@@ -14,6 +14,7 @@ ODS_MODE="${ODS_MODE:-local}"
 SKIP_GPU_OVERLAYS="${ODS_SKIP_GPU_OVERLAYS:-${ODS_SKIP_GPU_OVERLAYS_FOR:-}}"
 ASSUME_ENABLED=""
 NATIVE_RECOVERY="false"
+SELECTION_JSON="false"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -59,6 +60,12 @@ while [[ $# -gt 0 ]]; do
             ASSUME_ENABLED="${2:-}"
             shift 2
             ;;
+        --selection-json)
+            # Read-only selected fragments for diagnostics. This omits build
+            # projections and is not a recipe for launching Compose.
+            SELECTION_JSON="true"
+            shift
+            ;;
         --native-recovery)
             # Read-only recipe resolution for a validated retained initial
             # failure; protected proof still precedes recovery publication.
@@ -71,6 +78,10 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [[ "$SELECTION_JSON" == "true" ]]; then
+    export PYTHONDONTWRITEBYTECODE=1
+fi
 
 ROOT_DIR="$SCRIPT_DIR"
 PYTHON_CMD="python3"
@@ -90,7 +101,7 @@ if ! "$PYTHON_CMD" -c 'import yaml' >/dev/null 2>&1; then
 fi
 
 ODS_RESOLVE_ASSUME_ENABLED="$ASSUME_ENABLED" \
-"$PYTHON_CMD" - "$SCRIPT_DIR" "$TIER" "$GPU_BACKEND" "$PROFILE_OVERLAYS" "$ENV_MODE" "$SKIP_BROKEN" "$GPU_COUNT" "$ODS_MODE" "$SKIP_GPU_OVERLAYS" "$RESOLVER_ROOT" "$NATIVE_RECOVERY" <<'PY'
+"$PYTHON_CMD" - "$SCRIPT_DIR" "$TIER" "$GPU_BACKEND" "$PROFILE_OVERLAYS" "$ENV_MODE" "$SKIP_BROKEN" "$GPU_COUNT" "$ODS_MODE" "$SKIP_GPU_OVERLAYS" "$RESOLVER_ROOT" "$NATIVE_RECOVERY" "$SELECTION_JSON" <<'PY'
 import os
 import pathlib
 import platform
@@ -101,6 +112,9 @@ script_dir = pathlib.Path(sys.argv[1])
 # The source tree of this resolver; --script-dir may name another directory.
 resolver_root = pathlib.Path(sys.argv[10])
 native_recovery = sys.argv[11] == 'true'
+# Windows retained-extension validation executes this shared Python body
+# with the original argument list; it must keep the normal projection mode.
+selection_json = len(sys.argv) > 12 and sys.argv[12] == 'true'
 tier = (sys.argv[2] or "1").upper()
 gpu_backend = (sys.argv[3] or "nvidia").lower()
 profile_overlays = [x.strip() for x in (sys.argv[4] or "").split(",") if x.strip()]
@@ -169,12 +183,18 @@ macos_cloud_auth = script_dir / "data" / "generated" / "docker-compose.macos-clo
 def existing(overlays):
     return all((script_dir / f).exists() for f in overlays)
 
+# The native Windows entry point supplies its already-selected core/bundled
+# stack. Reuse user recipe discovery without reselecting platform overlays.
+selected_stack = globals().get("_selected_stack")
 resolved = []
 primary = "docker-compose.yml"
 
 # An ODS-managed host-native runtime owns inference selection, even when
 # hardware detection supplied a local CPU/AMD/NVIDIA profile to the installer.
-if host_native and ods_mode != "cloud" and not external_llm:
+if selected_stack is not None:
+    resolved = list(selected_stack)
+    primary = resolved[0]
+elif host_native and ods_mode != "cloud" and not external_llm:
     # The model stays local and switchable. The cloud overlay would profile
     # model-router out and can leave a stale router container serving Pixel
     # after reinstall; this overlay disables only the in-stack llama-server.
@@ -246,7 +266,7 @@ if not resolved:
 # The ROCm image replaces the Vulkan default when selected. It is layered after
 # docker-compose.amd.yml (also when a hardware profile chose that overlay) so
 # /dev/dri and the GPU groups still come from there.
-if "docker-compose.amd.yml" in resolved:
+if selected_stack is None and "docker-compose.amd.yml" in resolved:
     amd_inference_backend = _install_env_value("AMD_INFERENCE_BACKEND").lower() or "vulkan"
     if amd_inference_backend not in {"vulkan", "rocm"}:
         print(f"ERROR: AMD_INFERENCE_BACKEND must be vulkan or rocm, got {amd_inference_backend!r}", file=sys.stderr)
@@ -273,7 +293,7 @@ if (script_dir / primary).resolve() == macos_cloud_auth_resolved:
     primary = resolved[-1]
 
 # Multi-GPU overlay if we have more than 1 GPU.
-if gpu_count > 1:
+if selected_stack is None and gpu_count > 1:
     multigpu_file = f"docker-compose.multigpu-{gpu_backend}.yml"
     if (script_dir / multigpu_file).exists():
         resolved.append(multigpu_file)
@@ -1170,6 +1190,8 @@ def _extension_base_path(service_dir, service, label, assumed=frozenset()):
     """
     compose_rel = service.get("compose_file", "compose.yaml")
     if not isinstance(compose_rel, str) or not compose_rel:
+        if globals().get("_selected_stack") is not None:
+            raise ValueError(f"Retained extension {label} has no usable compose_file")
         print(f"WARNING: {label}: manifest has no usable compose_file, skipping overlays", file=sys.stderr)
         return None
     if compose_rel.endswith(".disabled"):
@@ -1179,6 +1201,8 @@ def _extension_base_path(service_dir, service, label, assumed=frozenset()):
     try:
         compose_path.resolve().relative_to(service_dir.resolve())
     except ValueError:
+        if globals().get("_selected_stack") is not None:
+            raise ValueError(f"Retained extension {label} compose_file escapes its directory")
         print(
             f"WARNING: {label}: compose_file '{compose_rel}' escapes the extension directory; skipping",
             file=sys.stderr,
@@ -1316,7 +1340,7 @@ base_stack_services = _declared_compose_services(resolved, strict=False)
 
 # Discover enabled extension compose fragments via manifests
 ext_dir = script_dir / "extensions" / "services"
-if ext_dir.exists():
+if selected_stack is None and ext_dir.exists():
     for service_dir in sorted(ext_dir.iterdir()):
         if not service_dir.is_dir():
             continue
@@ -1414,6 +1438,9 @@ _refused_services = {}
 
 
 def _note_refused_fragment(service_dir, compose_path, warnings):
+    if selected_stack is not None:
+        raise ValueError(f"Retained extension {service_dir.name}/{compose_path.name} requires review: "
+                         + "; ".join(warnings))
     try:
         data = _compose_policy_load(compose_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -1453,9 +1480,13 @@ if user_ext_dir.exists():
                         else:
                             manifest = yaml.safe_load(f)
                     if manifest is not None and not isinstance(manifest, dict):
+                        if selected_stack is not None:
+                            raise ValueError(f"Retained extension {service_dir.name} manifest is not a mapping")
                         print(f"WARNING: empty/non-dict manifest for {service_dir.name} at {manifest_path}, skipping", file=sys.stderr)
                         continue
                     if isinstance(manifest, dict) and manifest.get("schema_version") != "ods.services.v1":
+                        if selected_stack is not None:
+                            raise ValueError(f"Retained extension {service_dir.name} manifest schema is invalid")
                         continue
                     service = manifest.get("service", {}) if isinstance(manifest, dict) else {}
                 else:
@@ -1464,6 +1495,8 @@ if user_ext_dir.exists():
                 # the resolver: it runs on every `ods` invocation, and the
                 # AttributeError escapes the --skip-broken handler.
                 if not isinstance(service, dict):
+                    if selected_stack is not None:
+                        raise ValueError(f"Retained extension {service_dir.name} service is not a mapping")
                     print(f"WARNING: manifest 'service' is not a mapping for {service_dir.name} at {manifest_path}, skipping", file=sys.stderr)
                     continue
                 # Imported recipes without GPU metadata are unrestricted, as
@@ -1588,19 +1621,21 @@ if user_ext_dir.exists():
                     # Unexpected error — re-raise to crash visibly
                     raise
     except OSError as e:
+        if selected_stack is not None:
+            raise ValueError(f"Retained user-extension directory could not be read: {e}") from e
         print(f"WARNING: Could not scan user-extensions: {e}", file=sys.stderr)
 
 # External host runtimes disable ODS-managed inference and add the Linux
 # host-gateway alias to always-on clients. Append this before the operator
 # override so explicit local customization remains the final authority.
 external_llm_overlay = script_dir / "docker-compose.external-llm.yml"
-if external_llm:
+if selected_stack is None and external_llm:
     if not external_llm_overlay.exists():
         print("ERROR: EXTERNAL_LLM_URL is set but docker-compose.external-llm.yml is missing", file=sys.stderr)
         sys.exit(1)
     resolved.append("docker-compose.external-llm.yml")
 
-if not enable_open_webui:
+if selected_stack is None and not enable_open_webui:
     if not (script_dir / "docker-compose.gateway-only.yml").exists():
         print("ERROR: no-WebUI Compose overlay is missing", file=sys.stderr)
         sys.exit(1)
@@ -1610,7 +1645,7 @@ if not enable_open_webui:
 # mounts, these explicitly authorized absolute roots must match the bounded
 # registry exactly; no extra Compose keys or writable mounts are accepted.
 model_stores_overlay = script_dir / ".model-stores.compose.json"
-if model_stores_overlay.exists():
+if selected_stack is None and model_stores_overlay.exists():
     sys.path.insert(0, str(script_dir / "extensions/services/dashboard-api"))
     try:
         from model_stores import validated_compose_overlay, active_compose_overlay
@@ -1637,7 +1672,7 @@ if model_stores_overlay.exists():
 # script (installer refresh, ods-cli enable/disable, host agent, ods-update),
 # and dropping it there leaves those machines on the base limits. Applied
 # before docker-compose.override.yml so operator overrides still win.
-if tier in ("0", "T0"):
+if selected_stack is None and tier in ("0", "T0"):
     tier0_overlay = script_dir / "docker-compose.tier0.yml"
     if tier0_overlay.exists():
         resolved.append("docker-compose.tier0.yml")
@@ -1647,8 +1682,12 @@ if tier in ("0", "T0"):
 # under installer/CI and may handle composes from sources the operator
 # trusts less than themselves (cloned repo, restored backup). Apply the
 # same content scan as user extensions.
+if gpu_backend == "apple":
+    private_state = "installers/macos/dashboard-private-state.compose.yaml"
+    if (script_dir / private_state).is_file() and private_state not in resolved:
+        resolved.append(private_state)
 override = script_dir / "docker-compose.override.yml"
-if override.exists():
+if selected_stack is None and override.exists():
     ok, warnings = _scan_user_compose_content(override)
     for w in warnings:
         print(f"WARNING: docker-compose.override.yml: {w}", file=sys.stderr)
@@ -1660,14 +1699,14 @@ if override.exists():
 # Strip any caller-supplied occurrence, then append the validated overlay last
 # only for Apple cloud mode. This prevents stale profile flags from applying it
 # to local/non-Apple stacks or placing it before a user override.
-if ods_mode == "cloud" and gpu_backend == "apple" and macos_cloud_auth.exists():
+if selected_stack is None and ods_mode == "cloud" and gpu_backend == "apple" and macos_cloud_auth.exists():
     _append_macos_cloud_auth_overlay(resolved, macos_cloud_auth)
 
 # A successful native Pixel installation keeps these fragments disabled for
 # generic extension discovery. Restore their explicit selection after cache
 # invalidation, with the same final override order as the macOS installer.
 native_activation = script_dir / 'data/pixel-native/preparation/activation.json'
-if native_recovery or os.path.lexists(native_activation):
+if selected_stack is None and (native_recovery or os.path.lexists(native_activation)):
     import importlib.util
     try:
         native_spec = importlib.util.spec_from_file_location('ods_native_stack',
@@ -1758,7 +1797,10 @@ def _drop_unresolvable_user_extensions(files):
     return [rel for rel in files if extension_of(rel) not in dropped]
 
 
-resolved = _drop_unresolvable_user_extensions(resolved)
+dependency_resolved = _drop_unresolvable_user_extensions(resolved)
+if selected_stack is not None and dependency_resolved != resolved:
+    raise ValueError("Retained extensions have unresolved service dependencies; review before reinstalling")
+resolved = dependency_resolved
 
 # Validate the complete selected set before generating trusted build overlays.
 _source_entries = []
@@ -1772,7 +1814,16 @@ if _source_problems:
 
 # Each extension owns its projection so narrowed installs cannot accidentally
 # include unrelated services or require their missing configuration.
+if selected_stack is not None:
+    # Check canonical recipe ownership before writing any build projection.
+    _validate_selected(resolved)
 import tempfile
+if selection_json:
+    # All selection and policy checks above still apply. Diagnostics must
+    # not rewrite owner-private extension build projections merely to read
+    # which fragments are selected, and this output cannot launch Compose.
+    print(json.dumps({"fragments": resolved}))
+    sys.exit(0)
 projected = []
 for fragment in resolved:
     projected.append(fragment)
@@ -1801,7 +1852,9 @@ def to_flags(files):
 
 resolved_flags = to_flags(resolved)
 
-if env_mode:
+if selected_stack is not None:
+    print(json.dumps(resolved))
+elif env_mode:
     def out(key, value):
         safe = str(value).replace("\\", "\\\\").replace('"', '\\"')
         print(f'{key}="{safe}"')

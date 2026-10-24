@@ -6,6 +6,8 @@
 # It listens on 127.0.0.1 only and requires an API key. The Linux installer
 # points LiteLLM, the model router and Pixel at it (--native-llm-*); containers
 # reach Windows loopback via host.docker.internal.
+# The task, cutover, options and port helpers are vendor-neutral: the CUDA
+# build for NVIDIA GPUs on Windows on Arm uses them too (not routed yet).
 # Requires wsl-portal-setup.ps1 (Confirm-ODSPortalPreparation) in scope.
 
 . (Join-Path $PSScriptRoot 'detection.ps1')
@@ -21,11 +23,26 @@ $script:ODSPortalRuntimeTaskPrefix = 'ODSLlamaServerRuntime-'
 # Migrations and reruns keep the port the WSL side already uses.
 $script:ODSPortalRuntimePortCandidates = @(8080, 18080, 28080)
 $script:ODSPortalReadySeconds = 1020
+# Setup waits this long for a model change the dashboard started (a switch
+# can load for up to the readiness limit above).
+$script:ODSPortalRuntimeChangeWaitSeconds = 1200
 # The key reaches the Linux installer through this WSLENV-forwarded variable,
 # never on a command line (contract: --native-llm-api-key-env).
 $script:ODSPortalApiKeyVariable = 'ODS_NATIVE_LLM_API_KEY'
+# memory-plan.json and start-override.json exist only on the CUDA route: the
+# figures the launcher checks at every start, and the owner's Start anyway.
 $script:ODSPortalRuntimeOwnedFiles = @('runtime.json', 'runtime-options.json', 'launch.ps1', 'native-llama-runtime.ps1',
-    'private-file.ps1', 'api-key', 'intent.json', 'ready.json', 'process-ownership.json')
+    'private-file.ps1', 'api-key', 'intent.json', 'ready.json', 'process-ownership.json', 'memory-plan.json', 'start-override.json')
+# The scheduled task's description, by llama.cpp backend. Vulkan is the AMD
+# route and the default.
+$script:ODSPortalRuntimeTaskDescriptions = @{
+    vulkan = 'ODS: llama.cpp model server for the AMD GPU (127.0.0.1, API key). Starts at sign-in.'
+    cuda = 'ODS: llama.cpp model server for the NVIDIA GPU (127.0.0.1, API key). Starts at sign-in.'
+}
+# The CUDA build's GPU check runs on the first free of these quiet ports.
+$script:ODSPortalCheckPortCandidates = @(18090, 28090, 38090)
+# Explains the variable's AMD name wherever setup asks for it.
+$script:ODSPortalPortVariableNote = 'the AMD_INFERENCE_PORT environment variable (ODS uses that name for its Windows model server on every GPU)'
 
 function Get-ODSPortalStateDir {
     # Kept as ODS\lemonade this round: the WSL side registered this plan path
@@ -164,14 +181,22 @@ function Get-ODSPortalRuntimeOwnedLaunch($Task) {
     if ($shell.Count -ne 1 -or $action.Arguments -cne (Get-ODSPortalLauncherArguments) -or $action.WorkingDirectory -ine $runtimeDir) {
         throw 'The Portal model runtime task does not use the managed durable launcher; no process was stopped.'
     }
-    $plan = Read-ODSNativeLlamaJson (Join-Path $runtimeDir 'runtime.json')
+    $taskName = if ($Task.TaskName) { $Task.TaskName } else { Get-ODSPortalRuntimeTaskName }
+    $planPath = Join-Path $runtimeDir 'runtime.json'
+    # Uninstall keeps the task registered; deleting ODS files afterwards
+    # leaves it without the plan that proves which process it started.
+    if (-not (Test-Path -LiteralPath $planPath -PathType Leaf)) {
+        throw ("The Portal model runtime task $taskName has no saved runtime plan ($planPath), so ODS cannot prove " +
+            "which process it started; no process was stopped. If you deleted ODS files, remove the task from normal " +
+            "PowerShell, then rerun setup: Unregister-ScheduledTask -TaskPath '\' -TaskName '$taskName' -Confirm:`$false")
+    }
+    $plan = Read-ODSNativeLlamaJson $planPath
     if (-not [IO.Path]::IsPathRooted([string]$plan.ExecutablePath) -or
         [IO.Path]::GetFileName([string]$plan.ExecutablePath) -ine 'llama-server.exe' -or
         $plan.ModelsDir -ine (Get-ODSPortalModelsDir) -or
         ($plan.Port -isnot [int] -and $plan.Port -isnot [long])) {
         throw 'The saved Portal runtime plan does not match the managed llama-server; no process was stopped.'
     }
-    $taskName = if ($Task.TaskName) { $Task.TaskName } else { Get-ODSPortalRuntimeTaskName }
     return [pscustomobject]@{ TaskName = $taskName; Action = $action; ActionExe = $shell[0].Source
         ExecutablePath = [string]$plan.ExecutablePath; Port = [int]$plan.Port; Plan = $plan }
 }
@@ -184,14 +209,41 @@ function Stop-ODSPortalTaskTree {
     #>
     param($Task, [string]$TaskName, $Action, [string]$ActionExe, [string]$ExecutablePath, [int]$Port, [bool]$Durable)
     if ($Port -lt 1 -or $Port -gt 65535) { throw 'The existing Portal runtime task has an invalid port.' }
+    # Every stop path, including uninstall, must disarm scheduled retries.
+    # Publish first so even an already queued durable launcher exits cleanly.
+    $armed = [string]$Task.State -ne 'Disabled'
+    $progress = @{ Stopping = $false }
+    try {
+        Set-ODSPortalRuntimeIntent 'stopped'
+        Disable-ScheduledTask -TaskName $TaskName -TaskPath '\' -ErrorAction Stop | Out-Null
+        Stop-ODSPortalDisarmedTaskTree @PSBoundParameters -Progress $progress
+    } catch {
+        $failure = $_
+        # A refusal stopped nothing: sign-in startup goes back as it was, so a
+        # refused rerun or Unload never leaves the model off after a restart.
+        # Once stopping began the model may be down, and it stays disarmed as
+        # the Unload or uninstall that asked for the stop expects.
+        if ($armed -and -not $progress.Stopping) {
+            try {
+                Set-ODSPortalRuntimeIntent 'running'
+                Enable-ScheduledTask -TaskName $TaskName -TaskPath '\' -ErrorAction Stop | Out-Null
+            } catch {
+                throw ("$($failure.Exception.Message) Sign-in startup of the model could not be turned back on " +
+                    "either: $($_.Exception.Message) Run Windows setup again to restore it.")
+            }
+        }
+        throw $failure
+    }
+}
+
+function Stop-ODSPortalDisarmedTaskTree {
+    # $Progress.Stopping turns true just before the first task or process is
+    # stopped; a failure before that point is a refusal that changed nothing.
+    param($Task, [string]$TaskName, $Action, [string]$ActionExe, [string]$ExecutablePath, [int]$Port, [bool]$Durable,
+        [hashtable]$Progress = @{})
     $runtimeDir = Get-ODSPortalRuntimeDir
     $readyPath = Join-Path $runtimeDir 'ready.json'
     $ownershipPath = Join-Path $runtimeDir 'process-ownership.json'
-
-    # Every stop path, including uninstall, must disarm scheduled retries.
-    # Publish first so even an already queued durable launcher exits cleanly.
-    Set-ODSPortalRuntimeIntent 'stopped'
-    Disable-ScheduledTask -TaskName $TaskName -TaskPath '\' -ErrorAction Stop | Out-Null
 
     $engineId = Get-ODSPortalTaskEngineId $TaskName
     $nodes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
@@ -267,7 +319,7 @@ function Stop-ODSPortalTaskTree {
     # Hold process handles before stopping the task, so a recycled PID cannot
     # redirect a later Kill(). Children may live outside the runtime folder.
     $roots = if ($root) { @($root) } else { $recovered }
-    $owned = Get-ODSPortalOwnedProcessTree $roots $nodes
+    $owned = Get-ODSPortalOwnedProcessTree $roots $nodes $ExecutablePath
     try {
         $currentTasks = @(Get-ScheduledTask -TaskName $TaskName -TaskPath '\' -ErrorAction Stop)
         if ($currentTasks.Count -ne 1 -or $currentTasks[0].TaskPath -ne $Task.TaskPath -or
@@ -276,6 +328,7 @@ function Stop-ODSPortalTaskTree {
             $currentTasks[0].Actions[0].WorkingDirectory -ne $Action.WorkingDirectory -or (Get-ODSPortalTaskEngineId $TaskName) -ne $engineId) {
             throw 'The Portal runtime task changed during ownership verification; no process was stopped.'
         }
+        $Progress.Stopping = $true
         if ($engineId -gt 0) { Stop-ScheduledTask -TaskName $TaskName -TaskPath '\' -ErrorAction Stop }
         Stop-ODSPortalOwnedProcesses $owned.Handles
         if ($Durable -and (Test-Path -LiteralPath $ownershipPath)) { Remove-Item -LiteralPath $ownershipPath -Force }
@@ -319,9 +372,9 @@ function Test-ODSPortalPortBindable([int]$Port) {
 
 function Assert-ODSPortalPortAvailable([int]$Port) {
     $owner = Get-ODSPortalPortOwner $Port
-    if ($owner) { throw "Port $Port is used by '$owner'. Choose a free port with AMD_INFERENCE_PORT, then rerun." }
+    if ($owner) { throw "Port $Port is used by '$owner'. Choose a free port with $($script:ODSPortalPortVariableNote), then rerun." }
     if (-not (Test-ODSPortalPortBindable $Port)) {
-        throw "Port $Port cannot bind Windows loopback (it may be reserved after a restart). Set AMD_INFERENCE_PORT to a free port, then rerun."
+        throw "Port $Port cannot bind Windows loopback (it may be reserved after a restart). Choose a free port with $($script:ODSPortalPortVariableNote), then rerun."
     }
 }
 
@@ -341,11 +394,65 @@ function Select-ODSPortalRuntimePort {
         $reason = if ($owner) { $owner } else { 'reserved or unavailable for binding' }
         $taken += "$port ($reason)"
     }
-    throw "No free port for the llama.cpp model server; all are in use: $($taken -join ', '). Set AMD_INFERENCE_PORT to a free port, then rerun."
+    throw "No free port for the llama.cpp model server; all are in use: $($taken -join ', '). Choose a free port with $($script:ODSPortalPortVariableNote), then rerun."
+}
+
+function Select-ODSPortalCheckPort {
+    # The CUDA build's GPU check never takes the model server's ports.
+    $taken = @()
+    foreach ($port in $script:ODSPortalCheckPortCandidates) {
+        $owner = Get-ODSPortalPortOwner $port
+        if (-not $owner -and (Test-ODSPortalPortBindable $port)) { return $port }
+        $reason = if ($owner) { $owner } else { 'reserved or unavailable for binding' }
+        $taken += "$port ($reason)"
+    }
+    throw "No free port for the llama.cpp GPU check; all are in use: $($taken -join ', '). Close the programs using them, or restart Windows, then rerun setup."
 }
 
 function Set-ODSPortalRuntimeIntent([ValidateSet('running', 'stopped')][string]$State) {
     Write-ODSPrivateEnvFile -Path (Join-Path (Get-ODSPortalRuntimeDir) 'intent.json') -Content (@{ State = $State } | ConvertTo-Json -Compress)
+}
+
+function Get-ODSPortalControlMutexName {
+    return ('Global\ODS-PortalModelControl-' + (Get-ODSPortalUserSid))
+}
+
+function Enter-ODSPortalRuntimeChange([hashtable]$Lock) {
+    <#
+    .SYNOPSIS
+        Setup's turn to change the Windows model runtime. The dashboard's model
+        controller holds the same mutex for every switch, Unload and Resume, so
+        a rerun waits for one that is running instead of racing its stop.
+        The caller's $Lock holds the mutex before any wait begins, so its
+        finally (Exit-ODSPortalRuntimeChange) releases the lock even when
+        Ctrl+C stops setup just as a wait takes it.
+    #>
+    $Lock.Mutex = [Threading.Mutex]::new($false, (Get-ODSPortalControlMutexName))
+    $held = $false
+    # An abandoned mutex (a controller that ended without releasing it) is
+    # handed to this thread, so setup takes over.
+    try { $held = $Lock.Mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $held = $true }
+    if ($held) { return }
+    Write-Host '         A model change started from the dashboard is still running; setup continues once it finishes.'
+    # Short waits keep Ctrl+C working while setup waits.
+    $deadline = [datetime]::UtcNow.AddSeconds($script:ODSPortalRuntimeChangeWaitSeconds)
+    while (-not $held -and [datetime]::UtcNow -lt $deadline) {
+        try { $held = $Lock.Mutex.WaitOne(2000) } catch [Threading.AbandonedMutexException] { $held = $true }
+    }
+    if (-not $held) {
+        throw ('A model change started from the dashboard or with ods model is still running, so setup did not change ' +
+            'the model runtime. Let it finish, or restart Windows, then run setup again.')
+    }
+}
+
+function Exit-ODSPortalRuntimeChange([hashtable]$Lock) {
+    if (-not $Lock.Mutex) { return }
+    # Setup can stop before a wait took the lock, or just after. Only a lock
+    # this thread holds is released; ReleaseMutex refuses any other
+    # (ApplicationException), and that refusal needs no action.
+    try { $Lock.Mutex.ReleaseMutex() } catch [ApplicationException] { }
+    $Lock.Mutex.Dispose()
+    $Lock.Mutex = $null
 }
 
 function Assert-ODSPortalWslBinding([string]$WslDistro, [string]$WslInstallDir) {
@@ -365,12 +472,15 @@ function Get-ODSPortalApiKey {
     return (New-ODSNativeLlamaApiKey)
 }
 
-function New-ODSPortalRuntimeOptions($Runtime, $Qualification) {
+function New-ODSPortalRuntimeOptions($Runtime, $Qualification, [string]$Backend = 'vulkan', [string]$Architecture = 'x64') {
+    if ($Backend -cnotin @('vulkan', 'cuda') -or $Architecture -cnotin @('x64', 'arm64')) {
+        throw "Unknown llama.cpp runtime options: backend '$Backend', architecture '$Architecture'."
+    }
     $runtimeDir = Get-ODSPortalRuntimeDir
     # Thinking off by default, as Docker's LLAMA_ARG_REASONING=off; the binary
     # is asked whether it has --reasoning before the flag is used.
     $reasoning = @(Get-ODSNativeReasoningArgs -Executable $Runtime.ExecutablePath -Mode 'off' -FallbackFormat 'none')
-    return [ordered]@{
+    $options = [ordered]@{
         schemaVersion = 1
         Device = [string]$Qualification.Device.Name
         NGpuLayers = 'auto'
@@ -385,9 +495,50 @@ function New-ODSPortalRuntimeOptions($Runtime, $Qualification) {
         # an older launcher (setup not rerun since) is never handed one.
         PlanFeatures = @('MmprojFile')
     }
+    if ($Backend -ceq 'cuda') {
+        # Vulkan (AMD) options stay exactly as they were, with no Backend or
+        # Architecture. CUDA puts every layer on the GPU; with the launcher's
+        # --fit off, llama.cpp never moves part of the model to the CPU.
+        $options.NGpuLayers = 'all'
+        $options.Backend = 'cuda'
+        $options.Architecture = $Architecture
+    }
+    return $options
 }
 
-function New-ODSPortalRuntimeAction($Plan, $Options, [string]$ApiKey, [string]$WslDistro = '', [string]$WslInstallDir = '') {
+function Get-ODSGgufSplitSiblings([string]$File) {
+    <#
+    .SYNOPSIS
+        Every part of a split GGUF (name-00001-of-00003.gguf: all three), or
+        the file alone (pure). llama.cpp loads the other parts from the first.
+    #>
+    $match = [regex]::Match($File, '^(?<stem>.+)-(?<index>[0-9]{5})-of-(?<count>[0-9]{5})\.gguf$')
+    if (-not $match.Success) { return @($File) }
+    $count = [int]$match.Groups['count'].Value
+    $index = [int]$match.Groups['index'].Value
+    if ($count -lt 1 -or $index -lt 1 -or $index -gt $count) { return @($File) }
+    $stem = $match.Groups['stem'].Value
+    return @(1..$count | ForEach-Object { '{0}-{1:00000}-of-{2:00000}.gguf' -f $stem, $_, $count })
+}
+
+function New-ODSPortalMemoryPlanRecord($Plan, $Need, [double]$WslGiB) {
+    # memory-plan.json for a CUDA plan: what the launcher checks at each start.
+    $record = [ordered]@{
+        GgufFile = [string]$Plan.GgufFile
+        ContextSize = [long]$Plan.ContextSize
+        DeviceNeedGiB = [math]::Round([double]$Need.DeviceNeedGiB, 2)
+        CommitNeedGiB = [math]::Round([double]$Need.CommitNeedGiB, 2)
+        WslGiB = [math]::Round($WslGiB, 2)
+        Source = [string]$Need.Source
+    }
+    if (-not (Test-ODSNativeMemoryPlanRecord ([pscustomobject]$record))) { throw "The memory plan for $($Plan.GgufFile) is invalid." }
+    return $record
+}
+
+function New-ODSPortalRuntimeAction($Plan, $Options, [string]$ApiKey, [string]$WslDistro = '', [string]$WslInstallDir = '',
+    # The CUDA route's memory-plan.json record (New-ODSPortalMemoryPlanRecord);
+    # without one, no memory check runs (the AMD route).
+    $MemoryPlan = $null) {
     # All dependencies live beside the private plan, never in a temporary
     # checkout. The private writer verifies owner-only Windows ACLs.
     if ($WslDistro -or $WslInstallDir) { Assert-ODSPortalWslBinding $WslDistro $WslInstallDir }
@@ -415,6 +566,13 @@ function New-ODSPortalRuntimeAction($Plan, $Options, [string]$ApiKey, [string]$W
     }
     if ($null -ne $projector) { $plan.MmprojFile = [string]$projector }
     Write-ODSPrivateEnvFile -Path (Join-Path $runtimeDir 'runtime.json') -Content ($plan | ConvertTo-Json -Compress)
+    # A new plan never inherits an older plan's memory figures or Start anyway.
+    $memoryPath = Join-Path $runtimeDir 'memory-plan.json'
+    if ($null -ne $MemoryPlan) {
+        Write-ODSPrivateEnvFile -Path $memoryPath -Content ($MemoryPlan | ConvertTo-Json -Compress)
+    } elseif (Test-Path -LiteralPath $memoryPath) { Remove-Item -LiteralPath $memoryPath -Force }
+    $overridePath = Join-Path $runtimeDir 'start-override.json'
+    if (Test-Path -LiteralPath $overridePath) { Remove-Item -LiteralPath $overridePath -Force }
     Set-ODSPortalRuntimeIntent 'running'
     $readyPath = Join-Path $runtimeDir 'ready.json'
     if (Test-Path -LiteralPath $readyPath) { Remove-Item -LiteralPath $readyPath -Force }
@@ -428,10 +586,18 @@ try {
     $code = Invoke-ODSNativeLlamaRuntime $plan $options (Join-Path $PSScriptRoot 'ready.json')
     exit $code
 } catch {
-    $message = $_.Exception.Message
+    $exception = $_.Exception
+    $message = $exception.Message
     Add-Content -LiteralPath (Join-Path $PSScriptRoot 'native-llama-launch.log') -Encoding UTF8 `
         -Value ("{0:o} Portal llama-server startup failed: {1}" -f (Get-Date), $message)
-    $failure = @{ Error = ('llama-server startup failed: ' + $message) } | ConvertTo-Json -Compress
+    $record = [ordered]@{ Error = ('llama-server startup failed: ' + $message) }
+    if ($exception.Data['refusal']) {
+        # A memory refusal (CUDA): its own text, its code and the plan it was
+        # for, so the Models page can offer Start anyway for that plan.
+        $record = [ordered]@{ Error = $message; Code = [string]$exception.Data['refusal']
+            GgufFile = [string]$exception.Data['GgufFile']; ContextSize = [long]$exception.Data['ContextSize'] }
+    }
+    $failure = $record | ConvertTo-Json -Compress
     if (Get-Command Write-ODSPrivateEnvFile -ErrorAction SilentlyContinue) {
         Write-ODSPrivateEnvFile -Path (Join-Path $PSScriptRoot 'ready.json') -Content $failure
     } else {
@@ -464,6 +630,8 @@ function Wait-ODSPortalRuntimeReady($Registration, [int]$Seconds = $script:ODSPo
     while ((Get-Date) -lt $deadline) {
         if (Test-Path -LiteralPath $Registration.ReadyPath -PathType Leaf) {
             $ready = Get-Content -LiteralPath $Registration.ReadyPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            # A memory refusal ran no server, so the server log says nothing about it.
+            if ($ready.Error -and $ready.Code) { throw ([string]$ready.Error) }
             if ($ready.Error) { throw ([string]$ready.Error + (Get-ODSPortalLogExcerpt)) }
             if ($ready.Port -ne $Registration.Plan.Port -or $ready.ContextSize -ne $Registration.Plan.ContextSize -or
                 [string]$ready.ModelId -cne [string]$Registration.Plan.GgufFile) { throw 'The Portal llama-server ready record does not match its plan.' }
@@ -475,16 +643,18 @@ function Wait-ODSPortalRuntimeReady($Registration, [int]$Seconds = $script:ODSPo
     throw ("llama-server did not finish loading the model. Check $(Join-Path (Split-Path -Parent $Registration.ReadyPath) 'llama-server.log')." + (Get-ODSPortalLogExcerpt))
 }
 
-function Register-ODSPortalRuntimeTask($Registration) {
+function Register-ODSPortalRuntimeTask($Registration, [string]$Description = '') {
     # One task for this Windows user: starts at sign-in (so the model survives a
     # restart). It binds 127.0.0.1 only. Started separately by the caller.
+    # Without a description it is the AMD task, as before.
+    if (-not $Description) { $Description = $script:ODSPortalRuntimeTaskDescriptions['vulkan'] }
     $taskName = Get-ODSPortalRuntimeTaskName
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User (Get-ODSPortalUserSid)
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) `
         -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
     Register-ScheduledTask -TaskName $taskName -TaskPath '\' -Action $Registration.Action -Trigger $trigger `
         -Settings $settings -Principal (New-ODSInteractiveScheduledTaskPrincipal -RunLevel Limited) `
-        -Description 'ODS: llama.cpp model server for the AMD GPU (127.0.0.1, API key). Starts at sign-in.' -Force | Out-Null
+        -Description $Description -Force | Out-Null
     return $taskName
 }
 
@@ -547,12 +717,18 @@ function Backup-ODSPortalRuntimeDirectory([string]$Label) {
     if (-not (Test-Path -LiteralPath $runtimeDir -PathType Container)) { return '' }
     $backup = Join-Path (Get-ODSPortalStateDir) ("portal-runtime.$Label-" + (Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
     New-Item -ItemType Directory -Path $backup | Out-Null
-    foreach ($file in @(Get-ChildItem -LiteralPath $runtimeDir -File -Force)) {
-        if ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) {
-            throw 'The Portal runtime folder contains a link; nothing was changed.'
+    try {
+        foreach ($file in @(Get-ChildItem -LiteralPath $runtimeDir -File -Force)) {
+            if ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                throw 'The Portal runtime folder contains a link; nothing was changed.'
+            }
+            if ($file.Name -match '\.log(\.\d+)?$' -or $file.Name -like '.ods-private-env-*') { continue }
+            Write-ODSPrivateFileBytes -Path (Join-Path $backup $file.Name) -Bytes ([IO.File]::ReadAllBytes($file.FullName))
         }
-        if ($file.Name -match '\.log(\.\d+)?$' -or $file.Name -like '.ods-private-env-*') { continue }
-        Write-ODSPrivateFileBytes -Path (Join-Path $backup $file.Name) -Bytes ([IO.File]::ReadAllBytes($file.FullName))
+    } catch {
+        # A partial backup is never left behind as if it were one.
+        Remove-Item -LiteralPath $backup -Recurse -Force
+        throw
     }
     return $backup
 }
@@ -627,34 +803,85 @@ function Invoke-ODSPortalRuntimeCutover {
         Replace the previous ODS runtime with the qualified llama.cpp one and
         prove it, or restore the previous ODS runtime and fail visibly.
     #>
-    param($Existing, $Plan, $Options, [string]$ApiKey, [bool]$KeepPort, [string]$WslDistro = '', [string]$WslInstallDir = '')
-    $label = if ($Existing.Kind -eq 'lemonade') { 'lemonade-backup' } else { 'backup' }
-    $backup = if ($Existing.Kind -ne 'none') { Backup-ODSPortalRuntimeDirectory $label } else { '' }
-    # Quiesce only proven ODS identities. A user's own Lemonade keeps running.
-    if ($Existing.Kind -eq 'llama-server') { Stop-ODSPortalRuntime }
-    if (@($Existing.Launches).Count) { Stop-ODSPortalLemonadeLaunches $Existing.Launches }
-    $registered = $false
+    param($Existing, $Plan, $Options, [string]$ApiKey, [bool]$KeepPort, [string]$WslDistro = '', [string]$WslInstallDir = '',
+        # Empty keeps the AMD task description.
+        [string]$TaskDescription = '',
+        # The CUDA route's memory-plan.json record. It is written with the new
+        # plan after the backup, so a rollback restores the old pair.
+        $MemoryPlan = $null)
+    # One change at a time: a model switch, Unload or Resume from the
+    # dashboard holds the same lock, so its stop never races this one.
+    $lock = @{}
     try {
-        if ($KeepPort) { Assert-ODSPortalPortAvailable $Plan.Port }
-        $registration = New-ODSPortalRuntimeAction $Plan $Options $ApiKey $WslDistro $WslInstallDir
-        $taskName = Register-ODSPortalRuntimeTask $registration
-        $registered = $true
-        Start-ScheduledTask -TaskName $taskName -TaskPath '\' -ErrorAction Stop
-        $null = Wait-ODSPortalRuntimeReady $registration
-    } catch {
-        $failure = $_.Exception.Message
-        try {
-            Undo-ODSPortalRuntimeCutover $Existing $backup $registered
-        } catch {
-            throw "The llama.cpp runtime did not start ($failure), and restoring the previous runtime also failed: $($_.Exception.Message) Rerun setup; ODS changed only its own files under $(Get-ODSPortalStateDir), and its backup is kept there."
+        Enter-ODSPortalRuntimeChange $lock
+        # Setup read what ODS runs before it took the lock. A switch, Unload or
+        # Resume that finished meanwhile is the owner's latest choice: stop
+        # with nothing changed instead of undoing it.
+        $current = Get-ODSPortalExistingRuntime
+        if ($current.Kind -ne $Existing.Kind -or $current.WasEnabled -ne $Existing.WasEnabled -or
+            ($current.Selection | ConvertTo-Json -Compress) -cne ($Existing.Selection | ConvertTo-Json -Compress)) {
+            throw ('The model was changed from the dashboard while setup was running, so setup did not change the model ' +
+                'runtime. Run setup again; it keeps that change.')
         }
-        # The previous files are back in place; the backup is now redundant.
-        if ($backup) { Remove-Item -LiteralPath $backup -Recurse -Force }
-        throw "The llama.cpp runtime did not start: $failure $(Get-ODSPortalRestoredRuntimeNote $Existing)"
+        $label = if ($Existing.Kind -eq 'lemonade') { 'lemonade-backup' } else { 'backup' }
+        $backup = if ($Existing.Kind -ne 'none') { Backup-ODSPortalRuntimeDirectory $label } else { '' }
+        # Quiesce only proven ODS identities. A user's own Lemonade keeps running.
+        $llamaStopped = $false
+        try {
+            if ($Existing.Kind -eq 'llama-server') { Stop-ODSPortalRuntime; $llamaStopped = $true }
+            if (@($Existing.Launches).Count) { Stop-ODSPortalLemonadeLaunches $Existing.Launches }
+        } catch {
+            $failure = $_
+            if ($llamaStopped) {
+                # A former Lemonade task failed to stop after llama.cpp stopped:
+                # put llama.cpp back as it was, as a failed start does. That
+                # task's own stop already left it as its outcome requires.
+                try {
+                    Restore-ODSPortalRuntimeDirectory $backup
+                    if ($Existing.WasEnabled) {
+                        Set-ODSPortalRuntimeIntent 'running'
+                        Enable-ScheduledTask -TaskName $Existing.Launch.TaskName -TaskPath '\' -ErrorAction Stop | Out-Null
+                        Start-ScheduledTask -TaskName $Existing.Launch.TaskName -TaskPath '\' -ErrorAction Stop
+                    }
+                } catch {
+                    throw "Setup could not stop a former ODS Lemonade task ($($failure.Exception.Message)), and restoring the previous llama.cpp runtime also failed: $($_.Exception.Message) Rerun setup; ODS changed only its own files under $(Get-ODSPortalStateDir), and its backup is kept there."
+                }
+                # A backup that cannot be removed must not hide the cause.
+                if ($backup) { Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue }
+                throw "$($failure.Exception.Message) $(Get-ODSPortalRestoredRuntimeNote $Existing)"
+            }
+            # No new runtime file was written, so the backup is redundant.
+            # Failing to remove a private copy is safe to ignore; it must not
+            # hide the refusal the owner needs to see.
+            if ($backup) { Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue }
+            throw $failure
+        }
+        $registered = $false
+        try {
+            if ($KeepPort) { Assert-ODSPortalPortAvailable $Plan.Port }
+            $registration = New-ODSPortalRuntimeAction $Plan $Options $ApiKey $WslDistro $WslInstallDir $MemoryPlan
+            $taskName = Register-ODSPortalRuntimeTask $registration $TaskDescription
+            $registered = $true
+            Start-ScheduledTask -TaskName $taskName -TaskPath '\' -ErrorAction Stop
+            $null = Wait-ODSPortalRuntimeReady $registration
+        } catch {
+            $failure = $_.Exception.Message
+            try {
+                Undo-ODSPortalRuntimeCutover $Existing $backup $registered
+            } catch {
+                throw "The llama.cpp runtime did not start ($failure), and restoring the previous runtime also failed: $($_.Exception.Message) Rerun setup; ODS changed only its own files under $(Get-ODSPortalStateDir), and its backup is kept there."
+            }
+            # The previous files are back in place; the backup is now redundant,
+            # and one that cannot be removed must not hide the cause.
+            if ($backup) { Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue }
+            throw "The llama.cpp runtime did not start: $failure $(Get-ODSPortalRestoredRuntimeNote $Existing)"
+        }
+        if (@($Existing.Launches).Count) { Complete-ODSPortalLemonadeRetirement $Existing.Launches }
+        if ($backup -and $Existing.Kind -eq 'llama-server') { Remove-Item -LiteralPath $backup -Recurse -Force }
+        return $registration
+    } finally {
+        Exit-ODSPortalRuntimeChange $lock
     }
-    if (@($Existing.Launches).Count) { Complete-ODSPortalLemonadeRetirement $Existing.Launches }
-    if ($backup -and $Existing.Kind -eq 'llama-server') { Remove-Item -LiteralPath $backup -Recurse -Force }
-    return $registration
 }
 
 function Write-ODSPortalFitWarning($Device, [string]$ModelPath) {
@@ -663,6 +890,47 @@ function Write-ODSPortalFitWarning($Device, [string]$ModelPath) {
     if ($modelMiB -gt $Device.TotalMiB) {
         Write-Host "         The model needs about $modelMiB MiB but Vulkan reports $($Device.TotalMiB) MiB on $($Device.Description). llama.cpp keeps the rest in system memory, which is slower; a larger UMA frame buffer in the BIOS or a smaller model avoids that."
     }
+}
+
+function Invoke-ODSPortalCudaQualification {
+    <#
+    .SYNOPSIS
+        Qualify an installed CUDA llama.cpp runtime on this NVIDIA GPU before
+        any large download: the pinned build, its CUDA device, then the GPU
+        check with a small model already in the store. Nothing routes here yet.
+    .OUTPUTS
+        Passed, Class ('' when passed; device when llama.cpp lists no CUDA GPU;
+        otherwise the GPU check's class), Reason, Qualification and Check.
+        Throws, with Data['class'], when llama-server.exe cannot run at all.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$Pin,
+        [Parameter(Mandatory = $true)]$Runtime,
+        [Parameter(Mandatory = $true)][string]$AdapterName,
+        [Parameter(Mandatory = $true)][string]$ComputeCap,
+        [Parameter(Mandatory = $true)][string]$TestModelPath,
+        $CodeIntegrity = $null
+    )
+    if ([string]$Pin.Backend -cne 'cuda') { throw "The GPU check is for CUDA llama.cpp builds, not '$($Pin.Flavor)'." }
+    if ($null -eq $CodeIntegrity) { $CodeIntegrity = Get-ODSNativeLlamaCodeIntegrityState }
+    $qualification = Test-ODSNativeLlamaQualification -ExecutablePath $Runtime.ExecutablePath -ExpectedBuild $Pin.Build `
+        -AdapterName $AdapterName -CodeIntegrity $CodeIntegrity -Backend cuda -Architecture $Pin.Architecture
+    if (-not $qualification.Device) {
+        $seen = @($qualification.Devices | ForEach-Object { "$($_.Name) $($_.Description)" }) -join '; '
+        if (-not $seen) { $seen = 'no devices' }
+        return [pscustomobject]@{ Passed = $false; Class = 'device'; Qualification = $qualification; Check = $null
+            Reason = ("llama.cpp found no NVIDIA CUDA GPU (it lists: $seen). The NVIDIA NPU is not used by ODS. " +
+                'Update the NVIDIA driver with the NVIDIA App or from nvidia.com, restart Windows and rerun setup.') }
+    }
+    # The check's log sits beside the runtime it qualifies (an unpinned log
+    # never invalidates a runtime) and goes with it when it is removed.
+    $reasoning = @(Get-ODSNativeReasoningArgs -Executable $Runtime.ExecutablePath -Mode 'off' -FallbackFormat 'none')
+    $check = Invoke-ODSNativeLlamaGenerationProbe -ExecutablePath $Runtime.ExecutablePath -ModelPath $TestModelPath `
+        -Device $qualification.Device.Name -Port (Select-ODSPortalCheckPort) -LogPath (Join-Path $Runtime.Directory 'gpu-check.log') `
+        -ComputeCap $ComputeCap -ArchsByCompute $Pin.RequiredCudaArchs -ReasoningArguments $reasoning `
+        -Architecture $Pin.Architecture -CodeIntegrity $CodeIntegrity
+    return [pscustomobject]@{ Passed = $check.Passed; Class = $check.Class; Reason = $check.Reason
+        Qualification = $qualification; Check = $check }
 }
 
 function Initialize-ODSPortalAmdRuntime($Plan, [string]$SourceRoot, [bool]$NonInteractive, [string]$WslDistro = '', [string]$WslInstallDir = '') {

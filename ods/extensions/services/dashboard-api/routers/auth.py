@@ -27,19 +27,77 @@ Security:
 
 from __future__ import annotations
 
+import html
 import logging
 import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 import session_signer
+from config import SERVICES
 from security import verify_api_key
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["auth"])
+
+# Keep in sync with ODS_HELP_DISCORD_URL in installers/lib/constants.sh.
+ODS_HELP_DISCORD_URL = "https://discord.gg/4ntNp9MAwC"
+
+
+def _has_valid_session(request: Request) -> bool:
+    return session_signer.verify(request.cookies.get(SESSION_COOKIE_NAME, ""))[0]
+
+
+def _dashboard_url(request: Request) -> Optional[str]:
+    """The dashboard on the host this browser used, at its configured port.
+
+    Built from the request's own host and the installed dashboard port, never
+    from a query parameter, so the page cannot be turned into a redirect.
+    """
+    dashboard = SERVICES.get("dashboard")
+    if not dashboard or not dashboard.get("external_port"):
+        return None
+    return str(request.url.replace(
+        username=None, password=None, port=dashboard["external_port"],
+        path="/", query="", fragment="",
+    ))
+
+
+def _expired_sign_in_page(request: Request) -> HTMLResponse:
+    """Explain an expired ODS sign-in to an owner who opened Hermes in a browser."""
+    dashboard_url = _dashboard_url(request)
+    if dashboard_url:
+        dashboard_link = (
+            f'<p><a class="btn" href="{html.escape(dashboard_url, quote=True)}">'
+            "Open the ODS dashboard</a></p>"
+        )
+    else:
+        dashboard_link = ""
+    page = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ODS sign-in expired</title>
+<style>
+  :root {{ color-scheme: light dark; }}
+  body {{ font: 16px/1.5 system-ui, sans-serif; max-width: 32rem; margin: 4rem auto; padding: 0 1.5rem; }}
+  h1 {{ font-size: 1.5rem; margin: 0 0 0.5rem; }}
+  .btn {{ display: inline-block; padding: 0.7rem 1.2rem; background: #18181b; color: #fff; text-decoration: none; border-radius: 0.5rem; }}
+</style>
+</head>
+<body>
+  <h1>ODS sign-in expired</h1>
+  <p>Your ODS sign-in in this browser has expired, so Hermes could not open.</p>
+  <p>Open the ODS dashboard and click Hermes again. The dashboard signs this browser back in for you.</p>
+  {dashboard_link}
+  <p>Still stuck? <a href="{ODS_HELP_DISCORD_URL}">Get help on Discord</a></p>
+</body>
+</html>"""
+    return HTMLResponse(page, status_code=401, headers={"Cache-Control": "no-store"})
 
 
 @router.get("/api/auth/hermes-session")
@@ -48,7 +106,12 @@ async def hermes_session(request: Request):
 
     The proxy exposes this as /auth/ods. No caller-selected destination, cookie
     domain, or credential is accepted. Other host aliases must sign in separately.
+    A browser opening the link without a valid session gets a page with the
+    recovery step instead of raw JSON; other callers keep the JSON 401.
     """
+    if "text/html" in request.headers.get("accept", "") and not _has_valid_session(request):
+        logger.info("hermes-session denied a browser launch: no valid ODS session")
+        return _expired_sign_in_page(request)
     verify_session(request)
     if request.query_params:
         raise HTTPException(status_code=400, detail="Hermes launch does not accept a destination")
@@ -111,13 +174,13 @@ def verify_session(request: Request) -> dict:
 
         forward_auth dashboard-api:3002 {
             uri /api/auth/verify-session
-            copy_headers Cookie
         }
 
-    Caddy forwards the original request's Cookie header here; we read
-    the ods-session cookie, hand it to session_signer.verify(), and
-    return 200/401 based on the result. The proxy honors the status
-    code: 2xx → forward the original request to the upstream; non-2xx
+    Caddy forwards the original request's Cookie header here by default;
+    we read the ods-session cookie, hand it to session_signer.verify(),
+    and return 200/401 based on the result. Successful verification leaves
+    the browser's original cookies intact for Hermes's separate session check.
+    The proxy honors the status code: 2xx → forward the original request to the upstream; non-2xx
     → return the forward_auth response to the client.
 
     Response body on success is intentionally minimal — proxies just

@@ -384,6 +384,7 @@ write_status() {
 {
   "status": "$status",
   "model": "$_safe_model",
+  "downloadGeneration": "${BOOTSTRAP_DOWNLOAD_GENERATION:-}",
   "percent": ${percent:-null},
   "bytesDownloaded": $downloaded,
   "bytesTotal": $total,
@@ -396,6 +397,9 @@ STATUSEOF
         rm -f "$_tmp" 2>/dev/null || true
         return 1
     fi
+    chmod 0644 "$_tmp" 2>/dev/null || {
+        log "WARNING: could not set 0644 permissions on $STATUS_FILE temp file"
+    }
     if ! mv "$_tmp" "$STATUS_FILE"; then
         rm -f "$_tmp" 2>/dev/null || true
         return 1
@@ -1492,6 +1496,47 @@ log "Target: $MODELS_DIR/$FULL_GGUF_FILE"
 # ── Phase 1: Download the full model ──
 mkdir -p "$MODELS_DIR"
 acquire_upgrade_lock
+BOOTSTRAP_DOWNLOAD_GENERATION=""
+BOOTSTRAP_DOWNLOAD_CONTROL=""
+# Git Bash uses a Windows Python/process model. Preserve its existing download
+# path until that native cancellation protocol is qualified separately.
+if ! is_windows_bash; then
+    BOOTSTRAP_DOWNLOAD_GENERATION="$(python3 -c 'import uuid; print(uuid.uuid4().hex)')" || fail "Could not identify the download operation."
+    BOOTSTRAP_DOWNLOAD_CONTROL="$(cd "$(dirname "${BASH_SOURCE[0]}")/../extensions/services/dashboard-api" && pwd)/bootstrap_download_control.py"
+    [[ -f "$BOOTSTRAP_DOWNLOAD_CONTROL" && ! -L "$BOOTSTRAP_DOWNLOAD_CONTROL" ]] || fail "Download cancellation helper is unavailable."
+fi
+BOOTSTRAP_DOWNLOAD_REQUEST="$INSTALL_DIR/data/bootstrap-download.cancel.json"
+
+finish_cancelled_download() {
+    stop_download_monitor
+    local bytes=0
+    [[ -f "$_part_path" ]] && bytes="$(file_size "$_part_path")"
+    write_status "cancelled" "$(status_percent "$bytes" "$TOTAL_BYTES")" "$bytes" "$TOTAL_BYTES" 0 "Download cancelled by user; partial file preserved."
+    release_model_lifecycle_lock
+    release_upgrade_lock
+    log "Download cancelled by user; partial file preserved."
+    exit 0
+}
+
+check_download_cancel() {
+    [[ -n "$BOOTSTRAP_DOWNLOAD_GENERATION" ]] || return 0
+    if python3 "$BOOTSTRAP_DOWNLOAD_CONTROL" --request "$BOOTSTRAP_DOWNLOAD_REQUEST" \
+            --generation "$BOOTSTRAP_DOWNLOAD_GENERATION" --check; then
+        finish_cancelled_download
+    fi
+}
+
+download_child() {
+    if [[ -z "$BOOTSTRAP_DOWNLOAD_GENERATION" ]]; then
+        "$@"
+        return $?
+    fi
+    python3 "$BOOTSTRAP_DOWNLOAD_CONTROL" --request "$BOOTSTRAP_DOWNLOAD_REQUEST" \
+        --generation "$BOOTSTRAP_DOWNLOAD_GENERATION" -- "$@"
+    local rc=$?
+    [[ "$rc" != 76 ]] || finish_cancelled_download
+    return "$rc"
+}
 
 # Get total file size for progress calculation
 TOTAL_BYTES=$(get_remote_size "$FULL_GGUF_URL")
@@ -1590,9 +1635,10 @@ if [[ "$_dl_success" != "true" ]]; then
     _download_round=1
     while [[ "$_dl_success" != "true" ]]; do
         for ((_attempt=1; _attempt<=_download_attempts; _attempt++)); do
+            check_download_cancel
             if [[ "$_download_round" -gt 1 || "$_attempt" -gt 1 ]]; then
                 log "Retry attempt $_attempt of $_download_attempts (round $_download_round)..."
-                sleep 5
+                download_child sleep 5
             fi
 
             if [[ -f "$_part_path" && "$TOTAL_BYTES" -gt 0 ]]; then
@@ -1603,6 +1649,7 @@ if [[ "$_dl_success" != "true" ]]; then
                 elif [[ "$_part_bytes" -eq "$TOTAL_BYTES" ]]; then
                     log "Partial file already has the expected size; promoting it for integrity verification."
                     acquire_model_lifecycle_lock || fail "Could not serialize full-model finalization."
+                    check_download_cancel
                     if ! mv "$_part_path" "$_final_path"; then
                         log "Download attempt $_attempt failed while finalizing $_part_path -> $_final_path"
                         release_model_lifecycle_lock
@@ -1615,7 +1662,7 @@ if [[ "$_dl_success" != "true" ]]; then
                 # restart the transfer from byte zero after a long connection reset,
                 # truncating an otherwise good multi-GB .part file.
                 start_download_monitor "$_part_path" "$TOTAL_BYTES"
-                if curl -fSL -C - --connect-timeout "$_download_connect_timeout" \
+                if download_child curl -fSL -C - --connect-timeout "$_download_connect_timeout" \
                         --speed-time "$_download_speed_time" --speed-limit "$_download_speed_limit" \
                         "${_download_curl_http_flags[@]}" \
                         -o "$_part_path" "$FULL_GGUF_URL" 2>&1; then
@@ -1624,6 +1671,7 @@ if [[ "$_dl_success" != "true" ]]; then
                         log "Download attempt $_attempt reported success but produced no partial file: $_part_path"
                     else
                         acquire_model_lifecycle_lock || fail "Could not serialize full-model finalization."
+                        check_download_cancel
                         if ! mv "$_part_path" "$_final_path"; then
                             log "Download attempt $_attempt failed while finalizing $_part_path -> $_final_path"
                             release_model_lifecycle_lock
@@ -1681,7 +1729,7 @@ if [[ "$_dl_success" != "true" ]]; then
         write_status "downloading" "$_download_percent" "$_downloaded_bytes" "$TOTAL_BYTES" 0 \
             "Retrying download in ${_download_retry_backoff_seconds}s; partial file preserved for resume."
         log "Download attempts exhausted after ${_download_elapsed}s; retrying in ${_download_retry_backoff_seconds}s with partial resume."
-        sleep "$_download_retry_backoff_seconds"
+        download_child sleep "$_download_retry_backoff_seconds"
         _download_round=$(( _download_round + 1 ))
     done
 

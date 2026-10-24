@@ -1,8 +1,66 @@
-import { deliveredArtifactDisplayText, deliveredArtifactMetadata, parseDeliveredArtifacts, parseDeliveredArtifactsFrame } from './pixelDeliveredArtifacts'
+import { deliveredArtifactDisplayText, deliveredArtifactForDownloadHref, deliveredArtifactForHref, deliveredArtifactMetadata, parseDeliveredArtifacts, parseDeliveredArtifactsFrame } from './pixelDeliveredArtifacts'
 
 const receipt = () => ({schemaVersion:1, kind:'ods-pixel-workspace-artifact', relativePath:'Playground/project/report.md',
   siteId:`site-${'a'.repeat(24)}`, sha256:'a'.repeat(64), file:{path:'report.md', bytes:12, sha256:'b'.repeat(64)}})
 const frame = artifacts => ({choices:[{finish_reason:'stop'}],pixel_artifacts:{schemaVersion:1,artifacts}})
+
+it('resolves a download-labelled filename only to one completed receipt',()=>{
+  const source=receipt(),href='https://untrusted.example/s/report.md'
+  expect(deliveredArtifactForDownloadHref(href,[source])).toEqual(source)
+  expect(deliveredArtifactForHref(href,[source])).toBeNull('ordinary source links keep their stricter snapshot binding')
+  const other={...source,relativePath:'Other/report.md',siteId:`site-${'c'.repeat(24)}`,sha256:'c'.repeat(64)}
+  for(const artifacts of [null,[],[source,other],[{...source,file:{...source.file,sha256:'bad'}}]]) {
+    expect(deliveredArtifactForDownloadHref(href,artifacts)).toBeNull()
+  }
+})
+
+it.each([
+  'https://untrusted.example/s/other.md','https://untrusted.example/s/report.md?x=1',
+  'https://untrusted.example/s/report.md#copy','https://user:pass@untrusted.example/s/report.md',
+  'https://untrusted.example/a/../s/report.md','https://untrusted.example/a/%2e%2e/s/report.md',
+  'https://untrusted.example/s/%72eport.md','https://untrusted.example/s\\report.md',
+  'file:///s/report.md','javascript:report.md',
+])('never binds a download to malformed or unmatched URL %s',href=>{
+  expect(deliveredArtifactForDownloadHref(href,[receipt()])).toBeNull()
+})
+
+it('resolves the observed invented host only through its exact delivered snapshot and file', () => {
+  const source = {schemaVersion:1,kind:'ods-pixel-workspace-artifact',relativePath:'fleet-current-main-20261017/welcome.md',
+    siteId:'site-59a5b7d9dcc69d70aad30310',sha256:'59a5b7d9dcc69d70aad303105bdd065a05cebd0d3849a845cbd231e50e797e07',
+    file:{path:'welcome.md',bytes:67,sha256:'28a58d9ddc4c50bd490b22b8e9aa79b02325bbfd018fb2741b0e5a5f30e90185'}}
+  expect(deliveredArtifactForHref('https://portal.openclaw.ai/59a5b7d9dcc69d70aad30310/welcome.md',[source])).toEqual(source)
+})
+
+it.each(['site', 'stripped', 'relay', 'preview'])('matches a canonical %s path without trusting the authored host', kind => {
+  const source=receipt()
+  const paths={site:`/${source.siteId}/report.md`,stripped:`/${source.siteId.slice(5)}/report.md`,relay:`/pixel-preview/${source.siteId}/report.md`,preview:`/preview/${source.siteId}/report.md`}
+  expect(deliveredArtifactForHref(`https://untrusted.example${paths[kind]}`,[source])).toEqual(source)
+})
+
+it.each([
+  '/site-bbbbbbbbbbbbbbbbbbbbbbbb/report.md', '/site-aaaaaaaaaaaaaaaaaaaaaaaa/other.md',
+  '/site-aaaaaaaaaaaaaaaaaaaaaaaa/report.md/extra', '/other/site-aaaaaaaaaaaaaaaaaaaaaaaa/report.md',
+  '/unused/../site-aaaaaaaaaaaaaaaaaaaaaaaa/report.md', '/site-aaaaaaaaaaaaaaaaaaaaaaaa/./report.md',
+  '/unused/%2e%2e/site-aaaaaaaaaaaaaaaaaaaaaaaa/report.md', '/site-aaaaaaaaaaaaaaaaaaaaaaaa/%72eport.md',
+  '/site-aaaaaaaaaaaaaaaaaaaaaaaa/report.md?download=1', '/site-aaaaaaaaaaaaaaaaaaaaaaaa/report.md#copy',
+  '/site-aaaaaaaaaaaaaaaaaaaaaaaa\\report.md',
+])('does not select a receipt from a noncanonical or unmatched path %s', path => {
+  expect(deliveredArtifactForHref(`https://example.com${path}`,[receipt()])).toBeNull()
+})
+
+it.each(['http://user:password@example.com','https://exa\nmple.com',' https://example.com','file://example.com','javascript:example.com'])('rejects malformed or credential-bearing authored URLs %s', origin => {
+  expect(deliveredArtifactForHref(`${origin}/${receipt().siteId}/report.md`,[receipt()])).toBeNull()
+})
+
+it('rejects absent, invalid or ambiguous metadata instead of guessing by filename', () => {
+  const source=receipt(),url=`https://example.com/${source.siteId}/report.md`
+  for(const artifacts of [undefined,[],[source,source],[{...source,sha256:'c'.repeat(64)}]]) {
+    expect(deliveredArtifactForHref(url,artifacts)).toBeNull()
+  }
+  const collision={...source,sha256:'a'.repeat(24)+'b'.repeat(40)}
+  expect(deliveredArtifactForHref(url,[source,collision])).toBeNull()
+  expect(deliveredArtifactForHref('https://example.com/report.md',[source])).toBeNull()
+})
 
 it('accepts bounded host metadata separately from websites and copies it for history', () => {
   const source = receipt(), result = parseDeliveredArtifactsFrame(frame([source]))

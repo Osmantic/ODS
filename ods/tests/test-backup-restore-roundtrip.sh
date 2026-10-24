@@ -49,6 +49,14 @@ echo "tei-cache" > "$SRC/data/embeddings/embeddings.bin"
 mkdir -p "$SRC/data/whisper/hub/blobs" "$SRC/data/whisper/hub/snapshots/revision"
 echo "linked-model-cache" > "$SRC/data/whisper/hub/blobs/model"
 ln -s ../../blobs/model "$SRC/data/whisper/hub/snapshots/revision/model.bin"
+# State dashboard-api writes straight into its ./data:/data mount, plus the
+# data directory of a Library-installed extension.
+mkdir -p "$SRC/data/user-extensions/foo" "$SRC/data/pixel-images" "$SRC/data/foo"
+echo "id: foo" > "$SRC/data/user-extensions/foo/manifest.yaml"
+echo "foo-state" > "$SRC/data/foo/state.txt"
+echo "png-bytes" > "$SRC/data/pixel-images/x.png"
+echo '{"hash":"x"}' > "$SRC/data/dashboard-password.json"
+chmod 600 "$SRC/data/dashboard-password.json"
 
 # Both scripts source lib/rsync.sh relative to ODS_DIR
 mkdir -p "$SRC/lib"
@@ -141,6 +149,11 @@ info "Validating restored contents"
     || fail "Missing whisper cache after restore"
 [[ -f "$DST/data/embeddings/embeddings.bin" ]] || fail "Missing embeddings cache after restore"
 
+[[ -f "$DST/data/user-extensions/foo/manifest.yaml" ]]     || fail "Missing Library-installed extension after restore"
+[[ -f "$DST/data/foo/state.txt" ]]     || fail "Missing Library-installed extension data after restore"
+[[ -f "$DST/data/pixel-images/x.png" ]] || fail "Missing pixel image after restore"
+[[ -f "$DST/data/dashboard-password.json" ]]     || fail "Missing dashboard-password.json after restore"
+[[ "$(stat -c %a "$DST/data/dashboard-password.json" 2>/dev/null     || stat -f %Lp "$DST/data/dashboard-password.json")" == "600" ]]     || fail "dashboard-password.json lost its 0600 mode across backup and restore"
 pass "All expected files/dirs present after restore"
 
 # Validate content integrity
@@ -217,7 +230,7 @@ pass "Legacy rsync fallback remains additive"
 # log line leaking to stdout garbles the path and fails every .tar.gz restore.
 
 info "Creating compressed backup from source"
-ODS_DIR="$SRC" bash "$ODS_BACKUP" --type full --compress >/dev/null 2>&1 || fail "Compressed backup failed"
+ODS_DIR="$SRC" bash "$ODS_BACKUP" --type full --compress --description "full cache recovery" >/dev/null 2>&1 || fail "Compressed backup failed"
 
 TARBALL=$(ls -1 "$SRC/.backups"/*.tar.gz 2>/dev/null | head -n 1)
 [[ -n "$TARBALL" ]] || fail "No compressed backup created"
@@ -229,6 +242,13 @@ mkdir -p "$DST2/data" "$DST2/.backups" "$DST2/lib"
 cp "$SCRIPT_DIR/../lib/rsync.sh" "$SCRIPT_DIR/../lib/backup-paths.sh" "$DST2/lib/"
 echo "compose-content" > "$DST2/docker-compose.yml"
 cp "$TARBALL" "$DST2/.backups/"
+
+info "Inspecting compressed backup before restore"
+compressed_list=$(ODS_DIR="$DST2" bash "$ODS_RESTORE" --list) || fail "Compressed backup listing failed"
+echo "$compressed_list" | grep -E "${CBACKUP_ID}[[:space:]]+full[[:space:]]+[^[:space:]]+[[:space:]]+full cache recovery" \
+    >/dev/null || fail "Compressed backup listing lost its type or description"
+[[ ! -e "$DST2/.backups/$CBACKUP_ID" ]] || fail "Listing extracted the compressed backup"
+pass "Compressed backup metadata is visible before restore"
 
 info "Restoring from compressed backup"
 ODS_DIR="$DST2" bash "$ODS_RESTORE" -f "$CBACKUP_ID" >/dev/null 2>&1 || fail "Compressed restore failed"

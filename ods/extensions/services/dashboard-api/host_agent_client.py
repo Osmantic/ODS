@@ -28,6 +28,18 @@ class AgentHTTPError(AgentClientError):
         self.response_text = response_text
 
 
+def agent_reports_busy(error: AgentHTTPError) -> bool:
+    """True for the host's 409 refusal made before acting: another model or
+    Portal change holds the lifecycle, so nothing was changed."""
+    if error.status_code != 409:
+        return False
+    try:
+        body = json.loads(error.response_text)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(body, dict) and "model-lifecycle-busy" in (body.get("error"), body.get("code"))
+
+
 class AgentUnavailable(AgentClientError):
     """The host agent could not be reached."""
 
@@ -40,15 +52,21 @@ class AgentProtocolError(AgentClientError):
     """The host agent returned a response that violated its JSON contract."""
 
 
+# The host agent closes idle keep-alive sockets after 30 s
+# (ThreadedHTTPServer.request_socket_timeout). Expire pooled connections well
+# before that: with equal timeouts the pool can reuse a socket the agent is
+# closing, and behind Docker Desktop's proxy that close may never reach the
+# container, so the request hangs until its read timeout.
+_KEEPALIVE_EXPIRY_SECONDS = 10.0
 _SYNC_LIMITS = httpx.Limits(
     max_connections=8,
     max_keepalive_connections=4,
-    keepalive_expiry=30.0,
+    keepalive_expiry=_KEEPALIVE_EXPIRY_SECONDS,
 )
 _ASYNC_LIMITS = httpx.Limits(
     max_connections=2,
     max_keepalive_connections=2,
-    keepalive_expiry=30.0,
+    keepalive_expiry=_KEEPALIVE_EXPIRY_SECONDS,
 )
 _sync_client: httpx.Client | None = None
 _async_client: httpx.AsyncClient | None = None

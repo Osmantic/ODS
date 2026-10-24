@@ -190,9 +190,21 @@ def update_selection_records(previous, activation, prepared, proof, install_dir)
 
 def compose_flags(install_dir, process_env, *, recovery=False):
     cache = install_dir / '.compose-flags'
-    if not recovery and os.path.lexists(cache):
+    use_cache = not recovery and os.path.lexists(cache)
+    if use_cache:
         raw = cache.read_text()
-    else:
+        cached_tokens = shlex.split(raw)
+        if (not cached_tokens or len(cached_tokens) % 2
+                or any(token != '-f' for token in cached_tokens[::2])):
+            raise ValueError('resolved-compose-flags-required')
+        # Full-stack start/restart freezes this selection before entering the
+        # native lifecycle. Like the CLI, discover an owner override added
+        # after installation through the resolver and its content checks.
+        override = install_dir / 'docker-compose.override.yml'
+        if override.is_file() and not any(
+                install_dir / path == override for path in cached_tokens[1::2]):
+            use_cache = False
+    if not use_cache:
         # Extension changes invalidate this disposable cache. Resolve the saved
         # selection like ods-cli, without sourcing .env or publishing a new cache.
         environment = helper('pixel-native-env')
@@ -235,19 +247,33 @@ def compose_flags(install_dir, process_env, *, recovery=False):
             *(['--native-recovery'] if recovery else [])],
             cwd=install_dir, env=resolver_env, capture_output=True, text=True,
             check=True, timeout=30).stdout
+    # Retained caches can predate the Mac private-store overlay. Include it
+    # before native lifecycle selection is frozen, preserving user overrides.
+    if (install_dir / 'installers/macos/dashboard-private-state.compose.yaml').is_file():
+        raw = helper('dashboard-private-state').selected_flags(install_dir, raw)
     tokens = shlex.split(raw)
     if not tokens or len(tokens) % 2 or any(token != '-f' for token in tokens[::2]):
         raise ValueError('resolved-compose-flags-required')
     return tokens
 
 
-def refresh_clients(install_dir):
+def refresh_clients(install_dir, *, ingress_selection_locked=False):
     """Recreate native consumers from the resolved stack, preserving volumes.
 
     The owner selection must already be published and protected activation
     verified. Failure leaves that selection intact for an explicit replay.
     """
     install_dir = Path(install_dir).resolve(strict=True)
+    selection = helper('pixel-native-stack').read_selection(install_dir / 'data/pixel-native/preparation')
+    key = hashlib.sha256(json.dumps({'selection': selection,
+        'source': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}, sort_keys=True).encode()).hexdigest()
+    return helper('pixel-native-ingress-refresh').refresh_installed(install_dir,
+        selection_locked=ingress_selection_locked, operation_kind='finalize-clients', operation_key=key,
+        operation=lambda selection, record, checkpoint: _refresh_clients_held(install_dir))
+
+
+def _refresh_clients_held(install_dir):
+    """Called only inside the installed ingress admission transaction."""
     installer, stack = helper('pixel-macos-access-install'), helper('pixel-native-stack')
     owner = pwd.getpwuid(os.getuid())
     _, environment, _, _, _, _ = installer._source_gateway(
@@ -328,21 +354,36 @@ def finalize_update(preparation):
             '--source-ref', prepared['pixelSourceRef']], stdout=subprocess.PIPE,
             text=True, timeout=180, check=True)
         document = update_selection_records(previous, activation, prepared, json.loads(result.stdout), install_dir)
-        # One atomic record avoids a mismatched preparation/activation pair after a crash.
-        with tempfile.TemporaryDirectory(prefix='.selection-', dir=directory) as temporary:
-            staged = Path(temporary) / 'selection.json'
-            with staged.open('xb') as stream:
-                os.fchmod(stream.fileno(), 0o600)
-                stream.write((json.dumps(document, sort_keys=True) + '\n').encode())
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(staged, directory / stack.UPDATE_SELECTION)
-            fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(fd)
-            finally:
-                os.close(fd)
-        refresh_clients(install_dir)
+        def complete_held(selection, record, checkpoint):
+            # One atomic record avoids a mismatched preparation/activation pair after a crash.
+            with tempfile.TemporaryDirectory(prefix='.selection-', dir=directory) as temporary:
+                staged = Path(temporary) / 'selection.json'
+                with staged.open('xb') as stream:
+                    os.fchmod(stream.fileno(), 0o600)
+                    stream.write((json.dumps(document, sort_keys=True) + '\n').encode())
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(staged, directory / stack.UPDATE_SELECTION)
+                fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+            _refresh_clients_held(install_dir)
+            # Recheck protected authority after the actual client handover,
+            # while the same admission hold still excludes user requests.
+            checked = subprocess.run(['/usr/bin/sudo', '/usr/bin/python3', str(Path(__file__).resolve()),
+                '--verify-protected', '--owner', pwd.getpwuid(os.getuid()).pw_name,
+                '--runtime', prepared['runtimeDigest'], '--services', prepared['serviceDigest'],
+                '--source-ref', prepared['pixelSourceRef']], stdout=subprocess.PIPE,
+                text=True, timeout=180, check=True)
+            if json.loads(checked.stdout) != json.loads(result.stdout):
+                raise ValueError('native-update-protected-proof-changed')
+        operation_key = hashlib.sha256(json.dumps({'selection': document,
+            'source': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}, sort_keys=True).encode()).hexdigest()
+        helper('pixel-native-ingress-refresh').refresh_installed(install_dir,
+            selection_locked=True, operation=complete_held, operation_kind='finalize-clients',
+            operation_key=operation_key)
     finally:
         os.close(lock)
     return {'status': 'selection-ready', 'path': str(directory / stack.UPDATE_SELECTION)}

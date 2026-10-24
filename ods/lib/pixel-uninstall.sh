@@ -692,8 +692,11 @@ ods_pixel_uninstall_managed() {
     # install. Root artifacts must still match the ODS/Pixel contract; drift
     # fails closed instead of deleting an ambient or operator-modified service.
     owner_uid="$(id -u)"
-    owner_gid="$(id -g)"
     owner_name="$(id -un)"
+    # The installer gives Pixel's files the account's primary group (pw_gid).
+    # Plain `id -g` is this shell's current group, which `newgrp docker` (the
+    # installer's own advice) or `sg docker` changes to docker.
+    owner_gid="$(id -g "$owner_name")"
     if [[ -e "$wsl_bridge_unit" || -L "$wsl_bridge_unit" \
         || -e "$wsl_bridge_program" || -L "$wsl_bridge_program" ]]; then
         [[ -f "$wsl_bridge_unit" && ! -L "$wsl_bridge_unit" \
@@ -1849,7 +1852,8 @@ def owner_source(
     if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)
             or info.st_nlink != 1 or info.st_uid != owner_uid
             or info.st_size > maximum or info.st_mode & write_mask
-            or (allow_owner_group_write and info.st_gid != owner_gid)
+            or (allow_owner_group_write and info.st_mode & 0o020
+                and info.st_gid != owner_gid)
             or (private and info.st_mode & 0o077)):
         raise SystemExit(f"unsafe ODS Pixel Operations source: {path}")
 
@@ -1999,8 +2003,10 @@ if exists(install_dir):
         # Early ODS checkouts inherited an owner-private group's cooperative
         # umask and can therefore carry 0664 here. That does not authorize the
         # source as a mutable deletion oracle: it must still be a regular,
-        # single-link, owner/primary-group file whose bytes exactly equal the
-        # root-owned 0755 executable below. New checkouts are created at 0644.
+        # single-link owner file, group-writable only by the owner's primary
+        # group, whose bytes exactly equal the root-owned 0755 executable
+        # below. New checkouts are created at 0644, under whatever group sg
+        # made primary when a first install refreshed a just-granted group.
         owner_source(expected_program, 2 * 1024 * 1024, allow_owner_group_write=True)
         if program.read_bytes() != expected_program.read_bytes():
             raise SystemExit("Pixel Operations Broker program drifted from the exact Pixel source")

@@ -1897,32 +1897,23 @@ def _current_extension_catalog():
     return merge_local_catalog(installed, EXTENSIONS_LIBRARY_DIR, schema, proposals_only=True)
 
 
-@router.get("/api/webui/selection")
-async def webui_selection(api_key: str = Depends(verify_api_key)):
-    """Expose the installed base-service choice to its Extensions Library tile."""
+def _webui_selection() -> dict:
+    """Read the host-owned base-service choice for Library and templates."""
     try:
-        result = await asyncio.to_thread(request_agent_json, "GET", "/v1/webui/selection", timeout=5)
+        result = request_agent_json("GET", "/v1/webui/selection", timeout=5)
     except AgentClientError:
         raise HTTPException(status_code=503, detail="Open WebUI selection is unavailable") from None
     if (not isinstance(result, dict) or type(result.get("enabled")) is not bool
             or type(result.get("supported")) is not bool):
         raise HTTPException(status_code=502, detail="Open WebUI selection could not be verified")
-    return JSONResponse({"enabled": result["enabled"], "supported": result["supported"]},
-                        headers={"Cache-Control": "no-store"})
+    return {"enabled": result["enabled"], "supported": result["supported"]}
 
 
-@router.post("/api/webui/selection")
-async def enable_webui_from_library(request: Request, api_key: str = Depends(verify_api_key)):
-    """Add WebUI through its dedicated host-owned selection path."""
+def _enable_webui_selection() -> dict:
+    """Use the same verified host action for individual and template adds."""
     try:
-        payload = await request.json()
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid Open WebUI selection") from None
-    if not isinstance(payload, dict) or set(payload) != {"enabled"} or payload["enabled"] is not True:
-        raise HTTPException(status_code=400, detail="Only adding Open WebUI is supported")
-    try:
-        result = await asyncio.to_thread(request_agent_json, "POST", "/v1/webui/selection",
-                                         payload={"enabled": True}, timeout=900)
+        result = request_agent_json("POST", "/v1/webui/selection",
+                                    payload={"enabled": True}, timeout=900)
     except AgentHTTPError as exc:
         code = exc.status_code
         if code == 501:
@@ -1939,6 +1930,26 @@ async def enable_webui_from_library(request: Request, api_key: str = Depends(ver
     if (not isinstance(result, dict) or result.get("enabled") is not True
             or result.get("action") not in {"enabled", "already_selected"}):
         raise HTTPException(status_code=502, detail="Open WebUI result could not be verified")
+    return {"enabled": True, "action": result["action"]}
+
+
+@router.get("/api/webui/selection")
+async def webui_selection(api_key: str = Depends(verify_api_key)):
+    """Expose the installed base-service choice to its Extensions Library tile."""
+    result = await asyncio.to_thread(_webui_selection)
+    return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+
+@router.post("/api/webui/selection")
+async def enable_webui_from_library(request: Request, api_key: str = Depends(verify_api_key)):
+    """Add WebUI through its dedicated host-owned selection path."""
+    try:
+        payload = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid Open WebUI selection") from None
+    if not isinstance(payload, dict) or set(payload) != {"enabled"} or payload["enabled"] is not True:
+        raise HTTPException(status_code=400, detail="Only adding Open WebUI is supported")
+    result = await asyncio.to_thread(_enable_webui_selection)
     # The Library immediately refetches catalog and detail after this action.
     # Refresh this one cached health row now; the background all-service poll
     # can otherwise leave a successful Add looking disabled until Refresh.
@@ -4760,6 +4771,9 @@ def prepare_extension_images(
     download. Library recipes prepare their images in their own install.
     """
     _validate_service_id(service_id)
+    if service_id == "opencode" and service_id in SERVICES:
+        # A host application with no images: its enable starts the host service.
+        return JSONResponse({"status": "ready", "service_ids": []})
     if service_id == "open-webui":
         plan = ["open-webui"]
     else:

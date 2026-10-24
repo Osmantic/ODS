@@ -24,6 +24,7 @@ from host_agent_client import (
     AgentUnavailable,
     async_request_json as async_request_agent_json,
 )
+from runtime_projection import awaiting_runtime_readback
 from security import verify_api_key
 
 logger = logging.getLogger(__name__)
@@ -188,13 +189,21 @@ async def _reconcile_activation_with_host(
         or activation.get("pixel") != "reconciled"
     ):
         return activation
+    async def read_host_status() -> Any:
+        # A cold host cache answers without activeRuntime while it proves the
+        # runtime in the background; re-poll that gap as the dashboard does.
+        for attempt in range(4):
+            status = await async_request_agent_json("GET", "/v1/model/status", timeout=2.0)
+            if not awaiting_runtime_readback(status) or attempt == 3:
+                return status
+            await asyncio.sleep(0.25)
+
     try:
-        host_status = await async_request_agent_json(
-            "GET",
-            "/v1/model/status",
-            timeout=3,
-        )
-    except (AgentHTTPError, AgentUnavailable, AgentProtocolError):
+        host_status = await asyncio.wait_for(read_host_status(), timeout=3.0)
+    except (AgentHTTPError, AgentUnavailable, AgentProtocolError, asyncio.TimeoutError):
+        host_status = None
+    if host_status is None or awaiting_runtime_readback(host_status):
+        # Unknown is not drift: the proof had not finished, or the host was unreachable.
         return {
             **activation,
             "valid": False,
@@ -828,6 +837,29 @@ def _proof_record_failure(
     return result
 
 
+def _provider_not_serving(response_text: str) -> dict[str, Any] | None:
+    """The host agent's report that the active route's provider fails chats.
+
+    Only its code, the provider's HTTP status and the agent's bounded,
+    key-redacted error line pass; any other host detail stays dropped.
+    """
+    try:
+        payload = json.loads(response_text)
+    except ValueError:
+        return None
+    if not isinstance(payload, Mapping) or payload.get("code") != "provider_not_serving":
+        return None
+    status = _safe_int(payload.get("providerStatus"))
+    if status is None or not 100 <= status <= 599:
+        return None
+    result = _proof_record_failure("provider_not_serving", reachable=True, status_code=502)
+    result["providerStatus"] = status
+    message = _safe_text(payload.get("providerMessage"), max_length=300)
+    if message:
+        result["providerMessage"] = message
+    return result
+
+
 def _safe_proof_record(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, Mapping):
         return _proof_record_failure("invalid_host_agent_response", reachable=True)
@@ -866,6 +898,9 @@ async def _record_egress_probe_proof(probe_response: Mapping[str, Any]) -> dict[
             "remote-provider proof recording returned HTTP %s",
             exc.status_code,
         )
+        not_serving = _provider_not_serving(exc.response_text) if exc.status_code == 502 else None
+        if not_serving is not None:
+            return not_serving
         return _proof_record_failure(
             f"host_agent_http_{exc.status_code}",
             reachable=True,

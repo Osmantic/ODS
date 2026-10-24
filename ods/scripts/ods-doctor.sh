@@ -187,6 +187,8 @@ fi
 
 DOCKER_CLI="false"
 DOCKER_DAEMON="false"
+# Exported for the report writer below, keeping its argument list unchanged.
+export DOCKER_ACCESS_DENIED="false"
 COMPOSE_CLI="false"
 DASHBOARD_HTTP="false"
 WEBUI_HTTP="false"
@@ -204,8 +206,12 @@ EXT_DIAGNOSTICS="[]"
 
 if command -v docker >/dev/null 2>&1; then
     DOCKER_CLI="true"
-    if docker info >/dev/null 2>&1; then
+    if docker_info_error="$(docker info 2>&1 >/dev/null)"; then
         DOCKER_DAEMON="true"
+    elif [[ "$docker_info_error" == *"permission denied"* ]]; then
+        # A running daemon this account cannot use yet, as right after the
+        # installer adds it to the docker group, is not a stopped daemon.
+        DOCKER_ACCESS_DENIED="true"
     fi
     if docker compose version >/dev/null 2>&1 || command -v docker-compose >/dev/null 2>&1; then
         COMPOSE_CLI="true"
@@ -550,10 +556,12 @@ elif [[ "${ENABLE_VOICE:-false}" != "true" ]]; then
     TTS_HTTP="disabled"
 fi
 
-# DGX Spark / GB10 CUDA arch check. Generic llama.cpp CUDA images can run on
-# GB10 while missing sm_121 support, which has been observed to produce
-# syntactically valid but unusable model output. Surface that mismatch in
-# doctor so operators do not have to infer it from llama-server logs.
+# Compute capability 12.1 CUDA arch check: DGX Spark (GB10) and RTX Spark
+# (N1X). llama.cpp's CUDA 12 images (server-cuda-*) load on these GPUs without
+# sm_121 kernels and answer with unusable output ("????"); the installer picks
+# the CUDA 13 image config/backends/nvidia.json pins for them. Surface a
+# mismatch in doctor so operators do not have to infer it from llama-server
+# logs. The DGX_SPARK_* names and report keys are kept for older readers.
 DGX_SPARK_GPU="false"
 DGX_SPARK_GPU_NAME=""
 DGX_SPARK_COMPUTE_CAP=""
@@ -573,17 +581,17 @@ if [[ "$_doctor_gpu_backend" == "nvidia" ]] && command -v nvidia-smi >/dev/null 
                 LLAMA_CUDA_ARCHS="$(echo "$_llama_arch_line" | sed -n 's/.*CUDA : ARCHS = \([^|]*\).*/\1/p' | xargs)"
                 if [[ -z "$LLAMA_CUDA_ARCHS" ]]; then
                     DGX_SPARK_CUDA_ARCH_STATUS="unknown"
-                    DGX_SPARK_CUDA_ARCH_MESSAGE="DGX Spark detected, but llama-server CUDA archs were not found in logs."
+                    DGX_SPARK_CUDA_ARCH_MESSAGE="DGX Spark / RTX Spark GPU (compute capability 12.1) detected, but llama-server CUDA archs were not found in logs."
                 elif [[ ",${LLAMA_CUDA_ARCHS}," == *",1210,"* || ",${LLAMA_CUDA_ARCHS}," == *",121,"* || ",${LLAMA_CUDA_ARCHS}," == *",121a,"* ]]; then
                     DGX_SPARK_CUDA_ARCH_STATUS="pass"
-                    DGX_SPARK_CUDA_ARCH_MESSAGE="DGX Spark llama-server binary includes sm_121 support."
+                    DGX_SPARK_CUDA_ARCH_MESSAGE="llama-server includes sm_121 kernels for this DGX Spark / RTX Spark GPU."
                 else
                     DGX_SPARK_CUDA_ARCH_STATUS="warn"
-                    DGX_SPARK_CUDA_ARCH_MESSAGE="DGX Spark detected, but llama-server reports CUDA archs '${LLAMA_CUDA_ARCHS}' without sm_121."
+                    DGX_SPARK_CUDA_ARCH_MESSAGE="DGX Spark / RTX Spark GPU (compute capability 12.1) detected, but llama-server reports CUDA archs '${LLAMA_CUDA_ARCHS}' without sm_121."
                 fi
             else
                 DGX_SPARK_CUDA_ARCH_STATUS="unknown"
-                DGX_SPARK_CUDA_ARCH_MESSAGE="DGX Spark detected, but ods-llama-server is not available for CUDA arch inspection."
+                DGX_SPARK_CUDA_ARCH_MESSAGE="DGX Spark / RTX Spark GPU (compute capability 12.1) detected, but ods-llama-server is not available for CUDA arch inspection."
             fi
         fi
     fi
@@ -781,6 +789,8 @@ from datetime import datetime, timezone
 from urllib import error, request
 
 cap_file, preflight_file, report_file, docker_cli, docker_daemon, compose_cli, dashboard_http, webui_http, dashboard_port, webui_port, ext_diagnostics_json, stt_cached, stt_model_name, stt_recovery, tts_http, tts_port, dgx_spark_gpu, dgx_spark_gpu_name, dgx_spark_compute_cap, llama_cuda_archs, dgx_spark_arch_status, dgx_spark_arch_message, hermes_slash_worker_count, hermes_slash_worker_max_count, ods_managed_container_count, ods_running_container_count, root_dir_arg, webui_enabled = sys.argv[1:]
+# Passed in the environment so callers of this block keep its argument list.
+docker_access_denied = os.environ.get("DOCKER_ACCESS_DENIED", "false")
 
 cap = json.load(open(cap_file, "r", encoding="utf-8"))
 pre = json.load(open(preflight_file, "r", encoding="utf-8"))
@@ -1665,6 +1675,7 @@ report = {
     "runtime": {
         "docker_cli": docker_cli == "true",
         "docker_daemon": docker_daemon == "true",
+        "docker_access_denied": docker_access_denied == "true",
         "compose_cli": compose_cli == "true",
         "dashboard_http": dashboard_http == "true",
         "webui_enabled": webui_enabled == "true",
@@ -1744,7 +1755,11 @@ for check in pre.get("checks", []):
 runtime = report["runtime"]
 if not runtime["docker_cli"]:
     fix_hints.append("Install Docker CLI/Docker Desktop and reopen your terminal.")
-if runtime["docker_cli"] and not runtime["docker_daemon"]:
+if runtime["docker_cli"] and runtime["docker_access_denied"]:
+    fix_hints.append("Docker is running, but this account cannot use it yet. Log out and back in "
+                     "(or run 'newgrp docker') so the docker group membership applies, then run "
+                     "ods doctor again.")
+elif runtime["docker_cli"] and not runtime["docker_daemon"]:
     fix_hints.append("Start Docker daemon/Desktop before launching ODS.")
 if not runtime["compose_cli"]:
     fix_hints.append("Install Docker Compose v2 plugin (or docker-compose).")
@@ -1815,8 +1830,10 @@ if hermes_slash_worker_count_num > hermes_slash_worker_max_count_num:
 
 if dgx_spark_arch_status == "warn":
     fix_hints.append(
-        "DGX Spark / GB10 detected, but llama-server was not built with sm_121 support. "
-        "Build llama.cpp with -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=121 or use a GB10-specific llama-server image."
+        "This GPU (DGX Spark GB10 or RTX Spark N1X, compute capability 12.1) runs a llama-server without "
+        "sm_121 kernels, so its answers can come back as '????'. Rerun the ODS installer: it selects the "
+        "CUDA 13 llama.cpp image (server-cuda13) pinned for this GPU. If you set LLAMA_SERVER_IMAGE yourself, "
+        "use that image or a llama.cpp build made with -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=121."
     )
 
 for warning in amd_runtime.get("warnings", []):
@@ -1867,6 +1884,9 @@ echo "ODS Doctor report: $REPORT_FILE"
 echo "  Preflight blockers: ${PREFLIGHT_BLOCKERS:-0}"
 echo "  Preflight warnings: ${PREFLIGHT_WARNINGS:-0}"
 echo "  Docker daemon: $DOCKER_DAEMON"
+if [[ "$DOCKER_ACCESS_DENIED" == "true" ]]; then
+    echo "  Docker access: permission denied for $(id -un); log out and back in (or run 'newgrp docker')"
+fi
 echo "  Compose CLI:   $COMPOSE_CLI"
 "$PYTHON_CMD" - "$REPORT_FILE" <<'PY'
 import json
@@ -1889,9 +1909,9 @@ if ext_total > 0:
 
 dgx_check = data.get("runtime", {}).get("dgx_spark_cuda_arch_check", {})
 if dgx_check.get("status") == "warn":
-    print(f"  DGX Spark:     warning - {dgx_check.get('message')}")
+    print(f"  Spark GPU:     warning - {dgx_check.get('message')}")
 elif dgx_check.get("status") == "pass":
-    print("  DGX Spark:     llama-server includes sm_121 support")
+    print("  Spark GPU:     llama-server includes sm_121 kernels")
 
 amd_runtime = data.get("runtime", {}).get("amd_runtime", {})
 if amd_runtime.get("available"):

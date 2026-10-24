@@ -24,6 +24,7 @@ from fastapi.responses import RedirectResponse, JSONResponse
 from env_values import parse_env_value
 import hf_gguf_header
 import model_preflight
+from bootstrap_download_control import valid_generation
 from config import (
     DATA_DIR,
     GPU_BACKEND,
@@ -53,6 +54,7 @@ from host_agent_client import (
 )
 from models import ModelLibraryGpu, ModelLibraryResponse
 from pixel_runtime_state import pixel_stream_active
+from runtime_projection import active_runtime_projection
 from context_policy import HERMES_MIN_CONTEXT
 from performance_oracle import (
     activation_context_plan,
@@ -1285,6 +1287,10 @@ async def _hf_preflight_gate(
     gated = bool(details.get("gated")) and (
         not _hf_token() or header_status.get("reason") == "gated"
     )
+    refusal = model_preflight.refusal(kind, supported, architecture, build, gated=gated)
+    if (refusal is None and kind == "chat" and model_preflight.nextn_layers(header)
+            and model_preflight.nextn_supported(policy, build, architecture) is False):
+        refusal = model_preflight.nextn_refusal(build)
     return {
         "artifact": _hf_artifact_binding(details, artifact),
         "header": header,
@@ -1293,7 +1299,7 @@ async def _hf_preflight_gate(
         "architecture": architecture,
         "runtime": {"key": runtime_key, "build": build, "architectureSupported": supported},
         "modelKind": kind,
-        "refusal": model_preflight.refusal(kind, supported, architecture, build, gated=gated),
+        "refusal": refusal,
     }
 
 
@@ -1312,7 +1318,10 @@ async def _model_storage_status() -> dict[str, Any] | None:
         return None
     if not isinstance(value, dict):
         return None
-    return {key: value.get(key) for key in ("freeBytes", "totalBytes", "marginBytes")}
+    status = {key: value.get(key) for key in ("freeBytes", "totalBytes", "marginBytes")}
+    # WSL only: whether the Windows drive under the virtual disk was counted.
+    status.update({key: value[key] for key in ("windowsDrive", "windowsDriveChecked") if key in value})
+    return status
 
 
 def _hf_default_context(declared: int | None) -> int:
@@ -1408,7 +1417,7 @@ async def _hf_preflight(
         artifact_context = artifact_layout.get("max_context_length") or fallback_context
         # Access denial applies to the repository; model evidence does not.
         refusal = gate["refusal"] if (gate["refusal"] or {}).get("code") == "gated" else artifact_gate["refusal"]
-        needed = 0 if artifact.get("installed") else _hf_artifact_size(artifact) + projector_bytes
+        weights = 0 if artifact.get("installed") else _hf_artifact_size(artifact)
         artifacts[artifact["id"]] = {
             "header": artifact_gate["headerStatus"],
             "architecture": artifact_gate["architecture"],
@@ -1417,7 +1426,9 @@ async def _hf_preflight(
             "contextSource": "gguf_header" if artifact_layout.get("max_context_length") else fallback_source,
             "refusal": refusal,
             "fit": _hf_artifact_fit(artifact, artifact_layout, artifact_context, gpu_info, projector_bytes),
-            "disk": model_preflight.disk_status(needed, storage),
+            "disk": model_preflight.disk_status(weights + projector_bytes if weights else 0, storage),
+            # An import with Include vision unticked downloads the weights alone.
+            "diskWithoutProjector": model_preflight.disk_status(weights, storage),
             "tensors": _hf_artifact_tensors(artifact_gate, artifact),
         }
     return {
@@ -1658,7 +1669,29 @@ async def search_huggingface_models(
     if query:
         params["search"] = query
     try:
-        payload, _headers = await _hf_get_json("/api/models", params=params)
+        payload = None
+        if _HF_REPO_RE.fullmatch(query):
+            # A pasted repository ID does not need the Hub's search index.
+            # The metadata endpoint can remain healthy during search outages.
+            try:
+                repository, _headers = await _hf_get_json(
+                    f"/api/models/{quote(query, safe='/')}",
+                    timeout_seconds=6.0,
+                    connect_timeout_seconds=3.0,
+                )
+            except HTTPException as exc:
+                if exc.status_code != 404:
+                    raise
+                # An owner/name prefix can still be a useful fuzzy search.
+            else:
+                if not isinstance(repository, dict) or str(
+                    repository.get("id") or repository.get("modelId") or ""
+                ).lower() != query.lower():
+                    raise HTTPException(status_code=502, detail="Hugging Face returned an unexpected repository")
+                item = _hf_search_item(repository)
+                payload = [repository] if item and item["ggufFileCount"] else []
+        if payload is None:
+            payload, _headers = await _hf_get_json("/api/models", params=params)
     except HTTPException as exc:
         if cached and exc.status_code in {429, 502, 504}:
             return {**cached[1], "stale": True}
@@ -1740,8 +1773,8 @@ async def _prepare_huggingface_import(body: dict[str, Any]):
             "acknowledgedAt": datetime.now(timezone.utc).isoformat(),
         }
         logger.warning(
-            "Hugging Face import of %s acknowledged an architecture (%s) that llama.cpp %s does not list",
-            repo_id, gate["architecture"], gate["runtime"]["build"],
+            "Hugging Face import of %s acknowledged %s for architecture %s on llama.cpp %s",
+            repo_id, refusal["code"], gate["architecture"], gate["runtime"]["build"],
         )
     tensors = _hf_artifact_tensors(gate, artifact)
     if tensors["status"] == "unsupported":
@@ -1851,6 +1884,10 @@ def _newly_measured_tps(metrics: dict, loaded_model: str | None) -> float:
     return float(metrics.get("tokens_per_second") or 0)
 
 
+_RUNTIME_ERROR_LIMIT = 1024
+_START_REFUSALS = ("memory_refused", "gpu_busy")
+
+
 def _model_management_proof() -> dict:
     """The host agent's management proof, with whether its launcher loads a vision projector."""
     if not _windows_hosted_runtime():
@@ -1868,6 +1905,13 @@ def _model_management_proof() -> dict:
         result["vision"] = value["managed"] and value.get("vision") is True
         if isinstance(value.get('reason'), str):
             result['reason'] = value['reason'][:500]
+        # Why a managed Windows model is not running (the launcher's own
+        # error), and a memory refusal its Resume overrides ("Start anyway").
+        error = value.get("runtimeError")
+        if value["managed"] and not value["running"] and isinstance(error, str) and error.strip():
+            result["runtimeError"] = error[:_RUNTIME_ERROR_LIMIT]
+            if value.get("startRefusal") in _START_REFUSALS:
+                result["startRefusal"] = value["startRefusal"]
         return result
     except (AgentClientError, ValueError):
         # A failed proof is unknown, not evidence of an independently managed service.
@@ -1905,6 +1949,17 @@ def _projector_unavailable_reason() -> str | None:
     return "ODS could not confirm that the Windows model runtime loads vision files, so the model imports without one"
 
 
+async def _discover_loaded_model() -> str | None:
+    """Try both identity sources within the catalog's one discovery budget."""
+    loaded_model = await get_loaded_model()
+    if loaded_model:
+        return loaded_model
+    service = SERVICES.get("llama-server", {})
+    return await _fetch_llama_loaded_model(
+        service.get("host", "llama-server"), int(service.get("port", 8080)),
+    )
+
+
 @router.get("/api/models", response_model=ModelLibraryResponse)
 async def list_models(api_key: str = Depends(verify_api_key)):
     """List model catalog entries with source-labelled performance metadata."""
@@ -1912,23 +1967,13 @@ async def list_models(api_key: str = Depends(verify_api_key)):
     gpu_info, loaded_model, agent_status = await asyncio.gather(
         asyncio.to_thread(get_gpu_info),
         _await_or_default(
-            get_loaded_model(),
+            _discover_loaded_model(),
             None,
-            "loaded model",
+            "loaded model discovery",
             timeout_seconds=_MODEL_DISCOVERY_TIMEOUT_SECONDS,
         ),
         asyncio.to_thread(_get_agent_model_status),
     )
-    if not loaded_model:
-        service = SERVICES.get("llama-server", {})
-        host = service.get("host", "llama-server")
-        port = int(service.get("port", 8080))
-        loaded_model = await _await_or_default(
-            _fetch_llama_loaded_model(host, port),
-            None,
-            "loaded model fallback",
-            timeout_seconds=_MODEL_DISCOVERY_TIMEOUT_SECONDS,
-        )
     metrics, context_size = await asyncio.gather(
         _await_or_default(
             get_llama_metrics(model_hint=loaded_model),
@@ -2000,6 +2045,11 @@ async def list_models(api_key: str = Depends(verify_api_key)):
     payload["hostRuntime"] = _windows_hosted_runtime()
     if payload["hostRuntime"]:
         payload["modelManagement"] = await asyncio.to_thread(_model_management)
+    # A held transition does not establish which route currently serves chat.
+    payload["activeRuntime"] = (
+        None if payload.get("modelRecoveryPending") or (payload.get("modelLifecycle") or {}).get("active")
+        else active_runtime_projection(agent_status)
+    )
     payload["activationReadyModel"] = (
         payload.get("currentModel")
         if loaded_entry
@@ -2025,6 +2075,9 @@ def model_download_status(api_key: str = Depends(verify_api_key)):
     status_path = Path(DATA_DIR) / "model-download-status.json"
     if not status_path.exists():
         bootstrap_status = _read_bootstrap_status_file()
+        if _is_cancelled_download_status(bootstrap_status):
+            terminal = {**bootstrap_status, "error": "Download cancelled by user; partial file preserved."}
+            return _idle_download_status(last_terminal_status=terminal)
         if _is_stale_active_bootstrap_status(bootstrap_status):
             return _stale_bootstrap_download_status(bootstrap_status)
         bootstrap_info = get_bootstrap_status()
@@ -2041,7 +2094,9 @@ def model_download_status(api_key: str = Depends(verify_api_key)):
             "percent": bootstrap_info.percent,
             "bytesDownloaded": int((bootstrap_info.downloaded_gb or 0) * 1024**3),
             "bytesTotal": int((bootstrap_info.total_gb or 0) * 1024**3),
-            "speedMbps": bootstrap_info.speed_mbps,
+            # Same field and unit as host-agent download status; the Models
+            # page progress hook reads speedBytesPerSec only.
+            "speedBytesPerSec": int((bootstrap_info.speed_mbps or 0) * 1024**2),
             "eta": bootstrap_info.eta_seconds,
         }
     try:
@@ -2384,6 +2439,15 @@ def _call_agent_model(
             raise HTTPException(status_code=409, detail=_agent_http_detail(exc)) from exc
         if exc.status_code == 400:
             raise HTTPException(status_code=400, detail=_agent_http_detail(exc)) from exc
+        detail = _agent_http_detail(exc)
+        if (path == "/v1/model/delete" and exc.status_code == 500
+                and isinstance(detail, dict)
+                and detail.get("code") in {
+                    "model_delete_recovery_required", "model_delete_cleanup_pending", "model_delete_status_update_failed",
+                }):
+            # Keep the existing gateway status while carrying the deletion
+            # outcome and recovery instruction to the Library consumer.
+            raise HTTPException(status_code=502, detail=detail) from exc
         if exc.status_code == 507:
             raise HTTPException(
                 status_code=507,
@@ -2729,6 +2793,46 @@ def download_model(model_id: str, api_key: str = Depends(verify_api_key)):
 @router.post("/api/models/download/cancel")
 def cancel_download(api_key: str = Depends(verify_api_key)):
     """Cancel an in-progress model download."""
+    bootstrap = _read_bootstrap_status_file()
+    if bootstrap and bootstrap.get("status") in _ACTIVE_BOOTSTRAP_STATUSES:
+        if bootstrap.get("status") not in {"starting", "downloading"}:
+            raise HTTPException(status_code=409, detail="The full model has finished downloading and is being activated. It cannot be cancelled now.")
+        generation = bootstrap.get("downloadGeneration")
+        if not valid_generation(generation):
+            raise HTTPException(status_code=409, detail="This full-model download worker does not support cancellation acknowledgements. It is still running.")
+        # This is a nonce, not a secret. The native owner must be able to read
+        # a request written by the API container; only the API writes requests.
+        directory = Path(DATA_DIR)
+        request_path = directory / "bootstrap-download.cancel.json"
+        temporary = None
+        try:
+            fd, temporary = tempfile.mkstemp(prefix=".bootstrap-cancel-", dir=directory)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump({"generation": generation}, handle)
+                handle.flush()
+                os.fchmod(handle.fileno(), 0o644)
+                os.fsync(handle.fileno())
+            os.replace(temporary, request_path)
+        except OSError:
+            raise HTTPException(status_code=503, detail="The download cancellation request could not be delivered. The download may still be running.") from None
+        finally:
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except FileNotFoundError:
+                    pass
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            current = _read_bootstrap_status_file()
+            if not current or current.get("downloadGeneration") != generation:
+                raise HTTPException(status_code=409, detail="The download changed before cancellation was acknowledged. Check its current progress.")
+            state = current.get("status")
+            if state == "cancelled":
+                return {"status": "cancelled", "cancelled": True, "downloadGeneration": generation}
+            if state not in {"starting", "downloading"}:
+                raise HTTPException(status_code=409, detail="The download finished or changed before it could be cancelled. Check its current progress.")
+            time.sleep(0.2)
+        raise HTTPException(status_code=409, detail="The download has not acknowledged cancellation yet. Check progress before retrying.")
     result = _call_agent_model("/v1/model/download/cancel", {})
     return result
 

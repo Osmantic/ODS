@@ -82,7 +82,7 @@ def selection(receipt, activation):
 
 
 def finish(*, preparation, receipt, run, verify, compose, selected_services, restore_host_agent=None,
-           resume_model=None, restore_optional_tools=None):
+           resume_model=None, restore_optional_tools=None, refresh_ingress=None):
     if sys.platform != 'darwin' or os.geteuid() == 0:
         raise ValueError('native-macos-owner-required')
     config = helper('pixel-native-config')
@@ -116,55 +116,58 @@ def finish(*, preparation, receipt, run, verify, compose, selected_services, res
                 raise ValueError('native-initial-recovery-proof-failed')
             unchanged()
         prove()
-        compose.wait_ready(run)
-        clients = ['dashboard-api']
-        if 'open-webui' in selected_services:
-            clients.append('open-webui')
-        # A stale override can leave healthy clients talking to a legacy Edge.
-        for name in clients:
-            definition = selected_services.get(name)
-            if type(definition) is not dict:
-                raise ValueError('native-client-service-missing')
-            hosts = definition.get('extra_hosts', {})
-            if type(hosts) not in (dict, list) or any(
-                    str(host).split('=', 1)[0].split(':', 1)[0].lower().rstrip('.') == 'pixel-edge'
-                    for host in hosts):
-                raise ValueError('native-client-has-legacy-edge-route')
-        if run('up', '-d', '--no-deps', '--wait', '--wait-timeout', '120', *clients, timeout=180).returncode:
-            raise ValueError('native-recovery-client-routing-failed')
-        probe = ('import urllib.request; '
-            'r=urllib.request.build_opener(urllib.request.ProxyHandler({})).open('
-            '"http://pixel-edge:9595/health",timeout=15); '
-            'raise SystemExit(0 if r.status==200 else 1)')
-        if run('exec', '-T', 'dashboard-api', 'python3', '-c', probe, timeout=30).returncode:
-            raise ValueError('native-recovery-client-routing-failed')
-        compose.wait_ready(run)
-        optional_result = None
-        if restore_optional_tools is not None:
-            unchanged()
-            optional_result = restore_optional_tools(unchanged)
-        # Host setup may normalize its own Colima bridge setting in .env.
-        # Finish optional setup's exact retained-environment checks first.
-        if restore_host_agent is not None:
-            unchanged()
-            restore_host_agent()
-        prove()
-        # Publish only after routing and protected readback succeed. An earlier
-        # interruption retains the error receipt and is safe to retry explicitly.
-        with tempfile.TemporaryDirectory(prefix='.recovery-', dir=preparation) as temporary:
-            staged = Path(temporary) / 'selection.json'
-            with staged.open('xb') as stream:
-                os.fchmod(stream.fileno(), 0o600)
-                stream.write(body)
-                stream.flush()
-                os.fsync(stream.fileno())
-            unchanged()
-            os.replace(staged, destination)
-            directory_fd = os.open(preparation, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
+        def complete_held():
+            compose.wait_ready(run)
+            clients = ['dashboard-api']
+            if 'open-webui' in selected_services:
+                clients.append('open-webui')
+            # A stale override can leave healthy clients talking to a legacy Edge.
+            for name in clients:
+                definition = selected_services.get(name)
+                if type(definition) is not dict:
+                    raise ValueError('native-client-service-missing')
+                hosts = definition.get('extra_hosts', {})
+                if type(hosts) not in (dict, list) or any(
+                        str(host).split('=', 1)[0].split(':', 1)[0].lower().rstrip('.') == 'pixel-edge'
+                        for host in hosts):
+                    raise ValueError('native-client-has-legacy-edge-route')
+            if run('up', '-d', '--no-deps', '--wait', '--wait-timeout', '120', *clients, timeout=180).returncode:
+                raise ValueError('native-recovery-client-routing-failed')
+            probe = ('import urllib.request; '
+                'r=urllib.request.build_opener(urllib.request.ProxyHandler({})).open('
+                '"http://pixel-edge:9595/health",timeout=15); '
+                'raise SystemExit(0 if r.status==200 else 1)')
+            if run('exec', '-T', 'dashboard-api', 'python3', '-c', probe, timeout=30).returncode:
+                raise ValueError('native-recovery-client-routing-failed')
+            compose.wait_ready(run)
+            optional_result = None
+            if restore_optional_tools is not None:
+                unchanged()
+                optional_result = restore_optional_tools(unchanged)
+            # Host setup may normalize its own Colima bridge setting in .env.
+            # Finish optional setup's exact retained-environment checks first.
+            if restore_host_agent is not None:
+                unchanged()
+                restore_host_agent()
+            prove()
+            # Publish only after routing and protected readback succeed. An earlier
+            # interruption retains the error receipt and is safe to retry explicitly.
+            with tempfile.TemporaryDirectory(prefix='.recovery-', dir=preparation) as temporary:
+                staged = Path(temporary) / 'selection.json'
+                with staged.open('xb') as stream:
+                    os.fchmod(stream.fileno(), 0o600)
+                    stream.write(body)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                unchanged()
+                os.replace(staged, destination)
+                directory_fd = os.open(preparation, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+            return optional_result
+        optional_result = refresh_ingress(complete_held) if refresh_ingress is not None else complete_held()
         if resume_model is not None or restore_optional_tools is not None:
             result = {'selection': str(destination)}
             if optional_result is not None:

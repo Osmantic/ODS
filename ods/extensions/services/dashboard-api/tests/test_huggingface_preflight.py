@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -14,9 +15,10 @@ _TYPES_B9014 = {"F32": 0, "F16": 1, "Q8_0": 8, "Q4_K": 12, "Q6_K": 14}
 POLICY = {
     "backendBuilds": {"nvidia": "b11429", "cpu": "b9014", "amd": "b9014"},
     "builds": {
-        "b9014": {"commit": "1" * 40, "architectures": ["llama", "qwen3"], "tensorTypes": _TYPES_B9014},
+        "b9014": {"commit": "1" * 40, "architectures": ["llama", "qwen3"], "tensorTypes": _TYPES_B9014,
+                  "nextnLoader": False, "nextnArchitectures": []},
         "b11429": {"commit": "2" * 40, "architectures": ["llama", "nanbeige", "qwen3"],
-                   "tensorTypes": {**_TYPES_B9014, "Q2_0": 42}},
+                   "tensorTypes": {**_TYPES_B9014, "Q2_0": 42}, "nextnLoader": True},
     },
 }
 GIB = 1024 ** 3
@@ -173,6 +175,88 @@ def test_preflight_refuses_an_architecture_this_build_lacks(test_client, preflig
     assert body["refusal"]["code"] == "runtime_architecture_unsupported"
     assert body["refusal"]["overridable"] is True
     assert "b9014" in body["refusal"]["message"]
+
+
+@pytest.mark.parametrize("backend, layers, refused", [
+    ("amd", 1, True),      # b9014 loads the NextN block as an ordinary layer and fails (#7914)
+    ("nvidia", 1, False),  # b11429 reads NextN layers for every architecture
+    ("amd", 0, False),     # no NextN block
+])
+def test_preflight_refuses_a_nextn_file_this_build_cannot_load(
+    test_client, preflight_env, monkeypatch, backend, layers, refused,
+):
+    models_router, state = preflight_env
+    monkeypatch.setattr(models_router, "GPU_BACKEND", backend)
+    state["details"] = _details(ggufArchitecture="qwen3")
+    state["header"] = _dense_header("qwen3", {"qwen3.nextn_predict_layers": layers})
+
+    body = _preflight(test_client).json()
+
+    assert body["runtime"]["architectureSupported"] is True
+    if refused:
+        assert body["refusal"]["code"] == "runtime_nextn_unsupported"
+        assert body["refusal"]["overridable"] is True
+        assert "b9014" in body["refusal"]["message"]
+        assert body["artifacts"]["a" * 20]["refusal"]["code"] == "runtime_nextn_unsupported"
+    else:
+        assert body["refusal"] is None
+
+
+def test_import_refuses_a_nextn_file_this_build_cannot_load_unless_acknowledged(
+    test_client, preflight_env, monkeypatch,
+):
+    models_router, state = preflight_env
+    monkeypatch.setattr(models_router, "GPU_BACKEND", "amd")
+    state["details"] = _details(ggufArchitecture="qwen3")
+    state["header"] = _dense_header("qwen3", {"qwen3.nextn_predict_layers": 1})
+    dispatched = []
+
+    def dispatch(_path, payload, **_kwargs):
+        dispatched.append(payload)
+        return {"status": "started"}
+
+    monkeypatch.setattr(models_router, "_call_agent_model", dispatch)
+
+    refused = _import(test_client)
+
+    assert refused.status_code == 422
+    assert refused.json()["detail"]["code"] == "runtime_nextn_unsupported"
+    assert dispatched == []
+
+    accepted = _import(test_client, allowUnsupportedRuntime=True)
+
+    assert accepted.status_code == 200
+    assert len(dispatched) == 1
+    registry = json.loads((models_router.Path(models_router.DATA_DIR) / "model-imports.json").read_text(encoding="utf-8"))
+    assert registry["models"][0]["runtime_override"]["code"] == "runtime_nextn_unsupported"
+
+
+@pytest.mark.parametrize('architecture, supported', [
+    ('glm4', True), ('glm4moe', True), ('glm-dsa', True),
+    ('exaone-moe', True), ('bailingmoe2', True), ('qwen35', False),
+])
+def test_nextn_gate_matches_the_shipped_build_policy(test_client, preflight_env, monkeypatch, architecture, supported):
+    models_router, state = preflight_env
+    monkeypatch.setattr(models_router, 'GPU_BACKEND', 'cpu')
+    policy = Path(__file__).resolve().parents[4] / 'config/llama-cpp-architectures.json'
+    monkeypatch.setattr(models_router, '_ARCHITECTURES_PATH', policy)
+    state['details'] = _details(ggufArchitecture=architecture)
+    state['header'] = _dense_header(architecture, {f'{architecture}.nextn_predict_layers': 1})
+    result = _preflight(test_client).json()
+    assert result['runtime']['build'] == 'b9014'
+    assert result['runtime']['architectureSupported'] is True
+    if supported:
+        assert result['refusal'] is None
+    else:
+        assert result['refusal']['code'] == 'runtime_nextn_unsupported'
+
+
+def test_nextn_gate_ignores_metadata_for_another_architecture(test_client, preflight_env, monkeypatch):
+    models_router, state = preflight_env
+    monkeypatch.setattr(models_router, 'GPU_BACKEND', 'cpu')
+    state['details'] = _details(ggufArchitecture='qwen3')
+    state['header'] = _dense_header('qwen3', {'other.nextn_predict_layers': 1, 'qwen3.nextn_predict_layers': 0})
+    assert _preflight(test_client).json()['refusal'] is None
 
 
 def test_preflight_names_a_reranker_from_its_header(test_client, preflight_env):
@@ -552,6 +636,24 @@ def test_storage_check_allows_for_a_windows_managed_model_store(monkeypatch):
     assert models_router._MODEL_STORAGE_TIMEOUT_SECONDS >= 15
 
 
+@pytest.mark.parametrize("wsl", [
+    {"windowsDrive": "C:", "windowsDriveChecked": True},
+    {"windowsDrive": None, "windowsDriveChecked": False},
+])
+def test_storage_check_keeps_the_wsl_windows_drive_fields(monkeypatch, wsl):
+    import asyncio
+
+    import routers.models as models_router
+
+    storage = {"freeBytes": 73873989632, "totalBytes": 1022580748288, "marginBytes": 51129037414}
+    monkeypatch.setattr(models_router, "request_agent_json",
+                        lambda *_args, **_kwargs: {**storage, **wsl, "extra": "dropped"})
+
+    status = asyncio.run(models_router._model_storage_status())
+
+    assert status == {**storage, **wsl}
+
+
 def _busy(operation):
     from fastapi import HTTPException
 
@@ -786,6 +888,31 @@ def test_selected_header_tensor_refusal_is_preserved_through_import(test_client,
     record = json.loads((router.Path(router.DATA_DIR) / "model-imports.json").read_text())["models"][0]
     assert record["architecture"] == "qwen3"
     assert record["runtime_override"]["tensorTypes"] == ["Q2_0"]
+
+
+@pytest.mark.parametrize("artifact_id", [None, "b" * 20])
+@pytest.mark.parametrize("weights_gib, expected", [(15, "ok"), (16, "insufficient")])
+def test_preflight_reports_disk_for_an_import_without_the_projector(
+    test_client, preflight_env, artifact_id, weights_gib, expected,
+):
+    _router, state = preflight_env
+    state["details"] = _vision_details()
+    # 20 GiB free, 5 GiB margin: 15 GiB fits without the projector; 16 GiB never fits.
+    state["details"]["artifacts"][1]["sizeBytes"] = weights_gib * GIB
+    state["details"]["artifacts"][1]["files"][0]["sizeBytes"] = weights_gib * GIB
+
+    url = f"/api/models/huggingface/preflight/{REPO}"
+    if artifact_id:
+        url += f"?artifactId={artifact_id}"
+    response = test_client.get(url, headers=test_client.auth_headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["artifactId"] == (artifact_id or "a" * 20)
+    artifacts = body["artifacts"]
+
+    assert artifacts["b" * 20]["disk"] == "insufficient"
+    assert artifacts["b" * 20]["diskWithoutProjector"] == expected
+    assert artifacts["a" * 20]["diskWithoutProjector"] == "ok"
 
 
 def test_a_windows_launcher_without_vision_support_imports_the_weights_alone(test_client, monkeypatch):

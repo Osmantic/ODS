@@ -165,6 +165,9 @@ def validate_image(image, image_id):
         or labels.get("org.osmantic.ods.inspection.protocol") != "1"
         or labels.get("org.osmantic.ods.inspection.fill") != "native-text-number-fill-v2"
         or labels.get("org.osmantic.ods.inspection.select") != "native-single-select-v1"
+        or labels.get("org.osmantic.ods.inspection.press") != "trusted-key-press-v1"
+        or labels.get("org.osmantic.ods.inspection.paint") != "element-paint-v1"
+        or labels.get("org.osmantic.ods.inspection.screenshot") != "viewport-screenshot-v1"
         or labels.get("org.osmantic.ods.inspection.playwright") != "1.62.0"
     ):
         raise ValueError("inspection-image-contract-mismatch")

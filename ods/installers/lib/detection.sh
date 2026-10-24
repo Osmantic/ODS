@@ -15,6 +15,7 @@
 #           normalize_profile_tier(), tier_rank(), load_backend_contract(),
 #           fix_nvidia_secure_boot(), MIN_DRIVER_VERSION
 #           Side-effect var on Jetson: JETSON_L4T_RELEASE (e.g. "R36.4.0")
+#           Side-effect var on NVIDIA: GPU_COMPUTE_CAP (e.g. "12.1")
 #
 # Modder notes:
 #   Add new GPU vendors or APU detection logic here.
@@ -328,6 +329,7 @@ detect_gpu() {
     GPU_BACKEND="cpu"  # default to CPU-only fallback
     GPU_MEMORY_TYPE="none"
     GPU_DEVICE_ID=""
+    GPU_COMPUTE_CAP=""
 
     # Try NVIDIA Jetson (Tegra SoC) first — Tegra iGPUs do not appear as PCIe
     # devices under /sys/class/drm with vendor 0x10de, and nvidia-smi (only in
@@ -392,14 +394,38 @@ detect_gpu() {
     for _v in "$_drm_sys"/card*/device/vendor; do
         [[ "$(cat "$_v" 2>/dev/null)" == "0x10de" ]] && _nvidia_hw=true && break
     done
+    # Headless servers without nvidia-drm.ko have no DRM card for the GPU, but
+    # the PCI device still exists. Accept vendor 0x10de with a display class
+    # (0x03xxxx: VGA 0x0300, 3D controller 0x0302 for datacenter GPUs).
+    # ODS_PCI_SYS can be overridden in tests to point at a mock sysfs tree.
+    local _pci_sys="${ODS_PCI_SYS:-/sys/bus/pci/devices}"
+    if ! $_nvidia_hw; then
+        for _v in "$_pci_sys"/*/vendor; do
+            [[ "$(cat "$_v" 2>/dev/null)" == "0x10de" ]] || continue
+            [[ "$(cat "${_v%/vendor}/class" 2>/dev/null)" == 0x03* ]] && _nvidia_hw=true && break
+        done
+    fi
     # WSL2: /sys/class/drm/ only contains a 'version' file — no card* entries exist.
     # Fall back to nvidia-smi as the sole hardware witness on WSL2.
-    if ! $_nvidia_hw && grep -qiE "microsoft|wsl" /proc/sys/kernel/osrelease 2>/dev/null; then
+    # ODS_OSRELEASE_FILE can be overridden in tests to simulate native Linux.
+    if ! $_nvidia_hw && grep -qiE "microsoft|wsl" "${ODS_OSRELEASE_FILE:-/proc/sys/kernel/osrelease}" 2>/dev/null; then
         command -v nvidia-smi &>/dev/null && _nvidia_hw=true
+    fi
+    if ! $_nvidia_hw && command -v nvidia-smi &>/dev/null         && nvidia-smi -L 2>/dev/null | grep -q '^GPU '; then
+        warn "nvidia-smi lists GPUs but no NVIDIA PCI/DRM device was found in sysfs; ignoring nvidia-smi"
     fi
     if $_nvidia_hw && command -v nvidia-smi &> /dev/null; then
         local raw
         if raw=$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null) && [[ -n "$raw" ]]; then
+            # A row whose memory is [N/A] beside a GPU with a memory size is
+            # not a GPU for the model (Windows on Arm lists an NVIDIA NPU that
+            # way). A lone [N/A] row stays: that is the unified-memory case
+            # below (GB10, GB200).
+            local _first_gpu_row=1
+            if awk -F',' '$2 ~ /[0-9]/ { found = 1 } END { exit !found }' <<< "$raw"; then
+                _first_gpu_row=$(awk -F',' '{ m = $2; gsub(/^[ \t]+|[ \t]+$/, "", m) } m != "[N/A]" && m != "N/A" { print NR; exit }' <<< "$raw")
+                raw=$(awk -F',' '{ m = $2; gsub(/^[ \t]+|[ \t]+$/, "", m) } m != "[N/A]" && m != "N/A"' <<< "$raw")
+            fi
             GPU_BACKEND="nvidia"
             GPU_MEMORY_TYPE="discrete"
             GPU_INFO="$raw"
@@ -425,10 +451,19 @@ detect_gpu() {
                     fi
                 fi
             fi
-            # Extract PCI device ID from first GPU
+            # Extract PCI device ID from first GPU (nvidia-smi lists devices
+            # in the same order for every query)
             local pci_id
-            pci_id=$(nvidia-smi --query-gpu=pci.device_id --format=csv,noheader 2>/dev/null | head -1 | xargs)
+            pci_id=$(nvidia-smi --query-gpu=pci.device_id --format=csv,noheader 2>/dev/null | sed -n "${_first_gpu_row}p" | xargs)
             [[ -n "$pci_id" ]] && GPU_DEVICE_ID="${pci_id:0:6}"
+            # Compute capability of the same GPU (12.1 on a DGX Spark GB10 or
+            # an RTX Spark N1X). Phase 06 picks the llama.cpp image built for
+            # it. A driver whose nvidia-smi lacks the compute_cap field (before
+            # 510) fails this query; the value then stays empty and the
+            # default image applies, as before.
+            local compute_cap
+            compute_cap=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | sed -n "${_first_gpu_row}p" | xargs) || compute_cap=""
+            [[ "$compute_cap" =~ ^[0-9]+\.[0-9]+$ ]] && GPU_COMPUTE_CAP="$compute_cap"
             if [[ $GPU_COUNT -gt 1 ]]; then
                 # Build a display name for multi-GPU (e.g. "RTX 3090 + RTX 4090" or "RTX 4090 × 2")
                 local first_name second_name
@@ -783,10 +818,10 @@ fix_nvidia_secure_boot() {
     if [[ -z "$installed_driver" ]]; then
         ai "No NVIDIA driver package found. Installing recommended driver..."
         if command -v ubuntu-drivers &>/dev/null; then
-            ods_sudo ubuntu-drivers install 2>>"$LOG_FILE" || \
-            ods_sudo apt-get install -y "nvidia-driver-${MIN_DRIVER_VERSION}" 2>>"$LOG_FILE" || true
+            ods_sudo ubuntu-drivers install </dev/null 2>>"$LOG_FILE" || \
+            ods_sudo apt-get install -y "nvidia-driver-${MIN_DRIVER_VERSION}" </dev/null 2>>"$LOG_FILE" || true
         else
-            ods_sudo apt-get install -y "nvidia-driver-${MIN_DRIVER_VERSION}" 2>>"$LOG_FILE" || true
+            ods_sudo apt-get install -y "nvidia-driver-${MIN_DRIVER_VERSION}" </dev/null 2>>"$LOG_FILE" || true
         fi
         installed_driver=$(dpkg-query -W -f='${Package}\n' 'nvidia-driver-*' 2>/dev/null \
                            | sed -n 's/.*nvidia-driver-\([0-9][0-9]*\).*/\1/p' | sort -n | tail -1 || true)
@@ -831,7 +866,7 @@ fix_nvidia_secure_boot() {
     # Ensure linux-headers are present (needed for sign-file)
     if [[ ! -d "/usr/src/linux-headers-${kver}" ]]; then
         ai "Installing kernel headers for ${kver}..."
-        ods_sudo apt-get install -y "linux-headers-${kver}" 2>>"$LOG_FILE" || true
+        ods_sudo apt-get install -y "linux-headers-${kver}" </dev/null 2>>"$LOG_FILE" || true
     fi
 
     # Generate MOK keypair if not already present

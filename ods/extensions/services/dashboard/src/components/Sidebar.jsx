@@ -4,6 +4,7 @@ import { ArrowLeft, ChevronLeft, ChevronRight, Grid2X2, LifeBuoy, Search, Sparkl
 import { getSidebarExternalLinks, getSidebarNavItems } from '../plugins/registry'
 import { usePortalIdentity } from '../contexts/PortalIdentityContext'
 import { fallbackServiceUrl } from '../lib/serviceUrls'
+import { openWithFreshSession, opensWithOdsSession } from '../lib/odsSession'
 import PixelHandoffApproval from './PixelHandoffApproval'
 import PixelMascot from './PixelMascot'
 import ODSLogo from './ODSLogo'
@@ -73,7 +74,7 @@ export default function Sidebar({ status, collapsed, onToggle }) {
           if (internalPath) {
             return <NavLink key={key} to={internalPath} onClick={closeSearch} className={({ isActive }) => `pixel-nav-item ${isActive ? 'is-active' : ''}`} title={stateLabel ? `${label} · ${stateLabel}` : label} aria-label={label}><Icon size={16} /><span>{label}</span>{stateLabel && !collapsed && <small>{stateLabel}</small>}</NavLink>
           }
-          return <a key={key} className="pixel-nav-item" title={healthy ? label : `${label} · Offline`} aria-label={label} aria-disabled={!healthy} href={healthy ? url : undefined} target={healthy ? '_blank' : undefined} rel="noopener noreferrer"><Icon size={16} /><span>{label}</span>{!healthy && !collapsed && <small>Offline</small>}</a>
+          return <a key={key} className="pixel-nav-item" title={healthy ? label : `${label} · Offline`} aria-label={label} aria-disabled={!healthy} href={healthy ? url : undefined} target={healthy ? '_blank' : undefined} rel="noopener noreferrer" onClick={opensWithOdsSession(key) ? openWithFreshSession : undefined}><Icon size={16} /><span>{label}</span>{!healthy && !collapsed && <small>Offline</small>}</a>
         })}
       </details>}
       <PixelConversationNavigation collapsed={collapsed} />

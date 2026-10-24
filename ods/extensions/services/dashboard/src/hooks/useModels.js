@@ -112,8 +112,14 @@ function errorMessageFromPayload(data, fallback) {
   return fallback
 }
 
-async function errorMessageFromResponse(response, fallback) {
-  return errorMessageFromPayload(await responseJson(response), fallback)
+class ModelActionError extends Error {
+  constructor(message, deletionDetail = null) {
+    super(message)
+    // Only a typed, committed deletion outcome authorizes immediate readback.
+    const committedOutcome = deletionDetail?.code === 'model_delete_cleanup_pending' ||
+      deletionDetail?.code === 'model_delete_status_update_failed'
+    this.deletionCommitted = committedOutcome && deletionDetail.deletionCommitted === true
+  }
 }
 
 async function modelActionRequest(url, options, budget, timeoutMessage, failureMessage, expectedStatus = null) {
@@ -129,7 +135,13 @@ async function modelActionRequest(url, options, budget, timeoutMessage, failureM
     await Promise.race([
       (async () => {
         const response = await fetch(url, { ...options, signal: controller.signal })
-        if (!response.ok) throw new Error(await errorMessageFromResponse(response, failureMessage))
+        if (!response.ok) {
+          const data = await responseJson(response)
+          throw new ModelActionError(
+            errorMessageFromPayload(data, failureMessage),
+            options.method === 'DELETE' ? data?.detail : null,
+          )
+        }
         if (expectedStatus && (await responseJson(response)).status !== expectedStatus) {
           throw new Error('The runtime operation was not confirmed. Refresh its status before retrying.')
         }
@@ -177,18 +189,40 @@ function normalizeOdsMode(value) {
   return ODS_MODES.has(mode) ? mode : 'unknown'
 }
 
+const START_REFUSALS = new Set(['memory_refused', 'gpu_busy'])
+
+function normalizeActiveRuntime(value) {
+  // Models needs only display identity and context; route custody and provider
+  // capabilities remain validated by the server, outside this display state.
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const { source, model, contextLength } = value
+  if (!['local-switchboard', 'external-host', 'remote-provider'].includes(source)
+    || typeof model !== 'string' || !model.trim() || model.length > 256) return null
+  if (contextLength != null && (!Number.isInteger(contextLength) || contextLength < 1 || contextLength > 10000000)) return null
+  if (source === 'remote-provider' && (!Number.isInteger(contextLength) || contextLength < 4096
+    || !Number.isInteger(value.maxTokens) || value.maxTokens < 1 || value.maxTokens > contextLength
+    || typeof value.reasoning !== 'boolean')) return null
+  return { source, model, contextLength: contextLength ?? null }
+}
+
 function normalizeModelManagement(value) {
   const managed = typeof value?.managed === 'boolean' ? value.managed : null
+  const running = managed === true && value.running === true
+  // Why a managed Windows model is not running, in the launcher's words; a
+  // memory refusal makes Resume start the model anyway.
+  const runtimeError = managed === true && !running && typeof value.runtimeError === 'string' ? value.runtimeError : ''
   return {
     managed,
     canActivate: managed === true && value.canActivate === true,
     canUnload: managed === true && value.canUnload === true,
-    running: managed === true && value.running === true,
+    running,
     reason: typeof value?.reason === 'string' ? value.reason : '',
+    runtimeError,
+    startRefusal: runtimeError && START_REFUSALS.has(value.startRefusal) ? value.startRefusal : '',
   }
 }
 
-function modelActivationModeError(effectiveMode, configuredMode, llmBackend, hostRuntime, management, externalApi = null) {
+function modelActivationModeError(effectiveMode, configuredMode, llmBackend, hostRuntime, management, externalApi = null, activeRuntime = null) {
   if (llmBackend === 'external') {
     const via = externalApi?.host ? ` at ${externalApi.host}` : ''
     return `ODS uses a model API${via}. Models downloaded here stay on this computer but are not used while API mode is on; to run them, rerun the ODS installer and leave API mode.`
@@ -199,6 +233,9 @@ function modelActivationModeError(effectiveMode, configuredMode, llmBackend, hos
     return management?.managed === false
       ? 'The model server on this computer is not managed by this ODS installation. Change the model in that server, or rerun the ODS installer to manage it here.'
       : management?.reason || 'Model management is temporarily unavailable. Refresh the runtime status.'
+  }
+  if (activeRuntime?.source === 'remote-provider') {
+    return 'Switch back to a local model in Model connections to use local model activation controls.'
   }
   if (effectiveMode === 'unknown' || configuredMode === 'unknown') {
     return 'ODS could not verify the active runtime mode. Repair or restart ODS before running a local model.'
@@ -243,6 +280,7 @@ export function useModels({observe=true} = {}) {
   const [llmBackend, setLlmBackend] = useState(USE_MOCK_DATA ? 'llama-server' : 'unknown')
   const [hostRuntime, setHostRuntime] = useState(false)
   const [externalApi, setExternalApi] = useState(null)
+  const [activeRuntime, setActiveRuntime] = useState(null)
   const [modelManagement, setModelManagement] = useState(() => normalizeModelManagement(null))
   const [runtimeActionLoading, setRuntimeActionLoading] = useState(null)
   const [recommendationAlternatives, setRecommendationAlternatives] = useState([])
@@ -355,6 +393,7 @@ export function useModels({observe=true} = {}) {
           }
         : null)
       setHostRuntime(data.hostRuntime === true)
+      setActiveRuntime(normalizeActiveRuntime(data.activeRuntime))
       setModelManagement(normalizeModelManagement(data.modelManagement))
       setRecommendationAlternatives(data.recommendationAlternatives ?? [])
       setHermesMinimumContext(Number(data.hermesMinimumContext || DEFAULT_HERMES_MIN_CONTEXT))
@@ -370,6 +409,7 @@ export function useModels({observe=true} = {}) {
           ? 'Could not refresh model status within 30 seconds. ODS may still be working; wait for status confirmation before retrying a model change.'
           : err.message)
         setModelActivation(null)
+        setActiveRuntime(null)
         setModelManagement(normalizeModelManagement(null))
       }
       // No silent fallback - let error propagate to UI
@@ -437,7 +477,7 @@ export function useModels({observe=true} = {}) {
   }
 
   const loadModel = async (modelId, options = {}) => {
-    const modeError = modelActivationModeError(odsMode, configuredMode, llmBackend, hostRuntime, modelManagement, externalApi)
+    const modeError = modelActivationModeError(odsMode, configuredMode, llmBackend, hostRuntime, modelManagement, externalApi, activeRuntime)
     if (modeError) {
       setMutationError(modeError)
       return
@@ -642,6 +682,7 @@ export function useModels({observe=true} = {}) {
       await fetchModels() // Refresh
     } catch (err) {
       setMutationError(err.message)
+      if (err instanceof ModelActionError && err.deletionCommitted) await fetchModels()
     } finally {
       finishAction(action.token)
     }
@@ -680,7 +721,7 @@ export function useModels({observe=true} = {}) {
     ].filter(Boolean)),
   ]
   const error = mutationError || fetchError
-  const activationModeError = modelActivationModeError(odsMode, configuredMode, llmBackend, hostRuntime, modelManagement, externalApi)
+  const activationModeError = modelActivationModeError(odsMode, configuredMode, llmBackend, hostRuntime, modelManagement, externalApi, activeRuntime)
 
   return {
     models,
@@ -697,6 +738,7 @@ export function useModels({observe=true} = {}) {
     llmBackend,
     hostRuntime,
     externalApi,
+    activeRuntime,
     modelManagement,
     runtimeActionLoading,
     stopRuntime: () => changeRuntime('stop'),

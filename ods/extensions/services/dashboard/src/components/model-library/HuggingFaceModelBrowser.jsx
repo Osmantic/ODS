@@ -252,7 +252,9 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
       if (detailsRequestRef.current !== requestId || importLock.current !== owner || downloadBusyRef.current) return
       const refusal = check?.refusal || check?.tensors?.refusal
       if (refusal && !(refusal.overridable && allowUnsupportedRuntime)) return
-      if (check?.disk === 'insufficient' && !artifact.installed) return
+      // Use the vision choice captured before the selected-artifact check began.
+      const disk = request.includeVision === false ? check?.diskWithoutProjector : check?.disk
+      if (disk === 'insufficient' && !artifact.installed) return
       if (!confirmedUnknown && check?.header.status !== 'read') {
         setArtifactCheckIssue({
           repoId: repository.id, revision: repository.sha, artifactId: artifact.id, unknown: true, allowUnsupportedRuntime,
@@ -297,7 +299,7 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
       const detail = requestError.detail
       setOverrideOffer(
         detailsRequestRef.current === requestId && requestError.rejected && !allowUnsupportedRuntime && detail?.overridable === true
-          && ['runtime_architecture_unsupported', 'runtime_tensor_type_unsupported'].includes(detail?.code) ? artifact : null,
+          && ['runtime_architecture_unsupported', 'runtime_tensor_type_unsupported', 'runtime_nextn_unsupported'].includes(detail?.code) ? artifact : null,
       )
     } finally {
       if (artifactCheckRef.current?.owner === owner) artifactCheckRef.current = null
@@ -628,6 +630,14 @@ function ArtifactDialog({ model, details, loading, error, preflight, preflightLo
                 </div>
               )}
 
+              {preflight && details.runtimeCompatible !== false && details.artifacts.length > 0 && (
+                <StorageSummary storage={preflight.storage} blocked={details.artifacts.some(artifact => (
+                  !artifact.installed && (projector && !includeVision
+                    ? preflight.artifacts?.[artifact.id]?.diskWithoutProjector
+                    : preflight.artifacts?.[artifact.id]?.disk) === 'insufficient'
+                ))} />
+              )}
+
               {details.artifacts.length === 0 ? (
                 <div className="rounded-lg border border-theme-border bg-theme-text-secondary/8 px-4 py-8 text-center text-sm text-theme-text-secondary">
                   This repository has no complete GGUF artifact with exact size and SHA-256 metadata.
@@ -660,6 +670,9 @@ function ArtifactDialog({ model, details, loading, error, preflight, preflightLo
                         artifact={artifact}
                         gpu={gpu}
                         check={preflight?.artifacts?.[artifact.id] || null}
+                        storage={preflight?.storage}
+                        projectorBytes={projector && includeVision ? projector.sizeBytes : 0}
+                        projectorSkipped={Boolean(projector) && !includeVision}
                         checking={preflightLoading}
                         checkingHeader={checkingArtifact === artifact.id}
                         checkIssue={artifactCheckIssue?.artifactId === artifact.id ? artifactCheckIssue : null}
@@ -688,20 +701,25 @@ function ArtifactDialog({ model, details, loading, error, preflight, preflightLo
   )
 }
 
-function ArtifactRow({ artifact, gpu, check, checking, checkingHeader, checkIssue, refusal: artifactRefusal, busy, importing, runtimeCompatible, onImport }) {
+function ArtifactRow({ artifact, gpu, check, storage, projectorBytes, projectorSkipped, checking, checkingHeader, checkIssue, refusal: artifactRefusal, busy, importing, runtimeCompatible, onImport }) {
   const artifactPath = artifact.files?.[0]?.filename || artifact.label
   const refusal = artifactRefusal || check?.tensors?.refusal || null
   const [confirmingOverride, setConfirmingOverride] = useState(false)
   const memory = artifactMemory(artifact, gpu, check, checking)
-  const diskShort = check?.disk === 'insufficient' && !artifact.installed
+  // check.disk counts the default projector; with Include vision unticked only the weights download.
+  const disk = projectorSkipped ? check?.diskWithoutProjector : check?.disk
+  const diskShort = disk === 'insufficient' && !artifact.installed
+  const shortfall = knownStorage(storage) && diskBytes(artifact.sizeBytes) && diskBytes(projectorBytes)
+    ? artifact.sizeBytes + projectorBytes + storage.marginBytes - storage.freeBytes : null
   const blocked = !runtimeCompatible || (refusal && !refusal.overridable)
   const needsOverride = Boolean(refusal?.overridable) && !blocked
+  // Import records survive deletion; their IDs identify artifacts, not a failed action.
   const label = checkingHeader ? 'Checking file…' : importing ? 'Starting'
     : artifact.installed ? 'Installed'
       : blocked ? (refusal?.code === 'gated' ? 'Needs access' : 'Not supported')
         : diskShort ? 'Not enough disk'
           : needsOverride ? 'Import anyway…'
-            : artifact.importedModelId ? 'Retry' : 'Import'
+            : 'Import'
   const startImport = () => {
     if (needsOverride) {
       setConfirmingOverride(true)
@@ -722,7 +740,9 @@ function ArtifactRow({ artifact, gpu, check, checking, checkingHeader, checkIssu
       <div>
         <p className={`text-xs font-semibold ${memory.ok === false ? 'text-theme-text-secondary' : 'text-emerald-300'}`}>{memory.value}</p>
         <p className="mt-0.5 text-[10px] text-theme-text-muted">{memory.detail}</p>
-        {diskShort && <p className="mt-0.5 text-[10px] font-semibold text-amber-300">Not enough free disk space</p>}
+        {diskShort && <p className="mt-0.5 text-[10px] font-semibold text-amber-300">{shortfall > 0
+          ? `Free ${formatDiskBytes(shortfall, true)} more to download.`
+          : 'Not enough free disk space'}</p>}
         {check?.tensors?.status === 'unsupported' && (
           <p className="mt-0.5 text-[10px] font-semibold text-amber-300">Stored as {check.tensors.unknown.join(', ')}: needs a newer llama.cpp</p>
         )}
@@ -756,6 +776,36 @@ function ArtifactRow({ artifact, gpu, check, checking, checkingHeader, checkIssu
   )
 }
 
+function diskBytes(value) {
+  return Number.isSafeInteger(value) && value >= 0
+}
+
+function knownStorage(storage) {
+  return diskBytes(storage?.freeBytes) && diskBytes(storage?.marginBytes)
+}
+
+function formatDiskBytes(bytes, roundUp = false) {
+  if (bytes === 0) return '0 bytes'
+  const unit = bytes >= 1024 ** 3 ? 1024 ** 3 : bytes >= 1024 ** 2 ? 1024 ** 2 : 1
+  const label = unit === 1024 ** 3 ? 'GiB' : unit === 1024 ** 2 ? 'MiB' : 'bytes'
+  const value = roundUp ? Math.ceil(bytes / unit * 100) / 100 : bytes / unit
+  return `${value.toFixed(unit === 1 ? 0 : 2)} ${label}`
+}
+
+function StorageSummary({ storage, blocked }) {
+  // WSL: the Windows drive that stores the virtual disk, when its free space is the figure shown.
+  const windowsDrive = /^[A-Z]:$/.test(storage?.windowsDrive ?? '') ? storage.windowsDrive : null
+  return (
+    <section aria-label="Model storage" className="mb-4 space-y-1 rounded-lg border border-white/[0.07] bg-black/20 px-4 py-3 text-xs text-theme-text-secondary">
+      {knownStorage(storage) ? <>
+        <p>Disk space: {formatDiskBytes(storage.freeBytes)} available{windowsDrive && ` on the Windows drive ${windowsDrive}`}. ODS must keep {formatDiskBytes(storage.marginBytes)} free after the download.</p>
+        {storage.windowsDriveChecked === false && <p>ODS could not check the Windows drive that stores WSL, so this is the space inside WSL only. Make sure that drive has room for the download.</p>}
+        {blocked && <p>Free up space on the model drive, then reopen this repository to check again.</p>}
+      </> : <p>Disk space details are unavailable. ODS will check space before downloading.</p>}
+    </section>
+  )
+}
+
 function artifactMemory(artifact, gpu, check, checking) {
   const fit = check?.fit
   if (fit && fit.status !== 'unknown' && Number(fit.requiredGb) > 0) {
@@ -786,6 +836,8 @@ const THINKING_TEXT = {
   tags: 'Thinks; it may not turn off',
   none: 'No thinking markers',
 }
+
+const TRANSIENT_HEADER_REASONS = new Set(['unreachable', 'rate_limited', 'upstream_error'])
 
 function PreflightSummary({ preflight, loading, error }) {
   if (loading && !preflight) {
@@ -836,7 +888,11 @@ function PreflightSummary({ preflight, loading, error }) {
         </p>
       )}
       {header?.status === 'unavailable' && header.message && refusal?.code !== 'gated' && (
-        <p className="text-theme-text-muted">Some checks could not run: {header.message}.</p>
+        <p className="text-theme-text-muted">
+          Some checks could not run: {header.message.replace(/\.*$/, '')}.
+          {TRANSIENT_HEADER_REASONS.has(header.reason) ? ' Close and reopen this list to try again.' : ''}{' '}
+          <HelpLink className="text-[11px]" />
+        </p>
       )}
       <p className="text-[10px] text-theme-text-muted">From the repository’s own files. How a model actually behaves shows only once you use it.</p>
     </section>
@@ -869,6 +925,7 @@ async function responseJson(response) {
 function errorMessage(body, fallback) {
   if (typeof body?.detail === 'string') return body.detail
   if (typeof body?.detail?.message === 'string') return body.detail.message
+  if (typeof body?.detail?.error === 'string') return body.detail.error
   if (typeof body?.error === 'string') return body.error
   return fallback
 }

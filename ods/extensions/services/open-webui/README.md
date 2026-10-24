@@ -19,6 +19,12 @@ When selected, Open WebUI is served at `http://localhost:3000` and communicates 
 - **Document Q&A**: Upload files and chat with their contents (requires Qdrant)
 - **Model selection**: Switch between models at runtime
 
+With Model Switchboard on (the default outside cloud mode), Open WebUI talks to
+LiteLLM, which serves several names for the one active model (`ods/current`,
+`local`, `default` and a `*` catch-all). The model picker lists `ods/current`
+once instead, plus the named cloud routes in hybrid mode. Change the active
+model from the Dashboard; `ods/current` follows it.
+
 ## Configuration
 
 Environment variables (set in `.env`):
@@ -140,10 +146,21 @@ stop Open WebUI and restore the copy as above.
 
 ## Tool calling
 
-Since Open WebUI 0.10, chats and models that have not chosen a function-calling
-mode use **Native** tool calling, which relies on the model's own tool support.
-If a local model does not handle tools well, set **Function Calling** to
-**Legacy** for that model, or for all models in the default model parameters.
+ODS defaults Open WebUI's **Function Calling** to **Legacy**. A downloaded
+model can answer ordinary chat while failing native tool calls; Open WebUI's
+upstream Native default can otherwise inject helper tools into a plain chat
+and turn its reply into a provider error. This is a compatibility default,
+not an automatic adjustment to each model's capability profile.
+
+Legacy keeps explicitly selected tools and the Web Search, Image Generation,
+and Code Interpreter feature handlers available, subject to their usual setup
+and permissions. Automatic native built-in helpers are not injected by
+default. For a model with working native tools, explicitly choose **Native**
+in that model's parameters or in the chat's Function Calling setting. Existing
+per-model and chat choices take precedence over ODS's default and are retained
+when switching the model behind `ods/current`. A saved Native choice therefore
+still needs a model that can handle native tools; changing models does not
+silently replace that choice.
 
 ## First Use
 
@@ -160,7 +177,7 @@ docker compose logs open-webui
 ```
 
 **"Connection refused" to LLM:**
-- Verify llama-server is healthy: `curl http://localhost:8080/health`
+- Verify llama-server is healthy: `curl http://localhost:11434/health`
 - Check `LLM_API_URL` in `.env`
 
 **Voice input not working:**
@@ -180,9 +197,10 @@ docker compose logs open-webui
 ## Files
 
 - `manifest.yaml` — Service metadata and feature definitions
-- `openwebui-entrypoint.sh` — Runs `openwebui-prepare.py`, then the image's own start command
+- `openwebui-entrypoint.sh` — Runs `openwebui-prepare.py` and `openwebui-model-list.py`, then the image's own start command
+- `openwebui-model-list.py` — Limits the LiteLLM connection's model list to `ods/current` (and hybrid cloud routes)
 - `openwebui-prepare.py` — Pre-start backup and upgrade checks (see [Upgrades and backups](#upgrades-and-backups))
-- `tests/` — Contracts for the pre-start step and its compose wiring
+- `tests/` — Contracts for the pre-start steps and their compose wiring
 - `../../../tests/test-open-webui-live.sh` — Read-only check of a running install, for the fleet harness
 
 ## License

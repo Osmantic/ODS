@@ -81,12 +81,24 @@ def test_update_publication_is_atomic_and_replayable(tmp_path, monkeypatch, faul
         return SimpleNamespace(stdout=json.dumps(proof))
     monkeypatch.setattr(module.subprocess, 'run', verify)
     refreshed = []
+    held = []
     def refresh(path):
         assert path == installed
+        assert held == [True]
         assert stack.read_selection(directory)[0]['runtimeDigest'] == 'c' * 64
         refreshed.append(True)
         if fault == 'clients' and len(refreshed) == 1: raise OSError('client recreation failed')
-    monkeypatch.setattr(module, 'refresh_clients', refresh)
+    monkeypatch.setattr(module, '_refresh_clients_held', refresh)
+    original_helper = module.helper
+    def transaction(path, **kwargs):
+        assert path == installed and kwargs['selection_locked'] is True
+        held.append(True)
+        try:
+            return kwargs['operation']({}, {}, lambda value: None)
+        finally:
+            held.pop()
+    monkeypatch.setattr(module, 'helper', lambda name: SimpleNamespace(refresh_installed=transaction)
+        if name == 'pixel-native-ingress-refresh' else original_helper(name))
     if fault == 'replace':
         def fail(*args): raise OSError('fixture publication failure')
         monkeypatch.setattr(module.os, 'replace', fail)
@@ -109,7 +121,7 @@ def test_update_publication_is_atomic_and_replayable(tmp_path, monkeypatch, faul
         with pytest.raises(OSError): module.finalize_update(candidate)
         assert stack.read_selection(directory)[0]['runtimeDigest'] == 'c' * 64
         assert module.finalize_update(candidate)['status'] == 'selection-ready'
-        assert len(calls) == 2
+        assert len(calls) == 3
     elif fault:
         with pytest.raises((ValueError, OSError)):
             module.finalize_update(candidate)
@@ -119,7 +131,7 @@ def test_update_publication_is_atomic_and_replayable(tmp_path, monkeypatch, faul
         result = module.finalize_update(candidate)
         assert result['status'] == 'selection-ready'
         assert module.finalize_update(candidate) == result
-        assert len(calls) == 2
+        assert len(calls) == 4
         assert stack.read_selection(directory)[0]['runtimeDigest'] == 'c' * 64
         assert (directory / stack.UPDATE_SELECTION).stat().st_mode & 0o777 == 0o600
     assert json.loads((directory / 'preparation.json').read_text()) == previous
@@ -158,12 +170,14 @@ def test_refresh_clients_uses_native_stack_and_verifies_from_dashboard(tmp_path,
     def resolve(path, files):
         assert path == installed and files == ['base.yaml', 'legacy.yaml', fragment]
         return ['../outside.yaml'] if fault == 'escape' else ['base.yaml', 'native.yaml', fragment]
-    stack = SimpleNamespace(resolve_files=resolve)
+    stack = SimpleNamespace(resolve_files=resolve, read_selection=lambda path: ({'runtimeDigest': 'a' * 64}, {}))
     native_env = module.helper('pixel-native-env')
     native_compose = module.helper('pixel-native-compose')
     monkeypatch.setattr(module, 'helper', lambda name: {
         'pixel-macos-access-install': installer, 'pixel-native-stack': stack,
-        'pixel-native-env': native_env, 'pixel-native-compose': native_compose}[name])
+        'pixel-native-env': native_env, 'pixel-native-compose': native_compose,
+        'pixel-native-ingress-refresh': SimpleNamespace(refresh_installed=lambda *args, **kwargs:
+            kwargs['operation']({}, {}, lambda value: None))}[name])
     monkeypatch.setattr(module.Path, 'is_socket', lambda path: fault != 'socket')
     monkeypatch.setenv('DOCKER_CONTEXT', 'remote')
     monkeypatch.setenv('DOCKER_TLS_VERIFY', '1')
@@ -277,6 +291,55 @@ def test_missing_cache_resolves_saved_selection_fail_closed(tmp_path, monkeypatc
     assert not marker.exists()
     assert module.os.path.lexists(cache) == (fault in ('corrupt-cache', 'dangling-cache'))
     if fault == 'corrupt-cache': assert cache.read_text() == '--bad'
+
+
+@pytest.mark.parametrize('scenario', [
+    'absent', 'added', 'relative', 'absolute', 'lookalike', 'malformed',
+])
+def test_native_lifecycle_discovers_override_added_after_cache(tmp_path, monkeypatch, scenario):
+    override = tmp_path / 'docker-compose.override.yml'
+    if scenario != 'absent':
+        override.write_text('services: {}\n')
+    cached = '-f base.yaml'
+    if scenario == 'relative':
+        cached += ' -f docker-compose.override.yml'
+    elif scenario == 'absolute':
+        cached += ' -f ' + str(override)
+    elif scenario == 'lookalike':
+        cached += ' -f custom-docker-compose.override.yml'
+    elif scenario == 'malformed':
+        cached = '--bad'
+    cache = tmp_path / '.compose-flags'
+    cache.write_text(cached)
+    env_file = tmp_path / '.env'
+    env_file.write_text('GPU_BACKEND=apple\nTIER=1\nENABLE_OPEN_WEBUI=false\n')
+    env_file.chmod(0o600)
+    resolver = tmp_path / 'scripts/resolve-compose-stack.sh'
+    resolver.parent.mkdir()
+    resolver.write_text('# test resolver')
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        assert command[:2] == ['/bin/bash', str(resolver)]
+        assert kwargs['env']['ENABLE_OPEN_WEBUI'] == 'false'
+        return SimpleNamespace(stdout='-f base.yaml -f docker-compose.override.yml')
+
+    monkeypatch.setattr(module.subprocess, 'run', run)
+    if scenario == 'malformed':
+        with pytest.raises(ValueError):
+            module.compose_flags(tmp_path, {})
+        assert not calls
+    else:
+        flags = module.compose_flags(tmp_path, {'ENABLE_OPEN_WEBUI': 'true'})
+        if scenario in ('added', 'lookalike'):
+            assert flags == ['-f', 'base.yaml', '-f', 'docker-compose.override.yml']
+            assert len(calls) == 1
+        else:
+            assert flags == cached.split()
+            assert not calls
+    assert cache.read_text() == cached
+    assert env_file.read_text() == 'GPU_BACKEND=apple\nTIER=1\nENABLE_OPEN_WEBUI=false\n'
 
 
 @pytest.mark.parametrize('saved,expected', [

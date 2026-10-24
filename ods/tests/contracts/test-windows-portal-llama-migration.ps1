@@ -12,7 +12,12 @@ function Check([bool]$Condition, [string]$Message) {
     $script:checks++
     Microsoft.PowerShell.Utility\Write-Host "PASS $Message"
 }
-function Write-Host { param([Parameter(ValueFromRemainingArguments = $true)]$Text) $script:output.Add([string]($Text -join ' ')) }
+function Write-Host { param([Parameter(ValueFromRemainingArguments = $true)]$Text)
+    $line = [string]($Text -join ' ')
+    $script:output.Add($line)
+    # A scenario's dashboard change finishes once setup says it is waiting.
+    if ($script:releaseOnWait -and $line -match 'setup continues once it finishes') { $script:releaseOnWait.Set() }
+}
 # Process control and installers must never be reached by the orchestration.
 function Stop-Process { throw 'Stop-Process must never be used by the migration.' }
 function Start-Process { throw 'Start-Process (msiexec or any runtime) must never be used by the migration.' }
@@ -29,6 +34,53 @@ $env:AMD_INFERENCE_PORT = ''
 try {
     $script:sid = 'S-1-5-21-100-200-300-1001'
     function Get-ODSPortalUserSid([string]$UserId) { if ($UserId) { return $UserId }; return $script:sid }
+    # A fixture-only name for the model-change lock: this test never waits on,
+    # or blocks, a real ODS model operation of this Windows user.
+    $script:fixtureMutex = 'ODS-PortalModelControl-Test-' + [guid]::NewGuid().ToString('N')
+    function Get-ODSPortalControlMutexName { return $script:fixtureMutex }
+    function Start-ControlHolder([int]$Milliseconds) {
+        # Holds the lock on a separate thread, as the dashboard's controller
+        # process would, until released or for the given time.
+        $held = [Threading.ManualResetEventSlim]::new($false)
+        $release = [Threading.ManualResetEventSlim]::new($false)
+        $holder = [PowerShell]::Create()
+        $null = $holder.AddScript({ param($Name, $Held, $Release, $Milliseconds)
+            $mutex = [Threading.Mutex]::new($false, $Name)
+            $acquired = $false
+            try {
+                $acquired = $mutex.WaitOne(0)
+                if (-not $acquired) { throw 'The isolated test mutex was unexpectedly busy.' }
+                $Held.Set()
+                $null = $Release.Wait($Milliseconds)
+            } finally { if ($acquired) { $mutex.ReleaseMutex() }; $mutex.Dispose() }
+        }).AddArgument($script:fixtureMutex).AddArgument($held).AddArgument($release).AddArgument($Milliseconds)
+        $pending = $holder.BeginInvoke()
+        if (-not $held.Wait(10000)) {
+            $holder.Stop(); $holder.Dispose(); $held.Dispose(); $release.Dispose()
+            throw 'The model-change lock is still held: setup did not release it.'
+        }
+        return [pscustomobject]@{ PowerShell = $holder; Pending = $pending; Held = $held; Release = $release }
+    }
+    function Stop-ControlHolder($Holder) {
+        $Holder.Release.Set()
+        if (-not $Holder.Pending.AsyncWaitHandle.WaitOne(5000)) { $Holder.PowerShell.Stop() }
+        try { $null = $Holder.PowerShell.EndInvoke($Holder.Pending) }
+        finally { $Holder.PowerShell.Dispose(); $Holder.Held.Dispose(); $Holder.Release.Dispose() }
+    }
+    function Get-ControlLockState {
+        # Free, busy or abandoned, as another thread sees the lock. Setup's own
+        # thread would simply re-enter a lock it kept.
+        $probe = [PowerShell]::Create()
+        $null = $probe.AddScript({ param($Name)
+            $mutex = [Threading.Mutex]::new($false, $Name)
+            try {
+                try { $taken = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $mutex.ReleaseMutex(); return 'abandoned' }
+                if ($taken) { $mutex.ReleaseMutex(); return 'free' }
+                return 'busy'
+            } finally { $mutex.Dispose() }
+        }).AddArgument($script:fixtureMutex)
+        try { return [string]@($probe.EndInvoke($probe.BeginInvoke()))[0] } finally { $probe.Dispose() }
+    }
     $script:shellPath = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
     function Get-Command { param($Name, $CommandType, $ErrorAction)
         if ($CommandType -eq 'Application') { return [pscustomobject]@{ Source = $script:shellPath; Name = 'powershell.exe' } }
@@ -69,8 +121,24 @@ try {
     }
     function Get-ODSPortalTaskEngineId { param($TaskName) return 0 }
     # The proven-tree stops are covered by test-windows-portal-llama-restart.ps1.
+    function Open-BackupReader {
+        # Another program reads a file in the runtime backup (sharing reads,
+        # not deletes): the backup can be restored but not removed.
+        $backups = @(Get-ChildItem -LiteralPath (Get-ODSPortalStateDir) -Directory | Where-Object { $_.Name -like 'portal-runtime.*backup-*' })
+        if ($backups.Count -ne 1) { throw "Expected one runtime backup, found $($backups.Count)." }
+        $script:backupReader = [IO.File]::Open((Join-Path $backups[0].FullName 'runtime.json'), 'Open', 'Read', 'Read')
+    }
+    function Close-BackupReader {
+        if ($script:backupReader) { $script:backupReader.Dispose(); $script:backupReader = $null }
+        # The backup that could not be removed is the scenario's to clean up.
+        Get-ChildItem -LiteralPath (Get-ODSPortalStateDir) -Directory | Where-Object { $_.Name -like 'portal-runtime.*backup-*' } |
+            Remove-Item -Recurse -Force
+    }
     function Stop-ODSPortalLemonadeLaunch($Task, $Launch) {
         $script:events.Add('quiesce:' + $Launch.TaskName)
+        if ($script:holdBackup -eq 'lemonade-stop') { Open-BackupReader }
+        # A refusal changes nothing (the real stop restores what it touched).
+        if ($script:lemonadeStopFailure) { throw $script:lemonadeStopFailure }
         # As the real stop: publish the stopped intent, then disable the task.
         Set-ODSPortalRuntimeIntent 'stopped'
         Disable-ScheduledTask -TaskName $Launch.TaskName -TaskPath '\'
@@ -78,6 +146,7 @@ try {
     function Stop-ODSPortalRuntime([string]$ExecutablePath = '') {
         $task = Get-ODSPortalRuntimeTask
         if (-not $task) { return }
+        if ($script:llamaStopFailure) { throw $script:llamaStopFailure }
         $script:events.Add('stop-llama')
         Set-ODSPortalRuntimeIntent 'stopped'
         Disable-ScheduledTask -TaskName $task.TaskName -TaskPath '\'
@@ -107,6 +176,8 @@ try {
     function Test-ODSNativeLlamaQualification { param($ExecutablePath, $ExpectedBuild, $AdapterName, $CodeIntegrity)
         $script:events.Add('qualify')
         if ($script:qualifyFailure) { throw $script:qualifyFailure }
+        # Setup already read what ODS runs; a dashboard change can start now.
+        if ($script:duringStaging) { & $script:duringStaging }
         $devices = if ($script:device) { @($script:device) } else { @() }
         return [pscustomobject]@{ Build = 9014; Commit = 'd4b0c22f'; Devices = $devices; Device = $script:device; PolicyHint = $script:policyHint }
     }
@@ -125,6 +196,7 @@ try {
             return [string]$Registration.Plan.GgufFile
         }
         $script:events.Add('ready')
+        if ($script:holdBackup -eq 'start') { Open-BackupReader }
         if ($script:readyFailure) { throw $script:readyFailure }
         return [string]$Registration.Plan.GgufFile
     }
@@ -140,7 +212,8 @@ try {
         $script:events.Clear(); $script:output.Clear(); $script:queried.Clear()
         $script:prompts = [Collections.Generic.List[string]]::new()
         $script:consent = $true; $script:installFailure = ''; $script:qualifyFailure = ''; $script:readyFailure = ''; $script:startFailure = ''
-        $script:restoredReadyFailure = ''
+        $script:restoredReadyFailure = ''; $script:llamaStopFailure = ''; $script:lemonadeStopFailure = ''
+        $script:duringStaging = $null; $script:releaseOnWait = $null; $script:holdBackup = ''
         $script:policyHint = ''; $script:owners = @{}; $script:reserved = @()
         $script:device = [pscustomobject]@{ Name = 'Vulkan0'; Description = 'AMD Radeon RX 9070 XT'; TotalMiB = 16304; FreeMiB = 16000 }
     }
@@ -214,6 +287,291 @@ try {
     Check ((Get-Index 'stop-llama') -lt (Get-Index "register:$llamaTask") -and -not ($script:events -match '^unregister')) 'a rerun stops its own task tree first and keeps the same task'
     Check (@(Get-ChildItem -LiteralPath (Get-ODSPortalStateDir) -Directory | Where-Object { $_.Name -like 'portal-runtime.backup-*' }).Count -eq 0) 'a successful rerun leaves no backup behind'
     $script:owners = @{}
+
+    # --- Rerun: a runtime backup that cannot copy a file leaves nothing behind -
+    # Windows file locks only: another program holds runtime-options.json open.
+    if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+        Reset-Scenario
+        $planBefore = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $runtimeDir 'runtime.json')))
+        $locked = [IO.File]::Open((Join-Path $runtimeDir 'runtime-options.json'), 'Open', 'Read', 'None')
+        $message = ''
+        try {
+            try { $null = Initialize-ODSPortalAmdRuntime $plan $fixture $true 'Ubuntu-24.04' '/home/user/ods' } catch { $message = $_.Exception.Message }
+        } finally { $locked.Dispose() }
+        Check ($message -and -not ($script:events -contains 'stop-llama') -and -not ($script:events -match '^register') -and
+            [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $runtimeDir 'runtime.json'))) -ceq $planBefore) 'a rerun whose runtime backup cannot copy a file stops before the runtime is touched'
+        Check (@(Get-ChildItem -LiteralPath (Get-ODSPortalStateDir) -Directory | Where-Object { $_.Name -like 'portal-runtime.*' }).Count -eq 0) 'a failed runtime backup leaves no partial backup that could pass for a complete one'
+        $script:owners = @{}
+    }
+
+    # --- Rerun: a refused stop changes nothing and keeps no backup ------------
+    Reset-Scenario
+    $planBefore = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $runtimeDir 'runtime.json')))
+    $script:llamaStopFailure = 'The runtime process ancestry is stale or ambiguous; no process was stopped.'
+    $message = ''
+    try { $null = Initialize-ODSPortalAmdRuntime $plan $fixture $true 'Ubuntu-24.04' '/home/user/ods' } catch { $message = $_.Exception.Message }
+    Check ($message -match 'stale or ambiguous' -and -not ($script:events -match '^(stop-llama|register|disable|enable|start)') -and
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $runtimeDir 'runtime.json'))) -ceq $planBefore) 'a rerun whose stop is refused reports it and changes nothing'
+    Check (@(Get-ChildItem -LiteralPath (Get-ODSPortalStateDir) -Directory | Where-Object { $_.Name -like 'portal-runtime.*' }).Count -eq 0) 'a refused rerun stop leaves no runtime backup (or private key copy) behind'
+    $probe = Start-ControlHolder 0
+    Stop-ControlHolder $probe
+    Check $true 'a rerun that stops early still releases the model-change lock'
+    $script:owners = @{}
+
+    # --- Rerun: a former Lemonade task refuses after llama.cpp stopped ---------
+    Reset-Scenario
+    $leftoverExe = Join-Path (Join-Path $fixture 'former-lemonade') 'LemonadeServer.exe'
+    $script:tasks[$lemonadeTask] = [pscustomobject]@{ TaskName = $lemonadeTask; TaskPath = '\'; State = 'Ready'
+        Principal = [pscustomobject]@{ UserId = $script:sid }
+        Actions = @([pscustomobject]@{ Execute = $leftoverExe; WorkingDirectory = (Split-Path -Parent $leftoverExe)
+            Arguments = ('serve --port 13305 --host 127.0.0.1 --no-tray --llamacpp vulkan --extra-models-dir "' + (Get-ODSPortalModelsDir) + '"') }) }
+    $script:lemonadeStopFailure = 'Cannot prove the running Portal runtime task process; no process was stopped.'
+    $message = ''
+    try { $null = Initialize-ODSPortalAmdRuntime $plan $fixture $true 'Ubuntu-24.04' '/home/user/ods' } catch { $message = $_.Exception.Message }
+    Check ($message -match 'Cannot prove the running Portal runtime task process' -and $message -match 'previous ODS runtime was restored and is running again' -and
+        (Get-Index 'stop-llama') -lt (Get-Index "quiesce:$lemonadeTask") -and (Get-Index "quiesce:$lemonadeTask") -lt (Get-Index "enable:$llamaTask") -and
+        (Get-Index "enable:$llamaTask") -lt (Get-Index "start:$llamaTask") -and $script:events[$script:events.Count - 1] -ceq 'ready-restored' -and
+        -not ($script:events -match '^(register|unregister)') -and -not ($script:events -contains "start:$lemonadeTask") -and
+        (Test-ODSNativeLlamaWanted (Join-Path $runtimeDir 'intent.json'))) 'a former Lemonade task that refuses after llama.cpp stopped restarts llama.cpp as it was and reports both'
+    Check ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $runtimeDir 'runtime.json'))) -ceq $planBefore -and
+        @(Get-ChildItem -LiteralPath (Get-ODSPortalStateDir) -Directory | Where-Object { $_.Name -like 'portal-runtime.*' }).Count -eq 0) 'that restore keeps the plan byte for byte and removes its redundant backup'
+    # Windows file sharing only: another program (antivirus, an editor) reads a
+    # backup file, so the redundant backup cannot be removed. The owner still
+    # sees why setup stopped and what it restored.
+    if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+        Reset-Scenario
+        $script:lemonadeStopFailure = 'Cannot prove the running Portal runtime task process; no process was stopped.'
+        $script:holdBackup = 'lemonade-stop'
+        $message = ''
+        try {
+            try { $null = Initialize-ODSPortalAmdRuntime $plan $fixture $true 'Ubuntu-24.04' '/home/user/ods' } catch { $message = $_.Exception.Message }
+        } finally { Close-BackupReader }
+        Check ($message -match 'Cannot prove the running Portal runtime task process' -and $message -match 'previous ODS runtime was restored and is running again' -and
+            $script:events[$script:events.Count - 1] -ceq 'ready-restored') 'a backup that cannot be removed never hides the Lemonade refusal or the restored state'
+        $script:owners = @{}
+    }
+    $null = $script:tasks.Remove($lemonadeTask)
+    $script:owners = @{}
+    if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+        # The same after a failed start: the cause and the restored runtime.
+        Reset-Scenario
+        $script:readyFailure = 'llama-server exited during startup with code 1.'
+        $script:holdBackup = 'start'
+        $message = ''
+        try {
+            try { $null = Initialize-ODSPortalAmdRuntime $plan $fixture $true 'Ubuntu-24.04' '/home/user/ods' } catch { $message = $_.Exception.Message }
+        } finally { Close-BackupReader }
+        Check ($message -match 'did not start: llama-server exited during startup' -and $message -match 'previous ODS runtime was restored and is running again' -and
+            $script:events[$script:events.Count - 1] -ceq 'ready-restored') 'a backup that cannot be removed never hides why the new runtime did not start or the restored state'
+        $script:owners = @{}
+    }
+
+    # --- Rerun: a model change from the dashboard is still running ------------
+    Reset-Scenario
+    $script:ODSPortalRuntimeChangeWaitSeconds = 0
+    $holder = Start-ControlHolder 20000
+    $message = ''
+    try {
+        try { $null = Initialize-ODSPortalAmdRuntime $plan $fixture $true 'Ubuntu-24.04' '/home/user/ods' } catch { $message = $_.Exception.Message }
+    } finally { Stop-ControlHolder $holder }
+    Check ($message -match 'model change started from the dashboard or with ods model is still running, so setup did not change the model runtime\. Let it finish, or restart Windows, then run setup again\.' -and
+        -not ($script:events -match '^(stop-llama|register|disable|enable|start)') -and
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $runtimeDir 'runtime.json'))) -ceq $planBefore -and
+        @(Get-ChildItem -LiteralPath (Get-ODSPortalStateDir) -Directory | Where-Object { $_.Name -like 'portal-runtime.*' }).Count -eq 0) 'a rerun never stops the runtime while a dashboard model change holds the lock, and says how to continue'
+    Reset-Scenario
+    $script:ODSPortalRuntimeChangeWaitSeconds = 30
+    $holder = Start-ControlHolder 1500
+    try { $null = Initialize-ODSPortalAmdRuntime $plan $fixture $true 'Ubuntu-24.04' '/home/user/ods' } finally { Stop-ControlHolder $holder }
+    Check ((($script:output -join ' ') -match 'A model change started from the dashboard is still running; setup continues once it finishes\.') -and
+        (Get-Index 'stop-llama') -ge 0 -and (Get-Index "register:$llamaTask") -gt (Get-Index 'stop-llama') -and (Get-Index 'ready') -gt 0) 'a rerun waits for a running dashboard model change, then replaces the runtime'
+    $script:ODSPortalRuntimeChangeWaitSeconds = 1200
+    $probe = Start-ControlHolder 0
+    Stop-ControlHolder $probe
+    Check $true 'a completed rerun releases the model-change lock'
+    $script:owners = @{}
+
+    # --- Rerun: a dashboard change that finishes while setup waits is kept ----
+    # The dashboard takes the lock after setup read what ODS runs, changes the
+    # runtime and finishes once setup waits. Setup must not act on its earlier
+    # read: that would undo the change.
+    $changedMessage = 'The model was changed from the dashboard while setup was running, so setup did not change the model runtime. Run setup again; it keeps that change.'
+    function Invoke-RerunDuringDashboardChange([scriptblock]$Change) {
+        $script:dashboardChange = $Change
+        $script:duringStaging = {
+            $script:holder = Start-ControlHolder 20000
+            $script:releaseOnWait = $script:holder.Release
+            & $script:dashboardChange
+        }
+        $script:ODSPortalRuntimeChangeWaitSeconds = 30
+        $failure = ''
+        try {
+            try { $null = Initialize-ODSPortalAmdRuntime $plan $fixture $true 'Ubuntu-24.04' '/home/user/ods' } catch { $failure = $_.Exception.Message }
+        } finally {
+            if ($script:holder) { Stop-ControlHolder $script:holder; $script:holder = $null }
+            $script:ODSPortalRuntimeChangeWaitSeconds = 1200
+        }
+        return $failure
+    }
+    # An Unload finishes during the wait, and the new runtime would then fail:
+    # setup must not restart the model the owner just unloaded.
+    Reset-Scenario
+    $planBefore = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $runtimeDir 'runtime.json')))
+    $script:readyFailure = 'llama-server exited during startup with code 1.'
+    $message = Invoke-RerunDuringDashboardChange {
+        # The controller's Unload: the stopped intent, then the task disabled.
+        Set-ODSPortalRuntimeIntent 'stopped'
+        $script:tasks[$llamaTask].State = 'Disabled'
+    }
+    Check ($message -ceq $changedMessage -and
+        (($script:output -join ' ') -match 'A model change started from the dashboard is still running; setup continues once it finishes\.')) 'a rerun that waited for a dashboard Unload stops and says the change is kept'
+    Check (-not ($script:events -match '^(stop-llama|register|unregister|disable|enable|start|ready)') -and
+        $script:tasks[$llamaTask].State -eq 'Disabled' -and -not (Test-ODSNativeLlamaWanted (Join-Path $runtimeDir 'intent.json')) -and
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $runtimeDir 'runtime.json'))) -ceq $planBefore -and
+        @(Get-ChildItem -LiteralPath (Get-ODSPortalStateDir) -Directory | Where-Object { $_.Name -like 'portal-runtime.*' }).Count -eq 0) 'that rerun leaves the model unloaded: nothing restarted, re-armed or backed up'
+    $probe = Start-ControlHolder 0
+    Stop-ControlHolder $probe
+    $script:tasks[$llamaTask].State = 'Ready'; Set-ODSPortalRuntimeIntent 'running'
+    # A switch to another stored model finishes during the wait.
+    Reset-Scenario
+    [IO.File]::WriteAllText((Join-Path (Get-ODSPortalModelsDir) 'Switched-To.gguf'), 'fixture model')
+    $selectionBefore = [IO.File]::ReadAllBytes((Join-Path $runtimeDir 'runtime.json'))
+    $message = Invoke-RerunDuringDashboardChange {
+        $switched = Get-Content -LiteralPath (Join-Path $runtimeDir 'runtime.json') -Raw | ConvertFrom-Json
+        $switched.GgufFile = 'Switched-To.gguf'; $switched.ContextSize = 16384
+        Write-ODSPrivateEnvFile -Path (Join-Path $runtimeDir 'runtime.json') -Content ($switched | ConvertTo-Json -Compress)
+    }
+    $kept = Get-Content -LiteralPath (Join-Path $runtimeDir 'runtime.json') -Raw | ConvertFrom-Json
+    Check ($message -ceq $changedMessage -and $kept.GgufFile -ceq 'Switched-To.gguf' -and $kept.ContextSize -eq 16384 -and
+        -not ($script:events -match '^(stop-llama|register|disable|enable|start|ready)') -and $script:tasks[$llamaTask].State -eq 'Ready' -and
+        @(Get-ChildItem -LiteralPath (Get-ODSPortalStateDir) -Directory | Where-Object { $_.Name -like 'portal-runtime.*' }).Count -eq 0) 'a rerun that waited for a dashboard model switch keeps the switched model and changes nothing'
+    $probe = Start-ControlHolder 0
+    Stop-ControlHolder $probe
+    Check $true 'a rerun that met a finished dashboard change releases the model-change lock'
+    Write-ODSPrivateFileBytes -Path (Join-Path $runtimeDir 'runtime.json') -Bytes $selectionBefore
+    Remove-Item -LiteralPath (Join-Path (Get-ODSPortalModelsDir) 'Switched-To.gguf')
+    $script:owners = @{}
+
+    # Thread-level lock behavior, on the Windows route that runs it.
+    if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+        # --- Ctrl+C while setup waits never keeps the lock --------------------
+        # The console runs setup on a thread it reuses, so a lock setup kept
+        # after Ctrl+C would stay held until the window closed, and every
+        # dashboard switch, Unload and Resume would answer busy. The owner
+        # presses Ctrl+C while setup waits: as the dashboard change ends (its
+        # wait takes the lock in that same moment), or while it still runs.
+        $raceSetup = @'
+. $setupLibrary
+$script:ODSPortalRuntimeChangeWaitSeconds = 60
+function Get-ODSPortalControlMutexName { return $fixtureMutex }
+function Write-Host { param([Parameter(ValueFromRemainingArguments = $true)]$Text)
+    if (($Text -join ' ') -match 'setup continues once it finishes') { $waiting.Set() }
+}
+# Ctrl+C lands before setup gets past the lock; if it did not, setup stops
+# here, and nothing outside this runspace is ever reached.
+function Get-ODSPortalExistingRuntime { Start-Sleep -Seconds 30; throw 'The Ctrl+C fixture never continues past the lock.' }
+foreach ($name in @('Register-ScheduledTask', 'Unregister-ScheduledTask', 'Start-ScheduledTask', 'Stop-ScheduledTask', 'Enable-ScheduledTask',
+    'Disable-ScheduledTask', 'Get-ScheduledTask', 'Get-CimInstance', 'Stop-Process', 'Start-Process', 'wsl', 'wsl.exe', 'docker', 'schtasks', 'reg')) {
+    Set-Item -Path "Function:global:$name" -Value ([scriptblock]::Create("throw 'The Ctrl+C fixture must not run $name.'"))
+}
+'@
+        $raceCutover = "Invoke-ODSPortalRuntimeCutover -Existing ([pscustomobject]@{ Kind = 'none'; WasEnabled = `$false; Launches = @(); Selection = `$null }) " +
+            "-Plan @{} -Options @{} -ApiKey 'fixture' -KeepPort `$false"
+        $setupLibrary = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../installers/windows/lib/wsl-portal-setup.ps1'))
+        function Invoke-CtrlCDuringWait([bool]$ChangeEndsAtStop) {
+            $holder = Start-ControlHolder 60000
+            $waiting = [Threading.ManualResetEventSlim]::new($false)
+            $runspace = [runspacefactory]::CreateRunspace()
+            $runspace.ThreadOptions = 'ReuseThread'
+            $runspace.Open()
+            $setup = [PowerShell]::Create()
+            $setup.Runspace = $runspace
+            try {
+                $runspace.SessionStateProxy.SetVariable('setupLibrary', $setupLibrary)
+                $runspace.SessionStateProxy.SetVariable('fixtureMutex', $script:fixtureMutex)
+                $runspace.SessionStateProxy.SetVariable('waiting', $waiting)
+                $null = $setup.AddScript($raceSetup, $false).Invoke()
+                $setup.Commands.Clear()
+                $null = $setup.AddScript($raceCutover, $false).BeginInvoke()
+                if (-not $waiting.Wait(30000)) { throw 'Setup never reached the model-change wait.' }
+                # Setup is now inside one of its 2 s waits.
+                [Threading.Thread]::Sleep(300)
+                $stop = $setup.BeginStop($null, $null)
+                if ($ChangeEndsAtStop) { $holder.Release.Set() }
+                if (-not $stop.AsyncWaitHandle.WaitOne(30000)) { throw 'Setup did not stop after Ctrl+C.' }
+                Stop-ControlHolder $holder
+                $holder = $null
+                # The setup window is still open: its thread is alive.
+                return (Get-ControlLockState)
+            } finally {
+                if ($holder) { Stop-ControlHolder $holder }
+                $setup.Dispose(); $runspace.Dispose(); $waiting.Dispose()
+            }
+        }
+        $states = @(foreach ($trial in 1..4) { Invoke-CtrlCDuringWait $true })
+        Check (($states -join ',') -ceq 'free,free,free,free') ("Ctrl+C as a dashboard change ends during setup's wait never leaves the lock held while the window stays open" +
+            $(if (($states -join ',') -cne 'free,free,free,free') { " Got: $($states -join ',')." }))
+        $state = Invoke-CtrlCDuringWait $false
+        Check ($state -ceq 'free') ("Ctrl+C while the dashboard change still runs leaves the lock free once that change ends" + $(if ($state -cne 'free') { " Got: $state." }))
+
+        # --- A controller that ended without releasing the lock ---------------
+        # Windows hands the next waiter an abandoned mutex; setup takes it over
+        # instead of failing.
+        function Start-AbandoningHolder {
+            $runspace = [runspacefactory]::CreateRunspace()
+            $runspace.ThreadOptions = 'UseNewThread'
+            $runspace.Open()
+            $holder = [PowerShell]::Create()
+            $holder.Runspace = $runspace
+            $held = [Threading.ManualResetEventSlim]::new($false)
+            $release = [Threading.ManualResetEventSlim]::new($false)
+            $null = $holder.AddScript({ param($Name, $Held, $Release)
+                $mutex = [Threading.Mutex]::new($false, $Name)
+                if (-not $mutex.WaitOne(0)) { throw 'The isolated test mutex was unexpectedly busy.' }
+                $Held.Set()
+                $null = $Release.Wait(20000)
+                # Ends without ReleaseMutex; its thread ends with the pipeline.
+                [Threading.Thread]::CurrentThread
+            }).AddArgument($script:fixtureMutex).AddArgument($held).AddArgument($release)
+            $pending = $holder.BeginInvoke()
+            if (-not $held.Wait(10000)) { throw 'The abandoning holder never took the isolated test mutex.' }
+            return [pscustomobject]@{ PowerShell = $holder; Runspace = $runspace; Pending = $pending; Held = $held; Release = $release }
+        }
+        function Complete-AbandoningHolder($Holder) {
+            $Holder.Release.Set()
+            try {
+                $thread = @($Holder.PowerShell.EndInvoke($Holder.Pending))[0]
+                if (-not $thread.Join(10000)) { throw 'The abandoning holder thread did not end.' }
+            } finally { $Holder.PowerShell.Dispose(); $Holder.Runspace.Dispose(); $Holder.Held.Dispose(); $Holder.Release.Dispose() }
+        }
+        # Abandoned before setup reaches the lock.
+        Reset-Scenario
+        Complete-AbandoningHolder (Start-AbandoningHolder)
+        $message = ''
+        try { $null = Initialize-ODSPortalAmdRuntime $plan $fixture $true 'Ubuntu-24.04' '/home/user/ods' } catch { $message = $_.Exception.Message }
+        Check (-not $message -and -not (($script:output -join ' ') -match 'still running; setup continues') -and
+            (Get-Index 'stop-llama') -ge 0 -and (Get-Index "register:$llamaTask") -gt (Get-Index 'stop-llama') -and
+            (Get-Index 'ready') -gt (Get-Index "register:$llamaTask")) ("a rerun takes over a model-change lock a controller left abandoned, without waiting" + $(if ($message) { " Setup said: $message" }))
+        $state = Get-ControlLockState
+        Check ($state -ceq 'free') ("that rerun releases the lock it took over" + $(if ($state -cne 'free') { " Got: $state." }))
+        # Abandoned while setup waits for it.
+        Reset-Scenario
+        $script:ODSPortalRuntimeChangeWaitSeconds = 30
+        $abandoning = Start-AbandoningHolder
+        $script:releaseOnWait = $abandoning.Release
+        $message = ''
+        try {
+            try { $null = Initialize-ODSPortalAmdRuntime $plan $fixture $true 'Ubuntu-24.04' '/home/user/ods' } catch { $message = $_.Exception.Message }
+        } finally {
+            Complete-AbandoningHolder $abandoning
+            $script:ODSPortalRuntimeChangeWaitSeconds = 1200
+        }
+        Check (-not $message -and (($script:output -join ' ') -match 'still running; setup continues') -and
+            (Get-Index 'stop-llama') -ge 0 -and (Get-Index "register:$llamaTask") -gt (Get-Index 'stop-llama') -and
+            (Get-Index 'ready') -gt (Get-Index "register:$llamaTask")) ("a rerun waiting for a controller that ends without releasing the lock takes it over" + $(if ($message) { " Setup said: $message" }))
+        $state = Get-ControlLockState
+        Check ($state -ceq 'free') ("that rerun releases the lock afterwards" + $(if ($state -cne 'free') { " Got: $state." }))
+        $script:owners = @{}
+    }
 
     # --- Rerun: a selected vision model keeps its projector while it is stored --
     Reset-Scenario

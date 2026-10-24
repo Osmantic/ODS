@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 
 from host_agent_client import (
     AgentHTTPError,
+    agent_reports_busy,
     AgentProtocolError,
     AgentUnavailable,
     async_request_json as request_agent_json,
@@ -50,6 +51,9 @@ async def _request(method: str, path: str, payload: Any = None, *, validator=nor
     try:
         raw = await request_agent_json(method, path, payload=payload, timeout=timeout)
     except AgentHTTPError as exc:
+        if agent_reports_busy(exc):
+            # Refused before any change, unlike an unconfirmed one.
+            raise HTTPException(409, {"code": "model_lifecycle_busy", "message": "ODS is busy with a model or Portal change. Nothing was changed; try again in a moment."}) from None
         code = exc.status_code if exc.status_code in (400, 409, 413, 503) else 502
         raise HTTPException(code, "Settings request failed") from None
     except AgentUnavailable:

@@ -16,17 +16,21 @@ function fixture(request=async()=>host) {
 }
 test('actual registration includes exact bounded schema and no model-supplied receipt',async()=>{
  const tool=(await registeredPixelTools()).find(t=>t.name===ARTIFACT_TOOL);assert.ok(tool);
- assert.deepEqual(tool.parameters,{type:'object',additionalProperties:false,required:['relativePath'],properties:{relativePath:{type:'string',minLength:1,maxLength:512}}});
+ assert.deepEqual(tool.parameters,{type:'object',additionalProperties:false,required:['relativePath'],properties:{relativePath:{type:'string',minLength:1,maxLength:512},sourcePath:{type:'string',minLength:1,maxLength:512}}});
  assert.equal((await tool.execute('unbound',args)).isError,true);
 });
 
-test('registered artifact tool guides unsupported code to ZIP without renaming sources',async()=>{
+test('registered artifact tool guides code to broker packaging without renaming sources',async()=>{
  const tool=(await registeredPixelTools()).find(t=>t.name===ARTIFACT_TOOL);
- assert.match(tool.description,/unsupported source-code files.*code projects.*ZIP/i);
- assert.match(tool.description,/preserv(?:e|ing) (?:original )?filenames and bytes/i);
+ assert.match(tool.description,/source files or a project directory.*sourcePath/);
+ assert.match(tool.description,/verifies a ZIP directly from source bytes/);
+ assert.match(tool.description,/preserves the requested directory basename and nested filenames/);
  assert.match(tool.description,/never rename source.*\.txt/i);
- assert.match(tool.description,/verify archive contents and integrity/i);
+ assert.match(tool.description,/no shell packaging, staging file or cleanup is needed/);
  assert.match(tool.description,/at most 4 MiB/);
+ assert.match(tool.description,/NEW deliverable.*non-hidden workspace path/);
+ assert.match(tool.description,/Preserve the exact requested outer filename, including hyphens/);
+ assert.match(tool.description,/artifact tool, not a website preview tool/);
 });
 
 test('unsupported code rejection explains ZIP recovery without spending the bounded publication budget',async()=>{
@@ -40,7 +44,7 @@ test('unsupported code rejection explains ZIP recovery without spending the boun
   f.admission.before({toolName:ARTIFACT_TOOL,params:value},context);
   const rejected=await f.tool.execute(context.toolCallId,value);
   assert.equal(rejected.details.code,'invalid-arguments');
-  assert.match(rejected.content[0].text,/ZIP.*preserving filenames and bytes/);
+  assert.match(rejected.content[0].text,/sourcePath.*verifies a ZIP directly from source bytes/);
   assert.match(rejected.content[0].text,/never rename source.*\.txt/i);
   assert.equal(calls,0);
  }
@@ -118,6 +122,40 @@ test('unsupported team roles and noninteractive surfaces are rejected before bro
  assert.equal(f.guard.reserveWorkspaceArtifact({...context,sessionKey:'agent:pixel:subagent:other'}),false);
 });
 
+test('hidden new-deliverable path is refused with a narrow diagnostic, then corrected to a safe path preserving the requested hyphenated filename',async()=>{
+ let calls=0;
+ const requested='unicode-notes.zip';
+ const safeArgs={relativePath:'Playground/'+requested};
+ const safePayload=normalizeWorkspaceArtifact(safeArgs);
+ const safeReceipt={...receipt,...safeArgs,file:{path:requested,bytes:10,sha256:'b'.repeat(64)}};
+ const safeHost={...host,...safeReceipt};
+ const f=fixture(async()=>{calls++;return safeHost});
+ const hiddenArgs={relativePath:'.openclaw/tmp/'+requested};
+ f.admission.before({toolName:ARTIFACT_TOOL,params:hiddenArgs},context);
+ const rejected=await f.tool.execute(context.toolCallId,hiddenArgs);
+ assert.equal(rejected.details.code,'invalid-arguments');
+ assert.match(rejected.content[0].text,/hidden path component/);
+ assert.match(rejected.content[0].text,/non-hidden workspace path/);
+ assert.match(rejected.content[0].text,/argument rejection says nothing about file permissions or broker availability/);
+ assert.equal(calls,0);
+ const hiddenSource={relativePath:'project.zip',sourcePath:'.private-owner-docs/project'};
+ f.admission.before({toolName:ARTIFACT_TOOL,params:hiddenSource},context);
+ const sourceRejected=await f.tool.execute(context.toolCallId,hiddenSource);
+ assert.equal(sourceRejected.details.code,'invalid-arguments');
+ assert.match(sourceRejected.content[0].text,/sourcePath contains a hidden path component/);
+ assert.match(sourceRejected.content[0].text,/Preserve the selected source/);
+ assert.doesNotMatch(sourceRejected.content[0].text,/private-owner-docs/);
+ assert.equal(calls,0);
+ f.admission.before({toolName:ARTIFACT_TOOL,params:safeArgs},context);
+ const corrected=await f.tool.execute(context.toolCallId,safeArgs);
+ assert.equal(corrected.isError,undefined);
+ assert.equal(calls,1);
+ assert.equal(corrected.details.relativePath,safeArgs.relativePath);
+ assert.equal(corrected.details.file.path,requested);
+ assert.deepEqual(f.guard.deliveryVerificationForRun(context.runId).artifacts,[safeReceipt]);
+ assert.equal(safePayload.relativePath,safeArgs.relativePath);
+});
+
 test('wrong path field gives schema correction without consuming admission or a publication attempt',async()=>{
  let calls=0;const f=fixture(async()=>{calls++;return host});
  assert.match(f.tool.description,/relativePath.*Playground\/report\.pdf/);
@@ -180,7 +218,7 @@ test('explicit later background trigger or foreign session revokes merged identi
  }
 });
 
-for(const wrapped of [false,true]) test(`document download recovers from a rejected ${wrapped?'deferred':'direct'} website tool`,async()=>{
+for(const wrapped of [false,true]) for(const failure of ['result','error']) test(`document download recovers from a rejected ${wrapped?'deferred':'direct'} website tool (${failure})`,async()=>{
  const guard=createToolLoopGuard();
  guard.observeRun(context,'pixel',{prompt:'Create report.md containing exactly "Hello." and give me the file as a download.'});
  const preview='pixel_ods_workspace_preview';
@@ -191,7 +229,7 @@ for(const wrapped of [false,true]) test(`document download recovers from a rejec
  const decision=guard.beforeToolCall(event,scope);
  assert.equal(decision.block,true);
  const rejected={isError:true,content:[{type:'text',text:decision.blockReason}]};
- guard.afterToolCall({...event,result:wrapped?{details:{tool:{id:'openclaw:pixel-ods:'+preview,name:preview},result:rejected}}:rejected},scope);
+ guard.afterToolCall({...event,...(failure==='error' ? {error:decision.blockReason} : {result:wrapped?{details:{tool:{id:'openclaw:pixel-ods:'+preview,name:preview},result:rejected}}:rejected})},scope);
  const admission=createWorkspaceArtifactAdmission();
  const artifactEvent={toolName:ARTIFACT_TOOL,params:args};
  admission.before(artifactEvent,context);
@@ -205,20 +243,74 @@ for(const wrapped of [false,true]) test(`document download recovers from a rejec
  assert.match(decision.blockReason,/relativePath/);
 });
 
-test('document receipt cannot bypass an owner-requested website preview',()=>{
+for(const failure of ['result','error']) test(`document receipt cannot bypass an owner-requested website preview (${failure})`,()=>{
  const guard=createToolLoopGuard();
  guard.observeRun(context,'pixel',{prompt:'Build a website preview with a working button, and give me report.md as a download.'});
  const event={toolName:'pixel_ods_workspace_preview',params:{relativeDirectory:'site'}};
  const decision=guard.beforeToolCall(event,{...context,toolName:event.toolName});
  assert.equal(decision.block,true);
  assert.doesNotMatch(decision.blockReason,/Do not call pixel_ods_workspace_preview for documents/);
- guard.afterToolCall({...event,result:{isError:true,content:[{type:'text',text:decision.blockReason}]}},context);
+ guard.afterToolCall({...event,...(failure==='error' ? {error:decision.blockReason} : {result:{isError:true,content:[{type:'text',text:decision.blockReason}]}})},context);
  assert.equal(guard.reserveWorkspaceArtifact(context),true);
  assert.equal(guard.acceptWorkspaceArtifact(context,receipt),true);
  const delivery=guard.deliveryVerificationForRun('run');
  assert.equal(delivery.status,'failed');
  assert.match(delivery.text,/website|browser preview/i);
  assert.deepEqual(delivery.artifacts,[receipt]);
+});
+
+for(const failure of ['result','error']) test(`plain text attachment survives four blocked previews and two artifact deliveries (${failure})`,async()=>{
+ // The owner prompt and seven-call order match the Mac fleet-check journey.
+ // Broker metadata is a fixture. The live transcript retains isError, not the
+ // after-tool hook envelope; exercise both supported failure representations.
+ const prompt='Create a plain text file named fleet-check.txt containing exactly these three lines, then attach it so I can download it:\nMaya: quote Thursday\nLuis: testing Friday\nCSV: owner and date unassigned';
+ const content='Maya: quote Thursday\nLuis: testing Friday\nCSV: owner and date unassigned\n';
+ const relativePath='fleet-check.txt',sha256='2f04ae05f1d8d14be14f26dec03ca48e3b804ea67d8353d654e391b0235ce3e0';
+ const documentReceipt={...receipt,relativePath,file:{path:relativePath,bytes:73,sha256}};
+ const guard=createToolLoopGuard(),admission=createWorkspaceArtifactAdmission();
+ guard.observeRun(context,'pixel',{prompt});
+ const write={toolName:'write',toolCallId:'write',params:{path:relativePath,content}};
+ const writeScope={...context,toolName:'write',toolCallId:'write'};
+ assert.notEqual(guard.beforeToolCall(write,writeScope)?.block,true);
+ guard.afterToolCall({...write,result:{content:[{type:'text',text:'Successfully wrote 73 bytes to fleet-check.txt'}]}},writeScope);
+ let publications=0;
+ const artifact=createWorkspaceArtifactTool(context,{admission,
+  reserve:s=>guard.reserveWorkspaceArtifact(s),unavailableReason:s=>guard.workspaceArtifactUnavailableReason(s),
+  accept:(s,r)=>guard.acceptWorkspaceArtifact(s,r),request:async()=>{
+   publications++;return {...host,...documentReceipt};
+  }});
+ for(const [index,name] of ['preview','preview','preview','artifact','preview','artifact'].entries()) {
+  const toolCallId='call-'+index;
+  if(name==='preview') {
+   const event={toolName:'pixel_ods_workspace_preview',toolCallId,params:{relativeDirectory:relativePath}};
+   const scope={...context,toolName:event.toolName,toolCallId};
+   const blocked=guard.beforeToolCall(event,scope);
+   assert.equal(blocked.block,true);
+   assert.match(blocked.blockReason,/Do not call pixel_ods_workspace_preview for documents/);
+   const result={content:[{type:'text',text:blocked.blockReason}],details:{status:'blocked'}};
+   guard.afterToolCall({...event,...(failure==='error' ? {result,error:blocked.blockReason} : {result:{...result,isError:true}})},scope);
+   guard.toolResultPersist({toolName:event.toolName,toolCallId,message:{role:'toolResult',toolName:event.toolName,toolCallId,...result,isError:true}},scope);
+  } else {
+   const event={toolName:'tool_call',toolCallId,params:{id:ARTIFACT_TOOL,args:{relativePath}}};
+   const scope={...context,toolName:event.toolName,toolCallId};
+   const decision=guard.beforeToolCall(event,scope);
+   assert.notEqual(decision?.block,true);
+   admission.before(event,scope,decision);
+   const result=await artifact.execute(`tool_search_code:${toolCallId}:${ARTIFACT_TOOL}:1`,{relativePath});
+   assert.equal(result.isError,undefined);
+   const wrapped={content:result.content,details:{tool:{id:ARTIFACT_TOOL,name:ARTIFACT_TOOL},result}};
+   guard.afterToolCall({...event,result:wrapped},scope);
+   guard.toolResultPersist({toolName:event.toolName,toolCallId,message:{role:'toolResult',toolName:event.toolName,toolCallId,...wrapped}},scope);
+  }
+ }
+ assert.equal(publications,2);
+ const delivery=guard.deliveryVerificationForRun(context.runId);
+ assert.ok(['none','passed'].includes(delivery.status),JSON.stringify(delivery));
+ assert.deepEqual(delivery.artifacts,[documentReceipt]);
+ const text='Attached fleet-check.txt with the three requested lines.';
+ const sent=guard.replyPayloadSending({runId:context.runId,kind:'final',payload:{text}})?.payload?.text??text;
+ assert.ok(sent.includes(text),sent);
+ assert.doesNotMatch(sent,/requested website files|retry the build|browser preview/i);
 });
 
 test('a rejected document preview cannot validate an invalid artifact or survive owner cancellation',async()=>{

@@ -22,8 +22,9 @@ ods_preflight_require_jq() {
             pacman) ods_sudo pacman -S --noconfirm jq ;;
             zypper) ods_sudo zypper install -y jq ;;
             apk)    ods_sudo apk add jq ;;
-            apt)    ods_sudo apt-get update -qq && ods_sudo apt-get install -y jq ;;
-            *)      ods_sudo apt-get install -y jq ;;
+            xbps)   ods_sudo xbps-install -Sy jq ;;
+            apt)    ods_sudo apt-get update -qq </dev/null && ods_sudo apt-get install -y jq </dev/null ;;
+            *)      ods_sudo apt-get install -y jq </dev/null ;;
         esac
         if ! command -v jq >/dev/null 2>&1; then
             error "Failed to install jq automatically. Install it manually and re-run."

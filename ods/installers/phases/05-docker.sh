@@ -248,7 +248,7 @@ if command -v docker &>/dev/null && ! $DRY_RUN; then
             if [[ -n "$_docker_2921" ]]; then
                 ods_sudo apt-get install -y --allow-downgrades \
                     docker-ce="$_docker_2921" docker-ce-cli="$_docker_2921" \
-                    >> "$LOG_FILE" 2>&1 && \
+                    </dev/null >> "$LOG_FILE" 2>&1 && \
                     ai_ok "Docker downgraded to 29.2.1 (AMD GPU fix)" || \
                     ai_warn "Could not downgrade Docker. GPU containers may fail. Manual fix: sudo apt install docker-ce=$_docker_2921"
             else
@@ -468,6 +468,27 @@ _docker_nvidia_runtime_available() {
     [[ "$runtimes" =~ \"nvidia\"[[:space:]]*: ]]
 }
 
+# Docker Desktop runs the engine in its own VM and reports itself as
+# "Docker Desktop" (on Windows on Arm, "Docker Desktop (containerized)").
+# A toolkit installed in this distro and a `systemctl restart docker` never
+# reach that engine.
+_docker_is_desktop_engine() {
+    local os=""
+    # An engine that does not answer is not Docker Desktop's for this check;
+    # the toolkit path below reports its own errors.
+    os=$(docker_run info --format '{{.OperatingSystem}}' 2>/dev/null || true)
+    [[ "$os" == "Docker Desktop"* ]]
+}
+
+_docker_desktop_nvidia_refusal() {
+    local help="Need help? Ask on the ODS Discord: ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
+    if _docker_is_wsl_host; then
+        printf '%s' "Docker Desktop is not giving this Ubuntu its NVIDIA runtime, and ODS never installs a second NVIDIA container toolkit under Docker Desktop (it would rewrite Docker's settings and restart a Docker service that Docker Desktop does not use). Setup stopped here; it installed no NVIDIA software and did not restart Docker. Update Docker Desktop, keep \"Use the WSL 2 based engine\" turned on in its settings, restart Docker Desktop, then rerun the ODS installer. To install now without the GPU (slower), rerun it with GPU_BACKEND=cpu set. ${help}"
+    else
+        printf '%s' "Docker here is Docker Desktop, whose engine runs in its own virtual machine without an NVIDIA runtime, and ODS never installs an NVIDIA container toolkit under Docker Desktop. Setup stopped here; it installed no NVIDIA software and did not restart Docker. To use the GPU, install Docker Engine and switch to it (docker context use default), then rerun the ODS installer. To install now without the GPU (slower), rerun it with GPU_BACKEND=cpu set. ${help}"
+    fi
+}
+
 _ensure_podman_dockerhub_search() {
     _runtime_is_podman || return 0
     ods_podman_ensure_dockerhub_search
@@ -540,6 +561,8 @@ if [[ $GPU_COUNT -gt 0 && "$GPU_BACKEND" == "nvidia" ]]; then
         if command -v nvidia-ctk &>/dev/null && ! $DRY_RUN; then
             ods_sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml 2>>"$LOG_FILE" || true
         fi
+    elif _docker_is_desktop_engine; then
+        error "$(_docker_desktop_nvidia_refusal)"
     else
         ai "Installing NVIDIA Container Toolkit..."
         if ! $DRY_RUN; then
@@ -593,8 +616,8 @@ if [[ $GPU_COUNT -gt 0 && "$GPU_BACKEND" == "nvidia" ]]; then
                         echo "deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://nvidia.github.io/libnvidia-container/stable/deb/\$(ARCH) /" | \
                             ods_sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list > /dev/null
                     fi
-                    ods_sudo apt-get update
-                    if ! ods_sudo apt-get install -y nvidia-container-toolkit; then
+                    ods_sudo apt-get update </dev/null
+                    if ! ods_sudo apt-get install -y nvidia-container-toolkit </dev/null; then
                         error "Failed to install NVIDIA Container Toolkit. Check network connectivity and GPU drivers."
                     fi
                     ;;

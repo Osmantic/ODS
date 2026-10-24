@@ -13,6 +13,8 @@
 2. Each backend pins its explicitly selected build in BACKEND_BUILDS.
    NVIDIA CUDA advances independently for the Qwen3.5 NextN loader; CPU,
    AMD, Intel, Apple, Arc and native Windows keep their existing builds.
+   The image config/backends/nvidia.json maps compute capability 12.1 to
+   (DGX Spark GB10, RTX Spark N1X) is the CUDA 13 build of the NVIDIA release.
    This table is a release policy, not a runtime or fleet qualification claim.
    The AMD images are official ggml-org images whose every copy
    (Compose, installer pulls, config/backends/amd.json, the lock file)
@@ -182,6 +184,20 @@ def check_other_backends(errors: list[str]) -> None:
         expected_build = BACKEND_BUILDS[backend]
         if build_of(ref) != expected_build:
             errors.append(f"{name}: llama.cpp {build_of(ref) or ref!r} differs from the {backend} release policy {expected_build}")
+    # A compute capability the CUDA 12 default cannot serve (12.1: DGX Spark
+    # GB10, RTX Spark N1X) runs the CUDA 13 build of the same NVIDIA release,
+    # so the Models page's architecture list and the interop captures hold.
+    nvidia_runtime = json.loads((ROOT_DIR / "config/backends/nvidia.json").read_text(encoding="utf-8")) \
+        .get("runtime", {}).get("llama_server", {})
+    compute_images = nvidia_runtime.get("container_images_by_compute", {})
+    if "12.1" not in compute_images:
+        errors.append("config/backends/nvidia.json: container_images_by_compute must map 12.1 to the CUDA 13 build")
+    for compute_cap, ref in sorted(compute_images.items()):
+        match = IMAGE_RE.fullmatch(str(ref))
+        if not match or not match.group("digest") or not match.group("tag").startswith("server-cuda13-"):
+            errors.append(f"config/backends/nvidia.json: the compute {compute_cap} image must be an official server-cuda13-* tag@digest, got {ref!r}")
+        elif build_of(ref) != BACKEND_BUILDS["nvidia"]:
+            errors.append(f"config/backends/nvidia.json: the compute {compute_cap} image {ref} must be the NVIDIA release {BACKEND_BUILDS['nvidia']}")
 
     arc = (ROOT_DIR / "docker-compose.arc.yml").read_text(encoding="utf-8")
     dockerfile = (ROOT_DIR / "images/llama-sycl/Dockerfile").read_text(encoding="utf-8")

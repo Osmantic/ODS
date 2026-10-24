@@ -227,17 +227,48 @@ validate_force_reinstall_target() {
 # `ods-uninstall.sh --keep-data` leaves behind, or an unrelated directory named
 # by ODS_INSTALL_DIR, is left for the owner to move or remove.
 incomplete_install_is_removable() {
-    local target_dir="$1" target_real
+    local target_dir="$1" target_real entries
 
     [[ "$target_dir" == /* ]] || return 1
     [[ -d "$target_dir" && ! -L "$target_dir" ]] || return 1
     target_real="$(cd -P -- "$target_dir" 2>/dev/null && pwd -P)" || return 1
     [[ "$target_real" != / && "$target_real" != "$(cd -P -- "$HOME" 2>/dev/null && pwd -P)" ]] || return 1
-    if [[ -z "$(ls -A -- "$target_dir" 2>/dev/null)" ]]; then
-        return 0
-    fi
+    # A directory that cannot be listed is not known to be empty.
+    entries="$(ls -A -- "$target_dir")" || return 1
+    [[ -n "$entries" ]] || return 0
     [[ -f "$target_dir/ods-cli" && ! -L "$target_dir/ods-cli" ]] || return 1
     [[ -f "$target_dir/ods-uninstall.sh" && ! -L "$target_dir/ods-uninstall.sh" ]] || return 1
+}
+
+# True when $1 does not exist, or is a real directory that lists as empty.
+path_is_absent_or_empty_dir() {
+    local path="$1" entries
+
+    [[ -e "$path" || -L "$path" ]] || return 0
+    [[ -d "$path" && ! -L "$path" ]] || return 1
+    entries="$(ls -A -- "$path")" || return 1
+    [[ -z "$entries" ]]
+}
+
+# The installer sets nothing up in the install directory before phase 06,
+# which creates data/ and writes .env; earlier phases check the host, install
+# Docker when needed, and adjust the source tree's feature selection. A tree
+# with no .env and none of the owner data that `ods-uninstall.sh --keep-data`
+# keeps (data/, .backups/, presets/) therefore holds only source files,
+# typically from an earlier attempt that stopped in its checks (a port already
+# in use, say). That run said to fix the problem and run the same command
+# again, so the tree is replaced without asking. The bootstrap copies no
+# tests/ and no .git, so a tree with either is a working checkout instead.
+incomplete_install_is_unconfigured() {
+    local target_dir="$1"
+
+    incomplete_install_is_removable "$target_dir" || return 1
+    [[ ! -e "$target_dir/.env" && ! -L "$target_dir/.env" ]] || return 1
+    [[ ! -e "$target_dir/tests" && ! -L "$target_dir/tests" ]] || return 1
+    [[ ! -e "$target_dir/.git" && ! -L "$target_dir/.git" ]] || return 1
+    path_is_absent_or_empty_dir "$target_dir/data" \
+        && path_is_absent_or_empty_dir "$target_dir/.backups" \
+        && path_is_absent_or_empty_dir "$target_dir/presets"
 }
 
 refuse_unidentified_incomplete_install() {
@@ -503,7 +534,7 @@ else
         command -v git &> /dev/null || error "Please install git: https://git-scm.com"
     else
         if command -v apt-get &> /dev/null; then
-            sudo apt-get update -qq && sudo apt-get install -y -qq git
+            sudo apt-get update -qq </dev/null && sudo apt-get install -y -qq git </dev/null
         elif command -v dnf &> /dev/null; then
             sudo dnf install -y -q git
         elif command -v yum &> /dev/null; then
@@ -526,7 +557,7 @@ if command -v curl &> /dev/null; then
 else
     log "Installing curl..."
     if command -v apt-get &> /dev/null; then
-        sudo apt-get install -y -qq curl
+        sudo apt-get install -y -qq curl </dev/null
     elif command -v dnf &> /dev/null; then
         sudo dnf install -y -q curl
     elif command -v yum &> /dev/null; then
@@ -582,6 +613,13 @@ if [[ -d "$INSTALL_DIR" ]]; then
         BOOTSTRAP_RECOVER_STRANDED=true
         warn "ODS source with retained models but no .env found at $INSTALL_DIR (an earlier --keep-models reinstall stopped before configuring it)."
         warn "Resuming that reinstall: models are kept, and the tree is replaced only after the requested candidate's preflight passes."
+    elif [[ "$BOOTSTRAP_FORCE" != "true" ]] && incomplete_install_is_unconfigured "$INSTALL_DIR"; then
+        # Fleet 2026-10-18: a fresh install stopped in phase 04 (port in use)
+        # and said to run the same command again, which then refused this
+        # tree. --force keeps its own path below.
+        log "An earlier install attempt stopped before ODS was configured; replacing its source files at $INSTALL_DIR"
+        rm -rf -- "$INSTALL_DIR" \
+            || error "Could not replace $INSTALL_DIR. It holds no ODS configuration or data, only source files: remove it, then run the same command again."
     else
         warn "Directory exists but incomplete install at $INSTALL_DIR"
         echo ""
@@ -826,4 +864,30 @@ cd "$INSTALL_DIR"
 # Native artifact provenance compares installed bytes with this clean checkout's
 # immutable Git objects. The runtime copy deliberately contains no .git directory.
 export ODS_BOOTSTRAP_SOURCE_DIR="$TEMP_DIR/repo/ods"
+# Keep the original foreground exec: it preserves stdin, process group, PID,
+# signal dispositions and exit status. Backgrounding the installer makes INT
+# ignored by a Bash child on macOS 3.2, even after trap - INT.
+# A detached-output watcher removes only this private clone once the original
+# process identity is gone. A failed observation retains the source instead.
+bootstrap_installer_pid=$$
+bootstrap_process_start() {
+    # A successful full inventory distinguishes an absent PID from ps failing
+    # to observe one. lstart survives exec and prevents confusing a reused PID.
+    LC_ALL=C ps -A -o pid= -o lstart= |
+        awk -v target_pid="$bootstrap_installer_pid" '$1 == target_pid { $1=""; print }'
+}
+if bootstrap_installer_start="$(bootstrap_process_start)" && [[ -n "$bootstrap_installer_start" ]]; then
+    (
+        trap - EXIT
+        trap '' INT TERM HUP
+        while :; do
+            current_start="$(bootstrap_process_start)" || exit 0
+            [[ "$current_start" == "$bootstrap_installer_start" ]] || break
+            sleep 0.2 || exit 0
+        done
+        rm -rf -- "$TEMP_DIR"
+    ) </dev/null >/dev/null 2>&1 &
+else
+    warn "Could not monitor temporary source cleanup; retain $TEMP_DIR for this install."
+fi
 exec ./install.sh "$@"

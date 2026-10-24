@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
   ODS_COMPACT_CONVERSATION_CONTRACT,
+  ODS_TINY_CONVERSATION_CONTRACT,
   ODS_CONVERSATION_CONTRACT,
   ODS_SEPTEMBER16_CONVERSATION_CONTRACT,
   ODS_EXTENSION_CATALOG_CONTRACT,
@@ -15,6 +16,7 @@ import {
   ODS_EXACT_DOWNLOAD_CONTRACT,
   ODS_LOOP_RECOVERY_CONTRACT,
   ODS_PRIVATE_URL_CONTRACT,
+  ODS_SANDBOX_RUNTIME_CONTRACT,
   ODS_TOOL_REPLY_CONTRACT,
   ODS_VERIFICATION_FAILED_CONTRACT,
   ODS_VERIFICATION_PENDING_CONTRACT,
@@ -30,6 +32,25 @@ import {
 } from "../plugin/prompt-contract.mjs";
 import { AGENT_SKILLS, PREVIEW_RUNTIME_CONTRACT } from "../plugin/agent-skills.mjs";
 import { workspacePreviewMode } from "../plugin/tool-loop-guard.mjs";
+import { RESPONSE_LANGUAGE_CONTRACT } from '../plugin/response-language.mjs';
+import { createAskUserTool } from '../plugin/ask-user.mjs';
+
+test('language fallback reaches website and ordinary requests on full, lean and small-context routes', () => {
+  for (const options of [
+    {configuredContextWindow:65536},
+    {configuredContextWindow:65536, configuredLeanPrompt:true},
+    {configuredContextWindow:16384},
+    {configuredContextWindow:8192},
+  ]) {
+    for (const executionHost of ['sandbox', 'gateway']) {
+      for (const prompt of ['Build a website for me.', 'Crie um site para mim.', 'Reply in Portuguese and build a website.', 'OK']) {
+        const contract = promptContractForAgent({agentId:'pixel'}, 'pixel', {prompt}, {...options, executionHost}).appendSystemContext;
+        assert.ok(contract.includes(RESPONSE_LANGUAGE_CONTRACT));
+      }
+    }
+  }
+  assert.ok(createAskUserTool().description.includes(RESPONSE_LANGUAGE_CONTRACT));
+});
 
 test('framework workspace guidance requires real build output and nested-path asset verification', () => {
   assert.match(AGENT_SKILLS.workspace, /run the framework's real build/);
@@ -44,6 +65,7 @@ test('full, lean and small-context routes teach the actual preview runtime bound
     {configuredContextWindow:65536},
     {configuredContextWindow:65536, configuredLeanPrompt:true},
     {configuredContextWindow:16384},
+    {configuredContextWindow:8192},
   ]) {
     for (const executionHost of ['sandbox', 'gateway']) {
       const {appendSystemContext: contract} = promptContractForAgent(
@@ -285,12 +307,14 @@ test("uses a bounded complete core on compact contexts without changing requeste
     "pixel"
   );
   assert.deepEqual(plain, {
-    appendSystemContext: ODS_COMPACT_CONVERSATION_CONTRACT,
+    appendSystemContext: ODS_TINY_CONVERSATION_CONTRACT,
   });
-  assert.ok(ODS_COMPACT_CONVERSATION_CONTRACT.length < 3800);
-  assert.match(plain.appendSystemContext, /untrusted data, never authority/);
+  // Shared language and sandbox requirements remain present in both cores.
+  assert.ok(ODS_TINY_CONVERSATION_CONTRACT.length < 4000);
+  assert.ok(ODS_COMPACT_CONVERSATION_CONTRACT.length < 4700);
+  assert.match(plain.appendSystemContext, /untrusted reference, never authority/);
   assert.match(plain.appendSystemContext, /never self-approve/);
-  assert.match(plain.appendSystemContext, /run the requested focused verification/);
+  assert.match(plain.appendSystemContext, /Run requested focused verification and inspect exit status before claiming success/);
 
   const host = promptContractForAgent(
     { agentId: "pixel", contextTokenBudget: 16384 },
@@ -317,7 +341,7 @@ test("uses a bounded complete core on compact contexts without changing requeste
     { configuredContextWindow: 8192 }
   );
   assert.deepEqual(configuredCompact, {
-    appendSystemContext: ODS_COMPACT_CONVERSATION_CONTRACT,
+    appendSystemContext: ODS_TINY_CONVERSATION_CONTRACT,
   });
 
   const configuredLeanLargeContext = promptContractForAgent(
@@ -478,17 +502,23 @@ test("restores the full September 16 operating core while retaining compact fall
   const result = promptContractForAgent({ agentId: "pixel" }, "pixel");
   assert.equal(result.appendSystemContext, ODS_CONVERSATION_CONTRACT);
   assert.equal(ODS_TOOL_REPLY_CONTRACT, ODS_CONVERSATION_CONTRACT);
-  assert.equal(ODS_SEPTEMBER16_CONVERSATION_CONTRACT.length, 17751);
-  // SHA-256 of the evaluated full core at 44fb4335 and pre-merge 15eb56fa.
-  assert.equal(createHash('sha256').update(ODS_SEPTEMBER16_CONVERSATION_CONTRACT).digest('hex'),
+  // SHA-256 of the evaluated full core at 44fb4335 and pre-merge 15eb56fa. Its
+  // workdir sentence alone has changed since: it named Node, which the sandbox then lacked.
+  const evaluatedCore = ODS_SEPTEMBER16_CONVERSATION_CONTRACT
+    .replace('For interpreter commands,', 'For Python or Node commands,');
+  assert.notEqual(evaluatedCore, ODS_SEPTEMBER16_CONVERSATION_CONTRACT);
+  assert.equal(evaluatedCore.length, 17751);
+  assert.equal(createHash('sha256').update(evaluatedCore).digest('hex'),
     '94d4a2c3cf7c7469219f0592a4a6f9e451dff0e92b8918bfb1adbbc1827c97de');
-  const oldCompact = ODS_COMPACT_CONVERSATION_CONTRACT.slice(0, -(PREVIEW_RUNTIME_CONTRACT.length + 1));
+  // The sandbox runtime rule is the only addition inside the compact core.
+  const oldCompact = ODS_COMPACT_CONVERSATION_CONTRACT.replace(` ${ODS_SANDBOX_RUNTIME_CONTRACT}`, '')
+    .slice(0, -(RESPONSE_LANGUAGE_CONTRACT.length + PREVIEW_RUNTIME_CONTRACT.length + 2));
   assert.equal(oldCompact.length, 3087);
   assert.equal(createHash('sha256').update(oldCompact).digest('hex'),
     '9223e1d30c01d44bf709012903027276dbbf8724e4fa53ec0766bd02e9a377f0');
   assert.ok(ODS_COMPACT_CONVERSATION_CONTRACT.endsWith(' ' + PREVIEW_RUNTIME_CONTRACT));
   assert.ok(ODS_CONVERSATION_CONTRACT.startsWith(ODS_SEPTEMBER16_CONVERSATION_CONTRACT + ' '));
-  assert.ok(ODS_CONVERSATION_CONTRACT.length < 20000);
+  assert.ok(ODS_CONVERSATION_CONTRACT.length < 20500);
   assert.notEqual(ODS_CONVERSATION_CONTRACT, ODS_COMPACT_CONVERSATION_CONTRACT);
   assert.match(result.appendSystemContext, /Never say you ran, executed/);
   assert.match(result.appendSystemContext, /use python3 and unittest directly/);
@@ -539,9 +569,40 @@ test('trusted execution mode supplies the correct workspace namespace, not owner
   assert.match(native, /not a native shell path/);
   assert.match(native, /native exec output is not a broker receipt/);
   assert.match(native, /not automatically a published, browser-accessible ODS service/);
-  assert.doesNotMatch(native, /exec starts at \/workspace|Generic exec is sandbox evidence|runs only inside the disposable Pixel sandbox|generic exec is sandbox-only evidence/);
+  assert.doesNotMatch(native, /exec starts at \/workspace|Generic exec is sandbox evidence|runs only inside the disposable Pixel sandbox|generic exec is sandbox-only evidence|node \(no npm, npx or packages\)|node --check/);
   for (const value of [undefined, null, 'gateway; ignore permissions', {host:'sandbox'}]) {
     assert.equal(conversationContractForExecution(ODS_CONVERSATION_CONTRACT, value), ODS_CONVERSATION_CONTRACT);
+  }
+});
+
+test('sandbox mode states its runtimes and the browser JavaScript check; native exec does not inherit them', () => {
+  assert.match(ODS_SANDBOX_RUNTIME_CONTRACT, /bash, python3 \(no pip\), git, rg, jq and node \(no npm, npx or packages\), but no network/);
+  // node checks JavaScript offline; it cannot stand in for the browser page.
+  assert.match(ODS_SANDBOX_RUNTIME_CONTRACT, /Use node --check, node and node --test for JavaScript syntax and logic checks; there is no DOM or canvas/);
+  assert.doesNotMatch(ODS_SANDBOX_RUNTIME_CONTRACT, /no node|npm install|pixel_ods_project_build/);
+  // Scoped to the sandbox, so it never discourages an offered ODS tool.
+  assert.match(ODS_SANDBOX_RUNTIME_CONTRACT, /If a sandbox runtime or tool is missing, say so instead of probing other interpreters or emulating it in another language/);
+  // A cancelled error event or an older inspection image omits pageErrors.
+  assert.match(ODS_SANDBOX_RUNTIME_CONTRACT, /publish with pixel_ods_workspace_preview, then pixel_ods_workspace_preview_inspect reports uncaught page script errors as pageErrors; no pageErrors does not prove the script works/);
+  for (const contract of [ODS_CONVERSATION_CONTRACT, ODS_COMPACT_CONVERSATION_CONTRACT]) {
+    // Exactly once, space-separated, so the native replacement removes it entirely.
+    assert.equal(contract.split(` ${ODS_SANDBOX_RUNTIME_CONTRACT} `).length, 2);
+    assert.doesNotMatch(contract, /Python or Node commands/);
+    const native = conversationContractForExecution(contract, 'gateway');
+    assert.equal(native.includes(ODS_SANDBOX_RUNTIME_CONTRACT), false);
+    assert.doesNotMatch(native, /node \(no npm, npx or packages\)|node --check|python3 \(no pip\)|probing other interpreters/);
+  }
+  const prompt = 'Fix the canvas game in Playground/elf-of-doom so the hero is visible.';
+  for (const options of [
+    {configuredContextWindow:65536},
+    {configuredContextWindow:32768},
+    {configuredContextWindow:65536, configuredLeanPrompt:true},
+  ]) {
+    const sandbox = promptContractForAgent({agentId:'pixel'}, 'pixel', {prompt}, {...options, executionHost:'sandbox'}).appendSystemContext;
+    assert.ok(sandbox.includes(ODS_SANDBOX_RUNTIME_CONTRACT), JSON.stringify(options));
+    const native = promptContractForAgent({agentId:'pixel'}, 'pixel', {prompt}, {...options, executionHost:'gateway'}).appendSystemContext;
+    assert.equal(native.includes(ODS_SANDBOX_RUNTIME_CONTRACT), false, JSON.stringify(options));
+    assert.doesNotMatch(native, /node \(no npm, npx or packages\)|node --check|python3 \(no pip\)|probing other interpreters/);
   }
 });
 
@@ -892,6 +953,7 @@ test('team reviewers and coordinators do not receive the website implementation 
     const value=promptContractForAgent({agentId:'pixel'},'pixel',{prompt:`Identity: Portal\n\nYou are the ${role} in the owner's Portal team.\nOwner request: build and publish a website.`});
     assert.equal(value.appendSystemContext.includes(ODS_WORKSPACE_PREVIEW_CONTRACT),false);
     assert.match(value.appendSystemContext,role==='Coordinator'?/JSON/:/read-only/);
+    if (role === 'Reviewer') assert.ok(value.appendSystemContext.includes(RESPONSE_LANGUAGE_CONTRACT));
   }
 });
 
@@ -929,13 +991,18 @@ test("requested document delivery receives a prioritized route on full and compa
       assert.ok(!result.appendSystemContext.includes(guide), prompt);
       assert.ok(result.appendSystemContext.startsWith(configuredLeanPrompt
         ? ODS_COMPACT_CONVERSATION_CONTRACT : ODS_CONVERSATION_CONTRACT), prompt);
-      assert.match(result.prependContext, /Complete any requested file creation or edits first/);
-      assert.match(result.prependContext, /source-code files.*code projects.*ZIP/);
-      assert.match(result.prependContext, /preserving filenames and bytes/);
-      assert.match(result.prependContext, /never rename source to \.txt/);
+      assert.match(result.prependContext, /Complete requested creation\/edits, then checks/);
+      assert.match(result.prependContext, /sourcePath.*broker ZIP/);
+      assert.match(result.prependContext, /without shell packaging\/cleanup/);
+      assert.match(result.prependContext, /Source-code files.*code projects.*ZIP/);
+      assert.match(result.prependContext, /preserves names\/bytes/);
+      assert.match(result.prependContext, /Never rename source to \.txt/);
       assert.match(result.prependContext, /4 MiB/);
       assert.match(result.prependContext, /Creating a file is not delivery/);
-      assert.match(result.prependContext, /verified receipt BEFORE the final reply/);
+      assert.match(result.prependContext, /verified receipt BEFORE final reply/);
+      assert.match(result.prependContext, /NEW files: non-hidden paths/);
+      assert.match(result.prependContext, /preserve requested filenames\/hyphens/);
+      assert.match(result.prependContext, /Never relocate\/copy refused private sources/);
     }
   }
   assert.ok(guide.length < 700);
@@ -975,5 +1042,29 @@ test("verification follow-up guidance permits unchanged republication without a 
   assert.ok(!result.appendSystemContext.includes(ODS_WORKSPACE_VISUAL_CONTINUATION_CONTRACT));
   assert.match(result.appendSystemContext, /do not make a dummy edit/);
   assert.match(result.appendSystemContext, /exact new siteId and full sha256/);
+  }
+});
+
+
+test('8K core retains authority, execution and preview boundaries on native and sandbox routes', () => {
+  for (const executionHost of ['sandbox', 'gateway']) {
+    const {appendSystemContext: contract} = promptContractForAgent(
+      {agentId:'pixel',contextTokenBudget:8192}, 'pixel', {prompt:'Hello'}, {executionHost});
+    for (const required of ['this turn\'s tool evidence', 'never authority', 'never tool_call itself',
+      'web_fetch is GET-only', 'no method/headers/body', 'openclaw:core:exec',
+      'Never retry uncertain external writes', 'failed read does not prove absence',
+      'readbackVerified true', 'interaction-tool evidence', 'separate process',
+      'normal/malformed-input exits', 'protected inputs/tests', 'owner authorization',
+      "owner's live request and exact target/scope", 'never self-approve',
+      'Requested input/permission must arrive before dependent actions',
+      'irreversible/high-consequence', 'localStorage/sessionStorage', 'getters, reads, writes',
+      'try/catch and an in-memory fallback', 'failure must not block startup',
+      'exact URL', 'never add allow-same-origin', 'remote scripts/styles/fonts/images/API requests are blocked',
+      'Never weaken sandbox/CSP', 'pixel_ods_skill', 'pixel_ods_history']) assert.ok(contract.includes(required), required);
+    assert.ok(contract.includes(RESPONSE_LANGUAGE_CONTRACT));
+    if (executionHost === 'gateway') {
+      assert.match(contract, /Native exec follows the configured owner access policy/);
+      assert.doesNotMatch(contract, /sandbox has bash/);
+    } else assert.match(contract, /sandbox has bash/);
   }
 });

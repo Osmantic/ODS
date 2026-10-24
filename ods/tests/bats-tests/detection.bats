@@ -157,6 +157,8 @@ MOCK
     assert_equal "$GPU_BACKEND" "nvidia"
     assert_equal "$GPU_COUNT" "1"
     assert_equal "$GPU_VRAM" "24564"
+    # This nvidia-smi answers no compute_cap query (a driver before 510).
+    assert_equal "$GPU_COMPUTE_CAP" ""
 }
 
 @test "detect_gpu: sums VRAM for multi-GPU and formats display name" {
@@ -189,6 +191,84 @@ MOCK
     [[ "$GPU_NAME" == *"2"* ]]
 }
 
+# RTX Spark under WSL: the N1X row is the owner's probe
+# (tests/fixtures/rtx-spark/nvidia-smi-wsl.txt). WSL lists only the N1X today;
+# the NVIDIA NPU row ([N/A] memory, as Windows lists it) is synthetic insurance.
+_mock_nvidia_rows() {
+    mkdir -p "$BATS_TEST_TMPDIR/bin"
+    printf '%s\n' "$@" > "$BATS_TEST_TMPDIR/rows.csv"
+    cat > "$BATS_TEST_TMPDIR/bin/nvidia-smi" << MOCK
+#!/bin/bash
+if [[ "\$*" == *"--query-gpu=name,memory.total"* ]]; then
+    cut -d'|' -f1 "$BATS_TEST_TMPDIR/rows.csv"
+elif [[ "\$*" == *"pci.device_id"* ]]; then
+    cut -d'|' -f2 "$BATS_TEST_TMPDIR/rows.csv"
+elif [[ "\$*" == *"compute_cap"* ]]; then
+    cut -d'|' -f3 "$BATS_TEST_TMPDIR/rows.csv"
+fi
+MOCK
+    chmod +x "$BATS_TEST_TMPDIR/bin/nvidia-smi"
+    export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+    mkdir -p "$BATS_TEST_TMPDIR/sys/class/drm/card0/device"
+    echo "0x10de" > "$BATS_TEST_TMPDIR/sys/class/drm/card0/device/vendor"
+    export ODS_DRM_SYS="$BATS_TEST_TMPDIR/sys/class/drm"
+}
+
+_spark_row() {
+    local row
+    row=$(sed -n '2p' "$BATS_TEST_DIRNAME/../fixtures/rtx-spark/nvidia-smi-wsl.txt")
+    # name, pci.device_id, compute_cap, memory.total, driver_version
+    printf '%s, %s|%s|%s' "$(cut -d',' -f1 <<< "$row")" "$(cut -d',' -f4 <<< "$row" | xargs)" \
+        "$(cut -d',' -f2 <<< "$row" | xargs)" "$(cut -d',' -f3 <<< "$row" | xargs)"
+}
+
+@test "detect_gpu: an NVIDIA NPU row beside the RTX Spark GPU is not a second GPU" {
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        skip "detect_gpu uses GNU grep -oP, not available on macOS"
+    fi
+    _mock_nvidia_rows "$(_spark_row)" "NVIDIA NPU, [N/A]|[N/A]|[N/A]"
+
+    detect_gpu
+    assert_equal "$GPU_NAME" "NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU)"
+    assert_equal "$GPU_COUNT" "1"
+    assert_equal "$GPU_VRAM" "98240"
+    assert_equal "$GPU_MEMORY_TYPE" "discrete"
+    assert_equal "$GPU_DEVICE_ID" "0x2E03"
+    assert_equal "$GPU_COMPUTE_CAP" "12.1"
+}
+
+@test "detect_gpu: an NVIDIA NPU row listed first does not hide the GPU or its device id" {
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        skip "detect_gpu uses GNU grep -oP, not available on macOS"
+    fi
+    _mock_nvidia_rows "NVIDIA NPU, [N/A]|[N/A]|[N/A]" "$(_spark_row)"
+
+    detect_gpu
+    assert_equal "$GPU_NAME" "NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU)"
+    assert_equal "$GPU_COUNT" "1"
+    assert_equal "$GPU_VRAM" "98240"
+    assert_equal "$GPU_DEVICE_ID" "0x2E03"
+    # The compute capability is the GPU's row, not the NPU's.
+    assert_equal "$GPU_COMPUTE_CAP" "12.1"
+}
+
+@test "detect_gpu: a lone [N/A] row (GB10) is still unified memory" {
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        skip "detect_gpu uses GNU grep -oP, not available on macOS"
+    fi
+    grep -q '^MemTotal:' /proc/meminfo 2>/dev/null || skip "needs /proc/meminfo"
+    _mock_nvidia_rows "NVIDIA GB10, [N/A]||12.1"
+
+    # As phase 02 calls it: the VRAM sum finds no digits on this path, which
+    # would stop a caller running with errexit and pipefail.
+    detect_gpu || true
+    assert_equal "$GPU_NAME" "NVIDIA GB10"
+    assert_equal "$GPU_COUNT" "1"
+    assert_equal "$GPU_MEMORY_TYPE" "unified"
+    [[ "$GPU_VRAM" -gt 0 ]]
+    assert_equal "$GPU_COMPUTE_CAP" "12.1"
+}
+
 @test "detect_gpu: returns failure when no GPU found" {
     if [[ "$(uname -s)" == "Darwin" ]]; then
         skip "detect_gpu uses GNU grep -oP, not available on macOS"
@@ -207,6 +287,68 @@ MOCK
     # On a machine with no sysfs AMD GPUs, detect_gpu should fail
     run detect_gpu
     assert_failure
+}
+
+# ── detect_gpu NVIDIA hardware witness (native Linux) ─────────────────────────
+
+_setup_native_nvidia_smi() {
+    mkdir -p "$BATS_TEST_TMPDIR/bin" "$BATS_TEST_TMPDIR/sys/class/drm" "$BATS_TEST_TMPDIR/sys/bus/pci/devices"
+    cat > "$BATS_TEST_TMPDIR/bin/nvidia-smi" << 'MOCK'
+#!/bin/bash
+if [[ "$*" == *"--query-gpu=name,memory.total"* ]]; then
+    echo "NVIDIA H100 PCIe, 81559 MiB"
+elif [[ "$*" == "-L" ]]; then
+    echo "GPU 0: NVIDIA H100 PCIe (UUID: GPU-0)"
+fi
+MOCK
+    chmod +x "$BATS_TEST_TMPDIR/bin/nvidia-smi"
+    export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+    echo "6.8.0-generic" > "$BATS_TEST_TMPDIR/osrelease"
+    export ODS_OSRELEASE_FILE="$BATS_TEST_TMPDIR/osrelease"
+    export ODS_DRM_SYS="$BATS_TEST_TMPDIR/sys/class/drm"
+    export ODS_PCI_SYS="$BATS_TEST_TMPDIR/sys/bus/pci/devices"
+}
+
+_add_pci_device() {
+    local dir="$ODS_PCI_SYS/$1"
+    mkdir -p "$dir"
+    echo "$2" > "$dir/vendor"
+    echo "$3" > "$dir/class"
+}
+
+@test "detect_gpu: NVIDIA 3D controller on PCI without nvidia_drm DRM card is detected" {
+    [[ "$(uname -s)" == "Darwin" ]] && skip "detect_gpu uses GNU grep -oP"
+    _setup_native_nvidia_smi
+    _add_pci_device 0000:01:00.0 0x10de 0x030200
+
+    detect_gpu
+    assert_equal "$GPU_BACKEND" "nvidia"
+    assert_equal "$GPU_NAME" "NVIDIA H100 PCIe"
+}
+
+@test "detect_gpu: stray nvidia-smi on AMD-only native Linux is not trusted and warns" {
+    [[ "$(uname -s)" == "Darwin" ]] && skip "detect_gpu uses GNU grep -oP"
+    _setup_native_nvidia_smi
+    _add_pci_device 0000:03:00.0 0x1002 0x030000
+    # Non-display NVIDIA function (e.g. audio) must not count as a GPU witness
+    _add_pci_device 0000:04:00.1 0x10de 0x040300
+    warn() { echo "WARN: $*" >> "$BATS_TEST_TMPDIR/warn.log"; }
+
+    # No AMD DRM card is mocked, so detect_gpu returns 1 (no GPU); only the
+    # backend choice and the warning matter here.
+    detect_gpu || true
+    [[ "$GPU_BACKEND" != "nvidia" ]]
+    grep -q "nvidia-smi lists GPUs but no NVIDIA PCI/DRM device" "$BATS_TEST_TMPDIR/warn.log"
+}
+
+@test "detect_gpu: NVIDIA DRM card path is still detected on native Linux" {
+    [[ "$(uname -s)" == "Darwin" ]] && skip "detect_gpu uses GNU grep -oP"
+    _setup_native_nvidia_smi
+    mkdir -p "$ODS_DRM_SYS/card0/device"
+    echo "0x10de" > "$ODS_DRM_SYS/card0/device/vendor"
+
+    detect_gpu
+    assert_equal "$GPU_BACKEND" "nvidia"
 }
 
 # ── detect_gpu AMD APU path ──────────────────────────────────────────────────

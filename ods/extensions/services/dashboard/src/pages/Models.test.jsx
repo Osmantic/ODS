@@ -99,6 +99,60 @@ function renderModels() {
   return render(createElement(MemoryRouter, null, createElement(Models)))
 }
 
+test.each([false, true])('shows the live model API instead of the loaded local engine (compact=%s)', (compact) => {
+  useModelsMock.mockReturnValue(baseState({
+    odsMode: 'local', configuredMode: 'cloud', llmBackend: 'llama-server',
+    currentModel: 'qwen3.5-9b-q4', loadedModel: 'Qwen3.5-9B-Q4_K_M.gguf',
+    activeRuntime: {source: 'remote-provider', model: 'deepseek-v4.1-flash', contextLength: 409600},
+    canActivateModels: false, activationModeError: 'Local mode does not match configured cloud mode.',
+    models: [model({status: 'loaded'})],
+  }))
+  render(createElement(MemoryRouter, null, createElement(Models, {compact})))
+  const runtime = screen.getByRole('region', {name: 'Model runtime'})
+  expect(runtime).toHaveTextContent('Using a model API')
+  expect(runtime).toHaveTextContent('deepseek-v4.1-flash')
+  expect(runtime).toHaveTextContent('400K')
+  expect(runtime).not.toHaveTextContent('Qwen')
+  expect(within(runtime).getByRole('link', {name: 'Model connections'})).toHaveAttribute('href', '/settings?section=remote')
+  expect(screen.queryByText('Local model runtime unavailable')).toBeNull()
+  expect(screen.queryByText(/Runtime: Local/)).toBeNull()
+  expect(screen.getByText('Loaded locally')).toBeVisible()
+  expect(screen.queryByText('Active')).toBeNull()
+  expect(screen.getByRole('button', {name: 'Configure context for Qwen 3.5 9B'})).toBeDisabled()
+})
+
+test('keeps the local Active state when no active remote route is verified', () => {
+  useModelsMock.mockReturnValue(baseState({
+    currentModel: 'qwen3.5-9b-q4',
+    models: [model({status: 'loaded'})],
+  }))
+  renderModels()
+  expect(screen.queryByText('Loaded locally')).toBeNull()
+  expect(screen.getByText('Active')).toBeVisible()
+  expect(screen.getByRole('button', {name: 'Configure context for Qwen 3.5 9B'})).toBeEnabled()
+})
+
+test('keeps the existing diagnostic when no active remote route is verified', () => {
+  useModelsMock.mockReturnValue(baseState({
+    odsMode: 'local', configuredMode: 'cloud', llmBackend: 'llama-server', activeRuntime: null,
+    canActivateModels: false, activationModeError: 'Runtime status is unconfirmed.',
+  }))
+  renderModels()
+  expect(screen.queryByText('Using a model API')).toBeNull()
+  expect(screen.getByText('Runtime status is unconfirmed.')).toBeVisible()
+  expect(screen.getByText('Local model runtime unavailable')).toBeVisible()
+})
+
+test('does not present a previous model API as active during a connection change', () => {
+  useModelsMock.mockReturnValue(baseState({
+    activeRuntime: {source: 'remote-provider', model: 'deepseek-v4.1-flash', contextLength: 409600},
+    modelLifecycle: {active: true, operation: 'remote_provider_apply'}, canActivateModels: false,
+  }))
+  renderModels()
+  expect(screen.queryByText('Using a model API')).toBeNull()
+  expect(screen.getByText(/ODS is checking or changing the model connection/)).toBeVisible()
+})
+
 function confirmModelRun() {
   fireEvent.click(screen.getByRole('button', { name: 'Run model' }))
 }
@@ -118,7 +172,10 @@ test.each([false, true])('refreshes the profile after first activation finishes 
       modelLifecycle: {active: false}, modelActivation: {active: false, phase: 'complete'}}))
     view.rerender(createElement(MemoryRouter, null, createElement(Models, {compact})))
     await act(async () => {})
-    expect(screen.getByRole('region', {name: 'What this model can do'})).toHaveTextContent('Calls tools (Pixel and agents)')
+    const profileRegion = screen.getByRole('region', {name: 'What this model can do'})
+    expect(profileRegion).toHaveTextContent('Tool-call check passed')
+    expect(profileRegion).toHaveTextContent('Streaming tool check not verified')
+    expect(profileRegion).not.toHaveTextContent('Calls tools (Pixel and agents)')
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(fetchMock).toHaveBeenCalledWith(`/api/models/${selected.id}/profile`, expect.objectContaining({cache: 'no-store'}))
     expect(fetchMock.mock.calls[0][1].method).toBeUndefined()
@@ -246,6 +303,38 @@ test.each([true, false])('only managed runtimes expose unload/resume and hide ad
   expect(running ? state.stopRuntime : state.startRuntime).toHaveBeenCalledOnce()
   expect(screen.queryByRole('button', { name: 'Adopt loaded model in ODS' })).toBeNull()
   if (!running) expect(screen.queryByText('Local model runtime unavailable')).toBeNull()
+})
+
+test('a stopped runtime shows the launcher error, and a memory refusal turns Resume into Start anyway', () => {
+  const refusal = 'The model was not started: Windows can lend it only 1.0 GiB right now (memory limit 30.5 GiB, 29.5 GiB in use) and it needs about 25.8 GiB.'
+  const state = baseState({
+    models: [model({ status: 'downloaded' })],
+    odsMode: 'local', configuredMode: 'local', llmBackend: 'llama-server', hostRuntime: true,
+    modelManagement: { managed: true, canActivate: false, canUnload: true, running: false, runtimeError: refusal, startRefusal: 'memory_refused' },
+    canActivateModels: false,
+    stopRuntime: vi.fn(), startRuntime: vi.fn(),
+  })
+  useModelsMock.mockReturnValue(state)
+  const view = renderModels()
+  const controls = screen.getByRole('region', { name: 'Model runtime controls' })
+  expect(within(controls).getByRole('status')).toHaveTextContent(refusal)
+  fireEvent.click(within(controls).getByRole('button', { name: 'Start anyway' }))
+  expect(state.startRuntime).toHaveBeenCalledOnce()
+  expect(screen.queryByRole('button', { name: 'Resume model' })).toBeNull()
+
+  // An AMD launch failure: its text, and the ordinary Resume.
+  useModelsMock.mockReturnValue({ ...state,
+    modelManagement: { ...state.modelManagement, runtimeError: 'llama-server startup failed: Port 18080 is already occupied.', startRefusal: '' } })
+  view.rerender(createElement(MemoryRouter, null, createElement(Models)))
+  expect(within(screen.getByRole('region', { name: 'Model runtime controls' })).getByRole('status')).toHaveTextContent('llama-server startup failed: Port 18080 is already occupied.')
+  expect(screen.getByRole('button', { name: 'Resume model' })).toBeEnabled()
+
+  // A running model shows no launcher error.
+  useModelsMock.mockReturnValue({ ...state, canActivateModels: true,
+    modelManagement: { managed: true, canActivate: true, canUnload: true, running: true, runtimeError: '', startRefusal: '' } })
+  view.rerender(createElement(MemoryRouter, null, createElement(Models)))
+  expect(within(screen.getByRole('region', { name: 'Model runtime controls' })).queryByRole('status')).toBeNull()
+  expect(screen.getByRole('button', { name: 'Unload model' })).toBeEnabled()
 })
 
 test.each([false, true])('unavailable management proof never offers adoption and recovers to managed controls (compact=%s)', compact => {
@@ -1416,10 +1505,64 @@ test('keeps the hard stop when ODS cannot read the machine memory', () => {
   renderModels()
   const runButton = screen.getByRole('button', { name: /^run$/i })
   expect(runButton).toBeDisabled()
-  expect(runButton).toHaveAttribute('title', 'This model does not fit the detected GPU memory.')
+  expect(runButton).toHaveAttribute('title', 'GPU capacity is unavailable. Wait for the memory reading before running this model.')
   fireEvent.click(runButton)
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   expect(loadModel).not.toHaveBeenCalled()
+})
+
+test.each([false, true])('unavailable capacity stays unknown and recovers without an activation (compact=%s)', compact => {
+  const loadModel = vi.fn()
+  const active = model({id: 'active', status: 'loaded', name: 'Active model'})
+  const candidate = model({status: 'downloaded'})
+  const known = baseState({currentModel: 'active', gpu: {vramTotal: 32}, models: [active, candidate], loadModel})
+  useModelsMock.mockReturnValue(known)
+  const page = () => createElement(MemoryRouter, null, createElement(Models, {compact}))
+  const view = render(page())
+  expect(screen.getByRole('button', {name: /^run$/i})).toBeEnabled()
+  useModelsMock.mockReturnValue({...known, gpu: null, models: [active, {...candidate, fitsVram: false, tokensPerSec: null, performance: {source: 'benchmark_required'}}]})
+  view.rerender(page())
+  expect(screen.getByText(/GB; capacity unavailable/)).toBeVisible()
+  expect(screen.queryByText(/\/ 0.0 GB/)).toBeNull()
+  expect(screen.queryByText('Too large')).toBeNull()
+  const activePanel = screen.getAllByText('Active model')[0].closest('section')
+  expect(within(activePanel).queryByText('Fits GPU')).toBeNull()
+  expect(screen.queryByText('Benchmark required')).toBeNull()
+  expect(screen.getAllByText('Fit unknown').length).toBeGreaterThan(0)
+  expect(screen.getAllByText('Speed unavailable').length).toBeGreaterThan(0)
+  expect(screen.getByRole('button', {name: /^run$/i})).toBeDisabled()
+  useModelsMock.mockReturnValue(known)
+  view.rerender(page())
+  expect(screen.queryByText(/capacity unavailable/)).toBeNull()
+  expect(screen.getByRole('button', {name: /^run$/i})).toBeEnabled()
+  expect(loadModel).not.toHaveBeenCalled()
+})
+
+test.each([null, {vramTotal: 0}, {vramTotal: NaN}, {vramTotal: Infinity}])('unknown capacity holds even a recommended model with a stale fit result (%s)', gpu => {
+  const loadModel = vi.fn()
+  useModelsMock.mockReturnValue(baseState({gpu, loadModel, models: [model({status: 'downloaded', recommended: true, fitsVram: true})]}))
+  renderModels()
+  const run = screen.getByRole('button', {name: /^run$/i})
+  expect(run).toBeDisabled()
+  expect(run).toHaveAttribute('title', 'GPU capacity is unavailable. Wait for the memory reading before running this model.')
+  fireEvent.click(run)
+  expect(loadModel).not.toHaveBeenCalled()
+})
+
+test('losing capacity holds an already-open context dialog and recovery does not submit it', () => {
+  const state = baseState({models: [model({status: 'downloaded'})]})
+  useModelsMock.mockReturnValue(state)
+  const view = renderModels()
+  fireEvent.click(screen.getByRole('button', {name: /^run$/i}))
+  expect(screen.getByRole('button', {name: 'Run model'})).toBeEnabled()
+  useModelsMock.mockReturnValue({...state, gpu: null})
+  view.rerender(createElement(MemoryRouter, null, createElement(Models)))
+  expect(screen.getByRole('button', {name: 'Run model'})).toBeDisabled()
+  expect(screen.getByText('GPU capacity is unavailable. Wait for the memory reading before running this model.')).toBeVisible()
+  useModelsMock.mockReturnValue(state)
+  view.rerender(createElement(MemoryRouter, null, createElement(Models)))
+  expect(screen.getByRole('button', {name: 'Run model'})).toBeEnabled()
+  expect(state.loadModel).not.toHaveBeenCalled()
 })
 
 test('runs a downloaded model at the highest fitting Hermes context when its default context exceeds VRAM', () => {

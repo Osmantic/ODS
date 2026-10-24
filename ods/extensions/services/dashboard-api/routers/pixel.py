@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from host_agent_client import AgentClientError, AgentHTTPError, async_request_json as request_agent_json
+from host_agent_client import AgentClientError, AgentHTTPError, agent_reports_busy, async_request_json as request_agent_json
 from runtime_projection import active_runtime_projection as _active_runtime_projection
 from pixel_runtime_state import begin_pixel_stream, end_pixel_stream, try_begin_pixel_stream
 from pixel_chat_results import ChatResultStore, ResultCapacity, ResultConflict, owner_namespace
@@ -398,6 +398,11 @@ async def pixel_access_change(change: PixelAccessChange):
     try:
         value = await request_agent_json("POST", "/v1/pixel/access-mode", payload=change.model_dump(), timeout=330.0)
         return _access_projection(value)
+    except AgentHTTPError as exc:
+        if agent_reports_busy(exc):
+            # Refused before any change, unlike an unverified attempt.
+            raise HTTPException(status_code=409, detail={"code": "model_lifecycle_busy", "message": "ODS is busy with a model or Portal change. Nothing was changed; try again in a moment."}) from None
+        raise HTTPException(status_code=409, detail="The access change was not verified. Refresh status before retrying or restoring safer mode.") from None
     except AgentClientError:
         raise HTTPException(status_code=409, detail="The access change was not verified. Refresh status before retrying or restoring safer mode.") from None
 
@@ -864,6 +869,115 @@ async def pixel_chat_activity(body: ChatCancelRequest) -> dict[str, str]:
     return {"state": "unknown"}
 
 
+_EXAMPLE_PROJECT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+_EXAMPLE_PREVIEW_KEYS = frozenset(("bytes", "entrySha256", "files", "kind", "port", "relativeDirectory",
+                                   "schemaVersion", "sha256", "siteId", "url"))
+_SHA256 = re.compile(r"[a-f0-9]{64}")
+_EXAMPLE_OPEN_SECONDS = 42.0
+
+
+class ExampleProjectOpenRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=64)
+
+    @field_validator("name")
+    @classmethod
+    def _example_name(cls, value: str) -> str:
+        if not _EXAMPLE_PROJECT_NAME.fullmatch(value):
+            raise ValueError("invalid example project name")
+        return value
+
+
+def _example_projects(value) -> dict[str, object]:
+    projects = value.get("projects") if isinstance(value, dict) else None
+    if (not isinstance(value, dict) or set(value) != {"schemaVersion", "projects"}
+            or type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1
+            or not isinstance(projects, list) or len(projects) > 8
+            or any(not isinstance(name, str) or not _EXAMPLE_PROJECT_NAME.fullmatch(name) for name in projects)
+            or len(set(projects)) != len(projects)):
+        raise ValueError("invalid example projects")
+    return {"schemaVersion": 1, "projects": list(projects)}
+
+
+def _example_preview(value, name: str) -> dict[str, object]:
+    preview = value.get("preview") if isinstance(value, dict) else None
+
+    def integer(key, low, high):
+        return type(preview.get(key)) is int and low <= preview[key] <= high
+
+    if (not isinstance(value, dict) or set(value) != {"schemaVersion", "preview"}
+            or type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1
+            or not isinstance(preview, dict) or set(preview) != _EXAMPLE_PREVIEW_KEYS
+            or type(preview["schemaVersion"]) is not int or preview["schemaVersion"] != 1
+            or preview["kind"] != "ods-pixel-workspace-preview"
+            or preview["relativeDirectory"] != f"Playground/{name}"
+            or not isinstance(preview["sha256"], str) or not _SHA256.fullmatch(preview["sha256"])
+            or not isinstance(preview["entrySha256"], str) or not _SHA256.fullmatch(preview["entrySha256"])
+            or preview["siteId"] != f"site-{preview['sha256'][:24]}"
+            or not integer("port", 1, 65535) or not integer("files", 1, 128) or not integer("bytes", 1, 16 * 1024 * 1024)
+            or preview["url"] != f"http://{preview['siteId']}.localhost:{preview['port']}/{preview['siteId']}/"):
+        raise ValueError("invalid example preview")
+    return {"schemaVersion": 1, "preview": {key: preview[key] for key in sorted(_EXAMPLE_PREVIEW_KEYS)}}
+
+
+@router.get("/example-projects", dependencies=[Depends(verify_api_key)])
+async def pixel_example_projects() -> dict[str, object]:
+    """The shipped example projects (Elf of Doom) whose folder is in the owner's workspace.
+
+    Portal's sidebar lists them with the other Playground projects. A deleted
+    or renamed folder is simply absent. Without Portal there are none.
+    """
+    config = _pixel_config()
+    if config is None:
+        return {"schemaVersion": 1, "projects": []}
+    edge_url, key = config
+    try:
+        timeout = httpx.Timeout(connect=2.0, read=6.0, write=2.0, pool=2.0)
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=False) as client:
+            async with client.stream("GET", f"{edge_url}/v1/example-projects",
+                                     headers=_edge_headers(key, accept="application/json")) as response:
+                if response.status_code != 200 or not response.headers.get("content-type", "").lower().startswith("application/json"):
+                    raise ValueError("example projects unavailable")
+                raw = await _bounded_response_bytes(response, 4096)
+        return _example_projects(json.loads(raw))
+    except (httpx.HTTPError, asyncio.TimeoutError, ValueError, TypeError, RecursionError) as exc:
+        raise HTTPException(status_code=503, detail="Portal could not list its example projects.") from exc
+
+
+@router.post("/example-projects/open", dependencies=[Depends(verify_api_key)])
+async def pixel_example_project_open(body: ExampleProjectOpenRequest) -> dict[str, object]:
+    """Open one shipped example project in Portal's Workspace preview, with no model run.
+
+    The host publishes the owner's existing Playground/<name> folder through
+    the same create-only preview service a model run uses and returns its
+    verified receipt. Nothing in the workspace is written.
+    """
+    config = _pixel_config()
+    if config is None:
+        raise HTTPException(status_code=503, detail="Portal is not set up on this ODS install.")
+    edge_url, key = config
+    try:
+        timeout = httpx.Timeout(connect=2.0, read=_EXAMPLE_OPEN_SECONDS, write=2.0, pool=2.0)
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=False) as client:
+            async with client.stream("POST", f"{edge_url}/v1/example-projects", json={"name": body.name},
+                                     headers=_edge_headers(key, accept="application/json")) as response:
+                if response.status_code == 404:
+                    raise HTTPException(status_code=404,
+                                        detail="This example project is no longer in your Portal workspace.")
+                if response.status_code == 422:
+                    raise HTTPException(status_code=422,
+                                        detail="This example project's folder is still there, but it cannot open as the example.")
+                if response.status_code == 409:
+                    raise HTTPException(status_code=409,
+                                        detail="Some files in this example project's folder cannot be previewed.")
+                if response.status_code != 200 or not response.headers.get("content-type", "").lower().startswith("application/json"):
+                    raise ValueError("example preview unavailable")
+                raw = await _bounded_response_bytes(response, 8192)
+        return _example_preview(json.loads(raw), body.name)
+    except (httpx.HTTPError, asyncio.TimeoutError, ValueError, TypeError, RecursionError) as exc:
+        raise HTTPException(status_code=503, detail="Portal could not publish the example project's preview.") from exc
+
+
 class _ClientDisconnected(Exception):
     """The dashboard consumer left while Pixel was still producing a turn."""
 
@@ -898,13 +1012,15 @@ async def _retained_chat_stream(request, body, owner):
                     raise HTTPException(status_code=409, detail=issue[1])
                 messages = await _prepare_chat_messages(body, owner)
                 await conversation_storage("assert_available", owner, body.chat_id)
-            except Exception:
+            except Exception as exc:
                 # The attempt ID was committed, but no producer or agent turn
                 # was started. Retain an exact terminal receipt for reloads.
                 text = "Portal did not start this attempt. Restore its connection and send your message again."
                 frame = {"choices": [{"delta": {"content": text}}]}
                 data = f"data: {json.dumps(frame)}\n\n".encode() + _error_event(text) + b"data: [DONE]\n\n"
-                store.reject_before_submission(identity, data)
+                deleted = (isinstance(exc, HTTPException) and exc.status_code == 410
+                           and isinstance(exc.detail, dict) and exc.detail.get("code") == "conversation_deleted")
+                store.reject_before_submission(identity, data, rejected=deleted)
                 raise
             begin_pixel_stream()
             task = asyncio.create_task(_produce_retained_result(store, identity, body, config, messages, owner=owner))

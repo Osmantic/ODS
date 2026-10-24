@@ -145,6 +145,7 @@ Every llama.cpp image ODS ships is pinned by tag and sha256 digest, for example 
 | Artifact | Pin |
 |---|---|
 | `server-cuda-b9014` (NVIDIA, multi-arch) | `sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f` |
+| `server-cuda13-b11429` (NVIDIA compute capability 12.1: DGX Spark GB10, RTX Spark N1X; multi-arch, from `config/backends/nvidia.json`) | `sha256:9d6ca9a08b5e0c0a6d2560bff7d4c76bdf946776bbde6a20d9d6403594d93a9f` |
 | `server-b9014` (CPU, multi-arch) | `sha256:2e7953dfef88f302bf0683bffa7dc1f8d86ef75910380bc41126ec5b8bedaf53` |
 | `server-intel-b9014` (Intel) | `sha256:9c7bbaad3663523a3deb8927d3cfbf58d33f00a7634c69843e9eeeda01568c1b` |
 | `server-b9014` (Apple Docker; same image as CPU) | `sha256:2e7953dfef88f302bf0683bffa7dc1f8d86ef75910380bc41126ec5b8bedaf53` |
@@ -154,6 +155,8 @@ Every llama.cpp image ODS ships is pinned by tag and sha256 digest, for example 
 | Intel Arc local build (`images/llama-sycl`, source default; not built or tested) | tag `b9014`, commit `d4b0c22f9e67f0295e91dc1ab4f17c0fb2557fa4` |
 
 To use another build, set `LLAMA_SERVER_IMAGE` to a `tag@sha256:digest` reference. `docker buildx imagetools inspect <image>` prints the digest of a tag. The AMD overlays do not read `LLAMA_SERVER_IMAGE`: model profiles can set it to the CUDA image, which would run without the GPU on AMD.
+
+On an NVIDIA GPU of compute capability 12.1 (DGX Spark GB10, RTX Spark N1X), llama.cpp's CUDA 12 images (`server-cuda-*`, `server-cuda12-*`) load but answer with `????`: they have no kernels for that GPU. The installer records the GPU's `GPU_COMPUTE_CAP` in `.env` and writes the `server-cuda13` pin above as `LLAMA_SERVER_IMAGE` instead, and the host agent does the same on Models-page switches and rollbacks. An image you set that is not a CUDA 12 llama.cpp build is kept.
 
 ### llama.cpp env names
 
@@ -190,7 +193,7 @@ llama-server exposes an OpenAI-compatible REST API:
 ### Example
 
 ```bash
-curl http://localhost:8080/v1/chat/completions \
+curl http://localhost:11434/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "default",
@@ -212,7 +215,7 @@ curl http://localhost:8080/v1/chat/completions \
                     │  llama-server   │
                     │  (llama.cpp)    │
                     │  :8080 (int)    │
-                    │  :8080 (ext)    │
+                    │  :11434 (ext)   │
                     └──────┬──────────┘
                            │  OpenAI-compatible API
           ┌────────────────┼──────────────────┐
@@ -249,7 +252,7 @@ docker compose logs llama-server
 
 **Check inference metrics:**
 ```bash
-curl http://localhost:8080/metrics
+curl http://localhost:11434/metrics
 ```
 
 ## License
