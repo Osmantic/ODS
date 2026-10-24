@@ -7390,6 +7390,7 @@ PYEOF
 
     log "Applying template: $template_id"
     local svc
+    local -a failed=() not_installed=()
     for svc in $services; do
         # Skip core services (no compose toggle needed)
         local cat="${SERVICE_CATEGORIES[$svc]:-optional}"
@@ -7402,10 +7403,35 @@ PYEOF
             continue
         fi
 
+        # The CLI cannot install Library extensions; the dashboard's template
+        # apply does. Name them instead of reporting an unknown service.
+        if [[ ! -d "$INSTALL_DIR/extensions/services/$svc" && ! -d "$INSTALL_DIR/data/user-extensions/$svc" \
+            && ( -d "$INSTALL_DIR/data/extensions-library/$svc" \
+                || -d "$INSTALL_DIR/extensions/library/services/$svc" ) ]]; then
+            warn "  $svc is a Library extension that is not installed"
+            not_installed+=("$svc")
+            continue
+        fi
+
         log "  Enabling $svc..."
-        ( cmd_enable "$svc" ) || warn "  Failed to enable $svc (continuing)"
+        if ! ( cmd_enable "$svc" ); then
+            warn "  Failed to enable $svc (continuing)"
+            failed+=("$svc")
+        fi
     done
-    success "Template applied: $template_id"
+    if [[ ${#failed[@]} -eq 0 && ${#not_installed[@]} -eq 0 ]]; then
+        success "Template applied: $template_id"
+        return 0
+    fi
+    # Additive: services enabled above stay enabled, but the template is not
+    # in effect until the rest are, so do not report success.
+    if [[ ${#not_installed[@]} -gt 0 ]]; then
+        warn "Not installed: ${not_installed[*]}. Apply '$template_id' from the dashboard's Extensions page, which installs Library extensions."
+    fi
+    if [[ ${#failed[@]} -gt 0 ]]; then
+        warn "Could not enable: ${failed[*]} (see the errors above)."
+    fi
+    error "Template $template_id was only partly applied."
 }
 
 cmd_template() {
