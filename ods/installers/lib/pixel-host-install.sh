@@ -5062,9 +5062,17 @@ if "__PIXEL_" in text:
     raise SystemExit("unresolved Pixel systemd placeholder")
 pathlib.Path(target).write_text(text, encoding="utf-8", newline="\n")
 PY
+    # Only validated, nonsecret native-memory settings enter the ingress env.
+    [[ "${ODS_CLAUDE_MEM_ENABLED:-false}" =~ ^(true|false|1|0)$ ]] || return 1
+    [[ "${ODS_CLAUDE_MEM_PORT:-37778}" =~ ^[0-9]{1,5}$ ]] || return 1
+    (( 10#${ODS_CLAUDE_MEM_PORT:-37778} >= 1 && 10#${ODS_CLAUDE_MEM_PORT:-37778} <= 65535 )) || return 1
+    [[ "${ODS_CLAUDE_MEM_SCOPE:-conversation}" =~ ^(conversation|installation)$ ]] || return 1
     cat > "$stage/pixel-agent.env" <<EOF
 PIXEL_INGRESS_SOCKET=/run/ods-pixel/pixel-ingress.sock
 PIXEL_CHAT_STATE_DIR=/var/lib/ods-pixel-chat
+ODS_CLAUDE_MEM_ENABLED=${ODS_CLAUDE_MEM_ENABLED:-false}
+ODS_CLAUDE_MEM_PORT=${ODS_CLAUDE_MEM_PORT:-37778}
+ODS_CLAUDE_MEM_SCOPE=${ODS_CLAUDE_MEM_SCOPE:-conversation}
 PIXEL_ACCESS_OWNER_KEY_FILE=/etc/ods/pixel-access-relay.key
 PIXEL_INGRESS_GID=${PIXEL_INGRESS_GID:?}
 PIXEL_GATEWAY_TOKEN_FILE=$runtime_token_file
@@ -5130,6 +5138,7 @@ EOF
         and (.matches | type == "array") and (.matches | length) <= 10
         and (.boundary | type == "string")' <<<"$extension_probe" >/dev/null || return 1
     ods_sudo install -o root -g root -m 0755 "$plugin_root/host/pixel_ingress.mjs" /usr/local/libexec/ods-pixel-ingress.mjs
+    ods_sudo install -o root -g root -m 0644 "$plugin_root/host/claude_mem.mjs" /usr/local/libexec/claude_mem.mjs
     ods_sudo install -o root -g root -m 0644 "$plugin_root/host/chat_history_ledger.mjs" /usr/local/libexec/chat_history_ledger.mjs
     ods_sudo install -o root -g root -m 0644 "$plugin_root/host/chat_image_store.mjs" /usr/local/libexec/chat_image_store.mjs
     ods_sudo install -o root -g root -m 0644 "$plugin_root/host/chat_image_transport.mjs" /usr/local/libexec/chat_image_transport.mjs
