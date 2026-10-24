@@ -256,9 +256,13 @@ def test_linux_activity_uses_the_managed_unit_state(monkeypatch):
 def test_registration_follows_each_platform_service_manager(_isolated):
     home = _isolated
     assert _mod._opencode_service_registered("Linux") is False
+    binary = home / ".opencode" / "bin" / "opencode"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)
     unit = home / ".config" / "systemd" / "user" / "opencode-web.service"
     unit.parent.mkdir(parents=True)
-    unit.write_text("[Unit]\n")
+    unit.write_text(f"[Service]\nExecStart={binary} serve --port 3003 --hostname 127.0.0.1\n")
     assert _mod._opencode_service_registered("Linux") is True
 
     assert _mod._opencode_service_registered("Darwin") is False
@@ -269,9 +273,71 @@ def test_registration_follows_each_platform_service_manager(_isolated):
 
     assert _mod._opencode_service_registered("Windows") is False
     exe = home / ".opencode" / "bin" / "opencode.exe"
-    exe.parent.mkdir(parents=True)
     exe.write_bytes(b"MZ")
     assert _mod._opencode_service_registered("Windows") is True
+
+
+@pytest.mark.parametrize("exec_start", [
+    "ExecStart={home}/.opencode/bin/opencode serve --port 3003",
+    "ExecStart=-{home}/.opencode/bin/opencode serve --port 3003",
+    "# no ExecStart line",
+])
+def test_linux_unit_without_its_executable_is_not_installed(_isolated, exec_start):
+    """#7626: a leftover unit whose binary is gone must offer setup, not Start."""
+    home = _isolated
+    unit = home / ".config" / "systemd" / "user" / "opencode-web.service"
+    unit.parent.mkdir(parents=True)
+    unit.write_text("[Service]\n" + exec_start.format(home=home) + "\n")
+    assert not (home / ".opencode").exists()
+    assert _mod._opencode_service_registered("Linux") is False
+
+
+def test_linux_unit_with_a_non_executable_binary_is_not_installed(_isolated):
+    home = _isolated
+    binary = home / ".opencode" / "bin" / "opencode"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("not a program\n")
+    binary.chmod(0o644)
+    unit = home / ".config" / "systemd" / "user" / "opencode-web.service"
+    unit.parent.mkdir(parents=True)
+    unit.write_text(f"[Service]\nExecStart={binary} serve\n")
+    assert _mod._opencode_service_registered("Linux") is False
+
+
+def test_leftover_unit_without_binary_reports_not_installed_with_setup(monkeypatch, _isolated):
+    home = _isolated
+    unit = home / ".config" / "systemd" / "user" / "opencode-web.service"
+    unit.parent.mkdir(parents=True)
+    unit.write_text(f"[Service]\nExecStart={home}/.opencode/bin/opencode serve\n")
+    monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(_mod, "_opencode_port", lambda: 3003)
+    monkeypatch.setattr(_mod, "_probe_opencode_web", lambda port: {**UNREACHABLE, "response_time_ms": 1.0})
+    monkeypatch.setattr(_mod, "_opencode_setup_issue", lambda env, system=None: None)
+    monkeypatch.setattr(
+        _mod, "_opencode_service_active",
+        lambda: pytest.fail("an unrunnable unit must not be reported as stopped"),
+    )
+    status = _mod._opencode_app_status({})
+    assert status["state"] == "not_installed"
+    assert status["startSupported"] is False
+    assert status["setupSupported"] is True
+
+
+@pytest.mark.parametrize("active_state,expected", [
+    ("failed", (True, False)),
+    ("activating", (True, False)),
+    ("active", (True, True)),
+])
+def test_setup_accepts_a_broken_unit_it_will_replace(monkeypatch, active_state, expected):
+    def run(command, **kwargs):
+        return subprocess.CompletedProcess(
+            command, 0,
+            stdout=f"LoadState=loaded\nUnitFileState=enabled\nActiveState={active_state}\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(_mod.subprocess, "run", run)
+    assert _mod._opencode_prior_systemd_state({}) == expected
 
 
 # --- setup availability ----------------------------------------------------------
@@ -447,6 +513,19 @@ def test_linux_start_failure_raises(monkeypatch):
     monkeypatch.setattr(_mod, "_opencode_user_service_env", lambda: {})
     _record_runs(monkeypatch, returncode=1)
     with pytest.raises(RuntimeError, match="Could not start OpenCode"):
+        _mod._start_managed_opencode()
+
+
+def test_linux_start_health_failure_points_at_the_unit_journal(monkeypatch):
+    monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(_mod, "_opencode_user_service_env", lambda: {})
+    _record_runs(monkeypatch)
+
+    def unhealthy(attempts=30):
+        raise RuntimeError("Managed OpenCode did not become healthy at http://127.0.0.1:3003/global/health")
+
+    monkeypatch.setattr(_mod, "_wait_for_opencode_health", unhealthy)
+    with pytest.raises(RuntimeError, match=r"journalctl --user -u opencode-web\.service"):
         _mod._start_managed_opencode()
 
 
