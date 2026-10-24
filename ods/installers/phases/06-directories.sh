@@ -2028,8 +2028,13 @@ ENV_EOF
     if [[ -f "$INSTALL_DIR/config/searxng/settings.yml" ]] && ! [[ -w "$INSTALL_DIR/config/searxng/settings.yml" ]]; then
         _phase06_repair_host_path "$INSTALL_DIR/config/searxng/settings.yml" "SearXNG configuration" || return 1
     fi
-    _searxng_lang="$(ods_searxng_default_lang)"
-    cat > "$INSTALL_DIR/config/searxng/settings.yml" << SEARXNG_EOF
+    # An owner may have edited it (the SearXNG README says how); keep it, as the
+    # macOS installer does, unless --force asks for a fresh one.
+    if [[ -f "$INSTALL_DIR/config/searxng/settings.yml" && "${FORCE:-false}" != true ]]; then
+        ai_ok "Preserved existing SearXNG config (use --force to regenerate)"
+    else
+        _searxng_lang="$(ods_searxng_default_lang)"
+        cat > "$INSTALL_DIR/config/searxng/settings.yml" << SEARXNG_EOF
 use_default_settings: true
 server:
   secret_key: "${SEARXNG_SECRET}"
@@ -2064,8 +2069,9 @@ engines:
   - name: stackoverflow
     disabled: false
 SEARXNG_EOF
-    ai_ok "Generated SearXNG config with randomized secret key (search language ${_searxng_lang})"
-    unset _searxng_lang
+        ai_ok "Generated SearXNG config with randomized secret key (search language ${_searxng_lang})"
+        unset _searxng_lang
+    fi
 fi
 
 # Documentation, CLI tools, and compose variants already copied by rsync/cp block above

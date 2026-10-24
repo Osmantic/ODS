@@ -180,6 +180,7 @@ tests/test-phase05-docker-desktop-nvidia-refusal.sh
 tests/test-phase05-podman-shim.sh
 tests/test-phase06-hermes-owner-card-rerun.sh
 tests/test-phase06-secret-generation.sh
+tests/test-searxng-rerun-keeps-settings.sh
 tests/test-phase08-selected-images.sh
 tests/test-phase10-skip-templated-user-units.sh
 tests/test-phase11-compose-recovery-status.sh
