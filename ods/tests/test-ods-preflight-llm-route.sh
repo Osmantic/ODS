@@ -21,6 +21,7 @@ assert_route() {
 assert_route local local '' ''
 assert_route litellm local http://model.example:8080 ''
 assert_route litellm cloud '' ''
+assert_route litellm CLOUD '' ''
 # The Windows Portal's llama-server runs outside the stack; LiteLLM holds its key.
 assert_route litellm local '' http://localhost:8080
 # A Lemonade-era .env reads as local (the migration rewrites it).
@@ -43,6 +44,18 @@ assert_skipped skipped llama-server cloud ''
 assert_skipped skipped model-router cloud ''
 assert_skipped skipped llama-server local http://localhost:8080
 assert_skipped shown model-router local http://localhost:8080
+
+# ods-preflight.sh is #!/bin/bash, which is Bash 3.2 on macOS: the route
+# selector must not use Bash 4 case conversion (${var,,} aborts the preflight).
+if grep -nE '\$\{[A-Za-z_][A-Za-z_0-9]*(,,?|\^\^?)\}' "$ROOT_DIR/lib/preflight-llm-route.sh"; then
+    printf 'FAIL route selector uses Bash 4 case conversion\n' >&2
+    exit 1
+fi
+if [[ -x /bin/bash ]] && ! /bin/bash -c '. "$1"; ODS_MODE=Cloud EXTERNAL_LLM_URL= NATIVE_LLM_BASE_URL= ods_preflight_uses_litellm' \
+        _ "$ROOT_DIR/lib/preflight-llm-route.sh"; then
+    printf 'FAIL route selector does not run under /bin/bash (%s)\n' "$(/bin/bash -c 'echo $BASH_VERSION')" >&2
+    exit 1
+fi
 
 grep -Fq 'if ods_preflight_uses_litellm; then' "$ROOT_DIR/ods-preflight.sh" || {
     printf 'FAIL preflight did not use the shared route selector\n' >&2

@@ -28,6 +28,62 @@ ai_bad() { :; }
 ai_ok() { :; }
 ai() { :; }
 
+# Dependency selection is isolated from the host package manager. The real
+# Ubuntu 26.04 package/group transition is also exercised in a clean container.
+for prereq_case in present ubuntu24 ubuntu26 debian12 python both unsupported \
+    parse_failure no_helper wrong_manager install_failure still_missing dry_run before_groups; do
+    if (
+        have_sg=false; have_python=true; install_calls=''; mutations=0
+        os_id=ubuntu; os_version=26.04; expected='util-linux-extra'; expected_status=0
+        PKG_MANAGER=apt; ENABLE_PIXEL_RUNTIME=true; DRY_RUN=false
+        case "$prereq_case" in
+            present) have_sg=true; expected='' ;;
+            ubuntu24) os_version=24.04; expected=login ;;
+            debian12) os_id=debian; os_version=12; expected=login ;;
+            python) have_sg=true; have_python=false; expected=python3 ;;
+            both) have_python=false; expected='util-linux-extra python3' ;;
+            unsupported) os_id=fedora; expected=''; expected_status=1 ;;
+            parse_failure|no_helper|wrong_manager|before_groups) expected=''; expected_status=1 ;;
+            install_failure|still_missing) expected_status=1 ;;
+            dry_run) expected='' ;;
+        esac
+        command() {
+            if [[ "$#" == 2 && "$1" == -v && "$2" == sg ]]; then "$have_sg"
+            elif [[ "$#" == 2 && "$1" == -v && "$2" == python3 ]]; then "$have_python"
+            else builtin command "$@"; fi
+        }
+        _ods_pixel_parse_os_release() {
+            [[ "$prereq_case" != parse_failure ]] || return 1
+            _ODS_PIXEL_OS_ID="$os_id"; _ODS_PIXEL_OS_VERSION_ID="$os_version"
+        }
+        pkg_install() {
+            install_calls="$*"
+            [[ "$prereq_case" != install_failure ]] || return 1
+            if [[ "$prereq_case" != still_missing ]]; then have_sg=true; have_python=true; fi
+        }
+        case "$prereq_case" in
+            no_helper|before_groups) unset -f pkg_install ;;
+            wrong_manager) PKG_MANAGER=dnf ;;
+        esac
+        status=0
+        if [[ "$prereq_case" == dry_run || "$prereq_case" == before_groups ]]; then
+            [[ "$prereq_case" != dry_run ]] || DRY_RUN=true
+            ods_sudo_available() { return 0; }
+            ods_pixel_install_owner() { printf '%s\n' "$owner"; }
+            ods_sudo() { mutations=$((mutations+1)); return 99; }
+            getent() { mutations=$((mutations+1)); return 99; }
+            ods_pixel_prepare_runtime_identity || status=$?
+        else
+            _ods_pixel_ensure_runtime_group_tools || status=$?
+        fi
+        [[ "$status" == "$expected_status" && "$install_calls" == "$expected" && "$mutations" == 0 ]]
+    ); then
+        pass "runtime group prerequisites: $prereq_case"
+    else
+        fail "runtime group prerequisites: $prereq_case"
+    fi
+done
+
 if (
     ods_sudo_available() { return 0; }
     ods_sudo() { printf '%s\n' 'unexpected redundant sudo' >&2; return 99; }
@@ -131,6 +187,85 @@ for group_case in pixel docker both both_pixel_socket existing_pixel_socket curr
     ); then pass "owner runtime group refresh: $group_case"
     else fail "owner runtime group refresh: $group_case"; fi
 done
+
+# A rerun must not stall on an access coordinator an interrupted uninstall
+# left stopped, but a deployment being deactivated keeps it stopped.
+mkdir -p "$TEST_ROOT/access-start"
+for access_case in stopped-ready stopped-installing active deactivating no-unit start-fails no-socket; do
+    if (
+        case_root="$TEST_ROOT/access-start/$access_case"
+        mkdir -p "$case_root"
+        calls="$case_root/calls"
+        export ODS_PIXEL_ACCESS_UNIT_PATH="$case_root/ods-pixel-access.service"
+        export ODS_PIXEL_ACCESS_SOCKET_PATH="$case_root/control.sock"
+        marker_state=ready active=1 start_rc=0 binds=true expected_rc=0
+        expected_calls='systemctl enable --now ods-pixel-access.service'
+        case "$access_case" in
+            stopped-installing) marker_state=installing ;;
+            active) active=0; expected_calls='' ;;
+            deactivating) marker_state=deactivating; expected_calls='' ;;
+            no-unit) expected_calls='' ;;
+            start-fails) start_rc=1 binds=false expected_rc=1 ;;
+            no-socket) binds=false expected_rc=1 ;;
+        esac
+        [[ "$access_case" == no-unit ]] || : >"$ODS_PIXEL_ACCESS_UNIT_PATH"
+        systemctl() { [[ "$*" == 'is-active --quiet ods-pixel-access.service' ]] || return 99; return "$active"; }
+        _ods_pixel_source_transition_state() { printf '%s|%s\n' "$marker_state" 0123456789abcdef0123456789abcdef01234567; }
+        ods_sudo_available() { return 0; }
+        ods_sudo() {
+            printf '%s\n' "$*" >>"$calls"
+            if [[ "$binds" == true ]]; then
+                python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' \
+                    "$ODS_PIXEL_ACCESS_SOCKET_PATH"
+            fi
+            return "$start_rc"
+        }
+        sleep() { :; }
+        ai() { :; }
+        result=0
+        _ods_pixel_start_stopped_access_service "$owner" "$TEST_ROOT" \
+            0123456789abcdef0123456789abcdef01234567 || result=$?
+        [[ "$result" == "$expected_rc" && "$(cat "$calls" 2>/dev/null)" == "$expected_calls" ]]
+    ); then pass "stopped access coordinator start: $access_case"
+    else fail "stopped access coordinator start: $access_case"; fi
+done
+# Helpers written before an interrupted install reached the coordinator's
+# unit leave nothing to resume; a recorded transition still needs recovery.
+for resume_case in no-unit-no-transition no-unit-with-transition unit-installed; do
+    if (
+        case_root="$TEST_ROOT/access-resume/$resume_case"
+        mkdir -p "$case_root/state"
+        export ODS_PIXEL_ACCESS_HELPER="$case_root/pixel_model_transition.py"
+        export ODS_PIXEL_ACCESS_UNIT_PATH="$case_root/ods-pixel-access.service"
+        export ODS_PIXEL_ACCESS_STATE_DIR="$case_root/state"
+        export PIXEL_SOURCE_REF=0123456789abcdef0123456789abcdef01234567
+        : >"$ODS_PIXEL_ACCESS_HELPER"
+        expected='status'
+        case "$resume_case" in
+            no-unit-no-transition) expected='' ;;
+            no-unit-with-transition) : >"$ODS_PIXEL_ACCESS_STATE_DIR/transition.json" ;;
+            unit-installed) : >"$ODS_PIXEL_ACCESS_UNIT_PATH" ;;
+        esac
+        ods_sudo_available() { return 0; }
+        ods_sudo() { "$@"; }
+        _ods_pixel_start_stopped_access_service() { :; }
+        _ods_pixel_model_transition() { printf '%s\n' "$1" >>"$case_root/calls"; return 1; }
+        result=0
+        _ods_pixel_resume_completed_release "$owner" "$TEST_ROOT" "$TEST_ROOT" \
+            0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef 2>/dev/null || result=$?
+        if [[ -z "$expected" ]]; then
+            [[ "$result" == 0 && ! -e "$case_root/calls" ]]
+        else
+            [[ "$result" == 1 && "$(cat "$case_root/calls")" == "$expected" ]]
+        fi
+    ); then pass "access coordinator resume guard: $resume_case"
+    else fail "access coordinator resume guard: $resume_case"; fi
+done
+grep -Fq '_ods_pixel_start_stopped_access_service "$owner" "$home" "${PIXEL_SOURCE_REF:?}"' \
+    "$ROOT/installers/lib/pixel-host-install.sh" \
+    && grep -Fq '_ods_pixel_start_stopped_access_service \' "$ROOT/installers/phases/06-directories.sh" \
+    && pass "both rerun status paths start a stopped access coordinator first" \
+    || fail "a rerun status path skips the stopped access coordinator start"
 
 if (
     inspection_calls="$TEST_ROOT/inspection-owner-calls"

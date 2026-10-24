@@ -12421,6 +12421,231 @@ test("a post-verification repetition stop preserves a partial tool receipt, not 
   assert.equal(guard.verificationForRun("run-1").status, "failed");
 });
 
+// Real before/after hooks share a tool-call ID; receipt tests must model it.
+const executionPreparedParams = new WeakMap();
+function executionBefore(guard, toolName, overrides = {}) {
+  const result = call(guard, toolName, {...overrides,
+    context:{toolCallId:"execution-1",...overrides.context}});
+  assert.notEqual(result?.block, true, result?.blockReason);
+  executionPreparedParams.set(guard, {toolName,params:result?.params ?? overrides.event?.params});
+  return result;
+}
+function executionAfter(guard, toolName, overrides = {}) {
+  const prepared = executionPreparedParams.get(guard);
+  return afterCall(guard, toolName, {...overrides,
+    event:{...overrides.event,...(prepared?.toolName===toolName ? {params:prepared.params}: {})},
+    context:{toolCallId:"execution-1",...overrides.context}});
+}
+
+test("explicit code execution without a terminal exit-0 receipt is not delivered as success", () => {
+  const prompt = "Use your Python execution tool to calculate sum(i*i for i in range(1,21)). Report the actual tool output and say whether you executed it. Do not infer or estimate the result.";
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+  const delivered = guard.deliveryVerificationForRun("run-1");
+  assert.equal(delivered.status, "failed");
+  assert.match(delivered.text, /did not receive a successful terminal execution receipt/);
+  assert.doesNotMatch(delivered.text, /\b2550\b|\b2870\b/);
+});
+
+test("a terminal exit-0 exec receipt satisfies an explicit execution request", () => {
+  const prompt = "Use your Python execution tool to calculate sum(i*i for i in range(1,21)). Report the actual tool output and say whether you executed it.";
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+  const params = { command: "python3 -c 'print(sum(i*i for i in range(1,21)))'", workdir: "/workspace" };
+  executionBefore(guard, "exec", { event: { params } });
+  executionAfter(guard, "exec", { event: { params, result: { details: { status: "completed", exitCode: 0, aggregated: "2870" } } } });
+  assert.notEqual(guard.deliveryVerificationForRun("run-1").status, "failed");
+});
+
+test("failed, missing-exit, isError and pending exec receipts do not satisfy execution", () => {
+  const prompt = "Run this Python script and report the output.";
+  for (const result of [
+    { details: { status: "completed", exitCode: 1 } },
+    { details: { status: "completed" } },
+    { details: { status: "failed", exitCode: 0 } },
+    { isError: true, details: { status: "completed", exitCode: 0 } },
+  ]) {
+    const guard = createToolLoopGuard();
+    guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+    const params = { command: "python3 script.py", workdir: "/workspace" };
+    executionBefore(guard, "exec", { event: { params } });
+    executionAfter(guard, "exec", { event: { params, result } });
+    assert.equal(guard.deliveryVerificationForRun("run-1").status, "failed");
+  }
+});
+
+test("a polled background completion with exit 0 satisfies execution", () => {
+  const prompt = "Run this Python script in the background and report the output.";
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+  const params = { command: "python3 script.py", workdir: "/workspace" };
+  executionBefore(guard, "exec", { event: { params } });
+  executionAfter(guard, "exec", { event: { params, result: { details: { status: "running", sessionId: "sess-1" } } } });
+  executionAfter(guard, "process", { event: { params: { action: "poll", sessionId: "sess-1" }, result: { details: { status: "completed", exitCode: 0, sessionId: "sess-1" } } } });
+  assert.notEqual(guard.deliveryVerificationForRun("run-1").status, "failed");
+});
+
+test("execution classifier excludes explanations, quotes, math and no-tools", () => {
+  for (const prompt of [
+    "Explain how to run a Python script.",
+    "Show me a command to run this script.",
+    "What is sum(i*i for i in range(1,21))?",
+    "Do not use any tools; just tell me the answer.",
+    "Quote: `python3 script.py`.",
+    "Give me Python code to run locally.",
+    "Quote the instruction: run this Python code and report output.",
+    "Explain how I can run a Python script.",
+    "Print the words run Python code.",
+    "Run this Python script; do not actually execute it, just show the code.",
+    "Do not run it, but execute the Python code.",
+  ]) {
+    const guard = createToolLoopGuard();
+    guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+    assert.notEqual(guard.deliveryVerificationForRun("run-1").status, "failed", prompt);
+  }
+});
+
+test("execution classifier allows explicit execution requests", () => {
+  for (const prompt of [
+    "Run this Python code without changing files.",
+    "Please execute the Python script.",
+    "Can you run this Python code?",
+    "Write a Python script and then run it.",
+  ]) {
+    const guard = createToolLoopGuard();
+    guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+    assert.equal(guard.deliveryVerificationForRun("run-1").status, "failed", prompt);
+  }
+});
+
+test("nested tool_call exec receipt satisfies execution", () => {
+  const prompt = "Run this Python script and report the output.";
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+  const params = { command: "python3 script.py", workdir: "/workspace" };
+  executionBefore(guard, "tool_call", { event: { params: { id: "openclaw:core:exec", args: params } } });
+  executionAfter(guard, "tool_call", {
+    event: {
+      params: { id: "openclaw:core:exec", args: params },
+      result: wrappedCoreResult("exec", { details: { status: "completed", exitCode: 0 } }),
+    },
+  });
+  assert.notEqual(guard.deliveryVerificationForRun("run-1").status, "failed");
+});
+
+test("background exec pending before poll does not satisfy execution", () => {
+  const prompt = "Run this Python script in the background and report the output.";
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+  const params = { command: "python3 script.py", workdir: "/workspace" };
+  executionBefore(guard, "exec", { event: { params } });
+  executionAfter(guard, "exec", { event: { params, result: { details: { status: "running", sessionId: "sess-1" } } } });
+  assert.equal(guard.deliveryVerificationForRun("run-1").status, "failed");
+});
+
+test("a self-consistent process receipt without a bound exec cannot satisfy execution", () => {
+  const guard=createToolLoopGuard();
+  guard.observeRun({agentId:"pixel",runId:"run-1",sessionId:"session-1"},"pixel",{prompt:"Run this Python script."});
+  executionAfter(guard,"process",{event:{params:{action:"poll",sessionId:"never-started"},
+    result:{details:{status:"completed",sessionId:"never-started",exitCode:0}}}});
+  assert.match(guard.deliveryVerificationForRun("run-1").text,/did not receive a successful terminal execution receipt/);
+});
+
+test("background poll with failed, missing-exit, or isError does not satisfy execution", () => {
+  const prompt = "Run this Python script in the background and report the output.";
+  for (const pollResult of [
+    { details: { status: "completed", exitCode: 1, sessionId: "sess-1" } },
+    { details: { status: "completed", sessionId: "sess-1" } },
+    { isError: true, details: { status: "completed", exitCode: 0, sessionId: "sess-1" } },
+  ]) {
+    const guard = createToolLoopGuard();
+    guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+    const params = { command: "python3 script.py", workdir: "/workspace" };
+    executionBefore(guard, "exec", { event: { params } });
+    executionAfter(guard, "exec", { event: { params, result: { details: { status: "running", sessionId: "sess-1" } } } });
+    executionAfter(guard, "process", { event: { params: { action: "poll", sessionId: "sess-1" }, result: pollResult } });
+    assert.equal(guard.deliveryVerificationForRun("run-1").status, "failed");
+  }
+});
+
+test("unrelated poll session does not satisfy execution", () => {
+  const prompt = "Run this Python script in the background and report the output.";
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+  const params = { command: "python3 script.py", workdir: "/workspace" };
+  executionBefore(guard, "exec", { event: { params } });
+  executionAfter(guard, "exec", { event: { params, result: { details: { status: "running", sessionId: "sess-1" } } } });
+  executionAfter(guard, "process", { event: { params: { action: "poll", sessionId: "sess-other" }, result: { details: { status: "completed", exitCode: 0, sessionId: "sess-other" } } } });
+  assert.equal(guard.deliveryVerificationForRun("run-1").status, "failed");
+});
+
+test("read-only tool receipt does not satisfy execution", () => {
+  const prompt = "Run this Python script and report the output.";
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+  const params = { path: "/workspace/script.py" };
+  executionBefore(guard, "read", { event: { params } });
+  executionAfter(guard, "read", { event: { params, result: { content: [{type:"text", text:"print(2870)"}] } } });
+  assert.equal(guard.deliveryVerificationForRun("run-1").status, "failed");
+});
+
+test("previous-run receipt does not satisfy a new execution request", () => {
+  const prompt = "Run this Python script and report the output.";
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+  const params = { command: "python3 script.py", workdir: "/workspace" };
+  executionBefore(guard, "exec", { event: { params } });
+  executionAfter(guard, "exec", { event: { params, result: { details: { status: "completed", exitCode: 0 } } } });
+  assert.notEqual(guard.deliveryVerificationForRun("run-1").status, "failed");
+  guard.observeRun({ agentId: "pixel", runId: "run-2", sessionId: "session-1" }, "pixel", { prompt });
+  assert.equal(guard.deliveryVerificationForRun("run-2").status, "failed");
+});
+
+test("successful execution followed by write keeps durable evidence", () => {
+  const prompt = "Run this Python script and report the output.";
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+  const params = { command: "python3 script.py", workdir: "/workspace" };
+  executionBefore(guard, "exec", { event: { params } });
+  executionAfter(guard, "exec", { event: { params, result: { details: { status: "completed", exitCode: 0 } } } });
+  const writeParams = { path: "/workspace/out.txt", content: "ok" };
+  executionBefore(guard, "write", { event: { params: writeParams } });
+  executionAfter(guard, "write", { event: { params: writeParams, result: { details: { status: "completed" } } } });
+  assert.notEqual(guard.deliveryVerificationForRun("run-1").status, "failed");
+});
+
+test("delivery hook replaces fabricated answer when execution receipt is missing", () => {
+  const prompt = "Run this Python script and report the output.";
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+  const delivered = guard.deliveryVerificationForRun("run-1");
+  assert.equal(delivered.status, "failed");
+  assert.match(delivered.text, /did not receive a successful terminal execution receipt/);
+  const outgoing = reply(guard, {event:{payload:{text:"I executed the Python code and got 2550."}}});
+  assert.match(outgoing.payload.text, /did not receive a successful terminal execution receipt/);
+  assert.doesNotMatch(outgoing.payload.text, /2550/);
+});
+
+test("execution evidence rejects unbound and foreign terminal receipts", () => {
+  for (const wrapped of [false, true]) for (const variant of ["no-call", "wrong-call", "wrong-run", "wrong-session", "wrong-params", "outer-error"]) {
+    const guard=createToolLoopGuard();
+    const context={agentId:"pixel",runId:"run-1",sessionId:"session-1",toolCallId:"execution-1"};
+    guard.observeRun(context,"pixel",{prompt:"Run this Python code and report the actual output."});
+    const args={command:"python3 -c 'print(2870)'",workdir:"/workspace"};
+    const toolName=wrapped?"tool_call":"exec";
+    const params=wrapped?{id:"openclaw:core:exec",args}:args;
+    if (variant!=="no-call") guard.beforeToolCall({toolName,params},{...context,toolName});
+    const result={details:{status:"completed",exitCode:0}};
+    const observed=wrapped?wrappedCoreResult("exec",result):result;
+    if (variant==="outer-error") observed.isError=true;
+    const altered={...args,command:"python3 -c 'print(1)'"};
+    guard.afterToolCall({toolName,params:variant==="wrong-params"?(wrapped?{id:"openclaw:core:exec",args:altered}:altered):params,
+      ...(variant==="wrong-run"?{runId:"other-run"}:{}),result:observed},
+      {...context,toolName,...(variant==="wrong-call"?{toolCallId:"other-call"}:{}),...(variant==="wrong-session"?{sessionId:"other-session"}:{})});
+    assert.match(guard.deliveryVerificationForRun("run-1").text,/did not receive a successful terminal execution receipt/,`${wrapped} ${variant}`);
+  }
+});
+
 test("negated workspace repairs do not grant continuation intent", () => {
   for (const prompt of ["Do not repair the game in my workspace.", "Never fix /workspace/moon-garden."]) {
     assert.equal(userMessageRequestsWorkspaceContinuation([], prompt), false);
@@ -13971,6 +14196,77 @@ test('host evidence recognizes read/get and curly-apostrophe exclusions', () => 
   }
   const prompt = 'In the sandbox, run command -v python3. Don’t inspect the host OS.';
   assert.equal(userMessageOperationsRequirements([], prompt).required, false, prompt);
+});
+
+test("relative cd verification binds the actual completed fleet result", () => {
+  for (const wrapped of [false, true]) for (const workdir of [undefined, "/workspace", "/workspace/parent"]) {
+    const guard = createToolLoopGuard();
+    guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", {
+      prompt: "Run the unit tests and report their actual result in chat.",
+    });
+    const args = { command: "cd fleet-tower3-20261022 && python3 -m unittest test_slugify -v", ...(workdir ? { workdir } : {}) };
+    const toolName = wrapped ? "tool_call" : "exec";
+    const params = wrapped ? { id: "exec", args } : args;
+    const before = call(guard, toolName, { event: { params, toolCallId: "fleet-test" } });
+    assert.notEqual(before?.block, true);
+    const executed = wrapped ? before?.params ?? params : { ...params, ...before?.params };
+    assert.equal(wrapped ? executed.args.command : executed.command, args.command);
+    const output = "test_spaces (test_slugify.TestSlugify.test_spaces) ... ok\n\nRan 7 tests in 0.000s\n\nOK";
+    const result = { content: [{ type: "text", text: output }], details: { status: "completed", exitCode: 0, aggregated: output } };
+    afterCall(guard, toolName, { event: { params: executed, toolCallId: "fleet-test", result: wrapped ? wrappedCoreResult("exec", result) : result } });
+    assert.equal(guard.verificationForRun("run-1").status, "passed");
+    assert.equal(reply(guard), undefined);
+  }
+});
+
+test("relative cd verification retains failed, empty and pending outcomes", () => {
+  const command = "cd project && python3 -m unittest -v";
+  for (const [details, expected] of [
+    [{ status: "completed", exitCode: 1, aggregated: "Ran 1 test\nFAILED (failures=1)" }, "failed"],
+    [{ status: "completed", exitCode: 0, aggregated: "Ran 0 tests\nOK" }, "failed"],
+    [{ status: "running", sessionId: "relative-check" }, "pending"],
+  ]) {
+    const guard = createToolLoopGuard();
+    const params = { command };
+    const before = call(guard, "exec", { event: { params } });
+    assert.notEqual(before?.block, true);
+    afterCall(guard, "exec", { event: { params: { ...params, ...before?.params }, result: { details } } });
+    assert.equal(guard.verificationForRun("run-1").status, expected);
+  }
+});
+
+test("relative cd verification fingerprints the runner cwd after cd", () => {
+  const source = readFileSync(new URL("../plugin/tool-loop-guard.mjs", import.meta.url), "utf8");
+  const scope = { path };
+  vm.runInNewContext(
+    source.slice(source.indexOf("function normalizeExecWorkdir("), source.indexOf("function normalizeApplyPatchInput(")) +
+    source.slice(source.indexOf("function verificationCommand("), source.indexOf("function canonicalRequestedUnittestParams(")), scope);
+  for (const [command, workdir, resolved] of [
+    ["cd project && python3 -m unittest -v", undefined, "/workspace/project"],
+    ["cd project && python3 -m unittest -v", "/workspace/parent", "/workspace/parent/project"],
+    ["cd /workspace/project && python3 -m unittest -v", "/workspace/parent", "/workspace/project"],
+  ]) {
+    const params = { command, ...(workdir ? { workdir } : {}) };
+    assert.equal(scope.verificationExecFingerprint(params), JSON.stringify(["python3 -m unittest -v", resolved]));
+  }
+});
+
+test("relative cd verification refuses masked output before execution", () => {
+  for (const suffix of [" | tee output.txt", " > output.txt", " 2>&1 | tee output.txt", " 2>/dev/null", "; echo done", " && echo done", " || true"]) {
+    const guard = createToolLoopGuard();
+    const params = { command: "cd project && python3 -m unittest -v" + suffix };
+    assert.equal(call(guard, "exec", { event: { params } })?.blockReason, VERIFICATION_COMMAND_NOT_AUDITABLE_REASON);
+  }
+});
+
+test("relative cd verification does not credit ambiguous paths or setup chains", () => {
+  for (const prefix of ["cd ../other", "cd .", "cd -P", "cd project/*", "cd a//b", "cd project/", "cd $(echo project)", 'cd "$DIR"', "cd project && echo setup"]) {
+    const guard = createToolLoopGuard();
+    call(guard, "read");
+    afterCall(guard, "exec", { event: { params: { command: "python3 -m unittest -v" }, result: { details: { exitCode: 1 } } } });
+    afterCall(guard, "exec", { event: { params: { command: prefix + " && python3 -m unittest -v" }, result: { details: { exitCode: 0, aggregated: "Ran 7 tests\nOK" } } } });
+    assert.equal(guard.verificationForRun("run-1").status, "failed", prefix);
+  }
 });
 
 test("AND-chain completed verification clears the previous failed direct test", () => {
@@ -16860,4 +17156,152 @@ test('ordinary Python failures do not receive an escaped-newline diagnosis',()=>
   const {guard,result}=nativeFailureRun();
   const text=persistToolResult(guard,'exec','native-failure',result).message.content[0].text;
   assert.doesNotMatch(text,/ODS Pixel repair/);
+});
+
+// Reproduces the standalone unittest module generated in a real Portal turn.
+// Its name deliberately does not match test_*.py or *_test.py.
+const standaloneUnittestSource = "\"\"\"Slugify utility with unittest tests.\"\"\"\n\nimport re\nimport unicodedata\n\n\ndef slugify(text: str) -> str:\n    \"\"\"\n    Convert text to a URL-friendly slug.\n    \n    - Lowercase the text\n    - Remove accents (normalize to ASCII)\n    - Replace runs of punctuation or whitespace with one hyphen\n    - Trim leading/trailing hyphens\n    \"\"\"\n    # Lowercase\n    text = text.lower()\n    \n    # Normalize to decomposed form and remove combining characters (accents)\n    text = unicodedata.normalize('NFKD', text)\n    text = ''.join(c for c in text if not unicodedata.combining(c))\n    \n    # Replace runs of non-alphanumeric characters with a single hyphen\n    text = re.sub(r'[^a-z0-9]+', '-', text)\n    \n    # Trim leading/trailing hyphens\n    text = text.strip('-')\n    \n    return text\n\n\nif __name__ == \"__main__\":\n    import unittest\n\n\nclass TestSlugify(unittest.TestCase):\n    def test_hello_world(self):\n        self.assertEqual(slugify(\"Hello, World!\"), \"hello-world\")\n\n    def test_creme_brulee(self):\n        self.assertEqual(slugify(\" Crème Brûlée \"), \"creme-brulee\")\n\n    def test_underscores(self):\n        self.assertEqual(slugify(\"a___b\"), \"a-b\")\n\n    def test_only_punctuation(self):\n        self.assertEqual(slugify(\"!!!\"), \"\")\n\n    def test_version(self):\n        self.assertEqual(slugify(\"Version 2.0\"), \"version-2-0\")\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n";
+const standaloneUnittestPrompt = "Create fleet_slug_check.py in the workspace with a Python slugify(text) function using only the standard library. Write and actually run tests for five cases. Report the actual test result and file path.";
+const standaloneUnittestOutput = ".....\n----------------------------------------------------------------------\nRan 5 tests in 0.000s\n\nOK\n";
+const standaloneUnittestResult = (details = {}) => ({ isError:false,
+  content:[{type:"text",text:details.aggregated ?? standaloneUnittestOutput}],
+  details:{status:"completed",exitCode:0,aggregated:standaloneUnittestOutput,...details} });
+
+function standaloneUnittestRun(wrapped, options = {}) {
+  const guard = createToolLoopGuard();
+  guard.observeRun({agentId:"pixel",runId:"run-1",sessionId:"session-1"},"pixel",
+    {prompt:options.prompt ?? standaloneUnittestPrompt});
+  if (options.write !== false) {
+    const params={path:options.path ?? "/workspace/fleet_slug_check.py",
+      content:options.source ?? standaloneUnittestSource};
+    const prepared=call(guard,"write",{event:{toolCallId:"write-1",params},context:{toolCallId:"write-1"}});
+    assert.notEqual(prepared?.block,true,prepared?.blockReason);
+    afterCall(guard,"write",{event:{toolCallId:"write-1",params:prepared?.params ?? params,
+      result:{isError:false,details:{status:"completed"}}},context:{toolCallId:"write-1"}});
+  }
+  const name=wrapped ? "tool_call" : "exec";
+  const args={command:options.command ?? "python3 fleet_slug_check.py",workdir:options.workdir ?? "/workspace"};
+  const params=wrapped ? {id:"openclaw:core:exec",args} : args;
+  const prepared=call(guard,name,{event:{toolCallId:"exec-1",params},context:{toolCallId:"exec-1"}});
+  const applied=prepared?.params ?? params;
+  return {guard,name,applied,prepared,finish(result=standaloneUnittestResult(),event={},context={}) {
+    if (prepared?.block) return;
+    afterCall(guard,name,{event:{toolCallId:"exec-1",params:applied,
+      result:wrapped ? wrappedCoreResult("exec",result) : result,...event},
+      context:{toolCallId:"exec-1",...context}});
+  }};
+}
+
+for(const wrapped of [false,true]) {
+  test(`owner-named standalone unittest completes the coding task, wrapped=${wrapped}`,()=>{
+    const run=standaloneUnittestRun(wrapped);
+    assert.notEqual(run.prepared?.block,true);
+    assert.equal((wrapped ? run.applied.args : run.applied).command,"python3 fleet_slug_check.py");
+    run.finish();
+    assert.equal(run.guard.verificationStatus("run-1"),"passed");
+    assert.equal(run.guard.verificationForRun("run-1").status,"passed");
+  });
+
+  test(`standalone unittest rejects unrelated, masked and unbound receipts, wrapped=${wrapped}`,()=>{
+    const cases=[
+      {name:"unwritten file",write:false},
+      {name:"unrelated file",path:"/workspace/helper.py",command:"python3 helper.py"},
+      {name:"wrong directory",workdir:"/workspace/other"},
+      {name:"no unittest source",source:"print('hello')"},
+      {name:"traversal",command:"python3 ../fleet_slug_check.py"},
+      {name:"output pipe",command:"python3 fleet_slug_check.py | tail -n 5"},
+      {name:"exit masking",command:"python3 fleet_slug_check.py; echo OK"},
+      {name:"extra argument",command:"python3 fleet_slug_check.py --fake"},
+      {name:"redirection",command:"python3 fleet_slug_check.py > log.txt"},
+      {name:"newline",command:"python3 fleet_slug_check.py\necho OK"},
+      {name:"nonzero exit",details:{exitCode:1}},
+      {name:"pending",details:{status:"running",sessionId:"pending-1"}},
+      {name:"missing status",details:{status:undefined}},
+      {name:"missing exit",details:{exitCode:undefined}},
+      {name:"zero tests",details:{aggregated:"Ran 0 tests in 0.000s\n\nOK\n"}},
+      {name:"failure text",details:{aggregated:"Ran 5 tests in 0.000s\n\nFAILED (failures=1)\n"}},
+      {name:"no summary",details:{aggregated:"all good"}},
+      {name:"error result",isError:true},
+      {name:"wrong call",event:{toolCallId:"exec-other"},context:{toolCallId:"exec-other"}},
+      {name:"wrong session",context:{sessionId:"session-other"}},
+      {name:"wrong event run",event:{runId:"run-other"}},
+      {name:"wrong params",event:{params:wrapped ? {id:"openclaw:core:exec",args:{command:"python3 fleet_slug_check.py",workdir:"/workspace/other"}} : {command:"python3 fleet_slug_check.py",workdir:"/workspace/other"}}},
+    ];
+    for(const c of cases) {
+      const run=standaloneUnittestRun(wrapped,c);
+      run.finish({...standaloneUnittestResult(c.details),isError:c.isError ?? false},c.event,c.context);
+      assert.notEqual(run.guard.verificationStatus("run-1"),"passed",c.name);
+    }
+  });
+
+  test(`standalone unittest polls only its bound pending execution, wrapped=${wrapped}`,()=>{
+    const run=standaloneUnittestRun(wrapped);
+    run.finish({isError:false,details:{status:"running",sessionId:"pending-1"}});
+    assert.equal(run.guard.verificationStatus("run-1"),"pending");
+    afterCall(run.guard,"process",{event:{params:{action:"poll",sessionId:"other"},result:standaloneUnittestResult({sessionId:"pending-1"})}});
+    assert.equal(run.guard.verificationStatus("run-1"),"pending");
+    afterCall(run.guard,"process",{event:{params:{action:"poll",sessionId:"pending-1"},result:standaloneUnittestResult({sessionId:"pending-1"})}});
+    assert.equal(run.guard.verificationStatus("run-1"),"passed");
+  });
+
+  for(const pending of [false,true,"completed"]) test(`changed source revokes standalone test evidence, wrapped=${wrapped}, pending=${pending}`,()=>{
+    const run=standaloneUnittestRun(wrapped);
+    if(pending === true)run.finish({isError:false,details:{status:"running",sessionId:"pending-1"}});
+    if(pending === "completed")run.finish();
+    const params={path:"/workspace/fleet_slug_check.py",oldText:"return text",newText:"return 'wrong'"};
+    const prepared=call(run.guard,"edit",{event:{toolCallId:"edit-1",params},context:{toolCallId:"edit-1"}});
+    assert.notEqual(prepared?.block,true);
+    afterCall(run.guard,"edit",{event:{toolCallId:"edit-1",params:prepared?.params ?? params,
+      result:{content:[{type:"text",text:"Successfully replaced text"}]}},context:{toolCallId:"edit-1"}});
+    if(pending === true)afterCall(run.guard,"process",{event:{params:{action:"poll",sessionId:"pending-1"},result:standaloneUnittestResult({sessionId:"pending-1"})}});
+    else if(pending === false)run.finish();
+    assert.notEqual(run.guard.verificationStatus("run-1"),"passed");
+  });
+}
+
+for(const [command,workdir,file,prompt] of [
+  ["python3 -B -u ./fleet_slug_check.py -v 2>&1","/workspace","/workspace/fleet_slug_check.py",standaloneUnittestPrompt],
+  ["python3 /workspace/fleet_slug_check.py","/workspace","/workspace/fleet_slug_check.py",standaloneUnittestPrompt],
+  ["python3 fleet_slug_check.py","/workspace/slug-project","/workspace/slug-project/fleet_slug_check.py",standaloneUnittestPrompt.replace("in the workspace","in /workspace/slug-project")],
+]) test(`standalone unittest preserves literal invocation: ${command} in ${workdir}`,()=>{
+  const run=standaloneUnittestRun(false,{command,workdir,path:file,prompt});
+  assert.notEqual(run.prepared?.block,true,run.prepared?.blockReason);
+  run.finish();
+  assert.equal(run.guard.verificationStatus("run-1"),"passed");
+});
+
+test("standalone unittest pending receipt rejects another conversation and non-clean completion",()=>{
+  for(const variant of ["wrong-session","wrong-event-run","zero-tests","is-error"]) {
+    const run=standaloneUnittestRun(false);
+    run.finish({isError:false,details:{status:"running",sessionId:"pending-1"}});
+    const details={sessionId:"pending-1",...(variant === "zero-tests" ? {aggregated:"Ran 0 tests in 0.000s\n\nOK\n"} : {})};
+    afterCall(run.guard,"process",{event:{params:{action:"poll",sessionId:"pending-1"},
+      ...(variant === "wrong-event-run" ? {runId:"run-other"} : {}),
+      result:{...standaloneUnittestResult(details),isError:variant === "is-error"}},
+      context:variant === "wrong-session" ? {sessionId:"session-other"} : {}});
+    assert.notEqual(run.guard.verificationStatus("run-1"),"passed",variant);
+  }
+});
+
+test("standalone unittest survives the real Tool Search native child hooks",()=>{
+  const run=standaloneUnittestRun(true);
+  const callId="tool_search_code:exec-1:exec:1",params=run.applied.args;
+  const prepared=call(run.guard,"exec",{event:{toolCallId:callId,params},context:{toolCallId:callId}});
+  assert.notEqual(prepared?.block,true);
+  afterCall(run.guard,"exec",{event:{toolCallId:callId,params:prepared?.params ?? params,
+    result:standaloneUnittestResult()},context:{toolCallId:callId}});
+  run.finish();
+  assert.equal(run.guard.verificationForRun("run-1").status,"passed");
+});
+
+test("standalone unittest requires this run's writes and the wrapper's successful result",()=>{
+  const stale=standaloneUnittestRun(false);
+  stale.guard.observeRun({agentId:"pixel",runId:"run-2",sessionId:"session-2"},"pixel",{prompt:standaloneUnittestPrompt});
+  const params={command:"python3 fleet_slug_check.py",workdir:"/workspace"};
+  call(stale.guard,"exec",{event:{toolCallId:"new-exec",runId:"run-2",params},context:{runId:"run-2",sessionId:"session-2",toolCallId:"new-exec"}});
+  afterCall(stale.guard,"exec",{event:{toolCallId:"new-exec",runId:"run-2",params,result:standaloneUnittestResult()},context:{runId:"run-2",sessionId:"session-2",toolCallId:"new-exec"}});
+  assert.notEqual(stale.guard.verificationStatus("run-2"),"passed");
+  const wrapped=standaloneUnittestRun(true);
+  wrapped.finish(undefined,{result:{...wrappedCoreResult("exec",standaloneUnittestResult()),isError:true}});
+  assert.notEqual(wrapped.guard.verificationStatus("run-1"),"passed");
 });

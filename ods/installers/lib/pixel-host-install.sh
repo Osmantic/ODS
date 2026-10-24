@@ -2334,11 +2334,49 @@ _ods_pixel_verify_current_runtime() {
     return 1
 }
 
+# Reruns ask the access coordinator for pending state before anything else.
+# Only an uninstall stops it (disable --now, first), and a later fail-closed
+# uninstall step can return early and leave it stopped across reboots. Start
+# it again for a deployment that is still ready or installing; never for one
+# an uninstall is deactivating.
+_ods_pixel_start_stopped_access_service() {
+    local owner="$1" home="$2" requested_ref="$3" transition state attempt
+    local unit="${ODS_PIXEL_ACCESS_UNIT_PATH:-/etc/systemd/system/ods-pixel-access.service}"
+    local socket="${ODS_PIXEL_ACCESS_SOCKET_PATH:-/run/ods-pixel-access/control.sock}"
+    [[ -f "$unit" && ! -L "$unit" ]] || return 0
+    systemctl is-active --quiet ods-pixel-access.service && return 0
+    transition="$(_ods_pixel_source_transition_state "$owner" "$home" "$requested_ref")" || return 0
+    state="${transition%%|*}"
+    [[ "$state" == ready || "$state" == installing ]] || return 0
+    ods_sudo_available || return 0
+    ai "Starting the stopped Pixel access coordinator..."
+    ods_sudo systemctl enable --now ods-pixel-access.service || return 1
+    for ((attempt = 1; attempt <= 30; attempt++)); do
+        [[ -S "$socket" ]] && return 0
+        sleep 1
+    done
+    return 1
+}
+
 _ods_pixel_resume_completed_release() {
     local owner="$1" home="$2" pixel_root="$3" contract_sha="$4"
     local status resume transaction_id outcome config_sha observed
-    local helper=/usr/local/libexec/ods-pixel-access/pixel_model_transition.py
+    local helper="${ODS_PIXEL_ACCESS_HELPER:-/usr/local/libexec/ods-pixel-access/pixel_model_transition.py}"
+    local unit="${ODS_PIXEL_ACCESS_UNIT_PATH:-/etc/systemd/system/ods-pixel-access.service}"
+    local state_dir="${ODS_PIXEL_ACCESS_STATE_DIR:-/var/lib/ods-pixel-access}"
     [[ -f "$helper" && ! -L "$helper" ]] || return 0
+    # The coordinator's helpers are written before its unit. A first install
+    # that stopped between the two never ran a coordinator, so it recorded no
+    # transition and there is nothing to resume; the install continues and
+    # installs the coordinator. A recorded transition still needs recovery.
+    if [[ ! -e "$unit" && ! -L "$unit" ]] && ods_sudo_available \
+        && ! ods_sudo test -e "$state_dir/transition.json"; then
+        return 0
+    fi
+    if ! _ods_pixel_start_stopped_access_service "$owner" "$home" "${PIXEL_SOURCE_REF:?}"; then
+        printf '%s\n' 'error: the Pixel access coordinator is stopped and did not start; see journalctl -u ods-pixel-access.service' >&2
+        return 1
+    fi
     status="$(_ods_pixel_model_transition status "$owner" "$home")" || return 1
     if [[ -n "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]; then
         _ods_pixel_check_source_transaction "$owner" || return 1
@@ -3464,8 +3502,36 @@ PY
     printf '%s\n' "$retired_release"
 }
 
+_ods_pixel_ensure_runtime_group_tools() {
+    # Fresh Ubuntu 26.04 no longer ships sg in login. Install the qualified
+    # distro's package before adding groups that this shell must refresh.
+    local -a packages=()
+    local sg_package
+    if command -v sg >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+        return 0
+    fi
+    _ods_pixel_parse_os_release || return 1
+    case "$_ODS_PIXEL_OS_ID:$_ODS_PIXEL_OS_VERSION_ID" in
+        ubuntu:26.04) sg_package=util-linux-extra ;;
+        ubuntu:24.04|debian:12) sg_package=login ;;
+        *) ai_bad "Pixel runtime group tools require a qualified Linux distribution."; return 1 ;;
+    esac
+    command -v sg >/dev/null 2>&1 || packages+=("$sg_package")
+    command -v python3 >/dev/null 2>&1 || packages+=(python3)
+    if [[ "${PKG_MANAGER:-}" != apt ]] || ! declare -f pkg_install >/dev/null 2>&1; then
+        ai_bad "Pixel runtime group tools are missing. Install: ${packages[*]}"
+        return 1
+    fi
+    pkg_install "${packages[@]}" || return 1
+    if ! command -v sg >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
+        ai_bad "Pixel runtime group tools are still unavailable after package installation."
+        return 1
+    fi
+}
+
 ods_pixel_prepare_runtime_identity() {
     [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true ]] || return 0
+    [[ "${DRY_RUN:-false}" != true ]] || return 0
     ods_sudo_available || {
         ai_bad "Pixel requires privileged systemd and group setup on this host."
         return 1
@@ -3473,6 +3539,10 @@ ods_pixel_prepare_runtime_identity() {
 
     local owner gid
     owner="$(ods_pixel_install_owner)" || return 1
+    if ! _ods_pixel_ensure_runtime_group_tools; then
+        ai_bad "Could not prepare Pixel's runtime group tools before identity setup."
+        return 1
+    fi
     if ! getent group ods-pixel >/dev/null 2>&1; then
         ods_sudo groupadd --system ods-pixel
     fi
@@ -5522,7 +5592,9 @@ ods_pixel_install_default_agent() {
         && _ods_pixel_initial_unconfigured_marker "$owner" "$home" "$pixel_root" >>"$pixel_log" 2>&1; then
         initial_access_reproved=true
     fi
-    if ! ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" bootstrap --apply >>"$pixel_log" 2>&1; then
+    # This fixed, noninteractive file entrypoint needs no terminal input.
+    # Nested sudo/NodeSource/apt must inherit EOF without changing sudoers.
+    if ! ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" bootstrap --apply </dev/null >>"$pixel_log" 2>&1; then
         # Phase 11 can stop here without reaching the installer's help trap,
         # so these messages carry the cause, recovery and help link themselves.
         # A failed check of an existing candidate is not a download problem.

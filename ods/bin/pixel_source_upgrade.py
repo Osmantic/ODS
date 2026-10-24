@@ -1474,6 +1474,10 @@ def _stage(manager, account, source, requested_ref):
             raise UpgradeError('source-pixel-services-required')
     if os.path.lexists(manager.state.parent / 'transition.json'):
         pending, _ = _protected_json(manager.state.parent / 'transition.json')
+        # Missing kind is the legacy access journal, as in the permissions
+        # coordinator; model recovery cannot settle either form.
+        if pending.get('kind', 'access') == 'access':
+            raise UpgradeError('source-access-journal-pending')
         if (existing is None or existing['hold'] is None
                 or pending.get('kind') != 'model' or pending.get('transaction_id') != existing['hold']):
             raise UpgradeError('source-previous-hold-pending')
@@ -1661,6 +1665,16 @@ def _failure_message(error):
         "source-ready-baseline-required": "The existing Pixel installation has no ready source-upgrade baseline.",
     }.get(str(error)) if isinstance(error, UpgradeError) else None
     if reason:
+        if str(error) == "source-controller-state-missing":
+            return (reason + " Automatic source upgrade is refused. Restore the complete matching prior "
+                    "installation state. If you choose to retire this installation instead, run "
+                    "'bash ./ods-uninstall.sh --keep-models --keep-data' from the installed ODS directory "
+                    "and confirm its uninstall prompt. If uninstall refuses, preserve its state and stop; "
+                    "do not delete files manually. After successful uninstall, rerun 'bash ./install.sh' "
+                    "from the new source checkout with your install options. Keep the model-backup "
+                    "location printed by the uninstaller: a later install does not automatically restore "
+                    "that backup. Docker images and build cache are retained, so check free disk space "
+                    "before reinstalling. Do not recreate protected state or discard any existing admission hold.")
         return (reason + " Automatic source upgrade is refused. Restore the complete matching prior "
                 "installation state, or use an owner-authorized clean install. "
                 "Do not recreate protected state or discard any existing admission hold.")
@@ -1669,6 +1683,11 @@ def _failure_message(error):
     # the update. Any other text, which could carry a path, stays out.
     code = str(error) if isinstance(error, (UpgradeError, RuntimeError)) else ""
     detail = f" (reason: {code})" if re.fullmatch(r"[a-z][a-z0-9-]{0,95}", code) else ""
+    if code == "source-access-journal-pending":
+        return (f"Portal is paused by an unfinished permissions change{detail}, so the Pixel update "
+                "did not start. Open the ODS dashboard's Settings > Portal permissions and choose "
+                "Restore Sandbox. After recovery succeeds, run the installer again. "
+                "The paused state and source snapshots were kept.")
     if code == "source-previous-hold-pending":
         # Unload model keeps Portal admission held until Resume model, and a
         # Windows rerun restarts the model without releasing that hold. The

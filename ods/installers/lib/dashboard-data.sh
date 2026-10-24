@@ -13,13 +13,26 @@ _ods_dashboard_mutate() {
     fi
 }
 
+_ods_dashboard_lock_helper_image() {
+    # Reuse the Dashboard API's pinned Python base. BusyBox has no Python.
+    ODS_DASHBOARD_LOCK_IMAGE='python:3.11-slim@sha256:e41613d42d4891e4930f79523f93f81bbc7632584ec65e36ab055f41a800b41e'
+    docker_run image inspect "$ODS_DASHBOARD_LOCK_IMAGE" >/dev/null 2>&1 ||
+        docker_run pull "$ODS_DASHBOARD_LOCK_IMAGE"
+}
+
 ods_prepare_dashboard_data() {
-    local install_dir="$1" rootless="$2" target private_store metadata group mode use_docker_repair=false
+    local install_dir="$1" rootless="$2" target private_store metadata group mode lock lock_helper use_docker_repair=false
+    lock_helper="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}/installers/lib/dashboard-lock.py"
     target="$install_dir/data"
     if [[ ! -d "$target" || -L "$target" ]]; then
         echo "[error] Dashboard data must be a real directory: $target" >&2
         return 1
     fi
+    # Create as the installer, without sudo. An existing unreadable lock can be
+    # inspected with O_PATH; neither creation nor repair follows a replacement
+    # symlink. Privileged repair below keeps the same flock inode.
+    lock="$target/.extensions-lock"
+    python3 "$lock_helper" prepare "$target" >/dev/null || return 1
     if [[ "$rootless" == true ]]; then
         use_docker_repair=true
     elif declare -f ods_sudo_available >/dev/null 2>&1 && ! ods_sudo_available; then
@@ -28,6 +41,10 @@ ods_prepare_dashboard_data() {
         # sufficient for this narrowly scoped bind-mount repair.
         metadata=$(stat -c '%g' "$target") || return 1
         [[ "$metadata" == 1000 ]] || use_docker_repair=true
+        metadata=$(stat -c '%g' "$lock") || return 1
+        [[ "$metadata" == 1000 ]] || use_docker_repair=true
+        metadata=$(stat -c '%u' "$lock") || return 1
+        [[ "$metadata" == "$(stat -c '%u' "$target")" && -r "$lock" ]] || use_docker_repair=true
         for private_store in "$target/pixel-chat-results" "$target/pixel-images"; do
             if [[ -d "$private_store" && ! -L "$private_store" ]]; then
                 metadata=$(stat -c '%u:%g' "$private_store") || return 1
@@ -40,6 +57,7 @@ ods_prepare_dashboard_data() {
         # The same pinned, offline helper also repairs rootful Docker when
         # the installer has Docker access but no passwordless sudo.
         _ods_rootless_ensure_helper_image || return 1
+        _ods_dashboard_lock_helper_image || return 1
         docker_run run --rm --network none --user 0:0 \
             --mount "type=bind,src=$target,dst=/data" \
             "$ODS_ROOTLESS_HELPER_IMAGE" sh -ec '
@@ -57,7 +75,11 @@ ods_prepare_dashboard_data() {
                         test "$(stat -c %u:%g "$private_store")" = 1000:1000
                     fi
                 done
-            '
+            ' || return 1
+        docker_run run --rm -i --network none --user 0:0 --read-only \
+            --security-opt no-new-privileges \
+            --mount "type=bind,src=$target,dst=/data" \
+            "$ODS_DASHBOARD_LOCK_IMAGE" python3 - repair /data < "$lock_helper"
         return $?
     fi
     metadata=$(stat -c '%g:%a' "$target") || return 1
@@ -84,4 +106,8 @@ ods_prepare_dashboard_data() {
             [[ "$(stat -c '%u:%g' "$private_store")" == 1000:1000 ]] || return 1
         fi
     done
+    # Ready locks need no elevation; ordinary owner/group authority may also
+    # suffice. A failed repair must propagate if privileged repair is denied.
+    python3 "$lock_helper" repair "$target" >/dev/null 2>&1 ||
+        _ods_dashboard_mutate python3 "$lock_helper" repair "$target" >/dev/null
 }
