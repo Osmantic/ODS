@@ -3443,12 +3443,27 @@ cmd_purge() {
     # Check if container is still running (disable may have failed to stop it)
     local _container="${SERVICE_CONTAINERS[$service_id]:-ods-$service_id}"
     local _running_containers
-    if ! _running_containers=$(docker ps --format '{{.Names}}'); then
+    if ! _running_containers=$(docker ps --format '{{.Names}}'$'\t''{{.Label "com.docker.compose.service"}}'$'\t''{{.Label "com.docker.compose.project.working_dir"}}'); then
         error "Cannot verify whether $service_id is running. Restore Docker connectivity and retry; data was not deleted."
     fi
-    if grep -Fxq -- "$_container" <<< "$_running_containers"; then
+    if cut -f1 <<< "$_running_containers" | grep -Fxq -- "$_container"; then
         error "$service_id container is still running. Run 'ods stop $service_id' first."
     fi
+    # Its companions (a database, worker or cache in the same fragment, named
+    # <id>-*) write the same data; one left running must block the delete too.
+    # Scope the refusal to this installation's directory. Recipe labels may
+    # name a legacy file or a frozen native recipe, or outlive their source.
+    # Refusing deletion must still protect those live writers; it does not
+    # grant authority to stop or modify any container.
+    local _install_real _name _companion _workdir
+    _install_real=$(cd -P "$INSTALL_DIR" && pwd)
+    while IFS=$'\t' read -r _name _companion _workdir; do
+        [[ "$_companion" == "$service_id"-* ]] || continue
+        # A separately registered extension keeps its own lifecycle and data.
+        [[ -n "${SERVICE_CONTAINERS[$_companion]+set}" ]] && continue
+        [[ "$_workdir" == "$INSTALL_DIR" || "$_workdir" == "$_install_real" ]] || continue
+        error "$service_id's $_companion service is still running (container $_name). Stop it first; data was not deleted."
+    done <<< "$_running_containers"
 
     # Check data directory exists
     local _data_dir="$INSTALL_DIR/data/$service_id"
