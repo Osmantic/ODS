@@ -19,7 +19,7 @@ ensure_hermes_dashboard_session_token() { :; }
 macos_model_store_compose_flags() { printf '%s\n' "$1"; }
 read_env_value() { :; }
 
-INSTALL_DIR="$tmp/install"
+INSTALL_DIR="$tmp/install with spaces"
 mkdir -p "$INSTALL_DIR/scripts"
 printf '#!/usr/bin/env bash\necho RESOLVED\n' > "$INSTALL_DIR/scripts/resolve-compose-stack.sh"
 chmod +x "$INSTALL_DIR/scripts/resolve-compose-stack.sh"
@@ -39,6 +39,19 @@ printf '%s\n' "$cache -f docker-compose.override.yml" > "$INSTALL_DIR/.compose-f
 [[ "$(_get_base_compose_flags)" == "$cache -f docker-compose.override.yml" ]] \
     && pass "a cache that already lists the override is kept" \
     || fail "a cache listing the override was not kept"
+
+absolute_cache="$cache -f '$INSTALL_DIR/docker-compose.override.yml'"
+printf '%s\n' "$absolute_cache" > "$INSTALL_DIR/.compose-flags"
+[[ "$(_get_base_compose_flags)" == "$absolute_cache" ]] \
+    && pass "a quoted absolute override path is kept" \
+    || fail "a quoted absolute override path was not kept"
+
+for lookalike in custom-docker-compose.override.yml docker-compose.override.yml.backup docker-compose.override.yml.d/other.yml; do
+    printf '%s\n' "$cache -f $lookalike" > "$INSTALL_DIR/.compose-flags"
+    [[ "$(_get_base_compose_flags)" == RESOLVED ]] \
+        && pass "a lookalike path does not hide the new override: $lookalike" \
+        || fail "a lookalike path hid the new override: $lookalike"
+done
 
 # Exercise the production resolver through the cache-miss path as well. A
 # stub alone would incorrectly suggest that protected core overrides work.

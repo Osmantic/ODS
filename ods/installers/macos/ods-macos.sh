@@ -159,8 +159,22 @@ _get_base_compose_flags() {
         cached_flags="$(cat "$flags_file")"
         # docs/PROFILES.md has owners add docker-compose.override.yml after
         # install; the cache predates it, so resolve (and scan) it again.
-        if [[ ! -f "${INSTALL_DIR}/docker-compose.override.yml" \
-            || "$cached_flags" == *"docker-compose.override.yml"* ]]; then
+        if [[ ! -f "${INSTALL_DIR}/docker-compose.override.yml" ]] \
+            || /usr/bin/python3 - "$INSTALL_DIR" "$cached_flags" <<'PY'
+import shlex
+import sys
+from pathlib import Path
+
+try:
+    tokens = shlex.split(sys.argv[2])
+except ValueError:
+    sys.exit(1)
+root = Path(sys.argv[1])
+valid = tokens and len(tokens) % 2 == 0 and all(t == '-f' for t in tokens[::2])
+present = valid and any(root / p == root / 'docker-compose.override.yml' for p in tokens[1::2])
+sys.exit(0 if present else 1)
+PY
+        then
             macos_model_store_compose_flags "$cached_flags"
             return $?
         fi
