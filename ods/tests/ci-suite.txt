@@ -119,6 +119,7 @@ tests/test-macos-bridge-bootstrap-retry.sh
 tests/test-macos-cli-update-verification.sh
 tests/test-macos-config-show-secret-mask.sh
 tests/test-macos-config-without-docker.sh
+tests/test-macos-dashboard-private-state-launch.sh
 tests/test-macos-doctor-honest-failure.sh
 tests/test-macos-download-retries.sh
 tests/test-macos-env-quote-strip.sh
