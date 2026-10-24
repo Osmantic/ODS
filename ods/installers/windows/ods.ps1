@@ -59,6 +59,7 @@ $LibDir = Join-Path $ScriptDir "lib"
 . (Join-Path $LibDir "native-llama-legacy.ps1")
 . (Join-Path $LibDir "model-activation.ps1")
 . (Join-Path $LibDir "host-agent-process.ps1")
+. (Join-Path $LibDir "host-agent-supervisor.ps1")
 . (Join-Path $LibDir "opencode-startup.ps1")
 . (Join-Path $LibDir "install-report.ps1")
 . (Join-Path $LibDir "tier-map.ps1")
@@ -699,8 +700,9 @@ function Test-ODSUninstallStartupLauncherOwned {
     if ([string]::IsNullOrWhiteSpace($Content)) { return $false }
     # Both native installer paths write the exact comment before this VBS
     # launcher. Older generated files omitted it. Reject any extra commands.
-    $launcher=[regex]::Match($Content.Trim(), '(?i)^(?:'' ODS Host Agent login startup launcher\r?\n)?Set WshShell = CreateObject\("WScript\.Shell"\)\r?\nWshShell\.Run "([^"\r\n]+)", 0, False$')
-    return ($launcher.Success -and (Test-ODSUninstallCommandOwned $launcher.Groups[1].Value))
+    $launcher=[regex]::Match($Content.Trim(), '(?i)^(?:'' ODS Host Agent(?: supervisor)? login startup launcher\r?\n)?Set WshShell = CreateObject\("WScript\.Shell"\)\r?\nWshShell\.Run "((?:""|[^"\r\n])+)", 0, False$')
+    return ($launcher.Success -and
+        (Test-ODSUninstallCommandOwned $launcher.Groups[1].Value.Replace('""', '"')))
 }
 
 function Stop-ODSUninstallOwnedHelpers {
@@ -804,9 +806,12 @@ function Invoke-Uninstall {
     }
 
     Write-AI "Stopping ODS host-side helpers..."
+    try { Write-ODSHostAgentSupervisorIntent -InstallDir $InstallDir -State stopped }
+    catch { Write-AIWarn "Could not publish host-agent stop intent: $($_.Exception.Message)" }
     Stop-ODSUninstallOwnedHelpers
 
-    foreach ($taskName in @($script:ODS_AGENT_TASK_NAME, $script:ODS_MODEL_UPGRADE_TASK_NAME, $script:LEMONADE_TASK_NAME, $script:OPENCODE_TASK_NAME, $script:NATIVE_LLAMA_TASK_NAME)) {
+    $scopedAgentTask = Get-ODSHostAgentTaskName $InstallDir
+    foreach ($taskName in @($script:ODS_AGENT_TASK_NAME, $scopedAgentTask, $script:ODS_MODEL_UPGRADE_TASK_NAME, $script:LEMONADE_TASK_NAME, $script:OPENCODE_TASK_NAME, $script:NATIVE_LLAMA_TASK_NAME) | Select-Object -Unique) {
         $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
         if (-not $task) { continue }
         if (-not (Test-ODSUninstallTaskOwned $task)) {
@@ -2855,33 +2860,60 @@ function Invoke-Agent {
     $logFile     = $script:ODS_AGENT_LOG_FILE
     $port        = $script:ODS_AGENT_PORT
     $healthUrl   = $script:ODS_AGENT_HEALTH_URL
+    $paths       = Get-ODSHostAgentSupervisorPaths $InstallDir
+    $taskName    = Get-ODSHostAgentTaskName $InstallDir
 
     switch ($Action.ToLower()) {
         "status" {
+            $state = $null
+            if (Test-Path -LiteralPath $paths.State -PathType Leaf) {
+                try {
+                    $state = Read-ODSHostAgentSupervisorState $paths.State
+                    if ([string]$state.planDigest -cne (Get-ODSHostAgentPlanDigest $paths.Plan)) {
+                        throw 'state plan digest mismatch'
+                    }
+                    Write-AI "Supervisor: $($state.actualState) (desired: $($state.desiredState), restarts: $($state.restartCount))"
+                } catch {
+                    Write-AIWarn "Host-agent supervisor state is invalid or stale"
+                }
+            } else {
+                Write-AIWarn "Host-agent supervisor state is not available"
+            }
             try {
                 $resp = Invoke-WebRequest -Uri $healthUrl -TimeoutSec 3 `
-                    -UseBasicParsing -ErrorAction SilentlyContinue
-                if ($resp.StatusCode -eq 200) {
+                    -UseBasicParsing -ErrorAction Stop
+                $body = [string]$resp.Content | ConvertFrom-Json -ErrorAction Stop
+                if ($resp.StatusCode -eq 200 -and $body.status -ceq 'ok' -and
+                    -not [string]::IsNullOrWhiteSpace([string]$body.version)) {
                     Write-AISuccess "Host agent: running (port $port)"
                 } else {
-                    Write-AIWarn "Host agent: responded with status $($resp.StatusCode)"
+                    Write-AIWarn "Host agent: health response is not valid"
                 }
             } catch {
                 Write-AIWarn "Host agent: not responding (port $port)"
             }
         }
         "start" {
-            # Check if already running
+            # A response on the configured port is accepted only when the
+            # listener PID is the PID recorded for this managed agent.
             try {
                 $resp = Invoke-WebRequest -Uri $healthUrl -TimeoutSec 2 `
-                    -UseBasicParsing -ErrorAction SilentlyContinue
+                    -UseBasicParsing -ErrorAction Stop
                 if ($resp.StatusCode -eq 200) {
-                    Write-AISuccess "Host agent already running (port $port)"
+                    $_managedPid = 0
+                    if (Test-Path -LiteralPath $pidFile -PathType Leaf) {
+                        $_managedPid = [int](Get-Content -LiteralPath $pidFile -Raw).Trim()
+                    }
+                    if ($_managedPid -gt 0 -and
+                        (Test-ODSHostAgentManagedHealth -Port $port -ProcessId $_managedPid)) {
+                        Write-AISuccess "Host agent already running (port $port)"
+                    } else {
+                        Write-AIError "Port $port is occupied by an unverified process; refusing to replace it"
+                    }
                     return
                 }
             } catch { }
 
-            # Find Python
             $_python3 = Resolve-ODSHostAgentPython
             if (-not $_python3) {
                 Write-AIError "Python 3 not found (ignoring Microsoft Store aliases) -- install Python 3.12 and try again"
@@ -2892,7 +2924,8 @@ function Invoke-Agent {
                 return
             }
 
-            # Clean stale PID
+            # Compatibility cleanup applies only to a direct-Python legacy
+            # process whose executable, script and start identity are proven.
             if (Test-Path $pidFile) {
                 try {
                     $_oldPid = [int](Get-Content $pidFile -Raw).Trim()
@@ -2901,52 +2934,39 @@ function Invoke-Agent {
                 Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
             }
 
-            $pidDir = Split-Path $pidFile
-            New-Item -ItemType Directory -Path $pidDir -Force -ErrorAction SilentlyContinue | Out-Null
-
-            # Start the agent through Task Scheduler so SSH-launched restarts
-            # survive the non-interactive PowerShell session ending.
             $_dockerBin = "C:\Program Files\Docker\Docker\resources\bin"
-            $_psQuote = {
-                param([string]$Value)
-                "'" + ($Value -replace "'", "''") + "'"
-            }
-            $_dockerPathLiteral = & $_psQuote "$_dockerBin;"
-            $_pythonLiteral = & $_psQuote $_python3.FilePath
-            $_pythonPrefixArgsLiteral = "@(" + (($_python3.PrefixArgs | ForEach-Object { & $_psQuote $_ }) -join ", ") + ")"
-            $_agentScriptLiteral = & $_psQuote $agentScript
-            $_pidFileLiteral = & $_psQuote $pidFile
-            $_installDirLiteral = & $_psQuote $InstallDir
-            $_logFileLiteral = & $_psQuote $logFile
-            $_agentCommand = @"
-`$env:PATH = $_dockerPathLiteral + `$env:PATH
-`$agentArgs = $_pythonPrefixArgsLiteral + @($_agentScriptLiteral, '--port', '$port', '--pid-file', $_pidFileLiteral, '--install-dir', $_installDirLiteral)
-Set-Location $_installDirLiteral
-Start-Process -FilePath $_pythonLiteral -ArgumentList `$agentArgs -WorkingDirectory $_installDirLiteral -WindowStyle Hidden -RedirectStandardError $_logFileLiteral
-"@
-            $_encodedAgentCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($_agentCommand))
-            try { Stop-ScheduledTask -TaskName $script:ODS_AGENT_TASK_NAME -ErrorAction SilentlyContinue } catch { }
-            $taskAction = New-ScheduledTaskAction -Execute "powershell.exe" `
-                -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand $_encodedAgentCommand" `
-                -WorkingDirectory $InstallDir
-            $taskTrigger = New-ScheduledTaskTrigger -AtLogOn
-            $taskSettings = New-ScheduledTaskSettingsSet `
-                -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-                -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)
-            $taskPrincipal = New-ODSInteractiveScheduledTaskPrincipal -RunLevel Limited
+            $paths = Write-ODSHostAgentSupervisorPlan -PythonPath $_python3.FilePath `
+                -PythonPrefixArgs @($_python3.PrefixArgs) -AgentScript $agentScript `
+                -InstallDir $InstallDir -Port $port -PidFile $pidFile -LogFile $logFile `
+                -DockerBin $_dockerBin
+            Write-ODSHostAgentSupervisorIntent -InstallDir $InstallDir -State running
+            $_supervisorArguments = Get-ODSHostAgentSupervisorArguments $paths.Plan
 
             $taskError = $null
             try {
-                Register-ScheduledTask -TaskName $script:ODS_AGENT_TASK_NAME `
-                    -Action $taskAction -Trigger $taskTrigger -Settings $taskSettings -Principal $taskPrincipal `
-                    -Description "ODS Host Agent -- manages extensions and bridges dashboard to host" `
-                    -Force -ErrorAction Stop | Out-Null
-                Start-ScheduledTask -TaskName $script:ODS_AGENT_TASK_NAME
-                # Cleanup any startup VBScript if scheduled task succeeded
+                $_task = Get-ODSHostAgentSupervisorTask -InstallDir $InstallDir `
+                    -PlanPath $paths.Plan -MissingOk
+                if (-not $_task) {
+                    $taskAction = New-ScheduledTaskAction -Execute "powershell.exe" `
+                        -Argument $_supervisorArguments -WorkingDirectory $InstallDir
+                    $taskTrigger = New-ScheduledTaskTrigger -AtLogOn
+                    $taskSettings = New-ScheduledTaskSettingsSet `
+                        -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+                        -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)
+                    $taskPrincipal = New-ODSInteractiveScheduledTaskPrincipal -RunLevel Limited
+                    Register-ScheduledTask -TaskName $taskName -Action $taskAction `
+                        -Trigger $taskTrigger -Settings $taskSettings -Principal $taskPrincipal `
+                        -Description "ODS Host Agent supervisor for $InstallDir" `
+                        -ErrorAction Stop | Out-Null
+                }
+                Start-ScheduledTask -TaskName $taskName -TaskPath '\' -ErrorAction Stop
                 $startupFolder = [Environment]::GetFolderPath("Startup")
                 $vbsFile = Join-Path $startupFolder "ods-host-agent.vbs"
                 if (Test-Path $vbsFile) {
-                    Remove-Item $vbsFile -Force -ErrorAction SilentlyContinue
+                    $_vbs = Get-Content -LiteralPath $vbsFile -Raw
+                    if ($_vbs -match 'ODS Host Agent supervisor login launcher') {
+                        Remove-Item $vbsFile -Force -ErrorAction SilentlyContinue
+                    }
                 }
             } catch {
                 $taskError = $_
@@ -2955,20 +2975,21 @@ Start-Process -FilePath $_pythonLiteral -ArgumentList `$agentArgs -WorkingDirect
 
                 $startupFolder = [Environment]::GetFolderPath("Startup")
                 $vbsFile = Join-Path $startupFolder "ods-host-agent.vbs"
+                $_vbsArguments = $_supervisorArguments.Replace('"', '""')
                 $vbsContent = @"
-' ODS Host Agent login startup launcher
+' ODS Host Agent supervisor login launcher
 Set WshShell = CreateObject("WScript.Shell")
-WshShell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand $_encodedAgentCommand", 0, False
+WshShell.Run "powershell.exe $_vbsArguments", 0, False
 "@
                 try {
                     Write-ODSUtf8NoBomFile -Path $vbsFile -Content $vbsContent
                     Write-AISuccess "Startup persistence configured via Start Menu Startup folder: $vbsFile"
-                    # Start the agent now using the startup script
                     Start-Process wscript.exe -ArgumentList ('"{0}"' -f $vbsFile) -NoNewWindow
                 } catch {
                     Write-AIError "Failed to set up alternative startup persistence: $_"
-                    Write-AIWarn "Starting host agent directly for this session..."
-                    Start-Process -FilePath $_python3.FilePath -ArgumentList @($agentScript, '--port', $port, '--pid-file', $pidFile, '--install-dir', $InstallDir) -WorkingDirectory $InstallDir -WindowStyle Hidden -RedirectStandardError $logFile
+                    Write-AIWarn "Starting the host-agent supervisor directly for this session..."
+                    Start-Process -FilePath powershell.exe -ArgumentList $_supervisorArguments `
+                        -WorkingDirectory $InstallDir -WindowStyle Hidden
                 }
             }
 
@@ -2986,13 +3007,36 @@ WshShell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hid
             }
         }
         "stop" {
-            try { Stop-ScheduledTask -TaskName $script:ODS_AGENT_TASK_NAME -ErrorAction SilentlyContinue } catch { }
-            # Cleanup Startup VBScript
+            # Publish stop intent before stopping the task so an observed exit
+            # can never race the supervisor's automatic restart.
+            Write-ODSHostAgentSupervisorIntent -InstallDir $InstallDir -State stopped
+            $_stoppedSupervisorTask = $false
+            try {
+                $_task = Get-ODSHostAgentSupervisorTask -InstallDir $InstallDir `
+                    -PlanPath $paths.Plan -MissingOk
+                if ($_task) {
+                    Stop-ScheduledTask -TaskName $taskName -TaskPath '\' -ErrorAction Stop
+                    $_stoppedSupervisorTask = $true
+                }
+            } catch {
+                Write-AIWarn "Refused to stop an unverified host-agent task: $($_.Exception.Message)"
+                return
+            }
             $startupFolder = [Environment]::GetFolderPath("Startup")
             $vbsFile = Join-Path $startupFolder "ods-host-agent.vbs"
             if (Test-Path $vbsFile) {
-                Remove-Item $vbsFile -Force -ErrorAction SilentlyContinue
+                $_vbs = Get-Content -LiteralPath $vbsFile -Raw
+                if ($_vbs -match 'ODS Host Agent supervisor login launcher') {
+                    Remove-Item $vbsFile -Force -ErrorAction SilentlyContinue
+                }
             }
+            if ($_stoppedSupervisorTask) {
+                $deadline = [datetime]::UtcNow.AddSeconds(15)
+                while (Test-Path $pidFile -and [datetime]::UtcNow -lt $deadline) {
+                    Start-Sleep -Milliseconds 250
+                }
+            }
+            # Compatibility fallback for a proven legacy direct-Python agent.
             if (Test-Path $pidFile) {
                 try {
                     $_pid = [int](Get-Content $pidFile -Raw).Trim()
@@ -3002,12 +3046,7 @@ WshShell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hid
                 }
                 Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
             } else {
-                Write-AI "Host agent not running (no PID file)"
-            }
-            foreach ($_listener in @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)) {
-                if ($_listener.OwningProcess -gt 0) {
-                    Stop-ODSHostAgentProcess -ProcessId ([int]$_listener.OwningProcess) -AgentScript $agentScript
-                }
+                Write-AI "Host agent stopped"
             }
         }
         "restart" {

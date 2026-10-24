@@ -21951,14 +21951,16 @@ def main():
     parser.add_argument("--port", type=int, default=7710, help="Listen port (default: 7710)")
     parser.add_argument("--pid-file", type=str, default="", help="Write PID to this file")
     parser.add_argument("--install-dir", type=str, default="", help="ODS install directory")
+    parser.add_argument("--log-file", type=str, default="", help="Write host-agent logs to this file")
     parser.add_argument(
         "--require-ods-network", action="store_true",
         help="Fail closed until the ODS Docker network exists (systemd will retry)",
     )
     args = parser.parse_args()
 
+    log_stream = open(args.log_file, "a", encoding="utf-8") if args.log_file else sys.stderr
     logging.basicConfig(
-        level=logging.INFO, stream=sys.stderr,
+        level=logging.INFO, stream=log_stream,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
