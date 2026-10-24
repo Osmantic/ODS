@@ -837,6 +837,8 @@ const THINKING_TEXT = {
   none: 'No thinking markers',
 }
 
+const TRANSIENT_HEADER_REASONS = new Set(['unreachable', 'rate_limited', 'upstream_error'])
+
 function PreflightSummary({ preflight, loading, error }) {
   if (loading && !preflight) {
     return (
@@ -886,7 +888,11 @@ function PreflightSummary({ preflight, loading, error }) {
         </p>
       )}
       {header?.status === 'unavailable' && header.message && refusal?.code !== 'gated' && (
-        <p className="text-theme-text-muted">Some checks could not run: {header.message}.</p>
+        <p className="text-theme-text-muted">
+          Some checks could not run: {header.message.replace(/\.*$/, '')}.
+          {TRANSIENT_HEADER_REASONS.has(header.reason) ? ' Close and reopen this list to try again.' : ''}{' '}
+          <HelpLink className="text-[11px]" />
+        </p>
       )}
       <p className="text-[10px] text-theme-text-muted">From the repository’s own files. How a model actually behaves shows only once you use it.</p>
     </section>
