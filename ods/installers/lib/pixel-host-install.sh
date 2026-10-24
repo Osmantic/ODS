@@ -5666,7 +5666,15 @@ ods_pixel_install_default_agent() {
             return 1
         fi
     fi
-    if _ods_pixel_managed_contract_matches "$owner" "$home" "$contract_sha256"; then
+    # A completed model transaction rebinds the live configuration digest but
+    # can leave the install contract describing the previous model. Reuse is
+    # safe only when the live route also agrees with the new onboarding record.
+    if _ods_pixel_managed_contract_matches "$owner" "$home" "$contract_sha256" \
+        && _ods_pixel_stable_alias_matches_promoted_model "$owner" "$home" "$answers" \
+            "$(_ods_pixel_runtime_model_identity)" "" "" "" \
+            "$(jq -r '.modelRouteFingerprint // ""' "$answers")" \
+            "$(jq -r '.modelImageInput // "unknown"' "$answers")" \
+            "$(jq -r '.modelThinkingControl // ""' "$answers")"; then
         reuse_active=true
     fi
     if _ods_pixel_verified_source_matches "$owner" "$home"; then
