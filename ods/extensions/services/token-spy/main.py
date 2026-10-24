@@ -814,6 +814,14 @@ async def _handle_streaming(client, raw_body, headers, model, sys_analysis,
     )
 
 
+def _buffered_proxy_response(resp: httpx.Response) -> Response:
+    # HTTPX has already decoded resp.content. Upstream compression and wire
+    # framing no longer describe these bytes; let Starlette set their length.
+    headers = {key: value for key, value in resp.headers.items()
+               if key.lower() not in {"content-encoding", "content-length", "transfer-encoding"}}
+    return Response(content=resp.content, status_code=resp.status_code, headers=headers)
+
+
 async def _handle_non_streaming(client, raw_body, headers, model, sys_analysis,
                                 msg_analysis, tools, start_time):
     """Handle non-streaming requests (rare for OpenClaw, but support anyway)."""
@@ -847,11 +855,7 @@ async def _handle_non_streaming(client, raw_body, headers, model, sys_analysis,
 
     await _log_entry_async(model, sys_analysis, msg_analysis, tools, raw_body, usage, start_time, provider_name="anthropic")
 
-    return Response(
-        content=resp.content,
-        status_code=resp.status_code,
-        headers=dict(resp.headers),
-    )
+    return _buffered_proxy_response(resp)
 
 
 # ── OpenAI-Compatible Proxy (Moonshot/Kimi) ──────────────────────────────────
@@ -1067,11 +1071,7 @@ async def _handle_openai_non_streaming(client, raw_body, headers, model, sys_ana
 
     await _log_entry_async(model, sys_analysis, msg_analysis, tools, raw_body, usage, start_time, provider_name="openai", filter_result=filter_result)
 
-    return Response(
-        content=resp.content,
-        status_code=resp.status_code,
-        headers=dict(resp.headers),
-    )
+    return _buffered_proxy_response(resp)
 
 
 # ── Auto-Reset (External Compaction) ─────────────────────────────────────────
@@ -2555,11 +2555,7 @@ async def proxy_other(request: Request, path: str):
             content=body if body else None,
             headers=headers,
         )
-        return Response(
-            content=resp.content,
-            status_code=resp.status_code,
-            headers=dict(resp.headers),
-        )
+        return _buffered_proxy_response(resp)
     except Exception as e:
         log.error(f"Proxy passthrough error: {e}")
         return JSONResponse(status_code=502, content={"error": "Upstream request failed"})
