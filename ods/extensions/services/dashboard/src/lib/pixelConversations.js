@@ -76,7 +76,7 @@ const terminalOutcome = message => JSON.stringify({status:message?.status,
   content:message?.content || (message?.status === 'done' ? 'Completed without a text response.' : '')})
 
 const EMPTY_DRAFT_KEYS = new Set(['schema', 'chatId', 'messages', 'draft', 'requestId', 'inFlight',
-  'interrupted', 'contextStart', 'compactionRequestId', 'preview', 'workspaceOpen', 'updatedAt', 'persistenceVersion', 'persistenceRevision', 'draftImages'])
+  'interrupted', 'contextStart', 'compactionRequestId', 'preview', 'workspaceOpen', 'updatedAt', 'persistenceVersion', 'persistenceRevision', 'draftImages', 'chatMode'])
 function omittedEmptyBaseline(chat) {
   // The library omits an empty draft. Moving the shared active pointer does
   // not edit that draft, but pending operations and unknown metadata stay strict.
