@@ -223,6 +223,7 @@ tests/test-update-backup-retention-spaces.sh
 tests/test-update-compose-restart-contract.sh
 tests/test-update-current-branch-contract.sh
 tests/test-update-current-version.sh
+tests/test-update-cross-process-lock.sh
 tests/test-update-refreshes-compose-flags.sh
 tests/test-update-script-backup.sh
 tests/test-voice-repair-command.sh
