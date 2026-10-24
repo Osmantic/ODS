@@ -220,6 +220,7 @@ tests/test-uninstall-refuses-sudo.sh
 tests/test-unix-restart-recreate-env.sh
 tests/test-update-backup-restore-configs.sh
 tests/test-update-backup-retention-spaces.sh
+tests/test-update-compat-exit-codes.sh
 tests/test-update-compose-restart-contract.sh
 tests/test-update-current-branch-contract.sh
 tests/test-update-current-version.sh
