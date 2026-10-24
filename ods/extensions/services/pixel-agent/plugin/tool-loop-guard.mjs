@@ -9134,6 +9134,21 @@ export function createToolLoopGuard({
       toolName === "tool_call" && typeof pendingParams?.id === "string"
         ? pendingParams.id.split(":").at(-1)
         : toolName;
+    // A model can ignore result coaching and jump straight to packaging.
+    // Give this exact failed verification two bounded corrective turns here;
+    // finalize revisions cannot resume the pinned harness after file writes.
+    // After the allowance, an unverified snapshot may still be delivered,
+    // but its publication cannot change the failed verification verdict.
+    if (pendingSelectedName === 'pixel_ods_workspace_artifact' &&
+        state?.unittestRecoveryPending && state.latestVerificationStatus === 'failed' &&
+        state.unittestRecoveryPending.fingerprint === state.latestVerificationFingerprint &&
+        !state.clientCancelled && !state.codingExhausted && !state.webLoopAborted &&
+        !state.recursiveDeleteDenied && !state.progressBudget.exhausted &&
+        recordFreeCorrection(state, 'unittest-recovery-artifact',
+          context?.toolCallId ?? event?.toolCallId, toolName)) {
+      return {block: true, blockReason: 'Before packaging this project, complete its requested verification. ' +
+        state.unittestRecoveryPending.instruction};
+    }
     if (pendingSelectedName === WORKSPACE_PREVIEW_TOOL) {
       if (state?.workspaceDocumentDeliveryRequested && !state.workspacePreviewRequired) {
         return {block:true, blockReason:
@@ -12245,6 +12260,7 @@ export function createToolLoopGuard({
     if (!fingerprint && !verificationFingerprint) return;
     if (verificationFingerprint) {
       state.latestVerificationFingerprint = verificationFingerprint;
+      state.unittestRecoveryPending = undefined;
     }
     const pendingSessionId = runningExecSessionId(execEvent);
     if (pendingSessionId) {
@@ -12289,6 +12305,26 @@ export function createToolLoopGuard({
         Number.isInteger(execEvent.result.details.exitCode)) {
       const summary = compactFailedUnittestText(execEvent.result);
       if (summary) pendingToolRun.nativeUnittestFailure = summary;
+    }
+    // A direct script can print its own summary, so keep the failed verdict.
+    // Give the model a recovery path when the owner requested unittest but
+    // did not name a test file for the pre-execution canonicalizer to use.
+    if (verificationFailed && state.workspacePythonUnittestRequested &&
+        verificationFingerprintIsPythonUnittest(verificationFingerprint) &&
+        !execFingerprintRunsUnittestRunner(fingerprint) && !execFailed(execEvent) &&
+        execEvent?.result?.details?.status === 'completed' &&
+        execEvent.result.details.exitCode === 0 &&
+        !Object.hasOwn(execEvent.result.details, 'sessionId') &&
+        boundExecReceipt(state, pendingToolRun, event, context, runId, toolCallId, toolName)) {
+      pendingToolRun.unittestRecoveryInstruction = '[ODS Pixel verification recovery] ' +
+        'This exit-0 command did not establish a clean unittest result. Inspect the reported failures and repair any real defect. ' +
+        'Run the relevant suite with python3 -m unittest -v from the project directory, using its actual test module. ' +
+        'Preserve every requested check and diagnostic; include any custom-runner checks in the suite instead of bypassing them. ' +
+        'Do not remove tests, weaken assertions, or claim success until the new result verifies the work.';
+      state.unittestRecoveryPending = {
+        fingerprint: verificationFingerprint,
+        instruction: pendingToolRun.unittestRecoveryInstruction,
+      };
     }
     // OpenClaw conservatively classifies its deferred `tool_call` wrapper as a
     // mutation. A failed wrapped exec therefore remains its last tool error
@@ -12919,6 +12955,8 @@ export function createToolLoopGuard({
     // Same exact-call binding as the completed-exec receipt above.
     const redirectOrderNote = executionGuidance && !Object.hasOwn(syntaxReceipt.details, 'sessionId')
       ? pending.redirectOrderNote : undefined;
+    const unittestRecoveryInstruction = executionGuidance
+      ? pending.unittestRecoveryInstruction : undefined;
     const sandboxPathCorrection = pending?.sandboxPathCorrection &&
       message.role === 'toolResult' && message.toolName === pending.transport &&
       (!message.toolCallId || message.toolCallId === toolCallId) &&
@@ -13204,6 +13242,8 @@ export function createToolLoopGuard({
       content.push({type:'text',text:executionGuidance});
     if (redirectOrderNote && !content.some(block => block?.type === 'text' && block.text === redirectOrderNote))
       content.push({type:'text',text:redirectOrderNote});
+    if (unittestRecoveryInstruction && !content.some(block => block?.type === 'text' && block.text === unittestRecoveryInstruction))
+      content.push({type:'text',text:unittestRecoveryInstruction});
     if (workspaceStageInstruction && coachingDue('workspace', workspaceStageInstruction)) {
       content.push({ type: "text", text: workspaceStageInstruction });
     }
