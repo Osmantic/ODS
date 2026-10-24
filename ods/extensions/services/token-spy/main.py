@@ -18,6 +18,7 @@ import shlex
 import tempfile
 import threading
 import time
+from contextlib import aclosing
 from functools import partial
 from pathlib import Path
 from urllib.parse import urlparse
@@ -27,6 +28,7 @@ import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, Security
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from starlette.background import BackgroundTask
 from filters import apply_filters
 from providers import ProviderRegistry
 from providers.anthropic import cumulative_usage_update
@@ -723,6 +725,47 @@ async def proxy_messages(request: Request):
         )
 
 
+# Dropped when relaying a buffered provider error: the body was already read
+# (and decoded), so framing/encoding headers no longer describe it.
+_STREAM_ERROR_DROP_HEADERS = frozenset({
+    "content-length", "transfer-encoding", "connection", "content-encoding",
+    "keep-alive",
+})
+
+
+async def _open_upstream_stream(client, path, raw_body, headers):
+    """Open a provider stream, or return the response the caller must get.
+
+    The downstream status is committed with the first byte, so a provider
+    failure must be known before the StreamingResponse is created.
+    """
+    try:
+        upstream = await client.send(
+            client.build_request("POST", path, content=raw_body, headers=headers),
+            stream=True,
+        )
+    except httpx.HTTPError as e:
+        log.error(f"Upstream request error: {e}")
+        return JSONResponse(
+            status_code=502,
+            content={"error": {"type": "proxy_error", "message": "Upstream request failed"}},
+        )
+    if upstream.status_code < 400:
+        return upstream
+    try:
+        err_body = await upstream.aread()
+    finally:
+        await upstream.aclose()
+    log.error(f"Upstream {upstream.status_code}: {err_body[:2000].decode(errors='replace')}")
+    return Response(
+        content=err_body,
+        status_code=upstream.status_code,
+        headers={k: v for k, v in upstream.headers.items()
+                 if k.lower() not in _STREAM_ERROR_DROP_HEADERS},
+        media_type=upstream.headers.get("content-type", "application/json"),
+    )
+
+
 async def _handle_streaming(client, raw_body, headers, model, sys_analysis,
                             msg_analysis, tools, start_time):
     """Stream SSE response through while capturing token metrics."""
@@ -736,15 +779,15 @@ async def _handle_streaming(client, raw_body, headers, model, sys_analysis,
         "stop_reason": None,
     }
 
+    upstream = await _open_upstream_stream(client, "/v1/messages", raw_body, headers)
+    if isinstance(upstream, Response):
+        return upstream
+
     async def stream_and_capture():
         current_event = None
         logged = False
         try:
-            async with client.stream(
-                "POST", "/v1/messages",
-                content=raw_body,
-                headers=headers,
-            ) as upstream:
+            async with aclosing(upstream):
                 async for line in upstream.aiter_lines():
                     # Yield line immediately for transparent passthrough
                     yield line + "\n"
@@ -811,6 +854,7 @@ async def _handle_streaming(client, raw_body, headers, model, sys_analysis,
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },
+        background=BackgroundTask(upstream.aclose),
     )
 
 
@@ -967,21 +1011,14 @@ async def _handle_openai_streaming(client, raw_body, headers, model, sys_analysi
         "stop_reason": None,
     }
 
+    upstream = await _open_upstream_stream(client, "/v1/chat/completions", raw_body, headers)
+    if isinstance(upstream, Response):
+        return upstream
+
     async def stream_and_capture():
         logged = False
         try:
-            async with client.stream(
-                "POST", "/v1/chat/completions",
-                content=raw_body,
-                headers=headers,
-            ) as upstream:
-                if upstream.status_code >= 400:
-                    err_body = b""
-                    async for chunk in upstream.aiter_bytes():
-                        err_body += chunk
-                    log.error(f"Upstream {upstream.status_code}: {err_body[:2000].decode(errors='replace')}")
-                    yield f"data: {err_body.decode(errors='replace')}\n\n"
-                    return
+            async with aclosing(upstream):
                 async for line in upstream.aiter_lines():
                     yield line + "\n"
 
@@ -1034,6 +1071,7 @@ async def _handle_openai_streaming(client, raw_body, headers, model, sys_analysi
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },
+        background=BackgroundTask(upstream.aclose),
     )
 
 
