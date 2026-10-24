@@ -3478,6 +3478,66 @@ function compactCleanVerificationResult(message, pending) {
   };
 }
 
+// Adapted from PR #6716, commit 2c042c830. A failed run can contain several
+// independent defects; retaining only the last traceback hides repair evidence.
+// Keep diagnostic excerpts and an explicit inventory within a fixed budget.
+const MULTI_FAILURE_SUMMARY_CHARS = 3500;
+function multipleUnittestFailures(lines) {
+  const ranIndex = lines.findLastIndex((line) => /^Ran\s+[1-9][0-9]*\s+tests?\s+in\s+/.test(line));
+  const headers = lines.flatMap((line, index) => /^(?:FAIL|ERROR):\s+/.test(line) ? [index] : []);
+  if (headers.length < 2 || ranIndex < 0 || headers.at(-1) > ranIndex) return undefined;
+  const clip = (text, limit) => text.length <= limit ? text : `${text.slice(0, limit - 12)} [truncated]`;
+  const rawTail = lines.slice(ranIndex).join("\n").trim();
+  // A test may print arbitrarily long text after the runner summary. Reserve
+  // the verdict and command exit separately instead of slicing the output tail.
+  const tail = rawTail.length <= 500 ? rawTail : [
+    clip(lines[ranIndex], 160),
+    ...lines.slice(ranIndex + 1).filter((line) => /^FAILED\s*\(/.test(line)).slice(-1).map((line) => clip(line, 160)),
+    ...lines.slice(ranIndex + 1).filter((line) => /^\(Command exited with code\s+/.test(line)).slice(-1).map((line) => clip(line, 80)),
+    "[Additional trailer text omitted.]",
+  ].join("\n");
+  const exception = /^(?:AssertionError|[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception)|SystemExit|KeyboardInterrupt|StopIteration)(?::|$)/;
+  const blocks = headers.map((start, position) => {
+    let end = headers[position + 1] ?? ranIndex;
+    while (end > start + 1 && /^(?:[=-]{20,}|\s*)$/.test(lines[end - 1])) end -= 1;
+    let errorIndex = -1, frameIndex = -1;
+    for (let index = start + 1; index < end; index += 1) {
+      if (exception.test(lines[index])) errorIndex = index;
+    }
+    for (let index = errorIndex - 1; index > start; index -= 1) {
+      if (/^\s*File\s+"/.test(lines[index])) {
+        frameIndex = index;
+        if (lines[index].includes("/workspace/")) break;
+      }
+    }
+    const excerpt = [clip(lines[start], 180)];
+    if (frameIndex >= 0) {
+      excerpt.push(clip(lines[frameIndex], 160));
+      if (frameIndex + 1 < errorIndex) excerpt.push(clip(lines[frameIndex + 1], 140));
+    }
+    if (errorIndex >= 0) excerpt.push(clip(lines[errorIndex], 220));
+    else excerpt.push("[Exception detail unavailable in this block.]");
+    return excerpt.join("\n");
+  });
+  const kept = [];
+  // Inventory and omission count need at most 160 characters for any array
+  // representable in JS. The fixed outer prefix and repair hint fit in the
+  // remaining space below the 4096-character model-facing bound.
+  let remaining = MULTI_FAILURE_SUMMARY_CHARS - tail.length - 160;
+  for (const block of blocks) {
+    if (block.length + 2 > remaining) continue;
+    kept.push(block);
+    remaining -= block.length + 2;
+  }
+  const omitted = blocks.length - kept.length;
+  return [
+    `Unittest diagnostic excerpts: ${blocks.length} failing tests; showing ${kept.length}.`,
+    ...kept,
+    ...(omitted ? [`[${omitted} more failing test(s) omitted to keep diagnostics bounded.]`] : []),
+    tail,
+  ].join("\n");
+}
+
 function compactFailedUnittestText(result) {
   if (
     !result ||
@@ -3495,6 +3555,7 @@ function compactFailedUnittestText(result) {
   const source = values.sort((left, right) => right.length - left.length)[0];
   if (typeof source !== "string" || source.length < 600) return undefined;
   const lines = source.replace(/\r\n?/g, "\n").split("\n");
+  const everyFailure = multipleUnittestFailures(lines);
   const failureIndex = lines.findLastIndex((line) => /^(?:FAIL|ERROR):\s+/.test(line));
   const ranIndex = lines.findLastIndex((line) => /^Ran\s+[1-9][0-9]*\s+tests?\s+in\s+/.test(line));
   const diagnosticEnd = ranIndex > failureIndex ? ranIndex : lines.length;
@@ -3521,8 +3582,8 @@ function compactFailedUnittestText(result) {
   if (failureIndex >= 0) summaryLines.push(lines[failureIndex]);
   summaryLines.push(...lines.slice(detailStart, detailEnd));
   if (ranIndex >= 0) summaryLines.push(...lines.slice(ranIndex));
-  let summary = summaryLines.join("\n").trim();
-  if (summary.length > 1400) {
+  let summary = everyFailure ?? summaryLines.join("\n").trim();
+  if (!everyFailure && summary.length > 1400) {
     summary = `${summaryLines[0]}\n${summary.slice(-1320)}`;
   }
   const escapedNewlineHint =
