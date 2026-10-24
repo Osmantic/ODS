@@ -1024,8 +1024,17 @@ function Invoke-ODSSttModelDownloadTrigger {
     # bounded so slow Hugging Face transfers do not wedge ods.ps1 or install.
     $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
     if ($curl) {
-        $curlOutput = & $curl.Source --fail --silent --show-error --max-time 30 -X POST $ModelUrl 2>&1
-        $curlExit = $LASTEXITCODE
+        $previousErrorActionPreference = $ErrorActionPreference
+        try {
+            # PS 5.1 turns redirected native stderr into ErrorRecords. Curl's
+            # timeout diagnostic must reach the exit-28 decision below instead
+            # of terminating repair before it can verify the model cache.
+            $ErrorActionPreference = 'Continue'
+            $curlOutput = & $curl.Source --fail --silent --show-error --max-time 30 -X POST $ModelUrl 2>&1
+            $curlExit = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+        }
         if ($curlExit -eq 0 -or $curlExit -eq 28) { return $true }
         Write-AIWarn "STT model download trigger returned curl exit $curlExit; verifying cache before failing."
         if ($curlOutput) {
