@@ -5,6 +5,8 @@ quarantines fixed native paths only after all six launchd jobs are absent and
 their observed process trees have exited, or an explicit preserved-plist reboot
 barrier proves the old processes cannot survive. Unknown or transitional state fails
 before stopping services. The dedicated Operations identity is retained.
+An initial activation that failed, and whose rollback confirmed every stop, is
+archived the same way without stopping anything.
 """
 import argparse
 import base64
@@ -40,6 +42,38 @@ DIRECTORIES = ('/private/var/lib/ods-pixel-native-config',
     '/usr/local/libexec/ods-pixel-runtimes')
 CONFIG_NAMES = ('pixel-access.json', 'pixel-access-relay.key', 'pixel-gateway.sb',
     'pixel-gateway.full-access.sb', 'pixel-gateway.sandboxed.sb', 'pixel-access-relay.sb')
+# A failed initial activation (pixel-macos-access-install.py): staging never
+# starts a job, and rollback disables each started job and journals its stop.
+INACTIVE_PHASES = ('staging', 'staging-failed', 'initial-stopped')
+SERVICE_ORDER = ['manager', 'promoter', 'operations']
+UNSTARTED_SERVICE_PHASES = ('starting', 'provisioning-identity', 'provisioning-state',
+    'publishing-services', 'services-prepared')
+STOPPED_SERVICE_PHASES = ('activation-failed', 'services-stopped')
+HELP = '  Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC'
+GUIDANCE = {
+    'native-retirement-stopped-job-needs-witness':
+        'Keep native state intact. Maintainer-assisted --prepare-stopped-recovery requires a Mac restart; '
+        'see docs/MACOS_PIXEL_RETIREMENT_RECOVERY.md before using it.',
+    'native-retirement-inactive-stop-unconfirmed':
+        'This Pixel setup stopped before every Pixel service was confirmed stopped, so its files '
+        'cannot be moved safely. Nothing was moved; keep them as they are.',
+    'native-retirement-inactive-job-loaded':
+        'A Pixel service from a setup that did not finish is loaded again. Nothing was moved; '
+        'keep the files as they are.',
+    'native-retirement-unbound-residue':
+        'Native Pixel files from an earlier installation remain, but the record that ties them to '
+        'an ODS installation is missing, so they cannot be proven safe to move. Nothing was moved.',
+    'native-retirement-custody-mismatch':
+        'The native Pixel on this Mac belongs to another ODS folder or user, or is in a state this '
+        'uninstaller does not handle. Run it as the user who installed ODS, for the folder ODS was '
+        'installed in. Nothing was moved.',
+    'native-retirement-docker-command-failed':
+        'Docker did not answer. Start Docker Desktop, wait until it is running, then run the same '
+        'command again.',
+    'operations-identity-process-active':
+        'macOS background processes still run as the Pixel service account _ods_pixel_ops. '
+        'Restart the Mac, then run the same command again.',
+}
 
 
 def helper(name):
@@ -49,22 +83,67 @@ def helper(name):
     return module
 
 
-def selected(settings, installation, services, *, owner, install_dir):
-    """Validate independent protected records before consulting mutable state."""
-    root = str(install_dir)
+def bound_owner(settings, installation, *, owner, root):
     if (settings.get('owner') != owner.pw_name or settings.get('install_dir') != root
             or settings.get('settings_data_dir') != root + '/data'
             or settings.get('state_dir') != str(STATE)
-            or installation.get('owner') != owner.pw_uid
-            or installation.get('phase') != 'active'
-            or services.get('owner') != owner.pw_uid
-            or services.get('progress', {}).get('phase') != 'services-active'
-            or services.get('requiresRecovery')):
+            or installation.get('owner') != owner.pw_uid):
         raise ValueError('native-retirement-custody-mismatch')
+
+
+def bound_service_root(services, root):
     bundle = services.get('selection', {}).get('bundle')
     if (not isinstance(bundle, str) or not bundle.startswith(root + '/data/pixel-native/')
             or any(part in ('', '.', '..') for part in bundle.split('/')[1:])):
         raise ValueError('native-retirement-service-root-mismatch')
+
+
+def selected(settings, installation, services, *, owner, install_dir):
+    """Validate independent protected records before consulting mutable state."""
+    root = str(install_dir)
+    bound_owner(settings, installation, owner=owner, root=root)
+    if (installation.get('phase') != 'active'
+            or services.get('owner') != owner.pw_uid
+            or services.get('progress', {}).get('phase') != 'services-active'
+            or services.get('requiresRecovery')):
+        raise ValueError('native-retirement-custody-mismatch')
+    bound_service_root(services, root)
+    return root
+
+
+def selected_inactive(settings, installation, services, *, owner, install_dir):
+    """Accept a failed initial activation only when none of its jobs can run.
+
+    Staging never starts a job. A failed activation disables and unloads each
+    job it started and journals its process tree as exited, leaving
+    stopUnconfirmed empty. An interrupted or unconfirmed rollback, or any
+    migration journal, remains a refusal.
+    """
+    root = str(install_dir)
+    bound_owner(settings, installation, owner=owner, root=root)
+    if (installation.get('schemaVersion') != 1
+            or installation.get('operation') != 'initial-install'):
+        raise ValueError('native-retirement-custody-mismatch')
+    if installation.get('phase') not in INACTIVE_PHASES:
+        raise ValueError('native-retirement-inactive-stop-unconfirmed')
+    if services is None:
+        return root
+    if services.get('owner') != owner.pw_uid:
+        raise ValueError('native-retirement-custody-mismatch')
+    bound_service_root(services, root)
+    progress, attempted = services.get('progress'), services.get('attempted')
+    if (type(progress) is not dict or type(attempted) is not list
+            or attempted != SERVICE_ORDER[:len(attempted)]):
+        raise ValueError('native-retirement-inactive-stop-unconfirmed')
+    if attempted:
+        stopped = (progress.get('phase') in STOPPED_SERVICE_PHASES
+                   and progress.get('attempted') == attempted
+                   and progress.get('stopUnconfirmed') == [])
+    else:
+        # The journal is written before each bootstrap: none was attempted.
+        stopped = progress.get('phase') in UNSTARTED_SERVICE_PHASES
+    if not stopped:
+        raise ValueError('native-retirement-inactive-stop-unconfirmed')
     return root
 
 
@@ -97,6 +176,100 @@ def command(args):
 
 def prove_absent(target):
     return command(['/bin/launchctl', 'print', target]).returncode == 113
+
+
+def enable_ods_labels():
+    """Clear launchd's disabled override on ODS labels whose plists are gone.
+
+    A failed initial activation disables its jobs so they cannot start at
+    boot, and the next install refuses a disabled label. A label is enabled
+    only after its plist left /Library/LaunchDaemons. Only the exact disabled
+    lines the installer itself recognizes are acted on.
+    """
+    result = command(['/bin/launchctl', 'print-disabled', 'system'])
+    if result.returncode:
+        raise ValueError('native-retirement-disabled-state-unavailable')
+    lines = {line.strip() for line in result.stdout.splitlines()}
+    for label in ('com.ods.pixel-' + name for name in LABELS):
+        if '"' + label + '" => disabled' not in lines:
+            continue
+        if os.path.lexists(Path('/Library/LaunchDaemons') / (label + '.plist')):
+            raise ValueError('native-retirement-disabled-job-definition-present')
+        if command(['/bin/launchctl', 'enable', 'system/' + label]).returncode:
+            raise ValueError('native-retirement-job-enable-failed')
+
+
+def settle_operations_session(uid):
+    """Stop macOS's own agents for the Operations account before moving its home.
+
+    Once anything runs as _ods_pixel_ops, macOS starts its per-user agents
+    (cfprefsd, distnoted, ...) in launchd domain user/<uid>. They outlive
+    Pixel's jobs and keep writing Library/ into the account home (#7376).
+    Callers verified the receipt-bound identity and that no Pixel job is
+    loaded. The process list, not bootout's exit status, is the proof.
+    """
+    def running():
+        result = command(['/bin/ps', '-axo', 'uid='])
+        if result.returncode:
+            raise ValueError('native-retirement-process-list-unavailable')
+        return str(uid) in result.stdout.split()
+    if not running():
+        return
+    command(['/bin/launchctl', 'bootout', 'user/' + str(uid)])
+    deadline = time.monotonic() + 30
+    while running():
+        if time.monotonic() >= deadline:
+            raise ValueError('operations-identity-process-active')
+        time.sleep(0.25)
+
+
+def verify_definition(path, body, *, settings, services, owner, root, digest):
+    """Bind one protected plist to its role's account and the protected records."""
+    definition = plistlib.loads(body)
+    if definition.get('Label') != path.stem:
+        raise ValueError('native-retirement-job-label-mismatch')
+    role = path.stem.removeprefix('com.ods.pixel-')
+    expected_user = ('root' if role in ('access', 'native-promoter') else
+        '_ods_pixel_ops' if role == 'native-operations' else owner.pw_name)
+    if definition.get('UserName') != expected_user:
+        raise ValueError('native-retirement-service-owner-mismatch')
+    if role == 'native-gateway':
+        if (digest(definition, ValueError) != settings.get('gateway_binding', {}).get('definition')
+                or 'HOME=' + str(root / 'data/pixel-native/home') not in definition.get('ProgramArguments', [])):
+            raise ValueError('native-retirement-gateway-binding-mismatch')
+    if role in ('native-manager', 'native-promoter', 'native-operations'):
+        expected = (services.get('recovery') or {}).get('definitions', {}).get(role.removeprefix('native-'), {})
+        if (expected.get('path') != str(path)
+                or base64.b64decode(expected.get('body', ''), validate=True) != body):
+            raise ValueError('native-retirement-service-definition-mismatch')
+    return definition
+
+
+def verify_native_directories(custody, owner, *, partial=False):
+    """Refuse symlink roots and unexpected immutable-tree contents instead of adopting them.
+
+    A failed activation can stop before creating the runtime or configuration root.
+    """
+    for name in DIRECTORIES:
+        path = Path(name)
+        if os.path.lexists(path):
+            info = path.lstat()
+            expected_uid = owner.pw_uid if path.name == 'ods-pixel-manager' else 0
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != expected_uid or info.st_mode & 0o022:
+                raise ValueError('native-retirement-directory-custody')
+    runtime = Path('/usr/local/libexec/ods-pixel-runtimes')
+    if not partial or os.path.lexists(runtime):
+        bundle = helper('pixel-runtime-bundle')
+        for path in runtime.iterdir():
+            if not re.fullmatch('[a-f0-9]{64}', path.name):
+                raise ValueError('native-retirement-unknown-runtime')
+            custody.protected_tree_metadata(path)
+            bundle.verify(path, expected_digest=path.name)
+    config_root = Path('/private/var/lib/ods-pixel-native-config')
+    if not partial or os.path.lexists(config_root):
+        owners = {p.name for p in config_root.iterdir()}
+        if owners != {str(owner.pw_uid)} and not (partial and not owners):
+            raise ValueError('native-retirement-foreign-config-owner')
 
 
 def sandbox_selection(value, *, owner, root):
@@ -276,6 +449,125 @@ def verify_witness(value, *, owner, boot, hashes, targets):
     return value['trees']
 
 
+def archive_moves(moves, *, custody, owner, root):
+    """Rename each path into a new private archive, journaling every step."""
+    archive = Path('/private/var/lib/ods-pixel-retired') / uuid.uuid4().hex
+    with custody.protected_directory(archive, create=True): pass
+    os.chmod(archive, 0o700)
+    receipt = {'schema': 1, 'owner': owner.pw_uid, 'installDir': str(root),
+               'status': 'retiring', 'moves': []}
+    def save():
+        temporary = archive / 'receipt.tmp'
+        temporary.write_text(json.dumps(receipt, sort_keys=True) + '\n')
+        os.chmod(temporary, 0o600)
+        with temporary.open('rb') as stream: os.fsync(stream.fileno())
+        os.replace(temporary, archive / 'receipt.json')
+        directory_fd = os.open(archive, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try: os.fsync(directory_fd)
+        finally: os.close(directory_fd)
+    save()
+    for index, source in enumerate(moves):
+        destination = archive / ('item-' + str(index))
+        receipt['moves'].append({'source': str(source), 'archive': str(destination), 'done': False})
+        save()
+        os.rename(source, destination)
+        receipt['moves'][-1]['done'] = True
+        save()
+    receipt['status'] = 'retired'
+    save()
+    return archive
+
+
+def retire_inactive(directory, record, *, custody, settings, installation, owner, root,
+                    residues, plists, validate_only, digest):
+    """Archive what a failed initial activation left, without stopping anything (#7071).
+
+    Its rollback already disabled and unloaded the jobs it started and confirmed
+    each stop, and the access bridge never created its lock. Bind the leftovers
+    to the protected records and prove no job is loaded, then move them like
+    normal retirement: nothing is deleted and the identity is retained. Admission
+    stayed held throughout, so the gateway never started an agent sandbox.
+    """
+    names = set(os.listdir(directory))
+    if names & {'retirement.json', 'retirement-plists'}:
+        raise ValueError('native-retirement-custody-mismatch')
+    services = (record(STATE / 'service-installation.json')
+                if 'service-installation.json' in names else None)
+    selected_inactive(settings, installation, services, owner=owner, install_dir=root)
+    account = helper('pixel-native-ops-account')
+    intent = None
+    if 'ops-identity.json' in names:
+        intent = account.validate_intent(record(STATE / 'ops-identity.json'))
+        for kind in ('Groups', 'Users'):
+            account.verify_record(account.read_record(kind), account.expected_attributes(intent, kind), complete=True)
+    if os.path.lexists(BROKER):
+        info = BROKER.lstat()
+        if (intent is None or not stat.S_ISDIR(info.st_mode)
+                or info.st_uid != intent['id'] or info.st_gid != intent['id']):
+            raise ValueError('native-retirement-broker-home-custody')
+    verify_native_directories(custody, owner, partial=True)
+    for name in names:
+        custody.protected_bytes(STATE / name, limit=32 * 1024 * 1024)
+    for path in plists:
+        if os.path.lexists(path):
+            verify_definition(path, custody.protected_bytes(path, limit=32 * 1024 * 1024),
+                settings=settings, services=services or {}, owner=owner, root=root, digest=digest)
+    def unloaded():
+        for path in plists:
+            result = command(['/bin/launchctl', 'print', 'system/' + path.stem])
+            if result.returncode == 0:
+                raise ValueError('native-retirement-inactive-job-loaded')
+            if result.returncode != 113:
+                raise ValueError('native-retirement-job-inspection-failed')
+    unloaded()
+    if validate_only:
+        return {'status': 'validated', 'owner': owner.pw_uid, 'installDir': str(root)}
+    if intent is not None:
+        settle_operations_session(intent['id'])
+        unloaded()
+    moves = sorted(BROKER.iterdir()) if os.path.lexists(BROKER) else []
+    moves += [p for p in residues + plists if p not in (STATE, BROKER) and os.path.lexists(p)]
+    if intent is None:
+        moves.append(STATE)  # No identity was provisioned, so nothing is retained.
+    else:
+        moves += [STATE / n for n in sorted(os.listdir(directory)) if n not in RETAIN]
+    archive = archive_moves(moves, custody=custody, owner=owner, root=root)
+    enable_ods_labels()
+    if intent is not None:
+        account.verify_empty_home_only() if os.path.lexists(BROKER) else account.verify_identity_only()
+    elif os.path.lexists(STATE) or os.path.lexists(BROKER):
+        raise ValueError('native-retirement-unbound-residue')
+    return {'status': 'retired', 'archive': str(archive)}
+
+
+def settle_retained_identity(account, custody, *, owner, root):
+    """Clear what blocks reuse of a retained Operations identity (#7376).
+
+    macOS's per-user agents for the account can outlive Pixel's jobs and write
+    Library/ into its otherwise empty home, and an interrupted retirement can
+    leave ODS's launchd labels disabled; the next install refuses both. Touch
+    only the receipt-bound account and ODS's labels, and move the home's
+    contents into a private archive instead of deleting them.
+    """
+    with custody.protected_directory(STATE) as directory:
+        if set(os.listdir(directory)) != RETAIN:
+            raise ValueError('operations-identity-not-only-protected-state')
+    intent = account.validate_intent(json.loads(custody.protected_bytes(STATE / 'ops-identity.json', limit=4096)))
+    for kind in ('Groups', 'Users'):
+        account.verify_record(account.read_record(kind), account.expected_attributes(intent, kind), complete=True)
+    if not all(prove_absent('system/com.ods.pixel-' + label) for label in LABELS):
+        raise ValueError('operations-identity-service-loaded-or-ambiguous')
+    settle_operations_session(intent['id'])
+    if os.path.lexists(BROKER):
+        info = BROKER.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != intent['id'] or info.st_gid != intent['id']:
+            raise ValueError('native-retirement-broker-home-custody')
+        leftovers = sorted(BROKER.iterdir())
+        if leftovers:
+            archive_moves(leftovers, custody=custody, owner=owner, root=root)
+    enable_ods_labels()
+
+
 def retire(install_dir, owner_name, *, validate_only=False,
            prepare_stopped_recovery=False, resume_stopped_recovery=False):
     if sum(bool(value) for value in (validate_only, prepare_stopped_recovery, resume_stopped_recovery)) > 1:
@@ -295,6 +587,7 @@ def retire(install_dir, owner_name, *, validate_only=False,
     residues = [Path(p) for p in DIRECTORIES] + [BROKER, STATE]
     residues += [Path('/private/etc/ods') / n for n in CONFIG_NAMES]
     plists = [Path('/Library/LaunchDaemons') / ('com.ods.pixel-' + n + '.plist') for n in LABELS]
+    plain = not (validate_only or prepare_stopped_recovery or resume_stopped_recovery)
     if not os.path.lexists(SETTINGS):
         if any(os.path.lexists(p) for p in residues + plists):
             # A previous successful retirement may retain only the identity.
@@ -302,16 +595,27 @@ def retire(install_dir, owner_name, *, validate_only=False,
             others = [p for p in residues + plists if p not in (STATE, BROKER)]
             if any(os.path.lexists(p) for p in others):
                 raise ValueError('native-retirement-unbound-residue')
+            if plain and os.path.lexists(STATE):
+                settle_retained_identity(account, custody, owner=owner, root=root)
             account.verify_empty_home_only() if os.path.lexists(BROKER) else account.verify_identity_only()
         return {'status': 'absent'}
     with custody.protected_directory(STATE) as directory:
-        lock = os.open('lock', os.O_RDWR | os.O_NOFOLLOW, dir_fd=directory)
+        # The access bridge creates this mutex on its first transition; an
+        # initial activation that failed before that never did (#7071).
+        lock = os.open('lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=directory)
         try:
             custody._verify_fd(lock, directory=False)
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             validate_state_names(os.listdir(directory))
             def record(path):
                 return json.loads(custody.protected_bytes(path, limit=32 * 1024 * 1024))
+            installation = record(STATE / 'installation.json')
+            if installation.get('phase') != 'active':
+                if prepare_stopped_recovery or resume_stopped_recovery:
+                    raise ValueError('native-retirement-inactive-uses-plain-retirement')
+                return retire_inactive(directory, record, custody=custody, settings=record(SETTINGS),
+                    installation=installation, owner=owner, root=root, residues=residues,
+                    plists=plists, validate_only=validate_only, digest=launchd_definition_digest)
             reboot = helper('pixel-native-retirement-reboot').Recovery(STATE, plists,
                 read=lambda path: custody.protected_bytes(path, limit=32 * 1024 * 1024),
                 directory=custody.protected_directory, save=atomic_json,
@@ -319,7 +623,6 @@ def retire(install_dir, owner_name, *, validate_only=False,
             if resume_stopped_recovery and reboot.document is None:
                 raise ValueError('native-retirement-reboot-preparation-required')
             settings = record(SETTINGS)
-            installation = record(STATE / 'installation.json')
             services = record(STATE / 'service-installation.json')
             selected(settings, installation, services, owner=owner, install_dir=root)
             account = helper('pixel-native-ops-account')
@@ -330,25 +633,8 @@ def retire(install_dir, owner_name, *, validate_only=False,
                 info = BROKER.lstat()
                 if not stat.S_ISDIR(info.st_mode) or info.st_uid != intent['id'] or info.st_gid != intent['id']:
                     raise ValueError('native-retirement-broker-home-custody')
-            # A protected root receipt owns the namespaces. Refuse symlink roots
-            # and unexpected immutable-tree contents instead of adopting them.
-            for name in DIRECTORIES:
-                path = Path(name)
-                if os.path.lexists(path):
-                    info = path.lstat()
-                    expected_uid = owner.pw_uid if path.name == 'ods-pixel-manager' else 0
-                    if not stat.S_ISDIR(info.st_mode) or info.st_uid != expected_uid or info.st_mode & 0o022:
-                        raise ValueError('native-retirement-directory-custody')
-            runtime = Path('/usr/local/libexec/ods-pixel-runtimes')
-            bundle = helper('pixel-runtime-bundle')
-            for path in runtime.iterdir():
-                if not re.fullmatch('[a-f0-9]{64}', path.name):
-                    raise ValueError('native-retirement-unknown-runtime')
-                custody.protected_tree_metadata(path)
-                bundle.verify(path, expected_digest=path.name)
-            config_root = Path('/private/var/lib/ods-pixel-native-config')
-            if {p.name for p in config_root.iterdir()} != {str(owner.pw_uid)}:
-                raise ValueError('native-retirement-foreign-config-owner')
+            # A protected root receipt owns the namespaces.
+            verify_native_directories(custody, owner)
             # Snapshot all root-controlled files used as retirement authority.
             snapshots = {str(p): custody.protected_bytes(reboot.path(p), limit=32 * 1024 * 1024)
                          for p in [SETTINGS, *plists, *(STATE / n for n in os.listdir(directory)
@@ -360,24 +646,9 @@ def retire(install_dir, owner_name, *, validate_only=False,
             sandbox_plans = sandboxes.plan()
             jobs = []
             for path in plists:
-                definition = plistlib.loads(snapshots[str(path)])
+                definition = verify_definition(path, snapshots[str(path)], settings=settings,
+                    services=services, owner=owner, root=root, digest=launchd_definition_digest)
                 target = 'system/' + path.stem
-                if definition.get('Label') != path.stem:
-                    raise ValueError('native-retirement-job-label-mismatch')
-                role = path.stem.removeprefix('com.ods.pixel-')
-                expected_user = ('root' if role in ('access', 'native-promoter') else
-                    '_ods_pixel_ops' if role == 'native-operations' else owner.pw_name)
-                if definition.get('UserName') != expected_user:
-                    raise ValueError('native-retirement-service-owner-mismatch')
-                if role == 'native-gateway':
-                    if (launchd_definition_digest(definition, ValueError) != settings.get('gateway_binding', {}).get('definition')
-                            or 'HOME=' + str(root / 'data/pixel-native/home') not in definition.get('ProgramArguments', [])):
-                        raise ValueError('native-retirement-gateway-binding-mismatch')
-                if role in ('native-manager', 'native-promoter', 'native-operations'):
-                    expected = services.get('recovery', {}).get('definitions', {}).get(role.removeprefix('native-'), {})
-                    if (expected.get('path') != str(path)
-                            or base64.b64decode(expected.get('body', ''), validate=True) != snapshots[str(path)]):
-                        raise ValueError('native-retirement-service-definition-mismatch')
                 result = command(['/bin/launchctl', 'print', target])
                 if result.returncode == 113:
                     jobs.append((target, (), False))
@@ -448,9 +719,6 @@ def retire(install_dir, owner_name, *, validate_only=False,
             # stop its processes before moving any native or workspace paths.
             sandboxes.preserve(sandbox_plans)
             reboot.unchanged(snapshots, code='native-retirement-authority-changed-after-stop')
-            archive = Path('/private/var/lib/ods-pixel-retired') / uuid.uuid4().hex
-            with custody.protected_directory(archive, create=True): pass
-            os.chmod(archive, 0o700)
             moves = []
             # The Operations account/home may be protected by macOS. Retain the
             # empty home and UUID-bound identity; preserve each former child.
@@ -461,27 +729,7 @@ def retire(install_dir, owner_name, *, validate_only=False,
                 moves.extend(BROKER.iterdir())
             moves += [p for p in residues + plists if p not in (STATE, BROKER) and os.path.lexists(p)]
             moves += [STATE / n for n in os.listdir(directory) if n not in RETAIN]
-            receipt = {'schema': 1, 'owner': owner.pw_uid, 'installDir': str(root),
-                       'status': 'retiring', 'moves': []}
-            def save():
-                temporary = archive / 'receipt.tmp'
-                temporary.write_text(json.dumps(receipt, sort_keys=True) + '\n')
-                os.chmod(temporary, 0o600)
-                with temporary.open('rb') as stream: os.fsync(stream.fileno())
-                os.replace(temporary, archive / 'receipt.json')
-                directory_fd = os.open(archive, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-                try: os.fsync(directory_fd)
-                finally: os.close(directory_fd)
-            save()
-            for index, source in enumerate(moves):
-                destination = archive / ('item-' + str(index))
-                receipt['moves'].append({'source': str(source), 'archive': str(destination), 'done': False})
-                save()
-                os.rename(source, destination)
-                receipt['moves'][-1]['done'] = True
-                save()
-            receipt['status'] = 'retired'
-            save()
+            archive = archive_moves(moves, custody=custody, owner=owner, root=root)
             account.verify_empty_home_only() if os.path.lexists(BROKER) else account.verify_identity_only()
             # This retirement is complete and is now the recovery record;
             # earlier completed ones and their stopped sandboxes are only disk.
@@ -510,9 +758,9 @@ def main():
         return 0
     except Exception as error:
         print('Native Pixel retirement refused (' + type(error).__name__ + '): ' + str(error), file=sys.stderr)
-        if str(error) == 'native-retirement-stopped-job-needs-witness':
-            print('Keep native state intact. Maintainer-assisted --prepare-stopped-recovery requires a Mac restart; '
-                  'see docs/MACOS_PIXEL_RETIREMENT_RECOVERY.md before using it.', file=sys.stderr)
+        print(GUIDANCE.get(str(error), 'Keep the remaining Pixel files as they are. When you ask for help, '
+              'share only the reason above, never private receipts, .env or keys.'), file=sys.stderr)
+        print(HELP, file=sys.stderr)
         return 1
 
 

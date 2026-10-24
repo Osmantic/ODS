@@ -3040,7 +3040,7 @@ for service in (data.get("services") or {}).values():
             if [[ -f "${INSTALL_DIR}/data/pixel-native/preparation/activation.json" ]]; then
                 echo "${COMPOSE_FLAGS[*]} ${_pixel_compose_fragments[*]}" > "${INSTALL_DIR}/.compose-flags"
             fi
-            ai_err "Native Pixel setup stopped. Keep data/pixel-native and its private receipts for diagnosis."
+            ai_err "Native Pixel setup stopped. Keep data/pixel-native and its private receipts for diagnosis. To start over, run the one-line installer with --force --keep-models: curl -fsSL https://install.osmantic.com/ods.sh | bash -s -- --force --keep-models (it moves this attempt's protected Pixel files to a backup, keeps your downloaded models and replaces ${INSTALL_DIR})."
             exit 1
         fi
         COMPOSE_FLAGS+=("${_pixel_compose_fragments[@]}")

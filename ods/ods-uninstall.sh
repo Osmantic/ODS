@@ -480,12 +480,14 @@ unset _ods_wsl_retire_helper
 if [[ "$(uname -s)" == "Darwin" ]]; then
     _ods_native_pixel_helper="$SCRIPT_DIR/installers/macos/lib/pixel-native-uninstall.py"
     if [[ ! -f "$_ods_native_pixel_helper" || -L "$_ods_native_pixel_helper" ]]; then
-        log_error "Native Pixel retirement helper is missing; installation retained"
+        log_error "Native Pixel retirement helper is missing; installation retained. Run the uninstaller from a complete ODS folder, or rerun the one-line installer with --force --keep-models."
+        echo "  Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC" >&2
         exit 1
     fi
     if ! run_sudo /usr/bin/python3 -I "$_ods_native_pixel_helper" \
         --install-dir "$INSTALL_DIR" --owner "${SUDO_USER:-$(id -un)}"; then
-        log_error "Native Pixel retirement failed before ODS uninstall mutation"
+        log_error "Native Pixel retirement failed before ODS uninstall mutation; the rest of ODS was not removed. The reason and the next step are printed above; once it is resolved, run the same command again."
+        echo "  Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC" >&2
         exit 1
     fi
     unset _ods_native_pixel_helper

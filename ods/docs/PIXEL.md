@@ -130,14 +130,41 @@ flag is needed for this path.
 `--no-pixel` selects the non-Pixel path for a fresh installation. The base
 installer rejects existing native Pixel state rather than silently replacing
 or disabling it; use the managed native update/migration path and preserve
-`data/pixel-native` and its receipts. Do not delete protected state or use force
-to work around that guard. See [MACOS-QUICKSTART.md](MACOS-QUICKSTART.md).
+`data/pixel-native` and its receipts. Do not delete protected state by hand to
+work around that guard; the uninstaller retires it (see the next section). See
+[MACOS-QUICKSTART.md](MACOS-QUICKSTART.md).
 
 If native retirement reports `native-retirement-stopped-job-needs-witness`, do
 not remove more files or fabricate a shutdown receipt. See the explicit,
 maintainer-assisted [stopped-service retirement recovery](MACOS_PIXEL_RETIREMENT_RECOVERY.md).
 It preserves verified autostart definitions and requires a Mac restart before
 retiring a deployment that lacks a live process-tree witness.
+
+### Removing a native Pixel setup that did not finish
+
+When the installer stops during native Pixel setup (for example with
+`native-operations-readiness-failed`), start over with the one-line installer:
+
+```bash
+curl -fsSL https://install.osmantic.com/ods.sh | bash -s -- --force --keep-models
+```
+
+It replaces the ODS folder and keeps downloaded models. Its uninstaller retires
+the unfinished Pixel attempt first. Retirement accepts an initial activation
+whose rollback disabled each job it started and confirmed that the job stopped.
+It then:
+
+- proves that no Pixel job is loaded;
+- stops macOS's own agents for the `_ods_pixel_ops` account;
+- moves the protected files into a private archive under
+  `/private/var/lib/ods-pixel-retired`, deleting nothing;
+- re-enables the `com.ods.pixel-*` launchd labels the rollback disabled;
+- keeps the Operations identity for the next install.
+
+An activation that was interrupted, or whose rollback could not confirm a stop,
+is still refused with its reason code. If only Pixel's system files remain (the
+ODS folder is gone), the installer prints the one helper command to run instead.
+Need help? Ask on the [ODS Discord](https://discord.gg/4ntNp9MAwC).
 
 ### Retained initial installation stopped at final health
 
