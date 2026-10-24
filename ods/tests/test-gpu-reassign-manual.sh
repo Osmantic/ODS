@@ -280,6 +280,33 @@ if grep -q "127.0.0.1:54321/" "$CURL_TRACE_FILE"; then
     exit 1
 fi
 
+# EOF at the final Apply prompt defaults to yes after all selection answers.
+export DOCKER_TRACE_FILE="$FIXTURE/docker-eof-apply-trace"
+run_manual $'0,1,2\n2\n2\n1\npipeline\n'
+[[ $RC -eq 0 ]] || {
+    echo "[FAIL] EOF at final apply prompt failed: $OUTPUT"
+    exit 1
+}
+grep -Fq "All services recreated with new GPU assignment" <<<"$OUTPUT" || {
+    echo "[FAIL] missing successful-apply message: $OUTPUT"
+    exit 1
+}
+mapfile -t docker_eof_assignments < "$DOCKER_TRACE_FILE"
+[[ "${#docker_eof_assignments[@]}" -eq 1 ]] || {
+    echo "[FAIL] expected one Docker trace, got ${#docker_eof_assignments[@]}"
+    exit 1
+}
+[[ "${docker_eof_assignments[0]}" == "GPU-ti-0,GPU-1080,GPU-ti-2" ]] || {
+    echo "[FAIL] unexpected Docker assignment: ${docker_eof_assignments[0]}"
+    exit 1
+}
+persisted_uuids=$(env_value LLAMA_SERVER_GPU_UUIDS)
+[[ "$persisted_uuids" == "GPU-ti-0,GPU-1080,GPU-ti-2" ]] || {
+    echo "[FAIL] LLAMA_SERVER_GPU_UUIDS not persisted: $persisted_uuids"
+    exit 1
+}
+unset DOCKER_TRACE_FILE
+
 before_hash=$(sha256sum "$FAKE_INSTALL/.env" | awk '{print $1}')
 export DOCKER_TRACE_FILE="$FIXTURE/docker-unhealthy-trace"
 export DOCKER_UNHEALTHY_ASSIGNMENT="GPU-ti-0,GPU-ti-2"
@@ -376,6 +403,17 @@ expected_tensor_split=$(echo "$assignment" | jq -r \
 [[ "$(env_value LLAMA_ARG_TENSOR_SPLIT)" == "$expected_tensor_split" ]]
 [[ -z "$(env_value COMFYUI_GPU_UUID)" ]]
 [[ -z "$(env_value EMBEDDINGS_GPU_UUID)" ]]
+
+# Without a terminal the apply prompt takes its documented default. It must
+# not die on EOF after .env was already rewritten.
+set +e
+OUTPUT=$(ODS_HOME="$FAKE_INSTALL" PATH="$STUB_PATH" \
+    ODS_GPU_REASSIGN_HEALTH_ATTEMPTS=1 ODS_GPU_REASSIGN_HEALTH_INTERVAL_SECONDS=0 \
+    "$ODS_CLI" gpu reassign --auto </dev/null 2>&1)
+RC=$?
+set -e
+[[ $RC -eq 0 ]] || { echo "[FAIL] reassign --auto without a terminal exited $RC: $OUTPUT"; exit 1; }
+echo "$OUTPUT" | grep -q "All services recreated with new GPU assignment"
 
 AMD_ROOT="$FIXTURE/amd-root"
 AMD_INSTALL="$FIXTURE/amd-install"
