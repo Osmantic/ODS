@@ -514,16 +514,19 @@ export default function RemoteProvider({ compact = false }) {
   const runProbe = async () => {
     setTesting(true)
     setTestError(null)
+    setTestResult(null)
     setConnectNotice(null)
     try {
       const payload = await fetchJson('/api/remote-provider/probe', { method: 'POST' }, PROBE_TIMEOUT_MS)
       setTestResult(payload)
       // A real failure: say it in the error banner, with its help link.
       if (payload?.routeProof?.reason === 'provider_not_serving') setTestError(notServingSummary(payload.routeProof))
-      await settleAfterAction()
+      else if (payload?.routeProof?.recorded !== true) setStatusData(null)
     } catch (err) {
       setTestError(err?.message || 'The connection check failed')
+      setStatusData(null)
     } finally {
+      await settleAfterAction()
       setTesting(false)
     }
   }
@@ -561,18 +564,23 @@ export default function RemoteProvider({ compact = false }) {
         // The route is in use; the API itself fails chats.
         setLifecycleError(notServingSummary(proof.routeProof))
       } else {
-        setLifecycleError(proof?.routeProof?.reason || 'ODS could not switch to the API.')
-        setLifecycleNote('The API answered, but ODS still uses its current model. Try Check connection again in a minute.')
+        setStatusData(null)
+        setLifecycleError(proof?.routeProof?.reason || 'The API switch could not be confirmed.')
+        setLifecycleNote('The API answered, but switching ODS could not be confirmed. Check the refreshed connection status before trying again.')
       }
     } catch (err) {
       setLifecycleError(err?.message || 'Connecting failed')
+      // Configure and proof can commit before their response reaches us.
+      // Invalidate the pre-request status; only readback can describe the route.
+      setStatusData(null)
       setLifecycleNote(saved
-        ? 'ODS still uses its current model. The API settings were saved; fix the problem, then connect again.'
-        : 'Nothing was changed. ODS still uses its current model.')
+        ? 'The API settings were saved, but the connection result could not be confirmed. Check the refreshed status below. Refresh status before retrying if it is unavailable.'
+        : 'Saving the API settings could not be confirmed. They may already have changed. Check the refreshed status below. Refresh status before retrying if it is unavailable.')
     } finally {
+      setConnectStep('Checking the current connection status…')
+      await settleAfterAction()
       setConnectStep('')
       setConnecting(false)
-      await settleAfterAction()
     }
   }
 
@@ -666,7 +674,7 @@ export default function RemoteProvider({ compact = false }) {
   const testEnabled = Boolean(statusData?.availableActions?.test)
   const enableAvailable = Boolean(statusData?.availableActions?.enable)
   const statusMeta = STATUS_META[statusData?.status] || STATUS_META.unknown
-  const lifecycleBusy = planning || Boolean(applyingAction) || connecting
+  const lifecycleBusy = planning || Boolean(applyingAction) || connecting || testing
   const contextLength = Number(form.contextLength)
   const maxTokens = Number(form.maxTokens)
   const configureReady = Boolean(
@@ -708,7 +716,7 @@ export default function RemoteProvider({ compact = false }) {
     // Shown once, in the error banner with its help link.
     if (testResult.routeProof.reason === 'provider_not_serving') return null
     const reason = testResult.routeProof.reason
-    return `The API answered, but ODS could not switch to it: ${friendlyProviderError(reason) || titleize(reason)}`
+    return `The API answered, but switching ODS could not be confirmed: ${friendlyProviderError(reason) || titleize(reason)}`
   }, [connectNotice, proofRecorded, testResult])
 
   if (loading) return <LoadingState />
@@ -738,7 +746,7 @@ export default function RemoteProvider({ compact = false }) {
           <button
             type="button"
             onClick={runProbe}
-            disabled={!testEnabled || testing}
+            disabled={!testEnabled || lifecycleBusy}
             className="inline-flex items-center gap-2 rounded-lg bg-theme-accent px-3 py-2 text-sm font-semibold text-white transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
           >
             {testing ? <Loader2 className="animate-spin" size={16} /> : <Play size={16} />}
@@ -751,7 +759,7 @@ export default function RemoteProvider({ compact = false }) {
       </nav>}
 
       {error && <ErrorBanner message={error} />}
-      {testError && <ErrorBanner message={testError} note="Nothing was changed. ODS still uses its current model." />}
+      {testError && <ErrorBanner message={testError} note="Check the refreshed connection status below. If status is unavailable, refresh it before retrying; the check may already have changed the active route." />}
       {connectStep && (
         <div className="mb-4 flex items-center gap-2 rounded-lg border border-theme-border bg-theme-text-secondary/10 px-4 py-3 text-sm text-theme-text-secondary" role="status">
           <Loader2 className="animate-spin" size={16} />
