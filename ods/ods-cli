@@ -3685,8 +3685,18 @@ cmd_preset() {
     check_install
     sr_load
 
+    validate_preset_name() {
+        if [[ -z "$1" || "$1" == "." || "$1" == ".." || "$1" == */* || "$1" == *\\* || "$1" == -* || "$1" =~ [[:cntrl:]] ]]; then
+            error "Invalid preset name: path separators, directory traversal, and leading dashes are not allowed"
+        fi
+    }
     local action="${1:-list}"
     local name="${2:-}"
+
+    case "$action" in
+        save|s|load|l|delete|rm|export|e) [[ -n "$name" ]] && validate_preset_name "$name" ;;
+        diff|d) [[ -n "$name" ]] && validate_preset_name "$name"; [[ -n "${3:-}" ]] && validate_preset_name "$3" ;;
+    esac
 
     case "$action" in
         save|s)
