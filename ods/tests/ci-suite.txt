@@ -155,6 +155,7 @@ tests/test-ods-doctor-external-llm.sh
 tests/test-ods-doctor-install-diagnoses.sh
 tests/test-help-links.sh
 tests/test-macos-api-mode-flags.sh
+tests/test-macos-compose-override-cache.sh
 tests/test-install-failure-message.sh
 tests/test-release-gate-syntax.sh
 tests/test-remote-provider-cli-output.sh
