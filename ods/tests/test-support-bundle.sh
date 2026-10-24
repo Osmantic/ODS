@@ -168,6 +168,24 @@ else
     fail "archive does not contain manifest/evidence.json"
 fi
 
+# macOS bsdtar embeds AppleDouble `._*` companions unless COPYFILE_DISABLE is
+# set; they unpack as binary junk files throughout the bundle. bsdtar hides
+# them from its own `tar -tzf` listing, so list the raw members with tarfile.
+if python3 -c 'import sys, tarfile; print("\n".join(tarfile.open(sys.argv[1]).getnames()))' "$ARCHIVE_PATH" \
+    | grep -qE '(^|/)\._'; then
+    fail "archive contains AppleDouble (._*) metadata members"
+else
+    pass "archive has no AppleDouble metadata members"
+fi
+
+# Deterministic on every platform, including Linux CI where bsdtar's AppleDouble
+# behaviour cannot be reproduced: a future edit dropping the guard fails here.
+if grep -Eq 'COPYFILE_DISABLE=[^ ]* +tar +-czf' "$SUPPORT_SCRIPT"; then
+    pass "archive tar runs under COPYFILE_DISABLE"
+else
+    fail "archive tar must run under COPYFILE_DISABLE to omit AppleDouble metadata"
+fi
+
 if [[ -f "$BUNDLE_DIR/config/env.redacted" ]] && grep -q "DASHBOARD_API_KEY=\\[REDACTED\\]" "$BUNDLE_DIR/config/env.redacted"; then
     pass ".env is included only as redacted env"
 else
