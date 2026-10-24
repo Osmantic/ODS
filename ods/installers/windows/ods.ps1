@@ -96,6 +96,8 @@ function Test-DockerRunning {
 }
 
 function Test-Install {
+    param([switch]$SkipDockerCheck)
+
     if (-not (Test-Path $InstallDir)) {
         Write-AIError "ODS not found at $InstallDir. Set ODS_HOME or run installer first."
         exit 1
@@ -106,7 +108,7 @@ function Test-Install {
         Write-AIError "docker-compose.base.yml not found in $InstallDir"
         exit 1
     }
-    if (-not (Test-DockerRunning)) { exit 1 }
+    if (-not $SkipDockerCheck -and -not (Test-DockerRunning)) { exit 1 }
 }
 
 function Write-ODSUtf8NoBomFile {
@@ -2529,6 +2531,9 @@ function Invoke-Chat {
             @{ role = "user"; content = $Message }
         )
     } | ConvertTo-Json -Depth 3
+    # Windows PowerShell 5.1 encodes a [string] -Body as ISO-8859-1, which
+    # replaces non-Latin text with "?". Send explicit UTF-8 bytes instead.
+    $bodyBytes = [System.Text.UTF8Encoding]::new($false).GetBytes($body)
 
     $llmEndpoint = Get-WindowsLocalLlmEndpoint -InstallDir $InstallDir -NativeBackend (Get-NativeInferenceBackend)
     $headers = @{}
@@ -2537,7 +2542,7 @@ function Invoke-Chat {
     }
     try {
         $resp = Invoke-RestMethod -Uri $llmEndpoint.ChatCompletionsUrl `
-            -Method POST -Headers $headers -Body $body -ContentType "application/json" -TimeoutSec 120
+            -Method POST -Headers $headers -Body $bodyBytes -ContentType "application/json; charset=utf-8" -TimeoutSec 120
 
         if (-not $resp.choices -or -not $resp.choices[0].message -or
             $resp.choices[0].message.content -isnot [string] -or
@@ -2593,7 +2598,9 @@ function Invoke-Update {
 }
 
 function Invoke-Report {
-    Test-Install
+    # Support diagnostics include failed Docker probes; an unavailable daemon
+    # must not prevent collecting the bundle needed to diagnose it.
+    Test-Install -SkipDockerCheck
     Push-Location $InstallDir
     try {
         $flags = Get-ComposeFlags

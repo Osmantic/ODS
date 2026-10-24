@@ -41,6 +41,7 @@ from config import (
     AGENT_HOST, AGENT_PORT, AGENT_URL, ODS_AGENT_KEY,
     _detect_container_default_gateway, _running_inside_container,
     _read_env_from_file,
+    get_env_file_read_error,
     normalize_ods_mode, read_live_env_value,
 )
 from models import (
@@ -1503,7 +1504,7 @@ async def api_status(api_key: str = Depends(verify_api_key)):
         cloud_mode = normalize_ods_mode(read_live_env_value("ODS_MODE")) == "cloud"
         if cloud_mode:
             last_inference = {}
-        return {
+        fallback = {
             "gpu": None, "services": [], "model": None,
             "bootstrap": None, "uptime": 0,
             "version": app.version, "tier": "Cloud" if cloud_mode else "Unknown",
@@ -1524,6 +1525,10 @@ async def api_status(api_key: str = Depends(verify_api_key)):
                           "loadedModel": None, "contextSize": None},
             "manifest_errors": _public_manifest_errors(),
         }
+        env_file_read_error = get_env_file_read_error()
+        if env_file_read_error:
+            fallback["envFileReadError"] = env_file_read_error
+        return fallback
 
 
 @app.get("/api/readiness")
@@ -1716,6 +1721,9 @@ async def _build_api_status() -> dict:
         },
         "manifest_errors": _public_manifest_errors(),
     }
+    env_file_read_error = get_env_file_read_error()
+    if env_file_read_error:
+        result["envFileReadError"] = env_file_read_error
     return result
 
 

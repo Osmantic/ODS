@@ -416,6 +416,11 @@ else
             error "The Pixel source update stopped at its '$1' step. Preserve the installation and any pending upgrade state."
             return 1
         }
+        if ! _ods_pixel_start_stopped_access_service \
+            "$_phase06_pixel_owner" "$_phase06_pixel_home" "$_phase06_requested_pixel_ref"; then
+            error "The Pixel access coordinator is stopped and did not start. See journalctl -u ods-pixel-access.service; the installation and any pending upgrade state were left intact."
+            return 1
+        fi
         _ods_pixel_source_transition_required \
             "$_phase06_pixel_owner" "$_phase06_pixel_home" "$_phase06_requested_pixel_ref" "$SCRIPT_DIR" \
             || _phase06_pixel_source_transition=$?

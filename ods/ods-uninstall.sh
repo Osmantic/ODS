@@ -208,6 +208,15 @@ EOF
     esac
 done
 
+# The installer refuses root, so the install, its unit templates and Pixel
+# belong to the account that installed them. Under sudo, HOME and the user
+# become root's, and every ownership check then reports ODS's own files and
+# units as foreign. Stop before checking anything, with the way out.
+if [[ "$(id -u)" -eq 0 && -n "${SUDO_USER:-}" && "$SUDO_USER" != root ]]; then
+    log_error "Run this uninstaller as $SUDO_USER, without sudo. It asks for sudo itself when it needs it; nothing was changed."
+    exit 1
+fi
+
 echo ""
 echo -e "${RED}╔══════════════════════════════════════════════════╗${NC}"
 echo -e "${RED}║         ODS UNINSTALLER                ║${NC}"

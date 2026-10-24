@@ -1431,6 +1431,32 @@ function verificationExecFingerprint(params) {
   return JSON.stringify([command, typeof workdir === "string" ? workdir : ""]);
 }
 
+// A verification file need not follow a test_*.py naming convention. Keep
+// this separate from the generic runner heuristic: it requires a file named
+// by the owner and written in this run, plus a clean, bound unittest receipt.
+function ownerStandaloneUnittest(params, state) {
+  if (!state?.workspaceVerificationRequested || typeof params?.command !== "string") return undefined;
+  const command = params.command.trim().replace(/[ \t]+2>&1$/, "");
+  const match = command.match(
+    /^python(?:3(?:\.\d+)?)?(?:[ \t]+(?:-B|-u))*[ \t]+((?:\/workspace\/|\.\/)?[A-Za-z0-9._/-]+\.py)(?:[ \t]+-v)?$/
+  );
+  if (!match) return undefined;
+  const workdir = normalizeExecWorkdir(params.workdir);
+  if (workdir != null && typeof workdir !== "string") return undefined;
+  const base = !workdir || workdir === "." || workdir === "/workspace" ? "" : normalizeWorkspaceFilePath(workdir);
+  const file = normalizeWorkspaceFilePath(match[1]);
+  if ((base && !derivedWorkspacePath(base)) || !derivedWorkspacePath(file)) return undefined;
+  const relativePath = match[1].startsWith("/workspace/") ? file : base ? `${base}/${file}` : file;
+  const directory = path.posix.dirname(relativePath);
+  if (!state.workspaceRequestedFiles.includes(path.posix.basename(relativePath)) ||
+      state.workspaceTaskDirectory && directory !== state.workspaceTaskDirectory ||
+      !state.successfulWritePaths.has(relativePath)) return undefined;
+  const content = state.successfulWriteContentByPath.get(relativePath);
+  if (typeof content !== "string" || !/\bunittest\.TestCase\b/.test(content)) return undefined;
+  return { fingerprint: execFingerprint(params), relativePath, content,
+    sessionId: state.currentSessionId, sessionKey: state.currentSessionKey };
+}
+
 function canonicalRequestedUnittestParams(params, state) {
   const parsed = verificationCommand(params);
   if (
@@ -7988,6 +8014,8 @@ export function createToolLoopGuard({
       priorBehaviorInspection,
       inspectionGeneration: state?.workspaceInspectionGeneration,
       verificationFingerprint,
+      standaloneUnittest: selectedToolName === "exec" && !verificationFingerprint
+        ? ownerStandaloneUnittest(selectedParams, state) : undefined,
       transport,
       selectedToolTarget,
     });
@@ -11455,6 +11483,10 @@ export function createToolLoopGuard({
       : undefined;
     if (successfulMutation) {
       for (const file of workspaceMutationFiles(successfulMutation.name,successfulMutation.event?.params)) {
+        if (state.latestStandaloneUnittest?.relativePath === normalizeWorkspaceFilePath(file)) {
+          state.latestVerificationStatus = undefined;
+          state.latestStandaloneUnittest = undefined;
+        }
         try {
           onWorkspaceMutation({sessionKey:state.currentSessionKey,workspaceRoot:state.configuredWorkspaceRoot,
             file,kind:successfulMutation.name});
@@ -11931,10 +11963,18 @@ export function createToolLoopGuard({
       if (!completion) return;
       const pending = state.pendingExecSessions.get(completion.sessionId);
       if (!pending) return;
+      if (pending.standaloneUnittest && (
+        event?.params?.sessionId !== completion.sessionId ||
+        (context?.sessionId && context.sessionId !== pending.standaloneUnittest.sessionId) ||
+        (context?.sessionKey && context.sessionKey !== pending.standaloneUnittest.sessionKey) ||
+        (event?.runId && event.runId !== runId))) return;
       state.pendingExecSessions.delete(completion.sessionId);
       state.pendingExecBlocks.delete(completion.sessionId);
       const verificationFailed =
         completion.failed ||
+        (pending.standaloneUnittest && (!pending.executionReceiptBound ||
+          !isDeepStrictEqual(pending.standaloneUnittest, ownerStandaloneUnittest(pending.standaloneParams, state)) ||
+          !cleanUnittestSummary(event.result))) ||
         (
           pending.verificationFingerprint &&
           verificationFingerprintIsPythonUnittest(pending.verificationFingerprint) &&
@@ -11964,6 +12004,7 @@ export function createToolLoopGuard({
         if (pending.verificationFingerprint) {
           state.failedVerificationAttempts = 0;
           state.latestVerificationStatus = "passed";
+          state.latestStandaloneUnittest = pending.standaloneUnittest;
           state.latestVerificationPassedGeneration = state.previewVerificationGeneration;
         }
         // A polled background completion is durable action evidence only when
@@ -11997,9 +12038,15 @@ export function createToolLoopGuard({
     if (!execEvent) return;
     const observedFingerprint = execFingerprint(execEvent?.params);
     const fingerprint = state.execOriginalByWrapped.get(observedFingerprint) ?? observedFingerprint;
+    const boundExecution = boundExecReceipt(
+      state, pendingToolRun, event, context, runId, toolCallId, toolName);
+    const standalone = boundExecution && !toolCallFailed(event) && pendingToolRun.standaloneUnittest;
+    const currentStandalone = standalone && ownerStandaloneUnittest(pendingToolRun.selectedParams, state);
+    const standaloneUnittest = standalone && isDeepStrictEqual(standalone, currentStandalone)
+      ? standalone : undefined;
     const verificationFingerprint =
       state.verificationOriginalByWrapped.get(observedFingerprint) ??
-      verificationExecFingerprint(execEvent?.params);
+      verificationExecFingerprint(execEvent?.params) ?? standaloneUnittest?.fingerprint;
     if (observedFingerprint) state.execOriginalByWrapped.delete(observedFingerprint);
     if (observedFingerprint) {
       state.verificationOriginalByWrapped.delete(observedFingerprint);
@@ -12017,6 +12064,8 @@ export function createToolLoopGuard({
       state.pendingExecSessions.set(pendingSessionId, {
         fingerprint,
         verificationFingerprint,
+        standaloneUnittest,
+        standaloneParams: standaloneUnittest ? pendingToolRun.selectedParams : undefined,
         executionReceiptBound: Boolean(boundExecReceipt(
           state, pendingToolRun, event, context, runId, toolCallId, toolName
         )) && !toolCallFailed(event),
@@ -12029,6 +12078,7 @@ export function createToolLoopGuard({
         !Number.isInteger(execEvent?.result?.details?.exitCode)) return;
     const verificationFailed =
       execFailed(execEvent) ||
+      (standaloneUnittest && !cleanUnittestSummary(execEvent.result)) ||
       (
         verificationFingerprint &&
         verificationFingerprintIsPythonUnittest(verificationFingerprint) &&
@@ -12083,6 +12133,7 @@ export function createToolLoopGuard({
       if (verificationFingerprint) {
         state.failedVerificationAttempts = 0;
         state.latestVerificationStatus = "passed";
+        state.latestStandaloneUnittest = standaloneUnittest;
         state.latestVerificationPassedGeneration = state.previewVerificationGeneration;
       }
     }

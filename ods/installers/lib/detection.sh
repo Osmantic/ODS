@@ -803,10 +803,10 @@ fix_nvidia_secure_boot() {
     if [[ -z "$installed_driver" ]]; then
         ai "No NVIDIA driver package found. Installing recommended driver..."
         if command -v ubuntu-drivers &>/dev/null; then
-            ods_sudo ubuntu-drivers install 2>>"$LOG_FILE" || \
-            ods_sudo apt-get install -y "nvidia-driver-${MIN_DRIVER_VERSION}" 2>>"$LOG_FILE" || true
+            ods_sudo ubuntu-drivers install </dev/null 2>>"$LOG_FILE" || \
+            ods_sudo apt-get install -y "nvidia-driver-${MIN_DRIVER_VERSION}" </dev/null 2>>"$LOG_FILE" || true
         else
-            ods_sudo apt-get install -y "nvidia-driver-${MIN_DRIVER_VERSION}" 2>>"$LOG_FILE" || true
+            ods_sudo apt-get install -y "nvidia-driver-${MIN_DRIVER_VERSION}" </dev/null 2>>"$LOG_FILE" || true
         fi
         installed_driver=$(dpkg-query -W -f='${Package}\n' 'nvidia-driver-*' 2>/dev/null \
                            | sed -n 's/.*nvidia-driver-\([0-9][0-9]*\).*/\1/p' | sort -n | tail -1 || true)
@@ -851,7 +851,7 @@ fix_nvidia_secure_boot() {
     # Ensure linux-headers are present (needed for sign-file)
     if [[ ! -d "/usr/src/linux-headers-${kver}" ]]; then
         ai "Installing kernel headers for ${kver}..."
-        ods_sudo apt-get install -y "linux-headers-${kver}" 2>>"$LOG_FILE" || true
+        ods_sudo apt-get install -y "linux-headers-${kver}" </dev/null 2>>"$LOG_FILE" || true
     fi
 
     # Generate MOK keypair if not already present
