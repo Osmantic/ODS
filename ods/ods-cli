@@ -6907,9 +6907,10 @@ _gpu_reassign() {
 
         success "Manual GPU assignment saved"
         echo ""
-        echo -n "  Apply changes now? [Y/n] "
-        read -r _yn
-        case "${_yn:-y}" in
+        # Without a terminal (a script, cron, ssh), take the documented default
+        # instead of dying on EOF after .env has already been rewritten.
+        read -p "  Apply changes now? [Y/n] " -r || REPLY=""
+        case "${REPLY:-y}" in
             y|Y|"")
                 local _flags_str _flags=()
                 _flags_str=$(get_compose_flags)
@@ -7032,9 +7033,10 @@ _gpu_reassign() {
 
     success "GPU assignment updated (strategy: ${strategy})"
     echo ""
-    echo -n "  Apply changes now? [Y/n] "
-    read -r _yn
-    case "${_yn:-y}" in
+    # Without a terminal (a script, cron, ssh), take the documented default
+    # instead of dying on EOF after .env has already been rewritten.
+    read -p "  Apply changes now? [Y/n] " -r || REPLY=""
+    case "${REPLY:-y}" in
         y|Y|"")
             local _flags_str _flags=()
             _flags_str=$(get_compose_flags)

@@ -377,6 +377,17 @@ expected_tensor_split=$(echo "$assignment" | jq -r \
 [[ -z "$(env_value COMFYUI_GPU_UUID)" ]]
 [[ -z "$(env_value EMBEDDINGS_GPU_UUID)" ]]
 
+# Without a terminal the apply prompt takes its documented default. It must
+# not die on EOF after .env was already rewritten.
+set +e
+OUTPUT=$(ODS_HOME="$FAKE_INSTALL" PATH="$STUB_PATH" \
+    ODS_GPU_REASSIGN_HEALTH_ATTEMPTS=1 ODS_GPU_REASSIGN_HEALTH_INTERVAL_SECONDS=0 \
+    "$ODS_CLI" gpu reassign --auto </dev/null 2>&1)
+RC=$?
+set -e
+[[ $RC -eq 0 ]] || { echo "[FAIL] reassign --auto without a terminal exited $RC: $OUTPUT"; exit 1; }
+echo "$OUTPUT" | grep -q "All services recreated with new GPU assignment"
+
 AMD_ROOT="$FIXTURE/amd-root"
 AMD_INSTALL="$FIXTURE/amd-install"
 mkdir -p "$AMD_ROOT/installers/lib" "$AMD_ROOT/scripts" "$AMD_INSTALL"
