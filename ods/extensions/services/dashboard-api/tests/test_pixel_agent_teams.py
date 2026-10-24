@@ -591,6 +591,7 @@ def test_extension_commands_cannot_create_unbound_worker_requests(tmp_path, mode
     assert manager.list(OWNER, 'chat') == []
 
 
+
 @pytest.mark.parametrize('role', ['coordinator', 'explorer', 'builder', 'reviewer'])
 def test_team_prompt_leaves_the_reply_language_to_pixel(tmp_path, role):
     # Pixel's response-language rule decides, from the owner's own words. A
@@ -601,3 +602,109 @@ def test_team_prompt_leaves_the_reply_language_to_pixel(tmp_path, role):
     assert row['goal'] in prompt
     fixed = prompt.replace(row['goal'], '').replace(row['context'], '')
     assert not re.search(r"language|English|Portuguese", fixed, re.I), fixed
+
+
+def _fill_store(store, status, created, instance=None):
+    import pixel_agent_teams
+    owner = "a" * 64
+    for i in range(pixel_agent_teams.MAX_TEAMS):
+        store.save(owner, {"id": f"{i:032x}", "chat_id": "c", "status": status, "created": created + i,
+                           "updated": created + i, "instance": instance or store.instance})
+    return owner
+
+
+def test_finished_teams_do_not_permanently_fill_history(tmp_path):
+    import time
+    store = TeamStore(tmp_path / "teams")
+    owner = _fill_store(store, "completed", time.time())
+    store.save(owner, {"id": "f" * 32, "chat_id": "new", "status": "queued", "created": time.time(),
+                       "instance": store.instance})
+    remaining = sorted(p.stem[65:] for p in (tmp_path / "teams").glob("*.json"))
+    assert len(remaining) == 128
+    assert f"{0:032x}" not in remaining  # oldest finished team was the one evicted
+    assert "f" * 32 in remaining
+
+
+def test_expired_finished_teams_are_pruned(tmp_path):
+    import time
+    import pixel_agent_teams
+    store = TeamStore(tmp_path / "teams")
+    owner = "b" * 64
+    old = time.time() - pixel_agent_teams.RETENTION_SECONDS - 60
+    for i, status in enumerate(["failed", "cancelled", "interrupted"]):
+        store.save(owner, {"id": f"{i:032x}", "chat_id": "c", "status": status, "created": old, "updated": old})
+    store.save(owner, {"id": "e" * 32, "chat_id": "c", "status": "completed", "created": time.time(),
+                       "updated": time.time()})
+    # The interrupted team is the chat's only Stop gate, so it survives.
+    assert sorted(p.stem[65:] for p in (tmp_path / "teams").glob("*.json")) == [f"{2:032x}", "e" * 32]
+
+
+def test_active_teams_are_never_evicted_for_history_space(tmp_path):
+    import time
+    store = TeamStore(tmp_path / "teams")
+    owner = _fill_store(store, "running", time.time() - 30 * 86400)
+    with pytest.raises(TeamConflict):
+        store.save(owner, {"id": "f" * 32, "chat_id": "new", "status": "queued", "created": time.time()})
+    assert len(list((tmp_path / "teams").glob("*.json"))) == 128
+
+
+def _team(i, chat, status, stamp, instance="dead"):
+    return {"id": f"{i:032x}", "chat_id": chat, "status": status, "created": stamp, "updated": stamp,
+            "instance": instance, "agents": []}
+
+
+def test_pruning_keeps_a_chats_interrupted_gate(tmp_path):
+    import time
+    import pixel_agent_teams
+    store = TeamStore(tmp_path / "teams")
+    now = time.time()
+    store.save(OWNER, _team(0, "gated", "interrupted", now - 30 * 86400))
+    for i in range(1, pixel_agent_teams.MAX_TEAMS):
+        store.save(OWNER, _team(i, f"c{i}", "completed", now - 1000 + i))
+    store.save(OWNER, _team(999, "new", "queued", now, store.instance))
+    remaining = {p.stem[65:] for p in (tmp_path / "teams").glob("*.json")}
+    assert f"{0:032x}" in remaining and f"{1:032x}" not in remaining
+    manager = TeamManager(store, None, yes)
+    with pytest.raises(TeamConflict, match="existing team"):
+        manager._check_admission(OWNER, "gated")
+
+
+def test_pruning_prefers_completed_over_older_interrupted(tmp_path):
+    import time
+    import pixel_agent_teams
+    store = TeamStore(tmp_path / "teams")
+    now = time.time()
+    store.save(OWNER, _team(0, "x", "interrupted", now - 5000))
+    store.save(OWNER, _team(1, "x", "interrupted", now - 4000))
+    for i in range(2, pixel_agent_teams.MAX_TEAMS):
+        store.save(OWNER, _team(i, f"c{i}", "completed", now - 1000 + i))
+    store.save(OWNER, _team(999, "new", "queued", now, store.instance))
+    remaining = {p.stem[65:] for p in (tmp_path / "teams").glob("*.json")}
+    assert {f"{0:032x}", f"{1:032x}"} <= remaining and f"{2:032x}" not in remaining
+
+
+def test_history_full_of_stop_gates_still_conflicts(tmp_path):
+    import time
+    import pixel_agent_teams
+    store = TeamStore(tmp_path / "teams")
+    old = time.time() - 30 * 86400
+    for i in range(pixel_agent_teams.MAX_TEAMS):
+        store.save(OWNER, _team(i, f"c{i}", "interrupted", old))
+    with pytest.raises(TeamConflict, match="full"):
+        store.save(OWNER, _team(999, "new", "queued", time.time(), store.instance))
+    assert len(list((tmp_path / "teams").glob("*.json"))) == pixel_agent_teams.MAX_TEAMS
+
+
+def test_unreadable_team_file_does_not_block_new_teams(tmp_path, caplog):
+    import time
+    store = TeamStore(tmp_path / "teams")
+    teams = tmp_path / "teams"
+    (teams / f"{OWNER}-{'1' * 32}.json").write_text('{"id": "trunc', encoding="utf-8")
+    (teams / "notes.json").write_text("{}", encoding="utf-8")
+    (teams / f"{OWNER}-{'2' * 32}.json").write_text("[]", encoding="utf-8")
+    for path in teams.glob("*.json"):
+        path.chmod(0o600)
+    store.save(OWNER, _team(999, "new", "queued", time.time(), store.instance))
+    assert store.get(OWNER, f"{999:032x}")["chat_id"] == "new"
+    assert (teams / "notes.json").exists()
+    assert "Skipping unreadable agent team file" in caplog.text
