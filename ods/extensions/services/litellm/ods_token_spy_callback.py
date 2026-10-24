@@ -57,7 +57,7 @@ def _duration_ms(start_time: Any, end_time: Any) -> int:
     return min(max(int(seconds * 1000), 0), 86_400_000)
 
 
-def _provider_name(kwargs: dict[str, Any]) -> str:
+def _api_base_host(kwargs: dict[str, Any]) -> str:
     litellm_params = _as_dict(kwargs.get("litellm_params"))
     api_base = str(
         litellm_params.get("api_base")
@@ -65,9 +65,14 @@ def _provider_name(kwargs: dict[str, Any]) -> str:
         or ""
     )
     try:
-        hostname = (urlparse(api_base).hostname or "").lower()
+        return (urlparse(api_base).hostname or "").lower()
     except ValueError:
-        hostname = ""
+        return ""
+
+
+def _provider_name(kwargs: dict[str, Any]) -> str:
+    litellm_params = _as_dict(kwargs.get("litellm_params"))
+    hostname = _api_base_host(kwargs)
     if hostname in _LOCAL_HOSTS or hostname.endswith(".local"):
         return "local"
     provider = str(
@@ -185,12 +190,10 @@ class ODSTokenSpyCallback(CustomLogger):
         start_time: Any,
         end_time: Any,
     ) -> None:
-        # With the switchboard enabled, this same request is recorded by
-        # model-router. Skipping here preserves exactly-once accounting.
-        if (
-            not self.enabled
-            or os.environ.get("ODS_MODEL_SWITCHBOARD", "enabled") == "enabled"
-        ):
+        # model-router records the requests LiteLLM forwards to it. Skipping
+        # only those preserves exactly-once accounting; cloud, hybrid cloud
+        # and remote-provider routes never reach model-router.
+        if not self.enabled or _api_base_host(kwargs) == "model-router":
             return
         if self.worker is None or self.worker.done():
             self.worker = asyncio.create_task(

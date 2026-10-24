@@ -286,7 +286,7 @@ GTT_EOF
             pacman) _inst_cmd=(pacman -S --noconfirm) ;;
             zypper) _inst_cmd=(zypper install -y) ;;
         esac
-        if _phase10_privileged "${_inst_cmd[@]}" tuned >> "$LOG_FILE" 2>&1; then
+        if _phase10_privileged "${_inst_cmd[@]}" tuned </dev/null >> "$LOG_FILE" 2>&1; then
             _phase10_privileged systemctl enable --now tuned >> "$LOG_FILE" 2>&1 && \
                 _phase10_privileged tuned-adm profile accelerator-performance 2>/dev/null && \
                 ai_ok "tuned installed and set to accelerator-performance (5-8% pp improvement)" || \

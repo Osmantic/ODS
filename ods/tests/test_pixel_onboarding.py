@@ -12,6 +12,18 @@ import pytest
 LIB = Path(__file__).resolve().parents[1] / "installers" / "lib"
 
 
+@pytest.fixture(autouse=True)
+def installer_umask():
+    # The renderer refuses group-writable onboarding directories. Create every
+    # fixture with the installer's modes, whatever the host's umask (Ubuntu's
+    # default 0002 would otherwise make them unsafe).
+    original_umask = os.umask(0o022)
+    try:
+        yield
+    finally:
+        os.umask(original_umask)
+
+
 @pytest.fixture
 def contract(tmp_path):
     home = tmp_path / "Owner Home"

@@ -23,7 +23,7 @@ def docker(*args, timeout=60):
 @pytest.mark.skipif(os.environ.get('ODS_RUN_DOCKER_SECURITY_TESTS') != '1',
                     reason='Requires an explicitly selected disposable Docker test host')
 @pytest.mark.parametrize('service, assets', [
-    ('it-tools', ['/']),
+    ('it-tools', ['/', '/ITTOOLS-SOURCE.txt', '/ITTOOLS-LICENSE.txt', '/source/csv-rfc4180.patch']),
     ('redoc', ['/', '/ods-reader.js']),
 ])
 def test_static_library_serves_private_build_context(tmp_path, service, assets):
@@ -64,6 +64,11 @@ def test_static_library_serves_private_build_context(tmp_path, service, assets):
             body = docker('exec', identity, 'wget', '-qO-',
                           'http://127.0.0.1:8080' + asset)
             assert body.strip(), asset
+        if service == 'it-tools':
+            docker('exec', identity, 'wget', '-qO', '/tmp/upstream.tar.gz',
+                   'http://127.0.0.1:8080/source/upstream.tar.gz')
+            digest = docker('exec', identity, 'sha256sum', '/tmp/upstream.tar.gz').split()[0]
+            assert digest == '1829b78fdea40d9a4a9aaf0c6aa7131e33898351e713356af07941959d3407d4'
         # The fix belongs in the image recipe, not by widening private inputs.
         assert (context / 'nginx.conf').stat().st_mode & 0o777 == 0o600
     finally:

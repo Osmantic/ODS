@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from host_agent_client import AgentClientError, AgentHTTPError, async_request_json as request_agent_json
+from host_agent_client import AgentClientError, AgentHTTPError, agent_reports_busy, async_request_json as request_agent_json
 from runtime_projection import active_runtime_projection as _active_runtime_projection
 from pixel_runtime_state import begin_pixel_stream, end_pixel_stream, try_begin_pixel_stream
 from pixel_chat_results import ChatResultStore, ResultCapacity, ResultConflict, owner_namespace
@@ -398,6 +398,11 @@ async def pixel_access_change(change: PixelAccessChange):
     try:
         value = await request_agent_json("POST", "/v1/pixel/access-mode", payload=change.model_dump(), timeout=330.0)
         return _access_projection(value)
+    except AgentHTTPError as exc:
+        if agent_reports_busy(exc):
+            # Refused before any change, unlike an unverified attempt.
+            raise HTTPException(status_code=409, detail={"code": "model_lifecycle_busy", "message": "ODS is busy with a model or Portal change. Nothing was changed; try again in a moment."}) from None
+        raise HTTPException(status_code=409, detail="The access change was not verified. Refresh status before retrying or restoring safer mode.") from None
     except AgentClientError:
         raise HTTPException(status_code=409, detail="The access change was not verified. Refresh status before retrying or restoring safer mode.") from None
 

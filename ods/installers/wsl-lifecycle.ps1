@@ -46,6 +46,47 @@ function Get-ODSWslIdentity([string]$Distro, [string]$InstallRoot) {
     [pscustomobject]@{ schemaVersion=1; ownerSid=$sid; distro=$Distro; installRoot=$InstallRoot; id=$id; taskName="ODS-WSL-$($id.Substring(0,24))"; directory=(Join-Path $stateBase $id) }
 }
 
+function Resolve-ODSWslTaskAccount([string]$OwnerSid) {
+    if ($OwnerSid -cne [Security.Principal.WindowsIdentity]::GetCurrent().User.Value) {
+        throw 'WSL task registration must use the current installation owner'
+    }
+    # Task Scheduler can reject even a SID when the local PC and user share a
+    # name. Use its fully qualified account, never an unqualified environment
+    # username; retain the SID as the ownership authority and check both ways.
+    $sid=[Security.Principal.SecurityIdentifier]::new($OwnerSid)
+    $account=$sid.Translate([Security.Principal.NTAccount])
+    if (-not $account.Value.Contains('\') -or
+        $account.Translate([Security.Principal.SecurityIdentifier]).Value -cne $OwnerSid) {
+        throw 'Could not verify the Windows account for the ODS task owner'
+    }
+    $account.Value
+}
+
+function Register-ODSWslTask($Identity,[string]$TaskName,$TaskAction,$Settings,[string]$Description,[switch]$AtLogOn) {
+    $account=Resolve-ODSWslTaskAccount $Identity.ownerSid
+    try {
+        $principal=New-ScheduledTaskPrincipal -UserId $account -LogonType Interactive -RunLevel Limited -ErrorAction Stop
+        $parameters=@{TaskName=$TaskName;Action=$TaskAction;Principal=$principal;Settings=$Settings;Description=$Description}
+        if ($AtLogOn) {
+            $trigger=New-ScheduledTaskTrigger -AtLogOn -User $account -ErrorAction Stop
+            $trigger.Delay='PT30S'
+            $parameters.Trigger=$trigger
+        }
+        # A caller can override ErrorActionPreference. Do not proceed to a
+        # misleading "task is missing" assertion after a nonterminating CIM error.
+        Register-ScheduledTask @parameters -ErrorAction Stop | Out-Null
+    } catch [Microsoft.Management.Infrastructure.CimException] {
+        $parts=$account -split '\\',2
+        if ($_.FullyQualifiedErrorId -match '0x80070057' -and $_.Exception.Message -match '\bUserId\b' -and
+            $parts.Count -eq 2 -and $parts[0] -ieq [Environment]::MachineName -and $parts[1] -ieq $parts[0]) {
+            throw [InvalidOperationException]::new(
+                'Windows Task Scheduler rejected the ODS task account. Your PC name matches your local Windows username. Rename this PC in Settings > System > About, restart Windows, then rerun ODS from a normal PowerShell window. Keep your existing Ubuntu distribution and ODS data.',
+                $_.Exception)
+        }
+        throw
+    }
+}
+
 function Assert-ODSPrivatePath([string]$Path, [switch]$Directory) {
     $item = Get-Item -LiteralPath $Path -Force
     # FileInfo.Attributes becomes -1 if a publisher replaces this name before
@@ -266,9 +307,8 @@ function Start-ODSWslAgentRelay($Identity) {
     Write-ODSPrivateBytes $controller ([IO.File]::ReadAllBytes($script:ODSWslLifecycleSource))
     if (-not $task) {
         $action=New-ScheduledTaskAction -Execute (Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe') -Argument (Get-ODSWslRelayTaskArguments $Identity)
-        $principal=New-ScheduledTaskPrincipal -UserId $Identity.ownerSid -LogonType Interactive -RunLevel Limited
         $settings=New-ScheduledTaskSettingsSet -Hidden -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-        Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Settings $settings -Description 'ODS owned WSL agent relay. On-demand only; independent of the launching terminal.' | Out-Null
+        Register-ODSWslTask $Identity $taskName $action $settings 'ODS owned WSL agent relay. On-demand only; independent of the launching terminal.'
     }
     $task=Assert-ODSWslRelayTask $Identity
     if ($task.State -ne 'Ready') { throw 'Owned WSL relay task is not ready' }
@@ -508,11 +548,8 @@ function Enable-ODSWslStartup($Identity,[string]$DockerDesktopPath = '',[switch]
     if (-not $intent -or ($NewInstallation -and -not $intent.desiredRunning)) { Set-ODSWslStartupIntent $Identity $true }
     if (-not $existing) {
         $action = New-ScheduledTaskAction -Execute (Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe') -Argument (Get-ODSWslStartupArguments $Identity)
-        $principal = New-ScheduledTaskPrincipal -UserId $Identity.ownerSid -LogonType Interactive -RunLevel Limited
-        $trigger = New-ScheduledTaskTrigger -AtLogOn -User $Identity.ownerSid
-        $trigger.Delay = 'PT30S'
         $settings = New-ScheduledTaskSettingsSet -Hidden -ExecutionTimeLimit ([TimeSpan]::FromMinutes(25)) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-        Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Trigger $trigger -Settings $settings -Description 'Restore this ODS WSL installation at owner sign-in only while its saved preference is running.' | Out-Null
+        Register-ODSWslTask $Identity $taskName $action $settings 'Restore this ODS WSL installation at owner sign-in only while its saved preference is running.' -AtLogOn
     }
     $task = Assert-ODSWslStartupTask $Identity
     if ($NewInstallation -and $task.State -eq 'Disabled') { Enable-ScheduledTask -TaskName $taskName | Out-Null }
@@ -937,16 +974,15 @@ function Start-ODSWslLifetime($Identity) {
     # Immutable for the duration of this run; commands use the current source,
     # while an already-running controller continues using its private copy.
     Write-ODSPrivateBytes (Join-Path $Identity.directory 'controller.ps1') ([IO.File]::ReadAllBytes($script:ODSWslLifecycleSource))
-    $generation=[guid]::NewGuid().ToString('N')
-    Write-ODSWslJson (Join-Path $Identity.directory 'request.json') @{ generation=$generation; action='run' }
     if (-not $task) {
         $action=New-ScheduledTaskAction -Execute (Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe') -Argument (Get-ODSWslTaskArguments $Identity)
-        $principal=New-ScheduledTaskPrincipal -UserId $Identity.ownerSid -LogonType Interactive -RunLevel Limited
         $settings=New-ScheduledTaskSettingsSet -Hidden -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-        Register-ScheduledTask -TaskName $Identity.taskName -Action $action -Principal $principal -Settings $settings -Description 'ODS owned WSL lifetime. On-demand only; explicit stop is never restarted automatically.' | Out-Null
+        Register-ODSWslTask $Identity $Identity.taskName $action $settings 'ODS owned WSL lifetime. On-demand only; explicit stop is never restarted automatically.'
     }
     $task=Assert-ODSWslTask $Identity
     if ($task.State -ne 'Ready') { throw 'Existing lifecycle controller became active before start; inspect its runtime record' }
+    $generation=[guid]::NewGuid().ToString('N')
+    Write-ODSWslJson (Join-Path $Identity.directory 'request.json') @{ generation=$generation; action='run' }
     Assert-ODSWslStartupStillWanted
     Start-ScheduledTask -TaskName $Identity.taskName
     for ($attempt=0; $attempt -lt 60; $attempt++) {
@@ -1057,6 +1093,15 @@ function New-ODSWslInstallerCommand([string]$RepoRoot,[string[]]$Arguments,[stri
     $environment=@()
     if ($ResolvedRoot) { $environment += 'INSTALL_DIR=' + (ConvertTo-ODSBashArgument $ResolvedRoot) }
     if ($script:ODSWslStateRoot) { $environment += 'ODS_WSL_STATE_ROOT=' + (ConvertTo-ODSBashArgument $script:ODSWslStateRoot) }
+    # wsl.exe does not implicitly forward arbitrary Windows environment values.
+    # Carry the owner's documented port override into the Linux admission and
+    # config writer, refusing invalid values before constructing a shell command.
+    if ($env:OLLAMA_PORT) {
+        if ($env:OLLAMA_PORT -cnotmatch '\A[1-9][0-9]{0,4}\z' -or [int]$env:OLLAMA_PORT -gt 65535) {
+            throw 'OLLAMA_PORT must be a port from 1 to 65535'
+        }
+        $environment += 'OLLAMA_PORT=' + (ConvertTo-ODSBashArgument $env:OLLAMA_PORT)
+    }
     if ($environment.Count) { $command += 'env ' + ($environment -join ' ') + ' ' }
     $command += 'bash install-core.sh'
     foreach ($argument in $Arguments) { $command += ' ' + (ConvertTo-ODSBashArgument $argument) }
