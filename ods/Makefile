@@ -72,6 +72,8 @@ test: ## Run unit and contract tests
 	@bash tests/test-ods-test-http-code.sh
 	@echo "=== ods-test.sh completes and reports when checks fail ==="
 	@bash tests/test-ods-test-complete-run.sh
+	@echo "=== ods-test.sh judges Tool Calling and LLM replies by their JSON ==="
+	@bash tests/test-ods-test-tool-calling.sh
 	@echo "=== phase 10 skips templated system units in the user scope ==="
 	@bash tests/test-phase10-skip-templated-user-units.sh
 	@echo "=== pre-download --tier is non-interactive ==="

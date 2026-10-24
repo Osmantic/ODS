@@ -172,6 +172,7 @@ tests/test-ods-doctor-docker-access.sh
 tests/test-ods-list-json-escaping.sh
 tests/test-ods-test-complete-run.sh
 tests/test-ods-test-http-code.sh
+tests/test-ods-test-tool-calling.sh
 tests/test-ods-test.sh
 tests/test-ods-update-runtime-compose.sh
 tests/test-offline-embedding-gate.sh
