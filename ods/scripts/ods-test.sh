@@ -30,7 +30,7 @@ _ODS_DIAGNOSTIC_PORT="${LLM_PORT:-}"
 
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ODS_DIR="${ODS_DIR:-$HOME/.ods}"
+ODS_DIR="${ODS_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 ENV_FILE="${ENV_FILE:-$ODS_DIR/.env}"
 TIMEOUT=15
 QUICK_TIMEOUT=5

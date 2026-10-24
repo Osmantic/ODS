@@ -251,6 +251,36 @@ class InferenceDiagnostics(unittest.TestCase):
         result = self.run_probe('tool-calling')
         self.assertEqual(result.returncode, 1, result.stdout)
 
+    def test_default_configuration_comes_from_this_installation(self):
+        # A checkout/installation can live outside HOME. Pin the legacy local
+        # port to our unrelated private server so the old selector stays safe.
+        foreign = self.root / 'other-home/.ods'
+        foreign.mkdir(parents=True)
+        foreign_env = 'ODS_MODEL_SWITCHBOARD=disabled\nOLLAMA_PORT=' + str(self.unrelated.port) + '\n'
+        (foreign / '.env').write_text(foreign_env)
+        result = self.run_probe(gateway=True, extra={
+            'ODS_DIR': '', 'ENV_FILE': '', 'HOME': str(foreign.parent),
+            'OLLAMA_PORT': str(self.unrelated.port),
+        })
+        self.assert_llm_result(result, 'llm', True)
+        self.assertEqual(self.unrelated.requests, [])
+        self.assertEqual((foreign / '.env').read_text(), foreign_env)
+
+    def test_explicit_environment_file_and_directory_are_honored(self):
+        selected = self.root / 'selected'
+        selected.mkdir()
+        (selected / '.env').write_text(
+            f'ODS_MODEL_SWITCHBOARD=enabled\nLITELLM_PORT={self.unrelated.port}\nLITELLM_KEY={self.key}\n')
+        self.unrelated.model, self.unrelated.token = 'ods/current', self.key
+        for extra in ({'ENV_FILE': str(selected / '.env')},
+                      {'ODS_DIR': str(selected), 'ENV_FILE': ''}):
+            with self.subTest(selectors=extra):
+                self.primary.requests.clear()
+                self.unrelated.requests.clear()
+                self.assert_llm_result(self.run_probe(gateway=True, extra=extra), 'llm', True)
+                self.assertEqual(self.primary.requests, [])
+                self.assertTrue(self.unrelated.requests)
+
     def test_health_readiness_is_not_replaced_by_model_listing(self):
         # Loading runtimes can list a model while refusing readiness. Keep the
         # main/quick/voice health gate; functional/custom APIs only need an
