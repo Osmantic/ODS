@@ -323,6 +323,51 @@ def test_activation_reconciliation_reports_a_still_cold_readback_as_unverified(m
     assert result["pixel"] == "unverified"
 
 
+@pytest.mark.parametrize("malformed_status", [[], {}])
+def test_activation_reconciliation_rejects_non_string_host_status(monkeypatch, malformed_status):
+    from routers import remote_provider_status as rps
+
+    async def malformed_runtime(*_args, **_kwargs):
+        return {"status": malformed_status, "modelTransactionPending": False}
+
+    monkeypatch.setattr(rps, "async_request_agent_json", malformed_runtime)
+    result = asyncio.run(rps._reconcile_activation_with_host(_reconciled_activation()))
+
+    assert result["valid"] is False
+    assert result["proven"] is False
+    assert result["reason"] == "consumer_drift"
+    assert result["pixel"] == "drifted"
+
+
+def test_activation_reconciliation_deadline_cancels_host_poll(monkeypatch):
+    from routers import remote_provider_status as rps
+
+    cancelled = []
+
+    async def hanging_runtime(*_args, **_kwargs):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+
+    real_wait_for = asyncio.wait_for
+
+    async def short_wait_for(awaitable, timeout):
+        assert timeout == 3.0
+        return await real_wait_for(awaitable, timeout=0.02)
+
+    monkeypatch.setattr(rps, "async_request_agent_json", hanging_runtime)
+    monkeypatch.setattr(rps.asyncio, "wait_for", short_wait_for)
+    result = asyncio.run(rps._reconcile_activation_with_host(_reconciled_activation()))
+
+    assert cancelled == [True]
+    assert result["valid"] is False
+    assert result["proven"] is False
+    assert result["reason"] == "consumer_status_unavailable"
+    assert result["pixel"] == "unverified"
+
+
 def test_activation_reconciliation_fails_closed_when_host_status_is_unavailable(monkeypatch):
     from host_agent_client import AgentUnavailable
     from routers import remote_provider_status as rps

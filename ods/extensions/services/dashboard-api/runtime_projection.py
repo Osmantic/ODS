@@ -14,6 +14,7 @@ def awaiting_runtime_readback(status: object) -> bool:
     return (
         isinstance(status, dict)
         and "activeRuntime" not in status
+        and isinstance(status.get("status"), str)
         and status.get("status") in _SETTLED_DOWNLOAD_STATUSES
     )
 
