@@ -21,6 +21,11 @@ fi
 
 set -euo pipefail
 
+# Preserve caller diagnostic overrides separately from installed configuration.
+_ODS_DIAGNOSTIC_URL="${LLM_URL:-}"
+_ODS_DIAGNOSTIC_HOST="${LLM_HOST:-}"
+_ODS_DIAGNOSTIC_PORT="${LLM_PORT:-}"
+
 # Colors
 RED='\e[0;31m'
 GREEN='\e[0;32m'
@@ -34,7 +39,7 @@ if [[ -f "$_FT_DIR/lib/service-registry.sh" ]]; then
     . "$_FT_DIR/lib/service-registry.sh"
     sr_load
     [[ -f "$_FT_DIR/lib/safe-env.sh" ]] && . "$_FT_DIR/lib/safe-env.sh"
-    load_env_file "$_FT_DIR/.env"
+    load_env_file "${ENV_FILE:-$_FT_DIR/.env}"
     sr_resolve_ports
 fi
 
@@ -73,49 +78,17 @@ test_llm_functional() {
     echo ""
     echo "> Testing LLM Functional Generation"
 
-    # The grep-based extraction pipelines in this script may legitimately
-    # produce zero matches (LLM/TTS/embeddings/whisper offline or returning
-    # unexpected payload). Under `set -euo pipefail` such a no-match would
-    # abort the script before the `[[ -z ... ]]` guard below can treat it
-    # as a test failure. Using `if ! VAR=$(...)` keeps the set -e safety
-    # net engaged everywhere else; `set -e` is disabled only for the
-    # evaluation of the condition (per bash spec), so a failed pipeline
-    # leaves VAR empty and the explicit `fail` path below runs.
-    local model_id=""
-    if ! model_id=$(curl -s --max-time 10 "$LLM_URL/v1/models" 2>/dev/null | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4); then
-        model_id=""
-    fi
-    model_id="${model_id:-local}"
-
-    local prompt="What is 2+2? Answer with just the number."
-    local payload="{\"model\": \"$model_id\", \"messages\": [{\"role\": \"user\", \"content\": \"$prompt\"}], \"max_tokens\": 10, \"temperature\": 0.1}"
-
-    local response
-    response=$(curl -s --max-time 30 \
-        -X POST "$LLM_URL/v1/chat/completions" \
-        -H "Content-Type: application/json" \
-        -d "$payload" 2>/dev/null || echo "")
-
-    if [[ -z "$response" ]]; then
-        fail "LLM returned no response"
+    # shellcheck source=lib/inference-probe.sh
+    . "$_FT_DIR/lib/inference-probe.sh"
+    if ! ods_inference_prepare || ! ods_inference_chat text "What is 2+2? Answer with just the number."; then
+        fail "LLM $_ODS_PROBE_ERROR"
         return 1
     fi
-
-    local content=""
-    if ! content=$(echo "$response" | grep -oE '"content":[[:space:]]*"[^"]+"' | head -1 | cut -d'"' -f4); then
-        content=""
-    fi
-
-    if [[ -z "$content" ]]; then
-        fail "LLM returned empty content"
-        return 1
-    fi
-
-    # Check if response contains "4" (the answer to 2+2)
-    if echo "$content" | grep -q "4"; then
+    local content="$_ODS_PROBE_CONTENT"
+    if [[ "$content" == 4 ]]; then
         pass "LLM generates correct answer: '$content'"
     else
-        warn "LLM generated: '$content' (expected '4')"
+        warn "LLM generated text (arithmetic answer differs from 4)"
         pass "LLM generates text (answer may vary)"
     fi
 }

@@ -45,6 +45,7 @@ for manifest in "$ROOT_DIR"/extensions/services/*/manifest.yaml; do
 done
 # Every probe targets a closed loopback port and fails immediately.
 cat > "$INSTALL/.env" <<'EOF'
+ODS_MODEL_SWITCHBOARD=disabled
 OLLAMA_PORT=1
 WEBUI_PORT=1
 WHISPER_PORT=1
