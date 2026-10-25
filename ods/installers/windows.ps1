@@ -224,7 +224,7 @@ if ($lifetimeRequired) {
     try { $null = Start-ODSWslLifetime $lifetimeIdentity } finally { $lifetimeLock.Dispose() }
     Write-Host "ODS WSL lifetime is active independently of this installer window."
     $stateHint = if ($StateRoot) { " -StateRoot `"$StateRoot`"" } else { '' }
-    Write-Host "Lifecycle: powershell -File `"$PSScriptRoot\wsl-lifecycle.ps1`" -Action status|stop|start|restart -Distro `"$Distro`" -InstallRoot `"$linuxInstallRoot`"$stateHint"
+    Write-Host "Lifecycle: powershell -NoProfile -ExecutionPolicy Bypass -File `"$PSScriptRoot\wsl-lifecycle.ps1`" -Action status|stop|start|restart -Distro `"$Distro`" -InstallRoot `"$linuxInstallRoot`"$stateHint"
     # Record, before install-core creates it, whether this root already holds
     # an installation (every uninstall removes .env, even with --keep-data).
     & wsl.exe --distribution $Distro --exec /usr/bin/test -e "$($lifetimeIdentity.installRoot)/.env"
@@ -278,7 +278,16 @@ if ($installerExitCode -eq 0 -and $lifetimeRequired -and '--pixel' -cin $Passthr
             # 'ODS Portal' web link when Edge or the shortcut is unavailable.
             . (Join-Path $PSScriptRoot 'windows/lib/app-shortcut.ps1')
             $appIcon = Join-Path (Split-Path -Parent $PSScriptRoot) 'extensions/services/dashboard/public/osmantic-os.ico'
-            $null = Publish-ODSPortalShortcut -PortalUrl $portalUrl[0] -IconSource $appIcon
+            $shortcuts = @(Publish-ODSPortalShortcut -PortalUrl $portalUrl[0] -IconSource $appIcon)
+            if ($shortcuts.Count -and $lifetimeRequired) {
+                # Uninstall (wsl-lifecycle disable-startup -RetireRelay) removes
+                # exactly these. Like the shortcut itself, never fail the install.
+                try {
+                    Write-ODSWslJson (Join-Path $lifetimeIdentity.directory 'shortcuts.json') @{ shortcuts = @(Get-ODSPortalShortcutRecord $shortcuts) }
+                } catch {
+                    Write-Warning "Uninstall will not remove the ODS shortcuts: their record was not saved: $($_.Exception.Message)"
+                }
+            }
             Write-Host "Opening Portal: $($portalUrl[0])"
             Start-Process $portalUrl[0]
         }

@@ -89,6 +89,19 @@ describe('Pixel access confirmation and effective status', () => {
     expect(fetch.mock.calls.filter(call => call[1]?.method === 'POST')).toHaveLength(1)
   })
 
+  it('says nothing changed when the host refuses an access change as busy', async () => {
+    const fetch = vi.fn(async (_url, options) => options?.method === 'POST'
+      ? {ok: false, status: 409, json: async () => ({detail: {code: 'model_lifecycle_busy', message: 'busy'}})}
+      : {ok: true, json: async () => safe})
+    vi.stubGlobal('fetch', fetch)
+    render(<PixelAccessCard />)
+    await screen.findByText('Not verified')
+    fireEvent.click(screen.getByRole('button', {name: 'Verify Sandbox'}))
+    expect(await screen.findByRole('alert')).toHaveTextContent('ODS is busy')
+    expect(screen.getByRole('alert')).not.toHaveTextContent('not verified')
+    expect(fetch.mock.calls.filter(call => call[1]?.method === 'POST')).toHaveLength(1)
+  })
+
   it('ends the inspection message after failure and clears the error on retry', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce({ok: false}).mockResolvedValue({ok: true, json: async () => safe}))
     render(<PixelAccessCard />)
