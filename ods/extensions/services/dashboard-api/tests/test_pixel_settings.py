@@ -190,6 +190,20 @@ def test_upstream_400_no_echo(client, mock_request_agent):
     assert mock_request_agent.call_count == 1
 
 
+def test_upstream_busy_refusal_says_nothing_changed(client, mock_request_agent):
+    # The host refuses with this code before acting, so the change never ran.
+    mock_request_agent.side_effect = AgentHTTPError(
+        409, "busy", '{"error": "Pixel settings runtime request failed", "code": "model-lifecycle-busy"}')
+    resp = client.post(
+        "/api/pixel/settings/save",
+        json={"expectedRevision": 0, "changes": {}},
+        headers={"Authorization": "Bearer test-key-12345"},
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "model_lifecycle_busy"
+    assert "Nothing was changed" in resp.json()["detail"]["message"]
+
+
 def test_upstream_503(client, mock_request_agent):
     mock_request_agent.side_effect = AgentUnavailable()
     resp = client.get("/api/pixel/settings", headers={"Authorization": "Bearer test-key-12345"})

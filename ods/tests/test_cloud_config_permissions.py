@@ -290,6 +290,8 @@ error(){ printf '%s\n' "$*" >&2; return 1; }
 source "$SCRIPT_DIR/installers/lib/pixel-integration.sh"
 ods_pixel_install_owner(){ id -un; }
 ods_pixel_owner_home(){ printf '%s\n' "$HOME"; }
+# Service startup is outside this filesystem permission-ordering fixture.
+_ods_pixel_start_stopped_access_service(){ :; }
 _ods_pixel_source_transition_required(){
     python3 "$PROBE" "$SCRIPT_DIR/bin/pixel_source_upgrade.py" "$INSTALL_DIR" "$OBSERVED" || exit 1
     exit 77

@@ -309,3 +309,18 @@ def test_a_failed_read_past_the_metadata_keeps_the_metadata(monkeypatch):
 
     assert result["architecture"] == "qwen3"
     assert result["tensor_types"] is None
+
+
+def test_range_read_timeout_names_header_read():
+    class _TimeoutHub(_Hub):
+        def __call__(self, request: httpx.Request):
+            if request.method == "GET":
+                raise httpx.ReadTimeout("timed out reading range")
+            return super().__call__(request)
+
+    hub = _TimeoutHub(_model_bytes())
+    with pytest.raises(hf_gguf_header.HeaderUnavailable) as raised:
+        _fetch(hub)
+
+    assert raised.value.code == "unreachable"
+    assert raised.value.message == "reading the model file's header timed out"

@@ -60,6 +60,25 @@ def test_workflow_listing_omits_key_when_unset(monkeypatch, tmp_path):
     assert seen["headers"] == {}
 
 
+def test_workflow_listing_returns_none_on_non_200_page(monkeypatch, tmp_path):
+    monkeypatch.delenv("N8N_API_KEY", raising=False)
+    (tmp_path / ".env").write_text("N8N_API_KEY=n8n-key\n", encoding="utf-8")
+    monkeypatch.setattr(config, "INSTALL_DIR", str(tmp_path))
+
+    resp = AsyncMock()
+    resp.status = 503
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=resp)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    session = AsyncMock()
+    session.get = MagicMock(return_value=ctx)
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("routers.workflows.aiohttp.ClientSession", return_value=session):
+        assert asyncio.run(wf_mod.get_n8n_workflows()) is None
+
+
 def test_schema_accepts_n8n_api_key_as_secret():
     properties = json.loads(SCHEMA.read_text(encoding="utf-8"))["properties"]
 

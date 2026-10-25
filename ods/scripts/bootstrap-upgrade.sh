@@ -397,6 +397,9 @@ STATUSEOF
         rm -f "$_tmp" 2>/dev/null || true
         return 1
     fi
+    chmod 0644 "$_tmp" 2>/dev/null || {
+        log "WARNING: could not set 0644 permissions on $STATUS_FILE temp file"
+    }
     if ! mv "$_tmp" "$STATUS_FILE"; then
         rm -f "$_tmp" 2>/dev/null || true
         return 1

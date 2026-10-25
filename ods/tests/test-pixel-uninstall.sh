@@ -272,7 +272,7 @@ import pathlib
 import sys
 
 text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
-assert 'owner_gid="$(id -g)"' in text
+assert 'owner_gid="$(id -g "$owner_name")"' in text
 assert '"$root_uid" "$root_gid" "$owner_uid" "$owner_gid"' in text
 assert "info.st_gid != owner_gid" in text
 assert "info.st_gid != os.getgid()" not in text
@@ -2141,6 +2141,24 @@ else
         && pass "root artifact drift fails before any mutation" \
         || fail "root artifact drift caused partial cleanup"
 fi
+
+# After `newgrp docker` (which the installer suggests) or `sg docker`, the
+# shell's current group is docker, not the account's primary group that the
+# installer gave Pixel's files. Validation must still accept them.
+write_access_fixture
+id() {
+    if [[ $# -eq 1 && "$1" == "-g" ]]; then
+        echo 4242
+    else
+        command id "$@"
+    fi
+}
+if ODS_PIXEL_UNINSTALL_VALIDATE_ONLY=true ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
+    pass "Pixel access validation accepts the owner's files under another current group"
+else
+    fail "Pixel access validation refused the owner's files after newgrp/sg docker"
+fi
+unset -f id
 
 write_access_fixture
 printf '%s\n' '[Service]' 'Environment=OPERATOR_OWNED=1' \

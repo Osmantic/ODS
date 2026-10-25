@@ -114,11 +114,35 @@ compose_flags_files_exist() {
     return 0
 }
 
+# Owner overlays added after install: registered model stores and the active
+# store's /models mount (scripts/register-model-store.py), and the
+# docker-compose.override.yml that docs/PROFILES.md describes. The installer's
+# cache predates them; without them llama-server starts on the default model
+# directory, or the owner's override is ignored. Matches ods-cli.
+compose_flags_cover_owner_overlays() {
+    local flags="$1"
+    if [[ -f "${INSTALL_DIR}/.model-stores.compose.json" && "$flags" != *".model-stores.compose.json"* ]]; then
+        return 1
+    fi
+    if [[ -f "${INSTALL_DIR}/docker-compose.override.yml" && "$flags" != *"docker-compose.override.yml"* ]]; then
+        return 1
+    fi
+    local active_store
+    active_store="$(env_file_value ODS_ACTIVE_MODEL_STORE)"
+    if [[ "${active_store:-default}" != "default" ]]; then
+        [[ "$flags" == *".active-model-store.compose.json"* ]] || return 1
+    elif [[ "$flags" == *".active-model-store.compose.json"* ]]; then
+        return 1
+    fi
+    return 0
+}
+
 resolve_compose_flags() {
     local cached=""
     if [[ -f "${INSTALL_DIR}/.compose-flags" ]]; then
         cached="$(< "${INSTALL_DIR}/.compose-flags")"
-        if [[ -n "$cached" ]] && compose_flags_files_exist "$cached"; then
+        if [[ -n "$cached" ]] && compose_flags_files_exist "$cached" \
+            && compose_flags_cover_owner_overlays "$cached"; then
             printf '%s\n' "$cached"
             return 0
         fi

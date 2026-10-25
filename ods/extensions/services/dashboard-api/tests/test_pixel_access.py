@@ -50,3 +50,21 @@ def test_config_cannot_be_presented_as_effective_without_runtime_proof():
                    {**safe, "effective_mode": "sandboxed", "runtime_verified": True, "pending": True}):
         with patch.object(pixel, "request_agent_json", new_callable=AsyncMock, return_value=status):
             assert client.get("/api/pixel/access-mode", headers=headers).status_code == 502
+
+
+def test_busy_refusal_is_not_reported_as_an_unverified_change():
+    from host_agent_client import AgentHTTPError
+
+    request = {"mode": "full-access", "confirmed": True, "revision": safe["revision"]}
+    busy = AgentHTTPError(409, "busy", '{"error": "model-lifecycle-busy"}')
+    with patch.object(pixel, "request_agent_json", new_callable=AsyncMock, side_effect=busy):
+        response = client.post("/api/pixel/access-mode", headers=headers, json=request)
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "model_lifecycle_busy"
+    assert "Nothing was changed" in response.json()["detail"]["message"]
+
+    failed = AgentHTTPError(503, "unavailable", '{"error": "access-service-unavailable"}')
+    with patch.object(pixel, "request_agent_json", new_callable=AsyncMock, side_effect=failed):
+        response = client.post("/api/pixel/access-mode", headers=headers, json=request)
+    assert response.status_code == 409
+    assert "was not verified" in response.json()["detail"]

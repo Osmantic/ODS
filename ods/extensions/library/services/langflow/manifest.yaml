@@ -20,6 +20,24 @@ service:
     Langflow is a visual LLM workflow builder that lets you create
     complex AI workflows with a drag-and-drop interface. Supports
     LangChain components, custom components, and real-time testing.
+  env_vars:
+    - key: LANGFLOW_SUPERUSER_PASSWORD
+      required: true
+      secret: true
+      description: Password for the Langflow superuser; flows can run arbitrary Python.
+      min_length: 8
+      max_length: 128
+      generate: password
+    - key: LANGFLOW_SECRET_KEY
+      required: true
+      secret: true
+      description: Stable key Langflow uses to encrypt stored credentials and sign sessions.
+      generate: hex64
+      min_length: 32
+    - key: LANGFLOW_SUPERUSER
+      required: false
+      default: admin
+      description: Langflow superuser username.
 
 features:
   - id: langflow-visual-workflow

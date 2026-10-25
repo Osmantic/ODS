@@ -534,7 +534,7 @@ else
         command -v git &> /dev/null || error "Please install git: https://git-scm.com"
     else
         if command -v apt-get &> /dev/null; then
-            sudo apt-get update -qq && sudo apt-get install -y -qq git
+            sudo apt-get update -qq </dev/null && sudo apt-get install -y -qq git </dev/null
         elif command -v dnf &> /dev/null; then
             sudo dnf install -y -q git
         elif command -v yum &> /dev/null; then
@@ -557,7 +557,7 @@ if command -v curl &> /dev/null; then
 else
     log "Installing curl..."
     if command -v apt-get &> /dev/null; then
-        sudo apt-get install -y -qq curl
+        sudo apt-get install -y -qq curl </dev/null
     elif command -v dnf &> /dev/null; then
         sudo dnf install -y -q curl
     elif command -v yum &> /dev/null; then

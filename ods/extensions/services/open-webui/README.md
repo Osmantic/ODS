@@ -177,7 +177,7 @@ docker compose logs open-webui
 ```
 
 **"Connection refused" to LLM:**
-- Verify llama-server is healthy: `curl http://localhost:8080/health`
+- Verify llama-server is healthy: `curl http://localhost:11434/health`
 - Check `LLM_API_URL` in `.env`
 
 **Voice input not working:**

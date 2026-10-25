@@ -115,7 +115,7 @@ async def _read_range(client: httpx.AsyncClient, url: str, start: int, end: int)
                 if received >= limit:
                     break
     except httpx.TimeoutException as exc:
-        raise HeaderUnavailable("unreachable", "The model file download timed out") from exc
+        raise HeaderUnavailable("unreachable", "reading the model file's header timed out") from exc
     except httpx.HTTPError as exc:
         raise HeaderUnavailable("unreachable", "The model file could not be reached") from exc
     return b"".join(chunks)[:limit]

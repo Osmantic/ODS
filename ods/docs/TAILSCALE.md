@@ -65,10 +65,14 @@ The extension is **opt-in**. It doesn't auto-install; you enable it when you wan
 #     to use it, set TS_EXTRA_ARGS=--advertise-tags=tag:ods below.
 
 # 2. Drop the key into .env:
+# Keep comments on their own lines: in .env, "KEY=   # note" sets KEY to
+# "# note" (Docker Compose drops the spaces before the "#").
 cat >> .env <<'EOF'
 TS_AUTHKEY=tskey-auth-xxxxxxxxxxxxxxxxxxxxxx
-TS_HOSTNAME=                # leave blank — defaults to ODS_DEVICE_NAME
-TS_EXTRA_ARGS=              # optional, e.g. --advertise-tags=tag:ods
+# TS_HOSTNAME: leave blank to use ODS_DEVICE_NAME
+TS_HOSTNAME=
+# TS_EXTRA_ARGS: optional, e.g. --advertise-tags=tag:ods
+TS_EXTRA_ARGS=
 EOF
 
 # 3. Enable the extension.

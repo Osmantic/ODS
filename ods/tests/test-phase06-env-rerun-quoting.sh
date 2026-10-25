@@ -126,6 +126,23 @@ done
     && pass "_env_get applies the inline-comment rule before installer logic compares values" \
     || fail "_env_get kept an inline comment in BIND_ADDRESS: $(_env_get BIND_ADDRESS "")"
 
+# An owner who follows the FAQ appends a key below the installer's empty line.
+# Compose uses the last assignment, so the rerun must keep that one.
+printf '%s\n' 'OPENAI_API_KEY=' '# owner edits below' 'N8N_PASS=before' 'OPENAI_API_KEY=appended' \
+    'N8N_PASS="new$owner"' > "$tmp_dir/duplicate.env"
+_saved_existing="$_env_existing"
+_env_existing="$tmp_dir/duplicate.env"
+[[ "$(_env_get OPENAI_API_KEY "")" == "appended" ]] \
+    && pass "_env_get keeps the owner's appended OPENAI_API_KEY over the installer's empty line" \
+    || fail "_env_get read an earlier OPENAI_API_KEY: '$(_env_get OPENAI_API_KEY "")'"
+[[ "$(_env_get N8N_PASS "")" == 'new$owner' ]] \
+    && pass "_env_get keeps the owner's rotated N8N_PASS" \
+    || fail "_env_get read an earlier N8N_PASS: '$(_env_get N8N_PASS "")'"
+[[ "$(_env_get_preserve_empty OPENAI_API_KEY "")" == "appended" ]] \
+    && pass "_env_get_preserve_empty keeps the last OPENAI_API_KEY too" \
+    || fail "_env_get_preserve_empty read an earlier OPENAI_API_KEY"
+_env_existing="$_saved_existing"
+
 # Simulate the rerun: read each value with phase 06's reader and write it back
 # the way the template now does.
 : > "$tmp_dir/rerun.env"

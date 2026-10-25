@@ -107,3 +107,51 @@ def test_without_the_relay_key_nothing_is_asked(client, monkeypatch):
     seen = relay_answers(monkeypatch, body={"status": 401, "ageSeconds": 3})
     assert client.get("/api/pixel/model-failure", headers=HEADERS).json() == {"cause": None}
     assert seen == []
+
+
+def test_native_relay_missing_from_registry_still_explains_failure(client, monkeypatch):
+    # Native installers explicitly select the disabled Compose fragment, which
+    # the public service registry intentionally omits.
+    monkeypatch.setattr(pmf, "SERVICES", {})
+    client.env["LLM_BACKEND"] = "llama-server"
+    seen = relay_answers(monkeypatch, body={"status": 502, "ageSeconds": 4})
+    response = client.get("/api/pixel/model-failure", headers=HEADERS)
+    assert response.status_code == 200
+    assert response.json()["cause"] == "model_unavailable"
+    assert response.json()["status"] == 502
+    assert seen == [("http://pixel-model-relay:4102/v1/ods/last-generation",
+                     {"Authorization": "Bearer relay-key"})]
+
+
+def test_absent_registry_without_key_does_not_probe(client, monkeypatch):
+    monkeypatch.setattr(pmf, "SERVICES", {})
+    client.env["PIXEL_MODEL_RELAY_KEY"] = ""
+    seen = relay_answers(monkeypatch, body={"status": 502, "ageSeconds": 4})
+    assert client.get("/api/pixel/model-failure", headers=HEADERS).json() == {"cause": None}
+    assert seen == []
+
+
+@pytest.mark.parametrize("body", [
+    {"status": "502", "ageSeconds": 4},
+    {"status": 502, "ageSeconds": 600},
+    {"status": 200, "ageSeconds": 4},
+])
+def test_absent_registry_preserves_failure_validation(client, monkeypatch, body):
+    monkeypatch.setattr(pmf, "SERVICES", {})
+    seen = relay_answers(monkeypatch, body=body)
+    assert client.get("/api/pixel/model-failure", headers=HEADERS).json() == {"cause": None}
+    assert len(seen) == 1
+
+
+def test_absent_registry_unreachable_relay_returns_no_cause(client, monkeypatch):
+    monkeypatch.setattr(pmf, "SERVICES", {})
+    relay_answers(monkeypatch, error=httpx.ConnectError("refused"))
+    assert client.get("/api/pixel/model-failure", headers=HEADERS).json() == {"cause": None}
+
+
+def test_registry_endpoint_takes_precedence(client, monkeypatch):
+    monkeypatch.setattr(pmf, "SERVICES", {"pixel-model-relay": {"host": "configured-relay", "port": 4202}})
+    seen = relay_answers(monkeypatch, body={"status": 401, "ageSeconds": 2})
+    assert client.get("/api/pixel/model-failure", headers=HEADERS).json()["cause"] == "key_refused"
+    assert seen == [("http://configured-relay:4202/v1/ods/last-generation",
+                     {"Authorization": "Bearer relay-key"})]

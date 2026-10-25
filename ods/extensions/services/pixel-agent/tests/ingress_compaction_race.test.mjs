@@ -38,7 +38,12 @@ async function fixture(t,mode) {
   let phase='idle',lease=null,revision=0,calls=0,actions=0,notify;
   const observed=new Promise(resolve=>{notify=resolve;});const submissions=[],routes=[],abortResults=[];
   let releaseFlight,abortNotify;const flight=new Promise(resolve=>{releaseFlight=resolve;});const abortObserved=new Promise(resolve=>{abortNotify=resolve;});
-  const compactor=createContextCompaction({directory:path.join(directory,'compaction'),busyRetryDelayMs:mode==='cancel'?100:1,busyRetryLimit:3,
+  let releaseRetry,retryNotify,cancelNotify;
+  const retryWait=new Promise(resolve=>{releaseRetry=resolve;});
+  const retryWaiting=new Promise(resolve=>{retryNotify=resolve;});
+  const cancelStarted=new Promise(resolve=>{cancelNotify=resolve;});
+  const compactor=createContextCompaction({directory:path.join(directory,'compaction'),busyRetryDelayMs:1,busyRetryLimit:3,
+    ...(mode==='cancel'?{waitForBusyRetry:async delayMs=>{assert.ok(delayMs>0 && delayMs<=1);retryNotify();await retryWait;}}:{}),
     readSession:()=>({sessionId:'created-by-stopped-turn'}),
     readConfig:()=>({agents:{defaults:{model:'ods-gateway/ods/current'}},models:{providers:{'ods-gateway':{models:[{id:'ods/current',name:'ODS Current (fixture.gguf)',contextWindow:32768}]}}}}),
     admission:{status:()=>({available:true,phase,revision}),owns:token=>lease===token,
@@ -51,6 +56,12 @@ async function fixture(t,mode) {
       if(mode==='cancel'||mode==='persistent'||calls===1)throw refusal();
       actions++;return {key,ok:true,compacted:true,result:{tokensAfter:100}};
     }});
+  const cancelPending=compactor.cancelPending.bind(compactor);
+  compactor.cancelPending=user=>{
+    // The real method marks cancellation synchronously, then waits for the
+    // held retry to settle. Observe that entry before releasing the test gate.
+    const result=cancelPending(user);cancelNotify();return result;
+  };
   const abort=abortHandler(compactor);
   const gateway=http.createServer(async(req,res)=>{
     let raw='';for await(const chunk of req)raw+=chunk;
@@ -73,9 +84,9 @@ async function fixture(t,mode) {
   });
   const gatewayPort=await listen(gateway),ingress=createIngressServer({token:'test-only-token',gatewayPort,historyLedger:ledger});
   const port=await listen(ingress);
-  t.after(async()=>{await Promise.all([new Promise(r=>ingress.close(r)),new Promise(r=>gateway.close(r))]);fs.rmSync(directory,{recursive:true,force:true});});
+  t.after(async()=>{releaseRetry();releaseFlight();await Promise.all([new Promise(r=>ingress.close(r)),new Promise(r=>gateway.close(r))]);fs.rmSync(directory,{recursive:true,force:true});});
   const post=async(route,body)=>{const response=await fetch(`http://127.0.0.1:${port}${route}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});return {status:response.status,body:await response.json()};};
-  return {compactor,ledger,observed,submissions,routes,post,abortResults,abortObserved,releaseFlight,get calls(){return calls;},get actions(){return actions;},get phase(){return phase;},
+  return {compactor,ledger,observed,submissions,routes,post,abortResults,abortObserved,releaseFlight,retryWaiting,releaseRetry,cancelStarted,get calls(){return calls;},get actions(){return actions;},get phase(){return phase;},
     chat:()=>post('/v1/chat/completions',{user:rawUser,request_id:'new-owner-turn',stream:false,
       history_snapshot:{schemaVersion:1,messages:[u('Delegate the old review'),u('Do not resume it. What is 18 + 7?')]},
       messages:[u('Do not resume it. What is 18 + 7?')]})};
@@ -91,10 +102,14 @@ test('first-turn native Stop followed by history hydration submits only the new 
 });
 
 test('Stop during native busy wait closes ingress without submitting the owner input',async t=>{
-  const f=await fixture(t,'cancel');const pending=f.chat();await f.observed;
-  const stopped=await f.post('/v1/chat/cancel',{user:rawUser});assert.equal(stopped.status,200);assert.equal(stopped.body.aborted,true);
+  const f=await fixture(t,'cancel');const pending=f.chat();await f.retryWaiting;
+  const stopping=f.post('/v1/chat/cancel',{user:rawUser});await f.cancelStarted;
+  assert.equal(f.calls,1);assert.equal(f.phase,'held');
+  f.releaseRetry();
+  const stopped=await stopping;assert.equal(stopped.status,200);assert.equal(stopped.body.aborted,true);
   const result=await pending;assert.equal(result.status,502);
   assert.equal(f.calls,1);assert.equal(f.actions,0);assert.equal(f.submissions.length,0);assert.equal(f.phase,'idle');
+  assert.equal(f.compactor.context(user).compaction.status,'failed');
 });
 
 for(const mode of ['unknown','persistent'])test(`unconfirmed history remains undelivered: ${mode}`,async t=>{

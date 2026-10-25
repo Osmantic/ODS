@@ -39,10 +39,12 @@ _phase07_install_linux_node() {
         apt)
             tmpfile=$(mktemp /tmp/nodesource-setup.XXXXXX.sh)
             if curl -fsSL --max-time 300 https://deb.nodesource.com/setup_22.x -o "$tmpfile" 2>/dev/null; then
-                ods_sudo -E bash "$tmpfile" 2>&1 | tee -a "$LOG_FILE" || ai_warn "Failed to run NodeSource apt setup script for $consumer"
+                # The downloaded file supplies the script; nested apt needs
+                # EOF rather than the installer's terminal through sudo-rs.
+                ods_sudo -E bash "$tmpfile" </dev/null 2>&1 | tee -a "$LOG_FILE" || ai_warn "Failed to run NodeSource apt setup script for $consumer"
             fi
             rm -f "$tmpfile"
-            ods_sudo apt-get install -y nodejs 2>&1 | tee -a "$LOG_FILE" || ai_warn "Failed to install nodejs via apt-get for $consumer"
+            ods_sudo apt-get install -y nodejs </dev/null 2>&1 | tee -a "$LOG_FILE" || ai_warn "Failed to install nodejs via apt-get for $consumer"
             ;;
         dnf)
             ods_sudo dnf module install -y nodejs:22 2>&1 | tee -a "$LOG_FILE" || \
@@ -583,7 +585,7 @@ if [[ -f "$INSTALL_DIR/bin/ods-mdns.py" ]] && [[ "$(uname -s)" == "Linux" ]]; th
         # --user below, which needs no root).
         ods_sudo_available || return 99
         case "$PKG_MANAGER" in
-            apt)    ods_sudo apt-get install -y python3-zeroconf 2>&1 | tee -a "$LOG_FILE" ;;
+            apt)    ods_sudo apt-get install -y python3-zeroconf </dev/null 2>&1 | tee -a "$LOG_FILE" ;;
             dnf)    ods_sudo dnf install -y python3-zeroconf 2>&1 | tee -a "$LOG_FILE" ;;
             pacman) ods_sudo pacman -S --noconfirm --needed python-zeroconf 2>&1 | tee -a "$LOG_FILE" ;;
             zypper) ods_sudo zypper --non-interactive install python3-zeroconf 2>&1 | tee -a "$LOG_FILE" ;;

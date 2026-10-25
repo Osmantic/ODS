@@ -240,3 +240,29 @@ def test_install_plan_marks_steps_whose_setup_hook_owns_settings():
     assert hooked["missingConfiguration"] == ["APP_SECRET"]
     assert declares_setup_hook({"hooks": {"post_install": "hooks/post.sh"}}) is True
     assert declares_setup_hook({"hooks": {"pre_start": "hooks/pre.sh"}, "setup_hook": " "}) is False
+
+
+def test_langflow_install_asks_for_generatable_secrets_before_compose_up(test_client, host):
+    # The shipped Langflow definition (no setup hook): both secrets are
+    # refused up front with a generator, so the dialog fills and saves them
+    # before the host agent ever runs compose.
+    import shutil
+    from pathlib import Path
+    source = Path(__file__).resolve().parents[3] / "library" / "services" / "langflow"
+    shutil.copytree(source, host.library / "langflow")
+
+    refused = _post(test_client, "/api/extensions/langflow/install")
+
+    assert refused.status_code == 400
+    detail = refused.json()["detail"]
+    assert detail["code"] == "missing_configuration"
+    assert detail["missing_configuration"] == ["LANGFLOW_SUPERUSER_PASSWORD", "LANGFLOW_SECRET_KEY"]
+    generators = {field["key"]: field["format"]["generate"] for field in detail["configuration"]}
+    assert generators == {"LANGFLOW_SUPERUSER_PASSWORD": "password", "LANGFLOW_SECRET_KEY": "hex64"}
+    assert host.installs == [] and not (host.users / "langflow").exists()
+
+    host.configured.update({"LANGFLOW_SUPERUSER_PASSWORD", "LANGFLOW_SECRET_KEY"})
+    response = _post(test_client, "/api/extensions/langflow/install")
+
+    assert response.status_code == 200
+    assert host.installs == ["langflow"]
