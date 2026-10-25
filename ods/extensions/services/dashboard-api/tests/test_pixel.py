@@ -135,6 +135,7 @@ def pixel_env(monkeypatch):
     monkeypatch.setattr(pixel_chat_identity, "async_request_json", saved_identity)
     monkeypatch.setenv("PIXEL_OPENWEBUI_KEY", EDGE_KEY)
     monkeypatch.setenv("PIXEL_EDGE_URL", "http://pixel-edge:9595")
+    monkeypatch.setattr(pixel, "_runtime_proof", None)
 
     async def idle_model_lifecycle(*_args, **_kwargs):
         return {"status": "idle", "lifecycleActive": False, "activeOperation": None}
@@ -700,6 +701,129 @@ async def test_pending_native_model_transaction_blocks_pixel_after_host_restart(
         with pytest.raises(HTTPException) as exc:
             await pixel.pixel_chat_stream(ConnectedRequest(), body)
         assert exc.value.status_code == 409
+
+
+# The host's ownership proof after Unload model; the Models page offers Resume model for it.
+_STOPPED_RUNTIME = {"managed": True, "canActivate": False, "canUnload": True, "running": False, "vision": False}
+_UNATTENDED_HOLD = {"status": "idle", "modelTransactionPending": True}
+
+
+def _host_agent(monkeypatch, model_status, management):
+    """Answer the host reads Portal makes for a held model; record each path."""
+    paths = []
+
+    async def agent(_method, path, **_kwargs):
+        paths.append(path)
+        if path == "/v1/model/status":
+            return model_status
+        if path == "/v1/model/management":
+            if isinstance(management, BaseException):
+                raise management
+            return management
+        raise pixel.AgentClientError("not used by this test")
+
+    monkeypatch.setattr(pixel, "request_agent_json", agent)
+    return paths
+
+
+def test_an_unattended_hold_on_a_stopped_runtime_is_an_unload_not_a_switch():
+    assert pixel._model_readiness_issue_from_status(_UNATTENDED_HOLD, runtime_stopped=True) == (
+        "model_unloaded", pixel._MODEL_UNLOADED_DETAIL)
+    assert pixel._model_readiness_issue_from_status(_UNATTENDED_HOLD) == ("model_switching", pixel._MODEL_SWITCH_DETAIL)
+    assert pixel._model_readiness_issue_from_status({"status": "idle"}, runtime_stopped=True) is None
+
+
+@pytest.mark.parametrize("status", [
+    {**_UNATTENDED_HOLD, "lifecycleActive": True, "activeOperation": "model_activation", "activeTarget": "next-model"},
+    {"status": "idle", "lifecycleActive": True, "activeOperation": "model_activation"},
+    # Resume model runs as the host's model_runtime operation.
+    {**_UNATTENDED_HOLD, "lifecycleActive": True, "activeOperation": "model_runtime"},
+])
+def test_a_host_operation_in_progress_stays_a_switch_on_a_stopped_runtime(status):
+    assert pixel._model_readiness_issue_from_status(status, runtime_stopped=True) == (
+        "model_switching", pixel._MODEL_SWITCH_DETAIL)
+
+
+@pytest.mark.asyncio
+async def test_status_says_the_model_is_unloaded_and_a_send_names_resume(monkeypatch):
+    paths = _host_agent(monkeypatch, _UNATTENDED_HOLD, _STOPPED_RUNTIME)
+    with patch.object(
+        pixel.httpx,
+        "AsyncClient",
+        side_effect=AssertionError("an unloaded model reached Pixel edge"),
+    ):
+        status = await pixel.pixel_status()
+        assert status == {"available": False, "model": None, "state": "model_unloaded",
+                          "detail": pixel._MODEL_UNLOADED_DETAIL}
+        body = pixel.ChatStreamRequest.model_validate({
+            "chat_id": "unloaded_model", "messages": [{"role": "user", "content": "hello"}],
+        })
+        with pytest.raises(HTTPException) as exc:
+            await pixel.pixel_chat_stream(ConnectedRequest(), body)
+        assert (exc.value.status_code, exc.value.detail) == (409, pixel._MODEL_UNLOADED_DETAIL)
+        assert (await pixel.pixel_status())["state"] == "model_unloaded"
+    # The proof starts Windows processes; one answer serves the following reads.
+    assert paths.count("/v1/model/management") == 1
+
+
+@pytest.mark.asyncio
+async def test_status_keeps_a_real_switch_without_asking_for_the_runtime_proof(monkeypatch):
+    switching = {**_UNATTENDED_HOLD, "lifecycleActive": True, "activeOperation": "model_activation"}
+    paths = _host_agent(monkeypatch, switching, _STOPPED_RUNTIME)
+    with patch.object(
+        pixel.httpx,
+        "AsyncClient",
+        side_effect=AssertionError("a model switch reached Pixel edge"),
+    ):
+        status = await pixel.pixel_status()
+    assert (status["state"], status["detail"]) == ("model_switching", pixel._MODEL_SWITCH_DETAIL)
+    assert "/v1/model/management" not in paths
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("management", [
+    {**_STOPPED_RUNTIME, "running": True, "canActivate": True},
+    {"managed": False, "canActivate": False, "canUnload": False, "running": False, "vision": False},
+    {**_STOPPED_RUNTIME, "canActivate": True},
+    {"status": "idle"},
+    pixel.AgentHTTPError(503, "Windows runtime management could not be verified"),
+    pixel.AgentClientError("unreachable"),
+], ids=["running", "unmanaged", "inconsistent", "malformed", "unverified", "unreachable"])
+async def test_an_unproven_stop_keeps_the_switching_hold(monkeypatch, management):
+    _host_agent(monkeypatch, _UNATTENDED_HOLD, management)
+    with patch.object(
+        pixel.httpx,
+        "AsyncClient",
+        side_effect=AssertionError("a held model reached Pixel edge"),
+    ):
+        status = await pixel.pixel_status()
+    assert (status["state"], status["detail"]) == ("model_switching", pixel._MODEL_SWITCH_DETAIL)
+
+
+@pytest.mark.asyncio
+async def test_the_runtime_proof_is_bounded_and_reused_until_it_expires(monkeypatch):
+    answers: dict[str, object] = {"management": None}
+    paths = []
+
+    async def host(_method, path, **_kwargs):
+        paths.append(path)
+        if path == "/v1/model/status":
+            return _UNATTENDED_HOLD
+        if answers["management"] is None:
+            await asyncio.sleep(5)  # A proof slower than its bound.
+        return answers["management"]
+
+    monkeypatch.setattr(pixel, "request_agent_json", host)
+    monkeypatch.setattr(pixel, "_RUNTIME_PROOF_SECONDS", 0.05)
+    switching = ("model_switching", pixel._MODEL_SWITCH_DETAIL)
+    assert await pixel._model_readiness_issue() == switching
+    answers["management"] = _STOPPED_RUNTIME
+    assert await pixel._model_readiness_issue() == switching
+    assert paths.count("/v1/model/management") == 1
+    checked_at, stopped = pixel._runtime_proof
+    monkeypatch.setattr(pixel, "_runtime_proof", (checked_at - pixel._RUNTIME_PROOF_TTL_SECONDS, stopped))
+    assert await pixel._model_readiness_issue() == ("model_unloaded", pixel._MODEL_UNLOADED_DETAIL)
+    assert paths.count("/v1/model/management") == 2
 
 
 @pytest.mark.asyncio

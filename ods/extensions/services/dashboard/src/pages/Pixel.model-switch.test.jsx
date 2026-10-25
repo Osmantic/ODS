@@ -71,6 +71,27 @@ it('requires an explicit unconfirmed outcome and never enables chat from diagnos
   expect(screen.getByLabelText('Model activation')).toHaveTextContent('has not finished')
 })
 
+it('says an unloaded model needs Resume model in Models instead of waiting for a switch',async()=>{
+  const detail='The model is unloaded. Open Models and choose Resume model to use Portal again.'
+  render(<Pixel/>); await act(async()=>{})
+  fireEvent.change(screen.getByRole('textbox'),{target:{value:'Keep this draft intact'}})
+  await poll({available:false,model:null,state:'model_unloaded',detail})
+  expect(screen.getByText('Model unloaded').querySelector('.animate-spin')).toBeNull()
+  expect(screen.queryByText('Switching model...')).toBeNull()
+  expect(screen.queryByLabelText('Model activation')).toBeNull()
+  expect(screen.getByText(detail)).toBeVisible()
+  expect(screen.getByRole('link',{name:'Open Models'})).toHaveAttribute('href','/models')
+  const composer=screen.getByPlaceholderText('Messages are held until the model is resumed')
+  expect(composer).toBeDisabled()
+  expect(composer).toHaveValue('Keep this draft intact')
+  expect(screen.getByTitle('Send')).toBeDisabled()
+  await poll({available:true})
+  expect(screen.queryByRole('link',{name:'Open Models'})).toBeNull()
+  expect(screen.getByRole('textbox')).toHaveValue('Keep this draft intact')
+  expect(screen.getByTitle('Send')).toBeEnabled()
+  expect(fetch.mock.calls.every(([url,options])=>options?.method!=='POST' || url==='/api/pixel/chat/context')).toBe(true)
+})
+
 it('ignores malformed diagnostic metadata and removes a stale diagnosis on the next status read',async()=>{
   status=switching('rolling_back')
   render(<Pixel/>);await act(async()=>{})

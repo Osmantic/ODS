@@ -72,6 +72,12 @@ _OPS_STATUSES = frozenset(
 )
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _MODEL_SWITCH_DETAIL = "Model switch in progress; Portal will be ready when activation completes"
+_MODEL_UNLOADED_DETAIL = "The model is unloaded. Open Models and choose Resume model to use Portal again."
+# The Windows runtime ownership proof starts host processes and takes seconds.
+# Bound it inside the Portal page's 15 s status deadline, and let one answer
+# serve its 3 s polls while an unattended hold lasts.
+_RUNTIME_PROOF_SECONDS = 10.0
+_RUNTIME_PROOF_TTL_SECONDS = 30.0
 _MODEL_HOLD_DETAIL = "A model transition is holding new messages. Check model update progress. If it has stopped, restore Sandbox in Portal permissions."
 _CHAT_RECOVERY_DETAIL = "Portal stopped during an earlier turn and new messages are held. Open Portal permissions and use Verify Sandbox or Restore Sandbox before continuing."
 _MODEL_CAPABILITY_DETAIL = (
@@ -443,7 +449,21 @@ async def _local_inference_issue(host_status: object) -> str | None:
     return "The local model runtime is unavailable. Restore it in Models before sending another task."
 
 
-def _model_readiness_issue_from_status(status: object) -> tuple[str, str] | None:
+def _unattended_model_hold(status: object) -> bool:
+    """A held Portal model transaction that no host lifecycle operation owns.
+
+    A model switch owns the host's model_activation lifecycle until it ends,
+    so a hold without any operation will not finish by itself.
+    """
+    return (isinstance(status, dict) and status.get("modelTransactionPending") is True
+            and not status.get("lifecycleActive") and not status.get("activeOperation"))
+
+
+def _model_readiness_issue_from_status(status: object, *, runtime_stopped: bool = False) -> tuple[str, str] | None:
+    # Unload model keeps the Portal hold until Resume model. An unattended
+    # hold on a runtime the host proves stopped is that, not a switch.
+    if runtime_stopped and _unattended_model_hold(status):
+        return "model_unloaded", _MODEL_UNLOADED_DETAIL
     if isinstance(status, dict) and status.get("modelTransactionPending") is True:
         return "model_switching", _MODEL_SWITCH_DETAIL
     switching = (
@@ -500,7 +520,7 @@ def _model_support_from_status(status: object) -> dict[str, str] | None:
 
 
 async def _model_readiness_issue() -> tuple[str, str] | None:
-    """Return a host-proven model transition, if one is under way.
+    """Return a host-proven model transition or unload hold, if one holds Portal.
 
     A failed host lifecycle probe alone does not take down the Pixel edge.
     llama-server serves the one model it was started with, and the router
@@ -547,8 +567,35 @@ async def _verified_external_host_runtime(host_status: object) -> dict[str, obje
     return _active_runtime_projection({"activeRuntime": runtime})
 
 
+_runtime_proof: tuple[float, bool] | None = None
+
+
+async def _owned_runtime_stopped() -> bool:
+    """Whether the host proves the Windows model runtime it owns is stopped.
+
+    A failed or invalid proof is unknown, never "stopped". It is remembered
+    too, so a slow host is not asked again on every poll.
+    """
+    global _runtime_proof
+    if _runtime_proof is not None and time.monotonic() - _runtime_proof[0] < _RUNTIME_PROOF_TTL_SECONDS:
+        return _runtime_proof[1]
+    try:
+        async with async_timeout(_RUNTIME_PROOF_SECONDS):
+            value = await request_agent_json("GET", "/v1/model/management", timeout=_RUNTIME_PROOF_SECONDS)
+    except (asyncio.TimeoutError, AgentClientError):
+        value = None
+    # Exactly the proof for which the Models page offers Resume model.
+    stopped = (isinstance(value, dict) and value.get("managed") is True and value.get("canUnload") is True
+               and value.get("running") is False and value.get("canActivate") is False)
+    _runtime_proof = (time.monotonic(), stopped)
+    return stopped
+
+
 async def _model_readiness_issue_for_status(status: object) -> tuple[str, str] | None:
-    return _model_readiness_issue_from_status(status)
+    # Only an unattended hold needs the runtime proof; a switch in progress
+    # owns a host lifecycle operation.
+    stopped = _unattended_model_hold(status) and await _owned_runtime_stopped()
+    return _model_readiness_issue_from_status(status, runtime_stopped=stopped)
 
 
 async def _model_activation_in_progress() -> bool:
