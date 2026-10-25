@@ -19,7 +19,7 @@ const sources = [
   { title: 'Current task', detail: 'Reference the current conversation', icon: AtSign, text: '@current-task ' },
   { title: 'Retained evidence', detail: 'Request evidence; no files are attached automatically', icon: AtSign, text: '@retained-evidence ' },
 ]
-export default function PixelComposerTools({ disabled, input, onInsert, onCompact, children }) {
+export default function PixelComposerTools({ disabled, input, onInsert, onCompact, mode = 'agent', children }) {
   const {displayName} = usePortalIdentity()
   const [menu, setMenu] = useState(null)
   const [dismissedMention, setDismissedMention] = useState(null)
@@ -38,6 +38,10 @@ export default function PixelComposerTools({ disabled, input, onInsert, onCompac
     return () => { window.removeEventListener('pointerdown', outside); window.removeEventListener('keydown', escape) }
   }, [menu])
   function toggle(kind, event) { lastTrigger.current = event.currentTarget; setMenu(value => value === kind ? null : kind) }
+  if (mode === 'chat') return <div className="pixel-composer-tools">
+    <span role="status" className="px-2 text-xs text-theme-text-secondary">Chat only · no agent tools</span>
+    <Link to="/models" className="pixel-composer-agent" title="Choose the chat model"><PixelMascot name={displayName}/><span>{displayName} model</span></Link>
+  </div>
   return <div ref={root} className="pixel-composer-tools">
     {!disabled && extensionQuery !== undefined && dismissedMention !== input && <PortalExtensionMention query={extensionQuery} onDismiss={() => setDismissedMention(input)} onSelect={text => onInsert(text, { replace: true })}/>}
     {menu && <div className="pixel-composer-popover" role="group" onKeyDown={event => {

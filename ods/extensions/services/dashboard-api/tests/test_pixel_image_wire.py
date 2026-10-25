@@ -43,7 +43,7 @@ def test_real_retained_producer_uses_ascii_content_transport(monkeypatch):
             pass
         def finish(self, identity, state):
             assert state == 'complete'
-    body = SimpleNamespace(messages=[SimpleNamespace(images=[object()])], chat_id='chat')
+    body = SimpleNamespace(messages=[SimpleNamespace(images=[object()])], chat_id='chat', mode='agent')
     asyncio.run(pixel._produce_retained_result(Store(), ('owner', 'chat', 'turn'), body,
                                               ('http://edge', 'fixture'), []))
     assert captured == [payload]

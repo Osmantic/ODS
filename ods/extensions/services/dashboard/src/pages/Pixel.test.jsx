@@ -147,6 +147,138 @@ describe('Pixel', () => {
     expect(screen.getByText('Your local ODS owner agent')).toBeVisible()
   })
 
+  it('keeps explicitly selected Chat only on the model route without launching agent commands', async () => {
+    globalThis.fetch.mockResolvedValueOnce(response({available:true,model:'pixel/default',runtime:{source:'local-switchboard',model:'fixture.gguf',contextLength:32768}}))
+    globalThis.fetch.mockResolvedValueOnce(sseResponse([
+      JSON.stringify({choices:[{delta:{content:'1827'}}]}), '[DONE]',
+    ]))
+    const mounted = render(<Pixel />)
+    await screen.findByText('Available')
+    fireEvent.click(screen.getByRole('button',{name:'Chat only'}))
+    expect(screen.getByRole('button',{name:'Chat only'})).toHaveAttribute('aria-pressed','true')
+    expect(screen.queryByText('Permissions')).toBeNull()
+    expect(screen.getByText(/no agent tools/i)).toBeVisible()
+    fireEvent.change(screen.getByPlaceholderText('Message Portal...'),{target:{value:'/goal Calculate 63 × 29'}})
+    fireEvent.click(screen.getByTitle('Send'))
+    await screen.findByText('1827')
+    const posts=globalThis.fetch.mock.calls.filter(([url])=>url==='/api/pixel/chat/stream')
+    expect(posts).toHaveLength(1)
+    const sent=JSON.parse(posts[0][1].body)
+    expect(sent.mode).toBe('chat')
+    expect(sent.history_snapshot).toBeUndefined()
+    expect(sent.messages.at(-1)).toEqual({role:'user',content:'/goal Calculate 63 × 29'})
+    expect(globalThis.fetch.mock.calls.some(([url])=>String(url).includes('/api/pixel/teams/'))).toBe(false)
+    await waitFor(()=>expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).chatMode).toBe('chat'))
+    fireEvent.click(screen.getByRole('button',{name:'New chat'}))
+    expect(screen.getByRole('button',{name:'Chat only'})).toHaveAttribute('aria-pressed','true')
+    expect(screen.getByText(/no agent tools/i)).toBeVisible()
+    globalThis.fetch.mockImplementation(url => url==='/api/pixel/chat/stream'
+      ? Promise.resolve(sseResponse([JSON.stringify({choices:[{delta:{content:'12'}}]}),'[DONE]']))
+      : Promise.resolve(response({available:true,model:'pixel/default',runtime:{source:'local-switchboard',model:'fixture.gguf',contextLength:32768}})))
+    fireEvent.change(screen.getByPlaceholderText('Message Portal...'),{target:{value:'What is 7 plus 5? Reply with just the number.'}})
+    fireEvent.click(screen.getByTitle('Send'))
+    await screen.findByText('12')
+    const newChatPost=globalThis.fetch.mock.calls.filter(([url])=>url==='/api/pixel/chat/stream').at(-1)
+    const nextSent=JSON.parse(newChatPost[1].body)
+    expect(nextSent.mode).toBe('chat')
+    expect(nextSent.chat_id).not.toBe(sent.chat_id)
+    expect(nextSent.request_id).not.toBe(sent.request_id)
+    expect(nextSent.messages).toEqual([{role:'user',content:'What is 7 plus 5? Reply with just the number.'}])
+    mounted.unmount()
+    globalThis.fetch.mockResolvedValue(response({available:true,model:'pixel/default',runtime:{source:'local-switchboard',model:'fixture.gguf',contextLength:32768}}))
+    render(<Pixel />)
+    expect(screen.getByRole('button',{name:'Chat only'})).toHaveAttribute('aria-pressed','true')
+  })
+
+  it.each(['/extensions @demo', '/extensions https://github.com/owner/repo'])('keeps extension-shaped text inert in Chat only after a valid response (%s)', async command => {
+    globalThis.fetch.mockImplementation(async url => {
+      if (url === '/api/pixel/status') return response({available:true, model:'pixel/default', runtime:{source:'local-switchboard',model:'fixture.gguf',contextLength:32768}})
+      if (url === '/api/pixel/chat/stream') return sseResponse([
+        JSON.stringify({choices:[{delta:{content:'This is an ordinary text reply.'}}]}), '[DONE]',
+      ])
+      return response({})
+    })
+    render(<Pixel />)
+    await screen.findByText('Available')
+    fireEvent.click(screen.getByRole('button',{name:'Chat only'}))
+    fireEvent.change(screen.getByPlaceholderText('Message Portal...'),{target:{value:command}})
+    fireEvent.click(screen.getByTitle('Send'))
+    await screen.findByText('This is an ordinary text reply.')
+    const posts = fetch.mock.calls.filter(([url]) => url === '/api/pixel/chat/stream')
+    expect(posts).toHaveLength(1)
+    expect(JSON.parse(posts[0][1].body)).toEqual(expect.objectContaining({mode:'chat'}))
+    expect(fetch.mock.calls.filter(([url, options]) => String(url).startsWith('/api/extensions/') && options?.method === 'POST')).toHaveLength(0)
+  })
+
+  it.each([undefined,
+    {source:'remote-provider',model:'private-leader',contextLength:32768,maxTokens:2048,reasoning:false},
+    {source:'external-host',model:'external-model',contextLength:32768},
+  ])('does not silently reroute a restored Chat only conversation for runtime %j', async runtime => {
+    localStorage.setItem('ods.pixel.chat.v1',JSON.stringify({schema:1,chatId:'chat-route-test',chatMode:'chat',messages:[],draft:'Preserve this question'}))
+    globalThis.fetch.mockResolvedValue(response({available:true,model:'pixel/default',runtime}))
+    render(<Pixel />)
+    await screen.findByText('Available')
+    expect(screen.getByRole('button',{name:'Chat only'})).toBeDisabled()
+    expect(screen.getByRole('button',{name:'Chat only'})).toHaveAttribute('aria-pressed','true')
+    expect(screen.getByText('Chat only requires a verified local model. Use Agent for the current provider route.')).toBeVisible()
+    expect(screen.getByTitle('Send')).toBeDisabled()
+    fireEvent.click(screen.getByRole('button',{name:'Agent'}))
+    expect(screen.getByRole('button',{name:'Agent'})).toHaveAttribute('aria-pressed','true')
+    expect(screen.getByPlaceholderText('Message Portal...')).toHaveValue('Preserve this question')
+    expect(globalThis.fetch.mock.calls.some(([url])=>url==='/api/pixel/chat/stream')).toBe(false)
+  })
+
+  it.each([false, true])('recovers a Chat-only interruption and continues the same conversation (receipt delayed=%s)', async delayed => {
+    localStorage.setItem('ods.pixel.chat.v1', JSON.stringify({schema:1,chatId:'chat-restart',requestId:'before-restart',chatMode:'chat',inFlight:true,
+      draft:'Continue this conversation',messages:[{role:'user',content:'First question'},{role:'assistant',content:'Old partial text'}]}))
+    let recovered = !delayed
+    globalThis.fetch.mockImplementation(async (url, options) => {
+      if (url === '/api/pixel/status') return response({available:true,runtime:{source:'local-switchboard',model:'fixture.gguf',contextLength:32768}})
+      if (url === '/api/pixel/chat/result') {
+        expect(JSON.parse(options.body)).toEqual({chat_id:'chat-restart',request_id:'before-restart'})
+        return response(recovered ? {state:'interrupted',events:'data: '+JSON.stringify({choices:[{delta:{content:'Saved before restart'}}]})+'\n\n'} : {state:'unknown',events:''})
+      }
+      if (url === '/api/pixel/chat/stream') return sseResponse([JSON.stringify({choices:[{delta:{content:'The next response'}}]}),'[DONE]'])
+      throw new Error(`Unexpected request ${url}`)
+    })
+    render(<Pixel />)
+    if (delayed) {
+      expect(await screen.findByRole('button',{name:'Check activity again'})).toBeEnabled()
+      expect(screen.getByRole('button',{name:'Try Stop previous work'})).toBeEnabled()
+      expect(screen.getByTitle('Send')).toBeDisabled()
+      expect(screen.getByRole('button',{name:'Agent'})).toBeDisabled()
+      recovered = true
+      fireEvent.click(screen.getByRole('button',{name:'Check activity again'}))
+    }
+    expect(await screen.findByText('Saved before restart')).toBeVisible()
+    expect(screen.queryByText(/Stopped by you/)).toBeNull()
+    await waitFor(()=>expect(screen.getByTitle('Send')).toBeEnabled())
+    expect(screen.getByRole('button',{name:'Agent'})).toBeEnabled()
+    expect(screen.getByRole('button',{name:'Chat only'})).toHaveAttribute('aria-pressed','true')
+    expect(screen.getByPlaceholderText('Message Portal...')).toHaveValue('Continue this conversation')
+    expect(globalThis.fetch.mock.calls.some(([url])=>url==='/api/pixel/chat/stream')).toBe(false)
+    fireEvent.click(screen.getByTitle('Send'))
+    expect(await screen.findByText('The next response')).toBeVisible()
+    const posts=globalThis.fetch.mock.calls.filter(([url])=>url==='/api/pixel/chat/stream')
+    expect(posts).toHaveLength(1)
+    expect(JSON.parse(posts[0][1].body)).toEqual(expect.objectContaining({chat_id:'chat-restart',mode:'chat',request_id:expect.not.stringMatching(/^before-restart$/)}))
+    expect(globalThis.fetch.mock.calls.some(([url])=>url==='/api/pixel/chat/activity' || url==='/api/pixel/chat/cancel')).toBe(false)
+    await waitFor(()=>expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).interrupted).toBe(false))
+  })
+
+  it('cannot send a receiptless Chat-only Stop to the Agent route', async () => {
+    localStorage.setItem('ods.pixel.chat.v1', JSON.stringify({schema:1,chatId:'chat-no-receipt',chatMode:'chat',inFlight:true,
+      messages:[{role:'user',content:'Previous question'},{role:'assistant',content:''}]}))
+    globalThis.fetch.mockImplementation(async url => {
+      if (url === '/api/pixel/status') return response({available:true,runtime:{source:'local-switchboard',model:'fixture.gguf',contextLength:32768}})
+      throw new Error(`Unexpected request ${url}`)
+    })
+    render(<Pixel />)
+    fireEvent.click(await screen.findByRole('button',{name:'Try Stop previous work'}))
+    expect(await screen.findByText('This saved chat has no request receipt. Portal cannot confirm or stop its previous response. Start a new chat to continue.')).toBeVisible()
+    expect(globalThis.fetch.mock.calls.some(([url])=>url==='/api/pixel/chat/cancel' || url==='/api/pixel/chat/activity')).toBe(false)
+  })
+
   it('keeps prompts clean without copy/reuse controls or inline tool-call summaries',async()=>{
     localStorage.setItem('ods.pixel.chat.v1',JSON.stringify({schema:1,chatId:'clean-chat',messages:[
       {role:'user',content:'A clean prompt'},
@@ -2320,6 +2452,67 @@ describe('Pixel', () => {
     expect(screen.getByText('Stopped by you. Workspace changes completed before cancellation were preserved.')).toBeInTheDocument()
     expect(screen.getByText('Available')).toBeInTheDocument()
     expect(screen.getByTitle('Send')).toBeDisabled()
+  })
+
+  it('stops Chat only without claiming workspace changes were preserved', async () => {
+    globalThis.fetch.mockResolvedValueOnce(response({ available: true, model: 'pixel/default', detail: 'local', runtime:{source:'local-switchboard',model:'fixture.gguf',contextLength:32768} }))
+    globalThis.fetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      body: { getReader: () => ({ read: async () => new Promise(() => {}), releaseLock: () => {} }) },
+      headers: new Map([['content-type', 'text/event-stream']]),
+    })
+    globalThis.fetch.mockResolvedValueOnce(response({ aborted: true }))
+
+    render(<Pixel />)
+    await screen.findByText('Available')
+    fireEvent.click(screen.getByRole('button', { name: 'Chat only' }))
+    fireEvent.change(screen.getByPlaceholderText('Message Portal...'), { target: { value: 'Tell me a story' } })
+    fireEvent.click(screen.getByTitle('Send'))
+    await screen.findByTitle('Stop')
+    fireEvent.click(screen.getByTitle('Stop'))
+
+    expect(await screen.findByText('Response stopped')).toBeInTheDocument()
+    expect(screen.getByText('Stopped by you.')).toBeInTheDocument()
+    expect(screen.queryByText(/Workspace changes completed before cancellation/)).toBeNull()
+    await waitFor(() => {
+      const stored = JSON.parse(localStorage.getItem('ods.pixel.chat.v1'))
+      expect(stored.messages.at(-1).status).toBe('stopped')
+      expect(stored.messages.at(-1).content).toBe('Stopped by you.')
+    })
+  })
+
+  it.each([false, true])('replays a cancelled Chat only receipt and continues its conversation (retained Stop=%s)', async stopRetained => {
+    localStorage.setItem('ods.pixel.chat.v1',JSON.stringify({schema:1,chatId:'stopped-chat',requestId:'stopped-attempt',inFlight:true,chatMode:'chat',
+      messages:[{role:'user',content:'Tell me a story'},{role:'assistant',content:''}]}))
+    let cancelled = !stopRetained
+    globalThis.fetch.mockImplementation(async (url, options) => {
+      if(url==='/api/pixel/status')return response({available:true,runtime:{source:'local-switchboard',model:'fixture.gguf',contextLength:32768}})
+      if(url==='/api/pixel/chat/result')return response(cancelled ? {state:'cancelled',events:'data: {"choices":[{"delta":{"content":"A short beginning"}}]}\n\ndata: [DONE]\n\n'} : {state:'unknown',events:''})
+      if(url==='/api/pixel/chat/cancel') {
+        expect(JSON.parse(options.body)).toEqual({chat_id:'stopped-chat',request_id:'stopped-attempt'})
+        cancelled = true
+        return response({aborted:true})
+      }
+      if(url==='/api/pixel/chat/stream')return sseResponse([JSON.stringify({choices:[{delta:{content:'New reply'}}]}),'[DONE]'])
+      throw new Error(`Unexpected request ${url}`)
+    })
+    render(<Pixel />)
+    if(stopRetained)fireEvent.click(await screen.findByRole('button',{name:'Try Stop previous work'}))
+    expect(await screen.findByText('Stopped by you.')).toBeVisible()
+    expect(screen.getByText('A short beginning')).toBeVisible()
+    expect(screen.queryByText(/Workspace changes completed before cancellation/)).toBeNull()
+    await waitFor(()=>expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1'))).toMatchObject({chatMode:'chat',requestId:null,inFlight:false,
+      messages:[{role:'user',content:'Tell me a story'},{role:'assistant',status:'stopped',content:'A short beginning\n\n---\n\n_Stopped by you._'}]}))
+    expect(globalThis.fetch.mock.calls.some(([url])=>url==='/api/pixel/chat/stream' || url==='/api/pixel/chat/activity')).toBe(false)
+    expect(globalThis.fetch.mock.calls.filter(([url])=>url==='/api/pixel/chat/cancel')).toHaveLength(stopRetained ? 1 : 0)
+    fireEvent.change(screen.getByPlaceholderText('Message Portal...'),{target:{value:'Continue the story'}})
+    await waitFor(()=>expect(screen.getByTitle('Send')).toBeEnabled())
+    fireEvent.click(screen.getByTitle('Send'))
+    expect(await screen.findByText('New reply')).toBeVisible()
+    const posted=JSON.parse(globalThis.fetch.mock.calls.find(([url])=>url==='/api/pixel/chat/stream')[1].body)
+    expect(posted).toMatchObject({chat_id:'stopped-chat',mode:'chat'})
+    expect(posted.request_id).not.toBe('stopped-attempt')
   })
 
   it('keeps partial output but marks it durably when the owner stops a response', async () => {
