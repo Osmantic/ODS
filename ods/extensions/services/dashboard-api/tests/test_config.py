@@ -261,7 +261,7 @@ class TestHostNativeLlmResolution:
             url_key: "http://192.168.50.1:8181/v1",
             "OLLAMA_URL": "http://litellm:4000",
         })
-        assert services["llama-server"] == {"host": "192.168.50.1", "port": 8181}
+        assert services["llama-server"] == {"host": "192.168.50.1", "port": 8181, "external_link": False}
 
     def test_host_side_url_and_gateway_are_never_probed(self):
         services = {"llama-server": {"host": "llama-server", "port": 8080}}
@@ -274,7 +274,9 @@ class TestHostNativeLlmResolution:
             "LEMONADE_BASE_URL": "http://localhost:13305",
             "LLM_API_URL": "http://litellm:4000",
         })
-        assert services["llama-server"] == {"host": "host.docker.internal", "port": 18080}
+        assert services["llama-server"] == {
+            "host": "host.docker.internal", "port": 18080, "external_link": False,
+        }
 
     def test_container_runtime_does_not_use_host_endpoint(self):
         services = {"llama-server": {"host": "llama-server", "port": 8080}}
@@ -297,6 +299,8 @@ class TestHostNativeLlmResolution:
 
         assert services["llama-server"]["host"] == "host.docker.internal"
         assert services["llama-server"]["port"] == 9090
+        # The container is off on this route; a sidebar link to its port opened an error page.
+        assert services["llama-server"]["external_link"] is False
 
     @pytest.mark.parametrize(
         ("backend", "location"),

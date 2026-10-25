@@ -264,6 +264,8 @@ def _apply_host_native_llm_service_override(
 
     service["host"] = parsed.hostname
     service["port"] = port
+    # The in-stack container is off on this route; its sidebar link (OLLAMA_PORT, 11434) opened an error page.
+    service["external_link"] = False
     logger.info("Host-native llama-server detected; routing LLM probes to %s:%d", parsed.hostname, port)
 
 
