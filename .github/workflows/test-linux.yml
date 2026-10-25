@@ -55,7 +55,8 @@ jobs:
           bash tests/test-backup-restore-roundtrip.sh
 
   pixel-advice-host-stdlib:
-    runs-on: ubuntu-latest
+    # setup-python does not provide Python 3.9 builds for Ubuntu 26.04.
+    runs-on: ${{ matrix.python == '3.9' && 'ubuntu-24.04' || 'ubuntu-latest' }}
     strategy:
       matrix:
         python: ['3.9', '3.11', '3.12']
