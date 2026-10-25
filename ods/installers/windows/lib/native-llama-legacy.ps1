@@ -138,6 +138,9 @@ function Get-ODSNativeLlamaLegacyReasoning([hashtable]$EnvMap) {
     # --reasoning-format for binaries without --reasoning.
     $mode = Get-ODSNativeLlamaLegacyEnvValue $EnvMap 'LLAMA_REASONING'
     if (-not $mode) { $mode = 'off' }
+    # Modes are case-insensitive, as in Get-ODSNativeReasoningArgs; the
+    # fallback format must be llama.cpp's lowercase name.
+    if ($mode -in @('off', 'on', 'auto')) { $mode = $mode.ToLowerInvariant() }
     $format = $mode
     if ($mode -ceq 'off') { $format = 'none' } elseif ($mode -ceq 'on') { $format = 'deepseek' }
     return [pscustomobject]@{ Mode = $mode; Format = $format }

@@ -3512,15 +3512,18 @@ own_repair = installer.index("--state-dir \"$home/.openclaw/ods-runtime-patches/
 assert runtime_checkpoint < first_repair < foreign_restore < own_repair
 assert installer.count("Could not bind the verified Pixel ODS managed-runtime configuration.") == 1
 import re
-managed = re.findall(r"--state-dir \"\$home/\.openclaw/ods-runtime-patches/([a-z-]+)\"", installer)
+managed = re.findall(r"--state-dir \"\$home/\.openclaw/ods-runtime-patches/([a-z0-9-]+)\"", installer)
 assert "for mkdir_module in bridge secure; do" in installer
 assert "--sandbox-mkdir \"$mkdir_module\"" in installer
 assert "--state-dir \"$home/.openclaw/ods-runtime-patches/sandbox-mkdir-$mkdir_module\"" in installer
 managed.extend(["sandbox-mkdir-bridge", "sandbox-mkdir-secure"])
 known = installer[foreign_restore:own_repair].split("--known", 1)[1].split(">>", 1)[0]
 assert sorted(known.replace("\\", " ").split()) == sorted(managed)
-assert len(set(managed)) == len(managed) == 21
+assert len(set(managed)) == len(managed) == 22
 assert {"context-usage", "yield-usage", "compaction-empty", "compaction-no-work", "subagent-admission", "hook-provenance", "run-id-redaction"}.issubset(managed)
+assert "utf8-output" in managed
+assert "--utf8-output" in installer
+assert "host/openclaw-utf8-output.json" in installer
 assert "command-attempt-warning" in managed
 assert "subagent-session" in managed
 assert "--subagent-session" in installer

@@ -157,6 +157,7 @@ tests/test-doctor-optional-webui.py
 tests/test-ods-doctor-host-native-llm.sh
 tests/test-ods-doctor-external-llm.sh
 tests/test-ods-doctor-install-diagnoses.sh
+tests/test-ods-doctor-model-router-inference.sh
 tests/test-help-links.sh
 tests/test-macos-api-mode-flags.sh
 tests/test-macos-compose-override-cache.sh
@@ -173,6 +174,7 @@ tests/test-ods-doctor-docker-access.sh
 tests/test-ods-list-json-escaping.sh
 tests/test-ods-test-complete-run.sh
 tests/test-ods-test-http-code.sh
+tests/test-ods-test-tool-calling.sh
 tests/test-ods-test.sh
 tests/test-ods-update-runtime-compose.sh
 tests/test-offline-embedding-gate.sh
@@ -185,6 +187,7 @@ tests/test-phase05-docker-desktop-nvidia-refusal.sh
 tests/test-phase05-podman-shim.sh
 tests/test-phase06-hermes-owner-card-rerun.sh
 tests/test-phase06-secret-generation.sh
+tests/test-phase06-tier-persisted.sh
 tests/test_searxng_source_copy_preservation.py
 tests/test-phase08-selected-images.sh
 tests/test-phase10-skip-templated-user-units.sh
@@ -315,6 +318,7 @@ tests/test-gpu-reassign-preflight.sh
 tests/test_uninstall_validate_install_dir.py
 tests/test-preset-completion.sh
 tests/test-bounded-extension-logs-contract.py
+tests/test-open-interpreter-llm-port.sh
 tests/test-cli-chat-route.py
 tests/test_host_agent_process_shutdown.py
 tests/test-cli-chat-error-exit.py
