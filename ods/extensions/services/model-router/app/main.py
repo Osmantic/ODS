@@ -49,6 +49,7 @@ from .completed_tool_sse import (
 )
 from .probe_attempts import ProbeAttempts
 from .tool_id_compat import normalize_history_tool_ids, route_requires_strict9_tool_ids
+from .nemo_history_compat import coalesce_plain_user_messages
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("ods-model-router")
@@ -1725,6 +1726,9 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
     if (path == "/v1/chat/completions"
             and route_requires_strict9_tool_ids(route["runtimeModelId"], route["backendKind"])):
         messages, changed = normalize_history_tool_ids(payload.get("messages"))
+        if changed:
+            payload["messages"] = messages
+        messages, changed = coalesce_plain_user_messages(payload.get("messages"))
         if changed:
             payload["messages"] = messages
     request_id = str(uuid.uuid4())
