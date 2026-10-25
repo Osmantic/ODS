@@ -300,9 +300,48 @@ test.each([true, false])('only managed runtimes expose unload/resume and hide ad
   renderModels()
   const button = screen.getByRole('button', { name: running ? 'Unload model' : 'Resume model' })
   fireEvent.click(button)
+  // Unloading asks first; Resume starts at once.
+  if (running) fireEvent.click(within(screen.getByRole('dialog', { name: 'Unload the model?' })).getByRole('button', { name: 'Unload model' }))
+  else expect(screen.queryByRole('dialog')).toBeNull()
   expect(running ? state.stopRuntime : state.startRuntime).toHaveBeenCalledOnce()
   expect(screen.queryByRole('button', { name: 'Adopt loaded model in ODS' })).toBeNull()
   if (!running) expect(screen.queryByText('Local model runtime unavailable')).toBeNull()
+})
+
+test('an open unload question closes for good when the model stops or another operation starts', () => {
+  const state = baseState({
+    models: [model({ status: 'loaded' })],
+    odsMode: 'local', configuredMode: 'local', llmBackend: 'llama-server', hostRuntime: true,
+    modelManagement: { managed: true, canActivate: true, canUnload: true, running: true },
+    stopRuntime: vi.fn(), startRuntime: vi.fn(),
+  })
+  useModelsMock.mockReturnValue(state)
+  const view = renderModels()
+  const show = (next, download = baseDownloadState()) => {
+    useModelsMock.mockReturnValue(next)
+    useDownloadProgressMock.mockReturnValue(download)
+    view.rerender(createElement(MemoryRouter, null, createElement(Models)))
+  }
+  const ask = () => {
+    fireEvent.click(within(screen.getByRole('region', { name: 'Model runtime controls' })).getByRole('button', { name: 'Unload model' }))
+    expect(screen.getByRole('dialog', { name: 'Unload the model?' })).toBeVisible()
+  }
+
+  // The model stopped elsewhere: nothing is left to unload.
+  ask()
+  show({ ...state, modelManagement: { ...state.modelManagement, canActivate: false, running: false } })
+  expect(screen.queryByRole('dialog')).toBeNull()
+  show(state)
+  expect(screen.queryByRole('dialog')).toBeNull()
+
+  // A download started elsewhere: the runtime controls wait for it.
+  ask()
+  show(state, baseDownloadState({ isDownloading: true }))
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(screen.getByRole('button', { name: 'Unload model' })).toBeDisabled()
+  show(state)
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(state.stopRuntime).not.toHaveBeenCalled()
 })
 
 test('a stopped runtime shows the launcher error, and a memory refusal turns Resume into Start anyway', () => {

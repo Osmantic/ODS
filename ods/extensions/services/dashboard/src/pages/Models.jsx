@@ -109,6 +109,7 @@ export default function Models({ compact = false }) {
   const [speedFilter, setSpeedFilter] = useState('any')
   const [contextFloor, setContextFloor] = useState(0)
   const [deleteConfirmModel, setDeleteConfirmModel] = useState(null)
+  const [unloadConfirmOpen, setUnloadConfirmOpen] = useState(false)
   const [activationConfigModel, setActivationConfigModel] = useState(null)
   const [libraryScope, setLibraryScope] = useState('recommended')
   const libraryRef = useRef(null)
@@ -257,6 +258,18 @@ export default function Models({ compact = false }) {
   }
 
   const pendingModelActions = actionLoadingModels ?? (actionLoading ? [actionLoading] : [])
+  const runtimeControlsBusy = Boolean(runtimeActionLoading || activationLoading || modelLifecycle?.active || pendingModelActions.length || downloadProgress.isDownloading)
+  // Unloading stops Portal and Hermes until Resume, so it asks first. The
+  // question closes for good if the model stops or another operation starts.
+  const unloadAvailable = Boolean(modelManagement?.managed === true && modelManagement.canUnload === true
+    && modelManagement.running && !runtimeControlsBusy)
+  useEffect(() => {
+    if (!unloadAvailable) setUnloadConfirmOpen(false)
+  }, [unloadAvailable])
+  const handleConfirmUnload = async () => {
+    setUnloadConfirmOpen(false)
+    await stopRuntime()
+  }
   const visibleDownloadProgress = downloadProgress.progress || (downloadProgress.statusError && {
     status: 'error',
     error: downloadProgress.statusError,
@@ -373,8 +386,8 @@ export default function Models({ compact = false }) {
               <p role="status" className="mt-1 text-xs text-theme-text-secondary">{modelManagement.runtimeError}</p>
             )}
           </div>
-          <button type="button" onClick={modelManagement.running ? stopRuntime : startRuntime}
-            disabled={Boolean(runtimeActionLoading || activationLoading || modelLifecycle?.active || pendingModelActions.length || downloadProgress.isDownloading)}
+          <button type="button" onClick={modelManagement.running ? () => setUnloadConfirmOpen(true) : startRuntime}
+            disabled={runtimeControlsBusy}
             className="rounded-md border border-theme-border px-3 py-2 disabled:opacity-50">
             {runtimeActionLoading === 'stop' ? 'Unloading…' : runtimeActionLoading === 'start' ? (modelManagement.startRefusal ? 'Starting…' : 'Resuming…') : modelManagement.running ? 'Unload model' : modelManagement.startRefusal ? 'Start anyway' : 'Resume model'}
           </button>
@@ -502,6 +515,12 @@ export default function Models({ compact = false }) {
           model={deleteConfirmModel}
           onCancel={() => setDeleteConfirmModel(null)}
           onConfirm={handleConfirmDelete}
+        />
+      )}
+      {unloadConfirmOpen && unloadAvailable && (
+        <UnloadModelDialog
+          onCancel={() => setUnloadConfirmOpen(false)}
+          onConfirm={handleConfirmUnload}
         />
       )}
       {activationConfigModel && (
@@ -1167,6 +1186,52 @@ function DeleteModelDialog({ model, onCancel, onConfirm }) {
             className="inline-flex h-9 items-center justify-center rounded-md border border-red-300/30 bg-red-500/15 px-3 text-xs font-semibold text-red-200 transition-colors hover:border-red-200/50 hover:bg-red-500/25"
           >
             Delete model
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function UnloadModelDialog({ onCancel, onConfirm }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 py-6">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="unload-model-title"
+        aria-describedby="unload-model-detail"
+        className="w-full max-w-md rounded-xl border border-red-400/25 bg-theme-card p-5 shadow-[0_24px_80px_rgba(0,0,0,0.32)]"
+      >
+        <div className="flex items-start gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-red-300/20 bg-red-500/10 text-red-300">
+            <AlertCircle size={17} />
+          </div>
+          <div className="min-w-0">
+            <h2 id="unload-model-title" className="text-sm font-semibold text-theme-text">
+              Unload the model?
+            </h2>
+            <p id="unload-model-detail" className="mt-2 text-sm leading-5 text-theme-text-muted">
+              Portal and Hermes stop answering until you choose Resume model. Loading it again can take a few minutes.
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            autoFocus
+            className="inline-flex h-9 items-center justify-center rounded-md border border-theme-border bg-theme-bg/45 px-3 text-xs font-semibold text-theme-text-secondary transition-colors hover:border-theme-accent/35 hover:text-theme-text"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            className="inline-flex h-9 items-center justify-center rounded-md border border-red-300/30 bg-red-500/15 px-3 text-xs font-semibold text-red-200 transition-colors hover:border-red-200/50 hover:bg-red-500/25"
+          >
+            Unload model
           </button>
         </div>
       </div>
