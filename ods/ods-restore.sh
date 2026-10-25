@@ -618,6 +618,10 @@ _restore_selected_paths() (
             log_error "Failed to stage configuration; live paths are unchanged."
             return 1
         fi
+        if [[ "${sources[i]}" == "$backup_dir/data/talk" || "${sources[i]}" == "$backup_dir/data/hermes" ]]; then
+            python3 "$SCRIPT_DIR/scripts/backup-talk-state.py" prepare "$backup_dir" \
+                "${sources[i]#"$backup_dir/"}" "$workspace/new" || return 1
+        fi
         # Verify the actual selected payload before any live path is moved.
         # No Open WebUI or other optional service is required for Pixel-only
         # and configuration-only backups. Additive local files are not deleted.
@@ -738,10 +742,20 @@ do_restore() {
         return 1
     fi
 
+    local talk_requires_stopped=""
+    if [[ "$restore_data" == true ]]; then
+        talk_requires_stopped=$(python3 "$SCRIPT_DIR/scripts/backup-talk-state.py" requires-stopped "$backup_dir") || return 1
+    fi
+
     # Dry run mode
     if [[ "$dry_run" == "true" ]]; then
         dry_run_preview "$backup_dir" "$restore_data" "$restore_config"
         return 0
+    fi
+
+    if [[ "$talk_requires_stopped" == true && "$stop_first" != true ]]; then
+        log_error "Durable Talk restore requires --stop-containers and a valid installed Compose receipt to prove API and Hermes are stopped."
+        return 1
     fi
 
     # Confirmation

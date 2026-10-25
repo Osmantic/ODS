@@ -15,6 +15,40 @@ An unsupported custom image reports continuity unavailable, with no legacy resum
 or replacement-conversation fallback. No unpublished candidate is selected by
 the production compose default.
 
+Where the existing native-state preflight permits ordinary ODS backup/restore,
+durable Talk backup includes `data/talk/conversations.sqlite3` together with
+the existing `data/hermes` payload. For this pair, `ods backup` uses SQLite's
+online backup API, capturing the mapping first and default Hermes `state.db`
+second. It checks database integrity, retained roots, and root/tip parent
+references before publishing the archive. Each database is a standalone snapshot;
+the two snapshots are not one atomic runtime transaction. Pause conversation work
+and stop both services before backup when an exact common point in time matters.
+Other Hermes files and custom profile stores retain the existing file-copy
+backup behavior; this does not certify all custom runtime layouts.
+
+Restoring these snapshots requires `ods restore --stop-containers` with a valid
+installed `.compose-flags` receipt. Restore refuses to publish if it cannot prove
+the resolved Compose project has no running containers. This also applies to a
+fresh target: establish its Compose receipt before restoring. The transaction
+removes obsolete WAL, SHM, and rollback-journal companions only in staging, so
+they cannot be replayed against a restored database. Ordinary archives without
+durable Talk keep their existing restore behavior.
+
+Managed native Pixel installations still refuse ordinary full/user-data backup
+and restore. This repair preserves that refusal; synthetic ordinary-install
+backup tests do not qualify native Pixel backup or recovery.
+
+On supported ordinary installations, use a full backup to include `.env`,
+`ODS_SESSION_SECRET`, and the Hermes auth
+seed/configuration when moving an installation. A user-data backup captures the
+database pair but does not export `.env`. Restoring data does not renew an expired
+owner cookie, recreate browser tab storage, or grant a newly issued login cookie
+access to an old opaque handle. Reopening still requires the original valid cookie,
+its signing secret, and the retained handle/tab identity. Hermes auth/profile
+identity and the supported manual-resume runtime must also remain compatible.
+Derived `data/hermes-auth` policy is regenerated at startup. Restore never replays
+an interrupted submission or changes these ownership rules.
+
 Hermes ships its own complete web UI — ODS is just packaging it. After `ods enable hermes` + `ods enable hermes-proxy`, you can browse to `http://<device>:9120` (or `hermes.<device>.local:9120` once mDNS announcement lands — see "Roadmap" below). The proxy is the entry point. Open Hermes from the authenticated ODS dashboard to use `/auth/ods`, or use the native Hermes login for operator-configured authentication. Set `HERMES_REQUIRE_OWNER_CARD=true` to require an ODS signed session before forwarding to Hermes's internal port 9119. See [docs/HERMES-SSO.md](HERMES-SSO.md) for the full auth flow. Once past the proxy you find pages for:
 
 - **Chat** — conversational interface with streaming responses + inline tool calls
