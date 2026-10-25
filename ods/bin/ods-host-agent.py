@@ -5381,6 +5381,7 @@ def _capture_remote_provider_hermes() -> dict:
 def _hermes_route_values(text: str) -> dict[str, str]:
     """Read scalar routing fields without interpreting arbitrary owner YAML."""
     values = {}
+    seen = set()
     path = []
     model_seen = False
     for line in text.splitlines():
@@ -5400,8 +5401,9 @@ def _hermes_route_values(text: str) -> dict[str, str]:
             ("model", "context_length"), ("model", "api_key"),
         }:
             continue
-        if key in values:
+        if key in seen:
             raise ValueError("Hermes model config has duplicate routing fields")
+        seen.add(key)
         if raw.startswith('"'):
             value, end = json.JSONDecoder().raw_decode(raw)
             if raw[end:].strip() and not raw[end:].lstrip().startswith("#"):
@@ -5413,6 +5415,10 @@ def _hermes_route_values(text: str) -> dict[str, str]:
             value = scalar[1].replace("''", "'")
         else:
             value = raw.split(" #", 1)[0].strip()
+            # YAML null means that Hermes falls back to its environment.
+            # A quoted "null" remains a literal credential/model value.
+            if not value or value in {"null", "Null", "NULL", "~"}:
+                continue
             if value.startswith(("*", "&", "|", ">", "[", "{")):
                 raise ValueError("Hermes model route requires scalar values")
         if not isinstance(value, (str, int)) or isinstance(value, bool):

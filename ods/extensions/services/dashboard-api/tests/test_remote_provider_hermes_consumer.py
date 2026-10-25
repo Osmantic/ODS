@@ -134,6 +134,15 @@ def test_restore_private_key_including_empty(hermes_route, old_key):
     assert yaml.safe_load(f["live"].read_text())["model"]["api_key"] == old_key
 
 
+@pytest.mark.parametrize("null", ["null", "~", ""])
+def test_null_private_key_restores_environment_fallback(hermes_route, null):
+    f = hermes_route
+    f["live"].write_text(f["live"].read_text().replace("api_key: local-test-key", "api_key: " + null))
+    agent._activate_remote_provider_route(f["route"])
+    agent._deactivate_remote_provider_route()
+    assert yaml.safe_load(f["live"].read_text())["model"]["api_key"] == "local-test-key"
+
+
 @pytest.mark.parametrize("running,exists,live_exists", [(False, True, True), (False, False, True), (False, False, False)])
 def test_optional_service_state_is_preserved(hermes_route, monkeypatch, running, exists, live_exists):
     f = hermes_route
