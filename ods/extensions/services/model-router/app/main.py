@@ -44,7 +44,7 @@ from jsonschema.exceptions import SchemaError, ValidationError
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from .completed_tool_sse import (
-    CompletionStreamIdentityError, assemble_chat_completion_sse,
+    CompletionStreamIdentityError, assemble_chat_completion_sse, response_reports_failure,
     completion_stream_rejection_code,
 )
 from .probe_attempts import ProbeAttempts
@@ -1289,10 +1289,7 @@ class _SSERewriter:
     ) -> None:
         self.completed = self.completed or saw_done
         for payload in payloads:
-            response = payload.get("response")
-            self.response_error = self.response_error or "error" in payload or (
-                isinstance(response, dict) and response.get("status") in ("failed", "incomplete", "cancelled")
-            )
+            self.response_error = self.response_error or response_reports_failure(payload)
             usage, stop_reason = _usage_from_response(payload)
             for key, value in usage.items():
                 self.usage[key] = max(self.usage[key], value)
@@ -1803,6 +1800,7 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
     }
 
     attempt_handle = None
+    response_metadata = {"failed": False}
     next_attempt = 2
     try:
         forwarded_body = json.dumps(payload).encode("utf-8")
@@ -1845,6 +1843,7 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                         complete = assemble_chat_completion_sse(
                             raw_stream, route["runtimeModelId"],
                             max_bytes=MAX_COMPLETED_TOOL_STREAM_BYTES,
+                            response_metadata=response_metadata,
                         )
                     except CompletionStreamIdentityError as exc:
                         rejection = completion_stream_rejection_code(exc)
@@ -1930,6 +1929,7 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                     attempt_handle = _begin_probe_attempt(
                         probe_id, request_id, next_attempt, fallback_body, route,
                     )
+                    response_metadata = {"failed": False}
                     next_attempt += 1
                     ods_headers["X-ODS-Tool-Stream-Fallback"] = "true"
                     remaining = UPSTREAM_TIMEOUT_SECONDS - (
@@ -2069,7 +2069,7 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
         except (ValueError, UnicodeDecodeError):
             initial_decision = None
         if isinstance(initial_decision, dict):
-            if "error" not in initial_decision:
+            if not response_metadata["failed"] and not response_reports_failure(initial_decision):
                 _observe_probe_response_model(attempt_handle, initial_decision.get("model"))
             native_names = _complete_native_envelope_names(initial_decision)
             native_invalid = native_names is not None and not _normalize_native_tool_markup(
@@ -2109,6 +2109,7 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                     # The common response parser must attribute the repaired
                     # response to this send, not to the original tool decision.
                     attempt_handle = repair_handle
+                    response_metadata = {"failed": False}
                 except asyncio.CancelledError:
                     _finish_probe_attempt(repair_handle, "cancelled")
                     raise
@@ -2130,7 +2131,7 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                         repaired = json.loads(upstream.content.decode("utf-8"))
                     except (ValueError, UnicodeDecodeError):
                         repaired = None
-                    if isinstance(repaired, dict) and "error" not in repaired:
+                    if isinstance(repaired, dict) and not response_reports_failure(repaired):
                         _observe_probe_response_model(repair_handle, repaired.get("model"))
                     if (structured_invalid and isinstance(repaired, dict)
                             and repaired.get("model") != route["runtimeModelId"]):
@@ -2161,7 +2162,7 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
             parsed = decoded
             response_usage, stop_reason = _usage_from_response(parsed)
             response_model = parsed.get("model")
-            if "error" not in parsed:
+            if not response_metadata["failed"] and not response_reports_failure(parsed):
                 _observe_probe_response_model(attempt_handle, response_model)
             if "model" in parsed:
                 parsed["model"] = requested_alias
