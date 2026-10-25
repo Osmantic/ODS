@@ -125,3 +125,155 @@ def test_disabled_durable_mode_never_downgrades_an_existing_handle(test_client, 
     response=test_client.post('/api/talk/'+route,headers={'X-ODS-Talk-Tab':'t'*64,'X-ODS-Talk-Conversation':'h'*64},json={'text':'hello'})
     assert response.status_code==409
     assert 'not replaced' in response.json()['detail']
+
+
+def _bridge_fixture(monkeypatch, durable):
+    import hermes_bridge as bridge
+    key = durable.resolve('owner', 't'*64, 'h'*64, create=True)
+    durable.created(key, 'native-root', 'runtime-one')
+    snapshot = {'session_id': 'runtime-one', 'running': False, 'pending_approval': None}
+    sockets = []
+    def http(**kwargs):
+        return SimpleNamespace(close=AsyncMock())
+    async def connect(_http):
+        ws = SimpleNamespace(closed=False, send_str=AsyncMock(), close=AsyncMock())
+        sockets.append(ws)
+        return ws
+    monkeypatch.setattr(bridge.aiohttp, 'ClientSession', http)
+    monkeypatch.setattr(bridge, '_connect_ws', connect)
+    monkeypatch.setattr(bridge, '_resume_conversation', AsyncMock(side_effect=lambda *args: dict(snapshot)))
+    return bridge, key, snapshot, sockets
+
+
+def test_refresh_cannot_replace_between_prompt_lookup_and_lock_claim(monkeypatch, durable):
+    bridge, key, _, _ = _bridge_fixture(monkeypatch, durable)
+    async def run():
+        queued = asyncio.Event()
+        class ObservedLock(asyncio.Lock):
+            async def acquire(self):
+                if self.locked():
+                    queued.set()
+                return await super().acquire()
+        await bridge.open_conversation(key)
+        original = bridge._CONNECTION_POOL[key]
+        original.lock = ObservedLock()
+        await original.lock.acquire()
+        used = []
+        async def submit(conn, *args):
+            assert not conn.closed, 'queued prompt used the connection closed by refresh'
+            used.append(conn)
+            yield {'type': 'complete', 'text': 'once'}
+        monkeypatch.setattr(bridge, '_submit_on_connection', submit)
+        prompt = asyncio.create_task(bridge.submit_prompt(key, 'explicit'))
+        await queued.wait()
+        try:
+            # Real asyncio.Lock.release makes locked() false before the queued
+            # acquirer gets its turn. Run refresh in precisely that interval.
+            # The queued prompt must recheck pool identity after it wakes.
+            original.lock.release()
+            await bridge.open_conversation(key)
+            assert original.closed
+            assert (await prompt).text == 'once'
+            assert used == [bridge._CONNECTION_POOL[key]]
+            assert used[0] is not original
+        finally:
+            await asyncio.gather(prompt, return_exceptions=True)
+            await bridge.shutdown_pool()
+    asyncio.run(run())
+
+
+def test_warm_lookup_waits_for_refresh_replacement(monkeypatch, durable):
+    bridge, key, _, _ = _bridge_fixture(monkeypatch, durable)
+    async def run():
+        entered, release = asyncio.Event(), asyncio.Event()
+        await bridge.open_conversation(key)
+        original = bridge._CONNECTION_POOL[key]
+        drop = bridge._drop_connection
+        async def paused_drop(*args):
+            entered.set()
+            await release.wait()
+            await drop(*args)
+        monkeypatch.setattr(bridge, '_drop_connection', paused_drop)
+        refresh = asyncio.create_task(bridge.open_conversation(key))
+        await entered.wait()
+        lookup = asyncio.create_task(bridge._get_connection(key))
+        try:
+            await asyncio.sleep(0)
+            assert not lookup.done(), 'warm lookup returned the connection being replaced'
+            release.set()
+            await refresh
+            assert await lookup is bridge._CONNECTION_POOL[key]
+            assert await lookup is not original and original.closed
+        finally:
+            release.set()
+            await asyncio.gather(refresh, lookup, return_exceptions=True)
+            await bridge.shutdown_pool()
+    asyncio.run(run())
+
+
+def test_cold_reconnect_retains_approval_and_cancel_does_not_wait_for_prompt(monkeypatch, durable):
+    bridge, key, snapshot, _ = _bridge_fixture(monkeypatch, durable)
+    snapshot['pending_approval'] = {'command': 'synthetic command', 'description': 'approval fixture'}
+    interrupt = AsyncMock()
+    monkeypatch.setattr(bridge, '_interrupt_session_with_ack', interrupt)
+    async def run():
+        try:
+            conn = await bridge._get_connection(key)
+            async with conn.lock:
+                assert await asyncio.wait_for(bridge.respond_approval(key, 'once'), .5)
+                assert not await bridge.respond_approval(key, 'deny')
+                sent = json.loads(conn.ws.send_str.call_args.args[0])
+                assert sent['params'] == {'session_id': 'runtime-one', 'choice': 'once', 'all': False}
+                assert await asyncio.wait_for(bridge.interrupt_active_prompt(key), .5)
+            assert conn.closed and key not in bridge._CONNECTION_POOL
+            interrupt.assert_awaited_once_with('runtime-one')
+        finally:
+            await bridge.shutdown_pool()
+    asyncio.run(run())
+
+
+def test_cancel_finishes_before_refresh_can_replace_connection(monkeypatch, durable):
+    bridge, key, _, _ = _bridge_fixture(monkeypatch, durable)
+    async def run():
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def interrupt(_runtime):
+            entered.set()
+            await release.wait()
+        monkeypatch.setattr(bridge, '_interrupt_session_with_ack', interrupt)
+        await bridge.open_conversation(key)
+        original = bridge._CONNECTION_POOL[key]
+        cancel = asyncio.create_task(bridge.interrupt_active_prompt(key))
+        await entered.wait()
+        refresh = asyncio.create_task(bridge.open_conversation(key))
+        try:
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            assert not refresh.done(), 'refresh replaced the connection during cancellation'
+            release.set()
+            assert await cancel
+            await refresh
+            assert original.closed
+            assert not bridge._CONNECTION_POOL[key].closed
+        finally:
+            release.set()
+            await asyncio.gather(cancel, refresh, return_exceptions=True)
+            await bridge.shutdown_pool()
+    asyncio.run(run())
+
+
+def test_cancel_before_first_send_prevents_late_admitted_submit(monkeypatch, durable):
+    bridge, key, _, _ = _bridge_fixture(monkeypatch, durable)
+    monkeypatch.setattr(bridge, '_interrupt_session_with_ack', AsyncMock())
+    async def run():
+        stream = bridge.stream_prompt(key, 'must not be sent after cancel')
+        try:
+            assert (await stream.__anext__())['type'] == 'session'
+            conn = bridge._CONNECTION_POOL[key]
+            assert await bridge.interrupt_active_prompt(key)
+            with pytest.raises(bridge.HermesUnavailable, match='closed before submission'):
+                await stream.__anext__()
+            conn.ws.send_str.assert_not_awaited()
+        finally:
+            await stream.aclose()
+            await bridge.shutdown_pool()
+    asyncio.run(run())

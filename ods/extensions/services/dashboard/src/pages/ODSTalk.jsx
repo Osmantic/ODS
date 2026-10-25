@@ -127,6 +127,8 @@ export default function ODSTalk() {
   // repeated failure otherwise leaves every dependency unchanged.
   const [statusAttempt, setStatusAttempt] = useState(0)
   const [sending, setSending] = useState(false)
+  const [stopping, setStopping] = useState(false)
+  const stoppingRef = useRef(false)
   const [recording, setRecording] = useState(false)
   const [spokenReplies, setSpokenReplies] = useState(() => {
     try {
@@ -218,6 +220,14 @@ export default function ODSTalk() {
           headers: { 'Content-Type': 'application/json', ...conversationHeaders(conversationRef.current) },
           body: JSON.stringify({ new: !conversationRef.current.identity.established }),
         })
+        if (opening !== conversationOpeningRef.current) return
+        if (session.status === 401 || session.status === 409) {
+          setStatus(session.status === 401 ? 'expired' : 'offline')
+          setStatusText(session.status === 401 ? 'Session expired. Scan the owner card again.'
+            : await parseError(session, 'Conversation could not be resumed.'))
+          setRetryStatusRefresh(false)
+          return
+        }
         if (!session.ok) throw new Error(await parseError(session, 'Conversation could not be resumed.'))
         const snapshot = await session.json()
         if (opening !== conversationOpeningRef.current) return
@@ -268,6 +278,35 @@ export default function ODSTalk() {
       setRetryStatusRefresh(true)
     }
   }, [liveMicSupported])
+
+  const stopRequest = useCallback(async () => {
+    if (stoppingRef.current || !conversationRef.current) return
+    stoppingRef.current = true
+    setStopping(true)
+    try {
+      const response = await fetch('/api/talk/cancel', {
+        method: 'POST', credentials: 'same-origin',
+        headers: conversationHeaders(conversationRef.current),
+      })
+      if (response.status === 401) {
+        setStatus('expired')
+        setStatusText('Session expired. Scan the owner card again.')
+        setRetryStatusRefresh(false)
+        return
+      }
+      if (!response.ok) throw new Error(await parseError(response, 'Stop could not be confirmed.'))
+      streamControllerRef.current?.abort()
+      conversationReadyRef.current = false
+      await refreshStatus()
+    } catch (error) {
+      setStatus('offline')
+      setStatusText(error.message || 'Stop could not be confirmed. Refresh to inspect the request.')
+      setRetryStatusRefresh(false)
+    } finally {
+      stoppingRef.current = false
+      setStopping(false)
+    }
+  }, [refreshStatus])
 
   useEffect(() => { refreshStatus() }, [refreshStatus])
 
@@ -922,18 +961,10 @@ export default function ODSTalk() {
               </div>
             </div>
             <div className="flex items-center gap-1">
-              {durableRequested && <button type="button" disabled={recording}
-                onClick={async () => {
-                  const response = await fetch('/api/talk/cancel', {
-                    method: 'POST', credentials: 'same-origin',
-                    headers: conversationHeaders(conversationRef.current),
-                  })
-                  if (!response.ok) { setStatusText(await parseError(response, 'Stop could not be confirmed.')); return }
-                  streamControllerRef.current?.abort()
-                  conversationReadyRef.current = false
-                  refreshStatus()
-                }}>Stop request</button>}
-              {durableRequested && <button type="button" disabled={sending || recording}
+              {durableRequested && <button type="button"
+                disabled={recording || stopping || status === 'loading' || !conversationRef.current}
+                onClick={stopRequest}>Stop request</button>}
+              {durableRequested && <button type="button" disabled={sending || recording || stopping || status === 'loading'}
                 onClick={() => {
                   conversationRef.current?.release()
                   conversationRef.current = null
@@ -956,7 +987,7 @@ export default function ODSTalk() {
               <button
                 type="button"
                 onClick={() => { conversationReadyRef.current = false; refreshStatus() }}
-                disabled={sending || recording}
+                disabled={sending || recording || stopping || status === 'loading'}
                 className="grid h-10 w-10 place-items-center rounded-full border border-zinc-200 bg-white text-zinc-500"
                 aria-label="Refresh ODS Talk status"
                 title="Refresh"

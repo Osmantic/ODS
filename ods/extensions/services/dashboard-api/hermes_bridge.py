@@ -208,10 +208,7 @@ async def _resume_conversation(ws, key):
 
 
 async def open_conversation(key, *, create=False):
-    # The same per-handle lock covers both first creation and cold attachment.
-    async with _POOL_GUARD:
-        opening = _OPENING_LOCKS.setdefault(key, asyncio.Lock())
-    async with opening:
+    async with _conversation_admission(key):
         existing = _CONNECTION_POOL.get(key)
         if existing is not None and existing.lock.locked():
             raise HermesUnavailable("This conversation already has an active request.")
@@ -321,10 +318,33 @@ class _HermesConnection:
 
 _CONNECTION_POOL: dict[str, _HermesConnection] = {}
 _POOL_GUARD = asyncio.Lock()
-# Per-key creation locks: two concurrent first-messages from the same phone
-# share one open instead of racing, without holding the global guard.
+# Lifecycle admission covers every lookup/claim, replacement and control write.
+# It is released after claiming conn.lock, before receiving a prompt response,
+# so approval/cancel never wait for a prompt that needs their response to finish.
 _OPENING_LOCKS: dict[str, asyncio.Lock] = {}
+_ADMISSION_USERS: dict[str, int] = {}
 _SWEEPER_TASK: asyncio.Task | None = None
+
+
+@contextlib.asynccontextmanager
+async def _conversation_admission(key):
+    async with _POOL_GUARD:
+        lock = _OPENING_LOCKS.setdefault(key, asyncio.Lock())
+        _ADMISSION_USERS[key] = _ADMISSION_USERS.get(key, 0) + 1
+    try:
+        async with lock:
+            yield
+    finally:
+        async with _POOL_GUARD:
+            users = _ADMISSION_USERS[key] - 1
+            if users:
+                _ADMISSION_USERS[key] = users
+            else:
+                del _ADMISSION_USERS[key]
+                if key not in _CONNECTION_POOL:
+                    # Count waiters too: removing an unlocked lock while a
+                    # waiter owns its reference would split admission in two.
+                    _OPENING_LOCKS.pop(key, None)
 
 
 async def _open_connection(session_key: str) -> _HermesConnection:
@@ -339,7 +359,7 @@ async def _open_connection(session_key: str) -> _HermesConnection:
     http_session = aiohttp.ClientSession(timeout=timeout, cookie_jar=aiohttp.CookieJar(unsafe=True))
     try:
         ws = await _connect_ws(http_session)
-    except Exception:
+    except BaseException:
         await http_session.close()
         raise
     try:
@@ -348,50 +368,62 @@ async def _open_connection(session_key: str) -> _HermesConnection:
             session_id = snapshot['session_id']
         else:
             session_id = await _create_session_on_ws(ws, timeout=30)
-    except Exception:
+    except BaseException:
         await ws.close()
         await http_session.close()
         raise
     conn = _HermesConnection(http_session=http_session, ws=ws, session_id=session_id)
+    if session_key.startswith('durable:'):
+        conn.pending_approval = snapshot.get('pending_approval')
     logger.info("hermes-bridge: opened pooled connection for %s (session_id=%s)", session_key[:8], session_id)
     return conn
 
 
 async def _get_connection(session_key: str) -> _HermesConnection:
-    """Look up the pooled connection for this session_key, or create one.
+    """Unclaimed lookup; prompt callers must use _claim_prompt_connection.
 
-    Caller must use ``async with conn.lock:`` around any send/receive cycle
-    to keep concurrent same-key prompts from interleaving on the same WS.
-
-    _POOL_GUARD is held only for dict bookkeeping. Opening a connection
-    (token fetch + ws connect + session.create) is network I/O that can
-    hang for the full client timeout when Hermes is slow or down; holding
-    the global guard across it would head-of-line block every other
-    phone's warm-connection lookup behind one cold open. The per-key
-    opening lock keeps concurrent same-key calls from opening duplicates.
+    Even a warm lookup waits for replacement to finish. All network I/O is
+    under per-conversation admission, never the global bookkeeping guard.
     """
+    async with _conversation_admission(session_key):
+        return await _get_connection_admitted(session_key)
+
+
+async def _get_connection_admitted(session_key):
+    """Caller holds conversation admission; returned connection is unclaimed."""
     async with _POOL_GUARD:
         conn = _CONNECTION_POOL.get(session_key)
         if conn is not None and not conn.closed and not conn.ws.closed:
             return conn
-        opening = _OPENING_LOCKS.setdefault(session_key, asyncio.Lock())
+        stale = _CONNECTION_POOL.pop(session_key, None)
+    if stale is not None:
+        await stale.aclose()
+    new_conn = await _open_connection(session_key)
+    async with _POOL_GUARD:
+        _CONNECTION_POOL[session_key] = new_conn
+    return new_conn
 
-    async with opening:
-        # Re-check under the guard: another same-key call may have finished
-        # opening while this one waited on the opening lock.
-        async with _POOL_GUARD:
-            conn = _CONNECTION_POOL.get(session_key)
-            if conn is not None and not conn.closed and not conn.ws.closed:
-                return conn
-            # Either no entry, marked closed, or the underlying ws died.
-            # Drop whatever is in the slot and open fresh.
-            stale = _CONNECTION_POOL.pop(session_key, None)
-        if stale is not None:
-            await stale.aclose()
-        new_conn = await _open_connection(session_key)
-        async with _POOL_GUARD:
-            _CONNECTION_POOL[session_key] = new_conn
-        return new_conn
+
+@contextlib.asynccontextmanager
+async def _claim_prompt_connection(key):
+    while True:
+        async with _conversation_admission(key):
+            conn = _CONNECTION_POOL.get(key)
+            if conn is None or not conn.lock.locked():
+                conn = await _get_connection_admitted(key)
+                # An unlocked asyncio.Lock is acquired without suspension.
+                # Refresh/eviction cannot intervene between lookup and claim.
+                await conn.lock.acquire()
+                break
+        # Never hold admission while waiting for an active prompt: its approval
+        # or cancel route needs admission. Recheck identity after waking because
+        # the old connection may have been evicted in the meantime.
+        async with conn.lock:
+            pass
+    try:
+        yield conn
+    finally:
+        conn.lock.release()
 
 
 async def _drop_connection(session_key: str, conn: _HermesConnection) -> None:
@@ -400,6 +432,8 @@ async def _drop_connection(session_key: str, conn: _HermesConnection) -> None:
         current = _CONNECTION_POOL.get(session_key)
         if current is conn:
             _CONNECTION_POOL.pop(session_key, None)
+        if session_key not in _CONNECTION_POOL and not _ADMISSION_USERS.get(session_key):
+            _OPENING_LOCKS.pop(session_key, None)
     await conn.aclose()
 
 
@@ -413,29 +447,21 @@ async def _sweep_idle_connections() -> None:
         try:
             await asyncio.sleep(_IDLE_SWEEP_INTERVAL)
             now = time.monotonic()
-            stale: list[tuple[str, _HermesConnection]] = []
             async with _POOL_GUARD:
-                for key, conn in list(_CONNECTION_POOL.items()):
+                keys = list(_CONNECTION_POOL)
+            for key in keys:
+                async with _conversation_admission(key):
+                    conn = _CONNECTION_POOL.get(key)
+                    if conn is None:
+                        continue
                     if conn.lock.locked():
                         # Active prompt. Do not close the WS while Hermes is
                         # streaming or pre-filling a long response; last_used
                         # is refreshed again when the prompt completes.
                         continue
-                    if conn.closed or conn.ws.closed:
-                        stale.append((key, conn))
-                        _CONNECTION_POOL.pop(key, None)
-                        continue
-                    if now - conn.last_used > _IDLE_EXPIRY_SECONDS:
-                        stale.append((key, conn))
-                        _CONNECTION_POOL.pop(key, None)
-                # Opening locks are keyed by cookie hash and would otherwise
-                # grow forever; drop the ones that are idle and unpooled.
-                for key, lock in list(_OPENING_LOCKS.items()):
-                    if not lock.locked() and key not in _CONNECTION_POOL:
-                        del _OPENING_LOCKS[key]
-            for key, conn in stale:
-                logger.info("hermes-bridge: evicting idle connection for %s", key[:8])
-                await conn.aclose()
+                    if conn.closed or conn.ws.closed or now - conn.last_used > _IDLE_EXPIRY_SECONDS:
+                        logger.info("hermes-bridge: evicting idle connection for %s", key[:8])
+                        await _drop_connection(key, conn)
         except asyncio.CancelledError:
             raise
         except Exception:  # pragma: no cover — keep sweeper alive on bugs
@@ -468,7 +494,9 @@ async def shutdown_pool() -> None:
     async with _POOL_GUARD:
         connections = list(_CONNECTION_POOL.values())
         _CONNECTION_POOL.clear()
-        _OPENING_LOCKS.clear()
+        for key in list(_OPENING_LOCKS):
+            if key not in _ADMISSION_USERS:
+                del _OPENING_LOCKS[key]
     for conn in connections:
         await conn.aclose()
 
@@ -487,6 +515,8 @@ async def _submit_on_connection(
     try:
         conn.last_used = time.monotonic()
         async with conn.write_lock:
+            if conn.closed or conn.ws.closed:
+                raise HermesUnavailable("The conversation connection closed before submission. Reconnect before sending again.")
             await conn.ws.send_str(json.dumps({
                 "jsonrpc": "2.0",
                 "id": request_id,
@@ -615,26 +645,32 @@ async def stream_prompt(session_key: str, text: str) -> AsyncIterator[dict[str, 
     _ensure_sweeper_running()
     timeout_seconds = _request_timeout()
 
-    conn = await _get_connection(session_key)
-    async with conn.lock:
+    async with _claim_prompt_connection(session_key) as conn:
         durable = session_key.startswith('durable:')
         if durable:
             snapshot = await _resume_conversation(conn.ws, session_key)
             conn.session_id = snapshot['session_id']
+            conn.pending_approval = snapshot.get('pending_approval')
             if snapshot['running']:
                 raise HermesUnavailable("This conversation already has an active request.")
         yield {"type": "session", "session_id": conn.session_id}
         if durable:
             talk_conversations.store().delivery(session_key, 'sending')
+        completed = False
         try:
             async for event in _submit_on_connection(conn, text, timeout_seconds):
-                if durable and event.get('type') == 'complete':
-                    talk_conversations.store().delivery(session_key, 'idle')
+                if event.get('type') == 'complete':
+                    completed = True
+                    if durable:
+                        talk_conversations.store().delivery(session_key, 'idle')
                 yield event
         except BaseException:
-            if durable:
-                talk_conversations.store().delivery(session_key, 'uncertain')
-            await _drop_connection(session_key, conn)
+            # A consumer may close the generator immediately after the terminal
+            # event. That is a completed turn, not uncertain delivery.
+            if not completed:
+                if durable:
+                    talk_conversations.store().delivery(session_key, 'uncertain')
+                await _drop_connection(session_key, conn)
             raise
 
 
@@ -650,6 +686,11 @@ async def respond_approval(session_key: str, choice: str) -> bool:
     if choice not in {"once", "deny"}:
         raise ValueError("choice must be 'once' or 'deny'")
 
+    async with _conversation_admission(session_key):
+        return await _respond_approval_admitted(session_key, choice)
+
+
+async def _respond_approval_admitted(session_key, choice):
     async with _POOL_GUARD:
         conn = _CONNECTION_POOL.get(session_key)
         if conn is None or conn.closed or conn.ws.closed:
@@ -717,7 +758,7 @@ async def _interrupt_session_with_ack(session_id: str) -> None:
     prompt-owning socket is evicted.
     """
     timeout = aiohttp.ClientTimeout(total=_APPROVAL_SEND_TIMEOUT * 2)
-    control_session = aiohttp.ClientSession(timeout=timeout)
+    control_session = aiohttp.ClientSession(timeout=timeout, cookie_jar=aiohttp.CookieJar(unsafe=True))
     control_ws: aiohttp.ClientWebSocketResponse | None = None
     request_id = f"ods-talk-interrupt-{time.monotonic_ns()}"
     deadline = time.monotonic() + _APPROVAL_SEND_TIMEOUT
@@ -767,11 +808,26 @@ async def interrupt_active_prompt(session_key: str) -> bool:
     abort RPC before closing the pooled connection so the abandoned turn frees
     its upstream model slot without affecting any sibling session.
 
-    This is best-effort disconnect cleanup. It never opens a new connection,
-    never interrupts an idle session, and always evicts the used connection so
-    late frames from the interrupted turn cannot be mistaken for a later Talk
-    response.
+    Admission prevents replacement while the acknowledgement is outstanding.
+    The write lock orders interruption after a started submit and prevents an
+    already-admitted submit from sending after cancellation has closed its WS.
+    Neither control operation waits for the prompt receive lock.
     """
+    async with _conversation_admission(session_key):
+        conn = _CONNECTION_POOL.get(session_key)
+        if conn is None:
+            return await _interrupt_active_prompt_admitted(session_key)
+        try:
+            await asyncio.wait_for(conn.write_lock.acquire(), timeout=_APPROVAL_SEND_TIMEOUT)
+        except asyncio.TimeoutError as exc:
+            raise HermesBridgeError("Hermes control channel is busy") from exc
+        try:
+            return await _interrupt_active_prompt_admitted(session_key)
+        finally:
+            conn.write_lock.release()
+
+
+async def _interrupt_active_prompt_admitted(session_key):
     if session_key.startswith('durable:'):
         row = talk_conversations.store().get(session_key)
         if not row['runtime']:

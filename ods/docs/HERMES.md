@@ -290,7 +290,7 @@ The container image stays cached — `docker image prune` removes it.
 
 ## Upstream attribution
 
-Hermes Agent is © 2026 Nous Research, MIT-licensed. ODS's contribution is the packaging layer (`extensions/services/hermes/`) — no code is forked from upstream. The pinned image is pulled directly from `docker.io/nousresearch/hermes-agent`.
+Hermes Agent is © 2026 Nous Research, MIT-licensed. The default pinned image is pulled directly from `docker.io/nousresearch/hermes-agent`. ODS supplies the packaging layer (`extensions/services/hermes/`). The optional, local-only manual-resume candidate in that directory applies an explicitly recorded upstream patch and retains the upstream license; it is not the default published image.
 
 When promoting / talking about this extension, the convention is: "Hermes Agent (from Nous Research) — packaged for ODS."
 
