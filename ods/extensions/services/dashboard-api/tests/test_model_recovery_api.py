@@ -117,7 +117,8 @@ def test_explicit_bootstrap_selection_is_authenticated_and_forwarded_once(client
     {'gguf': 'full.gguf', 'model': 'full', 'context': 65536, 'snapshot': '/etc'},
 ])
 def test_bootstrap_selection_rejects_paths_controls_and_unknown_fields(client, monkeypatch, target):
-    call = Mock(); monkeypatch.setattr(models, 'request_agent_json', call)
+    call = Mock()
+    monkeypatch.setattr(models, 'request_agent_json', call)
     body = {'bootstrapTransactionId': 'a' * 64, 'target': target}
     response = client.post('/api/models/recovery', headers={'Authorization':'Bearer test-key-12345'}, json=body)
     assert response.status_code == 400

@@ -203,7 +203,9 @@ def test_bootstrap_transport_real_peer_authenticates_before_sending(tmp_path, mo
     address = str(tmp_path / 'control.sock')
     received = []
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
-        server.bind(address); server.listen(1); server.settimeout(5)
+        server.bind(address)
+        server.listen(1)
+        server.settimeout(5)
         def serve():
             with server.accept()[0] as connection:
                 connection.settimeout(5)
@@ -212,7 +214,8 @@ def test_bootstrap_transport_real_peer_authenticates_before_sending(tmp_path, mo
                 if raw:
                     protocol.control_request(json.loads(raw))
                     connection.sendall(b'{"status":200,"body":{"pending":false}}\n')
-        thread = threading.Thread(target=serve, daemon=True); thread.start()
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
         monkeypatch.setattr(transport, 'ACCESS_SOCKET_PATH', address)
         if os.geteuid() == 0:
             assert transport.request_access(operation, payload) == (200, {'pending': False})

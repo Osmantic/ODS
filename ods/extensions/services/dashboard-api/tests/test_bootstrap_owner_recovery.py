@@ -41,8 +41,11 @@ def native_config(model='bootstrap'):
 
 @pytest.fixture
 def recovery(tmp_path, monkeypatch):
-    install = tmp_path / 'install'; install.mkdir(); (install / 'data').mkdir()
-    home = tmp_path / 'home'; (home / '.openclaw').mkdir(parents=True)
+    install = tmp_path / 'install'
+    install.mkdir()
+    (install / 'data').mkdir()
+    home = tmp_path / 'home'
+    (home / '.openclaw').mkdir(parents=True)
     native = home / '.openclaw/openclaw.json'
     snapshots.write(native, json.dumps(native_config()).encode())
     env = dict(ODS_MODE='local', GGUF_FILE=TARGET['gguf'], LLM_MODEL=TARGET['model'],
@@ -90,8 +93,11 @@ def recovery(tmp_path, monkeypatch):
     monkeypatch.setattr(host, '_pixel_model_config_paths', lambda: {'.env': install / '.env'})
     monkeypatch.setattr(host.platform, 'system', lambda: 'Linux')
     proofs = []
-    monkeypatch.setattr(host, '_prove_pixel_model_contract', lambda _, c: proofs.append(c) is None
-                        and c['model'] == TARGET['model'] and c['contextLength'] == TARGET['context'])
+    def prove_model_contract(_, contract):
+        proofs.append(contract)
+        return contract['model'] == TARGET['model'] and contract['contextLength'] == TARGET['context']
+
+    monkeypatch.setattr(host, '_prove_pixel_model_contract', prove_model_contract)
     monkeypatch.setattr(host, '_verify_litellm_route', lambda *a, **k: None)
     return SimpleNamespace(bridge=bridge, install=install, home=home, native=native,
                            env=env, request=request, proofs=proofs, monkeypatch=monkeypatch)
@@ -174,7 +180,8 @@ def test_real_bridge_and_shell_repair_legacy_process_death(recovery, point):
 
 @pytest.mark.parametrize('failure', ['inference', 'source', 'release', 'wrong-id', 'stale-target', 'gateway'])
 def test_refusals_preserve_journal_and_admission(recovery, failure):
-    r = recovery; tx = r.bridge.model_begin()['transaction_id']
+    r = recovery
+    tx = r.bridge.model_begin()['transaction_id']
     if failure == 'inference': r.monkeypatch.setattr(host, '_prove_pixel_model_contract', lambda *_: False)
     if failure == 'source': (r.bridge.state / 'source-upgrade').mkdir()
     if failure == 'release': atomic_json(r.bridge.state / 'release-intent.json',
@@ -194,7 +201,8 @@ def test_refusals_preserve_journal_and_admission(recovery, failure):
 
 @pytest.mark.parametrize('point', ['native-release', 'edge-release', 'finish-reply'])
 def test_release_interruptions_resume_original_transaction(recovery, point):
-    r = recovery; tx = r.bridge.model_begin()['transaction_id']
+    r = recovery
+    tx = r.bridge.model_begin()['transaction_id']
     r.monkeypatch.setattr(host, '_reconcile_ods_managed_pixel_model', lambda *a, **k: shell_reconcile(r, *a, **k))
     if point == 'native-release': r.bridge.fail_native = 'release'
     if point == 'edge-release': r.bridge.fail_edge = 'release'
@@ -231,13 +239,15 @@ def test_bootstrap_intent_precedes_gates_and_survives_lost_begin(recovery):
 
 @pytest.mark.parametrize('change', ['snapshot', 'manifest', 'current', 'symlink'])
 def test_stale_snapshots_never_become_recovery_authority(recovery, change):
-    r = recovery; tx = snapshots.prepare(r.install, TARGET)
+    r = recovery
+    tx = snapshots.prepare(r.install, TARGET)
     folder = snapshots.directory(r.install, tx)
     if change == 'snapshot': (folder / 'env').write_bytes(b'stale')
     if change == 'manifest': (folder / 'manifest.json').write_bytes(b'{}')
     if change == 'current': (r.install / '.env').write_bytes(b'changed')
     if change == 'symlink':
-        (folder / 'env').unlink(); (folder / 'env').symlink_to(r.install / '.env')
+        (folder / 'env').unlink()
+        (folder / 'env').symlink_to(r.install / '.env')
     with pytest.raises(AccessError): r.bridge.model_begin(bootstrap=tx)
     assert r.bridge.pending() is None
     assert r.bridge.edge_state['phase'] == 'idle'
@@ -245,7 +255,8 @@ def test_stale_snapshots_never_become_recovery_authority(recovery, change):
 
 @pytest.mark.parametrize('evidence', ['missing', 'completed', 'unavailable', 'malformed'])
 def test_host_status_never_calls_legacy_hold_idle(recovery, evidence):
-    r = recovery; r.bridge.model_begin()
+    r = recovery
+    r.bridge.model_begin()
     if evidence == 'completed':
         r.monkeypatch.setattr(host, '_read_pixel_model_journal', lambda: {'phase': 'completed', 'transactionId': '0' * 64})
     if evidence in ('unavailable', 'malformed'):
@@ -257,7 +268,8 @@ def test_host_status_never_calls_legacy_hold_idle(recovery, evidence):
 
 
 def test_shared_shell_lock_refuses_host_and_dies_with_parent(tmp_path, monkeypatch):
-    install = tmp_path / 'install'; install.mkdir()
+    install = tmp_path / 'install'
+    install.mkdir()
     monkeypatch.setenv('ODS_MODEL_LIFECYCLE_LOCK_ROOT', str(tmp_path / 'locks'))
     monkeypatch.setattr(host, 'INSTALL_DIR', install)
     shell = ROOT / 'installers/lib/model-lifecycle-lock.sh'
@@ -268,24 +280,34 @@ def test_shared_shell_lock_refuses_host_and_dies_with_parent(tmp_path, monkeypat
         assert child.stdout.readline().strip() == 'READY'  # diagnostics go to stderr
         acquired, _ = host._begin_model_lifecycle('model_recovery')
         assert acquired is False
-        child.kill(); child.wait(timeout=3)
+        child.kill()
+        child.wait(timeout=3)
         deadline = time.monotonic() + 3
         while True:
-            try: fd = locks.acquire(install); break
+            try:
+                fd = locks.acquire(install)
+                break
             except BlockingIOError:
                 if time.monotonic() >= deadline: raise
                 time.sleep(.05)
         locks.release(fd)
     finally:
-        if child.poll() is None: child.kill(); child.wait(timeout=3)
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=3)
 
 
 @pytest.mark.parametrize('hostile', ['directory-symlink', 'file-symlink', 'hardlink', 'fifo', 'public-directory'])
 def test_lifecycle_lock_refuses_hostile_precreation_without_chown(tmp_path, monkeypatch, hostile):
-    install = tmp_path / 'install'; install.mkdir()
-    root = tmp_path / 'locks'; other = tmp_path / 'other'; other.mkdir()
+    install = tmp_path / 'install'
+    install.mkdir()
+    root = tmp_path / 'locks'
+    other = tmp_path / 'other'
+    other.mkdir()
     monkeypatch.setenv('ODS_MODEL_LIFECYCLE_LOCK_ROOT', str(root))
-    protected = other / 'sentinel'; protected.write_text('unchanged'); protected.chmod(0o600)
+    protected = other / 'sentinel'
+    protected.write_text('unchanged')
+    protected.chmod(0o600)
     before = protected.stat()
     if hostile == 'directory-symlink': root.symlink_to(other, target_is_directory=True)
     else:
@@ -332,7 +354,8 @@ def test_before_inference_death_can_complete_the_proven_bootstrap_route(recovery
 
 
 def test_changed_bound_snapshot_refuses_native_repair(recovery):
-    r = recovery; tx = snapshots.prepare(r.install, TARGET)
+    r = recovery
+    tx = snapshots.prepare(r.install, TARGET)
     r.bridge.model_begin(bootstrap=tx)
     (snapshots.directory(r.install, tx) / 'env').write_bytes(b'stale')
     before = r.native.read_bytes()
@@ -342,14 +365,18 @@ def test_changed_bound_snapshot_refuses_native_repair(recovery):
 
 @pytest.mark.skipif(os.geteuid() != 0, reason='separate root isolated-container control')
 def test_root_refuses_attacker_owned_directory_and_never_chowns_symlink_target(tmp_path, monkeypatch):
-    install = tmp_path / 'install'; install.mkdir()
-    root = tmp_path / 'locks'; root.mkdir(mode=0o700)
+    install = tmp_path / 'install'
+    install.mkdir()
+    root = tmp_path / 'locks'
+    root.mkdir(mode=0o700)
     os.chown(root, 12345, -1)
     monkeypatch.setenv('ODS_MODEL_LIFECYCLE_LOCK_ROOT', str(root))
     with pytest.raises(RuntimeError): locks.acquire(install)
     assert root.stat().st_uid == 12345
     root.rmdir()
-    other = tmp_path / 'attacker-target'; other.mkdir(mode=0o700); os.chown(other, 12345, -1)
+    other = tmp_path / 'attacker-target'
+    other.mkdir(mode=0o700)
+    os.chown(other, 12345, -1)
     root.symlink_to(other, target_is_directory=True)
     with pytest.raises(OSError): locks.acquire(install)
     assert other.stat().st_uid == 12345

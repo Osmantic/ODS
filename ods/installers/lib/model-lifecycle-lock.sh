@@ -61,7 +61,7 @@ ods_model_lifecycle_lock_acquire() {
 
 ods_model_lifecycle_lock_release() {
     [[ -n "${ODS_MODEL_LIFECYCLE_LOCK_FD:-}" ]] || return 0
-    printf 'release\n' >&"$ODS_MODEL_LIFECYCLE_LOCK_FD" 2>/dev/null || true
+    printf 'release\n' 1>&"$ODS_MODEL_LIFECYCLE_LOCK_FD" 2>/dev/null || true
     { exec {ODS_MODEL_LIFECYCLE_LOCK_FD}>&-; } 2>/dev/null || true
     if [[ -n "${ODS_MODEL_LIFECYCLE_LOCK_PID:-}" ]]; then
         wait "$ODS_MODEL_LIFECYCLE_LOCK_PID" 2>/dev/null || true
