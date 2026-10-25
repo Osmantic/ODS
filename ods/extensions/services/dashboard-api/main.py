@@ -102,6 +102,7 @@ from settings import (
     _empty_value_unsets_env_key,
     _compute_env_apply_plan,
     _check_host_agent_available,
+    _env_host_platform,
 )
 
 
@@ -987,6 +988,7 @@ def _build_settings_env_payload(
         "backupPath": backup_path,
         "applyPlan": apply_plan,
         "agentAvailable": _check_host_agent_available(),
+        "hostPlatform": _env_host_platform(values),
     }
 
 

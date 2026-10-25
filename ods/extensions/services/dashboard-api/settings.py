@@ -96,6 +96,38 @@ _RETIRED_ENV_KEYS = frozenset({
     "LEMONADE_HOST_TRANSPORT", "LEMONADE_LLAMACPP", "LEMONADE_LLAMACPP_ROCM_BIN",
     "LEMONADE_MODEL", "LEMONADE_SERVER_IMAGE", "LITELLM_LEMONADE_API_KEY", "LLAMA_CPP_REF",
 })
+# Keys that only the native macOS installer writes (installers/macos/lib/
+# env-generator.sh) and only macOS code paths read: the Colima bridges, the
+# native Metal llama-server port and the unified-memory size. Shared keys whose
+# descriptions merely mention macOS (LLAMA_ARG_CTX_CHECKPOINTS, LLAMA_SPEC_TYPE,
+# ODS_AGENT_BIND, ...) apply everywhere and must not be listed here.
+_MACOS_ONLY_ENV_FIELDS = frozenset({
+    "HOST_RAM_GB",
+    "ODS_MACOS_HOST_AGENT_BRIDGE_ENABLED",
+    "ODS_MACOS_HOST_GATEWAY",
+    "ODS_MACOS_LLM_BRIDGE_ENABLED",
+    "ODS_MACOS_VM_IP",
+    "ODS_NATIVE_LLAMA_PORT",
+})
+# The dashboard runs in a Linux container, so the managed host's platform comes
+# from the installer-recorded GPU_BACKEND: only the macOS installer writes apple.
+_GPU_BACKEND_HOST_PLATFORMS = {
+    "apple": "macos",
+    "amd": "other", "cpu": "other", "intel": "other",
+    "jetson": "other", "nvidia": "other", "sycl": "other",
+}
+
+
+def _env_host_platform(values: dict[str, str]) -> Optional[str]:
+    """Return "macos", "other", or None when the managed host is unknown."""
+    backend = values.get("GPU_BACKEND", "").strip().lower()
+    return _GPU_BACKEND_HOST_PLATFORMS.get(backend)
+
+
+def _env_field_platforms(key: str) -> list[str]:
+    return ["macos"] if key in _MACOS_ONLY_ENV_FIELDS else []
+
+
 _READ_ONLY_ENV_FIELDS = {
     "ODS_MODE": "Runtime mode is selected by the installer and cannot be changed from the dashboard.",
     "TIER": "The active tier is managed by Model Manager so model consumers stay synchronized.",
@@ -252,6 +284,7 @@ def _build_env_fields(
             "hasValue": value != "",
             "readOnly": key in _READ_ONLY_ENV_FIELDS,
             "readOnlyReason": _READ_ONLY_ENV_FIELDS.get(key, ""),
+            "platforms": _env_field_platforms(key),
             **{name: definition[name] for name in _SCALAR_CONSTRAINT_MESSAGES if name in definition},
         }
 
@@ -274,6 +307,7 @@ def _build_env_fields(
             "hasValue": value != "",
             "readOnly": key in _READ_ONLY_ENV_FIELDS,
             "readOnlyReason": _READ_ONLY_ENV_FIELDS.get(key, ""),
+            "platforms": _env_field_platforms(key),
         }
 
     return fields

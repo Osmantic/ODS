@@ -67,24 +67,71 @@ describe('EnvEditor', () => {
     expect(screen.queryByText(/Save Behavior|Restart Behavior|Apply Behavior/)).toBeNull()
   })
 
-  test('hides fields documented as macOS-only on non-macOS hosts', () => {
-    renderEditor({
-      fields: {
-        OPENAI_API_KEY: baseFields.OPENAI_API_KEY,
-        MACOS_ONLY: {
-          key: 'MACOS_ONLY',
-          label: 'Unified system RAM',
-          type: 'integer',
-          description: 'macOS Apple Silicon only.',
-          default: 16,
-        },
-      },
-      values: { OPENAI_API_KEY: '', MACOS_ONLY: '16' },
-      sections: [{ id: 'platform', title: 'Platform', keys: ['OPENAI_API_KEY', 'MACOS_ONLY'] }],
-      activeSection: { id: 'platform', title: 'Platform', keys: ['OPENAI_API_KEY', 'MACOS_ONLY'] },
+  describe('managed host platform', () => {
+    const MAC_BROWSER = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 Safari/605.1.15'
+    const WINDOWS_BROWSER = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36'
+    const field = (key, label, description, platforms = []) => ({
+      key, label, type: 'string', description, required: false, secret: false, enum: [], default: null, platforms,
+    })
+    const platformFields = {
+      LLAMA_ARG_CTX_CHECKPOINTS: field('LLAMA_ARG_CTX_CHECKPOINTS', 'Ctx Checkpoints', 'Prompt checkpoints per slot. Native macOS uses 32 when unset.'),
+      LLAMA_SPEC_TYPE: field('LLAMA_SPEC_TYPE', 'Spec Type', 'Speculative decoding for the NVIDIA and CPU overlays and native macOS.'),
+      ODS_AGENT_BIND: field('ODS_AGENT_BIND', 'Agent Bind', 'Defaults to 127.0.0.1 on macOS/Windows.'),
+      HOST_RAM_GB: field('HOST_RAM_GB', 'Host RAM GB', 'Unified system RAM in GB.', ['macos']),
+      ODS_MACOS_VM_IP: field('ODS_MACOS_VM_IP', 'Colima VM IP', 'Colima VM address.', ['macos']),
+    }
+    const runtime = { id: 'runtime', title: 'Runtime', keys: ['LLAMA_ARG_CTX_CHECKPOINTS', 'LLAMA_SPEC_TYPE', 'ODS_AGENT_BIND', 'HOST_RAM_GB'] }
+    const bridge = { id: 'macos-bridge', title: 'macOS Bridge', keys: ['ODS_MACOS_VM_IP'] }
+    const renderForHost = (hostPlatform, userAgent) => {
+      vi.spyOn(window.navigator, 'userAgent', 'get').mockReturnValue(userAgent)
+      renderEditor({
+        editor: { ...baseEditor, hostPlatform },
+        fields: platformFields,
+        values: Object.fromEntries(Object.keys(platformFields).map(key => [key, ''])),
+        sections: [runtime, bridge],
+        activeSection: bridge,
+      })
+      fireEvent.click(screen.getByRole('combobox', { name: 'Configuration category' }))
+    }
+    const fieldLabel = label => screen.queryByText(label, { selector: 'label' })
+
+    afterEach(() => vi.restoreAllMocks())
+
+    test('keeps a Mac server\'s macOS-only settings when managed from a Windows browser', () => {
+      renderForHost('macos', WINDOWS_BROWSER)
+
+      expect(screen.getByRole('option', { name: 'Runtime · 4' })).toBeInTheDocument()
+      expect(screen.getByRole('option', { name: 'macOS Bridge · 1' })).toBeInTheDocument()
+      expect(screen.getByRole('heading', { name: 'macOS Bridge' })).toBeInTheDocument()
+      expect(fieldLabel('Colima VM IP')).toBeInTheDocument()
     })
 
-    expect(screen.queryByRole('spinbutton', { name: /Unified system RAM/i })).toBeNull()
+    test('hides macOS-only settings of a Linux server managed from a Mac browser', () => {
+      renderForHost('other', MAC_BROWSER)
+
+      expect(screen.getByRole('option', { name: 'Runtime · 3' })).toBeInTheDocument()
+      expect(screen.queryByRole('option', { name: /macOS Bridge/ })).toBeNull()
+      // The active section disappeared, so the sidebar and the field pane both move to Runtime.
+      expect(screen.getByRole('heading', { name: 'Runtime' })).toBeInTheDocument()
+      expect(fieldLabel('Host RAM GB')).toBeNull()
+      expect(fieldLabel('Colima VM IP')).toBeNull()
+    })
+
+    test('keeps shared fields whose descriptions mention macOS on non-macOS servers', () => {
+      renderForHost('other', WINDOWS_BROWSER)
+
+      expect(fieldLabel('Ctx Checkpoints')).toBeInTheDocument()
+      expect(fieldLabel('Spec Type')).toBeInTheDocument()
+      expect(fieldLabel('Agent Bind')).toBeInTheDocument()
+    })
+
+    test('shows every field when the server platform is unknown', () => {
+      renderForHost(null, WINDOWS_BROWSER)
+
+      expect(screen.getByRole('option', { name: 'Runtime · 4' })).toBeInTheDocument()
+      expect(screen.getByRole('option', { name: 'macOS Bridge · 1' })).toBeInTheDocument()
+      expect(fieldLabel('Colima VM IP')).toBeInTheDocument()
+    })
   })
 
   test('renders stored secrets as masked placeholders instead of exposing values', () => {
