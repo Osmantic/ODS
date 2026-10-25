@@ -83,6 +83,22 @@ test('unsupported durable runtime stays unavailable without a legacy session or 
   expect(JSON.parse(sessionStorage.getItem(storageKey))).toEqual(identity)
 })
 
+test('feature rollback preserves a retained durable identity until explicit New conversation', async () => {
+  const fetch = vi.fn(async () => response({ capabilities: {
+    text_chat: true, durable_conversation_requested: false, durable_conversation: false,
+  } }))
+  vi.stubGlobal('fetch', fetch)
+  render(<ODSTalk />)
+  await screen.findAllByText('Durable conversation continuity is disabled. Your retained conversation has not been replaced.')
+  expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
+  expect(JSON.parse(sessionStorage.getItem(storageKey))).toEqual(identity)
+  expect(fetch).toHaveBeenCalledTimes(1)
+  fireEvent.click(screen.getByRole('button', { name: 'New conversation' }))
+  await screen.findByText('Ready')
+  expect(sessionStorage.getItem(storageKey)).toBeNull()
+  expect(fetch.mock.calls.every(([url]) => url === '/api/talk/status')).toBe(true)
+})
+
 test('a restored pending request can be approved and stopped using the same conversation', async () => {
   let stopped = false
   const fetch = vi.fn(async url => {

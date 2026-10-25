@@ -5,7 +5,7 @@ import {
   Send, Volume2, VolumeX,
 } from 'lucide-react'
 import HelpLink from '../components/HelpLink'
-import { claimConversation, conversationHeaders, establishConversation, forgetConversation } from './talkConversation'
+import { claimConversation, conversationHeaders, establishConversation, forgetConversation, hasRetainedConversation } from './talkConversation'
 
 // Hermes likes to format with markdown (bold, lists, code). Rendering it as
 // HTML keeps the chat bubbles readable instead of showing raw `**` and `-`.
@@ -202,7 +202,14 @@ export default function ODSTalk() {
       // Shown only while Talk is ready; it never changes the status.
       setToolsAdvisory(data.modelCompatibility?.hermesTalkAdvisory?.code === TALK_TOOLS_ADVISORY_CODE)
       const capabilities = data.capabilities || {}
-      setDurableRequested(Boolean(capabilities.durable_conversation_requested))
+      const retainedButDisabled = !capabilities.durable_conversation_requested && hasRetainedConversation()
+      setDurableRequested(Boolean(capabilities.durable_conversation_requested || retainedButDisabled))
+      if (retainedButDisabled) {
+        setStatus('offline')
+        setStatusText('Durable conversation continuity is disabled. Your retained conversation has not been replaced.')
+        setRetryStatusRefresh(false)
+        return
+      }
       if (capabilities.durable_conversation_requested && !capabilities.durable_conversation) {
         setStatus('offline')
         setStatusText('Durable conversation continuity is unavailable on this Hermes runtime.')

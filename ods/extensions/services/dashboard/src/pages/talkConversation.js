@@ -1,5 +1,18 @@
 const STORAGE_KEY = 'ods-talk-conversation-v1'
 
+function validIdentity(identity) {
+  return /^[a-f0-9]{64}$/.test(identity?.handle) && /^[a-f0-9]{64}$/.test(identity?.tab)
+}
+
+export function hasRetainedConversation() {
+  // A disabled server flag must not silently discard a previously durable
+  // identity. Storage access errors propagate so unknown state fails closed.
+  const raw = sessionStorage.getItem(STORAGE_KEY)
+  let identity
+  try { identity = JSON.parse(raw) } catch { return false }
+  return validIdentity(identity)
+}
+
 function fresh() {
   const token = () => Array.from(crypto.getRandomValues(new Uint8Array(32)), b => b.toString(16).padStart(2, '0')).join('')
   return { handle: token(), tab: token(), established: false }
@@ -11,7 +24,7 @@ export async function claimConversation() {
   if (!navigator.locks?.request) throw new Error('Durable conversations require a browser with Web Locks support.')
   let identity
   try { identity = JSON.parse(sessionStorage.getItem(STORAGE_KEY)) } catch { /* fresh tab */ }
-  if (!/^[a-f0-9]{64}$/.test(identity?.handle) || !/^[a-f0-9]{64}$/.test(identity?.tab)) identity = fresh()
+  if (!validIdentity(identity)) identity = fresh()
   const acquire = value => new Promise((resolve, reject) => {
     navigator.locks.request(`ods-talk:${value.handle}`, { ifAvailable: true }, lock => {
       if (!lock) { resolve(null); return }
