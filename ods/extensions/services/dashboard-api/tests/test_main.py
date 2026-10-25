@@ -2,6 +2,7 @@
 
 import json
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -613,6 +614,22 @@ class TestExternalLinks:
         assert link["ui_path"] == "/auth/ods"
         # Health still matches the proxy's own status row, never Hermes Agent's.
         assert link["healthNeedles"] == ["hermes-proxy", "hermes auth proxy"]
+
+    def test_shipped_token_spy_manifest_has_no_sidebar_link(self, test_client, monkeypatch):
+        """Its page asks for Token Spy's own API key; the Usage page reads it server-side."""
+        import config
+        shipped, _, errors = config.load_extension_manifests(
+            Path(__file__).resolve().parents[2], "nvidia",
+            only_service_ids=frozenset({"token-spy"}),
+        )
+        assert errors == []
+        assert shipped["token-spy"]["external_link"] is False
+        monkeypatch.setattr("main.SERVICES", shipped)
+
+        resp = test_client.get("/api/external-links", headers=test_client.auth_headers)
+
+        assert resp.status_code == 200
+        assert resp.json() == []
 
 
 # --- /api/storage ---
