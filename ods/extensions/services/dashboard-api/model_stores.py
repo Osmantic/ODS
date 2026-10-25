@@ -17,6 +17,96 @@ from pathlib import Path, PureWindowsPath
 MAX_REGISTRY_BYTES = 65536
 
 
+def native_cache_type(row: dict) -> str:
+    """Schema-1 measured fits describe q4_0, never an interchangeable cache."""
+    cache = row.get("cacheType", "q4_0")
+    if not isinstance(cache, str) or cache not in ("q4_0", "f16"):
+        raise ValueError("Invalid registered cache type; choose q4_0 or f16")
+    if cache == "f16":
+        if row.get("mtp") is not False:
+            raise ValueError("f16 cache with MTP is not qualified")
+        if "memoryQualification" in row:
+            raise ValueError("f16 cannot reuse a legacy memory qualification; retain that record with its q4_0 profile")
+    return cache
+
+
+def native_profile_env(profile: dict) -> dict:
+    """The same cache contract for host activation and direct native launches."""
+    cache = profile.get("cacheType", "q4_0")
+    return {"LLAMA_PARALLEL": "1", "LLAMA_ARG_FLASH_ATTN": "on",
+            "LLAMA_ARG_CACHE_TYPE_K": cache, "LLAMA_ARG_CACHE_TYPE_V": cache}
+
+
+def _adjacent_module(name: str):
+    spec = importlib.util.spec_from_file_location('_ods_native_' + name, Path(__file__).with_name(name + '.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def physical_ram_bytes() -> tuple[int, int]:
+    """Fresh total/available RAM; no environment-supplied capacity or reclaim credit."""
+    if os.name == "nt":
+        import ctypes
+
+        class MemoryStatus(ctypes.Structure):
+            _fields_ = [("length", ctypes.c_ulong), ("load", ctypes.c_ulong)] + [
+                (name, ctypes.c_ulonglong) for name in
+                ("total", "available", "page_total", "page_available", "virtual_total", "virtual_available", "extended")]
+
+        status = MemoryStatus()
+        status.length = ctypes.sizeof(status)
+        if not getattr(ctypes, 'windll').kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            raise ValueError("Fresh physical RAM observation failed")
+        return int(status.total), int(status.available)
+    # Other platforms remain refused until their available-memory adapter is qualified.
+    fields = {}
+    try:
+        for line in Path('/proc/meminfo').read_text().splitlines():
+            key, value = line.split(':', 1)
+            fields[key] = int(value.strip().split()[0]) * 1024
+        return fields['MemTotal'], fields['MemAvailable']
+    except (OSError, ValueError, KeyError, IndexError) as exc:
+        raise ValueError("Fresh physical RAM observation is unavailable") from exc
+
+
+def admit_native_profile(profile: dict | None, model_path: Path, env: dict, *, projector: Path | None = None) -> dict | None:
+    """New f16 CPU contract: ordinary architecture estimate, never measured fit.
+
+    Called before configuration writes or process stop. Legacy q4 admission
+    stays unchanged. Available RAM includes the running model: no speculative
+    credit for memory that stopping a healthy process might release.
+    """
+    if not profile or profile.get('cacheType', 'q4_0') != 'f16':
+        return None
+    if str(env.get('N_GPU_LAYERS', '')).strip() != '0':
+        raise ValueError('f16 registered cache currently requires CPU-only N_GPU_LAYERS=0')
+    if projector is not None:
+        raise ValueError('f16 registered cache with a vision projector requires separate memory qualification')
+    inspector = _adjacent_module('gguf_inspector')
+    memory = _adjacent_module('model_memory')
+    model = inspector.inspect_gguf(model_path)
+    model.update(_adjacent_module('model_preflight').memory_fields(model))
+    model['size_bytes'] = model_path.stat().st_size
+    context = profile['contextLength']
+    if not model.get('readable') or not memory.architecture_metadata_complete(model):
+        raise ValueError('f16 cache admission requires complete GGUF memory metadata')
+    if not model.get('context_length') or context > model['context_length']:
+        raise ValueError('The selected context exceeds the model native context')
+    estimate = memory.estimate_for_runtime(model, context_length=context,
+                                          runtime_profile={'env': native_profile_env(profile)})
+    total, available = physical_ram_bytes()
+    if total <= 0 or not 0 < available <= total:
+        raise ValueError('Fresh physical RAM observation is invalid')
+    capacity = min(memory.cpu_model_capacity_gib(total / 1024**3), available / 1024**3)
+    if not memory.memory_fits(estimate.total_gib, capacity, 'cpu', architecture_estimate=True):
+        raise ValueError(f'Insufficient memory for f16 CPU cache: estimated {estimate.total_gib:.2f} GiB, '
+                         f'available model budget {capacity:.2f} GiB; no model state was changed')
+    return {'source': 'architecture-estimate', 'cacheType': 'f16',
+            'requiredGiB': estimate.total_gib, 'capacityGiB': capacity,
+            'totalRamBytes': total, 'availableRamBytes': available}
+
+
 def validate_profile_command(profile: dict, model_path: Path) -> None:
     # The host agent imports this module by filename, so resolve its adjacent
     # validator explicitly instead of depending on the host's sys.path.
@@ -25,6 +115,8 @@ def validate_profile_command(profile: dict, model_path: Path) -> None:
     spec.loader.exec_module(module)
     command = [profile['executable'], '--model', str(model_path), '--ctx-size', str(profile['contextLength']), '--jinja']
     command += profile['args']
+    if profile.get('cacheType') == 'f16':
+        command += ['--gpu-layers', '0']
     fit = profile.get('memoryQualification')
     if isinstance(fit, dict):
         projector = safe_artifact(Path(model_path).parent, fit.get('visionProjectorFile'))
@@ -35,12 +127,12 @@ def validate_profile_command(profile: dict, model_path: Path) -> None:
 
 
 def resolve_runtime_selection(install_dir: Path, *, verify_hashes: bool = True, allow_missing_model: bool = False) -> dict:
-    from env_values import parse_env_value
+    parse_env_value = _adjacent_module('env_values').parse_env_value
     install_dir = Path(install_dir)
     env = {}
     for line in (install_dir / ".env").read_text(encoding="utf-8").splitlines():
         key, separator, value = line.partition("=")
-        if separator and key.strip() in {"ODS_ACTIVE_MODEL_STORE", "GGUF_FILE", "CTX_SIZE", "MAX_CONTEXT"}:
+        if separator and key.strip() in {"ODS_ACTIVE_MODEL_STORE", "GGUF_FILE", "CTX_SIZE", "MAX_CONTEXT", "N_GPU_LAYERS"}:
             env[key.strip()] = parse_env_value(value)
     if verify_hashes and allow_missing_model:
         raise ValueError("Artifact verification cannot use missing-model metadata")
@@ -89,8 +181,10 @@ def resolve_runtime_selection(install_dir: Path, *, verify_hashes: bool = True, 
     fit = profile.get("memoryQualification") if profile else None
     projector = safe_artifact(store["path"], fit.get("visionProjectorFile")) if isinstance(fit, dict) \
         else library_projector(install_dir, store["path"], filename)
+    admission = admit_native_profile(profile, checkpoint, env, projector=projector) if verify_hashes else None
     return {"schemaVersion":1,"storeId":store["id"],"modelsDirectory":str(store["path"]),
             "modelPath":str(checkpoint),"available":available,"profile":profile,
+            "memoryAdmission":admission,
             "projectorPath":str(projector) if projector else None}
 
 
@@ -296,7 +390,8 @@ def native_profile(store: dict | None, filename: str, *, require_executable: boo
     load_args = row.get("loadModeArguments", [])
     if load_args not in ([], ["--mmap"], ["--load-mode", "mmap"]):
         raise ValueError("Invalid qualified model loading flags")
-    args = ["--parallel", "1", "--flash-attn", "on", "--cache-type-k", "q4_0", "--cache-type-v", "q4_0", *load_args]
+    cache = native_cache_type(row)
+    args = ["--parallel", "1", "--flash-attn", "on", "--cache-type-k", cache, "--cache-type-v", cache, *load_args]
     if row["mtp"]:
         args += ["--spec-type", "draft-mtp", "--spec-draft-n-max", str(draft), "--spec-draft-type-k", "q4_0", "--spec-draft-type-v", "q4_0"]
     fit = row.get("memoryQualification")
@@ -306,6 +401,6 @@ def native_profile(store: dict | None, filename: str, *, require_executable: boo
         # stay recorded but never qualify an activation; requalify natively.
         fit = None
     return {"backend": row["backend"], "executable": str(executable), "contextLength": context,
-            "mtp": row["mtp"], "args": args, "storeId": store["id"],
+            "mtp": row["mtp"], "args": args, "storeId": store["id"], "cacheType": cache,
             "runtimeSha256":row.get("runtimeSha256"), "modelSha256":row.get("modelSha256"),
             "memoryQualification":fit}

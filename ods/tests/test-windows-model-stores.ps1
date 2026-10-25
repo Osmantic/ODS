@@ -9,7 +9,7 @@ $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'inst
 if ($errors.Count) { throw $errors[0] }
 $definitions = @{}
 foreach ($name in @('Get-ODSNativeModelSelection','Get-ODSConfiguredNativeExecutable','Get-NativeInferenceBackend','Start-NativeInferenceServer',
-    'Get-ODSNativeLlamaStartPlan','Start-ODSNativeLlamaFromPlan')) {
+    'Get-ODSNativeLlamaStartPlan','Start-ODSNativeLlamaFromPlan','Restart-ODSNativeLlamaServer')) {
     $function = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
     if (-not $function) { throw "Missing function $name" }
     $definitions[$name] = $function.Extent.Text
@@ -47,6 +47,29 @@ function Write-FixtureEnv {
     $content = @($script:EnvMap.Keys | ForEach-Object { "$_=$($script:EnvMap[$_])" }) -join "`n"
     [IO.File]::WriteAllText((Join-Path $InstallDir '.env'), $content, [Text.UTF8Encoding]::new($false))
 }
+function Write-FixtureGguf {
+    param([int]$HeadDimension = 128)
+    $stream = [IO.File]::Create((Join-Path $ssd 'model.gguf'))
+    $writer = [IO.BinaryWriter]::new($stream)
+    try {
+        $writer.Write([Text.Encoding]::ASCII.GetBytes('GGUF'))
+        $writer.Write([uint32]3); $writer.Write([uint64]0); $writer.Write([uint64]7)
+        $values = [ordered]@{ 'general.architecture' = 'qwen3'; 'qwen3.context_length' = 32768;
+            'qwen3.block_count' = 28; 'qwen3.attention.head_count' = 16; 'qwen3.attention.head_count_kv' = 8;
+            'qwen3.attention.key_length' = $HeadDimension; 'qwen3.attention.value_length' = $HeadDimension }
+        foreach ($key in $values.Keys) {
+            $bytes = [Text.Encoding]::UTF8.GetBytes($key)
+            $writer.Write([uint64]$bytes.Length); $writer.Write($bytes)
+            if ($values[$key] -is [string]) {
+                $writer.Write([uint32]8)
+                $bytes = [Text.Encoding]::UTF8.GetBytes($values[$key])
+                $writer.Write([uint64]$bytes.Length); $writer.Write($bytes)
+            } else { $writer.Write([uint32]4); $writer.Write([uint32]$values[$key]) }
+        }
+    } finally { $writer.Dispose(); $stream.Dispose() }
+    $script:Registry.stores[0].profiles['model.gguf'].modelSha256 = (Get-FileHash -LiteralPath (Join-Path $ssd 'model.gguf')).Hash.ToLowerInvariant()
+    Write-FixtureRegistry
+}
 try {
     foreach ($directory in @('data/models','scripts','extensions/services/dashboard-api')) {
         New-Item -ItemType Directory -Path (Join-Path $InstallDir $directory) -Force | Out-Null
@@ -55,7 +78,7 @@ try {
     [IO.File]::WriteAllText($runtime, 'fixture runtime; never execute')
     [IO.File]::WriteAllText((Join-Path $ssd 'model.gguf'), 'fixture checkpoint')
     Copy-Item -LiteralPath (Join-Path $root 'scripts/resolve-model-store.py') -Destination (Join-Path $InstallDir 'scripts')
-    foreach ($module in @('model_stores.py','env_values.py','model_mtp.py')) {
+    foreach ($module in @('model_stores.py','env_values.py','model_mtp.py','model_memory.py','gguf_inspector.py','model_preflight.py')) {
         Copy-Item -LiteralPath (Join-Path $root "extensions/services/dashboard-api/$module") -Destination (Join-Path $InstallDir 'extensions/services/dashboard-api')
     }
     # The real resolver now validates native launch arguments with --help.
@@ -145,6 +168,41 @@ def run(command, **kwargs):
     Start-NativeInferenceServer
     Assert-True (-not (ConvertTo-ODSNativeLlamaArgumentString $script:Started[-1].Launch.Arguments).Contains('spec-type')) 'Stale global MTP was applied to a baseline model'
     $script:Registry.stores[0].profiles['model.gguf'].mtp = $true
+    Write-FixtureRegistry
+
+    # Real resolver, fresh RAM observation, shared estimator and full start /
+    # restart functions. Only --help and the final stop/start effects are fake.
+    $script:Registry.stores[0].profiles['model.gguf'].mtp = $false
+    $script:Registry.stores[0].profiles['model.gguf'].cacheType = 'f16'
+    $script:Registry.stores[0].profiles['model.gguf'].contextLength = 4096
+    $script:EnvMap.CTX_SIZE = '4096'; $script:EnvMap.N_GPU_LAYERS = '0'
+    Write-FixtureGguf; Write-FixtureEnv
+    $selection = Get-ODSNativeModelSelection -VerifyArtifacts
+    Assert-True ($selection.memoryAdmission.source -eq 'architecture-estimate' -and
+        $selection.memoryAdmission.availableRamBytes -gt 0) 'Fresh RAM admission was skipped'
+    Start-NativeInferenceServer
+    $joined = ConvertTo-ODSNativeLlamaArgumentString $script:Started[-1].Launch.Arguments
+    Assert-True ($joined.Contains('"--cache-type-k" "f16"') -and $joined.Contains('"--cache-type-v" "f16"') -and
+        $joined.Contains('"--n-gpu-layers" "0"')) 'f16 CPU launch disagrees with admission'
+    $script:Stops = 0
+    function Stop-ODSNativeLlamaLegacyProcess { param($PidFile, $Port, $ExecutablePaths) $script:Stops++ }
+    Restart-ODSNativeLlamaServer
+    Assert-True ($script:Stops -eq 1) 'Successful restart never reached the owned stop boundary'
+    $joined = ConvertTo-ODSNativeLlamaArgumentString $script:Started[-1].Launch.Arguments
+    Assert-True ($joined.Contains('"--cache-type-k" "f16"') -and $joined.Contains('"--cache-type-v" "f16"')) 'Restart lost f16'
+    # A complete dense header whose KV allocation exceeds the CPU budget even
+    # on a large machine, not a mocked refusal or a model execution.
+    Write-FixtureGguf -HeadDimension 8192
+    $startsBefore = $script:Started.Count
+    $envBefore = [IO.File]::ReadAllBytes((Join-Path $InstallDir '.env'))
+    $keyBefore = Get-FileHash -LiteralPath (Read-ODSNativeLlamaLegacyOptions).ApiKeyPath
+    Assert-Throws { Restart-ODSNativeLlamaServer } 'Insufficient memory'
+    Assert-Throws { Start-NativeInferenceServer } 'Insufficient memory'
+    Assert-True ($script:Stops -eq 1 -and $script:Started.Count -eq $startsBefore) 'Memory refusal stopped or started a process'
+    Assert-True ([Convert]::ToBase64String($envBefore) -eq [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $InstallDir '.env')))) 'Memory refusal changed configuration'
+    Assert-True ((Get-FileHash -LiteralPath $keyBefore.Path).Hash -eq $keyBefore.Hash) 'Memory refusal changed the key file'
+    Write-FixtureGguf
+    $script:Registry.stores[0].profiles['model.gguf'].Remove('cacheType')
     Write-FixtureRegistry
 
     # The default store runs the pinned runtime, verified against pin.json

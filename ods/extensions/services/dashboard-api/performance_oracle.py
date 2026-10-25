@@ -1581,12 +1581,17 @@ def _measured_native_activation(model, path, data_root, install_dir, gpu_info, s
     # the configured GPU offload. Fits measured through Lemonade's launch
     # (runtimeMode=lemonade) never qualify.
     launch_gpu_layers = value("N_GPU_LAYERS").strip() or "auto"
-    from model_stores import registered_stores, safe_artifact
+    from model_stores import native_cache_type, registered_stores, safe_artifact
     for store in registered_stores(data_root, container=Path("/.dockerenv").exists()):
         if store["path"].resolve() != path.parent.resolve():
             continue
         profiles = store.get("profiles", {})
         row = profiles.get(path.name) if isinstance(profiles, dict) else None
+        try:
+            if isinstance(row, dict):
+                native_cache_type(row)
+        except ValueError:
+            continue
         fit = row.get("memoryQualification") if isinstance(row, dict) else None
         if not isinstance(fit, dict) or fit.get("source") != "measured-native" or fit.get("schemaVersion") != 1:
             continue

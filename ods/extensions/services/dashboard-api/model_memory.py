@@ -513,6 +513,11 @@ def required_model_memory_gb(
     return estimate.total_gib if include_host_state else estimate.device_gib
 
 
+def cpu_model_capacity_gib(ram_gib: float) -> float:
+    """Shared CPU model budget used by selection and native cache admission."""
+    return min(max(ram_gib * 0.35, 3.0), 8.0)
+
+
 def fit_margin_gib(capacity_gib: float, memory_class: str) -> float:
     """Free memory an architecture estimate must leave on this memory class.
 
