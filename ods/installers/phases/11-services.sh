@@ -96,6 +96,18 @@ _phase11_refresh_litellm() {
     fi
 }
 
+_phase11_refresh_hermes_mounts() {
+    [[ "${ENABLE_HERMES:-false}" == true ]] || return 0
+    local python_cmd flag
+    local -a args=()
+    python_cmd="${ODS_PYTHON_CMD:-$(command -v python3 2>/dev/null || true)}"
+    [[ -n "$python_cmd" ]] || return 1
+    for flag in "${COMPOSE_FLAGS_ARR[@]}"; do args+=("--compose-arg=$flag"); done
+    "$python_cmd" "$INSTALL_DIR/scripts/refresh-hermes-mounts.py" \
+        --install-dir "$INSTALL_DIR" --docker-command "$DOCKER_CMD" \
+        --compose-command "$DOCKER_COMPOSE_CMD" "${args[@]}" >>"$LOG_FILE" 2>&1
+}
+
 _phase11_build_local_images() {
     local -a build_services=("$@")
     local -a failed_build_services=()
@@ -1636,6 +1648,15 @@ MODELS_INI_EOF
         if [[ -n "${_python_cmd:-}" ]] && [[ -f "$INSTALL_DIR/scripts/build-installation-context.py" ]]; then
             "$_python_cmd" "$INSTALL_DIR/scripts/build-installation-context.py" >>"$LOG_FILE" 2>&1 || \
                 warn "Installation-context SOUL.md regen failed post-launch (non-fatal — earlier static SOUL.md is in place)"
+        fi
+        # Source publication replaces file inodes while an unchanged running
+        # Hermes can retain old binds. Check after the final SOUL render, before
+        # copying that mounted persona; preserve the existing live config.
+        if ! _phase11_refresh_hermes_mounts; then
+            ai_bad "Could not verify Hermes mounted files. See $LOG_FILE."
+            exit 1
+        fi
+        if [[ -n "${_python_cmd:-}" ]] && [[ -f "$INSTALL_DIR/scripts/build-installation-context.py" ]]; then
             if $DOCKER_CMD ps --format '{{.Names}}' 2>/dev/null | grep -qx 'ods-hermes'; then
                 $DOCKER_CMD exec ods-hermes cp /opt/hermes/docker/SOUL.md /opt/data/SOUL.md \
                     >>"$LOG_FILE" 2>&1 || \

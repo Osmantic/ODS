@@ -194,6 +194,7 @@ tests/test-phase10-skip-templated-user-units.sh
 tests/test-phase11-compose-recovery-status.sh
 tests/test-phase11-download-linger.sh
 tests/test-phase11-exited-service-recovery.sh
+tests/test-phase11-hermes-mount-refresh.py
 tests/test-pixel-output-budget.sh
 tests/test-port-ollama-detection.sh
 tests/test-postflight-docker-context.sh
