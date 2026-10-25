@@ -299,6 +299,15 @@ jobs:
         shell: pwsh
         run: ./tests/test-windows-model-activation.ps1
 
+      - name: Windows Model Readiness Literal Path Contract (PowerShell 7)
+        shell: pwsh
+        run: ./tests/test-windows-model-readiness-literalpath.ps1
+
+      - name: Windows Model Readiness Literal Path Contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-model-readiness-literalpath.ps1
+
       - name: Windows Owner Public URL Carry Contract
         shell: pwsh
         run: ./tests/test-windows-public-url-carry.ps1

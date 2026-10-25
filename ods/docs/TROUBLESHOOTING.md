@@ -106,41 +106,53 @@ Fresh installs now fall back to CPU mode automatically when AMD is auto-detected
 
 ### llama-server Container Won't Start
 
-**Check logs:**
+Start in **Dashboard → Models** and check which runtime is selected. These
+container commands apply to an ODS-managed Docker llama-server on Linux/WSL:
+
 ```bash
-docker compose logs llama-server
+ods status
+ods logs llama-server
 ```
 
-**Common causes:**
+Stop following logs with **Ctrl+C**. The `ods` CLI selects this installation's
+Compose files; a bare `docker compose` command may select a different stack.
 
-1. **Not enough VRAM:**
-   - Reduce context: Edit `.env`, set `CTX_SIZE=4096`
-   - Use smaller model: Set `LLM_MODEL=qwen2.5-7b-instruct`
+If inference runs natively on macOS or Windows, use the Models controls and the
+[platform-specific model-management guidance](MODEL-MANAGEMENT.md#recommended-dashboard-models-page);
+there may be no llama-server container. If **Models** reports an external or
+remote API, inspect that provider and **Settings → Model connections** instead.
+Restarting a local container does not repair the selected remote server.
 
-2. **Model download failed:**
-   - Check disk space: `df -h`
-   - Restart: `docker compose restart llama-server`
+Use the first reported error to choose the next step:
 
-3. **GPU not detected:**
-   - Check: `nvidia-smi`
-   - Restart Docker: `sudo systemctl restart docker`
+1. **Missing or incomplete model:** check free space with `df -h` and inspect
+   download progress/error in **Models**. Resolve the reported disk, network or
+   Hub-access problem, then retry **Download**. Wait for verification before
+   choosing **Run**. Restarting inference does not complete a failed download.
+2. **Insufficient memory:** follow [CUDA Out of Memory](#cuda-out-of-memory)
+   below to select a suitable model/context through the managed controls.
+3. **GPU unavailable:** run `ods doctor` and use the reported driver/device
+   error. `nvidia-smi` is a driver check for NVIDIA hosts, not for AMD, Intel or
+   Apple GPUs. See [Hardware Sizing](HARDWARE-GUIDE.md) for supported hardware.
+
+If Portal reports an interrupted model switch, use **Recover model switch** or,
+from the Linux/WSL Bash CLI, `ods model recover`. Recovery reconciles the existing switch;
+it does not download or choose another model. If it refuses, keep the saved
+state and follow its reported repair guidance. See
+[Interrupted switches](PORTAL-MODEL-TRANSITIONS.md#interrupted-switches) before
+attempting another activation; do not delete transaction journals to unlock it.
 
 ### Open WebUI Shows "No Models Available"
 
-**Cause:** llama-server is still loading the model.
+First inspect **Dashboard → Models**. A model may still be downloading/loading,
+the selected runtime may have failed or stopped, or inference may be routed to
+an external API. Follow the startup checks above for the runtime actually in use.
 
-**Check:**
-```bash
-# Watch llama-server logs
-docker compose logs -f llama-server
-
-# Wait for "Application startup complete"
-```
-
-**Model loading time:**
-- 7B model: ~30 seconds
-- 32B model: ~2 minutes
-- 72B model: ~5 minutes
+Wait while the download or runtime reports progress; loading time depends on the
+model and hardware. Once Models reports the selected model running, send a short
+message through Portal or an enabled chat app. If inference works there but
+Open WebUI still has an empty list, inspect `ods logs open-webui` and its model
+connection settings. See the [Open WebUI service guide](../extensions/services/open-webui/README.md).
 
 ### Port Already in Use
 
@@ -168,26 +180,32 @@ docker compose logs -f llama-server
 
 ### CUDA Out of Memory
 
-**Error:** `torch.cuda.OutOfMemoryError: CUDA out of memory`
+Identify the failing service in its logs first. ODS's local LLM runs on
+llama.cpp; a `torch.cuda.OutOfMemoryError` from an image or speech extension
+needs that extension's own memory settings. On an NVIDIA host, `nvidia-smi`
+shows which processes use VRAM. On other backends, use their platform diagnostics.
 
-**Fixes:**
+For an ODS-managed local language model:
 
-1. **Reduce context window:**
-   ```bash
-   # In .env
-   CTX_SIZE=4096  # or even 2048
-   ```
+1. In **Models**, use **Configure context** on the running model and review the
+   offered context sizes, memory estimates and compatibility warnings. Choose a
+   smaller context only when it still meets the model's and enabled apps'
+   requirements. A fixed 2K/4K context is not suitable for every Portal or Talk
+   configuration.
+2. If a suitable context does not fit, choose a smaller compatible model.
+   **Download**, wait for verification, then **Run** it with the selected context.
+   The managed activation updates the artifact, runtime and dependent app routes
+   together. See [Model Management](MODEL-MANAGEMENT.md#recommended-dashboard-models-page).
+3. For headless Linux/WSL maintenance, `ods model list` shows tier choices and marks
+   downloaded artifacts. `ods model swap <tier>` activates an already-downloaded
+   tier through the same host-agent transaction; it does not download a model or
+   select an arbitrary GGUF file.
 
-2. **Reduce VRAM utilization:**
-   ```bash
-   # In .env
-   GPU_UTIL=0.8  # default is 0.9
-   ```
-
-3. **Use smaller model:**
-   ```bash
-   LLM_MODEL=qwen2.5-7b-instruct
-   ```
+After activation, check the running model in **Models** and send a short message
+through the affected chat app. Keep any reported activation or recovery error
+visible; use the interrupted-switch guidance above if a switch remains pending.
+For remote/external inference, change memory/context settings at the provider
+that owns the model rather than editing this installation's local model fields.
 
 ### Responses Very Slow
 

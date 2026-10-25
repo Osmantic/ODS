@@ -5,7 +5,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc python3-dev
     rm -rf /var/lib/apt/lists/*
 
 # Install dependencies
+# Open Interpreter 0.4.3 imports pkg_resources at startup; Setuptools 82 removed it.
 RUN pip install --no-cache-dir \
+    setuptools==81.0.0 \
     open-interpreter==0.4.3 \
     fastapi==0.111.0 \
     uvicorn==0.42.0 \
@@ -25,6 +27,9 @@ RUN mkdir -p /app/data && chown -R appuser:appuser /app
 
 # Switch to non-root user
 USER appuser
+
+# Exercise the actual chat runner import, which the HTTP health route does not.
+RUN python -c "from interpreter import interpreter; assert interpreter is not None"
 
 # Expose port (matches server.py and compose.yaml)
 EXPOSE 8080
