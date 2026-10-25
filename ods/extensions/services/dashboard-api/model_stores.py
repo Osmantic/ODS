@@ -165,6 +165,9 @@ def resolve_runtime_selection(install_dir: Path, *, verify_hashes: bool = True, 
                 raise ValueError("The active model/runtime changed since qualification")
     if profile:
         context = env.get("CTX_SIZE") or env.get("MAX_CONTEXT")
+        if (verify_hashes and profile.get("cacheType") == "f16" and context
+                and (not re.fullmatch(r"[0-9]+", context) or not 4096 <= int(context) <= 262144)):
+            raise ValueError("f16 active context must be an integer from 4096 to 262144; no model state was changed")
         if context and context.isdigit() and 4096 <= int(context) <= 262144:
             fit = profile.get("memoryQualification")
             if isinstance(fit, dict) and int(context) != fit.get("contextLength"):

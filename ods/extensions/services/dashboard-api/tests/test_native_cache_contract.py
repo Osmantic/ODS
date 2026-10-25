@@ -55,15 +55,15 @@ def test_f16_mtp_refuses(tmp_path):
         stores.native_profile(store, 'new.gguf')
 
 
-def gguf_bytes():
+def gguf_bytes(*, native_context=32768, head_dimension=128):
     def string(value):
         encoded = value.encode()
         return struct.pack('<Q', len(encoded)) + encoded
 
-    values = {'general.architecture': 'qwen3', 'qwen3.context_length': 32768,
+    values = {'general.architecture': 'qwen3', 'qwen3.context_length': native_context,
               'qwen3.block_count': 28, 'qwen3.attention.head_count': 16,
-              'qwen3.attention.head_count_kv': 8, 'qwen3.attention.key_length': 128,
-              'qwen3.attention.value_length': 128}
+              'qwen3.attention.head_count_kv': 8, 'qwen3.attention.key_length': head_dimension,
+              'qwen3.attention.value_length': head_dimension}
     body = b'GGUF' + struct.pack('<IQQ', 3, 0, len(values))
     for key, value in values.items():
         body += string(key)
@@ -99,6 +99,63 @@ def test_resolver_admits_exact_f16_estimate_and_refuses_changed_artifacts(tmp_pa
     checkpoint.write_bytes(checkpoint.read_bytes() + b'drift')
     with pytest.raises(ValueError, match='changed since qualification'):
         stores.resolve_runtime_selection(tmp_path)
+
+
+@pytest.mark.parametrize('context', ['0', '4095', '262145', '1048576', 'invalid', '-4096', '+8192', '8192.0', '8192e0'])
+def test_f16_active_context_refuses_before_probe_or_admission(tmp_path, monkeypatch, context):
+    complete_fixture(tmp_path, monkeypatch)
+    env = tmp_path / '.env'
+    env.write_text(env.read_text().replace('CTX_SIZE=4096', 'CTX_SIZE=' + context))
+    monkeypatch.setattr(stores, 'validate_profile_command', lambda *_: pytest.fail('probed an invalid active context'))
+    monkeypatch.setattr(stores, 'physical_ram_bytes', lambda: pytest.fail('admitted an invalid active context'))
+    before = {str(p): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    with pytest.raises(ValueError, match='f16 active context'):
+        stores.resolve_runtime_selection(tmp_path)
+    # Read-only status/stop still needs executable identity for the existing process.
+    status = stores.resolve_runtime_selection(tmp_path, verify_hashes=False)
+    assert status['profile']['executable'] == str(tmp_path / 'llama-server')
+    assert status['memoryAdmission'] is None
+    assert {str(p): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()} == before
+
+
+@pytest.mark.parametrize(('active', 'fallback', 'expected'), [
+    (None, None, 4096), ('', '8192', 8192), ('4096', None, 4096),
+    ('8192', None, 8192), ('262144', None, 262144),
+])
+def test_f16_admits_active_context_instead_of_registered_default(tmp_path, monkeypatch, active, fallback, expected):
+    checkpoint, store = complete_fixture(tmp_path, monkeypatch)
+    # A small dense header keeps the maximum supported context affordable in
+    # this metadata-only test while still using the real parser and estimator.
+    checkpoint.write_bytes(gguf_bytes(native_context=262144, head_dimension=4))
+    store['profiles']['new.gguf']['modelSha256'] = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+    (tmp_path / 'data/model-stores.json').write_text(json.dumps({'schemaVersion': 1, 'stores': [store]}))
+    env = tmp_path / '.env'
+    text = env.read_text().replace('CTX_SIZE=4096\n', '')
+    if active is not None:
+        text += 'CTX_SIZE=' + active + '\n'
+    if fallback is not None:
+        text += 'MAX_CONTEXT=' + fallback + '\n'
+    env.write_text(text)
+    probes = []
+    def probe(profile, _checkpoint):
+        probes.append(profile['contextLength'])
+    monkeypatch.setattr(stores, 'validate_profile_command', probe)
+    selected = stores.resolve_runtime_selection(tmp_path)
+    assert selected['profile']['contextLength'] == expected
+    assert probes == [expected]
+    assert selected['memoryAdmission']['source'] == 'architecture-estimate'
+
+
+@pytest.mark.parametrize('context', ['invalid', '1048576'])
+def test_q4_context_fallback_is_unchanged(tmp_path, monkeypatch, context):
+    _, store = complete_fixture(tmp_path, monkeypatch)
+    store['profiles']['new.gguf']['cacheType'] = 'q4_0'
+    (tmp_path / 'data/model-stores.json').write_text(json.dumps({'schemaVersion': 1, 'stores': [store]}))
+    env = tmp_path / '.env'
+    env.write_text(env.read_text().replace('CTX_SIZE=4096', 'CTX_SIZE=' + context))
+    selected = stores.resolve_runtime_selection(tmp_path)
+    assert selected['profile']['contextLength'] == 4096
+    assert selected['memoryAdmission'] is None
 
 
 @pytest.mark.parametrize('failure', ['low-ram', 'unknown-ram', 'context', 'gpu', 'projector'])

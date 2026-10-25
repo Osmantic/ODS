@@ -48,13 +48,13 @@ function Write-FixtureEnv {
     [IO.File]::WriteAllText((Join-Path $InstallDir '.env'), $content, [Text.UTF8Encoding]::new($false))
 }
 function Write-FixtureGguf {
-    param([int]$HeadDimension = 128)
+    param([int]$HeadDimension = 128, [int]$NativeContext = 32768)
     $stream = [IO.File]::Create((Join-Path $ssd 'model.gguf'))
     $writer = [IO.BinaryWriter]::new($stream)
     try {
         $writer.Write([Text.Encoding]::ASCII.GetBytes('GGUF'))
         $writer.Write([uint32]3); $writer.Write([uint64]0); $writer.Write([uint64]7)
-        $values = [ordered]@{ 'general.architecture' = 'qwen3'; 'qwen3.context_length' = 32768;
+        $values = [ordered]@{ 'general.architecture' = 'qwen3'; 'qwen3.context_length' = $NativeContext;
             'qwen3.block_count' = 28; 'qwen3.attention.head_count' = 16; 'qwen3.attention.head_count_kv' = 8;
             'qwen3.attention.key_length' = $HeadDimension; 'qwen3.attention.value_length' = $HeadDimension }
         foreach ($key in $values.Keys) {
@@ -190,6 +190,32 @@ def run(command, **kwargs):
     Assert-True ($script:Stops -eq 1) 'Successful restart never reached the owned stop boundary'
     $joined = ConvertTo-ODSNativeLlamaArgumentString $script:Started[-1].Launch.Arguments
     Assert-True ($joined.Contains('"--cache-type-k" "f16"') -and $joined.Contains('"--cache-type-v" "f16"')) 'Restart lost f16'
+    # The active context, not the registered default, must bind admission and
+    # the actual launch builder. No model is executed for these boundary checks.
+    Write-FixtureGguf -HeadDimension 4 -NativeContext 262144
+    foreach ($context in @('8192', '262144')) {
+        $script:EnvMap.CTX_SIZE = $context
+        Write-FixtureEnv
+        $selection = Get-ODSNativeModelSelection -VerifyArtifacts
+        $plan = Get-ODSNativeLlamaStartPlan
+        Assert-True ($selection.profile.contextLength -eq [int]$context -and $plan.Launch.ContextSize -eq [long]$context) 'Admitted context differs from native launch context'
+        Assert-True (($plan.Launch.Arguments -join ' ').Contains("--ctx-size $context")) 'Native argv lost the admitted context'
+    }
+    $startsBefore = $script:Started.Count
+    $stopsBefore = $script:Stops
+    $keyBefore = Get-FileHash -LiteralPath (Read-ODSNativeLlamaLegacyOptions).ApiKeyPath
+    foreach ($context in @('4095', '262145', '1048576', 'invalid', '+8192', '8192.0')) {
+        $script:EnvMap.CTX_SIZE = $context
+        Write-FixtureEnv
+        $envBefore = [IO.File]::ReadAllBytes((Join-Path $InstallDir '.env'))
+        Assert-Throws { Restart-ODSNativeLlamaServer } 'f16 active context'
+        Assert-Throws { Start-NativeInferenceServer } 'f16 active context'
+        Assert-True ($script:Stops -eq $stopsBefore -and $script:Started.Count -eq $startsBefore) 'Invalid context stopped or started a process'
+        Assert-True ([Convert]::ToBase64String($envBefore) -eq [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $InstallDir '.env')))) 'Invalid context changed configuration'
+        Assert-True ((Get-FileHash -LiteralPath $keyBefore.Path).Hash -eq $keyBefore.Hash) 'Invalid context changed the key file'
+    }
+    $script:EnvMap.CTX_SIZE = '4096'
+    Write-FixtureEnv
     # A complete dense header whose KV allocation exceeds the CPU budget even
     # on a large machine, not a mocked refusal or a model execution.
     Write-FixtureGguf -HeadDimension 8192

@@ -55,7 +55,10 @@ RAM and the shared selector budget `min(max(total RAM * 0.35, 3 GiB), 8 GiB)`.
 It gives no credit for memory that stopping the current model might release.
 Unknown observations, incomplete layouts, an excessive context, and an
 insufficient budget refuse before changing model configuration or stopping
-the current native process. Metadata and the original artifact hashes are
+the current native process. An explicit active context must be an integer
+from 4096 to 262144; invalid values cannot fall back to a smaller registered
+context for admission while the launcher uses the original value.
+Metadata and the original artifact hashes are
 still verified. An estimate is not a reservation: other processes may consume
 RAM after admission, and the existing launch/rollback handling remains needed.
 
