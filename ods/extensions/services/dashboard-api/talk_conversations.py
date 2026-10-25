@@ -12,8 +12,9 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import sys
 
-_STORES = {}
+_STORES: dict[str, Store] = {}
 _TOKEN = re.compile(r'^[A-Za-z0-9_-]{32,128}$')
 
 
@@ -44,7 +45,7 @@ class Store:
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.guard = self.path.with_suffix('.lock').open('a+b')
         try:
-            if os.name == 'nt':
+            if sys.platform == 'win32':
                 import msvcrt
                 self.guard.seek(0)
                 if self.guard.read(1) == b'':

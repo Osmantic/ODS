@@ -77,7 +77,8 @@ def test_missing_manual_contract_never_creates_a_replacement(monkeypatch, durabl
 
 
 def test_enabled_image_upload_refuses_history_bypass(test_client, monkeypatch, durable):
-    import hermes_bridge, session_signer
+    import hermes_bridge
+    import session_signer
     session_signer._set_secret_for_tests('synthetic-image-test')
     cookie=session_signer.issue(ttl_seconds=3600)
     durable.resolve(hermes_bridge.talk_session_key(cookie),'t'*64,'h'*64,create=True)
