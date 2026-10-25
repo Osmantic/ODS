@@ -66,9 +66,11 @@ class Upstream:
             assert await reader.read() == b""
             closed.set()
         finally:
-            writer.close()
-            await writer.wait_closed()
-            self.writers.discard(writer)
+            try:
+                writer.close()
+                await asyncio.wait_for(writer.wait_closed(), 1)
+            finally:
+                self.writers.discard(writer)
 
     async def stop(self):
         tasks = list(self.tasks)
@@ -77,11 +79,14 @@ class Upstream:
         for task in tasks:
             if not task.done():
                 task.cancel()
-        for task in tasks:
-            with suppress(asyncio.CancelledError):
-                await task
-            self.tasks.remove(task)
+        # Drain every owned handler, including already-finished handlers whose
+        # assertions must propagate. One failing handler must not skip the rest.
+        outcomes = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 2)
+        self.tasks.difference_update(tasks)
         assert not self.tasks and not self.writers
+        for outcome in outcomes:
+            if isinstance(outcome, BaseException) and not isinstance(outcome, asyncio.CancelledError):
+                raise outcome
 
 
 @pytest.mark.parametrize("phase", ["silent", "active", "tool-decision"])
@@ -194,7 +199,7 @@ def test_disconnect_closes_real_upstream_and_reuses_single_connection(tmp_path, 
                 sock.close()
                 listener.close()
                 await listener.wait_closed()
-                await upstream.stop()
+                await asyncio.wait_for(upstream.stop(), 3)
                 assert serving.done()
 
     asyncio.run(exercise())
