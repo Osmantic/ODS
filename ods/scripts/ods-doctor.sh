@@ -1102,6 +1102,11 @@ def _looks_like_local_llama_route(value):
     return (
         "llama-server" in lowered
         or "ods-llama-server" in lowered
+        or "//model-router:" in lowered
+        or "//ods-model-router:" in lowered
+        or "localhost:9099" in lowered
+        or "127.0.0.1:9099" in lowered
+        or "host.docker.internal:9099" in lowered
         or "localhost:8080" in lowered
         or "127.0.0.1:8080" in lowered
         or "host.docker.internal:8080" in lowered

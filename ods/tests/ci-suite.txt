@@ -157,6 +157,7 @@ tests/test-doctor-optional-webui.py
 tests/test-ods-doctor-host-native-llm.sh
 tests/test-ods-doctor-external-llm.sh
 tests/test-ods-doctor-install-diagnoses.sh
+tests/test-ods-doctor-model-router-inference.sh
 tests/test-help-links.sh
 tests/test-macos-api-mode-flags.sh
 tests/test-macos-compose-override-cache.sh
