@@ -179,11 +179,11 @@ def test_consumer_failure_restores_exact_files(hermes_route, monkeypatch, direct
     before = {p: (p.read_bytes(), stat.S_IMODE(p.stat().st_mode)) if p.exists() else None for p in paths}
     if failure == "restart":
         restart = agent._restart_existing_container
-        def fail(name, state, **kw):
+        def fail_restart(name, state, **kw):
             if name == "ods-hermes":
                 raise RuntimeError("injected restart failure")
             return restart(name, state, **kw)
-        monkeypatch.setattr(agent, "_restart_existing_container", fail)
+        monkeypatch.setattr(agent, "_restart_existing_container", fail_restart)
     elif failure == "readback":
         reads = [0]
         def read():
@@ -193,12 +193,12 @@ def test_consumer_failure_restores_exact_files(hermes_route, monkeypatch, direct
     else:
         reconcile = agent._reconcile_managed_pixel_contract
         calls = [0]
-        def fail(contract, **kw):
+        def fail_pixel(contract, **kw):
             calls[0] += 1
             if calls[0] == 1:
                 raise RuntimeError("injected Pixel failure")
             return reconcile(contract, **kw)
-        monkeypatch.setattr(agent, "_reconcile_managed_pixel_contract", fail)
+        monkeypatch.setattr(agent, "_reconcile_managed_pixel_contract", fail_pixel)
     with pytest.raises(RuntimeError, match="failed"):
         if direction == "activate":
             agent._activate_remote_provider_route(f["route"])
