@@ -5486,6 +5486,7 @@ ods_pixel_install_default_agent() {
         && -f "$plugin_root/host/openclaw-tool-result-projection.json" \
         && -f "$plugin_root/host/openclaw-diagnostic-stream-writes.json" \
         && -f "$plugin_root/host/openclaw-command-attempt-warning.json" \
+        && -f "$plugin_root/host/openclaw-utf8-output.json" \
         && -f "$plugin_root/host/openclaw-image-envelope.json" \
         && -f "$plugin_root/host/openclaw-context-usage.json" \
         && -f "$plugin_root/host/openclaw-yield-usage.json" \
@@ -5935,7 +5936,7 @@ ods_pixel_install_default_agent() {
         --restore-foreign "$home/.openclaw/ods-runtime-patches" \
         --known tool-recovery completion-recovery image-envelope compaction-export \
             compaction-idle compaction-resume read-range tool-result-projection \
-            diagnostic-stream-writes command-attempt-warning compaction-budget context-usage yield-usage compaction-empty compaction-no-work subagent-admission subagent-session hook-provenance run-id-redaction sandbox-mkdir-bridge sandbox-mkdir-secure \
+            diagnostic-stream-writes command-attempt-warning utf8-output compaction-budget context-usage yield-usage compaction-empty compaction-no-work subagent-admission subagent-session hook-provenance run-id-redaction sandbox-mkdir-bridge sandbox-mkdir-secure \
         >>"$pixel_log" 2>&1; then
         ai_bad "Pixel could not restore OpenClaw runtime patches left by another ODS build. See $pixel_log."
         return 1
@@ -6057,6 +6058,16 @@ ods_pixel_install_default_agent() {
         --state-dir "$home/.openclaw/ods-runtime-patches/command-attempt-warning" \
         >>"$pixel_log" 2>&1; then
         ai_bad "Pixel's command attempt warning repair could not verify its package bytes. See $pixel_log."
+        return 1
+    fi
+    # Preserve UTF-8 characters split across subprocess stdout/stderr events.
+    # The runtime keeps each stream's pending bytes until its final flush.
+    if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+        "$plugin_root/host/openclaw_tool_recovery.py" \
+        --openclaw-bin "$openclaw_bin" --utf8-output \
+        --state-dir "$home/.openclaw/ods-runtime-patches/utf8-output" \
+        >>"$pixel_log" 2>&1; then
+        ai_bad "Pixel's UTF-8 output repair could not verify its package bytes. See $pixel_log."
         return 1
     fi
     # Honor the configured compaction budget on slow local providers.
