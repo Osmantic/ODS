@@ -52,6 +52,7 @@ class _Handler:
 @pytest.fixture(autouse=True)
 def _isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+    (tmp_path / "ods").mkdir()
     monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path / "ods")
     monkeypatch.setattr(_mod, "DATA_DIR", tmp_path / "ods" / "data")
     home = tmp_path / "home"

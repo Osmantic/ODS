@@ -93,3 +93,44 @@ def test_timeout_is_unconfirmed_not_retried(client,monkeypatch):
     result=client.post('/api/models/recovery',headers={'Authorization':'Bearer test-key-12345'},json={})
     assert result.status_code==503 and 'private detail' not in result.text
     assert call.call_count==1
+
+
+@pytest.mark.parametrize('target', [
+    {'gguf': 'Qwen [Q4] part 1.gguf', 'model': 'namespace/model:latest', 'context': 65536},
+    {'gguf': 'full.gguf', 'model': 'full-model', 'context': 65536},
+])
+def test_explicit_bootstrap_selection_is_authenticated_and_forwarded_once(client, monkeypatch, target):
+    body = {'bootstrapTransactionId': 'a' * 64, 'target': target}
+    call = Mock(return_value=DONE)
+    monkeypatch.setattr(models, 'request_agent_json', call)
+    assert client.post('/api/models/recovery', json=body).status_code == 401
+    call.assert_not_called()
+    response = client.post('/api/models/recovery', headers={'Authorization':'Bearer test-key-12345'}, json=body)
+    assert response.status_code == 200
+    call.assert_called_once_with('POST', '/v1/model/recover', payload=body, timeout=400)
+
+
+@pytest.mark.parametrize('target', [
+    {'gguf': '../other.gguf', 'model': 'full', 'context': 65536},
+    {'gguf': 'full.gguf', 'model': 'full', 'context': True},
+    {'gguf': 'bad\n.gguf', 'model': 'full', 'context': 65536},
+    {'gguf': 'full.gguf', 'model': 'full', 'context': 65536, 'snapshot': '/etc'},
+])
+def test_bootstrap_selection_rejects_paths_controls_and_unknown_fields(client, monkeypatch, target):
+    call = Mock(); monkeypatch.setattr(models, 'request_agent_json', call)
+    body = {'bootstrapTransactionId': 'a' * 64, 'target': target}
+    response = client.post('/api/models/recovery', headers={'Authorization':'Bearer test-key-12345'}, json=body)
+    assert response.status_code == 400
+    call.assert_not_called()
+
+
+@pytest.mark.parametrize('phase', ['acquiring', 'draining', 'held', 'finishing', 'releasing', 'native-released', 'error'])
+def test_legacy_status_projects_pending_and_explicit_current_target(client, monkeypatch, phase):
+    target = {'gguf': 'Qwen [Q4].gguf', 'model': 'namespace/full:latest', 'context': 65536}
+    body = dict(pending=True, phase=phase, transactionId='a'*64, kind='bootstrap',
+                reason='bootstrap-owner-recovery-required', currentTarget=target,
+                sourceUpgrade=False, secret='not-public')
+    monkeypatch.setattr(models, 'request_agent_json', Mock(return_value=body))
+    response = client.get('/api/models/recovery', headers={'Authorization':'Bearer test-key-12345'})
+    assert response.status_code == 200
+    assert response.json() == {k:v for k,v in body.items() if k != 'secret'}

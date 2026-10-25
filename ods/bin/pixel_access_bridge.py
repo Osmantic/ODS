@@ -1069,6 +1069,11 @@ class SystemdAccessBridge:
                   "start_config_sha256": journal["start_config_sha256"]}
         if "error" in journal:
             result["error"] = journal["error"]
+        intent = self.bootstrap_intent(journal['transaction_id'])
+        if intent is not None:
+            result['bootstrap'] = intent
+        if self.bootstrap_source_custody(journal['transaction_id']):
+            result['source_upgrade'] = True
         intent_path = self.state / 'release-intent.json'
         completed_path = self.state / 'release-completed.json'
         if intent_path.exists() and completed_path.exists():
@@ -1088,6 +1093,89 @@ class SystemdAccessBridge:
                 result['release_completion'] = dict(outcome=completed['outcome'],
                     config_sha256=completed['configSha256'])
         return result
+
+    def bootstrap_source_custody(self, transaction_id):
+        if not os.path.lexists(self.state / 'source-upgrade'): return False
+        self.discover(allow_installing=True)
+        from pixel_source_upgrade import SourceUpgrade, UpgradeError
+        try:
+            value = SourceUpgrade(self.state / 'source-upgrade', self.install, self.owner.pw_uid).journal()
+            return value is None or value['phase'] != 'complete' or value['hold'] == transaction_id
+        except (UpgradeError, OSError, ValueError, TypeError, KeyError):
+            raise AccessError('source-recovery-required') from None
+
+    def bootstrap_intent(self, transaction_id):
+        path = self.state / 'bootstrap-intent.json'
+        if not os.path.lexists(path): return None
+        value = private_json(path, 0, 8192)
+        from pixel_bootstrap_recovery import target
+        try:
+            if (type(value) is not dict or set(value) != {'provenance', 'transactionId', 'snapshotSha256', 'target'}
+                    or value['provenance'] != 'bootstrap-upgrade'
+                    or any(type(value[k]) is not str or not HEX.fullmatch(value[k]) for k in ('transactionId', 'snapshotSha256'))):
+                raise ValueError()
+            target(value['target'])
+        except (ValueError, TypeError):
+            raise AccessError('bootstrap-intent-invalid') from None
+        return value if value['transactionId'] == transaction_id else None
+
+    def model_recovery_prepare(self, request):
+        """Explicit owner repair of this legacy hold, retaining both gates.
+
+        This is not an installer release migration. Existing protected release
+        intent and source-upgrade custody must use their own recovery ceremony.
+        Old bootstrap holds have no trusted snapshot: only the explicitly
+        selected, freshly proved current inference can be reconciled.
+        """
+        try:
+            protocol.control_request(dict(operation='model-recovery-prepare', request=request))
+        except protocol.ProtocolError:
+            raise AccessError('invalid-request') from None
+        with self.bounded(300), self.locked():
+            pending = self.model_journal(request['transaction_id'])
+            if platform.system() != 'Linux' or self.bootstrap_source_custody(request['transaction_id']):
+                raise AccessError('bootstrap-custody-conflict')
+            intent_path = self.state / 'release-intent.json'
+            if os.path.lexists(intent_path):
+                intent = private_json(intent_path, 0, 8192)
+                if type(intent) is not dict or intent.get('transactionId') == request['transaction_id']:
+                    raise AccessError('release-prepared-recovery-required')
+            self.discover()
+            intent = self.bootstrap_intent(request['transaction_id'])
+            if intent is not None:
+                from pixel_bootstrap_recovery import validate
+                try:
+                    validate(self.install, request['transaction_id'], self.owner.pw_uid,
+                             expected=intent['snapshotSha256'])
+                except (OSError, ValueError, TypeError):
+                    raise AccessError('bootstrap-snapshot-invalid') from None
+            # Compare the exact native bytes the owner inspected. An arbitrary
+            # backup or stale request must not replace the current gateway.
+            from pixel_model_coordinator import _config
+            if _config(self)[1] != request['config_sha256']:
+                raise AccessError('model-config-changed')
+            record = self.state / 'bootstrap-recovery.json'
+            if os.path.lexists(record):
+                previous = private_json(record, 0, 8192)
+                if (type(previous) is not dict or set(previous) != {'transaction_id', 'target', 'config_sha256'}):
+                    raise AccessError('bootstrap-recovery-invalid')
+                if previous['transaction_id'] == request['transaction_id'] and previous['target'] != request['target']:
+                    raise AccessError('bootstrap-recovery-target-changed')
+            # A process death during the following native rewrite can only
+            # resume this same owner-selected target. No caller token adoption.
+            atomic_json(record, request)
+            edge = self.edge()
+            if edge.get('phase') not in ('idle', 'interrupted', 'held') or edge.get('streams'):
+                raise AccessError('model-lease-lost')
+            edge = self.edge('recover' if edge['phase'] == 'interrupted' else 'acquire', pending['token'], edge['revision'])
+            native = self.native('acquire', pending['token'], timeout=10)
+            if (edge.get('phase') != 'held' or edge.get('streams')
+                    or native.get('phase') != 'held' or native.get('active') or native.get('stopped')):
+                raise AccessError('model-lease-lost')
+            pending.update(phase='held', edge_revision=edge['revision'])
+            pending.pop('error', None)
+            atomic_json(self.state / 'transition.json', pending)
+            return {'status': 'held', 'transaction_id': pending['transaction_id']}
 
     def model_error(self, pending, error):
         pending["phase"] = "error"
@@ -1132,7 +1220,7 @@ class SystemdAccessBridge:
             return None
         return value
 
-    def model_begin(self, *, installer_source=False):
+    def model_begin(self, *, installer_source=False, bootstrap=None):
         with self.bounded(MODEL_DRAIN_TIMEOUT + 30), self.locked():
             if self.pending() is not None:
                 if installer_source:
@@ -1149,6 +1237,15 @@ class SystemdAccessBridge:
                     raise
                 self.restart_stopped_source_edge()
                 snapshot = self.inspect(allow_installing=True)
+            bootstrap_intent = None
+            if bootstrap is not None:
+                if platform.system() != 'Linux' or installer_source or self.bootstrap_source_custody(bootstrap):
+                    raise AccessError('bootstrap-custody-conflict')
+                from pixel_bootstrap_recovery import validate
+                try:
+                    bootstrap_intent = validate(self.install, bootstrap, self.owner.pw_uid, current=True)
+                except (OSError, ValueError, TypeError):
+                    raise AccessError('bootstrap-snapshot-invalid') from None
             source_plan = None
             if installer_source or (platform.system() == 'Linux' and os.path.lexists(self.state / 'source-upgrade')):
                 if platform.system() != 'Linux' or (installer_source and os.geteuid() != 0):
@@ -1214,6 +1311,17 @@ class SystemdAccessBridge:
                     source_plan.bind(pending['transaction_id'], lambda _token: None)
                 except UpgradeError as error:
                     raise AccessError(str(error)) from None
+            if bootstrap_intent is not None:
+                pending['transaction_id'] = bootstrap
+                from pixel_model_coordinator import _config
+                native_before, native_sha = _config(self)
+                if native_sha != pending['start_config_sha256']:
+                    raise AccessError('bootstrap-original-state-changed')
+                atomic_json(self.state / 'bootstrap-native-before.json', dict(
+                    transactionId=bootstrap, configSha256=native_sha, config=native_before))
+                # Both the request handle and original snapshot are durable
+                # before admission is acquired, including a lost begin reply.
+                atomic_json(self.state / 'bootstrap-intent.json', bootstrap_intent)
             # Durable intent precedes both admission-gate acquisition calls.
             atomic_json(self.state / "transition.json", pending)
             try:

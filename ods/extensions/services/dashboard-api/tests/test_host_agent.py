@@ -8598,6 +8598,11 @@ class TestInstallStatePollBehavior:
         )
         monkeypatch.setattr(_mod, "_precreate_data_dirs", lambda _sid: None)
 
+        # Image preparation now streams pull output through Popen, outside
+        # this fixture's subprocess.run controls. These tests begin with
+        # prepared images and exercise the real running-state poll below.
+        monkeypatch.setattr(_mod, "_prepare_install_images", lambda *_args: (True, ""))
+
         monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
         monkeypatch.setattr(_mod, "DATA_DIR", data_dir)
         monkeypatch.setattr(_mod, "USER_EXTENSIONS_DIR", user_root)

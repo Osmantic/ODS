@@ -58,3 +58,15 @@ if output="$(recover --force)"; then fail "an unknown option exited 0"; fi
 grep -qF "Usage: ods model recover [--release-unverified]" <<<"$output" || fail "no usage: $output"
 
 echo "PASS: ods model recover reports each outcome and offers a release only where one applies"
+
+# Exact positional target values, including filename brackets/spaces and provider
+# separators, reach the API without shell interpolation or lost quoting.
+export STUB_CODE=200 STUB_BODY='{"pending":false,"phase":"completed","transactionId":"'"$(printf 'a%.0s' {1..64})"'"}'
+output="$(recover --bootstrap-current "$(printf 'a%.0s' {1..64})" 'Qwen [Q4] part 1.gguf' 'namespace/model:latest' 65536)" \
+    || fail "bootstrap recovery dispatch failed: $output"
+jq -e '.bootstrapTransactionId == ("a" * 64) and .target == {gguf:"Qwen [Q4] part 1.gguf",model:"namespace/model:latest",context:65536}' "$fixture/payload" >/dev/null \
+    || fail "bootstrap recovery lost its exact selected target"
+export STUB_CODE=409 STUB_BODY='{"pending":true,"phase":"held","transactionId":"'"$(printf 'a%.0s' {1..64})"'","kind":"bootstrap","sourceUpgrade":false,"currentTarget":{"gguf":"Qwen [Q4] part 1.gguf","model":"namespace/model:latest","context":65536}}'
+if output="$(recover)"; then fail "pending bootstrap exited zero"; fi
+grep -qF -- "--bootstrap-current" <<<"$output" || fail "explicit bootstrap recovery was not offered"
+grep -qF "'Qwen [Q4] part 1.gguf'" <<<"$output" || fail "suggested recovery command is not shell quoted"

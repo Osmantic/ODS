@@ -141,7 +141,13 @@ acquire_model_router_swap_gate() {
     fi
     MODEL_ROUTER_SWAP_GATE_TOKEN="$token"
     (
+        # The lease heartbeat must die with bootstrap, even after SIGKILL.
+        # It must not keep the lifecycle flock alive after its parent dies.
+        if [[ -n "${ODS_MODEL_LIFECYCLE_LOCK_FD:-}" ]]; then
+            { exec {ODS_MODEL_LIFECYCLE_LOCK_FD}>&-; } 2>/dev/null || true
+        fi
         while sleep 10; do
+            kill -0 "$$" 2>/dev/null || exit 0
             model_router_swap_gate_call begin "$token" 30 || exit 1
         done
     ) >/dev/null 2>&1 &
@@ -277,12 +283,21 @@ prepare_bootstrap_pixel_model() {
 acquire_bootstrap_pixel_model_transaction() {
     prepare_bootstrap_pixel_model || return 1
     [[ -n "$BOOTSTRAP_PIXEL_OWNER" ]] || return 0
-    local binary transaction
+    local binary transaction request_id
     binary="$(_ods_pixel_openclaw_bin "$BOOTSTRAP_PIXEL_OWNER" "$BOOTSTRAP_PIXEL_HOME")" || return 1
     _ods_pixel_install_access_service "$BOOTSTRAP_PIXEL_OWNER" "$binary" || return 1
     # Drain whole Portal turns before closing model-router admission: an active
     # turn may still need more inference requests to finish its tools/follow-up.
-    transaction="$(_ods_pixel_model_transition begin "$BOOTSTRAP_PIXEL_OWNER" "$BOOTSTRAP_PIXEL_HOME")" || return 1
+    # Prepare and fsync the original inputs and caller-generated handle BEFORE
+    # begin. The root coordinator validates and binds them before taking either
+    # gate, so a process death or lost reply cannot lose transaction provenance.
+    request_id="$(ods_pixel_run_as_owner "$BOOTSTRAP_PIXEL_OWNER" "$BOOTSTRAP_PIXEL_HOME" \
+        python3 "$INSTALL_DIR/bin/pixel_bootstrap_recovery.py" prepare "$INSTALL_DIR" \
+        "$FULL_GGUF_FILE" "$FULL_LLM_MODEL" "$FULL_MAX_CONTEXT")" || return 1
+    [[ "$request_id" =~ ^[0-9a-f]{64}$ ]] || return 1
+    ACTIVE_CONFIG_SNAPSHOT_DIR="$INSTALL_DIR/data/bootstrap-upgrade-active-config.$request_id"
+    transaction="$(_ods_pixel_model_transition bootstrap-begin "$BOOTSTRAP_PIXEL_OWNER" "$BOOTSTRAP_PIXEL_HOME" "$request_id")" || return 1
+    [[ "$transaction" == "$request_id" ]] || return 1
     [[ "$transaction" =~ ^[0-9a-f]{64}$ ]] || return 1
     BOOTSTRAP_PIXEL_TRANSACTION="$transaction"
     log "Closed Pixel admission and drained active Portal turns before model promotion."
@@ -687,6 +702,11 @@ restore_file_state() {
 }
 
 snapshot_active_model_config() {
+    if [[ -n "${BOOTSTRAP_PIXEL_TRANSACTION:-}" ]]; then
+        ods_pixel_run_as_owner "$BOOTSTRAP_PIXEL_OWNER" "$BOOTSTRAP_PIXEL_HOME" \
+            python3 "$INSTALL_DIR/bin/pixel_bootstrap_recovery.py" verify "$INSTALL_DIR" "$BOOTSTRAP_PIXEL_TRANSACTION"
+        return $?
+    fi
     local snapshot_base
     snapshot_base="${INSTALL_DIR}/data"
     mkdir -p "$snapshot_base" 2>/dev/null || return 1
@@ -715,6 +735,14 @@ restore_active_model_config() {
     fi
     [[ -n "${ACTIVE_CONFIG_SNAPSHOT_DIR:-}" && -d "$ACTIVE_CONFIG_SNAPSHOT_DIR" ]] || return 1
 
+    if [[ -n "${BOOTSTRAP_PIXEL_TRANSACTION:-}" ]]; then
+        [[ "$ACTIVE_CONFIG_SNAPSHOT_DIR" == "$INSTALL_DIR/data/bootstrap-upgrade-active-config.$BOOTSTRAP_PIXEL_TRANSACTION" ]] || return 1
+        ods_pixel_run_as_owner "$BOOTSTRAP_PIXEL_OWNER" "$BOOTSTRAP_PIXEL_HOME" \
+            python3 "$INSTALL_DIR/bin/pixel_bootstrap_recovery.py" verify "$INSTALL_DIR" "$BOOTSTRAP_PIXEL_TRANSACTION" || return 1
+    elif [[ -f "$ACTIVE_CONFIG_SNAPSHOT_DIR/manifest.json" ]]; then
+        # A bound snapshot cannot be restored outside its still-held transaction.
+        return 1
+    fi
     if [[ -f "$ACTIVE_CONFIG_SNAPSHOT_DIR/env" ]]; then
         cp -p "$ACTIVE_CONFIG_SNAPSHOT_DIR/env" "$ENV_FILE" || return 1
     elif [[ -f "$ACTIVE_CONFIG_SNAPSHOT_DIR/env.missing" ]]; then
@@ -728,13 +756,17 @@ restore_active_model_config() {
         rm -f "$MODELS_INI"
     fi
 
-    rm -rf "$ACTIVE_CONFIG_SNAPSHOT_DIR"
+    if [[ ! -f "$ACTIVE_CONFIG_SNAPSHOT_DIR/manifest.json" ]]; then
+        rm -rf "$ACTIVE_CONFIG_SNAPSHOT_DIR"
+    fi
     ACTIVE_CONFIG_SNAPSHOT_DIR=""
 }
 
 discard_active_model_config_snapshot() {
     if [[ -n "${ACTIVE_CONFIG_SNAPSHOT_DIR:-}" ]]; then
-        rm -rf "$ACTIVE_CONFIG_SNAPSHOT_DIR"
+        if [[ ! -f "$ACTIVE_CONFIG_SNAPSHOT_DIR/manifest.json" ]]; then
+            rm -rf "$ACTIVE_CONFIG_SNAPSHOT_DIR"
+        fi
         ACTIVE_CONFIG_SNAPSHOT_DIR=""
     fi
 }

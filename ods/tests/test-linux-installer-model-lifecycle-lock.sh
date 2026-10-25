@@ -122,7 +122,7 @@ for mode in release failed-acquire; do
         set -euo pipefail
         . "$ODS_TEST_LOCK_LIB"
         if [[ "$ODS_TEST_LOCK_MODE" == failed-acquire ]]; then
-            flock() { return 1; }
+            ODS_MODEL_LIFECYCLE_LOCK_WAIT_SECONDS=invalid
             if ods_model_lifecycle_lock_acquire "$ODS_TEST_INSTALL_DIR" "refused lock"; then
                 exit 91
             fi
@@ -214,7 +214,7 @@ INSTALL_DIR="$agent_dir"
 LOG_FILE="$tmp/session-agent.log"
 export ODS_TEST_AGENT_PID_FILE="$tmp/session-agent.pid"
 ods_model_lifecycle_lock_acquire "$agent_dir" "test session agent"
-_ods_start_session_host_agent || fail "fixture session agent did not start"
+_ods_start_session_host_agent || { cat "$LOG_FILE" >&2; fail "fixture session agent did not start"; }
 agent_pid="$(cat "$ODS_TEST_AGENT_PID_FILE")"
 kill -0 "$agent_pid" || fail "fixture session agent did not stay alive"
 ods_model_lifecycle_lock_release

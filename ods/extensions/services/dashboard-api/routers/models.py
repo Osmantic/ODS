@@ -2838,7 +2838,8 @@ def cancel_download(api_key: str = Depends(verify_api_key)):
 
 
 def _model_recovery_projection(value):
-    phases = {'idle', 'completed', 'prepared', 'held', 'applying', 'applied', 'committing', 'rolling-back', 'unavailable'}
+    phases = {'idle', 'completed', 'prepared', 'held', 'applying', 'applied', 'committing', 'rolling-back', 'unavailable',
+              'acquiring', 'draining', 'finishing', 'releasing', 'native-released', 'error'}
     if (type(value) is not dict or type(value.get('pending')) is not bool
             or value.get('phase') not in phases
             or value['pending'] != (value['phase'] not in ('idle', 'completed'))):
@@ -2850,13 +2851,29 @@ def _model_recovery_projection(value):
     result = {'pending': value['pending'], 'phase': value['phase'], 'transactionId': transaction}
     if value.get('outcome') in ('commit', 'rollback') and value['phase'] == 'completed':
         result['outcome'] = value['outcome']
-    if value.get('reason') in ('model-recovery-proof-required', 'model-recovery-unavailable'):
+    if value.get('reason') in ('model-recovery-proof-required', 'model-recovery-unavailable',
+                               'bootstrap-owner-recovery-required', 'coordinator-state-unavailable'):
         result['reason'] = value['reason']
+    if value.get('kind') == 'bootstrap':
+        result['kind'] = 'bootstrap'
+        if type(value.get('sourceUpgrade')) is bool: result['sourceUpgrade'] = value['sourceUpgrade']
+        for key in ('target', 'currentTarget'):
+            if _bootstrap_recovery_target(value.get(key)): result[key] = value[key]
     # The agent offers the owner a release without the live proof only for a
     # switch that changed nothing (fleet row 27).
     if value['pending'] and type(value.get('releasable')) is bool:
         result['releasable'] = value['releasable']
     return result
+
+
+def _bootstrap_recovery_target(value):
+    return (type(value) is dict and set(value) == {'gguf', 'model', 'context'}
+            and type(value['gguf']) is str and 1 <= len(value['gguf']) <= 255
+            and not any(c in value['gguf'] for c in '/\\')
+            and not any(ord(c) < 32 or ord(c) == 127 for c in value['gguf'])
+            and value['gguf'].endswith('.gguf') and type(value['model']) is str
+            and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._+:/ @(),=-]{0,255}', value['model'])
+            and type(value['context']) is int and 4096 <= value['context'] <= 10000000)
 
 
 _RECOVERY_REQUESTS: tuple[dict[str, bool], ...] = ({}, {'releaseUnverified': True})
@@ -2887,9 +2904,13 @@ def model_recovery_status(api_key: str = Depends(verify_api_key)):
 
 @router.post('/api/models/recovery')
 def recover_model_switch(body: dict | None = Body(default=None), api_key: str = Depends(verify_api_key)):
-    if body is None or not any(body == allowed and all(type(body[key]) is type(value) for key, value in allowed.items())
-                               for allowed in _RECOVERY_REQUESTS):
-        raise HTTPException(status_code=400, detail='Recovery accepts {} or {"releaseUnverified": true} only.')
+    bootstrap = (type(body) is dict and set(body) == {'bootstrapTransactionId', 'target'}
+                 and type(body['bootstrapTransactionId']) is str
+                 and re.fullmatch('[a-f0-9]{64}', body['bootstrapTransactionId'])
+                 and _bootstrap_recovery_target(body['target']))
+    if not bootstrap and (body is None or not any(body == allowed and all(type(body[key]) is type(value) for key, value in allowed.items())
+                               for allowed in _RECOVERY_REQUESTS)):
+        raise HTTPException(status_code=400, detail='Use ordinary recovery, releaseUnverified, or an exact bootstrapTransactionId and target.')
     value = _model_recovery_request('POST', dict(body))
     return value if isinstance(value, JSONResponse) else JSONResponse(value, headers={'Cache-Control': 'no-store'})
 

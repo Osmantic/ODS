@@ -4396,6 +4396,14 @@ cmd_model() {
             case "${2:-}" in
                 "") ;;
                 --release-unverified) body='{"releaseUnverified":true}' ;;
+                --bootstrap-current)
+                    [[ "$#" -eq 6 && "${3:-}" =~ ^[a-f0-9]{64}$ && "${6:-}" =~ ^[0-9]+$ ]] \
+                        || error "Usage: ods model recover --bootstrap-current TRANSACTION GGUF MODEL CONTEXT"
+                    body="$(jq -cn --arg tx "$3" --arg gguf "$4" --arg model "$5" --argjson context "$6" \
+                        '{bootstrapTransactionId:$tx,target:{gguf:$gguf,model:$model,context:$context}}')" || return 1
+                    echo "Recovering held bootstrap $3 using current inference: $5 ($4), context $6."
+                    ;;
+
                 *) error "Usage: ods model recover [--release-unverified]" ;;
             esac
             response_file="$(mktemp)"; payload_file="$(mktemp)"
@@ -4424,6 +4432,10 @@ cmd_model() {
                 && jq -e '.reason == "model-recovery-proof-required" and .releasable == true' "$response_file" >/dev/null 2>&1; then
                 echo "  The switch did not change anything. To release it and put Portal back on the model settings it had before, run:" >&2
                 echo "    ods model recover --release-unverified" >&2
+            fi
+            if jq -e '.kind == "bootstrap" and .sourceUpgrade != true and .currentTarget != null' "$response_file" >/dev/null 2>&1; then
+                echo "  To confirm the current model as the recovery target, run:" >&2
+                jq -r '"    ods model recover --bootstrap-current " + ([.transactionId, .currentTarget.gguf, .currentTarget.model, (.currentTarget.context|tostring)] | @sh)' "$response_file" >&2
             fi
             rm -f "$response_file"
             echo "  Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC" >&2

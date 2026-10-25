@@ -26,7 +26,11 @@ BOOTSTRAP_PIXEL_OWNER=""
 BOOTSTRAP_PIXEL_HOME=""
 BOOTSTRAP_PIXEL_CONFIG_MUTATED=false
 BOOTSTRAP_PIXEL_RELEASE_FAILED=false
+INSTALL_DIR=/isolated
+FULL_GGUF_FILE=full.gguf
+FULL_MAX_CONTEXT=65536
 FULL_LLM_MODEL=full9b
+ods_pixel_run_as_owner() { echo snapshot-durable >> "$EVENTS"; printf 'a%.0s' {1..64}; echo; }
 log() { :; }
 prepare_bootstrap_pixel_model() { BOOTSTRAP_PIXEL_OWNER=owner; BOOTSTRAP_PIXEL_HOME=/home/owner; }
 _ods_pixel_openclaw_bin() { echo /installed/openclaw; }
@@ -34,7 +38,7 @@ _ods_pixel_install_access_service() { echo access-controller >> "$EVENTS"; }
 _ods_pixel_model_transition() {
     echo "transition:$1:${5:-}" >> "$EVENTS"
     case "$1" in
-      begin) printf '%064d\\n' 0 | tr 0 a ;;
+      bootstrap-begin) printf '%064d\\n' 0 | tr 0 a ;;
       finish) test "${FAIL_FINISH:-false}" != true ;;
     esac
 }
@@ -65,7 +69,7 @@ _docker_llama_swap_applies=true
 acquire_model_router_swap_gate() { test -n "$BOOTSTRAP_PIXEL_TRANSACTION"; echo router-drained >> "$EVENTS"; }
 snapshot_active_model_config() { echo snapshot-before-mutation >> "$EVENTS"; }
 ''' + flow)
-        self.assertLess(events.index('transition:begin:'), events.index('router-drained'))
+        self.assertLess(events.index('transition:bootstrap-begin:'), events.index('router-drained'))
         self.assertLess(events.index('router-drained'), events.index('snapshot-before-mutation'))
         self.assertFalse(any(x.startswith('transition:finish:') for x in events))
 
@@ -127,6 +131,21 @@ if finish_bootstrap_pixel_model_transaction rolled-back; then exit 12; fi
 BOOTSTRAP_PIXEL_RELEASE_FAILED=true
 if restore_active_model_config; then exit 11; fi
 ''')
+
+    def test_bound_snapshot_missing_manifest_cannot_fall_back_to_unverified_restore(self):
+        events = self.run_shell('''
+INSTALL_DIR="$(dirname "$EVENTS")"
+BOOTSTRAP_PIXEL_TRANSACTION="$(printf 'a%.0s' {1..64})"
+ACTIVE_CONFIG_SNAPSHOT_DIR="$INSTALL_DIR/data/bootstrap-upgrade-active-config.$BOOTSTRAP_PIXEL_TRANSACTION"
+mkdir -p "$ACTIVE_CONFIG_SNAPSHOT_DIR"
+printf stale > "$ACTIVE_CONFIG_SNAPSHOT_DIR/env"
+ENV_FILE="$INSTALL_DIR/live-env"
+printf current > "$ENV_FILE"
+ods_pixel_run_as_owner() { echo verify-refused >> "$EVENTS"; return 1; }
+if restore_active_model_config; then exit 10; fi
+[[ "$(cat "$ENV_FILE")" == current ]]
+''')
+        self.assertEqual(events, ['verify-refused'])
 
     def test_borrowed_transaction_must_match_held_root_journal(self):
         for phase, tx in [('draining', TX), ('held', 'b' * 64), ('error', TX)]:

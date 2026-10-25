@@ -187,3 +187,43 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
             if process.poll() is None:
                 process.kill()
                 process.communicate(timeout=10)
+
+
+@pytest.mark.skipif(sys.platform != 'linux', reason='Linux SO_PEERCRED authority boundary')
+@pytest.mark.parametrize('operation,payload', [
+    ('model-status', None),
+    ('model-bootstrap-begin', {'transaction_id': TOKEN}),
+    ('model-recovery-prepare', {'transaction_id': TOKEN, 'target': {
+        'gguf': 'Qwen [Q4] 1.gguf', 'model': 'namespace/model:latest', 'context': 65536}, 'config_sha256': DIGEST}),
+    ('model-finish', {'transaction_id': TOKEN, 'outcome': 'applied'}),
+])
+def test_bootstrap_transport_real_peer_authenticates_before_sending(tmp_path, monkeypatch, operation, payload):
+    import socket
+    import threading
+    address = str(tmp_path / 'control.sock')
+    received = []
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+        server.bind(address); server.listen(1); server.settimeout(5)
+        def serve():
+            with server.accept()[0] as connection:
+                connection.settimeout(5)
+                raw = connection.makefile('rb').readline(65537)
+                received.append(raw)
+                if raw:
+                    protocol.control_request(json.loads(raw))
+                    connection.sendall(b'{"status":200,"body":{"pending":false}}\n')
+        thread = threading.Thread(target=serve, daemon=True); thread.start()
+        monkeypatch.setattr(transport, 'ACCESS_SOCKET_PATH', address)
+        if os.geteuid() == 0:
+            assert transport.request_access(operation, payload) == (200, {'pending': False})
+        else:
+            with pytest.raises(ValueError, match='requires root coordinator'):
+                transport.request_access(operation, payload)
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+    if os.geteuid() == 0:
+        expected = {'operation': operation}
+        if payload is not None: expected['request'] = payload
+        assert json.loads(received[0]) == expected
+    else:
+        assert received == [b'']
