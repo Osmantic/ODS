@@ -5103,6 +5103,10 @@ def _read_remote_provider_activation_state() -> dict | None:
         or len(previous["llmApiUrl"]) > 2048
         or any(character in previous["llmApiUrl"] for character in "\r\n\x00")
         or not _valid_serializable_text_snapshot(previous.get("cloudConfig"))
+        or ("hermesRoute" in previous and not _valid_remote_provider_hermes_route(previous["hermesRoute"]))
+        or any(key in previous and (not isinstance(previous[key], str)
+               or len(previous[key]) > 16384 or any(char in previous[key] for char in "\r\n\x00"))
+               for key in ("hermesBaseUrl", "hermesApiKey"))
         or not _valid_managed_pixel_runtime_contract(previous.get("pixel"))
         or (
             previous.get("pixelThinkingControl") is not None
@@ -5363,6 +5367,203 @@ def _reconcile_managed_pixel_contract(contract: dict[str, object] | None,
     )
 
 
+def _capture_remote_provider_hermes() -> dict:
+    """Private rollback state; no paths or credentials enter public receipts."""
+    template = _snapshot_text_file(INSTALL_DIR / "extensions/services/hermes/cli-config.yaml.template")
+    live = _capture_hermes_live_config(INSTALL_DIR / "data/hermes/config.yaml")
+    return {
+        "template": _serializable_text_snapshot(template),
+        "live": {**_serializable_text_snapshot(live), "source": live.get("source")},
+        "container": _capture_container_state("ods-hermes"),
+    }
+
+
+def _hermes_route_values(text: str) -> dict[str, str]:
+    """Read scalar routing fields without interpreting arbitrary owner YAML."""
+    values = {}
+    path = []
+    model_seen = False
+    for line in text.splitlines():
+        match = re.match(r"^([ ]*)(['\"]?)([A-Za-z_][A-Za-z0-9_-]*)\2\s*:(.*)$", line)
+        if not match:
+            continue
+        indent, key, raw = len(match[1]), match[3], match[4].strip()
+        if indent == 0 and key == "model":
+            if model_seen or (raw and not raw.startswith("#")):
+                raise ValueError("Hermes model config requires one block mapping")
+            model_seen = True
+        while path and path[-1][0] >= indent:
+            path.pop()
+        path.append((indent, key))
+        if tuple(item[1] for item in path) not in {
+            ("model", "default"), ("model", "base_url"),
+            ("model", "context_length"), ("model", "api_key"),
+        }:
+            continue
+        if key in values:
+            raise ValueError("Hermes model config has duplicate routing fields")
+        if raw.startswith('"'):
+            value, end = json.JSONDecoder().raw_decode(raw)
+            if raw[end:].strip() and not raw[end:].lstrip().startswith("#"):
+                raise ValueError("Hermes model route is not a scalar")
+        elif raw.startswith("'"):
+            scalar = re.fullmatch(r"'((?:[^']|'')*)'\s*(?:#.*)?", raw)
+            if not scalar:
+                raise ValueError("Hermes model route is not a scalar")
+            value = scalar[1].replace("''", "'")
+        else:
+            value = raw.split(" #", 1)[0].strip()
+            if value.startswith(("*", "&", "|", ">", "[", "{")):
+                raise ValueError("Hermes model route requires scalar values")
+        if not isinstance(value, (str, int)) or isinstance(value, bool):
+            raise ValueError("Hermes model route requires scalar values")
+        values[key] = str(value)
+    return values
+
+
+def _previous_remote_provider_hermes_route(snapshot: dict, env: dict) -> dict:
+    live = snapshot["live"]
+    source = live if live.get("exists") and live.get("source") != "deferred_absent" else snapshot["template"]
+    values = _hermes_route_values(str(source.get("text") or ""))
+    context = int(values.get("context_length") or env.get("MAX_CONTEXT") or env.get("CTX_SIZE") or 65536)
+    route = {
+        "model": values.get("default") or _hermes_selected_model(env),
+        "baseUrl": values.get("base_url") or env.get("HERMES_LLM_BASE_URL") or
+                   str(env.get("LLM_API_URL") or "http://model-router:9099").rstrip("/").removesuffix("/v1") + "/v1",
+        "contextLength": context,
+        "apiKey": values.get("api_key", str(env.get("HERMES_LLM_API_KEY") or "")),
+    }
+    if not route["model"] or not route["baseUrl"] or context <= 0:
+        raise RuntimeError("Previous Hermes model route is incomplete")
+    return route
+
+
+def _valid_remote_provider_hermes_route(route: object) -> bool:
+    return (isinstance(route, dict)
+            and all(isinstance(route.get(key), str) and len(route[key]) <= 16384
+                    and not any(char in route[key] for char in "\r\n\x00")
+                    for key in ("model", "baseUrl", "apiKey"))
+            and bool(route["model"]) and bool(route["baseUrl"])
+            and type(route.get("contextLength")) is int and route["contextLength"] > 0)
+
+
+def _restored_remote_provider_hermes_route(previous: dict, snapshot: dict, env: dict) -> dict:
+    route = previous.get("hermesRoute")
+    if route is not None:
+        if not _valid_remote_provider_hermes_route(route):
+            raise RuntimeError("Previous Hermes model route is invalid")
+        return route
+    # Older activations did not write Hermes YAML. Keep that retained route
+    # when available; if it already follows LiteLLM, recover from saved env.
+    route = _previous_remote_provider_hermes_route(snapshot, env)
+    if route["baseUrl"].rstrip("/") == "http://litellm:4000/v1":
+        route = _previous_remote_provider_hermes_route(
+            {"live": {}, "template": {}}, env,
+        )
+    return route
+
+
+def _write_remote_provider_hermes_live(snapshot: dict, text: str) -> None:
+    path = INSTALL_DIR / "data/hermes/config.yaml"
+    if snapshot.get("source") == "container":
+        _write_hermes_live_config(path, text, "container")
+    else:
+        # Keep the existing owner when the host agent runs as root. Credentials
+        # belong in the private live config, never the product template.
+        _restore_text_file(path, {**snapshot, "exists": True, "text": text,
+                                 "bytes": text.encode("utf-8"), "mode": 0o600})
+
+
+def _apply_remote_provider_hermes(snapshot: dict, route: dict) -> None:
+    template_path = INSTALL_DIR / "extensions/services/hermes/cli-config.yaml.template"
+    template, live, state = snapshot["template"], snapshot["live"], snapshot["container"]
+    if not template.get("exists") and not live.get("exists"):
+        if state.get("exists"):
+            raise RuntimeError("Installed Hermes has no readable model configuration")
+        return
+    if not _valid_remote_provider_hermes_route(route):
+        raise RuntimeError("Hermes selected route is incomplete")
+    model, base, context = route["model"], route["baseUrl"], route["contextLength"]
+    if template.get("exists"):
+        _hermes_route_values(str(template["text"]))
+        updated, changed = _patch_hermes_config_text(str(template["text"]), model, base, context)
+        if changed:
+            _write_bound_file_in_place(template_path, updated.encode("utf-8"))
+    if live.get("source") == "deferred_absent":
+        if state.get("exists"):
+            raise RuntimeError("Hermes persisted route is inaccessible")
+    elif live.get("exists") or state.get("exists"):
+        text = str((live if live.get("exists") else template).get("text") or "")
+        _hermes_route_values(text)
+        updated, _ = _patch_hermes_config_text(text, model, base, context, api_key=str(route["apiKey"]))
+        _write_remote_provider_hermes_live(live, updated)
+    if state.get("running"):
+        if not _restart_existing_container("ods-hermes", state, recreate=True):
+            raise RuntimeError("Hermes model route could not be refreshed")
+        _wait_for_container_health("ods-hermes")
+        if not _remote_provider_hermes_config_matches(_read_hermes_container_config(), route):
+            raise RuntimeError("Hermes selected route could not be verified")
+
+
+def _restore_remote_provider_hermes(snapshot: dict) -> None:
+    template_path = INSTALL_DIR / "extensions/services/hermes/cli-config.yaml.template"
+    template, live, state = snapshot["template"], snapshot["live"], snapshot["container"]
+    _restore_bound_env_file(template_path, template)
+    live_path = INSTALL_DIR / "data/hermes/config.yaml"
+    if live.get("source") == "deferred_absent":
+        pass
+    elif live.get("source") == "container":
+        _write_hermes_live_config(live_path, str(live["text"]), "container")
+    elif live.get("exists"):
+        _restore_text_file(live_path, live)
+    else:
+        _remove_hermes_live_config(live_path)
+    if state.get("running"):
+        if not _restore_container_state("ods-hermes", state, recreate=True):
+            raise RuntimeError("Hermes rollback consumer could not be refreshed")
+        _wait_for_container_health("ods-hermes")
+        if live.get("exists"):
+            if _read_hermes_container_config() != live["text"]:
+                raise RuntimeError("Hermes rollback route could not be verified")
+
+
+def _remote_provider_hermes_config_matches(text: str, route: dict, *, private: bool = True) -> bool:
+    values = _hermes_route_values(text)
+    return (values.get("default") == route["model"]
+            and values.get("base_url") == route["baseUrl"]
+            and int(values.get("context_length") or 0) == route["contextLength"]
+            and (not private or values.get("api_key") == route["apiKey"]))
+
+
+def _remote_provider_hermes_matches(env: dict, runtime: dict) -> bool:
+    try:
+        snapshot = _capture_remote_provider_hermes()
+        template, live, state = snapshot["template"], snapshot["live"], snapshot["container"]
+        if not template.get("exists") and not live.get("exists") and not state.get("exists"):
+            return True
+        key = str(env.get("LITELLM_KEY") or "")
+        if not key or env.get("HERMES_LLM_BASE_URL") != "http://litellm:4000/v1" or env.get("HERMES_LLM_API_KEY") != key:
+            return False
+        if state.get("exists") and (not live.get("exists") or live.get("source") == "deferred_absent"):
+            return False
+        route = {"model": "ods/current", "baseUrl": "http://litellm:4000/v1",
+                 "contextLength": int(runtime["contextLength"]), "apiKey": key}
+        for config in (template, live):
+            if config.get("source") == "deferred_absent":
+                if state.get("exists"):
+                    return False
+                continue
+            if config.get("exists"):
+                if not _remote_provider_hermes_config_matches(str(config["text"]), route, private=config is live):
+                    return False
+        if state.get("running"):
+            if not _remote_provider_hermes_config_matches(_read_hermes_container_config(), route):
+                return False
+        return True
+    except (OSError, RuntimeError, ValueError, TypeError, KeyError):
+        return False
+
+
 def _verify_current_remote_provider_consumers(
     route: dict,
     runtime: dict[str, object],
@@ -5376,6 +5577,8 @@ def _verify_current_remote_provider_consumers(
         return None
     pixel = _managed_pixel_runtime_contract()
     if pixel is not None and pixel != runtime:
+        return None
+    if not _remote_provider_hermes_matches(env, runtime):
         return None
     failure = _litellm_route_failure(env)
     if failure is not None and failure[2]:
@@ -5478,6 +5681,10 @@ def _activate_remote_provider_route(
 
     existing = _read_remote_provider_activation_state()
     env = load_env(env_path)
+    gateway_key = str(env.get("LITELLM_KEY") or "")
+    if not gateway_key:
+        raise RuntimeError("Remote provider activation requires the LiteLLM gateway key")
+    hermes_before = _capture_remote_provider_hermes()
     previous = existing.get("previous") if isinstance(existing, dict) else None
     if not isinstance(previous, dict):
         previous = {
@@ -5485,13 +5692,22 @@ def _activate_remote_provider_route(
             "llmApiUrl": str(env.get("LLM_API_URL") or "http://llama-server:8080"),
             "hermesBaseUrl": str(env.get("HERMES_LLM_BASE_URL") or ""),
             "hermesApiKey": str(env.get("HERMES_LLM_API_KEY") or ""),
+            "hermesRoute": _previous_remote_provider_hermes_route(hermes_before, env),
             "cloudConfig": _serializable_text_snapshot(cloud_snapshot),
             "pixel": pixel_before,
             "pixelThinkingControl": pixel_before_control,
         }
-    else:
+    elif "hermesRoute" not in previous:
+        # Releases before Hermes reconciliation may still have the original
+        # explicit route in env. Never backfill a local recovery record with
+        # the active remote gateway's credential.
+        if str(env.get("HERMES_LLM_BASE_URL") or "").rstrip("/") != "http://litellm:4000/v1":
+            previous.setdefault("hermesBaseUrl", str(env.get("HERMES_LLM_BASE_URL") or ""))
+            previous.setdefault("hermesApiKey", str(env.get("HERMES_LLM_API_KEY") or ""))
+        restored_env = {**env, "ODS_MODE": previous["odsMode"], "LLM_API_URL": previous["llmApiUrl"]}
         for k, ek in (("hermesBaseUrl", "HERMES_LLM_BASE_URL"), ("hermesApiKey", "HERMES_LLM_API_KEY")):
-            previous.setdefault(k, str(env.get(ek) or ""))
+            restored_env[ek] = str(previous.get(k) or "")
+        previous["hermesRoute"] = _restored_remote_provider_hermes_route(previous, hermes_before, restored_env)
     candidate_state = {
         "schema": _REMOTE_PROVIDER_ACTIVATION_STATE_SCHEMA,
         "phase": "staging",
@@ -5511,6 +5727,7 @@ def _activate_remote_provider_route(
     litellm_recreated = False
     litellm_attempted = False
     relay_attempted = False
+    hermes_attempted = False
     try:
         _write_remote_provider_activation_state(candidate_state)
         raw_env = str(env_snapshot.get("text") or "")
@@ -5518,7 +5735,7 @@ def _activate_remote_provider_route(
             ("ODS_MODE", "cloud"),
             ("LLM_API_URL", "http://litellm:4000"),
             ("HERMES_LLM_BASE_URL", "http://litellm:4000/v1"),
-            *([("HERMES_LLM_API_KEY", env["LITELLM_KEY"])] if env.get("LITELLM_KEY") else []),
+            ("HERMES_LLM_API_KEY", gateway_key),
         ]:
             raw_env = _upsert_env_text(raw_env, key, val)
         _write_bound_env_text(env_path, raw_env)
@@ -5532,6 +5749,11 @@ def _activate_remote_provider_route(
             raise RuntimeError("LiteLLM route could not be recreated")
         _wait_for_container_health("ods-litellm")
         _verify_litellm_route(env, model="ods/current")
+        hermes_attempted = True
+        _apply_remote_provider_hermes(hermes_before, {
+            "model": "ods/current", "baseUrl": "http://litellm:4000/v1",
+            "contextLength": int(runtime["contextLength"]), "apiKey": gateway_key,
+        })
         # Portal reaches the model through the relay, so it must follow
         # ODS_MODE to LiteLLM before Pixel is bound to the remote model.
         relay_attempted = True
@@ -5591,6 +5813,11 @@ def _activate_remote_provider_route(
                 _reconcile_managed_pixel_contract(pixel_before, **_thinking_control_kwargs(pixel_before_control))
             except Exception as rollback_exc:
                 rollback_errors.append(f"Pixel: {rollback_exc}")
+        if hermes_attempted and not defer_consumer_rollback:
+            try:
+                _restore_remote_provider_hermes(hermes_before)
+            except Exception as rollback_exc:
+                rollback_errors.append(f"Hermes: {rollback_exc}")
         if transaction is not None and rollback_errors:
             raise _PixelModelTransactionUncertain('Remote consumer rollback is incomplete; managed model recovery is required') from exc
         if transaction is not None and owns_transaction:
@@ -5603,8 +5830,10 @@ def _activate_remote_provider_route(
         raise RuntimeError(detail) from exc
 
 
-def _deactivate_remote_provider_route(*, transaction=None) -> dict[str, object]:
+def _deactivate_remote_provider_route(*, transaction=None, defer_consumer_rollback: bool = False) -> dict[str, object]:
     """Restore the pre-remote gateway and Pixel route from private state."""
+    if defer_consumer_rollback and transaction is None:
+        raise RuntimeError("Deferred consumer rollback requires the lifecycle transaction")
     activation = _read_remote_provider_activation_state()
     if activation is None:
         return {"active": False, "restored": False, "reason": "not_activated"}
@@ -5620,6 +5849,7 @@ def _deactivate_remote_provider_route(*, transaction=None) -> dict[str, object]:
     pixel_before = transaction.previous if transaction is not None else _managed_pixel_runtime_contract()
     container_state = _capture_container_state("ods-litellm")
     relay_state = _capture_container_state(_PIXEL_MODEL_RELAY_CONTAINER)
+    hermes_before = _capture_remote_provider_hermes()
     owns_transaction = transaction is None
     if owns_transaction:
         transaction = _begin_pixel_model_transaction(load_env(env_path))
@@ -5629,6 +5859,7 @@ def _deactivate_remote_provider_route(*, transaction=None) -> dict[str, object]:
     litellm_attempted = False
     relay_attempted = False
     pixel_attempted = False
+    hermes_attempted = False
     try:
         raw_env = str(env_snapshot.get("text") or "")
         updates = {
@@ -5637,11 +5868,10 @@ def _deactivate_remote_provider_route(*, transaction=None) -> dict[str, object]:
         }
         remove_keys = set()
         for k, ek in (("hermesBaseUrl", "HERMES_LLM_BASE_URL"), ("hermesApiKey", "HERMES_LLM_API_KEY")):
-            if k in previous:
-                if previous[k]:
-                    updates[ek] = str(previous[k])
-                else:
-                    remove_keys.add(ek)
+            if previous.get(k):
+                updates[ek] = str(previous[k])
+            else:
+                remove_keys.add(ek)
         raw_env = _env_text_with_changes(raw_env.splitlines(), updates, remove_keys)
         _write_bound_env_text(env_path, raw_env)
         cloud_config = previous.get("cloudConfig")
@@ -5657,6 +5887,10 @@ def _deactivate_remote_provider_route(*, transaction=None) -> dict[str, object]:
         _wait_for_container_health("ods-litellm")
         restored_env = load_env(env_path)
         _verify_litellm_route(restored_env, model="ods/current")
+        hermes_attempted = True
+        _apply_remote_provider_hermes(
+            hermes_before, _restored_remote_provider_hermes_route(previous, hermes_before, restored_env),
+        )
         # Send Portal's relay back to the restored mode's route as well. Best
         # effort: disable is the fail-safe path and must not fail on the relay.
         relay_attempted = True
@@ -5700,7 +5934,7 @@ def _deactivate_remote_provider_route(*, transaction=None) -> dict[str, object]:
             rollback_errors.append(f"configuration: {rollback_exc}")
         if relay_attempted:
             _restore_pixel_model_relay(relay_state)
-        if litellm_attempted:
+        if litellm_attempted and not defer_consumer_rollback:
             try:
                 _restore_container_state("ods-litellm", container_state, recreate=True)
                 _wait_for_container_health("ods-litellm")
@@ -5711,6 +5945,11 @@ def _deactivate_remote_provider_route(*, transaction=None) -> dict[str, object]:
                 _reconcile_managed_pixel_contract(pixel_before)
             except Exception as rollback_exc:
                 rollback_errors.append(f"Pixel: {rollback_exc}")
+        if hermes_attempted and not defer_consumer_rollback:
+            try:
+                _restore_remote_provider_hermes(hermes_before)
+            except Exception as rollback_exc:
+                rollback_errors.append(f"Hermes: {rollback_exc}")
         if transaction is not None and rollback_errors:
             raise _PixelModelTransactionUncertain('Remote deactivation rollback is incomplete; managed model recovery is required') from exc
         if transaction is not None and owns_transaction:
@@ -5907,7 +6146,10 @@ def _remote_provider_mutation_paths(action: str) -> list[Path]:
 
 def _restore_remote_provider_snapshots(snapshots: dict[Path, dict]) -> None:
     for path, snapshot in reversed(list(snapshots.items())):
-        _restore_text_file(path, snapshot)
+        if path == INSTALL_DIR / ".env":
+            _restore_bound_env_file(path, snapshot)
+        else:
+            _restore_text_file(path, snapshot)
     _repair_remote_provider_secret_permissions()
 
 
@@ -5942,6 +6184,7 @@ def _apply_remote_provider_lifecycle_operation(payload: dict, plan: dict) -> dic
                 isinstance(route_status, dict)
                 and route_status.get("proven") is True
                 and active_runtime == runtime
+                and _remote_provider_hermes_matches(load_env(INSTALL_DIR / ".env"), runtime)
             ):
                 result["applied"] = True
                 result["unchanged"] = True
@@ -5989,11 +6232,22 @@ def _apply_remote_provider_lifecycle_operation(payload: dict, plan: dict) -> dic
         mutation_paths = _remote_provider_mutation_paths(action)
 
     snapshots: dict[Path, dict] = {}
+    consumer_snapshots: dict[Path, dict] = {}
     mutation_started = False
     pixel_transaction = None
     consumer_before = None
+    hermes_before = None
+    relay_before = None
     try:
         snapshots = {path: _snapshot_text_file(path) for path in mutation_paths}
+        if not (ssh_configure or ssh_enable):
+            # These files are restored on an outer failure after the inner
+            # consumer operation succeeds. They are never removal targets.
+            for path in (INSTALL_DIR / ".env", INSTALL_DIR / "config/litellm/cloud.yaml",
+                         _remote_provider_activation_state_path()):
+                consumer_snapshots[path] = _snapshot_text_file(path)
+            hermes_before = _capture_remote_provider_hermes()
+            relay_before = _capture_container_state(_PIXEL_MODEL_RELAY_CONTAINER)
         transaction_env = load_env(INSTALL_DIR / '.env')
         if (ssh_configure or ssh_enable) and transaction_env.get('PIXEL_OPENWEBUI_KEY'):
             current = _managed_pixel_runtime_contract()
@@ -6020,8 +6274,8 @@ def _apply_remote_provider_lifecycle_operation(payload: dict, plan: dict) -> dic
             if ssh_configure:
                 result["staged"] = True
             else:
+                consumer_before = _capture_container_state("ods-litellm")
                 if pixel_transaction is not None:
-                    consumer_before = _capture_container_state("ods-litellm")
                     result["activation"] = _activate_remote_provider_route(
                         route, transaction=pixel_transaction, defer_consumer_rollback=True,
                     )
@@ -6038,8 +6292,8 @@ def _apply_remote_provider_lifecycle_operation(payload: dict, plan: dict) -> dic
             if ssh_enable:
                 result["staged"] = True
             else:
+                consumer_before = _capture_container_state("ods-litellm")
                 if pixel_transaction is not None:
-                    consumer_before = _capture_container_state("ods-litellm")
                     result["activation"] = _activate_remote_provider_route(
                         route, transaction=pixel_transaction, defer_consumer_rollback=True,
                     )
@@ -6081,14 +6335,16 @@ def _apply_remote_provider_lifecycle_operation(payload: dict, plan: dict) -> dic
                     )
             _write_remote_provider_route_state(plan, resume=resume)
             mutation_started = True
-            result["activation"] = _deactivate_remote_provider_route(transaction=pixel_transaction) \
+            consumer_before = _capture_container_state("ods-litellm")
+            result["activation"] = _deactivate_remote_provider_route(transaction=pixel_transaction, defer_consumer_rollback=True) \
                 if pixel_transaction is not None else _deactivate_remote_provider_route()
             result["applied"] = True
         elif action == "remove":
             for path in mutation_paths:
                 _remove_remote_provider_file(path)
                 mutation_started = True
-            result["activation"] = _deactivate_remote_provider_route(transaction=pixel_transaction) \
+            consumer_before = _capture_container_state("ods-litellm")
+            result["activation"] = _deactivate_remote_provider_route(transaction=pixel_transaction, defer_consumer_rollback=True) \
                 if pixel_transaction is not None else _deactivate_remote_provider_route()
             result["applied"] = True
         if pixel_transaction is not None:
@@ -6116,7 +6372,10 @@ def _apply_remote_provider_lifecycle_operation(payload: dict, plan: dict) -> dic
         if mutation_started and snapshots:
             rollback["attempted"] = True
             try:
-                _restore_remote_provider_snapshots(snapshots)
+                restore_snapshots = dict(snapshots)
+                if consumer_before is not None:
+                    restore_snapshots.update(consumer_snapshots)
+                _restore_remote_provider_snapshots(restore_snapshots)
             except Exception as rollback_exc:
                 rollback["ok"] = False
                 if pixel_transaction is not None:
@@ -6131,6 +6390,8 @@ def _apply_remote_provider_lifecycle_operation(payload: dict, plan: dict) -> dic
                 _restore_container_state("ods-litellm", consumer_before, recreate=True)
                 if consumer_before.get("running"):
                     _wait_for_container_health("ods-litellm")
+                _restore_pixel_model_relay(relay_before)
+                _restore_remote_provider_hermes(hermes_before)
             except Exception as rollback_exc:
                 raise _PixelModelTransactionUncertain(
                     'Restored provider consumer could not be refreshed; managed model recovery is required'
@@ -17859,7 +18120,7 @@ def _patch_hermes_config_text(
         indent = re.escape(model_field_indent)
         return bool(re.match(rf"^{indent}(?:{field}|\"{field}\"|'{field}')\s*:", line))
 
-    if api_key:
+    if api_key is not None:
         # A retained owner file may use a quoted key or spaces before ':'.
         # Count only direct model fields, not a nested owner's api_key.
         # Refuse ambiguous duplicates rather than leave Hermes using a stale key.
@@ -17900,7 +18161,7 @@ def _patch_hermes_config_text(
         if base_url and "base_url" not in model_fields:
             new_lines.append(f"{model_indent}base_url: {json.dumps(base_url)}")
             changed = True
-        if api_key and "api_key" not in model_fields:
+        if api_key is not None and "api_key" not in model_fields:
             new_lines.append(f"{model_field_indent or model_indent}api_key: {json.dumps(api_key)}")
             changed = True
         if context_length and "context_length" not in model_fields:
@@ -17950,7 +18211,7 @@ def _patch_hermes_config_text(
             new_lines.append(new_line)
             changed = changed or new_line != line
             continue
-        if api_key and in_model_block and direct_model_field(line, "api_key"):
+        if api_key is not None and in_model_block and direct_model_field(line, "api_key"):
             model_fields.add("api_key")
             indent = model_field_indent
             new_line = f"{indent}api_key: {json.dumps(api_key)}"
@@ -17992,7 +18253,7 @@ def _patch_hermes_config_text(
         ])
         if base_url:
             new_lines.append(f"{model_indent}base_url: {json.dumps(base_url)}")
-        if api_key:
+        if api_key is not None:
             new_lines.append(f"{model_indent}api_key: {json.dumps(api_key)}")
         if context_length:
             new_lines.append(f"{model_indent}context_length: {int(context_length)}")
@@ -18040,13 +18301,19 @@ def _prepare_hermes_route_for_start() -> tuple[bool, str]:
         base_url = str(env.get("HERMES_LLM_BASE_URL") or "").strip()
         api_key = str(env.get("HERMES_LLM_API_KEY") or "")
         raw_context = str(env.get("MAX_CONTEXT") or env.get("CTX_SIZE") or "65536").strip()
+        remote_runtime = _active_remote_provider_pixel_runtime(fresh=True)
+        if remote_runtime is not None:
+            model_name = "ods/current"
+            base_url = "http://litellm:4000/v1"
+            api_key = str(env.get("LITELLM_KEY") or "")
+            raw_context = str(remote_runtime["contextLength"])
         try:
             context_length = int(raw_context)
         except ValueError:
             return False, "Hermes MAX_CONTEXT/CTX_SIZE must be an integer"
         if not model_name or not base_url or context_length <= 0:
             return False, "Hermes selected model route is incomplete"
-        if str(env.get("LLM_BACKEND") or "").lower() == "external" and not api_key.strip():
+        if (str(env.get("LLM_BACKEND") or "").lower() == "external" or remote_runtime is not None) and not api_key.strip():
             return False, "Hermes external gateway key is missing"
 
         template = INSTALL_DIR / "extensions" / "services" / "hermes" / "cli-config.yaml.template"
@@ -18084,7 +18351,7 @@ def _prepare_hermes_route_for_start() -> tuple[bool, str]:
                 context_length=context_length, api_key=api_key or None,
             )
             _atomic_write_text(live, live_text, mode=0o600)
-        elif str(env.get("LLM_BACKEND") or "").lower() == "external":
+        elif str(env.get("LLM_BACKEND") or "").lower() == "external" or remote_runtime is not None:
             # External selection must replace a stale local route. Preserve
             # unrelated owner settings, sessions, skills, and other data.
             patch(live, private_key=api_key)

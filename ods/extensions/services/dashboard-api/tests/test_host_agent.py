@@ -3956,6 +3956,13 @@ class TestRemoteProviderLifecycle:
     @pytest.fixture(autouse=True)
     def _auth(self, monkeypatch):
         monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+        # These gateway/Pixel fixtures do not install the optional Hermes
+        # service. Its real file and container boundary has a separate suite.
+        monkeypatch.setattr(_mod, "_capture_remote_provider_hermes", lambda: {
+            "template": {"exists": False}, "live": {"exists": False},
+            "container": {"exists": False, "running": False},
+        })
+        monkeypatch.setattr(_mod, "_capture_container_state", lambda _: {"exists": False, "running": False})
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX secret modes")
     def test_repairs_legacy_provider_secret_modes_without_widening_peer_token(
@@ -5470,7 +5477,7 @@ class TestRemoteProviderLifecycle:
         cloud_path.parent.mkdir(parents=True)
         data_dir.mkdir(parents=True)
         env_path = install_dir / ".env"
-        original_env = "ODS_MODE=local\nLLM_API_URL=http://llama-server:8080\n"
+        original_env = "ODS_MODE=local\nLLM_API_URL=http://llama-server:8080\nLITELLM_KEY=fixture-gateway\n"
         original_cloud = "known-good-cloud\n"
         env_path.write_text(original_env, encoding="utf-8")
         cloud_path.write_text(original_cloud, encoding="utf-8")
@@ -5722,7 +5729,7 @@ class TestRemoteProviderLifecycle:
         assert restored["ODS_MODE"] == "local"
 
     def test_remote_provider_activation_when_litellm_key_is_missing(self, tmp_path, monkeypatch):
-        """When LITELLM_KEY is absent at activation, HERMES_LLM_API_KEY is not overwritten."""
+        """A stale Hermes key cannot stand in for the gateway credential."""
         install_dir = tmp_path / "ods"
         data_dir = install_dir / "data"
         cloud_path = install_dir / "config" / "litellm" / "cloud.yaml"
@@ -5750,10 +5757,11 @@ class TestRemoteProviderLifecycle:
         monkeypatch.setattr(_mod, "_reconcile_managed_pixel_contract", lambda c, **kw: "reconciled")
         route = _mod._plan_remote_provider_lifecycle_operation(self._configure_payload())["route"]
 
-        _mod._activate_remote_provider_route(route)
-        activated_env = _mod.load_env(env_path)
-        assert activated_env["HERMES_LLM_BASE_URL"] == "http://litellm:4000/v1"
-        assert activated_env["HERMES_LLM_API_KEY"] == "no-key"
+        before = env_path.read_bytes()
+        with pytest.raises(RuntimeError, match="LiteLLM gateway key"):
+            _mod._activate_remote_provider_route(route)
+        assert env_path.read_bytes() == before
+        assert not _mod._remote_provider_activation_state_path().exists()
 
     def test_env_text_with_changes_vs_upsert_differences(self):
         """Assert exact normalization and update differences between _upsert_env_text and _env_text_with_changes."""
