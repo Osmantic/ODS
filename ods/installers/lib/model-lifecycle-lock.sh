@@ -46,7 +46,10 @@ ods_model_lifecycle_lock_acquire() {
     [[ "$wait_seconds" =~ ^[0-9]+$ ]] && (( wait_seconds <= 300 )) || return 1
     # The helper opens with O_NOFOLLOW relative to a validated directory fd.
     # In particular root never follows/chowns a precreated /tmp symlink.
-    coproc ODS_MODEL_LOCK { exec python3 "$helper" hold "$install_dir" "$parent_pid" "$wait_seconds"; }
+    # macOS Bash 3.2 parses this shared library before the Linux-only guard.
+    # Keep the Bash 4 coprocess syntax inside a literal; arguments expand only
+    # when that literal runs, with their existing quoting preserved.
+    eval 'coproc ODS_MODEL_LOCK { exec python3 "$helper" hold "$install_dir" "$parent_pid" "$wait_seconds"; }'
     ODS_MODEL_LIFECYCLE_LOCK_PID="$ODS_MODEL_LOCK_PID"
     exec {ODS_MODEL_LIFECYCLE_LOCK_FD}>&"${ODS_MODEL_LOCK[1]}"
     read_fd="${ODS_MODEL_LOCK[0]}"
