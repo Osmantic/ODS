@@ -149,6 +149,51 @@ else
     fail "Duplicate template IDs found ($total total, $unique unique)"
 fi
 
+# --- Test: ods template apply reports services it could not enable ---
+echo ""
+echo "--- Test: template apply does not claim success when a service is missing ---"
+# A real template lists Library extensions (aider, gitea, chromadb) that the
+# CLI cannot install. It used to print "Template applied" and exit 0 anyway.
+apply_root=$(mktemp -d)
+trap 'rm -rf "$apply_root"' EXIT
+apply_install="$apply_root/install"
+mkdir -p "$apply_install/templates" "$apply_install/extensions/services" "$apply_install/data/user-extensions" \
+    "$apply_install/extensions/library/services/libsvc"
+cp -R "$PROJECT_DIR/extensions/services/n8n" "$apply_install/extensions/services/n8n"
+mv "$apply_install/extensions/services/n8n/compose.yaml" "$apply_install/extensions/services/n8n/compose.yaml.disabled"
+cp -R "$PROJECT_DIR/scripts" "$apply_install/scripts"
+cp "$PROJECT_DIR/docker-compose.base.yml" "$apply_install/docker-compose.base.yml"
+printf 'ODS_MODE=local\n' > "$apply_install/.env"
+write_template() {
+    printf 'schema_version: ods.templates.v1\ntemplate:\n  id: %s\n  name: Test\n  services: [%s]\n' \
+        "$1" "$2" > "$apply_install/templates/$1.yaml"
+}
+apply_template() {
+    set +e
+    APPLY_OUTPUT=$(ODS_HOME="$apply_install" NO_COLOR=1 bash "$PROJECT_DIR/ods-cli" template apply "$1" </dev/null 2>&1)
+    APPLY_RC=$?
+    set -e
+}
+write_template partial "n8n, libsvc, ghost-service"
+apply_template partial
+if [[ "$APPLY_RC" -ne 0 \
+    && "$APPLY_OUTPUT" == *"Not installed: libsvc"* \
+    && "$APPLY_OUTPUT" == *"Could not enable: ghost-service"* \
+    && "$APPLY_OUTPUT" == *"only partly applied"* \
+    && "$APPLY_OUTPUT" != *"Template applied"* \
+    && -f "$apply_install/extensions/services/n8n/compose.yaml" ]]; then
+    pass "partial template apply exits non-zero, names what is missing, keeps what was enabled"
+else
+    fail "partial template apply: rc=$APPLY_RC output: $(printf '%s' "$APPLY_OUTPUT" | tail -n 6 | tr '\n' '|')"
+fi
+write_template complete "n8n"
+apply_template complete
+if [[ "$APPLY_RC" -eq 0 && "$APPLY_OUTPUT" == *"Template applied: complete"* ]]; then
+    pass "fully applied template still reports success"
+else
+    fail "complete template apply: rc=$APPLY_RC output: $(printf '%s' "$APPLY_OUTPUT" | tail -n 4 | tr '\n' '|')"
+fi
+
 # --- Summary ---
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

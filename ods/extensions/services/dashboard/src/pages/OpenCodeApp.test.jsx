@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { render } from '../test/test-utils'
 import OpenCodeApp from './OpenCodeApp'
 import { isLoopbackBrowser } from '../lib/serviceUrls'
@@ -86,6 +86,32 @@ describe('OpenCodeApp', () => {
 
     expect(await screen.findByRole('link', { name: /Open OpenCode/ })).toHaveAttribute('href', 'http://localhost:3003/')
     expect(fetch).toHaveBeenCalledWith('/api/apps/opencode/start', expect.objectContaining({ method: 'POST' }))
+  })
+
+  test.each([200, 503])('an earlier status poll (%s) cannot undo a completed start', async status => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    let resolvePoll
+    let reads = 0
+    routes['GET /api/apps/opencode'] = () => {
+      reads += 1
+      if (reads === 2) return new Promise(resolve => { resolvePoll = resolve })
+      return response(200, app(reads > 2 ? 'running' : 'stopped'))
+    }
+    routes['POST /api/apps/opencode/start'] = () => response(200, { opencode: app('running') })
+    try {
+      render(<OpenCodeApp />)
+      await screen.findByRole('button', { name: /Start OpenCode/ })
+      await act(async () => { vi.advanceTimersByTime(15000) })
+      fireEvent.click(screen.getByRole('button', { name: /Start OpenCode/ }))
+      await screen.findByRole('link', { name: /Open OpenCode/ })
+      await act(async () => { resolvePoll(await response(status, status === 200 ? app('stopped') : { detail: 'Old status unavailable' })) })
+      expect(screen.getByRole('status')).toHaveTextContent('Running')
+      expect(screen.getByRole('link', { name: /Open OpenCode/ })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /Start OpenCode/ })).not.toBeInTheDocument()
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   test('reports a start failure from the host', async () => {
