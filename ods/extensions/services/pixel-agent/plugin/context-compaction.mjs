@@ -85,12 +85,14 @@ export function createContextCompaction({agentId = 'pixel', readSession, readCon
   directory = path.join(process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.openclaw'), '.ods-context-compactions'),
   now = () => Date.now(), instanceId = PROCESS_INSTANCE, timeoutMs = 1920000,
   prepareModel = prepareStableContextModel, maximumRequests = 128, requireModelObservation = true,
-  busyRetryLimit = 120, busyRetryDelayMs = 250} = {}) {
+  busyRetryLimit = 120, busyRetryDelayMs = 250,
+  waitForBusyRetry = delayMs => new Promise(resolve => setTimeout(resolve, delayMs))} = {}) {
   if (!/^[a-z0-9_-]{1,64}$/.test(agentId) || typeof readSession !== 'function' ||
       typeof callGateway !== 'function' || !admission || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 ||
       timeoutMs > 1920000 || !Number.isSafeInteger(maximumRequests) || maximumRequests < 1 || maximumRequests > 512 ||
       !Number.isSafeInteger(busyRetryLimit) || busyRetryLimit < 1 || busyRetryLimit > 120 ||
-      !Number.isSafeInteger(busyRetryDelayMs) || busyRetryDelayMs < 1 || busyRetryDelayMs > 250) throw ERROR();
+      !Number.isSafeInteger(busyRetryDelayMs) || busyRetryDelayMs < 1 || busyRetryDelayMs > 250 ||
+      typeof waitForBusyRetry !== 'function') throw ERROR();
   const pending = new Map();
   const modelAttempts = new Map();
   const keyFor = user => { if (!USER.test(user ?? '')) throw ERROR(); return `agent:${agentId}:openai-user:${user}`; };
@@ -240,7 +242,7 @@ export function createContextCompaction({agentId = 'pixel', readSession, readCon
           if (!runtimeBusy(error) || attempt + 1 >= busyRetryLimit || performance.now() >= retryDeadline) throw error;
           task.dispatched = false;
           clearTimeout(timer);
-          await new Promise(resolve => setTimeout(resolve, Math.min(busyRetryDelayMs, Math.max(1, retryDeadline - performance.now()))));
+          await waitForBusyRetry(Math.min(busyRetryDelayMs, Math.max(1, retryDeadline - performance.now())));
           if (performance.now() >= retryDeadline) throw error;
           if (task.cancelled || pending.get(user) !== task || !admission.owns(item.leaseToken) || activeSession(sessionKey) ||
               revisionFor(user, entryFor(user)) !== item.sessionRevision) throw ERROR();
