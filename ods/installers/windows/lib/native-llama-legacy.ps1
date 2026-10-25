@@ -138,6 +138,7 @@ function Get-ODSNativeLlamaLegacyReasoning([hashtable]$EnvMap) {
     # --reasoning-format for binaries without --reasoning.
     $mode = Get-ODSNativeLlamaLegacyEnvValue $EnvMap 'LLAMA_REASONING'
     if (-not $mode) { $mode = 'off' }
+    if ($mode -in @('off', 'on', 'auto')) { $mode = $mode.ToLowerInvariant() }
     $format = $mode
     if ($mode -ceq 'off') { $format = 'none' } elseif ($mode -ceq 'on') { $format = 'deepseek' }
     return [pscustomobject]@{ Mode = $mode; Format = $format }
