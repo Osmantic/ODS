@@ -92,6 +92,8 @@ for path in ('/home/owner/ODS','/home/owner/ODS with spaces','/opt/local/ODS'):
 
 @pytest.fixture
 def contract_fixture(monkeypatch):
+    if sys.platform != 'linux':
+        pytest.skip('Linux installed owner metadata preflight')
     monkeypatch.syspath_prepend(str(SOURCE))
     monkeypatch.syspath_prepend(str(ODS / 'bin'))
     specification = importlib.util.spec_from_file_location('recovery_preflight_test', SOURCE / 'preflight.py')
