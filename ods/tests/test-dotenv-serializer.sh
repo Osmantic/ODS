@@ -26,13 +26,15 @@ values=(
     ""
     "it's a model"
     'it'"'"'s $HOME $(touch pwned) `id` C:\path "dq"'
+    'ends in a backslash $HOME\'
+    'C:\models\'
 )
 
 for value in "${values[@]}"; do
     quoted="$(dotenv_quote "$value")"
     expected="${value//$'\r'/ }"
     expected="${expected//$'\n'/ }"
-    if [[ "$expected" == *"'"* ]]; then
+    if [[ "$expected" == *"'"* || "$expected" == *\\ ]]; then
         expected="${expected//\`/ˋ}"
     fi
     printf 'TESTVAR=%s\n' "$quoted" > "$tmp_dir/.env"
@@ -109,6 +111,8 @@ compose_changed_values=(
     '"leading double quote'
     'tick`tock$$'
     'back\slash$"dq'"'"'sq'
+    'Tr0ub4dor&$3\'
+    ' padded backslash\'
 )
 for value in "${bare_values[@]}"; do
     [[ "$(dotenv_value "$value")" == "$value" ]] \

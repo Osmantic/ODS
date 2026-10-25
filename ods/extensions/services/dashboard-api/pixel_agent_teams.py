@@ -11,6 +11,7 @@ import copy
 from datetime import datetime
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -24,6 +25,8 @@ ACTIVE = {"queued", "running", "waiting", "stopping", "interrupted"}
 TERMINAL = {"completed", "failed", "cancelled", "skipped"}
 MAX_TEAMS = 128
 MAX_BYTES = 4 * 1024 * 1024
+logger = logging.getLogger(__name__)
+FINISHED_TEAM_STATUSES = {"completed", "failed", "cancelled", "stopped", "interrupted"}
 
 
 def publication_receipt(frame):
@@ -187,11 +190,64 @@ class TeamStore:
                 rows.append(row)
         return sorted(rows, key=lambda x: x["created"], reverse=True)
 
+    def _evictable(self, row):
+        # Finished teams, plus teams whose controller died with an earlier
+        # process (TeamManager.view reports those as interrupted). Teams run by
+        # this process, or waiting on the user, are never evicted.
+        if row["status"] in FINISHED_TEAM_STATUSES:
+            return True
+        return row["status"] in {"queued", "running", "stopping"} and row.get("instance") != self.instance
+
+    def _evict_finished(self):
+        """Make room for one more team when history is full, so MAX_TEAMS cannot lock out new teams.
+
+        Below MAX_TEAMS nothing is deleted. A full store loses only as many of
+        its oldest finished teams as it takes to admit one more team.
+        Completed/failed/cancelled/stopped teams go before older interrupted
+        ones, and a chat's newest interrupted team is never evicted.
+        """
+        total = sum(1 for _ in self.directory.glob("*.json"))
+        if total < MAX_TEAMS:
+            return
+        finished: list[tuple[float, Path]] = []
+        gates: dict[tuple[str, str], list[tuple[float, Path]]] = {}
+        for path in self.directory.glob("*.json"):
+            try:
+                row = self.get(path.stem[:64], path.stem[65:])
+                evictable = self._evictable(row)
+            except (ValueError, KeyError, TypeError) as exc:
+                # ValueError covers truncated JSON, non-private files and stray
+                # names; Key/TypeError a row that is not a team. Leave that file
+                # alone (it still counts toward MAX_TEAMS) so one bad file cannot
+                # block every new team.
+                logger.warning("Skipping unreadable agent team file %s during pruning: %s", path.name, exc)
+                continue
+            if not evictable:
+                continue
+            stamp = row.get("updated", row["created"])
+            if row["status"] in ACTIVE:
+                # Interrupted or stale-active teams block new teams in their chat
+                # until the user confirms Stop (TeamManager._check_admission).
+                gates.setdefault((path.stem[:64], row["chat_id"]), []).append((stamp, path))
+            else:
+                finished.append((stamp, path))
+        finished.sort(key=lambda item: item[0])
+        # Only a chat's older gates may go; its newest gate always survives, so
+        # pruning never silently lifts the Stop confirmation.
+        spare = sorted(item for rows in gates.values() for item in sorted(rows)[:-1])
+        for _stamp, path in finished + spare:
+            if total < MAX_TEAMS:
+                break
+            path.unlink()
+            total -= 1
+
     def save(self, owner, row):
         path = self._path(owner, row["id"])
         encoded = json.dumps(row, ensure_ascii=False).encode("utf-8")
         if len(encoded) > MAX_BYTES:
             raise TeamConflict("Agent history reached its size limit; existing history was preserved")
+        if not path.exists():
+            self._evict_finished()
         if not path.exists() and sum(1 for _ in self.directory.glob("*.json")) >= MAX_TEAMS:
             raise TeamConflict("Agent history is full; existing teams were preserved")
         fd, temporary = tempfile.mkstemp(prefix=".team-", dir=self.directory)

@@ -99,6 +99,60 @@ function renderModels() {
   return render(createElement(MemoryRouter, null, createElement(Models)))
 }
 
+test.each([false, true])('shows the live model API instead of the loaded local engine (compact=%s)', (compact) => {
+  useModelsMock.mockReturnValue(baseState({
+    odsMode: 'local', configuredMode: 'cloud', llmBackend: 'llama-server',
+    currentModel: 'qwen3.5-9b-q4', loadedModel: 'Qwen3.5-9B-Q4_K_M.gguf',
+    activeRuntime: {source: 'remote-provider', model: 'deepseek-v4.1-flash', contextLength: 409600},
+    canActivateModels: false, activationModeError: 'Local mode does not match configured cloud mode.',
+    models: [model({status: 'loaded'})],
+  }))
+  render(createElement(MemoryRouter, null, createElement(Models, {compact})))
+  const runtime = screen.getByRole('region', {name: 'Model runtime'})
+  expect(runtime).toHaveTextContent('Using a model API')
+  expect(runtime).toHaveTextContent('deepseek-v4.1-flash')
+  expect(runtime).toHaveTextContent('400K')
+  expect(runtime).not.toHaveTextContent('Qwen')
+  expect(within(runtime).getByRole('link', {name: 'Model connections'})).toHaveAttribute('href', '/settings?section=remote')
+  expect(screen.queryByText('Local model runtime unavailable')).toBeNull()
+  expect(screen.queryByText(/Runtime: Local/)).toBeNull()
+  expect(screen.getByText('Loaded locally')).toBeVisible()
+  expect(screen.queryByText('Active')).toBeNull()
+  expect(screen.getByRole('button', {name: 'Configure context for Qwen 3.5 9B'})).toBeDisabled()
+})
+
+test('keeps the local Active state when no active remote route is verified', () => {
+  useModelsMock.mockReturnValue(baseState({
+    currentModel: 'qwen3.5-9b-q4',
+    models: [model({status: 'loaded'})],
+  }))
+  renderModels()
+  expect(screen.queryByText('Loaded locally')).toBeNull()
+  expect(screen.getByText('Active')).toBeVisible()
+  expect(screen.getByRole('button', {name: 'Configure context for Qwen 3.5 9B'})).toBeEnabled()
+})
+
+test('keeps the existing diagnostic when no active remote route is verified', () => {
+  useModelsMock.mockReturnValue(baseState({
+    odsMode: 'local', configuredMode: 'cloud', llmBackend: 'llama-server', activeRuntime: null,
+    canActivateModels: false, activationModeError: 'Runtime status is unconfirmed.',
+  }))
+  renderModels()
+  expect(screen.queryByText('Using a model API')).toBeNull()
+  expect(screen.getByText('Runtime status is unconfirmed.')).toBeVisible()
+  expect(screen.getByText('Local model runtime unavailable')).toBeVisible()
+})
+
+test('does not present a previous model API as active during a connection change', () => {
+  useModelsMock.mockReturnValue(baseState({
+    activeRuntime: {source: 'remote-provider', model: 'deepseek-v4.1-flash', contextLength: 409600},
+    modelLifecycle: {active: true, operation: 'remote_provider_apply'}, canActivateModels: false,
+  }))
+  renderModels()
+  expect(screen.queryByText('Using a model API')).toBeNull()
+  expect(screen.getByText(/ODS is checking or changing the model connection/)).toBeVisible()
+})
+
 function confirmModelRun() {
   fireEvent.click(screen.getByRole('button', { name: 'Run model' }))
 }

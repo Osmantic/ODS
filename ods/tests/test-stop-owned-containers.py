@@ -228,10 +228,12 @@ def test_disable_renames_recipe_only_after_safe_recovery(tmp_path, recovery_succ
               'check_install() { :; }; load_env() { :; }; sr_load() { :; }\n'
               'get_compose_flags() { return 2; }; sr_resolve() { echo "$1"; }\n'
               'declare -A SERVICE_CATEGORIES=([example]=optional); SERVICE_IDS=(example)\n'
+              'declare -A SERVICE_TYPES=([example]=docker)\n'
               'docker() { echo UNEXPECTED_COMPOSE; return 99; }\n'
               'warn() { :; }; success() { :; }; error() { echo "$*" >&2; exit 1; }\n'
               '_regenerate_compose_flags() { echo regenerated > "$INSTALL_DIR/flags"; }\n')
     common += shell_function(ODS / 'ods-cli', '_stop_owned_containers_for_recovery')
+    common += shell_function(ODS / 'ods-cli', '_ods_cli_reject_host_service')
     common += shell_function(ODS / 'ods-cli', 'cmd_disable')
     result = subprocess.run([bash, '-s', '--', str(tmp_path), sys.executable],
                             input=common + '\ncmd_disable example\n', text=True, capture_output=True, timeout=15)
@@ -267,7 +269,9 @@ def test_disable_preserves_selection_when_compose_stop_fails(tmp_path):
               'check_install() { :; }; load_env() { :; }; sr_load() { :; }\n'
               'get_compose_flags() { echo "-f docker-compose.base.yml"; }; sr_resolve() { echo "$1"; }\n'
               'declare -A SERVICE_CATEGORIES=([example]=optional); SERVICE_IDS=(example)\n'
+              'declare -A SERVICE_TYPES=([example]=docker)\n'
               'warn() { echo "$*" >&2; }; success() { :; }; error() { echo "$*" >&2; exit 1; }\n')
+    common += shell_function(ODS / 'ods-cli', '_ods_cli_reject_host_service')
     common += shell_function(ODS / 'ods-cli', 'cmd_disable')
     result = subprocess.run(['bash', '-s', '--', str(tmp_path), sys.executable],
                             input=common + '\ncmd_disable example\n', text=True,

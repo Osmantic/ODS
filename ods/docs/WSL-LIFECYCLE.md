@@ -78,6 +78,18 @@ permission to kill a reused PID. Commands serialize through a private file lock.
 New files explicitly receive the current owner's SID before they are used, even
 when the initiating SSH token would otherwise assign Administrators ownership.
 Existing files with a different owner or a broader ACL are rejected, not reclaimed.
+New tasks use the owner's fully qualified Windows account, verified against the
+same SID used by the installation manifest. This avoids ambiguous local account
+names such as `BLICK\Blick`; tasks still run only as the signed-in owner with
+limited privileges and no stored password.
+
+If Windows still rejects the task's `UserId` and the local PC name matches the
+username, setup stops with a specific recovery message. In Windows Settings,
+open **System > About > Rename this PC**, choose a different PC name, restart
+Windows, then rerun the current installer in a normal PowerShell window. Keep
+the existing Ubuntu distribution and ODS data. ODS does not rename the PC or
+account automatically. Other task registration errors retain their original
+diagnostic; a domain or AzureAD account is not treated as a local name collision.
 The controller checks only its private request file while waiting; it never
 periodically launches `wsl.exe` to revive a stopped distribution.
 
@@ -105,7 +117,7 @@ For an already-managed installation missing its Windows sign-in task, repair
 registration without rerunning setup or starting WSL:
 
 ```powershell
-powershell -File .\installers\wsl-lifecycle.ps1 -Action enable-startup `
+powershell -ExecutionPolicy Bypass -File .\installers\wsl-lifecycle.ps1 -Action enable-startup `
   -Distro Ubuntu-24.04 -InstallRoot /home/owner/ods `
   -DockerDesktopPath 'C:\Program Files\Docker\Docker\Docker Desktop.exe'
 ```

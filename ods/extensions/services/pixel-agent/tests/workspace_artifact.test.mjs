@@ -28,6 +28,9 @@ test('registered artifact tool guides code to broker packaging without renaming 
  assert.match(tool.description,/never rename source.*\.txt/i);
  assert.match(tool.description,/no shell packaging, staging file or cleanup is needed/);
  assert.match(tool.description,/at most 4 MiB/);
+ assert.match(tool.description,/NEW deliverable.*non-hidden workspace path/);
+ assert.match(tool.description,/Preserve the exact requested outer filename, including hyphens/);
+ assert.match(tool.description,/artifact tool, not a website preview tool/);
 });
 
 test('unsupported code rejection explains ZIP recovery without spending the bounded publication budget',async()=>{
@@ -117,6 +120,40 @@ test('unsupported team roles and noninteractive surfaces are rejected before bro
  }
  const f=fixture();f.guard.observeRun({...context,sessionKey:'agent:pixel:subagent:other'},'pixel',{prompt:'Report'});
  assert.equal(f.guard.reserveWorkspaceArtifact({...context,sessionKey:'agent:pixel:subagent:other'}),false);
+});
+
+test('hidden new-deliverable path is refused with a narrow diagnostic, then corrected to a safe path preserving the requested hyphenated filename',async()=>{
+ let calls=0;
+ const requested='unicode-notes.zip';
+ const safeArgs={relativePath:'Playground/'+requested};
+ const safePayload=normalizeWorkspaceArtifact(safeArgs);
+ const safeReceipt={...receipt,...safeArgs,file:{path:requested,bytes:10,sha256:'b'.repeat(64)}};
+ const safeHost={...host,...safeReceipt};
+ const f=fixture(async()=>{calls++;return safeHost});
+ const hiddenArgs={relativePath:'.openclaw/tmp/'+requested};
+ f.admission.before({toolName:ARTIFACT_TOOL,params:hiddenArgs},context);
+ const rejected=await f.tool.execute(context.toolCallId,hiddenArgs);
+ assert.equal(rejected.details.code,'invalid-arguments');
+ assert.match(rejected.content[0].text,/hidden path component/);
+ assert.match(rejected.content[0].text,/non-hidden workspace path/);
+ assert.match(rejected.content[0].text,/argument rejection says nothing about file permissions or broker availability/);
+ assert.equal(calls,0);
+ const hiddenSource={relativePath:'project.zip',sourcePath:'.private-owner-docs/project'};
+ f.admission.before({toolName:ARTIFACT_TOOL,params:hiddenSource},context);
+ const sourceRejected=await f.tool.execute(context.toolCallId,hiddenSource);
+ assert.equal(sourceRejected.details.code,'invalid-arguments');
+ assert.match(sourceRejected.content[0].text,/sourcePath contains a hidden path component/);
+ assert.match(sourceRejected.content[0].text,/Preserve the selected source/);
+ assert.doesNotMatch(sourceRejected.content[0].text,/private-owner-docs/);
+ assert.equal(calls,0);
+ f.admission.before({toolName:ARTIFACT_TOOL,params:safeArgs},context);
+ const corrected=await f.tool.execute(context.toolCallId,safeArgs);
+ assert.equal(corrected.isError,undefined);
+ assert.equal(calls,1);
+ assert.equal(corrected.details.relativePath,safeArgs.relativePath);
+ assert.equal(corrected.details.file.path,requested);
+ assert.deepEqual(f.guard.deliveryVerificationForRun(context.runId).artifacts,[safeReceipt]);
+ assert.equal(safePayload.relativePath,safeArgs.relativePath);
 });
 
 test('wrong path field gives schema correction without consuming admission or a publication attempt',async()=>{
