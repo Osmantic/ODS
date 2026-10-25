@@ -258,6 +258,9 @@ socket, never ambient Docker context/environment.
 CLI: `serve` accepts authenticated local requests; `request` runs the fixed
 native helper request; `health` verifies the installed image identity without
 executing a site; `export` reads only `/previews` in the publisher container.
+`request`, `health` and `export` print one JSON result and exit 0, also on
+failure. `serve` prints its failure receipt and exits non-zero when it cannot
+start or stops with an error, so the unit's `Restart=on-failure` retries it.
 Native export uses fixed `docker exec` argv and actual container UID ownership.
 Export grants the publisher no Docker authority. Snapshots are reopened with
 the publisher's stable no-symlink file checks and rehashed, then rehashed again

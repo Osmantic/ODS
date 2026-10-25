@@ -299,6 +299,7 @@ tests/test_pixel_release_resume.py
 tests/test_pixel_source_upgrade_diagnostics.py
 tests/test_pixel_verify_lifecycle.py
 tests/test_portal_identity.py
+tests/test_preview_inspection.py
 tests/test_preview_inspection_delayed_entrance.py
 tests/test_preview_inspection_paint.py
 tests/test_preview_inspection_press.py

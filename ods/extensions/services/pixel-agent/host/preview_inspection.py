@@ -520,6 +520,13 @@ def main():
             raise Invalid("invalid invocation")
     except Exception:
         result = failure("unavailable", request)
+        if sys.argv[1:] == ["serve"]:
+            # No caller reads a serving broker's receipt, and systemd restarts
+            # the broker only after a failed exit. A broker that cannot start
+            # yet, as during boot, or that stops with an error logs the receipt
+            # and crashes with its cause so Restart=on-failure retries it.
+            sys.stdout.buffer.write(canonical(result) + b"\n")
+            raise
     sys.stdout.buffer.write(canonical(result) + b"\n")
 
 

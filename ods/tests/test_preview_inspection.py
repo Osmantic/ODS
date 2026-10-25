@@ -340,6 +340,46 @@ class ProtocolTests(unittest.TestCase):
             with self.assertRaises(publisher.PreviewError):
                 broker.snapshot_bundle(previews, request)
 
+    def test_serve_exits_nonzero_when_it_cannot_start(self):
+        # Seen live under WSL2 + Docker Desktop: after the VM restarted, the
+        # broker could not start, printed its receipt and exited 0. Its unit
+        # restarts only on failure, so the broker stayed down and every Portal
+        # build failed browser inspection until a manual restart.
+        import subprocess
+
+        # Paths that are not ready, as during boot. The child never reads the
+        # installed configuration or replaces a live broker's socket.
+        child = (
+            "import pathlib, sys\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "import preview_inspection as broker\n"
+            "broker.CONFIG = pathlib.Path(sys.argv[2], 'missing.json')\n"
+            "broker.SOCKET = pathlib.Path(sys.argv[2], 'run', 'control.sock')\n"
+            "sys.argv[1:] = sys.argv[3:]\n"
+            "raise SystemExit(broker.main())\n"
+        )
+        host = str(Path(broker.__file__).resolve().parent)
+        with tempfile.TemporaryDirectory() as tmp:
+
+            def run(mode):
+                return subprocess.run(
+                    [sys.executable, "-B", "-c", child, host, tmp, mode],
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    timeout=30,
+                )
+
+            serving = run("serve")
+            # Restart=on-failure retries an exit status above 0; the journal
+            # keeps the receipt and names the cause.
+            self.assertGreater(serving.returncode, 0, serving.stderr.decode(errors="replace"))
+            self.assertEqual(protocol.strict_json(serving.stdout)["errorCode"], "unavailable")
+            self.assertIn(b"missing.json", serving.stderr)
+            # Callers parse the other modes' receipt, which still exits 0.
+            health = run("health")
+            self.assertEqual(health.returncode, 0, health.stderr.decode(errors="replace"))
+            self.assertEqual(protocol.strict_json(health.stdout)["errorCode"], "unavailable")
+
 
 STORAGE_ERROR = (
     "Failed to read the 'sessionStorage' property from 'Window': The document "
