@@ -69,7 +69,7 @@ cost-map fetch, n8n and the Whisper Hugging Face client.
 ods status
 
 # Test LLM (should work offline)
-curl http://localhost:8080/v1/chat/completions \
+curl http://localhost:11434/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model": "local", "messages": [{"role": "user", "content": "Hello"}]}'
 

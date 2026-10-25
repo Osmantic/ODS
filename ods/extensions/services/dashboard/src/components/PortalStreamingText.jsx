@@ -61,7 +61,7 @@ function markDocumentDownloads() {
           const label=text(child).trim(), href=String(child.properties?.href || '')
           const named=/^download(?:\s+(?:verified\s+)?([A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z0-9]+))?\s*:?$/i.exec(label)
           const explicitLabel=Boolean(named)
-          const prefixed=/(?:^|\n)\s*download\s*:\s*$/i.test(before)
+          const prefixed=/(?:^|\n)\s*download(?:\s+link)?\s*:\s*$/i.test(before)
           const filename=named?.[1] || (prefixed && /^([A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z0-9]+)$/.exec(label)?.[1])
           const rawLink=label===href || label===href.split('/').at(-1)
           if(explicitLabel || filename || (rawLink && prefixed)) {
@@ -77,7 +77,7 @@ function markDocumentDownloads() {
         } else if(child.tagName==='img') {
           const label=text(child).trim()
           const named=/^download\s+(?:verified\s+)?(.+?)\s*:?$/i.exec(label)
-          const prefixed=/(?:^|\n)\s*download\s*:\s*$/i.test(before) || (downloadPrefix && !before.trim())
+          const prefixed=/(?:^|\n)\s*download(?:\s+link)?\s*:\s*$/i.test(before) || (downloadPrefix && !before.trim())
           const filename=named?.[1] || (prefixed ? label : '')
           if(/^[A-Za-z0-9][A-Za-z0-9._-]*\.(?:md|markdown|txt|csv|tsv|json|pdf|zip|rar|docx|xlsx|pptx)$/i.test(filename)) {
             // An image-shaped document label must not load the model's URL.
@@ -88,7 +88,7 @@ function markDocumentDownloads() {
             child.children=[{type:'text',value:label}]
           }
         }
-        const nextPrefix=child.tagName==='p' && previous?.tagName==='p' && /^download\s*:$/i.test(text(previous).trim())
+        const nextPrefix=child.tagName==='p' && previous?.tagName==='p' && /^download(?:\s+link)?\s*:$/i.test(text(previous).trim())
         visit(child,nextPrefix)
         before+=text(child)
         if(child.type!=='text' || child.value.trim())previous=child
