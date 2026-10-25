@@ -10,7 +10,10 @@ Privacy Shield sits between your applications and the LLM API, automatically scr
 
 - **Automatic PII Detection**: Uses regex patterns to detect emails, phone numbers, SSNs, credit cards, IP addresses, and API keys
 - **Anonymization**: Replaces PII with placeholders (e.g., `<PII_EMAIL_1>`, `<PII_PHONE_2>`)
-- **Session Persistence**: Remembers PII-to-placeholder mappings per session for consistent responses
+- **Request Isolation**: Each request gets its own PII-to-placeholder map, so one client's PII is never restored into another client's response (all clients share `SHIELD_API_KEY`). Send `X-Shield-Session: <opaque id>` to keep a mapping across requests; it is keyed on the API key plus that id; only those opt-in session maps are capped by `SHIELD_MAX_PII_ENTRIES` (LRU), while request-local maps are never evicted mid-request. Because every client shares `SHIELD_API_KEY`, the session id is the only thing separating clients: use a random, unguessable id (for example a UUID4); ids like `1` or `default` share one map across every client that picks them
+- **Stats**: `/stats` keeps its fields; `total_pii_scrubbed` and the new `requests_scrubbed` are cumulative since process start
+- **JSON bodies**: scrubbed after decoding; when PII is replaced the body is re-serialised with non-ASCII kept as-is and compact/spaced separators matching the input
+- **JSON-aware scrubbing**: JSON request bodies are decoded and every string value and key is scrubbed, so `@`-style escapes cannot bypass detection
 - **High Performance**: ~208 req/s throughput with caching
 - **Zero Configuration**: Works out of the box with sensible defaults
 
@@ -60,6 +63,7 @@ Environment variables (set in `.env`):
 | `PII_CACHE_ENABLED` | true | Enable session PII caching |
 | `PII_CACHE_SIZE` | 1000 | Max cached sessions |
 | `PII_CACHE_TTL` | 300 | Session TTL in seconds |
+| `SHIELD_MAX_PII_ENTRIES` | 4096 | Max distinct PII values per map (least recently used evicted) |
 
 For example, `SHIELD_PORT=18085` publishes `127.0.0.1:18085` while Docker
 health checks and dashboard requests continue to use `privacy-shield:8085`.
