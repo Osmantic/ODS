@@ -8,8 +8,10 @@ ods_preflight_host_native_llm() {
 }
 
 ods_preflight_uses_litellm() {
-    local mode="${ODS_MODE:-local}"
-    ods_preflight_host_native_llm || [[ -n "${EXTERNAL_LLM_URL:-}" ]] || [[ "${mode,,}" == "cloud" ]]
+    # ods-preflight.sh runs under macOS /bin/bash 3.2, which has no Bash 4 case conversion.
+    local mode
+    mode=$(printf '%s' "${ODS_MODE:-local}" | tr '[:upper:]' '[:lower:]')
+    ods_preflight_host_native_llm || [[ -n "${EXTERNAL_LLM_URL:-}" ]] || [[ "$mode" == "cloud" ]]
 }
 
 # Status leaves out the in-stack inference services a LiteLLM route does not

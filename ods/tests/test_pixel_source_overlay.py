@@ -33,6 +33,18 @@ def save(path, value):
     path.chmod(0o600)
 
 
+@pytest.fixture(autouse=True)
+def installer_umask():
+    # The upgrader refuses group-writable trees. Create every fixture with the
+    # installer's modes, whatever the host's umask (Ubuntu's default 0002
+    # would otherwise make them unsafe).
+    original_umask = os.umask(0o022)
+    try:
+        yield
+    finally:
+        os.umask(original_umask)
+
+
 @pytest.fixture
 def held_overlay(tmp_path, monkeypatch):
     return make_held_overlay(tmp_path, monkeypatch)

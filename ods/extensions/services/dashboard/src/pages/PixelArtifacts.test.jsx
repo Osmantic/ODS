@@ -40,6 +40,10 @@ async function send() {
 }
 
 it.each([
+  '**Download link:** [report.md](https://untrusted.example/s/site-aaaaaaaaaaaaaaaaaaaaaaaa)',
+  'Download link: [report.md](https://untrusted.example/s/site-aaaaaaaaaaaaaaaaaaaaaaaa)',
+  '**DOWNLOAD LINK:** [report.md](https://untrusted.example/s/site-aaaaaaaaaaaaaaaaaaaaaaaa)',
+  '**Download link:** [![report.md](https://untrusted.example/invented)](https://untrusted.example/invented)',
   '**Download**: https://portal.openclaw.io/s/report.md',
   'Download: <https://untrusted.example/s/report.md>',
   '[Download](https://untrusted.example/s/report.md)',
@@ -79,6 +83,10 @@ it.each([
 })
 
 it.each([
+  '> Download link: [report.md](https://untrusted.example/s/report.md)',
+  '`Download link:` [report.md](https://untrusted.example/s/report.md)',
+  'Download link: [Source](https://untrusted.example/s/report.md)',
+  'See the download link: [report.md](https://untrusted.example/s/report.md)',
   '[Source](https://untrusted.example/s/report.md)',
   '> [Download](https://untrusted.example/s/report.md)',
   '`[Download](https://untrusted.example/s/report.md)`',
@@ -123,7 +131,7 @@ it('refuses an authored download whose filename matches multiple completed recei
   expect(fetch.mock.calls.filter(([url])=>url.startsWith('/pixel-preview/'))).toHaveLength(0)
 })
 
-it.each(['[Download report.md]','Download: [report.md]'])('does not substitute a different receipt when a named download is ambiguous: %s',async label=>{
+it.each(['[Download report.md]','Download: [report.md]','Download link: [report.md]'])('does not substitute a different receipt when a named download is ambiguous: %s',async label=>{
   const other={...artifact,relativePath:'Other/report.md',siteId:`site-${'c'.repeat(24)}`,sha256:'c'.repeat(64)}
   const href=`https://untrusted.example/${artifact.siteId}/report.md`
   reply=stream([{choices:[{delta:{content:`${label}(${href})`}}]},

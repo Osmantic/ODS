@@ -1,5 +1,5 @@
 #!/bin/bash
-# Keep the owner's provider configuration across source upgrades. Docker may
+# Keep owner-managed configuration across source upgrades. Docker may
 # still bind its old inode, so replacing it can hide a broken next startup.
 ods_prepare_retained_cloud_provider() {
     local install_dir="$1" cloud helper
@@ -14,10 +14,43 @@ ods_prepare_retained_cloud_provider() {
     "${ODS_PYTHON_CMD:-python3}" "$helper" "$install_dir" || return 1
 }
 
+ods_validate_searxng_settings_path() {
+    local install_dir="$1" config_dir searxng_dir settings
+    config_dir="$install_dir/config"
+    searxng_dir="$config_dir/searxng"
+    settings="$searxng_dir/settings.yml"
+    if [[ -L "$config_dir" ]]; then
+        error "Refusing to use symlinked config directory: $config_dir"
+        return 1
+    fi
+    if [[ -e "$config_dir" && ! -d "$config_dir" ]]; then
+        error "Refusing to use non-directory config path: $config_dir"
+        return 1
+    fi
+    if [[ -L "$searxng_dir" ]]; then
+        error "Refusing to use symlinked SearXNG config directory: $searxng_dir"
+        return 1
+    fi
+    if [[ -e "$searxng_dir" && ! -d "$searxng_dir" ]]; then
+        error "Refusing to use non-directory SearXNG config path: $searxng_dir"
+        return 1
+    fi
+    if [[ -L "$settings" ]]; then
+        error "Refusing to use symlinked SearXNG settings file: $settings"
+        return 1
+    fi
+    if [[ -e "$settings" && ! -f "$settings" ]]; then
+        error "Refusing to use non-regular SearXNG settings file: $settings"
+        return 1
+    fi
+    return 0
+}
+
 ods_copy_install_source() {
     local source_dir="$1" install_dir="$2" log_file="$3"
     local cloud="$install_dir/config/litellm/cloud.yaml" dotfile
-    local -a cloud_excludes=() held_source_excludes=()
+    local -a cloud_excludes=() held_source_excludes=() searxng_excludes=()
+    ods_validate_searxng_settings_path "$install_dir" || return 1
     if [[ -n "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]; then
         # The protected source transaction has already installed and verified
         # these exact trees under admission hold. Do not overwrite them again
@@ -33,6 +66,16 @@ ods_copy_install_source() {
         cloud_excludes=(--exclude='/config/litellm/cloud.yaml')
     fi
 
+    # Protect the owner's bytes before the source template can replace them.
+    # Force regeneration is handled by phase 06 using the configured secret.
+    if [[ "${FORCE:-false}" != true && -f "$install_dir/config/searxng/settings.yml" ]]; then
+        command -v rsync >/dev/null 2>&1 || {
+            error "Install rsync before upgrading an existing SearXNG settings file."
+            return 1
+        }
+        searxng_excludes=(--exclude='/config/searxng/settings.yml')
+    fi
+
     [[ "$source_dir" != "$install_dir" ]] || return 0
     if command -v rsync >/dev/null 2>&1; then
         # DrvFS checkouts can report 0777 even for the source root. Keep
@@ -45,7 +88,7 @@ ods_copy_install_source() {
             --exclude='dist/' --exclude='*.log' --exclude='.current-mode' \
             --exclude='.profiles' --exclude='.target-model' \
             --exclude='.target-quantization' --exclude='.offline-mode' \
-            "${cloud_excludes[@]}" "${held_source_excludes[@]}" "$source_dir/" "$install_dir/"
+            "${cloud_excludes[@]}" "${searxng_excludes[@]}" "${held_source_excludes[@]}" "$source_dir/" "$install_dir/"
     else
         # This fallback is used only when no existing provider leaf needs
         # preservation. A rerun cannot safely use an unfiltered recursive cp.
