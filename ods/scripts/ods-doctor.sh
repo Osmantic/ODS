@@ -786,7 +786,7 @@ import re
 import shlex
 import sys
 from datetime import datetime, timezone
-from urllib import error, request
+from urllib import error, parse, request
 
 cap_file, preflight_file, report_file, docker_cli, docker_daemon, compose_cli, dashboard_http, webui_http, dashboard_port, webui_port, ext_diagnostics_json, stt_cached, stt_model_name, stt_recovery, tts_http, tts_port, dgx_spark_gpu, dgx_spark_gpu_name, dgx_spark_compute_cap, llama_cuda_archs, dgx_spark_arch_status, dgx_spark_arch_message, hermes_slash_worker_count, hermes_slash_worker_max_count, ods_managed_container_count, ods_running_container_count, root_dir_arg, webui_enabled = sys.argv[1:]
 # Passed in the environment so callers of this block keep its argument list.
@@ -1096,24 +1096,22 @@ def _looks_like_litellm_route(value):
 
 
 def _looks_like_local_llama_route(value):
-    lowered = (value or "").lower()
-    if not lowered:
+    value = (value or "").strip()
+    if not value:
         return False
-    return (
-        "llama-server" in lowered
-        or "ods-llama-server" in lowered
-        or "//model-router:" in lowered
-        or "//ods-model-router:" in lowered
-        or "localhost:9099" in lowered
-        or "127.0.0.1:9099" in lowered
-        or "host.docker.internal:9099" in lowered
-        or "localhost:8080" in lowered
-        or "127.0.0.1:8080" in lowered
-        or "host.docker.internal:8080" in lowered
-        or "localhost:11434" in lowered
-        or "127.0.0.1:11434" in lowered
-        or "host.docker.internal:11434" in lowered
-    )
+    try:
+        route = parse.urlsplit(value if "://" in value or value.startswith("//") else "//" + value)
+        hostname = (route.hostname or "").lower().rstrip(".")
+        port = route.port
+    except ValueError:
+        return False
+    # A provider path or query can contain a local URL without selecting it.
+    # Diagnose the actual destination rather than matching text anywhere.
+    if hostname in {"llama-server", "ods-llama-server", "model-router", "ods-model-router"}:
+        return True
+    return hostname in {"localhost", "127.0.0.1", "::1", "host.docker.internal"} and port in {
+        8080, 9099, 11434,
+    }
 
 
 def _source(path):

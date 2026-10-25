@@ -65,6 +65,19 @@ trap cleanup EXIT
 [[ -f "$ENV_PATH" ]] && HAD_ENV=true && cp "$ENV_PATH" "$ENV_BACKUP"
 [[ -f "$FLAGS_PATH" ]] && HAD_FLAGS=true && cp "$FLAGS_PATH" "$FLAGS_BACKUP"
 
+run_doctor() {
+    rm -f "$REPORT"
+    if ! (cd "$ROOT_DIR" && bash scripts/ods-doctor.sh "$REPORT" >"$TMP_DIR/doctor.log" 2>&1); then
+        cat "$TMP_DIR/doctor.log"
+        fail "doctor command failed"
+        exit 1
+    fi
+    if ! jq -e '.diagnoses | type == "array"' "$REPORT" >/dev/null; then
+        fail "doctor did not produce a valid diagnosis report"
+        exit 1
+    fi
+}
+
 # Test 1: In-stack model-router is diagnosed as a local route in cloud mode
 cat > "$ENV_PATH" <<'ENV'
 ODS_MODE=cloud
@@ -75,7 +88,7 @@ cat > "$FLAGS_PATH" <<'FLAGS'
 -f docker-compose.base.yml -f docker-compose.cloud.yml
 FLAGS
 
-(cd "$ROOT_DIR" && bash scripts/ods-doctor.sh "$REPORT" >/dev/null 2>&1) || true
+run_doctor
 
 if jq -e '.diagnoses[] | select(.id == "ODS-RUNTIME-CLOUD-LLM-LOCAL-ROUTE")' "$REPORT" >/dev/null; then
     pass "diagnosis present: ODS-RUNTIME-CLOUD-LLM-LOCAL-ROUTE"
@@ -96,7 +109,7 @@ LLM_API_URL=https://api.model-router.com/v1
 HERMES_LLM_BASE_URL=https://api.model-router.com/v1
 ENV
 
-(cd "$ROOT_DIR" && bash scripts/ods-doctor.sh "$REPORT" >/dev/null 2>&1) || true
+run_doctor
 
 if jq -e '.diagnoses[] | select(.id == "ODS-RUNTIME-CLOUD-LLM-LOCAL-ROUTE")' "$REPORT" >/dev/null; then
     fail "diagnosis wrongly triggered for remote domain: ODS-RUNTIME-CLOUD-LLM-LOCAL-ROUTE"
@@ -113,13 +126,41 @@ HERMES_LLM_BASE_URL=http://litellm:4000/v1
 LITELLM_KEY=sk-test-key
 ENV
 
-(cd "$ROOT_DIR" && bash scripts/ods-doctor.sh "$REPORT" >/dev/null 2>&1) || true
+run_doctor
 
 if jq -e '.diagnoses[] | select(.id == "ODS-RUNTIME-CLOUD-LLM-LOCAL-ROUTE" or .id == "ODS-RUNTIME-CLOUD-HERMES-LOCAL-ROUTE")' "$REPORT" >/dev/null; then
     fail "switchboard cloud route misfired local route diagnoses"
 else
     pass "switchboard cloud route passes with zero local route misfires"
 fi
+
+# A provider may route through a path containing another endpoint. Those
+# path/query strings must not be interpreted as the selected destination.
+for remote_url in \
+    'https://provider.example/v1/localhost:9099' \
+    'https://provider.example//model-router:9099/v1' \
+    'https://provider.example/v1?upstream=http://llama-server:8080' \
+    'https://api.llama-server.example/v1'; do
+    printf 'ODS_MODE=cloud\nLLM_API_URL=%s\nHERMES_LLM_BASE_URL=%s\n' \
+        "$remote_url" "$remote_url" > "$ENV_PATH"
+    run_doctor
+    if jq -e '.diagnoses[] | select(.id == "ODS-RUNTIME-CLOUD-LLM-LOCAL-ROUTE" or .id == "ODS-RUNTIME-CLOUD-HERMES-LOCAL-ROUTE")' "$REPORT" >/dev/null; then
+        fail "remote URL path, query, or hostname wrongly diagnosed: $remote_url"
+    else
+        pass "remote URL authority respected: $remote_url"
+    fi
+done
+
+for local_url in 'http://model-router/v1' 'http://ODS-MODEL-ROUTER:9099/v1' 'http://[::1]:9099/v1'; do
+    printf 'ODS_MODE=cloud\nLLM_API_URL=%s\nHERMES_LLM_BASE_URL=%s\n' \
+        "$local_url" "$local_url" > "$ENV_PATH"
+    run_doctor
+    if jq -e '[.diagnoses[] | select(.id == "ODS-RUNTIME-CLOUD-LLM-LOCAL-ROUTE" or .id == "ODS-RUNTIME-CLOUD-HERMES-LOCAL-ROUTE")] | length == 2' "$REPORT" >/dev/null; then
+        pass "local runtime destination diagnosed: $local_url"
+    else
+        fail "local runtime destination missed: $local_url"
+    fi
+done
 
 echo ""
 echo "Result: $PASSED passed, $FAILED failed, $SKIPPED skipped"
