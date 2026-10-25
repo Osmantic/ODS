@@ -1,22 +1,32 @@
 import { memo } from 'react'
 
 // SVG polyline sparkline — no external deps
-function Sparkline({ values, color, height = 48, width = '100%' }) {
-  const data = (values || []).filter(v => v != null)
-  if (data.length < 2) {
+function Sparkline({ values, timestamps, color, height = 48, width = '100%' }) {
+  const data = values || []
+  const measured = data.filter(Number.isFinite)
+  if (!measured.length) {
     return <div className="h-12 bg-zinc-800/50 rounded" />
   }
 
   const W = 300 // internal viewBox width
   const H = height
-  const max = Math.max(...data, 1)
-  const pts = data
-    .map((v, i) => {
-      const x = (i / (data.length - 1)) * W
-      const y = H - (v / max) * (H - 4) - 2
-      return `${x.toFixed(1)},${y.toFixed(1)}`
-    })
-    .join(' ')
+  const max = Math.max(...measured, 1)
+  const times = timestamps.map(value => new Date(value).getTime())
+  const duration = times.at(-1) - times[0]
+  const segments = []
+  let segment = []
+  data.forEach((value, index) => {
+    if (!Number.isFinite(value)) {
+      if (segment.length) segments.push(segment)
+      segment = []
+      return
+    }
+    const x = duration > 0 ? ((times[index] - times[0]) / duration) * W
+      : data.length > 1 ? (index / (data.length - 1)) * W : W / 2
+    const y = H - (value / max) * (H - 4) - 2
+    segment.push({x:x.toFixed(1), y:y.toFixed(1)})
+  })
+  if (segment.length) segments.push(segment)
 
   return (
     <svg
@@ -25,7 +35,9 @@ function Sparkline({ values, color, height = 48, width = '100%' }) {
       style={{ width, height }}
       className="block"
     >
-      <polyline points={pts} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" />
+      {segments.map((points, index) => points.length === 1
+        ? <circle key={index} cx={points[0].x} cy={points[0].y} r="2" fill={color} />
+        : <polyline key={index} points={points.map(point => `${point.x},${point.y}`).join(' ')} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" />)}
     </svg>
   )
 }
@@ -75,7 +87,7 @@ export const GPUChart = memo(function GPUChart({ history, gpuIndex }) {
                   {latest != null ? (Number.isInteger(latest) ? latest : latest.toFixed(1)) : '—'}
                 </span>
               </div>
-              <Sparkline values={values} color={color} height={36} />
+              <Sparkline values={values} timestamps={timestamps} color={color} height={36} />
             </div>
           )
         })}

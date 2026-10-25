@@ -137,6 +137,21 @@ it.each(['lost', 'http', 'wrong-revision', 'private'])('requires fresh inspectio
   expect(values.onBusyChange.mock.calls).toEqual([[true], [false]])
 })
 
+it('says nothing changed when the host refuses Apply as busy', async () => {
+  const mock = vi.fn(async (_url, options) => options.method === 'POST'
+    ? { ok: false, status: 409, json: async () => ({ detail: { code: 'model_lifecycle_busy', message: 'busy' } }) }
+    : response(runtimeDoc()))
+  const values = props()
+  vi.stubGlobal('fetch', mock)
+  render(<PixelSettingsRuntime {...values} />)
+  await waitFor(() => expect(apply()).toBeEnabled())
+  confirmApply()
+  expect(await screen.findByRole('alert')).toHaveTextContent(/ODS is busy.*Nothing was changed/)
+  expect(screen.getByRole('alert')).not.toHaveTextContent(/could not be confirmed/)
+  await waitFor(() => expect(apply()).toBeEnabled())
+  expect(posts(mock)).toHaveLength(1)
+})
+
 it('refuses success when a newer saved revision appears during post-Apply readback', async () => {
   let state = runtimeDoc()
   const mock = vi.fn(async (_url, options) => {

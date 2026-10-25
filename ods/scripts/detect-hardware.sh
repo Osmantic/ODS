@@ -148,6 +148,15 @@ detect_nvidia() {
         [[ -f "$_v" ]] || continue
         [[ "$(cat "$_v" 2>/dev/null)" == "0x10de" ]] && _has_nvidia=true && break
     done
+    # Headless servers without nvidia-drm.ko expose no DRM card, but the PCI
+    # device remains: accept vendor 0x10de with display class 0x03xxxx.
+    # Keep identical to installers/lib/detection.sh detect_gpu().
+    if ! $_has_nvidia; then
+        for _v in "${ODS_PCI_SYS:-/sys/bus/pci/devices}"/*/vendor; do
+            [[ "$(cat "$_v" 2>/dev/null)" == "0x10de" ]] || continue
+            [[ "$(cat "${_v%/vendor}/class" 2>/dev/null)" == 0x03* ]] && _has_nvidia=true && break
+        done
+    fi
 
     # WSL2 exposes the host GPU through its paravirtualized nvidia-smi bridge,
     # but normally does not expose a matching /sys/class/drm vendor node. A

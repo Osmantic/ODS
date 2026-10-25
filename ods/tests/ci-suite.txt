@@ -5,10 +5,13 @@
 # .github/scripts/list-unwired-tests.py --check fails CI for a test in none of them.
 
 tests/test-installer-dry-run-jq.sh
+tests/test-phase06-gpu-env-rerun.py
+tests/test-inference-port-admission.sh
 tests/contracts/test-amd-llamacpp-contracts.sh
 tests/contracts/test-host-native-llm-contracts.sh
 tests/contracts/test-host-native-llm-cpu-fallback.sh
 tests/contracts/test-installer-hardening.sh
+tests/contracts/test-docs-llama-host-port.sh
 tests/contracts/test-llama-metrics-flag.sh
 tests/contracts/test-llama-reasoning-format.sh
 tests/contracts/test-llama-runtime-tunables.py
@@ -18,6 +21,7 @@ tests/contracts/test-plist-log-paths.sh
 tests/contracts/test-remote-provider-cli.py
 tests/contracts/test-remote-provider-ssh-tunnel-service.py
 tests/contracts/test-windows-hermes-config-patching.sh
+tests/contracts/test-windows-lifecycle-command-policy.sh
 tests/contracts/test-windows-llm-model-readiness.sh
 tests/contracts/test-whisper-model-ttl.py
 tests/contracts/test-windows-strix-tier-map.sh
@@ -46,6 +50,7 @@ tests/test-catalog-invalid-manifest.py
 tests/test-cli-bootstrap-compose-wait.sh
 tests/test-cli-macos-native-llama.sh
 tests/test-cli-preset-restore-user-extensions.sh
+tests/test-cli-relative-path-args.sh
 tests/test-cli-prompts-noninteractive.sh
 tests/test-cli-status-docker-error.sh
 tests/test-cli-status-gpu-backend.sh
@@ -91,6 +96,7 @@ tests/test-install-menu-hermes-flag.sh
 tests/test-installed-feature-defaults.sh
 tests/test-installed-root-group-repair.sh
 tests/test-installer-log-safety.sh
+tests/test-installer-apt-stdin.sh
 tests/test-jetson-detection.sh
 tests/test-lean-linux-defaults.sh
 tests/test-lemonade-retirement-guard.py
@@ -100,6 +106,7 @@ tests/test-linux-host-agent-stop.sh
 tests/test-linux-opencode-path.sh
 tests/test-linux-whisper-cuda-gating.sh
 tests/test-litellm-amd-auth-enforced.sh
+tests/test-langflow-auth.sh
 tests/test-litellm-config-selection.sh
 tests/test-llama-image-compute-cap.sh
 tests/test-llama-memory-budget.sh
@@ -114,6 +121,8 @@ tests/test-macos-bridge-bootstrap-retry.sh
 tests/test-macos-cli-update-verification.sh
 tests/test-macos-config-show-secret-mask.sh
 tests/test-macos-config-without-docker.sh
+tests/test-macos-dashboard-private-state-launch.sh
+tests/test-macos-docker-cpu-budget.sh
 tests/test-macos-doctor-honest-failure.sh
 tests/test-macos-download-retries.sh
 tests/test-macos-env-quote-strip.sh
@@ -150,6 +159,7 @@ tests/test-ods-doctor-external-llm.sh
 tests/test-ods-doctor-install-diagnoses.sh
 tests/test-help-links.sh
 tests/test-macos-api-mode-flags.sh
+tests/test-macos-compose-override-cache.sh
 tests/test-install-failure-message.sh
 tests/test-release-gate-syntax.sh
 tests/test-remote-provider-cli-output.sh
@@ -159,6 +169,7 @@ tests/test-external-llm-key-env.sh
 tests/test-external-probe-hints.sh
 tests/test-external-llm-failure-hints.sh
 tests/test-ods-doctor-rootless-subid.sh
+tests/test-ods-doctor-docker-access.sh
 tests/test-ods-list-json-escaping.sh
 tests/test-ods-test-complete-run.sh
 tests/test-ods-test-http-code.sh
@@ -174,6 +185,7 @@ tests/test-phase05-docker-desktop-nvidia-refusal.sh
 tests/test-phase05-podman-shim.sh
 tests/test-phase06-hermes-owner-card-rerun.sh
 tests/test-phase06-secret-generation.sh
+tests/test_searxng_source_copy_preservation.py
 tests/test-phase08-selected-images.sh
 tests/test-phase10-skip-templated-user-units.sh
 tests/test-phase11-compose-recovery-status.sh
@@ -186,6 +198,7 @@ tests/test-pre-download-tier-noninteractive.sh
 tests/test-preflight.sh
 tests/test-preset-compatibility.sh
 tests/test-preset-diff.sh
+tests/test-preset-host-only-services.sh
 tests/test-preset-import-export.sh
 tests/test-preset-import-transaction.sh
 tests/test-preview-inspection.mjs
@@ -209,6 +222,8 @@ tests/test-tmpfile-cleanup.sh
 tests/test-token-spy-session-manager.sh
 tests/test-ui-missing-container-fast-fail.sh
 tests/test-uninstall-lemonade-leftovers.sh
+tests/test-uninstall-opencode-config.sh
+tests/test-uninstall-refuses-sudo.sh
 tests/test-unix-restart-recreate-env.sh
 tests/test-update-backup-restore-configs.sh
 tests/test-update-backup-retention-spaces.sh
@@ -299,6 +314,13 @@ tests/test-update-changelog-fallback.py
 tests/test-gpu-reassign-preflight.sh
 tests/test_uninstall_validate_install_dir.py
 tests/test-preset-completion.sh
+tests/test-cli-chat-route.py
+tests/test_host_agent_process_shutdown.py
 tests/test-cli-chat-error-exit.py
+tests/test-cli-compose-cache-model-store.sh
+tests/test-update-compose-cache-owner-overlays.sh
 tests/test-cli-update-model-lifecycle.sh
 tests/test-detect-hardware-amd-apu.sh
+tests/test-summary-quick-commands.sh
+tests/test_dashboard_env_custody.py
+tests/test_cli_preset_name_validation.py
