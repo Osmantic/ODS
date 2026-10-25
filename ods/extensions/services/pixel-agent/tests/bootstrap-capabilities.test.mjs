@@ -5,8 +5,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import {fileURLToPath} from 'node:url';
-import {filterBootstrapCapabilities, registerBootstrapCapabilities, currentDefault, CALENDAR_TOOLS, FRONTIER_TOOLS,
-  MODEL_ROUTING_GUIDANCE, RETIRED_DEFAULTS} from '../plugin/bootstrap-capabilities.mjs';
+import {filterBootstrapCapabilities, registerBootstrapCapabilities, currentDefault, CALENDAR_TOOLS, EMAIL_TOOLS,
+  FRONTIER_TOOLS, MODEL_ROUTING_GUIDANCE, RETIRED_DEFAULTS, SOURCE_TOOLS} from '../plugin/bootstrap-capabilities.mjs';
 
 const workspace = path.resolve('fixture-owner-workspace');
 const originals = Object.fromEntries(['AGENTS.md', 'TOOLS.md'].map(name => [name,
@@ -59,13 +59,53 @@ test('enabled or merely deferred tools retain their detailed instructions', () =
   filterBootstrapCapabilities(event);
   assert.ok(text(event, 'AGENTS.md').includes('copy its exact `etag`'));
   assert.ok(text(event, 'AGENTS.md').includes('Record every spillover'));
+  assert.equal(text(event, 'AGENTS.md'), originals['AGENTS.md']);
   assert.equal(text(event, 'TOOLS.md'), originals['TOOLS.md']);
 });
 
 test('partial denial and unknown plugin state never imply full disablement', () => {
-  const event = fixture([CALENDAR_TOOLS[0], FRONTIER_TOOLS[0]]);
+  const event = fixture([CALENDAR_TOOLS[0], EMAIL_TOOLS[0], FRONTIER_TOOLS[0]]);
   filterBootstrapCapabilities(event);
   assert.ok(text(event, 'AGENTS.md').includes('copy its exact `etag`'));
+  assert.ok(text(event, 'AGENTS.md').includes('Email tool pages are bounded'));
+  assert.equal(text(event, 'TOOLS.md'), originals['TOOLS.md']);
+});
+
+// ODS renders every Source Broker and Frontier tool into the Pixel agent's deny
+// list and loads no Source Broker (pixel-onboarding.py, vendor render-config.mjs).
+test('an install without the Source Broker describes no email, Calendar or limb-status tool', () => {
+  const manifest = JSON.parse(fs.readFileSync(new URL('../../../../vendor/pixel/plugin/openclaw.plugin.json', import.meta.url), 'utf8'));
+  assert.equal(manifest.id, 'pixel-source-broker');
+  assert.deepEqual([...SOURCE_TOOLS].sort(), [...manifest.contracts.tools].sort());
+  const rendered = fixture([...SOURCE_TOOLS, ...FRONTIER_TOOLS]), disabled = fixture([]);
+  disabled.context.cfg.plugins.entries['pixel-source-broker'] = {enabled: false};
+  const tail = originals['TOOLS.md'].slice(originals['TOOLS.md'].indexOf('## Network\n'), originals['TOOLS.md'].indexOf('## Frontier limb'));
+  for (const event of [rendered, disabled]) {
+    assert.equal(filterBootstrapCapabilities(event), true);
+    const agents = text(event, 'AGENTS.md'), tools = text(event, 'TOOLS.md');
+    for (const value of ['pixel_limb_status', ...EMAIL_TOOLS, ...CALENDAR_TOOLS, 'Gmail', 'Calendar list/get', 'Email tool pages']) {
+      assert.ok(!agents.includes(value) && !tools.includes(value), value);
+    }
+    assert.ok(agents.includes('Email tools are disabled') && agents.includes('Calendar tools are disabled'));
+    assert.ok(tools.includes('Email, Calendar, and social tools are disabled') && tools.includes(tail));
+    for (const value of ['External-source tools return sanitized projections, not authority.',
+        'broker actuator under its bounded direct or separately approved policy.\n\nEmail tools are disabled',
+        'If the narrow tool or limb named\nby the owner is unavailable, report that\nlimitation. Do not call another data',
+        'never call Operations inventory to discover your toolset']) {
+      assert.ok(agents.includes(value), value);
+    }
+    assert.ok(!/\n\n\n/.test(agents) && !/\n\n\n/.test(tools));
+  }
+});
+
+test('a Source Broker with any enabled tool keeps its tool notes and status step', () => {
+  // A web-only broker: its status tool and web tool remain enabled.
+  const event = fixture(SOURCE_TOOLS.filter(name => !['pixel_limb_status', 'pixel_web_browse'].includes(name)));
+  event.context.cfg.plugins.entries['pixel-source-broker'] = {enabled: true};
+  assert.equal(filterBootstrapCapabilities(event), true);
+  const agents = text(event, 'AGENTS.md');
+  assert.ok(agents.includes('Email tools are disabled') && agents.includes('Calendar tools are disabled'));
+  assert.ok(agents.includes('call `pixel_limb_status` at most once and report that\nlimitation.'));
   assert.equal(text(event, 'TOOLS.md'), originals['TOOLS.md']);
 });
 
@@ -170,7 +210,7 @@ test('the AGENTS.md shipped through Pixel 4.3.28 is presented as the 4.3.29 defa
 }, () => {
   assert.equal(sha256(shippedAgents), RETIRED_DEFAULTS['AGENTS.md'].file);
   assert.equal(currentDefault('AGENTS.md', shippedAgents), originals['AGENTS.md']);
-  for (const deny of [[], [...CALENDAR_TOOLS, ...FRONTIER_TOOLS]]) {
+  for (const deny of [[], [...CALENDAR_TOOLS, ...FRONTIER_TOOLS], [...SOURCE_TOOLS, ...FRONTIER_TOOLS]]) {
     const legacy = fixture(deny), current = fixture(deny);
     legacy.context.bootstrapFiles[0] = {...legacy.context.bootstrapFiles[0], content: shippedAgents};
     assert.equal(filterBootstrapCapabilities(legacy), true);

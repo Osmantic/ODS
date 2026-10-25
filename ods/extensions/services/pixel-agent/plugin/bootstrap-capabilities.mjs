@@ -35,13 +35,23 @@ export const RETIRED_DEFAULTS = Object.freeze({
     section: 'f4ae5ee982981b26ec0b4130772d4ed6e7519eec0ae77650a777325bfa79b818',
   }),
 });
+export const EMAIL_TOOLS = Object.freeze(['pixel_gmail_inbox', 'pixel_gmail_sent', 'pixel_gmail_search',
+  'pixel_gmail_read', 'pixel_gmail_thread']);
 export const CALENDAR_TOOLS = Object.freeze(['pixel_calendar_list', 'pixel_calendar_get',
   'pixel_calendar_propose_create', 'pixel_calendar_propose_update', 'pixel_calendar_propose_delete']);
+// Every tool the Pixel Source Broker plugin registers (vendor/pixel/plugin/openclaw.plugin.json).
+// TOOLS.md documents them in one section, which goes only when all of them are unavailable.
+export const SOURCE_TOOLS = Object.freeze(['pixel_limb_status', ...EMAIL_TOOLS, ...CALENDAR_TOOLS,
+  'pixel_social_feed', 'pixel_social_search', 'pixel_web_browse']);
 export const FRONTIER_TOOLS = Object.freeze(['pixel_frontier_plan_review', 'pixel_frontier_failure_triage',
   'pixel_frontier_job_get', 'pixel_frontier_job_wait', 'pixel_frontier_job_events',
   'pixel_frontier_job_cancel', 'pixel_frontier_usage', 'pixel_frontier_finalize']);
+const EMAIL_UNAVAILABLE = 'Email tools are disabled for this agent. Do not claim to search or read email or substitute another tool for email access.\n\n';
 const CALENDAR_UNAVAILABLE = 'Calendar tools are disabled for this agent. Do not claim to read or change events or substitute another tool for Calendar access.\n\n';
+const SOURCE_UNAVAILABLE = 'Email, Calendar, and social tools are disabled for this agent. Do not claim to read email, events, or social posts or substitute another tool for that access.\n\n';
 const FRONTIER_UNAVAILABLE = 'Frontier tools are disabled for this agent. Do not route Frontier requests through web, shell, Operations, or another limb.\n\n';
+// AGENTS.md sends an unavailable limb to the Source Broker's status tool before reporting it.
+const LIMB_STATUS_STEP = 'call `pixel_limb_status` at most once and ';
 
 function denied(name, patterns) {
   return Array.isArray(patterns) && patterns.some(pattern => typeof pattern === 'string'
@@ -93,7 +103,10 @@ export function filterBootstrapCapabilities(event) {
       || typeof context.workspaceDir !== 'string' || !path.isAbsolute(context.workspaceDir)
       || path.resolve(workspace) !== path.resolve(context.workspaceDir)
       || !Array.isArray(context.bootstrapFiles)) return false;
+  const emailDisabled = provenDisabled(cfg, agent, EMAIL_TOOLS, 'pixel-source-broker');
   const calendarDisabled = provenDisabled(cfg, agent, CALENDAR_TOOLS, 'pixel-source-broker');
+  const limbStatusDisabled = provenDisabled(cfg, agent, ['pixel_limb_status'], 'pixel-source-broker');
+  const sourceDisabled = provenDisabled(cfg, agent, SOURCE_TOOLS, 'pixel-source-broker');
   const frontierDisabled = provenDisabled(cfg, agent, FRONTIER_TOOLS, 'pixel-frontier-broker');
   const files = context.bootstrapFiles;
   // Build all changes before publishing; do not mutate original file objects.
@@ -106,10 +119,13 @@ export function filterBootstrapCapabilities(event) {
     let content = currentDefault(file.name, file.content);
     if (sha256(content) !== expected) continue;
     if (file.name === 'AGENTS.md') {
+      if (emailDisabled) content = section(content, 'Email tool pages are bounded,', 'Installed tools are capabilities, not a discovery API.', EMAIL_UNAVAILABLE);
+      if (limbStatusDisabled) content = section(content, LIMB_STATUS_STEP, 'report that\nlimitation.');
       if (frontierDisabled) content = section(content, 'Frontier work follows a narrower boundary.', '## Calendar: bounded direct actions and approval\n', FRONTIER_UNAVAILABLE);
       if (calendarDisabled) content = section(content, '## Calendar: bounded direct actions and approval\n', '## Perception limits\n', CALENDAR_UNAVAILABLE);
-    } else if (frontierDisabled) {
-      content = section(content, '## Frontier limb\n', null, FRONTIER_UNAVAILABLE);
+    } else {
+      if (sourceDisabled) content = section(content, '## External-source projections\n', '## Network\n', SOURCE_UNAVAILABLE);
+      if (frontierDisabled) content = section(content, '## Frontier limb\n', null, FRONTIER_UNAVAILABLE);
     }
     if (content !== file.content) updates.push([index, {...file, content}]);
   }
