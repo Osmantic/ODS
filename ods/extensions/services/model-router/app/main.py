@@ -368,6 +368,13 @@ def _finish_probe_attempt(handle, status, http_status=None):
         pass
 
 
+def _observe_probe_response_model(handle, model):
+    try:
+        _probe_attempts.observe_response_model(handle, model)
+    except Exception:
+        pass  # Optional diagnostics must never alter inference.
+
+
 class _TelemetrySink:
     """Best-effort telemetry transport that never blocks model responses."""
 
@@ -1267,6 +1274,7 @@ class _SSERewriter:
         self.identity_matches = True
         self.response_model: str | None = None
         self.response_model_consistent = True
+        self.response_error = False
         self.usage = {
             "input_tokens": 0,
             "output_tokens": 0,
@@ -1281,6 +1289,10 @@ class _SSERewriter:
     ) -> None:
         self.completed = self.completed or saw_done
         for payload in payloads:
+            response = payload.get("response")
+            self.response_error = self.response_error or "error" in payload or (
+                isinstance(response, dict) and response.get("status") in ("failed", "incomplete", "cancelled")
+            )
             usage, stop_reason = _usage_from_response(payload)
             for key, value in usage.items():
                 self.usage[key] = max(self.usage[key], value)
@@ -1984,6 +1996,8 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                         and 200 <= upstream.status_code < 300
                         and rewriter.response_model_consistent
                     ):
+                        if not rewriter.response_error:
+                            _observe_probe_response_model(attempt_handle, rewriter.response_model)
                         _record_evidence({
                             **evidence_base,
                             "status": upstream.status_code,
@@ -2055,6 +2069,8 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
         except (ValueError, UnicodeDecodeError):
             initial_decision = None
         if isinstance(initial_decision, dict):
+            if "error" not in initial_decision:
+                _observe_probe_response_model(attempt_handle, initial_decision.get("model"))
             native_names = _complete_native_envelope_names(initial_decision)
             native_invalid = native_names is not None and not _normalize_native_tool_markup(
                 initial_decision, payload,
@@ -2090,6 +2106,9 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                         headers=headers, timeout=remaining,
                     )
                     _finish_probe_attempt(repair_handle, "complete", upstream.status_code)
+                    # The common response parser must attribute the repaired
+                    # response to this send, not to the original tool decision.
+                    attempt_handle = repair_handle
                 except asyncio.CancelledError:
                     _finish_probe_attempt(repair_handle, "cancelled")
                     raise
@@ -2111,6 +2130,8 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                         repaired = json.loads(upstream.content.decode("utf-8"))
                     except (ValueError, UnicodeDecodeError):
                         repaired = None
+                    if isinstance(repaired, dict) and "error" not in repaired:
+                        _observe_probe_response_model(repair_handle, repaired.get("model"))
                     if (structured_invalid and isinstance(repaired, dict)
                             and repaired.get("model") != route["runtimeModelId"]):
                         return JSONResponse({"error": {
@@ -2140,6 +2161,8 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
             parsed = decoded
             response_usage, stop_reason = _usage_from_response(parsed)
             response_model = parsed.get("model")
+            if "error" not in parsed:
+                _observe_probe_response_model(attempt_handle, response_model)
             if "model" in parsed:
                 parsed["model"] = requested_alias
             _sanitize_choice_content(parsed)
