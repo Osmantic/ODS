@@ -14,6 +14,8 @@ each template under extensions/library/workflows for:
 - every Code node's jsCode parses (`node --check`, wrapped in an async
   function because n8n code may `return` at top level),
 - every Webhook node using headerAuth names its credential,
+- every Code node fed by a webhook accepts a valid request in n8n's
+  { headers, params, query, body } envelope (run in node with a fixture),
 - every HTTP Request node uses typeVersion 4.2 with that version's request
   fields (V1's `body`/`headers`/`binary` are silently ignored by V4, and V4's
   `method`/`jsonBody` are ignored by V1), sends the body it declares, and
@@ -183,6 +185,64 @@ def jscode_errors(rel: Path, workflow: dict, node_bin: str) -> list[str]:
     return errors
 
 
+# n8n webhook nodes hand the next node { headers, params, query, body }; the
+# request fields are under `body`. Each Code node fed by a webhook is run with
+# that envelope around a valid request for its template and must accept it.
+WEBHOOK_REQUEST_FIXTURES = {
+    "comfyui/llm-image-gen.json": {"prompt": "a red bicycle"},
+    "comfyui/llm-to-image.json": {"prompt": "a red bicycle", "channel": "general"},
+    "flowise/chatflow-api.json": {"chatflowId": "00000000-0000-0000-0000-000000000000", "question": "hello"},
+    "langflow/flow-api.json": {"flowId": "00000000-0000-0000-0000-000000000000", "message": "hello"},
+    "n8n/form-processing.json": {"name": "Ada", "email": "ada@example.com", "message": "hello"},
+    "n8n/webhook-trigger.json": {"message": "hello"},
+    "n8n/workflow-webhook-llm-respond.json": {"message": "hello"},
+    "whisper/stt-convert.json": {"audio": "UklGRiQAAABXQVZF", "channel": "general"},
+}
+CODE_NODE_RUNNER = r"""
+const fs = require("fs");
+const code = fs.readFileSync(process.argv[2], "utf8");
+const payload = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+const item = { json: payload };
+const $input = { first: () => item, last: () => item, all: () => [item], item };
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+new AsyncFunction("$input", "$json", "items", code)($input, payload, [item])
+  .then((r) => process.stdout.write(JSON.stringify(r === undefined ? null : r)))
+  .catch((e) => { process.stderr.write(String((e && e.message) || e)); process.exit(2); });
+"""
+
+
+def webhook_input_errors(rel: Path, template: str, workflow: dict, node_bin: str) -> list[str]:
+    errors: list[str] = []
+    nodes = {node.get("name"): node for node in workflow.get("nodes", [])}
+    for source, outputs in (workflow.get("connections") or {}).items():
+        if (nodes.get(source) or {}).get("type") != "n8n-nodes-base.webhook":
+            continue
+        for targets in outputs.get("main", []):
+            for target in targets:
+                node = nodes.get(target.get("node")) or {}
+                if node.get("type") != "n8n-nodes-base.code":
+                    continue
+                where = f"{rel}: Code node {node.get('name')!r} after webhook {source!r}"
+                if template not in WEBHOOK_REQUEST_FIXTURES:
+                    errors.append(f"{where} has no request fixture in WEBHOOK_REQUEST_FIXTURES")
+                    continue
+                envelope = {"headers": {"content-type": "application/json"}, "params": {}, "query": {},
+                            "body": WEBHOOK_REQUEST_FIXTURES[template]}
+                with tempfile.TemporaryDirectory() as tmp:
+                    (Path(tmp) / "run.js").write_text(CODE_NODE_RUNNER, encoding="utf-8")
+                    (Path(tmp) / "code.js").write_text(node["parameters"]["jsCode"], encoding="utf-8")
+                    (Path(tmp) / "input.json").write_text(json.dumps(envelope), encoding="utf-8")
+                    result = subprocess.run([node_bin, "run.js", "code.js", "input.json"], cwd=tmp,
+                                            capture_output=True, text=True, check=False)
+                if result.returncode != 0:
+                    errors.append(f"{where} rejects a valid webhook request: {result.stderr.strip()[:200]}")
+                    continue
+                first = (json.loads(result.stdout) or [{}])[0].get("json") or {}
+                if first.get("valid") is False or "error" in first:
+                    errors.append(f"{where} rejects a valid webhook request: {first}")
+    return errors
+
+
 LLM_GATEWAY_URL = "http://litellm:4000/v1/chat/completions"
 
 
@@ -240,6 +300,7 @@ def main() -> int:
         errors.extend(http_node_errors(rel, path.relative_to(WORKFLOW_DIR).as_posix(), workflow))
         if node_bin is not None:
             errors.extend(jscode_errors(rel, workflow, node_bin))
+            errors.extend(webhook_input_errors(rel, path.relative_to(WORKFLOW_DIR).as_posix(), workflow, node_bin))
 
     if errors:
         print("[FAIL] library n8n workflows are n8n 2.x compatible")
