@@ -67,7 +67,7 @@ from host_agent_client import (
     async_request_json as async_request_agent_json,
     shutdown_clients as shutdown_agent_clients,
 )
-from runtime_projection import active_runtime_projection
+from runtime_projection import active_runtime_projection, awaiting_runtime_readback
 from cloud_telemetry import get_cloud_throughput
 from agent_monitor import collect_metrics
 from routers import (
@@ -1571,7 +1571,7 @@ async def _get_dashboard_remote_runtime() -> dict[str, object] | None:
             runtime = active_runtime_projection(status)
             if runtime:
                 return runtime if runtime["source"] == "remote-provider" else None
-            if not isinstance(status, dict) or "activeRuntime" in status or status.get("status") not in {"idle", "complete"}:
+            if not awaiting_runtime_readback(status):
                 return None
             if attempt < 3:
                 await asyncio.sleep(0.25)

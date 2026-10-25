@@ -190,6 +190,24 @@ class InferenceDiagnostics(unittest.TestCase):
                 self.assertTrue(all(body['model'] == 'ods/current' for body in chats))
                 self.assertEqual(self.unrelated.requests, [], 'selected gateway fell back to unrelated local runtime')
 
+    def test_reasoning_only_replies_remain_valid_without_jq(self):
+        # Preserve main's thinking-model and stdlib-only diagnostic contract
+        # when the route/auth consumer switches to the shared probe.
+        self.primary.reply = {'choices': [{'message': {'content': '', 'reasoning_content': '4'}}]}
+        jq = self.root / 'bin/jq'
+        jq.write_text('#!/bin/sh\n: > "$HOME/jq-was-called"\nexit 91\n')
+        jq.chmod(0o755)
+        for consumer in ('llm', 'voice-roundtrip', 'functional'):
+            with self.subTest(consumer=consumer):
+                result = self.run_probe(consumer, gateway=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                if consumer == 'functional':
+                    self.assertIn('LLM generates correct answer', result.stdout)
+                else:
+                    rows = json.loads(result.stdout)['results']
+                    self.assertEqual(rows[-1]['status'], 'pass', result.stdout)
+        self.assertFalse((self.root / 'jq-was-called').exists())
+
     def test_http_errors_and_non_answers_cannot_pass(self):
         for status, reply in ((503, {'choices': [{'message': {'content': 'error answer'}}]}),
                               (200, {'error': {'content': 'not an answer'}}),

@@ -658,6 +658,14 @@ if (
     _ods_pixel_source_checkout() { printf '%s\n' "$repair_pixel"; }
     _ods_pixel_contract_sha256() { printf '%s\n' "$repair_contract"; }
     _ods_pixel_gateway_model_alias() { printf '%s\n' ods/current; }
+    # This fixture isolates runtime-package repair after exact-route reuse.
+    # Real route agreement and drift are exercised in test_pixel_onboarding_upgrade.py.
+    _ods_pixel_stable_alias_matches_promoted_model() { return 0; }
+    _ods_pixel_write_onboarding() {
+        mkdir -p "${3%/*}"
+        printf '%s\n' '{}' > "$3"
+        chmod 0600 "$3"
+    }
     _ods_pixel_apply_runtime_budget() {
         python3 - "$3" <<'PY'
 import json, pathlib, sys
@@ -674,7 +682,7 @@ PY
         ods_linux_node_tools_available _ods_pixel_write_extension_catalog \
         _ods_pixel_write_operations_policy _ods_pixel_write_extension_manager_unit \
         _ods_pixel_write_artifact_promoter_unit _ods_pixel_write_workspace_preview_unit \
-        _ods_pixel_write_onboarding _ods_pixel_harden_operations_state_profiles \
+        _ods_pixel_harden_operations_state_profiles \
         _ods_pixel_verify_operations_policy_custody _ods_pixel_sandbox_candidate_has_node; do
         eval "$stub() { :; }"
     done

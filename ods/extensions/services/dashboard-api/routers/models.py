@@ -54,6 +54,7 @@ from host_agent_client import (
 )
 from models import ModelLibraryGpu, ModelLibraryResponse
 from pixel_runtime_state import pixel_stream_active
+from runtime_projection import active_runtime_projection
 from context_policy import HERMES_MIN_CONTEXT
 from performance_oracle import (
     activation_context_plan,
@@ -1286,6 +1287,10 @@ async def _hf_preflight_gate(
     gated = bool(details.get("gated")) and (
         not _hf_token() or header_status.get("reason") == "gated"
     )
+    refusal = model_preflight.refusal(kind, supported, architecture, build, gated=gated)
+    if (refusal is None and kind == "chat" and model_preflight.nextn_layers(header)
+            and model_preflight.nextn_supported(policy, build, architecture) is False):
+        refusal = model_preflight.nextn_refusal(build)
     return {
         "artifact": _hf_artifact_binding(details, artifact),
         "header": header,
@@ -1294,7 +1299,7 @@ async def _hf_preflight_gate(
         "architecture": architecture,
         "runtime": {"key": runtime_key, "build": build, "architectureSupported": supported},
         "modelKind": kind,
-        "refusal": model_preflight.refusal(kind, supported, architecture, build, gated=gated),
+        "refusal": refusal,
     }
 
 
@@ -1768,8 +1773,8 @@ async def _prepare_huggingface_import(body: dict[str, Any]):
             "acknowledgedAt": datetime.now(timezone.utc).isoformat(),
         }
         logger.warning(
-            "Hugging Face import of %s acknowledged an architecture (%s) that llama.cpp %s does not list",
-            repo_id, gate["architecture"], gate["runtime"]["build"],
+            "Hugging Face import of %s acknowledged %s for architecture %s on llama.cpp %s",
+            repo_id, refusal["code"], gate["architecture"], gate["runtime"]["build"],
         )
     tensors = _hf_artifact_tensors(gate, artifact)
     if tensors["status"] == "unsupported":
@@ -2040,6 +2045,11 @@ async def list_models(api_key: str = Depends(verify_api_key)):
     payload["hostRuntime"] = _windows_hosted_runtime()
     if payload["hostRuntime"]:
         payload["modelManagement"] = await asyncio.to_thread(_model_management)
+    # A held transition does not establish which route currently serves chat.
+    payload["activeRuntime"] = (
+        None if payload.get("modelRecoveryPending") or (payload.get("modelLifecycle") or {}).get("active")
+        else active_runtime_projection(agent_status)
+    )
     payload["activationReadyModel"] = (
         payload.get("currentModel")
         if loaded_entry

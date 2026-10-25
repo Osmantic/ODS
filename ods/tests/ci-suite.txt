@@ -5,6 +5,7 @@
 # .github/scripts/list-unwired-tests.py --check fails CI for a test in none of them.
 
 tests/test-installer-dry-run-jq.sh
+tests/test-phase06-gpu-env-rerun.py
 tests/test-inference-port-admission.sh
 tests/contracts/test-amd-llamacpp-contracts.sh
 tests/contracts/test-host-native-llm-contracts.sh
@@ -49,6 +50,7 @@ tests/test-catalog-invalid-manifest.py
 tests/test-cli-bootstrap-compose-wait.sh
 tests/test-cli-macos-native-llama.sh
 tests/test-cli-preset-restore-user-extensions.sh
+tests/test-cli-relative-path-args.sh
 tests/test-cli-prompts-noninteractive.sh
 tests/test-cli-status-docker-error.sh
 tests/test-cli-status-gpu-backend.sh
@@ -119,6 +121,8 @@ tests/test-macos-bridge-bootstrap-retry.sh
 tests/test-macos-cli-update-verification.sh
 tests/test-macos-config-show-secret-mask.sh
 tests/test-macos-config-without-docker.sh
+tests/test-macos-dashboard-private-state-launch.sh
+tests/test-macos-docker-cpu-budget.sh
 tests/test-macos-doctor-honest-failure.sh
 tests/test-macos-download-retries.sh
 tests/test-macos-env-quote-strip.sh
@@ -155,6 +159,7 @@ tests/test-ods-doctor-external-llm.sh
 tests/test-ods-doctor-install-diagnoses.sh
 tests/test-help-links.sh
 tests/test-macos-api-mode-flags.sh
+tests/test-macos-compose-override-cache.sh
 tests/test-install-failure-message.sh
 tests/test-release-gate-syntax.sh
 tests/test-remote-provider-cli-output.sh
@@ -168,6 +173,7 @@ tests/test-ods-doctor-docker-access.sh
 tests/test-ods-list-json-escaping.sh
 tests/test-ods-test-complete-run.sh
 tests/test-ods-test-http-code.sh
+tests/test-ods-test-tool-calling.sh
 tests/test-ods-test.sh
 tests/test-inference-diagnostics.py
 tests/test-ods-update-runtime-compose.sh
@@ -181,6 +187,7 @@ tests/test-phase05-docker-desktop-nvidia-refusal.sh
 tests/test-phase05-podman-shim.sh
 tests/test-phase06-hermes-owner-card-rerun.sh
 tests/test-phase06-secret-generation.sh
+tests/test_searxng_source_copy_preservation.py
 tests/test-phase08-selected-images.sh
 tests/test-phase10-skip-templated-user-units.sh
 tests/test-phase11-compose-recovery-status.sh
@@ -193,6 +200,7 @@ tests/test-pre-download-tier-noninteractive.sh
 tests/test-preflight.sh
 tests/test-preset-compatibility.sh
 tests/test-preset-diff.sh
+tests/test-preset-host-only-services.sh
 tests/test-preset-import-export.sh
 tests/test-preset-import-transaction.sh
 tests/test-preview-inspection.mjs
@@ -216,6 +224,7 @@ tests/test-tmpfile-cleanup.sh
 tests/test-token-spy-session-manager.sh
 tests/test-ui-missing-container-fast-fail.sh
 tests/test-uninstall-lemonade-leftovers.sh
+tests/test-uninstall-opencode-config.sh
 tests/test-uninstall-refuses-sudo.sh
 tests/test-unix-restart-recreate-env.sh
 tests/test-update-backup-restore-configs.sh
@@ -308,7 +317,11 @@ tests/test-gpu-reassign-preflight.sh
 tests/test_uninstall_validate_install_dir.py
 tests/test-preset-completion.sh
 tests/test-cli-chat-route.py
+tests/test_host_agent_process_shutdown.py
 tests/test-cli-chat-error-exit.py
+tests/test-cli-compose-cache-model-store.sh
+tests/test-update-compose-cache-owner-overlays.sh
 tests/test-cli-update-model-lifecycle.sh
 tests/test-summary-quick-commands.sh
 tests/test_dashboard_env_custody.py
+tests/test_cli_preset_name_validation.py

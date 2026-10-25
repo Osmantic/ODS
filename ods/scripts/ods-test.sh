@@ -30,6 +30,7 @@ _ODS_DIAGNOSTIC_PORT="${LLM_PORT:-}"
 
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The install this script ships in: its .env sits beside scripts/.
 ODS_DIR="${ODS_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 ENV_FILE="${ENV_FILE:-$ODS_DIR/.env}"
 TIMEOUT=15
@@ -618,6 +619,7 @@ _print_text_summary() {
                 esac
             fi
         done
+        echo "  Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC"
     fi
     
     echo ""

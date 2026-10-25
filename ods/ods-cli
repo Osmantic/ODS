@@ -25,6 +25,16 @@ fi
 #=============================================================================
 # Configuration
 #=============================================================================
+# Commands cd into INSTALL_DIR; resolve user-typed paths against where ods ran.
+ODS_CALLER_PWD="$PWD"
+_caller_path() {
+    if [[ -z "$1" || "$1" == /* ]]; then
+        printf '%s' "$1"
+    else
+        printf '%s/%s' "$ODS_CALLER_PWD" "$1"
+    fi
+}
+
 _source="${BASH_SOURCE[0]}"
 while [[ -L "$_source" ]]; do
     _dir="$(cd "$(dirname "$_source")" && pwd)"
@@ -952,6 +962,26 @@ get_compose_flags() {
             if [[ "$cached" == *"docker-compose.lemonade-external.yml"* ]]; then
                 stale=1
             fi
+            # Registered model stores (scripts/register-model-store.py) and the
+            # active store's /models mount come after install. A cache from
+            # before them would start llama-server on the default directory,
+            # where the selected model is missing, and Compose then leaves
+            # LiteLLM and the Dashboard unstarted.
+            if [[ -f "$INSTALL_DIR/.model-stores.compose.json" \
+                && "$cached" != *".model-stores.compose.json"* ]]; then
+                stale=1
+            fi
+            # docs/PROFILES.md has owners add docker-compose.override.yml to
+            # turn services off; the resolver appends it when it exists.
+            if [[ -f "$INSTALL_DIR/docker-compose.override.yml" \
+                && "$cached" != *"docker-compose.override.yml"* ]]; then
+                stale=1
+            fi
+            if [[ "${ODS_ACTIVE_MODEL_STORE:-default}" != "default" ]]; then
+                [[ "$cached" == *".active-model-store.compose.json"* ]] || stale=1
+            elif [[ "$cached" == *".active-model-store.compose.json"* ]]; then
+                stale=1
+            fi
             # The AMD image follows AMD_INFERENCE_BACKEND (vulkan or rocm).
             if [[ "$cached" == *"docker-compose.amd.yml"* ]]; then
                 if [[ "${AMD_INFERENCE_BACKEND:-vulkan}" == "rocm" ]]; then
@@ -1141,7 +1171,7 @@ _compose_run_with_summary() {
 
     log_error "${_verb} failed:"
     local _surfaced
-    _surfaced=$(grep -iE 'error|unhealthy|failed|dependency|permission denied|docker API|docker daemon|docker\.sock|/var/run/docker\.sock' "$_compose_log" \
+    _surfaced=$(grep -iE 'error|unhealthy|failed|dependency|permission denied|docker API|docker daemon|docker\.sock|/var/run/docker\.sock|no such service:' "$_compose_log" \
         | sed 's/^/  /' \
         | head -20 || true)
     if [[ -n "$_surfaced" ]]; then
@@ -1778,7 +1808,18 @@ _ods_cli_wait_for_litellm_ready() {
 
 _ods_cli_wait_for_hermes_ready_with_retry() {
     local flags=("$@")
-    local state
+    local state flag hermes_selected=false
+
+    # `ods disable hermes` stops its container but leaves it in place, so the
+    # container existing does not mean this stack runs Hermes. Wait only when
+    # its Compose file is part of the stack being restarted.
+    for flag in "${flags[@]}"; do
+        if [[ "$flag" == extensions/services/hermes/compose.yaml \
+            || "$flag" == */extensions/services/hermes/compose.yaml ]]; then
+            hermes_selected=true
+        fi
+    done
+    [[ "$hermes_selected" == true ]] || return 0
 
     if _ods_cli_wait_for_hermes_ready; then
         return 0
@@ -2835,11 +2876,11 @@ cmd_doctor() {
                 ;;
             --report)
                 [[ -n "${2:-}" ]] || { echo "Error: --report requires a path argument" >&2; return 1; }
-                report_file="$2"
+                report_file="$(_caller_path "$2")"
                 shift 2
                 ;;
             *)
-                report_file="$1"
+                report_file="$(_caller_path "$1")"
                 shift
                 ;;
         esac
@@ -3178,6 +3219,25 @@ cmd_audit() {
 # Track visited services during recursive enable to prevent circular deps
 declare -a _ENABLE_VISITED=()
 
+# Host services (manifest type host-systemd) run outside Compose, so the
+# selection helper has no compose.yaml to move and would fail with "No Compose
+# selection file". Say what to do instead, matching the Dashboard's extension
+# detail for OpenCode. A shadowing user extension that ships Compose files
+# goes through the normal selection path.
+_ods_cli_reject_host_service() {
+    local service_id="$1" action="$2" ext_dir="$3"
+    [[ "${SERVICE_TYPES[$service_id]:-docker}" == "host-systemd" ]] || return 0
+    [[ -e "$ext_dir/compose.yaml" || -e "$ext_dir/compose.yaml.disabled" ]] && return 0
+    log_error "$service_id runs on the host, not as a Compose extension; 'ods $action' does not apply to it."
+    if [[ "$service_id" == "opencode" ]]; then
+        log "Open the OpenCode page in the ODS dashboard (/apps/opencode)."
+        log "Start OpenCode there when it is stopped; on Linux, set it up there when it is not installed."
+        log "Or re-run the ODS installer with --opencode to add it, or --no-opencode to remove it."
+    fi
+    echo "  Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC" >&2
+    exit 1
+}
+
 cmd_enable() {
     check_install
     sr_load
@@ -3209,6 +3269,7 @@ cmd_enable() {
     # Check it's not a core service
     local cat="${SERVICE_CATEGORIES[$service_id]:-optional}"
     [[ "$cat" == "core" ]] && { success "$service_id is a core service (always enabled)."; return 0; }
+    _ods_cli_reject_host_service "$service_id" enable "$ext_dir"
 
     if [[ "$service_id" == "ods-proxy" ]]; then
         _ods_cli_require_proxy_auth
@@ -3337,6 +3398,7 @@ cmd_disable() {
     # Check it's not a core service
     local cat="${SERVICE_CATEGORIES[$service_id]:-optional}"
     [[ "$cat" == "core" ]] && error "Cannot disable core service: $service_id"
+    _ods_cli_reject_host_service "$service_id" disable "$ext_dir"
 
     # A preliminary check avoids resolving Compose with known dependents.
     # The helper repeats the check and holds its selection lock through the
@@ -3423,12 +3485,27 @@ cmd_purge() {
     # Check if container is still running (disable may have failed to stop it)
     local _container="${SERVICE_CONTAINERS[$service_id]:-ods-$service_id}"
     local _running_containers
-    if ! _running_containers=$(docker ps --format '{{.Names}}'); then
+    if ! _running_containers=$(docker ps --format '{{.Names}}'$'\t''{{.Label "com.docker.compose.service"}}'$'\t''{{.Label "com.docker.compose.project.working_dir"}}'); then
         error "Cannot verify whether $service_id is running. Restore Docker connectivity and retry; data was not deleted."
     fi
-    if grep -Fxq -- "$_container" <<< "$_running_containers"; then
+    if cut -f1 <<< "$_running_containers" | grep -Fxq -- "$_container"; then
         error "$service_id container is still running. Run 'ods stop $service_id' first."
     fi
+    # Its companions (a database, worker or cache in the same fragment, named
+    # <id>-*) write the same data; one left running must block the delete too.
+    # Scope the refusal to this installation's directory. Recipe labels may
+    # name a legacy file or a frozen native recipe, or outlive their source.
+    # Refusing deletion must still protect those live writers; it does not
+    # grant authority to stop or modify any container.
+    local _install_real _name _companion _workdir
+    _install_real=$(cd -P "$INSTALL_DIR" && pwd)
+    while IFS=$'\t' read -r _name _companion _workdir; do
+        [[ "$_companion" == "$service_id"-* ]] || continue
+        # A separately registered extension keeps its own lifecycle and data.
+        [[ -n "${SERVICE_CONTAINERS[$_companion]+set}" ]] && continue
+        [[ "$_workdir" == "$INSTALL_DIR" || "$_workdir" == "$_install_real" ]] || continue
+        error "$service_id's $_companion service is still running (container $_name). Stop it first; data was not deleted."
+    done <<< "$_running_containers"
 
     # Check data directory exists
     local _data_dir="$INSTALL_DIR/data/$service_id"
@@ -3650,8 +3727,18 @@ cmd_preset() {
     check_install
     sr_load
 
+    validate_preset_name() {
+        if [[ -z "$1" || "$1" == "." || "$1" == ".." || "$1" == */* || "$1" == *\\* || "$1" == -* || "$1" =~ [[:cntrl:]] ]]; then
+            error "Invalid preset name: path separators, directory traversal, and leading dashes are not allowed"
+        fi
+    }
     local action="${1:-list}"
     local name="${2:-}"
+
+    case "$action" in
+        save|s|load|l|delete|rm|export|e) [[ -n "$name" ]] && validate_preset_name "$name" ;;
+        diff|d) [[ -n "$name" ]] && validate_preset_name "$name"; [[ -n "${3:-}" ]] && validate_preset_name "$3" ;;
+    esac
 
     case "$action" in
         save|s)
@@ -3670,19 +3757,18 @@ cmd_preset() {
             for sid in "${SERVICE_IDS[@]}"; do
                 local cat="${SERVICE_CATEGORIES[$sid]}"
                 [[ "$cat" == "core" ]] && continue
-                local cf="${SERVICE_COMPOSE[$sid]}"
                 # Match restore and Dashboard: a user extension shadows the
                 # bundled extension with the same service ID.
-                local user_ext_dir="$INSTALL_DIR/data/user-extensions/$sid"
-                [[ -L "$user_ext_dir" ]] && error "Invalid user extension: $sid"
-                if [[ -d "$user_ext_dir" ]]; then
-                    cf="$user_ext_dir/compose.yaml"
-                fi
-                if [[ -n "$cf" && -f "$cf" ]]; then
+                local ext_dir="$INSTALL_DIR/data/user-extensions/$sid"
+                [[ -L "$ext_dir" ]] && error "Invalid user extension: $sid"
+                [[ -d "$ext_dir" ]] || ext_dir="$INSTALL_DIR/extensions/services/$sid"
+                if [[ -f "$ext_dir/compose.yaml" ]]; then
                     echo "enabled:$sid" >> "$state_file"
-                else
+                elif [[ -f "$ext_dir/compose.yaml.disabled" ]]; then
                     echo "disabled:$sid" >> "$state_file"
                 fi
+                # Host-managed services (no Compose file) have no selection
+                # marker; the restore helper would reject them.
             done
 
             # Save metadata
@@ -4659,7 +4745,7 @@ _remote_provider_write_payload() {
             --api-key-file)
                 [[ $# -ge 2 ]] || error "--api-key-file requires a value"
                 secret_option_seen="true"
-                api_key_file="${2:-}"; shift 2 ;;
+                api_key_file="$(_caller_path "${2:-}")"; shift 2 ;;
             --api-key-env)
                 [[ $# -ge 2 ]] || error "--api-key-env requires a value"
                 secret_option_seen="true"
@@ -4669,7 +4755,7 @@ _remote_provider_write_payload() {
             --ssh-private-key-file)
                 [[ $# -ge 2 ]] || error "--ssh-private-key-file requires a value"
                 secret_option_seen="true"; ssh_option_seen="true"
-                ssh_private_key_file="${2:-}"; shift 2 ;;
+                ssh_private_key_file="$(_caller_path "${2:-}")"; shift 2 ;;
             --ssh-private-key-env)
                 [[ $# -ge 2 ]] || error "--ssh-private-key-env requires a value"
                 secret_option_seen="true"; ssh_option_seen="true"
@@ -4677,7 +4763,7 @@ _remote_provider_write_payload() {
             --ssh-known-hosts-file)
                 [[ $# -ge 2 ]] || error "--ssh-known-hosts-file requires a value"
                 secret_option_seen="true"; ssh_option_seen="true"
-                ssh_known_hosts_file="${2:-}"; shift 2 ;;
+                ssh_known_hosts_file="$(_caller_path "${2:-}")"; shift 2 ;;
             --ssh-known-hosts-env)
                 [[ $# -ge 2 ]] || error "--ssh-known-hosts-env requires a value"
                 secret_option_seen="true"; ssh_option_seen="true"
@@ -5478,8 +5564,19 @@ cmd_backup() {
         return
     fi
 
-    # Default: create backup (pass all args through)
-    "$INSTALL_DIR/ods-backup.sh" "$@"
+    # Default: create backup (pass all args through, output dir resolved)
+    local -a backup_args=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -o|--output)
+                backup_args+=("$1")
+                [[ $# -ge 2 ]] && { backup_args+=("$(_caller_path "$2")"); shift; }
+                ;;
+            *) backup_args+=("$1") ;;
+        esac
+        shift
+    done
+    "$INSTALL_DIR/ods-backup.sh" ${backup_args[@]+"${backup_args[@]}"}
 }
 
 cmd_restore() {
@@ -6355,6 +6452,7 @@ _gpu_validate() {
 
     echo ""
     echo "  Result: ${pass} check(s) passed, ${fail} failed"
+    [[ "$fail" -eq 0 ]]
 }
 
 # Helper: write AMD-specific env vars from topology JSON for manual assignment
@@ -6402,6 +6500,36 @@ _gpu_reassign_update_amd_arch_env() {
     else
         _env_unset "HSA_OVERRIDE_GFX_VERSION"
     fi
+}
+
+# VRAM held on each GPU by this installation's own llama-server, printed as
+# "<gpu-uuid> <MiB>" lines. Reassignment recreates that container, so its
+# allocation is free for the new plan; counting it as used made the loaded
+# model fail to fit its own reassignment (#8087). Ownership must be proven:
+# the container is this installation's llama-server Compose service and each
+# GPU process runs in its cgroup. Anything not proven is not credited.
+_gpu_reassign_owned_llama_vram() {
+    local container="${SERVICE_CONTAINERS[llama-server]:-ods-llama-server}"
+    local proc_root="${ODS_PROC_ROOT:-/proc}"
+    local inspected container_id workdir config_files service running install_real
+    # No such container (or no Docker access) means nothing of ours to credit.
+    inspected=$(docker inspect -f '{{.Id}}|{{index .Config.Labels "com.docker.compose.project.working_dir"}}|{{index .Config.Labels "com.docker.compose.project.config_files"}}|{{index .Config.Labels "com.docker.compose.service"}}|{{.State.Running}}' \
+        "$container" 2>/dev/null) || return 0
+    IFS='|' read -r container_id workdir config_files service running <<< "$inspected"
+    [[ "$container_id" =~ ^[0-9a-f]{64}$ && "$service" == llama-server && "$running" == true ]] || return 0
+    install_real=$(cd -P "$INSTALL_DIR" && pwd)
+    [[ "$workdir" == "$INSTALL_DIR" || "$workdir" == "$install_real" ]] || return 0
+    [[ ",$config_files," == *",$workdir/docker-compose.base.yml,"* ]] || return 0
+    local apps pid uuid used
+    # A driver that cannot list compute processes leaves the budget as it was.
+    apps=$(nvidia-smi --query-compute-apps=pid,gpu_uuid,used_memory \
+        --format=csv,noheader,nounits 2>/dev/null) || return 0
+    while IFS=', ' read -r pid uuid used; do
+        [[ "$pid" =~ ^[0-9]+$ && "$used" =~ ^[0-9]+$ && -n "$uuid" ]] || continue
+        # A process that exited since the listing has nothing left to credit.
+        grep -Fq -- "$container_id" "$proc_root/$pid/cgroup" 2>/dev/null || continue
+        printf '%s %s\n' "$uuid" "$used"
+    done <<< "$apps"
 }
 
 _gpu_reassign() {
@@ -6492,11 +6620,31 @@ _gpu_reassign() {
         fi
     fi
 
+    # The assignment budgets each GPU by its free VRAM. Credit back what this
+    # installation's llama-server holds (capped at the GPU's total) so the
+    # loaded model can be reassigned; config/gpu-topology.json keeps the
+    # driver's figures.
+    local assign_topo_json="$topo_json" reclaimed=""
+    if [[ "$backend" == "nvidia" ]]; then
+        reclaimed=$(_gpu_reassign_owned_llama_vram)
+    fi
+    if [[ -n "$reclaimed" ]]; then
+        assign_topo_json=$(jq --arg reclaimed "$reclaimed" '
+            ($reclaimed | split("\n") | map(select(length > 0) | split(" "))
+                | reduce .[] as $row ({}; .[$row[0]] += ($row[1] | tonumber))) as $credit
+            | .gpus |= map(
+                if ($credit[.uuid] // 0) > 0 and .memory_free_gb != null then
+                    .memory_free_gb = ([.memory_free_gb + $credit[.uuid] / 1024, .memory_gb]
+                        | min | . * 10 | round / 10)
+                else . end)' <<< "$topo_json")
+        log "Counting $(awk '{ total += $2 } END { print total }' <<< "$reclaimed") MiB held by this installation's llama-server as available; reassignment recreates it."
+    fi
+
     # Write topology to tmpfile and run assignment
     local tmpdir
     tmpdir=$(mktemp -d)
     trap "rm -rf '$tmpdir'" RETURN
-    echo "$topo_json" > "$tmpdir/topo.json"
+    echo "$assign_topo_json" > "$tmpdir/topo.json"
     local env_backup="$tmpdir/env.before"
     cp "$INSTALL_DIR/.env" "$env_backup"
 
@@ -6871,9 +7019,10 @@ _gpu_reassign() {
 
         success "Manual GPU assignment saved"
         echo ""
-        echo -n "  Apply changes now? [Y/n] "
-        read -r _yn
-        case "${_yn:-y}" in
+        # Without a terminal (a script, cron, ssh), take the documented default
+        # instead of dying on EOF after .env has already been rewritten.
+        read -p "  Apply changes now? [Y/n] " -r || REPLY=""
+        case "${REPLY:-y}" in
             y|Y|"")
                 local _flags_str _flags=()
                 _flags_str=$(get_compose_flags)
@@ -6996,9 +7145,10 @@ _gpu_reassign() {
 
     success "GPU assignment updated (strategy: ${strategy})"
     echo ""
-    echo -n "  Apply changes now? [Y/n] "
-    read -r _yn
-    case "${_yn:-y}" in
+    # Without a terminal (a script, cron, ssh), take the documented default
+    # instead of dying on EOF after .env has already been rewritten.
+    read -p "  Apply changes now? [Y/n] " -r || REPLY=""
+    case "${REPLY:-y}" in
         y|Y|"")
             local _flags_str _flags=()
             _flags_str=$(get_compose_flags)
@@ -7290,6 +7440,7 @@ PYEOF
 
     log "Applying template: $template_id"
     local svc
+    local -a failed=() not_installed=()
     for svc in $services; do
         # Skip core services (no compose toggle needed)
         local cat="${SERVICE_CATEGORIES[$svc]:-optional}"
@@ -7302,10 +7453,35 @@ PYEOF
             continue
         fi
 
+        # The CLI cannot install Library extensions; the dashboard's template
+        # apply does. Name them instead of reporting an unknown service.
+        if [[ ! -d "$INSTALL_DIR/extensions/services/$svc" && ! -d "$INSTALL_DIR/data/user-extensions/$svc" \
+            && ( -d "$INSTALL_DIR/data/extensions-library/$svc" \
+                || -d "$INSTALL_DIR/extensions/library/services/$svc" ) ]]; then
+            warn "  $svc is a Library extension that is not installed"
+            not_installed+=("$svc")
+            continue
+        fi
+
         log "  Enabling $svc..."
-        ( cmd_enable "$svc" ) || warn "  Failed to enable $svc (continuing)"
+        if ! ( cmd_enable "$svc" ); then
+            warn "  Failed to enable $svc (continuing)"
+            failed+=("$svc")
+        fi
     done
-    success "Template applied: $template_id"
+    if [[ ${#failed[@]} -eq 0 && ${#not_installed[@]} -eq 0 ]]; then
+        success "Template applied: $template_id"
+        return 0
+    fi
+    # Additive: services enabled above stay enabled, but the template is not
+    # in effect until the rest are, so do not report success.
+    if [[ ${#not_installed[@]} -gt 0 ]]; then
+        warn "Not installed: ${not_installed[*]}. Apply '$template_id' from the dashboard's Extensions page, which installs Library extensions."
+    fi
+    if [[ ${#failed[@]} -gt 0 ]]; then
+        warn "Could not enable: ${failed[*]} (see the errors above)."
+    fi
+    error "Template $template_id was only partly applied."
 }
 
 cmd_template() {
