@@ -98,13 +98,13 @@ function Test-DockerRunning {
 function Test-Install {
     param([switch]$SkipDockerCheck)
 
-    if (-not (Test-Path $InstallDir)) {
+    if (-not (Test-Path -LiteralPath $InstallDir)) {
         Write-AIError "ODS not found at $InstallDir. Set ODS_HOME or run installer first."
         exit 1
     }
     $baseCompose = Join-Path $InstallDir "docker-compose.base.yml"
     $monoCompose = Join-Path $InstallDir "docker-compose.yml"
-    if (-not (Test-Path $baseCompose) -and -not (Test-Path $monoCompose)) {
+    if (-not (Test-Path -LiteralPath $baseCompose) -and -not (Test-Path -LiteralPath $monoCompose)) {
         Write-AIError "docker-compose.base.yml not found in $InstallDir"
         exit 1
     }
@@ -156,8 +156,8 @@ function Get-ComposeFlags {
     Ensure-HermesDashboardSessionToken
 
     $flagsFile = Join-Path $InstallDir ".compose-flags"
-    if (Test-Path $flagsFile) {
-        $raw = (Get-Content $flagsFile -Raw).Trim()
+    if (Test-Path -LiteralPath $flagsFile) {
+        $raw = (Get-Content -LiteralPath $flagsFile -Raw).Trim()
         if (($raw -match 'user-extensions') -or (Test-Path -LiteralPath (Join-Path $InstallDir 'data/user-extensions')) -or (Test-Path -LiteralPath (Join-Path $InstallDir '.model-stores.compose.json')) -or
             (Test-Path -LiteralPath (Join-Path $InstallDir 'data/model-stores.json'))) {
             return (Resolve-ODSModelStoreComposeFlags -Flags ($raw -split "\s+"))
@@ -166,8 +166,8 @@ function Get-ComposeFlags {
     }
 
     $launchRecord = Join-Path (Join-Path $InstallDir "logs") "compose-launch.txt"
-    if (Test-Path $launchRecord) {
-        $composeFlagsLine = Get-Content $launchRecord -ErrorAction SilentlyContinue |
+    if (Test-Path -LiteralPath $launchRecord) {
+        $composeFlagsLine = Get-Content -LiteralPath $launchRecord -ErrorAction SilentlyContinue |
             Where-Object { $_ -match "^compose_flags=" } |
             Select-Object -First 1
         if ($composeFlagsLine) {
@@ -191,21 +191,21 @@ function Get-ComposeFlags {
     $nvidia = Join-Path $InstallDir "docker-compose.nvidia.yml"
     $mono = Join-Path $InstallDir "docker-compose.yml"
 
-    if (Test-Path $base) {
+    if (Test-Path -LiteralPath $base) {
         $flags += @("-f", "docker-compose.base.yml")
-        if (Test-Path $nvidia) {
+        if (Test-Path -LiteralPath $nvidia) {
             $flags += @("-f", "docker-compose.nvidia.yml")
         }
-    } elseif (Test-Path $mono) {
+    } elseif (Test-Path -LiteralPath $mono) {
         $flags += @("-f", "docker-compose.yml")
     }
 
     # Add enabled extension compose files
     $extDir = Join-Path (Join-Path $InstallDir "extensions") "services"
-    if (Test-Path $extDir) {
-        Get-ChildItem -Path $extDir -Directory | ForEach-Object {
+    if (Test-Path -LiteralPath $extDir) {
+        Get-ChildItem -LiteralPath $extDir -Directory | ForEach-Object {
             $composePath = Join-Path $_.FullName "compose.yaml"
-            if (Test-Path $composePath) {
+            if (Test-Path -LiteralPath $composePath) {
                 $relPath = $composePath.Substring($InstallDir.Length + 1) -replace "\\", "/"
                 $flags += @("-f", $relPath)
             }
@@ -2610,7 +2610,7 @@ function Invoke-Report {
     # Support diagnostics include failed Docker probes; an unavailable daemon
     # must not prevent collecting the bundle needed to diagnose it.
     Test-Install -SkipDockerCheck
-    Push-Location $InstallDir
+    Push-Location -LiteralPath $InstallDir
     try {
         $flags = Get-ComposeFlags
         Write-ODSInstallReport -InstallDir $InstallDir -ComposeFlags $flags | Out-Null
