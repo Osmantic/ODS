@@ -44,6 +44,75 @@ test('screenshot research request requires evidence, not an answer from memory',
   guard.begin('queria saber notícias de hoje sobre o stf dia 15/09/2026');
   assert.equal(guard.finalize('As notícias são estas.')?.action, 'revise');
 });
+
+const mixedDocsPrompt = 'Use web search to find the official Python documentation for csv.DictReader. Then create sales.csv in the workspace and read it back. Give me the direct CSV download, row count, total, and official documentation link.';
+const docsUrl = 'https://docs.python.org/3/library/csv.html';
+const searchReceipt = {details:{results:[{url:docsUrl}]},content:[{type:'text',text:'Python csv documentation'}]};
+const docsReceipt = {details:{status:200,url:docsUrl,text:'csv.DictReader reads CSV rows as dictionaries.'},content:[{type:'text',text:'csv.DictReader reads CSV rows as dictionaries.'}]};
+
+test('mixed source and file task gets one early reminder, then real page reads satisfy attribution',()=>{
+  const assurance=createCompletionAssurance();assurance.begin(mixedDocsPrompt);
+  assert.equal(assurance.beforeWorkspaceMutation(),undefined,'no invented search leads');
+  assurance.observe('web_search',{result:searchReceipt});
+  assert.equal(assurance.beforeWorkspaceMutation()?.block,true);
+  assert.equal(assurance.beforeWorkspaceMutation(),undefined,'bounded guidance, not a permanent write gate');
+  assert.deepEqual(assurance.readPages,[],'reminder is not page evidence');
+  assurance.observe('web_fetch',{result:docsReceipt});
+  assurance.observe('write',{result:{content:[{type:'text',text:'Saved CSV'}]}});
+  assert.equal(assurance.finalize(`The CSV has 3 rows and total 12. The Python documentation is at ${docsUrl}.`),undefined);
+});
+
+test('early reminder leaves citation checks intact when ignored or a source fails',()=>{
+  for(const failed of [undefined,{isError:true,content:[{type:'text',text:'Denied'}]},
+    {details:{status:403,url:docsUrl,text:'Forbidden'}}]) {
+    const assurance=createCompletionAssurance();assurance.begin(mixedDocsPrompt);
+    assurance.observe('web_search',{result:searchReceipt});
+    if(failed) assurance.observe('web_fetch',{result:failed});
+    assert.equal(assurance.beforeWorkspaceMutation()?.block,failed?undefined:true);
+    assert.deepEqual(assurance.readPages,[]);
+    assert.equal(assurance.finalize(`The CSV has 3 rows and total 12. Docs: ${docsUrl}`)?.action,'revise');
+  }
+});
+
+test('page reads, explicit read opt-outs, cancellation and plain file tasks do not get early reminders',()=>{
+  for(const prompt of ['Create sales.csv and give me a download link.',
+    'Search for documentation without reading pages, then create sales.csv.',
+    'Translate: open official source pages and create sales.csv.']) {
+    const assurance=createCompletionAssurance();assurance.begin(prompt);
+    assurance.observe('web_search',{result:searchReceipt});
+    assert.equal(assurance.beforeWorkspaceMutation(),undefined,prompt);
+  }
+  for(const action of ['read','cancel']) {
+    const assurance=createCompletionAssurance();assurance.begin(mixedDocsPrompt);
+    assurance.observe('web_search',{result:searchReceipt});
+    if(action==='read') assurance.observe('web_fetch',{result:docsReceipt});else assurance.cancel();
+    assert.equal(assurance.beforeWorkspaceMutation(),undefined,action);
+  }
+});
+
+for(const wrapped of [false,true]) for(const toolName of ['write','exec'])
+test(`production guard reminds before mixed-task workspace work, ${toolName}, wrapped=${wrapped}`,()=>{
+  const context={agentId:'pixel',trigger:'user',runId:'mixed-source-read',sessionId:'mixed-source-read',sessionKey:`agent:pixel:openai-user:ods-${'a'.repeat(64)}`};
+  const guard=createToolLoopGuard();
+  guard.observeRun(context,'pixel',{prompt:mixedDocsPrompt});
+  guard.afterToolCall({toolName:'web_search',params:{query:'Python csv docs'},result:searchReceipt},context,'pixel');
+  const args=toolName==='write'?{path:'sales.csv',content:'item,amount\napples,7'}:{command:'python3 make_csv.py'};
+  const event={toolName:wrapped?'tool_call':toolName,params:wrapped?{id:toolName,args}:args,toolCallId:'first-workspace-call'};
+  const reminder=guard.beforeToolCall(event,context,'pixel');
+  assert.equal(reminder?.block,true);
+  assert.match(reminder.blockReason,/Search results are leads/);
+  guard.afterToolCall({toolName:'web_fetch',params:{url:docsUrl},result:docsReceipt},context,'pixel');
+  assert.doesNotMatch(guard.beforeToolCall(event,context,'pixel')?.blockReason??'',/Search results are leads/);
+});
+
+test('operator-disabled page reading does not trigger workspace read guidance',()=>{
+  const context={agentId:'pixel',trigger:'user',runId:'disabled-page-reading',sessionId:'disabled-page-reading'};
+  const guard=createToolLoopGuard({hostCitationVerifier:{allowed:()=>false}});
+  guard.observeRun(context,'pixel',{prompt:mixedDocsPrompt});
+  guard.afterToolCall({toolName:'web_search',result:searchReceipt},context,'pixel');
+  const result=guard.beforeToolCall({toolName:'write',params:{path:'sales.csv',content:'item,amount'},toolCallId:'disabled-source-write'},context,'pixel');
+  assert.doesNotMatch(result?.blockReason??'',/Search results are leads/);
+});
 test('two revisions then honest terminal outcome; discovery is not research', () => {
   const guard = createCompletionAssurance();
   guard.begin('ok consulte.');
@@ -447,4 +516,33 @@ test('closed code spans and fences do not hide a later emphasized citation', () 
     '- ~~~\n  code\n  ~~~\n', '1. ~~~\n   code\n   ~~~\n', '> ~~~\n> code\n> ~~~\n']) {
     assert.deepEqual(guard.unverifiedCitations(prefix + `**${url}**`), [], prefix);
   }
+});
+
+
+for (const condition of [
+  'If a needed capability fails or is unavailable, I will state the concrete limitation and that the task is incomplete.',
+  'If I cannot open a source, I will report the limitation.',
+  'If the page is unverified, I will say so.',
+  'I will explain what happens if the service is unavailable.',
+  'Se a ferramenta estiver indisponivel, vou informar a limitacao.',
+]) test(`hypothetical failure does not clear exhausted completion recovery: ${condition}`, () => {
+  const guard=createCompletionAssurance();guard.begin('Use web search, read the official source pages, and create a tested Python project with a ZIP download.');
+  assert.equal(guard.finalize('I will create the project.')?.action,'revise');
+  assert.equal(guard.finalize('I will search the official documentation.')?.action,'revise');
+  assert.equal(guard.finalize('I will search the documentation now. '+condition)?.action,'finalize');
+  assert.match(guard.terminal,/task is incomplete/);
+  assert.equal(guard.terminalStatus,'failed');
+});
+
+for (const answer of [
+  'I cannot access the requested service. The task is incomplete.',
+  'The service is unavailable. If it returns, I will try later.',
+  'If a source fails, I will report it. The web service is unavailable now.',
+  'I could not read the source. Its claims remain unverified.',
+  'Nao consegui acessar o servico. Se voltar, vou tentar depois.',
+  'Which site should I search?',
+]) test(`actual limitation or clarification still ends without retry: ${answer}`, () => {
+  const guard=createCompletionAssurance();guard.begin('Use web search and read the source pages.');
+  assert.equal(guard.finalize(answer),undefined);
+  assert.equal(guard.terminal,undefined);
 });

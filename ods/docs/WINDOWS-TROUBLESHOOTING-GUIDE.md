@@ -542,9 +542,10 @@ docker compose ps
 
 ### 7. Test the AI
 ```powershell
-curl http://localhost:8080/v1/models
+curl http://localhost:11434/v1/models
 ```
-✅ Should return a JSON response with model information
+✅ Should return a JSON response with model information. Native AMD installs
+serve the model on `AMD_INFERENCE_PORT` from `.env` (normally 8080) instead.
 
 ---
 

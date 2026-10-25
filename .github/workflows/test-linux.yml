@@ -107,6 +107,7 @@ jobs:
         run: |
           python -m pytest -q extensions/services/pixel-agent/tests/test_workspace_preview.py \
             extensions/services/pixel-agent/tests/test_workspace_artifact.py \
+            extensions/services/pixel-agent/tests/test_workspace_artifact_archive.py \
             extensions/services/pixel-agent/tests/test_workspace_preview_charset.py \
             extensions/services/pixel-agent/tests/test_workspace_preview_git.py \
             extensions/services/pixel-agent/tests/test_preview_empty_assets.py
@@ -268,6 +269,9 @@ jobs:
       - name: BATS Unit Tests
         run: bash tests/run-bats.sh
 
+      - name: Installer spinner terminal rendering
+        run: python3 tests/test_installer_spinner_pty.py -v
+
       - name: Cold storage relative-path round trips
         run: python3 tests/test-cold-storage-relative-links.py
 
@@ -391,6 +395,9 @@ jobs:
       - name: CLI Enable Compose Reconciliation Tests
         run: bash tests/test-cli-enable-compose-reconciliation.sh
 
+      - name: CLI Host Service Enable Tests
+        run: bash tests/test-cli-host-service-enable.sh
+
       - name: CLI Link Refresh Tests
         run: bash tests/test-cli-link-refresh.sh
 
@@ -427,7 +434,9 @@ jobs:
         run: bash tests/test-phase06-env-rerun-quoting.sh
 
       - name: Installer Cloud Provider and Source Mode Preservation Tests
-        run: bash tests/test-phase06-cloud-config-preservation.sh
+        run: |
+          python3 tests/test_cloud_config_permissions.py
+          bash tests/test-phase06-cloud-config-preservation.sh
 
       - name: Installer Created Container Ownership Tests
         run: bash tests/test-phase11-created-container-ownership.sh
@@ -531,6 +540,8 @@ jobs:
           bash tests/test-dashboard-data-permissions.sh
           bash tests/test-extensions-library-copy.sh
           sudo -n python3 tests/test_dashboard_data_permissions.py
+          python3 tests/test_dashboard_extensions_lock.py
+          sudo -n python3 tests/test_dashboard_extensions_lock.py
           bash tests/test-resolve-compose-resilient.sh
           bash tests/test-phase03-multigpu-tty.sh
           bash tests/test-pixel-support-services.sh
@@ -676,7 +687,9 @@ jobs:
           bash tests/test-wsl-agent-start.sh
 
       - name: NVIDIA Multi-GPU Visibility Contract Tests
-        run: bash tests/test-multigpu-nvidia-visibility.sh
+        run: |
+          bash tests/test-multigpu-nvidia-visibility.sh
+          bash tests/test-multigpu-nvidia-service-pinning.sh
 
       - name: Upload Installer Simulation Artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
