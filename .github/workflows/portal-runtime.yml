@@ -169,6 +169,12 @@ jobs:
         env:
           OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node --test ods/extensions/services/pixel-agent/tests/runtime_diagnostic_stream_writes.integration.mjs
+      - name: Verify split UTF-8 output through the pinned subprocess supervisor
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_utf8_output.integration.mjs
       - name: Verify image lifecycle and failed command attempt presentation with pinned native SDK
         if: runner.os != 'Windows'
         shell: bash
