@@ -5477,16 +5477,21 @@ def _activate_remote_provider_route(
     relay_state = _capture_container_state(_PIXEL_MODEL_RELAY_CONTAINER)
 
     existing = _read_remote_provider_activation_state()
+    env = load_env(env_path)
     previous = existing.get("previous") if isinstance(existing, dict) else None
     if not isinstance(previous, dict):
-        env = load_env(env_path)
         previous = {
             "odsMode": str(env.get("ODS_MODE") or "local"),
             "llmApiUrl": str(env.get("LLM_API_URL") or "http://llama-server:8080"),
+            "hermesBaseUrl": str(env.get("HERMES_LLM_BASE_URL") or ""),
+            "hermesApiKey": str(env.get("HERMES_LLM_API_KEY") or ""),
             "cloudConfig": _serializable_text_snapshot(cloud_snapshot),
             "pixel": pixel_before,
             "pixelThinkingControl": pixel_before_control,
         }
+    else:
+        for k, ek in (("hermesBaseUrl", "HERMES_LLM_BASE_URL"), ("hermesApiKey", "HERMES_LLM_API_KEY")):
+            previous.setdefault(k, str(env.get(ek) or ""))
     candidate_state = {
         "schema": _REMOTE_PROVIDER_ACTIVATION_STATE_SCHEMA,
         "phase": "staging",
@@ -5509,8 +5514,13 @@ def _activate_remote_provider_route(
     try:
         _write_remote_provider_activation_state(candidate_state)
         raw_env = str(env_snapshot.get("text") or "")
-        raw_env = _upsert_env_text(raw_env, "ODS_MODE", "cloud")
-        raw_env = _upsert_env_text(raw_env, "LLM_API_URL", "http://litellm:4000")
+        for key, val in [
+            ("ODS_MODE", "cloud"),
+            ("LLM_API_URL", "http://litellm:4000"),
+            ("HERMES_LLM_BASE_URL", "http://litellm:4000/v1"),
+            *([("HERMES_LLM_API_KEY", env["LITELLM_KEY"])] if env.get("LITELLM_KEY") else []),
+        ]:
+            raw_env = _upsert_env_text(raw_env, key, val)
         _write_bound_env_text(env_path, raw_env)
         env = load_env(env_path)
         _render_remote_provider_cloud_config(route, env)
@@ -5621,8 +5631,18 @@ def _deactivate_remote_provider_route(*, transaction=None) -> dict[str, object]:
     pixel_attempted = False
     try:
         raw_env = str(env_snapshot.get("text") or "")
-        raw_env = _upsert_env_text(raw_env, "ODS_MODE", str(previous["odsMode"]))
-        raw_env = _upsert_env_text(raw_env, "LLM_API_URL", str(previous["llmApiUrl"]))
+        updates = {
+            "ODS_MODE": str(previous["odsMode"]),
+            "LLM_API_URL": str(previous["llmApiUrl"]),
+        }
+        remove_keys = set()
+        for k, ek in (("hermesBaseUrl", "HERMES_LLM_BASE_URL"), ("hermesApiKey", "HERMES_LLM_API_KEY")):
+            if k in previous:
+                if previous[k]:
+                    updates[ek] = str(previous[k])
+                else:
+                    remove_keys.add(ek)
+        raw_env = _env_text_with_changes(raw_env.splitlines(), updates, remove_keys)
         _write_bound_env_text(env_path, raw_env)
         cloud_config = previous.get("cloudConfig")
         if not isinstance(cloud_config, dict):
