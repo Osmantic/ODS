@@ -17,8 +17,8 @@
     },
     {
       "parameters": {
-        "url": "={{ 'http://' + ($env.SILLYTAVERN_HOST || 'localhost') + ':' + ($env.SILLYTAVERN_PORT || '8001') + '/' }}",
         "method": "GET",
+        "url": "http://sillytavern:8000/",
         "options": {
           "timeout": 30000
         }
@@ -26,7 +26,7 @@
       "id": "sillytavern-health",
       "name": "SillyTavern Health Check",
       "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 1,
+      "typeVersion": 4.2,
       "position": [450, 300]
     },
     {

@@ -5,6 +5,7 @@
   "nodes": [
     {
       "parameters": {
+        "authentication": "headerAuth",
         "httpMethod": "POST",
         "path": "llm-to-image",
         "options": {}
@@ -14,11 +15,17 @@
       "comment": "Accepts JSON: { prompt (required), channel (optional) }. API key via X-API-Key header only. Set LLM_TO_IMAGE_API_KEY env var to enable authentication.",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 1,
-      "position": [250, 300]
+      "position": [250, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "ODS Webhook Header Auth"
+        }
+      }
     },
     {
       "parameters": {
-        "jsCode": "// API Key authentication check - timing-safe comparison\nconst headers = $input.first().json.headers || {};\n\n// Case-insensitive header lookup (defense against platform normalization changes)\nconst headerKeys = Object.keys(headers);\nconst apiKeyHeader = headerKeys.find(k => k.toLowerCase() === 'x-api-key');\nconst providedKeyRaw = apiKeyHeader !== undefined ? headers[apiKeyHeader] : '';\nconst expectedKey = $env.LLM_TO_IMAGE_API_KEY;\n\nconst MAX_LEN = 256;\n\n// Timing-safe comparison - prevents timing attacks on API key\nfunction timingSafeEqual(a, b) {\n  if (typeof a !== 'string' || typeof b !== 'string') return false;\n\n  // Include bounds check in result (constant-time, no branch)\n  let result = (a.length > MAX_LEN || b.length > MAX_LEN) ? 1 : 0;\n  // Constant-time comparison: always iterate MAX_LEN, use 0 for out-of-bounds\n  for (let i = 0; i < MAX_LEN; i++) {\n    const charA = i < a.length ? a.charCodeAt(i) : 0;\n    const charB = i < b.length ? b.charCodeAt(i) : 0;\n    result |= charA ^ charB;\n  }\n  // Include length check in constant-time result\n  result |= (a.length === b.length) ? 0 : 1;\n  return result === 0;\n}\n\n// Authentication logic:\n// - If server has expectedKey configured: client MUST provide matching key\n// - If server has NO expectedKey configured: reject any request that provides a key\n// - If neither configured: allow (no auth required)\nif ((expectedKey || providedKeyRaw) && !timingSafeEqual(providedKeyRaw || '', expectedKey || '')) {\n  return [{ json: { valid: false, error: 'Authentication failed' } }];\n}\n\nconst input = $input.first().json || {};\n\n// Validate prompt\nconst promptRaw = input.prompt || input.message || '';\nconst prompt = promptRaw.toString().trim();\nif (!prompt) {\n  return [{ json: { valid: false, error: 'Missing required field: prompt' } }];\n}\nif (prompt.length > 2000) {\n  return [{ json: { valid: false, error: 'Prompt too long: max 2000 characters' } }];\n}\n\n// Validate channel\nconst channelRaw = (input.channel || 'general').replace(/^#+/, '').replace(/[<>@&]/g, '').slice(0, 100);\nif (!channelRaw.match(/^[a-zA-Z0-9_-]+$/)) {\n  return [{ json: { valid: false, error: 'Invalid channel: must be alphanumeric, dash, or underscore only' } }];\n}\n\nreturn [{\n  json: {\n    valid: true,\n    prompt: prompt,\n    channel: channelRaw\n  }\n}];"
+        "jsCode": "// Authentication is enforced by the Webhook node's Header Auth credential.\n\n// n8n webhooks deliver the request as { headers, params, query, body }.\nconst item = $input.first().json || {};\nconst input = item.body || item;\n\n// Validate prompt\nconst promptRaw = input.prompt || input.message || '';\nconst prompt = promptRaw.toString().trim();\nif (!prompt) {\n  return [{ json: { valid: false, error: 'Missing required field: prompt' } }];\n}\nif (prompt.length > 2000) {\n  return [{ json: { valid: false, error: 'Prompt too long: max 2000 characters' } }];\n}\n\n// Validate channel\nconst channelRaw = (input.channel || 'general').replace(/^#+/, '').replace(/[<>@&]/g, '').slice(0, 100);\nif (!channelRaw.match(/^[a-zA-Z0-9_-]+$/)) {\n  return [{ json: { valid: false, error: 'Invalid channel: must be alphanumeric, dash, or underscore only' } }];\n}\n\nreturn [{\n  json: {\n    valid: true,\n    prompt: prompt,\n    channel: channelRaw\n  }\n}];"
       },
       "id": "validate-input",
       "name": "Validate Input",
@@ -57,17 +64,13 @@
     },
     {
       "parameters": {
-        "url": "={{ 'http://' + ($env.LLM_HOST || 'localhost') + ':' + ($env.LLM_PORT || '8080') + '/v1/chat/completions' }}",
         "method": "POST",
-        "headers": {
-          "list": [
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "body": "={{ {\n  \"model\": $env.LLM_MODEL || 'default',\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are an AI image generation assistant. Convert the user's text description into a detailed, artistic image generation prompt for ComfyUI/FLUX. Include style, lighting, composition, and artistic details. Keep it under 500 characters.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": $('Validate Input').first().json.prompt\n    }\n  ],\n  \"max_tokens\": 500,\n  \"temperature\": 0.7\n} }}",
+        "url": "http://litellm:4000/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  \"model\": 'default',\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are an AI image generation assistant. Convert the user's text description into a detailed, artistic image generation prompt for ComfyUI/FLUX. Include style, lighting, composition, and artistic details. Keep it under 500 characters.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": $('Validate Input').first().json.prompt\n    }\n  ],\n  \"max_tokens\": 500,\n  \"temperature\": 0.7\n}) }}",
         "options": {
           "timeout": 60000
         }
@@ -75,8 +78,14 @@
       "id": "llm-prompt-enhancement",
       "name": "LLM Prompt Enhancement",
       "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 1,
+      "typeVersion": 4.2,
       "position": [850, 200],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "ODS LiteLLM Key"
+        }
+      },
       "comment": "Sends user prompt to LLM for image generation prompt enhancement. Uses validated input."
     },
     {
@@ -92,17 +101,11 @@
     },
     {
       "parameters": {
-        "url": "={{ 'http://' + ($env.COMFYUI_HOST || 'localhost') + ':' + ($env.COMFYUI_PORT || '8188') + '/prompt' }}",
         "method": "POST",
-        "headers": {
-          "list": [
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "body": "={{ {\n  \"prompt\": {\n    \"3\": {\n      \"inputs\": {\n        \"seed\": Math.floor(Math.random() * 9999999999),\n        \"steps\": 20,\n        \"cfg\": 8.0,\n        \"sampler_name\": \"euler\",\n        \"scheduler\": \"normal\",\n        \"denoise\": 1.0,\n        \"model\": [\"4\", 0],\n        \"positive\": [\"6\", 0],\n        \"negative\": [\"7\", 0],\n        \"latent_image\": [\"5\", 0]\n      },\n      \"class_type\": \"KSampler\"\n    },\n    \"4\": {\n      \"inputs\": {\n        \"ckpt_name\": $env.COMFYUI_MODEL_NAME || 'flux1-dev.safetensors'\n      },\n      \"class_type\": \"CheckpointLoaderSimple\"\n    },\n    \"5\": {\n      \"inputs\": {\n        \"width\": 1024,\n        \"height\": 1024,\n        \"batch_size\": 1\n      },\n      \"class_type\": \"EmptyLatentImage\"\n    },\n    \"6\": {\n      \"inputs\": {\n        \"text\": $('Process LLM Response').first().json.enhanced_prompt,\n        \"clip\": [\"4\", 1]\n      },\n      \"class_type\": \"CLIPTextEncode\"\n    },\n    \"7\": {\n      \"inputs\": {\n        \"text\": \"text, watermark, blurry, low quality\",\n        \"clip\": [\"4\", 1]\n      },\n      \"class_type\": \"CLIPTextEncode\"\n    },\n    \"8\": {\n      \"inputs\": {\n        \"samples\": [\"3\", 0],\n        \"vae\": [\"4\", 2]\n      },\n      \"class_type\": \"VAEDecode\"\n    },\n    \"9\": {\n      \"inputs\": {\n        \"filename_prefix\": 'llm_to_image_' + new Date().getTime(),\n        \"images\": [\"8\", 0]\n      },\n      \"class_type\": \"SaveImage\"\n    }\n  },\n  \"client_id\": 'n8n_llm_to_image_' + new Date().getTime()\n} }}",
+        "url": "http://comfyui:8188/prompt",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  \"prompt\": {\n    \"3\": {\n      \"inputs\": {\n        \"seed\": Math.floor(Math.random() * 9999999999),\n        \"steps\": 20,\n        \"cfg\": 8.0,\n        \"sampler_name\": \"euler\",\n        \"scheduler\": \"normal\",\n        \"denoise\": 1.0,\n        \"model\": [\"4\", 0],\n        \"positive\": [\"6\", 0],\n        \"negative\": [\"7\", 0],\n        \"latent_image\": [\"5\", 0]\n      },\n      \"class_type\": \"KSampler\"\n    },\n    \"4\": {\n      \"inputs\": {\n        \"ckpt_name\": 'flux1-dev.safetensors'\n      },\n      \"class_type\": \"CheckpointLoaderSimple\"\n    },\n    \"5\": {\n      \"inputs\": {\n        \"width\": 1024,\n        \"height\": 1024,\n        \"batch_size\": 1\n      },\n      \"class_type\": \"EmptyLatentImage\"\n    },\n    \"6\": {\n      \"inputs\": {\n        \"text\": $('Process LLM Response').first().json.enhanced_prompt,\n        \"clip\": [\"4\", 1]\n      },\n      \"class_type\": \"CLIPTextEncode\"\n    },\n    \"7\": {\n      \"inputs\": {\n        \"text\": \"text, watermark, blurry, low quality\",\n        \"clip\": [\"4\", 1]\n      },\n      \"class_type\": \"CLIPTextEncode\"\n    },\n    \"8\": {\n      \"inputs\": {\n        \"samples\": [\"3\", 0],\n        \"vae\": [\"4\", 2]\n      },\n      \"class_type\": \"VAEDecode\"\n    },\n    \"9\": {\n      \"inputs\": {\n        \"filename_prefix\": 'llm_to_image_' + new Date().getTime(),\n        \"images\": [\"8\", 0]\n      },\n      \"class_type\": \"SaveImage\"\n    }\n  },\n  \"client_id\": 'n8n_llm_to_image_' + new Date().getTime()\n}) }}",
         "options": {
           "timeout": 120000
         }
@@ -110,7 +113,7 @@
       "id": "comfyui-queue-prompt",
       "name": "Queue Image Generation",
       "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 1,
+      "typeVersion": 4.2,
       "position": [1250, 200],
       "comment": "Queues image generation with enhanced LLM prompt. Uses 1024x1024, 20 steps, Euler sampler."
     },

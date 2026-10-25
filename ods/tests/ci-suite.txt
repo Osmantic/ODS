@@ -11,6 +11,7 @@ tests/contracts/test-amd-llamacpp-contracts.sh
 tests/contracts/test-host-native-llm-contracts.sh
 tests/contracts/test-host-native-llm-cpu-fallback.sh
 tests/contracts/test-installer-hardening.sh
+tests/contracts/test-library-workflows-n8n2.py
 tests/contracts/test-docs-llama-host-port.sh
 tests/contracts/test-llama-metrics-flag.sh
 tests/contracts/test-llama-reasoning-format.sh
