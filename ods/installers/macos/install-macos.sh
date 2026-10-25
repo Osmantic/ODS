@@ -997,10 +997,11 @@ _configure_macos_llm_bridge() {
 
 
 
+# One Docker CPU floor covers every feature selection. The env generator caps
+# each service's CPU limit (TTS, Whisper, Hermes) to Docker's CPUs, so no
+# selection can ask compose for more CPUs than Docker has (#3600).
 _require_docker_cpu_budget() {
     local min_cpus="${1:-6}"
-    local max_pin="${2:-4}"
-    local workload="${3:-compose stack}"
     local docker_ncpu
 
     if ! [[ "$min_cpus" =~ ^[0-9]+$ ]] || [[ "$min_cpus" -lt 1 ]]; then
@@ -1009,7 +1010,7 @@ _require_docker_cpu_budget() {
 
     docker_ncpu=$(get_docker_available_cpus)
     if [[ "$docker_ncpu" =~ ^[0-9]+$ ]] && [[ "$docker_ncpu" -lt "$min_cpus" ]]; then
-        ai_err "Docker daemon only has ${docker_ncpu} CPU(s); ODS's ${workload} pins limits up to ${max_pin} CPUs per service and needs at least ${min_cpus} to avoid 'range of CPUs is from 0.01 to N' compose failures."
+        ai_err "Docker has only ${docker_ncpu} CPU(s); the ODS installer requires at least ${min_cpus}."
         case "${DOCKER_BACKEND:-unknown}" in
             colima)
                 local profile_args
@@ -1031,9 +1032,22 @@ _require_docker_cpu_budget() {
                 ai "Raise your docker daemon's CPU allocation to ${min_cpus}+ and re-run."
                 ;;
         esac
+        ai "Or install with ${docker_ncpu} anyway (ODS runs slower): re-run with ODS_MIN_DOCKER_CPUS=${docker_ncpu} set."
         exit 1
     fi
-    ai_ok "Docker CPU budget: ${docker_ncpu} (>=${min_cpus} required for ${workload})"
+    ai_ok "Docker CPU budget: ${docker_ncpu} (>=${min_cpus} required)"
+}
+
+# Speech recognition (WHISPER_CPU_LIMIT=4.0) and text-to-speech (at most 4
+# threads) are sized for 4 CPUs each, so voice runs at full speed on the
+# default floor. Fewer is only possible with a lower ODS_MIN_DOCKER_CPUS.
+_warn_voice_cpu_budget() {
+    local sized_for=4
+    local docker_ncpu
+    docker_ncpu=$(get_docker_available_cpus)
+    if [[ "$docker_ncpu" =~ ^[0-9]+$ ]] && [[ "$docker_ncpu" -lt "$sized_for" ]]; then
+        ai_warn "Voice: Docker has ${docker_ncpu} CPU(s), fewer than the ${sized_for} that speech recognition and text-to-speech are sized for, so speech will be slower. Voice still works."
+    fi
 }
 
 _macos_python_imports_yaml() {
@@ -1261,21 +1275,10 @@ if ! _ensure_colima_private_network; then
 fi
 
 # Pre-flight the docker daemon's CPU allocation. Trip early with a clear
-# message rather than letting compose fail after pulls/builds. If the user
-# already requested voice from CLI flags (for example --all), account for
-# Kokoro's 8-CPU pin now; interactive feature selection is checked again
-# after the user picks features.
-_docker_cpu_override="${ODS_MIN_DOCKER_CPUS:-}"
-_docker_cpu_min="${_docker_cpu_override:-6}"
-_docker_cpu_max_pin=4
-_docker_cpu_workload="base compose stack"
-if $ENABLE_VOICE && [[ -z "$_docker_cpu_override" ]]; then
-    _docker_cpu_min=10
-    _docker_cpu_max_pin=8
-    _docker_cpu_workload="voice-enabled compose stack"
-fi
-_docker_cpu_preflight_min="$_docker_cpu_min"
-_require_docker_cpu_budget "$_docker_cpu_min" "$_docker_cpu_max_pin" "$_docker_cpu_workload"
+# message rather than after pulls/builds. Voice and the Full Stack share this
+# floor: their CPU limits are capped to Docker's CPUs, so an 8-core Mac can
+# run them (#3600). Voice is checked after the user picks features.
+_require_docker_cpu_budget "${ODS_MIN_DOCKER_CPUS:-6}"
 
 # Catch a common Colima-after-DockerDesktop config bomb: when a prior
 # Docker Desktop install left `"credsStore": "desktop"` in ~/.docker/config.json
@@ -1749,8 +1752,8 @@ info_box "  Langfuse:" "$(if $ENABLE_LANGFUSE; then echo enabled; else echo disa
 # why the dashboard shows no image-gen tile after install.
 info_box "  ComfyUI:" "not available on macOS (no MPS Docker image upstream)"
 
-if $ENABLE_VOICE && [[ -z "$_docker_cpu_override" ]] && [[ "${_docker_cpu_preflight_min:-0}" -lt 10 ]]; then
-    _require_docker_cpu_budget 10 8 "voice-enabled compose stack"
+if $ENABLE_VOICE; then
+    _warn_voice_cpu_budget
 fi
 
 # ============================================================================

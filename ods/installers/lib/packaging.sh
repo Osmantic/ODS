@@ -177,7 +177,9 @@ detect_pkg_manager() {
 # Update the package index
 pkg_update() {
     case "$PKG_MANAGER" in
-        apt)    _pkg_run apt-get update -qq 2>>"$LOG_FILE" ;;
+        # sudo-rs 0.2.13/use_pty can stop apt when it inherits a terminal.
+        # Package commands are unattended; close input before entering sudo.
+        apt)    _pkg_run apt-get update -qq </dev/null 2>>"$LOG_FILE" ;;
         dnf)    _pkg_run dnf check-update -q 2>>"$LOG_FILE" || true ;;  # returns 100 if updates available
         pacman) _pkg_prepare_pacman_keyrings; _pkg_retry pacman -Syyu --noconfirm 2>>"$LOG_FILE" ;;  # full sync+upgrade (partial -Sy is unsafe)
         zypper)
@@ -209,7 +211,7 @@ pkg_install() {
 
     log "Installing packages (${PKG_MANAGER}): ${pkgs[*]}"
     case "$PKG_MANAGER" in
-        apt)    _pkg_run apt-get install -y -qq "${pkgs[@]}" 2>>"$LOG_FILE" ;;
+        apt)    _pkg_run apt-get install -y -qq "${pkgs[@]}" </dev/null 2>>"$LOG_FILE" ;;
         dnf)    _pkg_run dnf install -y -q "${pkgs[@]}" 2>>"$LOG_FILE" ;;
         pacman) _pkg_prepare_pacman_keyrings; _pkg_retry pacman -S --noconfirm --needed "${pkgs[@]}" 2>>"$LOG_FILE" ;;
         zypper)

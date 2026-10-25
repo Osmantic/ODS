@@ -327,6 +327,29 @@ describe('Settings', () => {
     expect(screen.getByDisplayValue('192.168.1.10')).toBeInTheDocument()
     expect(fetchMock.mock.calls.filter(([url]) => url === '/api/settings/env')).toHaveLength(3)
   })
+
+  test('preserves unsaved environment changes when retrying a failed refresh', async () => {
+    let offline = false
+    renderSettings((url) => (
+      offline && ['/api/settings/summary', '/api/storage', '/api/settings/env'].includes(url)
+        ? response({ detail: 'dashboard-api restarting' }, 503)
+        : null
+    ))
+    const input = await screen.findByDisplayValue('192.168.1.10')
+    fireEvent.change(input, { target: { value: '192.168.1.25' } })
+
+    offline = true
+    fireEvent.click(screen.getAllByRole('button', { name: 'Refresh' })[0])
+    const retry = await screen.findByRole('button', { name: 'Retry' })
+    expect(screen.getByDisplayValue('192.168.1.25')).toBeInTheDocument()
+
+    offline = false
+    fireEvent.click(retry)
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument())
+    expect(screen.getByDisplayValue('192.168.1.25')).toBeInTheDocument()
+    expect(screen.getByText('System details refreshed. Unsaved environment changes were preserved.')).toBeInTheDocument()
+  })
 })
 
 it.each([true,false])('locks the environment draft until its pending save settles (success=%s)', async success => {

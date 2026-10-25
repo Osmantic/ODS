@@ -386,6 +386,55 @@ if $OLLAMA_RUNNING && [[ "${EXTERNAL_LLM_PROVIDER:-}" != "ollama" ]]; then
     fi
 fi
 
+# A local model's host port is required, rather than a requirement the owner
+# can waive. Docker Desktop's Windows listener is invisible to Linux tools.
+# Reuse only this installation's running llama-server and actual host binding;
+# another service in the same Compose project is not proof of ownership.
+_phase04_own_inference_publishes() {
+    local port="$1" inspected running project_name service working_dir host_ports
+    command -v docker >/dev/null 2>&1 || return 1
+    local -a inspect_command=(docker container inspect --format \
+        '{{.State.Running}}|{{ index .Config.Labels "com.docker.compose.project" }}|{{ index .Config.Labels "com.docker.compose.service" }}|{{ index .Config.Labels "com.docker.compose.project.working_dir" }}|{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{.HostPort}} {{end}}{{end}}' \
+        ods-llama-server)
+    # Read-only, noninteractive inspection also supports sudo Docker reruns.
+    if [[ "${DOCKER_CMD:-docker}" == 'sudo docker' ]]; then
+        inspected="$(sudo -n "${inspect_command[@]}" 2>/dev/null)" || return 1
+    elif ! inspected="$("${inspect_command[@]}" 2>/dev/null)"; then
+        command -v sudo >/dev/null 2>&1 || return 1
+        inspected="$(sudo -n "${inspect_command[@]}" 2>/dev/null)" || return 1
+    fi
+    IFS='|' read -r running project_name service working_dir host_ports <<< "$inspected"
+    [[ "$running" == true && "$project_name" == "${COMPOSE_PROJECT_NAME:-ods}" \
+        && "$service" == llama-server && -n "$working_dir" && "$working_dir" == "${INSTALL_DIR:-}" ]] || return 1
+    [[ " $host_ports " == *" $port "* ]]
+}
+
+_phase04_check_inference_port() {
+    [[ "${TIER:-}" != CLOUD && "${ODS_MODE:-local}" != cloud \
+        && -z "${EXTERNAL_LLM_URL:-}" ]] || return 0
+    ods_native_llm_requested && return 0
+    local port="${OLLAMA_PORT:-}"
+    if [[ -z "$port" && -f "${INSTALL_DIR:-}/.env" ]]; then
+        port="$(external_llm_env_value "$INSTALL_DIR/.env" OLLAMA_PORT)"
+    fi
+    port="${port:-11434}"
+    if [[ ! "$port" =~ ^[1-9][0-9]{0,4}$ ]] || (( 10#$port > 65535 )); then
+        warn "OLLAMA_PORT must be a port from 1 to 65535."
+        return 1
+    fi
+    export OLLAMA_PORT="$port"
+    SERVICE_PORTS[llama-server]="$port"
+    if ! _phase04_own_inference_publishes "$port" && check_port_conflict "$port" false; then
+        warn "Required local model port $port is in use by ${PORT_CONFLICT_PROC:-another process}."
+        warn "If Ollama is running on Windows, quit it from the system tray first. Otherwise stop or reconfigure the conflicting service."
+        warn "Alternatively choose a free OLLAMA_PORT in the environment or installed .env and rerun. Windows PowerShell: \$env:OLLAMA_PORT='11435' (choose a free port)."
+        warn "Installation stopped before configuration or service startup; this port conflict cannot be bypassed with Continue anyway."
+        return 1
+    fi
+}
+
+_phase04_check_inference_port || return 1
+
 # Phase 06 writes WHISPER_PORT from this shell first, then from the installed
 # .env, then 9000. Decide and check with that same port, so a rerun leaves a
 # port the owner chose, or the 9100 earlier AMD installs moved Whisper to,
@@ -431,11 +480,7 @@ unset _whisper_port_for_check
 # Port conflict detection with detailed process information
 PORTS_TO_CHECK=""
 [[ "${ENABLE_OPEN_WEBUI:-true}" != "true" ]] || PORTS_TO_CHECK="${SERVICE_PORTS[open-webui]:-3000}"
-# A host-native llama-server (Windows Portal) owns its own port; the in-stack
-# llama-server does not run then.
-if [[ -z "${EXTERNAL_LLM_URL:-}" ]] && ! ods_native_llm_requested; then
-    PORTS_TO_CHECK="${SERVICE_PORTS[llama-server]:-8080} ${PORTS_TO_CHECK}"
-fi
+# The required local inference port was admitted above and cannot be waived.
 if [[ "$ENABLE_VOICE" == "true" ]]; then
     # A rerun's running Whisper holds its own port; that is not a conflict.
     _phase04_own_whisper_publishes "${SERVICE_PORTS[whisper]:-9000}" \

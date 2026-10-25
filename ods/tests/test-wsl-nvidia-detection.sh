@@ -44,7 +44,7 @@ assert_no_match() {
     fi
 }
 
-mkdir -p "$FIXTURE_DIR/empty-drm" "$FIXTURE_DIR/good-bin" "$FIXTURE_DIR/broken-bin"
+mkdir -p "$FIXTURE_DIR/empty-pci" "$FIXTURE_DIR/pci-3d/0000:01:00.0" "$FIXTURE_DIR/pci-audio/0000:01:00.1" "$FIXTURE_DIR/empty-drm" "$FIXTURE_DIR/good-bin" "$FIXTURE_DIR/broken-bin"
 printf '%s\n' 'Linux version 6.6.87.2-microsoft-standard-WSL2' > "$FIXTURE_DIR/proc-version-wsl"
 printf '%s\n' 'Linux version 6.8.0-generic' > "$FIXTURE_DIR/proc-version-native"
 
@@ -78,6 +78,7 @@ WSL_JSON=$(
     PATH="$FIXTURE_DIR/good-bin:$PATH" \
     ODS_PROC_VERSION_FILE="$FIXTURE_DIR/proc-version-wsl" \
     ODS_DRM_SYS="$FIXTURE_DIR/empty-drm" \
+    ODS_PCI_SYS="$FIXTURE_DIR/empty-pci" \
         bash "$DETECT_SCRIPT" --json-compact 2>/dev/null
 )
 assert_match "platform is WSL2" '"platform":[[:space:]]*"wsl2"' "$WSL_JSON"
@@ -92,6 +93,7 @@ BROKEN_JSON=$(
     PATH="$FIXTURE_DIR/broken-bin:$PATH" \
     ODS_PROC_VERSION_FILE="$FIXTURE_DIR/proc-version-wsl" \
     ODS_DRM_SYS="$FIXTURE_DIR/empty-drm" \
+    ODS_PCI_SYS="$FIXTURE_DIR/empty-pci" \
         bash "$DETECT_SCRIPT" --json-compact 2>/dev/null
 )
 assert_no_match "broken bridge is not NVIDIA hardware" '"type":[[:space:]]*"nvidia"' "$BROKEN_JSON"
@@ -102,9 +104,36 @@ NATIVE_JSON=$(
     PATH="$FIXTURE_DIR/good-bin:$PATH" \
     ODS_PROC_VERSION_FILE="$FIXTURE_DIR/proc-version-native" \
     ODS_DRM_SYS="$FIXTURE_DIR/empty-drm" \
+    ODS_PCI_SYS="$FIXTURE_DIR/empty-pci" \
         bash "$DETECT_SCRIPT" --json-compact 2>/dev/null
 )
 assert_no_match "native empty DRM is not NVIDIA hardware" '"type":[[:space:]]*"nvidia"' "$NATIVE_JSON"
+
+echo ""
+echo "=== Native Linux without nvidia_drm accepts an NVIDIA PCI display device ==="
+printf '%s\n' 0x10de > "$FIXTURE_DIR/pci-3d/0000:01:00.0/vendor"
+printf '%s\n' 0x030200 > "$FIXTURE_DIR/pci-3d/0000:01:00.0/class"
+PCI_JSON=$(
+    PATH="$FIXTURE_DIR/good-bin:$PATH" \
+    ODS_PROC_VERSION_FILE="$FIXTURE_DIR/proc-version-native" \
+    ODS_DRM_SYS="$FIXTURE_DIR/empty-drm" \
+    ODS_PCI_SYS="$FIXTURE_DIR/pci-3d" \
+        bash "$DETECT_SCRIPT" --json-compact 2>/dev/null
+)
+assert_match "NVIDIA PCI 3D controller is NVIDIA hardware" '"type":[[:space:]]*"nvidia"' "$PCI_JSON"
+
+echo ""
+echo "=== Native Linux rejects a non-display NVIDIA PCI function ==="
+printf '%s\n' 0x10de > "$FIXTURE_DIR/pci-audio/0000:01:00.1/vendor"
+printf '%s\n' 0x040300 > "$FIXTURE_DIR/pci-audio/0000:01:00.1/class"
+AUDIO_JSON=$(
+    PATH="$FIXTURE_DIR/good-bin:$PATH" \
+    ODS_PROC_VERSION_FILE="$FIXTURE_DIR/proc-version-native" \
+    ODS_DRM_SYS="$FIXTURE_DIR/empty-drm" \
+    ODS_PCI_SYS="$FIXTURE_DIR/pci-audio" \
+        bash "$DETECT_SCRIPT" --json-compact 2>/dev/null
+)
+assert_no_match "NVIDIA PCI audio function is not NVIDIA hardware" '"type":[[:space:]]*"nvidia"' "$AUDIO_JSON"
 
 echo ""
 echo "=== Summary ==="

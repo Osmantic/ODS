@@ -8,22 +8,27 @@ export default function PixelSourceExcerpt({source}) {
   const [error,setError]=useState('')
   const [busy,setBusy]=useState(false)
   const revision=useRef(0)
-  useEffect(()=>()=>{revision.current++},[])
+  const deadline=useRef(null)
+  useEffect(()=>()=>{revision.current++;clearTimeout(deadline.current)},[])
   const first=Number(start),last=Number(end)
   const valid=Number.isInteger(first)&&Number.isInteger(last)&&first>=1&&last>=first&&last<=lines.length
   const excerpt=valid ? lines.slice(first-1,last).join('') : ''
   const bounded=new TextEncoder().encode(excerpt).length<=65536
-  function change(setter,value){revision.current++;setter(value);setNotice('');setError('');setBusy(false)}
+  function change(setter,value){revision.current++;clearTimeout(deadline.current);setter(value);setNotice('');setError('');setBusy(false)}
   async function copy(){
     if(!valid||!bounded||busy)return
     const current=++revision.current
+    let timer
     setBusy(true);setNotice('');setError('')
     try {
-      await navigator.clipboard.writeText(excerpt)
+      await Promise.race([
+        navigator.clipboard.writeText(excerpt),
+        new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('Clipboard timed out')),5000);deadline.current=timer}),
+      ])
       if(current===revision.current)setNotice('Excerpt copied.')
     } catch {
       if(current===revision.current)setError('Clipboard unavailable. Select the excerpt below and copy manually.')
-    } finally {if(current===revision.current)setBusy(false)}
+    } finally {clearTimeout(timer);if(current===revision.current){deadline.current=null;setBusy(false)}}
   }
   return <details className="my-2 rounded border border-theme-border p-2">
     <summary className="cursor-pointer text-xs">Extract lines</summary>

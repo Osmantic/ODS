@@ -189,7 +189,7 @@ fi
 
 BACKEND_DIR="$(mktemp -d)"
 trap 'rm -rf "$BACKEND_DIR"' EXIT
-mkdir -p "$BACKEND_DIR/drm/card0/device" "$BACKEND_DIR/bin"
+mkdir -p "$BACKEND_DIR/drm/card0/device" "$BACKEND_DIR/bin" "$BACKEND_DIR/pci"
 SMI_CALLS="$BACKEND_DIR/smi-calls"
 
 extract_fn() {
@@ -223,7 +223,7 @@ printf '%s\n' 'Linux version 6.8.0-generic' > "$BACKEND_DIR/native-release"
 detect() {
     local out
     stub_nvidia_smi "$2"
-    out=$(GPU_BACKEND="" ODS_PROC_VERSION_FILE="$BACKEND_DIR/$1-release" \
+    out=$(GPU_BACKEND="" ODS_PCI_SYS="$BACKEND_DIR/pci" ODS_PROC_VERSION_FILE="$BACKEND_DIR/$1-release" \
         SMI_CALLS="$SMI_CALLS" PATH="$BACKEND_DIR/bin:$PATH" \
         bash "$BACKEND_DIR/probe.sh" 2>/dev/null) || out=""
     printf '%s' "$out"
@@ -266,6 +266,35 @@ if [[ "$got" == "nvidia" ]]; then
 else
     fail "Bare metal 0x10de vendor node reported '$got', expected nvidia"
 fi
+
+# pci_device <slot> <vendor> <class>
+pci_device() {
+    mkdir -p "$BACKEND_DIR/pci/$1"
+    printf '%s\n' "$2" > "$BACKEND_DIR/pci/$1/vendor"
+    printf '%s\n' "$3" > "$BACKEND_DIR/pci/$1/class"
+}
+
+# 18b. Bare metal without nvidia_drm (no DRM card) accepts an NVIDIA PCI
+#      3D controller (class 0x0302, datacenter GPUs)
+clear_vendor
+pci_device 0000:01:00.0 0x10de 0x030200
+got=$(detect native 'printf "NVIDIA H100 PCIe\n"')
+if [[ "$got" == "nvidia" ]]; then
+    pass "Bare metal NVIDIA PCI display device without DRM card selects nvidia"
+else
+    fail "Bare metal NVIDIA PCI 3D controller reported '$got', expected nvidia"
+fi
+rm -rf "${BACKEND_DIR:?}/pci/"*
+
+# 18c. A non-display NVIDIA PCI function (audio) is not a GPU witness
+pci_device 0000:01:00.1 0x10de 0x040300
+got=$(detect native 'printf "NVIDIA stub\n"')
+if [[ "$got" == "cpu" ]]; then
+    pass "Non-display NVIDIA PCI function does not select nvidia"
+else
+    fail "NVIDIA PCI audio function reported '$got', expected cpu"
+fi
+rm -rf "${BACKEND_DIR:?}/pci/"*
 
 # 19. An explicit .env backend still wins over probing
 clear_vendor

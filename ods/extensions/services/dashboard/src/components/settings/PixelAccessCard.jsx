@@ -134,7 +134,17 @@ export default function PixelAccessCard({ showHeading = true, active = true }) {
       setStale(true)
       const response = await fetch('/api/pixel/access-mode', {method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({mode, revision: current.revision, confirmed: mode === 'full-access' && confirmed})})
-      if (!response.ok) throw new Error()
+      if (!response.ok) {
+        // The host refuses with this code before acting: nothing was changed.
+        const body = await Promise.resolve().then(() => response.json()).catch(() => null)
+        if (response.status === 409 && body?.detail?.code === 'model_lifecycle_busy') {
+          if (!mounted.current) return
+          setStale(false)
+          setError('ODS is busy with a model or Portal change. No change was requested; try again in a moment.')
+          return
+        }
+        throw new Error()
+      }
       const value = await response.json()
       if (!mounted.current || activationVersion !== activation.current) return
       setStatus(value); setStale(false); setConfirming(false); setConfirmed(false)

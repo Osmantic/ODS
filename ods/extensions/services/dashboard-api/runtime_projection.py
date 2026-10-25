@@ -2,6 +2,22 @@
 
 import re
 
+# The host answers a cold or expired readback cache without activeRuntime while
+# it proves the runtime in the background. With no download in flight (the
+# status field carries the last download result, which outlives it), that
+# omission is the gap, not a missing runtime.
+_SETTLED_DOWNLOAD_STATUSES = frozenset({"idle", "complete", "failed", "cancelled"})
+
+
+def awaiting_runtime_readback(status: object) -> bool:
+    """True when a /v1/model/status reply only reflects a cold readback cache."""
+    return (
+        isinstance(status, dict)
+        and "activeRuntime" not in status
+        and isinstance(status.get("status"), str)
+        and status.get("status") in _SETTLED_DOWNLOAD_STATUSES
+    )
+
 
 def active_runtime_projection(status: object) -> dict[str, object] | None:
     if not isinstance(status, dict):

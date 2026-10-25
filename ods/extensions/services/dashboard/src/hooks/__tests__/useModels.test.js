@@ -1316,4 +1316,68 @@ describe('useModels', () => {
     view.unmount()
   })
 
+
+  test('propagates a validated remote-provider activeRuntime', async () => {
+    fetch.mockResolvedValue(modelsResponse([], {
+      llmBackend: 'llama-server',
+      loadedModel: 'Qwen3.5-9B-Q4_K_M.gguf',
+      activeRuntime: {
+        source: 'remote-provider',
+        model: 'deepseek-v4.1-flash',
+        contextLength: 131072,
+        maxTokens: 8192,
+        reasoning: true,
+        routeFingerprint: 'a'.repeat(64),
+      },
+    }))
+
+    const { result } = renderHook(() => useModels())
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    expect(result.current.activeRuntime).toEqual({
+      source: 'remote-provider',
+      model: 'deepseek-v4.1-flash',
+      contextLength: 131072,
+    })
+    // Local engine identity is preserved separately.
+    expect(result.current.loadedModel).toBe('Qwen3.5-9B-Q4_K_M.gguf')
+    expect(result.current.llmBackend).toBe('llama-server')
+    expect(result.current.canActivateModels).toBe(false)
+    await act(async () => { await result.current.loadModel('qwen3.5-9b-q4') })
+    expect(fetch.mock.calls.some(([, options]) => options?.method === 'POST')).toBe(false)
+  })
+
+  test('clears activeRuntime on fetch failure so a stale route is not claimed active', async () => {
+    fetch.mockResolvedValueOnce(modelsResponse([], {
+      activeRuntime: {
+        source: 'remote-provider',
+        model: 'deepseek-v4.1-flash',
+        contextLength: 131072,
+        maxTokens: 8192,
+        reasoning: true,
+      },
+    }))
+    const { result } = renderHook(() => useModels())
+    await waitFor(() => expect(result.current.activeRuntime?.model).toBe('deepseek-v4.1-flash'))
+
+    fetch.mockResolvedValueOnce({ ok: false })
+    await act(async () => {
+      await result.current.refresh()
+    })
+
+    expect(result.current.activeRuntime).toBeNull()
+    expect(result.current.error).toBeTruthy()
+  })
+
+  test('ignores malformed activeRuntime projections', async () => {
+    fetch.mockResolvedValue(modelsResponse([], {
+      activeRuntime: { source: 'remote-provider', model: '', contextLength: 0 },
+    }))
+
+    const { result } = renderHook(() => useModels())
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    expect(result.current.activeRuntime).toBeNull()
+  })
+
 })

@@ -247,10 +247,13 @@ echo ""
 bootline
 echo -e "${BGRN}QUICK COMMANDS${NC}"
 bootline
+# The stack is a resolved multi-file Compose project with no docker-compose.yml
+# in INSTALL_DIR, so bare `docker compose ...` fails there. The ods CLI passes
+# the resolved -f flags.
 echo "  cd $INSTALL_DIR"
-echo "  docker compose ps                          # Check container status"
-echo "  docker compose logs -f                     # View container logs"
-echo "  docker compose restart                     # Restart containers"
+echo "  ods list                                   # List services and their state"
+echo "  ods logs <service>                         # Follow one service's logs"
+echo "  ods restart                                # Restart the stack"
 echo "  systemctl --user list-timers               # Check maintenance timers"
 echo "  ods status                                 # Check service health"
 [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && echo "  bash install.sh --no-pixel --hermes         # Disable Portal; keep Hermes enabled"

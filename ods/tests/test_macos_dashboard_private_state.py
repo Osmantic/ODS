@@ -140,6 +140,37 @@ class MissingVolume(unittest.TestCase):
         self.assertEqual(self.inspect(status=0, stdout=b'[{"Name":"kept"}]\n', stderr=b''),
                          '[{"Name":"kept"}]\n')
 
+    def test_consumers_validates_all_identities_before_stopping(self):
+        class InstrumentedStores(M.Stores):
+            def __init__(self, root):
+                self.root = root
+                self.project = "ods"
+                self.volumes = {"pixel-images": "ods_dashboard-pixel-images"}
+                self.stopped = []
+
+            def docker(self, *args, missing=False):
+                if args[:1] == ("ps",):
+                    return "cid-owned cid-foreign"
+                if args[:2] == ("inspect", "cid-owned"):
+                    return json.dumps([{"Id": "cid-owned", "Config": {"Labels": {
+                        M.PROJECT: "ods", M.SERVICE: "dashboard-api",
+                        "com.docker.compose.project.working_dir": str(self.root)
+                    }}, "State": {"Running": True, "Restarting": False}}])
+                if args[:2] == ("inspect", "cid-foreign"):
+                    return json.dumps([{"Id": "cid-foreign", "Config": {"Labels": {
+                        M.PROJECT: "other-project", M.SERVICE: "dashboard-api"
+                    }}, "State": {"Running": True, "Restarting": False}}])
+                if args[:1] == ("stop",):
+                    self.stopped.append(args[1])
+                    return args[1]
+                raise AssertionError(args)
+
+        stores = InstrumentedStores(self.stores.root)
+        with self.assertRaisesRegex(ValueError, "private-store-foreign-consumer"):
+            stores.consumers(stop=True)
+        self.assertEqual(stores.stopped, [])
+
+
 
 class FakeStores(M.Stores):
     def __init__(self, root):
@@ -171,11 +202,14 @@ class FakeStores(M.Stores):
             return name
         raise AssertionError(args)
 
-    def consumers(self, *, stopped=False):
+    def consumers(self, *, stopped=False, stop=False):
         if self.foreign:
             raise ValueError("private-store-foreign-consumer")
-        if stopped and self.api_running:
-            raise ValueError("stopped writers required")
+        if self.api_running:
+            if stop:
+                self.api_running = False
+            elif stopped:
+                raise ValueError("stopped writers required")
 
     def transfer(self, kind, action, token, *, payload=None, output=None, expected=""):
         self.actions.append((kind, action))
@@ -259,6 +293,29 @@ class Migration(unittest.TestCase):
             self.stores.prepare(self.state)
         self.assertFalse(self.stores.definitions)
         self.assertFalse(list(self.state.glob("*.json")))
+
+    def test_prepare_with_stop_halts_running_api_for_migration(self):
+        self.populate()
+        self.stores.api_running = True
+        self.stores.prepare(self.state, stop=True)
+        self.assertFalse(self.stores.api_running)
+        self.assertTrue((self.stores.path("pixel-images") / W.MARKER).is_file())
+
+    def test_completed_stores_prepare_with_stop_preserves_running_api(self):
+        self.populate()
+        self.stores.prepare(self.state)
+        self.stores.api_running = True
+        self.stores.prepare(self.state, stop=True)
+        self.assertTrue(self.stores.api_running)
+
+    def test_unfinished_restore_preserves_running_api(self):
+        self.populate()
+        self.stores.prepare(self.state)
+        (self.state / "image-restore-active.json").write_text("{}")
+        self.stores.api_running = True
+        with self.assertRaisesRegex(ValueError, "restore-unfinished"):
+            self.stores.prepare(self.state, stop=True)
+        self.assertTrue(self.stores.api_running)
 
     def test_completed_volume_never_reimports_legacy_shadow(self):
         self.populate()

@@ -41,6 +41,7 @@ from config import (
     AGENT_HOST, AGENT_PORT, AGENT_URL, ODS_AGENT_KEY,
     _detect_container_default_gateway, _running_inside_container,
     _read_env_from_file,
+    get_env_file_read_error,
     normalize_ods_mode, read_live_env_value,
 )
 from models import (
@@ -66,7 +67,7 @@ from host_agent_client import (
     async_request_json as async_request_agent_json,
     shutdown_clients as shutdown_agent_clients,
 )
-from runtime_projection import active_runtime_projection
+from runtime_projection import active_runtime_projection, awaiting_runtime_readback
 from cloud_telemetry import get_cloud_throughput
 from agent_monitor import collect_metrics
 from routers import (
@@ -1503,7 +1504,7 @@ async def api_status(api_key: str = Depends(verify_api_key)):
         cloud_mode = normalize_ods_mode(read_live_env_value("ODS_MODE")) == "cloud"
         if cloud_mode:
             last_inference = {}
-        return {
+        fallback = {
             "gpu": None, "services": [], "model": None,
             "bootstrap": None, "uptime": 0,
             "version": app.version, "tier": "Cloud" if cloud_mode else "Unknown",
@@ -1524,6 +1525,10 @@ async def api_status(api_key: str = Depends(verify_api_key)):
                           "loadedModel": None, "contextSize": None},
             "manifest_errors": _public_manifest_errors(),
         }
+        env_file_read_error = get_env_file_read_error()
+        if env_file_read_error:
+            fallback["envFileReadError"] = env_file_read_error
+        return fallback
 
 
 @app.get("/api/readiness")
@@ -1566,7 +1571,7 @@ async def _get_dashboard_remote_runtime() -> dict[str, object] | None:
             runtime = active_runtime_projection(status)
             if runtime:
                 return runtime if runtime["source"] == "remote-provider" else None
-            if not isinstance(status, dict) or "activeRuntime" in status or status.get("status") not in {"idle", "complete"}:
+            if not awaiting_runtime_readback(status):
                 return None
             if attempt < 3:
                 await asyncio.sleep(0.25)
@@ -1716,6 +1721,9 @@ async def _build_api_status() -> dict:
         },
         "manifest_errors": _public_manifest_errors(),
     }
+    env_file_read_error = get_env_file_read_error()
+    if env_file_read_error:
+        result["envFileReadError"] = env_file_read_error
     return result
 
 

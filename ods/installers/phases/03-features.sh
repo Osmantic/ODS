@@ -194,8 +194,8 @@ fi
 #                            ODS Talk stays unavailable until a smaller model
 #                            is chosen (the Dashboard shows the same reason).
 # A context above the model's native maximum never "fits" (llama.cpp caps the
-# slot there). Without the selector (no Python) the raise is applied
-# unverified, as before.
+# slot there). Without the selector, only this run's own fresh pick may
+# use the legacy unverified raise; a retained model keeps its context.
 #
 # "This run's own pick": phase 02 records its fresh recommendation in
 # INSTALLER_RECOMMENDED_*; a rerun may then keep an older active model
@@ -218,6 +218,11 @@ if [[ "${ENABLE_HERMES:-false}" == "true" && "${ODS_MODE:-local}" != "cloud" ]];
             . "$SCRIPT_DIR/installers/lib/model-selector.sh"
         fi
         _hermes_floor_action="raise-unverified"
+        # The catalog has no fit record for community imports. A missing or
+        # failed fit check must not inflate a retained model's proven context.
+        if ! _ods_model_is_current_pick; then
+            _hermes_floor_action="cap"
+        fi
         _hermes_python=""
         if declare -F ods_catalog_fit_check >/dev/null 2>&1 \
             && [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" ]] \
@@ -244,8 +249,9 @@ if [[ "${ENABLE_HERMES:-false}" == "true" && "${ODS_MODE:-local}" != "cloud" ]];
                         _hermes_floor_action="cap"
                     fi
                     ;;
-                # Not a catalog model (an import) or the selector failed.
-                *) _hermes_floor_action="raise-unverified" ;;
+                # Keep the default: only a fresh installer pick can use the
+                # unverified fallback. Imports and other retained picks cap.
+                *) : ;;
             esac
         fi
         if [[ "$_hermes_floor_action" == "reselect" ]]; then
@@ -291,10 +297,10 @@ if [[ "${ENABLE_HERMES:-false}" == "true" && "${ODS_MODE:-local}" != "cloud" ]];
                 ;;
             cap)
                 HERMES_CONTEXT_BELOW_FLOOR=true
-                ai_warn "Hermes needs at least 64K context, but ${LLM_MODEL:-this model} runs at ${MAX_CONTEXT} here (64K does not fit or exceeds its native context)."
+                ai_warn "Hermes needs at least 64K context, but ${LLM_MODEL:-this model} keeps its ${MAX_CONTEXT} context (a safe 64K runtime was not established)."
                 ai_warn "ODS Talk stays unavailable (the Dashboard says why) until you choose a model that fits 64K in Models."
-                log "Hermes floor: kept ${LLM_MODEL:-model} at ${MAX_CONTEXT}; it cannot serve 64K here and it is not replaced (not this run's pick, or no installable model fits at 64K)"
-                MODEL_RECOMMENDATION_REASON="${MODEL_RECOMMENDATION_REASON:-} Hermes requires 64K context, which does not fit here; ODS Talk is unavailable with this model."
+                log "Hermes floor: kept ${LLM_MODEL:-model} at ${MAX_CONTEXT}; no safe 64K runtime was established and the retained model was not replaced."
+                MODEL_RECOMMENDATION_REASON="${MODEL_RECOMMENDATION_REASON:-} Hermes requires 64K context, but a safe 64K runtime was not established; ODS Talk is unavailable with this model."
                 ;;
         esac
         unset _hermes_floor_action _hermes_python _hermes_fit_status
