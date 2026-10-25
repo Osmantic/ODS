@@ -190,9 +190,21 @@ def update_selection_records(previous, activation, prepared, proof, install_dir)
 
 def compose_flags(install_dir, process_env, *, recovery=False):
     cache = install_dir / '.compose-flags'
-    if not recovery and os.path.lexists(cache):
+    use_cache = not recovery and os.path.lexists(cache)
+    if use_cache:
         raw = cache.read_text()
-    else:
+        cached_tokens = shlex.split(raw)
+        if (not cached_tokens or len(cached_tokens) % 2
+                or any(token != '-f' for token in cached_tokens[::2])):
+            raise ValueError('resolved-compose-flags-required')
+        # Full-stack start/restart freezes this selection before entering the
+        # native lifecycle. Like the CLI, discover an owner override added
+        # after installation through the resolver and its content checks.
+        override = install_dir / 'docker-compose.override.yml'
+        if override.is_file() and not any(
+                install_dir / path == override for path in cached_tokens[1::2]):
+            use_cache = False
+    if not use_cache:
         # Extension changes invalidate this disposable cache. Resolve the saved
         # selection like ods-cli, without sourcing .env or publishing a new cache.
         environment = helper('pixel-native-env')

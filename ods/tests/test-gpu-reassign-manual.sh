@@ -33,8 +33,9 @@ cat > "$STUB_BIN/nvidia-smi" <<'STUB'
 #!/usr/bin/env bash
 case "$*" in
     *"--query-gpu=index,name,memory.total,memory.free,pcie.link.gen.current,pcie.link.width.current,uuid"*)
+        # NVIDIA_LOADED: the managed model holds 9216 MiB of GPU 0.
         printf '%s\n' \
-            "0, NVIDIA GeForce GTX 1080 Ti, 11264, 10240, 3, 16, GPU-ti-0" \
+            "0, NVIDIA GeForce GTX 1080 Ti, 11264, $([[ "${NVIDIA_LOADED:-0}" == 1 ]] && echo 1024 || echo 10240), 3, 16, GPU-ti-0" \
             "1, NVIDIA GeForce GTX 1080, 8192, 7168, 3, 16, GPU-1080" \
             "2, NVIDIA GeForce GTX 1080 Ti, 11264, 9216, 3, 16, GPU-ti-2"
         ;;
@@ -51,6 +52,9 @@ case "$*" in
         printf '%s\n' "GPU-ti-0" "GPU-1080" "GPU-ti-2"
         ;;
     *"--query-gpu=driver_version"*) echo "580.0" ;;
+    *"--query-compute-apps=pid,gpu_uuid,used_memory"*)
+        [[ -z "${NVIDIA_COMPUTE_APPS:-}" ]] || printf '%s\n' "$NVIDIA_COMPUTE_APPS"
+        ;;
     "--list-gpus")
         printf '%s\n' \
             "GPU 0: NVIDIA GeForce GTX 1080 Ti (UUID: GPU-ti-0)" \
@@ -103,6 +107,10 @@ case "$*" in
         ;;
     compose\ *\ ps\ -q\ llama-server)
         echo llama-container
+        ;;
+    "inspect -f {{.Id}}|"*)
+        [[ -n "${DOCKER_LLAMA_INSPECT:-}" ]] || exit 1
+        printf '%s\n' "$DOCKER_LLAMA_INSPECT"
         ;;
     "inspect "*)
         if [[ "${DOCKER_UNHEALTHY_ASSIGNMENT:-}" == "${LLAMA_SERVER_GPU_UUIDS:-}" ]]; then
@@ -222,6 +230,14 @@ run_cli gpu validate
 [[ $RC -eq 0 ]]
 echo "$OUTPUT" | grep -q "Result: 3 check(s) passed, 0 failed"
 
+# A failed check must fail the command so scripts and health checks see it.
+cp "$FAKE_INSTALL/.env" "$FIXTURE/env.before-validate"
+sed 's/^GPU_COUNT=.*/GPU_COUNT=5/' "$FIXTURE/env.before-validate" > "$FAKE_INSTALL/.env"
+run_cli gpu validate
+[[ $RC -ne 0 ]] || { echo "[FAIL] gpu validate exited 0 with a failed check: $OUTPUT"; exit 1; }
+echo "$OUTPUT" | grep -q "Result: 2 check(s) passed, 1 failed"
+cp "$FIXTURE/env.before-validate" "$FAKE_INSTALL/.env"
+
 before_hash=$(sha256sum "$FAKE_INSTALL/.env" | awk '{print $1}')
 run_manual $'0,3\n\n\n\n'
 [[ $RC -ne 0 ]] || { echo "[FAIL] nonexistent GPU index was accepted"; exit 1; }
@@ -271,6 +287,33 @@ if grep -q "127.0.0.1:54321/" "$CURL_TRACE_FILE"; then
     echo "[FAIL] readiness preferred deprecated LLAMA_SERVER_PORT over OLLAMA_PORT"
     exit 1
 fi
+
+# EOF at the final Apply prompt defaults to yes after all selection answers.
+export DOCKER_TRACE_FILE="$FIXTURE/docker-eof-apply-trace"
+run_manual $'0,1,2\n2\n2\n1\npipeline\n'
+[[ $RC -eq 0 ]] || {
+    echo "[FAIL] EOF at final apply prompt failed: $OUTPUT"
+    exit 1
+}
+grep -Fq "All services recreated with new GPU assignment" <<<"$OUTPUT" || {
+    echo "[FAIL] missing successful-apply message: $OUTPUT"
+    exit 1
+}
+mapfile -t docker_eof_assignments < "$DOCKER_TRACE_FILE"
+[[ "${#docker_eof_assignments[@]}" -eq 1 ]] || {
+    echo "[FAIL] expected one Docker trace, got ${#docker_eof_assignments[@]}"
+    exit 1
+}
+[[ "${docker_eof_assignments[0]}" == "GPU-ti-0,GPU-1080,GPU-ti-2" ]] || {
+    echo "[FAIL] unexpected Docker assignment: ${docker_eof_assignments[0]}"
+    exit 1
+}
+persisted_uuids=$(env_value LLAMA_SERVER_GPU_UUIDS)
+[[ "$persisted_uuids" == "GPU-ti-0,GPU-1080,GPU-ti-2" ]] || {
+    echo "[FAIL] LLAMA_SERVER_GPU_UUIDS not persisted: $persisted_uuids"
+    exit 1
+}
+unset DOCKER_TRACE_FILE
 
 before_hash=$(sha256sum "$FAKE_INSTALL/.env" | awk '{print $1}')
 export DOCKER_TRACE_FILE="$FIXTURE/docker-unhealthy-trace"
@@ -368,6 +411,51 @@ expected_tensor_split=$(echo "$assignment" | jq -r \
 [[ "$(env_value LLAMA_ARG_TENSOR_SPLIT)" == "$expected_tensor_split" ]]
 [[ -z "$(env_value COMFYUI_GPU_UUID)" ]]
 [[ -z "$(env_value EMBEDDINGS_GPU_UUID)" ]]
+
+# Without a terminal the apply prompt takes its documented default. It must
+# not die on EOF after .env was already rewritten.
+set +e
+OUTPUT=$(ODS_HOME="$FAKE_INSTALL" PATH="$STUB_PATH" \
+    ODS_GPU_REASSIGN_HEALTH_ATTEMPTS=1 ODS_GPU_REASSIGN_HEALTH_INTERVAL_SECONDS=0 \
+    "$ODS_CLI" gpu reassign --auto </dev/null 2>&1)
+RC=$?
+set -e
+[[ $RC -eq 0 ]] || { echo "[FAIL] reassign --auto without a terminal exited $RC: $OUTPUT"; exit 1; }
+echo "$OUTPUT" | grep -q "All services recreated with new GPU assignment"
+
+# #8087: with the managed model loaded, GPU 0 reports only 1024 MiB free and
+# 16000 MB no longer fits any split. This installation's llama-server holds
+# 9216 MiB there and is recreated by the reassignment, so it counts as
+# available. A foreign process or another installation's container does not.
+llama_id=$(printf 'a%.0s' {1..64})
+mkdir -p "$FIXTURE/proc/4242" "$FIXTURE/proc/5151"
+printf '0::/system.slice/docker-%s.scope\n' "$llama_id" > "$FIXTURE/proc/4242/cgroup"
+printf '0::/user.slice/user-1000.slice/session-2.scope\n' > "$FIXTURE/proc/5151/cgroup"
+owned_inspect="$llama_id|$FAKE_INSTALL|$FAKE_INSTALL/docker-compose.base.yml,$FAKE_INSTALL/docker-compose.nvidia.yml|llama-server|true"
+run_loaded() {
+    set +e
+    OUTPUT=$(printf 'n\n' | ODS_HOME="$FAKE_INSTALL" PATH="$STUB_PATH" ODS_PROC_ROOT="$FIXTURE/proc" \
+        NVIDIA_LOADED=1 NVIDIA_COMPUTE_APPS="$1" DOCKER_LLAMA_INSPECT="$2" \
+        "$ODS_CLI" gpu reassign --auto 2>&1)
+    RC=$?
+    set -e
+}
+run_loaded "4242, GPU-ti-0, 9216" "$owned_inspect"
+[[ $RC -eq 0 ]] || { echo "[FAIL] loaded managed model could not be reassigned: $OUTPUT"; exit 1; }
+echo "$OUTPUT" | grep -q "Counting 9216 MiB held by this installation's llama-server"
+echo "$OUTPUT" | grep -q "GPU assignment updated"
+[[ "$(jq -r '.gpus[] | select(.uuid == "GPU-ti-0") | .memory_free_gb' "$FAKE_INSTALL/config/gpu-topology.json")" == 1 ]] \
+    || { echo "[FAIL] the saved topology must keep the driver's free memory"; exit 1; }
+
+before_hash=$(sha256sum "$FAKE_INSTALL/.env" | awk '{print $1}')
+run_loaded "5151, GPU-ti-0, 9216" "$owned_inspect"
+[[ $RC -ne 0 ]] || { echo "[FAIL] a foreign GPU process was credited"; exit 1; }
+echo "$OUTPUT" | grep -q "exceeds assignable free VRAM"
+run_loaded "4242, GPU-ti-0, 9216" "$llama_id|/srv/other|/srv/other/docker-compose.base.yml|llama-server|true"
+[[ $RC -ne 0 ]] || { echo "[FAIL] another installation's llama-server was credited"; exit 1; }
+echo "$OUTPUT" | grep -q "exceeds assignable free VRAM"
+[[ "$(sha256sum "$FAKE_INSTALL/.env" | awk '{print $1}')" == "$before_hash" ]] \
+    || { echo "[FAIL] a refused reassignment changed .env"; exit 1; }
 
 AMD_ROOT="$FIXTURE/amd-root"
 AMD_INSTALL="$FIXTURE/amd-install"

@@ -72,8 +72,9 @@ if ODS_HERMES_READY_TIMEOUT=2 ODS_HERMES_READY_INTERVAL=1 \
     exit 1
 fi
 
-awk '/cmd_restart\(\)/,/^}/' "$ROOT/ods-cli" \
-    | grep -Fq '_ods_cli_wait_for_hermes_ready_with_retry'
+# Read the complete function so grep cannot close the pipe early under pipefail.
+extract_function cmd_restart \
+    | grep -F '_ods_cli_wait_for_hermes_ready_with_retry' >/dev/null
 
 ready_calls=0
 compose_calls=0
@@ -89,7 +90,7 @@ _compose_run_with_summary() {
     compose_calls=$((compose_calls + 1))
     [[ "$*" == *"up -d --force-recreate --no-build --pull never hermes"* ]]
 }
-_ods_cli_wait_for_hermes_ready_with_retry -f compose.yaml
+_ods_cli_wait_for_hermes_ready_with_retry -f docker-compose.base.yml -f extensions/services/hermes/compose.yaml
 [[ "$ready_calls" -eq 2 ]]
 [[ "$compose_calls" -eq 1 ]]
 
@@ -103,7 +104,7 @@ docker() {
     [[ "${1:-}" == "inspect" && "${2:-}" == "--format" ]] || return 1
     printf '%s\n' exited
 }
-if _ods_cli_wait_for_hermes_ready_with_retry -f compose.yaml; then
+if _ods_cli_wait_for_hermes_ready_with_retry -f docker-compose.base.yml -f extensions/services/hermes/compose.yaml; then
     echo "Hermes retry accepted a non-unhealthy terminal state" >&2
     exit 1
 fi
@@ -120,11 +121,29 @@ docker() {
     [[ "${1:-}" == "inspect" && "${2:-}" == "--format" ]] || return 1
     printf '%s\n' unhealthy
 }
-if _ods_cli_wait_for_hermes_ready_with_retry -f compose.yaml; then
+if _ods_cli_wait_for_hermes_ready_with_retry -f docker-compose.base.yml -f extensions/services/hermes/compose.yaml; then
     echo "Hermes retry accepted repeated unhealthy readiness" >&2
     exit 1
 fi
 [[ "$ready_calls" -eq 2 ]]
 [[ "$compose_calls" -eq 1 ]]
+
+# A disabled Hermes leaves its stopped container behind. A restart whose
+# stack does not include Hermes must not report it as failed to recover.
+ready_calls=0
+compose_calls=0
+_ods_cli_wait_for_hermes_ready() {
+    ready_calls=$((ready_calls + 1))
+    return 1
+}
+docker() {
+    [[ "${1:-}" == "inspect" && "${2:-}" == "--format" ]] || return 1
+    printf '%s\n' exited
+}
+_ods_cli_wait_for_hermes_ready_with_retry -f docker-compose.base.yml \
+    -f extensions/services/searxng/compose.yaml \
+    || { echo "Restart failed on the stopped container of a disabled Hermes" >&2; exit 1; }
+[[ "$ready_calls" -eq 0 ]]
+[[ "$compose_calls" -eq 0 ]]
 
 echo "ODS restart Hermes readiness checks passed"

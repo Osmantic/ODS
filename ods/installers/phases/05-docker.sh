@@ -248,7 +248,7 @@ if command -v docker &>/dev/null && ! $DRY_RUN; then
             if [[ -n "$_docker_2921" ]]; then
                 ods_sudo apt-get install -y --allow-downgrades \
                     docker-ce="$_docker_2921" docker-ce-cli="$_docker_2921" \
-                    >> "$LOG_FILE" 2>&1 && \
+                    </dev/null >> "$LOG_FILE" 2>&1 && \
                     ai_ok "Docker downgraded to 29.2.1 (AMD GPU fix)" || \
                     ai_warn "Could not downgrade Docker. GPU containers may fail. Manual fix: sudo apt install docker-ce=$_docker_2921"
             else
@@ -616,8 +616,8 @@ if [[ $GPU_COUNT -gt 0 && "$GPU_BACKEND" == "nvidia" ]]; then
                         echo "deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://nvidia.github.io/libnvidia-container/stable/deb/\$(ARCH) /" | \
                             ods_sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list > /dev/null
                     fi
-                    ods_sudo apt-get update
-                    if ! ods_sudo apt-get install -y nvidia-container-toolkit; then
+                    ods_sudo apt-get update </dev/null
+                    if ! ods_sudo apt-get install -y nvidia-container-toolkit </dev/null; then
                         error "Failed to install NVIDIA Container Toolkit. Check network connectivity and GPU drivers."
                     fi
                     ;;

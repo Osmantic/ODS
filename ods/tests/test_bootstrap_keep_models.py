@@ -7,8 +7,10 @@ from unittest import mock
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,7 +29,7 @@ class KeepModelsTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.home = self.root / 'home'
         self.home.mkdir()
         self.install = self.home / 'ods'
@@ -121,6 +123,208 @@ rm -rf "$INSTALL_DIR"
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIsNone(json.loads(self.result.read_text())['model'])
         self.assertNotIn('--keep-models', self.args.read_text())
+
+    def assert_clone_cleanup(self, installer_status, *, observation_failure=False):
+        installer = self.repo / 'ods/install.sh'
+        installer.write_text('''#!/bin/bash
+set -euo pipefail
+[[ "${1:-}" != --preflight-only ]] || exit 0
+# Both the dispatcher and its replacement need the checkout for provenance.
+test -f "$ODS_BOOTSTRAP_SOURCE_DIR/candidate-only"
+exec python3 - <<'PY'
+import json, os, pathlib
+source = pathlib.Path(os.environ['ODS_BOOTSTRAP_SOURCE_DIR'])
+pathlib.Path(os.environ['RESULT']).write_text(json.dumps({
+    'source': str(source), 'candidate': (source / 'candidate-only').read_text(),
+}))
+raise SystemExit(int(os.environ['FIXTURE_INSTALL_STATUS']))
+PY
+''')
+        subprocess.run(['git', '-C', str(self.repo), 'add', '.'], check=True)
+        subprocess.run(['git', '-C', str(self.repo), '-c', 'user.name=Fixture',
+            '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'cleanup fixture'], check=True)
+        self.env['ODS_REF'] = subprocess.check_output(
+            ['git', '-C', str(self.repo), 'rev-parse', 'HEAD'], text=True).strip()
+        scratch = self.root / 'bootstrap scratch'
+        scratch.mkdir()
+        self.env.update(TMPDIR=str(scratch), FIXTURE_INSTALL_STATUS=str(installer_status))
+        result = self.bootstrap('--force', '--non-interactive', '--keep-models')
+        self.assertEqual(result.returncode, installer_status, result.stdout + result.stderr)
+        value = json.loads(self.result.read_text())
+        self.assertEqual(value['candidate'], 'fresh source')
+        clone = Path(value['source']).parents[1]
+        # BSD mktemp may use the system per-user directory instead of TMPDIR.
+        self.assertTrue(clone.name.startswith('tmp.'))
+        if observation_failure:
+            self.addCleanup(shutil.rmtree, clone, ignore_errors=True)
+            marker = self.root / 'ps-failed'
+            deadline = time.monotonic() + 5
+            while not marker.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(marker.exists(), 'failed observation was not exercised')
+            self.assertTrue(clone.exists(), 'an observation failure discarded source')
+        else:
+            self.assert_clone_removed(clone)
+            self.assertEqual(list(scratch.iterdir()), [])
+        self.assertEqual((self.install / 'data/models/llm/model.gguf').read_bytes(),
+            b'GGUF\x00fixture-exact-bytes\n')
+
+    def test_successful_installer_cleans_clone_after_source_provenance_read(self):
+        self.assert_clone_cleanup(0)
+
+    def test_failed_installer_cleans_clone_and_preserves_exit_status(self):
+        self.assert_clone_cleanup(37)
+
+    def test_failed_process_observation_retains_source(self):
+        real_ps = shutil.which('ps')
+        self.assertIsNotNone(real_ps)
+        self.env.update(REAL_PS=real_ps, PS_SEEN=str(self.root / 'ps-seen'),
+                        PS_FAILED=str(self.root / 'ps-failed'))
+        stub = self.bin / 'ps'
+        stub.write_text('''#!/bin/bash
+if [[ -f "$PS_SEEN" ]]; then
+    : > "$PS_FAILED"
+    exit 73
+fi
+: > "$PS_SEEN"
+exec "$REAL_PS" "$@"
+''')
+        stub.chmod(0o755)
+        self.assert_clone_cleanup(0, observation_failure=True)
+
+    def commit_installer_fixture(self):
+        subprocess.run(['git', '-C', str(self.repo), 'add', '.'], check=True)
+        subprocess.run(['git', '-C', str(self.repo), '-c', 'user.name=Fixture',
+            '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'installer fixture'], check=True)
+        self.env['ODS_REF'] = subprocess.check_output(
+            ['git', '-C', str(self.repo), 'rev-parse', 'HEAD'], text=True).strip()
+
+    def assert_clone_removed(self, clone):
+        deadline = time.monotonic() + 5
+        while clone.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertFalse(clone.exists(), 'bootstrap left its temporary clone behind')
+
+    def assert_installer_signal_lifetime(self, signum, *, shell=False):
+        # The exec-replaced installer records actual signal delivery and checks
+        # provenance again during shutdown, after the parent has been signalled.
+        (self.repo / 'ods/install.sh').write_text('''#!/bin/bash
+set -euo pipefail
+[[ "${1:-}" != --preflight-only ]] || exit 0
+exec python3 "$ODS_BOOTSTRAP_SOURCE_DIR/signal-fixture.py"
+''')
+        (self.repo / 'ods/signal-fixture.py').write_text('''import json, os, signal, time
+from pathlib import Path
+source = Path(os.environ['ODS_BOOTSTRAP_SOURCE_DIR'])
+result = Path(os.environ['RESULT'])
+state = {'pid': os.getpid(), 'source': str(source), 'signal': None, 'missing': False}
+def save():
+    temp = result.with_suffix('.tmp')
+    temp.write_text(json.dumps(state))
+    os.replace(temp, result)
+def stop(signum, frame):
+    state['signal'] = signum
+    time.sleep(0.1)
+    state['sourceAtExit'] = (source / 'candidate-only').is_file()
+    save()
+    raise SystemExit(128 + signum)
+for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+    signal.signal(signum, stop)
+save()
+until = time.monotonic() + 2
+while time.monotonic() < until:
+    state['missing'] |= not (source / 'candidate-only').is_file()
+    save()
+    time.sleep(0.02)
+''')
+        if shell:
+            # A real Bash installer cannot reset an INT disposition ignored on
+            # shell entry. Unlike Python's signal.signal(), this catches a
+            # bootstrap that accidentally passes asynchronous SIG_IGN onward.
+            (self.repo / 'ods/install.sh').write_text('''#!/bin/bash
+set -euo pipefail
+[[ "${1:-}" != --preflight-only ]] || exit 0
+stop() {
+    sleep 0.1
+    intact=false
+    [[ ! -f "$ODS_BOOTSTRAP_SOURCE_DIR/candidate-only" ]] || intact=true
+    printf '{"signal":%s,"sourceAtExit":%s,"missing":false}\\n' "$1" "$intact" > "$RESULT.tmp"
+    mv "$RESULT.tmp" "$RESULT"
+    exit "$((128+$1))"
+}
+trap 'stop 2' INT
+trap 'stop 15' TERM
+trap 'stop 1' HUP
+printf '{"source":"%s","signal":null,"missing":false}\\n' "$ODS_BOOTSTRAP_SOURCE_DIR" > "$RESULT.tmp"
+mv "$RESULT.tmp" "$RESULT"
+for ((i=0; i<100; i++)); do sleep 0.02; done
+''')
+        self.commit_installer_fixture()
+        scratch = self.root / 'signal scratch'
+        scratch.mkdir()
+        self.env['TMPDIR'] = str(scratch)
+        with (self.root / 'signal.stdout').open('wb') as out, (self.root / 'signal.stderr').open('wb') as err:
+            proc = subprocess.Popen(['bash', str(BOOTSTRAP), '--force', '--non-interactive', '--keep-models'],
+                env=self.env, stdout=out, stderr=err, start_new_session=True)
+        try:
+            deadline = time.monotonic() + 10
+            while not self.result.exists() and proc.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(self.result.exists(), (self.root / 'signal.stderr').read_text())
+            before = json.loads(self.result.read_text())
+            if not shell:
+                self.assertEqual(before['pid'], proc.pid, 'installer lost the bootstrap PID')
+            source = Path(before['source'])
+            self.assertTrue((source / 'candidate-only').is_file())
+            proc.send_signal(signum)
+            proc.wait(timeout=5)
+            # A buggy parent may exit before its child, so wait for the bounded
+            # recorder before examining the negative-control evidence.
+            deadline = time.monotonic() + 2.2
+            while time.monotonic() < deadline:
+                value = json.loads(self.result.read_text())
+                if value['signal'] is not None or value['missing']:
+                    break
+                time.sleep(0.02)
+            self.assertEqual(value['signal'], signum, value)
+            self.assertTrue(value['sourceAtExit'], value)
+            self.assertFalse(value['missing'], value)
+            self.assertEqual(proc.returncode, 128 + signum)
+            self.assert_clone_removed(source.parents[1])
+            self.assertEqual((self.install / 'data/models/llm/model.gguf').read_bytes(),
+                b'GGUF\x00fixture-exact-bytes\n')
+        finally:
+            # This test created the session; never signal the caller's group.
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.wait(timeout=3)
+
+    def test_installer_sigterm_preserves_source_until_child_exit(self):
+        self.assert_installer_signal_lifetime(signal.SIGTERM)
+
+    def test_installer_sigint_preserves_source_until_child_exit(self):
+        self.assert_installer_signal_lifetime(signal.SIGINT)
+
+    def test_installer_sighup_preserves_source_until_child_exit(self):
+        self.assert_installer_signal_lifetime(signal.SIGHUP)
+
+    def test_bash_installer_receives_sigint(self):
+        self.assert_installer_signal_lifetime(signal.SIGINT, shell=True)
+
+    def test_installer_stdin_is_preserved(self):
+        (self.repo / 'ods/install.sh').write_text('''#!/bin/bash
+set -euo pipefail
+[[ "${1:-}" != --preflight-only ]] || exit 0
+IFS= read -r answer
+printf '%s\\n' "$answer" > "$RESULT"
+''')
+        self.commit_installer_fixture()
+        result = subprocess.run(['bash', str(BOOTSTRAP), '--force', '--non-interactive', '--keep-models'],
+            env=self.env, input='fixture interactive answer\n', capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.result.read_text(), 'fixture interactive answer\n')
 
     def test_keep_models_requires_force_before_candidate_actions(self):
         result = self.bootstrap('--keep-models', '--non-interactive')
