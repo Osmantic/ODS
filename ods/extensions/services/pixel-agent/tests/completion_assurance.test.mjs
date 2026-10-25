@@ -517,3 +517,32 @@ test('closed code spans and fences do not hide a later emphasized citation', () 
     assert.deepEqual(guard.unverifiedCitations(prefix + `**${url}**`), [], prefix);
   }
 });
+
+
+for (const condition of [
+  'If a needed capability fails or is unavailable, I will state the concrete limitation and that the task is incomplete.',
+  'If I cannot open a source, I will report the limitation.',
+  'If the page is unverified, I will say so.',
+  'I will explain what happens if the service is unavailable.',
+  'Se a ferramenta estiver indisponivel, vou informar a limitacao.',
+]) test(`hypothetical failure does not clear exhausted completion recovery: ${condition}`, () => {
+  const guard=createCompletionAssurance();guard.begin('Use web search, read the official source pages, and create a tested Python project with a ZIP download.');
+  assert.equal(guard.finalize('I will create the project.')?.action,'revise');
+  assert.equal(guard.finalize('I will search the official documentation.')?.action,'revise');
+  assert.equal(guard.finalize('I will search the documentation now. '+condition)?.action,'finalize');
+  assert.match(guard.terminal,/task is incomplete/);
+  assert.equal(guard.terminalStatus,'failed');
+});
+
+for (const answer of [
+  'I cannot access the requested service. The task is incomplete.',
+  'The service is unavailable. If it returns, I will try later.',
+  'If a source fails, I will report it. The web service is unavailable now.',
+  'I could not read the source. Its claims remain unverified.',
+  'Nao consegui acessar o servico. Se voltar, vou tentar depois.',
+  'Which site should I search?',
+]) test(`actual limitation or clarification still ends without retry: ${answer}`, () => {
+  const guard=createCompletionAssurance();guard.begin('Use web search and read the source pages.');
+  assert.equal(guard.finalize(answer),undefined);
+  assert.equal(guard.terminal,undefined);
+});

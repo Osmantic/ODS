@@ -28,6 +28,18 @@ class AgentHTTPError(AgentClientError):
         self.response_text = response_text
 
 
+def agent_reports_busy(error: AgentHTTPError) -> bool:
+    """True for the host's 409 refusal made before acting: another model or
+    Portal change holds the lifecycle, so nothing was changed."""
+    if error.status_code != 409:
+        return False
+    try:
+        body = json.loads(error.response_text)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(body, dict) and "model-lifecycle-busy" in (body.get("error"), body.get("code"))
+
+
 class AgentUnavailable(AgentClientError):
     """The host agent could not be reached."""
 
