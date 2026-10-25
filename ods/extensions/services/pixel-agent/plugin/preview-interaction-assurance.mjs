@@ -185,29 +185,46 @@ export function attemptedPreviewBehavior(params, preview) {
     ? Object.freeze({requiresInteraction: true}) : undefined;
 }
 
-export function boundPreviewBehavior(params, result, preview, attempted) {
-  if (!attempted) return undefined;
-  return boundInspection(params, result, preview, request => {
-    if (request.steps.some(step => step.action === 'download')) return false;
-    if (!request.steps.some(step => BEHAVIOR_ACTIONS.includes(step.action))) return false;
-    // Fill/select can prepare a click, but each click needs a postcondition
-    // before another action. A value change without a click needs one too.
-    // Key presses may chain (Space to start, then ArrowRight); the last
-    // action before the end still needs a postcondition.
-    let pending;
-    for (const step of request.steps) {
-      if (BEHAVIOR_ASSERTIONS.includes(step.action)) pending = undefined;
-      else if (BEHAVIOR_ACTIONS.includes(step.action)) {
-        if (pending === 'click') return false;
-        pending = step.action;
-      }
+// The step that keeps an action plan from counting as behavior evidence: the
+// first click followed directly by another action (that action is `next`),
+// else a last action with no assertion after it. Fill/select can prepare a
+// click, but each click needs a postcondition before another action. A value
+// change without a click needs one too. Key presses may chain (Space to start,
+// then ArrowRight); the last action before the end still needs a postcondition.
+export function unassertedBehaviorStep(steps) {
+  let pending;
+  for (const [index, step] of steps.entries()) {
+    if (BEHAVIOR_ASSERTIONS.includes(step.action)) pending = undefined;
+    else if (BEHAVIOR_ACTIONS.includes(step.action)) {
+      if (pending?.action === 'click') return Object.freeze({...pending, next: Object.freeze({index, action: step.action})});
+      pending = {index, action: step.action};
     }
-    return pending === undefined;
-  });
+  }
+  return pending ? Object.freeze(pending) : undefined;
 }
 
-export function previewBehaviorInstruction(preview, pageErrors) {
-  return pageErrorRepairInstruction(preview, pageErrors) ??
+export function boundPreviewBehavior(params, result, preview, attempted) {
+  if (!attempted) return undefined;
+  return boundInspection(params, result, preview, request =>
+    !request.steps.some(step => step.action === 'download') &&
+    request.steps.some(step => BEHAVIOR_ACTIONS.includes(step.action)) &&
+    !unassertedBehaviorStep(request.steps));
+}
+
+// `gap` is the unassertedBehaviorStep of this snapshot's latest passing
+// inspection. That inspection's own result says "passed", and the generic
+// instruction below usually went out already with the publication, so the
+// step to correct is named first. Never evidence.
+function unassertedStepLine(preview, gap) {
+  if (!visibilityInspectionMatches(gap, preview)) return '';
+  const lead = 'The latest inspection of this snapshot passed, but ';
+  return gap.next
+    ? `${lead}step ${gap.index + 1} (click) is followed directly by step ${gap.next.index + 1} (${gap.next.action}) with no assertion of the click's own result, so this plan does not count as interaction evidence. Insert an assertion of that click's visible result before step ${gap.next.index + 1} and retry the same published snapshot. `
+    : `${lead}no assertion follows its last action, step ${gap.index + 1} (${gap.action}), so this plan does not count as interaction evidence. Add an assertion of that action's visible result after it and retry the same published snapshot. `;
+}
+
+export function previewBehaviorInstruction(preview, pageErrors, gap) {
+  return pageErrorRepairInstruction(preview, pageErrors) ?? unassertedStepLine(preview, gap) +
     'The preview interaction check remains unverified. Test the actual controls and visible results needed for the owner\'s request. ' +
     `Read the actual controls and affected elements from the source; do not replace the behavior checks with a heading-only assertion. ` +
     `Call ${PREVIEW_INSPECTION_TOOL} with siteId ${JSON.stringify(preview.siteId)}, sha256 ${JSON.stringify(preview.sha256)}, viewport {width,height}, and valid steps. ` +

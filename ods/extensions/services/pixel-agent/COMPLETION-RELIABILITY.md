@@ -890,6 +890,37 @@ through the real guard, inspection receipt and ingress, plus the regression
 cases (success claims in many forms, empty, silent and narration-only replies,
 imitated notes, passing and pending checks, local links, code fences).
 
+## Passing checks that do not count
+
+On the RTX Spark (stopwatch), the first interaction check failed at step 2.
+The agent edited the page, republished, and inspected the new snapshot. The
+tool answered "Preview inspection passed. These steps tested opposite
+visibility states of the same element around a click." Delivery still said
+"The attempted preview interaction checks have not passed browser inspection."
+
+A passing check of the latest snapshot does satisfy a check attempted on an
+earlier one; a pass of an older snapshot does not. But the tool reports the
+capsule's result, and the run guard counts a plan as interaction evidence only
+when each click has an assertion of its result before the next action and the
+last action has one too (`boundPreviewBehavior`). A plan can pass a transition
+around one click and then click another control with nothing asserted. Nothing
+told the model: the guard's next step for that snapshot had already gone out
+with the publication, so the coaching interval kept it off the passing result,
+and the pinned harness drops a `before_agent_finalize` revision after any
+plugin tool call.
+
+That result now names the step first, for example "The latest inspection of
+this snapshot passed, but step 5 (click) is followed directly by step 6
+(click) with no assertion of the click's own result, so this plan does not
+count as interaction evidence." `unassertedBehaviorStep` finds the step, and
+`boundPreviewBehavior` uses the same function, so the two cannot disagree. The
+step is named only for a passing, error-free receipt bound to the current
+snapshot, in a run with an attempted interaction check. The evidence policy
+and the delivery text are unchanged.
+
+`tests/preview_interaction_assurance.test.mjs` replays the stopwatch sequence
+(failed check, edit, republish, passing check), direct and through Tool Search.
+
 ## Focused verification
 
 For an explicitly published repair naming one workspace file, recognized

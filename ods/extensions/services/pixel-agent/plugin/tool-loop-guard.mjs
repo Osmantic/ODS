@@ -48,7 +48,7 @@ import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehavio
   boundInspectionPageErrors, boundInspectionControls, boundRenderedPreviewInspection, renderedInspectionInstruction,
   pageErrorRepairInstruction, visibilityInspectionMatches,
   visibilityInspectionInstruction, requestedVisibilityTransition, inheritedVisibilityTransition,
-  attemptedPreviewBehavior, boundPreviewBehavior, previewBehaviorInstruction } from './preview-interaction-assurance.mjs';
+  attemptedPreviewBehavior, boundPreviewBehavior, previewBehaviorInstruction, unassertedBehaviorStep } from './preview-interaction-assurance.mjs';
 import { workspaceRevalidationCandidate, workspaceReadOnlyCall, settledRevalidationReceipt, boundedPreviewVerification } from "./preview-revalidation.mjs";
 import { boundedPreviewDelivery } from './preview-delivery-recovery.mjs';
 import { explainedPreviewDelivery, inspectionFailureLine } from './preview-explanation.mjs';
@@ -7832,6 +7832,14 @@ export function createToolLoopGuard({
       ? attempt : undefined;
   }
 
+  // The step that kept the current snapshot's latest passing inspection from
+  // counting as behavior evidence, for the next-step instruction. Never evidence.
+  function workspaceBehaviorGap(state) {
+    const gap = state.workspaceBehaviorGap;
+    return visibilityInspectionMatches(gap, state.workspacePreview) &&
+      gap.sessionId === state.currentSessionId && gap.sessionKey === state.currentSessionKey ? gap : undefined;
+  }
+
   // The failed step of the current snapshot's latest inspection, for the note
   // beside a kept explanation (preview-explanation.mjs). Never evidence.
   function workspaceInspectionFailureLine(state) {
@@ -8171,6 +8179,7 @@ export function createToolLoopGuard({
       state.workspaceBehaviorInspection = undefined;
       state.workspaceRenderedInspection = undefined;
       state.workspaceInspectionFailure = undefined;
+      state.workspaceBehaviorGap = undefined;
       state.workspaceInspectionGeneration = (state.workspaceInspectionGeneration ?? 0) + 1;
     }
     // First-attempt obligation: record the duty to check an interaction
@@ -11325,6 +11334,13 @@ export function createToolLoopGuard({
           ? boundRenderedPreviewInspection(inspected.params, inspected.result, state.workspacePreview) : undefined;
         state.workspaceRenderedInspection = renderedProof ? Object.freeze({...renderedProof,
           sessionId: state.currentSessionId, sessionKey: state.currentSessionKey}) : undefined;
+        // A passing plan that the behavior policy above rejects only for an
+        // unasserted action: name that step in the next instruction.
+        const behaviorGap = behaviorBound && renderedProof && !state.workspaceBehaviorInspection &&
+          !inspected.params.steps.some(step => step.action === 'download')
+          ? unassertedBehaviorStep(inspected.params.steps) : undefined;
+        state.workspaceBehaviorGap = behaviorGap ? Object.freeze({...behaviorGap, siteId: renderedProof.siteId,
+          sha256: renderedProof.sha256, sessionId: state.currentSessionId, sessionKey: state.currentSessionKey}) : undefined;
         // Names the first failed step to the owner beside a kept explanation.
         const failureLine = inspectionFailureLine(inspected.result?.details, state.workspacePreview);
         state.workspaceInspectionFailure = failureLine ? Object.freeze({siteId: state.workspacePreview.siteId,
@@ -12761,7 +12777,7 @@ export function createToolLoopGuard({
             !state.workspaceVisibilityInspectionUnavailable) return {
           stage: 'workspace-preview-behavior',
           instruction: previewBehaviorInstruction(state.workspacePreview,
-            state.workspaceInspectionPageErrors),
+            state.workspaceInspectionPageErrors, workspaceBehaviorGap(state)),
         };
         if (controlNamesUninspected(state) && !state.workspaceVisibilityInspectionUnavailable) return {
           stage: 'workspace-preview-control-name-inspection',
@@ -13143,7 +13159,7 @@ export function createToolLoopGuard({
           return '[ODS Pixel next step] ' + (state.workspaceVisibilityInspectionUnavailable
             ? 'Keep the published preview, but report the attempted interaction checks as unverified because inspection is unavailable. Do not claim they work.'
             : previewBehaviorInstruction(state.workspacePreview,
-              state.workspaceInspectionPageErrors));
+              state.workspaceInspectionPageErrors, workspaceBehaviorGap(state)));
         }
         // Any inspection of this snapshot reports its load-time names.
         if (controlNamesUninspected(state) && !state.workspaceVisibilityInspectionUnavailable) {
@@ -14401,6 +14417,7 @@ export function createToolLoopGuard({
       state.workspaceBehaviorInspection = undefined;
       state.workspaceRenderedInspection = undefined;
       state.workspaceInspectionFailure = undefined;
+      state.workspaceBehaviorGap = undefined;
       state.previewVerificationGeneration = (state.previewVerificationGeneration ?? 0) + 1;
       sessionPreviews.delete(state.currentSessionId);
       sessionPreviewVisibilityObligations.delete(state.currentSessionId);

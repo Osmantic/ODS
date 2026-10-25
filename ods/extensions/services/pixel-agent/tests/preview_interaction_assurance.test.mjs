@@ -823,7 +823,7 @@ test('a different run and session cannot inherit the behavior obligation',()=>{
 
 // --- Pure helper tests for attemptedPreviewBehavior/boundPreviewBehavior ---
 import {FILL_INSPECTION_SCOPE} from '../plugin/workspace-preview-inspect.mjs';
-import {attemptedPreviewBehavior, boundPreviewBehavior} from '../plugin/preview-interaction-assurance.mjs';
+import {attemptedPreviewBehavior, boundPreviewBehavior, unassertedBehaviorStep} from '../plugin/preview-interaction-assurance.mjs';
 
 function purePreview(sha='a'.repeat(64)) { return {siteId:'site-'+sha.slice(0,24),sha256:sha}; }
 
@@ -951,6 +951,160 @@ test('several fields may prepare one click, but two clicks cannot share a final 
   assert.ok(boundPreviewBehavior(params,{details:pureReceipt(params)},preview,attempted));
   const noPostcondition=pureParams(preview,[...steps.slice(0,3),{action:'click',locator:{selector:'#toggle'}},steps[3]]);
   assert.equal(boundPreviewBehavior(noPostcondition,{details:pureReceipt(noPostcondition)},preview,attempted),undefined);
+});
+
+test('unassertedBehaviorStep names exactly the step boundPreviewBehavior rejects',()=>{
+  const preview=purePreview(),at=selector=>({selector});
+  const step=(action,selector)=>action==='assert-text' ? {action,locator:at(selector),expectedText:'ok'}
+    : action==='fill' ? {action,locator:at(selector),value:'x'} : action==='press' ? {action,locator:at(selector),key:'Space'} : {action,locator:at(selector)};
+  for (const [actions,gap] of [
+    [['fill','fill','click','assert-text'],undefined],
+    [['click','assert-visible','click','assert-hidden'],undefined],
+    [['press','press','assert-painted'],undefined],
+    [['assert-hidden','click','click','assert-visible'],{index:1,action:'click',next:{index:2,action:'click'}}],
+    [['click','press','assert-painted'],{index:0,action:'click',next:{index:1,action:'press'}}],
+    [['click','assert-visible','fill'],{index:2,action:'fill'}],
+    [['fill','click'],{index:1,action:'click'}],
+  ]) {
+    const params=pureParams(preview,actions.map((action,index)=>step(action,'#s'+index)));
+    assert.deepEqual(unassertedBehaviorStep(params.steps),gap,actions.join(','));
+    // pureReceipt builds click, fill and assertion evidence, not press or paint.
+    if (actions.some(action=>['press','assert-painted'].includes(action))) continue;
+    assert.equal(Boolean(boundPreviewBehavior(params,{details:pureReceipt(params)},preview,{requiresInteraction:true})),gap===undefined,actions.join(','));
+  }
+});
+
+// RTX Spark stopwatch run (2026-10-25): the first check failed at step 2, the
+// model edited the page and republished, and its check of the new snapshot
+// passed ("tested opposite visibility states of the same element around a
+// click"). Delivery still said the attempted checks had not passed.
+const stopwatchPrompt='Make me a simple stopwatch web page with start, stop and lap buttons';
+const stopwatchButton=name=>({role:'button',name,exact:true});
+function stopwatchPlan(preview,steps=[
+  {action:'assert-visible',locator:stopwatchButton('Start')},
+  {action:'assert-hidden',locator:{selector:'#stop'}},
+  {action:'click',locator:stopwatchButton('Start')},
+  {action:'assert-hidden',locator:{selector:'#start'}},
+  {action:'assert-visible',locator:{selector:'#stop'}},
+  {action:'click',locator:stopwatchButton('Stop')},
+  {action:'assert-visible',locator:{selector:'#start'}},
+]) { return {siteId:preview.siteId,sha256:preview.sha256,viewport:{width:480,height:800},steps}; }
+// Lap is clicked and Stop follows at once: the Start transition passes, but
+// the Lap click's own result is never asserted.
+function lapThenStopPlan(preview,lapResult) { return stopwatchPlan(preview,[
+  {action:'assert-visible',locator:stopwatchButton('Start')},
+  {action:'assert-hidden',locator:{selector:'#stop'}},
+  {action:'click',locator:stopwatchButton('Start')},
+  {action:'assert-visible',locator:{selector:'#stop'}},
+  {action:'click',locator:stopwatchButton('Lap')},
+  ...(lapResult ? [{action:'assert-visible',locator:{selector:'#laps li'}}] : []),
+  {action:'click',locator:stopwatchButton('Stop')},
+  {action:'assert-visible',locator:{selector:'#start'}},
+  {action:'assert-hidden',locator:{selector:'#stop'}},
+]); }
+function persistObserved(guard,{event,ctx},result) {
+  return guard.toolResultPersist({toolName:event.toolName,toolCallId:event.toolCallId,
+    message:{role:'toolResult',toolName:event.toolName,toolCallId:event.toolCallId,content:[{type:'text',text:'result'}],...result}},ctx);
+}
+const nextSteps=persisted=>(persisted?.message?.content ?? []).filter(block=>/^\[ODS Pixel next step\]/.test(block?.text ?? '')).map(block=>block.text);
+// The first check fails at its step 2 (assert-hidden on a disabled, still
+// visible button); the model edits the page and publishes a new snapshot.
+function failThenRepublish(guard,preview,wrapped) {
+  const first=behaviorInspection(guard,stopwatchPlan(preview),{wrapped,id:'first-check'});
+  const failed=structuredClone(first.result), inner=wrapped?failed.details.result:failed;
+  inner.isError=true;
+  inner.details.status='failed';
+  inner.details.steps=inner.details.steps.slice(0,2);
+  inner.details.steps[1]={...inner.details.steps[1],status:'failed',errorCode:'visibility_mismatch',
+    before:{count:1,visible:true,display:'inline-block',visibility:'visible',opacity:'0.4',hidden:false,hiddenUntilFound:false,rectCount:1}};
+  guard.afterToolCall({...first.event,result:failed},first.ctx);
+  persistObserved(guard,first,failed);
+  assert.equal(guard.verificationForRun('run').status,'failed');
+  assert.match(guard.verificationForRun('run').text,/attempted preview interaction checks have not passed/);
+  const content='<!doctype html><button>Show details</button><p hidden>Details</p>';
+  const edit=call(guard,'edit',{path:preview.relativeDirectory+'/index.html',edits:[{oldText:'<p hidden>',newText:'<p hidden class="details">'}]},
+    'repair',{content:[{type:'text',text:'Successfully replaced 1 block(s).'}]});
+  persistObserved(guard,edit,{content:[{type:'text',text:'Successfully replaced 1 block(s).'}]});
+  const data=Buffer.from(content.replace('<p hidden>','<p hidden class="details">')),name=Buffer.from('index.html'),a=Buffer.alloc(4),b=Buffer.alloc(8);
+  a.writeUInt32BE(name.length);b.writeBigUInt64BE(BigInt(data.length));
+  const sha256=createHash('sha256').update(a).update(name).update(b).update(data).digest('hex'),siteId='site-'+sha256.slice(0,24);
+  const next={...preview,sha256,siteId,entrySha256:createHash('sha256').update(data).digest('hex'),bytes:data.length,
+    url:`http://${siteId}.localhost:9437/${siteId}/`};
+  const published=call(guard,'pixel_ods_workspace_preview',{relativeDirectory:preview.relativeDirectory},'republish',{details:next});
+  // Its result already carries the generic behavior step for this snapshot.
+  assert.equal(nextSteps(persistObserved(guard,published,{details:next})).length,1);
+  return next;
+}
+
+for (const wrapped of [false,true]) test(`a passing check of the republished snapshot satisfies the check that failed on the earlier one (${wrapped?'deferred':'direct'})`,()=>{
+  const {guard,preview}=setup({prompt:stopwatchPrompt});
+  const next=failThenRepublish(guard,preview,wrapped);
+  assert.notEqual(next.sha256,preview.sha256);
+  assert.equal(guard.verificationForRun('run').status,'failed','the earlier attempt still needs a check of the new snapshot');
+  // A pass of the older snapshot cannot certify the new one.
+  const stale=behaviorInspection(guard,stopwatchPlan(preview),{wrapped,id:'stale-check'});
+  guard.afterToolCall({...stale.event,result:stale.result},stale.ctx);
+  assert.equal(guard.verificationForRun('run').status,'failed');
+  const latest=behaviorInspection(guard,stopwatchPlan(next),{wrapped,id:'latest-check'});
+  guard.afterToolCall({...latest.event,result:latest.result},latest.ctx);
+  const delivered=guard.verificationForRun('run');
+  assert.equal(delivered.status,'passed');
+  assert.equal(delivered.preview.sha256,next.sha256);
+  assert.match(delivered.text,/Browser inspection passed for the submitted interaction checks only/);
+  assert.doesNotMatch(delivered.text,/attempted preview interaction checks have not passed/);
+  assert.equal(guard.beforeAgentFinalize({},context),undefined);
+});
+
+for (const wrapped of [false,true]) test(`a passing plan that leaves a click unasserted says which step, in its own result (${wrapped?'deferred':'direct'})`,()=>{
+  const {guard,preview}=setup({prompt:stopwatchPrompt});
+  const next=failThenRepublish(guard,preview,wrapped);
+  const gap=behaviorInspection(guard,lapThenStopPlan(next),{wrapped,id:'lap-then-stop'});
+  guard.afterToolCall({...gap.event,result:gap.result},gap.ctx);
+  // The evidence policy is unchanged: this plan proves no behavior.
+  assert.equal(guard.verificationForRun('run').status,'failed');
+  assert.match(guard.verificationForRun('run').text,/attempted preview interaction checks have not passed/);
+  // The pinned harness drops a finalize revision after a plugin tool call, so
+  // this result is the last point that can tell the model what to correct.
+  const [step]=nextSteps(persistObserved(guard,gap,gap.result));
+  assert.ok(step,'the passing result carries its own next step');
+  assert.match(step,/The latest inspection of this snapshot passed, but step 5 \(click\) is followed directly by step 6 \(click\) with no assertion of the click's own result/);
+  assert.ok(step.includes(next.sha256));
+  assert.match(guard.beforeAgentFinalize({},context)?.retry?.instruction ?? '',/step 5 \(click\) is followed directly by step 6 \(click\)/);
+  const corrected=behaviorInspection(guard,lapThenStopPlan(next,true),{wrapped,id:'lap-asserted'});
+  guard.afterToolCall({...corrected.event,result:corrected.result},corrected.ctx);
+  assert.equal(guard.verificationForRun('run').status,'passed');
+  assert.deepEqual(nextSteps(persistObserved(guard,corrected,corrected.result)).filter(text=>/latest inspection of this snapshot passed, but/.test(text)),[]);
+  assert.equal(guard.beforeAgentFinalize({},context),undefined);
+});
+
+test('a Tool Search child that binds the passing plan names the unasserted step on its parent result',()=>{
+  const {guard,preview}=setup({prompt:stopwatchPrompt});
+  const next=failThenRepublish(guard,preview,true);
+  const id='nested-gap',params=lapThenStopPlan(next);
+  const outer=behaviorInspection(guard,params,{wrapped:true,id});
+  const child=call(guard,PREVIEW_INSPECTION_TOOL,params,`tool_search_code:${id}:${PREVIEW_INSPECTION_TOOL}:1`);
+  guard.afterToolCall({...child.event,result:outer.result.details.result},child.ctx);
+  guard.afterToolCall({...outer.event,result:outer.result},outer.ctx);
+  assert.equal(guard.verificationForRun('run').status,'failed');
+  assert.match(nextSteps(persistObserved(guard,outer,outer.result)).join('\n'),/step 5 \(click\) is followed directly by step 6 \(click\)/);
+});
+
+for (const fault of ['failed','trailing','older-snapshot','static']) test(`only a passing current check names an unasserted step: ${fault}`,()=>{
+  const {guard,preview}=setup({prompt:stopwatchPrompt});
+  const next=failThenRepublish(guard,preview,false);
+  const params=fault==='older-snapshot' ? lapThenStopPlan(preview)
+    : fault==='static' ? stopwatchPlan(next,[{action:'assert-visible',locator:stopwatchButton('Start')}])
+      : fault==='trailing' ? stopwatchPlan(next,[...stopwatchPlan(next).steps,{action:'click',locator:stopwatchButton('Lap')}])
+        : lapThenStopPlan(next);
+  const observed=behaviorInspection(guard,params,{id:'check-'+fault});
+  const result=structuredClone(observed.result);
+  if (fault==='failed') { result.isError=true; result.details.status='failed'; result.details.steps=result.details.steps.slice(0,1);
+    result.details.steps[0]={...result.details.steps[0],status:'failed',errorCode:'no_match',before:{count:0}}; }
+  guard.afterToolCall({...observed.event,result},observed.ctx);
+  assert.equal(guard.verificationForRun('run').status,'failed');
+  const steps=nextSteps(persistObserved(guard,observed,result)).join('\n');
+  if (fault==='trailing') assert.match(steps,/The latest inspection of this snapshot passed, but no assertion follows its last action, step 8 \(click\)/);
+  else assert.doesNotMatch(steps,/latest inspection of this snapshot passed, but/);
 });
 
 // A live laptop page was published with unguarded localStorage and called
