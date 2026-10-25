@@ -90,6 +90,11 @@ jobs:
         shell: powershell
         run: ./tests/contracts/test-windows-host-agent-spaced-path.ps1
 
+      - name: Windows CLI chat sends UTF-8 (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-cli-chat-utf8.ps1
+
       - name: Windows Compose startup recovery (PowerShell 7)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -205,6 +210,20 @@ jobs:
           ./tests/contracts/test-wsl-lifecycle.ps1
           ./tests/contracts/test-wsl-lifecycle-output.ps1
 
+      - name: WSL scheduled task account regression (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./tests/contracts/test-wsl-task-account.ps1
+          ./tests/contracts/test-wsl-task-account.ps1 -Live
+
+      - name: WSL scheduled task account regression (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          ./tests/contracts/test-wsl-task-account.ps1
+          ./tests/contracts/test-wsl-task-account.ps1 -Live
+
       - name: Windows AMD Recovery, Model Control and Migration Contracts (PowerShell 7)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -285,6 +304,15 @@ jobs:
         shell: pwsh
         run: ./tests/test-windows-model-activation.ps1
 
+      - name: Windows Owner Public URL Carry Contract
+        shell: pwsh
+        run: ./tests/test-windows-public-url-carry.ps1
+
+      - name: Windows Owner Public URL Carry Contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-public-url-carry.ps1
+
       - name: Windows Bootstrap Download Handoff Contract
         shell: pwsh
         run: ./tests/test-windows-bootstrap-download-handoff.ps1
@@ -292,6 +320,15 @@ jobs:
       - name: Windows Dotenv Serializer Contract
         shell: pwsh
         run: ./tests/test-windows-dotenv-serializer.ps1
+
+      - name: Windows Owner .env Settings Carry Contract
+        shell: pwsh
+        run: ./tests/test-windows-owner-env-carry.ps1
+
+      - name: Windows Owner .env Settings Carry Contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-owner-env-carry.ps1
 
       - name: Windows llama.cpp Speculative Opt-out Contract
         shell: pwsh
@@ -330,6 +367,16 @@ jobs:
       - name: Windows Runtime Recovery Contract
         shell: pwsh
         run: ./tests/contracts/test-windows-runtime-recovery.ps1
+
+      - name: Windows report during Docker outage (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/contracts/test-windows-report-outage.ps1
+
+      - name: Windows report during Docker outage (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-report-outage.ps1
 
       - name: Windows Host Agent Stale PID Recovery (PowerShell 7)
         if: runner.os == 'Windows'
@@ -457,6 +504,11 @@ jobs:
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: powershell
         run: ./tests/test-windows-network-signin.ps1
+
+      - name: Windows STT trigger native timeout contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-stt-trigger.ps1
 
       - name: Windows Whisper Port Conflict
         if: ${{ !cancelled() && runner.os == 'Windows' }}

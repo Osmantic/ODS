@@ -132,9 +132,9 @@ directory, use the helper below, replacing the Ubuntu username and distribution
 with the installation's values:
 
 ```powershell
-& .\ods\installers\wsl-lifecycle.ps1 -Action status -Distro Ubuntu-24.04 -InstallRoot /home/YOUR_UBUNTU_USER/ods
-& .\ods\installers\wsl-lifecycle.ps1 -Action stop -Distro Ubuntu-24.04 -InstallRoot /home/YOUR_UBUNTU_USER/ods
-& .\ods\installers\wsl-lifecycle.ps1 -Action start -Distro Ubuntu-24.04 -InstallRoot /home/YOUR_UBUNTU_USER/ods
+powershell -ExecutionPolicy Bypass -File .\ods\installers\wsl-lifecycle.ps1 -Action status -Distro Ubuntu-24.04 -InstallRoot /home/YOUR_UBUNTU_USER/ods
+powershell -ExecutionPolicy Bypass -File .\ods\installers\wsl-lifecycle.ps1 -Action stop -Distro Ubuntu-24.04 -InstallRoot /home/YOUR_UBUNTU_USER/ods
+powershell -ExecutionPolicy Bypass -File .\ods\installers\wsl-lifecycle.ps1 -Action start -Distro Ubuntu-24.04 -InstallRoot /home/YOUR_UBUNTU_USER/ods
 ```
 
 Use `-Action stop` to stop ODS and disable its next
