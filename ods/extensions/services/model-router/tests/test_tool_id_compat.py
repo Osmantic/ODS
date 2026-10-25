@@ -1,5 +1,4 @@
 import copy
-import hashlib
 import unittest
 from unittest import mock
 

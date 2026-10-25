@@ -16,7 +16,8 @@ class ReviewerEdges(unittest.TestCase):
                 original=[_assistant(LONG_ID),_tool(LONG_ID),extra]
                 snapshot=copy.deepcopy(original)
                 out,changed=compat.normalize_history_tool_ids(original)
-                self.assertFalse(changed);self.assertIs(out,original)
+                self.assertFalse(changed)
+                self.assertIs(out,original)
                 self.assertEqual(original,snapshot)
 
     def test_nemo_family_variants_and_boundaries(self):
@@ -29,7 +30,8 @@ class ReviewerEdges(unittest.TestCase):
     def test_unencodable_id_preserves_baseline(self):
         original=[_assistant('call_\ud800'),_tool('call_\ud800')]
         out,changed=compat.normalize_history_tool_ids(original)
-        self.assertFalse(changed);self.assertIs(out,original)
+        self.assertFalse(changed)
+        self.assertIs(out,original)
 
     def test_newline_is_not_valid_nine_character_id(self):
         original=[_assistant('abc123XYZ\n'),_tool('abc123XYZ\n')]
@@ -41,4 +43,5 @@ class ReviewerEdges(unittest.TestCase):
         original=[_assistant(LONG_ID),_tool(LONG_ID),_assistant('abc123XYZ'),_tool('abc123XYZ')]
         out,changed=compat.normalize_history_tool_ids(original)
         self.assertTrue(changed)
-        self.assertEqual(out[2],original[2]);self.assertEqual(out[3],original[3])
+        self.assertEqual(out[2],original[2])
+        self.assertEqual(out[3],original[3])

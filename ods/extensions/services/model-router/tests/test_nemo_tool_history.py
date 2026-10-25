@@ -5,7 +5,9 @@ import json
 
 import httpx
 
-from test_router import router  # noqa: F401  (fixture is authoritative)
+from test_router import router as _router_fixture
+
+router = _router_fixture
 
 
 NEMO = "Mistral-Nemo-Instruct-2407-Q4_K_M.gguf"
