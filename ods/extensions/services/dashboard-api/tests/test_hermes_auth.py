@@ -216,7 +216,7 @@ def test_launch_only_relays_host_only_secure_allowlisted_cookies(client, monkeyp
     cookies['unrelated'] = 'do-not-relay'
     monkeypatch.setattr(hermes_bridge, "login_dashboard", AsyncMock(return_value=list(cookies.values())))
     response = client.get("/api/auth/hermes-session", headers={"x-forwarded-proto": "https"}, follow_redirects=False)
-    assert response.status_code == 303 and response.headers['location'] == '/'
+    assert response.status_code == 303 and response.headers['location'] == '/chat'
     header = response.headers['set-cookie']
     assert 'hermes_session_at=fixture' in header and 'HttpOnly' in header and 'Secure' in header
     assert 'Path=/' in header and 'Domain=' not in header and 'unrelated' not in header
