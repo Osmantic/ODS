@@ -149,8 +149,15 @@ def snapshot(root):
 def private_root():
     # Real ancestor-custody checks reject /tmp. The test runner supplies a
     # private HOME; no installed owner state is read, modified, or removed.
-    with tempfile.TemporaryDirectory(prefix='.source-diagnostics-', dir=Path.home()) as directory:
-        yield Path(directory)
+    # The custody checks also reject group-writable trees, so create the
+    # fixtures with the modes the installer uses, whatever the host's umask
+    # (Ubuntu's default 0002 would otherwise make them unsafe).
+    original_umask = os.umask(0o022)
+    try:
+        with tempfile.TemporaryDirectory(prefix='.source-diagnostics-', dir=Path.home()) as directory:
+            yield Path(directory)
+    finally:
+        os.umask(original_umask)
 
 
 @pytest.mark.parametrize('marker_state', ['installing', 'ready'])
@@ -202,7 +209,21 @@ def test_manager_cli_refusals_preserve_all_fixture_state(
     if reason:
         assert reason in message
         assert 'Restore the complete matching prior installation state' in message
-        assert 'owner-authorized clean install' in message
+        if condition == 'missing-state':
+            assert 'bash ./ods-uninstall.sh --keep-models --keep-data' in message
+            assert 'from the installed ODS directory' in message
+            assert 'confirm its uninstall prompt' in message
+            assert 'If uninstall refuses, preserve its state and stop' in message
+            assert 'After successful uninstall' in message
+            assert "'bash ./install.sh' from the new source checkout" in message
+            assert 'does not automatically restore' in message
+            assert 'check free disk space' in message
+            assert 'owner-authorized clean install' not in message
+            assert '--force' not in message
+            assert 'never ran' not in message and 'never ready' not in message
+        else:
+            assert 'owner-authorized clean install' in message
+            assert 'ods-uninstall.sh' not in message
     else:
         assert 'is missing' not in message
         assert 'Preserve any existing admission hold' in message
@@ -259,6 +280,7 @@ def test_other_cli_failures_preserve_hold_guidance_without_leaking_exception(mon
     assert 'Preserve any existing admission hold and protected source snapshots' in message
     assert '/private/' not in message
     assert 'clean install' not in message
+    assert 'ods-uninstall.sh' not in message
     if isinstance(error, upgrade.UpgradeError):
         # A fixed code is source text, not private data; naming it says what
         # blocks the update (fleet row 27 hid model-recovery-required).
@@ -295,6 +317,56 @@ def test_cli_mismatched_hold_preserves_actual_journal_and_snapshots(private_root
     assert 'Preserve any existing admission hold and protected source snapshots' in message
     assert snapshot(root) == before
     assert manager.journal()['hold'] == 'd' * 64
+
+
+@pytest.mark.parametrize('kind,has_plan,access_guidance', [
+    ('access', False, True), ('legacy-absent', False, True),
+    ('access', True, True), ('legacy-absent', True, True),
+    ('model', False, False), ('unknown', False, False), (None, False, False),
+])
+def test_pending_access_journal_cli_names_its_recovery_without_writes(
+        private_root, monkeypatch, capsys, kind, has_plan, access_guidance):
+    root = private_root
+    install, home, candidate, state = (root / name for name in ('installed', 'owner', 'candidate', 'state'))
+    for path in (install, home, candidate, state):
+        path.mkdir(mode=0o700)
+    (install / 'retained-source').write_text('prior source')
+    (home / 'retained-data').write_text('owner data')
+    (state / 'source-upgrade').mkdir(mode=0o700)
+    (state / 'source-upgrade/retained-snapshot').write_bytes(b'prior snapshot')
+    for service in ('pixel-edge', 'litellm'):
+        path = candidate / f'extensions/services/{service}/compose.yaml'
+        path.parent.mkdir(parents=True)
+        path.write_text('services: {}')
+    pending = dict(phase='applying', configured_mode='sandboxed', transaction_id='d' * 64)
+    if kind != 'legacy-absent':
+        pending['kind'] = kind
+    journal = state / 'transition.json'
+    journal.write_text(json.dumps(pending))
+    journal.chmod(0o600)
+    manager = SimpleNamespace(state=state / 'source-upgrade', install=install,
+                              journal=lambda: {'hold': 'd' * 64} if has_plan else None,
+                              stage=refuse)
+    owner = SimpleNamespace(pw_uid=os.getuid(), pw_dir=str(home))
+    original_json = upgrade._protected_json
+    monkeypatch.setattr(upgrade, '_protected_json', lambda path, uid=0: original_json(path, os.getuid()))
+    monkeypatch.setattr(upgrade, '_manager', lambda *a, **kw: (manager, owner, state))
+    import contextlib
+    monkeypatch.setattr(upgrade, 'admission_lock', lambda _: contextlib.nullcontext())
+    monkeypatch.setattr(upgrade, 'owner_baseline', refuse)
+    monkeypatch.setattr(upgrade, '_client', refuse)
+    before = snapshot(root)
+    message = cli(monkeypatch, capsys, ['stage', str(install), 'fixture', str(candidate), 'b' * 40])
+    if access_guidance:
+        assert 'source-access-journal-pending' in message
+        assert 'Settings > Portal permissions' in message and 'Restore Sandbox' in message
+        assert 'Models page' not in message and 'ods model recover' not in message
+    else:
+        assert 'source-previous-hold-pending' in message
+        assert 'Models page' in message and 'ods model recover' in message
+        assert 'Restore Sandbox' not in message
+    assert snapshot(root) == before
+    assert str(root) not in message
 
 
 @pytest.mark.parametrize('error,shown', [

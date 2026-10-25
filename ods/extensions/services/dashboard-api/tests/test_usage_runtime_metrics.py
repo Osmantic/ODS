@@ -112,3 +112,29 @@ def test_distinct_keys_are_tracked_independently(clean_state):
     b = usage._observe_runtime_request_delta("b", input_tokens=100, output_tokens=0)
     assert a["requests"] == 1  # key "a" grew
     assert b["requests"] == 0  # key "b" unchanged, still at baseline
+
+
+# --- _configured_local_runtime_metrics_urls ---
+
+
+@pytest.fixture
+def clean_metrics_env(monkeypatch):
+    for key in ("LOCAL_USAGE_METRICS_URLS", "LLAMA_METRICS_URL", "LLM_API_URL", "OLLAMA_URL"):
+        monkeypatch.delenv(key, raising=False)
+    return monkeypatch
+
+
+def test_metrics_url_skips_litellm_gateway_in_hybrid_mode(clean_metrics_env):
+    clean_metrics_env.setenv("OLLAMA_URL", "http://litellm:4000")
+    assert usage._configured_local_runtime_metrics_urls() == ["http://llama-server:8080/metrics"]
+
+
+def test_metrics_url_uses_direct_runtime_url(clean_metrics_env):
+    clean_metrics_env.setenv("OLLAMA_URL", "http://llama-server:8080/v1")
+    assert usage._configured_local_runtime_metrics_urls() == ["http://llama-server:8080/metrics"]
+
+
+def test_metrics_url_prefers_explicit_override(clean_metrics_env):
+    clean_metrics_env.setenv("OLLAMA_URL", "http://litellm:4000")
+    clean_metrics_env.setenv("LLAMA_METRICS_URL", "http://10.0.0.5:8080/metrics")
+    assert usage._configured_local_runtime_metrics_urls() == ["http://10.0.0.5:8080/metrics"]
