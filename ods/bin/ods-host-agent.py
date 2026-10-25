@@ -15079,6 +15079,14 @@ class AgentHandler(BaseHTTPRequestHandler):
                 return
             if local_runtime_profile and local_runtime_profile.get("cacheType") == "f16":
                 try:
+                    # Bind admission to the branch that launches this registered
+                    # executable. It cannot enter the Linux GPU planners below;
+                    # WSL tasks and containers own different launch contracts.
+                    if (not windows_native_llama or wsl_managed.get('managed') is True
+                            or os.environ.get("ODS_HOST_INSTALL_DIR")):
+                        raise ValueError(
+                            "f16 registered cache currently requires the Windows native "
+                            "host launch; WSL, container and macOS routes are not qualified")
                     _model_stores.admit_native_profile(
                         {**local_runtime_profile, "contextLength": context_length}, target, env_pre,
                         projector=_model_projector_file(_library_record_for_gguf(gguf_file), target.parent))

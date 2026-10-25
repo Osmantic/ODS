@@ -11,6 +11,11 @@ first implementation supports dense transformer layouts recognized by
 requires `N_GPU_LAYERS=0`, no vision projector, and fresh RAM admission before
 host activation or native start/restart. GPU offload, Metal, hybrid/recurrent
 layouts, f16 MTP, and measured f16 qualification remain unsupported.
+Host activation supports only the Windows native host launcher that uses the
+registered executable. WSL-owned tasks, containers, and macOS activation refuse
+this profile before snapshots or writes. The admitted route cannot enter Linux
+GPU assignment, and catalog offload settings cannot replace its zero-layer
+setting through the activation environment projection.
 
 Author the profile using existing local artifacts (no download or inference):
 

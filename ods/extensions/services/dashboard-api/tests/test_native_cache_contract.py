@@ -184,11 +184,10 @@ def test_registration_refuses_inconsistent_authoring_without_writes(tmp_path, mo
     assert {str(p): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()} == before
 
 
-@pytest.mark.parametrize('enough', [False, True])
-def test_host_activation_admits_before_first_mutation_and_projects_f16(tmp_path, monkeypatch, enough):
+def host_activation_fixture(tmp_path, monkeypatch):
     import test_host_agent as fixtures
     host = fixtures._mod
-    complete_fixture(tmp_path, monkeypatch, host._model_stores)
+    checkpoint, _ = complete_fixture(tmp_path, monkeypatch, host._model_stores)
     monkeypatch.setattr(host, 'INSTALL_DIR', tmp_path)
     monkeypatch.setattr(host.platform, 'system', lambda: 'Windows')
     monkeypatch.delenv('ODS_HOST_INSTALL_DIR', raising=False)
@@ -197,6 +196,19 @@ def test_host_activation_admits_before_first_mutation_and_projects_f16(tmp_path,
     monkeypatch.setattr(host, '_ods_managed_pixel_identity', lambda: None)
     monkeypatch.setattr(host, '_select_runtime_profile', lambda *_: None)
     monkeypatch.setattr(host.subprocess, 'run', lambda *_a, **_k: pytest.fail('unexpected external process'))
+    return host, fixtures._FakeHandler(b''), checkpoint
+
+
+@pytest.mark.parametrize('enough', [False, True])
+@pytest.mark.parametrize('catalog_offload', [False, True])
+def test_host_activation_admits_before_first_mutation_and_projects_f16(tmp_path, monkeypatch, enough, catalog_offload):
+    host, handler, _ = host_activation_fixture(tmp_path, monkeypatch)
+    if catalog_offload:
+        monkeypatch.setattr(host, '_select_runtime_profile', lambda *_: {
+            'id': 'gpu-profile', 'env': {'N_GPU_LAYERS': '-1', 'LLAMA_ARG_N_GPU_LAYERS': '-1',
+                                      'LLAMA_ARG_CACHE_TYPE_K': 'q4_0', 'LLAMA_ARG_CACHE_TYPE_V': 'q4_0'}})
+    for planner in ('_plan_nvidia_model_gpu_assignment', '_plan_amd_model_gpu_assignment'):
+        monkeypatch.setattr(host, planner, lambda *_a, **_k: pytest.fail('native CPU route planned GPU offload'))
     observed: list = []
     def ram():
         observed.append('fresh-ram')
@@ -216,7 +228,6 @@ def test_host_activation_admits_before_first_mutation_and_projects_f16(tmp_path,
         raise AtWrite()
     monkeypatch.setattr(host, '_write_bound_env_text', capture_write)
     before = {str(p): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
-    handler = fixtures._FakeHandler(b'')
     if enough:
         with pytest.raises(AtWrite):
             host.AgentHandler._do_model_activate(handler, 'new')
@@ -224,9 +235,76 @@ def test_host_activation_admits_before_first_mutation_and_projects_f16(tmp_path,
         text = observed[2][2]
         assert 'LLAMA_ARG_CACHE_TYPE_K=f16\n' in text and 'LLAMA_ARG_CACHE_TYPE_V=f16\n' in text
         assert 'N_GPU_LAYERS=0\n' in text
+        assert 'LLAMA_ARG_N_GPU_LAYERS=' not in text
     else:
         host.AgentHandler._do_model_activate(handler, 'new')
         assert handler.response_code == 400
         assert 'Insufficient memory' in handler.parse_response()['error']
         assert observed == ['fresh-ram']
+    assert {str(p): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()} == before
+
+
+@pytest.mark.parametrize('route', ['linux-amd', 'linux-nvidia', 'wsl-owned', 'windows-offload',
+                                   'macos', 'linux-apple', 'late-container', 'changed-linux-plan'])
+def test_host_f16_refuses_other_launch_strategies_before_snapshot(tmp_path, monkeypatch, route):
+    host, handler, checkpoint = host_activation_fixture(tmp_path, monkeypatch)
+    env_path = tmp_path / '.env'
+    if route in ('macos', 'linux-apple', 'changed-linux-plan'):
+        env_path.write_text(env_path.read_text().replace('GPU_BACKEND=amd', 'GPU_BACKEND=apple'))
+        monkeypatch.setattr(host.platform, 'system', lambda: 'Darwin' if route == 'macos' else 'Linux')
+        # The original Apple branch must get past its real binary existence check.
+        (tmp_path / 'bin').mkdir()
+        (tmp_path / 'bin/llama-server').write_bytes(b'inert')
+    elif route.startswith('linux-'):
+        monkeypatch.setattr(host.platform, 'system', lambda: 'Linux')
+        env_path.write_text(env_path.read_text().replace('GPU_BACKEND=amd', 'GPU_BACKEND=' + route[6:]))
+    if route == 'wsl-owned':
+        monkeypatch.setattr(host.platform, 'system', lambda: 'Linux')
+        monkeypatch.setattr(host, '_managed_wsl_runtime', lambda _: {'managed': True})
+        monkeypatch.setattr(host._wsl_runtime, 'model_store', lambda *_: checkpoint.parent)
+    if route == 'windows-offload':
+        env_path.write_text(env_path.read_text().replace('N_GPU_LAYERS=0', 'N_GPU_LAYERS=-1'))
+    if route == 'late-container':
+        # A container marker observed at the final route decision must not adopt
+        # a profile previously resolved using host paths.
+        def mark_container(*_):
+            monkeypatch.setenv('ODS_HOST_INSTALL_DIR', str(tmp_path))
+        monkeypatch.setattr(host, '_select_runtime_profile', mark_container)
+    if route == 'changed-linux-plan':
+        # Preserve real loading/parsing; emulate a changed backend at the final
+        # .env read, after registered-profile verification used the Apple route.
+        original_load = host.load_env
+        reads = 0
+        def load_changed(path):
+            nonlocal reads
+            value = original_load(path)
+            reads += 1
+            if reads >= 3:
+                value['GPU_BACKEND'] = 'amd'
+            return value
+        monkeypatch.setattr(host, 'load_env', load_changed)
+    observed = []
+    def offload_plan(*_args, **_kwargs):
+        observed.append('gpu-plan')
+        return {'env_updates': {'N_GPU_LAYERS': '-1'}, 'env_removals': []}
+    monkeypatch.setattr(host, '_plan_amd_model_gpu_assignment', offload_plan)
+    monkeypatch.setattr(host, '_plan_nvidia_model_gpu_assignment', offload_plan)
+    def ram():
+        observed.append('fresh-ram')
+        return 16 * 1024**3, 8 * 1024**3
+    monkeypatch.setattr(host._model_stores, 'physical_ram_bytes', ram)
+    def reject_mutation(*_args, **_kwargs):
+        pytest.fail(f'reached snapshot/mutation boundary after {observed!r}')
+    for function in ('_snapshot_text_file', '_begin_pixel_model_transaction', '_write_bound_env_text',
+                     '_restart_windows_native_llama_server', '_restart_macos_native_llama_server'):
+        monkeypatch.setattr(host, function, reject_mutation)
+    before = {str(p): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    host.AgentHandler._do_model_activate(handler, 'new')
+    assert handler.response_code == 400
+    assert observed == []  # Neither telemetry nor planning can admit another route.
+    if route in ('linux-amd', 'linux-nvidia', 'wsl-owned'):
+        assert 'native executable' in handler.parse_response()['error']
+    else:
+        assert handler.parse_response()['code'] == 'native_cache_admission'
+        assert ('CPU-only' if route == 'windows-offload' else 'Windows native') in handler.parse_response()['error']
     assert {str(p): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()} == before
