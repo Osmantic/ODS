@@ -394,10 +394,25 @@ detect_gpu() {
     for _v in "$_drm_sys"/card*/device/vendor; do
         [[ "$(cat "$_v" 2>/dev/null)" == "0x10de" ]] && _nvidia_hw=true && break
     done
+    # Headless servers without nvidia-drm.ko have no DRM card for the GPU, but
+    # the PCI device still exists. Accept vendor 0x10de with a display class
+    # (0x03xxxx: VGA 0x0300, 3D controller 0x0302 for datacenter GPUs).
+    # ODS_PCI_SYS can be overridden in tests to point at a mock sysfs tree.
+    local _pci_sys="${ODS_PCI_SYS:-/sys/bus/pci/devices}"
+    if ! $_nvidia_hw; then
+        for _v in "$_pci_sys"/*/vendor; do
+            [[ "$(cat "$_v" 2>/dev/null)" == "0x10de" ]] || continue
+            [[ "$(cat "${_v%/vendor}/class" 2>/dev/null)" == 0x03* ]] && _nvidia_hw=true && break
+        done
+    fi
     # WSL2: /sys/class/drm/ only contains a 'version' file — no card* entries exist.
     # Fall back to nvidia-smi as the sole hardware witness on WSL2.
-    if ! $_nvidia_hw && grep -qiE "microsoft|wsl" /proc/sys/kernel/osrelease 2>/dev/null; then
+    # ODS_OSRELEASE_FILE can be overridden in tests to simulate native Linux.
+    if ! $_nvidia_hw && grep -qiE "microsoft|wsl" "${ODS_OSRELEASE_FILE:-/proc/sys/kernel/osrelease}" 2>/dev/null; then
         command -v nvidia-smi &>/dev/null && _nvidia_hw=true
+    fi
+    if ! $_nvidia_hw && command -v nvidia-smi &>/dev/null         && nvidia-smi -L 2>/dev/null | grep -q '^GPU '; then
+        warn "nvidia-smi lists GPUs but no NVIDIA PCI/DRM device was found in sysfs; ignoring nvidia-smi"
     fi
     if $_nvidia_hw && command -v nvidia-smi &> /dev/null; then
         local raw
@@ -803,10 +818,10 @@ fix_nvidia_secure_boot() {
     if [[ -z "$installed_driver" ]]; then
         ai "No NVIDIA driver package found. Installing recommended driver..."
         if command -v ubuntu-drivers &>/dev/null; then
-            ods_sudo ubuntu-drivers install 2>>"$LOG_FILE" || \
-            ods_sudo apt-get install -y "nvidia-driver-${MIN_DRIVER_VERSION}" 2>>"$LOG_FILE" || true
+            ods_sudo ubuntu-drivers install </dev/null 2>>"$LOG_FILE" || \
+            ods_sudo apt-get install -y "nvidia-driver-${MIN_DRIVER_VERSION}" </dev/null 2>>"$LOG_FILE" || true
         else
-            ods_sudo apt-get install -y "nvidia-driver-${MIN_DRIVER_VERSION}" 2>>"$LOG_FILE" || true
+            ods_sudo apt-get install -y "nvidia-driver-${MIN_DRIVER_VERSION}" </dev/null 2>>"$LOG_FILE" || true
         fi
         installed_driver=$(dpkg-query -W -f='${Package}\n' 'nvidia-driver-*' 2>/dev/null \
                            | sed -n 's/.*nvidia-driver-\([0-9][0-9]*\).*/\1/p' | sort -n | tail -1 || true)
@@ -851,7 +866,7 @@ fix_nvidia_secure_boot() {
     # Ensure linux-headers are present (needed for sign-file)
     if [[ ! -d "/usr/src/linux-headers-${kver}" ]]; then
         ai "Installing kernel headers for ${kver}..."
-        ods_sudo apt-get install -y "linux-headers-${kver}" 2>>"$LOG_FILE" || true
+        ods_sudo apt-get install -y "linux-headers-${kver}" </dev/null 2>>"$LOG_FILE" || true
     fi
 
     # Generate MOK keypair if not already present

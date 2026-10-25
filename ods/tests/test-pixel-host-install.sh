@@ -188,6 +188,85 @@ for group_case in pixel docker both both_pixel_socket existing_pixel_socket curr
     else fail "owner runtime group refresh: $group_case"; fi
 done
 
+# A rerun must not stall on an access coordinator an interrupted uninstall
+# left stopped, but a deployment being deactivated keeps it stopped.
+mkdir -p "$TEST_ROOT/access-start"
+for access_case in stopped-ready stopped-installing active deactivating no-unit start-fails no-socket; do
+    if (
+        case_root="$TEST_ROOT/access-start/$access_case"
+        mkdir -p "$case_root"
+        calls="$case_root/calls"
+        export ODS_PIXEL_ACCESS_UNIT_PATH="$case_root/ods-pixel-access.service"
+        export ODS_PIXEL_ACCESS_SOCKET_PATH="$case_root/control.sock"
+        marker_state=ready active=1 start_rc=0 binds=true expected_rc=0
+        expected_calls='systemctl enable --now ods-pixel-access.service'
+        case "$access_case" in
+            stopped-installing) marker_state=installing ;;
+            active) active=0; expected_calls='' ;;
+            deactivating) marker_state=deactivating; expected_calls='' ;;
+            no-unit) expected_calls='' ;;
+            start-fails) start_rc=1 binds=false expected_rc=1 ;;
+            no-socket) binds=false expected_rc=1 ;;
+        esac
+        [[ "$access_case" == no-unit ]] || : >"$ODS_PIXEL_ACCESS_UNIT_PATH"
+        systemctl() { [[ "$*" == 'is-active --quiet ods-pixel-access.service' ]] || return 99; return "$active"; }
+        _ods_pixel_source_transition_state() { printf '%s|%s\n' "$marker_state" 0123456789abcdef0123456789abcdef01234567; }
+        ods_sudo_available() { return 0; }
+        ods_sudo() {
+            printf '%s\n' "$*" >>"$calls"
+            if [[ "$binds" == true ]]; then
+                python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' \
+                    "$ODS_PIXEL_ACCESS_SOCKET_PATH"
+            fi
+            return "$start_rc"
+        }
+        sleep() { :; }
+        ai() { :; }
+        result=0
+        _ods_pixel_start_stopped_access_service "$owner" "$TEST_ROOT" \
+            0123456789abcdef0123456789abcdef01234567 || result=$?
+        [[ "$result" == "$expected_rc" && "$(cat "$calls" 2>/dev/null)" == "$expected_calls" ]]
+    ); then pass "stopped access coordinator start: $access_case"
+    else fail "stopped access coordinator start: $access_case"; fi
+done
+# Helpers written before an interrupted install reached the coordinator's
+# unit leave nothing to resume; a recorded transition still needs recovery.
+for resume_case in no-unit-no-transition no-unit-with-transition unit-installed; do
+    if (
+        case_root="$TEST_ROOT/access-resume/$resume_case"
+        mkdir -p "$case_root/state"
+        export ODS_PIXEL_ACCESS_HELPER="$case_root/pixel_model_transition.py"
+        export ODS_PIXEL_ACCESS_UNIT_PATH="$case_root/ods-pixel-access.service"
+        export ODS_PIXEL_ACCESS_STATE_DIR="$case_root/state"
+        export PIXEL_SOURCE_REF=0123456789abcdef0123456789abcdef01234567
+        : >"$ODS_PIXEL_ACCESS_HELPER"
+        expected='status'
+        case "$resume_case" in
+            no-unit-no-transition) expected='' ;;
+            no-unit-with-transition) : >"$ODS_PIXEL_ACCESS_STATE_DIR/transition.json" ;;
+            unit-installed) : >"$ODS_PIXEL_ACCESS_UNIT_PATH" ;;
+        esac
+        ods_sudo_available() { return 0; }
+        ods_sudo() { "$@"; }
+        _ods_pixel_start_stopped_access_service() { :; }
+        _ods_pixel_model_transition() { printf '%s\n' "$1" >>"$case_root/calls"; return 1; }
+        result=0
+        _ods_pixel_resume_completed_release "$owner" "$TEST_ROOT" "$TEST_ROOT" \
+            0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef 2>/dev/null || result=$?
+        if [[ -z "$expected" ]]; then
+            [[ "$result" == 0 && ! -e "$case_root/calls" ]]
+        else
+            [[ "$result" == 1 && "$(cat "$case_root/calls")" == "$expected" ]]
+        fi
+    ); then pass "access coordinator resume guard: $resume_case"
+    else fail "access coordinator resume guard: $resume_case"; fi
+done
+grep -Fq '_ods_pixel_start_stopped_access_service "$owner" "$home" "${PIXEL_SOURCE_REF:?}"' \
+    "$ROOT/installers/lib/pixel-host-install.sh" \
+    && grep -Fq '_ods_pixel_start_stopped_access_service \' "$ROOT/installers/phases/06-directories.sh" \
+    && pass "both rerun status paths start a stopped access coordinator first" \
+    || fail "a rerun status path skips the stopped access coordinator start"
+
 if (
     inspection_calls="$TEST_ROOT/inspection-owner-calls"
     INSTALL_DIR="$TEST_ROOT/inspection-install"
@@ -579,6 +658,14 @@ if (
     _ods_pixel_source_checkout() { printf '%s\n' "$repair_pixel"; }
     _ods_pixel_contract_sha256() { printf '%s\n' "$repair_contract"; }
     _ods_pixel_gateway_model_alias() { printf '%s\n' ods/current; }
+    # This fixture isolates runtime-package repair after exact-route reuse.
+    # Real route agreement and drift are exercised in test_pixel_onboarding_upgrade.py.
+    _ods_pixel_stable_alias_matches_promoted_model() { return 0; }
+    _ods_pixel_write_onboarding() {
+        mkdir -p "${3%/*}"
+        printf '%s\n' '{}' > "$3"
+        chmod 0600 "$3"
+    }
     _ods_pixel_apply_runtime_budget() {
         python3 - "$3" <<'PY'
 import json, pathlib, sys
@@ -595,7 +682,7 @@ PY
         ods_linux_node_tools_available _ods_pixel_write_extension_catalog \
         _ods_pixel_write_operations_policy _ods_pixel_write_extension_manager_unit \
         _ods_pixel_write_artifact_promoter_unit _ods_pixel_write_workspace_preview_unit \
-        _ods_pixel_write_onboarding _ods_pixel_harden_operations_state_profiles \
+        _ods_pixel_harden_operations_state_profiles \
         _ods_pixel_verify_operations_policy_custody _ods_pixel_sandbox_candidate_has_node; do
         eval "$stub() { :; }"
     done

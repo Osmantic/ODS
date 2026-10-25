@@ -991,15 +991,18 @@ test("requested document delivery receives a prioritized route on full and compa
       assert.ok(!result.appendSystemContext.includes(guide), prompt);
       assert.ok(result.appendSystemContext.startsWith(configuredLeanPrompt
         ? ODS_COMPACT_CONVERSATION_CONTRACT : ODS_CONVERSATION_CONTRACT), prompt);
-      assert.match(result.prependContext, /Complete any requested file creation or edits first/);
-      assert.match(result.prependContext, /sourcePath.*broker creates a ZIP/);
-      assert.match(result.prependContext, /without shell packaging or cleanup/);
-      assert.match(result.prependContext, /source-code files.*code projects.*ZIP/);
-      assert.match(result.prependContext, /preserving filenames and bytes/);
-      assert.match(result.prependContext, /never rename source to \.txt/);
+      assert.match(result.prependContext, /Complete requested creation\/edits, then checks/);
+      assert.match(result.prependContext, /sourcePath.*broker ZIP/);
+      assert.match(result.prependContext, /without shell packaging\/cleanup/);
+      assert.match(result.prependContext, /Source-code files.*code projects.*ZIP/);
+      assert.match(result.prependContext, /preserves names\/bytes/);
+      assert.match(result.prependContext, /Never rename source to \.txt/);
       assert.match(result.prependContext, /4 MiB/);
       assert.match(result.prependContext, /Creating a file is not delivery/);
-      assert.match(result.prependContext, /verified receipt BEFORE the final reply/);
+      assert.match(result.prependContext, /verified receipt BEFORE final reply/);
+      assert.match(result.prependContext, /NEW files: non-hidden paths/);
+      assert.match(result.prependContext, /preserve requested filenames\/hyphens/);
+      assert.match(result.prependContext, /Never relocate\/copy refused private sources/);
     }
   }
   assert.ok(guide.length < 700);

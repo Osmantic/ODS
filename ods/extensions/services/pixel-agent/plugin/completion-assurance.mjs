@@ -541,8 +541,12 @@ export function createCompletionAssurance({englishOnly = false} = {}) {
         text.includes(url.replaceAll('(', '%28').replaceAll(')', '%29')) || cited.has(citationKey(url)));
       // A candid failure or clarification is a valid terminal answer. It must
       // not be turned into another attempt that repeats denied work.
-      const limitation = /\b(?:nao (?:consegui|consigo|posso|foi possivel)|indisponivel|preciso que|qual (?:site|assunto)|unable|unavailable|cannot|could not|which (?:site|topic))\b/.test(normalize(text)) ||
-        (readsRequired && /\b(?:unverified|unread|not (?:opened|read|verified)|nao (?:verificad[ao]|lid[ao]|abert[ao]))\b/.test(normalize(text))) ||
+      // "If a tool is unavailable, I will report it" is a contingency, not
+      // evidence of a failure. A model can echo that recovery instruction
+      // while still promising work; it must not clear the incomplete result.
+      const limitationText = normalize(text).replace(/\b(?:if|se)\b[^.!?\n,;]{0,500}(?:[,;]|(?=[.!?\n]|$))/g, ' ');
+      const limitation = /\b(?:nao (?:consegui|consigo|posso|foi possivel)|indisponivel|preciso que|qual (?:site|assunto)|unable|unavailable|cannot|could not|which (?:site|topic))\b/.test(limitationText) ||
+        (readsRequired && /\b(?:unverified|unread|not (?:opened|read|verified)|nao (?:verificad[ao]|lid[ao]|abert[ao]))\b/.test(limitationText)) ||
         (/\?/.test(text) && /\b(?:posso|autoriza|confirma|may i|can i|would you|please confirm)\b/.test(normalize(text)));
       // After partial work a short promise still isn't a delivered result.
       const promiseOnly = promise && (!workObserved || (text.length < 900 && !/https?:\/\//.test(text)));

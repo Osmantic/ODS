@@ -184,7 +184,7 @@ export default function FirstBoot({ onComplete }) {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            target_username: username,
+            target_username: username.trim(),
             token_type: 'owner',
             scope: 'hermes',
             url_mode: ownerCardStatus?.url_mode || 'lan',
