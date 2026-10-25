@@ -23,12 +23,18 @@ def runtime(tmp_path, monkeypatch):
     cloud.parent.mkdir(parents=True)
     cloud.write_text('previous cloud\n')
     env=root/'.env'
-    env.write_text('ODS_MODE=local\nLLM_API_URL=http://llama-server:8080\nPIXEL_OPENWEBUI_KEY=fixture-chat-key\nGGUF_FILE=local.gguf\n')
+    env.write_text('ODS_MODE=local\nLLM_API_URL=http://llama-server:8080\nLITELLM_KEY=fixture-gateway-key\nPIXEL_OPENWEBUI_KEY=fixture-chat-key\nGGUF_FILE=local.gguf\n')
     env.chmod(0o600)
     monkeypatch.setattr(_mod,'INSTALL_DIR',root)
     monkeypatch.setattr(_mod,'DATA_DIR',data)
     helpers=_LifecycleFixtures()
     helpers._patch_successful_probe(monkeypatch)
+    # This fixture covers the Pixel/gateway transaction with Hermes absent.
+    # The Hermes file/container contract is exercised by the consumer suite.
+    monkeypatch.setattr(_mod,'_capture_remote_provider_hermes',lambda:{
+        'template':{'exists':False},'live':{'exists':False},
+        'container':{'exists':False,'running':False},
+    })
     state=SimpleNamespace(events=[],transactions=[],held=False,failure=None,
         native={'model':'local','contextLength':65536,'maxTokens':4096,'reasoning':False},
         root=root,data=data,cloud=cloud,env=env,helpers=helpers)
@@ -177,7 +183,13 @@ def test_rejected_replacement_refreshes_consumer_after_restoring_provider_files(
     loaded = {'secret': previous_secret}
     runtime.events.clear()
 
-    def restart(*args, **kwargs):
+    def restart(name, *args, **kwargs):
+        if name == _mod._PIXEL_MODEL_RELAY_CONTAINER:
+            assert runtime.held
+            assert files(runtime.root) == before
+            runtime.events.append('refresh-relay')
+            return True
+        assert name == 'ods-litellm'
         loaded['secret'] = secret.read_bytes()
         runtime.events.append('load-candidate')
         return True
@@ -216,7 +228,9 @@ def test_rejected_replacement_refreshes_consumer_after_restoring_provider_files(
         with pytest.raises(_mod._RemoteProviderApplyError, match='candidate chat denied') as caught:
             _mod._apply_remote_provider_lifecycle_operation(payload, plan)
         assert caught.value.rollback == {'attempted': True, 'ok': True}
-        assert runtime.events[-3:] == ['refresh-restored', 'prove-restored', 'finish-rollback']
+        assert runtime.events[-4:] == [
+            'refresh-restored', 'refresh-relay', 'prove-restored', 'finish-rollback',
+        ]
         assert runtime.native == previous and not runtime.held
     assert files(runtime.root) == before
     assert runtime.events.count('refresh-restored') == 1
