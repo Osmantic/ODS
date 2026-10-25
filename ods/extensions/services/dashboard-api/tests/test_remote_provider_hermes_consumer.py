@@ -134,13 +134,33 @@ def test_restore_private_key_including_empty(hermes_route, old_key):
     assert yaml.safe_load(f["live"].read_text())["model"]["api_key"] == old_key
 
 
-@pytest.mark.parametrize("null", ["null", "~", ""])
+@pytest.mark.parametrize("null", ["null", "~", "", "# use environment", "null # use environment"])
 def test_null_private_key_restores_environment_fallback(hermes_route, null):
     f = hermes_route
     f["live"].write_text(f["live"].read_text().replace("api_key: local-test-key", "api_key: " + null))
     agent._activate_remote_provider_route(f["route"])
     agent._deactivate_remote_provider_route()
     assert yaml.safe_load(f["live"].read_text())["model"]["api_key"] == "local-test-key"
+
+
+@pytest.mark.parametrize("bad_key", ["bad\nkey", "x" * 16385], ids=["newline", "oversized"])
+def test_invalid_previous_credential_refuses_before_transaction(hermes_route, monkeypatch, bad_key):
+    f = hermes_route
+    # Double-quoted YAML is also JSON, including the escaped newline.
+    text = f["live"].read_text().replace("api_key: local-test-key", "api_key: " + json.dumps(bad_key))
+    f["live"].write_text(text)
+    assert yaml.safe_load(text)["model"]["api_key"] == bad_key
+    before = {name: f[name].read_bytes() for name in ("env", "live", "template")}
+    begun = []
+    def begin(_env):
+        begun.append(True)
+    monkeypatch.setattr(agent, "_begin_pixel_model_transaction", begin)
+    with pytest.raises(RuntimeError, match="Previous Hermes model route is invalid"):
+        agent._activate_remote_provider_route(f["route"])
+    assert not begun
+    assert before == {name: f[name].read_bytes() for name in before}
+    assert not f["restarted"]
+    assert not agent._remote_provider_activation_state_path().exists()
 
 
 @pytest.mark.parametrize("running,exists,live_exists", [(False, True, True), (False, False, True), (False, False, False)])

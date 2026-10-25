@@ -5414,7 +5414,7 @@ def _hermes_route_values(text: str) -> dict[str, str]:
                 raise ValueError("Hermes model route is not a scalar")
             value = scalar[1].replace("''", "'")
         else:
-            value = raw.split(" #", 1)[0].strip()
+            value = "" if raw.startswith("#") else raw.split(" #", 1)[0].strip()
             # YAML null means that Hermes falls back to its environment.
             # A quoted "null" remains a literal credential/model value.
             if not value or value in {"null", "Null", "NULL", "~"}:
@@ -5439,8 +5439,8 @@ def _previous_remote_provider_hermes_route(snapshot: dict, env: dict) -> dict:
         "contextLength": context,
         "apiKey": values.get("api_key", str(env.get("HERMES_LLM_API_KEY") or "")),
     }
-    if not route["model"] or not route["baseUrl"] or context <= 0:
-        raise RuntimeError("Previous Hermes model route is incomplete")
+    if not _valid_remote_provider_hermes_route(route):
+        raise RuntimeError("Previous Hermes model route is invalid")
     return route
 
 
