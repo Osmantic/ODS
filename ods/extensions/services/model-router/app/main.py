@@ -48,6 +48,7 @@ from .completed_tool_sse import (
     completion_stream_rejection_code,
 )
 from .probe_attempts import ProbeAttempts
+from .tool_id_compat import normalize_history_tool_ids, route_requires_strict9_tool_ids
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("ods-model-router")
@@ -1718,6 +1719,14 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                 "type": "route_changed", "code": "409"}}, status_code=409), False
 
     payload["model"] = route["runtimeModelId"]
+    # The stable client alias hides the selected template from agents. Adapt
+    # only outgoing Nemo history after resolving the current route; audit and
+    # response IDs remain unchanged, including across model switches.
+    if (path == "/v1/chat/completions"
+            and route_requires_strict9_tool_ids(route["runtimeModelId"], route["backendKind"])):
+        messages, changed = normalize_history_tool_ids(payload.get("messages"))
+        if changed:
+            payload["messages"] = messages
     request_id = str(uuid.uuid4())
     probe_id = _verify_probe_marker(raw_body.decode("utf-8", "replace"))
     is_stream = bool(payload.get("stream"))

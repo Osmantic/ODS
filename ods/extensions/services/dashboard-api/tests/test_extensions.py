@@ -2749,6 +2749,26 @@ class TestComposeScanEdgeCases:
         assert resp.status_code == 400
         assert "GPU passthrough" in resp.json()["detail"]
 
+    def test_scan_rejects_dict_port_omitting_published_without_loopback(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        """400 when compose dictionary port omits published and host_ip (Issue #6907)."""
+        compose = (
+            "services:\n  svc:\n    image: test\n"
+            "    ports:\n      - target: 80\n"
+        )
+        lib_dir = _setup_library_ext(tmp_path, "dict-port-ext", compose_content=compose)
+        _patch_mutation_config(monkeypatch, tmp_path, lib_dir=lib_dir)
+
+        resp = test_client.post(
+            "/api/extensions/dict-port-ext/install",
+            headers=test_client.auth_headers,
+        )
+        assert resp.status_code == 400
+        assert "dict port binding" in resp.json()["detail"]
+        assert "127.0.0.1" in resp.json()["detail"]
+
+
 
 # --- Direct unit tests for the port-binding helpers ---
 

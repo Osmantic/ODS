@@ -1385,7 +1385,7 @@ def _scan_compose_content(
             if isinstance(port, dict):
                 # Dict-form: {target: 80, published: 8080, host_ip: ...}
                 host_ip = port.get("host_ip", "")
-                if port.get("published") and not _host_part_is_loopback(host_ip):
+                if not _host_part_is_loopback(host_ip):
                     raise HTTPException(
                         status_code=400,
                         detail=(
