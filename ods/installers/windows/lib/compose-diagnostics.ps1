@@ -10,7 +10,7 @@
 function Get-ODSComposeEnvFileArgs {
     param([string]$InstallDir)
     $envPath = Join-Path $InstallDir ".env"
-    if (Test-Path $envPath) {
+    if (Test-Path -LiteralPath $envPath) {
         return @("--env-file", ".env")
     }
     return @()
@@ -75,8 +75,8 @@ function Initialize-ODSComposeDockerClientConfig {
     )
 
     $dockerConfigDir = Join-Path (Join-Path $InstallDir "data") "docker-client-public"
-    if (-not (Test-Path $dockerConfigDir)) {
-        New-Item -ItemType Directory -Path $dockerConfigDir -Force | Out-Null
+    if (-not (Test-Path -LiteralPath $dockerConfigDir)) {
+        [System.IO.Directory]::CreateDirectory($dockerConfigDir) | Out-Null
     }
 
     $dockerConfig = [ordered]@{ auths = [ordered]@{} }
@@ -158,10 +158,10 @@ function Get-ODSComposeEnvValue {
     )
 
     $envPath = Join-Path $InstallDir ".env"
-    if (-not (Test-Path $envPath)) { return $Default }
+    if (-not (Test-Path -LiteralPath $envPath)) { return $Default }
 
     try {
-        $line = Get-Content $envPath -ErrorAction Stop |
+        $line = Get-Content -LiteralPath $envPath -ErrorAction Stop |
             Where-Object { $_ -match "^$([regex]::Escape($Name))=" } |
             Select-Object -First 1
         if (-not $line) { return $Default }
@@ -204,11 +204,11 @@ function Get-ODSComposeSensitiveEnvValues {
     param([string]$InstallDir)
 
     $envPath = Join-Path $InstallDir ".env"
-    if (-not (Test-Path $envPath)) { return @() }
+    if (-not (Test-Path -LiteralPath $envPath)) { return @() }
 
     $values = @()
     try {
-        foreach ($line in (Get-Content $envPath -ErrorAction Stop)) {
+        foreach ($line in (Get-Content -LiteralPath $envPath -ErrorAction Stop)) {
             if ($line -notmatch '^([A-Za-z_][A-Za-z0-9_]*)=(.*)$') { continue }
             $key = $Matches[1]
             $value = $Matches[2].Trim().Trim('"').Trim("'")
@@ -275,14 +275,14 @@ function Add-ODSComposePortReport {
     }
 
     if ($connections -and $connections.Count -gt 0) {
-        "- ${Label}:${Port} occupied" | Add-Content -Path $ReportPath -Encoding UTF8
+        "- ${Label}:${Port} occupied" | Add-Content -LiteralPath $ReportPath -Encoding UTF8
         foreach ($conn in $connections) {
             $pidText = if ($conn.OwningProcess) { " pid=$($conn.OwningProcess)" } else { "" }
-            "  $($conn.LocalAddress):$($conn.LocalPort)$pidText" | Add-Content -Path $ReportPath -Encoding UTF8
+            "  $($conn.LocalAddress):$($conn.LocalPort)$pidText" | Add-Content -LiteralPath $ReportPath -Encoding UTF8
         }
     }
     else {
-        "- ${Label}:${Port} free" | Add-Content -Path $ReportPath -Encoding UTF8
+        "- ${Label}:${Port} free" | Add-Content -LiteralPath $ReportPath -Encoding UTF8
     }
 }
 
@@ -300,8 +300,8 @@ function Add-ODSComposeCommandSection {
         [string[]]$SensitiveValues = @()
     )
 
-    "" | Add-Content -Path $ReportPath -Encoding UTF8
-    $Title | Add-Content -Path $ReportPath -Encoding UTF8
+    "" | Add-Content -LiteralPath $ReportPath -Encoding UTF8
+    $Title | Add-Content -LiteralPath $ReportPath -Encoding UTF8
     try {
         $output = & $Command 2>&1 | ForEach-Object { $_.ToString() }
         if ($output) {
@@ -312,25 +312,25 @@ function Add-ODSComposeCommandSection {
                 }
             }
             if ($First -gt 0) {
-                $lines | Select-Object -First $First | Add-Content -Path $ReportPath -Encoding UTF8
+                $lines | Select-Object -First $First | Add-Content -LiteralPath $ReportPath -Encoding UTF8
             }
             elseif ($Last -gt 0) {
                 $take = [Math]::Min($Last, $lines.Count)
                 $start = [Math]::Max(0, $lines.Count - $take)
                 for ($i = $start; $i -lt $lines.Count; $i++) {
-                    $lines[$i] | Add-Content -Path $ReportPath -Encoding UTF8
+                    $lines[$i] | Add-Content -LiteralPath $ReportPath -Encoding UTF8
                 }
             }
             else {
-                $lines | Add-Content -Path $ReportPath -Encoding UTF8
+                $lines | Add-Content -LiteralPath $ReportPath -Encoding UTF8
             }
         }
         else {
-            "(no output)" | Add-Content -Path $ReportPath -Encoding UTF8
+            "(no output)" | Add-Content -LiteralPath $ReportPath -Encoding UTF8
         }
     }
     catch {
-        "command failed: $_" | Add-Content -Path $ReportPath -Encoding UTF8
+        "command failed: $_" | Add-Content -LiteralPath $ReportPath -Encoding UTF8
     }
 }
 
@@ -352,7 +352,7 @@ function Write-ODSComposeFailureReport {
     )
 
     $logsDir = Join-Path $InstallDir "logs"
-    if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory -Path $logsDir -Force | Out-Null }
+    if (-not (Test-Path -LiteralPath $logsDir)) { [System.IO.Directory]::CreateDirectory($logsDir) | Out-Null }
 
     $stamp = Get-Date -Format "yyyy-MM-dd-HHmmss"
     $reportPath = Join-Path $InstallDir "install-report-$stamp.txt"
@@ -375,7 +375,7 @@ function Write-ODSComposeFailureReport {
         "- GPU backend: $gpuBackend",
         "- Compose command: $composeCommand",
         "- Installer log: $(if ($ComposeLogPath) { $ComposeLogPath } else { "unavailable" })",
-        "- Cached compose flags: $(if (Test-Path $flagsFile) { Get-Content $flagsFile -Raw } else { "unavailable" })",
+        "- Cached compose flags: $(if (Test-Path -LiteralPath $flagsFile) { Get-Content -LiteralPath $flagsFile -Raw } else { "unavailable" })",
         "- Next step: $NextStep",
         "",
         "Configured model/runtime",
@@ -386,18 +386,18 @@ function Write-ODSComposeFailureReport {
         "- CTX_SIZE=$(Get-ODSComposeEnvValue -InstallDir $InstallDir -Name "CTX_SIZE" -Default "unknown")",
         "",
         "Likely failed image(s)"
-    ) | Set-Content -Path $reportPath -Encoding UTF8
+    ) | Set-Content -LiteralPath $reportPath -Encoding UTF8
 
     $failedImages = @(Get-ODSComposeFailedImages -ComposeLogPath $ComposeLogPath)
     if ($failedImages.Count -gt 0) {
-        $failedImages | ForEach-Object { "- $_" } | Add-Content -Path $reportPath -Encoding UTF8
+        $failedImages | ForEach-Object { "- $_" } | Add-Content -LiteralPath $reportPath -Encoding UTF8
     }
     else {
-        "- none detected from installer log" | Add-Content -Path $reportPath -Encoding UTF8
+        "- none detected from installer log" | Add-Content -LiteralPath $reportPath -Encoding UTF8
     }
 
-    "" | Add-Content -Path $reportPath -Encoding UTF8
-    "Port checks" | Add-Content -Path $reportPath -Encoding UTF8
+    "" | Add-Content -LiteralPath $reportPath -Encoding UTF8
+    "Port checks" | Add-Content -LiteralPath $reportPath -Encoding UTF8
     Add-ODSComposePortReport -ReportPath $reportPath -Label "llama-server" -Port (Get-ODSComposeEnvValue -InstallDir $InstallDir -Name "OLLAMA_PORT" -Default "11434")
     Add-ODSComposePortReport -ReportPath $reportPath -Label "open-webui" -Port (Get-ODSComposeEnvValue -InstallDir $InstallDir -Name "WEBUI_PORT" -Default "3000")
     Add-ODSComposePortReport -ReportPath $reportPath -Label "dashboard" -Port (Get-ODSComposeEnvValue -InstallDir $InstallDir -Name "DASHBOARD_PORT" -Default "3001")
@@ -405,7 +405,7 @@ function Write-ODSComposeFailureReport {
     Add-ODSComposePortReport -ReportPath $reportPath -Label "litellm" -Port (Get-ODSComposeEnvValue -InstallDir $InstallDir -Name "LITELLM_PORT" -Default "4000")
     Add-ODSComposePortReport -ReportPath $reportPath -Label "searxng" -Port (Get-ODSComposeEnvValue -InstallDir $InstallDir -Name "SEARXNG_PORT" -Default "8888")
 
-    Push-Location $InstallDir
+    Push-Location -LiteralPath $InstallDir
     try {
         $envArgs = Get-ODSComposeEnvFileArgs -InstallDir $InstallDir
         $sensitiveValues = @(Get-ODSComposeSensitiveEnvValues -InstallDir $InstallDir)
@@ -418,13 +418,13 @@ function Write-ODSComposeFailureReport {
         Pop-Location
     }
 
-    "" | Add-Content -Path $reportPath -Encoding UTF8
-    "Installer log tail" | Add-Content -Path $reportPath -Encoding UTF8
-    if ($ComposeLogPath -and (Test-Path $ComposeLogPath)) {
-        Get-Content $ComposeLogPath -Tail 160 | Add-Content -Path $reportPath -Encoding UTF8
+    "" | Add-Content -LiteralPath $reportPath -Encoding UTF8
+    "Installer log tail" | Add-Content -LiteralPath $reportPath -Encoding UTF8
+    if ($ComposeLogPath -and (Test-Path -LiteralPath $ComposeLogPath)) {
+        Get-Content -LiteralPath $ComposeLogPath -Tail 160 | Add-Content -LiteralPath $reportPath -Encoding UTF8
     }
     else {
-        "installer log unavailable" | Add-Content -Path $reportPath -Encoding UTF8
+        "installer log unavailable" | Add-Content -LiteralPath $reportPath -Encoding UTF8
     }
 
     return $reportPath

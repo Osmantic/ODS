@@ -385,6 +385,20 @@ try {
         throw "Matching loading process was not preserved"
     }
 
+    # Compose failure diagnostic report must succeed even when the installation
+    # directory contains square brackets (wildcard characters in PowerShell).
+    $bracketInstallDir = Join-Path $testRoot "install-[bracket-test]"
+    [System.IO.Directory]::CreateDirectory($bracketInstallDir) | Out-Null
+    Set-Content -LiteralPath (Join-Path $bracketInstallDir ".env") -Value "GPU_BACKEND=cpu`nODS_MODE=local"
+    $bracketReport = Write-ODSComposeFailureReport -InstallDir $bracketInstallDir -ComposeFlags @() -Phase "test"
+    if (-not (Test-Path -LiteralPath $bracketReport -PathType Leaf)) {
+        throw "Compose diagnostics report was not written to bracketed install directory: $bracketReport"
+    }
+    $reportContent = Get-Content -LiteralPath $bracketReport -Raw
+    if ($reportContent -notmatch "ODS install failure report" -or $reportContent -notmatch "GPU backend: cpu") {
+        throw "Compose diagnostics report content in bracketed path is incomplete"
+    }
+
     Write-Host "[PASS] Windows Compose plugin and native llama-server runtime recovery contracts"
 } finally {
     Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
