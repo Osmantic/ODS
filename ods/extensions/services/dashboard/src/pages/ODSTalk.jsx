@@ -13,7 +13,9 @@ import HelpLink from '../components/HelpLink'
 const MARKDOWN_COMPONENTS = {
   p: ({ children }) => <p className="break-words [&:not(:first-child)]:mt-3">{children}</p>,
   ul: ({ children }) => <ul className="my-2 list-disc space-y-1 pl-5">{children}</ul>,
-  ol: ({ children }) => <ol className="my-2 list-decimal space-y-1 pl-5">{children}</ol>,
+  // Keep the list's start number: a reply of exactly "144." is a list that
+  // starts at 144 with an empty item, and dropping it showed a bare "1.".
+  ol: ({ children, start }) => <ol start={start} className="my-2 list-decimal space-y-1 pl-5">{children}</ol>,
   li: ({ children }) => <li className="break-words">{children}</li>,
   strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
   em: ({ children }) => <em className="italic">{children}</em>,

@@ -1214,6 +1214,27 @@ describe('Pixel', () => {
       .toMatchObject({ role: 'assistant', content, publication: preview }))
   })
 
+  // Seen live: "what is 12 squared?" was answered exactly "144.", which
+  // Markdown reads as an ordered list that starts at 144 with one empty item.
+  // Without its start number the reply showed an empty "1." and lost the answer.
+  it.each([
+    ['what is 12 squared?', '144.', '144', ['']],
+    ['what is left?', 'Steps 1 and 2 are done.\n\n3. Run the tests\n4. Open the pull request', '3', ['Run the tests', 'Open the pull request']],
+  ])('keeps the ordered-list start number in the reply to %j', async (question, content, start, items) => {
+    globalThis.fetch.mockResolvedValueOnce(response({available:true}))
+    globalThis.fetch.mockResolvedValueOnce(sseResponse([JSON.stringify({choices:[{delta:{content}}]}),'[DONE]']))
+    const {container}=render(<Pixel />)
+    await screen.findByText('Available')
+    fireEvent.change(screen.getByPlaceholderText('Message Portal...'),{target:{value:question}})
+    fireEvent.click(screen.getByTitle('Send'))
+    // Read the list once the whole reply is revealed. The reveal animation can
+    // outlast the default one-second DOM wait on Windows CI.
+    await waitFor(()=>expect(container.querySelector('.portal-streaming-text')).toHaveAttribute('aria-busy','false'),{timeout:5000})
+    const list=container.querySelector('.portal-streaming-text ol')
+    expect(list).toHaveAttribute('start',start)
+    expect(within(list).getAllByRole('listitem').map(item=>item.textContent)).toEqual(items)
+  })
+
   it('preserves earlier file changes across another message and reload without sending UI metadata to the model', async () => {
     const publication = letter => {
       const sha256 = letter.repeat(64)
