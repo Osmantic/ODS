@@ -1729,6 +1729,11 @@ async def _build_api_status() -> dict:
 
 # --- Settings ---
 
+# Sidebar names where the manifest name describes plumbing rather than the
+# application the link opens. Health matching keeps the manifest name.
+_SIDEBAR_LABELS = {"hermes-proxy": "Hermes"}
+
+
 @app.get("/api/external-links")
 async def get_external_links(api_key: str = Depends(verify_api_key)):
     """Return sidebar-ready external links derived from service manifests."""
@@ -1738,7 +1743,7 @@ async def get_external_links(api_key: str = Depends(verify_api_key)):
         if not ext_port or sid == "dashboard-api" or cfg.get("external_link") is False:
             continue
         links.append({
-            "id": sid, "label": cfg.get("name", sid), "port": ext_port,
+            "id": sid, "label": _SIDEBAR_LABELS.get(sid, cfg.get("name", sid)), "port": ext_port,
             "ui_path": cfg.get("ui_path", "/"),
             "public_url": cfg.get("public_url", ""),
             "icon": SIDEBAR_ICONS.get(sid, "ExternalLink"),

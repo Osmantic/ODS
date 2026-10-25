@@ -592,6 +592,28 @@ class TestExternalLinks:
         assert "open-webui" in link_ids
         assert "litellm" not in link_ids
 
+    def test_hermes_proxy_link_is_labelled_hermes(self, test_client, monkeypatch):
+        """The proxy's manifest name describes plumbing; the link opens Hermes."""
+        monkeypatch.setattr("main.SERVICES", {
+            "hermes-proxy": {
+                "name": "Hermes Auth Proxy",
+                "port": 9120,
+                "external_port": 9120,
+                "health": "/health",
+                "host": "hermes-proxy",
+                "ui_path": "/auth/ods",
+            },
+        })
+
+        resp = test_client.get("/api/external-links", headers=test_client.auth_headers)
+
+        assert resp.status_code == 200
+        [link] = resp.json()
+        assert link["label"] == "Hermes"
+        assert link["ui_path"] == "/auth/ods"
+        # Health still matches the proxy's own status row, never Hermes Agent's.
+        assert link["healthNeedles"] == ["hermes-proxy", "hermes auth proxy"]
+
 
 # --- /api/storage ---
 
