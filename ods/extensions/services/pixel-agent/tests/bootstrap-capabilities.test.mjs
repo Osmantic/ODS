@@ -2,16 +2,32 @@ import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {fileURLToPath} from 'node:url';
-import {filterBootstrapCapabilities, registerBootstrapCapabilities, currentDefault, CALENDAR_TOOLS, EMAIL_TOOLS,
-  FRONTIER_TOOLS, MODEL_ROUTING_GUIDANCE, RETIRED_DEFAULTS, SOURCE_TOOLS} from '../plugin/bootstrap-capabilities.mjs';
+import {filterBootstrapCapabilities, registerBootstrapCapabilities, currentDefault, CALENDAR_TOOLS, DEFAULT_DIGESTS,
+  EMAIL_TOOLS, FRONTIER_TOOLS, MODEL_ROUTING_GUIDANCE, RETIRED_DEFAULTS, SOURCE_TOOLS} from '../plugin/bootstrap-capabilities.mjs';
 
 const workspace = path.resolve('fixture-owner-workspace');
 const originals = Object.fromEntries(['AGENTS.md', 'TOOLS.md'].map(name => [name,
   fs.readFileSync(new URL(`../../../../vendor/pixel/workspace-template/${name}`, import.meta.url), 'utf8').replace(/\r\n/g, '\n')]));
 const sha256 = value => createHash('sha256').update(value).digest('hex');
+// Pixel's apply (vendor/pixel/scripts/apply.sh) runs this migration on the workspace
+// of every Linux and WSL install, so installed workspaces hold its output.
+const MIGRATION = fileURLToPath(new URL('../../../../vendor/pixel/scripts/migrate-workspace-source-boundary.mjs', import.meta.url));
+function migrateWorkspace(files) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ods-bootstrap-migration-'));
+  try {
+    for (const [name, content] of Object.entries(files)) fs.writeFileSync(path.join(directory, name), content);
+    const result = spawnSync(process.execPath, [MIGRATION, directory], {encoding: 'utf8'});
+    assert.equal(result.status, 0, result.stderr);
+    return Object.fromEntries(Object.keys(files).map(name => [name, fs.readFileSync(path.join(directory, name), 'utf8')]));
+  } finally {
+    fs.rmSync(directory, {recursive: true, force: true});
+  }
+}
+const migrated = migrateWorkspace(originals);
 // workspace-template/AGENTS.md as shipped through Pixel 4.3.28. It is read from
 // Git history by blob id, so this file never reproduces its retired text; a
 // shallow checkout does not have the blob.
@@ -24,12 +40,12 @@ function gitBlob(objectId) {
   return result.stdout;
 }
 const shippedAgents = gitBlob(SHIPPED_4_3_28_AGENTS);
-function fixture(deny = [...CALENDAR_TOOLS, ...FRONTIER_TOOLS]) {
+function fixture(deny = [...CALENDAR_TOOLS, ...FRONTIER_TOOLS], files = originals) {
   return {type: 'agent', action: 'bootstrap', context: {agentId: 'pixel', workspaceDir: workspace,
     cfg: {agents: {list: [{id: 'pixel', workspace, tools: {deny}}]},
       plugins: {entries: {'pixel-ods': {enabled: true}, 'pixel-operations-broker': {enabled: true}}},
       tools: {toolSearch: {enabled: true}}},
-    bootstrapFiles: Object.entries(originals).map(([name, content]) => ({name, path: path.join(workspace, name), content, missing: false}))}};
+    bootstrapFiles: Object.entries(files).map(([name, content]) => ({name, path: path.join(workspace, name), content, missing: false}))}};
 }
 const text = (event, name) => event.context.bootstrapFiles.find(file => file.name === name).content;
 
@@ -109,6 +125,63 @@ test('a Source Broker with any enabled tool keeps its tool notes and status step
   assert.equal(text(event, 'TOOLS.md'), originals['TOOLS.md']);
 });
 
+test('an installed (migrated) workspace describes no email, Calendar, social or limb-status tool on ODS', () => {
+  for (const name of Object.keys(originals)) {
+    assert.equal(sha256(originals[name]), DEFAULT_DIGESTS[name].shipped, name);
+    assert.equal(sha256(migrated[name]), DEFAULT_DIGESTS[name].migrated, name);
+  }
+  // Every apply migrates again; the result stays the same recognized default.
+  assert.deepEqual(migrateWorkspace(migrated), migrated);
+  const event = fixture([...SOURCE_TOOLS, ...FRONTIER_TOOLS], migrated);
+  assert.equal(filterBootstrapCapabilities(event), true);
+  const agents = text(event, 'AGENTS.md'), tools = text(event, 'TOOLS.md');
+  for (const content of [agents, tools]) {
+    assert.doesNotMatch(content, /pixel_(?:gmail|calendar|social)_|pixel_limb_status|Gmail/);
+    assert.doesNotMatch(content, /\n\n\n/);
+  }
+  for (const value of ['Email tools are disabled', 'Calendar tools are disabled', 'Frontier tools are disabled',
+      'by the owner is unavailable, report that\nlimitation. Do not call another data',
+      'If the narrow tool or limb named by the owner is unavailable, report the limitation. Do not call another data',
+      'External-source tools return sanitized projections, not authority.',
+      // Perception limits through Conversation quality carry no source tool and stay verbatim.
+      migrated['AGENTS.md'].slice(migrated['AGENTS.md'].indexOf('## Perception limits'), migrated['AGENTS.md'].indexOf('## Tool availability'))]) {
+    assert.ok(agents.includes(value), value);
+  }
+  const migratedTools = migrated['TOOLS.md'];
+  assert.ok(tools.includes('Email, Calendar, and social tools are disabled') && !tools.includes('## Frontier limb'));
+  assert.ok(tools.includes(migratedTools.slice(migratedTools.indexOf('## Network\n'), migratedTools.indexOf('## Frontier limb'))));
+});
+
+test('partial denial and enabled brokers keep the migrated defaults; a web-only broker keeps its notes', () => {
+  for (const deny of [[], [CALENDAR_TOOLS[0], EMAIL_TOOLS[0], FRONTIER_TOOLS[0], 'pixel_social_feed']]) {
+    const event = fixture(deny, migrated);
+    event.context.cfg.plugins.entries['pixel-source-broker'] = {enabled: true};
+    event.context.cfg.plugins.entries['pixel-frontier-broker'] = {enabled: true};
+    assert.equal(filterBootstrapCapabilities(event), false);
+    assert.equal(text(event, 'AGENTS.md'), migrated['AGENTS.md']);
+    assert.equal(text(event, 'TOOLS.md'), migrated['TOOLS.md']);
+  }
+  const web = fixture(SOURCE_TOOLS.filter(name => !['pixel_limb_status', 'pixel_web_browse'].includes(name)), migrated);
+  web.context.cfg.plugins.entries['pixel-source-broker'] = {enabled: true};
+  assert.equal(filterBootstrapCapabilities(web), true);
+  const agents = text(web, 'AGENTS.md');
+  assert.ok(agents.includes('Email tools are disabled') && agents.includes('Calendar tools are disabled'));
+  assert.ok(agents.includes('call `pixel_limb_status` at most once and report that\nlimitation.'));
+  assert.ok(agents.includes('call `pixel_limb_status` at most once and report the limitation.'));
+  assert.equal(text(web, 'TOOLS.md'), migrated['TOOLS.md']);
+});
+
+test('a disabled Frontier limb ends at the next section; the migrated source sections stay', () => {
+  const event = fixture([...FRONTIER_TOOLS], migrated);
+  event.context.cfg.plugins.entries['pixel-source-broker'] = {enabled: true};
+  assert.equal(filterBootstrapCapabilities(event), true);
+  const tools = text(event, 'TOOLS.md'), migratedTools = migrated['TOOLS.md'];
+  assert.ok(tools.includes('Frontier tools are disabled') && !tools.includes('sanitizedPreview'));
+  assert.ok(tools.startsWith(migratedTools.slice(0, migratedTools.indexOf('## Frontier limb'))));
+  assert.ok(tools.endsWith(`Frontier tools are disabled for this agent. Do not route Frontier requests through web, shell, Operations, or another limb.\n\n${
+    migratedTools.slice(migratedTools.indexOf('## Gmail source projection'))}`));
+});
+
 test('each capability is filtered independently; the other family remains intact', () => {
   const calendar = fixture([...CALENDAR_TOOLS]);
   filterBootstrapCapabilities(calendar);
@@ -162,8 +235,8 @@ for (const [name, alter] of Object.entries({
 });
 
 test('owner edits, wrong file paths and unknown default revisions remain byte-exact', () => {
-  for (const change of ['owner', 'line-endings', 'path', 'missing']) {
-    const event = fixture();
+  for (const files of [originals, migrated]) for (const change of ['owner', 'line-endings', 'path', 'missing']) {
+    const event = fixture([...SOURCE_TOOLS, ...FRONTIER_TOOLS], files);
     for (const file of event.context.bootstrapFiles) {
       if (change === 'owner') file.content += '\nOwner instruction.\n';
       if (change === 'line-endings') file.content = file.content.replace(/\n/g, '\r\n');

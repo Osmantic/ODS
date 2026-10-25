@@ -2,11 +2,19 @@ import {createHash} from 'node:crypto';
 import path from 'node:path';
 
 const sha256 = value => createHash('sha256').update(value).digest('hex');
-// Reviewed vendor defaults only (Pixel 4.3.29). Unknown revisions and any owner
+// Reviewed vendor defaults only (Pixel 4.3.29): the shipped template, and the same
+// files after Pixel's apply runs scripts/migrate-workspace-source-boundary.mjs on the
+// workspace, as every Linux and WSL install does. Unknown revisions and any owner
 // edits retain their complete original text. No workspace file is read or written here.
-const DEFAULT_DIGESTS = Object.freeze({
-  'AGENTS.md': 'f7ddef498b75de545361298b837722e0d53da982c8f7451664dd879935dbb21f',
-  'TOOLS.md': '1c575473578d8db98838c1587ce27e0be6ee6d51e2dab2539304f68f7dd8ea53',
+export const DEFAULT_DIGESTS = Object.freeze({
+  'AGENTS.md': Object.freeze({
+    shipped: 'f7ddef498b75de545361298b837722e0d53da982c8f7451664dd879935dbb21f',
+    migrated: '4c60cc483860f404556e30f581f5717b13c54e847dcbe3ef2e53d09ba00d21d9',
+  }),
+  'TOOLS.md': Object.freeze({
+    shipped: '1c575473578d8db98838c1587ce27e0be6ee6d51e2dab2539304f68f7dd8ea53',
+    migrated: '71461da997ee9ef37a28e4724062d044945b9033116c92df60f178d23baaf209',
+  }),
 });
 // The section Pixel 4.3.29 ships in place of a retired one. It is byte-identical
 // to GUIDANCE in installers/lib/pixel-workspace-guidance.py, which writes the same
@@ -50,8 +58,12 @@ const EMAIL_UNAVAILABLE = 'Email tools are disabled for this agent. Do not claim
 const CALENDAR_UNAVAILABLE = 'Calendar tools are disabled for this agent. Do not claim to read or change events or substitute another tool for Calendar access.\n\n';
 const SOURCE_UNAVAILABLE = 'Email, Calendar, and social tools are disabled for this agent. Do not claim to read email, events, or social posts or substitute another tool for that access.\n\n';
 const FRONTIER_UNAVAILABLE = 'Frontier tools are disabled for this agent. Do not route Frontier requests through web, shell, Operations, or another limb.\n\n';
-// AGENTS.md sends an unavailable limb to the Source Broker's status tool before reporting it.
+// AGENTS.md sends an unavailable limb to the Source Broker's status tool before reporting
+// it. The migrated default repeats that step in its appended "Tool availability" section.
 const LIMB_STATUS_STEP = 'call `pixel_limb_status` at most once and ';
+// The migration appends one section per source limb to TOOLS.md, after the Frontier limb.
+const MIGRATED_SOURCE_SECTIONS = Object.freeze(['## Gmail source projection\n',
+  '## Google Calendar source projection\n', '## Social source projection\n']);
 
 function denied(name, patterns) {
   return Array.isArray(patterns) && patterns.some(pattern => typeof pattern === 'string'
@@ -70,6 +82,21 @@ function section(text, start, end, replacement = '') {
   const a = text.indexOf(start), b = end ? text.indexOf(end, a + start.length) : text.length;
   if (a < 0 || b < a) throw new Error('reviewed-bootstrap-boundary-missing');
   return text.slice(0, a) + replacement + text.slice(b);
+}
+
+// A whole "## " section: from its heading to the next heading, or to the end.
+function headingSection(text, heading, replacement = '') {
+  const a = text.indexOf(heading);
+  if (a < 0 || (a > 0 && text[a - 1] !== '\n')) throw new Error('reviewed-bootstrap-boundary-missing');
+  const next = text.indexOf('\n## ', a + heading.length);
+  return text.slice(0, a) + replacement + text.slice(next < 0 ? text.length : next + 1);
+}
+
+// The one occurrence of an exact phrase.
+function replaceOnce(text, phrase, replacement) {
+  const a = text.indexOf(phrase);
+  if (a < 0 || text.includes(phrase, a + phrase.length)) throw new Error('reviewed-bootstrap-boundary-missing');
+  return text.slice(0, a) + replacement + text.slice(a + phrase.length);
 }
 
 function reviewedSection(text, digest, replacement) {
@@ -112,20 +139,28 @@ export function filterBootstrapCapabilities(event) {
   // Build all changes before publishing; do not mutate original file objects.
   const updates = [];
   for (let index = 0; index < files.length; index++) {
-    const file = files[index], expected = DEFAULT_DIGESTS[file?.name];
-    if (!expected || file.missing || typeof file.content !== 'string'
+    const file = files[index];
+    const digests = Object.hasOwn(DEFAULT_DIGESTS, file?.name ?? '') ? DEFAULT_DIGESTS[file.name] : null;
+    if (!digests || file.missing || typeof file.content !== 'string'
         || file.path !== path.join(path.resolve(workspace), file.name)) continue;
     // A workspace still holding the exact 4.3.28 default sees the 4.3.29 one.
     let content = currentDefault(file.name, file.content);
-    if (sha256(content) !== expected) continue;
+    const digest = sha256(content), migrated = digest === digests.migrated;
+    if (!migrated && digest !== digests.shipped) continue;
     if (file.name === 'AGENTS.md') {
       if (emailDisabled) content = section(content, 'Email tool pages are bounded,', 'Installed tools are capabilities, not a discovery API.', EMAIL_UNAVAILABLE);
-      if (limbStatusDisabled) content = section(content, LIMB_STATUS_STEP, 'report that\nlimitation.');
+      if (limbStatusDisabled) {
+        content = replaceOnce(content, `${LIMB_STATUS_STEP}report that\nlimitation.`, 'report that\nlimitation.');
+        if (migrated) content = replaceOnce(content, `${LIMB_STATUS_STEP}report the limitation.`, 'report the limitation.');
+      }
       if (frontierDisabled) content = section(content, 'Frontier work follows a narrower boundary.', '## Calendar: bounded direct actions and approval\n', FRONTIER_UNAVAILABLE);
-      if (calendarDisabled) content = section(content, '## Calendar: bounded direct actions and approval\n', '## Perception limits\n', CALENDAR_UNAVAILABLE);
+      if (calendarDisabled) content = headingSection(content, '## Calendar: bounded direct actions and approval\n', CALENDAR_UNAVAILABLE);
     } else {
-      if (sourceDisabled) content = section(content, '## External-source projections\n', '## Network\n', SOURCE_UNAVAILABLE);
-      if (frontierDisabled) content = section(content, '## Frontier limb\n', null, FRONTIER_UNAVAILABLE);
+      if (sourceDisabled) {
+        content = headingSection(content, '## External-source projections\n', SOURCE_UNAVAILABLE);
+        if (migrated) for (const heading of MIGRATED_SOURCE_SECTIONS) content = headingSection(content, heading);
+      }
+      if (frontierDisabled) content = headingSection(content, '## Frontier limb\n', FRONTIER_UNAVAILABLE);
     }
     if (content !== file.content) updates.push([index, {...file, content}]);
   }
