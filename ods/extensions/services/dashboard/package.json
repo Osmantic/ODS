@@ -23,7 +23,9 @@
     "react-markdown": "^10.1.0",
     "react-router-dom": "7.18.4",
     "rehype-highlight": "^7.0.2",
-    "remark-gfm": "^4.0.1"
+    "remark-gfm": "^4.0.1",
+    "i18next": "25.10.10",
+    "react-i18next": "16.6.6"
   },
   "overrides": {
     "postcss-nested": {

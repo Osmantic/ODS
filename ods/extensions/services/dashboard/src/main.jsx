@@ -9,6 +9,7 @@ import {
   isStaleAssetError,
   recoverFromStaleAsset,
 } from './utils/staleAssetRecovery'
+import './i18n'
 import './index.css'
 import './pixel-workspace.css'
 import './wallpaper-themes.css'
