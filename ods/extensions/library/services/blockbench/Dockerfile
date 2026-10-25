@@ -9,6 +9,6 @@ RUN mkdir -p /site/source && cp -r assets content css font icons keymaps lang li
 FROM nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236
 RUN rm -rf /usr/share/nginx/html/*
 COPY --from=build /site /usr/share/nginx/html
-COPY Dockerfile nginx.conf compose.yaml manifest.yaml upstream.json README.md /usr/share/nginx/html/source/ods-recipe/
-COPY nginx.conf /etc/nginx/nginx.conf
+COPY --chmod=0644 Dockerfile nginx.conf compose.yaml manifest.yaml upstream.json README.md /usr/share/nginx/html/source/ods-recipe/
+COPY --chmod=0644 nginx.conf /etc/nginx/nginx.conf
 USER 101:101

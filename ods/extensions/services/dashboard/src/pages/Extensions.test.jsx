@@ -336,6 +336,37 @@ it('does not offer WebUI add-back when the host does not support it', async () =
   expect(screen.queryByRole('button', { name: 'Add Open WebUI' })).toBeNull()
 })
 
+it.each([false, true])('search normalizes hyphens, underscores, and whitespace for extensions and collections (compact=%s)', async compact => {
+  const fetchMock = installFetchMock({agent_available:true,extensions:[
+    {id:'it-tools',name:'IT-Tools',description:'A collection of handy online tools',status:'not_installed',features:[baseFeature]},
+    {id:'other',name:'Other app',description:'Unrelated utility',status:'enabled',features:[baseFeature]},
+  ],summary:baseSummary({total:2,installed:1,not_installed:1})}, [
+    {id:'it-tools-collection',name:'IT_Tools Starter',description:'Handy developer utilities',services:['it-tools']},
+  ])
+  render(<Extensions compact={compact}/>)
+  expect(await screen.findByRole('heading',{name:'IT-Tools'})).toBeVisible()
+  const search = screen.getByRole('textbox')
+  fireEvent.change(search,{target:{value:'IT Tools'}})
+  expect(screen.getByText('IT-Tools')).toBeVisible()
+  expect(screen.queryByText('Other app')).toBeNull()
+  fireEvent.change(search,{target:{value:'  it_TOOLS  '}})
+  expect(screen.getByText('IT-Tools')).toBeVisible()
+  expect(screen.queryByText('Other app')).toBeNull()
+  fireEvent.change(search,{target:{value:'handy online'}})
+  expect(screen.getByText('IT-Tools')).toBeVisible()
+  expect(screen.queryByText('Other app')).toBeNull()
+  fireEvent.change(search,{target:{value:'unrelated'}})
+  expect(screen.queryByText('IT-Tools')).toBeNull()
+  expect(screen.getByText('Other app')).toBeVisible()
+  fireEvent.change(search,{target:{value:'it tools'}})
+  fireEvent.click(screen.getByRole('button',{name:'Starter collections 1'}))
+  expect(screen.getByText('IT_Tools Starter')).toBeVisible()
+  fireEvent.change(search,{target:{value:'unrelated'}})
+  expect(screen.queryByText('IT_Tools Starter')).toBeNull()
+  expect(screen.getByText('No collections match')).toBeVisible()
+  expect(fetchMock.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true)
+})
+
 it('hides collections that require unsupported services while retaining usable collections', async () => {
   installFetchMock({agent_available:true,extensions:[
     {id:'unsupported',name:'GPU unavailable',status:'incompatible',features:[]},

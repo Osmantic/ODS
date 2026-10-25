@@ -603,7 +603,7 @@ do_backup() (
 )
 
 # Verify checksums for an existing backup directory or archive
-verify_backup() {
+verify_backup() (
     local backup_id="$1"
 
     # Reject path traversal attempts
@@ -613,6 +613,9 @@ verify_backup() {
     fi
 
     local target="$BACKUP_ROOT/$backup_id"
+    if [[ ! -e "$target" && "$backup_id" != *.tar.gz && -f "$target.tar.gz" ]]; then
+        target="$target.tar.gz"
+    fi
 
     if [[ -d "$target" ]]; then
         if [[ ! -f "$target/checksums.sha256" ]]; then
@@ -635,10 +638,15 @@ verify_backup() {
     if [[ -f "$target" && "$target" == *.tar.gz ]]; then
         local tmpdir
         tmpdir=$(mktemp -d)
-        trap 'rm -rf "$tmpdir"' RETURN
+        # Verification can exit on tar/checksum failure or interruption before
+        # returning. Keep extraction and cleanup in this function's subshell.
+        trap 'rm -rf -- "$tmpdir"' EXIT
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
 
         # Extract checksums first (fast fail if missing)
-        local archive_name="${backup_id%.tar.gz}"
+        local archive_name
+        archive_name=$(basename "$target" .tar.gz)
         if ! tar xzf "$target" -C "$tmpdir" "${archive_name}/checksums.sha256" >/dev/null 2>&1; then
             log_error "checksums.sha256 not found in archive: $backup_id"
             return 1
@@ -661,7 +669,7 @@ verify_backup() {
 
     log_error "Backup not found: $backup_id"
     return 1
-}
+)
 
 # Main entry point
 main() {

@@ -3595,3 +3595,127 @@ def test_huggingface_quantization_names_mxfp4_artifacts():
     assert models_router._hf_quantization("Qwen3.6-35B-A3B-MXFP4_MOE.gguf") == "MXFP4_MOE"
     assert models_router._hf_quantization("Qwen3.6-35B-A3B-UD-Q4_K_M.gguf") == "Q4_K_M"
     assert models_router._hf_quantization("model.gguf") is None
+
+
+def test_download_status_bootstrap_fallback_reports_speed_in_bytes(test_client, monkeypatch, tmp_path):
+    """The Models page hook reads speedBytesPerSec; the bootstrap fallback must emit it."""
+    models_router, _install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(models_router, "_get_agent_model_status", lambda *a, **k: {"status": "idle"})
+    monkeypatch.setattr(
+        models_router,
+        "get_bootstrap_status",
+        lambda: BootstrapStatus(
+            active=True,
+            model_name="Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+            percent=40.0,
+            downloaded_gb=4.0,
+            total_gb=10.0,
+            speed_mbps=12.5,
+            eta_seconds=480,
+        ),
+    )
+
+    resp = test_client.get("/api/models/download-status", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "downloading"
+    assert body["speedBytesPerSec"] == int(12.5 * 1024**2)
+    assert body["eta"] == 480
+
+
+@pytest.mark.parametrize("transition", [
+    {}, {"modelTransactionPending": True},
+    {"lifecycleActive": True, "activeOperation": "remote_provider_apply"},
+])
+def test_api_models_exposes_remote_provider_active_runtime(test_client, monkeypatch, tmp_path, transition):
+    # The remote provider route is live; the Models page must see the actual
+    # remote model and context, not the still-loaded local Qwen engine.
+    models_router, install_dir, _data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    fingerprint = "a" * 64
+    agent_status = {
+        "activeRuntime": {
+            "source": "remote-provider",
+            "model": "deepseek-v4.1-flash",
+            "contextLength": 131072,
+            "maxTokens": 8192,
+            "reasoning": True,
+            "routeFingerprint": fingerprint,
+        },
+    }
+    monkeypatch.setattr(models_router, "request_agent_json", lambda *_args, **_kwargs: agent_status)
+    agent_status.update(transition)
+    monkeypatch.setattr(models_router, "_get_agent_model_status", lambda: agent_status)
+    monkeypatch.setattr(models_router, "LLM_BACKEND", "llama-server")
+    monkeypatch.setattr(models_router, "read_live_env_values", lambda _keys: {"LLM_BACKEND": "llama-server"})
+    _write_model_library(install_dir, [{
+        "id": "qwen3.5-9b-q4", "name": "Qwen 3.5 9B", "gguf_file": "Qwen3.5-9B-Q4_K_M.gguf",
+        "size_mb": 5600, "vram_required_gb": 8, "context_length": 65536, "quantization": "Q4_K_M",
+        "specialty": "General", "description": "Local catalog entry.", "llm_model_name": "qwen3.5-9b",
+    }])
+    monkeypatch.setattr(models_router, "get_gpu_info", lambda: _gpu())
+    monkeypatch.setattr(models_router, "get_loaded_model", AsyncMock(return_value="Qwen3.5-9B-Q4_K_M.gguf"))
+    monkeypatch.setattr(models_router, "get_llama_metrics", AsyncMock(return_value={}))
+    monkeypatch.setattr(models_router, "get_llama_context_size", AsyncMock(return_value=65536))
+
+    payload = test_client.get("/api/models", headers=test_client.auth_headers).json()
+
+    expected = {
+        "source": "remote-provider",
+        "model": "deepseek-v4.1-flash",
+        "contextLength": 131072,
+        "maxTokens": 8192,
+        "reasoning": True,
+        "routeFingerprint": fingerprint,
+    }
+    assert payload["activeRuntime"] == (None if transition else expected)
+    # The local engine may still be loaded; it is not the conversation route.
+    assert payload["loadedModel"] == "Qwen3.5-9B-Q4_K_M.gguf"
+    assert payload["llmBackend"] == "llama-server"
+
+
+def test_api_models_omits_active_runtime_when_projection_malformed(test_client, monkeypatch, tmp_path):
+    # A malformed projection must not be claimed active; diagnostics stay in
+    # agent_status but the response field is null.
+    models_router, install_dir, _data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    agent_status = {
+        "activeRuntime": {
+            "source": "remote-provider",
+            "model": "deepseek-v4.1-flash",
+            "contextLength": 100,
+            "maxTokens": 8192,
+            "reasoning": True,
+        },
+    }
+    monkeypatch.setattr(models_router, "request_agent_json", lambda *_args, **_kwargs: agent_status)
+    monkeypatch.setattr(models_router, "_get_agent_model_status", lambda: agent_status)
+    monkeypatch.setattr(models_router, "LLM_BACKEND", "llama-server")
+    monkeypatch.setattr(models_router, "read_live_env_values", lambda _keys: {"LLM_BACKEND": "llama-server"})
+    _write_model_library(install_dir, [])
+    monkeypatch.setattr(models_router, "get_gpu_info", lambda: _gpu())
+    monkeypatch.setattr(models_router, "get_loaded_model", AsyncMock(return_value=None))
+    monkeypatch.setattr(models_router, "get_llama_metrics", AsyncMock(return_value={}))
+    monkeypatch.setattr(models_router, "get_llama_context_size", AsyncMock(return_value=None))
+
+    payload = test_client.get("/api/models", headers=test_client.auth_headers).json()
+
+    assert payload["activeRuntime"] is None
+
+
+def test_api_models_omits_active_runtime_when_status_fetch_fails(test_client, monkeypatch, tmp_path):
+    # A failed status fetch must not surface a stale route as active.
+    models_router, install_dir, _data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(models_router, "request_agent_json", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(models_router, "_get_agent_model_status", lambda: None)
+    monkeypatch.setattr(models_router, "LLM_BACKEND", "llama-server")
+    monkeypatch.setattr(models_router, "read_live_env_values", lambda _keys: {"LLM_BACKEND": "llama-server"})
+    _write_model_library(install_dir, [])
+    monkeypatch.setattr(models_router, "get_gpu_info", lambda: _gpu())
+    monkeypatch.setattr(models_router, "get_loaded_model", AsyncMock(return_value=None))
+    monkeypatch.setattr(models_router, "get_llama_metrics", AsyncMock(return_value={}))
+    monkeypatch.setattr(models_router, "get_llama_context_size", AsyncMock(return_value=None))
+
+    payload = test_client.get("/api/models", headers=test_client.auth_headers).json()
+
+    assert payload["activeRuntime"] is None
