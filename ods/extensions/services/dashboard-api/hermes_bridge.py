@@ -1,27 +1,10 @@
-"""Small server-side bridge from ODS Talk to the pinned Hermes dashboard.
+"""Authenticated ODS Talk transport with optional durable conversation identity.
 
-ODS Talk deliberately does not expose Hermes's browser session token to the
-phone. The dashboard-api fetches that token from the internal Hermes HTML page,
-opens the JSON-RPC WebSocket on the Docker network, and returns only simplified
-chat results to the mobile portal.
-
-Architectural note: Hermes scopes streaming event delivery to the WebSocket
-that owns the session. If we open WS-A for ``session.create`` and then open a
-fresh WS-B for ``prompt.submit``, Hermes accepts the submit (returns
-``{"status":"streaming"}``) but the streaming events fire to WS-A — which we
-already closed. The bridge would then wait forever for events that never
-arrive and 502 at the request timeout. So a single submit_prompt / stream_prompt
-call MUST do both create-session and submit-prompt on the same WS.
-
-Per-cookie connection pool (issue #1322): instead of opening a new WS for
-every ODS Talk message, we hold one ``HermesConnection`` per ``session_key``
-in a process-wide pool and reuse the same Hermes session across messages from
-the same phone. Hermes's per-WS event scoping makes this work — the same WS
-is the owner, so events keep flowing. The big win is llama-server's
-prompt-cache stays warm across messages, so the second "hey" doesn't pay the
-30-60s prefill of the 16k-token agent system prompt. An idle sweeper closes
-connections that have been quiet for >5 minutes so a fleet of one-time
-visitors doesn't pin Hermes resources forever.
+Default mode retains the existing per-owner-cookie pool. With durable Talk
+explicitly enabled, every conversational route resolves an owner-and-tab-bound
+opaque handle. Reopening that pool entry uses the persisted native root and
+manual resume contract; session.create is never a reconnect fallback. A failed
+send has uncertain delivery and is never transparently replayed.
 """
 
 from __future__ import annotations
@@ -39,6 +22,7 @@ from typing import Any, AsyncIterator
 
 import aiohttp
 import hermes_auth
+import talk_conversations
 
 logger = logging.getLogger(__name__)
 
@@ -70,13 +54,7 @@ class HermesUnavailable(HermesBridgeError):
 
 
 class HermesConnectionStale(HermesUnavailable):
-    """The pooled WebSocket died before a prompt was submitted.
-
-    This is safe to retry transparently because Hermes never accepted the
-    prompt on that transport. Once prompt.submit has been sent, later
-    connection drops surface as errors instead of retrying and potentially
-    duplicating tool calls or streamed text.
-    """
+    """Compatibility error type; no bridge path automatically retries it."""
 
 
 @dataclass
@@ -178,6 +156,99 @@ async def _recv_json(ws: aiohttp.ClientWebSocketResponse, timeout: float) -> dic
     return {}
 
 
+async def _rpc(ws, method, params):
+    request_id = "ods-talk-" + str(time.monotonic_ns())
+    await ws.send_json({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
+    while True:
+        frame = await _recv_json(ws, 30)
+        if frame.get("id") == request_id:
+            return frame
+
+
+async def _require_manual_runtime(ws):
+    # Probe the actual dispatcher with an absent exact ID. This never creates
+    # a session or constructs an agent. Unknown/invalid methods fail closed.
+    result = await _rpc(ws, "session.resume.manual", {"session_id": "ods-capability-" + os.urandom(24).hex()})
+    if (result.get("error") or {}).get("code") != 4007:
+        raise HermesUnavailable("Durable conversation continuity is unavailable on this Hermes runtime.")
+    result = await _rpc(ws, "session.create.manual", {"request_key": "invalid-capability-probe"})
+    if (result.get("error") or {}).get("code") not in {4000, 4004}:
+        raise HermesUnavailable("Durable conversation creation is unavailable on this Hermes runtime.")
+
+
+async def durable_available():
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10),
+                                        cookie_jar=aiohttp.CookieJar(unsafe=True)) as http:
+            ws = await _connect_ws(http)
+            try:
+                await _require_manual_runtime(ws)
+            finally:
+                await ws.close()
+        return True
+    except (HermesBridgeError, aiohttp.ClientError, asyncio.TimeoutError):
+        return False
+
+
+async def _resume_conversation(ws, key):
+    row = talk_conversations.store().get(key)
+    if not row['root']:
+        raise HermesUnavailable("Conversation creation was interrupted. Start a new conversation explicitly.")
+    frame = await _rpc(ws, "session.resume.manual", {"session_id": row['root']})
+    result = frame.get('result') or {}
+    if (frame.get('error') or result.get('resume_contract') != 'manual-v1'
+            or result.get('automatic_continuation') is not False
+            or not isinstance(result.get('messages'), list)
+            or not isinstance(result.get('running'), bool)
+            or not isinstance(result.get('session_key'), str) or not result['session_key']
+            or not isinstance(result.get('session_id'), str) or not result['session_id']):
+        raise HermesUnavailable("Full conversation history cannot be resumed safely on this Hermes runtime.")
+    talk_conversations.store().resumed(key, result['session_key'], result['session_id'], running=result['running'])
+    return result
+
+
+async def open_conversation(key, *, create=False):
+    # The same per-handle lock covers both first creation and cold attachment.
+    async with _POOL_GUARD:
+        opening = _OPENING_LOCKS.setdefault(key, asyncio.Lock())
+    async with opening:
+        existing = _CONNECTION_POOL.get(key)
+        if existing is not None and existing.lock.locked():
+            raise HermesUnavailable("This conversation already has an active request.")
+        if existing is not None:
+            await _drop_connection(key, existing)
+        http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=_request_timeout()+20),
+                                     cookie_jar=aiohttp.CookieJar(unsafe=True))
+        ws = None
+        try:
+            ws = await _connect_ws(http)
+            row = talk_conversations.store().get(key)
+            if create and row['root'] is None:
+                await _require_manual_runtime(ws)
+                # Persist the uncertain boundary before transmitting creation.
+                talk_conversations.store().delivery(key, 'creating')
+                # Stable request identity recovers the same empty native root
+                # if the previous creation response was lost.
+                frame = await _rpc(ws, 'session.create.manual', {'request_key': key.removeprefix('durable:')})
+                result = frame.get('result') or {}
+                native, runtime = result.get('conversation_root'), result.get('session_id')
+                if (frame.get('error') or result.get('resume_contract') != 'manual-v1'
+                        or result.get('automatic_continuation') is not False
+                        or not isinstance(native, str) or not native or not isinstance(runtime, str) or not runtime):
+                    raise HermesUnavailable('Hermes did not provide a durable conversation identity.')
+                talk_conversations.store().created(key, native, runtime)
+            snapshot = await _resume_conversation(ws, key)
+            conn = _HermesConnection(http_session=http, ws=ws, session_id=snapshot['session_id'])
+            conn.pending_approval = snapshot.get('pending_approval')
+            _CONNECTION_POOL[key] = conn
+            return snapshot
+        except BaseException:
+            if ws is not None:
+                await ws.close()
+            await http.close()
+            raise
+
+
 async def _create_session_on_ws(ws: aiohttp.ClientWebSocketResponse, *, timeout: float = 30) -> str:
     """Run session.create over an already-open WS and return the session_id."""
     request_id = "ods-talk-create"
@@ -208,7 +279,7 @@ async def _create_session_on_ws(ws: aiohttp.ClientWebSocketResponse, *, timeout:
 
 @dataclass
 class _HermesConnection:
-    """One long-lived WS + Hermes session, scoped to a single phone cookie.
+    """One long-lived WS + Hermes session, scoped to a resolved conversation key.
 
     Holding the WS open across messages lets Hermes reuse its session_id and
     keeps the 16k-token system prompt warm in llama-server's KV cache. Each
@@ -265,14 +336,18 @@ async def _open_connection(session_key: str) -> _HermesConnection:
     """
     timeout_seconds = _request_timeout()
     timeout = aiohttp.ClientTimeout(total=timeout_seconds + 20)
-    http_session = aiohttp.ClientSession(timeout=timeout)
+    http_session = aiohttp.ClientSession(timeout=timeout, cookie_jar=aiohttp.CookieJar(unsafe=True))
     try:
         ws = await _connect_ws(http_session)
     except Exception:
         await http_session.close()
         raise
     try:
-        session_id = await _create_session_on_ws(ws, timeout=30)
+        if session_key.startswith('durable:'):
+            snapshot = await _resume_conversation(ws, session_key)
+            session_id = snapshot['session_id']
+        else:
+            session_id = await _create_session_on_ws(ws, timeout=30)
     except Exception:
         await ws.close()
         await http_session.close()
@@ -419,12 +494,9 @@ async def _submit_on_connection(
                 "params": {"session_id": conn.session_id, "text": text},
             }))
     except (aiohttp.ClientError, ConnectionResetError, ConnectionError) as exc:
-        # Pooled WS was closed under us between the freshness check and this
-        # send (Hermes restart, network blip, idle timeout that hadn't been
-        # noticed yet). Surface as HermesConnectionStale so stream_prompt
-        # evicts the pool entry + retries on a fresh connection. This is the
-        # only transparent-retry case because the prompt was not submitted.
-        raise HermesConnectionStale(f"Hermes WS closed before prompt submit: {exc}") from exc
+        # A transport error during send cannot establish that zero bytes
+        # reached Hermes. Never replay a potentially accepted tool-bearing turn.
+        raise HermesUnavailable("Message delivery is uncertain. Reconnect to inspect history before sending again.") from exc
 
     chunks: list[str] = []
     while True:
@@ -534,65 +606,36 @@ async def _submit_on_connection(
 
 
 async def stream_prompt(session_key: str, text: str) -> AsyncIterator[dict[str, Any]]:
-    """Submit a prompt to Hermes and yield delta events as they stream back.
+    """Submit once on the resolved conversation; surface uncertain delivery.
 
-    Yields dicts with:
-      {"type": "session",        "session_id": <id>}                          # once at start
-      {"type": "tool_start",     "tool": <name>, "detail": <context|None>}    # zero or more
-      {"type": "tool_complete",  "tool": <name>, "duration_s": <float|None>,
-                                 "summary": <str|None>}                       # zero or more
-      {"type": "delta",          "text": <chunk>}                             # zero or more
-      {"type": "complete",       "session_id": <id>, "text": <full>, ...}     # once at end
-
-    On error, raises HermesUnavailable / HermesBridgeError; no partial yield.
-
-    Uses the per-cookie connection pool so subsequent messages from the same
-    phone reuse the same Hermes session_id (and therefore keep llama-server's
-    prompt cache warm for the 16k-token agent system prompt). On the first
-    call for a cookie, opens a fresh WS and runs session.create; on later
-    calls, reuses the pooled connection and just sends prompt.submit. The
-    pool's idle sweeper closes inactive connections after
-    ODS_TALK_IDLE_EXPIRY seconds (default 300s = 5 min) so a fleet of
-    one-time visitors doesn't pin resources forever.
-
-    Two same-key prompts can't overlap (per-connection ``lock`` serializes
-    them); two different-key prompts run in parallel as long as
-    llama-server's slots can absorb the load.
+    Durable mode restores full native history before each explicit submission.
+    Per-connection locking serializes requests, and the store refuses multiple
+    API workers. It does not claim distributed turn-generation fencing.
     """
     _ensure_sweeper_running()
     timeout_seconds = _request_timeout()
 
-    # Attempt twice only for the pre-submit stale-WS case: the first try uses
-    # the pooled connection (warm cache, fast path); if send_str fails before
-    # Hermes accepts prompt.submit, evict it and try once more with a fresh
-    # connection. Once prompt.submit has been sent, later WS failures surface
-    # as errors instead of retrying and duplicating tool calls or text.
-    session_frame_emitted = False
-    for attempt in (1, 2):
-        conn = await _get_connection(session_key)
-        async with conn.lock:
-            if not session_frame_emitted:
-                # Yield the session frame once, from the *first* attempt's
-                # connection. If the connection dies before any deltas, the
-                # retry's session_id will be different but the SPA only cares
-                # about the most recent — replacing the frame is fine.
-                yield {"type": "session", "session_id": conn.session_id}
-                session_frame_emitted = True
-            try:
-                async for event in _submit_on_connection(conn, text, timeout_seconds):
-                    yield event
-                return
-            except HermesConnectionStale as exc:
-                await _drop_connection(session_key, conn)
-                if attempt == 2:
-                    # Already retried once; give up and surface the failure.
-                    raise
-                logger.info("hermes-bridge: retrying once after stale WS (%s)", exc)
-                # Drop the lock + loop to attempt 2 with a fresh connection.
-                continue
-            except HermesUnavailable:
-                await _drop_connection(session_key, conn)
-                raise
+    conn = await _get_connection(session_key)
+    async with conn.lock:
+        durable = session_key.startswith('durable:')
+        if durable:
+            snapshot = await _resume_conversation(conn.ws, session_key)
+            conn.session_id = snapshot['session_id']
+            if snapshot['running']:
+                raise HermesUnavailable("This conversation already has an active request.")
+        yield {"type": "session", "session_id": conn.session_id}
+        if durable:
+            talk_conversations.store().delivery(session_key, 'sending')
+        try:
+            async for event in _submit_on_connection(conn, text, timeout_seconds):
+                if durable and event.get('type') == 'complete':
+                    talk_conversations.store().delivery(session_key, 'idle')
+                yield event
+        except BaseException:
+            if durable:
+                talk_conversations.store().delivery(session_key, 'uncertain')
+            await _drop_connection(session_key, conn)
+            raise
 
 
 async def respond_approval(session_key: str, choice: str) -> bool:
@@ -729,6 +772,16 @@ async def interrupt_active_prompt(session_key: str) -> bool:
     late frames from the interrupted turn cannot be mistaken for a later Talk
     response.
     """
+    if session_key.startswith('durable:'):
+        row = talk_conversations.store().get(session_key)
+        if not row['runtime']:
+            return False
+        await _interrupt_session_with_ack(row['runtime'])
+        conn = _CONNECTION_POOL.get(session_key)
+        if conn is not None:
+            await _drop_connection(session_key, conn)
+        talk_conversations.store().delivery(session_key, 'idle')
+        return True
     async with _POOL_GUARD:
         conn = _CONNECTION_POOL.get(session_key)
         if (

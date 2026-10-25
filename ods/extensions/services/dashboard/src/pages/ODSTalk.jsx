@@ -5,6 +5,7 @@ import {
   Send, Volume2, VolumeX,
 } from 'lucide-react'
 import HelpLink from '../components/HelpLink'
+import { claimConversation, conversationHeaders, establishConversation, forgetConversation } from './talkConversation'
 
 // Hermes likes to format with markdown (bold, lists, code). Rendering it as
 // HTML keeps the chat bubbles readable instead of showing raw `**` and `-`.
@@ -112,6 +113,10 @@ function failedOutcomeMessage(status) {
 
 export default function ODSTalk() {
   const [messages, setMessages] = useState([welcomeMessage])
+  const conversationRef = useRef(null)
+  const conversationOpeningRef = useRef(null)
+  const conversationReadyRef = useRef(false)
+  const [durableRequested, setDurableRequested] = useState(false)
   const [input, setInput] = useState('')
   const [status, setStatus] = useState('loading')
   const [statusText, setStatusText] = useState('Connecting to ODS Talk...')
@@ -195,6 +200,43 @@ export default function ODSTalk() {
       // Shown only while Talk is ready; it never changes the status.
       setToolsAdvisory(data.modelCompatibility?.hermesTalkAdvisory?.code === TALK_TOOLS_ADVISORY_CODE)
       const capabilities = data.capabilities || {}
+      setDurableRequested(Boolean(capabilities.durable_conversation_requested))
+      if (capabilities.durable_conversation_requested && !capabilities.durable_conversation) {
+        setStatus('offline')
+        setStatusText('Durable conversation continuity is unavailable on this Hermes runtime.')
+        setRetryStatusRefresh(false)
+        return
+      }
+      if (capabilities.durable_conversation && !conversationReadyRef.current) {
+        if (!conversationOpeningRef.current) conversationOpeningRef.current = claimConversation()
+        const opening = conversationOpeningRef.current
+        const claimed = await opening
+        if (opening !== conversationOpeningRef.current) { claimed.release(); return }
+        conversationRef.current = claimed
+        const session = await fetch('/api/talk/session', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', ...conversationHeaders(conversationRef.current) },
+          body: JSON.stringify({ new: !conversationRef.current.identity.established }),
+        })
+        if (!session.ok) throw new Error(await parseError(session, 'Conversation could not be resumed.'))
+        const snapshot = await session.json()
+        if (opening !== conversationOpeningRef.current) return
+        establishConversation(conversationRef.current)
+        setMessages(snapshot.messages.length ? snapshot.messages.map((m, i) => ({
+          id: `restored-${i}`, role: m.role, text: m.text, status: 'done',
+        })) : [welcomeMessage])
+        if (snapshot.pending_approval) setMessages(items => [...items, {
+          id: 'restored-approval', role: 'assistant', text: '', status: 'pending',
+          approval: { ...snapshot.pending_approval, choices: ['once', 'deny'], responding: false },
+        }])
+        if (snapshot.running) {
+          setStatus('offline')
+          setStatusText('The previous request is still running. Refresh to read its result or stop it.')
+          setRetryStatusRefresh(false)
+          return
+        }
+        conversationReadyRef.current = true
+      }
       setVoiceState({
         tts: Boolean(capabilities.tts),
         audioMessage: Boolean(capabilities.audio_message),
@@ -265,6 +307,10 @@ export default function ODSTalk() {
     return () => {
       streamControllerRef.current?.abort()
       streamControllerRef.current = null
+      conversationOpeningRef.current?.then(claimed => claimed.release())
+      conversationRef.current = null
+      conversationOpeningRef.current = null
+      conversationReadyRef.current = false
     }
   }, [])
 
@@ -453,7 +499,7 @@ export default function ODSTalk() {
     try {
       const resp = await fetch('/api/talk/approval', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...conversationHeaders(conversationRef.current), 'Content-Type': 'application/json' },
         credentials: 'same-origin',
         body: JSON.stringify({ choice }),
       })
@@ -550,7 +596,7 @@ export default function ODSTalk() {
           method: 'POST',
           // Don't set Content-Type — fetch fills in multipart/form-data
           // with the right boundary string automatically.
-          headers: { 'Accept': 'text/event-stream' },
+          headers: { ...conversationHeaders(conversationRef.current), 'Accept': 'text/event-stream' },
           credentials: 'same-origin',
           body: form,
           signal: controller.signal,
@@ -558,7 +604,7 @@ export default function ODSTalk() {
       } else {
         resp = await fetch('/api/talk/message/stream', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+          headers: { ...conversationHeaders(conversationRef.current), 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
           credentials: 'same-origin',
           body: JSON.stringify({ text: clean }),
           signal: controller.signal,
@@ -699,7 +745,7 @@ export default function ODSTalk() {
   }, [refreshStatus, sending, speak, status])
 
   const sendAudioFile = useCallback(async (file) => {
-    if (!file || sending || status === 'expired') return
+    if (!file || sending || status !== 'ready') return
     setSending(true)
     const userId = makeId('voice')
     const assistantId = makeId('assistant')
@@ -714,6 +760,7 @@ export default function ODSTalk() {
       body.set('file', file, file.name || 'ods-talk-audio.webm')
       const resp = await fetch('/api/talk/audio-message', {
         method: 'POST',
+        headers: conversationHeaders(conversationRef.current),
         body,
         credentials: 'same-origin',
       })
@@ -824,7 +871,7 @@ export default function ODSTalk() {
   }
 
   const handleAttachmentPicked = useCallback((file) => {
-    if (!file || sending || status === 'expired') return
+    if (!file || sending || status !== 'ready') return
     const isImage = (file.type || '').startsWith('image/')
     const previewUrl = isImage ? URL.createObjectURL(file) : null
     setPendingAttachment(prev => {
@@ -875,6 +922,26 @@ export default function ODSTalk() {
               </div>
             </div>
             <div className="flex items-center gap-1">
+              {durableRequested && <button type="button" disabled={recording}
+                onClick={async () => {
+                  const response = await fetch('/api/talk/cancel', {
+                    method: 'POST', credentials: 'same-origin',
+                    headers: conversationHeaders(conversationRef.current),
+                  })
+                  if (!response.ok) { setStatusText(await parseError(response, 'Stop could not be confirmed.')); return }
+                  streamControllerRef.current?.abort()
+                  conversationReadyRef.current = false
+                  refreshStatus()
+                }}>Stop request</button>}
+              {durableRequested && <button type="button" disabled={sending || recording}
+                onClick={() => {
+                  conversationRef.current?.release()
+                  conversationRef.current = null
+                  conversationOpeningRef.current = null
+                  conversationReadyRef.current = false
+                  forgetConversation()
+                  refreshStatus()
+                }}>New conversation</button>}
               <button
                 type="button"
                 onClick={() => setSpokenReplies(value => !value)}
@@ -888,7 +955,8 @@ export default function ODSTalk() {
               </button>
               <button
                 type="button"
-                onClick={refreshStatus}
+                onClick={() => { conversationReadyRef.current = false; refreshStatus() }}
+                disabled={sending || recording}
                 className="grid h-10 w-10 place-items-center rounded-full border border-zinc-200 bg-white text-zinc-500"
                 aria-label="Refresh ODS Talk status"
                 title="Refresh"
