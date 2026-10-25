@@ -248,3 +248,7 @@ class ModelLibraryResponse(BaseModel):
     # carries the host agent's proof of what this installation may control.
     hostRuntime: bool = False
     modelManagement: Optional[dict[str, Any]] = None
+    # Host-authoritative active runtime projection (local-switchboard,
+    # external-host, or remote-provider). Nonsecret identity, limits and
+    # capabilities; None when unknown, pending, or malformed.
+    activeRuntime: Optional[dict[str, Any]] = None

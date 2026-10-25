@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import MetalMetricIcon from './MetalMetricIcon'
 import {
   MessageSquare, Image, Code, Shield, Layers, Package,
@@ -11,6 +11,9 @@ const TEMPLATE_APPLY_TIMEOUT_MS = 30 * 60 * 1000
 
 const fetchJson = async (url, options = {}) => {
   const c = new AbortController()
+  const abort = () => c.abort()
+  if (options.signal?.aborted) c.abort()
+  options.signal?.addEventListener('abort', abort, { once: true })
   const t = setTimeout(() => c.abort(), options.timeout || 30000)
   try {
     const response = await fetch(url, { ...options, signal: c.signal })
@@ -19,6 +22,7 @@ const fetchJson = async (url, options = {}) => {
     return { ok: response.ok, status: response.status, data }
   } finally {
     clearTimeout(t)
+    options.signal?.removeEventListener('abort', abort)
   }
 }
 
@@ -136,23 +140,35 @@ export function TemplatePreview({ template, onClose, onApplied }) {
   const [error, setError] = useState(null)
   const [applied, setApplied] = useState(false)
   const [applyResult, setApplyResult] = useState(null)
+  const previewRequest = useRef(null)
   const requestClose = () => { if (!applying) onClose() }
 
   const Icon = ICON_MAP[template.icon] || Package
 
-  const loadPreview = async () => {
+  const loadPreview = useCallback(async () => {
+    previewRequest.current?.abort()
+    const controller = new AbortController()
+    previewRequest.current = controller
     setLoading(true)
+    setPreviewData(null)
     setError(null)
     try {
-      const res = await fetchJson(`/api/templates/${template.id}/preview`, { method: 'POST' })
+      const res = await fetchJson(`/api/templates/${template.id}/preview`, { method: 'POST', signal: controller.signal })
+      if (controller.signal.aborted || previewRequest.current !== controller) return
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       setPreviewData(res.data)
     } catch (err) {
+      if (controller.signal.aborted || previewRequest.current !== controller) return
       setError(err.name === 'AbortError' ? 'Request timed out' : 'Failed to load preview')
     } finally {
-      setLoading(false)
+      if (!controller.signal.aborted && previewRequest.current === controller) setLoading(false)
     }
-  }
+  }, [template.id])
+
+  useEffect(() => {
+    void loadPreview()
+    return () => previewRequest.current?.abort()
+  }, [loadPreview])
 
   const handleApply = async () => {
     if (applying || !canApply) return
@@ -179,11 +195,6 @@ export function TemplatePreview({ template, onClose, onApplied }) {
     } finally {
       setApplying(false)
     }
-  }
-
-  // Load preview on mount
-  if (!previewData && !loading && !error) {
-    loadPreview()
   }
 
   const changes = previewData?.changes || {}
@@ -345,6 +356,7 @@ export function TemplatePreview({ template, onClose, onApplied }) {
         {error && (
           <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-sm text-red-300 mb-3">
             {error}
+            {!previewData && !applying && <button type="button" onClick={loadPreview} className="block mt-2 underline">Retry preview</button>}
           </div>
         )}
 

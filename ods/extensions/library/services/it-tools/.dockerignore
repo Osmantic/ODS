@@ -1,3 +1,6 @@
 **
 !Dockerfile
 !nginx.conf
+!csv-rfc4180.patch
+!test-csv-roundtrip.py
+!ITTOOLS-SOURCE.txt

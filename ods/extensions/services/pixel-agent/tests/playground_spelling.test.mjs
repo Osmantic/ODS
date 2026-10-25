@@ -6,7 +6,7 @@ import path from 'node:path';
 import {routePlaygroundTool} from '../plugin/playground-projects.mjs';
 import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
 
-const CORRECTION = /^For a new project, use a workspace-relative path such as Playground\/snake-game\/index\.html/;
+const CORRECTION = /^Not written\. For a new project, use a workspace-relative path such as Playground\/snake-game\/index\.html/;
 
 function fixture(t, intent = 'build me a todo app i can use in the browser') {
   const root = fs.mkdtempSync(path.join(tmpdir(), 'ods-playground-spelling-'));

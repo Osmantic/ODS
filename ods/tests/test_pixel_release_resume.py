@@ -50,6 +50,11 @@ _ods_pixel_verify_current_runtime() {
     [[ "$scenario" != verify-failed ]]
 }
 _ods_pixel_mark_verified_installing() { echo "$*" >> "$events"; }
+# Keep the resume check under test: the coordinator runs and the
+# never-installed shortcut (which needs sudo) does not apply.
+ods_sudo_available() { return 1; }
+_ods_pixel_start_stopped_access_service() { :; }
+PIXEL_SOURCE_REF=0123456789abcdef0123456789abcdef01234567
 '''
     script += function + '\n_ods_pixel_resume_completed_release fixture /home/fixture /pixel contract\n'
     result = subprocess.run(['bash', '-c', script, 'fixture', str(events), str(status_file), case],

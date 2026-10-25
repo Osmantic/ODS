@@ -3,6 +3,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tarfile
@@ -56,6 +57,47 @@ def unchanged(root):
     assert (root.parent / "outside").read_text() == "outside sentinel"
     assert not (root / ".backups/snapshot").exists()
     assert not list((root / ".backups").glob(".ods-extract-*"))
+
+
+@pytest.mark.parametrize("extra_count", [0, 2048])
+def test_list_compressed_metadata_without_extracting(installation, extra_count):
+    root = installation
+    path = archive(root, [entry(f"snapshot/data/{index:04d}-" + "x" * 80)
+                          for index in range(extra_count)])
+    original = path.read_bytes()
+    # An unquoted tar member pattern must not expand against the caller's cwd.
+    decoy = root.parent / "unrelated/manifest.json"
+    decoy.parent.mkdir()
+    decoy.write_text('{"backup_type": "wrong", "description": "cwd decoy"}')
+    result = subprocess.run(
+        ["bash", str(ODS / "ods-restore.sh"), "--list"],
+        cwd=root.parent, env={**os.environ, "ODS_DIR": str(root)},
+        capture_output=True, text=True, timeout=20,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert re.search(r"snapshot\s+config\s+\S+\s+isolated restore test", result.stdout), result.stdout
+    assert "cwd decoy" not in result.stdout
+    assert path.read_bytes() == original
+    unchanged(root)
+
+
+def test_list_unreadable_archive_keeps_other_backup_metadata(installation):
+    root = installation
+    (root / ".backups/broken.tar.gz").write_bytes(b"not a gzip archive")
+    saved = root / ".backups/saved"
+    saved.mkdir()
+    (saved / "manifest.json").write_text(json.dumps({
+        "backup_type": "user-data", "description": "uncompressed recovery",
+    }))
+    result = subprocess.run(
+        ["bash", str(ODS / "ods-restore.sh"), "--list"],
+        env={**os.environ, "ODS_DIR": str(root)},
+        capture_output=True, text=True, timeout=20,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert re.search(r"broken\s+unknown\s+", result.stdout), result.stdout
+    assert re.search(r"saved\s+user-data\s+\S+\s+uncompressed recovery", result.stdout), result.stdout
+    unchanged(root)
 
 
 def test_valid_backup_preserves_files_and_internal_links(installation):

@@ -18,6 +18,12 @@ router = APIRouter(prefix="/api/pixel", tags=["pixel"])
 # A failure older than this belongs to an earlier turn.
 RECENT_SECONDS = 120.0
 
+# Native installers explicitly start this internal relay from its disabled
+# Compose fragment. The public service registry intentionally omits that file.
+# A retained key alone does not establish availability; the authenticated,
+# bounded read below remains best effort and never starts a service.
+_RELAY_FALLBACK = {"host": "pixel-model-relay", "port": 4102}
+
 
 def _install_kind() -> str:
     if str(read_live_env_value("LLM_BACKEND") or "").strip().lower() == "external":
@@ -64,8 +70,9 @@ async def pixel_model_failure() -> dict:
     """The latest model call's failure when it is recent; otherwise no cause."""
     service = SERVICES.get("pixel-model-relay")
     key = str(read_live_env_value("PIXEL_MODEL_RELAY_KEY") or "")
-    if not service or not key:
+    if not key:
         return {"cause": None}
+    service = service or _RELAY_FALLBACK
     url = f"http://{service['host']}:{service['port']}/v1/ods/last-generation"
     try:
         async with httpx.AsyncClient(timeout=2.0) as client:

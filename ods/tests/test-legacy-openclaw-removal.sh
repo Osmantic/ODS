@@ -326,6 +326,7 @@ run_pixel_case() {
         error() { printf 'error: %s\n' "$*" >> "$calls"; }
         ods_pixel_install_owner() { echo owner; }
         ods_pixel_owner_home() { echo "$HOME"; }
+        _ods_pixel_start_stopped_access_service() { :; }
         _ods_pixel_source_transition_required() { return "$transition"; }
         ods_sudo() { [[ "$*" == "test -d /var/lib/ods-pixel-access/source-upgrade" ]]; }
         _ods_pixel_restore_transition_source() { :; }

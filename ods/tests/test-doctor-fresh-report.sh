@@ -31,6 +31,8 @@ extract() {
 body="$(extract cmd_doctor)"
 [[ -n "$body" ]] || fail "cmd_doctor was not found in ods-cli"
 eval "$body"
+eval "$(extract _caller_path)"
+ODS_CALLER_PWD="$PWD"
 eval "$(grep -E '^(warn|error)[(][)] ' "$ROOT/ods-cli")"
 RED="" GREEN="" YELLOW="" BLUE="" CYAN="" NC=""
 check_install() { :; }

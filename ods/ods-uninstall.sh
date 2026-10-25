@@ -208,6 +208,15 @@ EOF
     esac
 done
 
+# The installer refuses root, so the install, its unit templates and Pixel
+# belong to the account that installed them. Under sudo, HOME and the user
+# become root's, and every ownership check then reports ODS's own files and
+# units as foreign. Stop before checking anything, with the way out.
+if [[ "$(id -u)" -eq 0 && -n "${SUDO_USER:-}" && "$SUDO_USER" != root ]]; then
+    log_error "Run this uninstaller as $SUDO_USER, without sudo. It asks for sudo itself when it needs it; nothing was changed."
+    exit 1
+fi
+
 echo ""
 echo -e "${RED}╔══════════════════════════════════════════════════╗${NC}"
 echo -e "${RED}║         ODS UNINSTALLER                ║${NC}"
@@ -783,12 +792,44 @@ elif [[ -d "$HOME/.ods" ]]; then
     log_ok "Backups removed"
 fi
 
-# 7. Remove OpenCode config (if we created it)
-OPENCODE_CONFIG="$HOME/.config/opencode/opencode.json"
-if [[ -f "$OPENCODE_CONFIG" ]] && grep -q "llama-server" "$OPENCODE_CONFIG" 2>/dev/null; then
-    rm -f "$OPENCODE_CONFIG"
-    log_ok "OpenCode config removed"
-fi
+# 7. Remove ODS's OpenCode settings. The installer merges its llama-server
+# provider into an owner's existing config, so these files can also hold the
+# owner's own providers, MCP servers and agents: remove only what ODS added,
+# and delete a file only when nothing else is left in it.
+_ods_strip_opencode_config() {
+    local config="$1" stripped
+    [[ -f "$config" ]] && grep -q "llama-server" "$config" 2>/dev/null || return 0
+    if ! command -v jq >/dev/null 2>&1 \
+        || ! stripped=$(jq '
+            def ods: type == "string" and startswith("llama-server/");
+            del(.provider["llama-server"])
+            | if .provider == {} then del(.provider) else . end
+            | if (.model | ods) then del(.model) else . end
+            | if (.small_model | ods) then del(.small_model) else . end
+            | if (.agent | type) == "object" then
+                .agent |= with_entries(
+                    if (.value | type) == "object" and (.value.model | ods)
+                    then .value |= del(.model) else . end
+                    | select(.value != {}))
+                | if .agent == {} then del(.agent) else . end
+              else . end' "$config" 2>/dev/null); then
+        log_warn "Kept $config: remove its llama-server provider by hand"
+        return 0
+    fi
+    if [[ "$(printf '%s' "$stripped" | jq 'del(.["$schema"]) | length')" == 0 ]]; then
+        rm -f "$config"
+        log_ok "OpenCode config removed: $config"
+    # cp -p first so the rewrite keeps the owner's mode (the file can hold keys).
+    elif cp -p "$config" "$config.ods-tmp" && printf '%s\n' "$stripped" > "$config.ods-tmp" \
+        && mv "$config.ods-tmp" "$config"; then
+        log_ok "ODS's model provider removed from $config; your other settings were kept"
+    else
+        rm -f "$config.ods-tmp"
+        log_warn "Kept $config: remove its llama-server provider by hand"
+    fi
+}
+_ods_strip_opencode_config "$HOME/.config/opencode/opencode.json"
+_ods_strip_opencode_config "$HOME/.config/opencode/config.json"
 
 if ! $INSTALL_DIR_CLEANED; then
     log_error "ODS uninstall was incomplete; the installation directory remains at $INSTALL_DIR"

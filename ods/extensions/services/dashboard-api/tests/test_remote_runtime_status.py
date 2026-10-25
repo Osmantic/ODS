@@ -94,6 +94,17 @@ async def test_remote_projection_uses_async_bounded_host_endpoint(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("last_download", ["failed", "cancelled"])
+async def test_cold_host_cache_is_repolled_after_a_finished_failed_download(monkeypatch, last_download):
+    # The status field keeps the last download result; a failed or cancelled
+    # one has finished as surely as a completed one.
+    rpc = AsyncMock(side_effect=[{"status": last_download}, {"activeRuntime": REMOTE}])
+    monkeypatch.setattr(main, "async_request_agent_json", rpc)
+    assert await main._get_dashboard_remote_runtime() == REMOTE
+    assert rpc.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_cold_host_cache_is_repolled_without_using_stale_identity(monkeypatch):
     rpc = AsyncMock(side_effect=[{"status": "complete", "model": "Old-Local"}, {"activeRuntime": REMOTE}])
     monkeypatch.setattr(main, "async_request_agent_json", rpc)

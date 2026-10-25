@@ -200,6 +200,31 @@ const deliveredDocument=(digit='a')=>({schemaVersion:1,kind:'ods-pixel-workspace
   file:{path:documentName,bytes:149,sha256:digit.repeat(64)}})
 const standaloneDocument=`**Download:**\n\n![${documentName}](https://untrusted.example/invented.csv?sha256=wrong)`
 
+it('binds the captured Mac ZIP download-link reply while keeping its source citation',()=>{
+  const name='unicode-notes.zip'
+  const source=`Contents verified: café.txt and checklist.txt.\n\n**Download link:** [${name}](https://portal.openclaw.ai/s/site-ee6eff0984d1d85e58f1c6d9)\n\n[ZIP documentation](https://docs.python.org/3/library/zipfile.html)`
+  const artifact={...deliveredDocument(),relativePath:name,file:{...deliveredDocument().file,path:name}}
+  const {container}=render(<PortalStreamingText artifacts={[artifact]}>{source}</PortalStreamingText>)
+  expect(screen.getByRole('button',{name:`Download verified ${name}`})).toBeInTheDocument()
+  expect(container).toHaveTextContent('café.txt and checklist.txt')
+  expect(screen.getAllByRole('link')).toHaveLength(1)
+  expect(screen.getByRole('link',{name:/ZIP documentation/})).toHaveAttribute('href','https://docs.python.org/3/library/zipfile.html')
+})
+
+it.each([
+  `**Download link:** ![${documentName}](https://untrusted.example/invented.csv)`,
+  `**Download link:**\n\n![${documentName}](https://untrusted.example/invented.csv)`,
+])('binds a download-link image label only after its verified receipt: %s',source=>{
+  const {container,rerender}=render(<PortalStreamingText instant>{source}</PortalStreamingText>)
+  expect(container.querySelector('img,a[href]')).toBeNull()
+  expect(screen.queryByRole('button')).toBeNull()
+  rerender(<PortalStreamingText artifacts={[deliveredDocument()]}>{source}</PortalStreamingText>)
+  expect(screen.getByRole('button',{name:`Download verified ${documentName}`})).toBeInTheDocument()
+  rerender(<PortalStreamingText artifacts={[deliveredDocument(),deliveredDocument('b')]}>{source}</PortalStreamingText>)
+  expect(screen.queryByRole('button')).toBeNull()
+  expect(container.querySelector('img,a[href]')).toBeNull()
+})
+
 it('binds the actual standalone CSV image after its separate Download paragraph to a verified receipt',()=>{
   const {container}=render(<PortalStreamingText artifacts={[deliveredDocument()]}>{standaloneDocument}</PortalStreamingText>)
   expect(screen.getByRole('button',{name:`Download verified ${documentName}`})).toBeInTheDocument()
