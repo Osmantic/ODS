@@ -148,7 +148,177 @@ try {
             $said -match ([regex]::Escape("WARNING: The ODS app shortcut could not be saved in ${programs}:")) -and
             $said -match 'Created the ODS app on the desktop\.' -and $said -notmatch 'was not created') 'a Start-menu shortcut that cannot be saved keeps the desktop app and reports only it'
         (Get-Item -LiteralPath $blocked).Attributes = 'Normal'
+
+        # --- Uninstall removes only the shortcuts setup made (#7956) -------------
+        # ODS.lnk has a generic name: only a shortcut that still matches what
+        # Windows read back at setup is removed; everything else stays.
+        function Get-OdsShortcutArguments([string]$Path) {
+            $reader = New-Object -ComObject WScript.Shell
+            try { return [string]$reader.CreateShortcut($Path).Arguments } finally { $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($reader) }
+        }
+        Reset-Folders
+        $made = @(Publish-ODSPortalShortcut -PortalUrl $portal -IconSource $iconSource -DesktopFolder $desktop -ProgramsFolder $programs)
+        $records = @(Get-ODSPortalShortcutRecord $made)
+        Check ($records.Count -eq 2 -and @($records | Where-Object { $_.arguments -ceq '--app=http://localhost:3001/' -and $_.target -like '*\msedge.exe' }).Count -eq 2) 'setup records each app shortcut as Windows reads it back'
+        # The record survives the private JSON file uninstall reads it from.
+        $records = @(($records | ConvertTo-Json -Depth 4 | ConvertFrom-Json))
+        $script:output.Clear()
+        $result = Remove-ODSPortalShortcut $records
+        $removed = @($result.removed)
+        Check ($removed.Count -eq 2 -and @($result.cleanupFailures).Count -eq 0 -and
+            -not (Test-Path -LiteralPath (Join-Path $desktop 'ODS.lnk')) -and
+            -not (Test-Path -LiteralPath (Join-Path $programs 'ODS.lnk')) -and $script:output.Count -eq 0) 'uninstall removes the recorded app shortcuts and writes nothing else'
+
+        Reset-Folders
+        $made = @(Publish-ODSPortalShortcut -PortalUrl $portal -IconSource $iconSource -DesktopFolder $desktop -ProgramsFolder $programs)
+        $records = @(Get-ODSPortalShortcutRecord $made)
+        # Another installation, or the owner, later pointed the Start-menu
+        # shortcut elsewhere; an unrelated file, a relative path and a missing
+        # shortcut are recorded too.
+        $editor = New-Object -ComObject WScript.Shell
+        try { $edited = $editor.CreateShortcut((Join-Path $programs 'ODS.lnk')); $edited.Arguments = '--app=http://localhost:3101/'; $edited.Save() }
+        finally { $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($editor) }
+        $notes = Join-Path $desktop 'notes.txt'
+        [IO.File]::WriteAllText($notes, 'owner file')
+        $records += [ordered]@{ path = $notes; url = '' }
+        $records += [ordered]@{ path = 'ODS.lnk'; target = ''; arguments = '' }
+        $records += [ordered]@{ path = (Join-Path $fixture 'missing\ODS.lnk'); target = ''; arguments = '' }
+        $result = Remove-ODSPortalShortcut $records
+        $removed = @($result.removed)
+        Check ($removed.Count -eq 1 -and $removed[0] -eq (Join-Path $desktop 'ODS.lnk') -and
+            @($result.cleanupFailures).Count -eq 0 -and
+            (Get-OdsShortcutArguments (Join-Path $programs 'ODS.lnk')) -ceq '--app=http://localhost:3101/' -and
+            (Test-Path -LiteralPath $notes)) 'an edited shortcut, another file, a relative path and a missing shortcut are left alone'
+        Reset-Folders
+
+        $previousEdgeLookup = ${function:Get-ODSEdgePath}
+        function Get-ODSEdgePath { return $null }
+        $made = @(Publish-ODSPortalShortcut -PortalUrl $portal -DesktopFolder $desktop -ProgramsFolder $programs)
+        $records = @(Get-ODSPortalShortcutRecord $made)
+        Check ($records.Count -eq 1 -and $records[0].url -ceq $portal) 'setup records the web link it falls back to'
+        $webResult = Remove-ODSPortalShortcut $records
+        Check (@($webResult.removed).Count -eq 1 -and @($webResult.cleanupFailures).Count -eq 0 -and -not (Test-Path -LiteralPath $webLink)) 'uninstall removes the recorded web link'
+        $null = Publish-ODSPortalShortcut -PortalUrl $portal -DesktopFolder $desktop -ProgramsFolder $programs
+        [IO.File]::WriteAllText($webLink, "[InternetShortcut]`r`nURL=http://localhost:3101/pixel`r`n")
+        $webResult = Remove-ODSPortalShortcut $records
+        Check (@($webResult.removed).Count -eq 0 -and @($webResult.cleanupFailures).Count -eq 0 -and (Test-Path -LiteralPath $webLink)) 'a web link that now points elsewhere is left alone'
+        Set-Item -Path function:Get-ODSEdgePath -Value $previousEdgeLookup
+        Reset-Folders
+
+        # The WSL lifecycle controller removes them from the installation's
+        # private record during uninstall retirement.
+        $made = @(Publish-ODSPortalShortcut -PortalUrl $portal -IconSource $iconSource -DesktopFolder $desktop -ProgramsFolder $programs)
+        $identityDirectory = Join-Path $fixture 'instance'
+        $lifecycleResult = & {
+            . (Join-Path $root 'installers/wsl-lifecycle.ps1')
+            Initialize-ODSPrivateDirectory $identityDirectory
+            Write-ODSWslJson (Join-Path $identityDirectory 'shortcuts.json') @{ shortcuts = @(Get-ODSPortalShortcutRecord $made) }
+            Remove-ODSWslPortalShortcuts ([pscustomobject]@{ directory = $identityDirectory })
+        }
+        Check (@($lifecycleResult.removed).Count -eq 2 -and @($lifecycleResult.cleanupFailures).Count -eq 0 -and
+            @(Get-ChildItem -LiteralPath $desktop, $programs -Force).Count -eq 0 -and
+            -not (Test-Path -LiteralPath (Join-Path $identityDirectory 'shortcuts.json'))) 'uninstall retirement removes the recorded shortcuts and their record'
+        $none = & { . (Join-Path $root 'installers/wsl-lifecycle.ps1'); Remove-ODSWslPortalShortcuts ([pscustomobject]@{ directory = $identityDirectory }) }
+        Check (@($none.removed).Count -eq 0 -and @($none.cleanupFailures).Count -eq 0) 'an installation without a shortcut record removes nothing'
+
+        # A real ODS.lnk held open with FileShare.Read (deny delete) must not
+        # abort verified runtime retirement. The custody record is preserved
+        # for retry and the failure is reported as structured data.
+        Reset-Folders
+        $made = @(Publish-ODSPortalShortcut -PortalUrl $portal -IconSource $iconSource -DesktopFolder $desktop -ProgramsFolder $programs)
+        $records = @(Get-ODSPortalShortcutRecord $made)
+        $identityDirectory = Join-Path $fixture 'instance-deny-delete'
+        $denyResult = & {
+            . (Join-Path $root 'installers/wsl-lifecycle.ps1')
+            Initialize-ODSPrivateDirectory $identityDirectory
+            Write-ODSWslJson (Join-Path $identityDirectory 'shortcuts.json') @{ shortcuts = $records }
+            $held = [IO.File]::Open((Join-Path $desktop 'ODS.lnk'), 'Open', 'Read', 'Read')
+            try {
+                Remove-ODSWslPortalShortcuts ([pscustomobject]@{ directory = $identityDirectory })
+            } finally { $held.Dispose() }
+        }
+        $denyFailures = @($denyResult.cleanupFailures)
+        Check (@($denyResult.removed).Count -eq 1 -and $denyFailures.Count -eq 1 -and
+            $denyFailures[0].path -eq (Join-Path $desktop 'ODS.lnk') -and
+            $denyFailures[0].error -and $denyFailures[0].hresult -match '^0x[0-9A-F]{8}$' -and
+            (Test-Path -LiteralPath (Join-Path $desktop 'ODS.lnk')) -and
+            -not (Test-Path -LiteralPath (Join-Path $programs 'ODS.lnk')) -and
+            (Test-Path -LiteralPath (Join-Path $identityDirectory 'shortcuts.json'))) 'a real ODS.lnk held with FileShare.Read is reported as a cleanup failure, the other shortcut is removed, and the custody record is preserved'
+
+        # Once the deny-delete handle closes, a retry with the preserved
+        # custody record removes the remaining shortcut and clears the record.
+        $retryResult = & {
+            . (Join-Path $root 'installers/wsl-lifecycle.ps1')
+            Remove-ODSWslPortalShortcuts ([pscustomobject]@{ directory = $identityDirectory })
+        }
+        Check (@($retryResult.removed).Count -eq 1 -and $retryResult.removed[0] -eq (Join-Path $desktop 'ODS.lnk') -and
+            @($retryResult.cleanupFailures).Count -eq 0 -and
+            -not (Test-Path -LiteralPath (Join-Path $desktop 'ODS.lnk')) -and
+            -not (Test-Path -LiteralPath (Join-Path $identityDirectory 'shortcuts.json'))) 'a retry after the deny-delete handle closes removes the remaining shortcut and clears the custody record'
+        Reset-Folders
+
+        # A corrupted private shortcut record is a genuine failure, not an
+        # optional cleanup: retirement must not silently succeed.
+        $corruptDirectory = Join-Path $fixture 'instance-corrupt'
+        & {
+            . (Join-Path $root 'installers/wsl-lifecycle.ps1')
+            Initialize-ODSPrivateDirectory $corruptDirectory
+            Write-ODSWslJson (Join-Path $corruptDirectory 'shortcuts.json') @{ shortcuts = @() }
+            Assert-ODSPrivatePath (Join-Path $corruptDirectory 'shortcuts.json')
+            [IO.File]::WriteAllText((Join-Path $corruptDirectory 'shortcuts.json'), '{ not json')
+        }
+        $corruptFailure = Get-Failure {
+            . (Join-Path $root 'installers/wsl-lifecycle.ps1')
+            Remove-ODSWslPortalShortcuts ([pscustomobject]@{ directory = $corruptDirectory })
+        }
+        Check ($corruptFailure -match 'JSON' -and (Test-Path -LiteralPath (Join-Path $corruptDirectory 'shortcuts.json'))) 'a corrupted private shortcut record is a failure, not optional cleanup, and the record is preserved'
+        Reset-Folders
+
+        # The custody record itself held open with FileShare.Read (deny delete)
+        # after every shortcut was removed is optional cleanup: retirement must
+        # not abort, the failure must be reported, and the record must survive
+        # for a later retry. Validation failures above still throw.
+        $made = @(Publish-ODSPortalShortcut -PortalUrl $portal -IconSource $iconSource -DesktopFolder $desktop -ProgramsFolder $programs)
+        $records = @(Get-ODSPortalShortcutRecord $made)
+        $recordDirectory = Join-Path $fixture 'instance-deny-record-delete'
+        $recordPath = Join-Path $recordDirectory 'shortcuts.json'
+        $recordDenyResult = & {
+            . (Join-Path $root 'installers/wsl-lifecycle.ps1')
+            Initialize-ODSPrivateDirectory $recordDirectory
+            Write-ODSWslJson $recordPath @{ shortcuts = $records }
+            $held = [IO.File]::Open($recordPath, 'Open', 'Read', 'Read')
+            try {
+                Remove-ODSWslPortalShortcuts ([pscustomobject]@{ directory = $recordDirectory })
+            } finally { $held.Dispose() }
+        }
+        $recordDenyFailures = @($recordDenyResult.cleanupFailures)
+        Check (@($recordDenyResult.removed).Count -eq 2 -and $recordDenyFailures.Count -eq 1 -and
+            $recordDenyFailures[0].path -eq $recordPath -and
+            $recordDenyFailures[0].error -and $recordDenyFailures[0].hresult -match '^0x[0-9A-F]{8}$' -and
+            -not (Test-Path -LiteralPath (Join-Path $desktop 'ODS.lnk')) -and
+            -not (Test-Path -LiteralPath (Join-Path $programs 'ODS.lnk')) -and
+            (Test-Path -LiteralPath $recordPath)) 'a custody record held with FileShare.Read after shortcut removal is reported as a cleanup failure, not an abort, and is preserved for retry'
+
+        $recordRetryResult = & {
+            . (Join-Path $root 'installers/wsl-lifecycle.ps1')
+            Remove-ODSWslPortalShortcuts ([pscustomobject]@{ directory = $recordDirectory })
+        }
+        Check (@($recordRetryResult.removed).Count -eq 0 -and @($recordRetryResult.cleanupFailures).Count -eq 0 -and
+            -not (Test-Path -LiteralPath $recordPath)) 'a retry after the custody record handle closes clears the record'
+        Reset-Folders
     }
+
+    # --- Removal runs only for uninstall retirement ---------------------------------
+    $tokens = $null; $errors = $null
+    $lifecycleAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'installers/wsl-lifecycle.ps1'), [ref]$tokens, [ref]$errors)
+    $disable = $lifecycleAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Disable-ODSWslStartup' }, $true)
+    $calls = @($disable.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Remove-ODSWslPortalShortcuts' }, $true))
+    $guard = if ($calls.Count -eq 1) { $calls[0].Parent } else { $null }
+    while ($guard -and -not ($guard -is [System.Management.Automation.Language.IfStatementAst])) { $guard = $guard.Parent }
+    $validateReturn = $disable.Extent.Text.IndexOf("state='validated'")
+    Check ($errors.Count -eq 0 -and $calls.Count -eq 1 -and $guard -and $guard.Clauses[0].Item1.Extent.Text -ceq '$RetireRelay' -and
+        ($calls[0].Extent.StartOffset - $disable.Extent.StartOffset) -gt $validateReturn -and
+        $disable.Extent.Text.Contains('shortcuts=$shortcuts')) 'only uninstall retirement removes the shortcuts, after validation, and reports them'
 
     # --- windows.ps1 uses this helper after a verified install -------------------
     $installer = [IO.File]::ReadAllText((Join-Path $root 'installers/windows.ps1'))
@@ -156,6 +326,7 @@ try {
         $installer.Contains('Publish-ODSPortalShortcut -PortalUrl $portalUrl[0] -IconSource $appIcon') -and
         $installer.Contains("'extensions/services/dashboard/public/osmantic-os.ico'") -and
         -not $installer.Contains("'ODS Portal.url'")) 'windows.ps1 publishes the Portal shortcut through the helper'
+    Check ($installer.Contains("Write-ODSWslJson (Join-Path `$lifetimeIdentity.directory 'shortcuts.json') @{ shortcuts = @(Get-ODSPortalShortcutRecord `$shortcuts) }")) 'windows.ps1 records the shortcuts it made in the installation''s private lifecycle folder'
 
     Microsoft.PowerShell.Utility\Write-Host "Passed $script:checks Windows ODS app shortcut contracts."
 } finally {

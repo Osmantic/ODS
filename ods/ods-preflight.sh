@@ -60,6 +60,15 @@ detect_backend() {
     for _v in /sys/class/drm/card*/device/vendor; do
         [[ "$(cat "$_v" 2>/dev/null)" == "0x10de" ]] && _nvidia_hw=true && break
     done
+    # Headless servers without nvidia-drm.ko expose no DRM card, but the PCI
+    # device remains: accept vendor 0x10de with display class 0x03xxxx.
+    # Keep identical to installers/lib/detection.sh detect_gpu().
+    if ! $_nvidia_hw; then
+        for _v in "${ODS_PCI_SYS:-/sys/bus/pci/devices}"/*/vendor; do
+            [[ "$(cat "$_v" 2>/dev/null)" == "0x10de" ]] || continue
+            [[ "$(cat "${_v%/vendor}/class" 2>/dev/null)" == 0x03* ]] && _nvidia_hw=true && break
+        done
+    fi
     # WSL2 passes the host GPU through its paravirtualized nvidia-smi bridge and
     # normally exposes no matching /sys/class/drm vendor node, so a successful,
     # non-empty query is the hardware witness there. This is the same rule
@@ -121,9 +130,9 @@ log ""
 
 # 1. Docker check
 log "[1/8] Checking Docker..."
-if command -v docker &> /dev/null; then
-    DOCKER_VERSION=$(docker --version | awk '{print $3}' | tr -d ',')
-    pass "Docker installed: $DOCKER_VERSION"
+if command -v docker &> /dev/null && docker --version &> /dev/null; then
+    DOCKER_VERSION=$(docker --version 2>/dev/null | awk '{print $3}' | tr -d ',' || true)
+    pass "Docker installed: ${DOCKER_VERSION:-present}"
 
     if docker info &> /dev/null; then
         pass "Docker daemon running"
@@ -138,8 +147,8 @@ log ""
 # 2. Docker Compose check
 log "[2/8] Checking Docker Compose..."
 if docker compose version &> /dev/null 2>&1 || docker-compose version &> /dev/null 2>&1; then
-    COMPOSE_VERSION=$(docker compose version 2>/dev/null | awk '{print $4}' || docker-compose version 2>/dev/null | head -1 | awk '{print $3}')
-    pass "Docker Compose available: $COMPOSE_VERSION"
+    COMPOSE_VERSION=$(docker compose version 2>/dev/null | awk '{print $4}' || docker-compose version 2>/dev/null | head -1 | awk '{print $3}' || true)
+    pass "Docker Compose available: ${COMPOSE_VERSION:-present}"
 else
     fail "Docker Compose not found"
 fi

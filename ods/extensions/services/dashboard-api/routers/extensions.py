@@ -1385,7 +1385,7 @@ def _scan_compose_content(
             if isinstance(port, dict):
                 # Dict-form: {target: 80, published: 8080, host_ip: ...}
                 host_ip = port.get("host_ip", "")
-                if port.get("published") and not _host_part_is_loopback(host_ip):
+                if not _host_part_is_loopback(host_ip):
                     raise HTTPException(
                         status_code=400,
                         detail=(
@@ -4771,6 +4771,9 @@ def prepare_extension_images(
     download. Library recipes prepare their images in their own install.
     """
     _validate_service_id(service_id)
+    if service_id == "opencode" and service_id in SERVICES:
+        # A host application with no images: its enable starts the host service.
+        return JSONResponse({"status": "ready", "service_ids": []})
     if service_id == "open-webui":
         plan = ["open-webui"]
     else:

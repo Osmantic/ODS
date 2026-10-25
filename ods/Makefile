@@ -23,6 +23,7 @@ test: ## Run unit and contract tests
 	@echo "=== Install documentation contract ==="
 	@bash tests/test-install-docs.sh
 	@bash tests/test-hosted-bootstrap-verifier.sh
+	@bash tests/test-summary-quick-commands.sh
 	@echo ""
 	@echo "=== Tier map tests ==="
 	@bash tests/test-tier-map.sh
@@ -71,6 +72,8 @@ test: ## Run unit and contract tests
 	@bash tests/test-ods-test-http-code.sh
 	@echo "=== ods-test.sh completes and reports when checks fail ==="
 	@bash tests/test-ods-test-complete-run.sh
+	@echo "=== ods-test.sh judges Tool Calling and LLM replies by their JSON ==="
+	@bash tests/test-ods-test-tool-calling.sh
 	@echo "=== phase 10 skips templated system units in the user scope ==="
 	@bash tests/test-phase10-skip-templated-user-units.sh
 	@echo "=== pre-download --tier is non-interactive ==="
@@ -190,6 +193,7 @@ test: ## Run unit and contract tests
 	@echo "=== CLI preset restore user extensions ==="
 	@bash tests/test-cli-preset-restore-user-extensions.sh
 	@bash tests/test-preset-export-permissions.sh
+	@bash tests/test-preset-host-only-services.sh
 	@echo ""
 	@echo "=== ods-update.sh backup command ==="
 	@bash tests/test-update-backup-retention-labels.sh
@@ -254,6 +258,7 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== NVIDIA multi-GPU visibility contract ==="
 	@bash tests/test-multigpu-nvidia-visibility.sh
+	@bash tests/test-multigpu-nvidia-service-pinning.sh
 	@echo ""
 	@echo "=== CLI user-extension dependency resolution ==="
 	@bash tests/test-cli-user-extension-deps.sh

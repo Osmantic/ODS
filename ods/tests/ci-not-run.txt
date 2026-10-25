@@ -10,6 +10,7 @@ tests/test-macos-pixel-lifecycle.py           live-probe: needs a running native
 
 # Needs live services or a PowerShell host.
 tests/test-dashboard-integration.sh           live: probes a running dashboard-api
+tests/test-talk-upload-nginx.py               live: needs Docker and ODS_NGINX_TEST_IMAGE set to a local nginx image; run during fleet proxy qualification
 tests/test-windows-llm-endpoint.sh            windows: drives PowerShell scripts
 
 # Need a running ODS stack or a host CI does not have.

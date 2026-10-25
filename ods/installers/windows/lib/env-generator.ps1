@@ -219,6 +219,50 @@ function ConvertTo-ODSDotenvValue {
     return "'" + $text + "'"
 }
 
+# Settings ODS tells the owner to put in .env that no installer writes: the
+# dashboard's n8n API key (routers/workflows.py), the Hugging Face token for
+# gated downloads (routers/models.py), the Intel Arc image override
+# (docker-compose.arc.yml), Open WebUI's speech settings (tts/README.md) and
+# whether apps use measured model profiles (ODS_MODEL_PROFILES,
+# docs/MODEL-MANAGEMENT.md) and the opt-out from the dashboard's GitHub
+# release check (DISABLE_UPDATE_CHECK, FAQ.md).
+# Same list as ODS_OWNER_ENV_KEYS in installers/lib/extension-env-carry.sh.
+# Installer-managed keys must not be listed: an old value would override the
+# installer's new choice.
+$script:ODS_OWNER_ENV_KEYS = @(
+    "N8N_API_KEY"
+    "HF_TOKEN"
+    "LLAMA_ARC_IMAGE"
+    "AUDIO_TTS_ENGINE"
+    "AUDIO_TTS_MODEL"
+    "AUDIO_TTS_VOICE"
+    "AUDIO_TTS_OPENAI_API_BASE_URL"
+    "AUDIO_TTS_OPENAI_API_KEY"
+    "ODS_MODEL_PROFILES"
+    "DISABLE_UPDATE_CHECK"
+)
+
+function Get-ODSCarriedEnvLines {
+    <# Return, for each key the new .env content lacks, its last assignment line
+       in the previous .env, as it is when .env is read. Keys match exactly. #>
+    param(
+        [AllowEmptyCollection()][string[]]$PreviousLines,
+        [AllowEmptyString()][string]$NewContent,
+        [string[]]$Keys
+    )
+    $carried = @()
+    foreach ($key in $Keys) {
+        $prefix = "$key="
+        if ($NewContent -cmatch ("(?m)^" + [regex]::Escape($prefix))) { continue }
+        $last = $null
+        foreach ($line in $PreviousLines) {
+            if ($line.StartsWith($prefix, [StringComparison]::Ordinal)) { $last = $line }
+        }
+        if ($null -ne $last) { $carried += $last }
+    }
+    return $carried
+}
+
 function New-ODSEnv {
     <#
     .SYNOPSIS
@@ -263,9 +307,11 @@ function New-ODSEnv {
 
     # Preserve existing secrets on re-install (mirrors Linux _env_get logic)
     $existingEnv = @{}
+    $previousEnvLines = @()
     $envPath = Join-Path $InstallDir ".env"
     if (Test-Path $envPath) {
-        Get-Content $envPath | ForEach-Object {
+        $previousEnvLines = @(Get-Content $envPath)
+        $previousEnvLines | ForEach-Object {
             if ($_ -match "^([A-Za-z_][A-Za-z0-9_]*)=(.*)$") {
                 $existingEnv[$Matches[1]] = $Matches[2]
             }
@@ -703,6 +749,7 @@ TOGETHER_API_KEY=$(Get-EnvOrNew "TOGETHER_API_KEY" "")
 MINIMAX_API_KEY=$(Get-EnvOrNew "MINIMAX_API_KEY" "")
 
 #=== LLM Settings (llama-server) ===
+TIER=$Tier
 MODEL_PROFILE=$(Get-EnvOrNew "MODEL_PROFILE" "$(if ($TierConfig.ModelProfileRequested) { $TierConfig.ModelProfileRequested } else { "qwen" })")
 LLM_MODEL=$($TierConfig.LlmModel)
 GGUF_FILE=$($TierConfig.GgufFile)
@@ -862,10 +909,28 @@ LANGFUSE_INIT_USER_PASSWORD=$langfuseInitUserPassword
     # NOTE: No VIDEO_GID, RENDER_GID, HSA_OVERRIDE_GFX_VERSION on Windows
     # Those are Linux-only for AMD ROCm container device access
 
+    # The template above replaces .env; keep the owner's own settings.
+    $ownerLines = @(Get-ODSCarriedEnvLines -PreviousLines $previousEnvLines `
+        -NewContent $envContent -Keys $script:ODS_OWNER_ENV_KEYS)
+    if ($ownerLines.Count -gt 0) {
+        $nl = $(if ($envContent.Contains("`r`n")) { "`r`n" } else { "`n" })
+        $envContent += "$nl$nl#=== Owner settings (kept from the previous .env) ===$nl" + ($ownerLines -join $nl)
+    }
+
     $envPath = Join-Path $InstallDir ".env"
     if (Test-Path -LiteralPath $envPath -PathType Container) {
         Remove-Item -LiteralPath $envPath -Recurse -Force
         Write-AIWarn "Removed malformed .env directory from a previous partial install."
+    }
+    # The template above replaces .env; keep the owner's public URLs
+    # (docs/ODS-PROXY.md) as the Linux installer does.
+    if (Test-Path -LiteralPath $envPath -PathType Leaf) {
+        $publicUrlLines = @(Get-ODSPublicUrlEnvLines -NewContent $envContent `
+            -PreviousLines @(Get-Content -LiteralPath $envPath -Encoding UTF8))
+        if ($publicUrlLines.Count -gt 0) {
+            $nl = $(if ($envContent.Contains("`r`n")) { "`r`n" } else { "`n" })
+            $envContent += "$nl$nl#=== Public URLs (kept from the previous .env) ===$nl" + ($publicUrlLines -join $nl)
+        }
     }
     Write-ODSPrivateEnvFile -Path $envPath -Content $envContent
 
@@ -934,6 +999,34 @@ litellm_settings:
     return @{
         SearxngSecret  = $searxngSecret
     }
+}
+
+function Get-ODSPublicUrlEnvLines {
+    <# Return the owner's public-URL settings (docs/ODS-PROXY.md:
+       ODS_PUBLIC_URL, ODS_SERVICE_PUBLIC_URLS, <SERVICE>_PUBLIC_URL) from the
+       previous .env that the new content lacks, as Linux's
+       ods_carry_public_url_env_keys does: the last assignment of each key, in
+       first-seen order. #>
+    param(
+        [AllowEmptyCollection()][string[]]$PreviousLines,
+        [AllowEmptyString()][string]$NewContent
+    )
+    $order = [System.Collections.Generic.List[string]]::new()
+    $last = @{}
+    foreach ($line in $PreviousLines) {
+        $eq = $line.IndexOf('=')
+        if ($eq -lt 0) { continue }
+        $key = $line.Substring(0, $eq).Trim()
+        if ($key -cnotmatch '^[A-Z][A-Z0-9_]*_PUBLIC_URLS?$') { continue }
+        if (-not $last.ContainsKey($key)) { $order.Add($key) }
+        $last[$key] = $key + $line.Substring($eq)
+    }
+    $carried = @()
+    foreach ($key in $order) {
+        if ($NewContent -cmatch ("(?m)^\s*" + [regex]::Escape($key) + "\s*=")) { continue }
+        $carried += $last[$key]
+    }
+    return $carried
 }
 
 function Get-SearxngDefaultLanguage {
