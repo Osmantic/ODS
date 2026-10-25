@@ -29,6 +29,8 @@ function Get-ScheduledTask { param($TaskName,$ErrorAction)
 function Get-ODSWslRunningDistributions { 'Fixture' }
 function New-ScheduledTaskAction { param($Execute,$Argument); [pscustomobject]@{Execute=$Execute;Arguments=$Argument} }
 function New-ScheduledTaskPrincipal { param($UserId,$LogonType,$RunLevel); [pscustomobject]@{UserId=$UserId;LogonType=$LogonType;RunLevel=$RunLevel} }
+# This in-memory fixture uses a synthetic SID; real account lookup has its own contract.
+function Resolve-ODSWslTaskAccount { param($OwnerSid); $OwnerSid }
 function New-ScheduledTaskSettingsSet { param([switch]$Hidden,$ExecutionTimeLimit,$MultipleInstances,[switch]$AllowStartIfOnBatteries,[switch]$DontStopIfGoingOnBatteries); [pscustomobject]@{ExecutionTimeLimit='PT0S';RestartCount=0;MultipleInstances=$MultipleInstances} }
 function Register-ScheduledTask { param($TaskName,$Action,$Principal,$Settings,$Description); $script:task=[pscustomobject]@{Actions=@($Action);Principal=$Principal;Settings=$Settings;Triggers=@();State='Ready'} }
 function NewTask {

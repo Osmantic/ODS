@@ -247,7 +247,7 @@ wsl -e nvidia-smi
 docker run --rm --gpus all nvidia/cuda:12.0.0-base-ubuntu22.04 nvidia-smi
 
 # 4. llama-server health (after ODS starts)
-curl http://localhost:8080/health
+curl http://localhost:11434/health
 ```
 
 ---
