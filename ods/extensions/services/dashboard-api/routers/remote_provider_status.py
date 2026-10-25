@@ -24,6 +24,7 @@ from host_agent_client import (
     AgentUnavailable,
     async_request_json as async_request_agent_json,
 )
+from runtime_projection import awaiting_runtime_readback
 from security import verify_api_key
 
 logger = logging.getLogger(__name__)
@@ -188,13 +189,21 @@ async def _reconcile_activation_with_host(
         or activation.get("pixel") != "reconciled"
     ):
         return activation
+    async def read_host_status() -> Any:
+        # A cold host cache answers without activeRuntime while it proves the
+        # runtime in the background; re-poll that gap as the dashboard does.
+        for attempt in range(4):
+            status = await async_request_agent_json("GET", "/v1/model/status", timeout=2.0)
+            if not awaiting_runtime_readback(status) or attempt == 3:
+                return status
+            await asyncio.sleep(0.25)
+
     try:
-        host_status = await async_request_agent_json(
-            "GET",
-            "/v1/model/status",
-            timeout=3,
-        )
-    except (AgentHTTPError, AgentUnavailable, AgentProtocolError):
+        host_status = await asyncio.wait_for(read_host_status(), timeout=3.0)
+    except (AgentHTTPError, AgentUnavailable, AgentProtocolError, asyncio.TimeoutError):
+        host_status = None
+    if host_status is None or awaiting_runtime_readback(host_status):
+        # Unknown is not drift: the proof had not finished, or the host was unreachable.
         return {
             **activation,
             "valid": False,

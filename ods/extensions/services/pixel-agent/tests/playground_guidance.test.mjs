@@ -18,6 +18,9 @@ const MACMINI = JSON.parse(fs.readFileSync(new URL('./fixtures/photo-renamer-mac
 const PROMPT = MACMINI.prompt;
 const CORRECTION_START = 'For a new project, use a workspace-relative path such as Playground/snake-game/index.html';
 const CORRECTION_END = 'Do not use a bare filename or a generic src/public/project folder as the project name.';
+// A refused write without a suggested path: it says nothing was written, then
+// gives only the correction.
+const NOT_WRITTEN = `Not written. ${CORRECTION_START}`;
 const NOT_RUN = 'Not run: write the first project file before running commands; write creates its folder, so mkdir is not needed.';
 const FIRST_FILE = 'Create the first project file with write in a descriptive Playground folder before running commands or patches.';
 
@@ -252,8 +255,9 @@ test('role, generic and multi-segment names keep only the generic correction', (
     const {root, call} = fresh();
     const decision = call('write', {path:target, content:'x'});
     assert.equal(decision.block, true, target);
-    assert.ok(decision.blockReason.startsWith(CORRECTION_START), `${target}: ${decision.blockReason}`);
-    assert.doesNotMatch(decision.blockReason, /Not written|Call write/, target);
+    assert.ok(decision.blockReason.startsWith(NOT_WRITTEN), `${target}: ${decision.blockReason}`);
+    // No path is suggested: neither the suggestion prefix nor a next write.
+    assert.doesNotMatch(decision.blockReason, /Not written:|Call write|with path/, target);
     assert.equal(fs.existsSync(path.join(root, 'Playground')), false, target);
   }
 });
@@ -372,7 +376,7 @@ test('one run gets one suggested folder: later refusals repeat it, including for
   assert.ok(call('apply_patch', {input:'*** Begin Patch\n*** Add File: x.py\n+x\n*** End Patch'}).blockReason
     .startsWith(`${NOT_RUN} Call write now with path Playground/photo-renamer/test_photo_renamer.py and its content.`));
   // Multi-segment paths still get only the correction.
-  assert.ok(call('write', {path:'src/main.py', content:'x'}).blockReason.startsWith(CORRECTION_START));
+  assert.ok(call('write', {path:'src/main.py', content:'x'}).blockReason.startsWith(NOT_WRITTEN));
   assert.equal(fs.existsSync(path.join(root, 'Playground')), false);
   assert.equal(state.binding ?? null, null);
   // If the folder is taken meanwhile, the next suggestion derives an unused one.
@@ -392,14 +396,14 @@ test('advice needs a checkable workspace and never changes routing state', () =>
   const missing = path.join(workspace(), 'missing');
   const state = {};
   const call = (tool, params) => routePlaygroundTool({state, tool, params, root:missing, session:'guidance-session', intent:PROMPT});
-  assert.ok(call('write', {path:'/workspace/PhotoRenamer.py', content:'x'}).blockReason.startsWith(CORRECTION_START));
+  assert.ok(call('write', {path:'/workspace/PhotoRenamer.py', content:'x'}).blockReason.startsWith(NOT_WRITTEN));
   assert.ok(call('exec', {command:'mkdir -p Playground/snake-game'}).blockReason.startsWith(`${NOT_RUN} ${FIRST_FILE}`));
   assert.equal(state.failed, undefined);
   assert.equal(state.suggestedFolder, undefined);
   // A Playground that is not a real directory gets no suggestion either.
   const file = fresh();
   fs.writeFileSync(path.join(file.root, 'Playground'), 'not a folder');
-  assert.ok(file.call('write', {path:'PhotoRenamer.py', content:'x'}).blockReason.startsWith(CORRECTION_START));
+  assert.ok(file.call('write', {path:'PhotoRenamer.py', content:'x'}).blockReason.startsWith(NOT_WRITTEN));
   assert.ok(file.call('exec', {command:'mkdir -p Playground/snake-game'}).blockReason.startsWith(`${NOT_RUN} ${FIRST_FILE}`));
   assert.equal(file.state.failed, undefined);
 });

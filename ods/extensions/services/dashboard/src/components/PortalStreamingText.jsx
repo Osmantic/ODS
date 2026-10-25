@@ -6,6 +6,8 @@ import PortalInlineCitation from './PortalInlineCitation'
 import {useMemo,useLayoutEffect} from 'react'
 import {useResponseReveal} from '../lib/useResponseReveal'
 import {EMBED_NOTES} from '../lib/embedDisplay'
+import {parseDeliveredArtifacts} from '../lib/pixelDeliveredArtifacts'
+import {suppressDeliveredMediaLines} from '../lib/deliveredMediaDisplay'
 
 // Portal's own note, in its own paragraph where an embed it can't display
 // was, reads as a muted aside rather than as the model's words.
@@ -59,7 +61,7 @@ function markDocumentDownloads() {
           const label=text(child).trim(), href=String(child.properties?.href || '')
           const named=/^download(?:\s+(?:verified\s+)?([A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z0-9]+))?\s*:?$/i.exec(label)
           const explicitLabel=Boolean(named)
-          const prefixed=/(?:^|\n)\s*download\s*:\s*$/i.test(before)
+          const prefixed=/(?:^|\n)\s*download(?:\s+link)?\s*:\s*$/i.test(before)
           const filename=named?.[1] || (prefixed && /^([A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z0-9]+)$/.exec(label)?.[1])
           const rawLink=label===href || label===href.split('/').at(-1)
           if(explicitLabel || filename || (rawLink && prefixed)) {
@@ -75,7 +77,7 @@ function markDocumentDownloads() {
         } else if(child.tagName==='img') {
           const label=text(child).trim()
           const named=/^download\s+(?:verified\s+)?(.+?)\s*:?$/i.exec(label)
-          const prefixed=/(?:^|\n)\s*download\s*:\s*$/i.test(before) || (downloadPrefix && !before.trim())
+          const prefixed=/(?:^|\n)\s*download(?:\s+link)?\s*:\s*$/i.test(before) || (downloadPrefix && !before.trim())
           const filename=named?.[1] || (prefixed ? label : '')
           if(/^[A-Za-z0-9][A-Za-z0-9._-]*\.(?:md|markdown|txt|csv|tsv|json|pdf|zip|rar|docx|xlsx|pptx)$/i.test(filename)) {
             // An image-shaped document label must not load the model's URL.
@@ -86,7 +88,7 @@ function markDocumentDownloads() {
             child.children=[{type:'text',value:label}]
           }
         }
-        const nextPrefix=child.tagName==='p' && previous?.tagName==='p' && /^download\s*:$/i.test(text(previous).trim())
+        const nextPrefix=child.tagName==='p' && previous?.tagName==='p' && /^download(?:\s+link)?\s*:$/i.test(text(previous).trim())
         visit(child,nextPrefix)
         before+=text(child)
         if(child.type!=='text' || child.value.trim())previous=child
@@ -98,12 +100,20 @@ function markDocumentDownloads() {
 const PLUGINS=[rehypeHighlight,muteEmbedNotes,markDocumentDownloads,revealNewText]
 export default function PortalStreamingText({children, active=false, animate=active, instant=false, onReveal, components=EMPTY_COMPONENTS, artifacts=null}) {
   const fullSource=String(children ?? '')
-  const source=useResponseReveal(fullSource,{animate,instant})
+  // Once a completed answer has verified files, show its complete Markdown.
+  // Revealing half of an image-wrapped link can otherwise turn the unfinished
+  // outer destination into a separate clickable GFM autolink beside the real
+  // download button. Ordinary prose and in-flight responses still animate.
+  const delivered=!active && Boolean(parseDeliveredArtifacts(artifacts)?.length)
+  const source=useResponseReveal(fullSource,{animate,instant:instant || delivered})
   const revealing=source!==fullSource
+  const plugins=useMemo(()=>delivered && !revealing
+    ? [rehypeHighlight,muteEmbedNotes,markDocumentDownloads,[suppressDeliveredMediaLines,{source,artifacts}],revealNewText]
+    : PLUGINS,[delivered,revealing,source,artifacts])
   useLayoutEffect(()=>{onReveal?.()},[source,onReveal])
   const renderers=useMemo(()=>({...components,a:props=><PortalInlineCitation {...props} artifacts={artifacts}/>,span:StreamSpan}),[components,artifacts])
   return <div className={`portal-streaming-text ${active || revealing?'is-streaming':''}`} aria-busy={active || revealing}>
-    <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={PLUGINS} components={renderers}>{source}</ReactMarkdown>
+    <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={plugins} components={renderers}>{source}</ReactMarkdown>
     {(active || revealing) && <span className="portal-stream-cursor" aria-hidden="true"/>}
   </div>
 }
