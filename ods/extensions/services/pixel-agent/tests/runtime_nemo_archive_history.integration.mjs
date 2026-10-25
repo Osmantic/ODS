@@ -62,11 +62,12 @@ async function stopChild() {
 
 try {
 // Qualify the installed compaction path even when CI's pinned public package
-// is still pristine. Only this fixture's dist is writable; dependencies and
-// other public package resources remain read-only symlinks.
+// is still pristine. Copy the launcher too: Node resolves a symlinked entrypoint
+// to the public package and would bypass this fixture's repaired dist entirely.
+// Dependencies and other package resources remain read-only symlinks.
 const installed=pkg;pkg=join(root,'package');mkdirSync(pkg);
 for(const name of readdirSync(installed)) {
-  if(name==='dist')cpSync(join(installed,name),join(pkg,name),{recursive:true});
+  if(name==='dist' || name==='openclaw.mjs')cpSync(join(installed,name),join(pkg,name),{recursive:true});
   else symlinkSync(join(installed,name),join(pkg,name));
 }
 const sha=value=>createHash('sha256').update(value).digest('hex');
