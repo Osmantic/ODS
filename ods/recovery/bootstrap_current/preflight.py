@@ -1,4 +1,5 @@
 """Read-only installed compatibility and original custody preflight."""
+import copy
 import os
 from pathlib import Path
 import pwd
@@ -107,11 +108,50 @@ def inspect(compatibility, transaction=None):
     first, _ = snapshot(compatibility, transaction)
     from adapters import source_inputs
     sources = source_inputs(first)
+    def contract(binding):
+        owner = binding['owner']
+        raw = read(Path(owner['home']) / '.openclaw/openclaw.json', uid=owner['uid'], maximum=2*1024*1024)
+        if digest(raw) != binding['nativeSha256']:
+            raise Refused('initial-config-changed')
+        return current_contract(raw, binding)
+    current = contract(first)
     second, _ = snapshot(compatibility, transaction)
-    if first != second or sources != source_inputs(second):
+    if first != second or sources != source_inputs(second) or current != contract(second):
         raise Refused('preflight-changed')
     return dict(ok=True, bundleFiles=32, sourceMirrorVerified=True, unitVerified=True,
                 ownerVerified=True, pending=first['original'] is not None,
                 eligible=first['original'] is not None, bindingSha256=digest(encode(first)),
                 ownerSourceFiles=len(sources), ownerSourceSha256=digest(encode(sources)),
+                currentContractSha256=digest(encode(current)), currentMetadataVerified=True,
                 physicalRecoveryAccepted=False, mutationPerformed=False)
+
+
+def current_contract(raw, binding):
+    """Bind current capabilities without inferring them from a model name.
+
+    The installed renderer stores measured thinking control in the private
+    answers, not plugin config. Validate those exact semantics using the old
+    projection on a disposable copy; never add that key to native config.
+    """
+    from pixel_model_contract import binding as model_binding, projection
+    config = decode(raw)
+    _agent, row, settings, provider, _name = model_binding(config)
+    native = projection(config)['contract']
+    owner = binding['owner']
+    paths = (Path(binding['install']) / 'data/pixel/onboarding.json',
+             Path(owner['home']) / '.config/pixel-deployment/onboarding.json')
+    answers = [decode(read(path, uid=owner['uid'], maximum=2*1024*1024, forbidden_mode=0o077)) for path in paths]
+    expected = dict(modelProvider=provider, modelId=row['id'], modelName=row['name'],
+                    modelContextWindow=native['contextLength'], modelMaxTokens=native['maxTokens'],
+                    modelReasoning=native['reasoning'], modelImageInput=native.get('imageInput'),
+                    modelRouteFingerprint=native.get('routeFingerprint'))
+    control = answers[0].get('modelThinkingControl')
+    if ('imageInput' not in native or control not in ('enable_thinking', 'always', 'none')
+            or 'modelThinkingControl' in settings and settings['modelThinkingControl'] != control
+            or any(any(type(answer.get(key)) is not type(value) or answer.get(key) != value
+                       for key, value in expected.items())
+                   or answer.get('modelThinkingControl') != control for answer in answers)):
+        raise Refused('current-model-metadata-unproven')
+    checked = copy.deepcopy(config)
+    checked['plugins']['entries']['pixel-ods']['config']['modelThinkingControl'] = control
+    return projection(checked)['contract']

@@ -52,7 +52,8 @@ def main():
     if operation == 'reconcile':
         result = agent._reconcile_ods_managed_pixel_model(target['model'], target['contextLength'],
             max_tokens=target['maxTokens'], reasoning=target['reasoning'], borrowed_transaction=request['transaction'],
-            image_input=target.get('imageInput', 'unknown'))
+            route_fingerprint=target.get('routeFingerprint'), image_input=target['imageInput'],
+            thinking_control=target['thinkingControl'])
         if result != 'reconciled':
             raise RuntimeError('owner-reconciliation-incomplete')
     else:

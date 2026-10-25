@@ -22,7 +22,11 @@ sudo /usr/bin/python3 -B -I /REVIEWED/ROOT/PACKAGE/loader.py cancel TRANSACTION
 
 These are proposed invocation forms for reviewed provisioning, not instructions
 to run the unqualified candidate against a live installation. `--reasoning`
-explicitly selects reasoning. Resume uses the original root-bound target and
+must match the current proven reasoning setting. Recovery preserves the full
+current image policy, route fingerprint and measured thinking control. Both
+private onboarding copies must agree with the native route; missing/ambiguous
+capability metadata or a different confirmed target refuses before owner
+mutation. No model-name heuristic supplies missing thinking control. Resume uses the original root-bound target and
 package; cancellation requires an unchanged native configuration and no owner
 reconciliation. No arbitrary backup can be selected. `native-before.json` is
 an audit snapshot bound by the claim hash; this package does not restore it.

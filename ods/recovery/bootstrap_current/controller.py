@@ -233,10 +233,9 @@ class Recovery:
         if start is None:
             raise Refused('native-process-unavailable')
         raw = read(Path(self.binding['owner']['home']) / '.openclaw/openclaw.json', uid=self.binding['owner']['uid'], maximum=2*1024*1024)
-        from pixel_model_contract import projection
-        target = projection(decode(raw))['contract']
+        target = preflight.current_contract(raw, self.binding)
         proof = native.get('proof')
-        if (any(target.get(key) != value for key, value in self.target.items())
+        if (target != self.target
                 or config.get('config_sha256') != digest(raw) or config.get('config_sha256') != verified.get('config_sha256')
                 or config.get('configured_status') != self.binding['original']['configured_mode']
                 or pid != native.get('pid') or pid != verified.get('pid') or native.get('available') is not True
@@ -295,6 +294,7 @@ class Recovery:
             self.save('restored-held')
             return
         self.worker.run('inference')
+        self.current()  # Refuse changed/ambiguous contract before owner mutation.
         self.socket.start()
         self.claim['mutated'] = True
         self.save('reconciling')
@@ -360,7 +360,10 @@ def main(argv, package, manifest, compatibility):
                 raw = read(Path(binding['owner']['home']) / '.openclaw/openclaw.json', uid=binding['owner']['uid'])
                 if digest(raw) != binding['nativeSha256']:
                     raise Refused('initial-config-changed')
-                records.write('claim.json', encode(dict(version=1, transaction=args.transaction, target=proposed,
+                current = preflight.current_contract(raw, binding)
+                if any(current.get(key) != value for key, value in proposed.items()):
+                    raise Refused('confirmed-target-not-current')
+                records.write('claim.json', encode(dict(version=1, transaction=args.transaction, target=current,
                     binding=binding, ownerSources=sources, packageSha256=package_sha, phase='prepared', action='recover', mutated=False)), absent=True)
                 # The claim already durably binds the original hash. A crash
                 # before this optional audit snapshot must not orphan custody.
