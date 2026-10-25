@@ -534,22 +534,22 @@ function Invoke-ExtractionWithRetry {
         # Attempt extraction
         try {
             # Remove partial extraction if it exists
-            if (Test-Path $DestinationPath) {
+            if (Test-Path -LiteralPath $DestinationPath) {
                 Write-AI "Cleaning up previous extraction attempt..."
-                Remove-Item -Path $DestinationPath -Recurse -Force -ErrorAction Stop
+                Remove-Item -LiteralPath $DestinationPath -Recurse -Force -ErrorAction Stop
             }
 
             # Create parent directory if needed
             $parentDir = Split-Path -Parent $DestinationPath
-            if (-not (Test-Path $parentDir)) {
-                New-Item -ItemType Directory -Path $parentDir -Force | Out-Null
+            if (-not [string]::IsNullOrWhiteSpace($parentDir) -and -not (Test-Path -LiteralPath $parentDir)) {
+                [System.IO.Directory]::CreateDirectory($parentDir) | Out-Null
             }
 
             # Extract
-            Expand-Archive -Path $ZipPath -DestinationPath $DestinationPath -Force -ErrorAction Stop
+            Expand-Archive -LiteralPath $ZipPath -DestinationPath $DestinationPath -Force -ErrorAction Stop
 
             # Verify extraction succeeded (check if directory exists and has content)
-            if ((Test-Path $DestinationPath) -and ((Get-ChildItem $DestinationPath).Count -gt 0)) {
+            if ((Test-Path -LiteralPath $DestinationPath) -and ((Get-ChildItem -LiteralPath $DestinationPath).Count -gt 0)) {
                 return $true
             } else {
                 Write-AIWarn "Extraction completed but destination is empty"
