@@ -96,6 +96,33 @@ test('other agents retain the original catalog behavior', () => {
   assert.deepEqual(run([read], { agentId: 'another-agent', isVisibleCatalogTool: () => true }).tools, [...controls, read]);
 });
 
+test('8K tools remain discoverable and dispatch the original policy-filtered objects', async () => {
+  const deferred=['read','write','edit','apply_patch','exec','process','web_search','web_fetch','pixel_ods_web_extract','pixel_ods_skill','pixel_ods_ask_user','pixel_ods_extensions','pixel_ods_workspace_preview','pixel_ods_workspace_preview_inspect','pixel_ods_extension_request_status'];
+  const originals=deferred.map(tool);
+  const config={agents:{defaults:{contextTokens:65536},list:[{id:'pixel',contextTokens:8192}]},
+    tools:{toolSearch:{enabled:true,mode:'tools'}}};
+  const {tools:visible,catalogRef,catalogToolCount}=run(originals,{config});
+  assert.deepEqual(visible,controls);
+  assert.equal(catalogToolCount,originals.length);
+  const dispatched=[];
+  const ctx={agentId:'pixel',catalogRef,config,executeTool:async p=>{dispatched.push(p);return {content:[{type:'text',text:'receipt'}]};}};
+  const api=Object.fromEntries(createControls(ctx).map(t=>[t.name,t]));
+  for(const name of deferred){
+    const original=originals.find(t=>t.name===name);
+    const found=await api.tool_search.execute('search',{query:name,limit:10});
+    assert.ok(found.details.some(t=>t.name===name));
+    const described=await api.tool_describe.execute('describe',{id:name});
+    assert.deepEqual(described.details.parameters,original.parameters);
+    await api.tool_call.execute('call',{id:name,args:{marker:'8k'}});
+    assert.equal(dispatched.at(-1).tool,original);
+    assert.deepEqual(dispatched.at(-1).input,{marker:'8k'});
+  }
+  await assert.rejects(api.tool_call.execute('denied',{id:'policy_denied_tool',args:{}}));
+  assert.equal(dispatched.length,deferred.length);
+  config.agents.list[0].contextTokens=65536;
+  assert.deepEqual(run(originals,{config}).tools,[...controls,...originals]);
+});
+
 test('disabled search preserves the input tools', () => {
   const read = tool('read');
   const result = run([read], { config: { tools: { toolSearch: { enabled: false, mode: 'tools' } } } });

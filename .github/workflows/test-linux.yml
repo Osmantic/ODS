@@ -395,6 +395,9 @@ jobs:
       - name: CLI Enable Compose Reconciliation Tests
         run: bash tests/test-cli-enable-compose-reconciliation.sh
 
+      - name: CLI Host Service Enable Tests
+        run: bash tests/test-cli-host-service-enable.sh
+
       - name: CLI Link Refresh Tests
         run: bash tests/test-cli-link-refresh.sh
 
@@ -684,7 +687,9 @@ jobs:
           bash tests/test-wsl-agent-start.sh
 
       - name: NVIDIA Multi-GPU Visibility Contract Tests
-        run: bash tests/test-multigpu-nvidia-visibility.sh
+        run: |
+          bash tests/test-multigpu-nvidia-visibility.sh
+          bash tests/test-multigpu-nvidia-service-pinning.sh
 
       - name: Upload Installer Simulation Artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

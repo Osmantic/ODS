@@ -82,7 +82,7 @@ def test_callback_builds_metadata_only_event(monkeypatch):
     assert "private_tool" not in serialized
 
 
-def test_callback_skips_litellm_event_when_switchboard_is_enabled(
+def test_callback_skips_litellm_event_routed_through_model_router(
     monkeypatch,
 ):
     monkeypatch.setenv("TOKEN_SPY_URL", "http://token-spy:8080")
@@ -92,7 +92,10 @@ def test_callback_skips_litellm_event_when_switchboard_is_enabled(
     instance = callback.ODSTokenSpyCallback()
 
     asyncio.run(instance.async_log_success_event(
-        {"model": "default"},
+        {
+            "model": "default",
+            "litellm_params": {"api_base": "http://model-router:9099/v1"},
+        },
         {"model": "Concrete.gguf", "usage": {}},
         1.0,
         2.0,
@@ -100,6 +103,46 @@ def test_callback_skips_litellm_event_when_switchboard_is_enabled(
 
     assert instance.queue.empty()
     assert instance.worker is None
+
+
+@pytest.mark.parametrize("ods_mode,api_base,provider", [
+    # Cloud mode serves cloud.yaml even when the switchboard is enabled.
+    ("cloud", None, "anthropic"),
+    ("cloud", "http://remote-provider-egress:8091/v1", "openai"),
+    # The switchboard's cloud aliases go straight to the provider.
+    ("hybrid", None, "anthropic"),
+    ("local", "https://api.minimax.io/v1", "openai"),
+])
+def test_callback_records_switchboard_requests_that_bypass_model_router(
+    monkeypatch, ods_mode, api_base, provider,
+):
+    monkeypatch.setenv("TOKEN_SPY_URL", "http://token-spy:8080")
+    monkeypatch.setenv("TOKEN_SPY_API_KEY", "shared-secret")
+    monkeypatch.setenv("ODS_MODEL_SWITCHBOARD", "enabled")
+    monkeypatch.setenv("ODS_MODE", ods_mode)
+    callback = load_callback(monkeypatch)
+    instance = callback.ODSTokenSpyCallback()
+    litellm_params = {"custom_llm_provider": provider}
+    if api_base:
+        litellm_params["api_base"] = api_base
+
+    async def scenario():
+        instance._run = asyncio.Event().wait
+        await instance.async_log_success_event(
+            {"model": "cloud", "messages": [], "litellm_params": litellm_params},
+            {"model": "remote", "usage": {"prompt_tokens": 7, "completion_tokens": 3}},
+            1.0,
+            2.0,
+        )
+        assert instance.queue.qsize() == 1
+        instance.worker.cancel()
+        return instance.queue.get_nowait()
+
+    event = asyncio.run(scenario())
+
+    assert event["provider_name"] == provider
+    assert event["input_tokens"] == 7
+    assert event["output_tokens"] == 3
 
 
 def test_callback_bounds_provider_counters_to_ingest_contract(monkeypatch):

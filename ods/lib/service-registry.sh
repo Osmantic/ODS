@@ -47,6 +47,7 @@ declare -A SERVICE_HOST_NETWORK # service_id → "1" iff manifest sets host_netw
 # protocol only over a Unix-domain socket and intentionally have port 0.
 declare -A SERVICE_SOCKET_ONLY  # service_id → "1" iff manifest sets socket_only: true
 declare -A SERVICE_NAMES        # service_id → display name
+declare -A SERVICE_TYPES        # service_id → docker (default) | host-systemd
 declare -A SERVICE_SETUP_HOOKS  # service_id → absolute path to setup script
 declare -A SERVICE_GPU_BACKENDS # service_id → space-separated GPU backends (amd, nvidia, apple, cpu)
 declare -a SERVICE_IDS          # ordered list of all service IDs
@@ -206,6 +207,7 @@ for service_dir in _all_service_dirs:
         if socket_only:
             print(f'SERVICE_SOCKET_ONLY["{_esc(sid)}"]="1"')
         print(f'SERVICE_NAMES["{_esc(sid)}"]="{_esc(s.get("name", sid))}"')
+        print(f'SERVICE_TYPES["{_esc(sid)}"]="{_esc(s.get("type") or "docker")}"')
         # Prefer hooks.post_install over legacy setup_hook
         hooks = s.get("hooks", {})
         effective_hook = ""

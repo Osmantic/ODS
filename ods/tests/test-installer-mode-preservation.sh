@@ -2,6 +2,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# The mode reader ignores a group-writable .env, as the installer never
+# writes one; create fixtures with its modes whatever the host's umask.
+umask 022
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/ods-install-mode.XXXXXX")"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 

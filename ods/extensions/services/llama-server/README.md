@@ -193,7 +193,7 @@ llama-server exposes an OpenAI-compatible REST API:
 ### Example
 
 ```bash
-curl http://localhost:8080/v1/chat/completions \
+curl http://localhost:11434/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "default",
@@ -215,7 +215,7 @@ curl http://localhost:8080/v1/chat/completions \
                     │  llama-server   │
                     │  (llama.cpp)    │
                     │  :8080 (int)    │
-                    │  :8080 (ext)    │
+                    │  :11434 (ext)   │
                     └──────┬──────────┘
                            │  OpenAI-compatible API
           ┌────────────────┼──────────────────┐
@@ -252,7 +252,7 @@ docker compose logs llama-server
 
 **Check inference metrics:**
 ```bash
-curl http://localhost:8080/metrics
+curl http://localhost:11434/metrics
 ```
 
 ## License

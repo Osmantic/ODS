@@ -316,6 +316,13 @@ for sid in "${SERVICE_IDS[@]}"; do
         fail "Missing health endpoint: $sid"
     fi
 
+    service_type="${SERVICE_TYPES[$sid]:-}"
+    if [[ "$service_type" == "docker" || "$service_type" == "host-systemd" ]]; then
+        pass "Valid service type: $sid → $service_type"
+    else
+        fail "Invalid/missing service type: $sid → '$service_type'"
+    fi
+
     health_source="${SERVICE_HEALTH_SOURCES[$sid]:-}"
     if [[ "$health_source" == "http" || "$health_source" == "container" ]]; then
         pass "Valid health source: $sid → $health_source"

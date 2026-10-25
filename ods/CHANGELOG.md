@@ -109,6 +109,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   longer abort text status reporting.
 
 ### Security
+- The Weaviate library extension now runs Weaviate 1.36.24 (was 1.36.2),
+  pinned by digest. 1.36.24 carries Weaviate's security patch for the eight
+  leaked eMudhra intermediate certificates (CVE-2026-111943) on the same 1.36
+  line, so existing data needs no migration and the extension can still be
+  rolled back.
 - Open WebUI no longer starts for other devices while its built-in
   administrator, `admin@localhost`, still has the password `admin`. Open WebUI
   creates that account while it runs without sign-in, the default for a

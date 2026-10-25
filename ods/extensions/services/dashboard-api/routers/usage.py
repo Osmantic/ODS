@@ -347,7 +347,14 @@ def _configured_local_runtime_metrics_urls() -> list[str]:
     if explicit:
         return [item.strip() for item in explicit.split(",") if item.strip()]
 
-    base = os.environ.get("LLM_API_URL") or os.environ.get("OLLAMA_URL") or "http://llama-server:8080"
+    # Cloud and hybrid modes route LLM_API_URL through LiteLLM, which does not
+    # serve llama.cpp's counters; read them from llama-server itself.
+    base = "http://llama-server:8080"
+    for key in ("LLM_API_URL", "OLLAMA_URL"):
+        value = (os.environ.get(key) or "").strip()
+        if value and "litellm" not in value.lower():
+            base = value
+            break
     parsed = urllib.parse.urlparse(base.rstrip("/"))
     path = parsed.path.rstrip("/")
     if path in {"/v1", "/api/v1"}:

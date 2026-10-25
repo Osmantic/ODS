@@ -11,7 +11,10 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: 1
+              # One GPU. On multi-GPU hosts the installer writes WHISPER_GPU_UUID and the
+              # multigpu overlay requires it; a second reservation there would be
+              # appended by Compose and hand the container an extra GPU.
+              device_ids: ["${WHISPER_GPU_UUID:-0}"]
               capabilities: [gpu]
         limits:
           cpus: '${WHISPER_CPU_LIMIT:-1.0}'

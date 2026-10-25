@@ -8,12 +8,14 @@ dotenv_quote() {
     value="${value//$'\r'/ }"
     value="${value//$'\n'/ }"
 
-    # Single quotes are literal in both Bash and Compose. When the value itself
-    # contains one, use their common double-quoted escape set. Bash requires a
-    # backslash before a literal backtick there, while Compose preserves that
+    # Single quotes are literal in Bash and, except before the closing quote,
+    # in Compose: its parser reads \' as an escaped quote even there, so
+    # 'abc\' never terminates. When the value contains a single quote or ends
+    # in a backslash, use their common double-quoted escape set. Bash requires
+    # a backslash before a literal backtick there, while Compose preserves that
     # backslash, so normalize backticks to the visually equivalent modifier
     # grave accent only in this rare fallback instead of corrupting one reader.
-    if [[ "$value" == *"'"* ]]; then
+    if [[ "$value" == *"'"* || "$value" == *\\ ]]; then
         value="${value//\`/ˋ}"
         value="${value//\\/\\\\}"
         value="${value//\"/\\\"}"
@@ -39,7 +41,9 @@ dotenv_value() {
         && "$value" != [\"\']* && "$value" != *'$'* \
         && "$value" != *[[:space:]]'#'* ]]; then
         printf '%s\n' "$value"
-    elif [[ "$value" != *"'"* ]]; then
+    elif [[ "$value" != *"'"* && "$value" != *\\ ]]; then
+        # Compose reads a backslash before the closing quote as an escaped
+        # quote, so a value ending in one takes the double-quoted form below.
         printf "'%s'\n" "$value"
     else
         value="${value//\\/\\\\}"

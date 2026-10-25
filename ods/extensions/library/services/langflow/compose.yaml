@@ -8,6 +8,12 @@ services:
     environment:
       - LANGFLOW_HOST=0.0.0.0
       - LANGFLOW_PORT=7860
+      # Langflow defaults to AUTO_LOGIN=true, which hands every caller a
+      # superuser session and unauthenticated Python execution.
+      - LANGFLOW_AUTO_LOGIN=false
+      - LANGFLOW_SUPERUSER=${LANGFLOW_SUPERUSER:-admin}
+      - LANGFLOW_SUPERUSER_PASSWORD=${LANGFLOW_SUPERUSER_PASSWORD:?LANGFLOW_SUPERUSER_PASSWORD must be set}
+      - LANGFLOW_SECRET_KEY=${LANGFLOW_SECRET_KEY:?LANGFLOW_SECRET_KEY must be set}
       - LLM_API_URL=${LLM_API_URL:-http://llama-server:8080}
     volumes:
       - ./data/langflow:/app/data
