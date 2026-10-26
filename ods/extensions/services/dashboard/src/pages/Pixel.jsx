@@ -144,13 +144,11 @@ const CLEAN_CONTEXT_RECOVERY_REASON = 'operations-unavailable-zero-submissions'
 const CLEAN_CONTEXT_RECOVERY_NOTICE = 'The first attempt did not reach the Operations Broker, and the host verified that no work was submitted. Retrying once with a clean context…'
 const CLEAN_CONTEXT_RECOVERY_FAILED = 'Automatic recovery was attempted once, but Portal again did not reach the Operations Broker. The host verified that no Operations work was submitted. Check any other work before continuing; this does not confirm that other tools had no effects.'
 // The last turn's answer did not arrive. Calm wording: nothing failed that the
-// owner must repair, and the composer is free again. A restart that cut the
-// answer off offers to send the message again; a turn that ended without a
-// reply the page can show may already have done its work, so it says so.
-export const RESTART_NOTICE = 'Portal restarted while it was answering. Send your message again.'
-// The reply was cut off, but its work went on afterwards, so sending the
-// message again could repeat that work.
-export const RAN_ON_NOTICE = 'Portal kept working on this after the reply was cut off, but its answer couldn’t be shown here. Your files are saved. Ask Portal what it did before you send it again.'
+// owner must repair, and the composer is free again. Its work may have run on
+// and finished after the cut-off (the gateway can outlive the dashboard API,
+// and delegated work outlives both), so nothing offers to send the message
+// again in one click: that could repeat every tool action and file write.
+export const RESTART_NOTICE = 'Portal restarted before its reply arrived. Your files are saved. Ask Portal what it did before you send your message again.'
 export const NO_REPLY_NOTICE = 'Portal finished working on your last request, but its reply couldn’t be shown here. Your files are saved. Ask Portal what it did, or send your next message.'
 export const NOT_RECEIVED_NOTICE = 'Portal didn’t receive your last message. It’s back in the message box, ready to send again.'
 const CHECKING_TURN = 'Checking on your last request…'
@@ -697,12 +695,6 @@ export default function Pixel({ systemStatus = null }) {
   // The chat whose owner chose Continue and whose server confirmed that
   // nothing runs there: that confirmation alone releases its hold.
   const continueRequested = useRef(null)
-  // The request whose chat was found still working after its reply was cut
-  // off, with no receipt receiving that reply.
-  const ranOnRequest = useRef(null)
-  // A reply cut off before its answer arrived offers Send again in place,
-  // with its message back in the composer.
-  const [resendOffer, setResendOffer] = useState(null)
   // A message refused because an earlier turn still held this chat. It is sent
   // as soon as that turn is cleared up, unless the owner changes it first. The
   // ref makes that send happen once, even if a render still shows it pending.
@@ -955,12 +947,9 @@ export default function Pixel({ systemStatus = null }) {
               const recoveredTask = answered ? {task:recordedTask(recovered.task)} : recovered.task ? {task:recovered.task} : {}
               // A receipt without its answer lost its producer with the
               // dashboard API process, and the server then proved nothing
-              // still runs: Portal restarted while it was answering.
+              // still runs: Portal restarted while it was answering. Whether
+              // its work ran on cannot be told, so it is never re-sent here.
               const cutOff = result.state === 'interrupted' && !recovered.done && !recovered.failed && !answered
-              // Its work went on after the cut-off, so it may be done: never
-              // ask for the message again.
-              const ranOn = cutOff && ranOnRequest.current === requestId
-              let resend = null
               if (chat.requestId === requestId && chat.interrupted) {
                 const source = chat.persistenceSnapshot
                 const publication = successful ? recovered.preview : null
@@ -969,7 +958,7 @@ export default function Pixel({ systemStatus = null }) {
                 try {
                   let saved = writer.recover({...source, requestId:null, inFlight:false, interrupted:false,
                     messages:replaceLastAssistant(source.messages, cutOff ? {
-                      content: cutOffContent(recovered.content, ranOn ? RAN_ON_NOTICE : RESTART_NOTICE),
+                      content: cutOffContent(recovered.content, RESTART_NOTICE),
                       status: 'stopped',
                       task: recordedTask(recovered.task || source.messages.at(-1)?.task),
                     } : {
@@ -983,13 +972,11 @@ export default function Pixel({ systemStatus = null }) {
                     }),
                     ...(publication ? {preview:publication, workspaceOpen:true} : {}),
                   })
-                  if ((result.state === 'rejected' && recovered.admissionRejected && recovered.done) || (cutOff && !ranOn)) {
+                  if (result.state === 'rejected' && recovered.admissionRejected && recovered.done) {
                     // Draft edits follow the exact receipt recovery as a new
                     // checked revision; do not weaken the recovery handoff.
                     const draft = restoreRejectedDraft(source)
                     if (draft.draft !== undefined && draft.draft !== saved.draft) saved = writer({...saved, ...draft})
-                    const user = source.messages.at(-2)
-                    if (cutOff && user?.role === 'user' && typeof user.content === 'string' && user.content.trim()) resend = user.content
                   }
                   chat = loadStoredChat(saved)
                 } catch (error) {
@@ -1010,7 +997,6 @@ export default function Pixel({ systemStatus = null }) {
               setMessages(chat.messages)
               setPreview(chat.preview); setPreviewRefresh(0)
               setWorkspaceOpen(chat.workspaceOpen); setPreviewCollapsed(false)
-              if (resend) setResendOffer({chatId, text:resend})
               setInterrupted(chat.interrupted)
               updateRestoredActivity(chat.interrupted ? 'checking' : 'terminal')
               if (chat.interrupted) setActivityRefresh(value => value + 1)
@@ -1048,7 +1034,6 @@ export default function Pixel({ systemStatus = null }) {
       // Nothing runs, but this turn's receipt could not be read: it may still
       // hold the answer. Check again rather than settle without it.
       if (state === 'terminal') state = 'unknown'
-      if (state === 'active' && requestId) ranOnRequest.current = requestId
       setRestoredReplyLive(false)
       updateRestoredActivity(state)
       later(state)
@@ -1344,7 +1329,6 @@ export default function Pixel({ systemStatus = null }) {
     setStopping(false)
     setStopError('')
     setRefusal('')
-    setResendOffer(null)
     holdSend(null)
     setContinuing('')
     setExampleError(null)
@@ -1900,7 +1884,6 @@ export default function Pixel({ systemStatus = null }) {
   const startNewChat = useCallback((preserveDraft = false) => {
     if (newTaskBlocked) { setStopError(newTaskBlocked); return }
     setRefusal('')
-    setResendOffer(null)
     holdSend(null)
     setContinuing('')
     continueRequested.current = null
@@ -2043,7 +2026,6 @@ export default function Pixel({ systemStatus = null }) {
       setInput(chat.draft)
       setStopError('')
       setRefusal('')
-      setResendOffer(null)
       holdSend(null)
       setContinuing('')
       continueRequested.current = null
@@ -2089,15 +2071,6 @@ export default function Pixel({ systemStatus = null }) {
       return
     }
     void sendMessage()
-  }
-  // Send again for a reply that was cut off: the composer's restored copy when
-  // it is still there, otherwise the original message, leaving a newer draft.
-  const resendCutOff = () => {
-    const offer = resendOffer
-    if (offer?.chatId !== chatIdRef.current) return
-    if (input.trim() === offer.text.trim()) { sendFromComposer(); return }
-    if (sendBlocked) { setSendHint(true); return }
-    void sendMessage(offer.text)
   }
   // Pictures cannot join a turn while one is in flight (its own pictures are
   // still attached). A drop or paste then says so instead of doing nothing,
@@ -2378,9 +2351,6 @@ export default function Pixel({ systemStatus = null }) {
                   {!message.questions && (shownContent || message.status==='streaming') && (message.status==='error' ? <PortalResponseError content={shownContent}/> : <PortalStreamingText key={message.revealResponse || chatIdRef.current} active={message.status==='streaming'} animate={Boolean(message.revealResponse) || message.status==='streaming'} instant={['stopped','recovering','unconfirmed'].includes(message.status)} onReveal={chatScroll.onContentResize} components={MARKDOWN_COMPONENTS} artifacts={message.role==='assistant' && message.status==='done' ? message.artifacts : null}>{shownContent}</PortalStreamingText>)}
                   <OperationsApprovalCard content={message.content} />
                   {!message.questions && message.status!=='streaming' && <PortalResponseActions content={displayedContent}/>}
-                  {message.status === 'stopped' && index === messages.length - 1 && resendOffer?.chatId === chatIdRef.current && (
-                    <div className="portal-context-status"><button type="button" className="portal-context-action" onClick={resendCutOff}>Send again</button></div>
-                  )}
                 </>
               ) : (
                 <span className="break-words whitespace-pre-wrap">{message.content}</span>

@@ -8,7 +8,7 @@ import {act,fireEvent,screen,waitFor,within} from '@testing-library/react'
 import {render} from '../test/test-utils'
 // The repository's base ESLint profile does not mark JSX identifiers as uses.
 // eslint-disable-next-line no-unused-vars
-import Pixel, {NO_REPLY_NOTICE, NOT_RECEIVED_NOTICE, RAN_ON_NOTICE, RESTART_NOTICE} from './Pixel'
+import Pixel, {NO_REPLY_NOTICE, NOT_RECEIVED_NOTICE, RESTART_NOTICE} from './Pixel'
 import {CONTINUE_FAILED} from '../lib/portalContext'
 
 const QUESTION='Can you do things on cron timers or scheduled work tasks?'
@@ -70,11 +70,12 @@ function saveCutOffChat(extra={}) {
     messages:[{role:'user',content:QUESTION},{role:'assistant',content:PARTIAL}],...extra}))
 }
 
-it('settles a turn a restart cut off by itself, keeps what arrived and offers Send again',async()=>{
+it('settles a turn a restart cut off by itself, and never offers to repeat it in one click',async()=>{
   let attempt
   server.streams.push(body=>{attempt=body;return cutOffStream()})
   // The restarted server proved nothing still runs and settled the receipt:
-  // the producer died with the old process before the answer was sent.
+  // the producer died with the old process before the answer was sent. The
+  // gateway may well have finished the turn meanwhile, files and all.
   server.result=body=>{
     expect(body).toEqual({chat_id:attempt.chat_id,request_id:attempt.request_id})
     return response({state:'interrupted',events:TASK_ONLY})
@@ -83,24 +84,25 @@ it('settles a turn a restart cut off by itself, keeps what arrived and offers Se
   fireEvent.change(field(),{target:{value:QUESTION}})
   fireEvent.click(screen.getByTitle('Send'))
   const reply=await screen.findByText(RESTART_NOTICE)
+  expect(RESTART_NOTICE).toBe('Portal restarted before its reply arrived. Your files are saved. Ask Portal what it did before you send your message again.')
   const bubble=reply.closest('[data-pixel-response]')
   expect(within(bubble).getByText('Response stopped')).toBeVisible()
+  expect(screen.queryByRole('button',{name:'Send again'})).toBeNull()
   expect(screen.queryByText(STALE)).toBeNull()
   expect(row()).toBeNull()
-  // The composer is free and holds the question again.
+  // The composer is free, and nothing is put back to be sent again.
   expect(field()).toBeEnabled()
-  expect(field()).toHaveValue(QUESTION)
-  expect(screen.getByTitle('Send')).toBeEnabled()
+  expect(field()).toHaveValue('')
   await waitFor(()=>expect(stored()).toMatchObject({interrupted:false,inFlight:false,requestId:null}))
   expect(stored().messages.at(-1)).toMatchObject({status:'stopped',content:RESTART_NOTICE})
   expect(stored().messages.at(-1).task).toBeUndefined()
-  // One click sends the question again as a new turn.
-  server.streams.push(()=>answer('Yes: use a scheduled task.'))
-  fireEvent.click(within(bubble).getByRole('button',{name:'Send again'}))
-  expect(await screen.findByText('Yes: use a scheduled task.')).toBeVisible()
-  const resent=JSON.parse(calls('/api/pixel/chat/stream')[1][1].body)
-  expect(resent.messages.at(-1)).toEqual({role:'user',content:QUESTION})
-  expect(resent.request_id).not.toBe(attempt.request_id)
+  expect(stored().draft || '').toBe('')
+  // The next message is the owner's own.
+  server.streams.push(()=>answer('I created the scheduled task "cron-check".'))
+  fireEvent.change(field(),{target:{value:'What did you do?'}})
+  fireEvent.click(screen.getByTitle('Send'))
+  expect(await screen.findByText('I created the scheduled task "cron-check".')).toBeVisible()
+  expect(calls('/api/pixel/chat/stream')).toHaveLength(2)
   expect(calls('/api/pixel/chat/cancel')).toHaveLength(0)
 })
 
@@ -195,9 +197,13 @@ it('never settles a turn whose receipt could not be read, even when nothing runs
   await within(hold).findByText('Portal can’t confirm your last request has finished.')
   expect(screen.queryByText(NO_REPLY_NOTICE,{exact:false})).toBeNull()
   expect(screen.queryByRole('status',{name:'Message not started'})).toBeNull()
-  // Once the receipt can be read, it decides what the reply says.
+  // Once the receipt can be read, it decides what the reply says. Every
+  // check before that said "unknown", which proves nothing about whether
+  // the turn finished meanwhile, so nothing is put back to send again.
   server.result=()=>response({state:'interrupted',events:TASK_ONLY})
   await screen.findByText(RESTART_NOTICE,{},{timeout:4000})
+  expect(screen.queryByRole('button',{name:'Send again'})).toBeNull()
+  expect(field()).toHaveValue('')
   expect(calls('/api/pixel/chat/cancel')).toHaveLength(0)
 })
 
@@ -297,7 +303,8 @@ it('never offers Continue while the server finds this turn still running',async(
 
 it('never asks to send again when the cut-off turn’s work went on, so nothing is done twice',async()=>{
   // The turn delegated work. A restart cut its reply off while that work
-  // went on, and later ended.
+  // went on, and later ended. The settled reply says what it says for any
+  // cut-off turn, claiming nothing about what ran.
   saveCutOffChat()
   let running=true
   server.result=()=>response(running?{state:'unresolved',events:''}:{state:'interrupted',events:TASK_ONLY})
@@ -309,10 +316,10 @@ it('never asks to send again when the cut-off turn’s work went on, so nothing 
   running=false
   for(let second=0;second<15;second++)await act(async()=>vi.advanceTimersByTimeAsync(1000))
   expect(row()).toBeNull()
-  const reply=screen.getByText(RAN_ON_NOTICE)
+  const reply=screen.getByText(RESTART_NOTICE)
   const bubble=reply.closest('[data-pixel-response]')
   expect(within(bubble).queryByRole('button',{name:'Send again'})).toBeNull()
-  expect(screen.queryByText(RESTART_NOTICE,{exact:false})).toBeNull()
+  expect(screen.queryByText(/kept working on this/)).toBeNull()
   // The question is not put back to be sent again; the composer is free.
   expect(field()).toHaveValue('')
   expect(field()).toBeEnabled()
