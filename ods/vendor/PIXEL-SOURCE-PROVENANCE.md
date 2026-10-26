@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`c2a0929928d1b0b4f7d786e198239bdb1c264fb5`, and its SHA-256 is
-`bd0bee1d0325c6ae7956ac24c64e19688283c8d9a567e8b39282fe2c291ec779`.
+`57608788b03da813172323f2ab4caa463c72c63d`, and its SHA-256 is
+`a035e8f992b7e8707aac1356b7a195d65255188024ea58a3a1e9f168901c715c`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -336,11 +336,11 @@ tool permissions when Pixel renders an updated configuration. It does not add
 another MCP implementation or OAuth store. The macOS preparation path renders
 against a private copy of the selected previous state and verifies that the
 registry is unchanged before activation. The functional checkpoint is
-`1220b3630f5d35ba687ec59a18a7638e127a3f6f`; see
+`2ac52729f`; see
 [`pixel/ODS-QUALIFICATION-4.3.36.md`](pixel/ODS-QUALIFICATION-4.3.36.md) for evidence
 and the remaining acceptance gates. This is not a claim of fleet acceptance.
 
-The public source tree is `45a671aea99e3a4412f17397f3c3be6e1e946c3a`.
+The public source tree is `13acd0b000968fa07c4168b856bda665422396d3`.
 Two independent empty bare repositories, using the documented alternates
 procedure and `pack.threads=1`, produced byte-identical bundles with the retained
 public synthetic identity, timestamp and message. Recreating the previous tree
@@ -361,8 +361,13 @@ The earlier unpublished bundle `dbf6af6e9d6758a72c30585b3baab7ee4222c3bd`
 passed the existing isolated Pixel end-to-end suite on Linux and the source-upgrade
 and dashboard reconciliation suites. Its Docker/systemd boundaries are controlled;
 these checks do not constitute native Mac or complete installed fleet qualification.
-The current bundle changes only the qualification note to correct the native MCP
-fixture evidence described above; the functional source checkpoint is unchanged.
-It replaces that unpublished artifact and does not inherit a claim that the exact
-new bundle ran those suites. The comparison-fixture release gate described in
+The candidate subsequently corrected the native MCP fixture evidence in the
+qualification note, then added the declared-required-argument guard and its
+regressions at the functional checkpoint above. It replaces the unpublished
+artifacts and does not inherit a claim that the exact new bundle ran those
+suites. The current exact bundle checkout subsequently passed that isolated
+end-to-end suite in 89.20 seconds. The current ODS package with all installer
+repairs also passed the corrected loaded-Pixel native MCP read/refused-write
+case in 30.15 seconds. Neither result qualifies real-model inference, owner
+OAuth consent or native Mac behavior. The comparison-fixture release gate described in
 the candidate record remains open and also fails on the untouched 4.3.35 bundle.

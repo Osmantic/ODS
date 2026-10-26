@@ -1,6 +1,6 @@
 # ODS-maintained Pixel 4.3.36 candidate
 
-Functional source checkpoint: `1220b3630f5d35ba687ec59a18a7638e127a3f6f`,
+Functional source checkpoint: `2ac52729f`,
 prepared locally on `feat/portal-native-integrations-20261026`. This is an ODS
 candidate, not an upstream Pixel release or completed platform qualification.
 
@@ -24,6 +24,14 @@ The version advances from 4.3.35 because held source upgrades require an
 increasing version. OpenClaw, runtime/dependency versions, image digests and
 trust anchors remain at their existing pins. No release signature is generated.
 
+The unpublished candidate also checks the declared required parameter names
+before a Source Broker handler reads a projection or creates a proposal. A
+deferred call using `id` instead of `messageId` receives the missing field and
+the schema-discovery route, rather than a misleading record-not-found error.
+A draft call without `body` cannot create a partial proposal. This checks missing
+fields, not the complete JSON Schema; existing provider/approval validation and
+tool policies remain authoritative. It adds no aliases or automatic retries.
+
 Evidence from the functional checkpoint:
 
 - `ods/tests/test_pixel_connection_planner.py`: 19 cases passed on Linux/WSL,
@@ -41,13 +49,21 @@ Evidence from the functional checkpoint:
   fixture could pass its native MCP assertions without Pixel registering; that
   earlier timing is not qualification of the complete Pixel path. The corrected
   test passed in 41.013 seconds against a private copy of the exact ODS-installed
-  package with the current ODS profile repairs. This uses a controlled provider,
+  package with the listed current image/compaction repairs. This uses a controlled provider,
   not inference or a real remote OAuth account. Native execution is confined to
   the fixture's existing MCP-only tool policy; Docker sandbox execution is not
   qualified by it. No installed runtime or access mode was changed.
 - The macOS config/migration contract suites passed 65 cases on Linux/WSL,
   covering private staging and rejection of added, changed and null registry
   states. These are preparation/preservation checks, not real Mac qualification.
+- `tests/source-broker-plugin.test.mjs`: the complete suite passes twice with
+  the exact locked TypeBox 1.3.13 dependency. Its three new regression cases fail
+  against the preceding handler and pass against this one: missing arguments
+  fail before projection access, the correct `messageId` subsequently reads the
+  actual record, and missing draft/calendar fields leave no partial proposal.
+  The offline schema-builder fixture also passes. Broker and release-dependency
+  suites pass 85 cases. These checks do not establish small-model reliability;
+  a real 2B/8K natural task still repeats catalog searches and remains unqualified.
 
 Before accepting this candidate, complete bundle/source verification, the
 vendored release and end-to-end suites, held Linux/WSL source-upgrade checks,

@@ -24,8 +24,8 @@ from .connection import normalize_connection
 from .connection_transport import probe_connection
 from .store import MAX_BYTES, StoreError, decode_document
 
-PIXEL_COMMIT = 'c2a0929928d1b0b4f7d786e198239bdb1c264fb5'
-PIXEL_BUNDLE_SHA256 = 'bd0bee1d0325c6ae7956ac24c64e19688283c8d9a567e8b39282fe2c291ec779'
+PIXEL_COMMIT = '57608788b03da813172323f2ab4caa463c72c63d'
+PIXEL_BUNDLE_SHA256 = 'a035e8f992b7e8707aac1356b7a195d65255188024ea58a3a1e9f168901c715c'
 PIXEL_BUNDLE = Path(__file__).resolve().parents[2]/'vendor/pixel.bundle'
 # Preparation follows the current paired installer. Loading must not rewrite or
 # invalidate clients prepared with an earlier supported renderer. These exact
