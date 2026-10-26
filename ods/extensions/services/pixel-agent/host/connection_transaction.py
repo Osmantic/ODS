@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 
 import pixel_access_mode as controller
-from pixel_connections import planner, state
+from pixel_connections import planner, plugins as portal_plugins, state
 
 JOURNAL = "connection-journal.json"
 BACKUP = "connection-before.json"
@@ -191,6 +191,24 @@ def _plugin_ready(openclaw, install_dir, *, enabled):
         return False
 
 
+def _catalog_ready(openclaw, chosen):
+    """Every reviewed plugin the owner turned on resolves from the release as loaded."""
+    try:
+        for plugin_id in chosen:
+            inspected = subprocess.run([openclaw, "plugins", "inspect", plugin_id, "--json"],
+                                       stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                       timeout=120)
+            if inspected.returncode != 0 or len(inspected.stdout) > 1024 * 1024:
+                return False
+            value = json.loads(inspected.stdout)
+            plugin = value.get("plugin") if isinstance(value, dict) else None
+            if not isinstance(plugin, dict) or plugin.get("status") != "loaded":
+                return False
+        return True
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return False
+
+
 def _activate(activate):
     # Unknown transport/process state is NOT a proven mismatch. Leave the
     # durable journal and host gates held; only explicit recovery may retry it.
@@ -319,7 +337,8 @@ def apply_connection(config_path, gateway_target, connection_answers, *, state_d
         for name, _backup in SIDE_FILES:
             _replace(paths[name], side_after[name], journal["files"][name]["beforeSha"])
         enabled = bool(planner.active_tools(planned, gateway_target))
-        if not _plugin_ready(openclaw, install_dir, enabled=enabled) or not _activate(activate):
+        if (not _plugin_ready(openclaw, install_dir, enabled=enabled)
+                or not _catalog_ready(openclaw, gateway_target["plugins"]) or not _activate(activate)):
             return _rollback(path, sd, journal, validate, check_no_active_run, activate, openclaw, install_dir)
         controller._require_idle(check_no_active_run)
         _check_result(path, journal, "applied")
@@ -359,7 +378,8 @@ def connection_status(config_path, *, state_dir, env_path, answers_path):
         try:
             config = _decode(data)
             live = dict(planner.gateway_limbs(env.decode("utf-8")),
-                        userTimezone=config.get("agents", {}).get("defaults", {}).get("userTimezone"))
+                        userTimezone=config.get("agents", {}).get("defaults", {}).get("userTimezone"),
+                        plugins=portal_plugins.enabled_in(config))
             planner.target(live)
         except (planner.PlanError, UnicodeError, AttributeError):
             raise ConnectionTransactionError("connection-config-unrecognized") from None

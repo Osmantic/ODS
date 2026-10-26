@@ -1210,7 +1210,7 @@ _CONNECTION_TIMEOUTS = {'connection-begin': 70, 'connection-complete': 160, 'con
                         'connection-cancel': 30, 'connection-disconnect': 160, 'connection-sync': 30,
                         'connection-proposals': 30, 'connection-approve': 160, 'connection-decline': 30,
                         'connection-reconcile': 160, 'connection-activity': 30, 'connection-undo': 160,
-                        'connection-drafts': 30}
+                        'connection-drafts': 30, 'connection-plugin': 308}
 
 
 async def handle_connection_action(request: web.Request):

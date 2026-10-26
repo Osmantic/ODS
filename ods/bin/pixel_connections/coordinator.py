@@ -25,7 +25,7 @@ from pixel_access_bridge import AccessError, atomic_json, remaining, runtime_con
 from pixel_model_coordinator import _managed_marker, _marker_digest
 from pixel_settings.coordinator import _identity, _read, _valid_identity
 
-from . import activity, approvals, catalog, custody, drafts, lifecycle, oauth, planner, state
+from . import activity, approvals, catalog, custody, drafts, lifecycle, oauth, planner, plugins, state
 
 LIFECYCLE = lifecycle.PATH.name
 PATHS = custody.Paths()
@@ -129,7 +129,8 @@ def gateway_target(record: dict[str, Any] | None, *, custody_held: bool) -> dict
     """What Portal's gateway should run for the record, as the installer would render it."""
     google = (record or {}).get("connectors", {}).get("google")
     capabilities = state.effective_capabilities(google) if google and custody_held else None
-    return dict(planner.limbs(capabilities), userTimezone=(record or {}).get("ownerTimeZone"))
+    return dict(planner.limbs(capabilities), userTimezone=(record or {}).get("ownerTimeZone"),
+                plugins=state.enabled_plugins(record))
 
 
 # ---------------------------------------------------------------- Full Access (Decision 4)
@@ -398,7 +399,7 @@ def disconnect(bridge, request: Any) -> dict[str, Any]:
             record = None
         if record is not None:
             connectors = {name: value for name, value in record["connectors"].items() if name != "google"}
-            keep = connectors or record["ownerTimeZone"]
+            keep = connectors or record["ownerTimeZone"] or state.enabled_plugins(record)
             _write_record(dict(record, updatedAt=_iso(_now()), connectors=connectors) if keep else None)
         _write_lifecycle(bridge, _lifecycle("deactivating"))
         return {"outcome": "disconnected", "revoked": revoked == "revoked"}
@@ -825,11 +826,48 @@ def activate(bridge, request: Any) -> dict[str, Any]:
         return {"outcome": outcome}
 
 
+# ---------------------------------------------------------------- reviewed plugins
+
+def _plugin_request(request: Any) -> dict[str, Any]:
+    if (not isinstance(request, dict) or set(request) != {"plugin", "enabled"}
+            or request["plugin"] not in plugins.IDS or type(request["enabled"]) is not bool):
+        raise AccessError("invalid-connection-request")
+    return request
+
+
+def plugin_change(bridge, request: Any) -> dict[str, Any]:
+    """Turn one reviewed plugin on or off for Portal, through the same gated gateway change.
+
+    The choice is kept only when Portal's gateway takes it: a busy Portal or a
+    change rolled back leaves the record as it was, so nothing waits half-done.
+    """
+    request = _plugin_request(request)
+    with bridge.bounded(300), bridge.locked():
+        bridge.discover()
+        before = _record()
+        base = before or {"schemaVersion": state.SCHEMA_VERSION, "kind": state.KIND, "updatedAt": None,
+                          "ownerTimeZone": None, "connectors": {}}
+        record = dict(base, updatedAt=_iso(_now()),
+                      plugins=dict(base.get("plugins", {}), **{request["plugin"]: request["enabled"]}))
+        held = custody.holds_sign_in(PATHS)
+        _write_record(record)
+        try:
+            outcome = _change_gateway(bridge, gateway_target(record, custody_held=held),
+                                      state.connection_answers(record, google_custody=held))
+        except (AccessError, custody.CustodyError):
+            _write_record(before)
+            raise
+        if outcome == "rolled-back":
+            _write_record(before)
+            raise AccessError("plugin-change-rolled-back")
+        return {"outcome": outcome}
+
+
 OPERATIONS = {"connection-begin": begin, "connection-complete": complete, "connection-activate": activate,
               "connection-cancel": cancel, "connection-disconnect": disconnect, "connection-sync": sync,
               "connection-proposals": proposals, "connection-approve": approve, "connection-decline": decline,
               "connection-reconcile": reconcile, "connection-activity": changes_made, "connection-undo": undo,
-              "connection-drafts": drafts_waiting}
+              "connection-drafts": drafts_waiting, "connection-plugin": plugin_change}
 
 
 def control(bridge, operation: str, request: Any) -> dict[str, Any]:

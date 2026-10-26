@@ -152,7 +152,7 @@ CONNECTION_TIMEOUTS = {'connection-begin': 70, 'connection-complete': 160, 'conn
                        'connection-cancel': 30, 'connection-disconnect': 160, 'connection-sync': 30,
                        'connection-proposals': 30, 'connection-approve': 160, 'connection-decline': 30,
                        'connection-reconcile': 160, 'connection-activity': 30, 'connection-undo': 160,
-                       'connection-drafts': 30}
+                       'connection-drafts': 30, 'connection-plugin': 310}
 
 
 def request_runtime_connection_action(operation, request, *, config):
@@ -218,7 +218,7 @@ _CONNECTION_OPERATIONS = ('connection-begin', 'connection-complete', 'connection
                           'connection-cancel', 'connection-disconnect', 'connection-sync',
                           'connection-proposals', 'connection-approve', 'connection-decline',
                           'connection-reconcile', 'connection-activity', 'connection-undo',
-                          'connection-drafts')
+                          'connection-drafts', 'connection-plugin')
 _CAPABILITY_IDS = ('calendar.read', 'calendar.write', 'calendar.direct', 'gmail.read', 'gmail.drafts')
 _FLOW = re.compile(r'[a-f0-9]{32}')
 _STATE = re.compile(r'[A-Za-z0-9_-]{32,128}')
@@ -233,6 +233,7 @@ _REASON = re.compile(r'[a-z][a-z0-9-]{0,95}')
 _AUTH_URL = re.compile(r'https://accounts\.google\.com/o/oauth2/auth\?[A-Za-z0-9._~%&=+-]{1,4000}')
 _PROPOSAL = re.compile(r'calendar-[0-9]{13}-[a-f0-9]{8}')
 _DRAFT = re.compile(r'gmail-draft-[0-9]{13}-[a-f0-9]{8}')
+_PLUGIN = re.compile(r'[a-z][a-z0-9-]{1,62}')
 _HEX = re.compile(r'[a-f0-9]{64}')
 _ATTENDEE = re.compile(r'[^\s@<>\x00-\x1f\x7f]+@[^\s@<>\x00-\x1f\x7f]+')
 _CONTROL = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
@@ -356,6 +357,9 @@ def valid_connection_action(value):
         return set(request) == {'proposalId'} and _suggestion(operation, request['proposalId'])
     if operation == 'connection-disconnect':
         return request == {'connector': 'google'}
+    if operation == 'connection-plugin':
+        return (set(request) == {'plugin', 'enabled'} and _text(request['plugin'], _PLUGIN)
+                and type(request['enabled']) is bool)
     if operation == 'connection-cancel':
         return set(request) == {'flowId'} and _text(request['flowId'], _FLOW)
     if operation == 'connection-complete':
@@ -412,7 +416,8 @@ def public_connection_action(operation, value):
         valid = (set(value) == {'proposalId', 'outcome'} and _suggestion(operation, value['proposalId'])
                  and value['outcome'] in _CHANGE_OUTCOMES[operation])
     else:
-        outcomes = {'connection-activate': ('applied', 'unchanged'), 'connection-cancel': ('cancelled',),
+        outcomes = {'connection-activate': ('applied', 'unchanged'), 'connection-plugin': ('applied', 'unchanged'),
+                    'connection-cancel': ('cancelled',),
                     'connection-sync': ('started',)}.get(operation, ())
         valid = set(value) == {'outcome'} and value['outcome'] in outcomes
     if not valid:

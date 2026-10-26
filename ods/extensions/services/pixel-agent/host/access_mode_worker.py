@@ -29,7 +29,7 @@ if platform.system() == "Linux":
     # Connected apps ship only with the Linux and WSL Source Broker.
     for path in (directory / "connection_transaction.py", directory / "pixel_connections",
                  directory / "pixel_connections" / "__init__.py", directory / "pixel_connections" / "planner.py",
-                 directory / "pixel_connections" / "state.py"):
+                 directory / "pixel_connections" / "state.py", directory / "pixel_connections" / "plugins.py"):
         info = path.lstat()
         if stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
             raise RuntimeError("controller program custody unavailable")

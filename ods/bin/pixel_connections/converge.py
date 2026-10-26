@@ -19,7 +19,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from pixel_connections import planner  # noqa: E402
+from pixel_connections import planner, plugins  # noqa: E402
 
 MAX_BYTES = 2 * 1024 * 1024
 ZONE_LINE = re.compile(r"^PIXEL_USER_TIMEZONE='([A-Za-z0-9_+\-/]*)'$")
@@ -61,8 +61,11 @@ def main(argv: list[str]) -> int:
     if len(argv) != 5:
         raise SystemExit(__doc__)
     config_path, env_path, generated_env, pixel_env, install_dir = map(Path, argv)
-    target = dict(planner.gateway_limbs(_read(generated_env).decode("utf-8")), userTimezone=_zone(_read(pixel_env)))
     config_raw, env_raw = _read(config_path), _read(env_path)
+    # Plugin changes never stay half-done (the coordinator keeps a choice only once
+    # the gateway takes it), so the live configuration's plugins are already right.
+    target = dict(planner.gateway_limbs(_read(generated_env).decode("utf-8")), userTimezone=_zone(_read(pixel_env)),
+                  plugins=plugins.enabled_in(json.loads(config_raw)))
     try:
         planned = planner.plan_config(json.loads(config_raw), target, install_dir=str(install_dir))
         planned_env = planner.plan_gateway_env(env_raw.decode("utf-8"), target).encode("utf-8")

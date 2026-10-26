@@ -21,7 +21,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "bin"))
 import pixel_access_relay  # noqa: E402
-from pixel_connections import catalog, host_api, status  # noqa: E402
+from pixel_connections import catalog, host_api, plugins, status  # noqa: E402
 
 KEY = "synthetic-connections-test-key"
 FLOW = "a" * 32
@@ -77,7 +77,8 @@ class ConnectionsHostAPITests(unittest.TestCase):
         with patch.object(pixel_access_relay, "request_runtime_connections", return_value=(200, reply)) as relay:
             code, body = self.request()
         self.assertEqual(code, 200)
-        self.assertEqual(body, dict(reply, catalog=catalog.public_catalog()))
+        self.assertEqual(body, dict(reply, catalog=catalog.public_catalog(), pluginCatalog=plugins.public_catalog()))
+        self.assertNotIn("config", json.dumps(body["pluginCatalog"]), "Settings never sees a plugin's configuration")
         relay.assert_called_once()
 
     def test_owner_auth_comes_first(self):
@@ -102,15 +103,31 @@ class ConnectionsHostAPITests(unittest.TestCase):
                           return_value=(400, {"error": "invalid-request"})):
             self.assertEqual(self.request(), (400, {"error": "invalid-request"}))
 
-    def post(self, action, body, *, token=KEY):
+    def post(self, action, body, *, token=KEY, path=None):
         connection = http.client.HTTPConnection(*self.server.server_address, timeout=3)
         try:
-            connection.request("POST", "/v1/pixel/connections/google/" + action, json.dumps(body).encode(),
+            connection.request("POST", path or "/v1/pixel/connections/google/" + action, json.dumps(body).encode(),
                                {"Authorization": "Bearer " + token, "Content-Type": "application/json"})
             response = connection.getresponse()
             return response.status, json.loads(response.read())
         finally:
             connection.close()
+
+    def test_a_plugin_change_has_its_own_address_and_exact_shape(self):
+        plugin_path = "/v1/pixel/connections/plugin"
+        with patch.object(pixel_access_relay, "request_runtime_connection_action",
+                          return_value=(200, {"outcome": "applied"})) as relay:
+            self.assertEqual(self.post("", {"plugin": "memory-wiki", "enabled": True}, path=plugin_path),
+                             (200, {"outcome": "applied"}))
+            self.assertEqual(relay.call_args.args, ("connection-plugin", {"plugin": "memory-wiki", "enabled": True}))
+            relay.reset_mock()
+            self.assertEqual(self.post("plugin", {"plugin": "memory-wiki", "enabled": True})[0], 404)
+            for body in ({"plugin": "memory-wiki"}, {"plugin": "memory-wiki", "enabled": "yes"},
+                         {"plugin": 7, "enabled": True}, {"plugin": "memory-wiki", "enabled": True, "config": {}}):
+                self.assertEqual(self.post("", body, path=plugin_path), (400, {"error": "invalid-request"}), body)
+            self.assertEqual(self.post("", {"plugin": "memory-wiki", "enabled": True}, path=plugin_path,
+                                       token="wrong")[0], 403)
+        relay.assert_not_called()
 
     def test_each_action_reaches_root_and_returns_its_reply(self):
         for action, operation, request, reply in (

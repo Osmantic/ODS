@@ -3,6 +3,7 @@ import HelpLink from '../HelpLink'
 import CalendarActivity from './CalendarActivity'
 import CalendarChanges from './CalendarChanges'
 import EmailDrafts from './EmailDrafts'
+import PortalPlugins from './PortalPlugins'
 import GoogleConnectWizard, { Problem } from './GoogleConnectWizard'
 import { GOOGLE_CONSOLE, capabilitySummary, consoleLink, googleCard } from './connectedAppsStatus'
 import { disconnectGoogle, finishGoogle, savedProject, syncGoogle, useConnectedAppsStatus, useFullAccessOn } from './useConnectedApps'
@@ -146,5 +147,6 @@ export default function ConnectedApps() {
       {google?.account && !wizard ? <EmailDrafts waiting={google.waitingDrafts ?? 0}
         writable={Boolean(google.capabilities?.['gmail.drafts'])} onChanged={() => { void refresh() }} /> : null}
     </article> : null}
+    <PortalPlugins status={status} onChanged={() => { void refresh() }} />
   </section>
 }

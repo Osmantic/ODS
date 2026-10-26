@@ -1,7 +1,8 @@
 """The owner's connected-apps choices, kept by ODS across installs and updates.
 
 The record holds choices only, never credentials: which capabilities the owner
-turned on, the account, the Calendar and Gmail window, and the owner's time zone.
+turned on, the account, the Calendar and Gmail window, the owner's time zone,
+and which reviewed plugins Portal may use (plugins.py).
 One fact rides along with them: ``directPaused`` says Portal had Full Access when
 the custodian last looked, so the calendar changes Portal may make by itself wait
 (Decision 4). Every renderer reads the effective capabilities, never the raw ones.
@@ -20,12 +21,18 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from . import plugins as portal_plugins
+
 PATH = Path("/etc/ods/portal-connections.json")
 KIND = "ods-portal-connections"
 SCHEMA_VERSION = 1
 MAX_BYTES = 64 * 1024
 GOOGLE_CAPABILITIES = ("calendar.read", "calendar.write", "calendar.direct", "gmail.read", "gmail.drafts")
 TOP_KEYS = {"schemaVersion", "kind", "updatedAt", "ownerTimeZone", "connectors"}
+# Written since the plugin catalog; a record without it turns no plugin on. An ID
+# this release does not know (say, after going back to an older ODS) is kept and ignored.
+OPTIONAL_TOP_KEYS = {"plugins"}
+MAX_PLUGINS = 32
 GOOGLE_KEYS = {"status", "account", "calendarId", "gmailWindowDays", "capabilities", "cloudModels", "connectedAt"}
 # Written since automatic calendar changes became available; a record without it is not paused.
 OPTIONAL_GOOGLE_KEYS = {"directPaused"}
@@ -86,8 +93,13 @@ def _google(value: Any) -> dict[str, Any]:
 
 def validate(value: Any) -> dict[str, Any]:
     """Return the record unchanged when it matches the schema exactly."""
-    if not isinstance(value, dict) or set(value) != TOP_KEYS:
+    if not isinstance(value, dict) or not TOP_KEYS <= set(value) <= TOP_KEYS | OPTIONAL_TOP_KEYS:
         raise StateError("connection record has missing or unknown fields")
+    chosen = value.get("plugins", {})
+    if (not isinstance(chosen, dict) or len(chosen) > MAX_PLUGINS
+            or any(not isinstance(key, str) or not portal_plugins.PLUGIN_ID.fullmatch(key) or type(item) is not bool
+                   for key, item in chosen.items())):
+        raise StateError("connection record has an invalid plugin choice")
     if value["schemaVersion"] != SCHEMA_VERSION or value["kind"] != KIND:
         raise StateError("connection record has an unknown version or kind")
     _timestamp(value["updatedAt"], "updatedAt")
@@ -157,7 +169,7 @@ def read(path: Path = PATH, *, owners: tuple[int, ...] = (0,)) -> dict[str, Any]
 # the optional ones are left out entirely.
 DISCONNECTED_ANSWERS = {"timeZone": "UTC", "googleAccount": "ods@localhost.local", "calendarId": "primary",
                         "emailLimbEnabled": False, "calendarLimbEnabled": False, "calendarDirectEnabled": False}
-OPTIONAL_ANSWERS = ("userTimezone", "calendarWriteEnabled", "gmailWindowDays", "emailDraftsEnabled")
+OPTIONAL_ANSWERS = ("userTimezone", "calendarWriteEnabled", "gmailWindowDays", "emailDraftsEnabled", "portalPlugins")
 ANSWER_KEYS = (*DISCONNECTED_ANSWERS, *OPTIONAL_ANSWERS)
 
 
@@ -181,7 +193,14 @@ def valid_connection_answers(value: Any) -> bool:
             and all(type(value[key]) is bool for key in ("emailLimbEnabled", "calendarLimbEnabled",
                                                          "calendarDirectEnabled"))
             and (write is None or type(write) is bool) and (drafts is None or type(drafts) is bool)
-            and (window is None or type(window) is int and 1 <= window <= 3650))
+            and (window is None or type(window) is int and 1 <= window <= 3650)
+            and portal_plugins.valid_answers(value["portalPlugins"]))
+
+
+def enabled_plugins(record: dict[str, Any] | None) -> list[str]:
+    """The catalog plugins the owner turned on, in catalog order."""
+    chosen = (record or {}).get("plugins", {})
+    return [plugin_id for plugin_id in portal_plugins.IDS if chosen.get(plugin_id) is True]
 
 
 def effective_capabilities(google: dict[str, Any]) -> dict[str, bool]:
@@ -205,6 +224,10 @@ def onboarding_overrides(record: dict[str, Any] | None, *, google_custody: bool)
     zone = record["ownerTimeZone"]
     if zone:
         overrides.update(timeZone=zone, userTimezone=zone)
+    # Plugins need no Google sign-in; ODS's runtime overlay loads them from this answer.
+    chosen = portal_plugins.answers(enabled_plugins(record))
+    if chosen:
+        overrides["portalPlugins"] = chosen
     google = record["connectors"].get("google")
     if google and google_custody:
         capabilities = effective_capabilities(google)

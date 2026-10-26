@@ -105,6 +105,10 @@ MUTATIONS = (
     lambda v: v["connectors"]["google"].update(waitingChanges=None if v["connectors"]["google"]["waitingChanges"] is not None
                                                else 0),
     lambda v: v["connectors"]["google"].pop("waitingDrafts"),
+    lambda v: v.pop("plugins"),
+    lambda v: v.update(plugins="on"),
+    lambda v: v.update(plugins={"memory-wiki": "yes"}),
+    lambda v: v.update(plugins={"Not An Id": True}),
     lambda v: v["connectors"]["google"].update(waitingDrafts=-1),
     lambda v: v["connectors"]["google"].update(waitingDrafts=True),
     lambda v: v["connectors"]["google"].update(waitingDrafts=51),
@@ -146,6 +150,8 @@ REQUESTS = (
     ("connection-activity", {}), ("connection-undo", {"proposalId": PROPOSAL}),
     ("connection-drafts", {}), ("connection-approve", {"proposalId": DRAFT_ID, "sha256": "c" * 64}),
     ("connection-decline", {"proposalId": DRAFT_ID}), ("connection-reconcile", {"proposalId": DRAFT_ID}),
+    ("connection-plugin", {"plugin": "memory-wiki", "enabled": True}),
+    ("connection-plugin", {"plugin": "memory-wiki", "enabled": False}),
 )
 BAD_REQUESTS = (
     ("connection-begin", dict(BEGIN, redirectPort=80)), ("connection-begin", dict(BEGIN, extra=1)),
@@ -169,6 +175,9 @@ BAD_REQUESTS = (
     ("connection-undo", {"proposalId": DRAFT_ID}), ("connection-drafts", {"all": True}),
     ("connection-approve", {"proposalId": "gmail-draft-1-0badc0de", "sha256": "c" * 64}),
     ("connection-decline", {"proposalId": "gmail-send-1761500000000-0badc0de"}),
+    ("connection-plugin", {"plugin": "memory-wiki"}), ("connection-plugin", {"plugin": "memory-wiki", "enabled": 1}),
+    ("connection-plugin", {"plugin": "Memory Wiki", "enabled": True}),
+    ("connection-plugin", {"plugin": "memory-wiki", "enabled": True, "config": {"vaultMode": "unsafe-local"}}),
 )
 CHANGE = {"summary": "Dentist", "start": "2026-10-27T15:00:00-05:00", "end": "2026-10-27T16:00:00-05:00",
           "allDay": False, "timeZone": "America/Chicago", "location": "12 Main St", "description": "Bring\nthe form",
@@ -222,6 +231,7 @@ REPLIES = (
     ("connection-approve", {"proposalId": DRAFT_ID, "outcome": "applied"}),
     ("connection-reconcile", {"proposalId": DRAFT_ID, "outcome": "unconfirmed"}),
     ("connection-decline", {"proposalId": DRAFT_ID, "outcome": "declined"}),
+    ("connection-plugin", {"outcome": "applied"}), ("connection-plugin", {"outcome": "unchanged"}),
 )
 BAD_REPLIES = (
     ("connection-begin", {"flowId": FLOW, "authUrl": "https://example.com/o/oauth2/auth?x",
@@ -275,13 +285,14 @@ BAD_REPLIES = (
     ("connection-drafts", {"drafts": [dict(UNREAD_DRAFT, draft=GMAIL_DRAFT)], "more": 0}),
     ("connection-drafts", {"drafts": [dict(LONG_DRAFT, draft=GMAIL_DRAFT)], "more": 0}),
     ("connection-drafts", {"drafts": [], "more": -1}),
+    ("connection-plugin", {"outcome": "started"}), ("connection-plugin", {"outcome": "applied", "plugin": "x"}),
 )
 VALIDATORS = ("valid_connection_action", "public_connection_action", "_text", "_capability_flags", "_words",
               "_calendar_change", "_calendar_event", "_calendar_entry", "_calendar_moment", "_calendar_activity",
               "_suggestion", "_gmail_draft", "_draft_entry")
 CONSTANTS = ("_CONNECTION_OPERATIONS", "_CAPABILITY_IDS", "_FLOW", "_STATE", "_CODE", "_CLIENT_ID", "_CLIENT_SECRET",
              "_PROJECT", "_ACCOUNT", "_TIME_ZONE", "_SECOND", "_REASON", "_AUTH_URL", "_PROPOSAL", "_DRAFT", "_HEX",
-             "_ATTENDEE", "_CONTROL", "_CHANGE_OUTCOMES", "_DRAFT_OPERATIONS")
+             "_ATTENDEE", "_CONTROL", "_CHANGE_OUTCOMES", "_DRAFT_OPERATIONS", "_PLUGIN")
 
 
 class ActionWireTests(unittest.TestCase):
@@ -314,6 +325,8 @@ class ActionWireTests(unittest.TestCase):
                 coordinator._begin_request(copy.deepcopy(request))
             elif operation == "connection-complete":
                 coordinator._complete_request(copy.deepcopy(request))
+            elif operation == "connection-plugin":
+                coordinator._plugin_request(copy.deepcopy(request))
             elif operation in ("connection-approve", "connection-decline", "connection-reconcile", "connection-undo"):
                 coordinator._change_request(copy.deepcopy(request), set(request),
                                             drafts_too=operation != "connection-undo")

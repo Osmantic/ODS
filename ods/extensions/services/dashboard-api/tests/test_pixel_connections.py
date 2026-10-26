@@ -14,7 +14,7 @@ from host_agent_client import AgentHTTPError, AgentProtocolError, AgentUnavailab
 from routers import pixel_connections as api
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "bin"))
-from pixel_connections import catalog, status  # noqa: E402
+from pixel_connections import catalog, plugins, status  # noqa: E402
 
 AUTH = {"Authorization": "Bearer test-key-12345"}
 NOW = datetime(2026, 10, 25, 20, 30, tzinfo=timezone.utc)
@@ -47,7 +47,7 @@ def host_reply(tmp_path, *, connected=True):
     value = status.report(surface="linux-systemd", record_path=record, token_path=token, status_path=broker,
                           lifecycle_path=tmp_path / "connection.json", now=NOW, owners=owners,
                           broker_state=tmp_path / "broker")
-    return dict(status.validate_public(value), catalog=catalog.public_catalog())
+    return dict(status.validate_public(value), catalog=catalog.public_catalog(), pluginCatalog=plugins.public_catalog())
 
 
 def flag(monkeypatch, value):
@@ -526,3 +526,45 @@ async def test_unknown_status_interrupts_no_chat(monkeypatch, fresh_attention, t
     monkeypatch.setattr(api, "_attention", {"until": 0.0, "value": None})
     monkeypatch.setattr(api, "request_agent_json", AsyncMock(return_value={"token": "private-sentinel"}))
     assert await api.owner_attention() is None
+
+
+# ---------------------------------------------------------------- reviewed plugins
+
+def test_a_plugin_change_reaches_its_own_host_route_exactly(client, mock_request, monkeypatch):
+    body = {"plugin": "memory-wiki", "enabled": True}
+    assert client.post("/api/pixel/connections/plugin", json=body).status_code == 401
+    mock_request.return_value = {"outcome": "applied"}
+    response = client.post("/api/pixel/connections/plugin", json=body, headers=AUTH)
+    assert response.status_code == 200 and response.json() == {"outcome": "applied"}
+    assert response.headers["cache-control"] == "no-store"
+    mock_request.assert_awaited_once_with("POST", "/v1/pixel/connections/plugin", payload=body, timeout=330)
+    mock_request.reset_mock()
+    for bad in ({"plugin": "memory-wiki"}, {"plugin": "Memory Wiki", "enabled": True},
+                {"plugin": "memory-wiki", "enabled": "yes"}, dict(body, config={"vaultMode": "unsafe-local"})):
+        assert client.post("/api/pixel/connections/plugin", json=bad, headers=AUTH).status_code == 422
+    flag(monkeypatch, "false")
+    assert client.post("/api/pixel/connections/plugin", json=body, headers=AUTH).status_code == 404
+    mock_request.assert_not_called()
+
+
+def test_a_plugin_portal_could_not_start_with_says_so_with_help(client, mock_request):
+    mock_request.side_effect = AgentHTTPError(409, "plugin-change-rolled-back")
+    response = client.post("/api/pixel/connections/plugin", json={"plugin": "memory-wiki", "enabled": True},
+                           headers=AUTH)
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["message"] == api.MESSAGES["plugin-change-rolled-back"][0]
+    assert detail["help"] == api.ODS_HELP_DISCORD_URL
+
+
+def test_plugins_reach_settings_only_with_the_catalog_that_names_them(client, mock_request, tmp_path):
+    reply = host_reply(tmp_path)
+    assert reply["plugins"] == {"memory-wiki": False}
+    for change in (lambda value: value.update(pluginCatalog=[]),
+                   lambda value: value["plugins"].update({"memory-wiki": "yes"}),
+                   lambda value: value.update(plugins={"other-plugin": True}),
+                   lambda value: value["pluginCatalog"][0].update(config={"vaultMode": "isolated"})):
+        broken = copy.deepcopy(reply)
+        change(broken)
+        mock_request.return_value = broken
+        assert client.get("/api/pixel/connections", headers=AUTH).status_code == 502

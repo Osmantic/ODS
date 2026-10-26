@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Shared ODS Pixel onboarding contract for native host installers."""
 
-import importlib.util
 import json
 import os
 import pathlib
@@ -193,11 +192,8 @@ def connection_overrides():
     """
     if not connections_path:
         return {}
-    spec = importlib.util.spec_from_file_location(
-        "ods_portal_connection_state",
-        pathlib.Path(__file__).resolve().parents[2] / "bin" / "pixel_connections" / "state.py")
-    state = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(state)
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "bin"))
+    from pixel_connections import state
     try:
         record = state.read(pathlib.Path(connections_path), owners=(0, os.getuid()))
     except state.StateError as error:

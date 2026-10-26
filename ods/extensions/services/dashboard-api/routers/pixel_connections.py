@@ -148,6 +148,19 @@ class CatalogConnector(Strict):
     data: CatalogData
 
 
+PluginId = Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]{1,62}$")]
+
+
+class PluginCatalogEntry(Strict):
+    """A reviewed OpenClaw plugin the owner can turn on for Portal, as Settings describes it."""
+
+    id: PluginId
+    label: str = Field(min_length=1, max_length=80)
+    summary: str = Field(min_length=1, max_length=400)
+    details: list[Annotated[str, Field(min_length=1, max_length=300)]] = Field(max_length=8)
+    tools: list[Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{1,63}$")]] = Field(max_length=32)
+
+
 class ConnectionStatus(Strict):
     schemaVersion: Literal[1]
     available: bool
@@ -155,7 +168,9 @@ class ConnectionStatus(Strict):
     reason: str | None = Field(pattern=TOKEN)
     ownerTimeZone: str | None = Field(pattern=ZONE)
     connectors: Connectors
+    plugins: dict[PluginId, bool] = Field(max_length=32)
     catalog: list[CatalogConnector]
+    pluginCatalog: list[PluginCatalogEntry] = Field(max_length=32)
 
 
 def _projection(raw) -> dict:
@@ -167,6 +182,7 @@ def _projection(raw) -> dict:
     connected = google.state != "not-connected"
     if ((google.account is None) == connected or (google.capabilities is None) == connected
             or (google.waitingChanges is None) == connected or (google.waitingDrafts is None) == connected
+            or set(status.plugins) != {entry.id for entry in status.pluginCatalog}
             or any(SCOPE_PATTERN.fullmatch(scope) is None for scope in google.grantedScopes or [])):
         raise HTTPException(502, "Connected apps status could not be verified", headers=NO_STORE)
     return status.model_dump(by_alias=True)
@@ -284,6 +300,8 @@ MESSAGES: dict[str, tuple[str, bool]] = {
                                    "again.", True),
     "gateway-change-rolled-back": ("Portal couldn't start with the new connection, so it's back on its previous "
                                    "setup. Try again.", True),
+    "plugin-change-rolled-back": ("Portal couldn't start with that plugin change, so it's back as it was. Try "
+                                  "again.", True),
     "sign-in-exchange-unavailable": ("Google sign-in couldn't finish on this machine. Try again.", True),
     "connections-unavailable": ("ODS couldn't reach the service that connects apps to Portal. Make sure ODS is "
                                 "running, then try again.", True),
@@ -600,6 +618,17 @@ async def sync_google(request: EmptyRequest):
 async def finish_google(request: EmptyRequest):
     """Finish connecting or disconnecting when Portal was busy, or after an interruption."""
     return await _action("/v1/pixel/connections/google/finish", {}, OutcomeReply, 330)
+
+
+class PluginRequest(Strict):
+    plugin: PluginId
+    enabled: bool
+
+
+@router.post("/api/pixel/connections/plugin", dependencies=[Depends(verify_api_key)])
+async def change_plugin(request: PluginRequest):
+    """Turn one reviewed plugin on or off for Portal; Portal's gateway restarts with it."""
+    return await _action("/v1/pixel/connections/plugin", request.model_dump(), OutcomeReply, 330)
 
 
 # ---------------------------------------------------------------- calendar changes Portal suggests

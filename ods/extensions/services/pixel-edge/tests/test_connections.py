@@ -24,7 +24,7 @@ CONNECTED = dict(
         cloudModels=True, connectedAt='2026-10-25T20:00:00Z',
         grantedScopes=['https://www.googleapis.com/auth/calendar.events.readonly'],
         checkedAt='2026-10-25T20:29:30Z', sources=dict(email=SOURCE, calendar=SOURCE), pending=None,
-        waitingChanges=1, waitingDrafts=1)))
+        waitingChanges=1, waitingDrafts=1)), plugins={'memory-wiki': False})
 OWNER = {'Authorization': 'Bearer ' + 'o' * 64}
 # One calendar change Portal suggested, as root lists it for the owner's approval.
 CHANGE = {'proposalId': 'calendar-1761500000000-0badc0de', 'sha256': 'c' * 64, 'state': 'waiting', 'action': 'create',
@@ -151,7 +151,9 @@ class ConnectionsRelayTests(unittest.IsolatedAsyncioTestCase):
                                                                 'sha256': DRAFT['sha256']}},
                  {'proposalId': DRAFT['proposalId'], 'outcome': 'applied'}),
                 ({'operation': 'connection-reconcile', 'request': {'proposalId': DRAFT['proposalId']}},
-                 {'proposalId': DRAFT['proposalId'], 'outcome': 'waiting'})):
+                 {'proposalId': DRAFT['proposalId'], 'outcome': 'waiting'}),
+                ({'operation': 'connection-plugin', 'request': {'plugin': 'memory-wiki', 'enabled': True}},
+                 {'outcome': 'applied'})):
             with self.subTest(operation=payload['operation']):
                 self.calls.clear()
                 self.reply = reply

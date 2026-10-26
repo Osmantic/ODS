@@ -2,6 +2,7 @@
 
 A connection changes only the Source Broker plugin's entries, which of its tools
 Portal may call, the owner's time zone, and five limb flags in ``gateway.env``.
+The same transaction loads the reviewed plugins the owner turned on (plugins.py).
 Pixel refuses to re-apply the release that is already active, so ODS applies this
 transformation to the live files instead. It mirrors ``scripts/render-config.mjs``
 followed by the ODS runtime overlay, which sorts both tool allow lists; a test
@@ -12,6 +13,8 @@ from __future__ import annotations
 import copy
 import re
 from typing import Any
+
+from . import plugins as portal_plugins
 
 PLUGIN_ID = "pixel-source-broker"
 # render-config.mjs allSourceTools, in its order: newly inactive tools are appended
@@ -40,6 +43,8 @@ LIMB_KEYS = {
 # Pixel 4.3.35 added Gmail drafts. A gateway environment or a journaled target
 # from before it has no drafts flag, which means drafts are off.
 SINCE_DRAFTS = frozenset({"emailDrafts"})
+# A target journaled before the plugin catalog loads no plugin.
+SINCE_PLUGINS = frozenset({"plugins"})
 TIME_ZONE = re.compile(r"^[A-Za-z][A-Za-z0-9_+\-/]{0,63}$")
 # Pixel's configure quotes every value, escaping a quote inside it as '\''.
 ENV_LINE = re.compile(r"^([A-Z][A-Z0-9_]*)='((?:[^']|'\\'')*)'$")
@@ -60,15 +65,21 @@ def limbs(capabilities: dict[str, bool] | None) -> dict[str, bool]:
 
 
 def target(value: Any) -> dict[str, Any]:
-    """Validate a gateway target, the five limb flags and an optional time zone, and return it whole.
+    """Validate a gateway target, the five limb flags, an optional time zone and the plugins, and return it whole.
 
-    A target journaled before Gmail drafts comes back with drafts off.
+    A target journaled before Gmail drafts comes back with drafts off, and one
+    from before the plugin catalog with no plugin.
     """
-    keys = {*LIMB_KEYS, "userTimezone"}
-    if not isinstance(value, dict) or set(value) not in (keys, keys - SINCE_DRAFTS):
+    keys = {*LIMB_KEYS, "userTimezone", "plugins"}
+    if not isinstance(value, dict) or set(value) not in (keys, keys - SINCE_PLUGINS,
+                                                         keys - SINCE_PLUGINS - SINCE_DRAFTS):
         raise PlanError("invalid connection target")
-    value = {"emailDrafts": False, **value}
+    value = {"emailDrafts": False, "plugins": [], **value}
     if any(type(value[key]) is not bool for key in LIMB_KEYS):
+        raise PlanError("invalid connection target")
+    chosen = value["plugins"]
+    if (type(chosen) is not list or any(type(item) is not str for item in chosen)
+            or chosen != [plugin_id for plugin_id in portal_plugins.IDS if plugin_id in chosen]):
         raise PlanError("invalid connection target")
     if (value["emailDrafts"] and not value["email"] or value["calendarWrite"] and not value["calendar"]
             or value["calendarDirect"] and not value["calendarWrite"]):
@@ -174,6 +185,8 @@ def plan_config(config: Any, gateway: dict[str, Any], *, install_dir: str) -> di
         defaults["userTimezone"] = gateway["userTimezone"]
     else:
         defaults.pop("userTimezone", None)
+    portal_plugins.clear(planned)
+    portal_plugins.load_portal_plugins(planned, portal_plugins.answers(gateway["plugins"]) or [])
     return planned
 
 

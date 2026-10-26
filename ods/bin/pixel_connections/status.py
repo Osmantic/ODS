@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from . import approvals, catalog, drafts, lifecycle, state
+from . import plugins as portal_plugins
 
 BROKER_STATE = Path("/var/lib/pixel-source-broker")
 TOKEN = BROKER_STATE / "private/google-token.json"
@@ -206,10 +207,19 @@ def _valid_google(value: Any) -> bool:
                     for key in ("waitingChanges", "waitingDrafts")))
 
 
+def plugin_flags(record: dict[str, Any] | None) -> dict[str, bool]:
+    """Which reviewed plugins Portal may use; every one of them is off without a usable record."""
+    chosen = state.enabled_plugins(record)
+    return {plugin_id: plugin_id in chosen for plugin_id in portal_plugins.IDS}
+
+
 def validate_public(value: Any) -> dict[str, Any]:
     """Accept exactly the public status shape, so nothing else can reach the browser."""
     if (not isinstance(value, dict)
-            or set(value) != {"schemaVersion", "available", "surface", "reason", "ownerTimeZone", "connectors"}
+            or set(value) != {"schemaVersion", "available", "surface", "reason", "ownerTimeZone", "connectors",
+                              "plugins"}
+            or not isinstance(value["plugins"], dict) or set(value["plugins"]) != set(portal_plugins.IDS)
+            or any(type(flag) is not bool for flag in value["plugins"].values())
             or value["schemaVersion"] != SCHEMA_VERSION or type(value["available"]) is not bool
             or value["surface"] not in SURFACES
             or not _optional(value["reason"], lambda item: isinstance(item, str) and bool(TOKEN_PATTERN.fullmatch(item)))
@@ -225,7 +235,7 @@ def unavailable(surface: str) -> dict[str, Any]:
     """Connected apps need the Linux or WSL Source Broker; other systems say so plainly."""
     return {"schemaVersion": SCHEMA_VERSION, "available": False, "surface": surface,
             "reason": "not-available-on-this-system", "ownerTimeZone": None,
-            "connectors": {"google": not_connected()}}
+            "connectors": {"google": not_connected()}, "plugins": plugin_flags(None)}
 
 
 def _pending(path: Path, owners: tuple) -> tuple[dict[str, Any] | None, bool]:
@@ -249,7 +259,7 @@ def report(*, surface: str, record_path: Path = state.PATH, token_path: Path = T
         # Settings offers to reconnect; the install already kept everything off.
         return {"schemaVersion": SCHEMA_VERSION, "available": True, "surface": surface,
                 "reason": "record-unusable", "ownerTimeZone": None,
-                "connectors": {"google": not_connected(pending)}}
+                "connectors": {"google": not_connected(pending)}, "plugins": plugin_flags(None)}
     custody = token_path.is_file()
     broker, broker_error, waiting, waiting_drafts = None, False, 0, 0
     if record is not None and "google" in record["connectors"]:
@@ -270,4 +280,5 @@ def report(*, surface: str, record_path: Path = state.PATH, token_path: Path = T
         "connectors": {"google": google_view(record, custody=custody, broker=broker, broker_error=broker_error,
                                              now=now, pending=pending, waiting_changes=waiting,
                                              waiting_drafts=waiting_drafts)},
+        "plugins": plugin_flags(record),
     }
