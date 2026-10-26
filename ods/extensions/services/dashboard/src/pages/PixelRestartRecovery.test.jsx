@@ -278,6 +278,35 @@ it('does not blame the connection when an older turn holds the chat, and sends t
   expect(screen.queryByText(STALE)).toBeNull()
 })
 
+it('sends a held message by itself once per owner action, never in a loop',async()=>{
+  localStorage.setItem('ods.pixel.chat.v1',JSON.stringify({schema:1,chatId:'spark_chat',requestId:null,inFlight:false,interrupted:false,
+    messages:[{role:'user',content:QUESTION},{role:'assistant',content:'Earlier answer',status:'done'}]}))
+  const held=()=>response({detail:'This conversation has an unresolved attempt; recover or stop it first'},423)
+  // The chat looks free each time it is checked, yet every send is refused.
+  server.activity=()=>response({state:'terminal'})
+  server.streams.push(held,held,held,held)
+  vi.useFakeTimers()
+  await act(async()=>{render(<Pixel/>)})
+  await act(async()=>vi.advanceTimersByTimeAsync(10))
+  fireEvent.change(field(),{target:{value:'Checking in'}})
+  await act(async()=>{fireEvent.click(screen.getByTitle('Send'))})
+  await act(async()=>vi.advanceTimersByTimeAsync(5*60_000))
+  // It went out by itself once more, was refused again, and now waits.
+  expect(calls('/api/pixel/chat/stream')).toHaveLength(2)
+  const note=screen.getByRole('status',{name:'Message not started'})
+  expect(note).toHaveTextContent('Portal is busy with another request, so it did not start this message. Your message is kept; send it again in a moment.')
+  expect(field()).toHaveValue('Checking in')
+  expect(within(screen.getByRole('region',{name:'Conversation messages'})).queryByText('Checking in')).toBeNull()
+  // Send again is the owner's next action, and it too is retried once at most.
+  await act(async()=>{fireEvent.click(within(note).getByRole('button',{name:'Send again'}))})
+  await act(async()=>vi.advanceTimersByTimeAsync(5*60_000))
+  expect(calls('/api/pixel/chat/stream')).toHaveLength(4)
+  expect(screen.getByRole('status',{name:'Message not started'})).toBeVisible()
+  expect(field()).toHaveValue('Checking in')
+  expect(calls('/api/pixel/chat/cancel')).toHaveLength(0)
+  expect(screen.queryByText(STALE)).toBeNull()
+})
+
 it('heals an unconfirmed history by itself when the server proves the chat idle',async()=>{
   let unknown=true
   localStorage.setItem('ods.pixel.chat.v1',JSON.stringify({schema:1,chatId:'history_chat',messages:[{role:'user',content:QUESTION},{role:'assistant',content:'Earlier answer',status:'done'}],draft:'checking in'}))

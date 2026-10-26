@@ -1095,7 +1095,14 @@ async def pixel_chat_activity(body: ChatCancelRequest, owner: str = Depends(veri
         _result_settles.discard(conversation)
     if settled == "settled":
         return {"state": "terminal"}
-    return {"state": "active" if settled == "active" else state}
+    if settled == "active":
+        return {"state": "active"}
+    # An older edge or ingress cannot settle. Its own memory that the chat
+    # ended does not free a chat that a receipt still holds: the next message
+    # would only be refused.
+    if state == "terminal" and _chat_results().pending_attempts(conversation):
+        return {"state": "unknown"}
+    return {"state": state}
 
 
 _EXAMPLE_PROJECT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")

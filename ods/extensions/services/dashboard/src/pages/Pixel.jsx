@@ -702,6 +702,9 @@ export default function Pixel({ systemStatus = null }) {
   const [heldSend, setHeldSend] = useState(null)
   const heldSendRef = useRef(null)
   const holdSend = useCallback(value => { heldSendRef.current = value; setHeldSend(value) }, [])
+  // Set only while that automatic send starts: it is made once per owner
+  // action, never again for its own refusal.
+  const automaticSendRef = useRef(false)
   const [sendHint, setSendHint] = useState(false)
   const [exampleError, setExampleError] = useState(null)
   const [restoredActivity, setRestoredActivity] = useState(() => initialChat?.interrupted ? 'checking' : 'idle')
@@ -1238,6 +1241,8 @@ export default function Pixel({ systemStatus = null }) {
   }, [messages, preview, workspaceOpen, sending, interrupted, input, imageDraftKey, conversationDeleted])
 
   const sendMessage = useCallback(async (answerOverride, continuationId = null) => {
+    const automatic = automaticSendRef.current
+    automaticSendRef.current = false
     if (conversationDeleted) return
     const exactDraft = typeof answerOverride === 'string' ? answerOverride : input
     const trimmed = (typeof answerOverride === 'string' ? answerOverride : input).trim()
@@ -1582,6 +1587,12 @@ export default function Pixel({ systemStatus = null }) {
         restoreDraft()
         contextStartRef.current = originalContextStart
         setMessages(messages)
+        if (automatic) {
+          // That automatic send was refused too. It is not repeated: the
+          // message waits in the composer, one click from going out.
+          setRefusal(busyRefusalText(false))
+          return
+        }
         if (typeof answerOverride !== 'string' && !turnImages.length) holdSend({chatId:chatIdRef.current, text:trimmed, at:Date.now()})
         setInterrupted(true)
         updateRestoredActivity('checking')
@@ -1839,6 +1850,7 @@ export default function Pixel({ systemStatus = null }) {
       || contextControl.historyUnknown || contextControl.busy) return
     holdSend(null)
     if (heldSend.chatId !== chatIdRef.current || Date.now() - heldSend.at > HELD_SEND_MAX_MS || input.trim() !== heldSend.text) return
+    automaticSendRef.current = true
     void sendMessage()
   }, [heldSend, interrupted, sending, stopping, status, contextControl.historyUnknown, contextControl.busy, input, sendMessage, holdSend])
 

@@ -121,18 +121,27 @@ def test_a_refused_follow_up_cannot_strand_the_chat_behind_the_cut_off_turn(stor
     ("active", "settled", "active"),     # a stream of this chat still passes through the edge
     ("unknown", "active", "active"),     # the native session is busy: a run may still be alive
     ("unknown", None, "unknown"),        # Portal still restarting, or an older edge or ingress
+    ("terminal", None, "unknown"),       # an older edge remembers the end, but the receipt holds the chat
     (None, "settled", "unknown"),        # the edge could not be read at all
 ])
 def test_work_that_may_still_run_keeps_the_chat_held(stores, edge, activity, settle, expected):
     edge.update(activity=activity, settle=settle)
     result = asyncio.run(pixel.pixel_chat_activity(pixel.ChatCancelRequest(chat_id=CHAT), OWNER))
     assert result == {"state": expected}
-    assert edge["settles"] == ([CHAT] if activity == "unknown" else [])
+    assert edge["settles"] == ([CHAT] if activity in {"unknown", "terminal"} else [])
     assert stores.get(CUT_OFF)["state"] == "unresolved"
     assert stores.has_pending(CUT_OFF[:2])
     with pytest.raises(HTTPException) as refused:
         asyncio.run(pixel.pixel_chat_stream(connected(), stream("second-turn"), OWNER))
     assert refused.value.status_code == 423
+
+
+def test_an_older_edge_that_remembers_the_end_frees_a_chat_no_receipt_holds(stores, edge):
+    stores.finish(CUT_OFF, "interrupted")
+    edge.update(activity="terminal", settle=None)
+    result = asyncio.run(pixel.pixel_chat_activity(pixel.ChatCancelRequest(chat_id=CHAT), OWNER))
+    assert result == {"state": "terminal"}
+    assert stores.reserve((*CUT_OFF[:2], "next-turn"), "next-input") is True
 
 
 def test_a_turn_this_process_still_streams_is_active_without_asking_anyone(stores, edge):
