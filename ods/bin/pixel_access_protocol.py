@@ -97,7 +97,9 @@ def control_request(value):
             "settings-status": {"operation", "data_dir_id"},
             "settings-change": {"operation", "data_dir_id", "request"},
             "provider-status": {"operation", "data_dir_id"},
-            "provider-change": {"operation", "data_dir_id", "request"}}
+            "provider-change": {"operation", "data_dir_id", "request"},
+            # Read-only and content-free: the owner's connected apps and their sync state.
+            "connection-status": {"operation"}}
     if operation not in keys or set(value) != keys[operation]:
         raise ProtocolError("invalid-request")
     if operation.startswith(("settings-", "provider-")) and (type(value["data_dir_id"]) is not str or not HEX.fullmatch(value["data_dir_id"])):

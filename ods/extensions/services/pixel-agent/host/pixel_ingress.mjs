@@ -22,7 +22,7 @@ import { parseQuestions } from "./questions_schema.mjs";
 import {createChatHistoryLedger,HistoryError} from './chat_history_ledger.mjs';
 import {createChatImageStore,createChatImageReadHandler,ChatImageError} from './chat_image_store.mjs';
 import {currentImageNote,decodeChatImageTurn,nativeHistoryMessages,validateImageRoute} from './chat_image_transport.mjs';
-import {handleAccessMode, handleModelControl, publicModelControl, readAccessOwnerKey, requestAccessController} from './access_mode_relay.mjs';
+import {handleAccessMode, handleConnections, handleModelControl, publicModelControl, readAccessOwnerKey, requestAccessController} from './access_mode_relay.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -1913,6 +1913,10 @@ export function createIngressServer({ token, gatewayPort, deps = defaultDeps, hi
     }
     if (pathname === '/v1/access-mode') {
       void handleAccessMode(req, res, {ownerKey:typeof accessOwnerKey === 'function' ? accessOwnerKey() : accessOwnerKey});
+      return;
+    }
+    if (pathname === '/v1/connections') {
+      void handleConnections(req, res, {ownerKey:typeof accessOwnerKey === 'function' ? accessOwnerKey() : accessOwnerKey});
       return;
     }
 

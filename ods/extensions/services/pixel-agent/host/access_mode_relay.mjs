@@ -130,6 +130,25 @@ export function requestAccessController(payload, {socketPath = ACCESS_SOCKET_PAT
   });
 }
 
+// Read-only connected-apps status. The controller builds the content-free body;
+// this hop only authenticates the owner and never accepts a request body.
+export async function handleConnections(req, res, {ownerKey, request = requestAccessController} = {}) {
+  const reply = (status, body) => {res.writeHead(status, {'Content-Type':'application/json', 'Cache-Control':'no-store'});res.end(JSON.stringify(body));};
+  if (!ownerKey) return reply(503, {error:'access-owner-auth-unavailable'});
+  const expected = Buffer.from(`Bearer ${ownerKey}`), supplied = Buffer.from(typeof req.headers.authorization === 'string' ? req.headers.authorization : '');
+  if (expected.length !== supplied.length || !timingSafeEqual(expected, supplied)) return reply(403, {error:'owner-required'});
+  if (req.url !== '/v1/connections') return reply(400, {error:'invalid-request'});
+  if (req.method !== 'GET') return reply(405, {error:'method-not-allowed'});
+  if (req.headers['transfer-encoding'] !== undefined
+      || (req.headers['content-length'] !== undefined && req.headers['content-length'] !== '0')) {
+    return reply(400, {error:'invalid-request'});
+  }
+  try {
+    const result = await request({operation:'connection-status'}, {timeout:20000});
+    reply(result.status, result.body);
+  } catch {reply(503, {error:'connections-unavailable'});}
+}
+
 export async function handleAccessMode(req, res, {ownerKey, request = requestAccessController} = {}) {
   const reply = (status, body) => {res.writeHead(status, {'Content-Type':'application/json', 'Cache-Control':'no-store'});res.end(JSON.stringify(body));};
   const header = req.headers.authorization;

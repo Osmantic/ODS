@@ -37,6 +37,9 @@ for name in ("pixel_model_contract.py", "pixel_model_coordinator.py", "model_tra
     protected(PROGRAM / name)
 if platform.system() == "Linux":
     protected(PROGRAM / "pixel_source_upgrade.py")
+    # Connected apps use the systemd Source Broker, so only Linux and WSL ship them.
+    for name in ("__init__.py", "state.py", "status.py", "catalog.py"):
+        protected(PROGRAM / "pixel_connections" / name)
 if platform.system() == "Darwin":
     for name in ("pixel_macos_custody.py", "pixel_macos_process.py", "pixel_macos_policy.py"):
         protected(PROGRAM / name)
@@ -118,6 +121,10 @@ def main(*, reprove_installer_access=False):
                     status, body = 200, adapter.status()
                 elif request == {"operation": "model-status"}:
                     status, body = 200, adapter.model_status()
+                elif request == {"operation": "connection-status"} and platform.system() == "Linux":
+                    from pixel_connections.status import report as connection_report
+                    surface = "wsl-systemd" if "microsoft" in platform.release().lower() else "linux-systemd"
+                    status, body = 200, connection_report(surface=surface)
                 elif set(request) == {"operation", "request"} and request["operation"] == "change":
                     status, body = 200, adapter.change(request["request"])
                 elif request == {"operation": "model-begin"}:
