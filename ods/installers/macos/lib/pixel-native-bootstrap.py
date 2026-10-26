@@ -189,6 +189,10 @@ def probe_plugins(node, runtime, plugins, temporary, env, *, entrypoint='node_mo
                       'plugins', 'inspect', '--all', '--runtime', '--json'], cwd=temporary,
         env={**env, 'HOME': str(home), 'OPENCLAW_CONFIG_PATH': str(config),
              'OPENCLAW_STATE_DIR': str(home / 'state'), 'OPENCLAW_SKIP_CHANNELS': '1'}, timeout=180)
+    verify_plugin_report(output, paths)
+
+
+def verify_plugin_report(output, expected):
     # The pinned CLI's list command reads manifests without importing modules.
     # Runtime inspection must execute registration before a staged plugin passes.
     try:
@@ -199,7 +203,7 @@ def probe_plugins(node, runtime, plugins, temporary, env, *, entrypoint='node_mo
             not isinstance(item, dict) or not isinstance(item.get('plugin'), dict)
             for item in result):
         raise BootstrapError('native-plugin-load-proof-failed')
-    for plugin_id, path in paths.items():
+    for plugin_id, path in expected.items():
         matches = [item['plugin'] for item in result if item['plugin'].get('id') == plugin_id]
         if (len(matches) != 1 or matches[0].get('status') != 'loaded'
                 or matches[0].get('imported') is not True
