@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
+  CONNECTED_RECORDS_CONTRACT,
   ODS_COMPACT_CONVERSATION_CONTRACT,
   ODS_TINY_CONVERSATION_CONTRACT,
   ODS_CONVERSATION_CONTRACT,
@@ -510,8 +511,10 @@ test("restores the full September 16 operating core while retaining compact fall
   assert.equal(evaluatedCore.length, 17751);
   assert.equal(createHash('sha256').update(evaluatedCore).digest('hex'),
     '94d4a2c3cf7c7469219f0592a4a6f9e451dff0e92b8918bfb1adbbc1827c97de');
-  // The sandbox runtime rule is the only addition inside the compact core.
+  // Keep the historical core pinned independently of the runtime and connected
+  // record supplements; do not reroll its digest to accept another core.
   const oldCompact = ODS_COMPACT_CONVERSATION_CONTRACT.replace(` ${ODS_SANDBOX_RUNTIME_CONTRACT}`, '')
+    .replace(` ${CONNECTED_RECORDS_CONTRACT}`, '')
     .slice(0, -(RESPONSE_LANGUAGE_CONTRACT.length + PREVIEW_RUNTIME_CONTRACT.length + 2));
   assert.equal(oldCompact.length, 3087);
   assert.equal(createHash('sha256').update(oldCompact).digest('hex'),
