@@ -64,6 +64,13 @@ def test_build_imports_every_custom_node():
     assert "--database-url sqlite:///:memory:" in step
     assert '! grep -E "IMPORT FAILED|PRESTARTUP FAILED"' in step
     assert 'test ! -e "$COMFYUI_DIR/user"' in step
+    # Built-in nodes list these when they load (nodes_audio.py reads input/),
+    # so each must exist before ComfyUI starts.
+    created = re.search(r"mkdir -p ((?:/tmp/ods-quick-test/\w+\s*\\?\s*)+)", DOCKERFILE_CODE)
+    assert created, "the scratch directories are not created"
+    for name in ("user", "output", "input", "temp"):
+        assert f"/tmp/ods-quick-test/{name}" in created.group(1), name
+        assert f"--{name}-directory /tmp/ods-quick-test/{name}" in step, name
 
 
 def test_open_webui_image_settings_are_owner_settable():
