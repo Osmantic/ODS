@@ -89,6 +89,12 @@ jobs:
           cp -R ods/vendor/pixel/plugin/. "$PIXEL_SOURCE_PLUGIN_DIR/"
           npm ci --prefix "$PIXEL_SOURCE_PLUGIN_DIR" --ignore-scripts --no-audit --no-fund
           python3 ods/extensions/services/pixel-agent/tests/test_connection_plugin_runtime.py
+      - name: Verify native MCP excludes writes and delivers an allowed read through Pixel
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: python3 ods/extensions/services/pixel-agent/tests/test_native_mcp_runtime.py
       - name: Verify concurrent workspace creation and no-follow boundaries
         if: runner.os != 'Windows'
         env:
