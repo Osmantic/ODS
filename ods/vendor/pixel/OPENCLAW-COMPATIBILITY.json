@@ -13,7 +13,7 @@
       "status": "candidate",
       "qualifiedAt": "2026-10-25",
       "evidence": {
-        "sourceCommit": "096eba7f81d4bbbd588863b367fac343ecf6c86f",
+        "sourceCommit": "9a50d0522cbf97cc9fa1991c431ea8e3ef74238a",
         "liveAudit": "ODS-QUALIFICATION-4.3.34.md"
       }
     },
