@@ -65,6 +65,13 @@ try {
         return [pscustomobject]@{ version = '1.18.32'; asset = 'opencode-windows-x64-baseline.zip'; sha256 = $hash }
     }
 
+    # Only native execution is substituted; real hashing, staging, extraction and File.Replace
+    # operate on disk, including an open executable's sharing violation.
+    function Test-ODSOpenCodeVersion {
+        param($Path, $Version)
+        return ((Test-Path -LiteralPath $Path -PathType Leaf) -and [IO.File]::ReadAllText($Path) -eq $Version)
+    }
+
     # ── Part 1: Direct production download helpers with real curl and file:// ──
     $fixtureUri = ([System.Uri]([IO.Path]::GetFullPath($fixtureZip))).AbsoluteUri
     $plainDlDir = Join-Path $scratch 'download-plain'
