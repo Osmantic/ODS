@@ -27,6 +27,11 @@ START, END = calendar_harness.START, calendar_harness.END
 LATER = {"start": "2026-10-28T15:00:00-05:00", "end": "2026-10-28T16:00:00-05:00"}
 
 
+def stamp():
+    """Now in milliseconds, as Portal's tools stamp a proposal's ID; what Portal did is listed for a week from it."""
+    return int(datetime.now(timezone.utc).timestamp() * 1000)
+
+
 def summary(world, *events, at=None):
     """The broker's calendar summary as its refresh writes it, made after the changes so far by default."""
     records = [{"id": event["id"], "etag": event["etag"], "status": "confirmed", "title": event.get("summary"),
@@ -48,8 +53,8 @@ def undo(world, proposal_id):
 
 
 def made(world, action, values):
-    """One private change Portal queued and the broker made, as its path unit would run it."""
-    proposal_id = direct_harness.queue(world, action, values)
+    """One private change Portal queued just now and the broker made, as its path unit would run it."""
+    proposal_id = calendar_harness.propose(world, action, values, status=direct_harness.DIRECT_STATUS, stamp=stamp())
     direct_harness.drain(world)
     assert direct_harness.result(world, proposal_id)["status"] == "applied"
     return proposal_id
@@ -124,15 +129,15 @@ def test_google_refusing_an_undo_settles_it(owner):
 
 
 def test_only_this_weeks_changes_portal_made_by_itself_are_listed(owner):
-    calendar_harness.propose(owner, "create", calendar_harness.DENTIST)
+    calendar_harness.propose(owner, "create", calendar_harness.DENTIST, stamp=stamp())
     assert calendar_harness.approve(owner, calendar_harness.only(owner))["outcome"] == "applied"
     mine = made(owner, "create", direct_harness.PRIVATE)
     summary(owner)
     assert [entry["proposalId"] for entry in listed(owner)["changes"]] == [mine], "the owner approved the other"
     ids, ledger = c._approval_ids(owner.bridge), owner.bridge.state / "calendar-undo.json"
-    stamp = int(mine.split("-")[1]) / 1000
+    made_at = int(mine.split("-")[1]) / 1000
     for days, expected in ((6, [mine]), (8, [])):
-        later = datetime.fromtimestamp(stamp, timezone.utc) + timedelta(days=days)
+        later = datetime.fromtimestamp(made_at, timezone.utc) + timedelta(days=days)
         assert [entry["proposalId"] for entry in activity.listing(owner.paths, ids, ledger, now=later)["changes"]] \
             == expected
 
