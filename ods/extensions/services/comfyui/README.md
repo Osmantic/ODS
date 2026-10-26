@@ -22,10 +22,18 @@ ComfyUI is GPU-only. The service definition is split by GPU vendor:
 
 | Backend | Compose file | Notes |
 |---------|-------------|-------|
-| NVIDIA (CUDA) | `compose.nvidia.yaml` | Requires NVIDIA Container Toolkit |
+| NVIDIA (CUDA) | `compose.nvidia.yaml` | Requires NVIDIA Container Toolkit. The image is built on the machine (x86-64, CUDA 12.8). |
 | AMD (ROCm) | `compose.amd.yaml` | Runs the detected GPU's native architecture; the bundled ROCm 7.2 torch wheel includes gfx1151 and gfx1201; uses flash attention |
 
+The image generation feature asks for 8 GB of GPU memory: SDXL Lightning at 1024×1024. Not validated yet:
+- AMD GPUs other than gfx1151 (Strix Halo) and gfx1201 (RDNA 4);
+- Arm64 NVIDIA systems (DGX Spark, RTX Spark).
+
 > **Apple Silicon:** ComfyUI is not currently configured for Apple Silicon (macOS ARM). Use the native ComfyUI application instead.
+
+The NVIDIA image ships a fixed set of custom nodes: ComfyUI-GGUF, ComfyUI-KJNodes, ComfyUI-VideoHelperSuite and
+ComfyUI-LTXVideo. ComfyUI-Manager is not included. Its custom-node checkout never loaded under ComfyUI 0.16.4, and
+nodes installed at run time would not survive a container recreate.
 
 ## Configuration
 
@@ -34,6 +42,34 @@ Environment variables (set in `.env`):
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `COMFYUI_PORT` | 8188 | External port for the ComfyUI web UI and API |
+
+Open WebUI's image generation reads these from `.env` each time it starts:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ENABLE_IMAGE_GENERATION` | `true` when image generation was chosen at install | Shows the image button in Open WebUI chats |
+| `COMFYUI_BASE_URL` | `http://comfyui:8188` | The ComfyUI that Open WebUI sends prompts to |
+| `IMAGE_GENERATION_MODEL` | `sdxl_lightning_4step.safetensors` | Checkpoint for Open WebUI's built-in SDXL workflow |
+| `IMAGE_SIZE` | `1024x1024` | Image size |
+| `IMAGE_STEPS` | `4` | Sampling steps (SDXL Lightning 4-step is tuned for 4) |
+
+## Image model
+
+When image generation is chosen in the installer, the installer downloads SDXL Lightning 4-step
+(`sdxl_lightning_4step.safetensors`, 6.94 GB) into `checkpoints/` in the background.
+
+Adding ComfyUI later from the Extensions page does not download it yet. Fetch it once from your ODS install
+directory, then click **Refresh** in ComfyUI. On AMD the folder is `data/comfyui/ComfyUI/models/checkpoints`.
+
+```bash
+dir=data/comfyui/models/checkpoints
+curl -fL -C - -o "$dir/sdxl_lightning_4step.safetensors.part" \
+  https://huggingface.co/ByteDance/SDXL-Lightning/resolve/main/sdxl_lightning_4step.safetensors
+echo "e0d996ee0013e79d9d3561f50fcafb9a17e3ff07b780358e3b66d67932c4d490  $dir/sdxl_lightning_4step.safetensors.part" | sha256sum -c - \
+  && mv "$dir/sdxl_lightning_4step.safetensors.part" "$dir/sdxl_lightning_4step.safetensors"
+```
+
+The model is published under the CreativeML OpenRAIL++-M licence (Hugging Face `ByteDance/SDXL-Lightning`).
 
 ## Volume Mounts
 
@@ -120,22 +156,29 @@ ComfyUI ships an official workflow template for Lightricks LTX-2.3 text-to-video
 
 ### Required model files
 
-Place under `./data/comfyui/models/` (NVIDIA layout; for AMD use `./data/comfyui/ComfyUI/models/`). As of 2026-05-10, the official `video_ltx2_3_t2v.json` template's Model Links panel references:
+Place under `./data/comfyui/models/` (NVIDIA layout; for AMD use `./data/comfyui/ComfyUI/models/`). ComfyUI 0.16.4 ships
+workflow templates 0.9.11, whose `video_ltx2_3_t2v.json` Model Links panel references:
 
-| File | Subdirectory |
-|---|---|
-| `ltx-2.3-22b-dev-fp8.safetensors` | `checkpoints/` |
-| `ltx-2.3-22b-distilled-lora-384.safetensors` | `loras/` |
-| `gemma-3-12b-it-abliterated_lora_rank64_bf16.safetensors` | `loras/` |
-| `ltx-2.3-spatial-upscaler-x2-1.1.safetensors` | `latent_upscale_models/` |
+| File | Subdirectory | Size |
+|---|---|---|
+| `ltx-2.3-22b-dev-fp8.safetensors` ([Lightricks/LTX-2.3-fp8](https://huggingface.co/Lightricks/LTX-2.3-fp8)) | `checkpoints/` | 29.15 GB |
+| `gemma_3_12B_it_fp4_mixed.safetensors` ([Comfy-Org/ltx-2](https://huggingface.co/Comfy-Org/ltx-2), `split_files/text_encoders/`) | `text_encoders/` | 9.45 GB |
+| `ltx-2.3-22b-distilled-lora-384.safetensors` ([Lightricks/LTX-2.3](https://huggingface.co/Lightricks/LTX-2.3)) | `loras/` | 7.61 GB |
+| `ltx-2.3-spatial-upscaler-x2-1.1.safetensors` ([Lightricks/LTX-2.3](https://huggingface.co/Lightricks/LTX-2.3)) | `latent_upscale_models/` | 1.00 GB |
 
-The official template links to these files on Hugging Face. If ComfyUI updates the template, trust the template's Model Links panel over older mirrored model-storage notes. Combined disk footprint is roughly 30–35 GB.
+The four files take about 47 GB on disk.
+
+The 0.9.11 template links `ltx-2.3-spatial-upscaler-x2-1.0.safetensors`, which Lightricks no longer publishes. Download
+`x2-1.1` instead and select it in the upscaler loader node.
+
+The LTX-2.3 weights are published under the LTX-2 Community License Agreement, and the Gemma text encoder under
+Google's Gemma terms. Read both before use.
 
 ### Loading the workflow
 
 1. Open ComfyUI at `http://localhost:8188`
 2. **Workflow → Browse Templates → Video → LTX-2.3 T2V** (`video_ltx2_3_t2v.json`)
-3. Verify all four model loader nodes resolve (no red boxes)
+3. Verify all four model loader nodes resolve (no red boxes); pick the `x2-1.1` upscaler if its loader is red
 
 ### Tuning that matters
 

@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-23T23:19:02Z",
+  "generated_at": "2026-10-26T00:13:51Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -1247,7 +1247,7 @@
     {
       "id": "comfyui",
       "name": "ComfyUI (Image Generation)",
-      "description": "Generate images with FLUX.1 via ComfyUI",
+      "description": "Generate images with SDXL Lightning via ComfyUI",
       "category": "optional",
       "gpu_backends": [
         "amd",
@@ -1264,19 +1264,19 @@
         {
           "id": "images",
           "name": "Image Generation",
-          "description": "Generate images with FLUX.1 via ComfyUI",
+          "description": "Generate images with SDXL Lightning via ComfyUI",
           "icon": "Image",
           "category": "creative",
           "requirements": {
             "services": [
               "comfyui"
             ],
-            "vram_gb": 0
+            "vram_gb": 8
           },
           "enabled_services_all": [
             "comfyui"
           ],
-          "setup_time": "Ready",
+          "setup_time": "Image build or download and a 6.9 GB model; see README",
           "priority": 5,
           "launch": {
             "type": "service",

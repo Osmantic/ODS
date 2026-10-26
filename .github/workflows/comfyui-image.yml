@@ -1,0 +1,57 @@
+name: ComfyUI image
+# Builds the NVIDIA ComfyUI image (ods/extensions/services/comfyui/Dockerfile)
+# the way an install or an Extensions add does. The build itself fails when a
+# custom node's requirements fail, a node requirement replaces the pinned
+# torch, or any custom node fails to import (checked on the CPU; no GPU here).
+# The weekly run catches an upstream package or node that moved before an
+# owner's build does.
+on:
+  pull_request:
+    paths:
+      - 'ods/extensions/services/comfyui/Dockerfile'
+      - 'ods/extensions/services/comfyui/startup.sh'
+      - 'ods/tests/test_comfyui_image.py'
+      - '.github/workflows/comfyui-image.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'ods/extensions/services/comfyui/Dockerfile'
+      - 'ods/extensions/services/comfyui/startup.sh'
+      - 'ods/tests/test_comfyui_image.py'
+      - '.github/workflows/comfyui-image.yml'
+  schedule:
+    - cron: '41 4 * * 1'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: comfyui-image-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  image:
+    name: NVIDIA image (amd64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.12'
+      - name: Free runner disk for the CUDA image
+        # The CUDA 12.8 base plus the CUDA PyTorch wheels need more space than
+        # a fresh runner leaves free; these preinstalled toolchains are unused.
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Install test runner
+        run: python -m pip install 'pytest>=8,<9'
+      - name: Build the image and check what it ships
+        env:
+          ODS_TEST_COMFYUI_IMAGE: '1'
+          ODS_TEST_COMFYUI_IIDFILE: ${{ runner.temp }}/comfyui-image-id
+        run: python -m pytest -q -s ods/tests/test_comfyui_image.py
+      - name: Report image size
+        run: docker image inspect --format 'image {{.Architecture}} {{.Size}} bytes' "$(cat "$RUNNER_TEMP/comfyui-image-id")"

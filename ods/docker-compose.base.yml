@@ -199,10 +199,12 @@ services:
       # users would otherwise hit a missing-engine error from Open WebUI.
       ENABLE_IMAGE_GENERATION: "${ENABLE_IMAGE_GENERATION:-false}"
       IMAGE_GENERATION_ENGINE: "comfyui"
-      COMFYUI_BASE_URL: "http://comfyui:8188"
-      IMAGE_SIZE: "1024x1024"
-      IMAGE_STEPS: "4"
-      IMAGE_GENERATION_MODEL: "sdxl_lightning_4step.safetensors"
+      # Owner-settable in .env (Settings applies them by recreating Open WebUI).
+      # The workflow below stays fixed; IMAGE_GENERATION_MODEL fills its loader.
+      COMFYUI_BASE_URL: "${COMFYUI_BASE_URL:-http://comfyui:8188}"
+      IMAGE_SIZE: "${IMAGE_SIZE:-1024x1024}"
+      IMAGE_STEPS: "${IMAGE_STEPS:-4}"
+      IMAGE_GENERATION_MODEL: "${IMAGE_GENERATION_MODEL:-sdxl_lightning_4step.safetensors}"
       COMFYUI_WORKFLOW: >-
         {"3":{"inputs":{"seed":42,"steps":4,"cfg":1.5,"sampler_name":"euler","scheduler":"sgm_uniform","denoise":1.0,"model":["4",0],"positive":["6",0],"negative":["7",0],"latent_image":["5",0]},"class_type":"KSampler"},
         "4":{"inputs":{"ckpt_name":"sdxl_lightning_4step.safetensors"},"class_type":"CheckpointLoaderSimple"},
