@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT / "bin"))
 import pixel_access_bridge as bridge
 import pixel_access_protocol as protocol
+from pixel_connections import plugins
 
 
 def request(operation="settings-apply", **changes):
@@ -54,10 +55,11 @@ def request(operation="settings-apply", **changes):
         value['transaction_id'] = 'b' * 64
     if operation == 'connection-apply':
         value['connection_target'] = dict(email=True, emailDrafts=False, calendar=True, calendarWrite=False,
-                                          calendarDirect=False, userTimezone='America/Chicago')
+                                          calendarDirect=False, userTimezone='America/Chicago', plugins=['memory-wiki'])
         value['connection_answers'] = dict(timeZone='America/Chicago', googleAccount='owner@example.com',
             calendarId='primary', emailLimbEnabled=True, calendarLimbEnabled=True, calendarDirectEnabled=False,
-            userTimezone='America/Chicago', calendarWriteEnabled=False, gmailWindowDays=180, emailDraftsEnabled=False)
+            userTimezone='America/Chicago', calendarWriteEnabled=False, gmailWindowDays=180, emailDraftsEnabled=False,
+            portalPlugins=plugins.answers(['memory-wiki']))
     if operation.endswith("status"):
         value["config_sha256"] = None
     value.update(changes)
