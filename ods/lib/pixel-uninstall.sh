@@ -213,7 +213,7 @@ for name in (
     sources[f"pixel_provider/{name}"] = install / "bin/pixel_provider" / name
 CONNECTION_MODULES = tuple(f"pixel_connections/{name}" for name in (
     "__init__.py", "state.py", "status.py", "catalog.py", "oauth.py", "custody.py", "planner.py", "coordinator.py",
-    "lifecycle.py", "approvals.py"))
+    "lifecycle.py", "approvals.py", "activity.py"))
 # The root-owned copy of Pixel's broker that a connect installs from. It mirrors this
 # install's Pixel checkout, which later configures may rewrite, so only its exact
 # names and root custody are checked.

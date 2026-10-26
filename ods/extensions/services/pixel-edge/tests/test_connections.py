@@ -133,7 +133,14 @@ class ConnectionsRelayTests(unittest.IsolatedAsyncioTestCase):
                                                                 'sha256': CHANGE['sha256']}},
                  {'proposalId': CHANGE['proposalId'], 'outcome': 'applied'}),
                 ({'operation': 'connection-decline', 'request': {'proposalId': CHANGE['proposalId']}},
-                 {'proposalId': CHANGE['proposalId'], 'outcome': 'declined'})):
+                 {'proposalId': CHANGE['proposalId'], 'outcome': 'declined'}),
+                ({'operation': 'connection-activity', 'request': {}},
+                 {'changes': [{'proposalId': CHANGE['proposalId'], 'action': 'create', 'title': 'Focus time',
+                               'start': '2026-10-27T15:00:00-05:00', 'end': '2026-10-27T16:00:00-05:00',
+                               'allDay': False, 'previous': None, 'appliedAt': '2026-10-26T15:00:01Z',
+                               'undo': 'available'}], 'more': 0}),
+                ({'operation': 'connection-undo', 'request': {'proposalId': CHANGE['proposalId']}},
+                 {'proposalId': CHANGE['proposalId'], 'outcome': 'applied'})):
             with self.subTest(operation=payload['operation']):
                 self.calls.clear()
                 self.reply = reply

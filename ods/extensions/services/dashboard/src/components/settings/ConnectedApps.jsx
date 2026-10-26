@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import HelpLink from '../HelpLink'
+import CalendarActivity from './CalendarActivity'
 import CalendarChanges from './CalendarChanges'
 import GoogleConnectWizard, { Problem } from './GoogleConnectWizard'
 import { GOOGLE_CONSOLE, capabilitySummary, consoleLink, googleCard } from './connectedAppsStatus'
@@ -140,6 +141,7 @@ export default function ConnectedApps() {
         onClose={() => { setWizard(null); void refresh() }} onConnected={connected} /> : null}
       {google?.account && !wizard ? <CalendarChanges waiting={google.waitingChanges ?? 0}
         writable={Boolean(google.capabilities?.['calendar.write'])} onChanged={() => { void refresh() }} /> : null}
+      {google?.account && !wizard && google.capabilities?.['calendar.direct'] ? <CalendarActivity onChanged={() => { void refresh() }} /> : null}
     </article> : null}
   </section>
 }

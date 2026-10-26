@@ -107,3 +107,34 @@ export function outcomeNotice(outcome, entry) {
   if (outcome === 'waiting') return 'Nothing was sent for this change yet.'
   return stateLine({...entry, state: outcome})
 }
+
+// ---------------------------------------------------------------- what Portal did by itself
+
+const named = entry => entry.title ? quoted(entry.title) : 'an event'
+
+// One line per change Portal made without asking.
+export function activityLine(entry) {
+  const now = changeWhen(entry.start, entry.end, entry.allDay)
+  if (entry.action === 'create') return `Added ${named(entry)}${now ? `, ${now}` : ''}`
+  const before = entry.previous ? changeWhen(entry.previous.start, entry.previous.end, entry.previous.allDay) : null
+  return `Moved ${named(entry)}${now ? ` to ${now}` : ''}${before ? ` (it was ${before})` : ''}`
+}
+
+// Why a change can't be undone, or how its undo ended; null when Undo is offered.
+export function undoLine(entry) {
+  return {
+    syncing: 'Undo appears once ODS has synced your calendar, within a minute.',
+    done: 'Undone.',
+    refused: 'Google refused the undo because the event changed. Check your calendar.',
+    unconfirmed: "Google hasn't confirmed the undo, so ODS won't send it again. Check your calendar.",
+    changed: "The event changed since, so ODS won't undo this.",
+    gone: 'The event is no longer on your calendar.',
+  }[entry.undo] ?? null
+}
+
+// What the owner reads after pressing Undo.
+export function undoNotice(outcome, entry) {
+  if (outcome === 'applied') return entry.action === 'create' ? `Removed ${named(entry)} from your calendar.` : `Moved ${named(entry)} back.`
+  if (outcome === 'unconfirmed') return "Google hasn't confirmed the undo yet. ODS won't send it again; check your calendar in a minute."
+  return 'Google refused the undo because the event changed. Check your calendar.'
+}

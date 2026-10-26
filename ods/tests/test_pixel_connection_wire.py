@@ -135,6 +135,7 @@ REQUESTS = (
     ("connection-disconnect", {"connector": "google"}), ("connection-sync", {}),
     ("connection-proposals", {}), ("connection-approve", {"proposalId": PROPOSAL, "sha256": "c" * 64}),
     ("connection-decline", {"proposalId": PROPOSAL}), ("connection-reconcile", {"proposalId": PROPOSAL}),
+    ("connection-activity", {}), ("connection-undo", {"proposalId": PROPOSAL}),
 )
 BAD_REQUESTS = (
     ("connection-begin", dict(BEGIN, redirectPort=80)), ("connection-begin", dict(BEGIN, extra=1)),
@@ -152,6 +153,8 @@ BAD_REQUESTS = (
     ("connection-approve", {"proposalId": PROPOSAL, "sha256": "c" * 64, "force": True}),
     ("connection-decline", {"proposalId": "calendar-1-0badc0de"}),
     ("connection-reconcile", {"proposalId": PROPOSAL, "sha256": "c" * 64}),
+    ("connection-activity", {"days": 30}), ("connection-undo", {"proposalId": PROPOSAL, "sha256": "c" * 64}),
+    ("connection-undo", {}),
 )
 CHANGE = {"summary": "Dentist", "start": "2026-10-27T15:00:00-05:00", "end": "2026-10-27T16:00:00-05:00",
           "allDay": False, "timeZone": "America/Chicago", "location": "12 Main St", "description": "Bring\nthe form",
@@ -164,6 +167,12 @@ UPDATE = dict(WAITING, state="unconfirmed", action="update",
 UNREADABLE = {"proposalId": PROPOSAL, "sha256": None, "state": "invalid", "action": None, "createdAt": None,
               "change": None, "event": None, "tooLarge": False}
 TOO_LARGE = dict(WAITING, sha256=None, change=None, tooLarge=True)
+# Private changes Portal made by itself, as root lists them with Undo.
+ADDED = {"proposalId": PROPOSAL, "action": "create", "title": "Focus time", "start": CHANGE["start"],
+         "end": CHANGE["end"], "allDay": False, "previous": None, "appliedAt": "2026-10-26T15:00:01.123456Z",
+         "undo": "available"}
+MOVED = dict(ADDED, action="update", title=None, undo="syncing",
+             previous={"start": "2026-10-27", "end": "2026-10-28", "allDay": True})
 REPLIES = (
     ("connection-begin", {"flowId": FLOW, "authUrl": "https://accounts.google.com/o/oauth2/auth?client_id=x&state=y",
                           "redirectUri": "http://127.0.0.1:53682", "expiresAt": "2026-10-25T20:45:00Z"}),
@@ -180,6 +189,10 @@ REPLIES = (
     ("connection-approve", {"proposalId": PROPOSAL, "outcome": "unconfirmed"}),
     ("connection-reconcile", {"proposalId": PROPOSAL, "outcome": "waiting"}),
     ("connection-decline", {"proposalId": PROPOSAL, "outcome": "declined"}),
+    ("connection-activity", {"changes": [], "more": 0}),
+    ("connection-activity", {"changes": [ADDED, MOVED], "more": 4}),
+    ("connection-undo", {"proposalId": PROPOSAL, "outcome": "applied"}),
+    ("connection-undo", {"proposalId": PROPOSAL, "outcome": "rejected"}),
 )
 BAD_REPLIES = (
     ("connection-begin", {"flowId": FLOW, "authUrl": "https://example.com/o/oauth2/auth?x",
@@ -208,9 +221,16 @@ BAD_REPLIES = (
     ("connection-proposals", {"proposals": [dict(UNREADABLE, action="create")], "more": 0}),
     ("connection-proposals", {"proposals": [dict(TOO_LARGE, change=CHANGE)], "more": 0}),
     ("connection-proposals", {"proposals": [dict(UPDATE, event=dict(UPDATE["event"], allDay=None))], "more": 0}),
+    ("connection-undo", {"proposalId": PROPOSAL, "outcome": "declined"}),
+    ("connection-activity", {"changes": [dict(ADDED, action="delete")], "more": 0}),
+    ("connection-activity", {"changes": [dict(ADDED, undo="maybe")], "more": 0}),
+    ("connection-activity", {"changes": [dict(ADDED, title="Ring\x07")], "more": 0}),
+    ("connection-activity", {"changes": [dict(MOVED, previous={"start": None})], "more": 0}),
+    ("connection-activity", {"changes": [dict(ADDED, extra=1)], "more": 0}),
+    ("connection-activity", {"changes": [ADDED] * 21, "more": 0}),
 )
 VALIDATORS = ("valid_connection_action", "public_connection_action", "_text", "_capability_flags", "_words",
-              "_calendar_change", "_calendar_event", "_calendar_entry")
+              "_calendar_change", "_calendar_event", "_calendar_entry", "_calendar_moment", "_calendar_activity")
 CONSTANTS = ("_CONNECTION_OPERATIONS", "_CAPABILITY_IDS", "_FLOW", "_STATE", "_CODE", "_CLIENT_ID", "_CLIENT_SECRET",
              "_PROJECT", "_ACCOUNT", "_TIME_ZONE", "_SECOND", "_REASON", "_AUTH_URL", "_PROPOSAL", "_HEX",
              "_ATTENDEE", "_CONTROL", "_CHANGE_OUTCOMES")
@@ -246,7 +266,7 @@ class ActionWireTests(unittest.TestCase):
                 coordinator._begin_request(copy.deepcopy(request))
             elif operation == "connection-complete":
                 coordinator._complete_request(copy.deepcopy(request))
-            elif operation in ("connection-approve", "connection-decline", "connection-reconcile"):
+            elif operation in ("connection-approve", "connection-decline", "connection-reconcile", "connection-undo"):
                 coordinator._change_request(copy.deepcopy(request), set(request))
 
     @unittest.skipUnless(hasattr(os, "fchown"), "root keeps calendar snapshots on Linux")

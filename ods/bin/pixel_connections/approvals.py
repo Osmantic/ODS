@@ -196,8 +196,8 @@ def _placeholder(value: Any) -> bool:
     return False
 
 
-def validate(value: Any, proposal_id: str) -> tuple[str, dict[str, Any]]:
-    """The broker's validate_proposal for an operator proposal; ValueError where the broker refuses.
+def validate(value: Any, proposal_id: str, *, status: str = OPERATOR) -> tuple[str, dict[str, Any]]:
+    """The broker's validate_proposal for a proposal in ``status``; ValueError where the broker refuses.
 
     The broker also refuses event text that looks like a vendor credential. That
     rule stays in the broker, so such a change fails when approved and is never made.
@@ -205,7 +205,7 @@ def validate(value: Any, proposal_id: str) -> tuple[str, dict[str, Any]]:
     if (type(value) is not dict or set(value) != {"schemaVersion", "proposalId", "source", "action", "status",
                                                   "createdAt", "values", "boundary"}
             or value["schemaVersion"] != 1 or value["proposalId"] != proposal_id
-            or value["source"] != "pixel-owner-conversation" or value["status"] != OPERATOR
+            or value["source"] != "pixel-owner-conversation" or value["status"] != status
             or value["boundary"] != BOUNDARY or type(value["createdAt"]) is not str
             or type(value["action"]) is not str or value["action"] not in ALLOWED
             or type(value["values"]) is not dict):
@@ -335,30 +335,40 @@ def _when(value: Any) -> tuple[str | None, bool]:
     return None, False
 
 
-def _events(paths, owner: int, wanted: set[str]) -> dict[str, dict[str, Any]]:
-    """The current title and time of the events these changes touch, from the broker's calendar summary.
+def projected(paths, owner: int, wanted: set[str]) -> tuple[dict[str, dict[str, Any]], str | None]:
+    """The broker's calendar summary records of these events, and when that summary was made.
 
-    The summary is for display only: an unreadable one just leaves the event unnamed.
+    An unreadable summary names no event.
     """
     if not wanted:
-        return {}
+        return {}, None
     try:
         raw = _read(paths.projection / "calendar.json", owner=owner, limit=MAX_PROJECTION_BYTES)
         value = _json(raw) if raw is not None else None
     except (ApprovalError, UnicodeError, ValueError, RecursionError):
-        return {}
+        return {}, None
     records = value.get("records") if type(value) is dict else None
     found: dict[str, dict[str, Any]] = {}
     for record in records if type(records) is list else []:
         event_id = record.get("id") if type(record) is dict else None
-        if type(event_id) is not str or event_id not in wanted or event_id in found:
-            continue
-        start, all_day = _when(record.get("start"))
-        end, _end_all_day = _when(record.get("end"))
-        title = record.get("title")
-        found[event_id] = {"title": CONTROL.sub("", title)[:1000] if type(title) is str else None,
-                           "start": start, "end": end, "allDay": all_day}
-    return found
+        if type(event_id) is str and event_id in wanted and event_id not in found:
+            found[event_id] = record
+    generated = value.get("generatedAt") if type(value) is dict else None
+    return found, generated if type(generated) is str else None
+
+
+def event_view(record: dict[str, Any]) -> dict[str, Any]:
+    """An event's title and time as the owner reads them."""
+    start, all_day = _when(record.get("start"))
+    end, _end_all_day = _when(record.get("end"))
+    title = record.get("title")
+    return {"title": CONTROL.sub("", title)[:1000] if type(title) is str else None,
+            "start": start, "end": end, "allDay": all_day}
+
+
+def _events(paths, owner: int, wanted: set[str]) -> dict[str, dict[str, Any]]:
+    """The current title and time of the events these changes touch; for display only."""
+    return {event_id: event_view(record) for event_id, record in projected(paths, owner, wanted)[0].items()}
 
 
 def _unreadable(proposal_id: str) -> dict[str, Any]:

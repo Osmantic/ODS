@@ -461,6 +461,8 @@ the dashboard or a log.
 | `approve` | `{"proposalId", "sha256"}` | `{"proposalId", "outcome": "applied" \| "rejected" \| "not-applied" \| "unconfirmed"}` |
 | `decline` | `{"proposalId"}` | `{"proposalId", "outcome": "declined"}` |
 | `check` | `{"proposalId"}` | `{"proposalId", "outcome": "applied" \| "rejected" \| "not-applied" \| "unconfirmed" \| "waiting"}` |
+| `activity` | `{}` | `{"changes": [...], "more": 0}` |
+| `undo` | `{"proposalId"}` | `{"proposalId", "outcome": "applied" \| "rejected" \| "not-applied" \| "unconfirmed"}` |
 
 `begin` opens `http://127.0.0.1:<port>/` on the machine that runs the host agent
 (the Windows host for a WSL install) and returns Google's consent address. When
@@ -515,6 +517,17 @@ after any access-mode change it records the mode and updates Portal's gateway in
 the background (the connection's `pending` step shows it, with `finish` if Portal
 was busy). Changes queued while paused are discarded before the watcher runs again,
 so none is ever made late.
+
+`activity` lists those private changes from the last week, newest first, from the
+broker's own results: what Portal did, the time an event moved from, and whether
+it can be undone (`available`, `syncing`, `done`, `refused`, `unconfirmed`,
+`changed` or `gone`). `undo` reverses one, once. Root builds the reversal only
+from the broker's record (delete the event it created, or move the event back to
+the recorded times), checks that the calendar summary shows the event exactly as
+Portal left it, and makes it through `pixel-source-action@<id>.service` with the
+event's current ETag, so Google refuses it if the event changed since. The owner's
+click is the approval. A root ledger (`calendar-undo.json` in the coordinator's
+state) keeps each reversal, so a second `undo` reports the first outcome.
 
 **Error responses:**
 | Code | Condition |

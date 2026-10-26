@@ -11,10 +11,10 @@ import pixel_access_protocol as protocol  # noqa: E402
 from pixel_connections import state  # noqa: E402
 
 MODULES = ("__init__.py", "state.py", "status.py", "catalog.py", "oauth.py", "custody.py", "planner.py",
-           "coordinator.py", "lifecycle.py", "approvals.py")
+           "coordinator.py", "lifecycle.py", "approvals.py", "activity.py")
 ACTIONS = ("connection-begin", "connection-complete", "connection-activate", "connection-cancel",
            "connection-disconnect", "connection-sync", "connection-proposals", "connection-approve",
-           "connection-decline", "connection-reconcile")
+           "connection-decline", "connection-reconcile", "connection-activity", "connection-undo")
 TARGET = {"email": True, "calendar": True, "calendarWrite": False, "calendarDirect": False,
           "userTimezone": "America/Chicago"}
 ANSWERS = state.connection_answers(None, google_custody=False)
