@@ -72,14 +72,31 @@ _OPS_STATUSES = frozenset(
 )
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _MODEL_SWITCH_DETAIL = "Model switch in progress; Portal will be ready when activation completes"
-_MODEL_UNLOADED_DETAIL = "The model is unloaded. Open Models and choose Resume model to use Portal again."
+_MODEL_UNLOADED_DETAIL = "The model is unloaded, so Portal is paused. Choose Resume model to load it again."
+_MODEL_RECOVERY_DETAIL = ("A model switch stopped before it finished, so new messages are held. "
+                          "Choose Recover model switch to finish or undo it.")
+_RUNTIME_STOPPED_DETAIL = "The local model runtime is not running, so Portal is paused. Choose Resume model to start it."
 # The Windows runtime ownership proof starts host processes and takes seconds.
 # Bound it inside the Portal page's 15 s status deadline, and let one answer
 # serve its 3 s polls while an unattended hold lasts.
 _RUNTIME_PROOF_SECONDS = 10.0
 _RUNTIME_PROOF_TTL_SECONDS = 30.0
 _MODEL_HOLD_DETAIL = "A model transition is holding new messages. Check model update progress. If it has stopped, restore Sandbox in Portal permissions."
-_CHAT_RECOVERY_DETAIL = "Portal stopped during an earlier turn and new messages are held. Open Portal permissions and use Verify Sandbox or Restore Sandbox before continuing."
+_CHAT_RECOVERY_DETAIL = ("Portal stopped during an earlier turn, so new messages are held "
+                         "until its permissions are checked again.")
+# Host lifecycle operations that never own or change the Portal model
+# transaction. They take the lifecycle only to serialize with model work (the
+# access monitor's reproof runs every 30 s), so a hold they overlap is still
+# unattended. Mirrors _MODEL_RUNTIME_NEUTRAL_OPERATIONS in ods-host-agent.py.
+_MODEL_NEUTRAL_OPERATIONS = frozenset({
+    "pixel_startup_reproof", "pixel_access_mode", "pixel_open_app",
+    "pixel_providers", "pixel_settings", "model_profile_recheck",
+})
+# The one-click fix Portal offers for a held state ("recovery" in status).
+# Each names an existing API: the Sandbox actions POST /api/pixel/access-mode
+# with {"mode": "sandboxed"} exactly as Portal permissions does; resume-model
+# is Models' Resume model; recover-model is Models' Recover model switch.
+_STATE_RECOVERY = {"model_unloaded": "resume-model", "model_recovery_required": "recover-model"}
 _MODEL_CAPABILITY_DETAIL = (
     "The active model is recorded as not agent-qualified. Tool-driven tasks "
     "may be unreliable; chat and experiments remain available."
@@ -389,6 +406,33 @@ def _access_projection(value):
         raise HTTPException(status_code=502, detail="Portal access status could not be verified") from None
 
 
+def _access_recovery(access, *, model_hold_possible=True) -> str | None:
+    """The Portal permissions action that recovers this access state, if any.
+
+    Both actions send {"mode": "sandboxed", "confirmed": false}, exactly like
+    Verify Sandbox and Restore Sandbox; the host re-checks the revision and
+    refuses a busy runtime first. Nothing here can select Full Access, and an
+    unverified Full Access is left to the host's own same-mode reproof.
+    """
+    if not access or not access["available"]:
+        return None
+    reason, mode = access["reason"], access["configured_mode"]
+    if reason == "chat-recovery-required":
+        # Settings offers only this while a chat is held: Enable Full Access waits.
+        return {"sandboxed": "verify-sandbox", "full-access": "restore-sandbox"}.get(mode)
+    if not access["pending"] and reason == "runtime-proof-required" and mode == "sandboxed":
+        return "verify-sandbox"
+    # An unfinished access change resumes only by restoring Sandbox. A held
+    # model transaction reads the same way but has its own recovery.
+    if access["pending"] and reason == "transition-recovery-required" and not model_hold_possible:
+        return "restore-sandbox"
+    return None
+
+
+def _recovery_field(action: str | None) -> dict[str, str]:
+    return {"recovery": action} if action else {}
+
+
 @router.get("/access-mode", dependencies=[Depends(verify_api_key)])
 async def pixel_access_status():
     try:
@@ -453,17 +497,25 @@ def _unattended_model_hold(status: object) -> bool:
     """A held Portal model transaction that no host lifecycle operation owns.
 
     A model switch owns the host's model_activation lifecycle until it ends,
-    so a hold without any operation will not finish by itself.
+    so a hold without any operation will not finish by itself. Access checks
+    and settings saves also take the lifecycle, but never own a hold.
     """
-    return (isinstance(status, dict) and status.get("modelTransactionPending") is True
-            and not status.get("lifecycleActive") and not status.get("activeOperation"))
+    if not isinstance(status, dict) or status.get("modelTransactionPending") is not True:
+        return False
+    operation = status.get("activeOperation")
+    return (not status.get("lifecycleActive") and not operation) or operation in _MODEL_NEUTRAL_OPERATIONS
 
 
-def _model_readiness_issue_from_status(status: object, *, runtime_stopped: bool = False) -> tuple[str, str] | None:
+def _model_readiness_issue_from_status(status: object, *, runtime_stopped: bool = False,
+                                       unload_ruled_out: bool = False) -> tuple[str, str] | None:
     # Unload model keeps the Portal hold until Resume model. An unattended
     # hold on a runtime the host proves stopped is that, not a switch.
     if runtime_stopped and _unattended_model_hold(status):
         return "model_unloaded", _MODEL_UNLOADED_DETAIL
+    # The host proves it is not an unload either: an interrupted switch that
+    # nothing will finish by itself. Recover model switch completes or undoes it.
+    if unload_ruled_out and _unattended_model_hold(status):
+        return "model_recovery_required", _MODEL_RECOVERY_DETAIL
     if isinstance(status, dict) and status.get("modelTransactionPending") is True:
         return "model_switching", _MODEL_SWITCH_DETAIL
     switching = (
@@ -567,35 +619,61 @@ async def _verified_external_host_runtime(host_status: object) -> dict[str, obje
     return _active_runtime_projection({"activeRuntime": runtime})
 
 
-_runtime_proof: tuple[float, bool] | None = None
+_runtime_proof: tuple[float, bool | None] | None = None
 
 
-async def _owned_runtime_stopped() -> bool:
-    """Whether the host proves the Windows model runtime it owns is stopped.
+def _runtime_unloaded(value: object) -> bool | None:
+    """Whether a host runtime projection proves the model is unloaded.
 
-    A failed or invalid proof is unknown, never "stopped". It is remembered
-    too, so a slow host is not asked again on every poll.
+    True: the owned runtime is stopped, exactly the proof for which the Models
+    page offers Resume model. False: the host runs the model it owns, or owns
+    no runtime it could have unloaded. Anything else is unknown (None).
+    """
+    if not isinstance(value, dict):
+        return None
+    fields = tuple(value.get(key) for key in ("managed", "canUnload", "running", "canActivate"))
+    if any(type(field) is not bool for field in fields):
+        return None
+    return {(True, True, False, False): True, (True, True, True, True): False,
+            (False, False, False, False): False}.get(fields)
+
+
+async def _owned_runtime_unloaded() -> bool | None:
+    """The host's _runtime_unloaded proof for the Windows runtime it owns.
+
+    A stopped runtime under a switch that did not reach its held phase is not
+    an unload. A failed or invalid proof is unknown. It is remembered too, so a
+    slow host is not asked again on every poll.
     """
     global _runtime_proof
     if _runtime_proof is not None and time.monotonic() - _runtime_proof[0] < _RUNTIME_PROOF_TTL_SECONDS:
         return _runtime_proof[1]
     try:
         async with async_timeout(_RUNTIME_PROOF_SECONDS):
-            value = await request_agent_json("GET", "/v1/model/management", timeout=_RUNTIME_PROOF_SECONDS)
+            unloaded = _runtime_unloaded(await request_agent_json(
+                "GET", "/v1/model/management", timeout=_RUNTIME_PROOF_SECONDS))
+            if unloaded is True:
+                # Resume model restarts only an unload's held transaction. The
+                # host refuses it for a switch that stopped part-way and asks
+                # for recovery first, so that hold is not an unload.
+                try:
+                    journal = await request_agent_json("GET", "/v1/model/recovery", timeout=_RUNTIME_PROOF_SECONDS)
+                except AgentClientError:
+                    journal = None
+                if isinstance(journal, dict) and journal.get("pending") is True and journal.get("phase") != "held":
+                    unloaded = False
     except (asyncio.TimeoutError, AgentClientError):
-        value = None
-    # Exactly the proof for which the Models page offers Resume model.
-    stopped = (isinstance(value, dict) and value.get("managed") is True and value.get("canUnload") is True
-               and value.get("running") is False and value.get("canActivate") is False)
-    _runtime_proof = (time.monotonic(), stopped)
-    return stopped
+        unloaded = None
+    _runtime_proof = (time.monotonic(), unloaded)
+    return unloaded
 
 
 async def _model_readiness_issue_for_status(status: object) -> tuple[str, str] | None:
     # Only an unattended hold needs the runtime proof; a switch in progress
     # owns a host lifecycle operation.
-    stopped = _unattended_model_hold(status) and await _owned_runtime_stopped()
-    return _model_readiness_issue_from_status(status, runtime_stopped=stopped)
+    unloaded = await _owned_runtime_unloaded() if _unattended_model_hold(status) else None
+    return _model_readiness_issue_from_status(status, runtime_stopped=unloaded is True,
+                                              unload_ruled_out=unloaded is False)
 
 
 async def _model_activation_in_progress() -> bool:
@@ -666,7 +744,7 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
                 "detail": _MODEL_HOLD_DETAIL}
     if access and access["available"] and access["reason"] == "chat-recovery-required":
         return {**activation_metadata, "available": False, "model": None, "state": "chat_recovery_required",
-                "detail": _CHAT_RECOVERY_DETAIL}
+                "detail": _CHAT_RECOVERY_DETAIL, **_recovery_field(_access_recovery(access))}
     readiness_issue = await _model_readiness_issue_for_status(host_status)
     if readiness_issue is not None:
         state, detail = readiness_issue
@@ -676,6 +754,7 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
             "model": None,
             "state": state,
             "detail": detail,
+            **_recovery_field(_STATE_RECOVERY.get(state)),
         }
     edge_url, key = config
     try:
@@ -705,7 +784,11 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
         if available:
             inference_issue = await _local_inference_issue(host_status)
             if inference_issue:
-                return {**activation_metadata, "available": False, "model": None, "state": "model_unavailable", "detail": inference_issue}
+                # A stopped runtime the host owns gets Models' Resume model.
+                stopped = await _owned_runtime_unloaded() is True
+                return {**activation_metadata, "available": False, "model": None, "state": "model_unavailable",
+                        "detail": _RUNTIME_STOPPED_DETAIL if stopped else inference_issue,
+                        **_recovery_field("resume-model" if stopped else None)}
         runtime = _active_runtime_projection(host_status)
         if available and runtime is None:
             runtime = await _verified_external_host_runtime(host_status)
@@ -725,6 +808,10 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
         readiness = project_readiness(available, access, identity, access_issue)
         result["readiness"] = readiness
         if available:
+            # Only a host that reports no open model transaction lets a held
+            # access transition be offered Restore Sandbox.
+            settled = isinstance(host_status, dict) and host_status.get("modelTransactionPending") is False
+            result.update(_recovery_field(_access_recovery(access, model_hold_possible=not settled)))
             result["detail"] = "Owner agent available; " + ("runtime files changed since initialization" if identity["state"] == "mismatch"
                                                          else "release identity is not fully verified")
             if readiness["accessState"] == "failed":

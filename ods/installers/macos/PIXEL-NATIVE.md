@@ -1064,6 +1064,14 @@ the simulated crash. Startup/reconcile tests cover 26 cases and seven
 subtests. Cold reboot and interruption during active tools or transactions
 remain separate qualification requirements.
 
+Since 2026-10-25 the monitor no longer stops on a state that can resolve
+later. A pending transition, an interrupted chat or an open Portal model
+transaction is checked again with backoff from 30 seconds to 5 minutes, and
+the helper still refuses to touch it. After a timeout or an unconfirmed
+change the monitor submits nothing further; it reads status until the runtime
+is verified again, then resumes. A status read that shows a stale Sandbox
+proof wakes it early.
+
 The local Portal cancellation check on 2026-09-19 observed native inference
 active before cancelling the exact chat/request identity. The API acknowledged
 cancellation in 0.12 seconds; the stream ended and retained state was

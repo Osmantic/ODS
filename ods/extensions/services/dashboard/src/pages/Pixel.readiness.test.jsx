@@ -81,6 +81,59 @@ it('refreshes already-open verified Permissions when Portal discovers recovery w
  expect(transport.mock.calls.some(([url])=>url==='/api/pixel/chat/stream')).toBe(false)
 })
 
+it('recovers a held chat from Portal itself with the same Verify Sandbox request',async()=>{
+ const sandbox={available:true,surface:'wsl-systemd',configured_mode:'sandboxed',effective_mode:'sandboxed',runtime_verified:true,revision:'a'.repeat(64),busy:false,pending:false,reason:null,scope:'owner-host'}
+ let held=true
+ const transport=vi.fn(async(url,options)=>{
+  if(url==='/api/pixel/status')return json(held?{available:false,state:'chat_recovery_required',recovery:'verify-sandbox',
+   detail:'Portal stopped during an earlier turn, so new messages are held until its permissions are checked again.'}:{available:true})
+  if(url==='/api/pixel/access-mode'){
+   if(options?.method==='POST'){held=false;return json(sandbox)}
+   return json({...sandbox,reason:'chat-recovery-required'})
+  }
+  if(url==='/api/pixel/chat/context')return json({schemaVersion:1,status:'missing',sessionRevision:null,
+   context:null,model:null,compaction:{status:'idle',count:0},history:{revision:null,acknowledgedMessages:0}})
+  return json({})
+ })
+ vi.stubGlobal('fetch',transport);vi.useFakeTimers()
+ render(<Pixel/>);await act(async()=>{})
+ fireEvent.change(screen.getByPlaceholderText('Messages are held until Portal recovery'),{target:{value:'Keep this draft'}})
+ expect(screen.getByText('Recovery required')).toBeVisible()
+ const recovery=within(screen.getByRole('region',{name:'Portal recovery'}))
+ expect(recovery.getByRole('alert')).toHaveTextContent('new messages are held')
+ expect(screen.queryByRole('link',{name:'Portal permissions'})).toBeNull()
+ // Recovery waits for the owner; polling alone never sends it.
+ await act(async()=>{await vi.advanceTimersByTimeAsync(9000)})
+ expect(transport.mock.calls.some(([url,options])=>options?.method==='POST'&&url!=='/api/pixel/chat/context')).toBe(false)
+ fireEvent.click(recovery.getByRole('button',{name:'Verify now'}));await act(async()=>{})
+ const posts=transport.mock.calls.filter(([url,options])=>url==='/api/pixel/access-mode'&&options?.method==='POST')
+ expect(posts.map(([,options])=>JSON.parse(options.body))).toEqual([{mode:'sandboxed',revision:'a'.repeat(64),confirmed:false}])
+ await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
+ expect(screen.queryByRole('region',{name:'Portal recovery'})).toBeNull()
+ expect(screen.getByPlaceholderText('Message Portal...')).toHaveValue('Keep this draft')
+ expect(screen.getByPlaceholderText('Message Portal...')).toBeEnabled()
+ expect(transport.mock.calls.some(([url])=>url==='/api/pixel/chat/stream')).toBe(false)
+})
+
+it('offers Verify now for a stale Sandbox proof instead of a settings link',async()=>{
+ const unverified={...failed(),state:'unverified',accessState:'unverified',reasonCode:'access-proof-unverified'}
+ let status={available:true,readiness:unverified,recovery:'verify-sandbox'}
+ transport(()=>status)
+ vi.useFakeTimers()
+ render(<Pixel/>);await act(async()=>{})
+ const recovery=within(screen.getByRole('region',{name:'Portal recovery'}))
+ expect(recovery.getByRole('status')).toHaveTextContent('ODS re-checks it automatically')
+ expect(recovery.getByRole('button',{name:'Verify now'})).toBeEnabled()
+ expect(screen.queryByLabelText('Runtime readiness')).toBeNull()
+ // Chat stays usable meanwhile; the notice is not a hold.
+ expect(screen.getByPlaceholderText('Message Portal...')).toBeEnabled()
+ // The host monitor re-proves it on its own; the notice then goes away.
+ status={available:true,readiness:{...unverified,accessState:'verified',effectiveMode:'sandboxed',reasonCode:'release-binding-unavailable'}}
+ await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
+ expect(screen.queryByRole('region',{name:'Portal recovery'})).toBeNull()
+ expect(fetch.mock.calls.some(([url])=>url==='/api/pixel/access-mode')).toBe(false)
+})
+
 it('retains only a diagnostic cloud label during an available access transition and recovers on polling',async()=>{
   const runtime={source:'remote-provider',model:'cloud-model',contextLength:65536,maxTokens:4096,reasoning:false}
   let status={available:true,runtime}

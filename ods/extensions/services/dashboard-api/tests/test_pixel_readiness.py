@@ -18,7 +18,8 @@ FAILED = dict(ACCESS, available=False, configured_mode="unknown", effective_mode
               revision=None, reason="inspection-failed")
 
 
-async def status_for(monkeypatch, access=ACCESS, identity=None, *, held=False, recovery=False):
+async def status_for(monkeypatch, access=ACCESS, identity=None, *, held=False, recovery=None, model_status=None):
+    """Portal status for one access projection; ``recovery`` expects the chat gate's fix."""
     monkeypatch.setenv("PIXEL_OPENWEBUI_KEY", "e" * 64)
     monkeypatch.setenv("PIXEL_EDGE_URL", "http://pixel-edge:9595")
     calls = []
@@ -26,7 +27,8 @@ async def status_for(monkeypatch, access=ACCESS, identity=None, *, held=False, r
     async def host(method, path, **kwargs):
         calls.append((method, path, kwargs))
         if path == "/v1/model/status":
-            return {"status": "idle", "activeRuntime": {"source": "local-switchboard", "model": "fixture-model", "contextLength": 65536}}
+            return {"status": "idle", "activeRuntime": {"source": "local-switchboard", "model": "fixture-model", "contextLength": 65536},
+                    **(model_status or {})}
         assert path == "/v1/pixel/access-mode" and method == "GET"
         if isinstance(access, Exception):
             raise access
@@ -50,8 +52,9 @@ async def status_for(monkeypatch, access=ACCESS, identity=None, *, held=False, r
         assert result == {"available": False, "model": None, "state": "model_transition_pending", "detail": pixel._MODEL_HOLD_DETAIL}
         assert all(method == "GET" for method, _path, _kwargs in calls)
         return result
-    if recovery:
-        assert result == {"available": False, "model": None, "state": "chat_recovery_required", "detail": pixel._CHAT_RECOVERY_DETAIL}
+    if recovery is not None:
+        expected = {"available": False, "model": None, "state": "chat_recovery_required", "detail": pixel._CHAT_RECOVERY_DETAIL}
+        assert result == ({**expected, "recovery": recovery} if recovery else expected)
         assert all(method == "GET" for method, _path, _kwargs in calls)
         return result
     assert result["available"] is True
@@ -122,9 +125,53 @@ async def test_interrupted_chat_gate_is_held_with_verified_permissions_and_no_ho
     projected = pixel._access_projection(access)
     assert projected["runtime_verified"] and projected["effective_mode"] == "sandboxed"
     assert not projected["pending"]
-    await status_for(monkeypatch, access, recovery=True)
+    await status_for(monkeypatch, access, recovery="verify-sandbox")
     recovered = await status_for(monkeypatch, {**access, "reason": None})
     assert recovered["available"] and recovered["readiness"]["accessState"] == "verified"
+    assert "recovery" not in recovered
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("mode", "recovery"), [
+    ("sandboxed", "verify-sandbox"),
+    # Settings offers only Restore Sandbox while a chat is held: Enable Full Access waits.
+    ("full-access", "restore-sandbox"),
+    ("unknown", ""),
+])
+async def test_the_chat_gate_offers_the_one_permissions_action_that_recovers_it(monkeypatch, mode, recovery):
+    verified = mode != "unknown"
+    access = {**ACCESS, "configured_mode": mode, "effective_mode": mode if verified else "unknown",
+              "runtime_verified": verified, "reason": "chat-recovery-required"}
+    await status_for(monkeypatch, access, recovery=recovery)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("access", "model_status", "recovery"), [
+    # A gateway restart dropped an idle Sandbox's proof: Verify now.
+    ({**ACCESS, "runtime_verified": False, "effective_mode": "unknown", "reason": "runtime-proof-required"},
+     None, "verify-sandbox"),
+    # Busy work is refused by the host before anything changes; offer it anyway.
+    ({**ACCESS, "runtime_verified": False, "effective_mode": "unknown", "reason": "runtime-proof-required",
+      "busy": True}, None, "verify-sandbox"),
+    # An unverified Full Access is left to the host's same-mode reproof.
+    ({**ACCESS, "configured_mode": "full-access", "runtime_verified": False, "effective_mode": "unknown",
+      "reason": "runtime-proof-required"}, None, None),
+    # An unfinished access change resumes by restoring Sandbox, but only when
+    # the host proves no model transaction holds the coordinator instead.
+    ({**ACCESS, "pending": True, "runtime_verified": False, "effective_mode": "unknown",
+      "reason": "transition-recovery-required"}, {"modelTransactionPending": False}, "restore-sandbox"),
+    ({**ACCESS, "pending": True, "runtime_verified": False, "effective_mode": "unknown",
+      "reason": "transition-recovery-required"}, None, None),
+    ({**ACCESS, "pending": True, "runtime_verified": False, "effective_mode": "unknown",
+      "reason": "model-transition-recovery-required"}, {"modelTransactionPending": False}, None),
+    (ACCESS, None, None),
+    (FAILED, None, None),
+], ids=["stale-sandbox", "stale-sandbox-busy", "stale-full-access", "unfinished-change",
+        "unfinished-change-model-unknown", "installer-model-journal", "verified", "failed"])
+async def test_an_available_portal_offers_a_fix_only_where_the_host_will_accept_it(
+        monkeypatch, access, model_status, recovery):
+    result = await status_for(monkeypatch, access, model_status=model_status)
+    assert result.get("recovery") == recovery
 
 
 @pytest.mark.asyncio

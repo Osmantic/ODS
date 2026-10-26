@@ -71,25 +71,51 @@ it('requires an explicit unconfirmed outcome and never enables chat from diagnos
   expect(screen.getByLabelText('Model activation')).toHaveTextContent('has not finished')
 })
 
-it('says an unloaded model needs Resume model in Models instead of waiting for a switch',async()=>{
-  const detail='The model is unloaded. Open Models and choose Resume model to use Portal again.'
+it('offers Resume model inside Portal for an unloaded model and keeps the draft',async()=>{
+  const detail='The model is unloaded, so Portal is paused. Choose Resume model to load it again.'
   render(<Pixel/>); await act(async()=>{})
   fireEvent.change(screen.getByRole('textbox'),{target:{value:'Keep this draft intact'}})
-  await poll({available:false,model:null,state:'model_unloaded',detail})
+  await poll({available:false,model:null,state:'model_unloaded',detail,recovery:'resume-model'})
   expect(screen.getByText('Model unloaded').querySelector('.animate-spin')).toBeNull()
   expect(screen.queryByText('Switching model...')).toBeNull()
   expect(screen.queryByLabelText('Model activation')).toBeNull()
   expect(screen.getByText(detail)).toBeVisible()
-  expect(screen.getByRole('link',{name:'Open Models'})).toHaveAttribute('href','/models')
+  // The fix is a button here, not a link to another page.
+  expect(screen.queryByRole('link',{name:'Open Models'})).toBeNull()
+  const resume=within(screen.getByRole('region',{name:'Portal recovery'})).getByRole('button',{name:'Resume model'})
   const composer=screen.getByPlaceholderText('Messages are held until the model is resumed')
   expect(composer).toBeDisabled()
   expect(composer).toHaveValue('Keep this draft intact')
   expect(screen.getByTitle('Send')).toBeDisabled()
+  // Nothing is resumed until the owner chooses it.
+  expect(fetch.mock.calls.every(([url,options])=>options?.method!=='POST' || url==='/api/pixel/chat/context')).toBe(true)
+  fetch.mockImplementationOnce(async()=>json({status:'started'}))
+  fireEvent.click(resume)
+  await act(async()=>{})
+  const resumes=fetch.mock.calls.filter(([url])=>url==='/api/models/runtime/start')
+  expect(resumes.map(([,options])=>[options.method,options.body])).toEqual([['POST','{}']])
+  expect(screen.getByText('Done. Checking Portal again…')).toBeVisible()
   await poll({available:true})
-  expect(screen.queryByRole('link',{name:'Open Models'})).toBeNull()
+  expect(screen.queryByRole('region',{name:'Portal recovery'})).toBeNull()
   expect(screen.getByRole('textbox')).toHaveValue('Keep this draft intact')
   expect(screen.getByTitle('Send')).toBeEnabled()
-  expect(fetch.mock.calls.every(([url,options])=>options?.method!=='POST' || url==='/api/pixel/chat/context')).toBe(true)
+})
+
+it('offers Recover model switch for a switch that stopped and names the next step if it fails',async()=>{
+  const detail='A model switch stopped before it finished, so new messages are held. Choose Recover model switch to finish or undo it.'
+  render(<Pixel/>); await act(async()=>{})
+  await poll({available:false,model:null,state:'model_recovery_required',detail,recovery:'recover-model'})
+  expect(screen.getByText('Model switch stopped')).toBeVisible()
+  expect(screen.queryByText('Switching model...')).toBeNull()
+  expect(screen.getByTitle('Send')).toBeDisabled()
+  fetch.mockImplementationOnce(async()=>({ok:false,status:409,json:async()=>({pending:true,phase:'held',
+    transactionId:'a'.repeat(64),reason:'model-recovery-unavailable'})}))
+  fireEvent.click(within(screen.getByRole('region',{name:'Portal recovery'})).getByRole('button',{name:'Recover model switch'}))
+  await act(async()=>{})
+  const failure=within(screen.getByRole('region',{name:'Portal recovery'})).getByText(/could not be finished/)
+  expect(failure).toHaveTextContent('Open Models to read its current state')
+  expect(within(failure).getByRole('link',{name:'Get help on Discord'})).toHaveAttribute('href','https://discord.gg/4ntNp9MAwC')
+  expect(fetch.mock.calls.filter(([url,options])=>url==='/api/models/recovery'&&options?.method==='POST')).toHaveLength(1)
 })
 
 it('ignores malformed diagnostic metadata and removes a stale diagnosis on the next status read',async()=>{

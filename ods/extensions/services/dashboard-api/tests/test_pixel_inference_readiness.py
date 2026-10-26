@@ -34,6 +34,31 @@ async def test_agent_catalog_does_not_mask_unavailable_inference(monkeypatch, te
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(('management', 'recovery'), [
+    # Exactly the proof for which Models offers Resume model.
+    ({'managed': True, 'canActivate': False, 'canUnload': True, 'running': False, 'vision': False}, 'resume-model'),
+    ({'managed': True, 'canActivate': True, 'canUnload': True, 'running': True, 'vision': False}, None),
+    ({'managed': False, 'canActivate': False, 'canUnload': False, 'running': False, 'vision': False}, None),
+    (pixel.AgentHTTPError(503, 'Windows runtime management could not be verified'), None),
+], ids=['stopped', 'running', 'unmanaged', 'unverified'])
+async def test_a_stopped_owned_runtime_offers_resume_model_in_portal(monkeypatch, management, recovery):
+    async def host(method, path, **kwargs):
+        if path == '/v1/model/management':
+            if isinstance(management, BaseException):
+                raise management
+            return management
+        return {'schema_version': 'ods.host-llm-status.v1', 'health': {'status': 'error'}} if path == '/v1/llm/status' else {'status': 'idle'}
+    monkeypatch.setattr(pixel, 'request_agent_json', host)
+    upstream = FakeResponse(chunks=[json.dumps({'data':[{'id':'portal/default'}]}).encode()])
+    with patch.object(pixel.httpx, 'AsyncClient', return_value=FakeClient(upstream)):
+        result = await pixel.pixel_status()
+    assert (result['available'], result['state']) == (False, 'model_unavailable')
+    assert result.get('recovery') == recovery
+    assert result['detail'] == (pixel._RUNTIME_STOPPED_DETAIL if recovery else
+                                'The local model runtime is unavailable. Restore it in Models before sending another task.')
+
+
+@pytest.mark.asyncio
 async def test_live_health_can_recover_without_generating_tokens(monkeypatch):
     async def host(method, path, **kwargs):
         assert method == 'GET' and path == '/v1/llm/status'

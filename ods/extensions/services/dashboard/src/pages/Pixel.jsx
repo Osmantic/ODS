@@ -35,6 +35,7 @@ import {compactCommand,CONTEXT_REQUEST_ID,historySnapshot,usePortalContext} from
 import PortalModelSelector from '../components/PortalModelSelector'
 import PortalRuntimeIdentity from '../components/PortalRuntimeIdentity'
 import PortalReadiness from '../components/PortalReadiness'
+import PortalRecovery, { PORTAL_RECOVERY_ACTIONS, portalRecoveryAction } from '../components/PortalRecovery'
 import { pixelReadinessView, PIXEL_RECOVERY_REQUIRED } from '../lib/pixelReadiness'
 import PortalAgentActivity from '../components/PortalAgentActivity'
 import PortalExtensionSetup from '../components/PortalExtensionSetup'
@@ -623,6 +624,8 @@ export default function Pixel({ systemStatus = null }) {
 
   const [status, setStatus] = useState('loading')
   const [statusDetail, setStatusDetail] = useState('')
+  // The one-click fix the status API names for a held state, if any.
+  const [statusRecovery, setStatusRecovery] = useState(null)
   useEffect(() => {
     // Wake an already-open Permissions panel once when admission becomes held.
     // The panel still fetches its own authoritative access receipt.
@@ -984,7 +987,10 @@ export default function Pixel({ systemStatus = null }) {
               ? 'held'
             : data.state === 'chat_recovery_required'
               ? 'recovery'
+            : data.state === 'model_recovery_required'
+              ? 'model-recovery'
             : 'unavailable')
+        setStatusRecovery(PORTAL_RECOVERY_ACTIONS.has(data?.recovery) ? data.recovery : null)
         setModelActivation(modelActivationStatus(data.modelActivation))
         setStatusDetail(typeof data.detail === 'string' ? data.detail : '')
       } catch (error) {
@@ -993,6 +999,7 @@ export default function Pixel({ systemStatus = null }) {
           setAgentRuntime(null)
           setRuntimeIdentity(null)
           setRuntimeReadiness(null)
+          setStatusRecovery(null)
           setStatus('unavailable')
           setStatusDetail('Could not reach Portal backend')
         }
@@ -1777,6 +1784,8 @@ export default function Pixel({ systemStatus = null }) {
         ? 'Model transition pending'
       : status === 'recovery'
         ? 'Recovery required'
+      : status === 'model-recovery'
+        ? 'Model switch stopped'
       : status === 'loading'
         ? 'Connecting...'
         : 'Degraded'
@@ -1878,11 +1887,10 @@ export default function Pixel({ systemStatus = null }) {
           </span>
         </div>
       </header>
-      {status === 'available' && <PortalReadiness readiness={runtimeReadiness} />}
+      {status === 'available' && !portalRecoveryAction(status, statusRecovery) && <PortalReadiness readiness={runtimeReadiness} />}
       <ModelActivationNotice value={modelActivation} pending={status === 'switching'} available={status === 'available'} portal onRefresh={()=>setModelStatusRefresh(value=>value+1)}/>
       {status === 'held' && <p role="status" className="shrink-0 border-b border-theme-border px-4 py-2 text-xs text-theme-text-secondary sm:px-6">{statusDetail}</p>}
-      {status === 'recovery' && <p role="alert" className="shrink-0 border-b border-theme-border px-4 py-2 text-xs text-theme-text-secondary sm:px-6">{statusDetail} <Link to="/settings?section=access" className="underline">Portal permissions</Link></p>}
-      {status === 'unloaded' && <p role="status" className="shrink-0 border-b border-theme-border px-4 py-2 text-xs text-theme-text-secondary sm:px-6">{statusDetail} <Link to="/models" className="underline">Open Models</Link></p>}
+      <PortalRecovery status={status} action={statusRecovery} detail={statusDetail} onSettled={()=>setModelStatusRefresh(value=>value+1)}/>
       {status === 'available' && modelSupport && (
         <p role="status" aria-label="Model capability" className="shrink-0 border-b border-theme-border px-4 py-2 text-xs text-theme-text-secondary sm:px-6">
           {modelSupport.detail}

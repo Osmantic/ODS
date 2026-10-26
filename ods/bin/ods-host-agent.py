@@ -10295,6 +10295,12 @@ class AgentHandler(BaseHTTPRequestHandler):
                 json_response(self, status, body)
             except Exception:
                 json_response(self, 503, {"error": "access-service-unavailable"})
+                return
+            if status == 200 and _pixel_access_stale_sandbox_proof(body):
+                # A restart dropped an idle Sandbox's proof. Let the access
+                # monitor re-prove it now with the protected helper, instead of
+                # at its next scheduled check. This read itself changes nothing.
+                _pixel_access_monitor_wake.set()
             return
         body = read_json_body(self)
         if body is None:
@@ -21512,10 +21518,23 @@ def _request_server_shutdown(server, signum=None):
 
 
 def _reconcile_native_pixel_startup():
-    """Re-prove an unchanged native policy, serialized with model operations."""
+    """Re-prove an unchanged native policy, serialized with model operations.
+
+    Returns ``(outcome, detail)`` for the access monitor:
+
+    - ``recheck``: verified, re-proved, in use, or deferred while ODS starts
+      or runs a model operation;
+    - ``attention``: the helper refused before it submitted any change, for
+      example a held transition or an interrupted chat;
+    - ``uncertain``: a change was submitted, or may have been, and is not
+      confirmed;
+    - ``None``: this host has no usable protected helper.
+
+    ``detail`` names the helper's bounded stage and reason tokens.
+    """
     helper = Path('/usr/local/libexec/ods-pixel-access/pixel_access_reconcile.py')
     if platform.system() not in ('Darwin', 'Linux') or not helper.exists():
-        return
+        return None, None
     # Execute only the installed root-owned helper, never an owner checkout.
     try:
         for entry in (helper, *helper.parents):
@@ -21534,10 +21553,10 @@ def _reconcile_native_pixel_startup():
         if (len(declarations) != 1 or not isinstance(declarations[0].value, ast.Constant)
                 or type(declarations[0].value.value) is not int or declarations[0].value.value != 1):
             logger.warning('Pixel startup reproof requires a compatible installed helper')
-            return
+            return None, None
     except (OSError, ValueError, SyntaxError):
         logger.warning('Pixel startup reproof refused: helper custody')
-        return
+        return None, None
     unavailable = None
     for attempt in range(12):
         acquired, active = _begin_model_lifecycle('pixel_startup_reproof')
@@ -21549,21 +21568,22 @@ def _reconcile_native_pixel_startup():
                 )
                 if result.returncode == 0:
                     logger.debug('Pixel access reproof check completed')
-                    return True
+                    return 'recheck', None
                 if len(result.stderr) > 8192:
                     raise ValueError('diagnostic-size')
                 diagnostic = json.loads(result.stderr)
                 projection = diagnostic.get('projection', {})
-                if (diagnostic.get('stage') == 'unsafe-state'
+                stage = diagnostic.get('stage')
+                if (stage == 'unsafe-state'
                         and projection.get('scope') == 'owner-host'
                         and projection.get('available') is True
                         and projection.get('pending') is False
                         and projection.get('busy') is True):
-                    return True
+                    return 'recheck', None
                 # Retry only an unavailable preflight. Never replay an
                 # uncertain mutation or consume another pending transaction.
-                retry = (diagnostic.get('stage') == 'status-transport-unavailable' or (
-                         diagnostic.get('stage') in ('status-unavailable', 'unsafe-state')
+                retry = (stage == 'status-transport-unavailable' or (
+                         stage in ('status-unavailable', 'unsafe-state')
                          and projection.get('available') is False
                          and projection.get('pending') is False
                          and projection.get('busy') is False
@@ -21575,13 +21595,16 @@ def _reconcile_native_pixel_startup():
                              'edge-container-unavailable', 'host-command-failed')))
                 if not retry:
                     # Both values are bounded tokens from the helper's projection.
-                    logger.warning('Pixel startup reproof requires attention (stage=%s reason=%s)',
-                                   diagnostic.get('stage'), projection.get('reason'))
-                    return
-                unavailable = (diagnostic.get('stage'), projection.get('reason'))
+                    detail = 'stage=%s reason=%s' % (stage, projection.get('reason'))
+                    # The helper raises these two from its status read, before
+                    # it submits a change. Anything else may follow a change.
+                    if stage in ('unsafe-state', 'status-unavailable'):
+                        return 'attention', detail
+                    return 'uncertain', detail
+                unavailable = (stage, projection.get('reason'))
             except (OSError, ValueError, TypeError, AttributeError, subprocess.TimeoutExpired):
                 logger.warning('Pixel startup reproof failed; no automatic mutation retry')
-                return
+                return 'uncertain', 'stage=helper-failed'
             finally:
                 _end_model_lifecycle('pixel_startup_reproof')
         if attempt < 11:
@@ -21597,14 +21620,108 @@ def _reconcile_native_pixel_startup():
     else:
         logger.warning('Pixel startup reproof readiness window exhausted '
                        '(last stage=%s reason=%s)', *unavailable)
-    return True
+    return 'recheck', None
+
+
+# The access monitor re-proves a healthy runtime on this interval and backs off
+# to the cap while a check waits on the owner or on another operation.
+_PIXEL_ACCESS_RECHECK_SECONDS = 30
+_PIXEL_ACCESS_BACKOFF_CAP_SECONDS = 300
+# A status read that finds a stale Sandbox proof wakes the monitor. It then
+# waits this long, so a just-restarted gateway settles, and never spins.
+_PIXEL_ACCESS_WAKE_SETTLE_SECONDS = 5
+_pixel_access_monitor_wake = threading.Event()
+
+
+def _pixel_access_stale_sandbox_proof(value) -> bool:
+    """Whether a status is exactly what Verify Sandbox repairs: a restart
+    dropped the runtime proof of an idle, unchanged Sandbox."""
+    return (isinstance(value, dict) and value.get('available') is True
+            and value.get('scope') == 'owner-host' and value.get('configured_mode') == 'sandboxed'
+            and value.get('effective_mode') == 'unknown' and value.get('runtime_verified') is False
+            and value.get('busy') is False and value.get('pending') is False
+            and value.get('reason') == 'runtime-proof-required')
+
+
+def _pixel_model_hold_pending() -> bool:
+    """Whether the host's Portal model transaction is still open.
+
+    Unload and an interrupted switch keep the access coordinator held, so the
+    reproof helper would refuse anyway. Checking here keeps the monitor off the
+    model lifecycle lock while the owner resumes or recovers the model. An
+    unreadable journal is not proof that the transaction finished.
+    """
+    try:
+        return bool(_pixel_model_recovery_status()['pending'])
+    except (OSError, ValueError, RuntimeError, KeyError, TypeError):
+        return True
+
+
+def _pixel_access_verified() -> bool:
+    """Read-only: whether the coordinator reports a verified runtime now."""
+    from pixel_access_client import request_access
+    try:
+        status, value = request_access('status')
+    except (OSError, ValueError, TypeError):
+        return False
+    mode = value.get('configured_mode')
+    return (status == 200 and value.get('available') is True and value.get('scope') == 'owner-host'
+            and mode in ('sandboxed', 'full-access') and value.get('effective_mode') == mode
+            and value.get('runtime_verified') is True and value.get('pending') is False
+            and value.get('reason') is None)
+
+
+def _wait_for_pixel_access_check(delay: float, *, wake: bool) -> None:
+    """Sleep until the next check; a wake shortens it to the settle delay."""
+    if not wake:
+        time.sleep(delay)
+        return
+    if _pixel_access_monitor_wake.wait(delay):
+        _pixel_access_monitor_wake.clear()
+        time.sleep(_PIXEL_ACCESS_WAKE_SETTLE_SECONDS)
 
 
 def _monitor_native_pixel_access():
-    """Recheck healthy/busy instances; stop on uncertain policy mutations."""
-    while _reconcile_native_pixel_startup() is True:
-        time.sleep(30)
-    logger.warning('Pixel access monitor stopped; recovery requires attention')
+    """Keep Portal's access proof current for the life of the host agent.
+
+    A gateway restart drops the runtime proof, so the protected helper re-proves
+    the unchanged mode. The monitor never stops on a state that can resolve
+    later: a held transition, an interrupted chat or a model transaction is
+    checked again with bounded backoff, and the helper itself still refuses
+    to touch it. After a change that was not confirmed, the monitor submits no
+    change by itself. It only reads status until the runtime is verified again
+    (Verify now in Portal, the installer, or that change having completed).
+    """
+    state, attempts = None, 0
+    while True:
+        if state is not None and state[0] == 'uncertain':
+            outcome, detail = ('recheck', None) if _pixel_access_verified() else state
+        elif _pixel_model_hold_pending():
+            outcome, detail = 'hold', None
+        else:
+            outcome, detail = _reconcile_native_pixel_startup()
+        if outcome is None:
+            # Not a Portal host, or its helper was refused (already logged).
+            logger.info('Pixel access monitor stopped: this host has no usable protected access helper')
+            return
+        if (outcome, detail) != state:
+            if outcome == 'attention':
+                logger.warning('Pixel startup reproof requires attention (%s); '
+                               'the access monitor keeps checking', detail)
+            elif outcome == 'uncertain':
+                logger.warning('Pixel access change was not confirmed (%s); no automatic retry. '
+                               'Reading status until the runtime is verified again', detail)
+            elif outcome == 'hold':
+                logger.info('Pixel access check waits while a Portal model transaction is open')
+            elif state is not None and outcome == 'recheck':
+                logger.info('Pixel access monitor resumed automatic reproof')
+            state, attempts = (outcome, detail), 0
+        attempts = min(attempts + 1, 10)
+        delay = (_PIXEL_ACCESS_RECHECK_SECONDS if outcome == 'recheck' else
+                 min(_PIXEL_ACCESS_RECHECK_SECONDS * 2 ** (attempts - 1), _PIXEL_ACCESS_BACKOFF_CAP_SECONDS))
+        # A wake can only lead to the helper's own guarded check: never while
+        # a change is unconfirmed, and not while a model transaction is open.
+        _wait_for_pixel_access_check(delay, wake=outcome in ('recheck', 'attention'))
 
 
 def _unreachable_docker_credential_helpers(config: dict, search_path: str) -> list[str]:
