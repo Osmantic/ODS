@@ -17,7 +17,6 @@
 .portal-agent-row-label { flex:1; min-width:0; overflow-wrap:anywhere; }
 .portal-agent-row.is-text { padding:3px 0; }
 .portal-agent-row-meta { display:inline-flex; align-items:center; flex-shrink:0; gap:5px; font-size:10px; font-variant-numeric:tabular-nums; opacity:.75; padding-top:3px; }
-.portal-agent-row[data-state=failed],.portal-agent-row[data-state=blocked],.portal-agent-row[data-state=unconfirmed] { color:rgb(var(--theme-text-secondary)); }
 .portal-agent-detail { margin-left:23px; font-family:ui-monospace,monospace; font-size:11px; overflow-wrap:anywhere; opacity:.85; }
 .portal-agent-sources { margin:5px 0 3px 18px; }
 .portal-agent-sources a { display:flex; align-items:center; flex-wrap:wrap; gap:5px 8px; padding:4px 6px; border-radius:6px; color:rgb(var(--theme-text-secondary)); text-decoration:none; }

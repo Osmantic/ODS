@@ -1,10 +1,17 @@
-import {fireEvent,render,screen} from '@testing-library/react'
+import {fireEvent,render,screen,within} from '@testing-library/react'
 import PortalAgentActivity from './PortalAgentActivity'
 import PortalActivityChange,{activityChangeRows} from './PortalActivityChange'
 const start='2026-09-15T10:00:00.000Z',end='2026-09-15T10:00:05.000Z'
 const display=(type,label,extra={})=>({type,label,detail:null,sources:[],steps:[],change:null,...extra})
 const displays=[display('text','Conferindo a documentação.'),display('search','React reference',{sources:[{title:'Official docs',url:'https://react.dev/reference'}]}),display('tool','Reading a file',{detail:'app.jsx'}),display('steps','Check the result',{steps:[{id:'check',title:'Run checks',status:'completed'}]}),display('trace','Asking for your input')]
 const task={schemaVersion:3,runId:'chatcmpl_11111111-2222-4333-8444-555555555555',startedAt:start,finishedAt:end,state:'completed',calls:5,failures:0,blocked:0,truncated:false,activities:[{kind:'unknown',calls:5,failures:0,blocked:0}],events:displays.map((display,i)=>({sequence:i+1,kind:'unknown',state:'completed',startedAt:start,finishedAt:end,display})),context:null,goal:null}
+const call=(sequence,kind,state,value)=>({sequence,kind,state,startedAt:start,finishedAt:end,display:value})
+const row=text=>screen.getByText(text).closest('li')
+// No row, plan step or heading reads as broken: no alarm words, no alert icon.
+const expectCalm=container=>{
+ expect(screen.queryByText(/Failed|Blocked|Unconfirmed|Needs attention/)).toBeNull()
+ expect(container.querySelector('.lucide-circle-alert')).toBeNull()
+}
 it('does not invent a completed duration from a persisted running receipt after reload',()=>{
  vi.useFakeTimers()
  try {
@@ -30,8 +37,9 @@ it('renders an empty file without crashing and distinguishes completed recovery 
  expect(activityChangeRows({kind:'patch',before:'',after:'--- old.txt\n+++ new.txt\n@@ -1 +1 @@\n--- heading\n+++ heading'})).toEqual([{type:'remove',text:'-- heading'},{type:'add',text:'++ heading'}]);
  render(<PortalActivityChange change={{file:'empty.txt',kind:'write',before:'',after:'',truncated:false}}/>);
  expect(screen.getByLabelText('Changes to empty.txt')).toHaveTextContent('Empty content');
- render(<PortalAgentActivity task={{...task,failures:1,activities:[{kind:'unknown',calls:5,failures:1,blocked:0}],events:task.events.map((e,i)=>i===0?{...e,state:'failed'}:e)}}/>);
+ const {container}=render(<PortalAgentActivity task={{...task,failures:1,activities:[{kind:'unknown',calls:5,failures:1,blocked:0}],events:task.events.map((e,i)=>i===0?{...e,state:'failed'}:e)}}/>);
  expect(screen.getByRole('button',{name:'Worked for 5s'})).toHaveAttribute('aria-expanded','false');
+ expectCalm(container);
 });
 it('shows a compact thinking line immediately with no fake steps or technical placeholder',()=>{
  render(<PortalAgentActivity active/>);
@@ -50,11 +58,59 @@ it('collapses completed work and expands the chronological mixed log with safe s
  expect(trigger).toHaveAttribute('aria-expanded','false');expect(screen.queryByRole('link')).toBeNull();
  fireEvent.click(trigger);expect(screen.getByRole('link')).toBeVisible();
 });
-it('keeps failures visible and never turns unfinished work into a successful step',()=>{
+it('ends a reply that failed calmly and never turns unfinished work into a successful step',()=>{
  const value={...task,state:'failed',failures:1,activities:[{kind:'unknown',calls:5,failures:1,blocked:0}],events:task.events.map((event,i)=>i===4?{...event,state:'failed'}:i===2?{...event,state:'running',finishedAt:null}:event)};
- render(<PortalAgentActivity task={value} status="error"/>);
- expect(screen.getByRole('button',{name:'Needs attention'})).toHaveAttribute('aria-expanded','true');
- expect(screen.getByText('Failed')).toBeVisible();expect(screen.getByText('Unconfirmed')).toBeVisible();
+ const {container}=render(<PortalAgentActivity task={value} status="error"/>);
+ expect(screen.getByRole('button',{name:'Ended early · you can try again'})).toHaveAttribute('aria-expanded','true');
+ // A call with no recorded end claims no result: no check and no duration.
+ expect(row('Reading a file')).toHaveAttribute('data-state','unconfirmed');
+ expect(row('Reading a file').querySelector('.portal-agent-row-meta')).toBeNull();
+ // The last call did not work and nothing followed it, so it shows no status.
+ expect(row('Asking for your input')).toHaveAttribute('data-state','tried');
+ expect(row('Asking for your input').querySelector('.portal-agent-row-meta')).toBeNull();
+ expectCalm(container);
+});
+it('shows calls that did not work as ordinary steps while the agent keeps going',()=>{
+ const events=[call(1,'run','failed',display('tool','Running a command',{detail:'npm test'})),call(2,'unknown','blocked',null),call(3,'edit','failed',display('tool','Editing a file',{detail:'app.js'}))]
+ const activities=edits=>[{kind:'run',calls:1,failures:1,blocked:0},{kind:'edit',calls:edits,failures:1,blocked:0},{kind:'unknown',calls:1,failures:1,blocked:1}]
+ const working={...task,state:'running',finishedAt:null,calls:3,failures:3,blocked:1,activities:activities(1),events}
+ const {container,rerender}=render(<PortalAgentActivity task={working} active/>);
+ expect(within(row('npm test')).getByText('Tried another way')).toBeVisible();
+ // Portal declined this call before it ran; the agent was told why and continued.
+ expect(within(row('Using a tool')).getByText('Tried another way')).toBeVisible();
+ // The latest call has no outcome to show while the agent decides what to do next.
+ expect(row('app.js').querySelector('.portal-agent-row-meta')).toBeNull();
+ expectCalm(container);
+ rerender(<PortalAgentActivity task={{...working,calls:4,activities:activities(2),events:[...events,call(4,'edit','completed',display('tool','Editing a file',{detail:'index.js'}))]}} active/>);
+ expect(within(row('app.js')).getByText('Tried another way')).toBeVisible();
+ expect(within(row('index.js')).getByLabelText('Finished')).toBeInTheDocument();
+ expectCalm(container);
+});
+it('keeps a delivered answer calm when its receipt recorded a failed run',()=>{
+ const value={...task,state:'failed'}
+ const {rerender}=render(<PortalAgentActivity task={value} status="done"/>);
+ expect(screen.getByRole('button',{name:'Worked for 5s'})).toHaveAttribute('aria-expanded','false');
+ rerender(<PortalAgentActivity task={value}/>);
+ expect(screen.getByRole('button',{name:'Worked for 5s'})).toHaveAttribute('aria-expanded','false');
+ expect(screen.queryByText(/Needs attention|Ended early/)).toBeNull();
+});
+it('pauses a plan step the agent reported as blocked instead of raising an alert',()=>{
+ const plan=display('steps','Website plan',{steps:[{id:'build',title:'Build the page',status:'completed'},{id:'key',title:'Get an API key',status:'blocked'},{id:'check',title:'Check the result',status:'pending'}]})
+ const value={...task,calls:1,activities:[{kind:'unknown',calls:1,failures:0,blocked:0}],events:[call(1,'unknown','completed',plan)]}
+ const {container}=render(<PortalAgentActivity task={value} active/>);
+ expect(row('Get an API key')).toHaveAttribute('data-state','paused');
+ expect(within(row('Get an API key')).getByLabelText('Paused')).toBeInTheDocument();
+ expect(within(row('Check the result')).getByLabelText('Pending')).toBeInTheDocument();
+ expect(screen.queryByLabelText('Blocked')).toBeNull();
+ expectCalm(container);
+});
+it('groups older receipts by kind without marking a kind with working calls as failed',()=>{
+ const grouped={schemaVersion:1,runId:task.runId,startedAt:start,finishedAt:end,state:'completed',calls:6,failures:3,blocked:1,truncated:false,activities:[{kind:'read',calls:2,failures:2,blocked:1},{kind:'run',calls:4,failures:1,blocked:0}]}
+ const {container}=render(<PortalAgentActivity task={grouped} status="done"/>);
+ fireEvent.click(screen.getByRole('button',{name:'Worked for 5s'}));
+ expect(within(row('Reading files')).getByText('Tried another way')).toBeVisible();
+ expect(within(row('Ran')).getByLabelText('Finished')).toBeInTheDocument();
+ expectCalm(container);
 });
 it('opens actual file edits and command details without claiming failed edits succeeded',()=>{
  const change={file:'app.js',kind:'edit',before:'const n = 1;\nunchanged',after:'const n = 2;\nunchanged',truncated:false}
@@ -66,4 +122,5 @@ it('opens actual file edits and command details without claiming failed edits su
  expect(screen.getAllByLabelText('1 lines added, 1 lines removed')).toHaveLength(2);
  rerender(<PortalAgentActivity task={{...value,events:value.events.map((event,i)=>i===2?{...event,state:'failed'}:event)}} active/>);
  expect(screen.queryByLabelText('Changes to app.js')).toBeNull();
+ expect(within(row('Editing a file')).getByText('Tried another way')).toBeVisible();
 });
