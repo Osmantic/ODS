@@ -176,6 +176,7 @@ jobs:
         run: |
           ./tests/contracts/test-windows-spark-memory.ps1
           ./tests/contracts/test-windows-wslconfig.ps1
+          ./tests/contracts/test-windows-wsl-memory-budget.ps1
 
       - name: Windows RTX Spark Memory Contracts (Windows PowerShell)
         if: runner.os == 'Windows'
@@ -183,6 +184,7 @@ jobs:
         run: |
           ./tests/contracts/test-windows-spark-memory.ps1
           ./tests/contracts/test-windows-wslconfig.ps1
+          ./tests/contracts/test-windows-wsl-memory-budget.ps1
 
       - name: WSL Portal Completion Gate
         if: runner.os == 'Linux'

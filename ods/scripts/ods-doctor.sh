@@ -778,6 +778,35 @@ elif command -v python >/dev/null 2>&1; then
     PYTHON_CMD="python"
 fi
 
+# ODS in WSL: Windows' commit headroom (the memory Windows can still lend;
+# at zero it can crash WSL), whether WSL runs with its .wslconfig memory
+# limit yet, containers that lost their data after a WSL restart, ports
+# Windows cannot reach, and the host agent's repair after the last WSL boot.
+# scripts/wsl-host-check.py is read-only and prints JSON; the report writer
+# below turns its findings into diagnoses.
+WSL_HOST_CHECK_JSON="{}"
+if [[ "$(uname -r 2>/dev/null)" == *[Mm]icrosoft* && -f "$ROOT_DIR/scripts/wsl-host-check.py" ]]; then
+    _wsl_host_ports=()
+    if [[ "$DOCKER_DAEMON" == "true" && "${#SERVICE_IDS[@]}" -gt 0 ]]; then
+        # Every running ODS service with a published HTTP port, probed from
+        # Windows. A Docker that does not answer here leaves no port to probe.
+        _wsl_running="$(docker ps --format '{{.Names}}' 2>/dev/null)" || _wsl_running=""
+        for sid in "${SERVICE_IDS[@]}"; do
+            _wsl_container="${SERVICE_CONTAINERS[$sid]:-}"
+            _wsl_port="${SERVICE_PORTS[$sid]:-0}"
+            if [[ -n "$_wsl_container" && "$_wsl_port" =~ ^[1-9][0-9]*$ && -n "${SERVICE_HEALTH[$sid]:-}" ]] \
+                && grep -qxF -- "$_wsl_container" <<<"$_wsl_running"; then
+                _wsl_host_ports+=("--port=$sid:$_wsl_port")
+            fi
+        done
+    fi
+    # A helper that cannot run leaves these checks out; the rest of the report stands.
+    WSL_HOST_CHECK_JSON="$("$PYTHON_CMD" "$ROOT_DIR/scripts/wsl-host-check.py" --install-dir "$ROOT_DIR" \
+        --docker "$DOCKER_DAEMON" --dashboard-api-container "${SERVICE_CONTAINERS[dashboard-api]:-ods-dashboard-api}" \
+        ${_wsl_host_ports[@]+"${_wsl_host_ports[@]}"})" || WSL_HOST_CHECK_JSON="{}"
+fi
+export WSL_HOST_CHECK_JSON
+
 "$PYTHON_CMD" - "$CAP_FILE" "$PREFLIGHT_FILE" "$REPORT_FILE" "$DOCKER_CLI" "$DOCKER_DAEMON" "$COMPOSE_CLI" "$DASHBOARD_HTTP" "$WEBUI_HTTP" "$_DASHBOARD_PORT" "$_WEBUI_PORT" "$EXT_DIAGNOSTICS" "$STT_MODEL_CACHED" "$STT_MODEL_NAME" "$STT_RECOVERY_HINT" "$TTS_HTTP" "$TTS_PORT" "$DGX_SPARK_GPU" "$DGX_SPARK_GPU_NAME" "$DGX_SPARK_COMPUTE_CAP" "$LLAMA_CUDA_ARCHS" "$DGX_SPARK_CUDA_ARCH_STATUS" "$DGX_SPARK_CUDA_ARCH_MESSAGE" "$HERMES_SLASH_WORKER_COUNT" "$HERMES_SLASH_WORKER_MAX_COUNT" "$ODS_MANAGED_CONTAINER_COUNT" "$ODS_RUNNING_CONTAINER_COUNT" "$ROOT_DIR" "$WEBUI_ENABLED" <<'PY'
 import json
 import os
@@ -1663,7 +1692,23 @@ def _collect_install_diagnoses(artifacts):
 
 install_artifacts = _collect_install_artifacts()
 inference_contract = _collect_inference_contract()
-diagnoses = _collect_install_diagnoses(install_artifacts) + inference_contract.get("diagnoses", [])
+
+
+def _wsl_host_check():
+    """scripts/wsl-host-check.py's facts and findings (ODS in WSL only)."""
+    try:
+        data = json.loads(os.environ.get("WSL_HOST_CHECK_JSON") or "{}")
+    except ValueError:
+        return {}, []
+    if not isinstance(data, dict):
+        return {}, []
+    found = [item for item in data.get("findings") or [] if isinstance(item, dict) and item.get("id")]
+    return {key: value for key, value in data.items() if key != "findings"}, found
+
+
+wsl_host, wsl_host_diagnoses = _wsl_host_check()
+diagnoses = (_collect_install_diagnoses(install_artifacts) + inference_contract.get("diagnoses", [])
+             + wsl_host_diagnoses)
 inference_contract_public = dict(inference_contract)
 inference_contract_public.pop("diagnoses", None)
 
@@ -1719,6 +1764,7 @@ report = {
         },
         "amd_runtime": amd_runtime,
         "inference_contract": inference_contract_public,
+        "wsl_host": wsl_host,
     },
     "extensions": ext_diagnostics,
     "summary": {
@@ -1925,6 +1971,26 @@ if amd_runtime.get("available"):
     )
 elif amd_runtime.get("reason") not in (None, "", "not_amd", "api_mode"):
     print(f"  AMD Runtime:   {amd_runtime.get('reason')}")
+
+wsl_host = data.get("runtime", {}).get("wsl_host") or {}
+windows = wsl_host.get("windows") or {}
+if windows.get("available"):
+    limit = (windows.get("wslconfig") or {}).get("memoryGiB")
+    total = (wsl_host.get("wsl") or {}).get("memTotalGiB")
+    if limit is None:
+        wsl_limit = f"WSL {total} GiB (no memory= in .wslconfig)"
+    elif total is not None and total > limit + 0.25:
+        wsl_limit = f"WSL {total} GiB; its {limit} GiB limit applies after WSL restarts"
+    else:
+        wsl_limit = f"WSL {total} GiB (limit {limit} GiB, active)"
+    print(f"  Windows memory: {windows.get('commitAvailableGiB')} GiB free of a "
+          f"{windows.get('commitLimitGiB')} GiB commit limit; {wsl_limit}")
+elif windows.get("reason"):
+    print(f"  Windows memory: not checked ({windows.get('reason')})")
+binds = wsl_host.get("bindMounts") or {}
+if binds.get("checked"):
+    print(f"  Container data: {binds.get('container')} /data "
+          f"{'is your ODS data' if binds.get('state') == 'match' else 'is NOT your ODS data: run ods repair mounts'}")
 
 hermes_workers = data.get("runtime", {}).get("hermes_slash_workers", {})
 if hermes_workers.get("status") == "warn":

@@ -16,6 +16,7 @@ import ast
 import atexit
 import base64
 import collections
+import contextlib
 import hashlib
 import http.client
 import importlib
@@ -21960,12 +21961,12 @@ def _wsl_port_check(boot_id: str, record_path: Path, *, clock=time.monotonic,
         sleep(_WSL_PORT_CHECK_POLL_SECONDS)
 
 
-def _run_wsl_port_check() -> None:
+def _run_wsl_port_check() -> dict[str, str]:
     """Thread body: one bounded check per agent start, summarized in one line."""
     boot_id = _linux_boot_id()
     if boot_id is None:
         logger.warning("WSL port check skipped: no boot id to limit restarts to one per WSL boot")
-        return
+        return {}
     logger.info("WSL port check: watching ODS's published HTTP ports for up to %d minutes",
                 _WSL_PORT_CHECK_WINDOW_SECONDS // 60)
     states = _wsl_port_check(boot_id, DATA_DIR / _WSL_PORT_CHECK_RECORD)
@@ -21974,14 +21975,300 @@ def _run_wsl_port_check() -> None:
         by_state.setdefault(state, []).append(name)
     summary = "; ".join(f"{state} {', '.join(names)}" for state, names in sorted(by_state.items()))
     logger.info("WSL port check finished: %s", summary or "no running ODS HTTP service")
+    return states
+
+
+# A WSL VM crash (Windows ran out of commit on an RTX Spark, 2026-10-25) or a
+# `wsl --shutdown` makes Docker Desktop start ODS's unless-stopped containers
+# again, and some came back with an EMPTY folder where ODS's data belongs:
+# /data was empty in ods-dashboard-api while ~/ods/data was full, so the
+# dashboard said the local model runtime was unavailable. A restart keeps the
+# stale view; recreating the container from the distribution fixes it, once
+# Docker Desktop shares the distribution's files again. So after each WSL
+# boot this agent asks `ods repair mounts --check`, and when containers see
+# stale data it runs `ods repair mounts`: the stack's own Compose files
+# (ods-cli's get_compose_flags, never a container's recorded file list), no
+# pull, no build, and only after a new container proved it sees the real
+# data (scripts/wsl-bind-recovery.py). Without that proof nothing changes,
+# and the agent watches for the owner's Docker Desktop restart to try once
+# more. It runs before the port check: a recreate re-publishes ports too.
+_WSL_BIND_CHECK_WINDOW_SECONDS = 600     # Docker Desktop can take minutes after a WSL boot
+_WSL_BIND_CHECK_POLL_SECONDS = 15
+_WSL_BIND_WATCH_SECONDS = 3600           # how long to wait for a Docker Desktop restart
+_WSL_BIND_WATCH_POLL_SECONDS = 30
+_WSL_BIND_CLI_TIMEOUT_SECONDS = 420      # lock wait, the helper's budget and Compose
+_WSL_BIND_REPAIRS_PER_BOOT = 2           # one after the boot, one after a Docker restart
+_WSL_SELF_HEAL_RECORD = "wsl-self-heal.json"
+_WSL_SELF_HEAL_SETTLED_STATES = frozenset({"healthy", "repaired"})
+_WSL_DOCKER_RESTART_STEP = (
+    "Restart Docker Desktop: in Windows, right-click the Docker icon in the taskbar and choose "
+    "Restart (or run 'docker desktop restart' in PowerShell). ODS repairs its containers by "
+    "itself afterwards; if it still reports this, run: ods repair mounts")
+_WSL_SELF_HEAL_NEXT_STEPS = {
+    "needs-docker-desktop-restart": _WSL_DOCKER_RESTART_STEP,
+    "repair-failed": "Run: ods repair mounts (in Ubuntu). It says what failed.",
+    "check-failed": "Run: ods repair mounts --check (in Ubuntu). It says what failed.",
+    "repair-limit": "Run: ods repair mounts (in Ubuntu).",
+    "docker-unavailable": "Start Docker Desktop, then run: ods repair mounts --check (in Ubuntu).",
+}
+
+
+def _ods_stack_fingerprint() -> tuple | None:
+    """This installation's ODS containers as sorted (name, started, status)
+    rows; None when Docker does not answer. A Docker restart changes it."""
+    try:
+        listed = subprocess.run(
+            ["docker", "ps", "--all", "--no-trunc", "--quiet",
+             "--filter", "label=com.docker.compose.project=ods"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if listed.returncode != 0:
+            return None
+        ids = listed.stdout.split()
+        if not ids:
+            return ()
+        inspected = subprocess.run(
+            ["docker", "inspect", "--type", "container", *ids],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.debug("WSL mount check: Docker did not answer: %s", exc)
+        return None
+    # A container removed between the two commands fails the inspect; the
+    # next poll sees the new set.
+    if inspected.returncode != 0:
+        return None
+    rows = json.loads(inspected.stdout)
+    root = os.path.realpath(INSTALL_DIR)
+    stack = []
+    for row in rows if isinstance(rows, list) else []:
+        labels = (row.get("Config") or {}).get("Labels") or {}
+        working_dir = labels.get("com.docker.compose.project.working_dir")
+        if not isinstance(working_dir, str) or os.path.realpath(working_dir) != root:
+            continue
+        state = row.get("State") or {}
+        stack.append((str(row.get("Name") or "").lstrip("/"), str(state.get("StartedAt") or ""),
+                      str(state.get("Status") or "")))
+    return tuple(sorted(stack))
+
+
+def _wait_for_settled_stack(seconds: float, poll: float, *, clock, sleep,
+                            changed_from: tuple | None = None) -> tuple | None:
+    """The stack once Docker answers and its containers stay the same for one
+    poll (and, with ``changed_from``, differ from it: Docker restarted them).
+    Within ``seconds``; then () when Docker answered with no container of
+    this installation, None when it never answered or never settled."""
+    deadline = clock() + seconds
+    previous = None
+    while True:
+        current = _ods_stack_fingerprint()
+        if current and current == previous and current != changed_from:
+            return current
+        previous = current
+        if clock() + poll > deadline:
+            return () if current == () else None
+        sleep(poll)
+
+
+def _ods_repair_mounts(check: bool) -> tuple[int, str]:
+    """Run ``ods repair mounts [--check]``; (exit code, its last lines).
+
+    Going through ods-cli gives the recovery the same Compose files as every
+    ods command, and the owner the same command to run by hand.
+    """
+    bash = _find_usable_bash()
+    if not bash:
+        return -1, "no usable bash to run ods-cli"
+    env = {**os.environ, "INSTALL_DIR": str(INSTALL_DIR), "ODS_HOME": str(INSTALL_DIR), "NO_COLOR": "1"}
+    argv = [bash, str(INSTALL_DIR / "ods-cli"), "repair", "mounts", *(["--check"] if check else [])]
+    try:
+        result = subprocess.run(argv, cwd=str(INSTALL_DIR), env=env, capture_output=True,
+                                text=True, timeout=_WSL_BIND_CLI_TIMEOUT_SECONDS)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return -1, str(exc)
+    lines = [line.strip() for line in f"{result.stdout}\n{result.stderr}".splitlines() if line.strip()]
+    return result.returncode, " | ".join(lines[-6:])[:1500]
+
+
+def _read_wsl_self_heal(path: Path, boot_id: str) -> dict:
+    """This boot's self-heal record, {} for another boot or none."""
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except ValueError:
+        logger.warning("WSL mount check: ignoring unreadable record %s", path)
+        return {}
+    if not isinstance(record, dict) or record.get("bootId") != boot_id:
+        return {}
+    return record
+
+
+def _write_wsl_self_heal(path: Path, boot_id: str, record: dict, state: str, detail: str = "") -> dict:
+    """Record a state for ``ods doctor``; the next step comes with it."""
+    record = {**record, "bootId": boot_id, "state": state, "detail": detail[:1500],
+              "next": _WSL_SELF_HEAL_NEXT_STEPS.get(state, ""), "updatedAt": _iso_now()}
+    _atomic_write_json(path, record)
+    return record
+
+
+@contextlib.contextmanager
+def _wsl_bind_repair_guard():
+    """Hold the model lifecycle and every service lock while containers are
+    recreated, so no model switch, Pixel model transaction or dashboard
+    service operation races it; yields False (holding nothing) when busy."""
+    acquired, _active = _begin_model_lifecycle("wsl_bind_recovery")
+    if not acquired:
+        yield False
+        return
+    held: list[threading.Lock] = []
+    try:
+        if _pixel_model_transition_pending_for_route_proof():
+            yield False
+            return
+        for service_id in sorted(set(_declared_docker_containers().values())):
+            lock = _service_locks[service_id]
+            if not lock.acquire(blocking=False):
+                yield False
+                return
+            held.append(lock)
+        yield True
+    finally:
+        for lock in reversed(held):
+            lock.release()
+        _end_model_lifecycle("wsl_bind_recovery")
+
+
+def _wsl_bind_repair(boot_id: str, record_path: Path, record: dict, detail: str) -> tuple[str | None, dict]:
+    """Recreate the stale services once, under the repair guard; (state,
+    record), state None when something else was busy and nothing ran."""
+    repairs = int(record.get("repairs") or 0)
+    with _wsl_bind_repair_guard() as free:
+        if not free:
+            return None, record
+        logger.info("WSL mount check: containers see stale data; recreating them (%s)", detail)
+        # Recorded before it runs: no crash or later agent start repeats it.
+        record = _write_wsl_self_heal(record_path, boot_id, {**record, "repairs": repairs + 1},
+                                      "repairing", detail)
+        code, detail = _ods_repair_mounts(check=False)
+        if code == 4:
+            # Another recovery held its lock, so this one did not run.
+            return None, _write_wsl_self_heal(record_path, boot_id, {**record, "repairs": repairs},
+                                              "checking", detail)
+        state = {0: "repaired", 3: "needs-docker-desktop-restart"}.get(code, "repair-failed")
+        return state, _write_wsl_self_heal(record_path, boot_id, record, state, detail)
+
+
+def _wsl_bind_self_heal(boot_id: str, record_path: Path, *, clock=time.monotonic, sleep=time.sleep,
+                        window: float = _WSL_BIND_CHECK_WINDOW_SECONDS) -> str:
+    """One bounded pass: wait for the stack, check it, repair it when stale.
+
+    Returns the state it recorded. At most _WSL_BIND_REPAIRS_PER_BOOT repairs
+    per WSL boot.
+    """
+    record = _read_wsl_self_heal(record_path, boot_id)
+    started = clock()
+    stack = _wait_for_settled_stack(window, _WSL_BIND_CHECK_POLL_SECONDS, clock=clock, sleep=sleep)
+    if not stack:
+        state = "no-containers" if stack == () else "docker-unavailable"
+        detail = "" if stack == () else "Docker did not report this installation's containers in time"
+        _write_wsl_self_heal(record_path, boot_id, record, state, detail)
+        return state
+    while True:
+        code, detail = _ods_repair_mounts(check=True)
+        if code == 0:
+            _write_wsl_self_heal(record_path, boot_id, record, "healthy")
+            return "healthy"
+        if code not in (2, 4):
+            _write_wsl_self_heal(record_path, boot_id, record, "check-failed", detail)
+            return "check-failed"
+        if code == 2 and int(record.get("repairs") or 0) >= _WSL_BIND_REPAIRS_PER_BOOT:
+            _write_wsl_self_heal(record_path, boot_id, record, "repair-limit", detail)
+            return "repair-limit"
+        if code == 2:
+            state, record = _wsl_bind_repair(boot_id, record_path, record, detail)
+            if state is not None:
+                return state
+        # Another repair (ods start, ods repair mounts) or ODS operation is
+        # running: ask again on the next poll.
+        if clock() - started + _WSL_BIND_CHECK_POLL_SECONDS > window:
+            _write_wsl_self_heal(record_path, boot_id, record, "check-failed",
+                                 "another repair or ODS operation kept running")
+            return "check-failed"
+        sleep(_WSL_BIND_CHECK_POLL_SECONDS)
+
+
+def _log_wsl_self_heal(state: str) -> None:
+    if state == "healthy":
+        logger.info("WSL mount check: ODS's containers see their data")
+    elif state == "repaired":
+        logger.info("WSL mount check: recreated the containers that saw stale data; they see it now")
+    elif state in _WSL_SELF_HEAL_NEXT_STEPS:
+        logger.warning("WSL mount check: %s. %s", state, _WSL_SELF_HEAL_NEXT_STEPS[state])
+
+
+def _run_wsl_bind_self_heal(boot_id: str | None) -> str:
+    """The first pass after a WSL boot; skipped when this boot already settled."""
+    if boot_id is None:
+        logger.warning("WSL mount check skipped: no boot id to limit repairs per WSL boot")
+        return "skipped"
+    record_path = DATA_DIR / _WSL_SELF_HEAL_RECORD
+    if _read_wsl_self_heal(record_path, boot_id).get("state") in _WSL_SELF_HEAL_SETTLED_STATES:
+        # A later agent start in the same boot (the installer, the WSL
+        # lifecycle after `ods start`) leaves a settled stack alone.
+        return "settled"
+    state = _wsl_bind_self_heal(boot_id, record_path)
+    _log_wsl_self_heal(state)
+    return state
+
+
+def _watch_for_docker_restart(boot_id: str, *, clock=time.monotonic, sleep=time.sleep) -> str | None:
+    """After a repair the proof refused, one that failed, or a Docker that
+    never answered: once Docker Desktop (re)starts the containers (the
+    owner's restart, or an `ods repair mounts` by hand), check and repair
+    once more. Bounded by _WSL_BIND_WATCH_SECONDS; returns that pass's
+    state, None without one."""
+    baseline = _ods_stack_fingerprint()
+    logger.info("WSL mount check: waiting up to %d minutes for Docker Desktop to restart",
+                _WSL_BIND_WATCH_SECONDS // 60)
+    restarted = _wait_for_settled_stack(_WSL_BIND_WATCH_SECONDS, _WSL_BIND_WATCH_POLL_SECONDS,
+                                        clock=clock, sleep=sleep, changed_from=baseline)
+    if not restarted:
+        return None
+    state = _wsl_bind_self_heal(boot_id, DATA_DIR / _WSL_SELF_HEAL_RECORD, clock=clock, sleep=sleep)
+    _log_wsl_self_heal(state)
+    return state
+
+
+def _record_dead_ports(boot_id: str, states: dict[str, str]) -> None:
+    """Ports still dead after one restart need Docker Desktop restarted."""
+    dead = sorted(name for name, state in states.items() if state in ("still-dead", "restart-failed"))
+    if not dead:
+        return
+    path = DATA_DIR / _WSL_SELF_HEAL_RECORD
+    record = _read_wsl_self_heal(path, boot_id)
+    _atomic_write_json(path, {**record, "bootId": boot_id, "deadPorts": dead,
+                              "portsNext": _WSL_DOCKER_RESTART_STEP, "updatedAt": _iso_now()})
+
+
+def _run_wsl_restart_recovery() -> None:
+    """Thread body after an agent start under WSL: stale mounts first, then
+    dead published ports, then (only when needed) the Docker restart watch."""
+    boot_id = _linux_boot_id()
+    state = _run_wsl_bind_self_heal(boot_id)
+    states = _run_wsl_port_check()
+    if boot_id is not None:
+        _record_dead_ports(boot_id, states)
+    if boot_id is not None and state in ("needs-docker-desktop-restart", "repair-failed", "docker-unavailable"):
+        _watch_for_docker_restart(boot_id)
 
 
 def _start_wsl_port_check() -> threading.Thread | None:
-    """Start the check in the background under WSL; the agent never waits on it."""
+    """Start the WSL restart recovery in the background; the agent never waits on it."""
     # An agent inside a container would probe that container's own loopback.
     if not _is_wsl_linux() or os.environ.get("ODS_HOST_INSTALL_DIR"):
         return None
-    thread = threading.Thread(target=_run_wsl_port_check, name="ods-wsl-port-check", daemon=True)
+    thread = threading.Thread(target=_run_wsl_restart_recovery, name="ods-wsl-port-check", daemon=True)
     thread.start()
     return thread
 

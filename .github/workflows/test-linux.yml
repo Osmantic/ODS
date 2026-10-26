@@ -563,6 +563,8 @@ jobs:
         run: |
           python3 tests/contracts/test-wsl-stack.py
           python3 tests/test-wsl-bind-recovery.py
+          bash tests/test-ods-repair-mounts.sh
+          python3 tests/test-wsl-host-check.py
           python3 tests/test-wsl-runtime-control.py
           python3 tests/test-configure-wsl-model-store.py
           python3 tests/test-retire-wsl-runtime.py

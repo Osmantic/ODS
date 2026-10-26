@@ -2211,9 +2211,16 @@ cmd_start() {
         if [[ ! -f "$_wsl_bind_recovery" ]]; then
             error "WSL bind-mount recovery helper is missing: $_wsl_bind_recovery. Reinstall or update ODS before starting services."
         fi
-        if ! "${ODS_PYTHON_CMD:-python3}" "$_wsl_bind_recovery" --install-dir "$INSTALL_DIR" --service "$resolved_service" -- "${flags[@]}"; then
-            error "WSL bind-mount recovery failed; service start was cancelled."
-        fi
+        local _wsl_bind_rc=0
+        "${ODS_PYTHON_CMD:-python3}" "$_wsl_bind_recovery" --install-dir "$INSTALL_DIR" --service "$resolved_service" -- "${flags[@]}" \
+            || _wsl_bind_rc=$?
+        case "$_wsl_bind_rc" in
+            0) ;;
+            3) _ods_cli_mounts_need_docker_restart
+               error "Service start was cancelled: containers would not see your ODS data." ;;
+            4) error "Another ODS mount repair is running; service start was cancelled. Run the command again in a minute." ;;
+            *) error "WSL bind-mount recovery failed; service start was cancelled." ;;
+        esac
     fi
 
     if [[ -z "$resolved_service" ]]; then
@@ -3047,6 +3054,32 @@ if inference_contract:
     )
     for issue in (inference_contract.get('issues') or [])[:3]:
         print(f"    {YELLOW if issue.get('severity') == 'warn' else RED}⚠{NC} {issue.get('id')}: {issue.get('detail')}")
+
+# ODS in WSL: the memory Windows can still lend (GlobalMemoryStatusEx
+# ullAvailPageFile, not a model server's own budget) and WSL's own limit.
+wsl_host = runtime.get('wsl_host') or {}
+windows = wsl_host.get('windows') or {}
+if windows.get('available'):
+    free = windows.get('commitAvailableGiB')
+    symbol = GREEN + '✓' + NC if free is not None and free >= 8 else (RED + '✗' + NC if free is not None and free < 2 else YELLOW + '⚠' + NC)
+    print(f"  {symbol} Windows commit headroom: {free} GiB of a {windows.get('commitLimitGiB')} GiB commit limit")
+    limit = (windows.get('wslconfig') or {}).get('memoryGiB')
+    total = (wsl_host.get('wsl') or {}).get('memTotalGiB')
+    if limit is None:
+        print(f"  {CYAN}ℹ{NC} WSL memory: {total} GiB (no memory= in .wslconfig)")
+    elif total is not None and total > limit + 0.25:
+        print(f"  {YELLOW}⚠{NC} WSL memory: {total} GiB; the {limit} GiB limit in .wslconfig applies after WSL restarts")
+    else:
+        print(f"  {GREEN}✓{NC} WSL memory: {total} GiB (limit {limit} GiB in .wslconfig)")
+elif windows.get('reason'):
+    print(f"  {CYAN}ℹ{NC} Windows commit headroom: not checked ({windows.get('reason')})")
+binds = wsl_host.get('bindMounts') or {}
+if binds.get('checked'):
+    if binds.get('state') == 'match':
+        print(f"  {GREEN}✓{NC} Container data: {binds.get('container')} sees your ODS data")
+    else:
+        print(f"  {RED}✗{NC} Container data: {binds.get('container')} does not see your ODS data (run: ods repair mounts)")
+        has_failures = True
 
 print()
 
@@ -7197,6 +7230,51 @@ cmd_gpu() {
     esac
 }
 
+# What to do when a new container cannot see the install's files either.
+_ods_cli_mounts_need_docker_restart() {
+    log_error "Docker Desktop is not sharing this Ubuntu's files with new containers, so ODS recreated nothing."
+    echo "  Restart Docker Desktop: in Windows, right-click the Docker icon in the taskbar and choose Restart" >&2
+    echo "  (or run 'docker desktop restart' in PowerShell). Then run: ods repair mounts" >&2
+    echo "  Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC" >&2
+}
+
+# After WSL restarts, Docker Desktop can bring ODS's containers back with an
+# empty folder where ODS's data belongs. This recreates the affected services
+# from images already on this PC (no pull, no build), with the stack's own
+# Compose files (get_compose_flags), and only after a new container proved it
+# sees the real data. The host agent runs the same command by itself after a
+# WSL restart. --check only reports (exit 2 when containers see stale data).
+_ods_cli_repair_mounts() {
+    local mode="repair" option
+    for option in "$@"; do
+        case "$option" in
+            --check) mode="check" ;;
+            *) error "Unknown option for ods repair mounts: $option (only --check)" ;;
+        esac
+    done
+    if [[ "$(uname -r 2>/dev/null)" != *[Mm]icrosoft* ]]; then
+        log "Only ODS in WSL with Docker Desktop needs this repair; nothing to do here."
+        return 0
+    fi
+    local recovery="$INSTALL_DIR/scripts/wsl-bind-recovery.py"
+    [[ -f "$recovery" ]] || error "The mount repair helper is missing: $recovery. Rerun the ODS installer."
+    local flags_str
+    flags_str=$(get_compose_flags)
+    local -a flags=() recovery_args=(--install-dir "$INSTALL_DIR")
+    read -ra flags <<< "$flags_str"
+    [[ "$mode" == check ]] && recovery_args+=(--check)
+    local rc=0
+    "${ODS_PYTHON_CMD:-python3}" "$recovery" "${recovery_args[@]}" -- "${flags[@]}" || rc=$?
+    case "$rc" in
+        0) success "ODS's containers see your ODS data." ;;
+        2) warn "Some containers see an empty or old folder instead of your ODS data. Fix it with: ods repair mounts" ;;
+        3) _ods_cli_mounts_need_docker_restart ;;
+        4) warn "Another ODS mount repair is running. Run the command again in a minute." ;;
+        *) log_error "The mount repair failed; the messages above say why. Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC" ;;
+    esac
+    return "$rc"
+}
+
 cmd_repair() {
     check_install
     cd "$INSTALL_DIR"
@@ -7205,6 +7283,10 @@ cmd_repair() {
 
     local target="${1:-voice}"
     case "$target" in
+        mounts|wsl-mounts|bind-mounts)
+            shift
+            _ods_cli_repair_mounts "$@"
+            ;;
         hermes-workers|slash-workers)
             local script="$INSTALL_DIR/scripts/prune-hermes-slash-workers.sh"
             [[ -x "$script" ]] || error "Hermes slash worker repair script not found or not executable: $script"
@@ -7277,7 +7359,7 @@ cmd_repair() {
             success "Voice repair complete"
             ;;
         *)
-            log "Usage: ods repair [voice|hermes-workers|rootless-ownership]"
+            log "Usage: ods repair [voice|hermes-workers|rootless-ownership|mounts]"
             log_error "Unknown repair target: $target"
             return 1
             ;;
@@ -7542,8 +7624,9 @@ ${CYAN}Commands:${NC}
   chat "<message>"    Quick chat with the LLM
   benchmark           Run a quick performance test
   doctor [report|--json]   Run diagnostics (--json writes JSON to stdout)
-  repair|fix [voice|hermes-workers]
-                      Repair voice services or prune leaked Hermes slash workers
+  repair|fix [voice|hermes-workers|mounts]
+                      Repair voice services, prune leaked Hermes slash workers, or
+                      (WSL) recreate containers that lost their data after WSL restarted
   template [action]   Apply pre-built service templates (list|preview|apply)
   audit [extensions]  Audit extension manifests and compose contracts
   agent [action]      Manage ods host agent (status|start|stop|restart|logs)
