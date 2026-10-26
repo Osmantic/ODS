@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`3d2acd8f22a53d28b36b7e6ee017bb3143dc428b`, and its SHA-256 is
-`f136282398bdcabe5590af360e5bdce6e0e89ae28e29e8376d3bd7f8a05266e9`.
+`0684f0791dcb56f9473d5fe4b06f9f22f028f74a`, and its SHA-256 is
+`481a29f9a89bf0354dc78ea13b1b9e813ab5d030922cdfd37a9b49217e1fcf6a`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -250,3 +250,28 @@ above identify this candidate. The prior 4.3.32 bundle commit
 `4bf2203c56cce323490e41e36736062d4f74cf39` and digest
 `0f45a292d978bd766d19606404554a0ebdca6e1f8e0fb95d870e2f7d3ceded5b` remain historical identities in Git
 and in existing clients' retained receipts. No release signature was generated.
+
+## ODS-maintained 4.3.34 Source Broker readiness candidate
+
+This candidate prepares the Source Broker for owner-connected Google accounts:
+Calendar pagination and window coverage, per-source refresh isolation with a
+content-free `status.json`, granted-scope handling, a broker-identity sign-in
+exchange and revocation, and a `--prepare` install mode. ODS keeps every source
+limb off, so ODS installations run none of the new broker code and render the
+same `openclaw.json`. `pixel/ODS-QUALIFICATION-4.3.34.md` records the automated
+evidence and the installed upgrade qualification still required. The version
+advance preserves the strictly increasing source-upgrade gate.
+
+The public vendor tree is `03a4d4c4e03f059fb809fe4a2c7bc9114c34fcc7` at ODS source
+commit `bc7e056d403c29f0db2b2e1d878ea702c98ab988`. Two independent empty bare repositories using the alternates
+procedure above produced byte-identical bundles with the retained public
+synthetic author, timestamp and root message (Git 2.53 on Windows,
+`pack.threads=1`); the same procedure first reproduced the 4.3.33 commit
+`3d2acd8f22a53d28b36b7e6ee017bb3143dc428b` from its tree, though not its bytes,
+since the packs the alternates name have changed. The bundle advertises one root
+commit and no private history. Current pins above identify this candidate. The
+prior 4.3.33 bundle commit `3d2acd8f22a53d28b36b7e6ee017bb3143dc428b` and digest
+`f136282398bdcabe5590af360e5bdce6e0e89ae28e29e8376d3bd7f8a05266e9` remain historical
+identities in Git and in existing clients' retained receipts. No release
+signature was generated and no private source history or signing credentials
+were used.
