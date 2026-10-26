@@ -6912,7 +6912,12 @@ def _remove_extension_containers(service_id: str, *, delete_volumes: bool) -> di
     comes from the containers' Compose labels, as for recovery stops. Named
     volumes and ./data/<id> are kept unless the owner chose to delete the data.
     """
-    ext_dir = USER_EXTENSIONS_DIR / service_id
+    # validate_service_id admitted the id; keep the path inside its folder anyway.
+    base = os.path.normpath(os.fspath(USER_EXTENSIONS_DIR))
+    full = os.path.normpath(os.path.join(base, service_id))
+    if not full.startswith(base + os.sep):
+        raise ValueError(f"Invalid extension id: {service_id}")
+    ext_dir = Path(full)
     if ext_dir.is_symlink() or not ext_dir.is_dir():
         raise ValueError(f"{service_id} is not an installed Library extension")
     selected = ext_dir / "compose.yaml"

@@ -198,6 +198,19 @@ def _is_stale(iso_timestamp: str, max_age_seconds: int) -> bool:
         return True
 
 
+def _contained_path(root, name: str) -> Path:
+    """``root / name``, refused when the name would lead outside ``root``.
+
+    Callers validate ids against _SERVICE_ID_RE first; this keeps each path
+    built from one inside its folder whatever a caller passes.
+    """
+    base = os.path.normpath(os.fspath(root))
+    full = os.path.normpath(os.path.join(base, name))
+    if not full.startswith(base + os.sep):
+        raise HTTPException(status_code=400, detail=f"Invalid extension path: {name}")
+    return Path(full)
+
+
 def _parse_timestamp(value) -> datetime | None:
     """An aware ISO timestamp, or None."""
     try:
@@ -376,7 +389,7 @@ def _read_recorded_progress(service_id: str) -> dict | None:
 
 
 def _load_progress_file(service_id: str):
-    progress_file = Path(DATA_DIR) / "extension-progress" / f"{service_id}.json"
+    progress_file = _contained_path(Path(DATA_DIR) / "extension-progress", f"{service_id}.json")
     if not progress_file.exists():
         return None
     try:
@@ -3663,7 +3676,7 @@ def _dismiss_interrupted_progress(service_id: str) -> str:
     containers and data stay.
     """
     directory = Path(DATA_DIR) / "extension-progress"
-    path = directory / f"{service_id}.json"
+    path = _contained_path(directory, f"{service_id}.json")
     if directory.is_symlink() or path.is_symlink():
         return "unsafe"
     try:
@@ -5552,9 +5565,8 @@ def _delete_extension_data(service_id: str) -> float | None:
     """
     if service_id in _COMPOSE_POLICY_RESERVED_NAMES or service_id in CORE_SERVICE_IDS:
         raise HTTPException(status_code=403, detail=f"data/{service_id} belongs to ODS, not to an extension")
-    data_root = Path(DATA_DIR).resolve()
-    data_path = (data_root / service_id).resolve()
-    if not data_path.is_relative_to(data_root) or data_path != data_root / service_id:
+    data_path = _contained_path(Path(DATA_DIR).resolve(), service_id)
+    if data_path.resolve() != data_path:
         raise HTTPException(
             status_code=400,
             detail=(f"data/{service_id} redirects to another location, so neither it nor "
@@ -5575,10 +5587,11 @@ def _delete_extension_data(service_id: str) -> float | None:
     return size_gb
 
 
-def _extension_display_name(ext_dir: Path, service_id: str) -> str:
+def _extension_display_name(service_id: str) -> str:
     """The installed manifest's name, for the owner-facing result."""
+    manifest_path = _contained_path(USER_EXTENSIONS_DIR, service_id) / "manifest.yaml"
     try:
-        manifest = yaml.safe_load((ext_dir / "manifest.yaml").read_text(encoding="utf-8"))
+        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, yaml.YAMLError):
         return service_id
     service = manifest.get("service") if isinstance(manifest, dict) else None
@@ -5685,7 +5698,7 @@ def uninstall_extension(service_id: str, include_data_info: bool = Query(True),
             raise
         stopped_before_removal = True
 
-    name = _extension_display_name(ext_dir, service_id)
+    name = _extension_display_name(service_id)
     # While the definition still names the extension's companions. A stopped
     # container nothing manages any more stayed behind otherwise.
     removed = _call_agent_remove_containers(service_id, delete_volumes=delete_data)
@@ -5730,7 +5743,7 @@ def uninstall_extension(service_id: str, include_data_info: bool = Query(True),
             shutil.rmtree(backup)
         _invalidate_extension_digest_cache(ext_dir, backup)
 
-        progress_file = Path(DATA_DIR) / "extension-progress" / f"{service_id}.json"
+        progress_file = _contained_path(Path(DATA_DIR) / "extension-progress", f"{service_id}.json")
         progress_file.unlink(missing_ok=True)
 
     logger.info("Uninstalled extension: %s (stopped first: %s, containers: %s, data deleted: %s)",

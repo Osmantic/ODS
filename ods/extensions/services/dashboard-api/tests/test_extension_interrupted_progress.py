@@ -336,6 +336,15 @@ def test_a_retry_whose_images_are_here_drops_only_the_old_interruption(
     assert path.exists() is kept
 
 
+@pytest.mark.parametrize("name", ["../user-extensions", "..", "a/../../b", ""])
+def test_paths_built_from_ids_stay_in_their_folder(tmp_path, name):
+    from fastapi import HTTPException
+
+    assert ext_mod._contained_path(tmp_path, "gotify.json") == tmp_path / "gotify.json"
+    with pytest.raises(HTTPException):
+        ext_mod._contained_path(tmp_path, name)
+
+
 # --- Remove ---
 
 
