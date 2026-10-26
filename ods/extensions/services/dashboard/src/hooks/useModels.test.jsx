@@ -71,6 +71,20 @@ test('a joined activation that loads the model is confirmed', async () => {
   expect(view.result.current.currentModel).toBe('model-b')
 })
 
+test('an unsupported architecture shows the refusal and keeps the current model without joining an activation', async () => {
+  const message = "Model architecture 'dspark' is not supported by this runtime. The active model was not changed."
+  stubServer(() => reply(409, { detail: {
+    code: 'runtime_architecture_unsupported', error: message, requestedModelId: 'model-b',
+  } }))
+  server.lifecycle = null
+  const { view, load } = await startLoad()
+  await act(async () => { await load })
+  expect(view.result.current.error).toBe(message)
+  expect(view.result.current.currentModel).toBe('model-a')
+  expect(view.result.current.activationLoading).toBeNull()
+  expect(fetch.mock.calls.filter(([url]) => url.endsWith('/load'))).toHaveLength(1)
+})
+
 test('a load request still in flight keeps waiting for its answer', async () => {
   stubServer(() => new Promise(() => {}))
   const { view } = await startLoad()
