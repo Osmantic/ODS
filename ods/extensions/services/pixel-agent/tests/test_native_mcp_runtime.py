@@ -112,6 +112,12 @@ class NativeMcpRuntimeTests(unittest.TestCase):
             port = listener.getsockname()[1]
         plugin = world.home / 'portal-plugin'
         shutil.copytree(ROOT / 'extensions/services/pixel-agent/plugin', plugin)
+        # A WSL checkout on NTFS can present every source file as mode 0777.
+        # The disposable plugin must have the same safe modes as an installation.
+        plugin.chmod(0o755)
+        for entry in plugin.rglob('*'):
+            if not entry.is_symlink():
+                entry.chmod(0o755 if entry.is_dir() else 0o644)
         config = {
             'gateway': {'mode': 'local', 'bind': 'loopback', 'port': port, 'auth': {'mode': 'token', 'token': token},
                         'http': {'endpoints': {'chatCompletions': {'enabled': True}}}},
@@ -180,24 +186,33 @@ class NativeMcpRuntimeTests(unittest.TestCase):
         # Keep inference and execution within the disposable fixture. This
         # qualifies native MCP policy/filtering, not Docker sandbox execution.
         config['agents']['defaults']['sandbox']['mode'] = 'off'
+        config['agents']['list'][0]['sandbox'] = {'mode': 'off'}
+        config['agents']['list'][0]['tools'].setdefault('exec', {})['host'] = 'gateway'
         config['agents']['defaults']['sandbox']['docker']['containerPrefix'] = 'ods-mcp-qa-' + secrets.token_hex(8) + '-'
         world.write_config(config)
         validation = subprocess.run([world.openclaw, 'config', 'validate'], cwd=world.home,
                                     env=world.env, capture_output=True, text=True)
         self.assertEqual(validation.returncode, 0, validation.stderr[-3000:])
+        world.cli('plugins', 'registry', '--refresh', '--json')
+        primary = world.cli('plugins', 'inspect', 'pixel-ods', '--runtime', '--json')['plugin']
+        self.assertEqual(primary['status'], 'loaded', 'Pixel must register before its MCP turn can qualify')
+        self.assertIs(primary['imported'], True)
+        self.assertEqual(primary['rootDir'], str(plugin.resolve()))
         probe = world.cli('mcp', 'probe', 'qa-project', '--json')
         self.assertEqual(probe['tools'], ['qa-project__project_status'])
         self.assertEqual(probe['servers']['qa-project']['filteredTools'], 1)
         self.assertEqual(probe['diagnostics'], [])
         world.start_gateway(port, 'native-mcp')
         request = urllib.request.Request('http://127.0.0.1:%d/v1/chat/completions' % port,
-            data=json.dumps({'model': 'openclaw:pixel', 'user': 'native-mcp-qa', 'stream': False,
+            # Portal supplies this canonical conversation namespace. An
+            # arbitrary native user label correctly fails image custody.
+            data=json.dumps({'model': 'openclaw:pixel', 'user': 'ods-' + secrets.token_hex(32), 'stream': False,
                              'messages': [{'role': 'user', 'content': 'Read Project Cedar using its connected tools.'}]}).encode(),
             headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'})
         with urllib.request.urlopen(request, timeout=90) as response:
             result = json.load(response)
         self.assertEqual(failures, [])
-        self.assertEqual(len(requests), 4)
+        self.assertEqual(len(requests), 4, json.dumps(result))
         rejected = [item['content'] for item in requests[2]['messages'] if item.get('role') == 'tool']
         self.assertIn('Unknown tool id', json.dumps(rejected))
         self.assertIn(tool_ids[0], json.dumps(rejected))
