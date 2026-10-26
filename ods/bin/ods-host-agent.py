@@ -134,6 +134,54 @@ if _model_stores_spec is None or _model_stores_spec.loader is None:
 _model_stores = importlib.util.module_from_spec(_model_stores_spec)
 _model_stores_spec.loader.exec_module(_model_stores)
 
+_model_preflight_spec = importlib.util.spec_from_file_location(
+    "_ods_model_preflight", _MODEL_MEMORY_PATH.with_name("model_preflight.py"))
+if _model_preflight_spec is None or _model_preflight_spec.loader is None:
+    raise ImportError("Cannot load shared runtime compatibility policy")
+_model_preflight = importlib.util.module_from_spec(_model_preflight_spec)
+_model_preflight_spec.loader.exec_module(_model_preflight)
+
+_gguf_inspector_spec = importlib.util.spec_from_file_location(
+    "_ods_gguf_inspector", _MODEL_MEMORY_PATH.with_name("gguf_inspector.py"))
+if _gguf_inspector_spec is None or _gguf_inspector_spec.loader is None:
+    raise ImportError("Cannot load shared GGUF inspector")
+_gguf_inspector = importlib.util.module_from_spec(_gguf_inspector_spec)
+_gguf_inspector_spec.loader.exec_module(_gguf_inspector)
+
+
+def _activation_architecture_refusal(target: Path, env: dict, *, windows_hosted: bool,
+                                    registered_runtime: dict | None) -> dict | None:
+    """Refuse a known unsupported architecture before holding or changing a route.
+
+    Import acknowledgements do not qualify the installed runtime. Inspect the
+    actual selected file again, including files added directly to a model store.
+    Custom runtimes have their own qualification; the bundled policy cannot
+    establish their capabilities. Unknown evidence retains the existing guarded
+    activation and rollback rather than inventing an incompatibility.
+    """
+    if registered_runtime:
+        return None
+    header = _gguf_inspector.inspect_gguf(target)
+    architecture = header.get("architecture")
+    if not header.get("readable") or architecture in {None, "", "unknown"}:
+        return None
+    backend = str(env.get("GPU_BACKEND") or "nvidia").strip().lower()
+    image = str(env.get("LLAMA_SERVER_IMAGE") or "").strip() if backend not in {"apple", "amd"} and not windows_hosted else ""
+    if image and (not image.startswith(f"{_LLAMA_CPP_REPOSITORY}:server-")
+                  or _model_preflight.build_from_image(image) is None):
+        return None
+    policy = _model_preflight.load_runtime_policy(INSTALL_DIR / "config/llama-cpp-architectures.json")
+    key, build = _model_preflight.effective_build(policy, backend, windows_hosted=windows_hosted, model_image=image)
+    if _model_preflight.architecture_supported(policy, build, architecture) is not False:
+        return None
+    return {
+        "code": "runtime_architecture_unsupported",
+        "error": (f"Model architecture '{architecture}' is not supported by the selected llama.cpp build {build}. "
+                  "Choose a compatible model or qualify a runtime that supports it. The active model was not changed."),
+        "architecture": architecture,
+        "runtime": {"key": key, "build": build},
+    }
+
 
 def _installed_model_file(filename: str) -> Path | None:
     return _model_stores.resolve_model_file(INSTALL_DIR / "data", filename, container=bool(os.environ.get("ODS_HOST_INSTALL_DIR")))
@@ -15114,6 +15162,15 @@ class AgentHandler(BaseHTTPRequestHandler):
                         profile_context_length = None
                 llama_server_image = runtime_profile.get("llama_server_image") or llama_server_image
                 runtime_env = runtime_profile.get("env") if isinstance(runtime_profile.get("env"), dict) else {}
+            image_updates, image_removals = _model_activation_image_changes(env_pre, llama_server_image, catalog_images)
+            selected_runtime_env = {key: value for key, value in env_pre.items() if key not in image_removals}
+            selected_runtime_env.update(image_updates)
+            architecture_refusal = _activation_architecture_refusal(
+                target, selected_runtime_env, windows_hosted=host_native_llama,
+                registered_runtime=local_runtime_profile)
+            if architecture_refusal is not None:
+                json_response(self, 409, {**architecture_refusal, "requestedModelId": model_id})
+                return
             recommended_context = _recommended_activation_context(model_id, model, env_pre)
             if (
                 requested_context_length is None
@@ -15319,34 +15376,10 @@ class AgentHandler(BaseHTTPRequestHandler):
                                         "LLAMA_ARG_SPEC_DRAFT_TYPE_K":"q4_0", "LLAMA_ARG_SPEC_DRAFT_TYPE_V":"q4_0"})
                 remove_keys.update({"LLAMA_ARG_SPEC_DRAFT_TYPE_K", "LLAMA_ARG_SPEC_DRAFT_TYPE_V"})
                 remove_keys.difference_update(updates)
-                # Only update LLAMA_SERVER_IMAGE on Docker backends that read it.
-                # macOS runs llama-server natively (no Docker image to pull),
-                # and the AMD overlay pins its own Vulkan/ROCm image: catalog
-                # images name another backend's (CUDA) build.
-                if llama_server_image and gpu_backend not in {"apple", "amd"}:
-                    updates["LLAMA_SERVER_IMAGE"] = llama_server_image
-                elif (
-                    gpu_backend not in {"apple", "amd"}
-                    and str(env_pre.get("LLAMA_SERVER_IMAGE") or "").strip() in catalog_images
-                ):
-                    # A catalog entry's or runtime profile's image belongs to
-                    # the model that selected it. A model without its own image
-                    # runs the backend default again; a host or owner image that
-                    # no catalog model names is kept.
-                    remove_keys.add("LLAMA_SERVER_IMAGE")
-                if gpu_backend not in {"apple", "amd"}:
-                    # A compute-12.1 GPU names its CUDA 13 build here: the
-                    # backend default (no key) is a CUDA 12 build.
-                    if "LLAMA_SERVER_IMAGE" in updates:
-                        env_image = updates["LLAMA_SERVER_IMAGE"]
-                    elif "LLAMA_SERVER_IMAGE" in remove_keys:
-                        env_image = ""
-                    else:
-                        env_image = str(env_pre.get("LLAMA_SERVER_IMAGE") or "").strip()
-                    compute_image = _llama_image_for_compute(env_image, env_pre)
-                    if compute_image != env_image:
-                        updates["LLAMA_SERVER_IMAGE"] = compute_image
-                        remove_keys.discard("LLAMA_SERVER_IMAGE")
+                # Apply exactly the runtime selection checked before mutation.
+                updates.update(image_updates)
+                remove_keys.update(image_removals)
+                remove_keys.difference_update(image_updates)
                 # A vision import loads its projector in the container (WP2);
                 # any other model clears the previous one's. Host-native
                 # runtimes take the projector as an argument instead.
@@ -17800,6 +17833,27 @@ def _render_model_router_runtime_configs(
         if enabled:
             raise RuntimeError(message)
         logger.warning("%s; switchboard mode is %s", message, switchboard_mode)
+
+
+def _model_activation_image_changes(env: dict, model_image: str | None,
+                                    catalog_images: set[str] | frozenset[str]) -> tuple[dict, set]:
+    """Select the candidate image once for both compatibility and activation."""
+    updates: dict = {}
+    removals: set = set()
+    if env.get("GPU_BACKEND", "nvidia") in {"apple", "amd"}:
+        return updates, removals  # Native macOS and the AMD overlay ignore this key.
+    current = str(env.get("LLAMA_SERVER_IMAGE") or "").strip()
+    if model_image:
+        updates["LLAMA_SERVER_IMAGE"] = model_image
+    elif current in catalog_images:
+        # A previous model's image is not an owner override.
+        removals.add("LLAMA_SERVER_IMAGE")
+    image = updates.get("LLAMA_SERVER_IMAGE", "" if removals else current)
+    compute_image = _llama_image_for_compute(image, env)
+    if compute_image != image:
+        updates["LLAMA_SERVER_IMAGE"] = compute_image
+        removals.discard("LLAMA_SERVER_IMAGE")
+    return updates, removals
 
 
 def _container_llama_rollback_image(env: dict) -> str:

@@ -7,6 +7,7 @@ import http.client
 import io
 import json
 import shutil
+import struct
 import subprocess
 import sys
 import threading
@@ -3911,6 +3912,80 @@ def test_pixel_reasoning_capability_follows_model_family_and_runtime_mode(
         model,
         {"LLAMA_REASONING": mode},
     ) is expected
+
+
+@pytest.mark.parametrize('backend', ['nvidia', 'cpu', 'amd', 'apple'])
+@pytest.mark.parametrize('catalog', [True, False])
+def test_unsupported_architecture_preserves_running_model_before_transaction(tmp_path, monkeypatch, backend, catalog):
+    install, env_path, env_text, models_ini, ini_text, *_ = _write_model_activation_fixture(tmp_path, gpu_backend=backend)
+    def string(value):
+        raw = value.encode()
+        return struct.pack('<Q', len(raw)) + raw
+    data = (b'GGUF' + struct.pack('<IQQ', 3, 0, 1)
+            + string('general.architecture') + struct.pack('<I', 8) + string('dspark'))
+    (install / 'data/models/new-model.gguf').write_bytes(data)
+    library = {'models': [{'id': 'target-model', 'gguf_file': 'new-model.gguf',
+                          'gguf_url': 'https://example.test/new-model.gguf',
+                          'gguf_sha256': hashlib.sha256(data).hexdigest(),
+                          'llm_model_name': 'new-model', 'context_length': 4096}]} if catalog else {'models': []}
+    (install / 'config/model-library.json').write_text(json.dumps(library))
+    shutil.copyfile(_agent_path.parents[1] / 'config/llama-cpp-architectures.json', install / 'config/llama-cpp-architectures.json')
+    monkeypatch.setattr(_mod, 'INSTALL_DIR', install)
+    monkeypatch.setattr(_mod.platform, 'system', lambda: 'Linux')
+    monkeypatch.delenv('ODS_HOST_INSTALL_DIR', raising=False)
+    monkeypatch.setattr(_mod, '_ods_managed_pixel_identity', lambda: None)
+    monkeypatch.setattr(_mod, '_recommended_activation_context', lambda *_a: None)
+    monkeypatch.setattr(_mod, '_select_runtime_profile', lambda *_a: None)
+    monkeypatch.setattr(_mod, '_managed_wsl_runtime', lambda *_a: {'managed': False})
+    monkeypatch.setattr(_mod, '_plan_nvidia_model_gpu_assignment', lambda *_a, **_kw: None)
+    monkeypatch.setattr(_mod, '_plan_amd_model_gpu_assignment', lambda *_a, **_kw: None)
+    reached = []
+    def snapshot(*_args):
+        reached.append('snapshot')
+        raise RuntimeError('test stopped before any transaction or process mutation')
+    monkeypatch.setattr(_mod, '_snapshot_text_file', snapshot)
+    handler = _ResponseHandler()
+    _mod.AgentHandler._do_model_activate(handler, 'target-model' if catalog else 'new-model')
+    assert handler.response_code == 409, handler.parse_response()
+    assert handler.parse_response()['code'] == 'runtime_architecture_unsupported'
+    assert handler.parse_response()['architecture'] == 'dspark'
+    assert reached == []
+    assert env_path.read_text() == env_text
+    assert models_ini.read_text() == ini_text
+    assert not (install / 'data/model-activation-receipt.json').exists()
+
+
+@pytest.mark.parametrize('architecture,image,registered,policy_present,windows,blocked,build', [
+    ('qwen35', '', None, True, False, False, None),
+    ('dspark', '', None, True, False, True, 'b11429'),
+    ('dspark', 'ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:example', None, True, False, True, 'b9014'),
+    ('dspark', 'ghcr.io/ggml-org/llama.cpp:server-cuda-b99999', None, True, False, False, None),
+    ('dspark', 'ghcr.io/ggml-org/llama.cpp:server-cuda-custom', None, True, False, False, None),
+    ('dspark', 'owner/custom:server-b9014', None, True, False, False, None),
+    ('dspark', '', {'executable': 'qualified-custom-runtime'}, True, False, False, None),
+    ('dspark', '', None, False, False, False, None),
+    ('unknown', '', None, True, False, False, None),
+    ('dspark', 'owner/ignored-image:latest', None, True, True, True, 'b9014'),
+])
+def test_activation_architecture_uses_selected_runtime_and_positive_evidence(
+        tmp_path, monkeypatch, architecture, image, registered, policy_present, windows, blocked, build):
+    (tmp_path / 'config').mkdir()
+    if policy_present:
+        shutil.copyfile(_agent_path.parents[1] / 'config/llama-cpp-architectures.json', tmp_path / 'config/llama-cpp-architectures.json')
+    def string(value):
+        data = value.encode()
+        return struct.pack('<Q', len(data)) + data
+    target = tmp_path / 'test.gguf'
+    target.write_bytes(b'GGUF' + struct.pack('<IQQ', 3, 0, 1)
+                       + string('general.architecture') + struct.pack('<I', 8) + string(architecture))
+    monkeypatch.setattr(_mod, 'INSTALL_DIR', tmp_path)
+    refusal = _mod._activation_architecture_refusal(
+        target, {'GPU_BACKEND': 'nvidia', 'LLAMA_SERVER_IMAGE': image},
+        windows_hosted=windows, registered_runtime=registered)
+    assert (refusal is not None) is blocked
+    if blocked:
+        assert refusal['architecture'] == architecture
+        assert refusal['runtime']['build'] == build
 
 
 class TestModelActivateRollback:

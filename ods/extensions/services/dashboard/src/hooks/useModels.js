@@ -592,6 +592,10 @@ export function useModels({observe=true, reuseLastCatalog=false} = {}) {
 
         const body = await responseJson(response)
         if (response.status === 409) {
+          if (body?.detail?.code === 'runtime_architecture_unsupported') {
+            activationError = errorMessageFromPayload(body, 'This runtime does not support the model architecture.')
+            return
+          }
           if (body?.detail?.code === 'pixel_chat_active') {
             activationError = errorMessageFromPayload(
               body,
