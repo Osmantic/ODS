@@ -56,6 +56,9 @@ def read(path: Path = PATH, *, owners: tuple = (0,)) -> dict[str, Any] | None:
         descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     except FileNotFoundError:
         return None
+    except OSError as error:
+        # A link planted in its place, or a journal this account may not read.
+        raise LifecycleError("connection journal cannot be opened safely") from error
     with os.fdopen(descriptor, "rb") as handle:
         info = os.fstat(handle.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > MAX_BYTES:

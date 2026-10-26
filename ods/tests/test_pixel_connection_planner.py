@@ -133,6 +133,68 @@ class PlannerTests(unittest.TestCase):
                 planner.plan_gateway_env(bad, gateway(READ_ONLY))
 
 
+GATEWAY_ENV = ("OPENCLAW_STATE_DIR='/home/owner/.openclaw'\nPIXEL_CALENDAR_DIRECT_ENABLED='0'\n"
+               "PIXEL_LIMB_EMAIL_ENABLED='0'\nPIXEL_LIMB_CALENDAR_ENABLED='0'\nPIXEL_LIMB_CALENDAR_WRITE_ENABLED='0'\n")
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "the installer converges connected apps on Linux and WSL")
+class ConvergeTests(unittest.TestCase):
+    """The installer step that finishes a connect or disconnect the coordinator could not."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        self.config, self.env = root / "openclaw.json", root / "gateway.env"
+        self.generated, self.pixel_env = root / "generated-gateway.env", root / "pixel.env"
+        self.write(self.config, json.dumps(disconnected_config()))
+        self.write(self.env, GATEWAY_ENV)
+        self.write(self.pixel_env, "PIXEL_USER_TIMEZONE='America/Chicago'\n")
+
+    def write(self, path, text, mode=0o600):
+        path.write_text(text)
+        path.chmod(mode)
+
+    def converge(self):
+        return subprocess.run([sys.executable, "-I", str(ROOT / "bin/pixel_connections/converge.py"), str(self.config),
+                               str(self.env), str(self.generated), str(self.pixel_env), INSTALL],
+                              capture_output=True, text=True)
+
+    def test_a_connection_the_coordinator_could_not_finish_is_finished_by_the_update(self):
+        connected = planner.plan_gateway_env(GATEWAY_ENV, gateway(READ_ONLY))
+        self.write(self.generated, connected)
+        result = self.converge()
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "changed\n", ""))
+        expected = planner.plan_config(disconnected_config(), gateway(READ_ONLY, "America/Chicago"), install_dir=INSTALL)
+        self.assertEqual(json.loads(self.config.read_text()), expected)
+        self.assertEqual(self.env.read_text(), connected)
+        for path in (self.config, self.env):
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.converge().stdout, "unchanged\n")
+        # Disconnecting converges the same way.
+        self.write(self.generated, GATEWAY_ENV)
+        self.assertEqual(self.converge().stdout, "changed\n")
+        self.assertNotIn(planner.PLUGIN_ID, json.loads(self.config.read_text())["plugins"]["allow"])
+        self.assertEqual(self.env.read_text(), GATEWAY_ENV)
+
+    def test_unsafe_or_unexpected_files_stop_the_update_unchanged(self):
+        self.write(self.generated, planner.plan_gateway_env(GATEWAY_ENV, gateway(READ_ONLY)))
+        before = self.config.read_bytes()
+        self.config.chmod(0o644)
+        result = self.converge()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unsafe Pixel file: openclaw.json", result.stderr)
+        self.config.chmod(0o600)
+        self.write(self.config, json.dumps(dict(disconnected_config(), plugins={"allow": "not a list"})))
+        result = self.converge()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("outside the connected-apps shape", result.stderr)
+        self.write(self.config, before.decode())
+        self.write(self.env, GATEWAY_ENV + "export X=1\n")
+        self.assertNotEqual(self.converge().returncode, 0)
+        self.assertEqual(self.config.read_bytes(), before)
+
+
 def _env_file(path: Path) -> dict[str, str]:
     values = {}
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -143,7 +205,8 @@ def _env_file(path: Path) -> dict[str, str]:
     return values
 
 
-@unittest.skipIf(os.name == "nt" or shutil.which("node") is None, "renders with Pixel's configure on Linux with Node.js")
+@unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("node"),
+                     "connected apps ship on Linux and WSL; renders with Pixel's configure and Node.js")
 class RenderCrossCheckTests(unittest.TestCase):
     """Pixel's configure and renderer plus the ODS overlay produce what the planner predicts."""
 

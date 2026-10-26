@@ -206,6 +206,10 @@ MESSAGES: dict[str, tuple[str, bool]] = {
     "gateway-change-rolled-back": ("Portal couldn't start with the new connection, so it's back on its previous "
                                    "setup. Try again.", True),
     "sign-in-exchange-unavailable": ("Google sign-in couldn't finish on this machine. Try again.", True),
+    "connections-unavailable": ("ODS couldn't reach the service that connects apps to Portal. Make sure ODS is "
+                                "running, then try again.", True),
+    "connection-change-unconfirmed": ("ODS couldn't confirm this step. Connected apps shows where it stands; try "
+                                      "again from there.", True),
 }
 FALLBACK = ("ODS couldn't finish this step. Try again, and ask on Discord if it keeps happening.", True)
 

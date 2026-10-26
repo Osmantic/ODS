@@ -51,6 +51,8 @@ class _Listener:
                 pass  # The request line carries the sign-in code; nothing about it is logged.
 
         self._handle: Callable[[str], tuple] | None = None
+        # One redirect is handled at a time; closing never waits for one in progress.
+        self._handling = threading.Lock()
         self._lock = threading.Lock()
         self._closed = False
         self._serving = False
@@ -69,10 +71,12 @@ class _Listener:
         self._timer.start()
 
     def callback(self, query: str) -> tuple:
-        with self._lock:
-            if self._closed or self._handle is None:
+        with self._handling:
+            with self._lock:
+                handle = None if self._closed else self._handle
+            if handle is None:
                 return "This sign-in has ended", "Go back to ODS and start again.", None, True
-            return self._handle(query)
+            return handle(query)
 
     def close(self) -> None:
         with self._lock:
@@ -131,10 +135,8 @@ def _activate_later(relay: Relay, config: dict, log: Callable[[str], None]) -> N
 def _complete(flow_id: str, fields: dict[str, str], *, config: dict, relay: Relay,
               log: Callable[[str], None]) -> tuple:
     status, reply = relay("connection-complete", {"flowId": flow_id, **fields}, config=config)
-    if status == 200:
-        _close_listener(flow_id)
-        if reply["outcome"] == "connected":
-            _activate_later(relay, config, log)
+    if status == 200 and reply["outcome"] == "connected":
+        _activate_later(relay, config, log)
     return status, reply
 
 
@@ -197,7 +199,11 @@ def complete(body: Any, *, config: dict, relay: Relay, log: Callable[[str], None
         fields = oauth.callback_fields(oauth.pasted_query(body["address"]))
     except oauth.OAuthError as error:
         return 400, {"error": error.code}
-    return _complete(body["flowId"], fields, config=config, relay=relay, log=log)
+    status, reply = _complete(body["flowId"], fields, config=config, relay=relay, log=log)
+    if status == 200:
+        # The redirect came another way, so the loopback address has nothing left to wait for.
+        _close_listener(body["flowId"])
+    return status, reply
 
 
 def cancel(body: Any, *, config: dict, relay: Relay, log: Callable[[str], None] = print) -> tuple:

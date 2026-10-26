@@ -1,5 +1,6 @@
 """Connected apps on the root control socket and the owner-worker pipe: exact frames only."""
 from pathlib import Path
+import re
 import sys
 
 import pytest
@@ -116,6 +117,26 @@ def test_every_custody_list_names_the_connection_modules():
         assert f'"{name.removesuffix(".py")}' in uninstaller.split("CONNECTION_MODULES = ", 1)[1].split("SOURCE_BROKER_KIT", 1)[0] \
             or name == "__init__.py"
         assert f'"bin/pixel_connections/{name}"' in fixture
+
+
+def test_the_installer_prepares_the_kit_before_the_broker_and_converges_before_comparing():
+    from pixel_connections import custody
+    installer = (ROOT / "installers/lib/pixel-host-install.sh").read_text(encoding="utf-8")
+    kit = installer.split("_ods_pixel_install_source_broker_kit() {", 1)[1].split("\n}\n", 1)[0]
+    # The kit lands beside the installed custody module, where custody.KIT looks for it.
+    assert "target = pathlib.Path('/usr/local/libexec/ods-pixel-access')" in installer
+    assert "pathlib.Path('/usr/local/libexec/ods-pixel-access/pixel_connections/source-broker-kit')" in kit
+    assert custody.KIT.parts[-2:] == ("pixel_connections", "source-broker-kit")
+    units = re.search(r"units = \(([^)]*)\)", kit).group(1)
+    assert tuple(re.findall(r"'([^']+)'", units)) == custody.UNITS
+    assert set(re.findall(r"'([a-z.-]+)': root /", kit)) == {"broker.py", "source-broker.env"}
+    reuse, configure = installer.split('if [[ "$reuse_active" == true ]]; then', 1)[1].split("\n    else\n", 1)
+    for branch in (reuse, configure):
+        assert (branch.index('_ods_pixel_install_source_broker_kit "$owner"')
+                < branch.index('_ods_pixel_install_source_broker_if_connected "$owner"'))
+    same_source = configure.split('if [[ "$same_verified_source" == true ]]; then', 1)[1]
+    assert same_source.index("pixel_connections/converge.py") < same_source.index(
+        "_ods_pixel_candidate_config_matches_live")
 
 
 def test_the_root_service_answers_from_the_status_module_on_linux_only():

@@ -418,6 +418,22 @@ def test_disconnect_stops_revokes_erases_and_then_portal_forgets_the_tools(world
     assert c.control(world.bridge, "connection-activate", {}) == {"outcome": "unchanged"}
 
 
+def test_an_unusable_journal_never_blocks_the_owner(world):
+    connect(world)
+    c.control(world.bridge, "connection-activate", {})
+    path = Path(world.bridge.state) / "connection.json"
+    path.write_text("{not json")
+    path.chmod(0o600)
+    assert c.control(world.bridge, "connection-activate", {}) == {"outcome": "unchanged"}
+    assert not path.exists()
+    path.write_text("{not json")
+    path.chmod(0o600)
+    stale = world.paths.oauth / f"{'b' * 32}.flow.json"
+    stale.write_text("{}")
+    flow = begin(world)
+    assert not stale.exists() and journal(world)["flowId"] == flow["flowId"]
+
+
 def test_a_new_sign_in_replaces_an_unfinished_one(world):
     first = begin(world)
     second = begin(world)

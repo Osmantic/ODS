@@ -64,10 +64,16 @@ def _lifecycle_path(bridge) -> Path:
 
 
 def read_lifecycle(path: Path) -> dict[str, Any] | None:
+    """The journal; an unusable one is removed, so it can never block the owner's next step.
+
+    Nothing depends on it alone: activation reconciles with the record, and a new
+    sign-in replaces every unfinished one.
+    """
     try:
         return lifecycle.read(path, owners=OWNERS)
     except lifecycle.LifecycleError:
-        raise AccessError("invalid-connection-journal") from None
+        path.unlink(missing_ok=True)
+        return None
 
 
 def _write_lifecycle(bridge, value: dict[str, Any]) -> None:
@@ -171,9 +177,8 @@ def begin(bridge, request: Any) -> dict[str, Any]:
     request = _begin_request(request)
     with bridge.bounded(60), bridge.locked():
         bridge.discover()
-        journal = read_lifecycle(_lifecycle_path(bridge))
-        if journal and journal["phase"] == "consent":
-            custody.discard_flow(PATHS, journal["flowId"])
+        # Only one sign-in is ever open, so every earlier handoff goes, journaled or not.
+        custody.discard_flows(PATHS)
         _clear_lifecycle(bridge)
         custody.prepare(PATHS, RUN, reader=bridge.owner.pw_name)
         scopes = [*oauth.IDENTITY_SCOPES, *catalog.scopes_for("google", request["capabilities"])]

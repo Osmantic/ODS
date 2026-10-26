@@ -80,7 +80,7 @@ test('connected-apps status is owner-only, read-only and asks the controller one
   for(const key of ['', 'c'.repeat(64)]) {
     assert.equal((await fetch(url,{headers:{authorization:`Bearer ${key}`}})).status,403);
   }
-  assert.equal((await fetch(url,{method:'POST',headers:{authorization:`Bearer ${ownerKey}`,'content-type':'application/json'},body:'{}'})).status,405);
+  assert.equal((await fetch(url,{method:'PUT',headers:{authorization:`Bearer ${ownerKey}`,'content-type':'application/json'},body:'{}'})).status,405);
   assert.equal((await fetch(url+'?account=other',{headers:{authorization:`Bearer ${ownerKey}`}})).status,400);
   assert.equal(calls.length,0);
   const response=await fetch(url,{headers:{authorization:`Bearer ${ownerKey}`}});
@@ -88,6 +88,58 @@ test('connected-apps status is owner-only, read-only and asks the controller one
   assert.equal(response.headers.get('cache-control'),'no-store');
   assert.deepEqual(await response.json(),{schemaVersion:1});
   assert.deepEqual(calls,[[{operation:'connection-status'},{timeout:20000}]]);
+});
+
+async function connectionServer(t, answer) {
+  const calls=[];
+  const server=http.createServer((req,res)=>void handleConnections(req,res,{ownerKey, request:async (value, options)=>{calls.push([value, options]);return answer(value);}}));
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const url=`http://127.0.0.1:${server.address().port}/v1/connections`;
+  const post=(body, headers={})=>fetch(url,{method:'POST',headers:{authorization:`Bearer ${ownerKey}`,'content-type':'application/json',...headers},body});
+  return {calls, url, post};
+}
+
+test('each custodian action reaches the controller once, with its own time budget', async t => {
+  const {calls, post}=await connectionServer(t, value=>({status:200,body:{outcome:value.operation==='connection-sync'?'started':'applied'}}));
+  for (const [operation, request, budget] of [['connection-sync', {}, 25000], ['connection-activate', {}, 305000],
+      ['connection-cancel', {flowId:'a'.repeat(32)}, 25000], ['connection-disconnect', {connector:'google'}, 155000]]) {
+    calls.length=0;
+    const response=await post(JSON.stringify({operation, request}));
+    assert.equal(response.status,200);
+    assert.equal(response.headers.get('cache-control'),'no-store');
+    await response.json();
+    assert.deepEqual(calls,[[{operation, request},{timeout:budget}]]);
+  }
+});
+
+test('only an exact action frame reaches the controller', async t => {
+  const {calls, url, post}=await connectionServer(t, ()=>({status:200,body:{outcome:'started'}}));
+  for (const body of ['{}', '[]', 'not json', JSON.stringify({operation:'connection-status', request:{}}),
+      JSON.stringify({operation:'connection-sync', request:[]}), JSON.stringify({operation:'connection-sync', request:{}, extra:1}),
+      JSON.stringify({operation:'__proto__', request:{}})]) {
+    assert.equal((await post(body)).status,400,body);
+  }
+  assert.equal((await post(JSON.stringify({operation:'connection-sync', request:{pad:'x'.repeat(4096)}}))).status,413);
+  assert.equal((await post('{}',{'content-type':'text/plain'})).status,415);
+  assert.equal((await fetch(url,{method:'POST',headers:{authorization:'Bearer '+'c'.repeat(64),'content-type':'application/json'},
+    body:JSON.stringify({operation:'connection-sync', request:{}})})).status,403);
+  assert.equal((await fetch(url+'?x=1',{method:'POST',headers:{authorization:`Bearer ${ownerKey}`,'content-type':'application/json'},
+    body:JSON.stringify({operation:'connection-sync', request:{}})})).status,400);
+  assert.equal(calls.length,0);
+});
+
+test('a controller refusal keeps only its code', async t => {
+  let answer={status:409,body:{error:'runtime-busy'}};
+  const {post}=await connectionServer(t, ()=>answer);
+  const sync=JSON.stringify({operation:'connection-sync', request:{}});
+  let response=await post(sync);
+  assert.equal(response.status,409);
+  assert.deepEqual(await response.json(),{error:'runtime-busy'});
+  answer={status:503,body:{error:'Private Path /etc'}};
+  response=await post(sync);
+  assert.equal(response.status,503);
+  assert.deepEqual(await response.json(),{error:'connection-change-unconfirmed'});
 });
 
 test('an unreachable controller gives a plain unavailable answer', async t => {

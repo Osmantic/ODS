@@ -1,6 +1,7 @@
-"""The Edge relay and the host agent accept exactly the same connected-apps status."""
+"""The Edge relay and the host agent accept exactly the same connected-apps status and actions."""
 import copy
 import importlib.util
+import inspect
 import json
 import os
 import sys
@@ -101,6 +102,105 @@ MUTATIONS = (
                                                         "expiresAt": "2026-10-25T20:45:00Z", "flowId": "a" * 32,
                                                         "since": "2026-10-25T20:30:00Z"}),
 )
+
+
+FLOW = "a" * 32
+CAPABILITIES = RECORD["connectors"]["google"]["capabilities"]
+BEGIN = {"connector": "google", "capabilities": CAPABILITIES, "cloudModels": False, "ownerTimeZone": "America/Chicago",
+         "loginHint": None, "redirectPort": 53682,
+         "client": {"clientId": "123456789012-abcdefghijklmnopqrstuvwxyz012345.apps.googleusercontent.com",
+                    "clientSecret": "test-secret-test", "projectId": "ods-owner-calendar"}}
+REQUESTS = (
+    ("connection-begin", BEGIN),
+    ("connection-begin", dict(BEGIN, ownerTimeZone=None, loginHint="owner@example.com", cloudModels=True)),
+    ("connection-complete", {"flowId": FLOW, "state": "s" * 43, "code": "4/0AfJohX-fixture"}),
+    ("connection-complete", {"flowId": FLOW, "state": "s" * 43, "error": "access-denied"}),
+    ("connection-activate", {}), ("connection-cancel", {"flowId": FLOW}),
+    ("connection-disconnect", {"connector": "google"}), ("connection-sync", {}),
+)
+BAD_REQUESTS = (
+    ("connection-begin", dict(BEGIN, redirectPort=80)), ("connection-begin", dict(BEGIN, extra=1)),
+    ("connection-begin", dict(BEGIN, client=dict(BEGIN["client"], clientId="not-a-google-client"))),
+    ("connection-begin", dict(BEGIN, capabilities=dict(CAPABILITIES, send=True))),
+    ("connection-begin", dict(BEGIN, cloudModels="no")), ("connection-begin", dict(BEGIN, connector="dropbox")),
+    ("connection-complete", {"flowId": FLOW, "state": "s" * 43}),
+    ("connection-complete", {"flowId": FLOW, "state": "s" * 43, "code": "4/x", "error": "access-denied"}),
+    ("connection-complete", {"flowId": FLOW, "state": "s" * 43, "error": "server_error"}),
+    ("connection-complete", {"flowId": FLOW, "state": "short", "code": "4/x"}),
+    ("connection-activate", {"force": True}), ("connection-cancel", {"flowId": "A" * 32}),
+    ("connection-disconnect", {}), ("connection-status", {}), ("connection-sync", []),
+)
+REPLIES = (
+    ("connection-begin", {"flowId": FLOW, "authUrl": "https://accounts.google.com/o/oauth2/auth?client_id=x&state=y",
+                          "redirectUri": "http://127.0.0.1:53682", "expiresAt": "2026-10-25T20:45:00Z"}),
+    ("connection-complete", {"outcome": "connected", "errorClass": None, "account": "owner@example.com",
+                             "capabilities": CAPABILITIES, "missing": ["gmail.read"]}),
+    ("connection-complete", {"outcome": "failed", "errorClass": "account-unverified", "account": None,
+                             "capabilities": None, "missing": []}),
+    ("connection-activate", {"outcome": "applied"}), ("connection-activate", {"outcome": "unchanged"}),
+    ("connection-cancel", {"outcome": "cancelled"}), ("connection-sync", {"outcome": "started"}),
+    ("connection-disconnect", {"outcome": "disconnected", "revoked": False}),
+)
+BAD_REPLIES = (
+    ("connection-begin", {"flowId": FLOW, "authUrl": "https://example.com/o/oauth2/auth?x",
+                          "redirectUri": "http://127.0.0.1:53682", "expiresAt": "2026-10-25T20:45:00Z"}),
+    ("connection-begin", {"flowId": FLOW, "authUrl": "https://accounts.google.com/o/oauth2/auth?x",
+                          "redirectUri": "http://192.168.1.2:53682", "expiresAt": "2026-10-25T20:45:00Z"}),
+    ("connection-complete", {"outcome": "connected", "errorClass": None, "account": None,
+                             "capabilities": CAPABILITIES, "missing": []}),
+    ("connection-complete", {"outcome": "failed", "errorClass": None, "account": None, "capabilities": None,
+                             "missing": []}),
+    ("connection-complete", {"outcome": "connected", "errorClass": None, "account": "owner@example.com",
+                             "capabilities": CAPABILITIES, "missing": ["send"]}),
+    ("connection-activate", {"outcome": "cancelled"}), ("connection-sync", {"outcome": "started", "token": "x"}),
+    ("connection-disconnect", {"outcome": "disconnected"}), ("connection-cancel", []),
+)
+VALIDATORS = ("valid_connection_action", "public_connection_action", "_text", "_capability_flags")
+CONSTANTS = ("_CONNECTION_OPERATIONS", "_CAPABILITY_IDS", "_FLOW", "_STATE", "_CODE", "_CLIENT_ID", "_CLIENT_SECRET",
+             "_PROJECT", "_ACCOUNT", "_TIME_ZONE", "_SECOND", "_REASON", "_AUTH_URL")
+
+
+class ActionWireTests(unittest.TestCase):
+    """The host relay and the Edge pass the same custodian actions, so neither can widen what root sees."""
+
+    def test_the_host_relay_and_the_edge_run_identical_validators(self):
+        import pixel_access_relay as relay
+        for name in VALIDATORS:
+            self.assertEqual(inspect.getsource(getattr(relay, name)), inspect.getsource(getattr(edge, name)), name)
+        for name in CONSTANTS:
+            ours, theirs = getattr(relay, name), getattr(edge, name)
+            self.assertEqual(getattr(ours, "pattern", ours), getattr(theirs, "pattern", theirs), name)
+
+    def test_both_accept_every_request_the_host_sends_and_refuse_the_rest(self):
+        import pixel_access_relay as relay
+        for operation, request in REQUESTS:
+            payload = {"operation": operation, "request": copy.deepcopy(request)}
+            self.assertTrue(relay.valid_connection_action(payload), operation)
+            self.assertTrue(edge.valid_connection_action(payload), operation)
+        for operation, request in BAD_REQUESTS:
+            payload = {"operation": operation, "request": copy.deepcopy(request)}
+            self.assertFalse(relay.valid_connection_action(payload), (operation, request))
+            self.assertFalse(edge.valid_connection_action(payload), (operation, request))
+
+    @unittest.skipIf(os.name == "nt", "the root coordinator runs on Linux")
+    def test_root_accepts_whatever_both_relays_pass(self):
+        from pixel_connections import coordinator
+        for operation, request in REQUESTS:
+            if operation == "connection-begin":
+                coordinator._begin_request(copy.deepcopy(request))
+            elif operation == "connection-complete":
+                coordinator._complete_request(copy.deepcopy(request))
+
+    def test_both_pass_every_reply_the_custodian_gives_and_withhold_the_rest(self):
+        import pixel_access_relay as relay
+        for operation, reply in REPLIES:
+            self.assertEqual(relay.public_connection_action(operation, copy.deepcopy(reply)), reply)
+            self.assertEqual(edge.public_connection_action(operation, copy.deepcopy(reply)), reply)
+        for operation, reply in BAD_REPLIES:
+            with self.assertRaises(ValueError):
+                relay.public_connection_action(operation, copy.deepcopy(reply))
+            with self.assertRaises(ValueError):
+                edge.public_connection_action(operation, copy.deepcopy(reply))
 
 
 class WireContractTests(unittest.TestCase):

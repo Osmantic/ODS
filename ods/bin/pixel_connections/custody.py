@@ -29,6 +29,7 @@ KIT_FILES = ("broker.py", "source-broker.env", *UNITS)
 MAX_RESULT_BYTES = 64 * 1024
 ENV_LINE = re.compile(r"^([A-Z][A-Z0-9_]*)='((?:[^']|'\\'')*)'$")
 FLOW_ID = re.compile(r"^[a-f0-9]{32}$")
+FLOW_FILE = re.compile(r"^[a-f0-9]{32}\.(?:flow|code|result)\.json$")
 # Exactly the keys the broker writes into a sign-in or revocation result.
 EXCHANGE_KEYS = {"schemaVersion", "kind", "finishedAt", "flowId", "outcome", "errorClass", "httpStatus",
                  "errorType", "grantedScopes", "account"}
@@ -196,6 +197,15 @@ def discard_flow(paths: Paths, flow_id: str) -> None:
         raise CustodyError("invalid-flow")
     for suffix in ("flow", "code", "result"):
         (paths.oauth / f"{flow_id}.{suffix}.json").unlink(missing_ok=True)
+
+
+def discard_flows(paths: Paths) -> None:
+    """Remove the files of every sign-in flow; a broker never prepared has none."""
+    if paths.oauth.is_symlink() or not paths.oauth.is_dir():
+        return
+    for entry in os.scandir(paths.oauth):
+        if FLOW_FILE.fullmatch(entry.name):
+            os.unlink(entry.path)
 
 
 def _unique(pairs: list) -> dict[str, Any]:
