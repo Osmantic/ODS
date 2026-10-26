@@ -274,6 +274,7 @@ bash tests/legacy-clean-migration-transaction.test.sh
 bash tests/legacy-clean-migration-swap.test.sh
 bash tests/restore-broker-reader-acls.test.sh
 bash tests/restore-private-state-receipt-gate.test.sh
+bash tests/restore-private-state-source-status.test.sh
 bash tests/restore-private-state-version-gate.test.sh
 bash tests/migrate-prepare.test.sh
 bash tests/bootstrap-mirror-fallback.test.sh

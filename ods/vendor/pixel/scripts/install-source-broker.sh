@@ -56,7 +56,12 @@ source_token=$PIXEL_GOOGLE_TOKEN_PATH
 google_source_enabled=0
 [[ ${PIXEL_LIMB_EMAIL_ENABLED:-1} == 1 || ${PIXEL_LIMB_CALENDAR_ENABLED:-1} == 1 ]] && google_source_enabled=1
 if [[ $google_source_enabled == 1 && -f "$source_token" ]]; then
-  sudo install -o "$PIXEL_SOURCE_BROKER_USER" -g "$broker_group" -m 0600 "$source_token" "$PIXEL_SOURCE_TOKEN_PATH"
+  # A sign-in exchanged directly into custody is newer than an old staged token; keep it.
+  if sudo test -f "$PIXEL_SOURCE_TOKEN_PATH" && ! sudo test "$source_token" -nt "$PIXEL_SOURCE_TOKEN_PATH"; then
+    pixel_log "Kept the newer Google sign-in already held by the Source Broker; removing the older staged token"
+  else
+    sudo install -o "$PIXEL_SOURCE_BROKER_USER" -g "$broker_group" -m 0600 "$source_token" "$PIXEL_SOURCE_TOKEN_PATH"
+  fi
 fi
 if [[ $google_source_enabled == 1 ]]; then
   sudo test -f "$PIXEL_SOURCE_TOKEN_PATH" || pixel_die "No broker OAuth token exists; run ./pixel authorize first"

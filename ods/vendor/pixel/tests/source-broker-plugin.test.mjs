@@ -137,6 +137,25 @@ test("email answers carry their source's sync state and tolerate a missing statu
   assert.equal((await call(tools, "pixel_gmail_inbox", {})).sync, null);
 });
 
+test("a meeting already running or an all-day event counts as busy", async (t) => {
+  const at = (hours) => new Date(Date.parse("2026-11-02T00:00:00Z") + hours * 3_600_000).toISOString();
+  const records = [
+    { id: "running", title: "Design review", start: { dateTime: at(9) }, end: { dateTime: at(11) } },
+    { id: "trip", title: "Conference", start: { date: "2026-11-01" }, end: { date: "2026-11-03" } },
+    { id: "ended", title: "Standup", start: { dateTime: at(8) }, end: { dateTime: at(10) } },
+    { id: "later", title: "Lunch", start: { dateTime: at(12) }, end: { dateTime: at(13) } },
+  ];
+  const directory = await withProjections(t, { calendar: calendarProjection({ records, recordCount: records.length }) });
+  const tools = await loadPlugin({ PIXEL_LIMB_WEB_ENABLED: "0", PIXEL_SOURCE_PROJECTION_DIR: directory });
+  const busy = await call(tools, "pixel_calendar_list", { timeMin: at(10), timeMax: at(10.5) });
+  assert.deepEqual(busy.events.map(({ id }) => id).sort(), ["running", "trip"]);
+  assert.equal(busy.totalMatches, 2);
+  const limited = await call(tools, "pixel_calendar_list", { timeMin: at(0), timeMax: at(24), maxResults: 1 });
+  assert.equal(limited.count, 1);
+  assert.equal(limited.totalMatches, 4);
+  assert.equal(limited.hasMore, true);
+});
+
 test("window coverage needs both bounds and a valid request", () => {
   const coverage = { windowStart: iso(-7), windowEnd: iso(90) };
   assert.equal(calendarWindowCovers(coverage, iso(-7), iso(90)), true);

@@ -635,6 +635,11 @@ else
   pixel_systemctl daemon-reload >/dev/null 2>&1 || true
   for unit in "${units[@]}"; do pixel_systemctl restart "$unit" >/dev/null; done
 fi
+# The timer refreshes later; refresh once now so the Source Broker's status.json exists
+# before verify (a backup from before 4.3.34 has none). A failed refresh fails restore.
+if [[ ${PIXEL_SOURCE_BROKER_ENABLED:-0} == 1 ]]; then
+  pixel_systemctl start "${PIXEL_SOURCE_BROKER_UNIT:-pixel-source-broker.service}" >/dev/null
+fi
 # Reader ACLs are target deployment policy, not authenticated legacy content. Rebuild
 # only the bounded public projections after broker startup has regenerated its files and
 # while rollback remains armed. A failure is covered by the exact existing rollback path;

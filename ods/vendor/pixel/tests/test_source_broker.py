@@ -1850,7 +1850,8 @@ class SourceBrokerReadinessTests(unittest.TestCase):
             email = status["sources"]["email"]
             self.assertEqual((email["state"], email["errorClass"], email["httpStatus"]), ("error", "api-disabled", 403))
             self.assertEqual(email["recordCount"], 1)
-            self.assertIsNone(email["lastSuccessAt"])
+            # No earlier status (first refresh after an upgrade): the kept snapshot's time counts.
+            self.assertEqual(email["lastSuccessAt"], "2026-08-04T20:00:00Z")
             self.assertEqual(email["failingSince"], email["lastAttemptAt"])
             self.assertEqual(status["sources"]["calendar"]["state"], "ok")
             self.assertTrue(status["sources"]["calendar"]["complete"])
@@ -1914,6 +1915,20 @@ class SourceBrokerReadinessTests(unittest.TestCase):
             status = self.read(root, "status")
             self.assertEqual((status["sources"]["email"]["errorClass"], status["sources"]["email"]["httpStatus"]), ("missing-scope", None))
             self.assertEqual(status["sources"]["calendar"]["state"], "ok")
+
+    def test_after_disconnecting_the_last_snapshot_is_no_longer_served(self):
+        with tempfile.TemporaryDirectory() as directory, self.broker_env(Path(directory)):
+            root = Path(directory)
+            write_token(root / "private" / "google-token.json")
+            self.run_refresh(self.google())
+            self.assertEqual(self.read(root, "calendar")["recordCount"], 1)
+            (root / "private" / "google-token.json").unlink()
+            self.run_refresh(self.google())
+            for source in ("email", "calendar"):
+                cleared = self.read(root, source)
+                self.assertEqual((cleared["records"], cleared["generatedAt"]), ([], None))
+                self.assertEqual(cleared["coverage"]["reason"], "not-connected")
+                self.assertEqual(self.read(root, "status")["sources"][source]["recordCount"], 0)
 
     def test_no_stored_connection_reports_not_connected_without_network(self):
         with tempfile.TemporaryDirectory() as directory, self.broker_env(Path(directory)):
@@ -2139,6 +2154,32 @@ class SourceBrokerReadinessTests(unittest.TestCase):
                 result = json.loads((root / "private" / "oauth" / "revoke.result.json").read_text(encoding="utf-8"))
                 self.assertEqual((result["outcome"], result["errorClass"]), (outcome, error_class))
                 self.assertNotIn("example-refresh-token", json.dumps(result))
+
+    def test_revoke_deletes_the_sign_in_whatever_google_or_the_file_says(self):
+        refresh_only = json.dumps({"refresh_token": "example-refresh-token"})
+        cases = [
+            # (case, stored token file, raw reply body, outcome, error class, Google contacted)
+            ("unexpected reply", refresh_only, b"not json", "local-only", "unknown", True),
+            ("partial token file", json.dumps({"refresh_token": "example-refresh-token",
+                                               "token_uri": "https://other.example/token"}), b"", "revoked", None, True),
+            ("unreadable token file", "{not json", b"", "local-only", "unknown", False),
+            ("no refresh token", json.dumps({"client_id": "fixture-client"}), b"", "local-only", "not-connected", False),
+        ]
+        for name, stored, reply, outcome, error_class, contacts_google in cases:
+            with self.subTest(name), tempfile.TemporaryDirectory() as directory, self.broker_env(Path(directory)):
+                root = Path(directory)
+                write_protected(root / "private" / "google-token.json", stored)
+                calls = []
+
+                def urlopen(request, timeout=None, reply=reply):
+                    calls.append(request.full_url)
+                    return FakeResponse(reply)
+                with patch.object(BROKER.urllib.request, "urlopen", urlopen), contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(BROKER.revoke(), 0)
+                self.assertEqual(calls, [BROKER.GOOGLE_REVOKE_URI] if contacts_google else [])
+                self.assertFalse((root / "private" / "google-token.json").exists())
+                result = json.loads((root / "private" / "oauth" / "revoke.result.json").read_text(encoding="utf-8"))
+                self.assertEqual((result["outcome"], result["errorClass"]), (outcome, error_class))
 
     def test_revoke_without_a_stored_connection_needs_no_network(self):
         with tempfile.TemporaryDirectory() as directory, self.broker_env(Path(directory)):

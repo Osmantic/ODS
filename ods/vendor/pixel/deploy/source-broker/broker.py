@@ -1734,7 +1734,7 @@ def previous_status(path: Path) -> dict[str, Any]:
 
 def source_status(prior: dict[str, Any], *, enabled: bool, attempted_at: str,
                   failure: dict[str, Any] | None = None, record_count: int = 0,
-                  complete: bool | None = None) -> dict[str, Any]:
+                  complete: bool | None = None, kept_generated_at: str | None = None) -> dict[str, Any]:
     """Content-free state for one source: when it last worked and why it does not now."""
     if not enabled:
         return {"enabled": False, "state": "disabled", "errorClass": None, "httpStatus": None,
@@ -1744,7 +1744,10 @@ def source_status(prior: dict[str, Any], *, enabled: bool, attempted_at: str,
         return {"enabled": True, "state": "ok", "errorClass": None, "httpStatus": None,
                 "errorType": None, "lastAttemptAt": attempted_at, "lastSuccessAt": attempted_at,
                 "failingSince": None, "recordCount": record_count, "complete": complete}
-    last_success = prior.get("lastSuccessAt") if valid_iso_timestamp(prior.get("lastSuccessAt")) else None
+    # Without an earlier status (the first refresh after an upgrade), the kept snapshot's
+    # own time is when this source last worked.
+    last_success = (prior.get("lastSuccessAt") if valid_iso_timestamp(prior.get("lastSuccessAt"))
+                    else kept_generated_at)
     failing_since = (prior.get("failingSince") if prior.get("state") == "error"
                      and valid_iso_timestamp(prior.get("failingSince")) else attempted_at)
     return {"enabled": True, "state": "error", **failure, "lastAttemptAt": attempted_at,
@@ -1822,13 +1825,15 @@ def refresh() -> int:
             records, coverage = fetch()
         except Exception as error:  # One source failing must not stale or block the others.
             failure = failure_record(error)
-            kept = retained_projection(path, label)
+            # A removed sign-in means the owner disconnected: never keep serving that data.
+            kept = None if failure["errorClass"] == "not-connected" else retained_projection(path, label)
             if kept is None:
                 unavailable = {"bounded": True, "available": False, "reason": failure["errorClass"]}
                 atomic_json(path, projection(label, [], None, True, unavailable, started_at=started_at))
             sources[name] = source_status(
                 prior.get(name, {}), enabled=True, attempted_at=attempted_at, failure=failure,
                 record_count=len(kept["records"]) if kept else 0, complete=False,
+                kept_generated_at=kept["generatedAt"] if kept else None,
             )
             continue
         generated_at = iso(utc_now())
@@ -2768,21 +2773,34 @@ def revoke() -> int:
     oauth_dir = Path(os.environ.get("PIXEL_SOURCE_OAUTH_DIR", "/var/lib/pixel-source-broker/private/oauth"))
     token_path = Path(os.environ.get("PIXEL_SOURCE_TOKEN_PATH", "/var/lib/pixel-source-broker/private/google-token.json"))
     outcome, failure = "revoked", {"errorClass": None, "httpStatus": None, "errorType": None}
+    refresh_token = None
     try:
-        credentials = read_credentials(token_path)
-    except SourceUnavailable:
-        credentials = None
-        outcome = "not-connected"
-    if credentials is not None:
         try:
-            request_json(GOOGLE_REVOKE_URI, method="POST", headers={"content-type": "application/x-www-form-urlencoded"},
-                         body=urllib.parse.urlencode({"token": credentials["refresh_token"]}).encode("ascii"))
-        except (UpstreamHTTPError, urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException) as error:
-            # Google answers invalid_token for a grant that is already revoked or expired.
-            if not (isinstance(error, UpstreamHTTPError) and error.code == 400 and "invalid_token" in error.reasons):
+            stored = json.loads(token_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            outcome = "not-connected"
+        except (OSError, ValueError) as error:
+            outcome, failure = "local-only", failure_record(error)
+        else:
+            # Revoking needs only the refresh token, whatever else the file holds.
+            candidate = stored.get("refresh_token") if isinstance(stored, dict) else None
+            if isinstance(candidate, str) and candidate:
+                refresh_token = candidate
+            else:
+                outcome, failure = "local-only", failure_record(SourceUnavailable("not-connected", "no refresh token"))
+        if refresh_token is not None:
+            try:
+                request_json(GOOGLE_REVOKE_URI, method="POST", headers={"content-type": "application/x-www-form-urlencoded"},
+                             body=urllib.parse.urlencode({"token": refresh_token}).encode("ascii"))
+            except UpstreamHTTPError as error:
+                # Google answers invalid_token for a grant that is already revoked or expired.
+                if not (error.code == 400 and "invalid_token" in error.reasons):
+                    outcome, failure = "local-only", failure_record(error)
+            except Exception as error:  # Any other failure still ends with the sign-in deleted here.
                 outcome, failure = "local-only", failure_record(error)
-    token_path.unlink(missing_ok=True)
-    oauth_result(oauth_dir / "revoke.result.json", "pixel-source-oauth-revoke-result", {"outcome": outcome, **failure})
+    finally:
+        token_path.unlink(missing_ok=True)
+        oauth_result(oauth_dir / "revoke.result.json", "pixel-source-oauth-revoke-result", {"outcome": outcome, **failure})
     print(json.dumps({"outcome": outcome, "errorClass": failure["errorClass"]}))
     return 0
 
