@@ -29,6 +29,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git wget ffmpeg libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
     && rm -rf /var/lib/apt/lists/*
 
+# Every pip install below resolves to the exact package set this image was
+# tested with (constraints.txt). An ARG reaches each RUN as an environment
+# variable during the build without staying in the running image.
+COPY constraints.txt /opt/ods-comfyui-constraints.txt
+ARG PIP_CONSTRAINT=/opt/ods-comfyui-constraints.txt
+
 # ---------------------------------------------------------------------------
 # Layer 2: PyTorch + CUDA 12.8 (Blackwell sm_120 support), pinned as in
 # Dockerfile.standalone. torchaudio comes from the same index, so ComfyUI's
@@ -94,10 +100,11 @@ RUN pip3 install --no-cache-dir "comfy-kitchen[cublas]"
 # Layer 6: Build checks
 #
 # No node requirement may replace the pinned torch. ComfyUI then loads every
-# custom node on the CPU and exits (--quick-test-for-ci); "IMPORT FAILED" or
-# "PRESTARTUP FAILED" fails the build. Its run state goes to scratch paths and
-# an in-memory database: the default database lives in $COMFYUI_DIR/user,
-# which startup.sh treats as an old image's user data to migrate.
+# custom node on the CPU and exits (--quick-test-for-ci); "IMPORT FAILED",
+# "PRESTARTUP FAILED" or KJNodes' own "LTXV nodes could not be imported" (it
+# catches that error itself) fails the build. Its run state goes to scratch
+# paths and an in-memory database: the default database lives in
+# $COMFYUI_DIR/user, which startup.sh treats as an old image's user data.
 # ---------------------------------------------------------------------------
 RUN python3 -c "import torch, torchvision, torchaudio; \
 assert torch.__version__ == '2.11.0+cu128', torch.__version__; \
@@ -115,8 +122,9 @@ assert torchaudio.__version__ == '2.11.0+cu128', torchaudio.__version__" \
             > /tmp/ods-quick-test.log 2>&1 \
         || { cat /tmp/ods-quick-test.log; exit 1; }; } \
     && cat /tmp/ods-quick-test.log \
-    && ! grep -E "IMPORT FAILED|PRESTARTUP FAILED" /tmp/ods-quick-test.log \
-    && test ! -e "$COMFYUI_DIR/user" \
+    && ! grep -E "IMPORT FAILED|PRESTARTUP FAILED|LTXV nodes could not be imported" /tmp/ods-quick-test.log \
+    && { test ! -e "$COMFYUI_DIR/user" \
+        || { echo "The build check left $COMFYUI_DIR/user behind" >&2; exit 1; }; } \
     && rm -rf /tmp/ods-quick-test /tmp/ods-quick-test.log
 
 # ---------------------------------------------------------------------------

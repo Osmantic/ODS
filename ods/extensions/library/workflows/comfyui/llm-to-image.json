@@ -67,7 +67,7 @@
             }
           ]
         },
-        "body": "={{ {\n  \"model\": $env.LLM_MODEL || 'default',\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are an AI image generation assistant. Convert the user's text description into a detailed, artistic image generation prompt for ComfyUI/FLUX. Include style, lighting, composition, and artistic details. Keep it under 500 characters.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": $('Validate Input').first().json.prompt\n    }\n  ],\n  \"max_tokens\": 500,\n  \"temperature\": 0.7\n} }}",
+        "body": "={{ {\n  \"model\": $env.LLM_MODEL || 'default',\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are an AI image generation assistant. Convert the user's text description into a detailed, artistic image generation prompt for ComfyUI (SDXL Lightning). Include style, lighting, composition, and artistic details. Keep it under 500 characters.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": $('Validate Input').first().json.prompt\n    }\n  ],\n  \"max_tokens\": 500,\n  \"temperature\": 0.7\n} }}",
         "options": {
           "timeout": 60000
         }
@@ -140,7 +140,7 @@
     {
       "parameters": {
         "channel": "={{ $('Validate Input').first().json.channel || 'general' }}",
-        "text": "={{ '*Image Generation Failed* ❌\\n\\n**Error:** ' + (($json.error || $input.all()[0]?.error?.message || $input.all()[0]?.error?.description || 'Unknown error')).toString().slice(0, 997).trimEnd() + '\\n\\nPlease check:\\n- LLM service is running\\n- ComfyUI service is running\\n- FLUX.1 model is loaded\\n- API keys are correct (if configured)' }}"
+        "text": "={{ '*Image Generation Failed* ❌\\n\\n**Error:** ' + (($json.error || $input.all()[0]?.error?.message || $input.all()[0]?.error?.description || 'Unknown error')).toString().slice(0, 997).trimEnd() + '\\n\\nPlease check:\\n- LLM service is running\\n- ComfyUI service is running\\n- sdxl_lightning_4step.safetensors is in ComfyUI's checkpoints folder\\n- API keys are correct (if configured)' }}"
       },
       "id": "discord-error",
       "name": "Discord Error",

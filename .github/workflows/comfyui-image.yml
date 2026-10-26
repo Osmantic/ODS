@@ -9,6 +9,7 @@ on:
   pull_request:
     paths:
       - 'ods/extensions/services/comfyui/Dockerfile'
+      - 'ods/extensions/services/comfyui/constraints.txt'
       - 'ods/extensions/services/comfyui/startup.sh'
       - 'ods/tests/test_comfyui_image.py'
       - '.github/workflows/comfyui-image.yml'
@@ -16,6 +17,7 @@ on:
     branches: [main]
     paths:
       - 'ods/extensions/services/comfyui/Dockerfile'
+      - 'ods/extensions/services/comfyui/constraints.txt'
       - 'ods/extensions/services/comfyui/startup.sh'
       - 'ods/tests/test_comfyui_image.py'
       - '.github/workflows/comfyui-image.yml'

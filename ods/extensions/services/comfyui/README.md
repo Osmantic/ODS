@@ -61,8 +61,12 @@ When image generation is chosen in the installer, the installer downloads SDXL L
 Adding ComfyUI later from the Extensions page does not download it yet. Fetch it once from your ODS install
 directory, then click **Refresh** in ComfyUI. On AMD the folder is `data/comfyui/ComfyUI/models/checkpoints`.
 
+If `mkdir` or `curl` reports "Permission denied" (the AMD container runs as root and owns its folder), run the commands
+with `sudo`.
+
 ```bash
 dir=data/comfyui/models/checkpoints
+mkdir -p "$dir"
 curl -fL -C - -o "$dir/sdxl_lightning_4step.safetensors.part" \
   https://huggingface.co/ByteDance/SDXL-Lightning/resolve/main/sdxl_lightning_4step.safetensors
 echo "e0d996ee0013e79d9d3561f50fcafb9a17e3ff07b780358e3b66d67932c4d490  $dir/sdxl_lightning_4step.safetensors.part" | sha256sum -c - \

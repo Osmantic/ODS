@@ -45,6 +45,22 @@ def test_build_steps_do_not_hide_failures():
     assert "2>/dev/null" not in DOCKERFILE_CODE
 
 
+def test_every_pip_install_resolves_to_the_tested_set():
+    constraint = DOCKERFILE_CODE.index("ARG PIP_CONSTRAINT=/opt/ods-comfyui-constraints.txt")
+    assert DOCKERFILE_CODE.index("COPY constraints.txt /opt/ods-comfyui-constraints.txt") < constraint
+    assert constraint < DOCKERFILE_CODE.index("pip3 install")
+    pins = {}
+    for line in (COMFYUI / "constraints.txt").read_text(encoding="utf-8").splitlines():
+        if line and not line.startswith("#"):
+            name, separator, version = line.partition("==")
+            assert separator and name and version, line
+            pins[name.lower()] = version
+    installed = dict(re.findall(r"\b(torch|torchvision|torchaudio)==([0-9.]+)", DOCKERFILE_CODE))
+    for package, version in installed.items():
+        assert pins[package] == f"{version}+cu128", package
+    assert "comfy-kitchen" in pins
+
+
 def test_custom_nodes_are_pinned_and_manager_is_absent():
     clones = re.findall(r"git clone (?:--branch \S+ --depth 1 )?https://github.com/([^/\s]+/[^\s.]+)",
                         DOCKERFILE_CODE)
@@ -62,7 +78,7 @@ def test_build_imports_every_custom_node():
     assert gate, "the import gate is missing"
     step = gate.group(0)
     assert "--database-url sqlite:///:memory:" in step
-    assert '! grep -E "IMPORT FAILED|PRESTARTUP FAILED"' in step
+    assert '! grep -E "IMPORT FAILED|PRESTARTUP FAILED|LTXV nodes could not be imported"' in step
     assert 'test ! -e "$COMFYUI_DIR/user"' in step
     # Built-in nodes list these when they load (nodes_audio.py reads input/),
     # so each must exist before ComfyUI starts.
