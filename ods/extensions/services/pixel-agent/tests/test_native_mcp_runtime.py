@@ -5,6 +5,7 @@ deliberately requests an excluded write, then an allowed read as a positive
 control. No owner configuration, credentials, network app or Docker is used.
 """
 import http.server
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -140,6 +141,48 @@ class NativeMcpRuntimeTests(unittest.TestCase):
                          'command': sys.executable, 'args': ['-I', str(server), str(calls), fact],
                          'toolFilter': {'include': ['project_status']}}}}
         world.write_config(config)
+        # Reconfigure with Pixel's real renderer before exercising the native
+        # server. A catalog/probe-only test would miss losing the registry or
+        # its effective tool restrictions during an ODS update.
+        spec = importlib.util.spec_from_file_location('native_mcp_renderer_fixture',
+            ROOT / 'vendor/pixel/tests/test_native_search.py')
+        rendering = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(rendering)
+        rendering.NativeSearchTests.setUpClass()
+        self.addCleanup(rendering.NativeSearchTests.tearDownClass)
+        render_case = rendering.NativeSearchTests()
+        render_case.setUp()
+        self.addCleanup(render_case.doCleanups)
+        digest = subprocess.check_output(['node', str(ROOT / 'vendor/pixel/scripts/hash-gateway-extension.mjs'),
+                                          str(plugin)], text=True).strip()
+        tools = json.loads((plugin / 'openclaw.plugin.json').read_text())['contracts']['tools']
+        render_case.answers.update(openclawHome=str(world.state), workspace=str(world.home / 'workspace'),
+            modelProvider='ods-local', modelId='Qwen3.5-2B', modelName='ODS Local Qwen3.5-2B',
+            modelBaseUrl='http://127.0.0.1:11434/v1', modelContextWindow=16384,
+            modelMaxTokens=2048, modelReasoning=False, webSearchProvider='searxng',
+            webLimbEnabled=False, emailLimbEnabled=False, calendarLimbEnabled=False,
+            gatewayExtensions=[{'id': 'pixel-ods', 'path': str(plugin), 'sha256': digest, 'tools': tools}])
+        render_case.configure()
+        environment = render_case.configured_env()
+        environment['PIXEL_GATEWAY_TOKEN'] = token
+        rendered = render_case.render(environment)
+        self.assertEqual(rendered['mcp'], config['mcp'])
+        self.assertIn('bundle-mcp', rendered['tools']['sandbox']['tools']['allow'])
+        candidate.write_text(json.dumps(rendered))
+        staged = subprocess.run([sys.executable, str(ROOT / 'installers/lib/pixel-runtime-budget.py'),
+            str(candidate), '3004', '', str(world.state)], env={**os.environ, **world.env},
+            capture_output=True, text=True, check=True).stdout.strip()
+        config = json.loads((candidate if staged == 'unchanged' else Path(staged)).read_bytes())
+        config['models']['providers']['ods-local']['baseUrl'] = 'http://127.0.0.1:%d/v1' % provider.server_port
+        config['gateway']['port'] = port
+        # Keep inference and execution within the disposable fixture. This
+        # qualifies native MCP policy/filtering, not Docker sandbox execution.
+        config['agents']['defaults']['sandbox']['mode'] = 'off'
+        config['agents']['defaults']['sandbox']['docker']['containerPrefix'] = 'ods-mcp-qa-' + secrets.token_hex(8) + '-'
+        world.write_config(config)
+        validation = subprocess.run([world.openclaw, 'config', 'validate'], cwd=world.home,
+                                    env=world.env, capture_output=True, text=True)
+        self.assertEqual(validation.returncode, 0, validation.stderr[-3000:])
         probe = world.cli('mcp', 'probe', 'qa-project', '--json')
         self.assertEqual(probe['tools'], ['qa-project__project_status'])
         self.assertEqual(probe['servers']['qa-project']['filteredTools'], 1)

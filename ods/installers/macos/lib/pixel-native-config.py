@@ -458,7 +458,15 @@ def prepare(*, source, ref, answers, node, sandbox_image, destination, runtime,
                            '--answers', str(snapshot)], cwd=checkout, env=env)
         migrate_workspace_guidance(checkout / '.generated/workspace', generated=True)
         values = generated_environment(checkout / '.env')
-        values.update(OPENCLAW_HOME=str(isolated_home / 'empty-openclaw'),
+        render_home = isolated_home / 'render-openclaw'
+        render_home.mkdir(mode=0o700)
+        if previous is not None:
+            # The native renderer reads the same private pre-update state as
+            # Linux, without preparing against or writing the live home.
+            render_config = render_home / 'openclaw.json'
+            render_config.write_text(json.dumps(previous))
+            render_config.chmod(0o600)
+        values.update(OPENCLAW_HOME=str(render_home),
                       PIXEL_SANDBOX_IMAGE=sandbox_image,
                       PIXEL_PLUGIN_PATH=paths['pixel-source-broker'],
                       PIXEL_OPS_PLUGIN_PATH=paths['pixel-operations-broker'],

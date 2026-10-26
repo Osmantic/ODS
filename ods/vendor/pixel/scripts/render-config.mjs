@@ -2,6 +2,7 @@ import { readFile, readdir, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import { preserveNativeMcp } from "./lib/native-mcp-config.mjs";
 
 const required = (name) => { const value = process.env[name]; if (!value) throw new Error(`${name} is required`); return value; };
 const number = (name) => Number(required(name));
@@ -233,6 +234,7 @@ const config = {
     load: { paths: [...new Set([...extensionPaths, ...(sourcePluginEnabled ? [pluginPath] : []), ...(operationsEnabled ? [opsPluginPath] : []), ...(frontierEnabled ? [frontierPluginPath] : [])])] },
   },
 };
+preserveNativeMcp(current, config, required("PIXEL_AGENT_ID"));
 await mkdir(dirname(outputPath), { recursive: true });
 await writeFile(outputPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
 console.log(outputPath);

@@ -186,6 +186,63 @@ def test_overlay_accepts_only_private_sibling_and_passes_explicit_home(tmp_path,
         assert json.loads(path.read_text()) == ({'after': True} if result_kind == 'valid' else {'before': True})
 
 
+def test_native_migration_seeds_only_private_disposable_render_state(tmp_path, monkeypatch):
+    # This exercises preparation plumbing on Linux too. It does not qualify a
+    # native Mac runtime or replace the opted-in live Mac tests.
+    monkeypatch.setattr(config.sys, 'platform', 'darwin')
+    monkeypatch.setattr(config.os, 'geteuid', lambda: 501)
+    monkeypatch.setattr(config.bootstrap, 'selected_release', lambda *args: {})
+    monkeypatch.setattr(config, 'runtime_plugins', lambda *args: {
+        name: str(tmp_path / name) for name in
+        ('pixel-source-broker', 'pixel-operations-broker', 'pixel-frontier-broker')})
+    home = tmp_path / 'existing-home'
+    home.mkdir(mode=0o700)
+    previous = home / 'openclaw.json'
+    body = json.dumps({'mcp': {'servers': {'project': {'transport': 'stdio', 'command': '/usr/bin/true',
+                      'env': {'QA_VALUE': 'synthetic-private-state'}}}}})
+    previous.write_text(body)
+    previous.chmod(0o600)
+    node = tmp_path / 'node'
+    node.touch()
+    policy = tmp_path / 'policy.json'
+    policy.write_text('{"schemaVersion":2,"targets":{},"actions":{}}')
+    policy.chmod(0o600)
+    monkeypatch.setattr(config, 'private_answers', lambda path: {'openclawHome': str(home),
+        'operationsPolicyFile': str(policy), 'agentId': 'pixel', 'deploymentName': 'ods-default',
+        'gatewayPort': 19800, 'gatewayExtensions': [], 'operationsLimbEnabled': True})
+
+    def command(args, **kwargs):
+        if args[:2] == ['git', 'clone']:
+            Path(args[-1]).mkdir()
+        elif args[1].endswith('configure.mjs'):
+            root = Path(args[1]).parent.parent
+            (root / '.env').write_text("PIXEL_LIMB_OPERATIONS_ENABLED='1'\n")
+            generated = root / '.generated'
+            (generated / 'workspace').mkdir(parents=True)
+            generated.chmod(0o700)
+            (generated / 'workspace/AGENTS.md').write_text('upstream instructions')
+            (generated / 'ops-policy.json').write_text('{"schemaVersion":2,"targets":{},"actions":{}}')
+        elif args[1].endswith('render-config.mjs'):
+            isolated = Path(kwargs['env']['OPENCLAW_HOME'])
+            assert isolated != home and isolated.parent != home
+            assert isolated.stat().st_mode & 0o777 == 0o700
+            assert (isolated / 'openclaw.json').stat().st_mode & 0o777 == 0o600
+            assert json.loads((isolated / 'openclaw.json').read_text()) == json.loads(body)
+            assert previous.read_text() == body
+            raise RuntimeError('isolated-native-state-seeded')
+        return ''
+
+    monkeypatch.setattr(config.bootstrap, 'command', command)
+    with pytest.raises(RuntimeError, match='isolated-native-state-seeded'):
+        config.prepare(source=tmp_path, ref='a' * 40, answers=tmp_path / 'answers', node=node,
+            sandbox_image='sha256:' + 'b' * 64, destination=tmp_path / 'candidate', runtime=tmp_path,
+            previous_config=previous, previous_state_dir=home)
+    assert previous.read_text() == body
+    assert previous.stat().st_mode & 0o777 == 0o600
+    assert not list(tmp_path.glob('.pixel-config-*'))
+    assert not (tmp_path / 'candidate').exists()
+
+
 @pytest.mark.parametrize('fault', [None, 'runtime', 'plugin-version', 'plugin-id', 'escape'])
 def test_runtime_paths_require_selected_plugin_versions(tmp_path, fault):
     runtime = tmp_path / 'runtime'

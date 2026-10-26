@@ -384,6 +384,56 @@ class RenderCrossCheckTests(unittest.TestCase):
         disconnected = self.render(None)
         self.assert_planned(disconnected, self.render(None), None, None)
 
+    def test_native_mcp_permissions_survive_render_and_connection_changes(self):
+        initial, _ = self.render(None)
+        native = {"servers": {"qa-project": {"transport": "stdio", "command": "/usr/bin/true",
+                  "args": ["synthetic-only"], "env": {"QA_VALUE": "private-fixture"},
+                  "toolFilter": {"include": ["project_status"], "exclude": ["project_delete"]}}}}
+        initial["mcp"] = native
+        initial["tools"]["alsoAllow"].append("qa-project__project_status")
+        initial["tools"]["deny"] = ["qa-project__project_delete"]
+        initial["tools"]["byProvider"] = {"restricted-provider": {"allow": ["read"]}}
+        initial["tools"]["sandbox"]["tools"]["allow"].append("qa-project__project_status")
+        initial["tools"]["sandbox"]["tools"]["deny"] = ["qa-project__project_delete"]
+        initial["agents"]["list"][0]["tools"]["alsoAllow"] = ["qa-project__project_status"]
+        live = self.home / ".openclaw/openclaw.json"
+        live.write_text(json.dumps(initial))
+        live.chmod(0o600)
+        previous = self.render(None)
+        for capabilities, chosen in ((READ_ONLY, ()), (READ_ONLY, ("memory-wiki",)),
+                                     (None, ("memory-wiki",)), (None, ())):
+            with self.subTest(capabilities=capabilities, chosen=chosen):
+                current = self.render(self.record(capabilities, chosen=chosen))
+                config = current[0]
+                self.assertEqual(config["mcp"], native)
+                self.assertIn("qa-project__project_status", config["tools"]["sandbox"]["tools"]["allow"])
+                self.assertEqual(config["tools"]["sandbox"]["tools"]["deny"], ["qa-project__project_delete"])
+                self.assertEqual(config["tools"]["deny"], ["qa-project__project_delete"])
+                self.assertEqual(config["tools"]["byProvider"], initial["tools"]["byProvider"])
+                self.assertEqual(config["agents"]["list"][0]["tools"]["alsoAllow"], ["qa-project__project_status"])
+                self.assert_planned(previous, current, capabilities, "America/Chicago", chosen)
+                previous = current
+
+    def test_native_registry_alone_never_grants_mcp_and_restrictive_policy_is_retained(self):
+        initial, _ = self.render(None)
+        initial["mcp"] = {"servers": {"disabled-project": {"enabled": False,
+                          "transport": "stdio", "command": "/usr/bin/true"}}}
+        live = self.home / ".openclaw/openclaw.json"
+        live.write_text(json.dumps(initial))
+        live.chmod(0o600)
+        unchanged, _ = self.render(None)
+        self.assertEqual(unchanged["mcp"], initial["mcp"])
+        self.assertEqual(unchanged["tools"], initial["tools"])
+        self.assertEqual(unchanged["agents"]["list"][0]["tools"], initial["agents"]["list"][0]["tools"])
+        # A restrictive list with no MCP names must not be discarded and turn
+        # into the wider coding profile on the next render.
+        unchanged["tools"]["allow"] = ["read"]
+        unchanged["agents"]["list"][0]["tools"]["allow"] = ["read"]
+        live.write_text(json.dumps(unchanged))
+        config, _ = self.render(None)
+        self.assertEqual(config["tools"]["allow"], ["read"])
+        self.assertEqual(config["agents"]["list"][0]["tools"]["allow"], ["read"])
+
 
 if __name__ == "__main__":
     unittest.main()
