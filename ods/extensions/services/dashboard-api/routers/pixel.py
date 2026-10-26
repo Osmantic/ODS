@@ -811,9 +811,12 @@ async def _status_projection() -> tuple[dict[str, object], bool]:
             if inference_issue:
                 # A stopped runtime the host owns gets Models' Resume model.
                 stopped = await _owned_runtime_unloaded(_RUNTIME_HINT_SECONDS) is True
+                # A health probe that misses its 3 s while the runtime generates
+                # a large step (RTX Spark, 2026-10-25) is not proof it stopped:
+                # only a runtime the host proves stopped answers at once.
                 return {**activation_metadata, "available": False, "model": None, "state": "model_unavailable",
                         "detail": _RUNTIME_STOPPED_DETAIL if stopped else inference_issue,
-                        **_recovery_field("resume-model" if stopped else None)}, False
+                        **_recovery_field("resume-model" if stopped else None)}, not stopped
         runtime = _active_runtime_projection(host_status)
         if available and runtime is None:
             runtime = await _verified_external_host_runtime(host_status)

@@ -8,7 +8,7 @@ import json
 import os
 import pathlib
 import sys
-from unittest.mock import ANY, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -379,6 +379,27 @@ async def test_status_rides_out_a_transient_edge_failure_but_not_a_definitive_on
         assert (await pixel.pixel_status())["available"] is False
     with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(FakeResponse(status=502))):
         assert (await pixel.pixel_status())["available"] is False
+
+
+@pytest.mark.asyncio
+async def test_status_rides_out_a_slow_runtime_probe_but_not_a_stopped_runtime(monkeypatch):
+    # RTX Spark: the host runtime's health probe missed its 3 s while the model
+    # wrote a large page, and Portal told the owner to restore the model mid-build.
+    listing = FakeResponse(chunks=[json.dumps({"data": [{"id": "portal/default"}]}).encode()])
+    with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(listing)):
+        available = await pixel.pixel_status()
+    assert available["available"] is True
+    issue = "The local model runtime is unavailable. Restore it in Models before sending another task."
+    monkeypatch.setattr(pixel, "_local_inference_issue", AsyncMock(return_value=issue))
+    monkeypatch.setattr(pixel, "_owned_runtime_unloaded", AsyncMock(return_value=None))
+    with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(listing)):
+        assert await pixel.pixel_status() == available
+    # A runtime the host proves stopped is an answer: Resume model shows at once.
+    monkeypatch.setattr(pixel, "_owned_runtime_unloaded", AsyncMock(return_value=True))
+    with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(listing)):
+        stopped = await pixel.pixel_status()
+    assert stopped["available"] is False and stopped["state"] == "model_unavailable"
+    assert stopped["recovery"] == "resume-model"
 
 
 @pytest.mark.asyncio
