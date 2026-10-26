@@ -1,0 +1,17 @@
+# ODS fork overlay: Codex CLI sends its system prompt as leading role=developer
+# Responses input items (two of them). The Qwen3.x llama.cpp chat template
+# hard-errors on a second leading system/developer message ("System message
+# must be at the beginning"), so every Codex request 500s at the gateway.
+# ods_codex_chat_patch.py merges the consecutive leading system/developer
+# messages in both LiteLLM paths: the native Responses forward (the OpenAI-
+# compatible backends answer /v1/responses directly, so the items reach the
+# template untouched) and the Responses -> chat conversion. Gated on the
+# pinned image digest; no-op for normal single-system requests.
+FROM ghcr.io/berriai/litellm:v1.90.7@sha256:917d480b7e4a7e61822e54f70be5c7cf753fb0b7328cbf6467612652ca748075
+
+COPY ods_codex_chat_patch.py /tmp/ods_codex_chat_patch.py
+RUN python /tmp/ods_codex_chat_patch.py && \
+    python -m py_compile /app/.venv/lib/python3.13/site-packages/litellm/llms/openai/openai.py && \
+    python -m py_compile /app/.venv/lib/python3.13/site-packages/litellm/llms/custom_httpx/llm_http_handler.py && \
+    python -c "import litellm.llms.openai.openai as a, litellm.llms.custom_httpx.llm_http_handler as b; assert hasattr(a, 'ods_normalize_chat_messages') and hasattr(b, 'ods_normalize_responses_input')" && \
+    rm /tmp/ods_codex_chat_patch.py
