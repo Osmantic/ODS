@@ -7,6 +7,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Portal can read your Google Calendar and Gmail. Connect them in Settings,
+  Connected apps: a wizard walks you through creating your own Google sign-in
+  app, and Portal then answers from your events and from summaries of your
+  Inbox and Sent mail (180 days), never attachments. The Google sign-in stays in
+  ODS's Source Broker, in its own system account on this machine; Portal reads
+  only the summaries. When Portal runs on a cloud model, that model's provider
+  sees what Portal reads. Disconnect removes ODS's access at Google and deletes
+  everything it saved; uninstalling ODS does the same. Linux and Windows (WSL2)
+  only for now. Set `PORTAL_CONNECTED_APPS_ENABLED=false` to hide it. See
+  `docs/pixel/CONNECTED-APPS.md`.
 - Portal's workspace includes one finished example project, Elf of Doom, a
   small browser game Portal wrote in ODS from natural-language prompts. The
   installer adds `Playground/elf-of-doom` whenever that name is absent and the

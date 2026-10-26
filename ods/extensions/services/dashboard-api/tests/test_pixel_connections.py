@@ -50,8 +50,9 @@ def host_reply(tmp_path, *, connected=True):
 
 
 def flag(monkeypatch, value):
-    monkeypatch.setattr(api, "read_live_env_value",
-                        lambda key: value if key == "PORTAL_CONNECTED_APPS_ENABLED" else "")
+    """The owner's PORTAL_CONNECTED_APPS_ENABLED; None leaves it unset."""
+    monkeypatch.setattr(api, "read_live_env_value", lambda key, default="":
+                        default if value is None or key != "PORTAL_CONNECTED_APPS_ENABLED" else value)
 
 
 @pytest.fixture
@@ -81,8 +82,8 @@ def test_main_registers_the_connections_route(test_client):
     assert test_client.get("/api/pixel/connections/enabled").status_code == 401
 
 
-@pytest.mark.parametrize("value,enabled", [("true", True), (" TRUE ", True), ("false", False), ("", False),
-                                           ("yes", False)])
+@pytest.mark.parametrize("value,enabled", [(None, True), ("true", True), (" TRUE ", True), ("false", False),
+                                           (" False ", False), ("", True)])
 def test_settings_learns_whether_connected_apps_are_on_without_asking_the_runtime(client, mock_request, monkeypatch,
                                                                                    value, enabled):
     flag(monkeypatch, value)
@@ -94,7 +95,7 @@ def test_settings_learns_whether_connected_apps_are_on_without_asking_the_runtim
     mock_request.assert_not_called()
 
 
-def test_status_stays_hidden_until_connected_apps_are_turned_on(client, mock_request, monkeypatch):
+def test_status_is_hidden_while_the_owner_has_connected_apps_off(client, mock_request, monkeypatch):
     flag(monkeypatch, "false")
     assert client.get("/api/pixel/connections", headers=AUTH).status_code == 404
     mock_request.assert_not_called()
@@ -194,9 +195,9 @@ def test_main_registers_the_action_routes(test_client):
 
 
 @pytest.mark.parametrize("action,body,host,reply,timeout", ACTIONS)
-def test_actions_stay_hidden_until_connected_apps_are_turned_on(client, mock_request, monkeypatch,
+def test_actions_are_hidden_while_the_owner_has_connected_apps_off(client, mock_request, monkeypatch,
                                                                 action, body, host, reply, timeout):
-    flag(monkeypatch, "")
+    flag(monkeypatch, "false")
     response = client.post(f"/api/pixel/connections/google/{action}", json=body, headers=AUTH)
     assert response.status_code == 404
     mock_request.assert_not_called()

@@ -163,7 +163,8 @@ def _projection(raw) -> dict:
 
 
 def _connected_apps_enabled() -> bool:
-    return read_live_env_value("PORTAL_CONNECTED_APPS_ENABLED").strip().lower() == "true"
+    # On unless the owner set it to false.
+    return read_live_env_value("PORTAL_CONNECTED_APPS_ENABLED", "true").strip().lower() != "false"
 
 
 def _enabled() -> None:

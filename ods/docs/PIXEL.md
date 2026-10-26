@@ -452,8 +452,8 @@ asks the owner to reconnect. A record that fails validation also leaves them off
 it never fails an install. Without the file, the onboarding contract is the same
 as before connected apps existed.
 
-Connecting happens in Settings, Connected apps, while `PORTAL_CONNECTED_APPS_ENABLED`
-is `true` (it is `false` by default). The owner brings their own Google Cloud
+Connecting happens in Settings, Connected apps ([owner guide](pixel/CONNECTED-APPS.md)).
+`PORTAL_CONNECTED_APPS_ENABLED=false` hides that section. The owner brings their own Google Cloud
 project: a Desktop-app OAuth client whose JSON file they upload. The agent's root
 access coordinator does the rest, without running owner code as root. Each install
 copies the exact Pixel broker, its systemd units and its environment template
