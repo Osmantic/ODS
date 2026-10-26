@@ -49,12 +49,18 @@ def host_reply(tmp_path, *, connected=True):
     return dict(status.validate_public(value), catalog=catalog.public_catalog())
 
 
+def flag(monkeypatch, value):
+    monkeypatch.setattr(api, "read_live_env_value",
+                        lambda key: value if key == "PORTAL_CONNECTED_APPS_ENABLED" else "")
+
+
 @pytest.fixture
 def client(monkeypatch):
     app = FastAPI()
     app.include_router(api.router)
     import security
     monkeypatch.setattr(security, "DASHBOARD_API_KEY", "test-key-12345")
+    flag(monkeypatch, "true")
     with TestClient(app) as test_client:
         yield test_client
 
@@ -72,6 +78,26 @@ def test_status_requires_the_owner(client, mock_request):
 
 def test_main_registers_the_connections_route(test_client):
     assert test_client.get("/api/pixel/connections").status_code == 401
+    assert test_client.get("/api/pixel/connections/enabled").status_code == 401
+
+
+@pytest.mark.parametrize("value,enabled", [("true", True), (" TRUE ", True), ("false", False), ("", False),
+                                           ("yes", False)])
+def test_settings_learns_whether_connected_apps_are_on_without_asking_the_runtime(client, mock_request, monkeypatch,
+                                                                                   value, enabled):
+    flag(monkeypatch, value)
+    assert client.get("/api/pixel/connections/enabled").status_code == 401
+    response = client.get("/api/pixel/connections/enabled", headers=AUTH)
+    assert response.status_code == 200
+    assert response.json() == {"enabled": enabled}
+    assert response.headers["cache-control"] == "no-store"
+    mock_request.assert_not_called()
+
+
+def test_status_stays_hidden_until_connected_apps_are_turned_on(client, mock_request, monkeypatch):
+    flag(monkeypatch, "false")
+    assert client.get("/api/pixel/connections", headers=AUTH).status_code == 404
+    mock_request.assert_not_called()
 
 
 def test_a_connected_account_is_reported_exactly(client, mock_request, tmp_path):
@@ -163,11 +189,6 @@ ACTIONS = [
 ]
 
 
-@pytest.fixture
-def enabled(monkeypatch):
-    monkeypatch.setattr(api, "read_live_env_value", lambda key: "true" if key == "PORTAL_CONNECTED_APPS_ENABLED" else "")
-
-
 def test_main_registers_the_action_routes(test_client):
     assert test_client.post("/api/pixel/connections/google/sync", json={}).status_code == 401
 
@@ -175,14 +196,14 @@ def test_main_registers_the_action_routes(test_client):
 @pytest.mark.parametrize("action,body,host,reply,timeout", ACTIONS)
 def test_actions_stay_hidden_until_connected_apps_are_turned_on(client, mock_request, monkeypatch,
                                                                 action, body, host, reply, timeout):
-    monkeypatch.setattr(api, "read_live_env_value", lambda key: "")
+    flag(monkeypatch, "")
     response = client.post(f"/api/pixel/connections/google/{action}", json=body, headers=AUTH)
     assert response.status_code == 404
     mock_request.assert_not_called()
 
 
 @pytest.mark.parametrize("action,body,host,reply,timeout", ACTIONS)
-def test_each_action_reaches_its_host_route_with_exactly_the_owners_choices(client, mock_request, enabled,
+def test_each_action_reaches_its_host_route_with_exactly_the_owners_choices(client, mock_request,
                                                                             action, body, host, reply, timeout):
     assert client.post(f"/api/pixel/connections/google/{action}", json=body).status_code == 401
     mock_request.return_value = copy.deepcopy(reply)
@@ -205,7 +226,7 @@ def test_each_action_reaches_its_host_route_with_exactly_the_owners_choices(clie
     (AgentUnavailable("private-sentinel"), 503, "connections-unavailable", True),
     (AgentProtocolError("private-sentinel"), 502, "connection-change-unconfirmed", True),
 ])
-def test_refusals_say_what_happened_and_what_to_do(client, mock_request, enabled, failure, status_code, code,
+def test_refusals_say_what_happened_and_what_to_do(client, mock_request, failure, status_code, code,
                                                    needs_help):
     mock_request.side_effect = failure
     response = client.post("/api/pixel/connections/google/finish", json={}, headers=AUTH)
@@ -229,7 +250,7 @@ def test_refusals_say_what_happened_and_what_to_do(client, mock_request, enabled
     ("disconnect", {"connector": "google"}),
     ("finish", {"force": True}),
 ])
-def test_requests_outside_the_contract_never_reach_the_host(client, mock_request, enabled, action, body):
+def test_requests_outside_the_contract_never_reach_the_host(client, mock_request, action, body):
     response = client.post(f"/api/pixel/connections/google/{action}", json=body, headers=AUTH)
     assert response.status_code == 422
     mock_request.assert_not_called()
@@ -245,7 +266,7 @@ def test_requests_outside_the_contract_never_reach_the_host(client, mock_request
     ("disconnect", {}, {"outcome": "disconnected"}),
     ("sync", {}, {"outcome": "started", "revoked": False}),
 ])
-def test_a_reply_of_any_other_shape_is_refused_without_echoing_it(client, mock_request, enabled, action, body, reply):
+def test_a_reply_of_any_other_shape_is_refused_without_echoing_it(client, mock_request, action, body, reply):
     mock_request.return_value = reply
     response = client.post(f"/api/pixel/connections/google/{action}", json=body, headers=AUTH)
     assert response.status_code == 502
