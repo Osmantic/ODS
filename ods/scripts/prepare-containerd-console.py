@@ -50,7 +50,7 @@ def _run_systemctl_show():
         )
     except FileNotFoundError:
         return None
-    props = {}
+    props: dict[str, list[str]] = {}
     for line in proc.stdout.splitlines():
         if "=" not in line:
             continue
