@@ -249,11 +249,12 @@ it('keeps one working Continue in this chat while activity stays unknown, and fr
   expect(calls('/api/pixel/chat/cancel')).toHaveLength(2)
   expect(screen.getByText(STOPPED)).toBeVisible()
   expect(screen.queryByText(NO_REPLY_NOTICE)).toBeNull()
-  expect(stored().messages.at(-1)).toMatchObject({status:'stopped',content:`${PARTIAL}\n\n---\n\n_${STOPPED}_`})
   expect(field()).toBeEnabled()
   expect(field()).toHaveValue('checking in')
   expect(screen.getByTitle('Send')).toBeEnabled()
+  // The conversation is saved after it renders; wait for that save.
   await waitFor(()=>expect(stored()).toMatchObject({interrupted:false,requestId:null}))
+  await waitFor(()=>expect(stored().messages.at(-1)).toMatchObject({status:'stopped',content:`${PARTIAL}\n\n---\n\n_${STOPPED}_`}))
   server.streams.push(()=>answer('I am here.'))
   fireEvent.click(screen.getByTitle('Send'))
   expect(await screen.findByText('I am here.')).toBeVisible()
