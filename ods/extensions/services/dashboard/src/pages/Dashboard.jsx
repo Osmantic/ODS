@@ -646,7 +646,7 @@ function buildChartPoints(values, maxValue) {
 }
 
 function throughputLabel(inference, stale = false) {
-  if (!Number.isFinite(inference?.tokensPerSecond)) return 'Telemetry unavailable'
+  if (!Number.isFinite(inference?.tokensPerSecond)) return 'Not reported'
   if (stale || inference?.throughputState === 'unavailable') return 'Last known rate · telemetry unavailable'
   if (inference?.throughputMode === 'cloud_request_average') return 'Last cloud request · includes latency'
   if (inference?.throughputState === 'retained') return 'Last run'
@@ -906,13 +906,18 @@ export default function Dashboard({ status, loading, compact = false }) {
     })
   }
 
-  systemMetrics.push(
-    {
+  // The API keeps a model's last measured rate. Until it has one (some native
+  // engines never report it), the tile is left out rather than "unavailable".
+  if (Number.isFinite(status?.inference?.tokensPerSecond)) {
+    systemMetrics.push({
       icon: Zap,
       label: 'Tokens / second',
-      value: Number.isFinite(status?.inference?.tokensPerSecond) ? `${status.inference.tokensPerSecond.toFixed(1)} tok/s` : '—',
-      subvalue: throughputLabel(status?.inference,status?.clientTelemetry?.stale),
-    },
+      value: `${status.inference.tokensPerSecond.toFixed(1)} tok/s`,
+      subvalue: throughputLabel(status.inference,status?.clientTelemetry?.stale),
+    })
+  }
+
+  systemMetrics.push(
     {
       icon: Brackets,
       label: 'Context',
@@ -1189,7 +1194,7 @@ const SystemOverviewPanel = memo(function SystemOverviewPanel({ tokensPerSecond,
             ? 'Latest Completion'
             : tokenCountMode === 'cumulative'
               ? 'Accumulated Output'
-              : 'Waiting for telemetry'}
+              : 'Not reported'}
           values={generated.values}
           timestamps={generated.timestamps}
           range={range}
@@ -1263,9 +1268,9 @@ const OverviewChart = memo(function OverviewChart({
           </div>
         </div>
 
-        {delta == null ? (
+        {delta == null ? currentDisplay !== '—' && (
           <div className="mb-2 whitespace-nowrap text-xs font-medium text-theme-text-muted">
-            {currentDisplay === '—' ? 'telemetry unavailable' : 'collecting samples'}
+            collecting samples
           </div>
         ) : (
           <div className={`mb-2 whitespace-nowrap text-xs font-semibold ${deltaTone}`}>
@@ -1344,7 +1349,7 @@ const OverviewChart = memo(function OverviewChart({
             fontSize="11"
             fontWeight="600"
           >
-            {currentDisplay === '—' ? 'telemetry unavailable' : 'collecting telemetry'}
+            {currentDisplay === '—' ? 'No data' : 'collecting telemetry'}
           </text>
         )}
 
