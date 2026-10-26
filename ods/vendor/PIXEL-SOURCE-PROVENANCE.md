@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`0684f0791dcb56f9473d5fe4b06f9f22f028f74a`, and its SHA-256 is
-`481a29f9a89bf0354dc78ea13b1b9e813ab5d030922cdfd37a9b49217e1fcf6a`.
+`cb3fe963dec251e2d2ae7639d5424bda2ddbfd85`, and its SHA-256 is
+`fa60234e95c6467bc911376a5c8be634291cc296b9d03af0e3afe0fb000ee8b1`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -262,8 +262,8 @@ same `openclaw.json`. `pixel/ODS-QUALIFICATION-4.3.34.md` records the automated
 evidence and the installed upgrade qualification still required. The version
 advance preserves the strictly increasing source-upgrade gate.
 
-The public vendor tree is `03a4d4c4e03f059fb809fe4a2c7bc9114c34fcc7` at ODS source
-commit `bc7e056d403c29f0db2b2e1d878ea702c98ab988`. Two independent empty bare repositories using the alternates
+The public vendor tree is `f513634dbcd7388973fef07b20d8a003dd9134d9` at ODS source
+commit `2c922a0ae6cbc8736c0e8c641970dfb5bbed9b2d`. Two independent empty bare repositories using the alternates
 procedure above produced byte-identical bundles with the retained public
 synthetic author, timestamp and root message (Git 2.53 on Windows,
 `pack.threads=1`); the same procedure first reproduced the 4.3.33 commit
@@ -275,3 +275,12 @@ prior 4.3.33 bundle commit `3d2acd8f22a53d28b36b7e6ee017bb3143dc428b` and digest
 identities in Git and in existing clients' retained receipts. No release
 signature was generated and no private source history or signing credentials
 were used.
+
+The candidate was rebuilt before publication with independent-review fixes: a
+disconnected sign-in clears the last snapshot, Calendar busy checks match overlapping
+events, revocation always deletes the stored sign-in, restore refreshes before it
+verifies, `--confirm` keeps a newer sign-in already in custody, and the control UI chat
+inherits the new flags. The functional source checkpoint is
+`12225ccb390c84f4a08e60cfc25e966e6e45f08f`. The same procedure produced byte-identical
+bundles twice. This replaces the unpublished earlier candidate commit
+`0684f0791dcb56f9473d5fe4b06f9f22f028f74a`.
