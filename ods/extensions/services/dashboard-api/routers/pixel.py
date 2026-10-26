@@ -366,7 +366,7 @@ async def pixel_chat_result(body: ChatResultRequest, owner: str = Depends(verify
         # the request identity while its exact cancellation is still pending.
         return {"state": "active", "events": ""}
     if row["state"] == "unresolved":
-        activity = await pixel_chat_activity(ChatCancelRequest(chat_id=body.chat_id))
+        activity = await pixel_chat_activity(ChatCancelRequest(chat_id=body.chat_id), owner)
         if activity["state"] == "terminal":
             store.finish(key, "interrupted")
             row = store.get(key)
@@ -977,34 +977,114 @@ async def pixel_chat_cancel(body: ChatCancelRequest, owner: str = Depends(verify
         finally:
             _result_abort_ack.discard(identity)
             _result_stops.discard(identity[:2])
-    if isinstance(owner, str) and _result_store is not None and _result_store.has_pending((owner_namespace(owner), body.chat_id)):
-        return {"aborted": False}
+    if isinstance(owner, str):
+        conversation = (owner_namespace(owner), body.chat_id)
+        # A restarted API process has not opened the store yet, but receipts
+        # its predecessor left unfinished still hold this chat.
+        pending = _chat_results().pending_attempts(conversation)
+        if pending:
+            # A chat-level request ("Continue in this chat") never stops a turn
+            # this process is still streaming; that turn's own Stop names it.
+            # An attempt no producer owns any more is resolved by its exact ID.
+            if _owns_live_work(conversation):
+                return {"aborted": False}
+            return await pixel_chat_cancel(ChatCancelRequest(chat_id=body.chat_id, request_id=pending[0][2]), owner)
     return {"aborted": await _cancel_edge_run(edge_url, key, body.chat_id)}
 
 
-@router.post("/chat/activity", dependencies=[Depends(verify_api_key)])
-async def pixel_chat_activity(body: ChatCancelRequest) -> dict[str, str]:
-    """One authenticated chat lookup; global activity never supplies its state."""
-    config = _pixel_config()
-    if config is None:
-        return {"state": "unknown"}
-    edge_url, key = config
+def _owns_live_work(conversation) -> bool:
+    """True while this process streams, prepares or stops a turn of this chat."""
+    return (conversation in _result_stops
+            or any(identity[:2] == conversation for identity in _result_preflights)
+            or any(identity[:2] == conversation and not task.done() for identity, task in _result_tasks.items()))
+
+
+async def _edge_chat_activity(edge_url: str, key: str, chat_id: str) -> str | None:
+    """The edge's exact view of one chat, or None when it could not be read."""
     try:
         timeout = httpx.Timeout(connect=2.0, read=5.0, write=2.0, pool=2.0)
         async with httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=False) as client:
             async with client.stream("POST", f"{edge_url}/v1/chat/activity",
-                                     json={"user": body.chat_id},
+                                     json={"user": chat_id},
                                      headers=_edge_headers(key, accept="application/json")) as response:
                 if response.status_code != 200 or not response.headers.get("content-type", "").lower().startswith("application/json"):
-                    return {"state": "unknown"}
+                    return None
                 raw = await _bounded_response_bytes(response, 1024)
         parsed = json.loads(raw)
         if (isinstance(parsed, dict) and set(parsed) == {"state"}
                 and isinstance(parsed["state"], str) and parsed["state"] in {"active", "terminal", "unknown"}):
-            return {"state": parsed["state"]}
+            return parsed["state"]
     except (httpx.HTTPError, asyncio.TimeoutError, ValueError, TypeError):
         pass
-    return {"state": "unknown"}
+    return None
+
+
+async def _settle_edge_chat(edge_url: str, key: str, chat_id: str) -> str | None:
+    """Ask the ingress, through the edge, to settle a chat it proves idle.
+
+    "settled" means no run of this chat can still be alive and any turn a
+    restart cut off is recorded as interrupted; "active" means work may still
+    run. Nothing is ever stopped. None means it could not be confirmed, for
+    example while Portal is still restarting or on an older edge or ingress.
+    """
+    try:
+        timeout = httpx.Timeout(connect=2.0, read=10.0, write=2.0, pool=2.0)
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=False) as client:
+            async with client.stream("POST", f"{edge_url}/v1/chat/settle",
+                                     json={"user": chat_id},
+                                     headers=_edge_headers(key, accept="application/json")) as response:
+                if response.status_code != 200 or not response.headers.get("content-type", "").lower().startswith("application/json"):
+                    return None
+                raw = await _bounded_response_bytes(response, 1024)
+        parsed = json.loads(raw)
+        if (isinstance(parsed, dict) and set(parsed) == {"state"}
+                and isinstance(parsed["state"], str) and parsed["state"] in {"settled", "active"}):
+            return parsed["state"]
+    except (httpx.HTTPError, asyncio.TimeoutError, ValueError, TypeError):
+        pass
+    return None
+
+
+@router.post("/chat/activity")
+async def pixel_chat_activity(body: ChatCancelRequest, owner: str = Depends(verify_api_key)) -> dict[str, str]:
+    """One authenticated chat lookup; global activity never supplies its state.
+
+    A turn this process still streams is active. Otherwise, when no stream of
+    this chat passes through the edge, the host ingress is asked to settle the
+    chat: under its history lock it proves the native session idle before it
+    records a turn that a restart cut off as interrupted, and it never stops a
+    run. Only that proof turns the chat terminal here, and it also releases
+    receipts no producer owns any more, so the chat can take its next message.
+    """
+    config = _pixel_config()
+    if config is None:
+        return {"state": "unknown"}
+    edge_url, key = config
+    conversation = (owner_namespace(owner), body.chat_id) if isinstance(owner, str) else None
+    if conversation is not None and _owns_live_work(conversation):
+        return {"state": "active"}
+    state = await _edge_chat_activity(edge_url, key, body.chat_id)
+    if state is None:
+        return {"state": "unknown"}
+    if state == "active" or conversation is None:
+        return {"state": state}
+    # Fence this process's own next attempt so it cannot race the history lock.
+    _result_stops.add(conversation)
+    try:
+        settled = await _settle_edge_chat(edge_url, key, body.chat_id)
+        if settled == "settled":
+            store = _chat_results()
+            for identity in store.pending_attempts(conversation):
+                row = _result_state(store, identity)
+                if row is not None and row["state"] == "unresolved":
+                    # No producer owns this receipt and the ingress proved the
+                    # chat idle. Keep every saved chunk; never call it complete.
+                    store.finish(identity, "interrupted")
+    finally:
+        _result_stops.discard(conversation)
+    if settled == "settled":
+        return {"state": "terminal"}
+    return {"state": "active" if settled == "active" else state}
 
 
 _EXAMPLE_PROJECT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")

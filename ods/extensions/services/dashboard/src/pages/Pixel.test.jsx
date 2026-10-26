@@ -14,6 +14,7 @@ const previewManifests=new Map()
 // The repository's base ESLint profile does not mark JSX identifiers as uses.
 // eslint-disable-next-line no-unused-vars
 import Pixel, {
+  NO_REPLY_NOTICE,
   OperationsApprovalCard,
   formatElapsed,
   isCleanContextRecoveryFrame,
@@ -28,6 +29,8 @@ const response = (body, status = 200) => ({
   status,
   json: async () => body,
 })
+// The calm line a reply ends with once the server proved its turn is over.
+const CUT_OFF = (_content, node) => node?.tagName === 'EM' && node.textContent === NO_REPLY_NOTICE
 
 it('resolves old cards to the latest verified version of their own project',()=>{
   const publication=(letter,directory)=>{
@@ -2044,10 +2047,11 @@ describe('Pixel', () => {
     await act(async () => {})
     for (let reload = 0; reload < 2; reload += 1) {
       const restored = render(<Pixel />)
-      await screen.findByText('Activity unknown')
+      await screen.findByText('Portal can’t confirm your last request has finished.')
+      expect(screen.getByRole('button', { name: 'Continue in this chat' })).toBeEnabled()
       expect(screen.getByText('Create a report, then verify it.')).toBeInTheDocument()
       expect(screen.getByText('Created report.md; checking its contents.')).toBeInTheDocument()
-      expect(screen.getByText(/Completion was not confirmed/)).toBeInTheDocument()
+      expect(screen.queryByText(/Activity unknown|Completion was not confirmed/)).not.toBeInTheDocument()
       expect(screen.queryByText(/Stopped by you/)).not.toBeInTheDocument()
       expect(screen.queryByTitle('Stop')).not.toBeInTheDocument()
       expect(globalThis.fetch.mock.calls.filter(([url]) => url === '/api/pixel/chat/stream')).toHaveLength(1)
@@ -2202,9 +2206,10 @@ describe('Pixel', () => {
     expect(signals).toHaveLength(1)
     await act(async () => { await vi.advanceTimersByTimeAsync(15000) })
     expect(signals[0].aborted).toBe(true)
-    expect(screen.getByRole('button',{name:'Check activity again'})).toBeEnabled()
+    expect(screen.getByRole('button',{name:'Continue in this chat'})).toBeEnabled()
     expect(screen.getByText('Saved partial result')).toBeVisible()
-    await act(async () => { fireEvent.click(screen.getByRole('button',{name:'Check activity again'})) })
+    // The next check starts by itself, with a fresh deadline.
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
     expect(signals).toHaveLength(2)
     expect(signals[1]).not.toBe(signals[0])
     expect(screen.getByPlaceholderText('Message Portal...')).toBeEnabled()
@@ -2230,12 +2235,17 @@ describe('Pixel', () => {
     expect(screen.getByRole('button', {name:'New chat'})).toHaveAttribute('aria-disabled', 'true')
     expect(screen.getByRole('button', {name:'New chat'})).toHaveAttribute('title', expect.stringContaining('Portal is finishing the current task'))
     expect(screen.getByText('Saved partial result')).toBeInTheDocument()
+    expect(screen.getByText('Portal is still working on your last request. Its answer will appear here when it’s done. You can stop it.')).toBeVisible()
     state = 'terminal'
-    await screen.findByText(/previous request is no longer active/, {}, { timeout: 3000 })
+    // The server proved the turn is over: the reply settles calmly, it is
+    // never claimed as the owner's Stop, and the composer is free again.
+    await screen.findByText(CUT_OFF, {}, { timeout: 3000 })
     expect(screen.queryByTitle('Stop')).not.toBeInTheDocument()
-    expect(screen.queryByText('Response stopped')).not.toBeInTheDocument()
-    expect(screen.getByText(/final response was not recovered/)).toBeInTheDocument()
+    expect(screen.queryByText(/Stopped by you|no longer active|was not recovered/)).not.toBeInTheDocument()
     expect(screen.getByText('Saved partial result')).toBeInTheDocument()
+    expect(screen.queryByRole('status', { name: 'Last message' })).not.toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText('Message Portal...'), { target: { value: 'What did you change?' } })
+    expect(screen.getByTitle('Send')).toBeEnabled()
     expect(globalThis.fetch.mock.calls.some(([url]) => url === '/api/pixel/chat/stream')).toBe(false)
   })
 
@@ -2249,7 +2259,7 @@ describe('Pixel', () => {
       return response({state:chat_id === 'second_interrupted' ? 'active' : 'terminal'})
     })
     render(<Pixel />)
-    await screen.findByText(/previous request is no longer active/)
+    await screen.findByText(CUT_OFF)
     act(()=>window.dispatchEvent(new CustomEvent('ods:pixel-select-conversation',{detail:'second_interrupted'})))
     await screen.findByText('Working in this chat')
     expect(fetch).toHaveBeenCalledWith('/api/pixel/chat/activity',expect.objectContaining({body:JSON.stringify({chat_id:'second_interrupted'})}))
@@ -2270,11 +2280,11 @@ describe('Pixel', () => {
       return response({ aborted })
     })
     render(<Pixel />)
-    await screen.findByText('Activity unknown')
+    await screen.findByText('Portal can’t confirm your last request has finished.')
     expect(screen.queryByTitle('Stop')).not.toBeInTheDocument()
     state = 'active'
-    fireEvent.click(screen.getByText('Check activity again'))
-    await screen.findByText('Working in this chat')
+    // The next check, on a growing interval, finds the work still running.
+    await screen.findByText('Working in this chat', {}, { timeout: 3000 })
     expect(screen.getByRole('textbox')).toBeDisabled()
     fireEvent.click(screen.getByTitle('Stop'))
     await screen.findByRole('alert')
@@ -2301,9 +2311,11 @@ describe('Pixel', () => {
     await screen.findByTitle('Stop')
     fireEvent.click(screen.getByTitle('Stop'))
     state = 'terminal'
-    await screen.findByText(/previous request is no longer active/, {}, { timeout: 3000 })
+    await screen.findByText(CUT_OFF, {}, { timeout: 3000 })
     await act(async () => { finishCancel(response({ aborted: true })) })
-    expect(screen.queryByText('Response stopped')).not.toBeInTheDocument()
+    // The late acknowledgement never rewrites the settled reply as a Stop.
+    expect(screen.queryByText(/Stopped by you/)).not.toBeInTheDocument()
+    expect(screen.getByText(CUT_OFF)).toBeInTheDocument()
     expect(screen.getByText('Saved partial result')).toBeInTheDocument()
     expect(screen.queryByTitle('Stop')).not.toBeInTheDocument()
   })
@@ -2320,15 +2332,15 @@ describe('Pixel', () => {
       return response({ state: 'active' })
     })
     render(<Pixel />)
-    await screen.findByText('Activity unknown')
-    fireEvent.click(screen.getByText('Check activity again'))
-    await screen.findByText('Activity unknown')
+    await screen.findByText('Portal can’t confirm your last request has finished.')
+    // Neither a failed lookup nor global activity counts as this chat's work.
+    await waitFor(() => expect(calls).toBe(2), { timeout: 3000 })
+    expect(screen.getByText('Portal can’t confirm your last request has finished.')).toBeVisible()
     expect(screen.queryByTitle('Stop')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByText('Check activity again'))
-    await screen.findByText('Working in this chat')
+    await screen.findByText('Working in this chat', {}, { timeout: 4000 })
   })
 
-  it('restored unknown activity permits an explicit exact-chat stop attempt without replay or false stopped claims', async () => {
+  it('restored unknown activity permits an explicit exact-chat Continue without replay or false stopped claims', async () => {
     saveInterruptedChat()
     let aborted = false
     globalThis.fetch.mockImplementation(async (url, options) => {
@@ -2339,15 +2351,17 @@ describe('Pixel', () => {
       return response({ aborted })
     })
     render(<Pixel />)
-    await screen.findByText('Activity unknown')
+    await screen.findByText('Portal can’t confirm your last request has finished.')
     expect(globalThis.fetch.mock.calls.some(([url]) => url === '/api/pixel/chat/cancel')).toBe(false)
-    fireEvent.click(screen.getByText('Try Stop previous work'))
-    await screen.findByRole('alert')
+    fireEvent.click(screen.getByRole('button', { name: 'Continue in this chat' }))
+    await screen.findByText('Portal could not confirm this chat is free yet. Try again in a moment.')
     expect(screen.queryByText('Response stopped')).not.toBeInTheDocument()
     expect(screen.getByText('Saved partial result')).toBeInTheDocument()
     aborted = true
-    fireEvent.click(screen.getByText('Try Stop previous work'))
-    await screen.findByText('Response stopped')
+    fireEvent.click(screen.getByRole('button', { name: 'Continue in this chat' }))
+    await screen.findByText(CUT_OFF)
+    expect(screen.getByText('Response stopped')).toBeInTheDocument()
+    expect(screen.queryByText(/Stopped by you/)).not.toBeInTheDocument()
     expect(screen.getByText('Saved partial result')).toBeInTheDocument()
     expect(globalThis.fetch.mock.calls.some(([url]) => url === '/api/pixel/chat/stream')).toBe(false)
   })
@@ -2688,7 +2702,7 @@ describe('Pixel', () => {
     expect(screen.queryByText(/private-upstream-secret/)).toBeNull()
   })
 
-  it('marks a stream that closes without DONE as interrupted', async () => {
+  it('keeps a stream that closes without DONE calm and checks it instead of calling it failed', async () => {
     globalThis.fetch.mockResolvedValueOnce(
       response({ available: true, model: 'pixel/default', detail: 'local' })
     )
@@ -2701,8 +2715,12 @@ describe('Pixel', () => {
     fireEvent.change(screen.getByPlaceholderText('Message Portal...'), { target: { value: 'test' } })
     fireEvent.click(screen.getByTitle('Send'))
 
-    await waitFor(() => expect(screen.getByText('Response interrupted.')).toBeInTheDocument())
+    expect(await screen.findByRole('status', { name: 'Last message' })).toBeVisible()
     expect(screen.getByText('Partial answer')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Continue in this chat' })).toBeEnabled()
+    expect(screen.queryByText(/Response interrupted|Connection interrupted|could not be received|Ended early/)).not.toBeInTheDocument()
+    await waitFor(() => expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1'))).toMatchObject({ interrupted: true }))
+    expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).messages.at(-1).status).toBeUndefined()
   })
 
   it('preserves partial answers and ignores late content after an upstream error', async () => {

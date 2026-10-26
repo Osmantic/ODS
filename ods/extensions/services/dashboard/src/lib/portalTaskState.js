@@ -17,10 +17,11 @@ export function newTaskBlockedReason({running, stopping, checking, launching, co
 
 // The composer stays editable while Portal works. Sending waits, and says why
 // instead of doing nothing.
-export function sendBlockedReason({deleted, running, stopping, waiting, ready}) {
+export function sendBlockedReason({deleted, running, stopping, held, waiting, ready}) {
   if (deleted) return ''
   if (stopping) return 'Portal is stopping the current task. Your message is kept here; send it when Portal has stopped.'
   if (running) return 'Portal is finishing the current task. Your message is kept here; send it when Portal is done, or stop the task.'
+  if (held) return 'Choose Continue in this chat first. Your message is kept here.'
   if (waiting || !ready) return 'Portal is not ready for a new message yet. Your message is kept here; send it when Portal is ready.'
   return ''
 }

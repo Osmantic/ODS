@@ -173,5 +173,12 @@ class ChatResultStore:
     def has_pending(self, conversation):
         return self.db.execute("SELECT 1 FROM attempts WHERE owner=? AND chat=? AND state IN ('active','unresolved')", conversation).fetchone() is not None
 
+    def pending_attempts(self, conversation):
+        """Keys of this conversation's unfinished attempts, newest first."""
+        rows = self.db.execute(
+            "SELECT attempt FROM attempts WHERE owner=? AND chat=? AND state IN ('active','unresolved') ORDER BY rowid DESC",
+            conversation).fetchall()
+        return [(*conversation, row["attempt"]) for row in rows]
+
     def chunks(self, key, after=-1):
         return self.db.execute("SELECT sequence,data FROM chunks WHERE owner=? AND chat=? AND attempt=? AND sequence>? ORDER BY sequence", (*key, after)).fetchall()

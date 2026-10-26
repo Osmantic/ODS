@@ -32,7 +32,7 @@ import PixelQuestions from '../components/PixelQuestions'
 import PortalGoalPlan from '../components/PortalGoalPlan'
 import {goalCommand,continueGoal} from '../lib/portalGoal'
 import PortalContextRing from '../components/PortalContextRing'
-import {compactCommand,CONTEXT_REQUEST_ID,historySnapshot,usePortalContext} from '../lib/portalContext'
+import {compactCommand,CONTEXT_REQUEST_ID,CONTINUE_FAILED,historySnapshot,usePortalContext} from '../lib/portalContext'
 import PortalModelSelector from '../components/PortalModelSelector'
 import PortalRuntimeIdentity from '../components/PortalRuntimeIdentity'
 import PortalReadiness from '../components/PortalReadiness'
@@ -143,6 +143,24 @@ const MODEL_SWITCH_DETAIL = 'Model switch in progress; Portal will be ready when
 const CLEAN_CONTEXT_RECOVERY_REASON = 'operations-unavailable-zero-submissions'
 const CLEAN_CONTEXT_RECOVERY_NOTICE = 'The first attempt did not reach the Operations Broker, and the host verified that no work was submitted. Retrying once with a clean context…'
 const CLEAN_CONTEXT_RECOVERY_FAILED = 'Automatic recovery was attempted once, but Portal again did not reach the Operations Broker. The host verified that no Operations work was submitted. Check any other work before continuing; this does not confirm that other tools had no effects.'
+// The last turn's answer did not arrive. Calm wording: nothing failed that the
+// owner must repair, and the composer is free again. A restart that cut the
+// answer off offers to send the message again; a turn that ended without a
+// reply the page can show may already have done its work, so it says so.
+export const RESTART_NOTICE = 'Portal restarted while it was answering. Send your message again.'
+export const NO_REPLY_NOTICE = 'Portal finished working on your last request, but its reply couldn’t be shown here. Your files are saved. Ask Portal what it did, or send your next message.'
+const CHECKING_TURN = 'Checking on your last request…'
+const TURN_STILL_RUNNING = 'Portal is still working on your last request. Its answer will appear here when it’s done. You can stop it.'
+const TURN_UNCONFIRMED = 'Portal can’t confirm your last request has finished.'
+const CONTINUING_TURN = 'Making sure nothing is still running in this chat…'
+// A cut-off turn is checked again on a growing interval and the checks stop
+// once its state is proven. Work that is still running is checked at most
+// every 15 s so the chat frees up soon after it finishes.
+const TURN_RECHECK_MS = [1000, 2000, 4000, 8000, 15000, 30000, 60000]
+const ACTIVE_RECHECK_MAX_MS = 15000
+// A refused message is sent on its own only soon after the owner sent it.
+const HELD_SEND_MAX_MS = 2 * 60 * 1000
+const HELD_SEND_NOTE = ' Your new message will go out right after.'
 const STATUS_POLL_MS = 3000
 const OPS_STATUS_POLL_MS = 3000
 const OPS_TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled', 'rejected'])
@@ -441,6 +459,25 @@ function stoppedContent(content) {
   return `${partial}\n\n---\n\n_${STOPPED_NOTICE}_`
 }
 
+// A reply cut off before its answer arrived keeps the text that did arrive,
+// followed by one calm line.
+function cutOffContent(content, notice) {
+  const partial = typeof content === 'string' ? content.trimEnd() : ''
+  if (!partial) return notice
+  if (partial.includes(notice)) return partial
+  return `${partial}\n\n_${notice}_`
+}
+
+// An activity receipt that recorded nothing would only add an empty log to a
+// cut-off reply.
+function recordedTask(task) {
+  return task && (task.events?.length || task.activities?.length || task.goal) ? task : undefined
+}
+
+// A reply whose outcome was never confirmed: the answer stopped arriving and
+// no receipt has settled it yet. It is not saved as a final outcome.
+const unsettledReply = message => message?.role === 'assistant' && !['done', 'error', 'stopped'].includes(message.status)
+
 function messagePublication(message) {
   const validate = preview => parseVerifiedPreviewFrame({choices:[{finish_reason:'stop'}],pixel:{schemaVersion:1,preview}})
   if (message?.role !== 'assistant') return {}
@@ -633,6 +670,9 @@ export default function Pixel({ systemStatus = null }) {
     if (status === 'recovery') window.dispatchEvent(new Event(PIXEL_RECOVERY_REQUIRED))
   }, [status])
   const [messages, setMessages] = useState(() => initialChat?.messages || [])
+  // Checks that settle a cut-off turn later read the conversation as rendered.
+  const messagesRef = useRef(messages)
+  messagesRef.current = messages
   const [input, setInput] = useState(() => initialChat?.draft || '')
   const [persistenceError, setPersistenceError] = useState('')
   const [sending, setSending] = useState(false)
@@ -642,6 +682,20 @@ export default function Pixel({ systemStatus = null }) {
   const [stopError, setStopError] = useState('')
   // A turn Portal refused because it was busy; its draft is back in the composer.
   const [refusal, setRefusal] = useState('')
+  // "Continue in this chat": '' | 'pending' | 'failed'.
+  const [continuing, setContinuing] = useState('')
+  // The chat whose owner chose Continue and whose server confirmed that
+  // nothing runs there: that confirmation alone releases its hold.
+  const continueRequested = useRef(null)
+  // A reply cut off before its answer arrived offers Send again in place,
+  // with its message back in the composer.
+  const [resendOffer, setResendOffer] = useState(null)
+  // A message refused because an earlier turn still held this chat. It is sent
+  // as soon as that turn is cleared up, unless the owner changes it first. The
+  // ref makes that send happen once, even if a render still shows it pending.
+  const [heldSend, setHeldSend] = useState(null)
+  const heldSendRef = useRef(null)
+  const holdSend = useCallback(value => { heldSendRef.current = value; setHeldSend(value) }, [])
   const [sendHint, setSendHint] = useState(false)
   const [exampleError, setExampleError] = useState(null)
   const [restoredActivity, setRestoredActivity] = useState(() => initialChat?.interrupted ? 'checking' : 'idle')
@@ -753,13 +807,19 @@ export default function Pixel({ systemStatus = null }) {
   const previewAccess = resolvePreviewAccess(currentPreview)
   const restoredActive = interrupted && !sending && restoredActivity === 'active'
   const restoredChecking = interrupted && !sending && restoredActivity === 'checking'
+  // Portal could not prove what happened to the last turn. Sending waits for
+  // the owner's Continue, which is offered right where they look.
+  const restoredUnconfirmed = interrupted && !sending && restoredActivity === 'unknown'
   const contextCapacity=contextRuntime?.source==='external-host'
     ? Number(contextRuntime.contextLength) || null
     : Number(contextRuntime?.contextLength || systemStatus?.inference?.contextSize || systemStatus?.model?.contextLength) || null
   const contextControl=usePortalContext({chatId:chatIdRef.current,
     runtimeIdentity:{model:contextRuntime?.model || activeModel,source:contextRuntime?.source || '',routeFingerprint:contextRuntime?.routeFingerprint},capacity:contextCapacity,
     initialRequestId:compactionRequestRef.current,
-    blocked:conversationDeleted || sending || modelSwitching || stopping || teams.busy || (interrupted && restoredActivity!=='terminal') || status!=='available',
+    blocked:conversationDeleted || sending || modelSwitching || stopping || teams.busy || status!=='available',
+    // The page settles its own interrupted turn first. That holds compaction
+    // and automatic checks, never the owner's explicit Continue.
+    held:interrupted && restoredActivity!=='terminal',
     onPendingChange:(id,chatId)=>{
       if(chatId!==chatIdRef.current)throw new Error('The conversation changed before compaction could be saved.')
       historySnapshot(messages)
@@ -785,10 +845,43 @@ export default function Pixel({ systemStatus = null }) {
     let controller = null
     let disposed = false
     let timer = null
+    let attempt = 0
+    let rereadReceipt = Boolean(requestId)
+    // Each check waits longer than the last, and a proven state ends them.
+    // Work still running is checked at least every 15 s.
+    const later = state => {
+      const delay = TURN_RECHECK_MS[Math.min(attempt, TURN_RECHECK_MS.length - 1)]
+      attempt += 1
+      timer = globalThis.setTimeout(checkActivity, state === 'active' ? Math.min(delay, ACTIVE_RECHECK_MAX_MS) : delay)
+    }
+    // No receipt holds this turn and the server proved that nothing still
+    // runs for this chat, so no answer will arrive. The work may well be done,
+    // so the reply keeps the text that did arrive and says so plainly. The
+    // composer is free, with whatever the owner had typed.
+    function settleWithoutReceipt() {
+      continueRequested.current = null
+      requestIdRef.current = null
+      const latest = messagesRef.current
+      const last = latest.at(-1)
+      if (unsettledReply(last)) {
+        setMessages(replaceLastAssistant(latest, {content:cutOffContent(last.content, NO_REPLY_NOTICE), status:'stopped', task:recordedTask(last.task)}))
+      }
+      setInterrupted(false)
+      updateRestoredActivity('idle')
+      void contextControl.refresh(true)
+    }
     async function checkActivity() {
+      if (continueRequested.current === chatId) {
+        // The owner chose Continue and the server confirmed that nothing runs
+        // for this chat. That confirmation releases the hold by itself, even
+        // while the receipt or the chat lookup cannot be read.
+        settleWithoutReceipt()
+        return
+      }
       controller = new AbortController()
       const deadline = globalThis.setTimeout(() => controller.abort(), 15000)
       let state = 'unknown'
+      let receiptPending = false
       try {
         if (requestId) {
           const resultResponse = await fetch('/api/pixel/chat/result', {
@@ -801,7 +894,7 @@ export default function Pixel({ systemStatus = null }) {
             && typeof result.events === 'string' && result.events.length <= 8 * 1024 * 1024) {
             if (result.state === 'active') {
               updateRestoredActivity('active')
-              timer = globalThis.setTimeout(checkActivity, 2000)
+              later('active')
               return
             }
             if (['complete', 'interrupted', 'cancelled', 'rejected'].includes(result.state)) {
@@ -817,6 +910,11 @@ export default function Pixel({ systemStatus = null }) {
               if (!chat || chat.chatId !== chatId) throw new Error('Saved conversation is unavailable')
               const recovered = retainedResult(result.events)
               const successful = result.state === 'complete' && recovered.done && !recovered.failed
+              // A receipt without its terminal frame lost its producer with
+              // the dashboard API process, and the server then proved nothing
+              // still runs: Portal restarted while it was answering.
+              const cutOff = result.state === 'interrupted' && !recovered.done && !recovered.failed
+              let resend = null
               if (chat.requestId === requestId && chat.interrupted) {
                 const source = chat.persistenceSnapshot
                 const publication = successful ? recovered.preview : null
@@ -824,7 +922,11 @@ export default function Pixel({ systemStatus = null }) {
                 const writer = createConversationWriter(source)
                 try {
                   let saved = writer.recover({...source, requestId:null, inFlight:false, interrupted:false,
-                    messages:replaceLastAssistant(source.messages, {
+                    messages:replaceLastAssistant(source.messages, cutOff ? {
+                      content: cutOffContent(recovered.content, RESTART_NOTICE),
+                      status: 'stopped',
+                      task: recordedTask(recovered.task || source.messages.at(-1)?.task),
+                    } : {
                       content: result.state === 'cancelled' ? stoppedContent(recovered.content)
                         : recovered.content || (successful ? 'Completed without a text response.' : 'Portal could not complete the response. Check saved work before continuing.'),
                       status: result.state === 'cancelled' ? 'stopped' : successful ? 'done' : 'error',
@@ -835,11 +937,13 @@ export default function Pixel({ systemStatus = null }) {
                     }),
                     ...(publication ? {preview:publication, workspaceOpen:true} : {}),
                   })
-                  if (result.state === 'rejected' && recovered.admissionRejected && recovered.done) {
+                  if ((result.state === 'rejected' && recovered.admissionRejected && recovered.done) || cutOff) {
                     // Draft edits follow the exact receipt recovery as a new
                     // checked revision; do not weaken the recovery handoff.
                     const draft = restoreRejectedDraft(source)
                     if (draft.draft !== undefined && draft.draft !== saved.draft) saved = writer({...saved, ...draft})
+                    const user = source.messages.at(-2)
+                    if (cutOff && user?.role === 'user' && typeof user.content === 'string' && user.content.trim()) resend = user.content
                   }
                   chat = loadStoredChat(saved)
                 } catch (error) {
@@ -860,12 +964,16 @@ export default function Pixel({ systemStatus = null }) {
               setMessages(chat.messages)
               setPreview(chat.preview); setPreviewRefresh(0)
               setWorkspaceOpen(chat.workspaceOpen); setPreviewCollapsed(false)
+              if (resend) setResendOffer({chatId, text:resend})
               setInterrupted(chat.interrupted)
               updateRestoredActivity(chat.interrupted ? 'checking' : 'terminal')
               if (chat.interrupted) setActivityRefresh(value => value + 1)
               void contextControl.refresh(true)
               return
             }
+            // An unresolved receipt: the chat lookup below may prove the turn
+            // is over, and that also settles this receipt on the server.
+            receiptPending = result.state === 'unresolved'
           }
         }
         const response = await fetch('/api/pixel/chat/activity', {
@@ -879,8 +987,19 @@ export default function Pixel({ systemStatus = null }) {
         // A failed lookup or edge restart is not evidence that work finished.
       } finally { globalThis.clearTimeout(deadline) }
       if (disposed || chatIdRef.current !== chatId) return
+      if (state === 'terminal' && receiptPending && rereadReceipt) {
+        // The server settled the receipt as it proved the chat idle; read it
+        // once more so whatever was saved of the answer is kept.
+        rereadReceipt = false
+        timer = globalThis.setTimeout(checkActivity, 0)
+        return
+      }
+      if (state === 'terminal') {
+        settleWithoutReceipt()
+        return
+      }
       updateRestoredActivity(state)
-      if (state !== 'terminal') timer = globalThis.setTimeout(checkActivity, 2000)
+      later(state)
     }
     checkActivity()
     return () => {
@@ -889,6 +1008,15 @@ export default function Pixel({ systemStatus = null }) {
       if (timer !== null) globalThis.clearTimeout(timer)
     }
   }, [interrupted, sending, activityRefresh, updateRestoredActivity])
+
+  // Portal coming back after an update or restart is when a cut-off turn can
+  // settle: check it then, not at the end of a long interval.
+  const priorStatus = useRef(status)
+  useEffect(() => {
+    const previous = priorStatus.current
+    priorStatus.current = status
+    if (status === 'available' && !['available', 'loading'].includes(previous) && interrupted && !sending) setActivityRefresh(value => value + 1)
+  }, [status, interrupted, sending])
 
   useEffect(() => {
     let controller = null
@@ -1102,7 +1230,7 @@ export default function Pixel({ systemStatus = null }) {
     const trimmed = (typeof answerOverride === 'string' ? answerOverride : input).trim()
     if(compactCommand(trimmed)){await compactConversation();return}
     if(contextControl.busy || contextControl.historyUnknown)return
-    if ((!trimmed && !images.items.length) || sending || modelSwitching || abortRef.current || restoredActive || restoredChecking || status !== 'available' || trimmed.length > MAX_INPUT_LEN) return
+    if ((!trimmed && !images.items.length) || sending || modelSwitching || abortRef.current || restoredActive || restoredChecking || restoredUnconfirmed || status !== 'available' || trimmed.length > MAX_INPUT_LEN) return
     if(images.busy){setStopError('Finish uploading or remove the failed image before sending. Your draft is preserved.');return}
     const turnImages=typeof answerOverride==='string'?[]:images.receipts.map(({id,sha256})=>({id,sha256}))
     const needsImageRoute=turnImages.length>0 || hasImageHistory
@@ -1151,6 +1279,9 @@ export default function Pixel({ systemStatus = null }) {
       userMessage,
     ]
     const visibleConversation = [...messages, userMessage]
+    // A refused send must not replace the identity of a turn that still holds
+    // this chat; it is the one that can still be recovered.
+    const heldRequestId = requestIdRef.current
     setMessages([...visibleConversation, { role: 'assistant', content: '', status: 'streaming', revealResponse:makeChatId() }])
     if (typeof answerOverride !== 'string') setInput('')
     setSending(true)
@@ -1159,6 +1290,9 @@ export default function Pixel({ systemStatus = null }) {
     setStopping(false)
     setStopError('')
     setRefusal('')
+    setResendOffer(null)
+    holdSend(null)
+    setContinuing('')
     setExampleError(null)
     // Text typed while this turn runs is a new draft. A turn that does not
     // start returns its own text to the composer without replacing that draft.
@@ -1255,13 +1389,22 @@ export default function Pixel({ systemStatus = null }) {
           requestIdRef.current = null
           throw new Error('chat-request-rejected')
         }
+        if (response.status === 423) {
+          // An earlier turn still holds this chat, most often one a restart
+          // cut off. Nothing started. Keep following that turn, never this
+          // refused attempt, which has no receipt to recover.
+          requestIdRef.current = heldRequestId
+          return { kind: 'held' }
+        }
         if (response.status === 429) {
           // Portal was busy (for example preparing another picture) and
           // refused this turn before starting it. Nothing ran.
           requestIdRef.current = null
           return { kind: 'busy' }
         }
-        if (!response.ok) throw new Error('chat unavailable')
+        // A gateway error here usually means the dashboard API is restarting;
+        // any other refusal is a real failure the owner may need help with.
+        if (!response.ok) throw new Error(response.status >= 502 && response.status <= 504 ? 'chat-connection-lost' : 'chat unavailable')
 
         reader = response.body?.getReader()
         if (!reader) throw new Error('stream unavailable')
@@ -1369,7 +1512,7 @@ export default function Pixel({ systemStatus = null }) {
       // An acknowledged Stop or page disposal can close a reader normally.
       // Its late close must not overwrite the explicit cancellation outcome.
       if (!isCurrentTurn()) return
-      if (attempt.receivedError) { setInterrupted(true); return }
+      if (attempt.receivedError) { setInterrupted(true); updateRestoredActivity('checking'); return }
       if (attempt.receivedDone) requestIdRef.current = null
       if (attempt.receivedDone) {
         const previousPublication = [...messages].reverse().find(message => message.publication?.relativeDirectory === attempt.verifiedPreview?.relativeDirectory)?.publication || preview
@@ -1389,11 +1532,13 @@ export default function Pixel({ systemStatus = null }) {
         }))
         return
       }
-      const content = attempt.assistantText
-        ? `${attempt.assistantText}\n\n_Response interrupted._`
-        : 'Connection interrupted'
+      // The answer stopped arriving before Portal said it was done, for
+      // example because Portal restarted. Keep what arrived; the check that
+      // follows settles it. The server may hold the whole answer, may still
+      // be working, or may prove the turn was cut off.
       setInterrupted(true)
-      setMessages(previous => replaceLastAssistant(previous, { content, status: 'error' }))
+      updateRestoredActivity('checking')
+      setMessages(previous => replaceLastAssistant(previous, { content: attempt.assistantText, status: 'unconfirmed' }))
     }
 
     try {
@@ -1415,6 +1560,19 @@ export default function Pixel({ systemStatus = null }) {
         contextStartRef.current = originalContextStart
         setMessages(messages)
         setRefusal(busyRefusalText(turnImages.length > 0))
+        return
+      }
+      if (attempt.kind === 'held') {
+        // Not a failure either, and never the connection: this message did
+        // not start because an earlier turn still holds the chat. It waits in
+        // the composer while that turn is cleared up, then goes out.
+        restoreDraft()
+        contextStartRef.current = originalContextStart
+        setMessages(messages)
+        if (typeof answerOverride !== 'string' && !turnImages.length) holdSend({chatId:chatIdRef.current, text:trimmed, at:Date.now()})
+        setInterrupted(true)
+        updateRestoredActivity('checking')
+        setActivityRefresh(value => value + 1)
         return
       }
       if (attempt.kind === 'rejected') {
@@ -1472,7 +1630,8 @@ export default function Pixel({ systemStatus = null }) {
           updateRestoredActivity('idle')
           return
         }
-        if (attempt.kind === 'busy') {
+        if (attempt.kind === 'busy' || attempt.kind === 'held') {
+          if (attempt.kind === 'held') requestIdRef.current = null
           contextStartRef.current = originalContextStart
           setMessages(messages)
           restoreDraft()
@@ -1522,10 +1681,18 @@ export default function Pixel({ systemStatus = null }) {
         const storageFailed = conversationChanged || error?.message === 'chat-recovery-storage-unavailable'
         const historyTooLarge=error?.message==='history-request-too-large'
         const requestRejected=error?.message==='chat-request-rejected'
-        setInterrupted(!storageFailed && !historyTooLarge && !requestRejected)
-        if (storageFailed || historyTooLarge || requestRejected || turnImages.length) restoreDraft()
-        setMessages(previous => replaceLastAssistant(previous, {
-          content: requestRejected?'Portal rejected the request format (HTTP 422). No task was started. Your draft is preserved. Refresh Portal before retrying.':historyTooLarge?'The encoded conversation exceeds the 8 MB request limit. No task was started. Export this conversation before starting a new chat.':conversationChanged ? 'This conversation changed in another tab. No task was started. Download a recovery copy, then reload to read the saved version.' : storageFailed ? 'Could not save the request for recovery. No task was started. Check browser storage and try again.' : latestAssistantText || 'Request failed',
+        const refused=error?.message==='chat unavailable'
+        // A lost connection is not yet a failure: the turn may have started,
+        // finished or been cut off by a restart. Keep what arrived and let
+        // the check that follows settle it.
+        const uncertain=!storageFailed && !historyTooLarge && !requestRejected && !refused
+        // A refusal may still have saved a receipt that explains it; check.
+        const recover=!storageFailed && !historyTooLarge && !requestRejected
+        setInterrupted(recover)
+        if (recover) updateRestoredActivity('checking')
+        if (!uncertain || turnImages.length) restoreDraft()
+        setMessages(previous => replaceLastAssistant(previous, uncertain ? {content:latestAssistantText, status:'unconfirmed'} : {
+          content: requestRejected?'Portal rejected the request format (HTTP 422). No task was started. Your draft is preserved. Refresh Portal before retrying.':historyTooLarge?'The encoded conversation exceeds the 8 MB request limit. No task was started. Export this conversation before starting a new chat.':conversationChanged ? 'This conversation changed in another tab. No task was started. Download a recovery copy, then reload to read the saved version.' : storageFailed ? 'Could not save the request for recovery. No task was started. Check browser storage and try again.' : 'Portal could not start this message. Your draft is kept; try sending it again.',
           status: 'error',
         }))
       }
@@ -1543,7 +1710,7 @@ export default function Pixel({ systemStatus = null }) {
         void contextControl.refresh(true)
       }
     }
-  }, [input, messages, preview, workspaceOpen, sending, modelSwitching, status, restoredActive, restoredChecking, updateRestoredActivity, teams.busy, teams.start,compactConversation,contextControl.busy,contextControl.historyUnknown,contextControl.refresh,startExtensionInstallation,startGithubExtensionRequest,images,imageModel,hasImageHistory,conversationDeleted])
+  }, [input, messages, preview, workspaceOpen, sending, modelSwitching, status, restoredActive, restoredChecking, restoredUnconfirmed, updateRestoredActivity, teams.busy, teams.start,compactConversation,contextControl.busy,contextControl.historyUnknown,contextControl.refresh,startExtensionInstallation,startGithubExtensionRequest,images,imageModel,hasImageHistory,conversationDeleted])
 
   const stopStreaming = useCallback(async () => {
     const controller = abortRef.current
@@ -1608,7 +1775,7 @@ export default function Pixel({ systemStatus = null }) {
       // without an exact acknowledgement could leave tools or inference active.
       if (stopRequestRef.current === stopRequest && chatIdRef.current === chatId && abortRef.current === controller) {
         setStopError(restored
-          ? 'Stop was not confirmed. This chat may still have work in progress; check its activity or retry the stop request.'
+          ? 'Portal could not confirm the stop yet. Try Stop again in a moment.'
           : 'Stop was not confirmed. Portal is still connected; retry Stop.')
         if (restored) setActivityRefresh(value => value + 1)
       }
@@ -1622,6 +1789,46 @@ export default function Pixel({ systemStatus = null }) {
     }
   }, [stopping, interrupted, updateRestoredActivity])
 
+  // "Continue in this chat" is the one action offered when Portal cannot prove
+  // what happened to the last turn. It asks the server to stop anything left
+  // over in this chat and releases the hold only after the server confirms
+  // that nothing is running there.
+  const continueChat = useCallback(async () => {
+    if (!interrupted) { void contextControl.resolveInterrupted(); return }
+    if (continuing === 'pending' || sending || stopping) return
+    const chatId = chatIdRef.current
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 30000)
+    setContinuing('pending')
+    try {
+      const response = await fetch('/api/pixel/chat/cancel', {
+        method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId }),
+      })
+      const payload = await response.json()
+      if (chatIdRef.current !== chatId) return
+      if (!response.ok || !payload || Object.keys(payload).length !== 1 || payload.aborted !== true) throw new Error('continue unconfirmed')
+      continueRequested.current = chatId
+      setContinuing('')
+      // The next check settles the turn at once and frees the composer.
+      setActivityRefresh(value => value + 1)
+    } catch {
+      if (chatIdRef.current === chatId) setContinuing('failed')
+    } finally {
+      clearTimeout(timeout)
+    }
+  }, [interrupted, continuing, sending, stopping, contextControl.resolveInterrupted, updateRestoredActivity])
+
+  // Settle, then send: the message a held chat refused goes out once the
+  // earlier turn is cleared up, while the composer still holds it unchanged.
+  useEffect(() => {
+    if (!heldSend || heldSendRef.current !== heldSend || interrupted || sending || stopping || status !== 'available'
+      || contextControl.historyUnknown || contextControl.busy) return
+    holdSend(null)
+    if (heldSend.chatId !== chatIdRef.current || Date.now() - heldSend.at > HELD_SEND_MAX_MS || input.trim() !== heldSend.text) return
+    void sendMessage()
+  }, [heldSend, interrupted, sending, stopping, status, contextControl.historyUnknown, contextControl.busy, input, sendMessage, holdSend])
+
   // One live task streams into this page; see portalTaskState for why a new
   // task waits for it. Every New task control shows this reason, never nothing.
   const newTaskBlocked = newTaskBlockedReason({running:sending || restoredActive, stopping, checking:restoredChecking,
@@ -1632,6 +1839,10 @@ export default function Pixel({ systemStatus = null }) {
   const startNewChat = useCallback((preserveDraft = false) => {
     if (newTaskBlocked) { setStopError(newTaskBlocked); return }
     setRefusal('')
+    setResendOffer(null)
+    holdSend(null)
+    setContinuing('')
+    continueRequested.current = null
     setSendHint(false)
     chatIdRef.current = makeChatId()
     images.replace(chatIdRef.current)
@@ -1649,7 +1860,7 @@ export default function Pixel({ systemStatus = null }) {
     setExampleError(null)
     updateRestoredActivity('idle')
     inputRef.current?.focus?.()
-  }, [newTaskBlocked, updateRestoredActivity, images.replace, input])
+  }, [newTaskBlocked, updateRestoredActivity, images.replace, input, holdSend])
 
   useEffect(() => {
     const remove = async event => {
@@ -1771,6 +1982,10 @@ export default function Pixel({ systemStatus = null }) {
       setInput(chat.draft)
       setStopError('')
       setRefusal('')
+      setResendOffer(null)
+      holdSend(null)
+      setContinuing('')
+      continueRequested.current = null
       setSendHint(false)
       setExampleError(null)
       setInterrupted(chat.interrupted)
@@ -1782,7 +1997,7 @@ export default function Pixel({ systemStatus = null }) {
     }
     window.addEventListener(SELECT_EVENT, select)
     return () => window.removeEventListener(SELECT_EVENT, select)
-  }, [sending, restoredActive, restoredChecking, stopping, updateRestoredActivity, teams.launching,contextControl.busy,images.replace])
+  }, [sending, restoredActive, restoredChecking, stopping, updateRestoredActivity, teams.launching,contextControl.busy,images.replace,holdSend])
 
   const inputOver = input.length > MAX_INPUT_LEN
   const inputEmpty = !(command?.task ?? goalDraft?.task ?? input).trim() && !images.items.length
@@ -1791,6 +2006,7 @@ export default function Pixel({ systemStatus = null }) {
   // editable and is saved with the chat. Only sending waits, and says why.
   const composerLocked = conversationDeleted || modelSwitching || status !== 'available'
   const sendBlocked = sendBlockedReason({deleted:conversationDeleted, stopping, running:sending || restoredActive || teams.busy,
+    held:restoredUnconfirmed || (contextControl.historyUnknown && !contextControl.historyChecking),
     waiting:restoredChecking || contextControl.busy || contextControl.historyUnknown || modelSwitching, ready:status === 'available'})
   useEffect(() => { if (!sendBlocked) setSendHint(false) }, [sendBlocked])
   const composerVisible = !(workspaceExpanded && workspaceOpen && !previewCollapsed)
@@ -1812,6 +2028,15 @@ export default function Pixel({ systemStatus = null }) {
       return
     }
     void sendMessage()
+  }
+  // Send again for a reply that was cut off: the composer's restored copy when
+  // it is still there, otherwise the original message, leaving a newer draft.
+  const resendCutOff = () => {
+    const offer = resendOffer
+    if (offer?.chatId !== chatIdRef.current) return
+    if (input.trim() === offer.text.trim()) { sendFromComposer(); return }
+    if (sendBlocked) { setSendHint(true); return }
+    void sendMessage(offer.text)
   }
   // Pictures cannot join a turn while one is in flight (its own pictures are
   // still attached). A drop or paste then says so instead of doing nothing,
@@ -1844,9 +2069,7 @@ export default function Pixel({ systemStatus = null }) {
     : restoredActive
       ? 'Working in this chat'
     : restoredChecking
-      ? 'Checking previous work'
-    : interrupted && restoredActivity === 'unknown'
-      ? 'Activity unknown'
+      ? 'Checking last request'
     : status === 'available'
       ? (readinessView.attention ? 'Needs attention' : 'Available')
       : status === 'switching'
@@ -1862,6 +2085,20 @@ export default function Pixel({ systemStatus = null }) {
       : status === 'loading'
         ? 'Connecting...'
         : 'Degraded'
+  // One calm line beside the composer while the last turn is settled, with
+  // one action, Continue in this chat, whenever settling waits on the owner.
+  const turnHold = sending ? null : interrupted ? (
+    continuing === 'pending' ? {text:CONTINUING_TURN, busy:true}
+      : restoredActive ? {text:TURN_STILL_RUNNING}
+      : {text:continuing === 'failed' ? CONTINUE_FAILED : restoredUnconfirmed ? TURN_UNCONFIRMED : CHECKING_TURN,
+        busy:!restoredUnconfirmed && continuing !== 'failed', failed:continuing === 'failed', action:continueChat, disabled:stopping}
+  ) : contextControl.historyUnknown ? (
+    contextControl.resolving ? {text:CONTINUING_TURN, busy:true}
+      : {text:contextControl.recoveryFailed ? CONTINUE_FAILED : contextControl.historyChecking ? CHECKING_TURN : TURN_UNCONFIRMED,
+        busy:contextControl.historyChecking && !contextControl.recoveryFailed, failed:contextControl.recoveryFailed,
+        action:continueChat, disabled:!contextControl.canResolve}
+  ) : null
+  const heldNote = heldSend?.chatId === chatIdRef.current && turnHold ? HELD_SEND_NOTE : ''
 
   // Native Windows Core has local model chat but no Pixel host runtime. The
   // status API distinguishes that deliberate selection from a temporary
@@ -1981,27 +2218,6 @@ export default function Pixel({ systemStatus = null }) {
             onClick={() => startNewChat(true)}>New chat with draft</button>
           {(images.items.length > 0 || hasImageHistory) && <p>Attachments will not be copied. Reattach the original files in the new chat.</p>}
         </div>}
-        {interrupted && !sending && (
-          <div role="status" className="mx-auto w-full max-w-5xl rounded-xl border border-theme-border bg-theme-text-secondary/10 px-4 py-3 text-sm text-theme-text-secondary">
-            {restoredActivity === 'active'
-              ? 'The previous request is still active in this chat. Your saved conversation and preview are preserved. You can stop that work below; its live response cannot be reattached.'
-              : restoredActivity === 'terminal'
-                ? 'The previous request is no longer active. Its final response was not recovered; check the saved files and results before continuing.'
-                : restoredActivity === 'checking'
-                  ? 'Checking whether this chat’s previous request is still active. Your saved conversation and preview are preserved.'
-                  : 'Completion was not confirmed. This chat’s activity is unknown. Your request and partial response are saved; check its results before continuing. You can attempt to stop previous work in this chat without resending it.'}
-            {restoredActivity === 'unknown' && (
-              <>
-                <button type="button" className="ml-2 underline" disabled={stopping} onClick={() => {
-                  updateRestoredActivity('checking')
-                  setActivityRefresh(value => value + 1)
-                }}>Check activity again</button>
-                <button type="button" className="ml-2 underline" disabled={stopping}
-                  onClick={stopStreaming}>Try Stop previous work</button>
-              </>
-            )}
-          </div>
-        )}
         {status === 'loading' && messages.length === 0 && (
           <div className="flex h-full flex-col items-center justify-center text-theme-text-muted">
             <Loader2 className="mb-3 h-8 w-8 animate-spin" />
@@ -2094,9 +2310,12 @@ export default function Pixel({ systemStatus = null }) {
               {message.role === 'assistant' && message.content ? (
                 <>
                   {message.publication && <PixelSnapshotChanges preview={message.publication} before={message.beforePublication} variant="summary" onPreview={()=>openPublication(message.publication,'preview')} onReview={path=>openPublication(message.publication,'review',path)}/>}
-                  {!message.questions && (shownContent || message.status==='streaming') && (message.status==='error' ? <PortalResponseError content={shownContent}/> : <PortalStreamingText key={message.revealResponse || chatIdRef.current} active={message.status==='streaming'} animate={Boolean(message.revealResponse) || message.status==='streaming'} instant={['stopped','recovering'].includes(message.status)} onReveal={chatScroll.onContentResize} components={MARKDOWN_COMPONENTS} artifacts={message.role==='assistant' && message.status==='done' ? message.artifacts : null}>{shownContent}</PortalStreamingText>)}
+                  {!message.questions && (shownContent || message.status==='streaming') && (message.status==='error' ? <PortalResponseError content={shownContent}/> : <PortalStreamingText key={message.revealResponse || chatIdRef.current} active={message.status==='streaming'} animate={Boolean(message.revealResponse) || message.status==='streaming'} instant={['stopped','recovering','unconfirmed'].includes(message.status)} onReveal={chatScroll.onContentResize} components={MARKDOWN_COMPONENTS} artifacts={message.role==='assistant' && message.status==='done' ? message.artifacts : null}>{shownContent}</PortalStreamingText>)}
                   <OperationsApprovalCard content={message.content} />
                   {!message.questions && message.status!=='streaming' && <PortalResponseActions content={displayedContent}/>}
+                  {message.status === 'stopped' && index === messages.length - 1 && resendOffer?.chatId === chatIdRef.current && (
+                    <div className="portal-context-status"><button type="button" className="portal-context-action" onClick={resendCutOff}>Send again</button></div>
+                  )}
                 </>
               ) : (
                 <span className="break-words whitespace-pre-wrap">{message.content}</span>
@@ -2168,7 +2387,7 @@ export default function Pixel({ systemStatus = null }) {
           ) : (
             <button
               onClick={sendFromComposer}
-              disabled={isDisabled || inputOver || inputEmpty || images.busy}
+              disabled={isDisabled || restoredUnconfirmed || inputOver || inputEmpty || images.busy}
               className="inline-flex h-11 w-11 items-center justify-center rounded-xl bg-theme-accent text-white transition hover:bg-theme-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
               title="Send"
             >
@@ -2184,10 +2403,11 @@ export default function Pixel({ systemStatus = null }) {
             <button type="button" onClick={sendFromComposer}>Send again</button>
           </div>}
           {exampleError && <p role="alert" className="mt-1.5 px-1 text-xs text-theme-text-secondary">{exampleError.text}{exampleError.help && <> <HelpLink /></>}</p>}
-          {contextControl.historyUnknown && <div className="portal-context-status" role="status">
-            {contextControl.resolving && <Loader2 size={13} className="animate-spin" aria-hidden="true"/>}
-            <span>{contextControl.recoveryNotice || 'The previous turn could not be confirmed. Resolve it before continuing; your conversation is preserved.'}</span>
-            <button type="button" disabled={!contextControl.canResolve} onClick={()=>void contextControl.resolveInterrupted()}>Resolve interrupted turn</button>
+          {turnHold && <div className="portal-context-status" role="status" aria-label="Last message">
+            {turnHold.busy && <Loader2 size={13} className="animate-spin" aria-hidden="true"/>}
+            <span>{turnHold.text}{heldNote}</span>
+            {turnHold.action && <button type="button" className="portal-context-action" disabled={turnHold.disabled} onClick={()=>void turnHold.action()}>Continue in this chat</button>}
+            {turnHold.failed && <HelpLink />}
           </div>}
           {contextControl.notice && <div className="portal-context-status" role={contextControl.phase==='failed'?'alert':'status'}>
             {contextControl.busy && contextControl.phase!=='unknown' && <Loader2 size={13} className="animate-spin" aria-hidden="true"/>}
@@ -2206,7 +2426,7 @@ export default function Pixel({ systemStatus = null }) {
             </div>
           </div>
           <div className="mt-1.5 flex items-center justify-between gap-3 px-1 text-[10px] text-theme-text-muted/70">
-            <span>{stopping ? 'Waiting for exact cancellation acknowledgement' : restoredActive ? 'Earlier work is active in this chat; Stop targets only this chat.' : sending ? `${displayName} is using the active ODS model and tools · ${workingElapsed} elapsed` : sendKey.mode === 'mod-enter' ? 'Ctrl/⌘+Enter to send • Enter for a new line' : 'Enter to send • Shift+Enter for a new line'}</span>
+            <span>{stopping ? 'Waiting for exact cancellation acknowledgement' : restoredActive ? 'Stop ends only the work in this chat.' : sending ? `${displayName} is using the active ODS model and tools · ${workingElapsed} elapsed` : sendKey.mode === 'mod-enter' ? 'Ctrl/⌘+Enter to send • Enter for a new line' : 'Enter to send • Shift+Enter for a new line'}</span>
           </div>
         </div>
         {inputOver && (

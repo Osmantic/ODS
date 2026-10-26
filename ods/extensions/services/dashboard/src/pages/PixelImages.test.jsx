@@ -218,11 +218,12 @@ it('waits for an observer image upload before adopting terminal request recovery
     return originalFetch(url,options)
   })
   render(<Pixel/>)
-  await screen.findByRole('button',{name:'Check activity again'})
+  await screen.findByRole('button',{name:'Continue in this chat'})
   fireEvent.change(screen.getByLabelText('Choose images'),{target:{files:[fixtureFile()]}})
   await waitFor(()=>expect(finishUpload).toBeTypeOf('function'))
+  // The next check finds the completed receipt by itself.
   terminal=true
-  fireEvent.click(screen.getByRole('button',{name:'Check activity again'}))
+  await waitFor(()=>expect(calls('/api/pixel/chat/result').length).toBeGreaterThan(1),{timeout:3000})
   await act(async()=>{})
   expect(signal.aborted).toBe(false)
   expect(screen.getByRole('list',{name:'Attached images'})).toBeVisible()
