@@ -878,8 +878,10 @@ export default function Pixel({ systemStatus = null }) {
       const latest = messagesRef.current
       const last = latest.at(-1)
       const user = latest.at(-2)
+      // Its pictures are still attached in the composer, so it goes back as
+      // a whole and is not left in the conversation to be sent twice.
       const unsent = !stopped && !received && unsettledReply(last) && !last.content?.trim() && !recordedTask(last.task)
-        && user?.role === 'user' && typeof user.content === 'string' && Boolean(user.content.trim()) && !user.images?.length
+        && user?.role === 'user' && typeof user.content === 'string' && Boolean(user.content.trim() || user.images?.length)
       if (unsent) {
         setMessages(latest.slice(0, -2))
         setInput(current => restoreUnsentDraft(current, user.content))
