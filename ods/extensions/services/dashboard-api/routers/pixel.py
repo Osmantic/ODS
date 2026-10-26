@@ -81,6 +81,9 @@ _RUNTIME_STOPPED_DETAIL = "The local model runtime is not running, so Portal is 
 # serve its 3 s polls while an unattended hold lasts.
 _RUNTIME_PROOF_SECONDS = 10.0
 _RUNTIME_PROOF_TTL_SECONDS = 30.0
+# An unavailable runtime is found only after the edge and telemetry reads, so
+# its optional Resume hint gets less of that deadline.
+_RUNTIME_HINT_SECONDS = 6.0
 _MODEL_HOLD_DETAIL = "A model transition is holding new messages. Check model update progress. If it has stopped, restore Sandbox in Portal permissions."
 _CHAT_RECOVERY_DETAIL = ("Portal stopped during an earlier turn, so new messages are held "
                          "until its permissions are checked again.")
@@ -638,26 +641,27 @@ def _runtime_unloaded(value: object) -> bool | None:
             (False, False, False, False): False}.get(fields)
 
 
-async def _owned_runtime_unloaded() -> bool | None:
+async def _owned_runtime_unloaded(seconds: float | None = None) -> bool | None:
     """The host's _runtime_unloaded proof for the Windows runtime it owns.
 
     A stopped runtime under a switch that did not reach its held phase is not
-    an unload. A failed or invalid proof is unknown. It is remembered too, so a
-    slow host is not asked again on every poll.
+    an unload. A failed, slow or invalid proof is unknown. It is remembered
+    too, so a slow host is not asked again on every poll.
     """
     global _runtime_proof
     if _runtime_proof is not None and time.monotonic() - _runtime_proof[0] < _RUNTIME_PROOF_TTL_SECONDS:
         return _runtime_proof[1]
+    seconds = _RUNTIME_PROOF_SECONDS if seconds is None else seconds
     try:
-        async with async_timeout(_RUNTIME_PROOF_SECONDS):
+        async with async_timeout(seconds):
             unloaded = _runtime_unloaded(await request_agent_json(
-                "GET", "/v1/model/management", timeout=_RUNTIME_PROOF_SECONDS))
+                "GET", "/v1/model/management", timeout=seconds))
             if unloaded is True:
                 # Resume model restarts only an unload's held transaction. The
                 # host refuses it for a switch that stopped part-way and asks
                 # for recovery first, so that hold is not an unload.
                 try:
-                    journal = await request_agent_json("GET", "/v1/model/recovery", timeout=_RUNTIME_PROOF_SECONDS)
+                    journal = await request_agent_json("GET", "/v1/model/recovery", timeout=seconds)
                 except AgentClientError:
                     journal = None
                 if isinstance(journal, dict) and journal.get("pending") is True and journal.get("phase") != "held":
@@ -785,7 +789,7 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
             inference_issue = await _local_inference_issue(host_status)
             if inference_issue:
                 # A stopped runtime the host owns gets Models' Resume model.
-                stopped = await _owned_runtime_unloaded() is True
+                stopped = await _owned_runtime_unloaded(_RUNTIME_HINT_SECONDS) is True
                 return {**activation_metadata, "available": False, "model": None, "state": "model_unavailable",
                         "detail": _RUNTIME_STOPPED_DETAIL if stopped else inference_issue,
                         **_recovery_field("resume-model" if stopped else None)}

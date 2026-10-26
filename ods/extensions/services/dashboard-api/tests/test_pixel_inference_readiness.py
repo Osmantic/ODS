@@ -1,4 +1,5 @@
 """Pixel discovery must not advertise a stopped host model server as ready."""
+import asyncio
 import json
 from unittest.mock import patch
 
@@ -56,6 +57,22 @@ async def test_a_stopped_owned_runtime_offers_resume_model_in_portal(monkeypatch
     assert result.get('recovery') == recovery
     assert result['detail'] == (pixel._RUNTIME_STOPPED_DETAIL if recovery else
                                 'The local model runtime is unavailable. Restore it in Models before sending another task.')
+
+
+@pytest.mark.asyncio
+async def test_a_slow_runtime_proof_cannot_hold_the_status_read(monkeypatch):
+    # The hint comes after the edge and telemetry reads, inside the page's deadline.
+    async def host(method, path, **kwargs):
+        if path == '/v1/model/management':
+            await asyncio.sleep(5)
+            return {'managed': True, 'canActivate': False, 'canUnload': True, 'running': False}
+        return {'schema_version': 'ods.host-llm-status.v1', 'health': {'status': 'error'}} if path == '/v1/llm/status' else {'status': 'idle'}
+    monkeypatch.setattr(pixel, 'request_agent_json', host)
+    monkeypatch.setattr(pixel, '_RUNTIME_HINT_SECONDS', 0.05)
+    upstream = FakeResponse(chunks=[json.dumps({'data':[{'id':'portal/default'}]}).encode()])
+    with patch.object(pixel.httpx, 'AsyncClient', return_value=FakeClient(upstream)):
+        result = await asyncio.wait_for(pixel.pixel_status(), timeout=2)
+    assert (result['state'], result.get('recovery')) == ('model_unavailable', None)
 
 
 @pytest.mark.asyncio
