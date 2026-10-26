@@ -51,5 +51,6 @@ jobs:
           node --test plugin/oauth-security.test.mjs tests/source-broker-plugin.test.mjs
           node plugin/email-query.test.mjs
           bash tests/restore-private-state-source-status.test.sh
+          bash tests/source-broker-verify.test.sh
       - name: Pixel end-to-end suite (fake Docker and systemd)
         run: bash tests/e2e.sh

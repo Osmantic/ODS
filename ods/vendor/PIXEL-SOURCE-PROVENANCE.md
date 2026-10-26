@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`9942dbb6f85b90dea02c5c490274f29bc3ef81ee`, and its SHA-256 is
-`ccf29ffcd5cbab3b7098f1eb973abfdafb74e4cbbb25be236d1862d3dc41ac7c`.
+`8cae7723c0098f7c8b39bdf52a54b2f3a553e97d`, and its SHA-256 is
+`4124cb5e940123c2ee1a9d0cb48664341058fb2b91359ada7f99c43c6e9f585f`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -262,8 +262,8 @@ same `openclaw.json`. `pixel/ODS-QUALIFICATION-4.3.34.md` records the automated
 evidence and the installed upgrade qualification still required. The version
 advance preserves the strictly increasing source-upgrade gate.
 
-The public vendor tree is `710e681be3190274390d2fb7502208b08d721149` at ODS source
-commit `c596e56219a970258eab32311f083ca86d69f139`. Two independent empty bare repositories using the alternates
+The public vendor tree is `18d78dbf9770cc1a639f8a4157621790eaf69b1d` at ODS source
+commit `05bf656517db1093d67e3970cafc5b42bf18b7bc`. Two independent empty bare repositories using the alternates
 procedure above produced byte-identical bundles with the retained public
 synthetic author, timestamp and root message (Git 2.53 on Windows,
 `pack.threads=1`); the same procedure first reproduced the 4.3.33 commit
@@ -292,3 +292,9 @@ only the account that Google's ID token verifies. The functional source checkpoi
 is now `096eba7f81d4bbbd588863b367fac343ecf6c86f`. Two independent builds were
 byte-identical. This replaces the unpublished candidate commit
 `cb3fe963dec251e2d2ae7639d5424bda2ddbfd85`.
+
+It was rebuilt once more so `pixel verify` accepts a broker whose first refresh
+after a source is turned on is still running. The functional source checkpoint is
+now `9a50d0522cbf97cc9fa1991c431ea8e3ef74238a`. Two independent builds were
+byte-identical. This replaces the unpublished candidate commit
+`9942dbb6f85b90dea02c5c490274f29bc3ef81ee`.

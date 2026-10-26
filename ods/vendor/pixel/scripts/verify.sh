@@ -7,6 +7,8 @@ source "$ROOT/scripts/lib/common.sh"
 source "$ROOT/scripts/lib/broker-bytes.sh"
 # shellcheck source=scripts/lib/release-build.sh
 source "$ROOT/scripts/lib/release-build.sh"
+# shellcheck source=scripts/lib/source-broker-verify.sh
+source "$ROOT/scripts/lib/source-broker-verify.sh"
 
 expected_install_dir=''
 ods_model_transaction=''
@@ -96,43 +98,7 @@ if [[ ${PIXEL_WEB_COURIER_ENABLED:-1} == 1 ]]; then
   [[ $probe_status == 3 ]] || pixel_die "Web Courier did not return the policy-refusal status for a loopback request"
   [[ "${probe%%$'\n'*}" == '# Request refused by policy' ]] || pixel_die "Web Courier did not return the policy-refusal envelope for a loopback request"
 fi
-if [[ ${PIXEL_SOURCE_BROKER_ENABLED:-1} == 1 ]]; then
-  broker_unit=${PIXEL_SOURCE_BROKER_UNIT:-pixel-source-broker.service}
-  broker_timer=${PIXEL_SOURCE_BROKER_TIMER:-pixel-source-broker.timer}
-  pixel_courier_systemctl_read is-active --quiet "$broker_timer" || pixel_die "Source Broker timer is not active"
-  if [[ ${PIXEL_CALENDAR_DIRECT_ENABLED:-0} == 1 ]]; then
-    direct_path=${PIXEL_SOURCE_DIRECT_PATH_UNIT:-pixel-source-direct.path}
-    pixel_courier_systemctl_read is-active --quiet "$direct_path" || pixel_die "Bounded direct Calendar watcher is not active"
-  fi
-  [[ ! -r "$PIXEL_SOURCE_TOKEN_PATH" ]] || pixel_die "Gateway owner can still read the isolated Google credential"
-  ! grep -q '^PIXEL_GOOGLE_TOKEN_PATH=' "${XDG_CONFIG_HOME:-$HOME/.config}/pixel-agent/gateway.env" || pixel_die "Gateway environment still references a Google credential"
-  for source in email calendar social; do
-    jq -e '.schemaVersion == 1 and .boundary.projectionOnly == true and .boundary.rawContentStored == false and (.records | type == "array")' "$PIXEL_SOURCE_PROJECTION_DIR/$source.json" >/dev/null || pixel_die "Invalid Source Broker projection: $source"
-  done
-  jq -e ".enabled == $([[ ${PIXEL_LIMB_EMAIL_ENABLED:-1} == 1 ]] && echo true || echo false)" "$PIXEL_SOURCE_PROJECTION_DIR/email.json" >/dev/null || pixel_die "Email projection does not match limb state"
-  jq -e ".enabled == $([[ ${PIXEL_LIMB_CALENDAR_ENABLED:-1} == 1 ]] && echo true || echo false)" "$PIXEL_SOURCE_PROJECTION_DIR/calendar.json" >/dev/null || pixel_die "Calendar projection does not match limb state"
-  jq -e ".enabled == $([[ ${PIXEL_LIMB_SOCIAL_ENABLED:-0} == 1 ]] && echo true || echo false)" "$PIXEL_SOURCE_PROJECTION_DIR/social.json" >/dev/null || pixel_die "Social projection does not match limb state"
-  pixel_courier_systemctl_read show "$broker_unit" -p Result --value | grep -Fx success >/dev/null || pixel_die "Source Broker last refresh failed"
-  # Each source reports on its own: a source the provider refuses is a warning with its
-  # recorded cause, while a missing, malformed or limb-mismatched status file fails.
-  source_status="$PIXEL_SOURCE_PROJECTION_DIR/status.json"
-  jq -e '.schemaVersion == 1 and .kind == "pixel-source-broker-status" and .boundary.contentFree == true and .boundary.credentialsIncluded == false and (.sources | type == "object")' "$source_status" >/dev/null ||
-    pixel_die "Source Broker status is missing or invalid; run sudo systemctl start ${broker_unit} and verify again"
-  for source in email calendar social; do
-    case "$source" in
-      email) limb_enabled=${PIXEL_LIMB_EMAIL_ENABLED:-1} ;;
-      calendar) limb_enabled=${PIXEL_LIMB_CALENDAR_ENABLED:-1} ;;
-      social) limb_enabled=${PIXEL_LIMB_SOCIAL_ENABLED:-0} ;;
-    esac
-    expected=false; [[ $limb_enabled == 1 ]] && expected=true
-    jq -e --arg source "$source" --argjson enabled "$expected" '.sources[$source] as $s | ($s | type == "object") and $s.enabled == $enabled and (if $enabled then ($s.state == "ok" or $s.state == "error") else $s.state == "disabled" end)' "$source_status" >/dev/null ||
-      pixel_die "Source Broker status does not match the $source limb state"
-    source_error=$(jq -r --arg source "$source" '.sources[$source] | select(.state == "error") | .errorClass // "unknown"' "$source_status")
-    if [[ -n "$source_error" ]]; then
-      pixel_warn "Source Broker cannot refresh $source right now ($source_error); Portal answers from its last snapshot until it recovers"
-    fi
-  done
-fi
+if [[ ${PIXEL_SOURCE_BROKER_ENABLED:-1} == 1 ]]; then pixel_verify_source_broker; fi
 active_release=$(realpath -e "$PIXEL_INSTALL_DIR/current") || pixel_die "Active release path is unavailable"
 [[ "$active_release" == "$PIXEL_INSTALL_DIR/releases/$PIXEL_RELEASE_VERSION" ]] || pixel_die "Active release path does not match the configured release"
 # Verify every installed+enabled broker's executable bytes hash-match the active release.

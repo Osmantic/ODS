@@ -17,6 +17,8 @@
     starting anything.
   - Every release carries the plugin's `typebox` dependency, so a source turned
     on later loads the plugin from the active release.
+  - `pixel verify` accepts a broker whose first refresh is still running, which
+    a large mailbox can take minutes to finish.
 - Optional answers-file keys `calendarWriteEnabled`, `gmailWindowDays` and
   `userTimezone` default to the previous behaviour. The gateway environment
   carries the real web and Calendar-write flags.
