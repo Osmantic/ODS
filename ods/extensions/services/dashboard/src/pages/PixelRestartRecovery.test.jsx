@@ -8,7 +8,7 @@ import {act,fireEvent,screen,waitFor,within} from '@testing-library/react'
 import {render} from '../test/test-utils'
 // The repository's base ESLint profile does not mark JSX identifiers as uses.
 // eslint-disable-next-line no-unused-vars
-import Pixel, {NO_REPLY_NOTICE, NOT_RECEIVED_NOTICE, RESTART_NOTICE} from './Pixel'
+import Pixel, {NO_REPLY_NOTICE, NOT_RECEIVED_NOTICE, RAN_ON_NOTICE, RESTART_NOTICE} from './Pixel'
 import {CONTINUE_FAILED} from '../lib/portalContext'
 
 const QUESTION='Can you do things on cron timers or scheduled work tasks?'
@@ -263,6 +263,32 @@ it('never offers Continue while the server finds this turn still running',async(
   for(let second=0;second<15;second++)await act(async()=>vi.advanceTimersByTimeAsync(1000))
   expect(row()).toBeNull()
   expect(screen.getByText((_,node)=>node?.tagName==='EM' && node.textContent===NO_REPLY_NOTICE)).toBeVisible()
+  expect(calls('/api/pixel/chat/cancel')).toHaveLength(0)
+})
+
+it('never asks to send again when the cut-off turn’s work went on, so nothing is done twice',async()=>{
+  // The turn delegated work. A restart cut its reply off while that work
+  // went on, and later ended.
+  saveCutOffChat()
+  let running=true
+  server.result=()=>response(running?{state:'unresolved',events:''}
+    :{state:'interrupted',events:`data: ${JSON.stringify({choices:[{delta:{content:PARTIAL}}]})}\n\n`})
+  server.activity=()=>response({state:running?'active':'terminal'})
+  vi.useFakeTimers()
+  await act(async()=>{render(<Pixel/>)})
+  await act(async()=>vi.advanceTimersByTimeAsync(10))
+  expect(within(row()).getByText('Portal is still working on your last request. When it’s done, ask Portal what it did. You can stop it.')).toBeVisible()
+  running=false
+  for(let second=0;second<15;second++)await act(async()=>vi.advanceTimersByTimeAsync(1000))
+  expect(row()).toBeNull()
+  const reply=screen.getByText((_,node)=>node?.tagName==='EM' && node.textContent===RAN_ON_NOTICE)
+  const bubble=reply.closest('[data-pixel-response]')
+  expect(within(bubble).getByText(PARTIAL,{exact:false})).toBeVisible()
+  expect(within(bubble).queryByRole('button',{name:'Send again'})).toBeNull()
+  expect(screen.queryByText(RESTART_NOTICE,{exact:false})).toBeNull()
+  // The question is not put back to be sent again; the composer is free.
+  expect(field()).toHaveValue('')
+  expect(field()).toBeEnabled()
   expect(calls('/api/pixel/chat/cancel')).toHaveLength(0)
 })
 

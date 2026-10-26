@@ -148,6 +148,9 @@ const CLEAN_CONTEXT_RECOVERY_FAILED = 'Automatic recovery was attempted once, bu
 // answer off offers to send the message again; a turn that ended without a
 // reply the page can show may already have done its work, so it says so.
 export const RESTART_NOTICE = 'Portal restarted while it was answering. Send your message again.'
+// The reply was cut off, but its work went on afterwards, so sending the
+// message again could repeat that work.
+export const RAN_ON_NOTICE = 'Portal kept working on this after the reply was cut off, but its answer couldn’t be shown here. Your files are saved. Ask Portal what it did before you send it again.'
 export const NO_REPLY_NOTICE = 'Portal finished working on your last request, but its reply couldn’t be shown here. Your files are saved. Ask Portal what it did, or send your next message.'
 export const NOT_RECEIVED_NOTICE = 'Portal didn’t receive your last message. It’s back in the message box, ready to send again.'
 const CHECKING_TURN = 'Checking on your last request…'
@@ -694,6 +697,9 @@ export default function Pixel({ systemStatus = null }) {
   // The chat whose owner chose Continue and whose server confirmed that
   // nothing runs there: that confirmation alone releases its hold.
   const continueRequested = useRef(null)
+  // The request whose chat was found still working after its reply was cut
+  // off, with no receipt receiving that reply.
+  const ranOnRequest = useRef(null)
   // A reply cut off before its answer arrived offers Send again in place,
   // with its message back in the composer.
   const [resendOffer, setResendOffer] = useState(null)
@@ -942,6 +948,9 @@ export default function Pixel({ systemStatus = null }) {
               // the dashboard API process, and the server then proved nothing
               // still runs: Portal restarted while it was answering.
               const cutOff = result.state === 'interrupted' && !recovered.done && !recovered.failed
+              // Its work went on after the cut-off, so it may be done: never
+              // ask for the message again.
+              const ranOn = cutOff && ranOnRequest.current === requestId
               let resend = null
               if (chat.requestId === requestId && chat.interrupted) {
                 const source = chat.persistenceSnapshot
@@ -951,7 +960,7 @@ export default function Pixel({ systemStatus = null }) {
                 try {
                   let saved = writer.recover({...source, requestId:null, inFlight:false, interrupted:false,
                     messages:replaceLastAssistant(source.messages, cutOff ? {
-                      content: cutOffContent(recovered.content, RESTART_NOTICE),
+                      content: cutOffContent(recovered.content, ranOn ? RAN_ON_NOTICE : RESTART_NOTICE),
                       status: 'stopped',
                       task: recordedTask(recovered.task || source.messages.at(-1)?.task),
                     } : {
@@ -965,7 +974,7 @@ export default function Pixel({ systemStatus = null }) {
                     }),
                     ...(publication ? {preview:publication, workspaceOpen:true} : {}),
                   })
-                  if ((result.state === 'rejected' && recovered.admissionRejected && recovered.done) || cutOff) {
+                  if ((result.state === 'rejected' && recovered.admissionRejected && recovered.done) || (cutOff && !ranOn)) {
                     // Draft edits follow the exact receipt recovery as a new
                     // checked revision; do not weaken the recovery handoff.
                     const draft = restoreRejectedDraft(source)
@@ -1030,6 +1039,7 @@ export default function Pixel({ systemStatus = null }) {
       // Nothing runs, but this turn's receipt could not be read: it may still
       // hold the answer. Check again rather than settle without it.
       if (state === 'terminal') state = 'unknown'
+      if (state === 'active' && requestId) ranOnRequest.current = requestId
       setRestoredReplyLive(false)
       updateRestoredActivity(state)
       later(state)
