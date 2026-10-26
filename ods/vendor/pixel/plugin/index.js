@@ -21,6 +21,7 @@ const ALLOWED_SOURCES = new Set(["email", "calendar", "social"]);
 const EMAIL_ENABLED = enabled("PIXEL_LIMB_EMAIL_ENABLED", "1");
 const CALENDAR_ENABLED = enabled("PIXEL_LIMB_CALENDAR_ENABLED", "1");
 const CALENDAR_WRITE_ENABLED = CALENDAR_ENABLED && enabled("PIXEL_LIMB_CALENDAR_WRITE_ENABLED", "1");
+const EMAIL_DRAFTS_ENABLED = EMAIL_ENABLED && enabled("PIXEL_LIMB_EMAIL_DRAFTS_ENABLED", "0");
 const SOCIAL_ENABLED = enabled("PIXEL_LIMB_SOCIAL_ENABLED", "0");
 const WEB_ENABLED = enabled("PIXEL_LIMB_WEB_ENABLED", "1");
 const OPERATIONS_ENABLED = enabled("PIXEL_LIMB_OPERATIONS_ENABLED", "0");
@@ -143,13 +144,14 @@ async function applyDirectProposal(proposalId) {
   throw new Error("bounded Calendar actuator did not return a result within 30 seconds; do not retry until the action journal is inspected");
 }
 
+const hasProjectionPlaceholder = (value) => {
+  if (typeof value === "string") return /^\[(?:quarantined|withheld)[^\]]*\]$/i.test(value.trim());
+  if (Array.isArray(value)) return value.some(hasProjectionPlaceholder);
+  if (value && typeof value === "object") return Object.values(value).some(hasProjectionPlaceholder);
+  return false;
+};
+
 async function writeProposal(action, values) {
-  const hasProjectionPlaceholder = (value) => {
-    if (typeof value === "string") return /^\[(?:quarantined|withheld)[^\]]*\]$/i.test(value.trim());
-    if (Array.isArray(value)) return value.some(hasProjectionPlaceholder);
-    if (value && typeof value === "object") return Object.values(value).some(hasProjectionPlaceholder);
-    return false;
-  };
   if (hasProjectionPlaceholder(values)) throw new Error("projection placeholders cannot be written to Calendar proposals");
   const proposalId = `calendar-${Date.now()}-${randomUUID().slice(0, 8)}`;
   const direct = CALENDAR_DIRECT_ENABLED && directCalendarEligible(action, values);
@@ -177,6 +179,26 @@ async function writeProposal(action, values) {
   return { ...proposal, operatorInstruction: `This change is consequential and still needs separate operator approval for the exact proposal ${proposalId}.` };
 }
 
+// A Gmail draft waits for the owner's approval of these exact values. Pixel has no send
+// capability: the owner reviews and sends the created draft from Gmail.
+async function writeDraftProposal(values) {
+  if (hasProjectionPlaceholder(values)) throw new Error("projection placeholders cannot be written to Gmail drafts");
+  const proposalId = `gmail-draft-${Date.now()}-${randomUUID().slice(0, 8)}`;
+  const proposal = {
+    schemaVersion: 1,
+    proposalId,
+    source: "pixel-owner-conversation",
+    action: "create-draft",
+    status: "pending-operator-approval",
+    createdAt: new Date().toISOString(),
+    values,
+    boundary: "This file is a proposal only. No Gmail draft has been created.",
+  };
+  await writeFile(join(PROPOSAL_DIR, `${proposalId}.json`), `${JSON.stringify(proposal, null, 2)}\n`, { flag: "wx", mode: 0o640 });
+  return { ...proposal, operatorInstruction: `The owner must approve this exact draft (${proposalId}) before Gmail creates it. Pixel never sends email; the owner sends the draft from Gmail.` };
+}
+
+const recipientSchema = (minItems) => Type.Array(Type.Object({ email: Type.String({ minLength: 3, maxLength: 320 }) }), { minItems, maxItems: 50 });
 const attendeeSchema = Type.Array(Type.Object({ email: Type.String({ minLength: 3, maxLength: 320 }) }), { maxItems: 100 });
 const calendarValues = {
   summary: Type.String({ minLength: 1, maxLength: 1000 }),
@@ -194,13 +216,17 @@ export default definePluginEntry({
   id: "pixel-source-broker", name: "Pixel Source Broker",
   description: "Projection-only email, calendar, and social tools with bounded Calendar actuation.",
   register(api) {
-    register(api, "pixel_limb_status", "Report which modular limbs are enabled without inspecting external data. Use this only when a requested limb tool is unavailable; it does not authorize or suggest substituting another limb.", Type.Object({}), async () => result({ limbs: { email: EMAIL_ENABLED, calendar: CALENDAR_ENABLED, calendarWrite: CALENDAR_WRITE_ENABLED, social: SOCIAL_ENABLED, web: WEB_ENABLED, operations: OPERATIONS_ENABLED, frontier: FRONTIER_ENABLED }, boundaryNotice: BOUNDARY }));
+    register(api, "pixel_limb_status", "Report which modular limbs are enabled without inspecting external data. Use this only when a requested limb tool is unavailable; it does not authorize or suggest substituting another limb.", Type.Object({}), async () => result({ limbs: { email: EMAIL_ENABLED, emailDrafts: EMAIL_DRAFTS_ENABLED, calendar: CALENDAR_ENABLED, calendarWrite: CALENDAR_WRITE_ENABLED, social: SOCIAL_ENABLED, web: WEB_ENABLED, operations: OPERATIONS_ENABLED, frontier: FRONTIER_ENABLED }, boundaryNotice: BOUNDARY }));
     if (EMAIL_ENABLED) {
     register(api, "pixel_gmail_inbox", "Read sanitized Inbox projections. Paginate with offset until hasMore is false; coverage proves whether the configured Inbox query was exhaustively indexed. Raw email and source credentials are unavailable.", Type.Object({ maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })), offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 100000 })), unreadOnly: Type.Optional(Type.Boolean()) }), async (_id, p) => result(await listEmail(p.unreadOnly ? "in:inbox is:unread" : "in:inbox", p.maxResults, p.offset)));
     register(api, "pixel_gmail_sent", "Read exhaustive paginated Sent-mail metadata when coverage is complete. Paginate with offset until hasMore is false. Sent bodies are never fetched or projected, including messages also labeled Inbox.", Type.Object({ query: Type.Optional(Type.String({ maxLength: 1000 })), maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })), offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 100000 })) }), async (_id, p) => result(await listEmail(`in:sent ${p.query ?? ""}`.trim(), p.maxResults, p.offset)));
     register(api, "pixel_gmail_search", "Search the indexed sanitized Inbox and metadata-only Sent projections. Use in:inbox or in:sent and paginate with offset. Absence is proof only when coverage is fresh and complete for the folder query.", Type.Object({ query: Type.String({ minLength: 1, maxLength: 1000 }), maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })), offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 100000 })) }), async (_id, p) => result(await listEmail(p.query, p.maxResults, p.offset)));
     register(api, "pixel_gmail_read", "Read one sanitized email record. Inbox records contain bounded summaries; Sent records are metadata-only. Raw bodies, HTML, and attachment content are unavailable.", Type.Object({ messageId: Type.String({ minLength: 1, maxLength: 256 }) }), async (_id, p) => { const data = await loadProjection("email"); const record = data.records.find((item) => item.id === p.messageId); if (!record) throw new Error("email projection record not found"); return result({ ...record, generatedAt: data.generatedAt, ageSeconds: data.ageSeconds, stale: data.stale, coverage: data.coverage ?? null, sync: await readSourceSync(PROJECTION_DIR, "email"), boundaryNotice: BOUNDARY }); });
     register(api, "pixel_gmail_thread", "Read bounded pages of one projected Gmail thread, including metadata-only Sent records when covered. Paginate with offset until hasMore is false.", Type.Object({ threadId: Type.String({ minLength: 1, maxLength: 256 }), maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })), offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 100000 })) }), async (_id, p) => { const data = await loadProjection("email"); const page = pageRecords(data.records.filter((item) => item.threadId === p.threadId), p.maxResults, p.offset); return result({ threadId: p.threadId, ...page, generatedAt: data.generatedAt, ageSeconds: data.ageSeconds, stale: data.stale, coverage: data.coverage ?? null, sync: await readSourceSync(PROJECTION_DIR, "email"), boundaryNotice: BOUNDARY }); });
+    }
+
+    if (EMAIL_DRAFTS_ENABLED) {
+    register(api, "pixel_gmail_draft_propose", "Propose one Gmail draft for the owner to approve. Nothing is created until the owner approves these exact values, and Pixel never sends email: the owner reviews and sends the draft from Gmail. To reply, pass the projected messageId as replyToMessageId; Gmail threads the draft. Never copy projection placeholders or credentials into a draft.", Type.Object({ to: recipientSchema(1), cc: Type.Optional(recipientSchema(0)), subject: Type.Optional(Type.String({ maxLength: 998 })), body: Type.String({ minLength: 1, maxLength: 100000 }), replyToMessageId: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })) }), async (_id, p) => result(await writeDraftProposal(p)));
     }
 
     if (CALENDAR_ENABLED) {

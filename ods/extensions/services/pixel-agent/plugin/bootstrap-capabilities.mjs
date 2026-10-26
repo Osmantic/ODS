@@ -44,7 +44,7 @@ export const RETIRED_DEFAULTS = Object.freeze({
   }),
 });
 export const EMAIL_TOOLS = Object.freeze(['pixel_gmail_inbox', 'pixel_gmail_sent', 'pixel_gmail_search',
-  'pixel_gmail_read', 'pixel_gmail_thread']);
+  'pixel_gmail_read', 'pixel_gmail_thread', 'pixel_gmail_draft_propose']);
 export const CALENDAR_PROPOSE_TOOLS = Object.freeze(['pixel_calendar_propose_create', 'pixel_calendar_propose_update',
   'pixel_calendar_propose_delete']);
 export const CALENDAR_TOOLS = Object.freeze(['pixel_calendar_list', 'pixel_calendar_get', ...CALENDAR_PROPOSE_TOOLS]);
