@@ -16,7 +16,9 @@ add `value`; `download` adds `path`, `expectedBytes` and `expectedSha256`;
 `press` adds `key` and an optional `holdMs`; `assert-painted` adds nothing
 (see the sections below). A locator is either
 `{selector: "CSS"}` or `{role: "button", name: "Show items", exact: true}`.
-Semantic roles are
+The tool also accepts a role/name locator without `exact` and a selector with
+`exact: true`, which match the same element, and always sends these two forms
+(`workspace-preview-inspect.mjs`); `exact: false` stays invalid. Semantic roles are
 allowlisted. There are no URLs, executable expressions, shell commands, image
 names, host paths, or Docker arguments in this protocol.
 

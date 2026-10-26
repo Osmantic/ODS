@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createWorkspacePreviewInspectTool} from '../plugin/workspace-preview-inspect.mjs';
+import {createWorkspacePreviewInspectTool, hasVisibilityTransitionPlan, inspectionPlanHash,
+  normalizeWorkspacePreviewInspectionParams as normalize} from '../plugin/workspace-preview-inspect.mjs';
 
 const valid = () => ({siteId:'site-'+ 'a'.repeat(24),sha256:'a'.repeat(64),
   viewport:{width:800,height:600},steps:[{action:'assert-hidden',locator:{selector:'#details'}}]});
@@ -93,6 +94,59 @@ test('inspection tool schema excludes empty CSS selectors and accessible names',
   const schema=createWorkspacePreviewInspectTool().parameters.properties.steps.items.properties.locator;
   assert.equal(schema.oneOf[0].properties.selector.minLength,1);
   assert.equal(schema.oneOf[1].properties.name.minLength,1);
+});
+
+// RTX Spark, 2026-10-25: the model router rejected three completions in a row
+// against this tool's schema before any tool ran, and the Portal turn ended.
+// One likely cause: role/name locators required exact as the constant true, and
+// models often leave it out, or add exact:true to a CSS selector. Neither
+// changes what is matched: role/name always match the exact accessible name,
+// and a selector has no other mode. exact:false, other keys and mixed forms
+// stay invalid.
+test('role/name locators may omit exact and selectors may carry exact:true; the inspector gets the protocol form',async()=>{
+  const calls=[];
+  const tool=createWorkspacePreviewInspectTool({request:async request=>{calls.push(structuredClone(request));throw Error('offline fixture');}});
+  const params={...valid(),steps:[
+    {action:'assert-hidden',locator:{selector:'#details',exact:true}},
+    {action:'click',locator:{role:'button',name:'Show details'}},
+    {action:'assert-visible',locator:{selector:'#details'}},
+  ]};
+  const before=structuredClone(params);
+  const result=await tool.execute('lenient',params);
+  assert.equal(result.details.errorCode,'unavailable','accepted and sent; only the offline fixture failed');
+  assert.deepEqual(params,before,'the caller arguments are never changed');
+  assert.deepEqual(calls[0].steps.map(step=>step.locator),
+    [{selector:'#details'},{role:'button',name:'Show details',exact:true},{selector:'#details'}]);
+  const strict={...valid(),steps:[
+    {action:'assert-hidden',locator:{selector:'#details'}},
+    {action:'click',locator:{role:'button',name:'Show details',exact:true}},
+    {action:'assert-visible',locator:{selector:'#details'}},
+  ]};
+  assert.deepEqual(normalize(params),normalize(strict),'one plan, whichever form the model used');
+  assert.equal(inspectionPlanHash(normalize(params)),inspectionPlanHash(normalize(strict)));
+  assert.equal(hasVisibilityTransitionPlan(normalize(params)),true,'the two #details assertions name one element');
+});
+
+test('exact:false, extra keys and mixed locator forms stay invalid, with a hint naming the field',async()=>{
+  const tool=createWorkspacePreviewInspectTool({request:async()=>assert.fail('an invalid plan must not run')});
+  for(const [locator,field] of [
+    [{role:'button',name:'Start',exact:false},'locator.exact'],
+    [{selector:'#start',exact:false},'locator.exact'],
+    [{role:'button',name:'Start',level:1},'locator'],
+    [{role:'button',name:'Start',exact:true,description:'the start button'},'locator'],
+    [{selector:'#start',role:'button',name:'Start'},'locator'],
+    [{role:'button'},'locator'],
+    [{name:'Start'},'locator'],
+    [{},'locator'],
+  ]) {
+    const params={...valid(),steps:[{action:'click',locator}]};
+    assert.throws(()=>normalize(params),undefined,JSON.stringify(locator));
+    const text=(await tool.execute('invalid',params)).content[0].text;
+    assert.ok(text.includes(`Step 1 (steps[0].${field})`),`${JSON.stringify(locator)}: ${text.slice(0,200)}`);
+  }
+  const schema=createWorkspacePreviewInspectTool().parameters.properties.steps.items.properties.locator;
+  assert.deepEqual(schema.oneOf.map(form=>[form.required,form.additionalProperties,form.properties.exact]),
+    [[['selector'],false,{const:true}],[['role','name'],false,{const:true}]]);
 });
 
 test('bounded step diagnostics identify fields without reflecting untrusted argument text',async()=>{
