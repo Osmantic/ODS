@@ -22,9 +22,13 @@ const encode=value=>new TextEncoder().encode(`data: ${typeof value==='string'?va
 const task={schemaVersion:1,runId:'chatcmpl_11111111-2222-4333-8444-555555555555',startedAt:'2026-10-26T01:34:20.000Z',finishedAt:null,state:'running',calls:0,failures:0,blocked:0,truncated:false,activities:[]}
 const context=(history='ready')=>({schemaVersion:1,status:history==='unknown'?'unavailable':'ready',sessionRevision:null,context:null,model:null,
   compaction:{status:'idle',count:0},history:{status:history,revision:null,acknowledgedMessages:0}})
-// A turn whose connection drops when the dashboard API is recreated.
-function cutOffStream() {
-  const chunks=[encode({object:'ods.task.activity',id:task.runId,pixel_task:task}),encode({choices:[{delta:{content:PARTIAL}}]})]
+// The ingress sends a turn's whole answer in one frame, after it recorded
+// the turn complete. Before that, only task activity arrives.
+const TASK_ONLY=`data: ${JSON.stringify({object:'ods.task.activity',id:task.runId,pixel_task:task})}\n\n`
+// A turn whose connection drops when the dashboard API is recreated, before
+// its answer arrived or, with text, right after it.
+function cutOffStream(text) {
+  const chunks=[encode({object:'ods.task.activity',id:task.runId,pixel_task:task}),...(text?[encode({choices:[{delta:{content:text}}]})]:[])]
   return {ok:true,status:200,headers:new Map([['content-type','text/event-stream']]),body:{getReader:()=>({
     read:async()=>{
       if(chunks.length)return {done:false,value:chunks.shift()}
@@ -70,18 +74,17 @@ it('settles a turn a restart cut off by itself, keeps what arrived and offers Se
   let attempt
   server.streams.push(body=>{attempt=body;return cutOffStream()})
   // The restarted server proved nothing still runs and settled the receipt:
-  // the producer died with the old process, so no terminal frame was saved.
+  // the producer died with the old process before the answer was sent.
   server.result=body=>{
     expect(body).toEqual({chat_id:attempt.chat_id,request_id:attempt.request_id})
-    return response({state:'interrupted',events:`data: ${JSON.stringify({choices:[{delta:{content:PARTIAL}}]})}\n\n`})
+    return response({state:'interrupted',events:TASK_ONLY})
   }
   render(<Pixel/>);await screen.findByText('Available')
   fireEvent.change(field(),{target:{value:QUESTION}})
   fireEvent.click(screen.getByTitle('Send'))
-  const reply=await screen.findByText((_,node)=>node?.tagName==='EM' && node.textContent===RESTART_NOTICE)
+  const reply=await screen.findByText(RESTART_NOTICE)
   const bubble=reply.closest('[data-pixel-response]')
   expect(within(bubble).getByText('Response stopped')).toBeVisible()
-  expect(within(bubble).getByText(PARTIAL,{exact:false})).toBeVisible()
   expect(screen.queryByText(STALE)).toBeNull()
   expect(row()).toBeNull()
   // The composer is free and holds the question again.
@@ -89,7 +92,7 @@ it('settles a turn a restart cut off by itself, keeps what arrived and offers Se
   expect(field()).toHaveValue(QUESTION)
   expect(screen.getByTitle('Send')).toBeEnabled()
   await waitFor(()=>expect(stored()).toMatchObject({interrupted:false,inFlight:false,requestId:null}))
-  expect(stored().messages.at(-1)).toMatchObject({status:'stopped',content:`${PARTIAL}\n\n_${RESTART_NOTICE}_`})
+  expect(stored().messages.at(-1)).toMatchObject({status:'stopped',content:RESTART_NOTICE})
   expect(stored().messages.at(-1).task).toBeUndefined()
   // One click sends the question again as a new turn.
   server.streams.push(()=>answer('Yes: use a scheduled task.'))
@@ -98,6 +101,32 @@ it('settles a turn a restart cut off by itself, keeps what arrived and offers Se
   const resent=JSON.parse(calls('/api/pixel/chat/stream')[1][1].body)
   expect(resent.messages.at(-1)).toEqual({role:'user',content:QUESTION})
   expect(resent.request_id).not.toBe(attempt.request_id)
+  expect(calls('/api/pixel/chat/cancel')).toHaveLength(0)
+})
+
+it('settles a receipt that kept the answer as finished, with nothing to send again',async()=>{
+  // The dashboard API was recreated after it saved the answer, before the
+  // closing frames. The ingress had recorded the turn complete before sending.
+  const ANSWER='Yes. Portal can run scheduled tasks: open Automations and add one.'
+  let attempt
+  server.streams.push(body=>{attempt=body;return cutOffStream(ANSWER)})
+  server.result=body=>{
+    expect(body).toEqual({chat_id:attempt.chat_id,request_id:attempt.request_id})
+    return response({state:'interrupted',events:`${TASK_ONLY}data: ${JSON.stringify({choices:[{delta:{content:ANSWER}}]})}\n\n`})
+  }
+  render(<Pixel/>);await screen.findByText('Available')
+  fireEvent.change(field(),{target:{value:QUESTION}})
+  fireEvent.click(screen.getByTitle('Send'))
+  await waitFor(()=>expect(stored()).toMatchObject({interrupted:false,inFlight:false,requestId:null}))
+  expect(stored().messages.at(-1)).toMatchObject({role:'assistant',status:'done',content:ANSWER})
+  const bubble=screen.getByText(ANSWER).closest('[data-pixel-response]')
+  expect(within(bubble).queryByText('Response stopped')).toBeNull()
+  expect(within(bubble).queryByRole('button',{name:'Send again'})).toBeNull()
+  expect(screen.queryByText(RESTART_NOTICE,{exact:false})).toBeNull()
+  expect(screen.queryByText(STALE)).toBeNull()
+  expect(row()).toBeNull()
+  // Nothing is put back to be sent again.
+  expect(field()).toHaveValue('')
   expect(calls('/api/pixel/chat/cancel')).toHaveLength(0)
 })
 
@@ -167,8 +196,8 @@ it('never settles a turn whose receipt could not be read, even when nothing runs
   expect(screen.queryByText(NO_REPLY_NOTICE,{exact:false})).toBeNull()
   expect(screen.queryByRole('status',{name:'Message not started'})).toBeNull()
   // Once the receipt can be read, it decides what the reply says.
-  server.result=()=>response({state:'interrupted',events:`data: ${JSON.stringify({choices:[{delta:{content:PARTIAL}}]})}\n\n`})
-  await screen.findByText((_,node)=>node?.tagName==='EM' && node.textContent===RESTART_NOTICE,{},{timeout:4000})
+  server.result=()=>response({state:'interrupted',events:TASK_ONLY})
+  await screen.findByText(RESTART_NOTICE,{},{timeout:4000})
   expect(calls('/api/pixel/chat/cancel')).toHaveLength(0)
 })
 
@@ -271,8 +300,7 @@ it('never asks to send again when the cut-off turn’s work went on, so nothing 
   // went on, and later ended.
   saveCutOffChat()
   let running=true
-  server.result=()=>response(running?{state:'unresolved',events:''}
-    :{state:'interrupted',events:`data: ${JSON.stringify({choices:[{delta:{content:PARTIAL}}]})}\n\n`})
+  server.result=()=>response(running?{state:'unresolved',events:''}:{state:'interrupted',events:TASK_ONLY})
   server.activity=()=>response({state:running?'active':'terminal'})
   vi.useFakeTimers()
   await act(async()=>{render(<Pixel/>)})
@@ -281,9 +309,8 @@ it('never asks to send again when the cut-off turn’s work went on, so nothing 
   running=false
   for(let second=0;second<15;second++)await act(async()=>vi.advanceTimersByTimeAsync(1000))
   expect(row()).toBeNull()
-  const reply=screen.getByText((_,node)=>node?.tagName==='EM' && node.textContent===RAN_ON_NOTICE)
+  const reply=screen.getByText(RAN_ON_NOTICE)
   const bubble=reply.closest('[data-pixel-response]')
-  expect(within(bubble).getByText(PARTIAL,{exact:false})).toBeVisible()
   expect(within(bubble).queryByRole('button',{name:'Send again'})).toBeNull()
   expect(screen.queryByText(RESTART_NOTICE,{exact:false})).toBeNull()
   // The question is not put back to be sent again; the composer is free.

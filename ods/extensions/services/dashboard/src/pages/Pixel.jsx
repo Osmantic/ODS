@@ -943,11 +943,20 @@ export default function Pixel({ systemStatus = null }) {
               let chat = loadStoredChat(readConversations().find(item => item.chatId === chatId))
               if (!chat || chat.chatId !== chatId) throw new Error('Saved conversation is unavailable')
               const recovered = retainedResult(result.events)
-              const successful = result.state === 'complete' && recovered.done && !recovered.failed
-              // A receipt without its terminal frame lost its producer with
-              // the dashboard API process, and the server then proved nothing
+              // The ingress sends a turn's whole answer in one frame, after it
+              // recorded the turn complete. A receipt that lost its producer
+              // after saving that text lost only its closing frames: the turn
+              // finished, and its answer is shown as such.
+              const answered = result.state === 'interrupted' && !recovered.failed && Boolean(recovered.content.trim())
+              const successful = (result.state === 'complete' && recovered.done && !recovered.failed) || answered
+              // Its closing frame carried the final activity log; the running
+              // snapshot saved before it is kept only if it recorded something,
+              // and it replaces the page's own snapshot, never adds to it.
+              const recoveredTask = answered ? {task:recordedTask(recovered.task)} : recovered.task ? {task:recovered.task} : {}
+              // A receipt without its answer lost its producer with the
+              // dashboard API process, and the server then proved nothing
               // still runs: Portal restarted while it was answering.
-              const cutOff = result.state === 'interrupted' && !recovered.done && !recovered.failed
+              const cutOff = result.state === 'interrupted' && !recovered.done && !recovered.failed && !answered
               // Its work went on after the cut-off, so it may be done: never
               // ask for the message again.
               const ranOn = cutOff && ranOnRequest.current === requestId
@@ -967,7 +976,7 @@ export default function Pixel({ systemStatus = null }) {
                       content: result.state === 'cancelled' ? stoppedContent(recovered.content)
                         : recovered.content || (successful ? 'Completed without a text response.' : 'Portal could not complete the response. Check saved work before continuing.'),
                       status: result.state === 'cancelled' ? 'stopped' : successful ? 'done' : 'error',
-                      ...(recovered.task ? {task:recovered.task} : {}),
+                      ...recoveredTask,
                       ...(successful && recovered.questions ? {questions:recovered.questions} : {}),
                       ...(successful && recovered.artifacts ? {artifacts:recovered.artifacts} : {}),
                       ...(publication ? {publication,beforePublication:before} : {}),
