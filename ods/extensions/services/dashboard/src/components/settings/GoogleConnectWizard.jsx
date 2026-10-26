@@ -5,6 +5,11 @@ import { cancelGoogle, completeGoogle, connectGoogle, saveProject, savedProject 
 
 const ZONE = /^[A-Za-z][A-Za-z0-9_+\-/]{0,63}$/
 const link = 'underline'
+// What turning a capability on means, where the label alone can't say it.
+const NOTES = {
+  'calendar.write': 'Portal suggests each change; nothing happens until you approve it in Settings.',
+  'calendar.direct': 'Only events without guests, and moving an event to a new time. At most 20 an hour, and paused while Portal has Full Access.',
+}
 
 function ownerTimeZone() {
   const zone = Intl.DateTimeFormat().resolvedOptions().timeZone
@@ -39,8 +44,13 @@ export default function GoogleConnectWizard({catalog, initial = null, status, re
   const waitingFrom = useRef(null)
   const consentSeen = useRef(false)
 
-  const requested = Object.fromEntries(catalog.capabilities.map(capability =>
-    [capability.id, capability.available && Boolean(choices[capability.id])]))
+  // The catalog lists each capability after the ones it needs.
+  const requested = {}
+  for (const capability of catalog.capabilities) {
+    requested[capability.id] = capability.available && Boolean(choices[capability.id])
+      && capability.requires.every(need => requested[need])
+  }
+  const offered = capability => capability.available && capability.requires.every(need => requested[need])
   const anything = Object.values(requested).some(Boolean)
   const labels = Object.fromEntries(catalog.capabilities.map(capability => [capability.id, capability.label]))
 
@@ -167,9 +177,10 @@ export default function GoogleConnectWizard({catalog, initial = null, status, re
       <fieldset className="space-y-2">
         <legend className="font-medium">What Portal may use</legend>
         {catalog.capabilities.map(capability => <label key={capability.id} className="flex items-start gap-2">
-          <input type="checkbox" checked={requested[capability.id]} disabled={!capability.available || busy}
+          <input type="checkbox" checked={requested[capability.id]} disabled={!offered(capability) || busy}
             onChange={event => setChoices(previous => ({...previous, [capability.id]: event.target.checked}))} />
-          <span>{capability.label}{capability.available ? '' : ' (coming in a later update)'}</span>
+          <span>{capability.label}{capability.available ? '' : ' (coming in a later update)'}
+            {capability.available && NOTES[capability.id] ? <span className="block text-sm text-theme-text-muted">{NOTES[capability.id]}</span> : null}</span>
         </label>)}
         <p className="text-sm text-theme-text-muted">Portal reads summaries of your mail and the details of your events, never attachments. When Portal runs on a cloud model, that model&apos;s provider sees what Portal reads.</p>
       </fieldset>

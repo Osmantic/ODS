@@ -36,7 +36,7 @@ GOOGLE: dict[str, Any] = {
         {
             "id": "calendar.direct", "label": "Add or move your own private events without asking",
             "effect": "private-write", "scopes": [CALENDAR_WRITE_SCOPE], "tools": [],
-            "default": False, "available": False, "requires": ["calendar.write"],
+            "default": False, "available": True, "requires": ["calendar.write"],
         },
         {
             "id": "gmail.read", "label": "Read email summaries", "effect": "read",

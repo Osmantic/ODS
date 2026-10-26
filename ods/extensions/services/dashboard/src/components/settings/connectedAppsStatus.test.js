@@ -72,6 +72,9 @@ describe('the Google card', () => {
       .toMatchObject({kind: 'updating', tone: 'progress', actions: []})
     expect(step({action: 'connect', phase: 'activating', expiresAt: null, error: 'runtime-busy', since: '2026-10-25T20:29:00Z'}))
       .toMatchObject({kind: 'update-stopped', actions: ['finish'], help: false})
+    // An update that never reported back has stopped: Finish runs it again.
+    expect(step({action: 'connect', phase: 'activating', expiresAt: null, error: null, since: '2026-10-25T20:23:00Z'}))
+      .toMatchObject({kind: 'update-stopped', actions: ['finish'], help: false, message: "Portal hasn't picked up the change yet."})
     expect(step({action: 'disconnect', phase: 'deactivating', expiresAt: null, error: 'gateway-change-rolled-back', since: '2026-10-25T20:29:00Z'}))
       .toMatchObject({kind: 'update-stopped', actions: ['finish'], help: true})
     expect(step({action: 'connect', phase: 'failed', expiresAt: null, error: 'access-denied', since: '2026-10-25T20:29:00Z'}))
@@ -106,6 +109,7 @@ it('polls only while a step runs or the first sync is underway', () => {
   const consent = {action: 'connect', phase: 'consent', expiresAt: '2026-10-25T20:40:00Z', error: null, since: '2026-10-25T20:25:00Z'}
   expect(refreshDelay(statusFor({pending: consent}), NOW)).toBe(2000)
   expect(refreshDelay(statusFor({pending: {...consent, phase: 'activating', expiresAt: null}}), NOW)).toBe(3000)
+  expect(refreshDelay(statusFor({pending: {...consent, phase: 'activating', expiresAt: null, since: '2026-10-25T20:23:00Z'}}), NOW)).toBeNull()
   expect(refreshDelay(statusFor({pending: {...consent, phase: 'activating', expiresAt: null, error: 'runtime-busy'}}), NOW)).toBeNull()
   expect(refreshDelay(statusFor({pending: {...consent, phase: 'failed', expiresAt: null, error: 'access-denied'}}), NOW)).toBeNull()
   expect(refreshDelay(statusFor({state: 'first-sync'}), NOW)).toBe(5000)

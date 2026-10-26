@@ -111,7 +111,18 @@ it('warns on the card while Full Access is on', async () => {
   api({'GET /api/pixel/connections': [200, statusFor({state: 'connected'})],
     'GET /api/pixel/access-mode': [200, {configured_mode: 'full-access'}]})
   render(<ConnectedApps />)
-  expect(await screen.findByText(/Full Access is on. Connected apps keep working/)).toBeVisible()
+  const note = await screen.findByText(/Full Access is on. Connected apps keep working/)
+  expect(note).toHaveTextContent('approving its own calendar changes')
+  expect(note).not.toHaveTextContent('by itself')
+})
+
+it('says private changes wait for approval while Full Access is on', async () => {
+  const capabilities = {'calendar.read': true, 'calendar.write': true, 'calendar.direct': true, 'gmail.read': true,
+    'gmail.drafts': false}
+  api({'GET /api/pixel/connections': [200, statusFor({state: 'connected', capabilities})],
+    'GET /api/pixel/access-mode': [200, {configured_mode: 'full-access'}]})
+  render(<ConnectedApps />)
+  expect(await screen.findByText(/Calendar changes Portal would make by itself wait for your approval until then/)).toBeVisible()
 })
 
 it('says plainly that connected apps are not available on this system', async () => {

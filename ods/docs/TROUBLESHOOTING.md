@@ -365,6 +365,12 @@ are the questions it doesn't answer. The full guide is
 
 **Fix:** open **Settings, Connected apps**. **Calendar changes from Portal** under the Google card lists every change that waits, with **Approve** and **Decline**. If Portal says it can't change your calendar at all, press **Change access** and connect again with **Suggest calendar changes you approve** checked.
 
+### Portal asks me to approve a change it used to make by itself
+
+**Cause:** Portal has Full Access. While it does, ODS pauses the private calendar changes Portal may make without asking, so each one waits for your approval.
+
+**Fix:** approve it in **Settings, Connected apps**, or switch Portal back to Sandbox in **Portal permissions** to let it make them by itself again. If they still wait after switching back, press **Finish** on the Google card.
+
 ### A calendar change says Google hasn't confirmed it
 
 **Cause:** the change was sent, but Google's answer didn't arrive. ODS never sends a change twice, so it can't simply try again.

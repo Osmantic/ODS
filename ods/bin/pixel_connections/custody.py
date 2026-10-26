@@ -35,6 +35,8 @@ EXCHANGE_KEYS = {"schemaVersion", "kind", "finishedAt", "flowId", "outcome", "er
                  "errorType", "grantedScopes", "account"}
 REVOKE_KEYS = {"schemaVersion", "kind", "finishedAt", "outcome", "errorClass", "httpStatus", "errorType"}
 ERROR_CLASS = re.compile(r"^[a-z][a-z-]{1,40}$")
+# The broker key that lets queued private calendar changes run.
+DIRECT_FLAG = "PIXEL_CALENDAR_DIRECT_ENABLED"
 SCOPE = re.compile(r"^(?:https://www\.googleapis\.com/auth/[a-z0-9._-]{1,100}|https://mail\.google\.com/|openid|email|profile)$")
 EMAIL = re.compile(r"^[^@\s<>\x00-\x1f\x7f]{1,64}@[^@\s<>\x00-\x1f\x7f]{1,253}$")
 
@@ -323,6 +325,30 @@ def start(run: Run, *, direct: bool) -> None:
     _check(run, ["systemctl", "enable", "--now", "pixel-source-broker.timer"])
     _check(run, ["systemctl", "enable" if direct else "disable", "--now", "pixel-source-direct.path"])
     _check(run, ["systemctl", "start", "--no-block", "pixel-source-broker.service"])
+
+
+def direct_enabled(paths: Paths) -> bool:
+    """Whether the installed broker environment lets queued private changes run."""
+    try:
+        text = paths.env.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    return dict(parse_env(text)).get(DIRECT_FLAG) == "1"
+
+
+def watch_direct(paths: Paths, run: Run, *, enabled: bool) -> None:
+    """Turn the watcher that runs queued private changes on or off; a broker never prepared has none."""
+    if (paths.units / "pixel-source-direct.path").exists():
+        _check(run, ["systemctl", "enable" if enabled else "disable", "--now", "pixel-source-direct.path"])
+
+
+def pause_direct(paths: Paths, run: Run) -> None:
+    """Stop queued private changes at once, leaving every other part of the broker as it is."""
+    if paths.env.exists():
+        lines = parse_env(paths.env.read_text(encoding="utf-8"))
+        if dict(lines).get(DIRECT_FLAG) == "1":
+            install_env(paths, env_text(lines, {DIRECT_FLAG: "0"}))
+    watch_direct(paths, run, enabled=False)
 
 
 def sync(run: Run) -> None:

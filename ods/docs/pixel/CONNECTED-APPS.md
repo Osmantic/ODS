@@ -10,7 +10,8 @@ disconnect at any time.
 - **Calendar:** Portal reads the events in your primary calendar, from a week ago
   to three months ahead. If you turn on **Suggest calendar changes you approve**,
   it can also suggest adding, moving or deleting an event. Nothing changes on your
-  calendar until you approve that exact change in Settings.
+  calendar until you approve that exact change in Settings, unless you also let
+  Portal add or move your own private events by itself.
 - **Email:** Portal reads summaries of your Inbox and of what you sent, for the
   last 180 days: sender, subject, date and a short, cleaned-up excerpt. It never
   sees attachments, and it can't send or delete mail.
@@ -105,12 +106,29 @@ calendar has it now.
 To turn calendar changes on later, press **Change access** on the card and
 connect again with the box checked.
 
+## Private events Portal adds or moves by itself
+
+**Add or move your own private events without asking** builds on calendar
+changes. With it on, Portal makes two kinds of change without asking first:
+
+- adding an event that has no guests, so Google emails no one;
+- moving one of your events to a new time, changing nothing else about it.
+
+Anything else still waits for your approval: guests, invitations, a new title,
+place or notes, and every deletion. Portal makes at most 20 of these changes an
+hour; the rest are not made, and Portal says so.
+
+While Portal has **Full Access**, it makes none of these changes by itself. ODS
+stops them the moment you turn Full Access on, and Portal asks for your approval
+instead. They start again when you switch Portal back to Sandbox. Your choice
+stays on the card throughout.
+
 ## Disconnect
 
 Press **Disconnect** on the card. ODS stops syncing, removes its access at
 Google, and deletes the sign-in, every summary it saved and every calendar change
-still waiting. Portal then stops
-using your calendar and email. Uninstalling ODS does the same.
+still waiting. Portal then stops using your calendar and email. Uninstalling ODS
+does the same.
 
 ## Turn connected apps off
 

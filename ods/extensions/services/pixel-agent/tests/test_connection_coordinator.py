@@ -490,6 +490,7 @@ def test_requests_outside_the_contract_are_refused_before_any_change(world):
                (dict(base, ownerTimeZone="Not/AZone"), "invalid-connection-request"),
                (dict(base, redirectPort=80), "invalid-connection-request"),
                (dict(base, client=dict(CLIENT, clientId="not-a-google-client")), "client-invalid"),
+               (dict(base, capabilities=dict(READ_BOTH, **{"gmail.drafts": True})), "capability-unavailable"),
                (dict(base, capabilities=dict(READ_BOTH, **{"calendar.direct": True})), "capability-unavailable"),
                (dict(base, capabilities=dict(READ_BOTH, **{"calendar.read": False, "calendar.write": True})),
                 "capability-unavailable"),

@@ -506,6 +506,16 @@ owner approves it. This is Pixel's operator path (`source-show`, `source-approve
 - `decline` takes a change off the list. When nothing reached Google, its snapshot
   goes too; otherwise the snapshot and the broker's records stay as evidence.
 
+With `calendar.direct` on as well, Portal adds private events (no guests, no
+emails) and moves events to a new time without asking, through Pixel's bounded
+direct policy (`pixel-source-direct.path`, at most 20 an hour). Those never appear
+in `changes`. While Portal has Full Access they pause: before the access
+coordinator grants Full Access it turns the broker's direct watcher off, and right
+after any access-mode change it records the mode and updates Portal's gateway in
+the background (the connection's `pending` step shows it, with `finish` if Portal
+was busy). Changes queued while paused are discarded before the watcher runs again,
+so none is ever made late.
+
 **Error responses:**
 | Code | Condition |
 |------|-----------|

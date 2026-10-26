@@ -2,6 +2,9 @@
 
 The record holds choices only, never credentials: which capabilities the owner
 turned on, the account, the Calendar and Gmail window, and the owner's time zone.
+One fact rides along with them: ``directPaused`` says Portal had Full Access when
+the custodian last looked, so the calendar changes Portal may make by itself wait
+(Decision 4). Every renderer reads the effective capabilities, never the raw ones.
 The custodian in the access coordinator writes it. Installs read it so a
 connection survives an update. No record means nothing is connected; a record
 that fails validation also counts as nothing connected, and callers report why.
@@ -24,6 +27,8 @@ MAX_BYTES = 64 * 1024
 GOOGLE_CAPABILITIES = ("calendar.read", "calendar.write", "calendar.direct", "gmail.read", "gmail.drafts")
 TOP_KEYS = {"schemaVersion", "kind", "updatedAt", "ownerTimeZone", "connectors"}
 GOOGLE_KEYS = {"status", "account", "calendarId", "gmailWindowDays", "capabilities", "cloudModels", "connectedAt"}
+# Written since automatic calendar changes became available; a record without it is not paused.
+OPTIONAL_GOOGLE_KEYS = {"directPaused"}
 EMAIL = re.compile(r"^[^@\s<>\x00-\x1f\x7f]{1,64}@[^@\s<>\x00-\x1f\x7f]{1,253}$")
 CALENDAR_ID = re.compile(r"^[A-Za-z0-9._@+-]{1,255}$")
 TIME_ZONE = re.compile(r"^[A-Za-z][A-Za-z0-9_+\-/]{0,63}$")
@@ -56,8 +61,10 @@ def valid_time_zone(value: Any) -> bool:
 
 
 def _google(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != GOOGLE_KEYS:
+    if not isinstance(value, dict) or not GOOGLE_KEYS <= set(value) <= GOOGLE_KEYS | OPTIONAL_GOOGLE_KEYS:
         raise StateError("Google connection has missing or unknown fields")
+    if "directPaused" in value and type(value["directPaused"]) is not bool:
+        raise StateError("directPaused must be true or false")
     if value["status"] != "connected":
         raise StateError("Google connection status is unknown")
     if not isinstance(value["account"], str) or not EMAIL.fullmatch(value["account"]):
@@ -176,6 +183,13 @@ def valid_connection_answers(value: Any) -> bool:
             and (window is None or type(window) is int and 1 <= window <= 3650))
 
 
+def effective_capabilities(google: dict[str, Any]) -> dict[str, bool]:
+    """What Portal may do now: the owner's choices, with automatic changes off while they are paused."""
+    capabilities = dict(google["capabilities"])
+    capabilities["calendar.direct"] = capabilities["calendar.direct"] and not google.get("directPaused", False)
+    return capabilities
+
+
 def onboarding_overrides(record: dict[str, Any] | None, *, google_custody: bool) -> dict[str, Any]:
     """Pixel onboarding answers the record implies; empty when nothing is connected.
 
@@ -192,7 +206,7 @@ def onboarding_overrides(record: dict[str, Any] | None, *, google_custody: bool)
         overrides.update(timeZone=zone, userTimezone=zone)
     google = record["connectors"].get("google")
     if google and google_custody:
-        capabilities = google["capabilities"]
+        capabilities = effective_capabilities(google)
         writes = capabilities["calendar.read"] and capabilities["calendar.write"]
         overrides.update(
             emailLimbEnabled=capabilities["gmail.read"],

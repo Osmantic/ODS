@@ -122,7 +122,7 @@ export default function ConnectedApps() {
         {card.step.fix ? <p>{card.step.fix}</p> : null}
         {card.step.help ? <HelpLink /> : null}
       </div> : null}
-      {fullAccess && google?.account ? <p role="note" className="text-sm">Full Access is on. Connected apps keep working, but Portal now runs commands as your account, and if that account can use Docker, it can act as root on this machine, which includes reading the Google sign-in ODS keeps here. Switch Portal back to Sandbox in Portal access when you don&apos;t need Full Access.</p> : null}
+      {fullAccess && google?.account ? <p role="note" className="text-sm">Full Access is on. Connected apps keep working, but Portal now runs commands as your account, and if that account can use Docker, it can act as root on this machine, which includes reading the Google sign-in ODS keeps here and approving its own calendar changes. {google.capabilities?.['calendar.direct'] ? 'Calendar changes Portal would make by itself wait for your approval until then. ' : ''}Switch Portal back to Sandbox in Portal access when you don&apos;t need Full Access.</p> : null}
       {notice ? <p role="status">{notice}</p> : null}
       {problem ? <Problem problem={problem} /> : null}
       {!wizard && actions.length ? <div className="flex flex-wrap gap-3">

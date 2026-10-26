@@ -37,6 +37,11 @@ class ConnectionRecordSchemaTests(unittest.TestCase):
         self.assertIs(state.validate(value), value)
         self.assertEqual(state.parse(json.dumps(value).encode()), value)
 
+    def test_a_record_from_before_private_changes_is_not_paused(self):
+        for value in (record(), record(directPaused=False), record(directPaused=True)):
+            self.assertIs(state.validate(value), value)
+        self.assertNotIn("directPaused", record()["connectors"]["google"])
+
     def test_a_record_without_connectors_or_time_zone_is_valid(self):
         value = record()
         value.update(connectors={}, ownerTimeZone=None)
@@ -69,6 +74,7 @@ class ConnectionRecordSchemaTests(unittest.TestCase):
             "unknown capability": changed(lambda v: v["connectors"]["google"]["capabilities"].update(send=True)),
             "non-boolean capability": changed(lambda v: v["connectors"]["google"]["capabilities"].update({"gmail.read": 1})),
             "non-boolean cloud switch": changed(lambda v: v["connectors"]["google"].update(cloudModels="yes")),
+            "non-boolean pause": changed(lambda v: v["connectors"]["google"].update(directPaused="yes")),
         }
         for name, value in cases.items():
             with self.subTest(name):
@@ -164,6 +170,16 @@ class OnboardingMappingTests(unittest.TestCase):
         capabilities["calendar.direct"] = True
         overrides = state.onboarding_overrides(record(capabilities=dict(capabilities)), google_custody=True)
         self.assertTrue(overrides["calendarDirectEnabled"])
+
+    def test_full_access_pauses_private_changes_but_keeps_the_choice(self):
+        chosen = {"calendar.read": True, "calendar.write": True, "calendar.direct": True,
+                  "gmail.read": True, "gmail.drafts": False}
+        paused = record(capabilities=dict(chosen), directPaused=True)
+        overrides = state.onboarding_overrides(paused, google_custody=True)
+        self.assertEqual((overrides["calendarWriteEnabled"], overrides["calendarDirectEnabled"]), (True, False))
+        self.assertTrue(state.effective_capabilities(record(capabilities=dict(chosen))["connectors"]["google"])["calendar.direct"])
+        self.assertFalse(state.effective_capabilities(paused["connectors"]["google"])["calendar.direct"])
+        self.assertTrue(paused["connectors"]["google"]["capabilities"]["calendar.direct"], "the owner's choice stays")
 
     def test_a_connection_without_its_sign_in_keeps_sources_off(self):
         overrides = state.onboarding_overrides(record(), google_custody=False)

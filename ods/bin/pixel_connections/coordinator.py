@@ -40,6 +40,8 @@ GRANTED_BY = {
                                 "https://www.googleapis.com/auth/calendar.readonly",
                                 "https://www.googleapis.com/auth/calendar"}),
     "calendar.write": frozenset({catalog.CALENDAR_WRITE_SCOPE, "https://www.googleapis.com/auth/calendar"}),
+    # Private changes need no scope of their own: they are calendar changes the broker bounds.
+    "calendar.direct": frozenset({catalog.CALENDAR_WRITE_SCOPE, "https://www.googleapis.com/auth/calendar"}),
     "gmail.read": frozenset({catalog.GMAIL_READ_SCOPE, "https://www.googleapis.com/auth/gmail.modify",
                              "https://mail.google.com/"}),
 }
@@ -124,8 +126,87 @@ def _write_record(record: dict[str, Any] | None) -> None:
 def gateway_target(record: dict[str, Any] | None, *, custody_held: bool) -> dict[str, Any]:
     """What Portal's gateway should run for the record, as the installer would render it."""
     google = (record or {}).get("connectors", {}).get("google")
-    capabilities = google["capabilities"] if google and custody_held else None
+    capabilities = state.effective_capabilities(google) if google and custody_held else None
     return dict(planner.limbs(capabilities), userTimezone=(record or {}).get("ownerTimeZone"))
+
+
+# ---------------------------------------------------------------- Full Access (Decision 4)
+
+def _full_access(bridge) -> bool:
+    """Whether Portal is set to Full Access; anything but a Sandbox ODS can read counts as Full Access."""
+    try:
+        return bridge.worker()["configured_status"] != "sandboxed"
+    except AccessError:
+        return True  # Unknown: pause Portal's own changes; the next activation reads the mode again.
+
+
+def _with_pause(record: dict[str, Any], paused: bool) -> dict[str, Any]:
+    google = dict(record["connectors"]["google"], directPaused=paused)
+    return dict(record, updatedAt=_iso(_now()), connectors=dict(record["connectors"], google=google))
+
+
+def _follow_mode(bridge, record: dict[str, Any]) -> dict[str, Any]:
+    """Record whether Portal has Full Access now, so its own calendar changes pause or resume with it."""
+    paused = _full_access(bridge)
+    if record["connectors"]["google"].get("directPaused", False) == paused:
+        return record
+    record = _with_pause(record, paused)
+    _write_record(record)
+    return record
+
+
+def _install_broker_env(record: dict[str, Any], target: dict[str, Any]) -> None:
+    """The broker's environment for the record; queued private changes that could not run go first."""
+    google = record["connectors"]["google"]
+    if target["calendarDirect"] and not custody.direct_enabled(PATHS):
+        approvals.discard_unsent_direct(PATHS)
+    custody.install_env(PATHS, custody.connection_env(
+        PATHS, gateway=target, calendar_id=google["calendarId"], time_zone=record["ownerTimeZone"],
+        gmail_window_days=google["gmailWindowDays"]))
+
+
+def pause_for_full_access(bridge) -> None:
+    """Before Portal gets Full Access, stop every calendar change it could make by itself.
+
+    The broker stops at once. Portal's gateway catches up with the activation that
+    follows the mode change; until then its private changes are refused, never queued.
+    """
+    with bridge.bounded(60), bridge.locked():
+        try:
+            record = state.read(RECORD, owners=OWNERS)
+        except state.StateError:
+            record = None  # Nothing renders from an unusable record; the broker still stops below.
+        google = (record or {"connectors": {}})["connectors"].get("google")
+        try:
+            if record and google and google["capabilities"]["calendar.direct"] and not google.get("directPaused"):
+                _write_record(_with_pause(record, True))
+            custody.pause_direct(PATHS, RUN)
+        except (custody.CustodyError, OSError):
+            raise AccessError("calendar-pause-failed") from None
+
+
+def follow_access_mode(bridge) -> bool:
+    """After an access-mode change, whether Portal's gateway must catch up with a pause or resume.
+
+    The new mode is recorded first, and the step is journaled as activating, so a
+    catch-up that cannot run now (Portal busy) waits in Settings behind Finish.
+    """
+    with bridge.bounded(60), bridge.locked():
+        bridge.discover()
+        try:
+            record = state.read(RECORD, owners=OWNERS)
+        except state.StateError:
+            return False
+        google = (record or {"connectors": {}})["connectors"].get("google")
+        if (not record or not google or not google["capabilities"]["calendar.direct"]
+                or not custody.holds_sign_in(PATHS)):
+            return False
+        journal = read_lifecycle(_lifecycle_path(bridge))
+        if journal and journal["phase"] == "consent":
+            return False  # The open sign-in's own activation renders the mode.
+        _follow_mode(bridge, record)
+        _write_lifecycle(bridge, _lifecycle("activating"))
+        return True
 
 
 # ---------------------------------------------------------------- requests
@@ -263,12 +344,11 @@ def complete(bridge, request: Any) -> dict[str, Any]:
                       connectors=dict(record["connectors"], google={
                           "status": "connected", "account": result["account"], "calendarId": data["calendarId"],
                           "gmailWindowDays": data["gmailWindowDays"], "capabilities": granted,
-                          "cloudModels": wanted["cloudModels"], "connectedAt": now}))
+                          "cloudModels": wanted["cloudModels"], "connectedAt": now,
+                          "directPaused": _full_access(bridge)}))
         _write_record(record)
         target = gateway_target(record, custody_held=True)
-        custody.install_env(PATHS, custody.connection_env(
-            PATHS, gateway=target, calendar_id=data["calendarId"], time_zone=record["ownerTimeZone"],
-            gmail_window_days=data["gmailWindowDays"]))
+        _install_broker_env(record, target)
         custody.start(RUN, direct=target["calendarDirect"])
         _write_lifecycle(bridge, _lifecycle("activating"))
         return {"outcome": "connected", "errorClass": None, "account": result["account"], "capabilities": granted,
@@ -658,9 +738,15 @@ def activate(bridge, request: Any) -> dict[str, Any]:
             lifecycle = None
         record, held = _record(), custody.holds_sign_in(PATHS)
         try:
+            if held and record and "google" in record["connectors"]:
+                # The broker follows the record first: a gateway still on the old tools is refused, never obeyed.
+                record = _follow_mode(bridge, record)
+                target = gateway_target(record, custody_held=True)
+                _install_broker_env(record, target)
+                custody.watch_direct(PATHS, RUN, enabled=target["calendarDirect"])
             outcome = _change_gateway(bridge, gateway_target(record, custody_held=held),
                                       state.connection_answers(record, google_custody=held))
-        except AccessError as error:
+        except (AccessError, custody.CustodyError) as error:
             if lifecycle:
                 _write_lifecycle(bridge, dict(lifecycle, error=error.code))
             raise
