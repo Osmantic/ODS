@@ -2070,7 +2070,7 @@ async function handleImageDelete(req,res,{imageStore,historyLedger,imageRoutes,t
     imageStore.deleteConversation(user);
     sendJson(res,200,{schemaVersion:1,deleted:true});
   } catch(error) {sendError(res,error instanceof HistoryError || error instanceof ChatImageError?error.status:400,error instanceof HistoryError || error instanceof ChatImageError?error.message:'invalid-image-deletion-request');}
-  finally {try {release?.();}catch{/* Keep failed lock custody closed. */}}
+  finally {try {release?.();}catch{/* The next lock() reclaims a lock it could not remove, once removal works. */}}
 }
 
 async function handleImageRead(req,res,{policyOnly,imageStore,historyLedger,imageRoutes,token,gatewayPort,deps}) {
@@ -2253,7 +2253,7 @@ async function handleContextControl(req,res,pathname,token,gatewayPort,deps,ledg
     const native=await nativeContextRequest(compact?'compact':'context',{user,...compact?{request_id:body.request_id}:{}},token,gatewayPort,deps);
     sendJson(res,200,publicContext(native,ledger.projection(user)));
   } catch(error) {sendError(res,error instanceof HistoryError?error.status:400,error instanceof HistoryError?error.message:'invalid-context-request')}
-  finally {try {release?.()} catch { /* Persistent lock keeps subsequent writes closed. */ }}
+  finally {try {release?.()} catch { /* The next lock() reclaims a lock it could not remove, once removal works. */ }}
 }
 
 function listenUnix(server, socketPath) {

@@ -11,8 +11,13 @@ const USER = /^ods-[a-f0-9]{64}$/;
 const REQUEST = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 // No live holder needs longer than this to write its one small lock record.
 const LOCK_WRITE_GRACE_MS = 10000;
+// The largest PID process.kill accepts; anything else in a lock is torn.
+const MAX_PID = 2147483647;
 // Lock files held by this process, across ledger instances for one directory.
+// One ingress process owns a state directory; that is what makes a lock's
+// PID, boot and start time enough to tell a live holder from a leftover.
 const heldLocks = new Set();
+const PROC = fs.existsSync('/proc/self/stat');
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 export class HistoryError extends Error {
   constructor(code,status=409) { super(code.replaceAll('_','-')); this.code=this.message; this.status=status; }
@@ -75,16 +80,35 @@ function bootIdentity() {
     return /^[a-f0-9-]{36}$/.test(bootId) && Number.isSafeInteger(bootTime) && bootTime>0 ? {bootId,bootTime} : null;
   } catch(error) {if(['ENOENT','EACCES','EPERM'].includes(error.code)) return null;throw error}
 }
+// Linux: when a process started, in clock ticks since boot (immune to clock
+// jumps). Restarting Ubuntu alone keeps the boot but reuses PIDs.
+function processStart(pid) {
+  const text=fs.readFileSync(`/proc/${pid}/stat`,'utf8');
+  return Number(text.slice(text.lastIndexOf(')')+2).split(' ')[19]);
+}
+const SELF_START = PROC ? processStart('self') : undefined;
+// 'alive', 'gone' or 'reused' for a lock's owner. Its file passed the uid
+// check, so the holder runs as us: a process we may not see or signal is not it.
+function ownerProcess(owner) {
+  if(PROC) {
+    let start;
+    try {start=processStart(owner.pid)}
+    catch(error) {if(['ENOENT','ESRCH','EACCES','EPERM'].includes(error.code)) return 'gone';throw error}
+    return Number.isSafeInteger(owner.start) && owner.start!==start ? 'reused' : 'alive';
+  }
+  try {process.kill(owner.pid,0);return 'alive'}
+  catch(probe) {return probe.code==='EPERM' && (process.platform==='win32' || process.getuid?.()===0) ? 'alive' : 'gone'}
+}
 // A crash between creating a lock and writing it leaves an empty or torn file;
-// a crash while holding one leaves a PID that a later boot may reuse. Neither
-// may hold a conversation closed forever.
-export function staleLock(file,stat,raw,boot,now=Date.now()) {
+// a crash while holding one leaves a PID that a later process may reuse.
+// Neither may hold a conversation closed forever.
+export function staleLock(file,stat,raw,boot,now=Date.now(),processOf=ownerProcess) {
   let owner=null;
   try {owner=raw?JSON.parse(raw):null} catch(error) {if(!(error instanceof SyntaxError)) throw error}
-  if(!owner || !Number.isSafeInteger(owner.pid) || owner.pid<1) return Math.abs(now-stat.mtimeMs)>LOCK_WRITE_GRACE_MS;
+  if(!owner || !Number.isSafeInteger(owner.pid) || owner.pid<1 || owner.pid>MAX_PID) return Math.abs(now-stat.mtimeMs)>LOCK_WRITE_GRACE_MS;
   if(boot && (typeof owner.boot==='string' ? owner.boot!==boot.bootId : stat.mtimeMs<boot.bootTime-2000)) return true;
-  if(owner.pid===process.pid) return !heldLocks.has(file);
-  try {process.kill(owner.pid,0);return false} catch(probe) {return probe.code==='ESRCH'}
+  if(processOf(owner)!=='alive') return true;
+  return owner.pid===process.pid && !heldLocks.has(file);
 }
 
 export function createChatHistoryLedger(directory) {
@@ -131,15 +155,18 @@ export function createChatHistoryLedger(directory) {
         catch(probe) {if(probe.code==='ENOENT') continue;throw new HistoryError('history_storage_unavailable',503)}
         if(stat.size>128) throw new HistoryError('history_storage_unavailable',503);
         if(!staleLock(file,stat,raw,boot)) throw new HistoryError('history_busy',409);
-        const current=privateStat(file);
-        if(current.ino!==stat.ino || current.dev!==stat.dev) throw new HistoryError('history_busy',409);
-        fs.unlinkSync(file);
+        try {
+          const current=privateStat(file);
+          if(current.ino!==stat.ino || current.dev!==stat.dev) throw new HistoryError('history_busy',409);
+          fs.unlinkSync(file);
+        } catch(reclaim) {if(reclaim.code==='ENOENT') continue;if(reclaim instanceof HistoryError && reclaim.status===409) throw reclaim;throw new HistoryError('history_storage_unavailable',503)}
         continue;
       }
-      try {fs.writeFileSync(fd,JSON.stringify({pid:process.pid,...boot?{boot:boot.bootId}:{}}));fs.fsyncSync(fd);break;}
+      try {fs.writeFileSync(fd,JSON.stringify({pid:process.pid,...boot?{boot:boot.bootId}:{},...SELF_START!==undefined?{start:SELF_START}:{}}));break;}
       catch {
         // A full disk must not leave an empty lock behind for later turns.
-        fs.closeSync(fd);fd=undefined;fs.unlinkSync(file);
+        fs.closeSync(fd);fd=undefined;
+        try {fs.unlinkSync(file)} catch(cleanup) {if(cleanup.code!=='ENOENT') throw new HistoryError('history_storage_unavailable',503)}
         throw new HistoryError('history_storage_unavailable',503);
       }
     }
