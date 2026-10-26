@@ -10,10 +10,11 @@ import json
 import os
 from pathlib import Path
 import sys
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 os.environ.setdefault("DASHBOARD_API_KEY", "dashboard-test-key")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -56,7 +57,7 @@ def stores(tmp_path, monkeypatch):
 @pytest.fixture
 def edge(monkeypatch):
     """The restarted edge has no record of the chat; the ingress proves it idle."""
-    state = {"activity": "unknown", "settle": "settled", "lookups": [], "settles": []}
+    state: dict[str, Any] = {"activity": "unknown", "settle": "settled", "lookups": [], "settles": []}
 
     async def activity(edge_url, key, chat_id):
         state["lookups"].append(chat_id)
@@ -76,8 +77,14 @@ def edge(monkeypatch):
     return state
 
 
+def connected() -> Request:
+    # The handlers only ask whether the client is still connected.
+    return cast(Request, ConnectedRequest())
+
+
 def stream(request_id, text="Checking in"):
-    return pixel.ChatStreamRequest(chat_id=CHAT, request_id=request_id, messages=[{"role": "user", "content": text}])
+    return pixel.ChatStreamRequest.model_validate(
+        {"chat_id": CHAT, "request_id": request_id, "messages": [{"role": "user", "content": text}]})
 
 
 def test_restart_cut_turn_settles_by_itself_and_the_chat_takes_its_next_message(stores, edge):
@@ -97,7 +104,7 @@ def test_a_refused_follow_up_cannot_strand_the_chat_behind_the_cut_off_turn(stor
     # "Checking in" was refused while the cut-off turn held the chat, so its
     # request ID has no receipt. Its activity lookup still heals the chat.
     with pytest.raises(HTTPException) as refused:
-        asyncio.run(pixel.pixel_chat_stream(ConnectedRequest(), stream("checking-in"), OWNER))
+        asyncio.run(pixel.pixel_chat_stream(connected(), stream("checking-in"), OWNER))
     assert refused.value.status_code == 423
     missing = pixel.ChatResultRequest(chat_id=CHAT, request_id="checking-in")
     assert asyncio.run(pixel.pixel_chat_result(missing, OWNER)) == {"state": "unknown", "events": ""}
@@ -121,7 +128,7 @@ def test_work_that_may_still_run_keeps_the_chat_held(stores, edge, activity, set
     assert stores.get(CUT_OFF)["state"] == "unresolved"
     assert stores.has_pending(CUT_OFF[:2])
     with pytest.raises(HTTPException) as refused:
-        asyncio.run(pixel.pixel_chat_stream(ConnectedRequest(), stream("second-turn"), OWNER))
+        asyncio.run(pixel.pixel_chat_stream(connected(), stream("second-turn"), OWNER))
     assert refused.value.status_code == 423
 
 
@@ -153,7 +160,7 @@ def test_settle_fences_a_new_attempt_until_it_answers(stores, edge, monkeypatch)
         await entered.wait()
         stores.finish(CUT_OFF, "interrupted")  # even with nothing pending, the fence holds
         with pytest.raises(HTTPException) as fenced:
-            await pixel.pixel_chat_stream(ConnectedRequest(), stream("during-settle"), OWNER)
+            await pixel.pixel_chat_stream(connected(), stream("during-settle"), OWNER)
         assert fenced.value.status_code == 423
         release.set()
         assert await healing == {"state": "terminal"}
@@ -209,7 +216,7 @@ def test_continue_never_stops_a_turn_this_process_is_streaming(stores, monkeypat
 ])
 def test_settle_request_is_exact_and_only_trusts_a_closed_receipt(chunks, expected, monkeypatch):
     monkeypatch.setenv("PIXEL_OPENWEBUI_KEY", EDGE_KEY)
-    capture = {}
+    capture: dict[str, Any] = {}
     with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(FakeResponse(chunks=chunks), capture)) as client:
         assert asyncio.run(pixel._settle_edge_chat("http://pixel-edge:9595", EDGE_KEY, CHAT)) == expected
     assert capture["method"] == "POST"
