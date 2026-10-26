@@ -726,16 +726,37 @@ async def _current_runtime_identity(edge_url, key):
     return unknown_runtime_identity()
 
 
+# The gateway can answer its model list late while it works through a large
+# step. On the RTX Spark (2026-10-25) a status poll waited about 10 s while a
+# 27 KB page was being written, its edge call failed, and the composer flashed
+# "Portal is unavailable" mid-build. Within this grace a transient edge failure
+# repeats the last available answer; definitive states (unloaded, switching,
+# recovery, a missing model) answer at once and clear it.
+_STATUS_GRACE_SECONDS = 20.0
+_last_available_status: tuple[float, dict[str, object]] | None = None
+
+
 @router.get("/status", dependencies=[Depends(verify_api_key)])
 async def pixel_status(http_response: Response = None) -> dict[str, object]:
     """Return a fixed, nonsecret Pixel availability projection."""
+    global _last_available_status
     # The browser-facing response is newly constructed, so upstream no-store
     # headers do not survive automatically. Never cache a live identity check.
     if http_response is not None:
         http_response.headers["Cache-Control"] = "no-store"
+    result, transient = await _status_projection()
+    remembered = _last_available_status
+    if transient and remembered is not None and time.monotonic() - remembered[0] <= _STATUS_GRACE_SECONDS:
+        return dict(remembered[1])
+    _last_available_status = (time.monotonic(), dict(result)) if result.get("available") is True else None
+    return result
+
+
+async def _status_projection() -> tuple[dict[str, object], bool]:
+    """The status answer, and whether it is only a transient edge failure."""
     config = _pixel_config()
     if config is None:
-        return {"available": False, "model": None, "detail": "Portal is not enabled"}
+        return {"available": False, "model": None, "detail": "Portal is not enabled"}, False
     host_status, (access, access_issue) = await asyncio.gather(
         _host_model_status(), _current_access_readiness())
     activation = model_activation_status(host_status)
@@ -745,10 +766,10 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
     # probing the backend that the coordinator may currently be restarting.
     if access and access["available"] and access["pending"] and access["reason"] == "model-transition-pending":
         return {**activation_metadata, "available": False, "model": None, "state": "model_transition_pending",
-                "detail": _MODEL_HOLD_DETAIL}
+                "detail": _MODEL_HOLD_DETAIL}, False
     if access and access["available"] and access["reason"] == "chat-recovery-required":
         return {**activation_metadata, "available": False, "model": None, "state": "chat_recovery_required",
-                "detail": _CHAT_RECOVERY_DETAIL, **_recovery_field(_access_recovery(access))}
+                "detail": _CHAT_RECOVERY_DETAIL, **_recovery_field(_access_recovery(access))}, False
     readiness_issue = await _model_readiness_issue_for_status(host_status)
     if readiness_issue is not None:
         state, detail = readiness_issue
@@ -759,7 +780,7 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
             "state": state,
             "detail": detail,
             **_recovery_field(_STATE_RECOVERY.get(state)),
-        }
+        }, False
     edge_url, key = config
     try:
         timeout = httpx.Timeout(connect=5.0, read=5.0, write=5.0, pool=5.0)
@@ -771,9 +792,9 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
             timeout=timeout,
         ) as response:
             if response.status_code != 200:
-                return {**activation_metadata, "available": False, "model": None, "detail": "Portal service is unavailable"}
+                return {**activation_metadata, "available": False, "model": None, "detail": "Portal service is unavailable"}, True
             if not response.headers.get("content-type", "").lower().startswith("application/json"):
-                return {**activation_metadata, "available": False, "model": None, "detail": "Portal service returned an invalid response"}
+                return {**activation_metadata, "available": False, "model": None, "detail": "Portal service returned an invalid response"}, True
             raw = await _bounded_response_bytes(response, _MAX_STATUS_BYTES)
         payload = json.loads(raw)
         models = payload.get("data") if isinstance(payload, dict) else None
@@ -792,7 +813,7 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
                 stopped = await _owned_runtime_unloaded(_RUNTIME_HINT_SECONDS) is True
                 return {**activation_metadata, "available": False, "model": None, "state": "model_unavailable",
                         "detail": _RUNTIME_STOPPED_DETAIL if stopped else inference_issue,
-                        **_recovery_field("resume-model" if stopped else None)}
+                        **_recovery_field("resume-model" if stopped else None)}, False
         runtime = _active_runtime_projection(host_status)
         if available and runtime is None:
             runtime = await _verified_external_host_runtime(host_status)
@@ -824,14 +845,14 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
                 result["detail"] = ("Owner agent available; model transition needs recovery; release readiness is unverified"
                                     if readiness["reasonCode"] == "model-transition-recovery-required" else
                                     "Owner agent available; access transition is unfinished; release readiness is unverified")
-        return result
+        return result, False
     except (httpx.HTTPError, asyncio.TimeoutError) as exc:
         # Exception text and request objects can contain upstream credentials.
         # Retain the failure phase/type without logging those sensitive values.
         logger.warning("Pixel edge status request failed (%s)", type(exc).__name__)
-        return {**activation_metadata, "available": False, "model": None, "detail": "Portal service is unavailable"}
+        return {**activation_metadata, "available": False, "model": None, "detail": "Portal service is unavailable"}, True
     except (json.JSONDecodeError, UnicodeDecodeError, ValueError, TypeError):
-        return {**activation_metadata, "available": False, "model": None, "detail": "Portal service returned an invalid response"}
+        return {**activation_metadata, "available": False, "model": None, "detail": "Portal service returned an invalid response"}, True
 
 
 @router.get("/ops/{job_id}", dependencies=[Depends(verify_api_key)])

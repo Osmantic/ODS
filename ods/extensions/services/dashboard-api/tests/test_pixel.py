@@ -354,6 +354,48 @@ async def test_status_returns_only_fixed_projection():
 
 
 @pytest.mark.asyncio
+async def test_status_rides_out_a_transient_edge_failure_but_not_a_definitive_one(monkeypatch):
+    # RTX Spark: the gateway answered its model list late while writing a large
+    # page, and one failed poll flashed "Portal is unavailable" mid-build.
+    listing = FakeResponse(chunks=[json.dumps({"data": [{"id": "portal/default"}]}).encode()])
+    clock = [1000.0]
+    monkeypatch.setattr(pixel.time, "monotonic", lambda: clock[0])
+    with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(listing)):
+        available = await pixel.pixel_status()
+    assert available["available"] is True
+    with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(FakeResponse(status=502))):
+        clock[0] += pixel._STATUS_GRACE_SECONDS - 1
+        assert await pixel.pixel_status() == available
+        clock[0] += 2
+        expired = await pixel.pixel_status()
+    assert expired["available"] is False and expired["detail"] == "Portal service is unavailable"
+    # A missing model is an answer, not a transient failure: it shows at once
+    # and later failures do not resurrect the earlier available status.
+    clock[0] = 2000.0
+    with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(listing)):
+        await pixel.pixel_status()
+    missing = FakeResponse(chunks=[json.dumps({"data": []}).encode()])
+    with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(missing)):
+        assert (await pixel.pixel_status())["available"] is False
+    with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(FakeResponse(status=502))):
+        assert (await pixel.pixel_status())["available"] is False
+
+
+@pytest.mark.asyncio
+async def test_status_rides_out_an_edge_timeout_within_the_grace(monkeypatch):
+    listing = FakeResponse(chunks=[json.dumps({"data": [{"id": "portal/default"}]}).encode()])
+    with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(listing)):
+        available = await pixel.pixel_status()
+
+    async def timeout(_self):
+        raise pixel.httpx.ReadTimeout("slow gateway")
+
+    monkeypatch.setattr(FakeStreamContext, "__aenter__", timeout)
+    with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(listing)):
+        assert await pixel.pixel_status() == available
+
+
+@pytest.mark.asyncio
 async def test_status_accepts_real_edge_advertised_model(monkeypatch):
     # Exercise the production edge listing rather than repeating the dashboard
     # constant in a mock: these services previously disagreed after a rename.

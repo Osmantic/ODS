@@ -60,6 +60,14 @@ def mock_edge_read_transport(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_remembered_portal_status(monkeypatch):
+    """Each test starts without an available Portal status remembered by an earlier one."""
+    from routers import pixel
+
+    monkeypatch.setattr(pixel, "_last_available_status", None)
+
+
+@pytest.fixture(autouse=True)
 def _no_hugging_face_header_reads(monkeypatch):
     """Unit tests never reach Hugging Face; a test that needs a header stubs one."""
     import hf_gguf_header
