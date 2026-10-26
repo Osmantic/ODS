@@ -413,6 +413,25 @@ it('does not blame the connection when an older turn holds the chat, and sends t
   expect(screen.queryByText(STALE)).toBeNull()
 })
 
+it('a Stop in a held chat never stamps the earlier, finished reply as stopped',async()=>{
+  localStorage.setItem('ods.pixel.chat.v1',JSON.stringify({schema:1,chatId:'spark_chat',requestId:null,inFlight:false,interrupted:false,
+    messages:[{role:'user',content:QUESTION},{role:'assistant',content:'Earlier answer',status:'done'}]}))
+  // The send is refused because older work still holds the chat, and the
+  // check finds that work running, so Stop is offered.
+  server.streams.push(()=>response({detail:'This conversation has an unresolved attempt; recover or stop it first'},423))
+  let running=true
+  server.activity=()=>response({state:running?'active':'terminal'})
+  server.cancel=body=>{expect(body).toEqual({chat_id:'spark_chat'});running=false;return response({aborted:true})}
+  render(<Pixel/>);await screen.findByText('Available')
+  fireEvent.change(field(),{target:{value:'Checking in'}})
+  fireEvent.click(screen.getByTitle('Send'))
+  fireEvent.click(await screen.findByTitle('Stop'))
+  await waitFor(()=>expect(screen.queryByTitle('Stop')).toBeNull())
+  expect(screen.queryByText(/Stopped by you/)).toBeNull()
+  expect(screen.getByText('Earlier answer')).toBeVisible()
+  await waitFor(()=>expect(stored().messages.find(message=>message.content.startsWith('Earlier answer'))).toMatchObject({content:'Earlier answer',status:'done'}))
+})
+
 it('sends a held message by itself once per owner action, never in a loop',async()=>{
   localStorage.setItem('ods.pixel.chat.v1',JSON.stringify({schema:1,chatId:'spark_chat',requestId:null,inFlight:false,interrupted:false,
     messages:[{role:'user',content:QUESTION},{role:'assistant',content:'Earlier answer',status:'done'}]}))

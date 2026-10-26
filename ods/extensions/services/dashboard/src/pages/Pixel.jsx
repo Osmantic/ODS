@@ -1812,10 +1812,13 @@ export default function Pixel({ systemStatus = null }) {
       controller?.abort()
       abortRef.current = null
       requestIdRef.current = null
-      setMessages(previous => replaceLastAssistant(previous, {
+      // The live stream's own reply is the one stopped, whatever its last
+      // frame said. Without one, only a reply still unresolved is: a held
+      // chat's Stop ends older work, and its last reply may be finished.
+      setMessages(previous => controller || unsettledReply(previous.at(-1)) ? replaceLastAssistant(previous, {
         content: stoppedContent(controller?.responseText?.() ?? previous.at(-1)?.content),
         status: 'stopped',
-      }))
+      }) : previous)
       setSending(false)
       setInterrupted(false)
       updateRestoredActivity('terminal')
