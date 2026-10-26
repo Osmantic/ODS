@@ -9,8 +9,9 @@
 #          with --native-llm-url.
 #
 # Expects: nothing (pure functions)
-# Provides: ods_native_llm_requested(), ods_native_llm_normalize_origin(),
-#           ods_native_llm_container_origin(), ods_native_llm_origin_port()
+# Provides: ods_native_llm_requested(), ods_native_llm_owns_host_gpu(),
+#           ods_native_llm_normalize_origin(), ods_native_llm_container_origin(),
+#           ods_native_llm_origin_port()
 #
 # Modder notes:
 #   NATIVE_LLM_BASE_URL is the origin seen from the host (loopback);
@@ -21,6 +22,14 @@
 # True when this install uses a host-native llama-server.
 ods_native_llm_requested() {
     [[ -n "${NATIVE_LLM_BASE_URL:-}" ]]
+}
+
+# True when a Windows model server owns the host GPU: only Windows setup
+# passes --native-llm-gpu-name with the native route (the AMD GPU on the AMD
+# route). WSL then sees no usable GPU on purpose, so there is no GPU driver
+# for this stack to repair.
+ods_native_llm_owns_host_gpu() {
+    ods_native_llm_requested && [[ -n "${NATIVE_LLM_GPU_NAME:-}" ]]
 }
 
 # Print an http origin without a trailing slash or /v1 (/api/v1 from the
