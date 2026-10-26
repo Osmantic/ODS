@@ -1,17 +1,29 @@
 import {useId, useState} from 'react'
-import {CheckCircle2, Circle, CircleDot, ListChecks, AlertCircle, PauseCircle, ChevronDown} from 'lucide-react'
+import {CheckCircle2, Circle, CircleDot, ListChecks, PauseCircle, ChevronDown} from 'lucide-react'
 import {parseTaskActivity} from '../lib/pixelTaskActivity'
 import './portal-task-list.css'
 
-const stepLabels = {pending:'Pending',running:'In progress',completed:'Completed',blocked:'Blocked',paused:'Paused',waiting:'Waiting for you'}
+const stepLabels = {pending:'Pending',running:'In progress',completed:'Completed',paused:'Paused',waiting:'Waiting for you'}
+
+// A step the agent reports as blocked is paused, never an alarm: while the run
+// lasts the agent may still find another way. Steps wait for the owner only
+// when Portal holds the whole goal for an answer or approval.
+function stepState(step, plan, running) {
+  const stopped = step.status === 'blocked' || (step.status === 'running' && !running)
+  if (!stopped) return step.status
+  return !running && plan.status === 'waiting' ? 'waiting' : 'paused'
+}
 
 function PlanTasks({plan, active, onResume, disabled}) {
   const [open,setOpen] = useState(true)
   const id = useId()
   const completed = plan.steps.filter(step => step.status === 'completed').length
   const total = plan.steps.length
-  const running = active && plan.status === 'active'
-  const status = plan.status === 'active' && !active ? 'Paused' : {active:'Working toward your goal',completed:'Plan completed',blocked:'Needs attention',waiting:'Waiting for you'}[plan.status]
+  // A goal reported blocked is still being worked on until its run ends.
+  const running = active && ['active','blocked'].includes(plan.status)
+  // Ask for the owner only where the goal waits for them: Portal holds it for
+  // an answer or approval, or it stopped short and this card can continue it.
+  const status = plan.status === 'waiting' || (plan.status === 'blocked' && onResume) ? 'Waiting for you' : plan.status === 'completed' ? 'Plan completed' : 'Paused'
   const progress = total ? completed / total : 0
 
   return <section className="portal-task-plan" aria-label="Goal plan" data-status={running ? 'running' : plan.status}>
@@ -26,8 +38,8 @@ function PlanTasks({plan, active, onResume, disabled}) {
     <div className="portal-task-list-description"><p>{plan.summary}</p>{!running && <span className="portal-task-list-state">{status}</span>}</div>
     <div id={`${id}-tasks`} role="region" aria-labelledby={`${id}-trigger`} hidden={!open}>
       <ol className="portal-task-list" aria-label="Reported tasks">{plan.steps.map(step => {
-        const state = step.status === 'running' && !running ? plan.status === 'waiting' ? 'waiting' : 'paused' : step.status
-        const Icon = state === 'completed' ? CheckCircle2 : state === 'running' ? CircleDot : state === 'blocked' ? AlertCircle : ['paused','waiting'].includes(state) ? PauseCircle : Circle
+        const state = stepState(step, plan, running)
+        const Icon = state === 'completed' ? CheckCircle2 : state === 'running' ? CircleDot : ['paused','waiting'].includes(state) ? PauseCircle : Circle
         return <li key={step.id} data-state={state}>
           <Icon className="portal-task-list-icon" size={16} aria-hidden="true"/>
           <span className="portal-task-list-label">{step.title}</span>
