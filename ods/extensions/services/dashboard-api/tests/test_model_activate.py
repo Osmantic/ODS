@@ -71,6 +71,7 @@ def _llama_runtime_run(
 @pytest.fixture(autouse=True)
 def _isolate_opencode_config(monkeypatch, tmp_path):
     """Never let model-activation tests mutate the developer's real config."""
+    monkeypatch.setattr(_mod, '_legacy_pixel_model_status', lambda: None)
     config_dir = tmp_path / "isolated-home" / ".config" / "opencode"
     monkeypatch.setattr(
         _mod,

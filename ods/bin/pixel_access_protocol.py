@@ -81,6 +81,8 @@ def control_request(value):
     operation = value["operation"]
     keys = {"status": {"operation"}, "model-status": {"operation"},
             "change": {"operation", "request"},
+            "model-bootstrap-begin": {"operation", "request"},
+            "model-recovery-prepare": {"operation", "request"},
             "model-begin": {"operation"}, "model-finish": {"operation", "request"},
             "installer-model-verify": {"operation", "request"},
             "installer-source-begin": {"operation", "request"},
@@ -126,6 +128,18 @@ def control_request(value):
         if action == 'finish' and (type(payload['config_sha256']) is not str
                                    or not HEX.fullmatch(payload['config_sha256'])):
             raise ProtocolError('invalid-request')
+    if operation in ('model-bootstrap-begin', 'model-recovery-prepare'):
+        payload = value['request']
+        expected = {'transaction_id'} if operation == 'model-bootstrap-begin' else {'transaction_id', 'target', 'config_sha256'}
+        if (set(payload) != expected or type(payload.get('transaction_id')) is not str
+                or not HEX.fullmatch(payload['transaction_id'])):
+            raise ProtocolError('invalid-request')
+        if operation == 'model-recovery-prepare':
+            from pixel_bootstrap_recovery import target
+            try: target(payload['target'])
+            except (ValueError, TypeError): raise ProtocolError('invalid-request') from None
+            if type(payload['config_sha256']) is not str or not HEX.fullmatch(payload['config_sha256']):
+                raise ProtocolError('invalid-request')
     if operation == "installer-model-verify":
         request_value = value["request"]
         if (set(request_value) != {"transaction_id"}

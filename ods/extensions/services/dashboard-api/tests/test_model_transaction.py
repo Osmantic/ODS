@@ -126,6 +126,7 @@ def test_installer_contract_with_logical_name_is_proven_and_mismatches_are_logge
 
 @pytest.fixture
 def controller(tmp_path,monkeypatch):
+    monkeypatch.setattr(host, '_legacy_pixel_model_status', lambda: None)
     monkeypatch.setattr(host,'INSTALL_DIR',tmp_path)
     config=tmp_path/'config.json'
     config.write_text('old')

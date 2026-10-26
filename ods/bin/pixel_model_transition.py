@@ -42,6 +42,11 @@ def execute(action, transaction_id=None, outcome=None, *, request=None):
                 or not HEX.fullmatch(body["config_sha256"])):
             raise RuntimeError("installer-model-verification-failed")
         return body
+    if action == 'bootstrap-begin' and type(transaction_id) is str and HEX.fullmatch(transaction_id) and outcome is None:
+        status, body = request('model-bootstrap-begin', {'transaction_id': transaction_id})
+        if status != 200 or body != {'status': 'held', 'transaction_id': transaction_id}:
+            raise RuntimeError('bootstrap-begin-unconfirmed')
+        return transaction_id
     if action in ("begin", "source-begin") and transaction_id is None and outcome is None:
         status, body = (request("installer-source-begin", {}) if action == "source-begin"
                         else request("model-begin"))
@@ -54,7 +59,7 @@ def execute(action, transaction_id=None, outcome=None, *, request=None):
     if action == "status" and transaction_id is None and outcome is None:
         status, body = request("model-status")
         release_completion = body.get('release_completion')
-        status_body = {key: value for key, value in body.items() if key != 'release_completion'}
+        status_body = {key: value for key, value in body.items() if key not in ('release_completion', 'bootstrap', 'source_upgrade')}
         valid = (body == {"pending": False} or
                  (body.get("pending") is True and
                   set(status_body) in ({"pending", "kind", "transaction_id", "phase",
@@ -67,6 +72,20 @@ def execute(action, transaction_id=None, outcome=None, *, request=None):
                   body.get("configured_mode") in ("full-access", "sandboxed") and
                   body.get("phase") in ("acquiring", "draining", "held", "finishing",
                                          "releasing", "native-released", "error")))
+        if 'source_upgrade' in body:
+            valid = valid and body['source_upgrade'] is True
+        if 'bootstrap' in body:
+            from pixel_bootstrap_recovery import target
+            value = body['bootstrap']
+            try:
+                valid = (valid and type(value) is dict
+                         and set(value) == {'provenance', 'transactionId', 'snapshotSha256', 'target'}
+                         and value['provenance'] == 'bootstrap-upgrade'
+                         and value['transactionId'] == body['transaction_id']
+                         and type(value['snapshotSha256']) is str and HEX.fullmatch(value['snapshotSha256']))
+                target(value['target'])
+            except (ValueError, TypeError, KeyError):
+                valid = False
         if 'release_completion' in body:
             valid = (valid and type(release_completion) is dict
                      and set(release_completion) == {'outcome', 'config_sha256'}
@@ -135,6 +154,9 @@ def execute_release(action, transaction_id, *, candidate=None, digest=None, outc
 
 
 def main(argv):
+    if len(argv) == 3 and argv[:2] == ['bootstrap-begin', '--transaction']:
+        print(execute('bootstrap-begin', argv[2]))
+        return 0
     if len(argv) == 3 and argv[:2] == ['release-abort', '--transaction']:
         print(json.dumps(execute_release('abort', argv[2]), sort_keys=True))
         return 0

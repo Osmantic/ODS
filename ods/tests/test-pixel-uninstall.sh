@@ -411,6 +411,7 @@ write_access_fixture() {
         "bin/pixel_access_bridge.py"
         "bin/pixel_gateway_service.py"
         "bin/pixel_access_client.py"
+        "bin/pixel_bootstrap_recovery.py"
         "bin/pixel_access_reconcile.py"
         "bin/pixel_model_transition.py"
         "bin/pixel_access_protocol.py"
@@ -451,6 +452,12 @@ write_access_fixture() {
 {"install_dir":"$INSTALL_DIR","owner":"$(id -un)","openclaw_bin":"$MOCK_BIN/openclaw","gateway_port":18789,"settings_data_dir":null,"edge_owner_key_sha256":"$relay_digest"}
 JSON
     : > "$ACCESS_STATE/lock"
+    # Retained bootstrap evidence is removable only through the normal
+    # install-bound, private-file checks after transition.json is absent.
+    for record in bootstrap-native-before bootstrap-intent bootstrap-recovery; do
+        printf '%s\n' '{"transactionId":"fixture-completed"}' > "$ACCESS_STATE/$record.json"
+        chmod 0600 "$ACCESS_STATE/$record.json"
+    done
     printf '%s\n' '{"boundary":"fixture"}' > "$ACCESS_STATE/service-baseline.json"
     printf '%s\n' '[Service]' 'ProtectSystem=false' 'ProtectHome=false' \
         > "$access_dropin_dir/90-ods-full-access.conf"

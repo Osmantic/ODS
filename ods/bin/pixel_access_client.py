@@ -12,12 +12,12 @@ ACCESS_SOCKET_PATH = ("/private/var/run/ods-pixel-access/control.sock"
 
 
 def request_access(operation, request=None, *, settings_data_dir=None):
-    if operation not in ("status", "change", "model-status", "model-begin", "model-finish", "installer-model-verify",
+    if operation not in ("status", "change", "model-status", "model-bootstrap-begin", "model-recovery-prepare", "model-begin", "model-finish", "installer-model-verify",
                          "installer-release-prepare", "installer-release-publish", "installer-release-finish", "installer-release-abort", "installer-source-begin",
                           "settings-status", "settings-change", "provider-status", "provider-change"):
         raise ValueError("invalid access operation")
     payload = {"operation": operation}
-    if operation.startswith("installer-") or operation in ("change", "model-finish", "settings-change", "provider-change"):
+    if operation.startswith("installer-") or operation in ("model-bootstrap-begin", "model-recovery-prepare", "change", "model-finish", "settings-change", "provider-change"):
         payload["request"] = request
     if operation.startswith(("settings-", "provider-")):
         # Supplied by the host agent's actual DATA_DIR, never the HTTP request.
@@ -25,9 +25,9 @@ def request_access(operation, request=None, *, settings_data_dir=None):
             raise ValueError("unqualified settings data directory")
         payload["data_dir_id"] = hashlib.sha256(str(Path(settings_data_dir)).encode("utf-8")).hexdigest()
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-        connection.settimeout(1850 if operation in ("model-begin", "installer-source-begin") else 335)
+        connection.settimeout(1850 if operation in ("model-begin", "model-bootstrap-begin", "installer-source-begin") else 5 if operation == "model-status" else 335)
         connection.connect(ACCESS_SOCKET_PATH)
-        if operation.startswith("installer-"):
+        if operation.startswith("installer-") or (sys.platform == "linux" and operation in ("model-status", "model-bootstrap-begin", "model-recovery-prepare", "model-finish")):
             # This response is an authority input to the Linux installer, not
             # merely a UI status. Authenticate the root peer before sending.
             if sys.platform != "linux" or not hasattr(socket, "SO_PEERCRED"):

@@ -148,6 +148,9 @@ def managed(tmp_path, monkeypatch):
         monkeypatch.setattr(host._wsl_runtime, name, function)
     monkeypatch.setattr(host._wsl_runtime, "model_store", lambda *_args: models)
     monkeypatch.setattr(host._wsl_runtime, "plan_path", lambda *_args: plan_path)
+    # This fixture owns both coordinator transports. Its legacy bootstrap
+    # coordinator is reachable and idle independently of the modern transaction.
+    monkeypatch.setattr(host, "_legacy_pixel_model_status", lambda: {"pending": False})
     monkeypatch.setattr(host, "_runtime_model_control", control)
     monkeypatch.setattr(host, "_wait_for_model_readiness", readiness)
     monkeypatch.setattr(host, "_prove_pixel_model_contract", lambda _env, contract:

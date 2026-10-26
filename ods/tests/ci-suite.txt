@@ -5,6 +5,7 @@
 # .github/scripts/list-unwired-tests.py --check fails CI for a test in none of them.
 
 tests/test-installer-dry-run-jq.sh
+tests/test_bootstrap_recovery_package.py
 tests/test-phase06-gpu-env-rerun.py
 tests/test-inference-port-admission.sh
 tests/contracts/test-amd-llamacpp-contracts.sh
@@ -258,6 +259,7 @@ tests/test-wsl-runtime-proof.py
 tests/test-wsl-whisper-port-reservation.sh
 tests/test-wsl-windows-port-detection.sh
 tests/test_bootstrap_pixel_transaction.py
+tests/test_bootstrap_recovery_shell.py
 tests/test_bootstrap_status_checksum.py
 tests/test_build_installation_context_output.py
 tests/test_build_installation_context_port.py

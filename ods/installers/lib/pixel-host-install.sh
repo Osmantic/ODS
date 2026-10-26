@@ -2594,6 +2594,10 @@ _ods_pixel_model_transition() {
             [[ -z "$transaction_id" && -z "$outcome" ]] || return 1
             ods_pixel_run_as_owner "$owner" "$home" python3 -I "$helper" begin
             ;;
+        bootstrap-begin)
+            [[ "$transaction_id" =~ ^[0-9a-f]{64}$ && -z "$outcome" ]] || return 1
+            ods_pixel_run_as_owner "$owner" "$home" python3 -I "$helper" bootstrap-begin --transaction "$transaction_id"
+            ;;
         status)
             [[ -z "$transaction_id" && -z "$outcome" ]] || return 1
             ods_pixel_run_as_owner "$owner" "$home" python3 -I "$helper" status
@@ -2723,7 +2727,7 @@ ods_pixel_reconcile_promoted_model() {
             if _ods_pixel_managed_contract_matches "$owner" "$home" "$contract_sha256"; then
                 # A stale installed mirror needs the transactional path below,
                 # even if the active model and the ODS-side answers match.
-                if ods_pixel_run_as_owner "$owner" "$home" cmp -s -- \
+                if [[ -z "$borrowed_transaction" ]] && ods_pixel_run_as_owner "$owner" "$home" cmp -s -- \
                     "$answers" "$home/.config/pixel-deployment/onboarding.json"; then
                     _ods_pixel_wait_ingress "$owner" "$home" 6 1 || return 1
                     _ods_pixel_verify_plugin_loaded "$owner" "$home" "$openclaw_bin" \
@@ -3114,6 +3118,7 @@ write(target / 'pixel_access_bridge.py', (code_source / 'bin/pixel_access_bridge
 write(target / 'pixel_gateway_service.py', (code_source / 'bin/pixel_gateway_service.py').read_bytes(), 0o644)
 write(target / 'pixel_access_client.py', (code_source / 'bin/pixel_access_client.py').read_bytes(), 0o644)
 write(target / 'pixel_access_reconcile.py', (code_source / 'bin/pixel_access_reconcile.py').read_bytes(), 0o644)
+write(target / 'pixel_bootstrap_recovery.py', (code_source / 'bin/pixel_bootstrap_recovery.py').read_bytes(), 0o644)
 write(target / 'pixel_model_transition.py', (code_source / 'bin/pixel_model_transition.py').read_bytes(), 0o644)
 write(target / 'pixel_source_upgrade.py', (code_source / 'bin/pixel_source_upgrade.py').read_bytes(), 0o644)
 write(target / 'pixel_access_protocol.py', (code_source / 'bin/pixel_access_protocol.py').read_bytes(), 0o644)

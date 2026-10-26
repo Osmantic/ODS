@@ -194,6 +194,7 @@ sources = {
     "access_release_transaction.py": install / "extensions/services/pixel-agent/host/access_release_transaction.py",
     "pixel_access_bridge.py": install / "bin/pixel_access_bridge.py",
     "pixel_source_upgrade.py": install / "bin/pixel_source_upgrade.py",
+    "pixel_bootstrap_recovery.py": install / "bin/pixel_bootstrap_recovery.py",
     "pixel_gateway_service.py": install / "bin/pixel_gateway_service.py",
     "pixel_access_client.py": install / "bin/pixel_access_client.py",
     "pixel_access_reconcile.py": install / "bin/pixel_access_reconcile.py",
@@ -218,7 +219,7 @@ for name in (
 # absence.  If either side exists, normal byte and completeness validation
 # remains mandatory, so a partial current bundle still fails closed.
 expected_sources = set(sources)
-for later_module in ("pixel_gateway_service.py", "access_release_transaction.py", "pixel_source_upgrade.py"):
+for later_module in ("pixel_gateway_service.py", "access_release_transaction.py", "pixel_source_upgrade.py", "pixel_bootstrap_recovery.py"):
     if (not present(sources[later_module])
             and not present(program / later_module)):
         expected_sources.remove(later_module)
@@ -404,6 +405,9 @@ state_limits = {
     "verified.json": 256 * 1024,
     "service-baseline.json": 64 * 1024,
     "model-before.json": 8 * 1024 * 1024,
+    "bootstrap-native-before.json": 8 * 1024 * 1024,
+    "bootstrap-intent.json": 8192,
+    "bootstrap-recovery.json": 8192,
     "access-before.json": 8 * 1024 * 1024,
     "release-intent.json": 8192,
     "release-baseline.json": 8192,

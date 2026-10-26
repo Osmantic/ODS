@@ -545,6 +545,7 @@ _MODEL_ARTIFACT_FULL_SAMPLE_BYTES = 1024 * 1024
 # Model lifecycle ownership serializes operations that read or mutate model
 # artifacts, active routing, or the runtime containers. Keep the historical
 # activation-lock name as an alias because env updates use the same boundary.
+_model_lifecycle_file_lock = None
 _model_lifecycle_lock = threading.Lock()
 _model_activate_lock = _model_lifecycle_lock
 _model_lifecycle_state_lock = threading.Lock()
@@ -599,13 +600,23 @@ def _begin_model_lifecycle(operation: str, target: str = "") -> tuple[bool, dict
     """Claim the process-wide model lifecycle boundary without waiting."""
     global _model_lifecycle_operation, _model_lifecycle_target, _model_lifecycle_revision
     global _model_lifecycle_last_operation, _model_runtime_revision
-    global _model_activation_result
+    global _model_activation_result, _model_lifecycle_file_lock
     with _model_lifecycle_state_lock:
         if not _model_lifecycle_lock.acquire(blocking=False):
             return False, {
                 "operation": _model_lifecycle_operation,
                 "target": _model_lifecycle_target,
             }
+        try:
+            from model_lifecycle_lock import acquire
+            _model_lifecycle_file_lock = acquire(INSTALL_DIR)
+        except BlockingIOError:
+            _model_lifecycle_lock.release()
+            return False, {"operation": "external model lifecycle", "target": None}
+        except (OSError, RuntimeError) as exc:
+            _model_lifecycle_lock.release()
+            logger.error("Model lifecycle lock unavailable: %s", exc)
+            return False, {"operation": None, "target": None, "code": "model_lifecycle_lock_unavailable"}
         _model_lifecycle_operation = operation
         _model_lifecycle_target = target or None
         _model_lifecycle_revision += 1
@@ -619,7 +630,7 @@ def _begin_model_lifecycle(operation: str, target: str = "") -> tuple[bool, dict
 def _end_model_lifecycle(operation: str) -> None:
     """Release lifecycle ownership held by ``operation``."""
     global _model_lifecycle_operation, _model_lifecycle_target, _model_lifecycle_revision
-    global _model_runtime_revision
+    global _model_runtime_revision, _model_lifecycle_file_lock
     with _model_lifecycle_state_lock:
         if _model_lifecycle_operation != operation:
             logger.error(
@@ -632,10 +643,16 @@ def _end_model_lifecycle(operation: str) -> None:
         _model_lifecycle_operation = None
         _model_lifecycle_target = None
         _model_lifecycle_revision += 1
+        from model_lifecycle_lock import release
+        release(_model_lifecycle_file_lock)
+        _model_lifecycle_file_lock = None
         _model_lifecycle_lock.release()
 
 
 def _model_lifecycle_conflict(requested_operation: str, active: dict) -> dict:
+    if active.get("code") == "model_lifecycle_lock_unavailable":
+        return {"error": "Model lifecycle lock is unavailable; inspect the installation and lock ownership",
+                "code": "model_lifecycle_lock_unavailable", "activeOperation": None, "activeTarget": None}
     active_operation = active.get("operation") or "another lifecycle operation"
     payload = {
         "error": (
@@ -3795,12 +3812,15 @@ def _reconcile_ods_managed_pixel_model(
     route_fingerprint: str | None = None,
     image_input: str | None = None,
     thinking_control: str | None = None,
+    borrowed_transaction: str = "",
 ) -> str:
     """Transactionally bind the managed Pixel gateway to an activated model.
 
     ``thinking_control`` is the model's measured control. None keeps the
     renderer's name rule and clears a control saved for an earlier model.
     """
+    if borrowed_transaction and re.fullmatch(r'[a-f0-9]{64}', borrowed_transaction) is None:
+        raise RuntimeError('Invalid borrowed model transaction')
     identity = _ods_managed_pixel_identity()
     if identity is None:
         return "not_installed"
@@ -3860,6 +3880,7 @@ target_reasoning="$7"
 target_route_fingerprint="$8"
 target_image_input="$9"
 target_thinking_control="${10}"
+borrowed_transaction="${11:-}"
 INTERACTIVE=false
 DRY_RUN=false
 log() { printf '%s\n' "$*" >&2; }
@@ -3878,7 +3899,7 @@ export INSTALL_DIR INTERACTIVE DRY_RUN ODS_SUDO_AVAILABLE
 . "$INSTALL_DIR/installers/lib/sudo.sh"
 . "$INSTALL_DIR/installers/lib/pixel-host-install.sh"
 ods_pixel_reconcile_promoted_model "$owner" "$home" "$target_model" ready \
-    "$target_context" "$target_max_tokens" "$target_reasoning" "$target_route_fingerprint" "" "$target_image_input" \
+    "$target_context" "$target_max_tokens" "$target_reasoning" "$target_route_fingerprint" "$borrowed_transaction" "$target_image_input" \
     "$target_thinking_control"
 '''
     child_env = {
@@ -3901,6 +3922,7 @@ ods_pixel_reconcile_promoted_model "$owner" "$home" "$target_model" ready \
                 route_fingerprint or "",
                 image_input or "unknown",
                 thinking_control or "",
+                *([borrowed_transaction] if borrowed_transaction else []),
             ],
             env=child_env,
             capture_output=True,
@@ -4851,7 +4873,7 @@ def _recover_pixel_model_transaction(config: dict, *, release_unverified: bool =
     """
     journal = _read_pixel_model_journal()
     if journal is None or journal['phase']=='completed':
-        return {'pending':False,'phase':'idle','transactionId':None}
+        return _pixel_model_recovery_status()
     pending = {'pending':True,'phase':journal['phase'],'transactionId':journal['transactionId'],
                'reason':'model-recovery-proof-required','releasable':False}
     try:
@@ -5054,11 +5076,130 @@ def _repair_held_pixel_local_route(config: dict, *, transaction_id: str) -> dict
             'transactionId': transaction_id, 'outcome': 'commit'}
 
 
+def _legacy_pixel_model_execute(action, transaction_id=None, outcome=None):
+    # The host agent runs from the owner's checkout. The CLI's default loader
+    # requires root-owned installed modules; use the owner client explicitly.
+    # It authenticates the root Unix peer before sending any authority input.
+    from pixel_model_transition import execute
+    from pixel_access_client import request_access
+    return execute(action, transaction_id, outcome, request=request_access)
+
+
+def _legacy_pixel_model_status() -> dict | None:
+    if platform.system() != 'Linux':
+        return None
+    config = load_env(INSTALL_DIR / '.env')
+    if (_ods_managed_pixel_identity() is None and not config.get('PIXEL_NATIVE_CONFIG_PATH')
+            and not config.get('PIXEL_OPENWEBUI_KEY')):
+        return None
+    return _legacy_pixel_model_execute('status')
+
+
 def _pixel_model_recovery_status() -> dict:
-    journal=_read_pixel_model_journal()
+    journal = _read_pixel_model_journal()
+    if journal is not None and journal['phase'] != 'completed':
+        return {'pending': True, 'phase': journal['phase'], 'transactionId': journal['transactionId']}
+    try:
+        legacy = _legacy_pixel_model_status()
+    except (OSError, ValueError, RuntimeError, TypeError):
+        return {'pending': True, 'phase': 'unavailable', 'transactionId': None,
+                'reason': 'coordinator-state-unavailable'}
+    if legacy is not None and legacy['pending']:
+        config = load_env(INSTALL_DIR / '.env')
+        try:
+            from pixel_bootstrap_recovery import target
+            current_target = target(dict(gguf=config.get('GGUF_FILE'), model=config.get('LLM_MODEL'),
+                                         context=int(config.get('MAX_CONTEXT', '0'))))
+        except (ValueError, TypeError): current_target = None
+        return {'pending': True, 'phase': legacy['phase'], 'transactionId': legacy['transaction_id'],
+                'kind': 'bootstrap', 'reason': 'bootstrap-owner-recovery-required',
+                'sourceUpgrade': legacy.get('source_upgrade', False),
+                'target': legacy.get('bootstrap', {}).get('target'), 'currentTarget': current_target}
     if journal is None:
-        return {'pending':False,'phase':'idle','transactionId':None}
-    return {'pending':journal['phase']!='completed','phase':journal['phase'],'transactionId':journal['transactionId']}
+        return {'pending': False, 'phase': 'idle', 'transactionId': None}
+    return {'pending': False, 'phase': journal['phase'], 'transactionId': journal['transactionId']}
+
+
+def _recover_bootstrap_pixel_transaction(transaction_id: str, desired: dict) -> dict:
+    """Owner-selected current-target repair, under the shared lifecycle lock.
+
+    Reconcile the native gateway even after a partial old bootstrap rewrite.
+    Never replay inference activation, restore an arbitrary snapshot, release
+    unverified, or borrow an installer source/release migration transaction.
+    """
+    from pixel_bootstrap_recovery import target, read, write
+    from pixel_access_client import request_access
+    execute = _legacy_pixel_model_execute
+    target(desired)
+    journal = _read_pixel_model_journal()
+    if journal is not None and journal['phase'] != 'completed':
+        raise RuntimeError('Modern model transaction needs its own recovery')
+    identity = _ods_managed_pixel_identity()
+    if platform.system() != 'Linux' or identity is None:
+        raise RuntimeError('Bootstrap recovery requires this managed Linux owner')
+    config = load_env(INSTALL_DIR / '.env')
+    if (config.get('ODS_MODE', 'local') not in ('local', 'hybrid')
+            or config.get('GGUF_FILE') != desired['gguf'] or config.get('LLM_MODEL') != desired['model']
+            or config.get('MAX_CONTEXT') != str(desired['context'])
+            or config.get('CTX_SIZE') != str(desired['context'])):
+        raise RuntimeError('Recovery target differs from the current local configuration')
+    state = execute('status')
+    receipt = INSTALL_DIR / 'data' / 'bootstrap-owner-recovery.json'
+    if not state['pending']:
+        # A lost successful finish reply is resolved using this exact durable
+        # request and the coordinator's idempotent original finish ceremony.
+        saved = json.loads(read(receipt, os.geteuid()))
+        if saved.get('transactionId') != transaction_id or saved.get('target') != desired:
+            raise RuntimeError('No matching bootstrap recovery completion')
+        execute('finish', transaction_id, saved['outcome'])
+        return {'pending': False, 'phase': 'completed', 'transactionId': transaction_id}
+    if state['transaction_id'] != transaction_id or state.get('source_upgrade'):
+        raise RuntimeError('Bootstrap transaction custody differs')
+    current = _pixel_model_config_digests()
+    if 'unavailable' in current.values():
+        raise RuntimeError('Bootstrap configuration evidence unavailable')
+    contract = dict(model=desired['model'], contextLength=desired['context'],
+                    maxTokens=_pixel_max_tokens_for_context(desired['context']),
+                    reasoning=_pixel_model_reasoning_capable(desired['model'], config), imageInput='unknown')
+    if not _prove_pixel_model_contract(config, contract):
+        raise RuntimeError('Current inference is unverified; admission remains held')
+    _verify_litellm_route(config, model='ods/current')
+    if _pixel_model_config_digests() != current:
+        raise RuntimeError('Inference configuration changed during proof')
+    native_path = identity[1] / '.openclaw' / 'openclaw.json'
+    native_sha = hashlib.sha256(read(native_path, os.geteuid())).hexdigest()
+    release = state.get('release_completion')
+    outcome = 'applied'
+    if release is not None:
+        # Completed installer proofs are usable only for the identical native
+        # config and outcome. No native mutation is permitted in this branch.
+        if native_sha != release['config_sha256']:
+            raise RuntimeError('Protected release configuration differs')
+        outcome = 'applied' if release['outcome'] == 'apply' else 'rolled-back'
+    else:
+        code, held = request_access('model-recovery-prepare', dict(
+            transaction_id=transaction_id, target=desired, config_sha256=native_sha))
+        if code != 200 or held != {'status': 'held', 'transaction_id': transaction_id}:
+            raise RuntimeError('Bootstrap recovery custody could not be established')
+        _reconcile_ods_managed_pixel_model(desired['model'], desired['context'],
+            max_tokens=contract['maxTokens'], reasoning=contract['reasoning'],
+            image_input='unknown', borrowed_transaction=transaction_id)
+    # Re-read the actual config after reconciliation and prove it against the
+    # current inference; a successful helper exit alone is not acceptance.
+    from pixel_model_contract import projection
+    observed = projection(json.loads(read(native_path, os.geteuid())))['contract']
+    if (not _pixel_local_identity_matches(config, desired['gguf'], observed['model'])
+            or observed['contextLength'] != desired['context']
+            or not _prove_pixel_model_contract(config, observed)
+            or _pixel_model_config_digests() != current):
+        raise RuntimeError('Recovered native/inference contract is unconfirmed')
+    _verify_litellm_route(config, model='ods/current')
+    execute('verify', transaction_id)
+    if _pixel_model_config_digests() != current:
+        raise RuntimeError('Inference changed before release')
+    write(receipt, json.dumps(dict(transactionId=transaction_id, target=desired, outcome=outcome)).encode())
+    execute('finish', transaction_id, outcome)
+    return {'pending': False, 'phase': 'completed', 'transactionId': transaction_id, 'outcome': outcome}
 
 
 def _pixel_model_transition_pending_for_route_proof() -> bool:
@@ -14218,16 +14359,28 @@ class AgentHandler(BaseHTTPRequestHandler):
         if body is None:return
         # {"releaseUnverified": true} is the owner's explicit request to
         # release a switch that changed nothing without the live proof.
-        if body not in ({}, {'releaseUnverified':True}):
-            json_response(self,400,{'error':'Recovery accepts {} or {"releaseUnverified": true} only'})
+        bootstrap = (type(body) is dict and set(body) == {'bootstrapTransactionId', 'target'}
+                     and type(body['bootstrapTransactionId']) is str
+                     and re.fullmatch('[a-f0-9]{64}', body['bootstrapTransactionId']) is not None)
+        if bootstrap:
+            from pixel_bootstrap_recovery import target
+            try: target(body['target'])
+            except (ValueError, TypeError):
+                json_response(self,400,{'error':'Invalid bootstrap recovery target'})
+                return
+        if not bootstrap and body not in ({}, {'releaseUnverified':True}):
+            json_response(self,400,{'error':'Use ordinary recovery, releaseUnverified, or an exact bootstrapTransactionId and target'})
             return
         acquired,_active=_begin_model_lifecycle('model_recovery')
         if not acquired:
-            json_response(self,409,{'error':'Model lifecycle is busy'})
+            json_response(self, 503 if _active.get('code') else 409, _model_lifecycle_conflict('model recovery', _active))
             return
         try:
-            result=_recover_pixel_model_transaction(load_env(INSTALL_DIR/'.env'),
-                                                     release_unverified=body.get('releaseUnverified') is True)
+            if bootstrap:
+                result = _recover_bootstrap_pixel_transaction(body['bootstrapTransactionId'], body['target'])
+            else:
+                result=_recover_pixel_model_transaction(load_env(INSTALL_DIR/'.env'),
+                                                         release_unverified=body.get('releaseUnverified') is True)
             json_response(self,409 if result['pending'] else 200,result,no_store=True)
         except Exception:
             json_response(self,503,{'pending':True,'phase':'unavailable','reason':'model-recovery-unavailable'},no_store=True)
