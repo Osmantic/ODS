@@ -175,6 +175,54 @@ it('checks an unprovable last turn at most every minute instead of every two sec
   }finally {vi.useRealTimers()}
 })
 
+it('waits for work the server still runs, never offers Continue for it, and frees the chat when it ends',async()=>{
+  vi.useFakeTimers()
+  try {
+    let history='unknown',state='active'
+    globalThis.fetch=vi.fn().mockImplementation(async url=>{
+      if(url.endsWith('/activity')){if(state==='terminal')history='ready';return response({state})}
+      return response({...context(),status:history==='unknown'?'busy':'ready',history:{...context().history,status:history}})
+    })
+    const {result}=renderHook(()=>usePortalContext({chatId:'a',runtimeKey:'small',capacity:4096,onPendingChange:vi.fn()}))
+    await act(async()=>{})
+    expect(result.current.historyActive).toBe(false)
+    await act(async()=>vi.advanceTimersByTimeAsync(1000))
+    expect(result.current.historyUnknown).toBe(true)
+    expect(result.current.historyActive).toBe(true)
+    // Continue stops whatever is left over, so it is neither offered nor sent.
+    expect(result.current.canResolve).toBe(false)
+    await act(async()=>expect(await result.current.resolveInterrupted()).toBe(false))
+    // Running work is checked at least every 15 s, not once a minute.
+    for(let second=0;second<5*60;second++)await act(async()=>vi.advanceTimersByTimeAsync(1000))
+    const checks=fetch.mock.calls.filter(([url])=>url.endsWith('/activity')).length
+    expect(checks).toBeGreaterThanOrEqual(20)
+    expect(checks).toBeLessThanOrEqual(26)
+    expect(result.current.historyActive).toBe(true)
+    state='terminal'
+    for(let second=0;second<15;second++)await act(async()=>vi.advanceTimersByTimeAsync(1000))
+    expect(result.current.historyUnknown).toBe(false)
+    expect(result.current.historyActive).toBe(false)
+    expect(fetch.mock.calls.filter(([url])=>url.endsWith('/cancel'))).toHaveLength(0)
+  }finally {vi.useRealTimers()}
+})
+
+it('offers Continue when nothing runs but an older Portal could not record that',async()=>{
+  vi.useFakeTimers()
+  try {
+    // An older pixel edge remembers the chat ended but cannot settle its history.
+    globalThis.fetch=vi.fn().mockImplementation(async url=>response(url.endsWith('/activity')?{state:'terminal'}:{...context(),status:'unavailable',history:{...context().history,status:'unknown'}}))
+    const {result}=renderHook(()=>usePortalContext({chatId:'a',runtimeKey:'small',capacity:4096,onPendingChange:vi.fn()}))
+    await act(async()=>{})
+    expect(result.current.historyChecking).toBe(true)
+    await act(async()=>vi.advanceTimersByTimeAsync(1000))
+    expect(result.current.historyUnknown).toBe(true)
+    expect(result.current.historyChecking).toBe(false)
+    expect(result.current.historyActive).toBe(false)
+    expect(result.current.canResolve).toBe(true)
+    expect(fetch.mock.calls.filter(([url])=>url.endsWith('/cancel'))).toHaveLength(0)
+  }finally {vi.useRealTimers()}
+})
+
 it('waits for the page to settle its own turn, but never blocks the owner’s Continue',async()=>{
   vi.useFakeTimers()
   try {

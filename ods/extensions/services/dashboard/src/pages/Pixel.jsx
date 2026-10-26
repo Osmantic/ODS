@@ -151,6 +151,12 @@ export const RESTART_NOTICE = 'Portal restarted while it was answering. Send you
 export const NO_REPLY_NOTICE = 'Portal finished working on your last request, but its reply couldn’t be shown here. Your files are saved. Ask Portal what it did, or send your next message.'
 const CHECKING_TURN = 'Checking on your last request…'
 const TURN_STILL_RUNNING = 'Portal is still working on your last request. Its answer will appear here when it’s done. You can stop it.'
+// Work still running in this chat whose answer the page cannot receive, for
+// example after a restart cut the reply off while delegated work went on.
+const TURN_RUNNING_UNSEEN = 'Portal is still working on your last request. When it’s done, ask Portal what it did. You can stop it.'
+// Work the server found running for this chat when the page has no turn of
+// its own to follow there.
+const CHAT_STILL_RUNNING = 'Portal is still working on your last request. You can send your next message when it’s done.'
 const TURN_UNCONFIRMED = 'Portal can’t confirm your last request has finished.'
 const CONTINUING_TURN = 'Making sure nothing is still running in this chat…'
 // A cut-off turn is checked again on a growing interval and the checks stop
@@ -699,6 +705,9 @@ export default function Pixel({ systemStatus = null }) {
   const [sendHint, setSendHint] = useState(false)
   const [exampleError, setExampleError] = useState(null)
   const [restoredActivity, setRestoredActivity] = useState(() => initialChat?.interrupted ? 'checking' : 'idle')
+  // Whether the work still running there is this turn's own reply, which the
+  // server keeps receiving and the page then shows, or only work in the chat.
+  const [restoredReplyLive, setRestoredReplyLive] = useState(false)
   const [activityRefresh, setActivityRefresh] = useState(0)
   const [workingElapsedSeconds, setWorkingElapsedSeconds] = useState(0)
   const [agentRuntime, setAgentRuntime] = useState(null)
@@ -856,15 +865,17 @@ export default function Pixel({ systemStatus = null }) {
     }
     // No receipt holds this turn and the server proved that nothing still
     // runs for this chat, so no answer will arrive. The work may well be done,
-    // so the reply keeps the text that did arrive and says so plainly. The
-    // composer is free, with whatever the owner had typed.
-    function settleWithoutReceipt() {
+    // so the reply keeps the text that did arrive and says so plainly. After
+    // the owner's Continue, which stops anything left over, it says stopped.
+    // The composer is free, with whatever the owner had typed.
+    function settleWithoutReceipt({stopped = false} = {}) {
       continueRequested.current = null
       requestIdRef.current = null
       const latest = messagesRef.current
       const last = latest.at(-1)
       if (unsettledReply(last)) {
-        setMessages(replaceLastAssistant(latest, {content:cutOffContent(last.content, NO_REPLY_NOTICE), status:'stopped', task:recordedTask(last.task)}))
+        setMessages(replaceLastAssistant(latest, {content:stopped ? stoppedContent(last.content) : cutOffContent(last.content, NO_REPLY_NOTICE),
+          status:'stopped', task:recordedTask(last.task)}))
       }
       setInterrupted(false)
       updateRestoredActivity('idle')
@@ -875,7 +886,7 @@ export default function Pixel({ systemStatus = null }) {
         // The owner chose Continue and the server confirmed that nothing runs
         // for this chat. That confirmation releases the hold by itself, even
         // while the receipt or the chat lookup cannot be read.
-        settleWithoutReceipt()
+        settleWithoutReceipt({stopped:true})
         return
       }
       controller = new AbortController()
@@ -893,6 +904,7 @@ export default function Pixel({ systemStatus = null }) {
           if (resultResponse.ok && result && Object.keys(result).sort().join(',') === 'events,state'
             && typeof result.events === 'string' && result.events.length <= 8 * 1024 * 1024) {
             if (result.state === 'active') {
+              setRestoredReplyLive(true)
               updateRestoredActivity('active')
               later('active')
               return
@@ -998,6 +1010,7 @@ export default function Pixel({ systemStatus = null }) {
         settleWithoutReceipt()
         return
       }
+      setRestoredReplyLive(false)
       updateRestoredActivity(state)
       later(state)
     }
@@ -2006,7 +2019,7 @@ export default function Pixel({ systemStatus = null }) {
   // editable and is saved with the chat. Only sending waits, and says why.
   const composerLocked = conversationDeleted || modelSwitching || status !== 'available'
   const sendBlocked = sendBlockedReason({deleted:conversationDeleted, stopping, running:sending || restoredActive || teams.busy,
-    held:restoredUnconfirmed || (contextControl.historyUnknown && !contextControl.historyChecking),
+    held:restoredUnconfirmed || (contextControl.historyUnknown && !contextControl.historyChecking && !contextControl.historyActive),
     waiting:restoredChecking || contextControl.busy || contextControl.historyUnknown || modelSwitching, ready:status === 'available'})
   useEffect(() => { if (!sendBlocked) setSendHint(false) }, [sendBlocked])
   const composerVisible = !(workspaceExpanded && workspaceOpen && !previewCollapsed)
@@ -2085,18 +2098,22 @@ export default function Pixel({ systemStatus = null }) {
       : status === 'loading'
         ? 'Connecting...'
         : 'Degraded'
-  // One calm line beside the composer while the last turn is settled, with
-  // one action, Continue in this chat, whenever settling waits on the owner.
+  // One calm line beside the composer while the last turn is settled. Its one
+  // action, Continue in this chat, stops whatever is left over, so it appears
+  // only after a check found that Portal cannot tell: never while a check runs
+  // or while work is still running.
   const turnHold = sending ? null : interrupted ? (
     continuing === 'pending' ? {text:CONTINUING_TURN, busy:true}
-      : restoredActive ? {text:TURN_STILL_RUNNING}
-      : {text:continuing === 'failed' ? CONTINUE_FAILED : restoredUnconfirmed ? TURN_UNCONFIRMED : CHECKING_TURN,
-        busy:!restoredUnconfirmed && continuing !== 'failed', failed:continuing === 'failed', action:continueChat, disabled:stopping}
+      : restoredActive ? {text:restoredReplyLive ? TURN_STILL_RUNNING : TURN_RUNNING_UNSEEN}
+      : restoredUnconfirmed ? {text:continuing === 'failed' ? CONTINUE_FAILED : TURN_UNCONFIRMED,
+        failed:continuing === 'failed', action:continueChat, disabled:stopping}
+      : {text:CHECKING_TURN, busy:true}
   ) : contextControl.historyUnknown ? (
     contextControl.resolving ? {text:CONTINUING_TURN, busy:true}
-      : {text:contextControl.recoveryFailed ? CONTINUE_FAILED : contextControl.historyChecking ? CHECKING_TURN : TURN_UNCONFIRMED,
-        busy:contextControl.historyChecking && !contextControl.recoveryFailed, failed:contextControl.recoveryFailed,
-        action:continueChat, disabled:!contextControl.canResolve}
+      : contextControl.historyActive ? {text:CHAT_STILL_RUNNING, busy:true}
+      : contextControl.recoveryFailed ? {text:CONTINUE_FAILED, failed:true, action:continueChat, disabled:!contextControl.canResolve}
+      : contextControl.historyChecking ? {text:CHECKING_TURN, busy:true}
+      : {text:TURN_UNCONFIRMED, action:continueChat, disabled:!contextControl.canResolve}
   ) : null
   const heldNote = heldSend?.chatId === chatIdRef.current && turnHold ? HELD_SEND_NOTE : ''
 

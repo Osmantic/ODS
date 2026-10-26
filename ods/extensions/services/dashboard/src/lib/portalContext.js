@@ -87,7 +87,7 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
     if(!sameChat)acceptedModel.current=null
   }
   const runtimeKey=typed?`identity-${runtime.current.epoch}`:legacyRuntimeKey
-  const [view,setView]=useState({chatId,runtimeKey,context:null,observedCapacity:null,phase:initialRequestId?'checking':'idle',notice:'',historyUnknown:false,historyChecking:true,resolving:false,recoveryNotice:'',recoveryFailed:false,readUnavailable:false})
+  const [view,setView]=useState({chatId,runtimeKey,context:null,observedCapacity:null,phase:initialRequestId?'checking':'idle',notice:'',historyUnknown:false,historyChecking:true,historyActive:false,resolving:false,recoveryNotice:'',recoveryFailed:false,readUnavailable:false})
   const current=useRef({}),pending=useRef(initialRequestId || null),requests=useRef(new Set()),query=useRef(null),mutation=useRef(false)
   const refreshQueued=useRef(false),historyAttempts=useRef(0),historyPaused=useRef(false)
   const generation=useRef(0),lastQuery=useRef(0),priorRuntime=useRef(runtimeKey)
@@ -95,6 +95,7 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
   const lastManual=useRef(initialRequestId || null),observedCompaction=useRef(null)
   const contextRetries=useRef(0),priorAvailability=useRef({chatId,runtimeKey,blocked})
   current.current={chatId,runtimeKey,runtimeIdentity:typed?runtime.current.identity:null,capacity,blocked,explicitBlocked:Boolean(blockedMutation),onPendingChange,historyUnknown:view.chatId===chatId && view.runtimeKey===runtimeKey && view.historyUnknown,
+    historyActive:view.chatId===chatId && view.runtimeKey===runtimeKey && view.historyActive,
     readUnavailable:view.chatId===chatId && view.runtimeKey===runtimeKey && view.readUnavailable}
   const publish=useCallback(update=>setView(previous=>({...previous,...update,chatId:current.current.chatId,runtimeKey:current.current.runtimeKey})),[])
   const persist=useCallback(id=>{current.current.onPendingChange(id,current.current.chatId);pending.current=id},[])
@@ -141,7 +142,7 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
     const readUnavailable=snapshot.status==='unavailable'
     if(!readUnavailable)contextRetries.current=0
     if(!historyUnknown)historyAttempts.current=0
-    publish({context,phase,notice,historyUnknown,readUnavailable,observedModel:modelMatches && ['ready','missing','busy'].includes(snapshot.status)?snapshot.model || null:null,...(snapshot.model?{observedCapacity:modelMatches?snapshot.model.contextWindow:null}:{}),...(!historyUnknown?{recoveryNotice:'',recoveryFailed:false,historyChecking:true}:{})})
+    publish({context,phase,notice,historyUnknown,readUnavailable,observedModel:modelMatches && ['ready','missing','busy'].includes(snapshot.status)?snapshot.model || null:null,...(snapshot.model?{observedCapacity:modelMatches?snapshot.model.contextWindow:null}:{}),...(!historyUnknown?{recoveryNotice:'',recoveryFailed:false,historyChecking:true,historyActive:false}:{})})
   },[persist,publish])
 
   const refresh=useCallback(async(force=false)=>{
@@ -179,24 +180,30 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
 
   // An unconfirmed last turn usually means a restart cut it off. The server
   // settles the chat only when it proves nothing can still run there, and it
-  // never stops work, so this check may run without the owner. Until a check
-  // fails to prove that, the owner is not asked to act.
+  // never stops work, so this check may run without the owner. Work it finds
+  // still running is shown as such and waited for. Only a check that can tell
+  // neither asks the owner to act.
   const settleHistory=useCallback(async()=>{
     if(current.current.blocked || mutation.current || pending.current || !current.current.historyUnknown)return refresh(true)
     const at=generation.current,identity=current.current.chatId,controller=new AbortController()
     requests.current.add(controller)
     const timer=setTimeout(()=>controller.abort(),15000)
-    let settled=false
+    let state='unknown'
     try {
       const response=await fetch('/api/pixel/chat/activity',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:identity}),signal:controller.signal})
       const value=await response.json()
-      settled=response.ok && value && Object.keys(value).length===1 && value.state==='terminal'
+      if(response.ok && value && Object.keys(value).length===1 && ['active','terminal','unknown'].includes(value.state))state=value.state
     }catch {
       // An unanswered check proves nothing; the owner can still continue.
     }finally {clearTimeout(timer);requests.current.delete(controller)}
     if(at!==generation.current)return
-    if(!settled)publish({historyChecking:false})
-    return refresh(true)
+    if(state==='active')publish({historyChecking:false,historyActive:true,recoveryFailed:false,recoveryNotice:''})
+    else if(state==='unknown')publish({historyChecking:false,historyActive:false})
+    await refresh(true)
+    // "Nothing runs" settles the history too. If an older Portal could not
+    // record that, its history stays unconfirmed, and then the owner can
+    // continue: nothing is running.
+    if(state==='terminal' && at===generation.current)setView(previous=>previous.historyUnknown?{...previous,historyChecking:false,historyActive:false}:previous)
   },[publish,refresh])
 
   useEffect(()=>{
@@ -208,7 +215,7 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
     priorChat.current=chatId
     contextRetries.current=0
     historyAttempts.current=0
-    publish({context:null,observedCapacity:null,observedModel:null,phase:pending.current?'checking':'idle',notice:pending.current?'Checking compaction status…':'',historyUnknown:false,historyChecking:true,resolving:false,recoveryNotice:'',recoveryFailed:false,readUnavailable:false})
+    publish({context:null,observedCapacity:null,observedModel:null,phase:pending.current?'checking':'idle',notice:pending.current?'Checking compaction status…':'',historyUnknown:false,historyChecking:true,historyActive:false,resolving:false,recoveryNotice:'',recoveryFailed:false,readUnavailable:false})
     priorRuntime.current=runtimeKey
     void refresh(true)
     return ()=>{generation.current+=1;requests.current.forEach(controller=>controller.abort());requests.current.clear();query.current=null;refreshQueued.current=false}
@@ -225,7 +232,9 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
     if(historyPaused.current){historyPaused.current=false;historyAttempts.current=0}
     const retryRead=!operation && !historyOnly && view.readUnavailable && contextRetries.current<contextRetryDelays.length
     if(!operation && !historyOnly && !retryRead)return
-    const delay=historyOnly?historyRecheckDelays[Math.min(historyAttempts.current,historyRecheckDelays.length-1)]
+    // Work still running is checked at least every 15 s, so the chat frees
+    // itself soon after that work ends.
+    const delay=historyOnly?Math.min(historyRecheckDelays[Math.min(historyAttempts.current,historyRecheckDelays.length-1)],view.historyActive?15000:Infinity)
       :retryRead?contextRetryDelays[contextRetries.current]:['unknown','unavailable'].includes(view.phase)?5000:2000
     const timer=setTimeout(()=>{
       if(retryRead)contextRetries.current+=1
@@ -280,7 +289,9 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
   },[accept,persist,publish,refresh])
 
   const resolveInterrupted=useCallback(async()=>{
-    if(current.current.explicitBlocked || !current.current.historyUnknown || mutation.current || pending.current)return false
+    // Continue stops whatever is left over, so it is never offered, nor sent,
+    // while the server reports work still running in this chat.
+    if(current.current.explicitBlocked || !current.current.historyUnknown || current.current.historyActive || mutation.current || pending.current)return false
     generation.current+=1;requests.current.forEach(controller=>controller.abort());requests.current.clear();query.current=null;refreshQueued.current=false
     const at=generation.current,identity=current.current.chatId,controller=new AbortController()
     mutation.current=true;requests.current.add(controller)
@@ -306,6 +317,6 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
     }
   },[publish,refresh])
 
-  const displayed=view.chatId===chatId && view.runtimeKey===runtimeKey?view:{context:null,observedCapacity:null,phase:initialRequestId?'checking':'idle',notice:'',historyUnknown:false,historyChecking:true,resolving:false,recoveryNotice:'',recoveryFailed:false}
-  return {...displayed,busy:displayed.resolving || ['requesting','checking','running','unknown'].includes(displayed.phase),canResolve:displayed.historyUnknown && !blockedMutation && !pending.current && !displayed.resolving,compact,refresh,resolveInterrupted}
+  const displayed=view.chatId===chatId && view.runtimeKey===runtimeKey?view:{context:null,observedCapacity:null,phase:initialRequestId?'checking':'idle',notice:'',historyUnknown:false,historyChecking:true,historyActive:false,resolving:false,recoveryNotice:'',recoveryFailed:false}
+  return {...displayed,busy:displayed.resolving || ['requesting','checking','running','unknown'].includes(displayed.phase),canResolve:displayed.historyUnknown && !displayed.historyActive && !blockedMutation && !pending.current && !displayed.resolving,compact,refresh,resolveInterrupted}
 }

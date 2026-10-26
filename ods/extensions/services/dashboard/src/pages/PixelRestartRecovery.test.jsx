@@ -14,6 +14,9 @@ import {CONTINUE_FAILED} from '../lib/portalContext'
 const QUESTION='Can you do things on cron timers or scheduled work tasks?'
 const PARTIAL='Yes. Portal can run'
 const STALE=/Ended early|No tool activity was recorded|could not be received|check the connection|Activity unknown|could not be confirmed|Resolve interrupted turn|Check activity again|Try Stop previous work|Completion was not confirmed/
+const STOPPED='Stopped by you. Workspace changes completed before cancellation were preserved.'
+const STILL_WORKING='Portal is still working on your last request. You can send your next message when it’s done.'
+const CONTINUE={name:'Continue in this chat'}
 const response=(body,status=200)=>({ok:status>=200 && status<300,status,json:async()=>body})
 const encode=value=>new TextEncoder().encode(`data: ${typeof value==='string'?value:JSON.stringify(value)}\n\n`)
 const task={schemaVersion:1,runId:'chatcmpl_11111111-2222-4333-8444-555555555555',startedAt:'2026-10-26T01:34:20.000Z',finishedAt:null,state:'running',calls:0,failures:0,blocked:0,truncated:false,activities:[]}
@@ -48,7 +51,7 @@ beforeEach(()=>{
   fetchMock=vi.fn(async(url,options)=>{
     if(url==='/api/pixel/status')return response({available:true})
     if(url==='/api/pixel/chat/context')return server.context(options)
-    if(url==='/api/pixel/chat/result')return server.result(JSON.parse(options.body))
+    if(url==='/api/pixel/chat/result')return server.result(JSON.parse(options.body),options)
     if(url==='/api/pixel/chat/activity')return server.activity(JSON.parse(options.body))
     if(url==='/api/pixel/chat/cancel')return server.cancel(JSON.parse(options.body))
     if(url==='/api/pixel/chat/stream')return (server.streams.shift() || (()=>answer('Done')))(JSON.parse(options.body))
@@ -159,12 +162,15 @@ it('keeps one working Continue in this chat while activity stays unknown, and fr
   expect(within(hold).getByRole('button',{name:'Continue in this chat'})).toBeEnabled()
   expect(screen.getByRole('button',{name:'New chat'})).not.toHaveAttribute('aria-disabled')
   // Once it can, its confirmation alone releases the hold, even though
-  // the activity lookup still answers unknown.
+  // the activity lookup still answers unknown. Continue stops anything left
+  // over, so the reply says it was stopped, never that Portal finished.
   server.cancel=body=>{expect(body).toEqual({chat_id:'spark_chat'});return response({aborted:true})}
   fireEvent.click(within(hold).getByRole('button',{name:'Continue in this chat'}))
   await waitFor(()=>expect(row()).toBeNull())
   expect(calls('/api/pixel/chat/cancel')).toHaveLength(2)
-  expect(screen.getByText((_,node)=>node?.tagName==='EM' && node.textContent===NO_REPLY_NOTICE)).toBeVisible()
+  expect(screen.getByText(STOPPED)).toBeVisible()
+  expect(screen.queryByText(NO_REPLY_NOTICE)).toBeNull()
+  expect(stored().messages.at(-1)).toMatchObject({status:'stopped',content:`${PARTIAL}\n\n---\n\n_${STOPPED}_`})
   expect(field()).toBeEnabled()
   expect(field()).toHaveValue('checking in')
   expect(screen.getByTitle('Send')).toBeEnabled()
@@ -175,16 +181,72 @@ it('keeps one working Continue in this chat while activity stays unknown, and fr
   expect(calls('/api/pixel/chat/stream')).toHaveLength(1)
 })
 
-it('offers Continue in this chat while the first check is still running',async()=>{
+it('offers Continue in this chat only once a check cannot tell, never while that check runs',async()=>{
   saveCutOffChat()
-  server.result=()=>new Promise(()=>{})
-  render(<Pixel/>);await screen.findByText('Checking last request')
-  const hold=await screen.findByRole('status',{name:'Last message'})
-  expect(within(hold).getByText('Checking on your last request…')).toBeVisible()
-  expect(within(hold).getByRole('button',{name:'Continue in this chat'})).toBeEnabled()
-  fireEvent.click(within(hold).getByRole('button',{name:'Continue in this chat'}))
-  await waitFor(()=>expect(row()).toBeNull())
-  expect(field()).toBeEnabled()
+  // The restarting API does not answer; each check gives up after 15 s.
+  server.result=(_body,options)=>new Promise((_resolve,reject)=>options.signal.addEventListener('abort',()=>reject(new DOMException('aborted','AbortError'))))
+  vi.useFakeTimers()
+  await act(async()=>{render(<Pixel/>)})
+  await act(async()=>vi.advanceTimersByTimeAsync(10))
+  // Continue stops anything left over, and this check may still find work running.
+  expect(within(row()).getByText('Checking on your last request…')).toBeVisible()
+  expect(within(row()).queryByRole('button',CONTINUE)).toBeNull()
+  await act(async()=>vi.advanceTimersByTimeAsync(14_000))
+  expect(within(row()).queryByRole('button',CONTINUE)).toBeNull()
+  await act(async()=>vi.advanceTimersByTimeAsync(1_000))
+  expect(within(row()).getByText('Portal can’t confirm your last request has finished.')).toBeVisible()
+  expect(within(row()).getByRole('button',CONTINUE)).toBeEnabled()
+  expect(calls('/api/pixel/chat/cancel')).toHaveLength(0)
+})
+
+it('never offers Continue while the server finds this turn still running',async()=>{
+  saveCutOffChat()
+  let state='active'
+  server.activity=()=>response({state})
+  vi.useFakeTimers()
+  await act(async()=>{render(<Pixel/>)})
+  await act(async()=>vi.advanceTimersByTimeAsync(10))
+  // This turn's reply was cut off, so its answer cannot appear here; the line
+  // does not promise that it will.
+  expect(within(row()).getByText('Portal is still working on your last request. When it’s done, ask Portal what it did. You can stop it.')).toBeVisible()
+  expect(screen.queryByRole('button',CONTINUE)).toBeNull()
+  expect(screen.getByTitle('Stop')).toBeEnabled()
+  for(let second=0;second<2*60;second++)await act(async()=>vi.advanceTimersByTimeAsync(1000))
+  expect(screen.queryByRole('button',CONTINUE)).toBeNull()
+  // It was checked at least every 15 s, and the end of that work frees the chat.
+  expect(calls('/api/pixel/chat/activity').length).toBeGreaterThanOrEqual(8)
+  state='terminal'
+  for(let second=0;second<15;second++)await act(async()=>vi.advanceTimersByTimeAsync(1000))
+  expect(row()).toBeNull()
+  expect(screen.getByText((_,node)=>node?.tagName==='EM' && node.textContent===NO_REPLY_NOTICE)).toBeVisible()
+  expect(calls('/api/pixel/chat/cancel')).toHaveLength(0)
+})
+
+it('says Portal is still working, with no Continue, when it finds the chat busy, and frees the chat when that work ends',async()=>{
+  let history='unknown',state='active'
+  localStorage.setItem('ods.pixel.chat.v1',JSON.stringify({schema:1,chatId:'history_chat',messages:[{role:'user',content:QUESTION},{role:'assistant',content:'Earlier answer',status:'done'}],draft:'checking in'}))
+  server.context=()=>response({...context(history),status:history==='unknown'?'busy':'ready'})
+  server.activity=body=>{expect(body).toEqual({chat_id:'history_chat'});if(state==='terminal')history='ready';return response({state})}
+  vi.useFakeTimers()
+  await act(async()=>{render(<Pixel/>)})
+  await act(async()=>vi.advanceTimersByTimeAsync(1_100))
+  expect(within(row()).getByText(STILL_WORKING)).toBeVisible()
+  expect(screen.queryByRole('button',CONTINUE)).toBeNull()
+  expect(screen.getByTitle('Send')).toBeDisabled()
+  fireEvent.keyDown(field(),{key:'Enter'})
+  expect(screen.getByText('Portal is not ready for a new message yet. Your message is kept here; send it when Portal is ready.')).toBeVisible()
+  // It stays that way while the work runs, checked at least every 15 s.
+  for(let second=0;second<2*60;second++)await act(async()=>vi.advanceTimersByTimeAsync(1000))
+  expect(within(row()).getByText(STILL_WORKING)).toBeVisible()
+  expect(screen.queryByRole('button',CONTINUE)).toBeNull()
+  expect(calls('/api/pixel/chat/activity').length).toBeGreaterThanOrEqual(8)
+  state='terminal'
+  for(let second=0;second<15;second++)await act(async()=>vi.advanceTimersByTimeAsync(1000))
+  expect(row()).toBeNull()
+  expect(screen.getByTitle('Send')).toBeEnabled()
+  expect(field()).toHaveValue('checking in')
+  expect(calls('/api/pixel/chat/cancel')).toHaveLength(0)
+  expect(screen.queryByText(STALE)).toBeNull()
 })
 
 it('does not blame the connection when an older turn holds the chat, and sends the new message once it is cleared up',async()=>{
@@ -200,7 +262,7 @@ it('does not blame the connection when an older turn holds the chat, and sends t
   fireEvent.click(screen.getByTitle('Send'))
   const hold=await screen.findByRole('status',{name:'Last message'})
   await waitFor(()=>expect(hold).toHaveTextContent('Your new message will go out right after.'))
-  expect(within(hold).getByRole('button',{name:'Continue in this chat'})).toBeEnabled()
+  expect(await within(hold).findByRole('button',{name:'Continue in this chat'})).toBeEnabled()
   expect(screen.queryByText(STALE)).toBeNull()
   // The refused message is not left in the conversation; it waits in the composer.
   expect(within(screen.getByRole('region',{name:'Conversation messages'})).queryByText('Checking in')).toBeNull()

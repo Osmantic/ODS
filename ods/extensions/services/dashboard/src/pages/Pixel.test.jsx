@@ -2235,7 +2235,9 @@ describe('Pixel', () => {
     expect(screen.getByRole('button', {name:'New chat'})).toHaveAttribute('aria-disabled', 'true')
     expect(screen.getByRole('button', {name:'New chat'})).toHaveAttribute('title', expect.stringContaining('Portal is finishing the current task'))
     expect(screen.getByText('Saved partial result')).toBeInTheDocument()
-    expect(screen.getByText('Portal is still working on your last request. Its answer will appear here when it’s done. You can stop it.')).toBeVisible()
+    // No receipt brings this turn's answer back here, so the line never promises it.
+    expect(screen.getByText('Portal is still working on your last request. When it’s done, ask Portal what it did. You can stop it.')).toBeVisible()
+    expect(screen.queryByRole('button', {name:'Continue in this chat'})).not.toBeInTheDocument()
     state = 'terminal'
     // The server proved the turn is over: the reply settles calmly, it is
     // never claimed as the owner's Stop, and the composer is free again.
@@ -2340,7 +2342,7 @@ describe('Pixel', () => {
     await screen.findByText('Working in this chat', {}, { timeout: 4000 })
   })
 
-  it('restored unknown activity permits an explicit exact-chat Continue without replay or false stopped claims', async () => {
+  it('restored unknown activity permits an explicit exact-chat Continue without replay, and says stopped only once confirmed', async () => {
     saveInterruptedChat()
     let aborted = false
     globalThis.fetch.mockImplementation(async (url, options) => {
@@ -2359,9 +2361,11 @@ describe('Pixel', () => {
     expect(screen.getByText('Saved partial result')).toBeInTheDocument()
     aborted = true
     fireEvent.click(screen.getByRole('button', { name: 'Continue in this chat' }))
-    await screen.findByText(CUT_OFF)
-    expect(screen.getByText('Response stopped')).toBeInTheDocument()
-    expect(screen.queryByText(/Stopped by you/)).not.toBeInTheDocument()
+    // Continue stops anything left over: only its confirmation says stopped,
+    // and the reply never claims Portal finished.
+    await screen.findByText('Response stopped')
+    expect(screen.getByText(/Stopped by you/)).toBeInTheDocument()
+    expect(screen.queryByText(CUT_OFF)).not.toBeInTheDocument()
     expect(screen.getByText('Saved partial result')).toBeInTheDocument()
     expect(globalThis.fetch.mock.calls.some(([url]) => url === '/api/pixel/chat/stream')).toBe(false)
   })
