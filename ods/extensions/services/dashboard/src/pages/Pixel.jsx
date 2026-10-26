@@ -161,6 +161,10 @@ const TURN_RUNNING_UNSEEN = 'Portal is still working on your last request. When 
 const CHAT_STILL_RUNNING = 'Portal is still working on your last request. You can send your next message when it’s done.'
 const TURN_UNCONFIRMED = 'Portal can’t confirm your last request has finished.'
 const CONTINUING_TURN = 'Making sure nothing is still running in this chat…'
+// A Stop of earlier work that was not acknowledged. The alert goes once that
+// turn settles: there is nothing left to stop.
+const RESTORED_STOP_UNCONFIRMED = 'Portal could not confirm the stop yet. Try Stop again in a moment.'
+const clearRestoredStopError = current => current === RESTORED_STOP_UNCONFIRMED ? '' : current
 // A cut-off turn is checked again on a growing interval and the checks stop
 // once its state is proven. Work that is still running is checked at most
 // every 15 s so the chat frees up soon after it finishes.
@@ -875,6 +879,7 @@ export default function Pixel({ systemStatus = null }) {
     function settleWithoutReceipt({stopped = false, received = true} = {}) {
       continueRequested.current = null
       requestIdRef.current = null
+      setStopError(clearRestoredStopError)
       const latest = messagesRef.current
       const last = latest.at(-1)
       const user = latest.at(-2)
@@ -990,8 +995,9 @@ export default function Pixel({ systemStatus = null }) {
               // The sender may already have saved, or another request may now
               // own this chat. Adopt its authoritative record without writing.
               // The receipt settled this turn, so a Continue still answering
-              // for it has nothing left to release.
+              // for it has nothing left to release, nor a Stop to retry.
               continueRequested.current = null
+              setStopError(clearRestoredStopError)
               conversationWriter.current = createConversationWriter(chat.persistenceSnapshot)
               hydrating.current = true; hydrationAction.current = null; savedView.current = null
               requestIdRef.current = chat.requestId
@@ -1829,7 +1835,7 @@ export default function Pixel({ systemStatus = null }) {
       // without an exact acknowledgement could leave tools or inference active.
       if (stopRequestRef.current === stopRequest && chatIdRef.current === chatId && abortRef.current === controller) {
         setStopError(restored
-          ? 'Portal could not confirm the stop yet. Try Stop again in a moment.'
+          ? RESTORED_STOP_UNCONFIRMED
           : 'Stop was not confirmed. Portal is still connected; retry Stop.')
         if (restored) setActivityRefresh(value => value + 1)
       }

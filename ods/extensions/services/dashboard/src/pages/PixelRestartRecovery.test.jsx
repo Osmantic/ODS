@@ -413,6 +413,24 @@ it('does not blame the connection when an older turn holds the chat, and sends t
   expect(screen.queryByText(STALE)).toBeNull()
 })
 
+it.each(['without a receipt','from its receipt'])('clears a Stop that could not be confirmed once the turn settles %s',async source=>{
+  saveCutOffChat()
+  let state='active'
+  server.activity=()=>response({state})
+  if(source==='from its receipt')server.result=()=>response(state==='active'?{state:'unresolved',events:''}:{state:'interrupted',events:TASK_ONLY})
+  server.cancel=()=>response({aborted:false})
+  render(<Pixel/>)
+  fireEvent.click(await screen.findByTitle('Stop'))
+  const failed='Portal could not confirm the stop yet. Try Stop again in a moment.'
+  expect(await screen.findByText(failed)).toBeVisible()
+  // The work then ends by itself, and the chat frees itself.
+  state='terminal'
+  if(source==='without a receipt')await screen.findByText((_,node)=>node?.tagName==='EM' && node.textContent===NO_REPLY_NOTICE,{},{timeout:4000})
+  else await screen.findByText(RESTART_NOTICE,{},{timeout:4000})
+  expect(row()).toBeNull()
+  expect(screen.queryByText(failed)).toBeNull()
+})
+
 it('a Stop in a held chat never stamps the earlier, finished reply as stopped',async()=>{
   localStorage.setItem('ods.pixel.chat.v1',JSON.stringify({schema:1,chatId:'spark_chat',requestId:null,inFlight:false,interrupted:false,
     messages:[{role:'user',content:QUESTION},{role:'assistant',content:'Earlier answer',status:'done'}]}))
