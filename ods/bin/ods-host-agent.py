@@ -53,6 +53,9 @@ if _SWITCHBOARD_BIN_DIR not in sys.path:
 from model_switchboard.router_transport import request as _router_transport_request
 from model_switchboard.router_transport import exchange as _router_transport_exchange
 from model_switchboard import wsl_runtime as _wsl_runtime
+# Model packs (extensions/services/<id>/model-packs.json): files an extension's
+# container reads beside its image, fetched by the prepare step after images.
+import extension_assets as _extension_assets
 # Model profiles (WP3): measured capabilities per GGUF x llama.cpp build x host.
 # Fail-open like the switchboard: without the package a switch runs as before.
 try:
@@ -9555,6 +9558,41 @@ def _services_missing_images(flags: list[str], service_ids: list[str],
     return missing
 
 
+def _missing_model_files(service_ids: list[str]) -> list:
+    """Default model-pack files these bundled services read and this host lacks.
+
+    Packs ship only with bundled extensions, so a Library recipe of the same
+    name never supplies one.
+    """
+    files = []
+    for service_id in service_ids:
+        files.extend(_extension_assets.missing(
+            _extension_assets.default_files(EXTENSIONS_DIR / service_id, INSTALL_DIR, GPU_BACKEND)))
+    return files
+
+
+def _fetch_model_files(progress_id: str, files: list) -> tuple[bool, str]:
+    """Download model-pack files with progress on the card; returns ``(ok, error)``."""
+    try:
+        _extension_assets.check_space(files)
+        for item in files:
+            _write_progress(progress_id, "pulling", f"Downloading the {item.label}...")
+            reported = [time.monotonic()]
+
+            def report(done: int, item=item) -> None:
+                now = time.monotonic()
+                if now - reported[0] >= _IMAGE_PULL_PROGRESS_SECONDS:
+                    reported[0] = now
+                    _write_progress(progress_id, "pulling",
+                                    f"Downloading the {item.label}... "
+                                    f"{done / 1e9:.1f} of {item.size / 1e9:.1f} GB")
+
+            _extension_assets.fetch(item, report)
+    except _extension_assets.AssetError as exc:
+        return False, str(exc)
+    return True, ""
+
+
 def _pull_compose_images(flags: list[str], service_ids: list[str], progress_id: str,
                          *, env: dict[str, str] | None = None) -> tuple[bool, str]:
     """Download the images of ``service_ids`` with live progress under ``progress_id``.
@@ -13376,13 +13414,14 @@ class AgentHandler(BaseHTTPRequestHandler):
                                  "action": "install", 'operation_id': operation_id})
 
     def _handle_prepare_images(self):
-        """Download the images a planned enable needs before anything is selected.
+        """Download the images and models a planned enable needs before anything is selected.
 
         Takes service ids only: bundled extensions and Open WebUI, whose images
-        Compose resolves from their shipped files and pinned digests. Answers
-        200 when every image is already here, otherwise 202 and downloads in
-        the background, reporting progress under ``progress_id`` until it
-        records ``prepared`` or ``error``. Each service allows one operation.
+        Compose resolves from their shipped files and pinned digests. Their
+        default model packs (model-packs.json) follow the images. Answers 200
+        when everything is already here, otherwise 202 and downloads in the
+        background, reporting progress under ``progress_id`` until it records
+        ``prepared`` or ``error``. Each service allows one operation.
         """
         if not check_auth(self):
             return
@@ -13418,23 +13457,31 @@ class AgentHandler(BaseHTTPRequestHandler):
         try:
             flags, env = _image_prepare_context(service_ids)
             missing = _services_missing_images(flags, service_ids, env)
+            model_files = _missing_model_files(service_ids)
         except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:
             _release()
             logger.warning("Image preparation could not resolve %s: %s", progress_id, type(exc).__name__)
             json_response(self, 503, {"error": str(exc)[:300]})
             return
-        if not missing:
+        if not missing and not model_files:
             _release()
             json_response(self, 200, {"status": "ready", "service_ids": service_ids})
             return
 
         def _download() -> None:
             try:
-                pulled, error = _pull_compose_images(flags, missing, progress_id, env=env)
-                if pulled:
-                    _write_progress(progress_id, "prepared", "Images downloaded")
-                else:
-                    _write_progress(progress_id, "error", "Image download failed", error=error)
+                if missing:
+                    pulled, error = _pull_compose_images(flags, missing, progress_id, env=env)
+                    if not pulled:
+                        _write_progress(progress_id, "error", "Image download failed", error=error)
+                        return
+                if model_files:
+                    fetched, error = _fetch_model_files(progress_id, model_files)
+                    if not fetched:
+                        _write_progress(progress_id, "error", "Model download failed", error=error)
+                        return
+                _write_progress(progress_id, "prepared",
+                                "Images and models downloaded" if model_files else "Images downloaded")
             except (OSError, ValueError, subprocess.SubprocessError) as exc:
                 logger.exception("Image preparation failed for %s", progress_id)
                 _write_progress(progress_id, "error", "Image download failed", error=str(exc)[:500])
@@ -13446,7 +13493,8 @@ class AgentHandler(BaseHTTPRequestHandler):
         except Exception:
             _release()
             raise
-        json_response(self, 202, {"status": "accepted", "service_ids": service_ids, "pulling": missing})
+        json_response(self, 202, {"status": "accepted", "service_ids": service_ids, "pulling": missing,
+                                  "models": [item.target.name for item in model_files]})
 
 
     # ── Model management handlers ──

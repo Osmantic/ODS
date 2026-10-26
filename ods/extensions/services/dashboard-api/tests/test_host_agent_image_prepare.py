@@ -266,6 +266,112 @@ def test_prepare_refuses_while_the_service_is_being_changed(prepare, host, monke
     assert not _mod._service_locks["hermes"].locked()
 
 
+PACK_FILE = "model.safetensors"
+
+
+@pytest.fixture
+def model_pack(prepare, host, monkeypatch):  # noqa: F811
+    """A bundled extension that ships a default model pack (as ComfyUI does)."""
+    _mod._service_locks.pop("painter", None)
+    directory = host.builtins / "painter"
+    directory.mkdir()
+    (directory / "compose.yaml.disabled").write_text(
+        "services:\n  painter:\n    image: example/painter:1\n", encoding="utf-8")
+    (directory / "model-packs.json").write_text(json.dumps({
+        "schema": "ods.model-packs.v1",
+        "model_root": {"nvidia": "data/painter/models"},
+        "packs": [{"id": "image-default", "label": "Painter model", "default": True,
+                   "files": [{"subdir": "checkpoints", "file": PACK_FILE,
+                              "url": "https://example.invalid/model.safetensors",
+                              "sha256": "a" * 64, "bytes": 5, "license": "test"}]}],
+    }), encoding="utf-8")
+    monkeypatch.setattr(_mod, "GPU_BACKEND", "nvidia")
+    monkeypatch.setattr(_mod._extension_assets, "check_space", lambda files: None)
+    return host.install_dir / "data/painter/models/checkpoints" / PACK_FILE
+
+
+def test_prepare_fetches_a_missing_model_pack_after_the_images(prepare, host, monkeypatch, model_pack):  # noqa: F811
+    monkeypatch.setattr(_mod, "_services_missing_images", lambda flags, ids, env: ["painter"])
+    order = []
+    monkeypatch.setattr(_mod, "_pull_compose_images",
+                        lambda *args, **kwargs: (order.append("images"), (True, ""))[1])
+
+    def fetch(item, report):
+        order.append("model")
+        assert _mod._service_locks["painter"].locked()  # one operation per service
+        item.target.parent.mkdir(parents=True)
+        item.target.write_bytes(b"model")
+        report(5)
+
+    monkeypatch.setattr(_mod._extension_assets, "fetch", fetch)
+
+    status, response = prepare({"service_ids": ["painter"], "progress_id": "painter"})
+
+    assert status == 202 and response["models"] == [PACK_FILE]
+    assert order == ["images", "model"]
+    assert model_pack.read_bytes() == b"model"
+    record = host.progress("painter")
+    assert (record["status"], record["phase_label"]) == ("prepared", "Images and models downloaded")
+    assert not _mod._service_locks["painter"].locked()
+
+
+def test_prepare_downloads_a_missing_model_even_when_the_images_are_here(prepare, host, monkeypatch, model_pack):  # noqa: F811
+    monkeypatch.setattr(_mod, "_services_missing_images", lambda flags, ids, env: [])
+    monkeypatch.setattr(_mod, "_pull_compose_images", lambda *args, **kwargs: pytest.fail("no image download"))
+    labels = []
+    real_write = _mod._write_progress
+    monkeypatch.setattr(_mod, "_write_progress",
+                        lambda service_id, status, label="", **kw: (labels.append(label),
+                                                                    real_write(service_id, status, label, **kw)))
+    monkeypatch.setattr(_mod._extension_assets, "fetch", lambda item, report: (
+        item.target.parent.mkdir(parents=True), item.target.write_bytes(b"model")))
+
+    status, response = prepare({"service_ids": ["painter"], "progress_id": "painter"})
+
+    assert status == 202 and response["pulling"] == []
+    assert labels[0] == "Downloading the Painter model..."
+    assert host.progress("painter")["status"] == "prepared"
+
+
+def test_prepare_is_ready_when_images_and_models_are_here(prepare, host, monkeypatch, model_pack):  # noqa: F811
+    model_pack.parent.mkdir(parents=True)
+    model_pack.write_bytes(b"model")  # the pinned size: 5 bytes
+    monkeypatch.setattr(_mod, "_services_missing_images", lambda flags, ids, env: [])
+    monkeypatch.setattr(_mod._extension_assets, "fetch", lambda *args: pytest.fail("no download expected"))
+
+    status, response = prepare({"service_ids": ["painter"], "progress_id": "painter"})
+
+    assert status == 200 and response["status"] == "ready"
+    assert not _mod._service_locks["painter"].locked()
+
+
+def test_prepare_records_a_failed_model_download_for_the_card(prepare, host, monkeypatch, model_pack):  # noqa: F811
+    monkeypatch.setattr(_mod, "_services_missing_images", lambda flags, ids, env: [])
+
+    def fail(item, report):
+        raise _mod._extension_assets.AssetError("The download of Painter model stopped (timed out).")
+
+    monkeypatch.setattr(_mod._extension_assets, "fetch", fail)
+
+    status, _response = prepare({"service_ids": ["painter"], "progress_id": "painter"})
+
+    assert status == 202
+    record = host.progress("painter")
+    assert (record["status"], record["phase_label"]) == ("error", "Model download failed")
+    assert record["error"] == "The download of Painter model stopped (timed out)."
+    assert not _mod._service_locks["painter"].locked()
+
+
+def test_prepare_reports_a_malformed_pack_list_without_downloading(prepare, host, monkeypatch, model_pack):  # noqa: F811
+    (host.builtins / "painter" / "model-packs.json").write_text('{"schema": "other"}', encoding="utf-8")
+    monkeypatch.setattr(_mod, "_services_missing_images", lambda flags, ids, env: [])
+
+    status, response = prepare({"service_ids": ["painter"], "progress_id": "painter"})
+
+    assert status == 503 and "schema must be ods.model-packs.v1" in response["error"]
+    assert not _mod._service_locks["painter"].locked()
+
+
 def test_prepare_reports_an_unresolvable_stack_without_downloading(prepare, host, monkeypatch):  # noqa: F811
     monkeypatch.setattr(_mod, "_services_missing_images",
                         lambda flags, ids, env: (_ for _ in ()).throw(RuntimeError("Could not resolve")))

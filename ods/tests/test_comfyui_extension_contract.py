@@ -105,8 +105,16 @@ def test_image_model_name_agrees_everywhere():
     loaders = [node for node in workflow.values() if node["class_type"] == "CheckpointLoaderSimple"]
     assert [node["inputs"]["ckpt_name"] for node in loaders] == [MODEL]
 
+    packs = json.loads((COMFYUI / "model-packs.json").read_text(encoding="utf-8"))
+    default = [item for pack in packs["packs"] if pack["default"] for item in pack["files"]]
+    assert [(item["subdir"], item["file"]) for item in default] == [("checkpoints", MODEL)]
+
     installer = (ODS / "installers/phases/11-services.sh").read_text(encoding="utf-8")
     assert f'SDXL_MODEL="{MODEL}"' in installer
+    # The installer downloads through the same pinned pack list as the Extensions page.
+    assert '"$INSTALL_DIR/bin/extension_assets.py"' in installer
+    assert '"$INSTALL_DIR/extensions/services/comfyui" "$INSTALL_DIR" "$GPU_BACKEND"' in installer
+    assert "huggingface.co/ByteDance" not in installer
 
     n8n = (ODS / "extensions/library/workflows/comfyui/llm-to-image.json").read_text(encoding="utf-8")
     assert f"$env.COMFYUI_MODEL_NAME || '{MODEL}'" in n8n

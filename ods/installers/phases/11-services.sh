@@ -1146,11 +1146,11 @@ else
             fi
         fi
 
+        # The checkpoint ComfyUI's default image pack (comfyui/model-packs.json) pins.
         SDXL_MODEL="sdxl_lightning_4step.safetensors"
-        SDXL_URL="https://huggingface.co/ByteDance/SDXL-Lightning/resolve/main/sdxl_lightning_4step.safetensors"
 
         if [[ ! -f "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL" ]]; then
-            ai "Downloading SDXL Lightning 4-step (~6.5GB) for image generation..."
+            ai "Downloading SDXL Lightning 4-step (6.9 GB) for image generation..."
 
             # Source background task tracking
             if [[ -f "$SCRIPT_DIR/installers/lib/background-tasks.sh" ]]; then
@@ -1158,28 +1158,18 @@ else
             fi
 
             # This daemon must not inherit the installer model lifecycle lock;
-            # otherwise full-model activation waits for an unrelated 6.5 GB
+            # otherwise full-model activation waits for an unrelated 6.9 GB
             # image download after the installer itself releases the lock.
+            # It is the downloader the Extensions page uses: the pinned URL,
+            # size and SHA-256 come from model-packs.json, a partial download
+            # resumes, a file that fails its checksum is deleted, and it exits
+            # non-zero on failure so the summary reports it. It runs the copy in
+            # the install directory, which outlives the installer's source.
             (
                 _phase11_close_inherited_fds_for_daemon
-                exec nohup env \
-                    SDXL_CHECKPOINT_DIR="$SDXL_CHECKPOINT_DIR" \
-                    SDXL_MODEL="$SDXL_MODEL" \
-                    SDXL_URL="$SDXL_URL" \
-                    bash -c '
-                        echo "[SDXL] Starting SDXL Lightning model download..."
-                        if [[ ! -f "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL" ]]; then
-                            echo "[SDXL] Downloading $SDXL_MODEL (~6.5GB)..."
-                            curl -fSL -C - --connect-timeout 30 --max-time 3600 \
-                                --retry 5 --retry-delay 10 --retry-all-errors \
-                                -o "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL.part" \
-                                "$SDXL_URL" 2>&1 && \
-                                mv "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL.part" "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL" && \
-                                echo "[SDXL] $SDXL_MODEL complete" || \
-                                echo "[SDXL] ERROR: Failed to download $SDXL_MODEL"
-                        fi
-                        echo "[SDXL] SDXL Lightning model download finished."
-                    ' > "$INSTALL_DIR/logs/sdxl-download.log" 2>&1
+                exec nohup "${ODS_PYTHON_CMD:-python3}" "$INSTALL_DIR/bin/extension_assets.py" \
+                    "$INSTALL_DIR/extensions/services/comfyui" "$INSTALL_DIR" "$GPU_BACKEND" \
+                    > "$INSTALL_DIR/logs/sdxl-download.log" 2>&1
             ) &
 
             sdxl_pid=$!
@@ -1190,7 +1180,7 @@ else
             fi
 
             log "Background SDXL download started (PID: $sdxl_pid). Check: tail -f $INSTALL_DIR/logs/sdxl-download.log"
-            ai "SDXL Lightning downloading in background (~6.5GB). ComfyUI will be ready once complete."
+            ai "SDXL Lightning downloading in background (6.9 GB). ComfyUI will be ready once complete."
         else
             ai_ok "SDXL Lightning model already present"
         fi

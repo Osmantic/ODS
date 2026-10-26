@@ -55,14 +55,24 @@ Open WebUI's image generation reads these from `.env` each time it starts:
 
 ## Image model
 
-When image generation is chosen in the installer, the installer downloads SDXL Lightning 4-step
-(`sdxl_lightning_4step.safetensors`, 6.94 GB) into `checkpoints/` in the background.
+ComfyUI's default image pack is SDXL Lightning 4-step (`sdxl_lightning_4step.safetensors`, 6.94 GB). It is pinned
+by URL, size and SHA-256 in `model-packs.json` and goes into `checkpoints/`. It is downloaded:
+- when you add ComfyUI from the Extensions page, after its image, with progress on the card;
+- by the installer, in the background, when image generation is chosen there.
 
-Adding ComfyUI later from the Extensions page does not download it yet. Fetch it once from your ODS install
-directory, then click **Refresh** in ComfyUI. On AMD the folder is `data/comfyui/ComfyUI/models/checkpoints`.
+Both use `bin/extension_assets.py`. It checks free disk first, resumes a partial download (`*.part`), deletes a file
+that fails its checksum, and puts the model in place only once it is verified. If a download stops, add ComfyUI
+again to resume it. `ods enable comfyui` from the command line does not download it yet.
 
-If `mkdir` or `curl` reports "Permission denied" (the AMD container runs as root and owns its folder), run the commands
-with `sudo`.
+To fetch it by hand (offline machines, or `ods enable`), run this from your ODS install directory, then click
+**Refresh** in ComfyUI:
+
+```bash
+python3 bin/extension_assets.py extensions/services/comfyui . nvidia   # or amd
+```
+
+Or with curl. On AMD the folder is `data/comfyui/ComfyUI/models/checkpoints`. If `mkdir` or `curl` reports
+"Permission denied" (the AMD container runs as root and owns its folder), run the commands with `sudo`.
 
 ```bash
 dir=data/comfyui/models/checkpoints
