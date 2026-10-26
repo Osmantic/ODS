@@ -37,6 +37,7 @@ def stores(tmp_path, monkeypatch):
     monkeypatch.setattr(pixel, "_result_tasks", {})
     monkeypatch.setattr(pixel, "_result_preflights", set())
     monkeypatch.setattr(pixel, "_result_stops", set())
+    monkeypatch.setattr(pixel, "_result_settles", set())
     monkeypatch.setattr(pixel, "_result_abort_ack", set())
     monkeypatch.setenv("PIXEL_OPENWEBUI_KEY", EDGE_KEY)
     async def ready():
@@ -65,7 +66,9 @@ def edge(monkeypatch):
 
     async def settle(edge_url, key, chat_id):
         state["settles"].append(chat_id)
-        assert (receipts.owner_namespace(OWNER), chat_id) in pixel._result_stops
+        # The settle fence is its own; a Stop's fence is never borrowed for it.
+        assert (receipts.owner_namespace(OWNER), chat_id) in pixel._result_settles
+        assert (receipts.owner_namespace(OWNER), chat_id) not in pixel._result_stops
         return state["settle"]
 
     async def never_cancel(*_args):
@@ -164,7 +167,97 @@ def test_settle_fences_a_new_attempt_until_it_answers(stores, edge, monkeypatch)
         assert fenced.value.status_code == 423
         release.set()
         assert await healing == {"state": "terminal"}
+        assert not pixel._result_settles and not pixel._result_stops
+    asyncio.run(run())
+
+
+def _soon(awaitable):
+    """A race that went the wrong way fails here instead of hanging the run."""
+    return asyncio.wait_for(awaitable, 5)
+
+
+def _blocked(result):
+    """A stand-in edge call that waits until the test releases it."""
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def call(*_args):
+        entered.set()
+        await release.wait()
+        return result
+    return call, entered, release
+
+
+async def _stop_holds_the_chat(stores):
+    """While a Stop's cancel runs, its fence holds: no new turn, result active."""
+    assert CUT_OFF[:2] in pixel._result_stops
+    lookup = pixel.ChatResultRequest(chat_id=CHAT, request_id=CUT_OFF[2])
+    assert await pixel.pixel_chat_result(lookup, OWNER) == {"state": "active", "events": ""}
+    with pytest.raises(HTTPException) as refused:
+        await pixel.pixel_chat_stream(connected(), stream("during-stop"), OWNER)
+    assert refused.value.status_code == 423
+    assert stores.get(CUT_OFF)["state"] == "unresolved"
+
+
+def test_a_stop_that_starts_during_the_edge_read_is_left_alone(stores, edge, monkeypatch):
+    async def run():
+        read, reading, answer = _blocked("unknown")
+        cancel, cancelling, acknowledge = _blocked(True)
+        monkeypatch.setattr(pixel, "_edge_chat_activity", read)
+        monkeypatch.setattr(pixel, "_cancel_edge_run", cancel)
+        check = asyncio.create_task(pixel.pixel_chat_activity(pixel.ChatCancelRequest(chat_id=CHAT), OWNER))
+        await _soon(reading.wait())
+        stop = asyncio.create_task(pixel.pixel_chat_cancel(
+            pixel.ChatCancelRequest(chat_id=CHAT, request_id=CUT_OFF[2]), OWNER))
+        await _soon(cancelling.wait())
+        answer.set()
+        # The check finds the Stop and leaves the chat to it: no settle.
+        assert await _soon(check) == {"state": "active"}
+        assert edge["settles"] == []
+        await _stop_holds_the_chat(stores)
+        acknowledge.set()
+        assert await _soon(stop) == {"aborted": True}
+        assert stores.get(CUT_OFF)["state"] == "cancelled"
+        assert not pixel._result_stops and not pixel._result_settles
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("ingress", ["settled", "active"])
+def test_settle_never_removes_the_fence_of_a_stop_that_started_during_it(stores, edge, monkeypatch, ingress):
+    async def run():
+        settle, settling, answer = _blocked(ingress)
+        cancel, cancelling, acknowledge = _blocked(True)
+        monkeypatch.setattr(pixel, "_settle_edge_chat", settle)
+        monkeypatch.setattr(pixel, "_cancel_edge_run", cancel)
+        check = asyncio.create_task(pixel.pixel_chat_activity(pixel.ChatCancelRequest(chat_id=CHAT), OWNER))
+        await _soon(settling.wait())
+        # The owner's Stop is not refused because a check is settling.
+        stop = asyncio.create_task(pixel.pixel_chat_cancel(
+            pixel.ChatCancelRequest(chat_id=CHAT, request_id=CUT_OFF[2]), OWNER))
+        await _soon(cancelling.wait())
+        answer.set()
+        # Whatever the ingress answers, the Stop now owns this receipt.
+        assert await _soon(check) == {"state": "active"}
+        assert not pixel._result_settles
+        await _stop_holds_the_chat(stores)
+        acknowledge.set()
+        assert await _soon(stop) == {"aborted": True}
+        assert stores.get(CUT_OFF)["state"] == "cancelled"
         assert not pixel._result_stops
+    asyncio.run(run())
+
+
+def test_a_second_check_waits_for_the_settle_already_running(stores, edge, monkeypatch):
+    async def run():
+        settle, settling, answer = _blocked("settled")
+        monkeypatch.setattr(pixel, "_settle_edge_chat", settle)
+        first = asyncio.create_task(pixel.pixel_chat_activity(pixel.ChatCancelRequest(chat_id=CHAT), OWNER))
+        await _soon(settling.wait())
+        assert await pixel.pixel_chat_activity(pixel.ChatCancelRequest(chat_id=CHAT), OWNER) == {"state": "active"}
+        assert CUT_OFF[:2] in pixel._result_settles
+        answer.set()
+        assert await _soon(first) == {"state": "terminal"}
+        assert stores.get(CUT_OFF)["state"] == "interrupted"
+        assert not pixel._result_settles
     asyncio.run(run())
 
 

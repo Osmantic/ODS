@@ -248,6 +248,9 @@ _result_store: ChatResultStore | None = None
 _result_tasks: dict[tuple[str, str, str], asyncio.Task] = {}
 _result_preflights: set[tuple[str, str, str]] = set()
 _result_stops: set[tuple[str, str]] = set()
+# Chats whose last turn an activity check is settling right now. Kept apart
+# from Stop's fence, so neither can remove the other's.
+_result_settles: set[tuple[str, str]] = set()
 _result_abort_ack: set[tuple[str, str, str]] = set()
 
 
@@ -1068,10 +1071,18 @@ async def pixel_chat_activity(body: ChatCancelRequest, owner: str = Depends(veri
         return {"state": "unknown"}
     if state == "active" or conversation is None:
         return {"state": state}
-    # Fence this process's own next attempt so it cannot race the history lock.
-    _result_stops.add(conversation)
+    # A Stop, a turn or another check may have started here during that read.
+    # It owns the chat now; settling beside it could race its outcome.
+    if _owns_live_work(conversation) or conversation in _result_settles:
+        return {"state": "active"}
+    # Fence this process's own next attempt so it cannot race the history
+    # lock. A Stop keeps its own fence; only this check removes this one.
+    _result_settles.add(conversation)
     try:
         settled = await _settle_edge_chat(edge_url, key, body.chat_id)
+        if settled == "settled" and _owns_live_work(conversation):
+            # A Stop that started meanwhile settles its own receipt.
+            settled = "active"
         if settled == "settled":
             store = _chat_results()
             for identity in store.pending_attempts(conversation):
@@ -1081,7 +1092,7 @@ async def pixel_chat_activity(body: ChatCancelRequest, owner: str = Depends(veri
                     # chat idle. Keep every saved chunk; never call it complete.
                     store.finish(identity, "interrupted")
     finally:
-        _result_stops.discard(conversation)
+        _result_settles.discard(conversation)
     if settled == "settled":
         return {"state": "terminal"}
     return {"state": "active" if settled == "active" else state}
@@ -1213,6 +1224,8 @@ async def _retained_chat_stream(request, body, owner):
     try:
         if identity[:2] in _result_stops:
             raise ResultConflict("Stop is still being confirmed")
+        if identity[:2] in _result_settles:
+            raise ResultConflict("The last turn of this chat is still being checked")
         created = store.reserve(identity, fingerprint)
     except ResultConflict as exc:
         raise HTTPException(status_code=423, detail=str(exc)) from None
