@@ -1745,8 +1745,8 @@ def calendar_event(event_id, summary="Planning"):
 def write_token(path, granted=(GMAIL_READ, CALENDAR_READ)):
     write_protected(path, json.dumps({
         "client_id": "fixture-client.apps.googleusercontent.com",
-        "client_secret": "fixture-client-secret",
-        "refresh_token": "fixture-refresh-token",
+        "client_secret": "example-client-secret",
+        "refresh_token": "example-refresh-token",
         "token_uri": BROKER.GOOGLE_TOKEN_URI,
         "scope": " ".join(granted),
         "grantedScope": " ".join(granted),
@@ -1856,7 +1856,7 @@ class SourceBrokerReadinessTests(unittest.TestCase):
             self.assertTrue(status["sources"]["calendar"]["complete"])
             self.assertEqual(status["sources"]["social"]["state"], "disabled")
             text = json.dumps(status)
-            for private in ("owner@example.com", "fixture-refresh-token", "fixture-client-secret", "project 123", "Planning"):
+            for private in ("owner@example.com", "example-refresh-token", "example-client-secret", "project 123", "Planning"):
                 self.assertNotIn(private, text)
 
     def test_revoked_access_marks_both_google_sources_while_social_still_refreshes(self):
@@ -1992,7 +1992,7 @@ class SourceBrokerReadinessTests(unittest.TestCase):
         flow = {
             "schemaVersion": 1, "kind": "pixel-source-oauth-flow", "flowId": flow_id, "state": state,
             "codeVerifier": secrets.token_urlsafe(48), "redirectUri": "http://127.0.0.1:53682",
-            "client": {"installed": {"client_id": "fixture-client.apps.googleusercontent.com", "client_secret": "fixture-client-secret",
+            "client": {"installed": {"client_id": "fixture-client.apps.googleusercontent.com", "client_secret": "example-client-secret",
                                      "auth_uri": BROKER.GOOGLE_AUTH_URI, "token_uri": BROKER.GOOGLE_TOKEN_URI}},
             "requestedScopes": [GMAIL_READ, CALENDAR_READ], "account": "owner@example.com",
             "createdAt": BROKER.iso(now), "expiresAt": BROKER.iso(now + timedelta(minutes=10)),
@@ -2026,7 +2026,7 @@ class SourceBrokerReadinessTests(unittest.TestCase):
             flow_id, flow = self.handoff(root)
             granted = f"{CALENDAR_READ} {GMAIL_READ}"
             status, fake, output = self.run_exchange(flow_id, lambda method, url, body: (200, {
-                "access_token": "fixture-access-token", "refresh_token": "1//fixture-refresh", "scope": granted,
+                "access_token": "fixture-access-token", "refresh_token": "example-refresh-from-google", "scope": granted,
                 "token_type": "Bearer", "expires_in": 3599,
             }))
             self.assertEqual(status, 0)
@@ -2038,7 +2038,7 @@ class SourceBrokerReadinessTests(unittest.TestCase):
             self.assertEqual(sent["code"], ["4/fixture-authorization-code"])
             token_path = root / "private" / "google-token.json"
             token = json.loads(token_path.read_text(encoding="utf-8"))
-            self.assertEqual(token["refresh_token"], "1//fixture-refresh")
+            self.assertEqual(token["refresh_token"], "example-refresh-from-google")
             self.assertEqual(token["grantedScope"], " ".join(sorted([CALENDAR_READ, GMAIL_READ])))
             self.assertEqual(token["token_uri"], BROKER.GOOGLE_TOKEN_URI)
             self.assertEqual(BROKER.granted_scopes(token), frozenset({CALENDAR_READ, GMAIL_READ}))
@@ -2048,7 +2048,7 @@ class SourceBrokerReadinessTests(unittest.TestCase):
             result = self.exchange_result(root, flow_id)
             self.assertEqual((result["outcome"], result["errorClass"]), ("connected", None))
             self.assertEqual(result["grantedScopes"], sorted([CALENDAR_READ, GMAIL_READ]))
-            for secret in (flow["codeVerifier"], "1//fixture-refresh", "4/fixture-authorization-code", "fixture-client-secret"):
+            for secret in (flow["codeVerifier"], "example-refresh-from-google", "4/fixture-authorization-code", "example-client-secret"):
                 self.assertNotIn(secret, json.dumps(result))
                 self.assertNotIn(secret, output)
 
@@ -2076,8 +2076,8 @@ class SourceBrokerReadinessTests(unittest.TestCase):
 
     def test_exchange_only_talks_to_googles_fixed_endpoint_and_loopback_or_https_redirects(self):
         cases = [
-            ({"client": {"client_id": "fixture-client", "client_secret": "fixture-client-secret", "token_uri": "https://attacker.example/token"}}, "client-invalid"),
-            ({"client": {"client_id": "fixture-client", "client_secret": "fixture-client-secret", "auth_uri": "https://accounts.example/auth"}}, "client-invalid"),
+            ({"client": {"client_id": "fixture-client", "client_secret": "example-client-secret", "token_uri": "https://attacker.example/token"}}, "client-invalid"),
+            ({"client": {"client_id": "fixture-client", "client_secret": "example-client-secret", "auth_uri": "https://accounts.example/auth"}}, "client-invalid"),
             ({"redirectUri": "http://192.168.1.20:53682"}, "invalid-flow"),
             ({"redirectUri": "http://dashboard.ods.local/api/callback"}, "invalid-flow"),
             ({"expiresAt": "2026-01-01T00:00:00Z", "createdAt": "2025-12-31T23:55:00Z"}, "flow-expired"),
@@ -2134,11 +2134,11 @@ class SourceBrokerReadinessTests(unittest.TestCase):
                 write_token(root / "private" / "google-token.json")
                 fake = self.run_revoke(lambda *args, answer=answer: answer)
                 self.assertEqual([(method, url) for method, url, _body in fake.calls], [("POST", BROKER.GOOGLE_REVOKE_URI)])
-                self.assertEqual(urllib.parse.parse_qs(fake.calls[0][2]), {"token": ["fixture-refresh-token"]})
+                self.assertEqual(urllib.parse.parse_qs(fake.calls[0][2]), {"token": ["example-refresh-token"]})
                 self.assertFalse((root / "private" / "google-token.json").exists())
                 result = json.loads((root / "private" / "oauth" / "revoke.result.json").read_text(encoding="utf-8"))
                 self.assertEqual((result["outcome"], result["errorClass"]), (outcome, error_class))
-                self.assertNotIn("fixture-refresh-token", json.dumps(result))
+                self.assertNotIn("example-refresh-token", json.dumps(result))
 
     def test_revoke_without_a_stored_connection_needs_no_network(self):
         with tempfile.TemporaryDirectory() as directory, self.broker_env(Path(directory)):
