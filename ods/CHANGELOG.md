@@ -17,6 +17,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   everything it saved; uninstalling ODS does the same. Linux and Windows (WSL2)
   only for now. Set `PORTAL_CONNECTED_APPS_ENABLED=false` to hide it. See
   `docs/pixel/CONNECTED-APPS.md`.
+- Portal can suggest calendar changes you approve. Turn on **Suggest calendar
+  changes you approve** when you connect Google, then ask Portal to add, move or
+  delete an event. Each change waits in Settings, Connected apps, showing exactly
+  what it would write; nothing reaches Google until you press **Approve**, and
+  ODS makes that exact change once. Portal's chat says when a change waits.
 - Portal's workspace includes one finished example project, Elf of Doom, a
   small browser game Portal wrote in ODS from natural-language prompts. The
   installer adds `Playground/elf-of-doom` whenever that name is absent and the

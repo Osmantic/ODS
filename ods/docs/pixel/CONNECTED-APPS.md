@@ -8,7 +8,9 @@ disconnect at any time.
 ## What Portal can and can't do
 
 - **Calendar:** Portal reads the events in your primary calendar, from a week ago
-  to three months ahead. It doesn't change events yet.
+  to three months ahead. If you turn on **Suggest calendar changes you approve**,
+  it can also suggest adding, moving or deleting an event. Nothing changes on your
+  calendar until you approve that exact change in Settings.
 - **Email:** Portal reads summaries of your Inbox and of what you sent, for the
   last 180 days: sender, subject, date and a short, cleaned-up excerpt. It never
   sees attachments, and it can't send or delete mail.
@@ -39,6 +41,7 @@ disconnect at any time.
 
 1. Open **Settings, Connected apps** and press **Connect Google**.
 2. Choose what Portal may use: your calendar, your email summaries, or both.
+   Calendar changes are off unless you turn them on.
 3. Create your Google sign-in app, once. The wizard links each page:
    1. create a Google Cloud project;
    2. turn on the Gmail API and the Google Calendar API;
@@ -78,10 +81,35 @@ bar, paste it into the wizard, and press **Finish connecting**.
 If Portal is busy when you connect or disconnect, it finishes its task first.
 The card then offers **Finish**.
 
+## Calendar changes you approve
+
+With **Suggest calendar changes you approve** on, you can ask Portal "move my
+dentist appointment to Thursday" or "add lunch with Sam on Friday at noon".
+Portal writes the change down and tells you it waits for your approval; the chat
+also shows a line that links to Connected apps.
+
+Under the Google card, **Calendar changes from Portal** lists each one with
+everything it would write: the title, when, where, the guest list and notes,
+whether Google emails the guests, and for a change or deletion, the event as your
+calendar has it now.
+
+- **Approve** makes exactly that change, once. If Portal rewrites its suggestion
+  after you opened the list, the version you saw is still the one that's made.
+- **Decline** removes it. Nothing changes on your calendar.
+- If the event changed after Portal suggested something, Google refuses the
+  change and the list says so. Ask Portal again.
+- If Google doesn't confirm a change, ODS never sends it again. For a new event,
+  **Check again** asks Google whether it was added. For a move or a deletion,
+  look at your calendar, then **Dismiss** it.
+
+To turn calendar changes on later, press **Change access** on the card and
+connect again with the box checked.
+
 ## Disconnect
 
 Press **Disconnect** on the card. ODS stops syncing, removes its access at
-Google, and deletes the sign-in and every summary it saved. Portal then stops
+Google, and deletes the sign-in, every summary it saved and every calendar change
+still waiting. Portal then stops
 using your calendar and email. Uninstalling ODS does the same.
 
 ## Turn connected apps off

@@ -359,6 +359,18 @@ are the questions it doesn't answer. The full guide is
 
 **Fix:** open **Settings, Connected apps**. The card says which, and offers the button that fixes it. Portal's chat also shows **Open Connected apps** when the connection needs you.
 
+### Portal says a calendar change waits, but I can't find it
+
+**Cause:** Portal only suggests calendar changes; you approve each one in Settings.
+
+**Fix:** open **Settings, Connected apps**. **Calendar changes from Portal** under the Google card lists every change that waits, with **Approve** and **Decline**. If Portal says it can't change your calendar at all, press **Change access** and connect again with **Suggest calendar changes you approve** checked.
+
+### A calendar change says Google hasn't confirmed it
+
+**Cause:** the change was sent, but Google's answer didn't arrive. ODS never sends a change twice, so it can't simply try again.
+
+**Fix:** for a new event, press **Check again**. For a move or a deletion, look at your calendar to see whether it happened, then press **Dismiss**; ask Portal again if it didn't.
+
 Still stuck? Ask on the ODS Discord: <https://discord.gg/4ntNp9MAwC>.
 
 ---

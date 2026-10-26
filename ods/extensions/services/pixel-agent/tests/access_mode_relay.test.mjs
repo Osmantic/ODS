@@ -103,7 +103,10 @@ async function connectionServer(t, answer) {
 test('each custodian action reaches the controller once, with its own time budget', async t => {
   const {calls, post}=await connectionServer(t, value=>({status:200,body:{outcome:value.operation==='connection-sync'?'started':'applied'}}));
   for (const [operation, request, budget] of [['connection-sync', {}, 25000], ['connection-activate', {}, 305000],
-      ['connection-cancel', {flowId:'a'.repeat(32)}, 25000], ['connection-disconnect', {connector:'google'}, 155000]]) {
+      ['connection-cancel', {flowId:'a'.repeat(32)}, 25000], ['connection-disconnect', {connector:'google'}, 155000],
+      ['connection-proposals', {}, 25000], ['connection-decline', {proposalId:'calendar-1761500000000-0badc0de'}, 25000],
+      ['connection-approve', {proposalId:'calendar-1761500000000-0badc0de', sha256:'c'.repeat(64)}, 155000],
+      ['connection-reconcile', {proposalId:'calendar-1761500000000-0badc0de'}, 155000]]) {
     calls.length=0;
     const response=await post(JSON.stringify({operation, request}));
     assert.equal(response.status,200);

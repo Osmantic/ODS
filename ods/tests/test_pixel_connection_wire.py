@@ -19,6 +19,7 @@ edge = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(edge)
 
 OWNERS = (0, os.getuid()) if hasattr(os, "getuid") else (0,)
+PROPOSAL = "calendar-1761500000000-0badc0de"
 NOW = datetime(2026, 10, 25, 20, 30, tzinfo=timezone.utc)
 RECORD = {
     "schemaVersion": 1, "kind": "ods-portal-connections", "updatedAt": "2026-10-25T20:00:00Z",
@@ -58,7 +59,8 @@ def samples():
             (RECORD, True, broker(), None), (RECORD, True, broker("network"), None),
             (RECORD, True, broker("invalid-grant"), None), (None, False, None, journal("consent")),
             (RECORD, True, None, journal("activating", "runtime-busy")), (None, False, None, journal("deactivating")),
-            (RECORD, False, None, journal("consent")), (None, False, None, journal("failed", "access-denied"))):
+            (RECORD, False, None, journal("consent")), (None, False, None, journal("failed", "access-denied")),
+            (RECORD, True, broker(), "waiting-change")):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             os.chmod(root, 0o755)
@@ -69,12 +71,16 @@ def samples():
                 (root / "token.json").write_text("{}")
             if broker_value:
                 (root / "status.json").write_text(json.dumps(broker_value))
-            if pending:
+            if pending == "waiting-change":
+                (root / "proposals").mkdir()
+                (root / "proposals" / f"{PROPOSAL}.json").write_text(json.dumps({"status": "pending-operator-approval"}))
+            elif pending:
                 (root / "connection.json").write_text(json.dumps(pending))
                 os.chmod(root / "connection.json", 0o600)
             values.append(status.report(surface="wsl-systemd", record_path=root / "record.json",
                                         token_path=root / "token.json", status_path=root / "status.json",
-                                        lifecycle_path=root / "connection.json", now=NOW, owners=OWNERS))
+                                        lifecycle_path=root / "connection.json", now=NOW, owners=OWNERS,
+                                        broker_state=root))
     return values
 
 
@@ -90,6 +96,12 @@ MUTATIONS = (
     lambda v: v["connectors"]["google"]["sources"].update(social=None),
     lambda v: v["connectors"]["google"].update(grantedScopes=["https://example.com/scope"]),
     lambda v: v["connectors"]["google"].pop("pending"),
+    lambda v: v["connectors"]["google"].pop("waitingChanges"),
+    lambda v: v["connectors"]["google"].update(waitingChanges=-1),
+    lambda v: v["connectors"]["google"].update(waitingChanges=True),
+    lambda v: v["connectors"]["google"].update(waitingChanges=51),
+    lambda v: v["connectors"]["google"].update(waitingChanges=None if v["connectors"]["google"]["waitingChanges"] is not None
+                                               else 0),
     lambda v: v["connectors"]["google"].update(pending={"action": "connect", "phase": "consent", "expiresAt": None,
                                                         "error": None, "since": "2026-10-25T20:30:00Z"}),
     lambda v: v["connectors"]["google"].update(pending={"action": "connect", "phase": "deactivating", "expiresAt": None,
@@ -121,6 +133,8 @@ REQUESTS = (
     ("connection-complete", {"flowId": FLOW, "state": "s" * 43, "error": "access-denied"}),
     ("connection-activate", {}), ("connection-cancel", {"flowId": FLOW}),
     ("connection-disconnect", {"connector": "google"}), ("connection-sync", {}),
+    ("connection-proposals", {}), ("connection-approve", {"proposalId": PROPOSAL, "sha256": "c" * 64}),
+    ("connection-decline", {"proposalId": PROPOSAL}), ("connection-reconcile", {"proposalId": PROPOSAL}),
 )
 BAD_REQUESTS = (
     ("connection-begin", dict(BEGIN, redirectPort=80)), ("connection-begin", dict(BEGIN, extra=1)),
@@ -133,7 +147,23 @@ BAD_REQUESTS = (
     ("connection-complete", {"flowId": FLOW, "state": "short", "code": "4/x"}),
     ("connection-activate", {"force": True}), ("connection-cancel", {"flowId": "A" * 32}),
     ("connection-disconnect", {}), ("connection-status", {}), ("connection-sync", []),
+    ("connection-proposals", {"all": True}), ("connection-approve", {"proposalId": PROPOSAL}),
+    ("connection-approve", {"proposalId": PROPOSAL, "sha256": "C" * 64}),
+    ("connection-approve", {"proposalId": PROPOSAL, "sha256": "c" * 64, "force": True}),
+    ("connection-decline", {"proposalId": "calendar-1-0badc0de"}),
+    ("connection-reconcile", {"proposalId": PROPOSAL, "sha256": "c" * 64}),
 )
+CHANGE = {"summary": "Dentist", "start": "2026-10-27T15:00:00-05:00", "end": "2026-10-27T16:00:00-05:00",
+          "allDay": False, "timeZone": "America/Chicago", "location": "12 Main St", "description": "Bring\nthe form",
+          "attendees": ["pat@example.com"], "sendUpdates": "all"}
+WAITING = {"proposalId": PROPOSAL, "sha256": "c" * 64, "state": "waiting", "action": "create",
+           "createdAt": "2026-10-26T15:00:00.000Z", "change": CHANGE, "event": None, "tooLarge": False}
+UPDATE = dict(WAITING, state="unconfirmed", action="update",
+              change=dict.fromkeys(CHANGE, None) | {"start": CHANGE["start"], "end": CHANGE["end"], "sendUpdates": "none"},
+              event={"title": "Team sync", "start": "2026-10-27T10:00:00-05:00", "end": None, "allDay": False})
+UNREADABLE = {"proposalId": PROPOSAL, "sha256": None, "state": "invalid", "action": None, "createdAt": None,
+              "change": None, "event": None, "tooLarge": False}
+TOO_LARGE = dict(WAITING, sha256=None, change=None, tooLarge=True)
 REPLIES = (
     ("connection-begin", {"flowId": FLOW, "authUrl": "https://accounts.google.com/o/oauth2/auth?client_id=x&state=y",
                           "redirectUri": "http://127.0.0.1:53682", "expiresAt": "2026-10-25T20:45:00Z"}),
@@ -144,6 +174,12 @@ REPLIES = (
     ("connection-activate", {"outcome": "applied"}), ("connection-activate", {"outcome": "unchanged"}),
     ("connection-cancel", {"outcome": "cancelled"}), ("connection-sync", {"outcome": "started"}),
     ("connection-disconnect", {"outcome": "disconnected", "revoked": False}),
+    ("connection-proposals", {"proposals": [], "more": 0}),
+    ("connection-proposals", {"proposals": [WAITING, UPDATE, UNREADABLE, TOO_LARGE], "more": 3}),
+    ("connection-approve", {"proposalId": PROPOSAL, "outcome": "applied"}),
+    ("connection-approve", {"proposalId": PROPOSAL, "outcome": "unconfirmed"}),
+    ("connection-reconcile", {"proposalId": PROPOSAL, "outcome": "waiting"}),
+    ("connection-decline", {"proposalId": PROPOSAL, "outcome": "declined"}),
 )
 BAD_REPLIES = (
     ("connection-begin", {"flowId": FLOW, "authUrl": "https://example.com/o/oauth2/auth?x",
@@ -158,10 +194,26 @@ BAD_REPLIES = (
                              "capabilities": CAPABILITIES, "missing": ["send"]}),
     ("connection-activate", {"outcome": "cancelled"}), ("connection-sync", {"outcome": "started", "token": "x"}),
     ("connection-disconnect", {"outcome": "disconnected"}), ("connection-cancel", []),
+    ("connection-approve", {"proposalId": PROPOSAL, "outcome": "waiting"}),
+    ("connection-decline", {"proposalId": PROPOSAL, "outcome": "applied"}),
+    ("connection-approve", {"proposalId": "calendar-x", "outcome": "applied"}),
+    ("connection-proposals", {"proposals": [], "more": -1}),
+    ("connection-proposals", {"proposals": [WAITING] * 21, "more": 0}),
+    ("connection-proposals", {"proposals": [dict(WAITING, sha256=None)], "more": 0}),
+    ("connection-proposals", {"proposals": [dict(WAITING, extra=1)], "more": 0}),
+    ("connection-proposals", {"proposals": [dict(WAITING, change=dict(CHANGE, location="Room\x07"))], "more": 0}),
+    ("connection-proposals", {"proposals": [dict(WAITING, change=dict(CHANGE, attendees=["not-an-address"]))], "more": 0}),
+    ("connection-proposals", {"proposals": [dict(WAITING, change=dict(CHANGE, description="n" * 20001))], "more": 0}),
+    ("connection-proposals", {"proposals": [dict(WAITING, change=dict(CHANGE, sendUpdates="some"))], "more": 0}),
+    ("connection-proposals", {"proposals": [dict(UNREADABLE, action="create")], "more": 0}),
+    ("connection-proposals", {"proposals": [dict(TOO_LARGE, change=CHANGE)], "more": 0}),
+    ("connection-proposals", {"proposals": [dict(UPDATE, event=dict(UPDATE["event"], allDay=None))], "more": 0}),
 )
-VALIDATORS = ("valid_connection_action", "public_connection_action", "_text", "_capability_flags")
+VALIDATORS = ("valid_connection_action", "public_connection_action", "_text", "_capability_flags", "_words",
+              "_calendar_change", "_calendar_event", "_calendar_entry")
 CONSTANTS = ("_CONNECTION_OPERATIONS", "_CAPABILITY_IDS", "_FLOW", "_STATE", "_CODE", "_CLIENT_ID", "_CLIENT_SECRET",
-             "_PROJECT", "_ACCOUNT", "_TIME_ZONE", "_SECOND", "_REASON", "_AUTH_URL")
+             "_PROJECT", "_ACCOUNT", "_TIME_ZONE", "_SECOND", "_REASON", "_AUTH_URL", "_PROPOSAL", "_HEX",
+             "_ATTENDEE", "_CONTROL", "_CHANGE_OUTCOMES")
 
 
 class ActionWireTests(unittest.TestCase):
@@ -194,6 +246,39 @@ class ActionWireTests(unittest.TestCase):
                 coordinator._begin_request(copy.deepcopy(request))
             elif operation == "connection-complete":
                 coordinator._complete_request(copy.deepcopy(request))
+            elif operation in ("connection-approve", "connection-decline", "connection-reconcile"):
+                coordinator._change_request(copy.deepcopy(request), set(request))
+
+    @unittest.skipUnless(hasattr(os, "fchown"), "root keeps calendar snapshots on Linux")
+    def test_both_relays_pass_every_change_list_root_builds(self):
+        import pixel_access_relay as relay
+        from pixel_connections import approvals
+        with tempfile.TemporaryDirectory() as directory:
+            dirs = approvals.Dirs.under(Path(directory))
+            for item in dirs:
+                item.mkdir()
+            proposals = [("create", dict(CHANGE, attendees=[{"email": "pat@example.com"}]) | {"allDay": False}),
+                         ("update", {"eventId": "evt-1", "expectedEtag": '"e1"', "attendees": []}),
+                         ("delete", {"eventId": "evt-1", "expectedEtag": '"e1"'}),
+                         ("create", dict(CHANGE, attendees=[], description="\u00e9" * 20000)), ("create", "broken")]
+            for index, (action, values) in enumerate(proposals):
+                proposal_id = f"calendar-17615000000{index:02d}-0badc0de"
+                values = {key: value for key, value in values.items() if value is not None} if type(values) is dict else values
+                (dirs.proposals / f"{proposal_id}.json").write_text(json.dumps({
+                    "schemaVersion": 1, "proposalId": proposal_id, "source": "pixel-owner-conversation",
+                    "action": action, "status": "pending-operator-approval", "createdAt": "2026-10-26T15:00:00.000Z",
+                    "values": values, "boundary": "This file is a proposal only. No Calendar mutation has occurred."}))
+                os.chmod(dirs.proposals / f"{proposal_id}.json", 0o640)
+            (dirs.projection / "calendar.json").write_text(json.dumps({"records": [
+                {"id": "evt-1", "title": "Team sync", "start": {"date": "2026-10-27"}, "end": {"date": "2026-10-28"}}]}))
+            os.chmod(dirs.projection / "calendar.json", 0o640)
+            listed = approvals.listing(dirs, approvals.Ids(os.getuid(), os.getgid(), os.getuid()))
+        self.assertEqual([entry["state"] for entry in listed["proposals"]], ["waiting"] * 4 + ["invalid"])
+        self.assertTrue(listed["proposals"][3]["tooLarge"])
+        self.assertEqual(listed["proposals"][1]["event"], {"title": "Team sync", "start": "2026-10-27",
+                                                           "end": "2026-10-28", "allDay": True})
+        self.assertEqual(relay.public_connection_action("connection-proposals", copy.deepcopy(listed)), listed)
+        self.assertEqual(edge.public_connection_action("connection-proposals", copy.deepcopy(listed)), listed)
 
     def test_both_pass_every_reply_the_custodian_gives_and_withhold_the_rest(self):
         import pixel_access_relay as relay

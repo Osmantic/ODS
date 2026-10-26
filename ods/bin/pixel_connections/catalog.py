@@ -31,7 +31,7 @@ GOOGLE: dict[str, Any] = {
             "id": "calendar.write", "label": "Suggest calendar changes you approve", "effect": "external-write",
             "scopes": [CALENDAR_WRITE_SCOPE],
             "tools": ["pixel_calendar_propose_create", "pixel_calendar_propose_update", "pixel_calendar_propose_delete"],
-            "default": False, "available": False, "requires": ["calendar.read"],
+            "default": False, "available": True, "requires": ["calendar.read"],
         },
         {
             "id": "calendar.direct", "label": "Add or move your own private events without asking",

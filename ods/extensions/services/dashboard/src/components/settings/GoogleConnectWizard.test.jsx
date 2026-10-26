@@ -97,9 +97,12 @@ it("sends exactly the owner's choices, opens Google, and keeps no secret afterwa
 it('defaults to the capabilities ODS can deliver, and says a cloud model sees what Portal reads', async () => {
   const calls = api({'POST /api/pixel/connections/google/connect': [200, BEGUN]})
   wizard()
-  for (const name of [/Suggest calendar changes/, /Write Gmail drafts/]) {
+  for (const name of [/your own private events/, /Write Gmail drafts/]) {
     expect(screen.getByRole('checkbox', {name})).toBeDisabled()
   }
+  // Calendar changes are offered, off until the owner turns them on.
+  expect(screen.getByRole('checkbox', {name: /Suggest calendar changes/})).toBeEnabled()
+  expect(screen.getByRole('checkbox', {name: /Suggest calendar changes/})).not.toBeChecked()
   expect(screen.getByText(/When Portal runs on a cloud model, that model's provider sees what Portal reads/)).toBeVisible()
   // Cloud models may use connected data, as decided; no switch offers what nothing enforces yet.
   expect(screen.queryByRole('checkbox', {name: /cloud model/})).toBeNull()

@@ -15,10 +15,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from . import catalog, lifecycle, state
+from . import approvals, catalog, lifecycle, state
 
-TOKEN = Path("/var/lib/pixel-source-broker/private/google-token.json")
-BROKER_STATUS = Path("/var/lib/pixel-source-broker/projection/status.json")
+BROKER_STATE = Path("/var/lib/pixel-source-broker")
+TOKEN = BROKER_STATE / "private/google-token.json"
+BROKER_STATUS = BROKER_STATE / "projection/status.json"
 SCHEMA_VERSION = 1
 SUPPORTED_SURFACES = frozenset(catalog.GOOGLE["platforms"])
 # The broker refreshes every minute; a status older than this means it stopped.
@@ -132,11 +133,12 @@ def google_state(google: dict[str, Any], *, custody: bool, broker: dict[str, Any
 def not_connected(pending: dict[str, Any] | None = None) -> dict[str, Any]:
     return {"state": "not-connected", "reason": None, "account": None, "capabilities": None,
             "cloudModels": None, "connectedAt": None, "grantedScopes": None, "checkedAt": None,
-            "sources": {"email": None, "calendar": None}, "pending": pending}
+            "sources": {"email": None, "calendar": None}, "pending": pending, "waitingChanges": None}
 
 
 def google_view(record: dict[str, Any] | None, *, custody: bool, broker: dict[str, Any] | None,
-                broker_error: bool, now: datetime, pending: dict[str, Any] | None = None) -> dict[str, Any]:
+                broker_error: bool, now: datetime, pending: dict[str, Any] | None = None,
+                waiting_changes: int = 0) -> dict[str, Any]:
     google = (record or {}).get("connectors", {}).get("google")
     if google is None:
         return not_connected(pending)
@@ -154,13 +156,14 @@ def google_view(record: dict[str, Any] | None, *, custody: bool, broker: dict[st
         "sources": {name: sources.get(name) for name in SOURCES} if custody and not broker_error else
                    {"email": None, "calendar": None},
         "pending": pending,
+        "waitingChanges": waiting_changes,
     }
 
 
 SURFACES = frozenset({"linux-systemd", "wsl-systemd", "linux", "darwin", "windows"})
 CAPABILITY_IDS = frozenset(capability["id"] for capability in catalog.GOOGLE["capabilities"])
 GOOGLE_KEYS = {"state", "reason", "account", "capabilities", "cloudModels", "connectedAt", "grantedScopes",
-               "checkedAt", "sources", "pending"}
+               "checkedAt", "sources", "pending", "waitingChanges"}
 SOURCE_KEYS = {"state", "errorClass", "httpStatus", "lastSuccessAt", "failingSince", "recordCount", "complete"}
 
 
@@ -195,7 +198,10 @@ def _valid_google(value: Any) -> bool:
                           and all(isinstance(scope, str) and SCOPE.fullmatch(scope) for scope in item))
             and isinstance(value["sources"], dict) and set(value["sources"]) == set(SOURCES)
             and all(_valid_source(item) for item in value["sources"].values())
-            and lifecycle.valid_public(value["pending"]))
+            and lifecycle.valid_public(value["pending"])
+            and (value["waitingChanges"] is None) != connected
+            and _optional(value["waitingChanges"], lambda item: type(item) is int
+                          and 0 <= item <= approvals.CONSIDERED))
 
 
 def validate_public(value: Any) -> dict[str, Any]:
@@ -229,7 +235,7 @@ def _pending(path: Path, owners: tuple) -> tuple[dict[str, Any] | None, bool]:
 
 def report(*, surface: str, record_path: Path = state.PATH, token_path: Path = TOKEN,
            status_path: Path = BROKER_STATUS, lifecycle_path: Path = lifecycle.PATH, now: datetime | None = None,
-           owners: tuple[int, ...] = (0,)) -> dict[str, Any]:
+           owners: tuple[int, ...] = (0,), broker_state: Path = BROKER_STATE) -> dict[str, Any]:
     """The complete public status. Runs as root, which alone can see the sign-in."""
     if surface not in SUPPORTED_SURFACES:
         return unavailable(surface)
@@ -243,7 +249,10 @@ def report(*, surface: str, record_path: Path = state.PATH, token_path: Path = T
                 "reason": "record-unusable", "ownerTimeZone": None,
                 "connectors": {"google": not_connected(pending)}}
     custody = token_path.is_file()
-    broker, broker_error = None, False
+    broker, broker_error, waiting = None, False, 0
+    if record is not None and "google" in record["connectors"]:
+        # Only how many calendar changes wait for the owner; what they say never reaches status.
+        waiting = approvals.pending_count(approvals.Dirs.under(broker_state))
     if record is not None and "google" in record["connectors"] and custody:
         try:
             broker = read_broker_status(status_path)
@@ -256,5 +265,5 @@ def report(*, surface: str, record_path: Path = state.PATH, token_path: Path = T
         "reason": "journal-unusable" if journal_unusable else None,
         "ownerTimeZone": record["ownerTimeZone"] if record else None,
         "connectors": {"google": google_view(record, custody=custody, broker=broker, broker_error=broker_error,
-                                             now=now, pending=pending)},
+                                             now=now, pending=pending, waiting_changes=waiting)},
     }

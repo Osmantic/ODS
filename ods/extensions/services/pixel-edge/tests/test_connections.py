@@ -23,8 +23,15 @@ CONNECTED = dict(
                       'gmail.read': True, 'gmail.drafts': False},
         cloudModels=True, connectedAt='2026-10-25T20:00:00Z',
         grantedScopes=['https://www.googleapis.com/auth/calendar.events.readonly'],
-        checkedAt='2026-10-25T20:29:30Z', sources=dict(email=SOURCE, calendar=SOURCE), pending=None)))
+        checkedAt='2026-10-25T20:29:30Z', sources=dict(email=SOURCE, calendar=SOURCE), pending=None,
+        waitingChanges=1)))
 OWNER = {'Authorization': 'Bearer ' + 'o' * 64}
+# One calendar change Portal suggested, as root lists it for the owner's approval.
+CHANGE = {'proposalId': 'calendar-1761500000000-0badc0de', 'sha256': 'c' * 64, 'state': 'waiting', 'action': 'create',
+          'createdAt': '2026-10-26T15:00:00.000Z', 'event': None, 'tooLarge': False,
+          'change': {'summary': 'Dentist', 'start': '2026-10-27T15:00:00-05:00', 'end': '2026-10-27T16:00:00-05:00',
+                     'allDay': False, 'timeZone': 'America/Chicago', 'location': None, 'description': None,
+                     'attendees': ['pat@example.com'], 'sendUpdates': 'all'}}
 FLOW = 'a' * 32
 BEGIN = {'connector': 'google', 'capabilities': CONNECTED['connectors']['google']['capabilities'],
          'client': {'clientId': '123456789012-abcdefghijklmnopqrstuvwxyz012345.apps.googleusercontent.com',
@@ -120,7 +127,13 @@ class ConnectionsRelayTests(unittest.IsolatedAsyncioTestCase):
                   'missing': []}),
                 ({'operation': 'connection-disconnect', 'request': {'connector': 'google'}},
                  {'outcome': 'disconnected', 'revoked': True}),
-                ({'operation': 'connection-activate', 'request': {}}, {'outcome': 'unchanged'})):
+                ({'operation': 'connection-activate', 'request': {}}, {'outcome': 'unchanged'}),
+                ({'operation': 'connection-proposals', 'request': {}}, {'proposals': [CHANGE], 'more': 0}),
+                ({'operation': 'connection-approve', 'request': {'proposalId': CHANGE['proposalId'],
+                                                                'sha256': CHANGE['sha256']}},
+                 {'proposalId': CHANGE['proposalId'], 'outcome': 'applied'}),
+                ({'operation': 'connection-decline', 'request': {'proposalId': CHANGE['proposalId']}},
+                 {'proposalId': CHANGE['proposalId'], 'outcome': 'declined'})):
             with self.subTest(operation=payload['operation']):
                 self.calls.clear()
                 self.reply = reply
