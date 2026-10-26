@@ -2,6 +2,7 @@ import { useState } from 'react'
 import HelpLink from '../HelpLink'
 import CalendarActivity from './CalendarActivity'
 import CalendarChanges from './CalendarChanges'
+import EmailDrafts from './EmailDrafts'
 import GoogleConnectWizard, { Problem } from './GoogleConnectWizard'
 import { GOOGLE_CONSOLE, capabilitySummary, consoleLink, googleCard } from './connectedAppsStatus'
 import { disconnectGoogle, finishGoogle, savedProject, syncGoogle, useConnectedAppsStatus, useFullAccessOn } from './useConnectedApps'
@@ -123,7 +124,7 @@ export default function ConnectedApps() {
         {card.step.fix ? <p>{card.step.fix}</p> : null}
         {card.step.help ? <HelpLink /> : null}
       </div> : null}
-      {fullAccess && google?.account ? <p role="note" className="text-sm">Full Access is on. Connected apps keep working, but Portal now runs commands as your account, and if that account can use Docker, it can act as root on this machine, which includes reading the Google sign-in ODS keeps here and approving its own calendar changes. {google.capabilities?.['calendar.direct'] ? 'Calendar changes Portal would make by itself wait for your approval until then. ' : ''}Switch Portal back to Sandbox in Portal access when you don&apos;t need Full Access.</p> : null}
+      {fullAccess && google?.account ? <p role="note" className="text-sm">Full Access is on. Connected apps keep working, but Portal now runs commands as your account, and if that account can use Docker, it can act as root on this machine, which includes reading the Google sign-in ODS keeps here and approving its own calendar changes and Gmail drafts. {google.capabilities?.['calendar.direct'] ? 'Calendar changes Portal would make by itself wait for your approval until then. ' : ''}Switch Portal back to Sandbox in Portal access when you don&apos;t need Full Access.</p> : null}
       {notice ? <p role="status">{notice}</p> : null}
       {problem ? <Problem problem={problem} /> : null}
       {!wizard && actions.length ? <div className="flex flex-wrap gap-3">
@@ -142,6 +143,8 @@ export default function ConnectedApps() {
       {google?.account && !wizard ? <CalendarChanges waiting={google.waitingChanges ?? 0}
         writable={Boolean(google.capabilities?.['calendar.write'])} onChanged={() => { void refresh() }} /> : null}
       {google?.account && !wizard && google.capabilities?.['calendar.direct'] ? <CalendarActivity onChanged={() => { void refresh() }} /> : null}
+      {google?.account && !wizard ? <EmailDrafts waiting={google.waitingDrafts ?? 0}
+        writable={Boolean(google.capabilities?.['gmail.drafts'])} onChanged={() => { void refresh() }} /> : null}
     </article> : null}
   </section>
 }

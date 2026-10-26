@@ -46,7 +46,7 @@ HOOKS.update({"connection-owner-status": (), "connection-apply": ("busy", "conne
 CONNECTION_OPERATIONS = ("connection-begin", "connection-complete", "connection-activate",
                          "connection-cancel", "connection-disconnect", "connection-sync",
                          "connection-proposals", "connection-approve", "connection-decline",
-                         "connection-reconcile", "connection-activity", "connection-undo")
+                         "connection-reconcile", "connection-activity", "connection-undo", "connection-drafts")
 
 
 class ProtocolError(ValueError):

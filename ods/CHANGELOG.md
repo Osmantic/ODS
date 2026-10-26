@@ -29,6 +29,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Access confirmation now names what it means for connected apps. Settings lists
   what Portal changed by itself this week, with Undo for each change, as long as
   the event is still exactly as Portal left it.
+- Portal can write Gmail drafts you send yourself. Turn on **Write Gmail drafts
+  you send yourself** when you connect Google, then ask Portal to reply to an
+  email or write a new one. Each draft waits in Settings, Connected apps, shown
+  whole; nothing reaches Gmail until you press **Create draft**, and ODS creates
+  that exact draft once, in your Gmail Drafts. Portal can't send email: you send
+  the draft from Gmail. ODS now bundles Pixel 4.3.35, which adds the draft tool.
 - Portal's workspace includes one finished example project, Elf of Doom, a
   small browser game Portal wrote in ODS from natural-language prompts. The
   installer adds `Playground/elf-of-doom` whenever that name is absent and the

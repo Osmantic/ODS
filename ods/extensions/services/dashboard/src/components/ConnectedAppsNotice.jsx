@@ -14,15 +14,17 @@ export function connectedAppsAttention(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   if (value.step === 'update-stopped') return "Portal hasn't picked up your Google change yet."
   if (value.step === 'changes-waiting') {
-    return Number.isInteger(value.waiting) && value.waiting > 1
-      ? `${value.waiting} calendar changes from Portal wait for your approval.`
-      : 'A calendar change from Portal waits for your approval.'
+    const changes = Number.isInteger(value.waiting) ? value.waiting : 0
+    const drafts = Number.isInteger(value.drafts) ? value.drafts : 0
+    if (changes && drafts) return 'Calendar changes and Gmail drafts from Portal wait for your approval.'
+    if (drafts) return drafts > 1 ? `${drafts} Gmail drafts from Portal wait for your approval.` : 'A Gmail draft from Portal waits for your approval.'
+    return changes > 1 ? `${changes} calendar changes from Portal wait for your approval.` : 'A calendar change from Portal waits for your approval.'
   }
   return Object.hasOwn(LINES, value.state) ? LINES[value.state] : null
 }
 
 // Portal's chat points the owner to Connected apps when their Google connection
-// needs them, or a calendar change Portal suggested waits for their approval.
+// needs them, or a calendar change or Gmail draft Portal suggested waits for their approval.
 // Drawn from Portal's status only, never from Portal's words; the status carries
 // nothing while connected apps are off.
 export default function ConnectedAppsNotice({ value }) {

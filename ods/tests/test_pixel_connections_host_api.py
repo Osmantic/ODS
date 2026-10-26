@@ -26,6 +26,7 @@ from pixel_connections import catalog, host_api, status  # noqa: E402
 KEY = "synthetic-connections-test-key"
 FLOW = "a" * 32
 CHANGE = "calendar-1761500000000-0badc0de"
+DRAFT = "gmail-draft-1761500000000-0badc0de"
 STATE = "s" * 43
 READ_BOTH = {"calendar.read": True, "calendar.write": False, "calendar.direct": False,
              "gmail.read": True, "gmail.drafts": False}
@@ -122,7 +123,10 @@ class ConnectionsHostAPITests(unittest.TestCase):
                 ("decline", "connection-decline", {"proposalId": CHANGE}, {"proposalId": CHANGE, "outcome": "declined"}),
                 ("check", "connection-reconcile", {"proposalId": CHANGE}, {"proposalId": CHANGE, "outcome": "waiting"}),
                 ("activity", "connection-activity", {}, {"changes": [], "more": 0}),
-                ("undo", "connection-undo", {"proposalId": CHANGE}, {"proposalId": CHANGE, "outcome": "applied"})):
+                ("undo", "connection-undo", {"proposalId": CHANGE}, {"proposalId": CHANGE, "outcome": "applied"}),
+                ("drafts", "connection-drafts", {}, {"drafts": [], "more": 0}),
+                ("approve", "connection-approve", {"proposalId": DRAFT, "sha256": "c" * 64},
+                 {"proposalId": DRAFT, "outcome": "applied"})):
             with self.subTest(action=action), patch.object(pixel_access_relay, "request_runtime_connection_action",
                                                            return_value=(200, reply)) as relay:
                 self.assertEqual(self.post(action, request), (200, reply))
@@ -138,7 +142,7 @@ class ConnectionsHostAPITests(unittest.TestCase):
             for action, body in (("changes", {"all": True}), ("approve", {"proposalId": CHANGE}),
                                  ("approve", {"proposalId": CHANGE, "sha256": 7}),
                                  ("decline", {"proposalId": CHANGE, "sha256": "c" * 64}), ("check", {"proposalId": 7}),
-                                 ("activity", {"days": 7}), ("undo", {})):
+                                 ("activity", {"days": 7}), ("undo", {}), ("drafts", {"all": True})):
                 self.assertEqual(self.post(action, body), (400, {"error": "invalid-request"}), action)
         relay.assert_not_called()
 

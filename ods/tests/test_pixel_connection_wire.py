@@ -20,6 +20,7 @@ SPEC.loader.exec_module(edge)
 
 OWNERS = (0, os.getuid()) if hasattr(os, "getuid") else (0,)
 PROPOSAL = "calendar-1761500000000-0badc0de"
+DRAFT_ID = "gmail-draft-1761500000000-0badc0de"
 NOW = datetime(2026, 10, 25, 20, 30, tzinfo=timezone.utc)
 RECORD = {
     "schemaVersion": 1, "kind": "ods-portal-connections", "updatedAt": "2026-10-25T20:00:00Z",
@@ -60,7 +61,7 @@ def samples():
             (RECORD, True, broker("invalid-grant"), None), (None, False, None, journal("consent")),
             (RECORD, True, None, journal("activating", "runtime-busy")), (None, False, None, journal("deactivating")),
             (RECORD, False, None, journal("consent")), (None, False, None, journal("failed", "access-denied")),
-            (RECORD, True, broker(), "waiting-change")):
+            (RECORD, True, broker(), "waiting-change"), (RECORD, True, broker(), "waiting-draft")):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             os.chmod(root, 0o755)
@@ -71,9 +72,10 @@ def samples():
                 (root / "token.json").write_text("{}")
             if broker_value:
                 (root / "status.json").write_text(json.dumps(broker_value))
-            if pending == "waiting-change":
+            if pending in ("waiting-change", "waiting-draft"):
                 (root / "proposals").mkdir()
-                (root / "proposals" / f"{PROPOSAL}.json").write_text(json.dumps({"status": "pending-operator-approval"}))
+                name = PROPOSAL if pending == "waiting-change" else DRAFT_ID
+                (root / "proposals" / f"{name}.json").write_text(json.dumps({"status": "pending-operator-approval"}))
             elif pending:
                 (root / "connection.json").write_text(json.dumps(pending))
                 os.chmod(root / "connection.json", 0o600)
@@ -101,6 +103,12 @@ MUTATIONS = (
     lambda v: v["connectors"]["google"].update(waitingChanges=True),
     lambda v: v["connectors"]["google"].update(waitingChanges=51),
     lambda v: v["connectors"]["google"].update(waitingChanges=None if v["connectors"]["google"]["waitingChanges"] is not None
+                                               else 0),
+    lambda v: v["connectors"]["google"].pop("waitingDrafts"),
+    lambda v: v["connectors"]["google"].update(waitingDrafts=-1),
+    lambda v: v["connectors"]["google"].update(waitingDrafts=True),
+    lambda v: v["connectors"]["google"].update(waitingDrafts=51),
+    lambda v: v["connectors"]["google"].update(waitingDrafts=None if v["connectors"]["google"]["waitingDrafts"] is not None
                                                else 0),
     lambda v: v["connectors"]["google"].update(pending={"action": "connect", "phase": "consent", "expiresAt": None,
                                                         "error": None, "since": "2026-10-25T20:30:00Z"}),
@@ -136,6 +144,8 @@ REQUESTS = (
     ("connection-proposals", {}), ("connection-approve", {"proposalId": PROPOSAL, "sha256": "c" * 64}),
     ("connection-decline", {"proposalId": PROPOSAL}), ("connection-reconcile", {"proposalId": PROPOSAL}),
     ("connection-activity", {}), ("connection-undo", {"proposalId": PROPOSAL}),
+    ("connection-drafts", {}), ("connection-approve", {"proposalId": DRAFT_ID, "sha256": "c" * 64}),
+    ("connection-decline", {"proposalId": DRAFT_ID}), ("connection-reconcile", {"proposalId": DRAFT_ID}),
 )
 BAD_REQUESTS = (
     ("connection-begin", dict(BEGIN, redirectPort=80)), ("connection-begin", dict(BEGIN, extra=1)),
@@ -155,6 +165,10 @@ BAD_REQUESTS = (
     ("connection-reconcile", {"proposalId": PROPOSAL, "sha256": "c" * 64}),
     ("connection-activity", {"days": 30}), ("connection-undo", {"proposalId": PROPOSAL, "sha256": "c" * 64}),
     ("connection-undo", {}),
+    # Undo reverses only Portal's own calendar changes; a draft is never undone, and nothing is sent.
+    ("connection-undo", {"proposalId": DRAFT_ID}), ("connection-drafts", {"all": True}),
+    ("connection-approve", {"proposalId": "gmail-draft-1-0badc0de", "sha256": "c" * 64}),
+    ("connection-decline", {"proposalId": "gmail-send-1761500000000-0badc0de"}),
 )
 CHANGE = {"summary": "Dentist", "start": "2026-10-27T15:00:00-05:00", "end": "2026-10-27T16:00:00-05:00",
           "allDay": False, "timeZone": "America/Chicago", "location": "12 Main St", "description": "Bring\nthe form",
@@ -173,6 +187,16 @@ ADDED = {"proposalId": PROPOSAL, "action": "create", "title": "Focus time", "sta
          "undo": "available"}
 MOVED = dict(ADDED, action="update", title=None, undo="syncing",
              previous={"start": "2026-10-27", "end": "2026-10-28", "allDay": True})
+# Gmail drafts Portal wrote, as root lists them for approval.
+GMAIL_DRAFT = {"to": ["pat@example.com"], "cc": ["sam@example.com"], "subject": "Thursday",
+               "body": "Hi Pat,\n\nThursday at 3 works.\n\tSam", "replyTo": None}
+DRAFT = {"proposalId": DRAFT_ID, "sha256": "d" * 64, "state": "waiting", "createdAt": "2026-10-26T15:00:00.000Z",
+         "draft": GMAIL_DRAFT, "tooLarge": False}
+REPLY = dict(DRAFT, state="unconfirmed", draft=dict(GMAIL_DRAFT, cc=[], subject="Re: Lunch",
+                                                    replyTo={"from": "Pat <pat@example.com>", "subject": "Lunch"}))
+UNREAD_DRAFT = {"proposalId": DRAFT_ID, "sha256": None, "state": "invalid", "createdAt": None, "draft": None,
+                "tooLarge": False}
+LONG_DRAFT = dict(DRAFT, sha256=None, draft=None, tooLarge=True)
 REPLIES = (
     ("connection-begin", {"flowId": FLOW, "authUrl": "https://accounts.google.com/o/oauth2/auth?client_id=x&state=y",
                           "redirectUri": "http://127.0.0.1:53682", "expiresAt": "2026-10-25T20:45:00Z"}),
@@ -193,6 +217,11 @@ REPLIES = (
     ("connection-activity", {"changes": [ADDED, MOVED], "more": 4}),
     ("connection-undo", {"proposalId": PROPOSAL, "outcome": "applied"}),
     ("connection-undo", {"proposalId": PROPOSAL, "outcome": "rejected"}),
+    ("connection-drafts", {"drafts": [], "more": 0}),
+    ("connection-drafts", {"drafts": [DRAFT, REPLY, UNREAD_DRAFT, LONG_DRAFT], "more": 2}),
+    ("connection-approve", {"proposalId": DRAFT_ID, "outcome": "applied"}),
+    ("connection-reconcile", {"proposalId": DRAFT_ID, "outcome": "unconfirmed"}),
+    ("connection-decline", {"proposalId": DRAFT_ID, "outcome": "declined"}),
 )
 BAD_REPLIES = (
     ("connection-begin", {"flowId": FLOW, "authUrl": "https://example.com/o/oauth2/auth?x",
@@ -228,12 +257,31 @@ BAD_REPLIES = (
     ("connection-activity", {"changes": [dict(MOVED, previous={"start": None})], "more": 0}),
     ("connection-activity", {"changes": [dict(ADDED, extra=1)], "more": 0}),
     ("connection-activity", {"changes": [ADDED] * 21, "more": 0}),
+    ("connection-undo", {"proposalId": DRAFT_ID, "outcome": "applied"}),
+    ("connection-proposals", {"proposals": [DRAFT], "more": 0}),
+    ("connection-drafts", {"drafts": [WAITING], "more": 0}),
+    ("connection-drafts", {"drafts": [DRAFT] * 21, "more": 0}),
+    ("connection-drafts", {"drafts": [dict(DRAFT, extra=1)], "more": 0}),
+    ("connection-drafts", {"drafts": [dict(DRAFT, sha256=None)], "more": 0}),
+    ("connection-drafts", {"drafts": [dict(DRAFT, draft=dict(GMAIL_DRAFT, subject="Hi\nBcc: x@example.com"))], "more": 0}),
+    ("connection-drafts", {"drafts": [dict(DRAFT, draft=dict(GMAIL_DRAFT, to=[]))], "more": 0}),
+    ("connection-drafts", {"drafts": [dict(DRAFT, draft=dict(GMAIL_DRAFT, to=["not-an-address"]))], "more": 0}),
+    ("connection-drafts", {"drafts": [dict(DRAFT, draft=dict(GMAIL_DRAFT, cc=["a@example.com"] * 50))], "more": 0}),
+    ("connection-drafts", {"drafts": [dict(DRAFT, draft=dict(GMAIL_DRAFT, body=" "))], "more": 0}),
+    ("connection-drafts", {"drafts": [dict(DRAFT, draft=dict(GMAIL_DRAFT, body="n" * 100001))], "more": 0}),
+    ("connection-drafts", {"drafts": [dict(DRAFT, draft=dict(GMAIL_DRAFT, body="Ring\x07"))], "more": 0}),
+    ("connection-drafts", {"drafts": [dict(DRAFT, draft=dict(GMAIL_DRAFT, bcc=["x@example.com"]))], "more": 0}),
+    ("connection-drafts", {"drafts": [dict(DRAFT, draft=dict(GMAIL_DRAFT, replyTo={"from": None}))], "more": 0}),
+    ("connection-drafts", {"drafts": [dict(UNREAD_DRAFT, draft=GMAIL_DRAFT)], "more": 0}),
+    ("connection-drafts", {"drafts": [dict(LONG_DRAFT, draft=GMAIL_DRAFT)], "more": 0}),
+    ("connection-drafts", {"drafts": [], "more": -1}),
 )
 VALIDATORS = ("valid_connection_action", "public_connection_action", "_text", "_capability_flags", "_words",
-              "_calendar_change", "_calendar_event", "_calendar_entry", "_calendar_moment", "_calendar_activity")
+              "_calendar_change", "_calendar_event", "_calendar_entry", "_calendar_moment", "_calendar_activity",
+              "_suggestion", "_gmail_draft", "_draft_entry")
 CONSTANTS = ("_CONNECTION_OPERATIONS", "_CAPABILITY_IDS", "_FLOW", "_STATE", "_CODE", "_CLIENT_ID", "_CLIENT_SECRET",
-             "_PROJECT", "_ACCOUNT", "_TIME_ZONE", "_SECOND", "_REASON", "_AUTH_URL", "_PROPOSAL", "_HEX",
-             "_ATTENDEE", "_CONTROL", "_CHANGE_OUTCOMES")
+             "_PROJECT", "_ACCOUNT", "_TIME_ZONE", "_SECOND", "_REASON", "_AUTH_URL", "_PROPOSAL", "_DRAFT", "_HEX",
+             "_ATTENDEE", "_CONTROL", "_CHANGE_OUTCOMES", "_DRAFT_OPERATIONS")
 
 
 class ActionWireTests(unittest.TestCase):
@@ -267,7 +315,8 @@ class ActionWireTests(unittest.TestCase):
             elif operation == "connection-complete":
                 coordinator._complete_request(copy.deepcopy(request))
             elif operation in ("connection-approve", "connection-decline", "connection-reconcile", "connection-undo"):
-                coordinator._change_request(copy.deepcopy(request), set(request))
+                coordinator._change_request(copy.deepcopy(request), set(request),
+                                            drafts_too=operation != "connection-undo")
 
     @unittest.skipUnless(hasattr(os, "fchown"), "root keeps calendar snapshots on Linux")
     def test_both_relays_pass_every_change_list_root_builds(self):
@@ -299,6 +348,42 @@ class ActionWireTests(unittest.TestCase):
                                                            "end": "2026-10-28", "allDay": True})
         self.assertEqual(relay.public_connection_action("connection-proposals", copy.deepcopy(listed)), listed)
         self.assertEqual(edge.public_connection_action("connection-proposals", copy.deepcopy(listed)), listed)
+
+    @unittest.skipUnless(hasattr(os, "fchown"), "root keeps draft snapshots on Linux")
+    def test_both_relays_pass_every_draft_list_root_builds(self):
+        import pixel_access_relay as relay
+        from pixel_connections import approvals, drafts
+        with tempfile.TemporaryDirectory() as directory:
+            dirs = approvals.Dirs.under(Path(directory))
+            for item in dirs:
+                item.mkdir()
+            proposals = [{"to": [{"email": "pat@example.com"}], "cc": [{"email": "sam@example.com"}], "subject": "Plan",
+                          "body": "Hi Pat,\n\tThursday?"},
+                         {"to": [{"email": "pat@example.com"}], "body": "Sounds good.", "replyToMessageId": "msg-1"},
+                         {"to": [{"email": "pat@example.com"}], "body": "Unknown thread.", "replyToMessageId": "msg-9"},
+                         {"to": [{"email": "pat@example.com"}], "subject": "Long", "body": "é" * 30000},
+                         {"to": [{"email": "pat@example.com"}], "subject": "Two\nlines", "body": "Header injection"}]
+            for index, values in enumerate(proposals):
+                proposal_id = f"gmail-draft-17615000000{index:02d}-0badc0de"
+                (dirs.proposals / f"{proposal_id}.json").write_text(json.dumps({
+                    "schemaVersion": 1, "proposalId": proposal_id, "source": "pixel-owner-conversation",
+                    "action": "create-draft", "status": "pending-operator-approval",
+                    "createdAt": "2026-10-26T15:00:00.000Z", "values": values,
+                    "boundary": "This file is a proposal only. No Gmail draft has been created."}))
+                os.chmod(dirs.proposals / f"{proposal_id}.json", 0o640)
+            (dirs.projection / "email.json").write_text(json.dumps({"records": [
+                {"id": "msg-1", "from": "Pat <pat@example.com>", "subject": "Lunch?"}]}))
+            os.chmod(dirs.projection / "email.json", 0o640)
+            listed = drafts.listing(dirs, approvals.Ids(os.getuid(), os.getgid(), os.getuid()))
+        self.assertEqual([entry["state"] for entry in listed["drafts"]], ["waiting"] * 4 + ["invalid"])
+        self.assertEqual(listed["drafts"][0]["draft"], {"to": ["pat@example.com"], "cc": ["sam@example.com"],
+                                                        "subject": "Plan", "body": "Hi Pat,\n\tThursday?",
+                                                        "replyTo": None})
+        self.assertEqual(listed["drafts"][1]["draft"]["replyTo"], {"from": "Pat <pat@example.com>", "subject": "Lunch?"})
+        self.assertEqual(listed["drafts"][2]["draft"]["replyTo"], {"from": None, "subject": None})
+        self.assertTrue(listed["drafts"][3]["tooLarge"])
+        self.assertEqual(relay.public_connection_action("connection-drafts", copy.deepcopy(listed)), listed)
+        self.assertEqual(edge.public_connection_action("connection-drafts", copy.deepcopy(listed)), listed)
 
     def test_both_pass_every_reply_the_custodian_gives_and_withhold_the_rest(self):
         import pixel_access_relay as relay

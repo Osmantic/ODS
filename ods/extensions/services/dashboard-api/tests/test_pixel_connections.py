@@ -181,6 +181,7 @@ CONNECT = {"client": GOOGLE_CLIENT, "capabilities": READ_BOTH, "cloudModels": Fa
 CONNECTED = {"outcome": "connected", "errorClass": None, "account": "owner@example.com",
              "capabilities": READ_BOTH, "missing": []}
 CHANGE_ID = "calendar-1761500000000-0badc0de"
+DRAFT_ID = "gmail-draft-1761500000000-0badc0de"
 # Calendar changes Portal suggested, as root lists them for the owner.
 WAITING = {"proposalId": CHANGE_ID, "sha256": "c" * 64, "state": "waiting", "action": "create",
            "createdAt": "2026-10-26T15:00:00.000Z", "event": None, "tooLarge": False,
@@ -209,6 +210,10 @@ ACTIONS = [
     ("changes/decline", {"proposalId": CHANGE_ID}, "decline", {"proposalId": CHANGE_ID, "outcome": "declined"}, 45),
     ("changes/check", {"proposalId": CHANGE_ID}, "check", {"proposalId": CHANGE_ID, "outcome": "unconfirmed"}, 180),
     ("activity/undo", {"proposalId": CHANGE_ID}, "undo", {"proposalId": CHANGE_ID, "outcome": "applied"}, 180),
+    ("drafts/approve", {"proposalId": DRAFT_ID, "sha256": "a" * 64}, "approve",
+     {"proposalId": DRAFT_ID, "outcome": "applied"}, 180),
+    ("drafts/decline", {"proposalId": DRAFT_ID}, "decline", {"proposalId": DRAFT_ID, "outcome": "declined"}, 45),
+    ("drafts/check", {"proposalId": DRAFT_ID}, "check", {"proposalId": DRAFT_ID, "outcome": "waiting"}, 180),
 ]
 
 
@@ -277,6 +282,12 @@ def test_refusals_say_what_happened_and_what_to_do(client, mock_request, failure
     ("changes/approve", {"proposalId": "calendar-1-0badc0de", "sha256": "c" * 64}),
     ("changes/decline", {"proposalId": CHANGE_ID, "sha256": "c" * 64}),
     ("changes/check", {}),
+    # A draft goes only through the drafts routes, and a calendar change never does.
+    ("changes/approve", {"proposalId": DRAFT_ID, "sha256": "c" * 64}),
+    ("drafts/approve", {"proposalId": CHANGE_ID, "sha256": "c" * 64}),
+    ("drafts/approve", {"proposalId": DRAFT_ID}),
+    ("drafts/decline", {"proposalId": DRAFT_ID, "sha256": "c" * 64}),
+    ("activity/undo", {"proposalId": DRAFT_ID}),
 ])
 def test_requests_outside_the_contract_never_reach_the_host(client, mock_request, action, body):
     response = client.post(f"/api/pixel/connections/google/{action}", json=body, headers=AUTH)
@@ -296,6 +307,7 @@ def test_requests_outside_the_contract_never_reach_the_host(client, mock_request
     ("changes/approve", {"proposalId": CHANGE_ID, "sha256": "c" * 64}, {"proposalId": "private-sentinel",
                                                                         "outcome": "applied"}),
     ("changes/decline", {"proposalId": CHANGE_ID}, {"proposalId": CHANGE_ID, "outcome": "private-sentinel"}),
+    ("drafts/approve", {"proposalId": DRAFT_ID, "sha256": "a" * 64}, {"proposalId": CHANGE_ID, "outcome": "applied"}),
 ])
 def test_a_reply_of_any_other_shape_is_refused_without_echoing_it(client, mock_request, action, body, reply):
     mock_request.return_value = reply
@@ -366,10 +378,13 @@ def test_a_change_list_of_any_other_shape_is_refused_without_echoing_it(client, 
     assert "private-sentinel" not in response.text
 
 
-def test_every_calendar_refusal_tells_the_owner_what_to_do():
+def test_every_calendar_and_draft_refusal_tells_the_owner_what_to_do():
     for code in ("calendar-changes-off", "calendar-change-mismatch", "calendar-change-unknown", "calendar-change-invalid",
                  "calendar-change-unconfirmed", "calendar-change-not-made", "calendar-change-not-checkable",
-                 "calendar-change-result-invalid", "calendar-change-unsafe", "calendar-undo-unavailable"):
+                 "calendar-change-result-invalid", "calendar-change-unsafe", "calendar-undo-unavailable",
+                 "gmail-drafts-off", "gmail-draft-mismatch", "gmail-draft-unknown", "gmail-draft-invalid",
+                 "gmail-draft-unconfirmed", "gmail-draft-not-made", "gmail-draft-not-checkable",
+                 "gmail-draft-result-invalid", "gmail-draft-unsafe", "source-broker-env-invalid"):
         message, _needs_help = api.MESSAGES[code]
         assert message.endswith(".") and "error" not in message.lower(), code
 
@@ -388,6 +403,53 @@ def test_acting_on_a_change_refreshes_the_chat_line_at_once(client, mock_request
     assert api._attention["until"] == 0.0
 
 
+# Gmail drafts Portal wrote, as root lists them for the owner.
+DRAFT = {"proposalId": DRAFT_ID, "sha256": "a" * 64, "state": "waiting", "createdAt": "2026-10-26T15:00:00.000Z",
+         "tooLarge": False, "draft": {"to": ["pat@example.com"], "cc": ["sam@example.com"], "subject": "Thursday",
+                                      "body": "Hi Pat,\n\nThursday works.", "replyTo": None}}
+REPLY = dict(DRAFT, proposalId="gmail-draft-1761500000001-0badc0de", sha256="b" * 64, state="unconfirmed",
+             draft=dict(DRAFT["draft"], cc=[], subject="Re: Lunch", replyTo={"from": "Pat <pat@example.com>",
+                                                                             "subject": "Lunch"}))
+UNREAD_DRAFT = {"proposalId": "gmail-draft-1761500000002-0badc0de", "sha256": None, "state": "invalid",
+                "createdAt": None, "draft": None, "tooLarge": False}
+LONG_DRAFT = dict(DRAFT, proposalId="gmail-draft-1761500000003-0badc0de", sha256=None, draft=None, tooLarge=True)
+DRAFTS = {"drafts": [DRAFT, REPLY, UNREAD_DRAFT, LONG_DRAFT], "more": 1}
+
+
+def test_the_gmail_drafts_portal_wrote_reach_the_owner_exactly(client, mock_request, monkeypatch):
+    assert client.get("/api/pixel/connections/google/drafts").status_code == 401
+    mock_request.return_value = copy.deepcopy(DRAFTS)
+    response = client.get("/api/pixel/connections/google/drafts", headers=AUTH)
+    assert response.status_code == 200, response.text
+    assert response.json() == DRAFTS and response.headers["cache-control"] == "no-store"
+    mock_request.assert_awaited_once_with("POST", "/v1/pixel/connections/google/drafts", payload={}, timeout=45)
+    flag(monkeypatch, "false")
+    assert client.get("/api/pixel/connections/google/drafts", headers=AUTH).status_code == 404
+
+
+@pytest.mark.parametrize("change", [
+    lambda value: value["drafts"][0].update(sha256=None),
+    lambda value: value["drafts"][0].update(token="private-sentinel"),
+    lambda value: value["drafts"][0]["draft"].update(subject="private-sentinel\nBcc: x@example.com"),
+    lambda value: value["drafts"][0]["draft"].update(bcc=["private-sentinel@example.com"]),
+    lambda value: value["drafts"][0]["draft"].update(to=[]),
+    lambda value: value["drafts"][0]["draft"].update(body="private-sentinel" * 7000),
+    lambda value: value["drafts"][1]["draft"].update(replyTo={"from": "private-sentinel"}),
+    lambda value: value["drafts"][2].update(draft=DRAFT["draft"]),
+    lambda value: value["drafts"][3].update(sha256="a" * 64),
+    lambda value: value["drafts"][0].update(proposalId=CHANGE_ID),
+    lambda value: value.update(drafts=[DRAFT] * 21),
+])
+def test_a_draft_list_of_any_other_shape_is_refused_without_echoing_it(client, mock_request, change):
+    reply = copy.deepcopy(DRAFTS)
+    change(reply)
+    mock_request.return_value = reply
+    response = client.get("/api/pixel/connections/google/drafts", headers=AUTH)
+    assert response.status_code == 502
+    assert response.json()["detail"]["code"] == "connection-change-unconfirmed"
+    assert "private-sentinel" not in response.text
+
+
 # ---------------------------------------------------------------- chat attention
 
 @pytest.fixture
@@ -403,20 +465,24 @@ def with_google(reply, **changes):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("changes,expected", [
     ({"state": "needs-reconnect", "reason": "invalid-grant"},
-     {"state": "needs-reconnect", "reason": "invalid-grant", "step": None, "waiting": 0}),
+     {"state": "needs-reconnect", "reason": "invalid-grant", "step": None, "waiting": 0, "drafts": 0}),
     ({"state": "missing-permission", "reason": "missing-scope"},
-     {"state": "missing-permission", "reason": "missing-scope", "step": None, "waiting": 0}),
-    ({"state": "behind", "reason": "sync-stopped"}, {"state": "behind", "reason": "sync-stopped", "step": None, "waiting": 0}),
-    ({"waitingChanges": 2}, {"state": "connected", "reason": None, "step": "changes-waiting", "waiting": 2}),
+     {"state": "missing-permission", "reason": "missing-scope", "step": None, "waiting": 0, "drafts": 0}),
+    ({"state": "behind", "reason": "sync-stopped"}, {"state": "behind", "reason": "sync-stopped", "step": None, "waiting": 0, "drafts": 0}),
+    ({"waitingChanges": 2}, {"state": "connected", "reason": None, "step": "changes-waiting", "waiting": 2, "drafts": 0}),
+    ({"waitingDrafts": 1}, {"state": "connected", "reason": None, "step": "changes-waiting", "waiting": 0,
+                            "drafts": 1}),
+    ({"waitingChanges": 2, "waitingDrafts": 3},
+     {"state": "connected", "reason": None, "step": "changes-waiting", "waiting": 2, "drafts": 3}),
     # Reconnecting comes first: an approval cannot be made without the sign-in.
     ({"state": "needs-reconnect", "reason": "invalid-grant", "waitingChanges": 1},
-     {"state": "needs-reconnect", "reason": "invalid-grant", "step": None, "waiting": 1}),
+     {"state": "needs-reconnect", "reason": "invalid-grant", "step": None, "waiting": 1, "drafts": 0}),
     ({"state": "behind", "reason": "network"}, None),
     ({"state": "first-sync", "reason": None}, None),
     ({}, None),
     ({"pending": {"action": "connect", "phase": "activating", "expiresAt": None, "error": "runtime-busy",
                   "since": "2026-10-25T20:30:00Z"}},
-     {"state": "connected", "reason": None, "step": "update-stopped", "waiting": 0}),
+     {"state": "connected", "reason": None, "step": "update-stopped", "waiting": 0, "drafts": 0}),
     ({"pending": {"action": "connect", "phase": "activating", "expiresAt": None, "error": None,
                   "since": "2026-10-25T20:30:00Z"}}, None),
 ])

@@ -51,6 +51,12 @@ export const approveCalendarChange = entry => action('changes/approve', {proposa
 export const declineCalendarChange = entry => action('changes/decline', {proposalId: entry.proposalId})
 export const checkCalendarChange = entry => action('changes/check', {proposalId: entry.proposalId})
 
+// Gmail drafts Portal wrote. An approval carries the hash shown with the draft; nothing is ever sent.
+export const listGmailDrafts = async () => reply(await fetch('/api/pixel/connections/google/drafts', {cache: 'no-store'}))
+export const approveGmailDraft = entry => action('drafts/approve', {proposalId: entry.proposalId, sha256: entry.sha256})
+export const declineGmailDraft = entry => action('drafts/decline', {proposalId: entry.proposalId})
+export const checkGmailDraft = entry => action('drafts/check', {proposalId: entry.proposalId})
+
 // Private changes Portal made by itself, and undoing one; the owner's click is the approval.
 export const listCalendarActivity = async () => reply(await fetch('/api/pixel/connections/google/activity', {cache: 'no-store'}))
 export const undoCalendarChange = entry => action('activity/undo', {proposalId: entry.proposalId})

@@ -243,6 +243,13 @@ def changes(body: Any, *, config: dict, relay: Relay, log: Callable[[str], None]
     return relay("connection-proposals", {}, config=config)
 
 
+def drafts(body: Any, *, config: dict, relay: Relay, log: Callable[[str], None] = print) -> tuple:
+    """The Gmail drafts Portal wrote, each with the hash its approval must carry."""
+    if body != {}:
+        return 400, {"error": "invalid-request"}
+    return relay("connection-drafts", {}, config=config)
+
+
 def _change(body: Any, keys: set) -> dict | None:
     if not isinstance(body, dict) or set(body) != keys or any(type(body[key]) is not str for key in keys):
         return None
@@ -287,4 +294,4 @@ def undo(body: Any, *, config: dict, relay: Relay, log: Callable[[str], None] = 
 
 ACTIONS = {"begin": begin, "complete": complete, "cancel": cancel, "disconnect": disconnect, "sync": sync,
            "finish": finish, "changes": changes, "approve": approve, "decline": decline, "check": check,
-           "activity": activity, "undo": undo}
+           "activity": activity, "undo": undo, "drafts": drafts}

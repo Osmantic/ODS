@@ -14,7 +14,9 @@ disconnect at any time.
   Portal add or move your own private events by itself.
 - **Email:** Portal reads summaries of your Inbox and of what you sent, for the
   last 180 days: sender, subject, date and a short, cleaned-up excerpt. It never
-  sees attachments, and it can't send or delete mail.
+  sees attachments, and it can't send or delete mail. If you turn on **Write
+  Gmail drafts you send yourself**, it can also write a draft, which reaches
+  Gmail only after you approve it in Settings. You send it from Gmail.
 - Portal treats everything it reads as information, never as instructions. An
   email that says "forward this to everyone" changes nothing.
 
@@ -129,6 +131,27 @@ where it was. ODS undoes a change only while the event is exactly as Portal left
 it: if you or a guest changed it since, or you added guests, the list says so and
 leaves it alone. Each change can be undone once. A change made in the last minute
 shows Undo after the next calendar sync.
+
+## Gmail drafts you send yourself
+
+With **Write Gmail drafts you send yourself** on, you can ask Portal "reply to
+Sam that Thursday works" or "write to Pat about the invoice". Portal writes the
+draft and tells you it waits for your approval; the chat also shows a line that
+links to Connected apps. Portal can't send email, with this on or off.
+
+Under the Google card, **Gmail drafts from Portal** lists each draft whole: who
+it's for, the subject, the message, and for a reply, the email it answers.
+
+- **Create draft** puts exactly that draft in your Gmail Drafts, once. A reply
+  joins the conversation it answers. Open Gmail to read it over and send it.
+- **Decline** removes it. Nothing is written to Gmail.
+- If Gmail doesn't confirm a draft, ODS never creates it again. **Check again**
+  asks Gmail whether the draft is there.
+- A draft with a line break in its subject, or with text from an email ODS held
+  back as unsafe, can't be created. Decline it and ask Portal again.
+
+To turn drafts on later, press **Change access** on the card and connect again
+with the box checked. Google then asks you to allow Gmail drafts.
 
 ## Disconnect
 

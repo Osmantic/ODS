@@ -15,6 +15,10 @@ it.each([
   [{state: 'connected', reason: null, step: 'update-stopped'}, "Portal hasn't picked up your Google change yet."],
   [{state: 'connected', reason: null, step: 'changes-waiting', waiting: 1}, 'A calendar change from Portal waits for your approval.'],
   [{state: 'connected', reason: null, step: 'changes-waiting', waiting: 3}, '3 calendar changes from Portal wait for your approval.'],
+  [{state: 'connected', reason: null, step: 'changes-waiting', waiting: 0, drafts: 1}, 'A Gmail draft from Portal waits for your approval.'],
+  [{state: 'connected', reason: null, step: 'changes-waiting', waiting: 0, drafts: 2}, '2 Gmail drafts from Portal wait for your approval.'],
+  [{state: 'connected', reason: null, step: 'changes-waiting', waiting: 1, drafts: 1},
+    'Calendar changes and Gmail drafts from Portal wait for your approval.'],
 ])('says in one line what needs the owner: %j', (value, line) => {
   expect(connectedAppsAttention(value)).toBe(line)
 })

@@ -97,12 +97,13 @@ it("sends exactly the owner's choices, opens Google, and keeps no secret afterwa
 it('defaults to the capabilities ODS can deliver, and says a cloud model sees what Portal reads', async () => {
   const calls = api({'POST /api/pixel/connections/google/connect': [200, BEGUN]})
   wizard()
-  for (const name of [/your own private events/, /Write Gmail drafts/]) {
-    expect(screen.getByRole('checkbox', {name})).toBeDisabled()
+  expect(screen.getByRole('checkbox', {name: /your own private events/})).toBeDisabled()
+  // Calendar changes and Gmail drafts are offered, off until the owner turns them on.
+  for (const name of [/Suggest calendar changes/, /Write Gmail drafts/]) {
+    expect(screen.getByRole('checkbox', {name})).toBeEnabled()
+    expect(screen.getByRole('checkbox', {name})).not.toBeChecked()
   }
-  // Calendar changes are offered, off until the owner turns them on.
-  expect(screen.getByRole('checkbox', {name: /Suggest calendar changes/})).toBeEnabled()
-  expect(screen.getByRole('checkbox', {name: /Suggest calendar changes/})).not.toBeChecked()
+  expect(screen.getByText(/Portal never sends email: you send the draft from Gmail/)).toBeVisible()
   expect(screen.getByText(/When Portal runs on a cloud model, that model's provider sees what Portal reads/)).toBeVisible()
   // Cloud models may use connected data, as decided; no switch offers what nothing enforces yet.
   expect(screen.queryByRole('checkbox', {name: /cloud model/})).toBeNull()
@@ -225,4 +226,21 @@ it('offers private changes only on top of calendar changes, and explains both', 
   expect(own).toBeChecked()
   const sent = await begin(calls)
   expect(sent.capabilities).toEqual({...READ_BOTH, 'calendar.write': true, 'calendar.direct': true})
+})
+
+it('offers Gmail drafts only on top of reading email', async () => {
+  const calls = api({'POST /api/pixel/connections/google/connect': [200, BEGUN]})
+  wizard()
+  const email = screen.getByRole('checkbox', {name: 'Read email summaries'})
+  const drafts = screen.getByRole('checkbox', {name: /Write Gmail drafts/})
+  fireEvent.click(drafts)
+  expect(drafts).toBeChecked()
+  // Without email summaries Portal has nothing to answer, so drafts go with them.
+  fireEvent.click(email)
+  expect(drafts).not.toBeChecked()
+  expect(drafts).toBeDisabled()
+  fireEvent.click(email)
+  expect(drafts).toBeChecked()
+  const sent = await begin(calls)
+  expect(sent.capabilities).toEqual({...READ_BOTH, 'gmail.drafts': true})
 })

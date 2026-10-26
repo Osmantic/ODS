@@ -136,6 +136,7 @@ const CONNECTION_ACTIONS = {
   'connection-cancel': 25000, 'connection-disconnect': 155000, 'connection-sync': 25000,
   'connection-proposals': 25000, 'connection-approve': 155000, 'connection-decline': 25000,
   'connection-reconcile': 155000, 'connection-activity': 25000, 'connection-undo': 155000,
+  'connection-drafts': 25000,
 };
 
 // Connected-apps status (GET, no body) or one custodian action (POST). The

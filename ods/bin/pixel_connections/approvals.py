@@ -6,7 +6,8 @@ freezes the proposal Portal wrote into a snapshot that only the Source Broker
 owns, the owner approves that snapshot's exact SHA-256, and the broker's action
 unit applies it. A result counts only when it is bound to that hash. Nothing
 here talks to Google, and nothing here imports a Linux-only module, so status
-can count waiting changes on any host.
+can count waiting changes on any host. Gmail drafts (drafts.py) take the same
+path with their own rules.
 """
 from __future__ import annotations
 
@@ -22,7 +23,8 @@ from typing import Any, Callable, NamedTuple
 
 PROPOSAL_ID = re.compile(r"^calendar-[0-9]{13}-[a-f0-9]{8}$")
 PROPOSAL_FILE = re.compile(r"^(calendar-[0-9]{13}-[a-f0-9]{8})\.json$")
-STALE_SNAPSHOT = re.compile(r"^\.calendar-[0-9]{13}-[a-f0-9]{8}\.snapshot\.")
+# Calendar changes and Gmail drafts (drafts.py) share the snapshot directory.
+STALE_SNAPSHOT = re.compile(r"^\.(?:calendar|gmail-draft)-[0-9]{13}-[a-f0-9]{8}\.snapshot\.")
 SHA256 = re.compile(r"^[a-f0-9]{64}$")
 OPERATOR = "pending-operator-approval"
 DIRECT = "pending-bounded-direct"
@@ -399,13 +401,13 @@ def _entry(paths, ids: Ids, proposal_id: str) -> tuple[dict[str, Any], str | Non
              "change": _change(fields), "event": None, "tooLarge": False}, fields.get("eventId"))
 
 
-def _names(paths) -> list[str]:
+def _names(paths, pattern: re.Pattern = PROPOSAL_FILE) -> list[str]:
     """Proposal IDs, newest first; none when the broker has no proposal directory to list."""
     if paths.proposals.is_symlink() or not paths.proposals.is_dir():
         return []
     try:
         with os.scandir(paths.proposals) as entries:
-            names = [match.group(1) for match in (PROPOSAL_FILE.fullmatch(entry.name) for entry in entries) if match]
+            names = [match.group(1) for match in (pattern.fullmatch(entry.name) for entry in entries) if match]
     except OSError:
         return []  # Replaced while listing; the next refresh sees what is there.
     return sorted(names, reverse=True)
@@ -420,6 +422,25 @@ def _clear_stale_snapshots(paths) -> None:
             os.unlink(entry.path)
 
 
+def fit(entries: list[dict[str, Any]], more: int,
+        too_large: Callable[[dict[str, Any]], dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    """The entries one reply can carry, in order, and how many more wait their turn."""
+    shown: list[dict[str, Any]] = []
+    used = 0
+    for entry in entries:
+        size = len(json.dumps(entry))
+        if size > ENTRY_BUDGET:
+            # It cannot be shown whole, so it cannot be approved here; it can still be declined.
+            entry = too_large(entry)
+            size = len(json.dumps(entry))
+        if len(shown) >= LISTED or used + size > REPLY_BUDGET:
+            more += 1
+            continue
+        shown.append(entry)
+        used += size
+    return shown, more
+
+
 def listing(paths, ids: Ids) -> dict[str, Any]:
     """The changes that wait for the owner, oldest first, each with the hash that approves it."""
     names = _names(paths)
@@ -428,28 +449,18 @@ def listing(paths, ids: Ids) -> dict[str, Any]:
     _clear_stale_snapshots(paths)
     built = [entry for entry in (_entry(paths, ids, name) for name in reversed(names[:CONSIDERED])) if entry]
     events = _events(paths, ids.broker_uid, {event_id for _entry_value, event_id in built if event_id})
-    shown: list[dict[str, Any]] = []
-    more, used = max(0, len(names) - CONSIDERED), 0
     for entry, event_id in built:
         if event_id:
             entry["event"] = events.get(event_id)
-        size = len(json.dumps(entry))
-        if size > ENTRY_BUDGET:
-            # It cannot be shown whole, so it cannot be approved here; it can still be declined.
-            entry = dict(entry, sha256=None, change=None, event=None, tooLarge=True)
-            size = len(json.dumps(entry))
-        if len(shown) >= LISTED or used + size > REPLY_BUDGET:
-            more += 1
-            continue
-        shown.append(entry)
-        used += size
+    shown, more = fit([entry for entry, _event_id in built], max(0, len(names) - CONSIDERED),
+                      lambda entry: dict(entry, sha256=None, change=None, event=None, tooLarge=True))
     return {"proposals": shown, "more": more}
 
 
-def pending_count(paths) -> int:
+def pending_count(paths, pattern: re.Pattern = PROPOSAL_FILE) -> int:
     """How many changes wait for the owner. Read-only, for status; ownership is checked when they are shown."""
     count = 0
-    for name in _names(paths)[:CONSIDERED]:
+    for name in _names(paths, pattern)[:CONSIDERED]:
         try:
             if _result(paths, name, None) is not None:
                 continue
@@ -496,8 +507,9 @@ def _snapshot_for(paths, ids: Ids, proposal_id: str, sha256: str | None) -> tupl
     return raw, digest
 
 
-def approve(paths, run: Run, ids: Ids, request: dict[str, Any]) -> dict[str, Any]:
-    """Make exactly the change the owner approved, once.
+def approve(paths, run: Run, ids: Ids, request: dict[str, Any], *,
+            rules: Callable[[Any, str], Any] = validate) -> dict[str, Any]:
+    """Make exactly the change the owner approved, once; ``rules`` are the broker's for its kind.
 
     Approving again after a lost reply reports the first outcome without calling Google.
     """
@@ -508,7 +520,7 @@ def approve(paths, run: Run, ids: Ids, request: dict[str, Any]) -> dict[str, Any
         raise ApprovalError("calendar-change-unconfirmed")
     if state == "waiting":
         try:
-            validate(_json(raw), proposal_id)
+            rules(_json(raw), proposal_id)
         except (UnicodeError, ValueError, RecursionError):
             raise ApprovalError("calendar-change-invalid") from None
         # The unit fails when the broker refuses; only a bound result says what happened.
@@ -521,16 +533,18 @@ def approve(paths, run: Run, ids: Ids, request: dict[str, Any]) -> dict[str, Any
     return {"proposalId": proposal_id, "outcome": state}
 
 
-def reconcile(paths, run: Run, ids: Ids, request: dict[str, Any]) -> dict[str, Any]:
+def reconcile(paths, run: Run, ids: Ids, request: dict[str, Any], *,
+              checkable: frozenset[str] = frozenset({"create"})) -> dict[str, Any]:
     """Ask Google whether an unconfirmed new event exists; nothing is ever sent twice.
 
-    Pixel can check only a new event, whose ID it fixed before calling Google.
+    Pixel can check only what it named before calling Google: a new event, whose
+    ID it fixed, or a new draft, whose Message-ID it fixed (``checkable``).
     """
     proposal_id = request["proposalId"]
     raw, sha256 = _snapshot_for(paths, ids, proposal_id, None)
     state = _state(paths, proposal_id, sha256, ids.broker_uid)
     if state == "unconfirmed":
-        if _status(raw) != OPERATOR or _json(raw).get("action") != "create":
+        if _status(raw) != OPERATOR or _json(raw).get("action") not in checkable:
             raise ApprovalError("calendar-change-not-checkable")
         # Exit status 3 means Google cannot show the event yet; the result decides either way.
         run(["systemctl", "start", f"pixel-source-reconcile@{proposal_id}.service"], 120)

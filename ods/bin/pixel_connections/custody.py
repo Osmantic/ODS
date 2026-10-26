@@ -37,6 +37,7 @@ REVOKE_KEYS = {"schemaVersion", "kind", "finishedAt", "outcome", "errorClass", "
 ERROR_CLASS = re.compile(r"^[a-z][a-z-]{1,40}$")
 # The broker key that lets queued private calendar changes run.
 DIRECT_FLAG = "PIXEL_CALENDAR_DIRECT_ENABLED"
+DRAFTS_FLAG = "PIXEL_LIMB_EMAIL_DRAFTS_ENABLED"
 SCOPE = re.compile(r"^(?:https://www\.googleapis\.com/auth/[a-z0-9._-]{1,100}|https://mail\.google\.com/|openid|email|profile)$")
 EMAIL = re.compile(r"^[^@\s<>\x00-\x1f\x7f]{1,64}@[^@\s<>\x00-\x1f\x7f]{1,253}$")
 
@@ -311,6 +312,9 @@ def connection_env(paths: Paths, *, gateway: dict[str, bool], calendar_id: str, 
     }
     if time_zone:
         overrides["PIXEL_SOURCE_TIME_ZONE"] = time_zone
+    # A kit from before Gmail drafts has no drafts flag; env_text refuses one that needs it.
+    if gateway["emailDrafts"] or DRAFTS_FLAG in values:
+        overrides[DRAFTS_FLAG] = "1" if gateway["emailDrafts"] else "0"
     return env_text(lines, overrides)
 
 

@@ -25,7 +25,7 @@ from pixel_access_bridge import AccessError, atomic_json, remaining, runtime_con
 from pixel_model_coordinator import _managed_marker, _marker_digest
 from pixel_settings.coordinator import _identity, _read, _valid_identity
 
-from . import activity, approvals, catalog, custody, lifecycle, oauth, planner, state
+from . import activity, approvals, catalog, custody, drafts, lifecycle, oauth, planner, state
 
 LIFECYCLE = lifecycle.PATH.name
 PATHS = custody.Paths()
@@ -44,6 +44,8 @@ GRANTED_BY = {
     "calendar.direct": frozenset({catalog.CALENDAR_WRITE_SCOPE, "https://www.googleapis.com/auth/calendar"}),
     "gmail.read": frozenset({catalog.GMAIL_READ_SCOPE, "https://www.googleapis.com/auth/gmail.modify",
                              "https://mail.google.com/"}),
+    "gmail.drafts": frozenset({catalog.GMAIL_COMPOSE_SCOPE, "https://www.googleapis.com/auth/gmail.modify",
+                               "https://mail.google.com/"}),
 }
 CAPABILITY_IDS = tuple(capability["id"] for capability in catalog.GOOGLE["capabilities"])
 
@@ -242,9 +244,14 @@ def _begin_request(request: Any) -> dict[str, Any]:
 
 
 def _granted(requested: dict[str, bool], scopes: list[str]) -> dict[str, bool]:
+    """What Google granted of the owner's choices. Google lets the owner untick each
+    permission, so a capability whose requirement stayed off stays off too."""
     granted = dict.fromkeys(CAPABILITY_IDS, False)
-    for capability, satisfying in GRANTED_BY.items():
-        granted[capability] = requested[capability] and bool(satisfying & set(scopes))
+    # The catalog lists each capability after the ones it needs.
+    for capability in catalog.GOOGLE["capabilities"]:
+        name = capability["id"]
+        granted[name] = (requested[name] and bool(GRANTED_BY[name] & set(scopes))
+                         and all(granted[need] for need in capability["requires"]))
     return granted
 
 
@@ -408,7 +415,7 @@ def sync(bridge, request: Any) -> dict[str, Any]:
         return {"outcome": "started"}
 
 
-# ---------------------------------------------------------------- calendar changes Portal suggests
+# ---------------------------------------------------------------- calendar changes and Gmail drafts Portal suggests
 
 def _approval_ids(bridge) -> approvals.Ids | None:
     """None before the broker identity exists, when Portal cannot have suggested anything."""
@@ -419,13 +426,19 @@ def _approval_ids(bridge) -> approvals.Ids | None:
     return approvals.Ids(reader_uid=bridge.owner.pw_uid, reader_gid=bridge.owner.pw_gid, broker_uid=broker_uid)
 
 
-def _change_request(request: Any, keys: set) -> dict[str, Any]:
+def _change_request(request: Any, keys: set, *, drafts_too: bool = False) -> dict[str, Any]:
+    """A calendar change, or with ``drafts_too`` a Gmail draft, named exactly."""
     if (not isinstance(request, dict) or set(request) != keys or type(request["proposalId"]) is not str
-            or not approvals.PROPOSAL_ID.fullmatch(request["proposalId"])
+            or not (approvals.PROPOSAL_ID.fullmatch(request["proposalId"])
+                    or drafts_too and drafts.DRAFT_ID.fullmatch(request["proposalId"]))
             or "sha256" in keys and (type(request["sha256"]) is not str
                                      or not approvals.SHA256.fullmatch(request["sha256"]))):
         raise AccessError("invalid-connection-request")
     return request
+
+
+def _is_draft(request: dict[str, Any]) -> bool:
+    return drafts.DRAFT_ID.fullmatch(request["proposalId"]) is not None
 
 
 def _connected_google() -> dict[str, Any]:
@@ -446,21 +459,26 @@ def proposals(bridge, request: Any) -> dict[str, Any]:
 
 
 def approve(bridge, request: Any) -> dict[str, Any]:
-    """Make the one change the owner approved, exactly as they saw it."""
-    request = _change_request(request, {"proposalId", "sha256"})
+    """Make the one change, or create the one draft, the owner approved, exactly as they saw it."""
+    request = _change_request(request, {"proposalId", "sha256"}, drafts_too=True)
+    draft = _is_draft(request)
+    name = "gmail-draft" if draft else "calendar-change"
     with bridge.bounded(150), bridge.locked():
         bridge.discover()
-        if not _connected_google()["capabilities"]["calendar.write"]:
+        capabilities = _connected_google()["capabilities"]
+        if draft and not capabilities["gmail.drafts"]:
+            raise AccessError("gmail-drafts-off")
+        if not draft and not capabilities["calendar.write"]:
             raise AccessError("calendar-changes-off")
         ids = _approval_ids(bridge)
         if ids is None:
-            raise AccessError("calendar-change-unknown")
+            raise AccessError(f"{name}-unknown")
         try:
-            result = approvals.approve(PATHS, RUN, ids, request)
+            result = (drafts.approve if draft else approvals.approve)(PATHS, RUN, ids, request)
         except custody.CustodyError:
-            # systemctl did not answer in time. The broker's journal keeps the change from happening twice.
-            raise AccessError("calendar-change-unconfirmed") from None
-        if result["outcome"] == "applied":
+            # systemctl did not answer in time. The broker's journal keeps it from happening twice.
+            raise AccessError(f"{name}-unconfirmed") from None
+        if result["outcome"] == "applied" and not draft:
             try:
                 custody.sync(RUN)
             except custody.CustodyError:
@@ -469,18 +487,30 @@ def approve(bridge, request: Any) -> dict[str, Any]:
 
 
 def reconcile(bridge, request: Any) -> dict[str, Any]:
-    """Ask Google whether an unconfirmed new event was made; nothing is sent again."""
-    request = _change_request(request, {"proposalId"})
+    """Ask Google whether an unconfirmed new event or draft was made; nothing is sent again."""
+    request = _change_request(request, {"proposalId"}, drafts_too=True)
+    draft = _is_draft(request)
+    name = "gmail-draft" if draft else "calendar-change"
     with bridge.bounded(150), bridge.locked():
         bridge.discover()
         _connected_google()
         ids = _approval_ids(bridge)
         if ids is None:
-            raise AccessError("calendar-change-unknown")
+            raise AccessError(f"{name}-unknown")
         try:
-            return approvals.reconcile(PATHS, RUN, ids, request)
+            return (drafts.reconcile if draft else approvals.reconcile)(PATHS, RUN, ids, request)
         except custody.CustodyError:
-            raise AccessError("calendar-change-unconfirmed") from None
+            raise AccessError(f"{name}-unconfirmed") from None
+
+
+def drafts_waiting(bridge, request: Any) -> dict[str, Any]:
+    """The Gmail drafts Portal wrote, oldest first, each with the hash that approves it."""
+    if request != {}:
+        raise AccessError("invalid-connection-request")
+    with bridge.bounded(30), bridge.locked():
+        bridge.discover()
+        ids = _approval_ids(bridge)
+        return drafts.listing(PATHS, ids) if ids else {"drafts": [], "more": 0}
 
 
 def _undo_ledger(bridge) -> Path:
@@ -521,8 +551,8 @@ def undo(bridge, request: Any) -> dict[str, Any]:
 
 
 def decline(bridge, request: Any) -> dict[str, Any]:
-    """Take a suggested change off the list, connected or not."""
-    request = _change_request(request, {"proposalId"})
+    """Take a suggested change or draft off the list, connected or not."""
+    request = _change_request(request, {"proposalId"}, drafts_too=True)
     with bridge.bounded(30), bridge.locked():
         return approvals.decline(PATHS, request)
 
@@ -798,7 +828,8 @@ def activate(bridge, request: Any) -> dict[str, Any]:
 OPERATIONS = {"connection-begin": begin, "connection-complete": complete, "connection-activate": activate,
               "connection-cancel": cancel, "connection-disconnect": disconnect, "connection-sync": sync,
               "connection-proposals": proposals, "connection-approve": approve, "connection-decline": decline,
-              "connection-reconcile": reconcile, "connection-activity": changes_made, "connection-undo": undo}
+              "connection-reconcile": reconcile, "connection-activity": changes_made, "connection-undo": undo,
+              "connection-drafts": drafts_waiting}
 
 
 def control(bridge, operation: str, request: Any) -> dict[str, Any]:

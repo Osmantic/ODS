@@ -79,7 +79,7 @@ def _connection_pending(value):
 def _connection_google(value):
     if (type(value) is not dict or set(value) != {'state', 'reason', 'account', 'capabilities', 'cloudModels',
                                                   'connectedAt', 'grantedScopes', 'checkedAt', 'sources', 'pending',
-                                                  'waitingChanges'}
+                                                  'waitingChanges', 'waitingDrafts'}
             or value['state'] not in _CONNECTION_STATES):
         return False
     connected = value['state'] != 'not-connected'
@@ -94,9 +94,9 @@ def _connection_google(value):
             and type(sources) is dict and set(sources) == {'email', 'calendar'}
             and all(_connection_source(item) for item in sources.values())
             and _connection_pending(value['pending'])
-            and (value['waitingChanges'] is None) != connected
-            and (value['waitingChanges'] is None
-                 or type(value['waitingChanges']) is int and 0 <= value['waitingChanges'] <= 50))
+            and all((value[key] is None) != connected
+                    and (value[key] is None or type(value[key]) is int and 0 <= value[key] <= 50)
+                    for key in ('waitingChanges', 'waitingDrafts')))
 
 
 def public_connections(value):
@@ -171,7 +171,8 @@ def public_model_control(value):
 _CONNECTION_OPERATIONS = ('connection-begin', 'connection-complete', 'connection-activate',
                           'connection-cancel', 'connection-disconnect', 'connection-sync',
                           'connection-proposals', 'connection-approve', 'connection-decline',
-                          'connection-reconcile', 'connection-activity', 'connection-undo')
+                          'connection-reconcile', 'connection-activity', 'connection-undo',
+                          'connection-drafts')
 _CAPABILITY_IDS = ('calendar.read', 'calendar.write', 'calendar.direct', 'gmail.read', 'gmail.drafts')
 _FLOW = re.compile(r'[a-f0-9]{32}')
 _STATE = re.compile(r'[A-Za-z0-9_-]{32,128}')
@@ -185,6 +186,7 @@ _SECOND = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z')
 _REASON = re.compile(r'[a-z][a-z0-9-]{0,95}')
 _AUTH_URL = re.compile(r'https://accounts\.google\.com/o/oauth2/auth\?[A-Za-z0-9._~%&=+-]{1,4000}')
 _PROPOSAL = re.compile(r'calendar-[0-9]{13}-[a-f0-9]{8}')
+_DRAFT = re.compile(r'gmail-draft-[0-9]{13}-[a-f0-9]{8}')
 _HEX = re.compile(r'[a-f0-9]{64}')
 _ATTENDEE = re.compile(r'[^\s@<>\x00-\x1f\x7f]+@[^\s@<>\x00-\x1f\x7f]+')
 _CONTROL = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
@@ -192,6 +194,8 @@ _CHANGE_OUTCOMES = {'connection-approve': ('applied', 'rejected', 'not-applied',
                     'connection-reconcile': ('applied', 'rejected', 'not-applied', 'unconfirmed', 'waiting'),
                     'connection-decline': ('declined',),
                     'connection-undo': ('applied', 'rejected', 'not-applied', 'unconfirmed')}
+# Approving, checking and declining also take a Gmail draft; Undo takes only a calendar change.
+_DRAFT_OPERATIONS = ('connection-approve', 'connection-reconcile', 'connection-decline')
 
 
 def _text(value, pattern):
@@ -259,18 +263,51 @@ def _calendar_activity(value):
             and value['undo'] in ('available', 'syncing', 'done', 'refused', 'unconfirmed', 'changed', 'gone'))
 
 
+def _suggestion(operation, value):
+    return _text(value, _PROPOSAL) or operation in _DRAFT_OPERATIONS and _text(value, _DRAFT)
+
+
+def _gmail_draft(value):
+    to = value.get('to') if type(value) is dict else None
+    cc = value.get('cc') if type(value) is dict else None
+    reply = value.get('replyTo') if type(value) is dict else None
+    return (type(value) is dict and set(value) == {'to', 'cc', 'subject', 'body', 'replyTo'}
+            and type(to) is list and type(cc) is list and 1 <= len(to) and len(to) + len(cc) <= 50
+            and all(_words(item, 320) and _text(item, _ATTENDEE) for item in to + cc)
+            and type(value['subject']) is str and _words(value['subject'], 998)
+            and '\n' not in value['subject'] and '\r' not in value['subject']
+            and type(value['body']) is str and value['body'].strip() != '' and _words(value['body'], 100000)
+            and (reply is None or type(reply) is dict and set(reply) == {'from', 'subject'}
+                 and _words(reply['from'], 320) and _words(reply['subject'], 998)))
+
+
+def _draft_entry(value):
+    if (type(value) is not dict or set(value) != {'proposalId', 'sha256', 'state', 'createdAt', 'draft', 'tooLarge'}
+            or not _text(value['proposalId'], _DRAFT) or type(value['tooLarge']) is not bool
+            or value['state'] not in ('waiting', 'unconfirmed', 'applied', 'rejected', 'not-applied', 'invalid')
+            or not _words(value['createdAt'], 64)):
+        return False
+    if value['state'] == 'invalid':
+        return (value['tooLarge'] is False and value['createdAt'] is None
+                and value['sha256'] is None and value['draft'] is None)
+    shown = not value['tooLarge']
+    return ((_text(value['sha256'], _HEX) if shown else value['sha256'] is None)
+            and (_gmail_draft(value['draft']) if shown else value['draft'] is None))
+
+
 def valid_connection_action(value):
     if (type(value) is not dict or set(value) != {'operation', 'request'}
             or value['operation'] not in _CONNECTION_OPERATIONS or type(value['request']) is not dict):
         return False
     operation, request = value['operation'], value['request']
-    if operation in ('connection-activate', 'connection-sync', 'connection-proposals', 'connection-activity'):
+    if operation in ('connection-activate', 'connection-sync', 'connection-proposals', 'connection-activity',
+                     'connection-drafts'):
         return request == {}
     if operation == 'connection-approve':
-        return (set(request) == {'proposalId', 'sha256'} and _text(request['proposalId'], _PROPOSAL)
+        return (set(request) == {'proposalId', 'sha256'} and _suggestion(operation, request['proposalId'])
                 and _text(request['sha256'], _HEX))
     if operation in ('connection-decline', 'connection-reconcile', 'connection-undo'):
-        return set(request) == {'proposalId'} and _text(request['proposalId'], _PROPOSAL)
+        return set(request) == {'proposalId'} and _suggestion(operation, request['proposalId'])
     if operation == 'connection-disconnect':
         return request == {'connector': 'google'}
     if operation == 'connection-cancel':
@@ -321,8 +358,12 @@ def public_connection_action(operation, value):
         valid = (set(value) == {'changes', 'more'} and type(value['more']) is int and value['more'] >= 0
                  and type(value['changes']) is list and len(value['changes']) <= 20
                  and all(_calendar_activity(item) for item in value['changes']))
+    elif operation == 'connection-drafts':
+        valid = (set(value) == {'drafts', 'more'} and type(value['more']) is int and value['more'] >= 0
+                 and type(value['drafts']) is list and len(value['drafts']) <= 20
+                 and all(_draft_entry(item) for item in value['drafts']))
     elif operation in _CHANGE_OUTCOMES:
-        valid = (set(value) == {'proposalId', 'outcome'} and _text(value['proposalId'], _PROPOSAL)
+        valid = (set(value) == {'proposalId', 'outcome'} and _suggestion(operation, value['proposalId'])
                  and value['outcome'] in _CHANGE_OUTCOMES[operation])
     else:
         outcomes = {'connection-activate': ('applied', 'unchanged'), 'connection-cancel': ('cancelled',),
