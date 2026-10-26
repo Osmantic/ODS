@@ -128,7 +128,8 @@ export default function PixelConversationNavigation({ collapsed }) {
       <footer><button autoFocus disabled={deleting} onClick={closeDelete}>Cancel</button><button disabled={deleting} onClick={confirmDelete}>{deleting?'Deleting…':'Delete chat'}</button></footer>
     </dialog>
     <button ref={newTask} className="pixel-nav-item rail-new-task" aria-disabled={newTaskBlocked ? 'true' : undefined} aria-describedby={newTaskBlocked ? 'pixel-new-task-reason' : undefined} onClick={() => window.dispatchEvent(new Event('ods:pixel-new-task'))}><Plus size={16}/><span>New task</span></button>
-    {newTaskBlocked && <p id="pixel-new-task-reason" className="rail-new-task-reason" role="status">{newTaskBlocked}</p>}
+    {/* Described, not announced: the header already announces that Portal is working. */}
+    {newTaskBlocked && <p id="pixel-new-task-reason" className="rail-new-task-reason">{newTaskBlocked}</p>}
     <div className="pixel-original-sections">
       {pinned.length > 0 && <details className="rail-section" open><summary>Pinned{chevron}</summary>{rows(pinned, '')}</details>}
       {projects.length+shipped.length>0 && <details className="rail-section" open>
