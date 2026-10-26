@@ -32,7 +32,7 @@ import PixelQuestions from '../components/PixelQuestions'
 import PortalGoalPlan from '../components/PortalGoalPlan'
 import {goalCommand,continueGoal} from '../lib/portalGoal'
 import PortalContextRing from '../components/PortalContextRing'
-import {compactCommand,CONTEXT_REQUEST_ID,CONTINUE_FAILED,historySnapshot,usePortalContext} from '../lib/portalContext'
+import {compactCommand,CONTEXT_REQUEST_ID,CONTINUE_FAILED,historySnapshot,STOP_UNCONFIRMED,usePortalContext} from '../lib/portalContext'
 import PortalModelSelector from '../components/PortalModelSelector'
 import PortalRuntimeIdentity from '../components/PortalRuntimeIdentity'
 import PortalReadiness from '../components/PortalReadiness'
@@ -158,12 +158,12 @@ const TURN_STILL_RUNNING = 'Portal is still working on your last request. Its an
 const TURN_RUNNING_UNSEEN = 'Portal is still working on your last request. When it’s done, ask Portal what it did. You can stop it.'
 // Work the server found running for this chat when the page has no turn of
 // its own to follow there.
-const CHAT_STILL_RUNNING = 'Portal is still working on your last request. You can send your next message when it’s done.'
+const CHAT_STILL_RUNNING = 'Portal is still working on your last request. You can stop it, or send your next message when it’s done.'
 const TURN_UNCONFIRMED = 'Portal can’t confirm your last request has finished.'
 const CONTINUING_TURN = 'Making sure nothing is still running in this chat…'
 // A Stop of earlier work that was not acknowledged. The alert goes once that
 // turn settles: there is nothing left to stop.
-const RESTORED_STOP_UNCONFIRMED = 'Portal could not confirm the stop yet. Try Stop again in a moment.'
+const RESTORED_STOP_UNCONFIRMED = STOP_UNCONFIRMED
 const clearRestoredStopError = current => current === RESTORED_STOP_UNCONFIRMED ? '' : current
 // A cut-off turn is checked again on a growing interval and the checks stop
 // once its state is proven. Work that is still running is checked at most
@@ -2146,8 +2146,11 @@ export default function Pixel({ systemStatus = null }) {
         failed:continuing === 'failed', action:continueChat, disabled:stopping}
       : {text:CHECKING_TURN, busy:true}
   ) : contextControl.historyUnknown ? (
-    contextControl.resolving ? {text:CONTINUING_TURN, busy:true}
-      : contextControl.historyActive ? {text:CHAT_STILL_RUNNING, busy:true}
+    contextControl.resolving ? {text:contextControl.recoveryNotice || CONTINUING_TURN, busy:true}
+      // Here the page follows no turn of its own, so Stop sits in this line.
+      : contextControl.historyActive ? {text:contextControl.recoveryFailed ? STOP_UNCONFIRMED : CHAT_STILL_RUNNING,
+        busy:!contextControl.recoveryFailed, failed:contextControl.recoveryFailed,
+        action:contextControl.stopHistory, label:'Stop', disabled:!contextControl.canStop}
       : contextControl.recoveryFailed ? {text:CONTINUE_FAILED, failed:true, action:continueChat, disabled:!contextControl.canResolve}
       : contextControl.historyChecking ? {text:CHECKING_TURN, busy:true}
       : {text:TURN_UNCONFIRMED, action:continueChat, disabled:!contextControl.canResolve}
@@ -2457,7 +2460,7 @@ export default function Pixel({ systemStatus = null }) {
           {turnHold && <div className="portal-context-status" role="status" aria-label="Last message">
             {turnHold.busy && <Loader2 size={13} className="animate-spin" aria-hidden="true"/>}
             <span>{turnHold.text}{heldNote}</span>
-            {turnHold.action && <button type="button" className="portal-context-action" disabled={turnHold.disabled} onClick={()=>void turnHold.action()}>Continue in this chat</button>}
+            {turnHold.action && <button type="button" className="portal-context-action" disabled={turnHold.disabled} onClick={()=>void turnHold.action()}>{turnHold.label || 'Continue in this chat'}</button>}
             {turnHold.failed && <HelpLink />}
           </div>}
           {contextControl.notice && <div className="portal-context-status" role={contextControl.phase==='failed'?'alert':'status'}>

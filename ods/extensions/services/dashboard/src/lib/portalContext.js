@@ -29,6 +29,7 @@ const contextRetryDelays=[2000,5000,10000]
 // second. Each check asks the server to settle the chat if it proves idle.
 const historyRecheckDelays=[1000,2000,4000,8000,15000,30000,60000]
 export const CONTINUE_FAILED='Portal could not confirm this chat is free yet. Try again in a moment.'
+export const STOP_UNCONFIRMED='Portal could not confirm the stop yet. Try Stop again in a moment.'
 export function parseConversationContext(value) {
   if(!value || value.schemaVersion!==1 || !['ready','missing','busy','unavailable'].includes(value.status))return null
   const {context,compaction,history,model}=value
@@ -197,8 +198,10 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
       // An unanswered check proves nothing; the owner can still continue.
     }finally {clearTimeout(timer);requests.current.delete(controller)}
     if(at!==generation.current)return
-    if(state==='active')publish({historyChecking:false,historyActive:true,recoveryFailed:false,recoveryNotice:''})
-    else if(state==='unknown')publish({historyChecking:false,historyActive:false})
+    // A failed Stop or Continue is shown until the chat's state changes kind.
+    const changed=(state==='active')!==Boolean(current.current.historyActive)?{recoveryFailed:false,recoveryNotice:''}:{}
+    if(state==='active')publish({historyChecking:false,historyActive:true,...changed})
+    else if(state==='unknown')publish({historyChecking:false,historyActive:false,...changed})
     await refresh(true)
     // "Nothing runs" settles the history too. If an older Portal could not
     // record that, its history stays unconfirmed, and then the owner can
@@ -288,35 +291,40 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
     }finally {clearTimeout(timer);requests.current.delete(controller);if(at===generation.current){mutation.current=false;if(requery)void refresh(true)}}
   },[accept,persist,publish,refresh])
 
-  const resolveInterrupted=useCallback(async()=>{
-    // Continue stops whatever is left over, so it is never offered, nor sent,
-    // while the server reports work still running in this chat.
-    if(current.current.explicitBlocked || !current.current.historyUnknown || current.current.historyActive || mutation.current || pending.current)return false
+  // Both owner actions on an unconfirmed history stop whatever runs for this
+  // chat. Continue is for a history Portal cannot tell about; Stop is for
+  // work the server reports still running. Merely loading a conversation or
+  // reading its context never cancels work, and the hold is released only
+  // after the server confirms nothing is running for this chat.
+  const releaseChat=useCallback(async stop=>{
+    if(current.current.explicitBlocked || !current.current.historyUnknown || Boolean(current.current.historyActive)!==stop || mutation.current || pending.current)return false
     generation.current+=1;requests.current.forEach(controller=>controller.abort());requests.current.clear();query.current=null;refreshQueued.current=false
     const at=generation.current,identity=current.current.chatId,controller=new AbortController()
     mutation.current=true;requests.current.add(controller)
-    publish({resolving:true,recoveryFailed:false,recoveryNotice:'Making sure nothing is still running in this chat…'})
+    publish({resolving:true,recoveryFailed:false,recoveryNotice:stop?'Stopping…':'Making sure nothing is still running in this chat…'})
     const timer=setTimeout(()=>controller.abort(),30000)
     try {
-      // This explicit owner action ("Continue in this chat") stops anything
-      // left over. Merely loading a conversation or reading its context must
-      // never cancel work, and the hold is released only after the server
-      // confirms nothing is running for this chat.
       const response=await fetch('/api/pixel/chat/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:identity}),signal:controller.signal})
       const result=await response.json()
       if(at!==generation.current)return false
       if(!response.ok || result?.aborted!==true)throw new Error('stop unconfirmed')
-      publish({recoveryNotice:'Continuing in this chat…'})
+      publish({recoveryNotice:stop?'Stopping…':'Continuing in this chat…'})
       return true
     }catch {
-      if(at===generation.current)publish({recoveryFailed:true,recoveryNotice:CONTINUE_FAILED})
+      if(at===generation.current)publish({recoveryFailed:true,recoveryNotice:stop?STOP_UNCONFIRMED:CONTINUE_FAILED})
       return false
     }finally {
       clearTimeout(timer);requests.current.delete(controller)
       if(at===generation.current){mutation.current=false;publish({resolving:false});void refresh(true)}
     }
   },[publish,refresh])
+  // Continue stops whatever is left over, so it is never offered, nor sent,
+  // while the server reports work still running in this chat.
+  const resolveInterrupted=useCallback(()=>releaseChat(false),[releaseChat])
+  const stopHistory=useCallback(()=>releaseChat(true),[releaseChat])
 
   const displayed=view.chatId===chatId && view.runtimeKey===runtimeKey?view:{context:null,observedCapacity:null,phase:initialRequestId?'checking':'idle',notice:'',historyUnknown:false,historyChecking:true,historyActive:false,resolving:false,recoveryNotice:'',recoveryFailed:false}
-  return {...displayed,busy:displayed.resolving || ['requesting','checking','running','unknown'].includes(displayed.phase),canResolve:displayed.historyUnknown && !displayed.historyActive && !blockedMutation && !pending.current && !displayed.resolving,compact,refresh,resolveInterrupted}
+  const releasable=displayed.historyUnknown && !blockedMutation && !pending.current && !displayed.resolving
+  return {...displayed,busy:displayed.resolving || ['requesting','checking','running','unknown'].includes(displayed.phase),
+    canResolve:releasable && !displayed.historyActive,canStop:releasable && displayed.historyActive,compact,refresh,resolveInterrupted,stopHistory}
 }

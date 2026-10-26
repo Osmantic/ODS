@@ -1,5 +1,5 @@
 import {act,renderHook,waitFor} from '@testing-library/react'
-import {compactCommand,historySnapshot,parseConversationContext,usePortalContext} from './portalContext'
+import {compactCommand,historySnapshot,parseConversationContext,STOP_UNCONFIRMED,usePortalContext} from './portalContext'
 
 const context=(used=1200)=>({schemaVersion:1,status:'ready',sessionRevision:null,model:{id:'small',provider:'local',contextWindow:4096},
   context:{used,window:4096,measuredAt:'2026-09-16T12:00:00.000Z'},compaction:{status:'idle',count:0},history:{revision:null,acknowledgedMessages:2}})
@@ -203,6 +203,35 @@ it('waits for work the server still runs, never offers Continue for it, and free
     expect(result.current.historyUnknown).toBe(false)
     expect(result.current.historyActive).toBe(false)
     expect(fetch.mock.calls.filter(([url])=>url.endsWith('/cancel'))).toHaveLength(0)
+  }finally {vi.useRealTimers()}
+})
+
+it('stops work the server still runs only on the owner’s Stop, and frees the chat once that is confirmed',async()=>{
+  vi.useFakeTimers()
+  try {
+    let history='unknown',aborted=false
+    globalThis.fetch=vi.fn().mockImplementation(async url=>{
+      if(url.endsWith('/activity'))return response({state:'active'})
+      if(url.endsWith('/cancel')){if(aborted)history='ready';return response({aborted})}
+      return response({...context(),status:history==='unknown'?'busy':'ready',history:{...context().history,status:history}})
+    })
+    const {result}=renderHook(()=>usePortalContext({chatId:'a',runtimeKey:'small',capacity:4096,onPendingChange:vi.fn()}))
+    await act(async()=>{})
+    await act(async()=>vi.advanceTimersByTimeAsync(1000))
+    expect(result.current.historyActive).toBe(true)
+    expect(result.current.canStop).toBe(true)
+    expect(result.current.canResolve).toBe(false)
+    // Nothing is stopped without the owner.
+    expect(fetch.mock.calls.filter(([url])=>url.endsWith('/cancel'))).toHaveLength(0)
+    await act(async()=>expect(await result.current.stopHistory()).toBe(false))
+    expect(result.current.recoveryFailed).toBe(true)
+    expect(result.current.recoveryNotice).toBe(STOP_UNCONFIRMED)
+    expect(STOP_UNCONFIRMED).toBe('Portal could not confirm the stop yet. Try Stop again in a moment.')
+    aborted=true
+    await act(async()=>expect(await result.current.stopHistory()).toBe(true))
+    expect(fetch.mock.calls.filter(([url])=>url.endsWith('/cancel')).map(([,options])=>JSON.parse(options.body))).toEqual([{chat_id:'a'},{chat_id:'a'}])
+    expect(result.current.historyUnknown).toBe(false)
+    expect(result.current.historyActive).toBe(false)
   }finally {vi.useRealTimers()}
 })
 

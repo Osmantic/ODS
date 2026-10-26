@@ -15,7 +15,7 @@ const QUESTION='Can you do things on cron timers or scheduled work tasks?'
 const PARTIAL='Yes. Portal can run'
 const STALE=/Ended early|No tool activity was recorded|could not be received|check the connection|Activity unknown|could not be confirmed|Resolve interrupted turn|Check activity again|Try Stop previous work|Completion was not confirmed/
 const STOPPED='Stopped by you. Workspace changes completed before cancellation were preserved.'
-const STILL_WORKING='Portal is still working on your last request. You can send your next message when it’s done.'
+const STILL_WORKING='Portal is still working on your last request. You can stop it, or send your next message when it’s done.'
 const CONTINUE={name:'Continue in this chat'}
 const response=(body,status=200)=>({ok:status>=200 && status<300,status,json:async()=>body})
 const encode=value=>new TextEncoder().encode(`data: ${typeof value==='string'?value:JSON.stringify(value)}\n\n`)
@@ -355,6 +355,30 @@ it('never asks to send again when the cut-off turn’s work went on, so nothing 
   expect(field()).toHaveValue('')
   expect(field()).toBeEnabled()
   expect(calls('/api/pixel/chat/cancel')).toHaveLength(0)
+})
+
+it('offers Stop in place for work found running in the chat, and frees the chat once it is stopped',async()=>{
+  let history='unknown'
+  localStorage.setItem('ods.pixel.chat.v1',JSON.stringify({schema:1,chatId:'history_chat',messages:[{role:'user',content:QUESTION},{role:'assistant',content:'Earlier answer',status:'done'}],draft:'checking in'}))
+  server.context=()=>response({...context(history),status:history==='unknown'?'busy':'ready'})
+  server.activity=()=>response({state:'active'})
+  let aborted=false
+  server.cancel=body=>{expect(body).toEqual({chat_id:'history_chat'});if(aborted)history='ready';return response({aborted})}
+  render(<Pixel/>);await screen.findByText('Available')
+  const hold=await screen.findByRole('status',{name:'Last message'})
+  await within(hold).findByText(STILL_WORKING,{},{timeout:4000})
+  expect(within(hold).queryByRole('button',CONTINUE)).toBeNull()
+  // A Stop that is not confirmed says so, links help, and can be tried again.
+  fireEvent.click(within(hold).getByRole('button',{name:'Stop'}))
+  await within(hold).findByText('Portal could not confirm the stop yet. Try Stop again in a moment.')
+  expect(within(hold).getByRole('link',{name:/Get help on Discord/})).toBeVisible()
+  aborted=true
+  fireEvent.click(within(hold).getByRole('button',{name:'Stop'}))
+  await waitFor(()=>expect(row()).toBeNull())
+  expect(screen.getByTitle('Send')).toBeEnabled()
+  expect(screen.getByText('Earlier answer')).toBeVisible()
+  expect(screen.queryByText(/Stopped by you/)).toBeNull()
+  expect(calls('/api/pixel/chat/cancel')).toHaveLength(2)
 })
 
 it('says Portal is still working, with no Continue, when it finds the chat busy, and frees the chat when that work ends',async()=>{
