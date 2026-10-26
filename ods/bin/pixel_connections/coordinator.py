@@ -34,6 +34,7 @@ RECORD = state.PATH
 # Accounts that may own the record and the journal: root in production.
 OWNERS = (0,)
 HEX = re.compile(r"^[a-f0-9]{64}$")
+RELOAD_READY_SECONDS = 30
 # Scopes that satisfy a capability, as the Source Broker reads them.
 GRANTED_BY = {
     "calendar.read": frozenset({catalog.CALENDAR_READ_SCOPE, catalog.CALENDAR_WRITE_SCOPE,
@@ -633,19 +634,50 @@ def _verify(bridge, journal: dict[str, Any]) -> dict[str, Any]:
     return identity
 
 
+def _restart_baseline(bridge, journal: dict[str, Any]) -> dict[str, Any] | None:
+    """Wait for the gateway's own config reload before our explicit restart.
+
+    Replacing plugins.load.paths can make OpenClaw exit for its supervisor while
+    the owner worker is still inspecting plugins. Retry only service/read probes;
+    neither owner writes nor a possibly accepted admission POST are replayed.
+    Every successful return still needs both admission gates and the unit bound.
+    """
+    deadline = time.monotonic() + remaining(RELOAD_READY_SECONDS)
+    while time.monotonic() < deadline:
+        try:
+            before = _identity(bridge)
+            budget = deadline - time.monotonic()
+            if budget <= 0:
+                break
+            native = bridge.native(timeout=min(3, remaining(budget)))
+            if not native.get("stopped"):
+                if native.get("pid") != before["pid"] or _identity(bridge) != before:
+                    raise AccessError("connection-process-changed")
+                return before
+        except AccessError as error:
+            if error.code not in ("runtime-unavailable-or-busy", "runtime-operation-timeout",
+                                   "settings-process-not-active") or error.http_status is not None:
+                raise
+            # Only a crash of our already-journaled restart can be resumed.
+            if journal["phase"] == "restarting" and "restartIdentity" in journal:
+                try:
+                    if bridge.stopped_native(journal["token"]).get("stopped") is True:
+                        return journal["restartIdentity"]
+                except AccessError as stopped_error:
+                    if stopped_error.code != "native-idle-unconfirmed":
+                        raise
+        delay = deadline - time.monotonic()
+        if delay <= 0:
+            break
+        time.sleep(remaining(min(.25, delay)))
+    return None
+
+
 def _restart(bridge, journal: dict[str, Any]) -> str:
     """The owner worker's connection-activate hook: restart the fixed unit and re-prove access."""
-    if _busy(bridge, journal):
+    before = _restart_baseline(bridge, journal)
+    if before is None or _busy(bridge, journal):
         return "unavailable"
-    try:
-        before = _identity(bridge)
-    except AccessError:
-        # Only a crash of our already-journaled restart can be resumed.
-        if journal["phase"] != "restarting" or "restartIdentity" not in journal:
-            return "unavailable"
-        if bridge.stopped_native(journal["token"]).get("stopped") is not True:
-            return "unavailable"
-        before = journal["restartIdentity"]
     if bridge.unit_boundary() != journal["boundary"]:
         return "unavailable"
     journal.update(phase="restarting", restartIdentity=before)

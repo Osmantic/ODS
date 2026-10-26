@@ -287,6 +287,158 @@ def test_a_forged_callback_leaves_the_owners_sign_in_open(world):
     assert world.google.calls == []
 
 
+@pytest.mark.parametrize("boundary", ["native-channel", "service-process"])
+def test_connection_activation_waits_for_the_gateways_config_reload(world, monkeypatch, boundary):
+    """The real gateway may restart itself after the owner's atomic config replace."""
+    connect(world)
+    attempts = []
+    original_native, original_identity = world.bridge.native, c._identity
+
+    def after_owner_write():
+        config = json.loads(world.bridge.config_path.read_bytes())
+        return planner.PLUGIN_ID in config["plugins"]["allow"] and not world.bridge.log.count("restart")
+
+    def native(operation=None, token=None, **kwargs):
+        if boundary == "native-channel" and after_owner_write() and not attempts:
+            attempts.append(boundary)
+            raise AccessError("runtime-unavailable-or-busy")
+        return original_native(operation, token, **kwargs)
+
+    def identity(bridge):
+        if boundary == "service-process" and after_owner_write() and not attempts:
+            attempts.append(boundary)
+            raise AccessError("settings-process-not-active")
+        return original_identity(bridge)
+
+    monkeypatch.setattr(world.bridge, "native", native)
+    monkeypatch.setattr(c, "_identity", identity)
+    monkeypatch.setattr(c.time, "sleep", lambda _seconds: None)
+    assert c.control(world.bridge, "connection-activate", {}) == {"outcome": "applied"}
+    assert attempts == [boundary]
+    assert world.bridge.log.count("connection-apply") == world.bridge.log.count("restart") == 1
+    assert world.bridge.native_phase == world.bridge.edge_phase == "idle"
+    assert not (Path(world.bridge.state) / "transition.json").exists()
+
+
+def test_reload_wait_does_not_retry_a_gateway_identity_failure(world, monkeypatch):
+    connect(world)
+    original = world.bridge.native
+    failures = []
+
+    def native(operation=None, token=None, **kwargs):
+        config = json.loads(world.bridge.config_path.read_bytes())
+        if operation == "acquire" and planner.PLUGIN_ID in config["plugins"]["allow"]:
+            failures.append(True)
+            raise AccessError("gateway-process-mismatch")
+        return original(operation, token, **kwargs)
+
+    monkeypatch.setattr(world.bridge, "native", native)
+    with pytest.raises(AccessError, match="gateway-process-mismatch"):
+        c.control(world.bridge, "connection-activate", {})
+    assert failures == [True]
+    assert world.bridge.log.count("restart") == 0
+    assert world.bridge.native_phase == world.bridge.edge_phase == "held"
+    assert (Path(world.bridge.state) / "transition.json").is_file()
+
+
+def test_reload_wait_expires_without_a_restart_or_admission_write(world, monkeypatch):
+    clock, operations = [0.0], []
+
+    def unavailable(operation=None, token=None, **kwargs):
+        operations.append(operation)
+        raise AccessError("runtime-unavailable-or-busy")
+
+    monkeypatch.setattr(world.bridge, "native", unavailable)
+    monkeypatch.setattr(c, "RELOAD_READY_SECONDS", 1)
+    monkeypatch.setattr(c.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(c.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    assert c._restart(world.bridge, {"phase": "invoking", "token": "a" * 64}) == "unavailable"
+    assert clock[0] == 1 and operations and all(item is None for item in operations)
+    assert world.bridge.log.count("restart") == world.bridge.log.count("connection-apply") == 0
+
+
+@pytest.mark.parametrize("http_status", [401, 403, 500])
+def test_reload_wait_does_not_retry_an_http_refusal(world, monkeypatch, http_status):
+    reads = []
+
+    def refused(*args, **kwargs):
+        reads.append(True)
+        raise AccessError("runtime-unavailable-or-busy", http_status=http_status)
+
+    monkeypatch.setattr(world.bridge, "native", refused)
+    with pytest.raises(AccessError) as failure:
+        c._restart(world.bridge, {"phase": "invoking", "token": "a" * 64})
+    assert failure.value.http_status == http_status and reads == [True]
+    assert world.bridge.log.count("restart") == 0
+
+
+def test_reload_wait_never_replays_a_possibly_accepted_admission_post(world, monkeypatch):
+    connect(world)
+    original = world.bridge.native
+    writes = []
+
+    def native(operation=None, token=None, **kwargs):
+        config = json.loads(world.bridge.config_path.read_bytes())
+        if operation == "acquire" and planner.PLUGIN_ID in config["plugins"]["allow"]:
+            writes.append(True)
+            raise AccessError("runtime-operation-timeout")
+        return original(operation, token, **kwargs)
+
+    monkeypatch.setattr(world.bridge, "native", native)
+    with pytest.raises(AccessError, match="runtime-operation-timeout"):
+        c.control(world.bridge, "connection-activate", {})
+    assert writes == [True] and world.bridge.log.count("restart") == 0
+    assert world.bridge.native_phase == world.bridge.edge_phase == "held"
+    assert (Path(world.bridge.state) / "transition.json").is_file()
+
+
+def test_reload_wait_on_resume_waits_for_an_active_process_without_a_channel(world, monkeypatch):
+    original, reads = world.bridge.native, []
+    identity = c._identity(world.bridge)
+
+    def native(*args, **kwargs):
+        reads.append(True)
+        if len(reads) == 1:
+            raise AccessError("runtime-unavailable-or-busy")
+        return original(*args, **kwargs)
+
+    def not_stopped(_token):
+        raise AccessError("native-idle-unconfirmed")
+
+    monkeypatch.setattr(world.bridge, "native", native)
+    monkeypatch.setattr(world.bridge, "stopped_native", not_stopped)
+    monkeypatch.setattr(c.time, "sleep", lambda _seconds: None)
+    assert c._restart_baseline(world.bridge, {"phase": "restarting", "token": "a" * 64,
+                                             "restartIdentity": identity}) == identity
+    assert reads == [True, True]
+
+
+def test_reload_wait_preserves_proven_stopped_recovery_for_an_already_journaled_restart(world, monkeypatch):
+    identity = c._identity(world.bridge)
+    holds = []
+
+    def stopped_process(_bridge):
+        raise AccessError("settings-process-not-active")
+
+    def stopped_hold(token):
+        holds.append(token)
+        return {"stopped": True}
+
+    monkeypatch.setattr(c, "_identity", stopped_process)
+    monkeypatch.setattr(world.bridge, "stopped_native", stopped_hold)
+    assert c._restart_baseline(world.bridge, {"phase": "restarting", "token": "a" * 64,
+                                             "restartIdentity": identity}) == identity
+    assert holds == ["a" * 64] and world.bridge.log.count("restart") == 0
+
+
+def test_reload_wait_does_not_accept_a_native_snapshot_from_another_process(world, monkeypatch):
+    identity = c._identity(world.bridge)
+    monkeypatch.setattr(world.bridge, "native", lambda **_kwargs: {"pid": identity["pid"] + 1})
+    with pytest.raises(AccessError, match="connection-process-changed"):
+        c._restart_baseline(world.bridge, {"phase": "invoking", "token": "a" * 64})
+    assert world.bridge.log.count("restart") == 0
+
+
 def failed_because(world, error):
     """Settings learns why the last sign-in did not connect, even when only Google's redirect saw it."""
     value = journal(world)
