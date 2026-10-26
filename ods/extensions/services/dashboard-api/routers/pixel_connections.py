@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any, Literal
 
 from config import read_live_env_value
@@ -176,10 +177,8 @@ async def get_connections_enabled():
     return JSONResponse(content={"enabled": _connected_apps_enabled()}, headers=NO_STORE)
 
 
-@router.get("/api/pixel/connections", dependencies=[Depends(verify_api_key)])
-async def get_connections():
-    """Connected apps and their sync state, for Settings and the Portal Connect card."""
-    _enabled()
+async def _agent_status() -> dict:
+    """The validated status, or HTTPException with the owner-facing reason."""
     try:
         raw = await request_agent_json("GET", "/v1/pixel/connections", timeout=25)
     except AgentHTTPError as exc:
@@ -191,7 +190,54 @@ async def get_connections():
                             headers=NO_STORE) from None
     except AgentProtocolError:
         raise HTTPException(502, "Connected apps status could not be verified", headers=NO_STORE) from None
-    return JSONResponse(content=_projection(raw), headers=NO_STORE)
+    return _projection(raw)
+
+
+@router.get("/api/pixel/connections", dependencies=[Depends(verify_api_key)])
+async def get_connections():
+    """Connected apps and their sync state, for Settings and the Portal Connect card."""
+    _enabled()
+    return JSONResponse(content=await _agent_status(), headers=NO_STORE)
+
+
+# States the owner must act on in Settings. Syncing, a slow network and nothing
+# connected at all are not worth interrupting a chat for.
+ATTENTION_STATES = frozenset({"needs-reconnect", "missing-permission", "setup-broken", "blocked-by-admin",
+                              "unknown-error"})
+ATTENTION_SECONDS = 60.0
+_attention: dict[str, Any] = {"until": 0.0, "value": None}
+
+
+def _attention_of(status: dict) -> dict | None:
+    google = status["connectors"]["google"] if status["available"] else None
+    if google is None:
+        return None
+    pending = google["pending"]
+    if pending and pending["error"] and pending["phase"] in ("activating", "deactivating"):
+        return {"state": google["state"], "reason": google["reason"], "step": "update-stopped"}
+    if google["state"] in ATTENTION_STATES or google["reason"] == "sync-stopped":
+        return {"state": google["state"], "reason": google["reason"], "step": None}
+    return None
+
+
+async def owner_attention() -> dict | None:
+    """What Portal's chat should point the owner to in Connected apps, if anything.
+
+    Portal's status poll asks often; the agent runtime is asked at most once a
+    minute, and never while connected apps are off.
+    """
+    if not _connected_apps_enabled():
+        return None
+    now = time.monotonic()
+    if now < _attention["until"]:
+        return _attention["value"]
+    try:
+        value = _attention_of(await _agent_status())
+    except HTTPException:
+        # Unknown status interrupts nobody; Settings shows why it is unavailable.
+        value = None
+    _attention.update(until=now + ATTENTION_SECONDS, value=value)
+    return value
 
 
 # ---------------------------------------------------------------- owner actions

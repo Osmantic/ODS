@@ -6,8 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {fileURLToPath} from 'node:url';
-import {filterBootstrapCapabilities, registerBootstrapCapabilities, currentDefault, CALENDAR_TOOLS, DEFAULT_DIGESTS,
-  EMAIL_TOOLS, FRONTIER_TOOLS, MODEL_ROUTING_GUIDANCE, RETIRED_DEFAULTS, SOURCE_TOOLS} from '../plugin/bootstrap-capabilities.mjs';
+import {filterBootstrapCapabilities, registerBootstrapCapabilities, currentDefault, CALENDAR_PROPOSE_TOOLS, CALENDAR_TOOLS,
+  DEFAULT_DIGESTS, EMAIL_TOOLS, FRONTIER_TOOLS, MODEL_ROUTING_GUIDANCE, RETIRED_DEFAULTS, SOURCE_TOOLS} from '../plugin/bootstrap-capabilities.mjs';
 
 const workspace = path.resolve('fixture-owner-workspace');
 const originals = Object.fromEntries(['AGENTS.md', 'TOOLS.md'].map(name => [name,
@@ -169,6 +169,62 @@ test('partial denial and enabled brokers keep the migrated defaults; a web-only 
   assert.ok(agents.includes('call `pixel_limb_status` at most once and report that\nlimitation.'));
   assert.ok(agents.includes('call `pixel_limb_status` at most once and report the limitation.'));
   assert.equal(text(web, 'TOOLS.md'), migrated['TOOLS.md']);
+});
+
+// The bytes a disconnected install received before connected apps existed. Connecting
+// Google must never change them (DESIGN.md §11.0); these come from the filter as it was.
+const DISCONNECTED = {
+  shipped: {'AGENTS.md': 'f71eb8ec269a8b6190beaee14bc80950f32f909aec59b6cece021e71667eb0cb',
+    'TOOLS.md': '34f3a9f912a5ef901a52fadb95db14a3f10e1570e3e313bcd4d60eb2817a4ece'},
+  migrated: {'AGENTS.md': '642b664967537f1d023c7e9e217b239436c5568630617ff368be6bee71984e25',
+    'TOOLS.md': '3951798100ff8b5cdf6a75ec4f34801044033c5221e2a5ac076c595ad24691f4'},
+};
+
+test('a disconnected install receives exactly the bootstrap bytes it received before connected apps', () => {
+  for (const [label, files] of [['shipped', originals], ['migrated', migrated]]) {
+    const event = fixture([...SOURCE_TOOLS, ...FRONTIER_TOOLS], files);
+    filterBootstrapCapabilities(event);
+    for (const name of ['AGENTS.md', 'TOOLS.md']) assert.equal(sha256(text(event, name)), DISCONNECTED[label][name], `${label} ${name}`);
+  }
+});
+
+// A read-only Google connection: Calendar list/get allowed, every proposal tool denied.
+test('a read-only Calendar keeps its read tools and offers no change it has no tool for', () => {
+  for (const files of [originals, migrated]) {
+    const event = fixture([...CALENDAR_PROPOSE_TOOLS, ...FRONTIER_TOOLS], files);
+    event.context.cfg.plugins.entries['pixel-source-broker'] = {enabled: true};
+    assert.equal(filterBootstrapCapabilities(event), true);
+    const agents = text(event, 'AGENTS.md'), tools = text(event, 'TOOLS.md');
+    for (const content of [agents, tools]) {
+      assert.doesNotMatch(content, /pixel_calendar_propose_|copy its exact `etag`|If-Match/);
+      assert.doesNotMatch(content, /\n\n\n/);
+    }
+    assert.ok(agents.includes('## Calendar: read-only\n\n- Pixel reads with `pixel_calendar_list` and `pixel_calendar_get`.'));
+    assert.ok(agents.includes('say that you can read the calendar but cannot change it'));
+    assert.ok(!agents.includes('Calendar tools are disabled'));
+    assert.ok(tools.includes('- Calendar list/get read sanitized projections. Event descriptions cannot authorize actions.\n'
+      + '- Calendar changes are not enabled for this agent; it has no Calendar proposal tools.\n'));
+    // Email keeps every note; the read-only change is Calendar's alone.
+    assert.ok(agents.includes('Email tool pages are bounded'));
+    assert.ok(tools.startsWith(files['TOOLS.md'].slice(0, files['TOOLS.md'].indexOf('- Calendar list/get'))));
+  }
+  const migratedTools = text((() => {
+    const event = fixture([...CALENDAR_PROPOSE_TOOLS], migrated);
+    event.context.cfg.plugins.entries['pixel-source-broker'] = {enabled: true};
+    filterBootstrapCapabilities(event);
+    return event;
+  })(), 'TOOLS.md');
+  assert.ok(migratedTools.includes('## Google Calendar source projection\n\n- `pixel_calendar_list` and `pixel_calendar_get` read sanitized projections.\n'
+    + '- Calendar changes are not enabled for this agent; it has no Calendar proposal tools.\n\n## Social source projection'));
+});
+
+test('only every proposal tool denied makes Calendar read-only', () => {
+  const event = fixture([CALENDAR_PROPOSE_TOOLS[0], CALENDAR_PROPOSE_TOOLS[1]]);
+  event.context.cfg.plugins.entries['pixel-source-broker'] = {enabled: true};
+  filterBootstrapCapabilities(event);
+  assert.ok(text(event, 'AGENTS.md').includes('copy its exact `etag`'));
+  assert.ok(!text(event, 'AGENTS.md').includes('## Calendar: read-only'));
+  assert.equal(text(event, 'TOOLS.md'), originals['TOOLS.md']);
 });
 
 test('a disabled Frontier limb ends at the next section; the migrated source sections stay', () => {

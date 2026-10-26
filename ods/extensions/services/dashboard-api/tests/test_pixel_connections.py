@@ -272,3 +272,70 @@ def test_a_reply_of_any_other_shape_is_refused_without_echoing_it(client, mock_r
     assert response.status_code == 502
     assert response.json()["detail"]["code"] == "connection-change-unconfirmed"
     assert "private-sentinel" not in response.text
+
+
+# ---------------------------------------------------------------- chat attention
+
+@pytest.fixture
+def fresh_attention(monkeypatch):
+    monkeypatch.setattr(api, "_attention", {"until": 0.0, "value": None})
+
+
+def with_google(reply, **changes):
+    reply["connectors"]["google"].update(changes)
+    return reply
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changes,expected", [
+    ({"state": "needs-reconnect", "reason": "invalid-grant"}, {"state": "needs-reconnect", "reason": "invalid-grant", "step": None}),
+    ({"state": "missing-permission", "reason": "missing-scope"}, {"state": "missing-permission", "reason": "missing-scope", "step": None}),
+    ({"state": "behind", "reason": "sync-stopped"}, {"state": "behind", "reason": "sync-stopped", "step": None}),
+    ({"state": "behind", "reason": "network"}, None),
+    ({"state": "first-sync", "reason": None}, None),
+    ({}, None),
+    ({"pending": {"action": "connect", "phase": "activating", "expiresAt": None, "error": "runtime-busy",
+                  "since": "2026-10-25T20:30:00Z"}}, {"state": "connected", "reason": None, "step": "update-stopped"}),
+    ({"pending": {"action": "connect", "phase": "activating", "expiresAt": None, "error": None,
+                  "since": "2026-10-25T20:30:00Z"}}, None),
+])
+async def test_chat_is_pointed_to_connected_apps_only_when_the_owner_must_act(monkeypatch, fresh_attention, tmp_path,
+                                                                             changes, expected):
+    flag(monkeypatch, "true")
+    monkeypatch.setattr(api, "request_agent_json", AsyncMock(return_value=with_google(host_reply(tmp_path), **changes)))
+    assert await api.owner_attention() == expected
+
+
+@pytest.mark.asyncio
+async def test_chat_attention_asks_the_runtime_at_most_once_a_minute_and_never_while_off(monkeypatch, fresh_attention,
+                                                                                      tmp_path):
+    flag(monkeypatch, "true")
+    host = AsyncMock(return_value=with_google(host_reply(tmp_path), state="needs-reconnect", reason="sign-in-missing"))
+    monkeypatch.setattr(api, "request_agent_json", host)
+    clock = [1000.0]
+    monkeypatch.setattr(api.time, "monotonic", lambda: clock[0])
+    assert (await api.owner_attention())["state"] == "needs-reconnect"
+    clock[0] += 59
+    assert (await api.owner_attention())["state"] == "needs-reconnect"
+    assert host.await_count == 1
+    clock[0] += 2
+    host.return_value = host_reply(tmp_path)
+    assert await api.owner_attention() is None
+    assert host.await_count == 2
+    flag(monkeypatch, "false")
+    clock[0] += 120
+    assert await api.owner_attention() is None
+    assert host.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_unknown_status_interrupts_no_chat(monkeypatch, fresh_attention, tmp_path):
+    flag(monkeypatch, "true")
+    for failure in (AgentUnavailable("private-sentinel"), AgentProtocolError("private-sentinel"),
+                    AgentHTTPError(503, "connections-unavailable")):
+        monkeypatch.setattr(api, "_attention", {"until": 0.0, "value": None})
+        monkeypatch.setattr(api, "request_agent_json", AsyncMock(side_effect=failure))
+        assert await api.owner_attention() is None
+    monkeypatch.setattr(api, "_attention", {"until": 0.0, "value": None})
+    monkeypatch.setattr(api, "request_agent_json", AsyncMock(return_value={"token": "private-sentinel"}))
+    assert await api.owner_attention() is None
