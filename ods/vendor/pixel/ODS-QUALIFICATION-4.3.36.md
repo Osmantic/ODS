@@ -34,9 +34,17 @@ Evidence from the functional checkpoint:
   pinned OpenClaw gateway and ODS Pixel plugin, after real re-render and overlay,
   refused an explicitly requested excluded write, delivered an allowed native
   read to a controlled loopback provider, and returned its unique synthetic fact.
-  The final isolated run passed in 25.15 seconds. This uses a controlled provider,
-  not inference or a real remote OAuth account; sandbox execution is disabled in
-  this fixture so CI does not depend on Docker.
+  The corrected qualification at `593b5932e` requires the Pixel plugin to be
+  imported and loaded from the exact staged root before the turn. It normalizes
+  fixture file permissions, uses a coherent native execution mode, refreshes the
+  registry and supplies Portal's canonical conversation namespace. An earlier
+  fixture could pass its native MCP assertions without Pixel registering; that
+  earlier timing is not qualification of the complete Pixel path. The corrected
+  test passed in 41.013 seconds against a private copy of the exact ODS-installed
+  package with the current ODS profile repairs. This uses a controlled provider,
+  not inference or a real remote OAuth account. Native execution is confined to
+  the fixture's existing MCP-only tool policy; Docker sandbox execution is not
+  qualified by it. No installed runtime or access mode was changed.
 - The macOS config/migration contract suites passed 65 cases on Linux/WSL,
   covering private staging and rejection of added, changed and null registry
   states. These are preparation/preservation checks, not real Mac qualification.

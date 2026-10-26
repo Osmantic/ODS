@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`dbf6af6e9d6758a72c30585b3baab7ee4222c3bd`, and its SHA-256 is
-`71debee22f0505da32ee3984c99fed24e1c0929ba2fa39583e4cdf1d930b9cc5`.
+`c2a0929928d1b0b4f7d786e198239bdb1c264fb5`, and its SHA-256 is
+`bd0bee1d0325c6ae7956ac24c64e19688283c8d9a567e8b39282fe2c291ec779`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -340,7 +340,7 @@ registry is unchanged before activation. The functional checkpoint is
 [`pixel/ODS-QUALIFICATION-4.3.36.md`](pixel/ODS-QUALIFICATION-4.3.36.md) for evidence
 and the remaining acceptance gates. This is not a claim of fleet acceptance.
 
-The public source tree is `f7725319283f20fb27ea159fc355cf9cec882150`.
+The public source tree is `45a671aea99e3a4412f17397f3c3be6e1e946c3a`.
 Two independent empty bare repositories, using the documented alternates
 procedure and `pack.threads=1`, produced byte-identical bundles with the retained
 public synthetic identity, timestamp and message. Recreating the previous tree
@@ -357,9 +357,12 @@ re-render preserved an allowed read and refused an excluded write. Native Mac
 runtime/upgrade qualification, complete owner-account flows and the direct
 release-contract check remain as documented in the candidate record.
 
-The final exact Git bundle checkout also passed the existing isolated Pixel
-end-to-end suite on Linux. That suite uses controlled Docker/systemd boundaries;
-it does not constitute native Mac or complete installed fleet qualification.
-The existing source-upgrade and dashboard reconciliation suites passed against
-the final source identity. The comparison-fixture release gate described in
+The earlier unpublished bundle `dbf6af6e9d6758a72c30585b3baab7ee4222c3bd`
+passed the existing isolated Pixel end-to-end suite on Linux and the source-upgrade
+and dashboard reconciliation suites. Its Docker/systemd boundaries are controlled;
+these checks do not constitute native Mac or complete installed fleet qualification.
+The current bundle changes only the qualification note to correct the native MCP
+fixture evidence described above; the functional source checkpoint is unchanged.
+It replaces that unpublished artifact and does not inherit a claim that the exact
+new bundle ran those suites. The comparison-fixture release gate described in
 the candidate record remains open and also fails on the untouched 4.3.35 bundle.
