@@ -286,6 +286,14 @@ def test_runtime_control_preserves_failure_and_invalidates_status(
     assert invalidated == [True]
 
 
+def _recording(calls, answers):
+    """A host-agent stub that records each path and answers with the latest of ``answers``."""
+    def request(_method, path, **_kwargs):
+        calls.append(path)
+        return answers[-1]
+    return request
+
+
 def _catalog_management(test_client):
     response = test_client.get("/api/models", headers=test_client.auth_headers)
     assert response.status_code == 200
@@ -294,7 +302,7 @@ def _catalog_management(test_client):
 
 def test_catalog_reuses_a_proof_the_live_runtime_agrees_with(test_client, model_runtime, monkeypatch):
     calls = []
-    monkeypatch.setattr(model_runtime, "request_agent_json", lambda _method, path, **_kwargs: calls.append(path) or MANAGED)
+    monkeypatch.setattr(model_runtime, "request_agent_json", _recording(calls, [MANAGED]))
     monkeypatch.setattr(model_runtime, "get_loaded_model", AsyncMock(return_value="fixture"))
     assert [_catalog_management(test_client) for _ in range(3)] == [MANAGED] * 3
     assert calls == ["/v1/model/management"]
@@ -302,14 +310,14 @@ def test_catalog_reuses_a_proof_the_live_runtime_agrees_with(test_client, model_
 
 def test_catalog_proves_again_when_the_live_runtime_disagrees(test_client, model_runtime, monkeypatch):
     calls = []
-    capability = MANAGED
-    monkeypatch.setattr(model_runtime, "request_agent_json", lambda _method, path, **_kwargs: calls.append(path) or capability)
+    answers = [MANAGED]
+    monkeypatch.setattr(model_runtime, "request_agent_json", _recording(calls, answers))
     loaded = AsyncMock(return_value="fixture")
     monkeypatch.setattr(model_runtime, "get_loaded_model", loaded)
     assert _catalog_management(test_client) == MANAGED
     # The model stopped answering: a crash, or a stop made outside this dashboard.
     loaded.return_value = None
-    capability = STOPPED
+    answers.append(STOPPED)
     assert _catalog_management(test_client) == STOPPED
     assert _catalog_management(test_client) == STOPPED
     assert calls == ["/v1/model/management"] * 2
@@ -321,7 +329,7 @@ def test_catalog_proves_again_when_the_live_runtime_disagrees(test_client, model
 ])
 def test_owned_lifecycle_operations_always_get_a_fresh_proof(test_client, model_runtime, monkeypatch, status):
     calls = []
-    monkeypatch.setattr(model_runtime, "request_agent_json", lambda _method, path, **_kwargs: calls.append(path) or MANAGED)
+    monkeypatch.setattr(model_runtime, "request_agent_json", _recording(calls, [MANAGED]))
     monkeypatch.setattr(model_runtime, "get_loaded_model", AsyncMock(return_value="fixture"))
     _catalog_management(test_client)
     monkeypatch.setattr(model_runtime, "_get_agent_model_status", lambda: status)
@@ -376,7 +384,7 @@ def test_catalog_proves_ownership_alongside_the_other_reads(test_client, model_r
 def test_older_proof_is_shown_while_a_fresh_one_is_taken_in_the_background(model_runtime, monkeypatch):
     fresh = {**MANAGED, "reason": "fresh"}
     calls = []
-    monkeypatch.setattr(model_runtime, "request_agent_json", lambda _method, path, **_kwargs: calls.append(path) or fresh)
+    monkeypatch.setattr(model_runtime, "request_agent_json", _recording(calls, [fresh]))
     monkeypatch.setattr(model_runtime, "_model_management_remembered", (time.monotonic() - 20, MANAGED))
 
     async def reads():
@@ -390,7 +398,7 @@ def test_older_proof_is_shown_while_a_fresh_one_is_taken_in_the_background(model
 
 def test_catalog_never_reuses_a_proof_past_its_age_limit(model_runtime, monkeypatch):
     calls = []
-    monkeypatch.setattr(model_runtime, "request_agent_json", lambda _method, path, **_kwargs: calls.append(path) or STOPPED)
+    monkeypatch.setattr(model_runtime, "request_agent_json", _recording(calls, [STOPPED]))
     expired = time.monotonic() - model_runtime._MODEL_MANAGEMENT_MAX_AGE_SECONDS - 1
     monkeypatch.setattr(model_runtime, "_model_management_remembered", (expired, STOPPED))
     assert asyncio.run(model_runtime._catalog_model_management(None, {"status": "idle"}, None)) == STOPPED
