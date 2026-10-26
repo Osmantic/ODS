@@ -231,7 +231,37 @@ def test_every_rejected_decision_is_logged_by_shape_never_by_value(router, caplo
     repaired = json.loads(lines[2].split(": ", 1)[1])
     assert lines[2].startswith("Rejected model tool decision (repair 2)")
     assert repaired["rule"] == "additionalProperties" and repaired["at"] == "steps/0"
-    assert repaired["unexpected"] == ["note"], "argument key names may be logged"
+    assert repaired["unexpected"] == 1 and "note" not in lines[2], "undeclared keys are counted, never named"
+
+
+MAP = [{"type": "function", "function": {"name": "save", "parameters": {
+    "type": "object", "properties": {"contacts": {"type": "object",
+        "additionalProperties": {"type": "object", "required": ["phone"],
+                                 "properties": {"phone": {"type": "string"}}}}}}}}]
+
+
+def test_keys_that_come_from_the_arguments_are_never_logged(router, caplog):
+    # A map-shaped schema keys by user data: a contact name must not reach the log.
+    bad = decision("save", '{"contacts":{"alice.smith":{"note":"x"}}}')
+    with caplog.at_level("WARNING", logger="ods-model-router"):
+        response, _ = sequence(router, [bad, bad, bad], stream=False, tools=MAP)
+    assert response.status_code == 502
+    lines = [record.getMessage() for record in caplog.records if "Rejected model tool decision" in record.getMessage()]
+    assert lines and all("alice" not in line for line in lines)
+    initial = json.loads(lines[0].split(": ", 1)[1])
+    assert (initial["at"], initial["keys"], initial["keysAt"]) == ("contacts/*", ["contacts"], ["*"]), initial
+
+
+NUM = [{"type": "function", "function": {"name": "lookup", "parameters": {
+    "type": "object", "required": ["x"], "properties": {"x": {"type": "number", "multipleOf": 0.5}}}}}]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_arguments_the_validator_cannot_evaluate_get_one_ordinary_repair(router, stream):
+    # jsonschema raises on NaN against multipleOf; the classifier must not turn that into a 500.
+    response, sent = sequence(router, [decision(args='{"x": NaN}'), decision(args='{"x": 1.5}')],
+                              stream=stream, tools=NUM)
+    assert response.status_code == 200 and len(sent) == 2
 
 
 def test_an_unknown_function_and_bad_arguments_are_logged_without_their_text(router, caplog):

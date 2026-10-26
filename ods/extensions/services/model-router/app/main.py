@@ -360,6 +360,18 @@ def _diagnostic_names(values: Any) -> list[str]:
     return names[:_MAX_DIAGNOSTIC_NAMES] + (["..."] if len(names) > _MAX_DIAGNOSTIC_NAMES else [])
 
 
+def _declared_names(values: Any, declared: set[str]) -> list[str]:
+    """Log form of argument keys and paths: indices and names the schema declares.
+
+    Any other key comes from the arguments themselves (a map-shaped schema keys
+    by contact, file or user name), so it may be user data and logs as "*".
+    """
+    names = [str(value) if type(value) is int
+             else value if isinstance(value, str) and value in declared and _DIAGNOSTIC_NAME.fullmatch(value)
+             else "*" for value in values]
+    return names[:_MAX_DIAGNOSTIC_NAMES] + (["..."] if len(names) > _MAX_DIAGNOSTIC_NAMES else [])
+
+
 def _offered_function_schemas(payload: dict[str, Any]) -> dict[str, Any]:
     offered = payload.get("tools")
     return {
@@ -420,9 +432,8 @@ def _described_schema_error(error: ValidationError) -> dict[str, Any]:
         declared = error.schema.get("properties") if isinstance(error.schema, dict) else None
         declared = declared if isinstance(declared, dict) else {}
         if isinstance(instance, dict):
-            # Model-produced key names: the log may carry them, the feedback never.
-            described["unexpected"] = _diagnostic_names(sorted(
-                key for key in instance if isinstance(key, str) and key not in declared))
+            # Undeclared keys come from the arguments and may be user data: count them only.
+            described["unexpected"] = sum(1 for key in instance if isinstance(key, str) and key not in declared)
         allowed = sorted(key for key in declared if isinstance(key, str))
         described["detail"] = ("it has a property its schema does not allow"
                                + ("; use only " + ", ".join(allowed[:24]) if allowed else ""))
@@ -563,16 +574,22 @@ def _tool_decision_rejection(
             validator_class.check_schema(schema)
         except SchemaError:
             return {"kind": "protocol", "channel": channel, "rule": "schema", "functions": functions}
-        error = best_match(validator_class(schema).iter_errors(args))
+        try:
+            error = best_match(validator_class(schema).iter_errors(args))
+        except (ValueError, TypeError):
+            # The validator cannot evaluate these arguments (NaN against multipleOf);
+            # _repaired_tool_decision_invalid rejects them alike: one ordinary repair.
+            return {"kind": "protocol", "channel": channel, "rule": "unevaluable", "functions": functions}
         if error is None:
             continue
         error = _closest_schema_error(error)
+        declared = _declared_property_names(schema)
         return {
             "kind": "schema", "channel": channel, "functions": functions, "function": name,
-            "at": "/".join(_diagnostic_names(list(error.absolute_path))),
-            "where": _schema_path_text(error.absolute_path, _declared_property_names(schema)),
-            "keys": _diagnostic_names(sorted(args)) if isinstance(args, dict) else [],
-            "keysAt": _diagnostic_names(sorted(error.instance)) if isinstance(error.instance, dict) else [],
+            "at": "/".join(_declared_names(error.absolute_path, declared)),
+            "where": _schema_path_text(error.absolute_path, declared),
+            "keys": _declared_names(sorted(args), declared) if isinstance(args, dict) else [],
+            "keysAt": _declared_names(sorted(error.instance), declared) if isinstance(error.instance, dict) else [],
             **_described_schema_error(error),
         }
     return {"kind": "protocol", "channel": channel, "rule": "unclassified", "functions": functions}
