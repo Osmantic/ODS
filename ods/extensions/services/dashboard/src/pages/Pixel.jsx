@@ -25,7 +25,8 @@ import PixelDraftPreview from '../components/PixelDraftPreview'
 import PixelDictation from '../components/PixelDictation'
 import PixelCommandSearch, { OPEN_PIXEL_SEARCH } from '../components/PixelCommandSearch'
 import PixelConversationImport from '../components/PixelConversationImport'
-import { appendComposerText } from '../lib/pixelComposerText'
+import { appendComposerText, restoreUnsentDraft } from '../lib/pixelComposerText'
+import { ATTACH_BLOCKED, newTaskBlockedReason, publishNewTaskBlocked, sendBlockedReason } from '../lib/portalTaskState'
 import PixelSelectionActions from '../components/PixelSelectionActions'
 import PixelQuestions from '../components/PixelQuestions'
 import PortalGoalPlan from '../components/PortalGoalPlan'
@@ -47,7 +48,7 @@ import { conversationProject } from '../lib/conversationProjects'
 import PortalStreamingText from '../components/PortalStreamingText'
 import PortalResponseActions from '../components/PortalResponseActions'
 import PortalResponseError from '../components/PortalResponseError'
-import {isProviderRateLimit, isAdmissionRejected, portalResponseFailure} from '../lib/portalResponseFailure'
+import {isProviderRateLimit, isAdmissionRejected, isBusyRefusal, busyRefusalText, portalResponseFailure} from '../lib/portalResponseFailure'
 import {publicationDisplayText} from '../lib/publicationDisplay'
 import {isQuestionAnswer, parseQuestionsFrame, questionMetadata} from '../lib/pixelQuestions'
 import PixelTurnNavigation from '../components/PixelTurnNavigation'
@@ -636,6 +637,9 @@ export default function Pixel({ systemStatus = null }) {
   const [conversationDeleted, setConversationDeleted] = useState(() => initialChat?.conversationDeleted || false)
   const [stopping, setStopping] = useState(false)
   const [stopError, setStopError] = useState('')
+  // A turn Portal refused because it was busy; its draft is back in the composer.
+  const [refusal, setRefusal] = useState('')
+  const [sendHint, setSendHint] = useState(false)
   const [exampleError, setExampleError] = useState(null)
   const [restoredActivity, setRestoredActivity] = useState(() => initialChat?.interrupted ? 'checking' : 'idle')
   const [activityRefresh, setActivityRefresh] = useState(0)
@@ -1117,10 +1121,12 @@ export default function Pixel({ systemStatus = null }) {
       const context=teamAttempt.current.context
       setMessages(previous=>previous.some(m=>m.teamRequestId===requestId) ? previous : [...previous,{role:'user',content:trimmed},{role:'assistant',content:requestedGoal?'Preparing your goal…':'Preparing the agent team…',teamRequestId:requestId,...(requestedGoal?{goalMode:true}:{}),status:'done'}])
       setStopError('')
+      setRefusal('')
       setExampleError(null)
       try {
         const team=await teams.start({request_id:requestId,task:teamCommand.task,context,...(requestedGoal?{mode:'goal'}:{})})
-        if(team){setInput('');teamAttempt.current=null}
+        // The composer stays editable while the team launches; keep newer text.
+        if(team){setInput(value=>value===exactDraft?'':value);teamAttempt.current=null}
       } catch(e){setStopError(e.message)}
       return
     }
@@ -1145,7 +1151,11 @@ export default function Pixel({ systemStatus = null }) {
     updateRestoredActivity('idle')
     setStopping(false)
     setStopError('')
+    setRefusal('')
     setExampleError(null)
+    // Text typed while this turn runs is a new draft. A turn that does not
+    // start returns its own text to the composer without replacing that draft.
+    const restoreDraft = () => setInput(current => restoreUnsentDraft(current, trimmed))
 
     const controller = new AbortController()
     abortRef.current = controller
@@ -1165,6 +1175,7 @@ export default function Pixel({ systemStatus = null }) {
       let receivedDone = false
       let receivedError = false
       let admissionRejected = false
+      let busyRefused = false
       let recoveryEligible = false
       let verifiedPreview = null
       let verifiedArtifacts = null
@@ -1237,6 +1248,12 @@ export default function Pixel({ systemStatus = null }) {
           requestIdRef.current = null
           throw new Error('chat-request-rejected')
         }
+        if (response.status === 429) {
+          // Portal was busy (for example preparing another picture) and
+          // refused this turn before starting it. Nothing ran.
+          requestIdRef.current = null
+          return { kind: 'busy' }
+        }
         if (!response.ok) throw new Error('chat unavailable')
 
         reader = response.body?.getReader()
@@ -1271,6 +1288,7 @@ export default function Pixel({ systemStatus = null }) {
               if (receivedError) continue
               if (frame?.error) {
                 receivedError = true
+                busyRefused = !assistantText && isBusyRefusal(frame.error)
                 admissionRejected = !assistantText && isAdmissionRejected(frame.error)
                 const failureMessage = portalResponseFailure(frame.error)
                 setMessages(previous => replaceLastAssistant(previous, {
@@ -1313,6 +1331,11 @@ export default function Pixel({ systemStatus = null }) {
           }
         }
 
+        if (busyRefused && receivedDone) {
+          requestIdRef.current = null
+          setInterrupted(false)
+          return {kind:'busy'}
+        }
         if (admissionRejected && receivedDone) {
           requestIdRef.current = null
           setInterrupted(false)
@@ -1370,7 +1393,7 @@ export default function Pixel({ systemStatus = null }) {
       let attempt = await streamAttempt(chatIdRef.current, conversation, fullHistory)
       if (!isCurrentTurn()) return
       if (attempt.kind === 'deleted') {
-        setInput(current => current || exactDraft)
+        setInput(current => restoreUnsentDraft(current, exactDraft))
         contextStartRef.current = originalContextStart
         setMessages(messages)
         setConversationDeleted(true)
@@ -1378,15 +1401,24 @@ export default function Pixel({ systemStatus = null }) {
         updateRestoredActivity('idle')
         return
       }
+      if (attempt.kind === 'busy') {
+        // Not a failure: the turn never started. It goes back to the
+        // composer with its pictures, and one click sends it again.
+        restoreDraft()
+        contextStartRef.current = originalContextStart
+        setMessages(messages)
+        setRefusal(busyRefusalText(turnImages.length > 0))
+        return
+      }
       if (attempt.kind === 'rejected') {
-        setInput(current => current || trimmed)
+        restoreDraft()
         contextStartRef.current = originalContextStart
         return
       }
       if (attempt.kind === 'switching') {
         setStatus('switching')
         setStatusDetail(attempt.detail)
-        setInput(trimmed)
+        restoreDraft()
         contextStartRef.current = originalContextStart
         setMessages(messages)
         return
@@ -1394,7 +1426,7 @@ export default function Pixel({ systemStatus = null }) {
       if (attempt.kind === 'adaptive') {
         setStatus('available')
         setModelSupport(keepModelAdvisory)
-        setInput(trimmed)
+        restoreDraft()
         contextStartRef.current = originalContextStart
         setMessages(messages)
         return
@@ -1402,7 +1434,7 @@ export default function Pixel({ systemStatus = null }) {
 
       if (!attempt.receivedError && attempt.receivedDone && attempt.recoveryEligible) {
         if(needsImageRoute) {
-          setInput(trimmed)
+          restoreDraft()
           setMessages(previous=>replaceLastAssistant(previous,{content:'Portal could not recover this image conversation automatically. Your draft and images are preserved. Retry here after checking the conversation status.',status:'error'}))
           return
         }
@@ -1425,7 +1457,7 @@ export default function Pixel({ systemStatus = null }) {
         attempt = await streamAttempt(retryChatId, [userMessage], fullHistory)
         if (!isCurrentTurn()) return
         if (attempt.kind === 'deleted') {
-          setInput(current => current || exactDraft)
+          setInput(current => restoreUnsentDraft(current, exactDraft))
           contextStartRef.current = originalContextStart
           setMessages(messages)
           setConversationDeleted(true)
@@ -1433,15 +1465,22 @@ export default function Pixel({ systemStatus = null }) {
           updateRestoredActivity('idle')
           return
         }
+        if (attempt.kind === 'busy') {
+          contextStartRef.current = originalContextStart
+          setMessages(messages)
+          restoreDraft()
+          setRefusal(busyRefusalText(false))
+          return
+        }
         if (attempt.kind === 'rejected') {
-          setInput(current => current || trimmed)
+          restoreDraft()
           contextStartRef.current = originalContextStart
           return
         }
         if (attempt.kind === 'switching') {
           contextStartRef.current = originalContextStart
           setMessages(messages)
-          setInput(trimmed)
+          restoreDraft()
           setStatus('switching')
           setStatusDetail(`${attempt.detail}. The clean-context request is preserved.`)
           return
@@ -1449,7 +1488,7 @@ export default function Pixel({ systemStatus = null }) {
         if (attempt.kind === 'adaptive') {
           contextStartRef.current = originalContextStart
           setMessages(messages)
-          setInput(trimmed)
+          restoreDraft()
           setStatus('available')
           setModelSupport(keepModelAdvisory)
           return
@@ -1467,7 +1506,7 @@ export default function Pixel({ systemStatus = null }) {
 
       if(turnImages.length) {
         if(attempt.receivedDone && !attempt.receivedError)images.clear()
-        else setInput(trimmed)
+        else restoreDraft()
       }
       finishAttempt(attempt)
     } catch (error) {
@@ -1477,7 +1516,7 @@ export default function Pixel({ systemStatus = null }) {
         const historyTooLarge=error?.message==='history-request-too-large'
         const requestRejected=error?.message==='chat-request-rejected'
         setInterrupted(!storageFailed && !historyTooLarge && !requestRejected)
-        if (storageFailed || historyTooLarge || requestRejected || turnImages.length) setInput(trimmed)
+        if (storageFailed || historyTooLarge || requestRejected || turnImages.length) restoreDraft()
         setMessages(previous => replaceLastAssistant(previous, {
           content: requestRejected?'Portal rejected the request format (HTTP 422). No task was started. Your draft is preserved. Refresh Portal before retrying.':historyTooLarge?'The encoded conversation exceeds the 8 MB request limit. No task was started. Export this conversation before starting a new chat.':conversationChanged ? 'This conversation changed in another tab. No task was started. Download a recovery copy, then reload to read the saved version.' : storageFailed ? 'Could not save the request for recovery. No task was started. Check browser storage and try again.' : latestAssistantText || 'Request failed',
           status: 'error',
@@ -1576,8 +1615,17 @@ export default function Pixel({ systemStatus = null }) {
     }
   }, [stopping, interrupted, updateRestoredActivity])
 
+  // One live task streams into this page; see portalTaskState for why a new
+  // task waits for it. Every New task control shows this reason, never nothing.
+  const newTaskBlocked = newTaskBlockedReason({running:sending || restoredActive, stopping, checking:restoredChecking,
+    launching:teams.launching, compacting:contextControl.busy})
+  useEffect(() => { publishNewTaskBlocked(newTaskBlocked) }, [newTaskBlocked])
+  useEffect(() => () => publishNewTaskBlocked(''), [])
+
   const startNewChat = useCallback((preserveDraft = false) => {
-    if (sending || restoredActive || restoredChecking || stopping || teams.launching || contextControl.busy) return
+    if (newTaskBlocked) { setStopError(newTaskBlocked); return }
+    setRefusal('')
+    setSendHint(false)
     chatIdRef.current = makeChatId()
     images.replace(chatIdRef.current)
     requestIdRef.current = null
@@ -1594,7 +1642,7 @@ export default function Pixel({ systemStatus = null }) {
     setExampleError(null)
     updateRestoredActivity('idle')
     inputRef.current?.focus?.()
-  }, [sending, restoredActive, restoredChecking, stopping, updateRestoredActivity, teams.launching,contextControl.busy,images.replace,input])
+  }, [newTaskBlocked, updateRestoredActivity, images.replace, input])
 
   useEffect(() => {
     const remove = async event => {
@@ -1621,8 +1669,9 @@ export default function Pixel({ systemStatus = null }) {
     return () => window.removeEventListener(DELETE_EVENT, remove)
   }, [sending, restoredActive, restoredChecking, stopping, startNewChat, teams.busy,contextControl.busy])
 
+  // Inserting only edits the draft, which stays editable while Portal works.
   const insertComposerText = useCallback((text, { replace = false } = {}) => {
-    if (sending || restoredActive || restoredChecking || stopping || contextControl.busy) return
+    if (conversationDeleted) return
     setInput(value => {
       if (replace) return text
       const mode=agentCommand(text)?'agents':goalCommand(text)?'goal':null
@@ -1630,7 +1679,7 @@ export default function Pixel({ systemStatus = null }) {
       return mode ? `/${mode} ${task}` : appendComposerText(value, text)
     })
     inputRef.current?.focus?.()
-  }, [sending, restoredActive, restoredChecking, stopping,contextControl.busy])
+  }, [conversationDeleted])
 
   useEffect(() => {
     window.addEventListener('ods:pixel-new-task', startNewChat)
@@ -1714,6 +1763,8 @@ export default function Pixel({ systemStatus = null }) {
       setPreviewRefresh(0)
       setInput(chat.draft)
       setStopError('')
+      setRefusal('')
+      setSendHint(false)
       setExampleError(null)
       setInterrupted(chat.interrupted)
       setConversationDeleted(chat.conversationDeleted)
@@ -1729,6 +1780,12 @@ export default function Pixel({ systemStatus = null }) {
   const inputOver = input.length > MAX_INPUT_LEN
   const inputEmpty = !(command?.task ?? goalDraft?.task ?? input).trim() && !images.items.length
   const isDisabled = conversationDeleted || sending || modelSwitching || restoredActive || restoredChecking || stopping || teams.busy || contextControl.busy || contextControl.historyUnknown || status !== 'available'
+  // Typing never waits for Portal: while it works on this chat the draft stays
+  // editable and is saved with the chat. Only sending waits, and says why.
+  const composerLocked = conversationDeleted || modelSwitching || status !== 'available'
+  const sendBlocked = sendBlockedReason({deleted:conversationDeleted, stopping, running:sending || restoredActive || teams.busy,
+    waiting:restoredChecking || contextControl.busy || contextControl.historyUnknown || modelSwitching, ready:status === 'available'})
+  useEffect(() => { if (!sendBlocked) setSendHint(false) }, [sendBlocked])
   const composerVisible = !(workspaceExpanded && workspaceOpen && !previewCollapsed)
   const typeIntoComposer = useCallback((character, start, end) => setInput(value => {
     const agent = agentCommand(value)
@@ -1739,10 +1796,26 @@ export default function Pixel({ systemStatus = null }) {
     const next = text.slice(0, from) + character + text.slice(to)
     return agent ? `/agents ${next}` : goal ? `/goal ${next}` : next
   }), [])
-  const prepareComposerSend = useComposerFocus({ inputRef, disabled: isDisabled, visible: composerVisible, onType: typeIntoComposer })
+  const prepareComposerSend = useComposerFocus({ inputRef, disabled: composerLocked, visible: composerVisible, onType: typeIntoComposer })
   const sendFromComposer = () => {
     prepareComposerSend()
+    if (sendBlocked) {
+      // Enter while Portal works is never a silent no-op: the draft stays.
+      if (!inputEmpty) setSendHint(true)
+      return
+    }
     void sendMessage()
+  }
+  // Pictures cannot join a turn while one is in flight (its own pictures are
+  // still attached). A drop or paste then says so instead of doing nothing,
+  // and a dropped file never replaces the page.
+  const hasFiles = transfer => Array.from(transfer?.types || []).includes('Files')
+  const dropFiles = event => {
+    const files = Array.from(event.dataTransfer?.files || [])
+    if (!files.length) return
+    event.preventDefault()
+    if (isDisabled) { setStopError(ATTACH_BLOCKED); return }
+    images.choose(files)
   }
   const integrationCommand = [...messages].reverse().find(message => message.role === 'user')?.content
   const {recovery: integrationRecovery, resume: resumeProjectIntegration} = useExtensionProjectIntegration({
@@ -1804,7 +1877,7 @@ export default function Pixel({ systemStatus = null }) {
   return (
     <div className="pixel-chat flex flex-col overflow-hidden text-theme-text">
       <div className={`pixel-chat-preview-layout flex min-h-0 flex-1 flex-col lg:flex-row ${!composerVisible ? 'is-workspace-expanded' : ''}`}>
-        <div className="pixel-chat-column flex min-h-0 min-w-0 flex-1 flex-col">
+        <div className="pixel-chat-column flex min-h-0 min-w-0 flex-1 flex-col" onDragOver={event=>{if(hasFiles(event.dataTransfer))event.preventDefault()}} onDrop={dropFiles}>
       {persistenceError && <PixelConversationRecovery error={persistenceError} chatId={chatIdRef.current} messages={messages} draft={input}/>}
       <header className="pixel-chat-header">
         <div className="pixel-chat-identity">
@@ -1851,9 +1924,9 @@ export default function Pixel({ systemStatus = null }) {
             <button
               type="button"
               onClick={startNewChat}
-              disabled={sending || restoredActive || restoredChecking || stopping || contextControl.busy}
-              className="inline-flex items-center gap-1.5 rounded-none border-0 bg-transparent px-2.5 py-1.5 text-xs font-medium text-theme-text-secondary transition hover:text-theme-text disabled:cursor-not-allowed disabled:opacity-50"
-              title="Start a new chat"
+              aria-disabled={newTaskBlocked ? 'true' : undefined}
+              className="inline-flex items-center gap-1.5 rounded-none border-0 bg-transparent px-2.5 py-1.5 text-xs font-medium text-theme-text-secondary transition hover:text-theme-text aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+              title={newTaskBlocked || 'Start a new chat'}
             >
               <Plus className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">New chat</span>
@@ -2029,11 +2102,7 @@ export default function Pixel({ systemStatus = null }) {
 
       <div className="pixel-composer px-4 py-3 sm:px-6">
         {chatScroll.showLatest && <div className="mb-2 text-center"><button type="button" onClick={chatScroll.jumpToLatest} className="portal-jump-latest">Jump to latest</button></div>}
-        <div className={`portal-glass-composer mx-auto max-w-5xl ${messages.length===0 ? 'portal-neon-prompt' : ''}`} onDragOver={event=>{if(!isDisabled && Array.from(event.dataTransfer?.types || []).includes('Files'))event.preventDefault()}} onDrop={event=>{
-          if(isDisabled)return
-          const files=Array.from(event.dataTransfer?.files || [])
-          if(files.length){event.preventDefault();images.choose(files)}
-        }}>
+        <div className={`portal-glass-composer mx-auto max-w-5xl ${messages.length===0 ? 'portal-neon-prompt' : ''}`}>
           <PortalImageAttachments attachments={images} chatId={chatIdRef.current} disabled={isDisabled} hasHistory={hasImageHistory} model={imageModel} onRefresh={()=>void contextControl.refresh(true)}/>
           {command && <div className="mb-2 flex flex-wrap items-center gap-2 rounded-xl bg-theme-card/70 px-3 py-2 text-xs text-theme-text-secondary" role="group" aria-label="Agent team mode"><span className="font-medium text-theme-text">Agent team</span><span>Describe your task. Portal will choose the team.</span><button type="button" disabled={isDisabled} onClick={()=>setInput(command.task)} className="ml-auto whitespace-nowrap rounded px-2 py-1 hover:bg-theme-border/30">Exit team mode</button></div>}
           {goalDraft && <div className="portal-goal-mode" role="group" aria-label="Goal mode"><span>Goal</span><small>Describe the outcome. Portal will plan, work and check its progress.</small><button type="button" disabled={isDisabled} onClick={()=>setInput(goalDraft.task)}>Exit goal mode</button></div>}
@@ -2043,7 +2112,13 @@ export default function Pixel({ systemStatus = null }) {
             ref={inputRef}
             value={command ? command.task : goalDraft ? goalDraft.task : input}
             onChange={(event) => setInput(command ? `/agents ${event.target.value}` : goalDraft ? `/goal ${event.target.value}` : event.target.value)}
-            onPaste={event=>{const files=Array.from(event.clipboardData?.items || []).filter(item=>item.kind==='file').map(item=>item.getAsFile()).filter(Boolean);if(files.length && !isDisabled){event.preventDefault();images.choose(files)}}}
+            onPaste={event=>{
+              const files=Array.from(event.clipboardData?.items || []).filter(item=>item.kind==='file').map(item=>item.getAsFile()).filter(Boolean)
+              if(!files.length)return
+              // Pasted text still lands; only the picture waits, and says so.
+              if(isDisabled){setStopError(ATTACH_BLOCKED);return}
+              event.preventDefault();images.choose(files)
+            }}
             onKeyDown={(event) => {
               if (shouldSendMessage(event, sendKey.mode)) {
                 event.preventDefault()
@@ -2061,7 +2136,7 @@ export default function Pixel({ systemStatus = null }) {
                 : status === 'recovery'
                   ? 'Messages are held until Portal recovery'
                 : `${displayName} is unavailable`}
-            disabled={isDisabled}
+            disabled={composerLocked}
             rows={1}
             className={`pixel-composer-input min-h-11 flex-1 resize-none rounded-xl border bg-theme-card px-4 py-2.5 text-sm text-theme-text outline-none transition placeholder:text-theme-text-muted/70 disabled:opacity-50 ${
               inputOver ? 'border-red-400' : 'border-theme-border'
@@ -2091,6 +2166,11 @@ export default function Pixel({ systemStatus = null }) {
           </div>
           </div>
           {stopError && <p role="alert" className="mt-1.5 px-1 text-xs text-theme-text-secondary">{stopError}</p>}
+          {sendHint && sendBlocked && <p role="status" className="mt-1.5 px-1 text-xs text-theme-text-secondary">{sendBlocked}</p>}
+          {refusal && !inputEmpty && <div className="portal-context-status" role="status" aria-label="Message not started">
+            <span>{refusal}</span>
+            <button type="button" onClick={sendFromComposer}>Send again</button>
+          </div>}
           {exampleError && <p role="alert" className="mt-1.5 px-1 text-xs text-theme-text-secondary">{exampleError.text}{exampleError.help && <> <HelpLink /></>}</p>}
           {contextControl.historyUnknown && <div className="portal-context-status" role="status">
             {contextControl.resolving && <Loader2 size={13} className="animate-spin" aria-hidden="true"/>}

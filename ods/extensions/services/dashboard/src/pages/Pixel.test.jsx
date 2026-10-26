@@ -2138,8 +2138,11 @@ describe('Pixel', () => {
     render(<Pixel />)
     await screen.findByText('Working in this chat')
     expect(screen.getByTitle('Stop')).toBeEnabled()
-    expect(screen.getByPlaceholderText('Message Portal...')).toBeDisabled()
-    expect(screen.getByTitle('Start a new chat')).toBeDisabled()
+    // The draft stays editable; only sending and New chat wait, with a reason.
+    expect(screen.getByPlaceholderText('Message Portal...')).toBeEnabled()
+    expect(screen.queryByTitle('Send')).toBeNull()
+    expect(screen.getByRole('button', {name:'New chat'})).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByRole('button', {name:'New chat'})).toHaveAttribute('title', expect.stringContaining('Portal is finishing the current task'))
     expect(screen.getByText('Saved partial result')).toBeInTheDocument()
     state = 'terminal'
     await screen.findByText(/previous request is no longer active/, {}, { timeout: 3000 })
@@ -2164,7 +2167,8 @@ describe('Pixel', () => {
     act(()=>window.dispatchEvent(new CustomEvent('ods:pixel-select-conversation',{detail:'second_interrupted'})))
     await screen.findByText('Working in this chat')
     expect(fetch).toHaveBeenCalledWith('/api/pixel/chat/activity',expect.objectContaining({body:JSON.stringify({chat_id:'second_interrupted'})}))
-    expect(screen.getByPlaceholderText('Message Portal...')).toBeDisabled()
+    expect(screen.getByPlaceholderText('Message Portal...')).toBeEnabled()
+    expect(screen.queryByTitle('Send')).toBeNull()
     expect(screen.getByTitle('Stop')).toBeEnabled()
   })
 
@@ -2290,11 +2294,11 @@ describe('Pixel', () => {
     fireEvent.click(screen.getByTitle('Send'))
 
     // During streaming the Send button is replaced by a Stop button;
-    // the textarea itself is disabled.
+    // the textarea stays editable for the next message.
     await waitFor(() => {
       expect(screen.queryByTitle('Send')).not.toBeInTheDocument()
       const ta = screen.getByPlaceholderText('Message Portal...')
-      expect(ta).toBeDisabled()
+      expect(ta).toBeEnabled()
       expect(screen.getByText('Working')).toBeInTheDocument()
       expect(screen.getAllByText(/0:00 elapsed/).length).toBeGreaterThan(0)
       expect(screen.getByText('Thinking…')).toBeInTheDocument()

@@ -496,6 +496,13 @@ select option, select optgroup { background-color:rgb(var(--theme-card)); color:
 .pixel-conversation-navigation { margin-top: 16px; }
 .pixel-conversation-navigation .pixel-nav-item { width: 100%; min-width: 0; text-align: left; }
 .pixel-conversation-navigation .pixel-nav-item span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* New task waits while Portal finishes a task; its reason sits right below it.
+   A click still reaches Portal, which repeats the reason beside the composer. */
+.pixel-nav-item.rail-new-task[aria-disabled=true],
+:root .pixel-sidebar .pixel-nav-item.rail-new-task[aria-disabled=true]:hover { cursor: not-allowed; opacity: .55; color: #a7aab0; background: transparent; }
+.pixel-conversation-navigation .rail-new-task-reason { margin: 0 0 6px; padding: 0 12px 0 39px; color: #8b9097; font-size: 11px; line-height: 1.45; }
+.pixel-sidebar.is-collapsed .rail-new-task-reason { display: none; }
+@media(max-width:639px) { .pixel-sidebar .rail-new-task-reason { display: none; } }
 .pixel-original-sections { padding:.6rem 0 .75rem; }
 .pixel-original-sections .rail-section,.pixel-original-sections .rail-project { margin:0; padding:0; border:0; border-radius:0; background:transparent; box-shadow:none; }
 .pixel-original-sections .rail-section + .rail-section { margin-top:22px; }

@@ -138,8 +138,10 @@ it('keeps the draft and transcript while compacting and saves recovery identity 
   render(<Pixel/>);await screen.findByText('Available')
   fireEvent.click(screen.getByRole('button',{name:'Open prompt commands'}))
   fireEvent.click(screen.getByRole('button',{name:/Compact Free context/}))
-  expect(screen.getByPlaceholderText('Message Portal...')).toBeDisabled()
-  expect(screen.getByTitle('Start a new chat')).toBeDisabled()
+  // The draft stays editable while compacting; sending and New chat wait.
+  expect(screen.getByPlaceholderText('Message Portal...')).toBeEnabled()
+  expect(screen.getByTitle('Send')).toBeDisabled()
+  expect(screen.getByRole('button',{name:'New chat'})).toHaveAttribute('aria-disabled','true')
   expect(stored()).toMatchObject({chatId:'context-chat',messages:initial,draft:'My next request'})
   await act(async()=>finish())
   await screen.findByText('Context compacted. Your full conversation is preserved.')
@@ -262,18 +264,20 @@ it.each([true,false])('resolves uncertain history only after an explicit stop an
   render(<Pixel/>);await screen.findByText('Available')
   const resolveButton=await screen.findByRole('button',{name:'Resolve interrupted turn'})
   expect(calls('/api/pixel/chat/cancel')).toHaveLength(0)
-  expect(screen.getByPlaceholderText('Message Portal...')).toBeDisabled()
+  // The draft stays editable; sending waits until the turn is resolved.
+  expect(screen.getByPlaceholderText('Message Portal...')).toBeEnabled()
+  expect(screen.getByTitle('Send')).toBeDisabled()
   expect(screen.queryByText(/Context compaction failed/)).toBeNull()
   fireEvent.click(resolveButton)
   expect(resolveButton).toBeDisabled()
-  expect(screen.getByTitle('Start a new chat')).toBeDisabled()
+  expect(screen.getByRole('button',{name:'New chat'})).toHaveAttribute('aria-disabled','true')
   await act(async()=>finish())
   if(acknowledged) {
     await waitFor(()=>expect(screen.queryByRole('button',{name:'Resolve interrupted turn'})).toBeNull())
-    expect(screen.getByPlaceholderText('Message Portal...')).toBeEnabled()
+    expect(screen.getByTitle('Send')).toBeEnabled()
   }else {
     await screen.findByText(/The stop could not be confirmed/)
-    expect(screen.getByPlaceholderText('Message Portal...')).toBeDisabled()
+    expect(screen.getByTitle('Send')).toBeDisabled()
     expect(screen.getByRole('button',{name:'Resolve interrupted turn'})).toBeEnabled()
   }
   expect(stored()).toMatchObject({chatId:'context-chat',draft:'Keep the next request',messages:initial})

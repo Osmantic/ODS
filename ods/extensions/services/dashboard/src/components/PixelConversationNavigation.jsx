@@ -4,6 +4,7 @@ import {groupProjectConversations} from '../lib/conversationProjects'
 import {EXAMPLE_OPEN_EVENT, EXAMPLE_REFRESH_EVENT, exampleProjectRows, readExampleProjects} from '../lib/exampleProjects'
 import { CHAT_KEY, LIBRARY_EVENT, SELECT_EVENT, DELETE_EVENT, readConversations, conversationTitle } from '../lib/pixelConversations'
 import { conversationLabels } from '../lib/pixelConversationLabels'
+import { useNewTaskBlocked } from '../lib/portalTaskState'
 import PixelConversationRow, {ConversationTitle} from './PixelConversationRow'
 
 import { exportConversation } from '../lib/pixelConversationExport'
@@ -22,6 +23,8 @@ export default function PixelConversationNavigation({ collapsed }) {
   const [exportError, setExportError] = useState('')
   const [showArchived, setShowArchived] = useState(false)
   const [examples, setExamples] = useState([])
+  // While Portal finishes a task, New task is disabled and says why.
+  const newTaskBlocked = useNewTaskBlocked()
   const archiveToggle = useRef(null)
 
   const dialog = useRef(null)
@@ -85,7 +88,9 @@ export default function PixelConversationNavigation({ collapsed }) {
     window.addEventListener(EXAMPLE_REFRESH_EVENT, load)
     return () => { controller?.abort(); window.removeEventListener('focus', load); window.removeEventListener(EXAMPLE_REFRESH_EVENT, load) }
   }, [])
-  if (collapsed) return <button ref={newTask} className="pixel-nav-item" aria-label="New task" title="New task" onClick={() => window.dispatchEvent(new Event('ods:pixel-new-task'))}><Plus size={16}/></button>
+  // aria-disabled, not disabled: a click or tap still reaches Portal, which
+  // shows the reason beside the composer instead of doing nothing.
+  if (collapsed) return <button ref={newTask} className="pixel-nav-item rail-new-task" aria-label="New task" title={newTaskBlocked || 'New task'} aria-disabled={newTaskBlocked ? 'true' : undefined} onClick={() => window.dispatchEvent(new Event('ods:pixel-new-task'))}><Plus size={16}/></button>
   const labeled = chats.map(chat => ({chat, labels:conversationLabels(chat.chatId)}))
   const visible = labeled.filter(item => item.labels.archived === showArchived)
   const pinned = visible.filter(item => item.labels.pinned).map(item => item.chat)
@@ -122,7 +127,8 @@ export default function PixelConversationNavigation({ collapsed }) {
       {deleteError && <p role="alert">{deleteError}</p>}
       <footer><button autoFocus disabled={deleting} onClick={closeDelete}>Cancel</button><button disabled={deleting} onClick={confirmDelete}>{deleting?'Deleting…':'Delete chat'}</button></footer>
     </dialog>
-    <button ref={newTask} className="pixel-nav-item" onClick={() => window.dispatchEvent(new Event('ods:pixel-new-task'))}><Plus size={16}/><span>New task</span></button>
+    <button ref={newTask} className="pixel-nav-item rail-new-task" aria-disabled={newTaskBlocked ? 'true' : undefined} aria-describedby={newTaskBlocked ? 'pixel-new-task-reason' : undefined} onClick={() => window.dispatchEvent(new Event('ods:pixel-new-task'))}><Plus size={16}/><span>New task</span></button>
+    {newTaskBlocked && <p id="pixel-new-task-reason" className="rail-new-task-reason" role="status">{newTaskBlocked}</p>}
     <div className="pixel-original-sections">
       {pinned.length > 0 && <details className="rail-section" open><summary>Pinned{chevron}</summary>{rows(pinned, '')}</details>}
       {projects.length+shipped.length>0 && <details className="rail-section" open>

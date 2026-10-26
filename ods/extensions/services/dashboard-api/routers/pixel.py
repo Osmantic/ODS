@@ -1153,6 +1153,17 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
                             admission_rejected = json.loads(raw) == {"error": "pixel_transition_in_progress"}
                         except (ValueError, UnicodeDecodeError):
                             pass
+                    elif upstream.status_code == 429:
+                        # Edge has one image slot. It refuses another image turn
+                        # with this exact body before admitting it, so nothing
+                        # ran: tell the owner Portal was busy, not that it failed.
+                        try:
+                            raw = await _bounded_response_bytes(upstream, 1024)
+                            if json.loads(raw) == {"error": "image processing busy; retry shortly"}:
+                                admission_rejected = True
+                                admission_code = "image_turn_busy"
+                        except (ValueError, UnicodeDecodeError):
+                            pass
                     if upstream.status_code != 200 or not upstream.headers.get("content-type", "").lower().startswith("text/event-stream"):
                         raise ValueError("Invalid upstream stream")
                     buffered = bytearray()
