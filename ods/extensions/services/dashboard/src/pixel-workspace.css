@@ -34,11 +34,11 @@ select option, select optgroup { background-color:rgb(var(--theme-card)); color:
 .pixel-brand button { color:#858991; padding:5px; border-radius:6px; }
 .ods-brand { position:relative; justify-content:center; padding:0 0 18px; }
 .ods-brand > button { position:absolute; right:0; top:0; }
-.ods-metal-logo { width:164px; height:104px; pointer-events:none; }
+.ods-metal-logo { width:184px; height:104px; pointer-events:none; }
 .ods-metal-logo img { width:100%; height:100%; object-fit:contain; }
 .pixel-sidebar.is-collapsed .ods-brand { padding:26px 0 14px; }
-.pixel-sidebar.is-collapsed .ods-metal-logo { width:40px; height:30px; }
-@media(max-width:639px) { .pixel-sidebar .ods-brand { padding:26px 0 14px; } .pixel-sidebar .ods-metal-logo { width:40px; height:30px; } }
+.pixel-sidebar.is-collapsed .ods-metal-logo { width:44px; height:30px; }
+@media(max-width:639px) { .pixel-sidebar .ods-brand { padding:26px 0 14px; } .pixel-sidebar .ods-metal-logo { width:44px; height:30px; } }
 .pixel-mark { display:grid; place-items:center; width:30px; height:30px; color:#dbdce0; background:#232426; border:1px solid #343638; border-radius:9px; }
 .pixel-mark svg { width:23px; height:23px; }
 .pixel-nav { flex:1; overflow:auto; min-height:0; }

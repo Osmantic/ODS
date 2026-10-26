@@ -26,6 +26,7 @@ import HuggingFaceModelBrowser from '../components/model-library/HuggingFaceMode
 import ModelProfileSummary from '../components/model-library/ModelProfileSummary'
 import MetalMetricIcon from '../components/MetalMetricIcon'
 import FittedLibraryPage from '../components/FittedLibraryPage'
+import odsMark from '../assets/ods-mark.png'
 import './models-refined.css'
 
 const PAGE_SIZE = 10
@@ -610,7 +611,7 @@ function ModelSourceTabs({ value, onChange, installedCount, recommendedCount, co
       label: 'ODS Recommended',
       detail: 'Curated catalog',
       count: recommendedCount,
-      image: '/osmantic-isolated-os.png',
+      image: odsMark,
       tone: 'purple',
     },
     {
@@ -675,7 +676,7 @@ function ModelSourceTabs({ value, onChange, installedCount, recommendedCount, co
           >
             <span className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] ${iconStyles[tone]}`}>
               {image
-                ? <img src={image} alt="" className={image === '/osmantic-isolated-os.png' ? 'h-10 w-10 object-contain grayscale mix-blend-screen' : 'h-8 w-8 object-contain'} />
+                ? <img src={image} alt="" className={image === odsMark ? 'h-10 w-10 object-contain grayscale mix-blend-screen' : 'h-8 w-8 object-contain'} />
                 : <Icon size={27} strokeWidth={1.75} />}
             </span>
             <span className="min-w-0 flex-1">

@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import './ods-logo.css'
-
-const source = '/osmantic-isolated-os.png'
+// Bundled, not public: the build gives it a content-hashed URL, so a changed
+// mark reaches browsers that hold the old one under the year-long image cache.
+import source from '../assets/ods-mark.png'
 
 export default function ODSLogo() {
   const [mask, setMask] = useState(null)

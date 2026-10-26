@@ -102,6 +102,18 @@ contributor-supplied status. This wallpaper replacement does not establish new
 rights in them or authorize downstream rebranding. Keep a durable source and
 authorization record for those marks.
 
+The ODS wordmark (`extensions/services/dashboard/src/assets/ods-mark.png`, 599x232,
+SHA-256 `f3e86d5217589d449117b20586ea88b99738c60c2e1ab6b48557cbe59e37a81a`) was
+made on 2026-10-15 from that mark. The O stays in place, and its outer ring,
+which the supplied mark leaves open on the right where its S nests, is closed
+with the ring's own left side mirrored, in the ring's colors. The S, its speed
+lines and dot are scaled by 209/194 so the S spans the O's height, raised level
+with it and moved right. A D in the O's three-ring geometry (10 px lines, the
+O's right half, a straight left side) sits between them in the mark's gradient,
+13 px from the O's straight side and 9.8 px from the S at their closest. The
+image is cropped to the ink with a 4 px margin. It retains the supplied mark's
+status.
+
 Inter and JetBrains Mono retain their copyright and SIL OFL 1.1 terms in
 [the bundled font notice](../extensions/services/dashboard/public/fonts/OFL.txt).
 See [dashboard asset notices](../extensions/services/dashboard/ASSET-NOTICES.md)

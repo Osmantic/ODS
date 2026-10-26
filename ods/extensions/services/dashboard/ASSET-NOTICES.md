@@ -13,6 +13,12 @@
 - The ODS mark (`public/osmantic-isolated-os.png`) and favicon were supplied by
   Gabriel with asserted permission. Preserve a durable source/authorization
   record before representing downstream rebranding or redistribution as cleared.
+- The ODS wordmark the dashboard shows (`src/assets/ods-mark.png`) is derived from
+  that mark: its O is the supplied pixels, with the outer ring's opening on the
+  right closed by the ring's own mirrored left side; its S and speed lines are
+  the supplied pixels scaled by about 8% and raised level with the O; the D
+  between them was drawn for ODS on 2026-10-15 in the O's ring geometry and
+  gradient. It carries the supplied mark's status above.
 - Pixel's mascot renderer and workbench adaptation come from the Osmantic Pixel
   project. Read the current [Pixel License for ODS](../../../vendor/pixel/LICENSE.md)
   and [third-party notices](../../../vendor/pixel/THIRD_PARTY_NOTICES.md).

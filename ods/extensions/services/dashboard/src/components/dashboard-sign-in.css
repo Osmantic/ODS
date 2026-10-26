@@ -27,7 +27,7 @@
   flex-direction:column;
   padding:16px 16px 20px;
 }
-.ods-signin-ghost-rail .ods-metal-logo { width:164px; height:104px; margin:0 0 18px; }
+.ods-signin-ghost-rail .ods-metal-logo { width:184px; height:104px; margin:0 0 18px; }
 .ods-signin-ghost-rail b { display:flex; align-items:center; gap:10px; height:31px; }
 .ods-signin-ghost-rail b::before { content:''; width:14px; height:14px; border-radius:4px; background:rgb(var(--theme-text) / .14); }
 .ods-signin-ghost-rail b i { height:9px; width:78px; }
@@ -83,7 +83,7 @@
   text-align:center;
   animation:ods-signin-rise .32s ease-out both;
 }
-.ods-signin-card .ods-metal-logo { width:92px; height:58px; margin:0 auto 14px; }
+.ods-signin-card .ods-metal-logo { width:104px; height:58px; margin:0 auto 14px; }
 .ods-signin-card h1 { margin:0; font-size:17px; font-weight:600; line-height:1.35; }
 .ods-signin-lede { margin:6px 0 18px; color:rgb(var(--theme-text-secondary)); line-height:1.5; }
 
@@ -156,7 +156,7 @@
 @media (max-width:639px) {
   .ods-signin { --navigation-width:64px; }
   .ods-signin-ghost-rail { padding-inline:12px; }
-  .ods-signin-ghost-rail .ods-metal-logo { width:40px; height:30px; }
+  .ods-signin-ghost-rail .ods-metal-logo { width:44px; height:30px; }
   .ods-signin-ghost-rail b i { display:none; }
   .ods-signin-ghost-shell { right:4px; border-radius:12px; }
 }
