@@ -440,6 +440,43 @@ their credentials and qualification paths are configured. The Operations limb
 is enabled through Pixel's isolated broker, not by granting the model a host
 shell, Docker socket, or privileged credential.
 
+Email and Calendar turn on only when the owner connects Google. The choice is
+kept in `/etc/ods/portal-connections.json` (root-owned, readable by the
+`ods-pixel` group, mode `0640`), which holds no credentials: the capabilities the
+owner turned on, the account, the Calendar ID, the Gmail window and the owner's
+time zone. Every install and update reads it, so a connection survives an update,
+and runs `pixel source-broker --confirm` next to the Operations Broker when a
+source limb is on. A connection counts only while the Source Broker still holds
+the Google sign-in: after a restore without it, the sources stay off and Settings
+asks the owner to reconnect. A record that fails validation also leaves them off;
+it never fails an install. Without the file, the onboarding contract is the same
+as before connected apps existed.
+
+Connecting happens in Settings, Connected apps ([owner guide](pixel/CONNECTED-APPS.md)).
+`PORTAL_CONNECTED_APPS_ENABLED=false` hides that section. The owner brings their own Google Cloud
+project: a Desktop-app OAuth client whose JSON file they upload. The agent's root
+access coordinator does the rest, without running owner code as root. Each install
+copies the exact Pixel broker, its systemd units and its environment template
+into a root-owned kit beside the coordinator
+(`/usr/local/libexec/ods-pixel-access/pixel_connections/source-broker-kit`);
+connecting installs only those bytes, creates the `pixel-source-broker` system
+account, and hands the sign-in to it through files only that account can read.
+The broker exchanges the code with Google, so the refresh token never passes
+through the coordinator, the host agent or the dashboard, and it records only
+the account email Google verified.
+
+Pixel never re-applies its active release, so the coordinator then changes
+Portal's gateway on the live files: it plans the same Source Broker plugin,
+tools and limb flags Pixel's renderer and the ODS overlay would write (a test
+renders both and compares them), and keeps the onboarding answers in step so a
+later model change or update renders the same connection. The change runs under
+the same admission gates, rollback and runtime access proof as every other
+Portal change, and never interrupts a running chat: a busy Portal leaves the
+step pending until the owner presses Finish or the next update converges it.
+Disconnecting stops the broker, revokes the grant at Google, and deletes the
+sign-in and every projection, proposal and result derived from the account.
+Uninstalling ODS does the same and removes the broker's account, units and files.
+
 The installer writes an owner-private, mode-`0600` policy at
 `$INSTALL_DIR/data/pixel/operations-policy.json`. Pixel copies the reviewed
 policy into root-controlled broker custody. The gateway can write typed request

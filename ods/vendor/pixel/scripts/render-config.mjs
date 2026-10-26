@@ -116,22 +116,27 @@ const frontierPluginId = "pixel-frontier-broker";
 const allSourceTools = [
   "pixel_limb_status",
   "pixel_gmail_inbox", "pixel_gmail_sent", "pixel_gmail_search", "pixel_gmail_read", "pixel_gmail_thread",
+  "pixel_gmail_draft_propose",
   "pixel_calendar_list", "pixel_calendar_get", "pixel_calendar_propose_create",
   "pixel_calendar_propose_update", "pixel_calendar_propose_delete",
   "pixel_social_feed", "pixel_social_search", "pixel_web_browse",
 ];
-const emailTools = allSourceTools.filter((name) => name.startsWith("pixel_gmail_"));
-const calendarTools = allSourceTools.filter((name) => name.startsWith("pixel_calendar_"));
+const enabled = (name, fallback) => !["0", "false", "off", "no"].includes(String(process.env[name] ?? fallback).toLowerCase());
+const emailDraftsEnabled = enabled("PIXEL_LIMB_EMAIL_DRAFTS_ENABLED", "0");
+const emailTools = allSourceTools.filter((name) => name.startsWith("pixel_gmail_") && (emailDraftsEnabled || name !== "pixel_gmail_draft_propose"));
+const calendarWriteEnabled = enabled("PIXEL_LIMB_CALENDAR_WRITE_ENABLED", "1");
+const calendarTools = allSourceTools.filter((name) => name.startsWith("pixel_calendar_") && (calendarWriteEnabled || !name.startsWith("pixel_calendar_propose_")));
 const socialTools = allSourceTools.filter((name) => name.startsWith("pixel_social_"));
 const webTools = allSourceTools.filter((name) => name.startsWith("pixel_web_"));
 const sourceStatusTools = ["pixel_limb_status"];
-const enabled = (name, fallback) => !["0", "false", "off", "no"].includes(String(process.env[name] ?? fallback).toLowerCase());
 const emailEnabled = enabled("PIXEL_LIMB_EMAIL_ENABLED", "1");
 const calendarEnabled = enabled("PIXEL_LIMB_CALENDAR_ENABLED", "1");
 const socialEnabled = enabled("PIXEL_LIMB_SOCIAL_ENABLED", "0");
 const webEnabled = enabled("PIXEL_LIMB_WEB_ENABLED", "1");
 const operationsEnabled = enabled("PIXEL_LIMB_OPERATIONS_ENABLED", "0");
 const frontierEnabled = enabled("PIXEL_LIMB_FRONTIER_ENABLED", "0");
+const userTimezone = process.env.PIXEL_USER_TIMEZONE ?? "";
+if (userTimezone && !/^[A-Za-z][A-Za-z0-9_+\-/]{0,63}$/.test(userTimezone)) throw new Error("PIXEL_USER_TIMEZONE must be an IANA time zone name");
 const sourcePluginEnabled = emailEnabled || calendarEnabled || socialEnabled || webEnabled;
 const sourceTools = [...(sourcePluginEnabled ? sourceStatusTools : []), ...(emailEnabled ? emailTools : []), ...(calendarEnabled ? calendarTools : []), ...(socialEnabled ? socialTools : []), ...(webEnabled ? webTools : [])];
 const opsTools = [
@@ -205,6 +210,7 @@ const config = {
       },
       memorySearch: { enabled: true, provider: "local", model: required("PIXEL_EMBEDDING_MODEL"), local: { modelCacheDir: required("PIXEL_EMBEDDING_CACHE") }, extraPaths: ["daily-notes", "context", "library", "reflections"] },
       bootstrapMaxChars: 32000, bootstrapTotalMaxChars: 96000,
+      ...(userTimezone ? { userTimezone } : {}),
     },
     list: [pixel],
   },

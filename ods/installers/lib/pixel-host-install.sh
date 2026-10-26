@@ -3108,7 +3108,7 @@ def write(path, content, mode, uid=0, gid=0):
         if os.path.exists(temporary): os.unlink(temporary)
 
 host = code_source / 'extensions/services/pixel-agent/host'
-for name in ('access_mode_server.py', 'unix_peer.py', 'access_mode_worker.py', 'pixel_access_mode.py', 'access_mode_config.py', 'settings_transaction.py', 'provider_transaction.py', 'model_transaction.py', 'access_release_transaction.py', 'scheduled_tasks_owner.py', 'scheduled_tasks_gateway.mjs'):
+for name in ('access_mode_server.py', 'unix_peer.py', 'access_mode_worker.py', 'pixel_access_mode.py', 'access_mode_config.py', 'settings_transaction.py', 'provider_transaction.py', 'model_transaction.py', 'access_release_transaction.py', 'connection_transaction.py', 'scheduled_tasks_owner.py', 'scheduled_tasks_gateway.mjs'):
     write(target / name, (host / name).read_bytes(), 0o644)
 write(target / 'pixel_access_bridge.py', (code_source / 'bin/pixel_access_bridge.py').read_bytes(), 0o644)
 write(target / 'pixel_gateway_service.py', (code_source / 'bin/pixel_gateway_service.py').read_bytes(), 0o644)
@@ -3137,6 +3137,15 @@ for name in ('__init__.py', 'config.py', 'store.py', 'activation_config.py',
              'managed_deployment.py', 'service_environment.py', 'service_activation.py',
              'runtime_custody.py', 'coordinator.py'):
     write(provider_package / name, (code_source / 'bin/pixel_provider' / name).read_bytes(), 0o644)
+connections_package = target / 'pixel_connections'
+connections_package.mkdir(mode=0o755, exist_ok=True)
+info = connections_package.lstat()
+if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+    raise SystemExit("Pixel connections program directory is not root protected")
+os.chmod(connections_package, 0o755, follow_symlinks=False)
+for name in ('__init__.py', 'state.py', 'status.py', 'catalog.py', 'oauth.py', 'custody.py', 'planner.py',
+             'coordinator.py', 'lifecycle.py', 'approvals.py', 'activity.py', 'drafts.py', 'plugins.py'):
+    write(connections_package / name, (code_source / 'bin/pixel_connections' / name).read_bytes(), 0o644)
 config_dir = pathlib.Path('/etc/ods')
 config_dir.mkdir(mode=0o755, exist_ok=True)
 info = config_dir.lstat()
@@ -4815,12 +4824,87 @@ finally:
 PY
 }
 
+_ods_pixel_google_custody() {
+    # The Source Broker's Google sign-in is root-only. Without usable sudo it counts
+    # as absent, so an install never turns on a source it cannot see is connected.
+    local token="${ODS_PIXEL_SOURCE_TOKEN_PATH:-/var/lib/pixel-source-broker/private/google-token.json}"
+    if [[ "${ODS_SUDO_AVAILABLE:-true}" != false ]] && ods_sudo test -f "$token"; then
+        printf '%s\n' present
+    else
+        printf '%s\n' absent
+    fi
+}
+
+_ods_pixel_contract_uses_source_broker() {
+    jq -e '.emailLimbEnabled == true or .calendarLimbEnabled == true or .socialLimbEnabled == true' \
+        "$1" >/dev/null
+}
+
+_ods_pixel_install_source_broker_kit() {
+    local owner="$1" pixel_root="$2"
+    # The access coordinator connects a Google account later without running owner
+    # code as root: it installs only this root-owned copy of the exact Pixel broker,
+    # its units and its environment template, taken here from this install's
+    # configured Pixel checkout. Nothing runs until an owner connects.
+    ods_sudo python3 -I - "$pixel_root" "$(id -u "$owner")" <<'PY'
+import os, pathlib, stat, sys, tempfile
+
+root, owner_uid = pathlib.Path(sys.argv[1]), int(sys.argv[2])
+kit = pathlib.Path('/usr/local/libexec/ods-pixel-access/pixel_connections/source-broker-kit')
+units = ('pixel-source-broker.service', 'pixel-source-broker.timer', 'pixel-source-action@.service',
+         'pixel-source-reconcile@.service', 'pixel-source-direct.service', 'pixel-source-direct.path',
+         'pixel-source-exchange@.service', 'pixel-source-revoke.service')
+sources = {'broker.py': root / 'deploy/source-broker/broker.py',
+           'source-broker.env': root / '.generated/source-broker.env'}
+sources.update({unit: root / '.generated' / unit for unit in units})
+data = {}
+for name, source in sources.items():
+    descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, 'rb') as handle:
+        info = os.fstat(handle.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid not in (0, owner_uid)
+                or info.st_size > 2 * 1024 * 1024):
+            raise SystemExit(f'Unsafe Source Broker kit input: {name}')
+        data[name] = handle.read(2 * 1024 * 1024 + 1)
+for directory in (kit.parent.parent, kit.parent, kit):
+    directory.mkdir(mode=0o755, exist_ok=True)
+    info = directory.lstat()
+    if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != 0:
+        raise SystemExit('The Source Broker kit directory is not root protected')
+    os.chmod(directory, 0o755, follow_symlinks=False)
+for entry in os.scandir(kit):
+    if entry.name not in data:
+        raise SystemExit(f'Unexpected file in the Source Broker kit: {entry.name}')
+for name, content in data.items():
+    descriptor, temporary = tempfile.mkstemp(prefix='.kit-', dir=kit)
+    try:
+        os.fchmod(descriptor, 0o644)
+        os.fchown(descriptor, 0, 0)
+        with os.fdopen(descriptor, 'wb') as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, kit / name)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+PY
+}
+
+_ods_pixel_install_source_broker_if_connected() {
+    local owner="$1" home="$2" pixel_root="$3" answers="$4" pixel_log="$5"
+    # Only an owner's connected app turns a source limb on; otherwise nothing runs.
+    _ods_pixel_contract_uses_source_broker "$answers" || return 0
+    ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" source-broker --confirm >>"$pixel_log" 2>&1
+}
+
 _ods_pixel_write_onboarding() {
     local owner="$1" home="$2" answers="$3" openclaw_bin="$4" plugin_path="$5" plugin_digest="$6"
     local web_search_provider="${7:-searxng}" parallel_path="${8:-}" parallel_digest="${9:-}"
     local context="${MAX_CONTEXT:-16384}" max_tokens reasoning=default
     local gateway_alias gateway_label runtime_model model_gateway_port="${PIXEL_MODEL_RELAY_PORT:-4006}" pixel_gateway_port gateway_key="${PIXEL_MODEL_RELAY_KEY:-}"
     local gateway_key_file write_status=0
+    local connections="${ODS_PORTAL_CONNECTIONS_FILE:-/etc/ods/portal-connections.json}" google_custody=absent
     if [[ "$context" =~ ^[0-9]+$ && "$context" -ge 4096 ]]; then
         :
     else
@@ -4869,6 +4953,12 @@ _ods_pixel_write_onboarding() {
         return 1
     }
 
+    # The owner's connected apps survive an update. Root is asked about the broker's
+    # sign-in only when a connection record exists.
+    if [[ -e "$connections" || -L "$connections" ]]; then
+        google_custody="$(_ods_pixel_google_custody)"
+    fi
+
     local renderer
     renderer="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/pixel-onboarding.py" || return 1
     [[ -f "$renderer" ]] || return 1
@@ -4885,7 +4975,8 @@ _ods_pixel_write_onboarding() {
         "$openclaw_bin" "$home" "$runtime_model" "$context" "$max_tokens" "$reasoning" \
         "$gateway_alias" "$gateway_label" "$model_gateway_port" "$pixel_gateway_port" "$gateway_key_file" \
         "${SEARXNG_PORT:-8888}" "$plugin_path" "$plugin_digest" \
-        "$web_search_provider" "$parallel_path" "$parallel_digest" || write_status=$?
+        "$web_search_provider" "$parallel_path" "$parallel_digest" \
+        "$connections" "$google_custody" || write_status=$?
     ods_pixel_run_as_owner "$owner" "$home" rm -f -- "$gateway_key_file" || write_status=1
     return "$write_status"
 }
@@ -5700,6 +5791,14 @@ ods_pixel_install_default_agent() {
             ai_bad "Pixel's root-custodied Operations policy does not match the ODS-managed policy."
             return 1
         fi
+        if ! _ods_pixel_install_source_broker_kit "$owner" "$pixel_root" >>"$pixel_log" 2>&1; then
+            ai_bad "Pixel could not prepare the Source Broker files that connected apps use. See $pixel_log."
+            return 1
+        fi
+        if ! _ods_pixel_install_source_broker_if_connected "$owner" "$home" "$pixel_root" "$answers" "$pixel_log"; then
+            ai_bad "Pixel could not start the isolated Source Broker for your connected apps. See $pixel_log."
+            return 1
+        fi
         if [[ "${FORCE:-false}" == true ]]; then
             # Forced reinstall retires an interrupted agent sandbox while
             # the gateway is stopped, then runs the unchanged verifier.
@@ -5754,7 +5853,25 @@ ods_pixel_install_default_agent() {
             ai_bad "Pixel's root-custodied Operations policy does not match the ODS-managed policy."
             return 1
         fi
+        if ! _ods_pixel_install_source_broker_kit "$owner" "$pixel_root" >>"$pixel_log" 2>&1; then
+            ai_bad "Pixel could not prepare the Source Broker files that connected apps use. See $pixel_log."
+            return 1
+        fi
+        if ! _ods_pixel_install_source_broker_if_connected "$owner" "$home" "$pixel_root" "$answers" "$pixel_log"; then
+            ai_bad "Pixel could not start the isolated Source Broker for your connected apps. See $pixel_log."
+            return 1
+        fi
         if [[ "$same_verified_source" == true ]]; then
+            # Pixel never re-applies its active release, so the access coordinator
+            # connects and disconnects apps on the live files. One it could not
+            # finish converges here, before the same-release comparison below.
+            if ! ods_pixel_run_as_owner "$owner" "$home" python3 -I \
+                "${INSTALL_DIR:?}/bin/pixel_connections/converge.py" "$home/.openclaw/openclaw.json" \
+                "$home/.config/pixel-agent/gateway.env" "$pixel_root/.generated/gateway.env" \
+                "$pixel_root/.env" "$home/.local/share/pixel" >>"$pixel_log" 2>&1; then
+                ai_bad "Pixel could not line up Portal's connected apps with this update. See $pixel_log."
+                return 1
+            fi
             if _ods_pixel_candidate_config_matches_live "$owner" "$home" "$pixel_root/dist/openclaw.json"; then
                 same_source_resume=true
                 ai "The exact Pixel release and runtime configuration are unchanged; refreshing the verified ODS extension without reapplying the release..."

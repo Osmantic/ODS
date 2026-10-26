@@ -8,6 +8,32 @@ import stat
 import sys
 import tempfile
 
+# Reviewed OpenClaw plugins the owner turned on reach this overlay as onboarding
+# entries (bin/pixel_connections/plugins.py writes them); Pixel's renderer knows
+# none of them. These are Pixel's and ODS's own plugin IDs, never a catalog entry.
+RESERVED_PLUGINS = {"pixel-ods", "llama-cpp", "searxng", "parallel", "discord", "pixel-source-broker",
+                    "pixel-operations-broker", "pixel-frontier-broker"}
+
+
+def load_portal_plugins(config, chosen):
+    """Load each chosen plugin with its reviewed configuration, and let Portal call its tools.
+
+    installers/lib/pixel-runtime-budget.py carries an identical copy (it runs
+    without ODS's modules); tests/test_pixel_plugins.py keeps them identical.
+    """
+    plugins = config["plugins"]
+    tools = config["tools"]
+    agent = next(item for item in config["agents"]["list"] if item.get("id") == "pixel")
+    names = [name for item in chosen for name in item["tools"]]
+    for item in chosen:
+        if item["id"] not in plugins["allow"]:
+            plugins["allow"].append(item["id"])
+        plugins["entries"][item["id"]] = {"enabled": True, "config": copy.deepcopy(item["config"])}
+    tools["alsoAllow"] = sorted(set(tools["alsoAllow"]) | set(names))
+    tools["sandbox"]["tools"]["allow"] = sorted(set(tools["sandbox"]["tools"]["allow"]) | set(names))
+    agent["tools"]["deny"] = [name for name in agent["tools"]["deny"] if name not in names]
+
+
 path = pathlib.Path(sys.argv[1])
 if not sys.argv[2].isdigit() or not 1 <= int(sys.argv[2]) <= 65535:
     raise SystemExit("invalid Perplexica service port")
@@ -197,6 +223,7 @@ updated_pixel_config["modelContextWindow"] = context_window
 updated_pixel_config["leanPrompt"] = lean_prompt
 updated_pixel_config["perplexicaPort"] = research_port
 thinking_control = None
+portal_plugins = []
 if sys.argv[3]:
     answers_path = pathlib.Path(sys.argv[3])
     answers_info = answers_path.lstat()
@@ -230,6 +257,18 @@ if sys.argv[3]:
         updated_pixel_config.pop("modelRouteFingerprint", None)
     else:
         updated_pixel_config["modelRouteFingerprint"] = route_fingerprint
+    portal_plugins = answers.get("portalPlugins") or []
+    if (not isinstance(portal_plugins, list) or len(portal_plugins) > 32
+            or len({item.get("id") if isinstance(item, dict) else None for item in portal_plugins}) != len(portal_plugins)
+            or any(not isinstance(item, dict) or set(item) != {"id", "tools", "config"}
+                   or not isinstance(item["id"], str) or not re.fullmatch(r"[a-z][a-z0-9-]{1,62}", item["id"])
+                   or item["id"] in RESERVED_PLUGINS
+                   or not isinstance(item["tools"], list) or not 1 <= len(item["tools"]) <= 32
+                   or not all(isinstance(name, str) and re.fullmatch(r"[a-z][a-z0-9_]{1,63}", name)
+                              and not name.startswith("pixel_") for name in item["tools"])
+                   or not isinstance(item["config"], dict)
+                   for item in portal_plugins)):
+        raise SystemExit("invalid ODS Portal plugin contract")
 updated_agent["bootstrapMaxChars"] = 2000 if lean_prompt else 14000
 updated_agent["bootstrapTotalMaxChars"] = 6000 if lean_prompt else 36000
 updated_agent["contextInjection"] = "never" if lean_prompt else "continuation-skip"
@@ -430,6 +469,10 @@ for tools in (updated_tools['alsoAllow'], updated_sandbox_tools['allow']):
         tools.remove(project_tool)
 if project_enabled:
     updated_agent_tools['deny'] = [tool for tool in updated_agent_tools['deny'] if tool != project_tool]
+# A plugin may add only its own tools: none that Pixel or ODS keeps from Portal.
+if any(name in updated_agent_tools["deny"] for item in portal_plugins for name in item["tools"]):
+    raise SystemExit("ODS Portal plugin tools collide with a tool Portal is denied")
+load_portal_plugins(updated, portal_plugins)
 if updated == value:
     print("unchanged")
     raise SystemExit(0)

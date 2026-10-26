@@ -351,6 +351,223 @@ If the container does not exist yet (e.g. image is still pulling), a 200 respons
 | 503 | Log fetch timed out (5s) |
 | 500 | Failed to fetch logs |
 
+### `GET /v1/pixel/connections`
+
+Read-only status of Portal's connected apps (Google Calendar and Gmail first) and
+the connector catalog ODS ships. The agent's root access coordinator builds the
+status from the owner's choices (`/etc/ods/portal-connections.json`), whether the
+Source Broker still holds the Google sign-in, and the broker's own `status.json`.
+It is content-free: no token, message, event or file name is included.
+
+On Linux the host agent asks the coordinator's control socket directly; on Windows
+with WSL it goes through the `ods-pixel-edge` container and Portal's private ingress
+(`/v1/connections` at each hop). macOS and native Windows answer
+`"available": false` with `"reason": "not-available-on-this-system"`, because the
+Source Broker needs Linux or WSL systemd.
+
+**Authentication:** Required
+
+**Response (200):**
+```json
+{
+  "schemaVersion": 1,
+  "available": true,
+  "surface": "wsl-systemd",
+  "reason": null,
+  "ownerTimeZone": "America/Chicago",
+  "connectors": {
+    "google": {
+      "state": "connected",
+      "reason": null,
+      "account": "owner@example.com",
+      "capabilities": {"calendar.read": true, "calendar.write": false, "calendar.direct": false,
+                       "gmail.read": true, "gmail.drafts": false},
+      "cloudModels": true,
+      "connectedAt": "2026-10-25T20:00:00Z",
+      "grantedScopes": ["https://www.googleapis.com/auth/calendar.events.readonly",
+                        "https://www.googleapis.com/auth/gmail.readonly"],
+      "checkedAt": "2026-10-25T20:29:30Z",
+      "sources": {
+        "calendar": {"state": "ok", "errorClass": null, "httpStatus": null,
+                     "lastSuccessAt": "2026-10-25T20:29:30Z", "failingSince": null,
+                     "recordCount": 42, "complete": true},
+        "email": {"state": "ok", "errorClass": null, "httpStatus": null,
+                  "lastSuccessAt": "2026-10-25T20:29:30Z", "failingSince": null,
+                  "recordCount": 812, "complete": true}
+      },
+      "pending": null,
+      "waitingChanges": 0
+    }
+  },
+  "catalog": [{"id": "google", "name": "Google", "summary": "Calendar and Gmail", "...": "..."}]
+}
+```
+
+`state` is one of `not-connected`, `first-sync`, `connected`, `behind`,
+`needs-reconnect`, `missing-permission`, `setup-broken`, `blocked-by-admin` or
+`unknown-error`; `reason` names the cause (for example `sign-in-missing`,
+`invalid-grant`, `api-disabled` or `sync-stopped`). A top-level
+`"reason": "record-unusable"` means the saved choices could not be read, so
+connected apps are off until the owner reconnects. `"reason": "journal-unusable"`
+means the record of a step in progress could not be read; the next action replaces it.
+
+`pending` describes a step still in progress, or `null`:
+
+```json
+{"action": "connect", "phase": "activating", "expiresAt": null, "error": "runtime-busy",
+ "since": "2026-10-25T20:30:00Z"}
+```
+
+`phase` is `consent` (waiting for Google; `expiresAt` is when the sign-in ends),
+`activating` (connected; Portal still has to load the Calendar and Gmail tools),
+`deactivating` (disconnected; Portal still has to drop them) or `failed` (the last
+sign-in did not connect; `error` says why, for example `access-denied` when the
+owner cancelled at Google). For `activating` and `deactivating`, `error` is why the
+last attempt to update Portal stopped, for example `runtime-busy` while a chat is
+running, and `finish` completes the step. A new sign-in replaces a `failed` step.
+
+`waitingChanges` counts the calendar changes Portal suggested that wait for the
+owner (see `changes` below); it is `null` while nothing is connected. Only the
+count is reported here, never what a change says.
+
+**Error responses:**
+| Code | Condition |
+|------|-----------|
+| 401/403 | Missing or invalid API key |
+| 503 | The coordinator or the agent's relay is unavailable |
+
+### `POST /v1/pixel/connections/google/{action}`
+
+The owner's connected-apps actions. The agent's root access coordinator decides
+and records each one; the host agent only checks the request's shape, relays it
+the same way as the status above, and holds the one-shot loopback address that
+Google's redirect returns to. Each owner uses their own Google Cloud project: an
+OAuth client of type **Desktop app**, whose downloaded JSON file is the `client`
+below. The sign-in uses PKCE (S256); the code, the PKCE verifier and the refresh
+token reach only the Source Broker's own system account, never the host agent,
+the dashboard or a log.
+
+**Authentication:** Required
+
+| Action | Body | Reply |
+|--------|------|-------|
+| `begin` | `{"client": <Google's JSON file>, "capabilities": {...}, "cloudModels": false, "ownerTimeZone": "America/Chicago", "loginHint": null}` | `{"flowId", "authUrl", "expiresAt", "redirect": "loopback"}` |
+| `complete` | `{"flowId", "address": "http://127.0.0.1:<port>/?state=...&code=..."}` | `{"outcome": "connected" \| "failed", "errorClass", "account", "capabilities", "missing"}` |
+| `cancel` | `{"flowId"}` | `{"outcome": "cancelled"}` |
+| `disconnect` | `{}` | `{"outcome": "disconnected", "revoked": true}` |
+| `sync` | `{}` | `{"outcome": "started"}` |
+| `finish` | `{}` | `{"outcome": "applied" \| "unchanged"}` |
+| `changes` | `{}` | `{"proposals": [...], "more": 0}` |
+| `approve` | `{"proposalId", "sha256"}` | `{"proposalId", "outcome": "applied" \| "rejected" \| "not-applied" \| "unconfirmed"}` |
+| `decline` | `{"proposalId"}` | `{"proposalId", "outcome": "declined"}` |
+| `check` | `{"proposalId"}` | `{"proposalId", "outcome": "applied" \| "rejected" \| "not-applied" \| "unconfirmed" \| "waiting"}` |
+| `activity` | `{}` | `{"changes": [...], "more": 0}` |
+| `undo` | `{"proposalId"}` | `{"proposalId", "outcome": "applied" \| "rejected" \| "not-applied" \| "unconfirmed"}` |
+| `drafts` | `{}` | `{"drafts": [...], "more": 0}` |
+
+`begin` opens `http://127.0.0.1:<port>/` on the machine that runs the host agent
+(the Windows host for a WSL install) and returns Google's consent address. When
+Google redirects the browser there, the host agent completes the sign-in and
+shows a short page; that page and its request line are never logged. A page from
+an older sign-in leaves the current one open. When the browser is on another
+device, the owner pastes the address of the page that did not load into
+`complete`. The sign-in ends after 15 minutes.
+
+`capabilities` uses the catalog's capability IDs; one not `available` in this ODS
+release is refused with `capability-unavailable`. Google may grant fewer scopes
+than requested: `missing` lists what stayed off. Without a verified account
+email from Google, the sign-in is revoked and deleted (`account-unverified`).
+
+After `complete` connects and after `disconnect`, the host agent asks the
+coordinator to update Portal's gateway in the background. Portal is never
+interrupted: while a chat runs, the step stays pending with `runtime-busy` and
+`finish` completes it later. `disconnect` stops syncing, revokes the grant at
+Google, deletes the sign-in and everything the broker derived from the account,
+then lets Portal drop the tools; running it again is safe.
+
+`changes`, `approve`, `decline` and `check` handle the calendar changes Portal
+suggests when **Suggest calendar changes you approve** (`calendar.write`) is on.
+Portal's proposal tools only write a proposal; nothing reaches Google until the
+owner approves it. This is Pixel's operator path (`source-show`, `source-approve`,
+`source-reconcile`) run by root for the signed-in dashboard:
+
+- `changes` freezes each new proposal into a snapshot that only the Source Broker's
+  account owns, then lists the waiting ones, oldest first, with every value each
+  would send to Google, the event an update or delete targets (from the last
+  calendar sync), and the snapshot's SHA-256. It is the one connected-apps reply
+  that carries content. A change too long to show whole in one reply comes back
+  with `"tooLarge": true` and no hash; it can only be declined. A proposal that is
+  not valid comes back as `"state": "invalid"`.
+- `approve` carries the hash shown. Root refuses any other hash
+  (`calendar-change-mismatch`), then runs `pixel-source-action@<id>.service`, and
+  reports only an outcome bound to that hash. Approving again reports the first
+  outcome without calling Google. `unconfirmed` means Google may have the change but
+  did not confirm it; it is never sent again.
+- `check` asks Google whether an unconfirmed new event exists
+  (`pixel-source-reconcile@<id>.service`); it never writes. Only new events can be
+  checked (`calendar-change-not-checkable`).
+- `decline` takes a change off the list. When nothing reached Google, its snapshot
+  goes too; otherwise the snapshot and the broker's records stay as evidence.
+
+With `calendar.direct` on as well, Portal adds private events (no guests, no
+emails) and moves events to a new time without asking, through Pixel's bounded
+direct policy (`pixel-source-direct.path`, at most 20 an hour). Those never appear
+in `changes`. While Portal has Full Access they pause: before the access
+coordinator grants Full Access it turns the broker's direct watcher off, and right
+after any access-mode change it records the mode and updates Portal's gateway in
+the background (the connection's `pending` step shows it, with `finish` if Portal
+was busy). Changes queued while paused are discarded before the watcher runs again,
+so none is ever made late.
+
+`activity` lists those private changes from the last week, newest first, from the
+broker's own results: what Portal did, the time an event moved from, and whether
+it can be undone (`available`, `syncing`, `done`, `refused`, `unconfirmed`,
+`changed` or `gone`). `undo` reverses one, once. Root builds the reversal only
+from the broker's record (delete the event it created, or move the event back to
+the recorded times), checks that the calendar summary shows the event exactly as
+Portal left it, and makes it through `pixel-source-action@<id>.service` with the
+event's current ETag, so Google refuses it if the event changed since. The owner's
+click is the approval. A root ledger (`calendar-undo.json` in the coordinator's
+state) keeps each reversal, so a second `undo` reports the first outcome.
+
+`drafts` lists the Gmail drafts Portal wrote when **Write Gmail drafts you send
+yourself** (`gmail.drafts`, scope `gmail.compose`) is on, the same way `changes`
+lists calendar changes: each new proposal is frozen into a broker-owned snapshot
+and listed, oldest first, with every recipient, the subject, the whole message,
+the snapshot's SHA-256, and for a reply the sender and subject of the email it
+answers (from the last email sync; `null` when that sync does not hold it). A
+draft too long to show whole comes back with `"tooLarge": true` and no hash. Its
+IDs start `gmail-draft-`. `approve`, `check` and `decline` take them too:
+`approve` needs `gmail.drafts` on (`gmail-drafts-off`) and has the broker create
+exactly that draft once with Gmail's `users.drafts.create`; `check` finds an
+unconfirmed draft by the Message-ID the broker fixed before calling Gmail. Pixel
+has no tool that sends email, and nothing here sends one: the owner sends the
+draft from Gmail. Failures use the `gmail-draft-*` codes, which mirror the
+calendar ones. `undo` never takes a draft.
+
+`POST /v1/pixel/connections/plugin` with `{"plugin": "memory-wiki", "enabled": true}`
+turns one reviewed OpenClaw plugin on or off for Portal and answers
+`{"outcome": "applied" | "unchanged"}`. The catalog
+(`bin/pixel_connections/plugins.py`) lists core plugins reviewed in the exact
+OpenClaw package Pixel installs, each with the configuration it was reviewed
+with. Root records the choice and makes the same gated gateway change as
+`finish`. OpenClaw must resolve the plugin before Portal restarts with it.
+
+If Portal is busy (`runtime-busy`) or the change is rolled back
+(`plugin-change-rolled-back`), the record keeps the previous choice, so nothing
+waits half done. The status reply carries `plugins`, which is on or off for each
+catalog plugin and nothing else. The host agent adds `pluginCatalog`: what
+Settings shows for each plugin, never its configuration.
+
+**Error responses:**
+| Code | Condition |
+|------|-----------|
+| 400 | The body is outside the action's exact shape, or the client file is not a Desktop-app client (`client-not-desktop`, `client-invalid`) |
+| 401/403 | Missing or invalid API key |
+| 404 | Unknown action |
+| 409 | The coordinator refused the step; `error` is its code, for example `runtime-busy`, `sign-in-flow-expired`, `not-available-on-this-system`, `calendar-changes-off`, `calendar-change-mismatch` or `calendar-change-not-made` |
+| 503 | The coordinator or the agent's relay is unavailable; status shows where the step stands |
+
 ## Security Boundaries
 
 The host agent is a **critical security boundary** because it can start and stop Docker containers on the host.

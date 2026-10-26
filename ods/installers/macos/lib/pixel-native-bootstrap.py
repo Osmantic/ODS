@@ -77,8 +77,8 @@ def selected_release(source, ref):
     return value
 
 
-ODS_BUNDLED_REF = '3d2acd8f22a53d28b36b7e6ee017bb3143dc428b'
-ODS_BUNDLED_SHA256 = 'f136282398bdcabe5590af360e5bdce6e0e89ae28e29e8376d3bd7f8a05266e9'
+ODS_BUNDLED_REF = '4e176a0d158166bad230e62c4e0d81501ca0e1b4'
+ODS_BUNDLED_SHA256 = '8300883de8b9e2bfd6c67d8baaddc10b8671873521dbaa794ffea6060ef4b1d2'
 ODS_BUNDLED_SOURCE = Path(__file__).resolve().parents[3] / 'vendor/pixel.bundle'
 
 

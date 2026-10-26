@@ -143,7 +143,7 @@ class NativeOwnerRootTests(unittest.TestCase):
                 for source in source_dir.iterdir():
                     if source.is_file() and source.suffix in ('.py', '.mjs'):
                         shutil.copyfile(source, programs / source.name)
-            for package_name in ('pixel_settings', 'pixel_provider'):
+            for package_name in ('pixel_settings', 'pixel_provider', 'pixel_connections'):
                 shutil.copytree(ROOT / 'bin' / package_name, programs / package_name,
                     ignore=shutil.ignore_patterns('__pycache__'))
             for path in programs.rglob('*'):

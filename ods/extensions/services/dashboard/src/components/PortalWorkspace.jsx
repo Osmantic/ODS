@@ -93,7 +93,7 @@ export default function PortalWorkspace({preview,before,access:providedAccess,ti
           <button type="button" title="Workspace options" aria-label="Workspace options" aria-expanded={options} onClick={()=>setOptions(value=>!value)}><MoreHorizontal size={16}/></button>
         </>}
         {!collapsed && <button type="button" title={expanded?'Restore workspace size':'Expand workspace'} aria-label={expanded?'Restore workspace size':'Expand workspace'} onClick={onExpand}>{expanded?<Minimize2 size={14}/>:<Maximize2 size={14}/>}</button>}
-        <button type="button" title={collapsed?'Expand workspace':'Collapse workspace'} aria-label={active==='schedules'?(collapsed?'Expand workspace':'Collapse workspace'):(collapsed?'Expand preview':'Collapse preview')} onClick={onCollapse}>{collapsed?<PanelRightOpen size={14}/>:<PanelRightClose size={14}/>}</button>
+        <button type="button" title={active==='schedules'?(collapsed?'Expand workspace':'Collapse workspace'):(collapsed?'Expand preview':'Collapse preview')} aria-label={active==='schedules'?(collapsed?'Expand workspace':'Collapse workspace'):(collapsed?'Expand preview':'Collapse preview')} onClick={onCollapse}>{collapsed?<PanelRightOpen size={14}/>:<PanelRightClose size={14}/>}</button>
         <button type="button" title={active==='schedules'?'Close workspace':'Close preview'} aria-label={active==='schedules'?'Close workspace':'Close preview'} onClick={onClose}><X size={14}/></button>
       </div>
     </header>

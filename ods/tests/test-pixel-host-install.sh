@@ -683,7 +683,8 @@ PY
         _ods_pixel_write_operations_policy _ods_pixel_write_extension_manager_unit \
         _ods_pixel_write_artifact_promoter_unit _ods_pixel_write_workspace_preview_unit \
         _ods_pixel_harden_operations_state_profiles \
-        _ods_pixel_verify_operations_policy_custody _ods_pixel_sandbox_candidate_has_node; do
+        _ods_pixel_verify_operations_policy_custody _ods_pixel_sandbox_candidate_has_node \
+        _ods_pixel_install_source_broker_kit _ods_pixel_install_source_broker_if_connected; do
         eval "$stub() { :; }"
     done
     eval "_repair_run_as_owner() $(declare -f ods_pixel_run_as_owner | tail -n +2)"
@@ -1817,6 +1818,48 @@ else
 fi
 _ods_pixel_write_onboarding "$owner" "$home" "$answers" /usr/bin/openclaw /opt/ods/pixel-plugin "$digest"
 check env PATH="$CONFIGURE_TEST_PATH" python3 "$ROOT/tests/test_pixel_gateway_extension_configure.py" "$answers"
+
+# Connected apps: the broker's sign-in is root-only, and the Source Broker starts
+# only when the contract turns a source limb on.
+custody_token="$TEST_ROOT/broker-private/google-token.json"
+if (
+    ods_sudo() { printf '%s\n' "$*" >> "$TEST_ROOT/custody-sudo.log"; "$@"; }
+    ODS_PIXEL_SOURCE_TOKEN_PATH="$custody_token"
+    [[ "$(_ods_pixel_google_custody)" == absent ]] || exit 1
+    mkdir -p "${custody_token%/*}" && printf '{}\n' > "$custody_token"
+    [[ "$(_ods_pixel_google_custody)" == present ]] || exit 1
+    # Without usable sudo the sign-in cannot be seen, so it counts as absent.
+    ODS_SUDO_AVAILABLE=false
+    [[ "$(_ods_pixel_google_custody)" == absent ]] || exit 1
+    [[ "$(grep -c "^test -f $custody_token$" "$TEST_ROOT/custody-sudo.log")" == 2 ]]
+); then
+    pass "Google sign-in custody is checked through root and absent without sudo"
+else
+    fail "Google sign-in custody is checked through root and absent without sudo"
+fi
+source_broker_log="$TEST_ROOT/source-broker-calls.log"
+if (
+    ods_pixel_run_as_owner() { shift 2; printf '%s\n' "$*" >> "$source_broker_log"; }
+    _ods_pixel_install_source_broker_if_connected "$owner" "$home" /opt/pixel "$answers" "$TEST_ROOT/pixel.log"
+    [[ ! -e "$source_broker_log" ]] || exit 1
+    connected_answers="$TEST_ROOT/connected-onboarding.json"
+    jq '.calendarLimbEnabled = true' "$answers" > "$connected_answers"
+    _ods_pixel_install_source_broker_if_connected "$owner" "$home" /opt/pixel "$connected_answers" "$TEST_ROOT/pixel.log"
+    [[ "$(cat "$source_broker_log")" == "/opt/pixel/pixel source-broker --confirm" ]]
+); then
+    pass "Source Broker starts only for a contract with a connected source"
+else
+    fail "Source Broker starts only for a contract with a connected source"
+fi
+if (
+    ods_pixel_run_as_owner() { return 7; }
+    connected_answers="$TEST_ROOT/connected-onboarding.json"
+    _ods_pixel_install_source_broker_if_connected "$owner" "$home" /opt/pixel "$connected_answers" "$TEST_ROOT/pixel.log"
+); then
+    fail "a failed Source Broker install is reported"
+else
+    pass "a failed Source Broker install is reported"
+fi
 check python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); assert v["gatewayPort"] == 18789; assert v["webSearchProvider"] == "searxng"; assert not any(e["id"] == "parallel" for e in v["gatewayExtensions"])' "$answers"
 alternate_gateway_answers="$TEST_ROOT/alternate-gateway-onboarding.json"
 PIXEL_GATEWAY_PORT=18790 _ods_pixel_write_onboarding "$owner" "$home" \

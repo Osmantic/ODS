@@ -73,6 +73,10 @@ def local_server(mode):
 @pytest.mark.parametrize("mode", ["headers", "body"])
 def test_slow_trickle_is_bounded_by_absolute_http_deadline(tmp_path, mode):
     adapter = bridge.SystemdAccessBridge(tmp_path, "key")
+    # First getaddrinfo lazily imports the stdlib IDNA codec. Keep that cold
+    # filesystem cost outside this 100ms slow-response test, while still
+    # measuring the actual TCP connect, request and response deadline below.
+    socket.getaddrinfo("127.0.0.1", 0, type=socket.SOCK_STREAM)
     with local_server(mode) as (origin, seen):
         start = time.monotonic()
         with pytest.raises(bridge.AccessError, match="runtime-operation-timeout"):

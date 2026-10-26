@@ -1,7 +1,7 @@
 {
   "$schema": "./schemas/release-manifest-v1.schema.json",
   "schemaVersion": 1,
-  "pixel": "4.3.33",
+  "pixel": "4.3.35",
   "supportedHosts": [
     "Ubuntu 24.04 LTS",
     "Debian 12"
@@ -209,7 +209,7 @@
     "boundary": "terminal-only-clean-migration-no-in-place-update",
     "v1Contract": {
       "sourcePixel": "3.2.2",
-      "targetPixel": "4.3.33"
+      "targetPixel": "4.3.35"
     },
     "activation": "self-contained-migrate-legacy-clean-activate-transaction",
     "privacy": "content-free-receipts-no-paths-no-identity-no-user-content"
@@ -530,6 +530,7 @@
     "pixel_gmail_search",
     "pixel_gmail_read",
     "pixel_gmail_thread",
+    "pixel_gmail_draft_propose",
     "pixel_calendar_list",
     "pixel_calendar_get",
     "pixel_calendar_propose_create",

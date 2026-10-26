@@ -36,6 +36,7 @@ from pixel_chat_context import HistoryMessage, HistorySnapshot, public_context
 from pixel_runtime_identity import project_runtime_identity, unknown_runtime_identity
 from pixel_readiness import project_readiness
 from routers.pixel_images import router as image_router, resolve_message_images, conversation_storage
+from routers.pixel_connections import owner_attention
 from pixel_edge_read_client import borrow_edge_read_client, get_edge_read_client
 
 
@@ -851,6 +852,10 @@ async def _status_projection() -> tuple[dict[str, object], bool]:
                 result["detail"] = ("Owner agent available; model transition needs recovery; release readiness is unverified"
                                     if readiness["reasonCode"] == "model-transition-recovery-required" else
                                     "Owner agent available; access transition is unfinished; release readiness is unverified")
+            # Chat points to Connected apps only when a Google connection needs the owner.
+            connected_apps = await owner_attention()
+            if connected_apps is not None:
+                result["connectedApps"] = connected_apps
         return result, False
     except (httpx.HTTPError, asyncio.TimeoutError) as exc:
         # Exception text and request objects can contain upstream credentials.

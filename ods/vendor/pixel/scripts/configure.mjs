@@ -237,7 +237,19 @@ if (new Set(agentSkills).size !== agentSkills.length) throw new Error("agentSkil
 const legacyWebEnabled = supplied.webCourierEnabled;
 const emailLimbEnabled = boolean(await answer("emailLimbEnabled", "Enable email limb", capabilityDefaults.limbs.email), "emailLimbEnabled");
 const calendarLimbEnabled = boolean(await answer("calendarLimbEnabled", "Enable Calendar limb", capabilityDefaults.limbs.calendar), "calendarLimbEnabled");
-const calendarDirectEnabled = calendarLimbEnabled && boolean(await answer("calendarDirectEnabled", "Directly apply bounded private creates and time-only reschedules", true), "calendarDirectEnabled");
+// Answers-file only, so interactive configure asks the same questions as before.
+const calendarWriteEnabled = calendarLimbEnabled && boolean(supplied.calendarWriteEnabled ?? true, "calendarWriteEnabled");
+// Answers-file only, like calendarWriteEnabled: Gmail drafts the owner approves; there is no send tool.
+const emailDraftsEnabled = emailLimbEnabled && boolean(supplied.emailDraftsEnabled ?? false, "emailDraftsEnabled");
+const calendarDirectEnabled = calendarLimbEnabled && calendarWriteEnabled && boolean(await answer("calendarDirectEnabled", "Directly apply bounded private creates and time-only reschedules", true), "calendarDirectEnabled");
+const userTimezone = [undefined, null, ""].includes(supplied.userTimezone) ? "" : text(supplied.userTimezone, "userTimezone");
+if (userTimezone) {
+  if (!/^[A-Za-z][A-Za-z0-9_+\-/]{0,63}$/.test(userTimezone)) throw new Error(`Invalid IANA userTimezone: ${userTimezone}`);
+  try { new Intl.DateTimeFormat("en-US", { timeZone: userTimezone }).format(); } catch { throw new Error(`Invalid IANA userTimezone: ${userTimezone}`); }
+}
+const gmailWindowDays = [undefined, null, ""].includes(supplied.gmailWindowDays) ? null : integer(supplied.gmailWindowDays, "gmailWindowDays", 1);
+if (gmailWindowDays !== null && gmailWindowDays > 3650) throw new Error("gmailWindowDays must be <= 3650");
+const gmailWindow = gmailWindowDays === null ? "" : ` newer_than:${gmailWindowDays}d`;
 const socialLimbEnabled = boolean(await answer("socialLimbEnabled", "Enable social limb", capabilityDefaults.limbs.social), "socialLimbEnabled");
 const webLimbEnabled = boolean(await answer("webLimbEnabled", "Enable hardened Web limb", legacyWebEnabled ?? capabilityDefaults.limbs.web), "webLimbEnabled");
 const operationsLimbEnabled = boolean(await answer("operationsLimbEnabled", "Enable isolated Operations limb", capabilityDefaults.limbs.operations), "operationsLimbEnabled");
@@ -431,6 +443,7 @@ const sourceProjectionDir = join(sourceBrokerStateDir, "projection");
 const actionProposalDir = join(sourceBrokerStateDir, "proposals");
 const actionResultDir = join(sourceBrokerStateDir, "results");
 const sourceTokenPath = join(sourceBrokerStateDir, "private", "google-token.json");
+const sourceOauthDir = join(sourceBrokerStateDir, "private", "oauth");
 const sourceBrokerEnabled = emailLimbEnabled || calendarLimbEnabled || socialLimbEnabled;
 const opsBrokerInstallDir = "/opt/pixel-ops-broker";
 const opsBrokerStateDir = "/var/lib/pixel-ops-broker";
@@ -474,11 +487,13 @@ const values = {
   PIXEL_AGENT_SKILLS: JSON.stringify(agentSkills),
   PIXEL_PRIVATE_ONBOARDING_PATH: privateOnboardingPath,
   PIXEL_LIMB_EMAIL_ENABLED: emailLimbEnabled ? "1" : "0",
+  PIXEL_LIMB_EMAIL_DRAFTS_ENABLED: emailDraftsEnabled ? "1" : "0",
   PIXEL_LIMB_CALENDAR_ENABLED: calendarLimbEnabled ? "1" : "0",
   PIXEL_LIMB_SOCIAL_ENABLED: socialLimbEnabled ? "1" : "0",
   PIXEL_LIMB_WEB_ENABLED: webLimbEnabled ? "1" : "0",
   PIXEL_LIMB_OPERATIONS_ENABLED: operationsLimbEnabled ? "1" : "0",
   PIXEL_LIMB_FRONTIER_ENABLED: frontierLimbEnabled ? "1" : "0",
+  PIXEL_LIMB_CALENDAR_WRITE_ENABLED: calendarWriteEnabled ? "1" : "0",
   PIXEL_WEB_COURIER_ENABLED: webLimbEnabled ? "1" : "0",
   PIXEL_WEB_COURIER_UNIT: "pixel-web-courier.service",
   PIXEL_COURIER_SYSTEMD_DIR: "/etc/systemd/system",
@@ -514,6 +529,7 @@ const values = {
   PIXEL_REFERENCE_MODEL_PORT: "8000",
   PIXEL_GOOGLE_ACCOUNT: googleAccount,
   PIXEL_TIME_ZONE: timeZone,
+  PIXEL_USER_TIMEZONE: userTimezone,
   PIXEL_CALENDAR_ID: calendarId,
   PIXEL_GOOGLE_CONFIG_DIR: googleDir,
   PIXEL_GOOGLE_CLIENT_FILE: join(googleDir, "client.json"),
@@ -526,6 +542,8 @@ const values = {
   PIXEL_SOURCE_RECONCILE_UNIT: "pixel-source-reconcile@.service",
   PIXEL_SOURCE_DIRECT_UNIT: "pixel-source-direct.service",
   PIXEL_SOURCE_DIRECT_PATH_UNIT: "pixel-source-direct.path",
+  PIXEL_SOURCE_EXCHANGE_UNIT: "pixel-source-exchange@.service",
+  PIXEL_SOURCE_REVOKE_UNIT: "pixel-source-revoke.service",
   PIXEL_SOURCE_BROKER_SYSTEMD_DIR: "/etc/systemd/system",
   PIXEL_SOURCE_BROKER_ENV: "/etc/pixel-source-broker.env",
   PIXEL_SOURCE_BROKER_INSTALL_DIR: sourceBrokerInstallDir,
@@ -533,19 +551,21 @@ const values = {
   PIXEL_SOURCE_BROKER_USER: "pixel-source-broker",
   PIXEL_SOURCE_READER_USER: serviceUser,
   PIXEL_SOURCE_TOKEN_PATH: sourceTokenPath,
+  PIXEL_SOURCE_OAUTH_DIR: sourceOauthDir,
   PIXEL_SOURCE_PROJECTION_DIR: sourceProjectionDir,
   PIXEL_ACTION_PROPOSAL_DIR: actionProposalDir,
   PIXEL_ACTION_RESULT_DIR: actionResultDir,
   PIXEL_CALENDAR_DIRECT_ENABLED: calendarDirectEnabled ? "1" : "0",
   PIXEL_CALENDAR_DIRECT_MAX_PER_HOUR: "20",
-  PIXEL_SOURCE_GMAIL_QUERY: "in:inbox",
+  PIXEL_SOURCE_GMAIL_QUERY: `in:inbox${gmailWindow}`,
   PIXEL_SOURCE_GMAIL_PAGE_SIZE: "100",
   PIXEL_SOURCE_GMAIL_MAX_PAGES: "1000",
-  PIXEL_SOURCE_GMAIL_SENT_QUERY: "in:sent",
+  PIXEL_SOURCE_GMAIL_SENT_QUERY: `in:sent${gmailWindow}`,
   PIXEL_SOURCE_GMAIL_SENT_PAGE_SIZE: "100",
   PIXEL_SOURCE_GMAIL_SENT_MAX_PAGES: "1000",
   PIXEL_SOURCE_CALENDAR_PAST_DAYS: "7",
   PIXEL_SOURCE_CALENDAR_FUTURE_DAYS: "90",
+  PIXEL_SOURCE_CALENDAR_MAX_PAGES: "20",
   PIXEL_SOURCE_STALE_AFTER_MS: String(3 * 60 * 1000),
   PIXEL_OPS_BROKER_ENABLED: operationsLimbEnabled ? "1" : "0",
   PIXEL_OPS_BROKER_UNIT: "pixel-ops-broker.service",
@@ -615,8 +635,11 @@ const gatewayValues = {
   PIXEL_SOURCE_STALE_AFTER_MS: values.PIXEL_SOURCE_STALE_AFTER_MS,
   PIXEL_CALENDAR_DIRECT_ENABLED: values.PIXEL_CALENDAR_DIRECT_ENABLED,
   PIXEL_LIMB_EMAIL_ENABLED: values.PIXEL_LIMB_EMAIL_ENABLED,
+  PIXEL_LIMB_EMAIL_DRAFTS_ENABLED: values.PIXEL_LIMB_EMAIL_DRAFTS_ENABLED,
   PIXEL_LIMB_CALENDAR_ENABLED: values.PIXEL_LIMB_CALENDAR_ENABLED,
+  PIXEL_LIMB_CALENDAR_WRITE_ENABLED: values.PIXEL_LIMB_CALENDAR_WRITE_ENABLED,
   PIXEL_LIMB_SOCIAL_ENABLED: values.PIXEL_LIMB_SOCIAL_ENABLED,
+  PIXEL_LIMB_WEB_ENABLED: values.PIXEL_LIMB_WEB_ENABLED,
   PIXEL_LIMB_OPERATIONS_ENABLED: values.PIXEL_LIMB_OPERATIONS_ENABLED,
   PIXEL_LIMB_FRONTIER_ENABLED: values.PIXEL_LIMB_FRONTIER_ENABLED,
   PIXEL_OPS_STATE_DIR: opsBrokerStateDir,
@@ -650,6 +673,7 @@ await writeFile(join(generated, "web-courier.env"), `${Object.entries(webCourier
 
 const sourceBrokerValues = {
   PIXEL_SOURCE_TOKEN_PATH: sourceTokenPath,
+  PIXEL_SOURCE_OAUTH_DIR: sourceOauthDir,
   PIXEL_SOURCE_PROJECTION_DIR: sourceProjectionDir,
   PIXEL_ACTION_PROPOSAL_DIR: actionProposalDir,
   PIXEL_ACTION_RESULT_DIR: actionResultDir,
@@ -663,8 +687,11 @@ const sourceBrokerValues = {
   PIXEL_SOURCE_GMAIL_SENT_MAX_PAGES: values.PIXEL_SOURCE_GMAIL_SENT_MAX_PAGES,
   PIXEL_SOURCE_CALENDAR_PAST_DAYS: values.PIXEL_SOURCE_CALENDAR_PAST_DAYS,
   PIXEL_SOURCE_CALENDAR_FUTURE_DAYS: values.PIXEL_SOURCE_CALENDAR_FUTURE_DAYS,
+  PIXEL_SOURCE_CALENDAR_MAX_PAGES: values.PIXEL_SOURCE_CALENDAR_MAX_PAGES,
   PIXEL_LIMB_EMAIL_ENABLED: values.PIXEL_LIMB_EMAIL_ENABLED,
+  PIXEL_LIMB_EMAIL_DRAFTS_ENABLED: values.PIXEL_LIMB_EMAIL_DRAFTS_ENABLED,
   PIXEL_LIMB_CALENDAR_ENABLED: values.PIXEL_LIMB_CALENDAR_ENABLED,
+  PIXEL_LIMB_CALENDAR_WRITE_ENABLED: values.PIXEL_LIMB_CALENDAR_WRITE_ENABLED,
   PIXEL_LIMB_SOCIAL_ENABLED: values.PIXEL_LIMB_SOCIAL_ENABLED,
   PIXEL_CALENDAR_DIRECT_ENABLED: values.PIXEL_CALENDAR_DIRECT_ENABLED,
   PIXEL_CALENDAR_DIRECT_MAX_PER_HOUR: values.PIXEL_CALENDAR_DIRECT_MAX_PER_HOUR,
@@ -973,6 +1000,51 @@ WantedBy=multi-user.target
 `;
 await writeFile(join(generated, "pixel-source-direct.path"), sourceDirectPath, { mode: 0o600 });
 
+// Sign-in exchange and revocation run as the broker identity, the only one that may hold the token.
+const sourceExchangeService = `[Unit]
+Description=Pixel Source Broker Google sign-in exchange for flow %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=${values.PIXEL_SOURCE_BROKER_USER}
+Group=${values.PIXEL_SOURCE_BROKER_USER}
+ExecStart=${systemdQuote(join(sourceBrokerInstallDir, "broker.py"))} --exchange %i
+EnvironmentFile=${systemdPath(values.PIXEL_SOURCE_BROKER_ENV)}
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectHome=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+ProcSubset=pid
+ProtectSystem=strict
+ReadOnlyPaths=${systemdPath(sourceBrokerInstallDir)}
+ReadWritePaths=${systemdPath(join(sourceBrokerStateDir, "private"))}
+RemoveIPC=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+MemoryMax=256M
+TasksMax=64
+`;
+await writeFile(join(generated, "pixel-source-exchange@.service"), sourceExchangeService, { mode: 0o600 });
+
+const sourceRevokeService = sourceExchangeService
+  .replace("Pixel Source Broker Google sign-in exchange for flow %i", "Pixel Source Broker Google sign-in revocation")
+  .replace(" --exchange %i", " --revoke");
+await writeFile(join(generated, "pixel-source-revoke.service"), sourceRevokeService, { mode: 0o600 });
+
 const localWritableRoots = operationsPolicy ? Object.values(operationsPolicy.targets ?? {}).filter((target) => target?.enabled !== false && target?.backend === "local").flatMap((target) => Array.isArray(target.writableRoots) ? target.writableRoots : []) : [];
 const opsArtifactRoot = operationsPolicy?.download?.stagingRoot ?? join(opsBrokerStateDir, "artifacts");
 for (const path of [...localWritableRoots, opsArtifactRoot]) absolute(path, "operations policy writableRoot");
@@ -1093,7 +1165,7 @@ async function customize(directory) {
 await customize(generatedWorkspace);
 
 const limbs = { email: emailLimbEnabled, calendar: calendarLimbEnabled, social: socialLimbEnabled, web: webLimbEnabled, operations: operationsLimbEnabled, frontier: frontierLimbEnabled };
-const deploymentRecord = { version, deploymentProfile, capabilityProfile, ownerName, organization, deploymentName, timeZone, agentId, agentName, openclawBin, openclawHome, installDir, workspace, modelProvider, modelId, modelName, modelBaseUrl, modelPrivateHosts, modelReasoning, modelContextWindow, modelMaxTokens, webSearchProvider, searxngBaseUrl, embeddingModel, embeddingCache, googleAccount, calendarId, gatewayPort, gatewayExtensions, agentSkills, localCapabilityPacks, signedOperationsActionPacks, frontierTaskPacks, limbs, releaseOperator: { enabled: releaseOperatorEnabled }, sourceBroker: { enabled: sourceBrokerEnabled, systemUser: values.PIXEL_SOURCE_BROKER_USER, projectionDir: sourceProjectionDir, rawContentStored: false }, operationsBroker: { enabled: operationsLimbEnabled, systemUser: values.PIXEL_OPS_BROKER_USER, policyPath: opsPolicyPath, credentialsVisibleToGateway: false }, frontierBroker: { enabled: frontierLimbEnabled, systemUser: values.PIXEL_FRONTIER_BROKER_USER, policyPath: frontierPolicyPath, authMode: frontierAuthMode, budgetProfile: frontierBudgetProfile, credentialVisibleToGateway: false, primaryModelPrivate, primaryModelOperatorAttested }, calendarMutationPolicy: { boundedDirectEnabled: calendarDirectEnabled, directShapes: ["private-create-without-attendees", "etag-bound-time-only-update"], separateApprovalForConsequentialChanges: true }, messagingToolsDenied: true, sessionVisibility: "tree", gatewayRunsAsHardenedSystemService: true };
+const deploymentRecord = { version, deploymentProfile, capabilityProfile, ownerName, organization, deploymentName, timeZone, agentId, agentName, openclawBin, openclawHome, installDir, workspace, modelProvider, modelId, modelName, modelBaseUrl, modelPrivateHosts, modelReasoning, modelContextWindow, modelMaxTokens, webSearchProvider, searxngBaseUrl, embeddingModel, embeddingCache, googleAccount, calendarId, gatewayPort, gatewayExtensions, agentSkills, localCapabilityPacks, signedOperationsActionPacks, frontierTaskPacks, limbs, releaseOperator: { enabled: releaseOperatorEnabled }, sourceBroker: { enabled: sourceBrokerEnabled, systemUser: values.PIXEL_SOURCE_BROKER_USER, projectionDir: sourceProjectionDir, rawContentStored: false }, operationsBroker: { enabled: operationsLimbEnabled, systemUser: values.PIXEL_OPS_BROKER_USER, policyPath: opsPolicyPath, credentialsVisibleToGateway: false }, frontierBroker: { enabled: frontierLimbEnabled, systemUser: values.PIXEL_FRONTIER_BROKER_USER, policyPath: frontierPolicyPath, authMode: frontierAuthMode, budgetProfile: frontierBudgetProfile, credentialVisibleToGateway: false, primaryModelPrivate, primaryModelOperatorAttested }, calendarMutationPolicy: { writeEnabled: calendarWriteEnabled, boundedDirectEnabled: calendarDirectEnabled, directShapes: ["private-create-without-attendees", "etag-bound-time-only-update"], separateApprovalForConsequentialChanges: true }, messagingToolsDenied: true, sessionVisibility: "tree", gatewayRunsAsHardenedSystemService: true };
 let generatedAt = new Date().toISOString();
 try {
   const previous = JSON.parse(await readFile(join(generated, "deployment.json"), "utf8"));

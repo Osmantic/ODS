@@ -79,6 +79,16 @@ jobs:
         env:
           OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node --test ods/extensions/services/pixel-agent/tests/runtime_read_range.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_edit_redaction.integration.mjs
+      - name: Verify connected-app plugin imports and real wiki tools
+        if: runner.os == 'Linux'
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+          PIXEL_SOURCE_PLUGIN_DIR: ${{ runner.temp }}/connected-source/plugin
+        run: |
+          mkdir -p "$PIXEL_SOURCE_PLUGIN_DIR"
+          cp -R ods/vendor/pixel/plugin/. "$PIXEL_SOURCE_PLUGIN_DIR/"
+          npm ci --prefix "$PIXEL_SOURCE_PLUGIN_DIR" --ignore-scripts --no-audit --no-fund
+          python3 ods/extensions/services/pixel-agent/tests/test_connection_plugin_runtime.py
       - name: Verify concurrent workspace creation and no-follow boundaries
         if: runner.os != 'Windows'
         env:

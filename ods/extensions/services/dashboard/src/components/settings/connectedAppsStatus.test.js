@@ -1,0 +1,118 @@
+import { describe, expect, it } from 'vitest'
+import { GOOGLE_CONSOLE, capabilitySummary, consoleLink, googleCard, readClientFile, refreshDelay, signInProblem } from './connectedAppsStatus'
+import { INSTALLED, READ_BOTH, statusFor } from './connectedAppsFixtures'
+
+const NOW = Date.parse('2026-10-25T20:30:00Z')
+
+describe("the owner's client file", () => {
+  it('accepts the Desktop app file Google downloads and keeps its project', () => {
+    expect(readClientFile(JSON.stringify({installed: INSTALLED}))).toEqual({client: {installed: INSTALLED}, projectId: 'ods-owner-calendar'})
+    const minimal = {...INSTALLED}
+    delete minimal.redirect_uris
+    expect(readClientFile(JSON.stringify({installed: minimal})).projectId).toBe('ods-owner-calendar')
+  })
+
+  it('names the fix for every other file', () => {
+    for (const [value, code] of [
+      [{web: INSTALLED}, 'client-not-desktop'],
+      [{installed: {...INSTALLED, redirect_uris: ['https://example.com/callback']}}, 'client-not-desktop'],
+      [{installed: {...INSTALLED, token_uri: 'https://example.com/token'}}, 'client-invalid'],
+      [{installed: {...INSTALLED, client_id: 'not-a-client'}}, 'client-invalid'],
+      [{installed: INSTALLED, web: INSTALLED}, 'client-invalid'],
+      [{type: 'service_account'}, 'client-invalid'],
+    ]) expect(readClientFile(JSON.stringify(value))).toEqual({error: code})
+    expect(readClientFile('{not json')).toEqual({error: 'client-invalid'})
+  })
+})
+
+describe('console links', () => {
+  it("open the owner's own project once it is known", () => {
+    expect(consoleLink(GOOGLE_CONSOLE.audience, 'ods-owner-calendar')).toBe('https://console.developers.google.com/auth/audience?project=ods-owner-calendar')
+    expect(consoleLink(GOOGLE_CONSOLE.audience, null)).toBe(GOOGLE_CONSOLE.audience)
+    expect(consoleLink(GOOGLE_CONSOLE.audience, 'x"><script>')).toBe(GOOGLE_CONSOLE.audience)
+  })
+})
+
+describe('the Google card', () => {
+  it.each([
+    ['not-connected', null, 'Not connected', ['connect'], false],
+    ['first-sync', null, 'Syncing', ['disconnect'], false],
+    ['connected', null, 'Connected', ['sync', 'reconnect', 'disconnect'], false],
+    ['behind', 'network', 'Behind', ['sync', 'disconnect'], false],
+    ['behind', 'sync-stopped', 'Behind', ['sync', 'disconnect'], true],
+    ['needs-reconnect', 'invalid-grant', 'Needs reconnecting', ['reconnect', 'disconnect'], false],
+    ['needs-reconnect', 'sign-in-missing', 'Needs reconnecting', ['reconnect', 'disconnect'], false],
+    ['missing-permission', 'missing-scope', 'Missing permission', ['reconnect', 'disconnect'], false],
+    ['setup-broken', 'api-disabled', 'Setup needs a fix', ['sync', 'reconnect', 'disconnect'], false],
+    ['setup-broken', 'client-invalid', 'Setup needs a fix', ['sync', 'reconnect', 'disconnect'], false],
+    ['blocked-by-admin', 'blocked-by-admin', 'Blocked by your administrator', ['reconnect', 'disconnect'], false],
+    ['unknown-error', 'status-unreadable', 'Sync problem', ['sync', 'disconnect'], true],
+    ['unknown-error', null, 'Sync problem', ['sync', 'disconnect'], true],
+  ])('%s (%s) shows its fix', (state, reason, chip, actions, help) => {
+    const card = googleCard(statusFor({state, reason}), NOW)
+    expect(card.chip).toBe(chip)
+    expect(card.actions).toEqual(actions)
+    expect(card.help).toBe(help)
+    if (reason || state === 'unknown-error') expect(card.fix).toBeTruthy()
+  })
+
+  it('explains invalid-grant, including the 7-day Testing sign-out and how to stop it', () => {
+    const card = googleCard(statusFor({state: 'needs-reconnect', reason: 'invalid-grant'}), NOW)
+    expect(card.message).toMatch(/Testing, where Google ends sign-ins after 7 days/)
+    expect(card.fix).toMatch(/publish your app/)
+  })
+
+  it('shows each step in progress, and why the last sign-in did not connect', () => {
+    const step = pending => googleCard(statusFor({pending}), NOW).step
+    expect(step({action: 'connect', phase: 'consent', expiresAt: '2026-10-25T20:40:00Z', error: null, since: '2026-10-25T20:25:00Z'}))
+      .toMatchObject({kind: 'waiting', actions: ['connect']})
+    expect(step({action: 'connect', phase: 'consent', expiresAt: '2026-10-25T20:29:00Z', error: null, since: '2026-10-25T20:14:00Z'}))
+      .toMatchObject({kind: 'expired', actions: ['connect']})
+    expect(step({action: 'connect', phase: 'activating', expiresAt: null, error: null, since: '2026-10-25T20:29:00Z'}))
+      .toMatchObject({kind: 'updating', tone: 'progress', actions: []})
+    expect(step({action: 'connect', phase: 'activating', expiresAt: null, error: 'runtime-busy', since: '2026-10-25T20:29:00Z'}))
+      .toMatchObject({kind: 'update-stopped', actions: ['finish'], help: false})
+    // An update that never reported back has stopped: Finish runs it again.
+    expect(step({action: 'connect', phase: 'activating', expiresAt: null, error: null, since: '2026-10-25T20:23:00Z'}))
+      .toMatchObject({kind: 'update-stopped', actions: ['finish'], help: false, message: "Portal hasn't picked up the change yet."})
+    expect(step({action: 'disconnect', phase: 'deactivating', expiresAt: null, error: 'gateway-change-rolled-back', since: '2026-10-25T20:29:00Z'}))
+      .toMatchObject({kind: 'update-stopped', actions: ['finish'], help: true})
+    expect(step({action: 'connect', phase: 'failed', expiresAt: null, error: 'access-denied', since: '2026-10-25T20:29:00Z'}))
+      .toMatchObject({kind: 'failed', actions: ['connect'], help: false, message: "You didn't allow access at Google."})
+    expect(step({action: 'connect', phase: 'failed', expiresAt: null, error: 'sign-in-exchange-unavailable', since: '2026-10-25T20:29:00Z'}))
+      .toMatchObject({kind: 'failed', help: true})
+  })
+
+  it('offers Finish when ODS lost track of a step, and Disconnect for an unreadable record', () => {
+    expect(googleCard(statusFor({state: 'connected'}, {reason: 'journal-unusable'}), NOW).step).toMatchObject({actions: ['finish']})
+    expect(googleCard(statusFor({}, {reason: 'record-unusable'}), NOW)).toMatchObject({actions: ['disconnect'], help: true})
+  })
+
+  it('says plainly where connected apps are not available yet', () => {
+    const card = googleCard({...statusFor(), available: false, surface: 'darwin', reason: 'not-available-on-this-system'}, NOW)
+    expect(card).toMatchObject({chip: 'Not available', actions: []})
+    expect(card.message).toMatch(/Linux or WSL/)
+  })
+
+  it('treats every unknown sign-in outcome as a real failure with help', () => {
+    expect(signInProblem('something-new')).toMatchObject({help: true})
+    expect(signInProblem('access-denied').help).toBe(false)
+  })
+})
+
+it('summarizes only what Portal may use', () => {
+  expect(capabilitySummary(READ_BOTH)).toBe('Calendar: read · Email: summaries')
+  expect(capabilitySummary(null)).toBe('')
+})
+
+it('polls only while a step runs or the first sync is underway', () => {
+  const consent = {action: 'connect', phase: 'consent', expiresAt: '2026-10-25T20:40:00Z', error: null, since: '2026-10-25T20:25:00Z'}
+  expect(refreshDelay(statusFor({pending: consent}), NOW)).toBe(2000)
+  expect(refreshDelay(statusFor({pending: {...consent, phase: 'activating', expiresAt: null}}), NOW)).toBe(3000)
+  expect(refreshDelay(statusFor({pending: {...consent, phase: 'activating', expiresAt: null, since: '2026-10-25T20:23:00Z'}}), NOW)).toBeNull()
+  expect(refreshDelay(statusFor({pending: {...consent, phase: 'activating', expiresAt: null, error: 'runtime-busy'}}), NOW)).toBeNull()
+  expect(refreshDelay(statusFor({pending: {...consent, phase: 'failed', expiresAt: null, error: 'access-denied'}}), NOW)).toBeNull()
+  expect(refreshDelay(statusFor({state: 'first-sync'}), NOW)).toBe(5000)
+  expect(refreshDelay(statusFor({state: 'connected'}), NOW)).toBeNull()
+  expect(refreshDelay({...statusFor(), available: false}, NOW)).toBeNull()
+})

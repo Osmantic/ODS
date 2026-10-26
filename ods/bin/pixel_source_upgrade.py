@@ -359,7 +359,20 @@ def _prove_provision(bridge, manager, plan, kind):
     return dict(files=evidence, unit=status, socket=[info.st_dev, info.st_ino], images=images)
 
 
-def _render_overlay(renderer, anchor, home, uid, gid, *, provision=None, thinking_control=None):
+def _owner_plugins():
+    """The reviewed plugins root's connection record turns on, exactly as the installer's overlay loads them.
+
+    They come from root's own record, never the owner's answers file.
+    """
+    from pixel_connections import plugins, state
+    try:
+        record = state.read(state.PATH, owners=(SYSTEM_UID,))
+    except state.StateError:
+        return None  # The installer loads none from an unusable record either.
+    return plugins.answers(state.enabled_plugins(record))
+
+
+def _render_overlay(renderer, anchor, home, uid, gid, *, provision=None, thinking_control=None, portal_plugins=None):
     config = _overlay_json(anchor)
     args = config['plugins']['entries']['pixel-ods']['config']
     port = args['perplexicaPort']
@@ -389,6 +402,8 @@ def _render_overlay(renderer, anchor, home, uid, gid, *, provision=None, thinkin
         answers['modelRouteFingerprint'] = args['modelRouteFingerprint']
     if thinking_control is not None:
         answers['modelThinkingControl'] = thinking_control
+    if portal_plugins:
+        answers['portalPlugins'] = portal_plugins
     payload = dict(renderer=renderer.decode('utf-8'), config=anchor.decode('utf-8'),
                    port=port, transport=transport, socket=socket, home=str(home / '.openclaw'),
                    answers=answers)
@@ -498,7 +513,8 @@ def prove_runtime_overlay(bridge, transaction, config_sha, outcome):
     # answers file (a plugin-config key would break rollback), so the release
     # cannot name it. It selects one of the renderer's fixed thinking policies:
     # accept any of them, with every other input still derived from the release.
-    derived = (_render_overlay(renderer, anchor, home, uid, gid, **render_args,
+    chosen = _owner_plugins()
+    derived = (_render_overlay(renderer, anchor, home, uid, gid, **render_args, portal_plugins=chosen,
                                **({'thinking_control': control} if control else {}))
                for control in (None, 'enable_thinking', 'always', 'none'))
     if len(renderer) > 256 * 1024 or config_sha not in derived:
