@@ -33,7 +33,8 @@ import { parseQuestions, questionsText, requestsChoiceQuestion, choiceQuestionFr
 import { answersClarification, clarificationAnswerContext } from "./pending-clarification.mjs";
 import { createRunProgressBudget, failedToolOutcome, isLiteralEcho, lookupFoundNothing, nodeReportedFailure, progressLaneStopReason, RUN_PROGRESS_STOP_REASON } from "./run-progress-budget.mjs";
 import { assistantMessageText, composeProgressFinalization, composeReadPages, createProgressFinalization, partialFinalizationAnswer,
-  PROGRESS_FINALIZATION_INSTRUCTION } from "./progress-finalization.mjs";
+  PREVIEW_CHECK_FINALIZATION_INSTRUCTION, PROGRESS_FINALIZATION_INSTRUCTION, progressFinalizationHead,
+  unverifiedLinksNote } from "./progress-finalization.mjs";
 import { STOP_SYNTHESIS_LIMITS, STOP_SYNTHESIS_NOTE, synthesisAnswer, synthesisRequest } from "./stop-synthesis.mjs";
 import { createRunDeadline, runDeadlineReached, runDeadlineStopText, takeRunDeadlineNotice } from "./run-deadline.mjs";
 import { outputLimitContext, outputLimitCut, outputLimitNotice, outputLimitStopText } from "./output-limit.mjs";
@@ -51,8 +52,8 @@ import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehavio
   attemptedPreviewBehavior, boundPreviewBehavior, previewBehaviorInstruction, unassertedBehaviorStep } from './preview-interaction-assurance.mjs';
 import { workspaceRevalidationCandidate, workspaceReadOnlyCall, settledRevalidationReceipt, boundedPreviewVerification } from "./preview-revalidation.mjs";
 import { boundedPreviewDelivery } from './preview-delivery-recovery.mjs';
-import { PREVIEW_EARLIER_NOTE, PREVIEW_STOPPED_NOTE, explainedPreviewDelivery, ownerPreviewText,
-  previewCheckNote } from './preview-explanation.mjs';
+import { PREVIEW_EARLIER_NOTE, PREVIEW_MISSING_NOTE, PREVIEW_SCRIPT_NOTE, PREVIEW_STOPPED_NOTE, PREVIEW_UNFINISHED_NOTE,
+  explainedPreviewDelivery, ownerPreviewText, previewCheckNote } from './preview-explanation.mjs';
 import { extractRequestedLiterals, requestedTextCheck, requestedTextInstruction, requestedTextRevisionInstruction,
   requestedTextDeliveryNote, publishedElementOutline, extractRequestedControlNames, requestedControlSources,
   requestedControlNameCheck, requestedControlNameInstruction, requestedControlNameRevisionInstruction,
@@ -333,6 +334,13 @@ export const WORKSPACE_PREVIEW_UNVERIFIED_DELIVERY_PREFIX =
 
 export const WORKSPACE_PREVIEW_NOT_CREATED_DELIVERY_PREFIX =
   "Portal didn't create the website files for this request, so there is no preview to open yet. Ask Portal to try the build again.";
+
+// A tool-limit stop in a website build before any preview was published: this
+// line, then one of the two above with what there is and what to do next, then
+// PROGRESS_STOP_HELP (a link, so not one of the muted lines).
+export const PROGRESS_STOPPED_DELIVERY_PREFIX =
+  "Portal stopped before it finished because it wasn't making progress.";
+export const PROGRESS_STOP_HELP = "If it keeps happening, [get help on Discord](https://discord.gg/4ntNp9MAwC).";
 
 export const WORKSPACE_PREVIEW_PUBLISHED_DELIVERY_PREFIX =
   "Your preview is ready.";
@@ -8496,6 +8504,23 @@ export function createToolLoopGuard({
     return finalization;
   }
 
+  // The one fixed answer instruction. When a failed preview check of the
+  // current publication is what stopped the run, it tells the model to stop
+  // checking and say what it built and could not verify.
+  function finalizationInstruction(state) {
+    return state.progressStoppedByPreviewCheck && state.workspacePreview
+      ? PREVIEW_CHECK_FINALIZATION_INSTRUCTION : PROGRESS_FINALIZATION_INSTRUCTION;
+  }
+
+  // Charges one tool result to the progress budget and remembers a failed
+  // preview check that stopped the run (finalizationInstruction).
+  function observeProgress(state, outcome, tool) {
+    const running = !state.progressBudget.exhausted;
+    state.progressBudget.observeResult(outcome);
+    if (running && state.progressBudget.exhausted && outcome.failed && tool === PREVIEW_INSPECTION_TOOL &&
+        state.workspacePreview) state.progressStoppedByPreviewCheck = true;
+  }
+
   // Session history can contain an unrelated publication. Preserve it for
   // current preview work, but do not attach it to a later research failure.
   function progressStopPreview(state) {
@@ -8613,7 +8638,7 @@ export function createToolLoopGuard({
     if (state?.progressBudget.exhausted && progressFinalization(state).phase !== 'unavailable') {
       const callId = context?.toolCallId ?? event?.toolCallId;
       if (state.progressFinalization.toolBoundary(state.operationsPromptRound, callId) === 'instruct') {
-        return {block:true, blockReason:PROGRESS_FINALIZATION_INSTRUCTION};
+        return {block:true, blockReason:finalizationInstruction(state)};
       }
       if (state.progressFinalization.partial) verifyPartialAnswer(state, runId, agentId);
       stopExhaustedRun(state, runId);
@@ -11381,11 +11406,12 @@ export function createToolLoopGuard({
           recordFreeCorrection(state, 'empty-lookup', toolCallId, toolName, FREE_EMPTY_LOOKUPS_PER_RUN)) ||
         (nodeReportedFailure(answeredCommand, answerReceipt.result) &&
           recordFreeCorrection(state, 'node-result', toolCallId, toolName, FREE_NODE_RESULTS_PER_RUN)));
-      if (!answered) state.progressBudget.observeResult({callId: toolCallId, tool: toolName,
+      if (!answered) observeProgress(state, {callId: toolCallId, tool: toolName,
         params: event.params, failed: failedToolOutcome(event), pending: running,
         discovery:state.workspaceLaneRequested && (EXTENSION_METADATA_TOOLS.has(effectiveProgressTool) ||
           effectiveProgressTool === 'pixel_ops_inventory'),
-        lane:toolProgressLane(state, effectiveProgressTool,toolName === 'tool_call' ? event.params?.id : undefined)});
+        lane:toolProgressLane(state, effectiveProgressTool,toolName === 'tool_call' ? event.params?.id : undefined)},
+      effectiveProgressTool);
     }
     if (
       toolName === "tool_call" &&
@@ -12853,14 +12879,20 @@ export function createToolLoopGuard({
     // Native loop blocks can bypass before/after_tool_call entirely. Count
     // their persisted error receipt too; call IDs prevent double accounting.
     if (state && message.isError === true) {
-      state.progressBudget.observeResult({callId: toolCallId, tool: message.toolName,
-        failed: true, lane:progressLane});
+      observeProgress(state, {callId: toolCallId, tool: message.toolName,
+        failed: true, lane:progressLane}, pending?.selectedToolName ?? message.toolName);
     }
     // The ODS-repaired Pixel runtime projects persisted feedback into the next
     // provider request (openclaw-compaction-budget.json). Other SDK agents keep
     // storage-only semantics. before_tool_call still enforces the stop itself.
+    // While the single answer turn is still to come, the persisted result is
+    // the answer instruction, as the refusal that carries it: the stop text
+    // says to continue "with a corrected approach", and on the RTX Spark
+    // (2026-10-25) the model then kept calling tools and forfeited the turn.
     if (state?.progressBudget.exhausted) {
-      return {message: {...message, content: [{type: 'text', text: RUN_PROGRESS_STOP_REASON}]}};
+      const answerTurnAhead = ['pending', 'instructed'].includes(progressFinalization(state).phase);
+      return {message: {...message, content: [{type: 'text',
+        text: answerTurnAhead ? finalizationInstruction(state) : RUN_PROGRESS_STOP_REASON}]}};
     }
     if (message.isError === true && state?.progressBudget.laneExhausted(progressLane)) {
       return {message:{...message,content:[...(message.content ?? []),{type:'text',text:progressLaneStopReason(progressLane)}]}};
@@ -13771,6 +13803,25 @@ export function createToolLoopGuard({
     ? previewOutcome(result, previewPresentations.get(from)) : result;
   // A preview outcome's text as the owner reads it, where a stop text quotes it.
   const ownerOutcomeText = result => ownerPreviewText(result.text, previewPresentations.get(result));
+  // The owner's wording of a tool-limit stop in a website build ({note, rest};
+  // the stop text stays the record, as the model read it). The current
+  // publication gets one plain line and its receipt, which becomes the preview
+  // card: the page's own known gap (a script problem, missing requested text),
+  // else that its checks did not finish. An earlier publication keeps its link
+  // and the line that it is earlier. With none, the stop is said plainly with
+  // what there is, what to do next and where to get help. `facts` are other
+  // owner lines that stay. Undefined for every other run.
+  function progressStopPresentation(state, verification, facts = []) {
+    if (!previewOutcomes.has(verification)) return undefined;
+    // Only an outcome with a publication has a presentation (its receipt or link).
+    const shown = previewPresentations.get(verification);
+    if (shown && state.workspacePreview) return {
+      note: [PREVIEW_SCRIPT_NOTE, PREVIEW_MISSING_NOTE].includes(shown.note) ? shown.note : PREVIEW_UNFINISHED_NOTE,
+      rest: [...facts, shown.rest].filter(Boolean).join('\n\n')};
+    if (shown) return {note: PREVIEW_STOPPED_NOTE, rest: [...facts, shown.rest].filter(Boolean).join('\n\n')};
+    return {note: PROGRESS_STOPPED_DELIVERY_PREFIX,
+      rest: [verification.text, ...facts, PROGRESS_STOP_HELP].filter(Boolean).join('\n\n')};
+  }
 
   function verificationForRun(runId) {
     const verification = mixedTaskVerificationForRun(runId);
@@ -14221,9 +14272,11 @@ export function createToolLoopGuard({
     const artifacts=state?.workspaceArtifacts;
     // A preview outcome delivered as is (no stop, deadline or question text
     // replaced it) reads in the owner's wording, with the agent's final reply
-    // ahead of Portal's text unless the owner cancelled.
+    // ahead of Portal's text unless the owner cancelled. A tool-limit stop in a
+    // website build reads in the owner's wording too; its text already starts
+    // with the one answer that stop accepts, if any.
     const owner=previewOutcomes.has(result) ? {presentation: previewPresentations.get(result),
-      reply: state.clientCancelled ? undefined : state.finalReplyText} : undefined;
+      reply: state.clientCancelled || state.progressBudget.exhausted ? undefined : state.finalReplyText} : undefined;
     // Passing tests or creating an archive cannot stand in for its download
     // receipt. Keep pending questions, cancellation and existing failure facts.
     if (state?.workspaceDocumentDeliveryRequested && state.artifactOwnerInteractive &&
@@ -14303,14 +14356,22 @@ export function createToolLoopGuard({
       if (answer) {
         const unverified = [...new Set([...state.completionAssurance.unverifiedCitations(answer),
           ...(modelAnswer ? [] : synthesized.unlisted)])];
-        return {status: 'failed', text: composeProgressFinalization(answer, {preview,
+        const text = composeProgressFinalization(answer, {preview,
           previewExpected: Boolean(state.workspacePreviewRequired && !state.workspacePreviewForbidden),
           verificationStatus: state.latestVerificationStatus, researchLimit: state.researchStopped,
           unverifiedLinks: unverified,
           refusedToolCalls: state.progressFinalization.partial,
           requestedTextMissing: requestedTextDeliveryNote(preview, state.workspaceRequestedTextCheck,
             state.workspaceControlNameCheck),
-          ...(modelAnswer ? {} : {synthesis: {note: STOP_SYNTHESIS_NOTE, pages: synthesized.pages}})}), ...receipt};
+          ...(modelAnswer ? {} : {synthesis: {note: STOP_SYNTHESIS_NOTE, pages: synthesized.pages}})});
+        // A website build's owner reads the answer, then Portal's line in
+        // place of the stop facts after it; links the answer cites without a
+        // read receipt, and a host synthesis's source, stay said.
+        const stop = progressStopPresentation(state, verification, [unverifiedLinksNote(unverified),
+          ...(modelAnswer ? [] : [STOP_SYNTHESIS_NOTE, composeReadPages(synthesized.pages)])]);
+        const result = {status: 'failed', text, ...receipt};
+        return stop ? previewOutcome(result, {...stop, text: text.slice(progressFinalizationHead(answer).length + 2)})
+          : result;
       }
       // Without an answer, the fixed stop text is followed by the host's list
       // of pages read successfully, when this run could have been finalized
@@ -14320,9 +14381,14 @@ export function createToolLoopGuard({
       const pages = readPages ? `\n\n${readPages}` : '';
       // Without an answer, a research-loop stop keeps its specific text.
       if (state.researchStopped) return {status: 'failed', text: WEB_LOOP_DELIVERY_REASON + pages, ...receipt};
-      return {status: 'failed', text: RUN_PROGRESS_STOP_REASON + (preview
+      const text = RUN_PROGRESS_STOP_REASON + (preview
         ? `\n\n[Open last published preview](${preview.url})\n\nThis is the last verified publication, not proof that all requested work completed.` : '') +
-        pages, ...receipt};
+        pages;
+      // A website build's owner reads Portal's line and the preview card, or
+      // what there is and what to do next, in place of this stop text.
+      const stop = progressStopPresentation(state, verification, [readPages]);
+      return stop ? previewOutcome({status: 'failed', text, ...receipt}, {...stop, text})
+        : {status: 'failed', text, ...receipt};
     }
     // An acknowledged harness abort can end the model without a final token.
     // Preserve existing artifact/evidence delivery; for an otherwise empty

@@ -124,8 +124,12 @@ test('mac-mini d4a61f33 replay: refusals name the exact next path and the unchan
   // created, so the listing fails: the fourth consecutive failure.
   const listing = h.exec(list.args, 'Playground/photo-renamer-test', list.id);
   assert.notEqual(listing.decision?.block, true, listing.decision?.blockReason);
-  assert.equal(listing.text, RUN_PROGRESS_STOP_REASON, 'charged exactly as recorded: the fuse trips at call 4');
-  assert.ok(listing.text.startsWith(list.recorded.resultHead));
+  // The fuse trips at call 4, as recorded. The model read the stop text there
+  // (the recorded result head), and the refusal of call 5 was recorded the same
+  // way, so it never read the answer instruction; both now carry it.
+  assert.ok(RUN_PROGRESS_STOP_REASON.startsWith(list.recorded.resultHead));
+  assert.ok(RUN_PROGRESS_STOP_REASON.startsWith(listLong.recorded.resultHead));
+  assert.equal(listing.text, PROGRESS_FINALIZATION_INSTRUCTION, 'charged exactly as recorded: the fuse trips at call 4');
   const next = h.exec(listLong.args, 'Playground/photo-renamer-test', listLong.id);
   assert.equal(next.decision?.block, true);
   assert.equal(stopped(next.decision.blockReason), true);

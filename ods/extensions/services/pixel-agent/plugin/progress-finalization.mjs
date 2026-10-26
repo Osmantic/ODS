@@ -1,16 +1,19 @@
 // Graceful finalization after the run-progress budget stops a response.
 //
 // The budget is unchanged. Once it is exhausted every tool stays blocked. The
-// next refused tool call carries one fixed instruction (OpenClaw's
-// before_tool_call blockReason is the only text that reaches the live model:
-// tool_result_persist rewrites the saved transcript only), and the model then
+// next refused tool call carries one fixed instruction, and the model then
 // gets exactly one tool-free turn to answer from evidence the run already
-// returned. A tool call in that turn still ends the run at that boundary, but
-// substantive answer text in the same message is kept as a partial answer (the
-// calls are refused and never run). Any further model call, or an empty or
-// degenerate answer, falls back to the canned stop text, followed by the
-// host's list of pages read successfully in the response, unless the stop
-// synthesis (stop-synthesis.mjs) answers from those pages first.
+// returned. On ODS's Pixel runtime the result persisted for a call is what the
+// next model request carries (host/openclaw-compaction-budget.json), so while
+// that turn is open the results persisted after the stop carry the same
+// instruction, beginning with the result that stopped the run
+// (tool-loop-guard.mjs toolResultPersist). A tool call in that turn still ends
+// the run at that boundary, but substantive answer text in the same message is
+// kept as a partial answer (the calls are refused and never run). Any further
+// model call, or an empty or degenerate answer, falls back to the canned stop
+// text, followed by the host's list of pages read successfully in the
+// response, unless the stop synthesis (stop-synthesis.mjs) answers from those
+// pages first.
 import { RUN_PROGRESS_STOP_REASON } from './run-progress-budget.mjs';
 import { promisesExecution } from './completion-assurance.mjs';
 
@@ -24,6 +27,17 @@ export const PROGRESS_FINALIZATION_INSTRUCTION =
   'Deliver the requested output format as far as that evidence allows; mark each missing or unverified item ' +
   '(use null where the format needs a value) and briefly say why. Do not invent values, sources or results. ' +
   'Do not claim a publication, preview URL, passing test or saved file that a tool result above did not confirm.';
+
+// The same stop when failed preview checks used up the budget after the page
+// was published (RTX Spark, 2026-10-25: three checks failed on the model's own
+// plans under a working preview). The page is there and the owner sees it, so
+// the answer says what was built and plainly what could not be verified.
+export const PREVIEW_CHECK_FINALIZATION_INSTRUCTION =
+  '[ODS Pixel tool limit] Stop checking the preview now: tools are disabled for the rest of this response, ' +
+  'and calling one discards your answer. Your page is published, and Portal shows the owner its preview. ' +
+  'Give your final answer now from the tool results above: say briefly what you built, and say plainly which ' +
+  'requested behavior you could not verify. Do not claim that a check passed unless a tool result above shows it ' +
+  'passed, and do not add a preview link or embed: Portal shows the preview.';
 
 export const PROGRESS_FINALIZATION_NOTE =
   '**Partial answer: Portal reached its tool limit.** This response was stopped after repeated tool failures ' +
@@ -129,23 +143,33 @@ export function composeReadPages(pages) {
   return `${PROGRESS_READ_PAGES_HEADING}\n\n${lines.join('\n')}`;
 }
 
+// The answer as composed ahead of the host facts: an open code fence closed.
+export function progressFinalizationHead(answer) {
+  const fences = [...answer.matchAll(/^[ \t]{0,3}(`{3,}|~{3,})/gm)].map(match => match[1]);
+  return fences.length % 2 ? `${answer}\n${fences.at(-1)}` : answer;
+}
+
+// The answer's own links that no read receipt covers, or '' when none.
+export function unverifiedLinksNote(unverifiedLinks = []) {
+  const links = unverifiedLinks.filter(url => typeof url === 'string' && url.length <= 2048).slice(0, 5);
+  return links.length ? 'These linked pages were not read successfully in this response and remain unverified: ' +
+    links.map(url => `<${url}>`).join(', ') + '.' : '';
+}
+
 // Model answer first (the requested format stays intact), then host facts.
 // `synthesis` marks a stop synthesis (stop-synthesis.mjs): its note, and the
 // pages it was given, listed last.
 export function composeProgressFinalization(answer, {preview, previewExpected = false,
   verificationStatus, researchLimit = false, unverifiedLinks = [], refusedToolCalls = false,
   requestedTextMissing, synthesis} = {}) {
-  const fences = [...answer.matchAll(/^[ \t]{0,3}(`{3,}|~{3,})/gm)].map(match => match[1]);
-  const closing = fences.length % 2 ? `\n${fences.at(-1)}` : '';
   const facts = [PROGRESS_FINALIZATION_NOTE];
   if (refusedToolCalls) facts.push(PROGRESS_FINALIZATION_REFUSED_CALLS_NOTE);
   if (typeof synthesis?.note === 'string' && synthesis.note) facts.push(synthesis.note);
   if (researchLimit) facts.push("This response's web research allowance was used up, so no further sources could be read.");
   if (verificationStatus === 'failed') facts.push('The latest recognized test or verification command failed.');
   else if (verificationStatus === 'pending') facts.push('A recognized test or verification command had not finished, so its result is unverified.');
-  const links = unverifiedLinks.filter(url => typeof url === 'string' && url.length <= 2048).slice(0, 5);
-  if (links.length) facts.push('These linked pages were not read successfully in this response and remain unverified: ' +
-    links.map(url => `<${url}>`).join(', ') + '.');
+  const links = unverifiedLinksNote(unverifiedLinks);
+  if (links) facts.push(links);
   if (preview?.url) {
     facts.push(`[Open last published preview](${preview.url})`,
       'This is the last verified publication, not proof that all requested work completed.');
@@ -153,7 +177,7 @@ export function composeProgressFinalization(answer, {preview, previewExpected = 
   } else if (previewExpected) facts.push('ODS did not verify a preview in this response. No localhost URL is live or claimed.');
   const pages = synthesis ? composeReadPages(synthesis.pages) : '';
   if (pages) facts.push(pages);
-  return `${answer}${closing}\n\n${facts.join('\n\n')}`;
+  return `${progressFinalizationHead(answer)}\n\n${facts.join('\n\n')}`;
 }
 
 // Per-run state. Phases:

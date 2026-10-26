@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {createToolLoopGuard, DEFAULT_WEB_TOOL_LIMITS, FREE_CORRECTIONS_PER_KIND, PHANTOM_PROCESS_REASON,
-  WEB_LOOP_ABORT_REASON, WEB_LOOP_DELIVERY_REASON, WEB_SEARCH_BUDGET_EXHAUSTED_REASON} from '../plugin/tool-loop-guard.mjs';
+  PROGRESS_STOP_HELP, PROGRESS_STOPPED_DELIVERY_PREFIX, WEB_LOOP_ABORT_REASON, WEB_LOOP_DELIVERY_REASON,
+  WEB_SEARCH_BUDGET_EXHAUSTED_REASON, WORKSPACE_PREVIEW_NOT_CREATED_DELIVERY_PREFIX} from '../plugin/tool-loop-guard.mjs';
+import {PREVIEW_UNFINISHED_NOTE} from '../plugin/preview-explanation.mjs';
 import {RUN_PROGRESS_LIMITS, RUN_PROGRESS_STOP_REASON} from '../plugin/run-progress-budget.mjs';
 import {composeProgressFinalization, createProgressFinalization, progressFinalizationAnswer,
   PROGRESS_FINALIZATION_INSTRUCTION, PROGRESS_FINALIZATION_NOTE, PROGRESS_READ_PAGES_HEADING} from '../plugin/progress-finalization.mjs';
@@ -66,9 +68,11 @@ function callTool(guard, toolName = 'web_search', params = {query: 'RTX 5070 vs 
   return guard.beforeToolCall({toolName, toolCallId: id, params}, {...context, toolName, toolCallId: id});
 }
 
-// The model call after the exhausting result still sees that original result
-// (the persisted rewrite is transcript-only). Its next tool call is refused
-// with the instruction, and the following call is the single answer turn.
+// The model call after the exhausting result reads that result as persisted:
+// on ODS's runtime the persisted copy is what the next model request carries
+// (host/openclaw-compaction-budget.json), and it holds the instruction. A tool
+// call from that model call is refused with the instruction too, and the
+// following call is the single answer turn.
 function enterAnswerTurn(guard) {
   guard.observeModelCall({}, context);
   assert.deepEqual(callTool(guard), {block: true, blockReason: PROGRESS_FINALIZATION_INSTRUCTION});
@@ -149,7 +153,8 @@ test('composition keeps the requested format first and closes an unterminated fe
 test('research stop (tower3 replay): one tool-free turn yields the evidence-based answer plus an honest note', () => {
   const {guard, aborts} = guardFixture();
   Object.values(PAGES).forEach((url, index) => readPage(guard, url, `read-${index}`));
-  assert.equal(text(exhaustByFailures(guard)), RUN_PROGRESS_STOP_REASON, 'the saved transcript copy is unchanged');
+  assert.equal(text(exhaustByFailures(guard)), PROGRESS_FINALIZATION_INSTRUCTION,
+    'the persisted copy the next model request carries is the answer instruction, not the stop text');
   // The model call that issued the exhausting tool calls may end late.
   guard.observeModelEnd({}, context);
   enterAnswerTurn(guard);
@@ -274,6 +279,9 @@ test('visual stops never gain an unverified preview or localhost claim', () => {
     fabricated: 'I built the site in night-garden. Open http://localhost:8080/ to view the finished event page.',
     honest: 'I wrote night-garden/index.html with the three event cards. The preview was not published before the tool limit.',
   };
+  // No preview was published: the owner reads the stop plainly, what there is
+  // and what to do next, then where to get help.
+  const unpublished = `${PROGRESS_STOPPED_DELIVERY_PREFIX}\n\n${WORKSPACE_PREVIEW_NOT_CREATED_DELIVERY_PREFIX}\n\n${PROGRESS_STOP_HELP}`;
   for (const [kind, answer] of Object.entries(claims)) {
     const {guard} = guardFixture(prompt);
     exhaustByFailures(guard);
@@ -282,23 +290,24 @@ test('visual stops never gain an unverified preview or localhost claim', () => {
     const delivery = guard.deliveryVerificationForRun(context.runId);
     assert.equal(delivery.status, 'failed', kind);
     assert.equal(delivery.preview, undefined, kind);
-    assert.doesNotMatch(delivery.text, /Open last published preview/, kind);
-    if (kind === 'fabricated') assert.equal(delivery.text, RUN_PROGRESS_STOP_REASON, 'an unverified local URL forfeits the answer');
-    else {
-      assert.ok(delivery.text.startsWith(answer));
-      assert.match(delivery.text, /ODS did not verify a preview in this response\. No localhost URL is live or claimed\./);
-    }
+    assert.doesNotMatch(delivery.text, /Open (?:last published )?preview|preview is ready|localhost/, kind);
+    if (kind === 'fabricated') assert.equal(delivery.text, unpublished, 'an unverified local URL forfeits the answer');
+    else assert.equal(delivery.text, `${answer}\n\n${unpublished}`);
   }
-  // Only the host-verified publication may be linked, and only as a snapshot.
+  // Only the host-verified publication may be linked: its receipt, which the
+  // dashboard shows as the preview card, after Portal's plain line.
   const {guard} = guardFixture(prompt);
   const details = verifiedPreview(guard);
   exhaustByFailures(guard);
   enterAnswerTurn(guard);
-  guard.beforeAgentFinalize({lastAssistantMessage: `The page is published at ${details.url} but the sold-out toggle is unverified.`}, context);
+  const answer = `The page is published at ${details.url} but the sold-out toggle is unverified.`;
+  guard.beforeAgentFinalize({lastAssistantMessage: answer}, context);
   const delivery = guard.deliveryVerificationForRun(context.runId);
-  assert.ok(delivery.text.startsWith('The page is published at'));
-  assert.ok(delivery.text.includes(`[Open last published preview](${details.url})`));
-  assert.match(delivery.text, /not proof that all requested work completed/);
+  const recorded = guard.verificationForRun(context.runId).text;
+  const receipt = recorded.slice(recorded.indexOf('Your preview is ready.'));
+  assert.match(receipt, new RegExp(`^Your preview is ready\\.\\n\\n\\[Open preview\\]\\(${details.url.replace(/[.]/g, '\\.')}\\)\\n\\n`));
+  assert.equal(delivery.text, `${answer}\n\n${PREVIEW_UNFINISHED_NOTE}\n\n${receipt}`);
+  assert.doesNotMatch(delivery.text, /not proof|not completed|stopped after|tool limit|Open last published preview/);
   assert.equal(delivery.preview.sha256, details.sha256);
 });
 

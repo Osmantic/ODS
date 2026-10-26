@@ -9,7 +9,9 @@
 // (2026-10-25) two of four builds ended with only that fact text under a
 // preview that worked. The outcome keeps its status and its preview receipt,
 // and nothing here certifies anything: each line says what Portal could not
-// confirm, or what is wrong, and what the owner can do next.
+// confirm, or what is wrong, and what the owner can do next. A tool-limit stop
+// in a website build reads the same way (tool-loop-guard.mjs,
+// progressStopPresentation).
 //
 // The agent's explanation. A failed or still-running preview outcome (a
 // browser or interaction check that did not pass, requested text missing, a
@@ -47,10 +49,16 @@ export const PREVIEW_EARLIER_NOTE =
   "This preview shows the version from before Portal's latest changes. Ask Portal to publish the current files.";
 export const PREVIEW_STOPPED_NOTE =
   'Portal stopped before it finished, so this preview shows an earlier version. Send a message to continue.';
+// The tool limit stopped the run after the page was published: the page is
+// current and up, and Portal's checks of it did not finish (RTX Spark,
+// 2026-10-25: the model's own check plans kept failing under a working page).
+export const PREVIEW_UNFINISHED_NOTE =
+  "Portal published your page but couldn't finish checking it automatically. Try it, and tell Portal if something isn't right.";
 // The run has ended: a step the reply announces will not start on its own.
 export const PREVIEW_CONTINUE_NOTE = "The next step above hasn't started yet. Send a message to continue.";
 export const PREVIEW_NOTES = Object.freeze([PREVIEW_CONTROLS_NOTE, PREVIEW_UNCONFIRMED_NOTE, PREVIEW_RUNNING_NOTE,
-  PREVIEW_SCRIPT_NOTE, PREVIEW_MISSING_NOTE, PREVIEW_EARLIER_NOTE, PREVIEW_STOPPED_NOTE, PREVIEW_CONTINUE_NOTE]);
+  PREVIEW_SCRIPT_NOTE, PREVIEW_MISSING_NOTE, PREVIEW_EARLIER_NOTE, PREVIEW_STOPPED_NOTE, PREVIEW_UNFINISHED_NOTE,
+  PREVIEW_CONTINUE_NOTE]);
 
 // The combined reply is host verification text (ingress limit: 32 KiB). Leave
 // room for the extension and progress-lane notes that can follow it.
@@ -112,9 +120,11 @@ export function previewCheckNote({pending = false, pageErrors = false, missing =
 // preview outcome's own host text, the part of it the owner keeps (its preview
 // receipt or link) and Portal's line. Within `text`, which can carry other
 // host lines around that host text (a missing download, a stopped lane), the
-// host text becomes `line` and the kept part. Without it, `line` leads.
+// host text becomes `line` and the kept part. Without it, `line` leads. Host
+// text follows any answer in `text` (a tool-limit stop's answer comes first),
+// so its last occurrence is the one replaced.
 export function ownerPreviewText(text, presentation, line = presentation?.note) {
-  const at = presentation ? text.indexOf(presentation.text) : -1;
+  const at = presentation ? text.lastIndexOf(presentation.text) : -1;
   if (at < 0) return line ? `${line}\n\n${text}` : text;
   return text.slice(0, at) + [line, presentation.rest].filter(Boolean).join('\n\n') +
     text.slice(at + presentation.text.length);

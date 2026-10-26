@@ -17,7 +17,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import {createHash} from 'node:crypto';
 import {createServer} from 'node:http';
-import {createToolLoopGuard, WORKSPACE_PREVIEW_NOT_CREATED_DELIVERY_PREFIX,
+import {createToolLoopGuard, PROGRESS_STOP_HELP, PROGRESS_STOPPED_DELIVERY_PREFIX, WORKSPACE_PREVIEW_NOT_CREATED_DELIVERY_PREFIX,
   WORKSPACE_PREVIEW_UNVERIFIED_DELIVERY_PREFIX} from '../plugin/tool-loop-guard.mjs';
 import {createIngressServer} from '../host/pixel_ingress.mjs';
 import {PREVIEW_INSPECTION_TOOL} from '../plugin/preview-interaction-assurance.mjs';
@@ -447,7 +447,8 @@ test('Portal picks one line from the check facts: a broken page, a missing reque
 });
 
 test('Portal\'s lines are short, calm, fixed English, and the dashboard mutes exactly these', () => {
-  const lines = [...PREVIEW_NOTES, WORKSPACE_PREVIEW_UNVERIFIED_DELIVERY_PREFIX, WORKSPACE_PREVIEW_NOT_CREATED_DELIVERY_PREFIX];
+  const lines = [...PREVIEW_NOTES, WORKSPACE_PREVIEW_UNVERIFIED_DELIVERY_PREFIX, WORKSPACE_PREVIEW_NOT_CREATED_DELIVERY_PREFIX,
+    PROGRESS_STOPPED_DELIVERY_PREFIX];
   assert.equal(new Set(lines).size, lines.length);
   for (const line of lines) {
     assert.match(line, /^[\x20-\x7e]+$/, line);
@@ -456,6 +457,7 @@ test('Portal\'s lines are short, calm, fixed English, and the dashboard mutes ex
   }
   for (const line of PREVIEW_NOTES) assert.doesNotMatch(line, ALARM, line);
   assert.deepEqual([...DELIVERY_NOTES].sort(), [...lines].sort());
+  assert.ok(!DELIVERY_NOTES.includes(PROGRESS_STOP_HELP), 'the help link after a stop is a paragraph of its own, not muted');
 });
 
 test('the folded text sees the label however markdown or HTML draws it; fences follow CommonMark', () => {
