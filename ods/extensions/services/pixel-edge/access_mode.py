@@ -30,6 +30,63 @@ def public_status(value):
     return result
 
 
+# Same public connected-apps contract as bin/pixel_connections/status.py
+# validate_public; tests/test_pixel_connection_wire.py keeps the two in step.
+_CONNECTION_STATES = frozenset({'not-connected', 'first-sync', 'connected', 'needs-reconnect', 'blocked-by-admin',
+                                'setup-broken', 'missing-permission', 'unknown-error', 'behind'})
+_CAPABILITIES = frozenset({'calendar.read', 'calendar.write', 'calendar.direct', 'gmail.read', 'gmail.drafts'})
+_TOKEN = re.compile(r'[a-z][a-z0-9-]{0,63}')
+_INSTANT = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z')
+_EMAIL = re.compile(r'[^@\s<>\x00-\x1f\x7f]{1,64}@[^@\s<>\x00-\x1f\x7f]{1,253}')
+_ZONE = re.compile(r'[A-Za-z][A-Za-z0-9_+\-/]{0,63}')
+_SCOPE = re.compile(r'(?:https://www\.googleapis\.com/auth/[a-z0-9._-]{1,100}|https://mail\.google\.com/|openid|email|profile)')
+
+
+def _maybe(value, pattern):
+    return value is None or type(value) is str and pattern.fullmatch(value) is not None
+
+
+def _connection_source(value):
+    return value is None or (
+        type(value) is dict
+        and set(value) == {'state', 'errorClass', 'httpStatus', 'lastSuccessAt', 'failingSince', 'recordCount', 'complete'}
+        and value['state'] in ('ok', 'error', 'disabled') and _maybe(value['errorClass'], _TOKEN)
+        and (value['httpStatus'] is None or type(value['httpStatus']) is int and 100 <= value['httpStatus'] <= 599)
+        and _maybe(value['lastSuccessAt'], _INSTANT) and _maybe(value['failingSince'], _INSTANT)
+        and type(value['recordCount']) is int and value['recordCount'] >= 0
+        and (value['complete'] is None or type(value['complete']) is bool))
+
+
+def _connection_google(value):
+    if (type(value) is not dict or set(value) != {'state', 'reason', 'account', 'capabilities', 'cloudModels',
+                                                  'connectedAt', 'grantedScopes', 'checkedAt', 'sources'}
+            or value['state'] not in _CONNECTION_STATES):
+        return False
+    connected = value['state'] != 'not-connected'
+    capabilities, scopes, sources = value['capabilities'], value['grantedScopes'], value['sources']
+    return (_maybe(value['reason'], _TOKEN) and (value['account'] is None) != connected
+            and _maybe(value['account'], _EMAIL) and (capabilities is None) != connected
+            and (capabilities is None or type(capabilities) is dict and set(capabilities) == _CAPABILITIES
+                 and all(type(flag) is bool for flag in capabilities.values()))
+            and (value['cloudModels'] is None or type(value['cloudModels']) is bool)
+            and _maybe(value['connectedAt'], _INSTANT) and _maybe(value['checkedAt'], _INSTANT)
+            and (scopes is None or type(scopes) is list and all(type(item) is str and _SCOPE.fullmatch(item) for item in scopes))
+            and type(sources) is dict and set(sources) == {'email', 'calendar'}
+            and all(_connection_source(item) for item in sources.values()))
+
+
+def public_connections(value):
+    if (type(value) is not dict
+            or set(value) != {'schemaVersion', 'available', 'surface', 'reason', 'ownerTimeZone', 'connectors'}
+            or value['schemaVersion'] != 1 or type(value['available']) is not bool
+            or value['surface'] not in ('linux-systemd', 'wsl-systemd', 'linux', 'darwin', 'windows')
+            or not _maybe(value['reason'], _TOKEN) or not _maybe(value['ownerTimeZone'], _ZONE)
+            or type(value['connectors']) is not dict or set(value['connectors']) != {'google'}
+            or not _connection_google(value['connectors']['google'])):
+        raise ValueError('invalid-connection-status')
+    return value
+
+
 # Same bounded model-control wire contract as the host relay.
 def valid_model_contract(value):
     required = {'model', 'contextLength', 'maxTokens', 'reasoning'}

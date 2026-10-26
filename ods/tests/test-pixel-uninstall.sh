@@ -395,6 +395,7 @@ write_access_fixture() {
     local owner_uid relative source relay_digest
     owner_uid="$(id -u)"
     mkdir -p "$INSTALL_DIR/bin/pixel_settings" "$INSTALL_DIR/bin/pixel_provider" \
+        "$INSTALL_DIR/bin/pixel_connections" "$access_program/pixel_connections" \
         "$access_program/pixel_settings" "$access_program/pixel_provider" \
         "$access_dropin_dir" "$ACCESS_STATE" "$ACCESS_PROBE_BASE/$owner_uid" \
         "$access_runtime_state"
@@ -430,6 +431,10 @@ write_access_fixture() {
         "bin/pixel_provider/service_activation.py"
         "bin/pixel_provider/runtime_custody.py"
         "bin/pixel_provider/coordinator.py"
+        "bin/pixel_connections/__init__.py"
+        "bin/pixel_connections/state.py"
+        "bin/pixel_connections/status.py"
+        "bin/pixel_connections/catalog.py"
     )
     for relative in "${access_sources[@]}"; do
         source="$ROOT_DIR/$relative"
@@ -438,6 +443,7 @@ write_access_fixture() {
             extensions/services/pixel-agent/host/*) cp "$source" "$access_program/${relative##*/}" ;;
             bin/pixel_settings/*) cp "$source" "$access_program/pixel_settings/${relative##*/}" ;;
             bin/pixel_provider/*) cp "$source" "$access_program/pixel_provider/${relative##*/}" ;;
+            bin/pixel_connections/*) cp "$source" "$access_program/pixel_connections/${relative##*/}" ;;
             bin/*) cp "$source" "$access_program/${relative##*/}" ;;
         esac
     done
@@ -459,9 +465,11 @@ JSON
         > "$access_runtime_state/state.json"
     printf '%s\n' '{"pid":999999}' > "$access_runtime_state/process.json"
     : > "$access_runtime_state/.process-claim"
-    chmod 0755 "$access_program" "$access_program/pixel_settings" "$access_program/pixel_provider"
+    chmod 0755 "$access_program" "$access_program/pixel_settings" "$access_program/pixel_provider" \
+        "$access_program/pixel_connections"
     chmod 0644 "$access_program"/*.py "$access_program/pixel_settings"/*.py \
-        "$access_program/pixel_provider"/*.py "$SYSTEMD_DIR/ods-pixel-access.service" \
+        "$access_program/pixel_provider"/*.py "$access_program/pixel_connections"/*.py \
+        "$SYSTEMD_DIR/ods-pixel-access.service" \
         "$access_dropin_dir/90-ods-full-access.conf"
     chmod 0600 "$ETC_DIR/pixel-access.json" "$ETC_DIR/pixel-access-relay.key" "$ACCESS_STATE/lock" \
         "$ACCESS_STATE/service-baseline.json"

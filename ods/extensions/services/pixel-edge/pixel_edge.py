@@ -28,7 +28,7 @@ from runtime_identity import project_runtime_identity, unknown_runtime_identity
 from chat_context import project_context, valid_history_snapshot
 from image_admission import ImageWorkBudget
 from access_mode import (public_status as public_access_status, valid_change as valid_access_change,
-                         valid_model_control, public_model_control)
+                         valid_model_control, public_model_control, public_connections)
 
 
 def valid_live_task_event(event):
@@ -1205,6 +1205,31 @@ async def handle_access_mode(request: web.Request):
         return web.json_response({'error':'access-service-unavailable'}, status=503)
 
 
+async def handle_connections(request: web.Request):
+    """Read-only connected-apps status: owner-authenticated, no request body."""
+    fail = _check_preview_auth(request)
+    if fail is not None:
+        return fail
+    if _constant_time_compare(config_token, preview_proxy_token):
+        return web.json_response({'error': 'owner-auth-unavailable'}, status=503)
+    if request.query_string or request.can_read_body:
+        return web.json_response({'error': 'invalid-request'}, status=400)
+    try:
+        connector, origin = _access_transport()
+        timeout = ClientTimeout(total=21, sock_connect=3)
+        async with ClientSession(connector=connector, timeout=timeout, trust_env=False) as session:
+            async with session.get(origin + '/v1/connections', allow_redirects=False,
+                    headers={'Authorization': 'Bearer ' + preview_proxy_token}) as response:
+                raw = await _read_bounded(response.content, 65536)
+                if response.status != 200:
+                    status = response.status if response.status in (400, 403, 409, 503) else 503
+                    return web.json_response({'error': 'connections-unavailable'}, status=status)
+                value = public_connections(strict_json(raw))
+        return web.json_response(value, headers={'Cache-Control': 'no-store'})
+    except Exception:
+        return web.json_response({'error': 'connections-unavailable'}, status=503)
+
+
 _CONTROLLER_REASON = re.compile(r'[a-z0-9][a-z0-9-]{0,63}')
 
 
@@ -1965,6 +1990,7 @@ def create_app() -> web.Application:
     app.router.add_get('/v1/access-mode', handle_access_mode, allow_head=False)
     app.router.add_post('/v1/access-mode', handle_access_mode)
     app.router.add_post('/v1/model-control', handle_model_control)
+    app.router.add_get('/v1/connections', handle_connections, allow_head=False)
     app.router.add_get("/v1/transition", handle_transition)
     app.router.add_post("/v1/transition/{operation:acquire|drain|release|recover}", handle_transition)
     app.router.add_post("/v1/chat/completions", handle_chat_completions)

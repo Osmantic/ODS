@@ -5,7 +5,7 @@ import net from 'node:net';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import {handleAccessMode, readAccessOwnerKey, requestAccessController} from '../host/access_mode_relay.mjs';
+import {handleAccessMode, handleConnections, readAccessOwnerKey, requestAccessController} from '../host/access_mode_relay.mjs';
 
 const ownerKey = 'o'.repeat(64);
 const change = {mode:'full-access', confirmed:true, revision:'a'.repeat(64)};
@@ -69,4 +69,34 @@ test('controller timeout and oversized response fail without retry', async t => 
   await assert.rejects(requestAccessController({operation:'status'},{socketPath,timeout:20}));
   await assert.rejects(requestAccessController({operation:'status'},{socketPath,timeout:1000}));
   assert.equal(connections,2);
+});
+
+test('connected-apps status is owner-only, read-only and asks the controller one fixed question', async t => {
+  const calls=[];
+  const server=http.createServer((req,res)=>void handleConnections(req,res,{ownerKey, request:async (value, options)=>{calls.push([value, options]);return {status:200,body:{schemaVersion:1}}}}));
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const url=`http://127.0.0.1:${server.address().port}/v1/connections`;
+  for(const key of ['', 'c'.repeat(64)]) {
+    assert.equal((await fetch(url,{headers:{authorization:`Bearer ${key}`}})).status,403);
+  }
+  assert.equal((await fetch(url,{method:'POST',headers:{authorization:`Bearer ${ownerKey}`,'content-type':'application/json'},body:'{}'})).status,405);
+  assert.equal((await fetch(url+'?account=other',{headers:{authorization:`Bearer ${ownerKey}`}})).status,400);
+  assert.equal(calls.length,0);
+  const response=await fetch(url,{headers:{authorization:`Bearer ${ownerKey}`}});
+  assert.equal(response.status,200);
+  assert.equal(response.headers.get('cache-control'),'no-store');
+  assert.deepEqual(await response.json(),{schemaVersion:1});
+  assert.deepEqual(calls,[[{operation:'connection-status'},{timeout:20000}]]);
+});
+
+test('an unreachable controller gives a plain unavailable answer', async t => {
+  const server=http.createServer((req,res)=>void handleConnections(req,res,{ownerKey, request:async ()=>{throw new Error('private-sentinel');}}));
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const response=await fetch(`http://127.0.0.1:${server.address().port}/v1/connections`,{headers:{authorization:`Bearer ${ownerKey}`}});
+  assert.equal(response.status,503);
+  const text=await response.text();
+  assert.match(text,/connections-unavailable/);
+  assert.doesNotMatch(text,/private-sentinel/);
 });

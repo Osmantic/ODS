@@ -14,7 +14,8 @@ ACCESS_SOCKET_PATH = ("/private/var/run/ods-pixel-access/control.sock"
 def request_access(operation, request=None, *, settings_data_dir=None):
     if operation not in ("status", "change", "model-status", "model-begin", "model-finish", "installer-model-verify",
                          "installer-release-prepare", "installer-release-publish", "installer-release-finish", "installer-release-abort", "installer-source-begin",
-                          "settings-status", "settings-change", "provider-status", "provider-change"):
+                          "settings-status", "settings-change", "provider-status", "provider-change",
+                          "connection-status"):
         raise ValueError("invalid access operation")
     payload = {"operation": operation}
     if operation.startswith("installer-") or operation in ("change", "model-finish", "settings-change", "provider-change"):

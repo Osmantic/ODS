@@ -84,6 +84,41 @@ class AccessRelayTests(unittest.TestCase):
                 relay.request_runtime_access('status', config=CONFIG)
             self.assertEqual(run.call_count, 1)
 
+    def test_connections_on_windows_go_through_the_inspected_agent_container(self):
+        calls = []
+        def run(args, **kwargs):
+            calls.append((args, kwargs))
+            output = (('b' * 64 + ' true pixel-edge').encode() if args[1] == 'inspect'
+                      else json.dumps({'status': 200, 'body': {'schemaVersion': 1}}).encode())
+            return types.SimpleNamespace(stdout=output)
+        with patch.object(relay.subprocess, 'run', side_effect=run):
+            self.assertEqual(relay.request_runtime_connections(config=CONFIG), (200, {'schemaVersion': 1}))
+        sent = json.loads(calls[1][1]['input'])
+        self.assertEqual((sent['path'], sent['request'], sent['timeout']), ('/v1/connections', None, 22))
+        self.assertNotIn(OWNER_KEY, ' '.join(calls[1][0]))
+        self.assertIn("'/v1/connections'", relay._CLIENT)
+
+    def test_connections_are_not_available_without_the_linux_broker(self):
+        for platform, config in (('Darwin', CONFIG), ('Darwin', {}), ('Windows', {})):
+            with self.subTest(platform=platform, config=bool(config)), \
+                    patch.object(relay.platform, 'system', return_value=platform), \
+                    patch.object(relay.subprocess, 'run') as run:
+                code, value = relay.request_runtime_connections(config=config)
+                self.assertEqual(code, 200)
+                self.assertFalse(value['available'])
+                self.assertEqual(value['surface'], platform.lower())
+                self.assertEqual(value['connectors']['google']['state'], 'not-connected')
+                run.assert_not_called()
+
+    def test_connections_on_a_linux_host_ask_its_own_controller(self):
+        client = types.ModuleType('pixel_access_client')
+        client.request_access = lambda operation: (200, {'asked': operation})
+        with patch.object(relay.platform, 'system', return_value='Linux'), \
+                patch.dict(sys.modules, {'pixel_access_client': client}), \
+                patch.object(relay.subprocess, 'run') as run:
+            self.assertEqual(relay.request_runtime_connections(config={}), (200, {'asked': 'connection-status'}))
+            run.assert_not_called()
+
     def test_timeout_never_retries_or_falls_back_to_another_host(self):
         with patch.object(relay.subprocess, 'run', side_effect=[types.SimpleNamespace(stdout=('b'*64+' true pixel-edge').encode()), subprocess.TimeoutExpired('docker', 313)]) as run, self.assertRaises(relay.AccessRelayError):
             relay.request_runtime_access('change', CHANGE, config=CONFIG)

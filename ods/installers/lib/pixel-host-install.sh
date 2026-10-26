@@ -3137,6 +3137,14 @@ for name in ('__init__.py', 'config.py', 'store.py', 'activation_config.py',
              'managed_deployment.py', 'service_environment.py', 'service_activation.py',
              'runtime_custody.py', 'coordinator.py'):
     write(provider_package / name, (code_source / 'bin/pixel_provider' / name).read_bytes(), 0o644)
+connections_package = target / 'pixel_connections'
+connections_package.mkdir(mode=0o755, exist_ok=True)
+info = connections_package.lstat()
+if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+    raise SystemExit("Pixel connections program directory is not root protected")
+os.chmod(connections_package, 0o755, follow_symlinks=False)
+for name in ('__init__.py', 'state.py', 'status.py', 'catalog.py'):
+    write(connections_package / name, (code_source / 'bin/pixel_connections' / name).read_bytes(), 0o644)
 config_dir = pathlib.Path('/etc/ods')
 config_dir.mkdir(mode=0o755, exist_ok=True)
 info = config_dir.lstat()

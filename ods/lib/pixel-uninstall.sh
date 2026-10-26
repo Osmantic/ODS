@@ -210,6 +210,9 @@ for name in (
     "runtime_custody.py", "coordinator.py",
 ):
     sources[f"pixel_provider/{name}"] = install / "bin/pixel_provider" / name
+CONNECTION_MODULES = tuple(f"pixel_connections/{name}" for name in ("__init__.py", "state.py", "status.py", "catalog.py"))
+for name in CONNECTION_MODULES:
+    sources[name] = install / "bin" / name
 
 # pixel_gateway_service.py joined the root-owned access bundle after managed
 # Pixel deployments already existed in public beta.  A historical deployment
@@ -218,7 +221,8 @@ for name in (
 # absence.  If either side exists, normal byte and completeness validation
 # remains mandatory, so a partial current bundle still fails closed.
 expected_sources = set(sources)
-for later_module in ("pixel_gateway_service.py", "access_release_transaction.py", "pixel_source_upgrade.py"):
+for later_module in ("pixel_gateway_service.py", "access_release_transaction.py", "pixel_source_upgrade.py",
+                     *CONNECTION_MODULES):
     if (not present(sources[later_module])
             and not present(program / later_module)):
         expected_sources.remove(later_module)
@@ -296,9 +300,11 @@ if present(program):
     allowed_dirs = {
         pathlib.PurePosixPath("pixel_settings"),
         pathlib.PurePosixPath("pixel_provider"),
+        pathlib.PurePosixPath("pixel_connections"),
         pathlib.PurePosixPath("__pycache__"),
         pathlib.PurePosixPath("pixel_settings/__pycache__"),
         pathlib.PurePosixPath("pixel_provider/__pycache__"),
+        pathlib.PurePosixPath("pixel_connections/__pycache__"),
     }
     seen = set()
     for current, directories, files in os.walk(program, topdown=True, followlinks=False):

@@ -10275,6 +10275,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_pixel_sharing()
         elif path == "/v1/pixel/access-mode" and not parsed.query:
             self._handle_pixel_access_mode(False)
+        elif path == "/v1/pixel/connections" and not parsed.query:
+            self._handle_pixel_connections()
         elif path == "/v1/host/port":
             self._handle_host_port_status(parse_qs(parsed.query))
         elif path == "/v1/opencode/status" and not parsed.query:
@@ -10316,6 +10318,22 @@ class AgentHandler(BaseHTTPRequestHandler):
             json_response(self, 503, {"error": "access-transition-unavailable"})
         finally:
             _end_model_lifecycle("pixel_access_mode")
+
+    def _handle_pixel_connections(self):
+        """Content-free connected-apps status, plus the connector catalog ODS ships."""
+        if not check_auth(self):
+            return
+        from pixel_access_relay import AccessRelayError, request_runtime_connections
+        from pixel_connections import catalog as connection_catalog
+        from pixel_connections import status as connection_status
+        try:
+            status, body = request_runtime_connections(config=load_env(INSTALL_DIR / '.env'))
+            if status == 200:
+                body = dict(connection_status.validate_public(body), catalog=connection_catalog.public_catalog())
+        except (AccessRelayError, connection_status.StatusError, OSError, ValueError):
+            json_response(self, 503, {"error": "connections-unavailable"})
+            return
+        json_response(self, status, body)
 
     def _handle_pixel_open_app(self):
         if not check_auth(self):

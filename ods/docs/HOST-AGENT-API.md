@@ -351,6 +351,69 @@ If the container does not exist yet (e.g. image is still pulling), a 200 respons
 | 503 | Log fetch timed out (5s) |
 | 500 | Failed to fetch logs |
 
+### `GET /v1/pixel/connections`
+
+Read-only status of Portal's connected apps (Google Calendar and Gmail first) and
+the connector catalog ODS ships. The agent's root access coordinator builds the
+status from the owner's choices (`/etc/ods/portal-connections.json`), whether the
+Source Broker still holds the Google sign-in, and the broker's own `status.json`.
+It is content-free: no token, message, event or file name is included.
+
+On Linux the host agent asks the coordinator's control socket directly; on Windows
+with WSL it goes through the `ods-pixel-edge` container and Portal's private ingress
+(`/v1/connections` at each hop). macOS and native Windows answer
+`"available": false` with `"reason": "not-available-on-this-system"`, because the
+Source Broker needs Linux or WSL systemd.
+
+**Authentication:** Required
+
+**Response (200):**
+```json
+{
+  "schemaVersion": 1,
+  "available": true,
+  "surface": "wsl-systemd",
+  "reason": null,
+  "ownerTimeZone": "America/Chicago",
+  "connectors": {
+    "google": {
+      "state": "connected",
+      "reason": null,
+      "account": "owner@example.com",
+      "capabilities": {"calendar.read": true, "calendar.write": false, "calendar.direct": false,
+                       "gmail.read": true, "gmail.drafts": false},
+      "cloudModels": true,
+      "connectedAt": "2026-10-25T20:00:00Z",
+      "grantedScopes": ["https://www.googleapis.com/auth/calendar.events.readonly",
+                        "https://www.googleapis.com/auth/gmail.readonly"],
+      "checkedAt": "2026-10-25T20:29:30Z",
+      "sources": {
+        "calendar": {"state": "ok", "errorClass": null, "httpStatus": null,
+                     "lastSuccessAt": "2026-10-25T20:29:30Z", "failingSince": null,
+                     "recordCount": 42, "complete": true},
+        "email": {"state": "ok", "errorClass": null, "httpStatus": null,
+                  "lastSuccessAt": "2026-10-25T20:29:30Z", "failingSince": null,
+                  "recordCount": 812, "complete": true}
+      }
+    }
+  },
+  "catalog": [{"id": "google", "name": "Google", "summary": "Calendar and Gmail", "...": "..."}]
+}
+```
+
+`state` is one of `not-connected`, `first-sync`, `connected`, `behind`,
+`needs-reconnect`, `missing-permission`, `setup-broken`, `blocked-by-admin` or
+`unknown-error`; `reason` names the cause (for example `sign-in-missing`,
+`invalid-grant`, `api-disabled` or `sync-stopped`). A top-level
+`"reason": "record-unusable"` means the saved choices could not be read, so
+connected apps are off until the owner reconnects.
+
+**Error responses:**
+| Code | Condition |
+|------|-----------|
+| 401/403 | Missing or invalid API key |
+| 503 | The coordinator or the agent's relay is unavailable |
+
 ## Security Boundaries
 
 The host agent is a **critical security boundary** because it can start and stop Docker containers on the host.

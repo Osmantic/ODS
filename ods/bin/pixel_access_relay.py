@@ -23,7 +23,7 @@ try:
     request = value['request']
     connection = http.client.HTTPConnection('127.0.0.1', 9595, timeout=value['timeout'])
     path = value.get('path', '/v1/access-mode')
-    if path not in ('/v1/access-mode', '/v1/model-control'):
+    if path not in ('/v1/access-mode', '/v1/model-control', '/v1/connections'):
         raise ValueError()
     connection.request('GET' if request is None else 'POST', path,
         None if request is None else json.dumps(request).encode(),
@@ -132,6 +132,19 @@ def request_runtime_access(operation, request=None, *, config):
                         pending=False, scope='owner-host', reason='managed-runtime-unavailable')
     return _request_runtime_controller(request if operation == 'change' else None, config=config,
                                        path='/v1/access-mode', timeout=310 if operation == 'change' else 22)
+
+
+def request_runtime_connections(*, config):
+    """Connected-apps status from the agent's root controller, read-only."""
+    system = platform.system()
+    if system == 'Darwin' or not config.get('PIXEL_OPENWEBUI_KEY') and system != 'Linux':
+        # The Source Broker runs only under Linux or WSL systemd.
+        from pixel_connections.status import unavailable
+        return 200, unavailable('darwin' if system == 'Darwin' else system.lower())
+    if not config.get('PIXEL_OPENWEBUI_KEY'):
+        from pixel_access_client import request_access
+        return request_access('connection-status')
+    return _request_runtime_controller(None, config=config, path='/v1/connections', timeout=22)
 
 
 def _request_runtime_controller(request, *, config, path, timeout):
