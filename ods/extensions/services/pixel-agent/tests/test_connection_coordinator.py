@@ -439,6 +439,23 @@ def test_disconnect_stops_revokes_erases_and_then_portal_forgets_the_tools(world
     assert c.control(world.bridge, "connection-activate", {}) == {"outcome": "unchanged"}
 
 
+def test_an_unreadable_record_blocks_nothing_but_says_disconnect(world):
+    connect(world)
+    c.control(world.bridge, "connection-activate", {})
+    world.record.write_text("{not json")
+    world.record.chmod(0o644)
+    with pytest.raises(AccessError, match="connection-record-unusable"):
+        c.control(world.bridge, "connection-activate", {})
+    # Disconnect, which the refusal names as the fix, still works and replaces the record.
+    assert c.control(world.bridge, "connection-disconnect", {"connector": "google"}) == {
+        "outcome": "disconnected", "revoked": True}
+    assert not world.record.exists() and not world.paths.token.exists()
+    assert c.control(world.bridge, "connection-activate", {}) == {"outcome": "applied"}
+    assert planner.PLUGIN_ID not in json.loads(world.bridge.config_path.read_text())["plugins"]["allow"]
+    connect(world)
+    assert record(world)["connectors"]["google"]["account"] == "owner@example.com"
+
+
 def test_an_unusable_journal_never_blocks_the_owner(world):
     connect(world)
     c.control(world.bridge, "connection-activate", {})

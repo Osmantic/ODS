@@ -302,7 +302,12 @@ def disconnect(bridge, request: Any) -> dict[str, Any]:
         revoked = custody.revoke(PATHS, RUN)
         custody.erase(PATHS)
         custody.remove_env(PATHS)
-        record = _record()
+        try:
+            record = state.read(RECORD, owners=OWNERS)
+        except state.StateError:
+            # An unreadable record is how an owner gets here; disconnecting replaces it.
+            _write_record(None)
+            record = None
         if record is not None:
             connectors = {name: value for name, value in record["connectors"].items() if name != "google"}
             keep = connectors or record["ownerTimeZone"]
