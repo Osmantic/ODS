@@ -266,6 +266,24 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
     const chain=roots.get(runId);
     return chain && ownerMatches(chain,user) && valid(chain) ? chain.ready?.runId : undefined;
   }
+  // Whether this user's chat may still have delegated work while its owner
+  // session is idle: a child that one of its turns started still runs, or a
+  // registered child will still report back into the chat. Only an explicit
+  // false from isActive proves a child idle. A delegation that can no longer
+  // report back (Stop, access change, expiry) is over once its children have
+  // ended; valid() records that, so a later announcement is refused as well.
+  function pending(user, isActive) {
+    if (!USER.test(user ?? '')) return false;
+    const running = key => { try { return isActive(key) !== false; } catch { return true; } };
+    for (const chain of roots.values()) {
+      if (chain.sessionKey !== prefix + user) continue;
+      const started = [...spawned.entries()].filter(([,record]) => record.chainId === chain.id || record.cancelledChainIds?.includes(chain.id));
+      if ([...chain.children.keys(), ...started.map(([key]) => key)].some(running)) return true;
+      if (!chain.delivered && !chain.ready && valid(chain)
+          && (pendingSpawn(chain) || [...chain.children.values()].some(child => !child.announced))) return true;
+    }
+    return false;
+  }
   function hasPendingChildren(context) {
     const run = owned(context);
     // Advice must have the same live owner custody as delivery. A prompt,
@@ -369,6 +387,6 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
       return {block:true,blockReason:'No registered child completion event is pending. Review the current event and the earlier child results supplied in this run, then consolidate the owner response. This yield was not executed.'};
     }
   }
-  return {observe,before,after,nativeSpawn,finalize,end,read,finalRun,cancel,blocked,promptContext,ownerRunFor,ownerRunOf,admission,hasPendingChildren,
+  return {observe,before,after,nativeSpawn,finalize,end,read,finalRun,cancel,pending,blocked,promptContext,ownerRunFor,ownerRunOf,admission,hasPendingChildren,
     invalidate:() => {for (const chain of roots.values()) fail(chain);}};
 }
