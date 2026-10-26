@@ -293,8 +293,12 @@ def model_pack(prepare, host, monkeypatch):  # noqa: F811
 def test_prepare_fetches_a_missing_model_pack_after_the_images(prepare, host, monkeypatch, model_pack):  # noqa: F811
     monkeypatch.setattr(_mod, "_services_missing_images", lambda flags, ids, env: ["painter"])
     order = []
-    monkeypatch.setattr(_mod, "_pull_compose_images",
-                        lambda *args, **kwargs: (order.append("images"), (True, ""))[1])
+
+    def pull(*args, **kwargs):
+        order.append("images")
+        return True, ""
+
+    monkeypatch.setattr(_mod, "_pull_compose_images", pull)
 
     def fetch(item, report):
         order.append("model")
@@ -320,9 +324,12 @@ def test_prepare_downloads_a_missing_model_even_when_the_images_are_here(prepare
     monkeypatch.setattr(_mod, "_pull_compose_images", lambda *args, **kwargs: pytest.fail("no image download"))
     labels = []
     real_write = _mod._write_progress
-    monkeypatch.setattr(_mod, "_write_progress",
-                        lambda service_id, status, label="", **kw: (labels.append(label),
-                                                                    real_write(service_id, status, label, **kw)))
+
+    def recording_write(service_id, status, label="", **kw):
+        labels.append(label)
+        real_write(service_id, status, label, **kw)
+
+    monkeypatch.setattr(_mod, "_write_progress", recording_write)
     monkeypatch.setattr(_mod._extension_assets, "fetch", lambda item, report: (
         item.target.parent.mkdir(parents=True), item.target.write_bytes(b"model")))
 
