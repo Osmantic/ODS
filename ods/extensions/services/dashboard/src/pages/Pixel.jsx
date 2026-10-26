@@ -149,6 +149,7 @@ const CLEAN_CONTEXT_RECOVERY_FAILED = 'Automatic recovery was attempted once, bu
 // reply the page can show may already have done its work, so it says so.
 export const RESTART_NOTICE = 'Portal restarted while it was answering. Send your message again.'
 export const NO_REPLY_NOTICE = 'Portal finished working on your last request, but its reply couldn’t be shown here. Your files are saved. Ask Portal what it did, or send your next message.'
+export const NOT_RECEIVED_NOTICE = 'Portal didn’t receive your last message. It’s back in the message box, ready to send again.'
 const CHECKING_TURN = 'Checking on your last request…'
 const TURN_STILL_RUNNING = 'Portal is still working on your last request. Its answer will appear here when it’s done. You can stop it.'
 // Work still running in this chat whose answer the page cannot receive, for
@@ -870,13 +871,22 @@ export default function Pixel({ systemStatus = null }) {
     // runs for this chat, so no answer will arrive. The work may well be done,
     // so the reply keeps the text that did arrive and says so plainly. After
     // the owner's Continue, which stops anything left over, it says stopped.
-    // The composer is free, with whatever the owner had typed.
-    function settleWithoutReceipt({stopped = false} = {}) {
+    // A message that has no receipt and got nothing back never reached
+    // Portal: it goes back to the composer. The composer is free, with
+    // whatever the owner had typed.
+    function settleWithoutReceipt({stopped = false, received = true} = {}) {
       continueRequested.current = null
       requestIdRef.current = null
       const latest = messagesRef.current
       const last = latest.at(-1)
-      if (unsettledReply(last)) {
+      const user = latest.at(-2)
+      const unsent = !stopped && !received && unsettledReply(last) && !last.content?.trim() && !recordedTask(last.task)
+        && user?.role === 'user' && typeof user.content === 'string' && Boolean(user.content.trim()) && !user.images?.length
+      if (unsent) {
+        setMessages(latest.slice(0, -2))
+        setInput(current => restoreUnsentDraft(current, user.content))
+        setRefusal(NOT_RECEIVED_NOTICE)
+      } else if (unsettledReply(last)) {
         setMessages(replaceLastAssistant(latest, {content:stopped ? stoppedContent(last.content) : cutOffContent(last.content, NO_REPLY_NOTICE),
           status:'stopped', task:recordedTask(last.task)}))
       }
@@ -896,6 +906,9 @@ export default function Pixel({ systemStatus = null }) {
       const deadline = globalThis.setTimeout(() => controller.abort(), 15000)
       let state = 'unknown'
       let receiptPending = false
+      // Only a receipt lookup that answered can say this turn has none; one
+      // that failed proves nothing, and then the turn is not settled here.
+      let noReceipt = false
       try {
         if (requestId) {
           const resultResponse = await fetch('/api/pixel/chat/result', {
@@ -989,6 +1002,7 @@ export default function Pixel({ systemStatus = null }) {
             // An unresolved receipt: the chat lookup below may prove the turn
             // is over, and that also settles this receipt on the server.
             receiptPending = result.state === 'unresolved'
+            noReceipt = result.state === 'unknown'
           }
         }
         const response = await fetch('/api/pixel/chat/activity', {
@@ -1009,10 +1023,13 @@ export default function Pixel({ systemStatus = null }) {
         timer = globalThis.setTimeout(checkActivity, 0)
         return
       }
-      if (state === 'terminal') {
-        settleWithoutReceipt()
+      if (state === 'terminal' && (!requestId || noReceipt || receiptPending)) {
+        settleWithoutReceipt({received:!noReceipt})
         return
       }
+      // Nothing runs, but this turn's receipt could not be read: it may still
+      // hold the answer. Check again rather than settle without it.
+      if (state === 'terminal') state = 'unknown'
       setRestoredReplyLive(false)
       updateRestoredActivity(state)
       later(state)

@@ -8,7 +8,7 @@ import {act,fireEvent,screen,waitFor,within} from '@testing-library/react'
 import {render} from '../test/test-utils'
 // The repository's base ESLint profile does not mark JSX identifiers as uses.
 // eslint-disable-next-line no-unused-vars
-import Pixel, {NO_REPLY_NOTICE, RESTART_NOTICE} from './Pixel'
+import Pixel, {NO_REPLY_NOTICE, NOT_RECEIVED_NOTICE, RESTART_NOTICE} from './Pixel'
 import {CONTINUE_FAILED} from '../lib/portalContext'
 
 const QUESTION='Can you do things on cron timers or scheduled work tasks?'
@@ -126,6 +126,50 @@ it('frees the Spark’s window whose own request has no receipt once the server 
   expect(calls('/api/pixel/chat/result').length+calls('/api/pixel/chat/activity').length).toBe(checks)
   expect(calls('/api/pixel/chat/cancel')).toHaveLength(0)
   expect(stored()).toMatchObject({interrupted:false,requestId:null})
+})
+
+it('puts a message that never reached Portal back in the composer, and says so',async()=>{
+  // nginx answered 502 while the dashboard API was recreated: the request
+  // never arrived, so no receipt exists and nothing came back.
+  let attempt
+  server.streams.push(body=>{attempt=body;return response({detail:'Bad Gateway'},502)})
+  server.result=body=>{expect(body).toEqual({chat_id:attempt.chat_id,request_id:attempt.request_id});return response({state:'unknown',events:''})}
+  server.activity=()=>response({state:'terminal'})
+  render(<Pixel/>);await screen.findByText('Available')
+  fireEvent.change(field(),{target:{value:QUESTION}})
+  fireEvent.click(screen.getByTitle('Send'))
+  const note=await screen.findByRole('status',{name:'Message not started'})
+  expect(note).toHaveTextContent(NOT_RECEIVED_NOTICE)
+  expect(screen.queryByText(NO_REPLY_NOTICE,{exact:false})).toBeNull()
+  expect(within(screen.getByRole('region',{name:'Conversation messages'})).queryByText(QUESTION)).toBeNull()
+  expect(row()).toBeNull()
+  expect(field()).toHaveValue(QUESTION)
+  expect(screen.getByTitle('Send')).toBeEnabled()
+  await waitFor(()=>expect(stored()).toMatchObject({interrupted:false,requestId:null,draft:QUESTION}))
+  expect(stored().messages.some(message=>message.content===QUESTION)).toBe(false)
+  // One click sends it as a new turn.
+  server.streams.push(()=>answer('Yes: use a scheduled task.'))
+  fireEvent.click(within(note).getByRole('button',{name:'Send again'}))
+  expect(await screen.findByText('Yes: use a scheduled task.')).toBeVisible()
+  const resent=JSON.parse(calls('/api/pixel/chat/stream')[1][1].body)
+  expect(resent.messages.filter(message=>message.role==='user')).toEqual([{role:'user',content:QUESTION}])
+  expect(resent.request_id).not.toBe(attempt.request_id)
+  expect(calls('/api/pixel/chat/cancel')).toHaveLength(0)
+})
+
+it('never settles a turn whose receipt could not be read, even when nothing runs',async()=>{
+  saveCutOffChat()
+  server.result=()=>response({detail:'Portal results are unavailable'},503)
+  server.activity=()=>response({state:'terminal'})
+  render(<Pixel/>);await screen.findByText('Available')
+  const hold=await screen.findByRole('status',{name:'Last message'})
+  await within(hold).findByText('Portal can’t confirm your last request has finished.')
+  expect(screen.queryByText(NO_REPLY_NOTICE,{exact:false})).toBeNull()
+  expect(screen.queryByRole('status',{name:'Message not started'})).toBeNull()
+  // Once the receipt can be read, it decides what the reply says.
+  server.result=()=>response({state:'interrupted',events:`data: ${JSON.stringify({choices:[{delta:{content:PARTIAL}}]})}\n\n`})
+  await screen.findByText((_,node)=>node?.tagName==='EM' && node.textContent===RESTART_NOTICE,{},{timeout:4000})
+  expect(calls('/api/pixel/chat/cancel')).toHaveLength(0)
 })
 
 it('backs off instead of polling every second while a turn cannot be proven',async()=>{
