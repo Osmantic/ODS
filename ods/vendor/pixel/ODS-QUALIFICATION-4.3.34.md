@@ -1,6 +1,6 @@
 # ODS-maintained Pixel 4.3.34 candidate
 
-Functional source checkpoint: `3320fad646cf23e226a0edfb0c80cb29d1f53df9` on the
+Functional source checkpoint: `12225ccb390c84f4a08e60cfc25e966e6e45f08f` on the
 public ODS branch `feat/pixel-4.3.34-source-broker`. This record does not claim
 an upstream Pixel release or completed fleet acceptance.
 
@@ -33,6 +33,13 @@ Automated evidence, all with fakes and no network or real accounts:
   unchanged.
 - `tests/e2e.sh`: generated units and environment files, and renders with writes
   on, off, and with a user time zone.
+
+An independent review before publication found and fixed: a disconnected sign-in
+kept serving the last snapshot; Calendar busy checks missed events already running;
+revocation could leave the token after an unexpected reply; restore verified before
+the first refresh wrote `status.json`; an older staged token could replace a newer
+one in custody; and the control UI chat did not inherit the new flags. Each has a
+regression test.
 
 Before accepting this release, run the held source upgrade on real Linux/WSL
 installations and through a macOS native update, verify the installed source
