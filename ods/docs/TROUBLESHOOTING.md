@@ -323,6 +323,46 @@ ods status
 
 ---
 
+## Connected apps (Google Calendar and Gmail)
+
+The card in **Settings, Connected apps** names the problem and its fix; these
+are the questions it doesn't answer. The full guide is
+[Connected apps](pixel/CONNECTED-APPS.md).
+
+### Connected apps aren't in Settings
+
+**Cause:** `PORTAL_CONNECTED_APPS_ENABLED=false` in ODS's `.env`.
+
+**Fix:** set it to `true`, or remove the line, then reload the dashboard.
+
+### Google says the app isn't verified
+
+**Cause:** the sign-in app is your own, and Google hasn't reviewed it. That's expected.
+
+**Fix:** choose **Advanced**, then continue to your app.
+
+### The Google tab ends on a page that can't be reached
+
+**Cause:** your browser is on a different computer from the one running ODS, and Google sent it back to `127.0.0.1` on that computer.
+
+**Fix:** copy the whole address from that tab, paste it into the wizard, and press **Finish connecting**.
+
+### Google signs Portal out every week
+
+**Cause:** your Google app is still in Testing, and Google ends Testing sign-ins after 7 days.
+
+**Fix:** open your app's **Audience** page in Google Cloud, press **Publish app**, then **Reconnect** in Settings.
+
+### Portal says it can't read my calendar or email
+
+**Cause:** Google isn't connected, needs reconnecting, or you didn't turn that part on.
+
+**Fix:** open **Settings, Connected apps**. The card says which, and offers the button that fixes it. Portal's chat also shows **Open Connected apps** when the connection needs you.
+
+Still stuck? Ask on the ODS Discord: <https://discord.gg/4ntNp9MAwC>.
+
+---
+
 ## Getting Help
 
 1. **Check logs:**
