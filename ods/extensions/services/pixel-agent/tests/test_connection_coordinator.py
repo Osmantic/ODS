@@ -287,19 +287,27 @@ def test_a_forged_callback_leaves_the_owners_sign_in_open(world):
     assert world.google.calls == []
 
 
-def test_a_denied_or_expired_sign_in_leaves_nothing_behind(world, monkeypatch):
+def failed_because(world, error):
+    """Settings learns why the last sign-in did not connect, even when only Google's redirect saw it."""
+    value = journal(world)
+    return value["phase"] == "failed" and value["error"] == error and lifecycle.public(value)["action"] == "connect"
+
+
+def test_a_denied_or_expired_sign_in_leaves_nothing_behind_but_the_reason(world, monkeypatch):
     flow = begin(world)
     reply = c.control(world.bridge, "connection-complete",
                       {"flowId": flow["flowId"], "state": consent_state(world, flow["flowId"]), "error": "access-denied"})
     assert reply["outcome"] == "failed" and reply["errorClass"] == "access-denied"
-    assert journal(world) is None and not world.record.exists() and not list(world.paths.oauth.iterdir())
+    assert failed_because(world, "access-denied")
+    assert not world.record.exists() and not list(world.paths.oauth.iterdir())
     flow = begin(world)
+    assert journal(world)["phase"] == "consent", "a new sign-in replaces the last reason"
     later = c._now() + timedelta(seconds=oauth.FLOW_SECONDS + 1)
     monkeypatch.setattr(c, "_now", lambda: later)
     with pytest.raises(AccessError, match="sign-in-flow-expired"):
         c.control(world.bridge, "connection-complete",
                   {"flowId": flow["flowId"], "state": consent_state(world, flow["flowId"]), "code": "4/late"})
-    assert journal(world) is None and not list(world.paths.oauth.iterdir())
+    assert failed_because(world, "sign-in-flow-expired") and not list(world.paths.oauth.iterdir())
     assert world.google.calls == []
 
 
@@ -307,8 +315,21 @@ def test_google_refusing_the_code_records_nothing(world):
     world.google.token = lambda body: (400, {"error": "invalid_grant", "error_description": "Bad Request"})
     reply = connect(world)
     assert reply["outcome"] == "failed" and reply["errorClass"] == "invalid-grant"
-    assert not world.record.exists() and not world.paths.token.exists() and journal(world) is None
+    assert not world.record.exists() and not world.paths.token.exists() and failed_because(world, "invalid-grant")
     assert not list(world.paths.oauth.iterdir())
+    # Finish has nothing to complete for a sign-in that did not connect; it clears the reason.
+    assert c.control(world.bridge, "connection-activate", {}) == {"outcome": "unchanged"}
+    assert journal(world) is None
+
+
+def test_a_broker_that_cannot_run_the_exchange_is_reported(world, monkeypatch):
+    flow = begin(world)
+    monkeypatch.setattr(c, "RUN", lambda arguments, timeout: 1)
+    with pytest.raises(AccessError, match="sign-in-exchange-unavailable"):
+        c.control(world.bridge, "connection-complete",
+                  {"flowId": flow["flowId"], "state": consent_state(world, flow["flowId"]), "code": "4/fixture-code"})
+    assert failed_because(world, "sign-in-exchange-unavailable")
+    assert not world.record.exists() and not list(world.paths.oauth.iterdir())
 
 
 def test_a_capability_google_did_not_grant_stays_off(world):
@@ -325,7 +346,7 @@ def test_a_sign_in_without_a_verified_account_is_revoked_and_deleted(world):
     assert reply == {"outcome": "failed", "errorClass": "account-unverified", "account": None,
                      "capabilities": None, "missing": []}
     assert [url for url, _body in world.google.calls] == [BROKER.GOOGLE_TOKEN_URI, BROKER.GOOGLE_REVOKE_URI]
-    assert not world.paths.token.exists() and not world.record.exists() and journal(world) is None
+    assert not world.paths.token.exists() and not world.record.exists() and failed_because(world, "account-unverified")
 
 
 def test_a_busy_portal_is_never_interrupted_and_activation_resumes_later(world):

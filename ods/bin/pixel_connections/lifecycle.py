@@ -1,8 +1,9 @@
 """The root journal of a connection in progress, from consent until Portal's gateway matches.
 
 The coordinator writes it; status reads it so Settings can say "waiting for
-Google" or offer the one button that finishes a stuck step. It holds no token,
-code, PKCE verifier or state, only a hash of the state.
+Google", why the last sign-in did not connect, or offer the one button that
+finishes a stuck step. It holds no token, code, PKCE verifier or state, only a
+hash of the state.
 """
 from __future__ import annotations
 
@@ -17,7 +18,9 @@ from typing import Any
 PATH = Path("/var/lib/ods-pixel-access/connection.json")
 KEYS = {"kind", "connector", "phase", "flowId", "stateHash", "redirectUri", "expiresAt", "request",
         "error", "updatedAt"}
-PHASES = ("consent", "activating", "deactivating")
+# "failed" keeps why the last sign-in did not connect, so Settings can say so; the
+# next sign-in replaces it.
+PHASES = ("consent", "activating", "deactivating", "failed")
 CONSENT_KEYS = ("flowId", "stateHash", "redirectUri", "expiresAt", "request")
 CODE = re.compile(r"^[a-z][a-z0-9-]{0,95}$")
 INSTANT = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
@@ -33,7 +36,8 @@ def validate(value: Any) -> dict[str, Any]:
             or value["connector"] != "google" or value["phase"] not in PHASES
             or value["error"] is not None and (type(value["error"]) is not str or not CODE.fullmatch(value["error"]))
             or value["updatedAt"] is not None and (type(value["updatedAt"]) is not str
-                                                   or not INSTANT.fullmatch(value["updatedAt"]))):
+                                                   or not INSTANT.fullmatch(value["updatedAt"]))
+            or value["phase"] == "failed" and value["error"] is None):
         raise LifecycleError("invalid connection journal")
     consent = value["phase"] == "consent"
     if consent != all(value[key] is not None for key in CONSENT_KEYS) or not consent and any(
@@ -104,7 +108,8 @@ def valid_public(value: Any) -> bool:
             or type(value["since"]) is not str or not INSTANT.fullmatch(value["since"])
             or value["phase"] not in PHASES
             or value["action"] != ("disconnect" if value["phase"] == "deactivating" else "connect")
-            or value["error"] is not None and (type(value["error"]) is not str or not CODE.fullmatch(value["error"]))):
+            or value["error"] is not None and (type(value["error"]) is not str or not CODE.fullmatch(value["error"]))
+            or value["phase"] == "failed" and value["error"] is None):
         return False
     if value["phase"] == "consent":
         return type(value["expiresAt"]) is str and INSTANT.fullmatch(value["expiresAt"]) is not None

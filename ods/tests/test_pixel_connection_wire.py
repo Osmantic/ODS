@@ -58,7 +58,7 @@ def samples():
             (RECORD, True, broker(), None), (RECORD, True, broker("network"), None),
             (RECORD, True, broker("invalid-grant"), None), (None, False, None, journal("consent")),
             (RECORD, True, None, journal("activating", "runtime-busy")), (None, False, None, journal("deactivating")),
-            (RECORD, False, None, journal("consent"))):
+            (RECORD, False, None, journal("consent")), (None, False, None, journal("failed", "access-denied"))):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             os.chmod(root, 0o755)
@@ -98,6 +98,10 @@ MUTATIONS = (
                                                         "error": "Has Spaces", "since": "2026-10-25T20:30:00Z"}),
     lambda v: v["connectors"]["google"].update(pending={"action": "connect", "phase": "activating", "expiresAt": None,
                                                         "error": None, "since": None}),
+    lambda v: v["connectors"]["google"].update(pending={"action": "connect", "phase": "failed", "expiresAt": None,
+                                                        "error": None, "since": "2026-10-25T20:30:00Z"}),
+    lambda v: v["connectors"]["google"].update(pending={"action": "disconnect", "phase": "failed", "expiresAt": None,
+                                                        "error": "access-denied", "since": "2026-10-25T20:30:00Z"}),
     lambda v: v["connectors"]["google"].update(pending={"action": "connect", "phase": "consent", "error": None,
                                                         "expiresAt": "2026-10-25T20:45:00Z", "flowId": "a" * 32,
                                                         "since": "2026-10-25T20:30:00Z"}),
@@ -208,7 +212,7 @@ class WireContractTests(unittest.TestCase):
         produced = samples()
         # Every step in progress reaches Settings, and none of the flow's secrets do.
         phases = [value["connectors"]["google"]["pending"] for value in produced]
-        self.assertEqual({item["phase"] for item in phases if item}, {"consent", "activating", "deactivating"})
+        self.assertEqual({item["phase"] for item in phases if item}, {"consent", "activating", "deactivating", "failed"})
         self.assertNotIn("b" * 64, json.dumps(produced))
         self.assertNotIn("a" * 32, json.dumps(produced))
         for value in produced:

@@ -213,6 +213,12 @@ def _failed(error_class: str) -> dict[str, Any]:
     return {"outcome": "failed", "errorClass": error_class, "account": None, "capabilities": None, "missing": []}
 
 
+def _sign_in_failed(bridge, error_class: str) -> dict[str, Any]:
+    """Keep why the sign-in did not connect, for Settings; the next sign-in replaces it."""
+    _write_lifecycle(bridge, _lifecycle("failed", error=error_class))
+    return _failed(error_class)
+
+
 def complete(bridge, request: Any) -> dict[str, Any]:
     """Finish consent: the broker exchanges the code, and the owner's record names what Google granted."""
     request = _complete_request(request)
@@ -223,30 +229,31 @@ def complete(bridge, request: Any) -> dict[str, Any]:
             raise AccessError("sign-in-flow-unknown")
         if _now() >= _instant(journal["expiresAt"]):
             custody.discard_flow(PATHS, journal["flowId"])
-            _clear_lifecycle(bridge)
+            _sign_in_failed(bridge, "sign-in-flow-expired")
             raise AccessError("sign-in-flow-expired")
         # A forged or stale callback leaves the owner's real flow open.
         if not hmac.compare_digest(oauth.state_hash(request["state"]), journal["stateHash"]):
             raise AccessError("sign-in-state-mismatch")
         if "error" in request:
             custody.discard_flow(PATHS, journal["flowId"])
-            _clear_lifecycle(bridge)
-            return _failed(request["error"])
+            return _sign_in_failed(bridge, request["error"])
         custody.write_handoff(PATHS, f"{journal['flowId']}.code.json", {
             "schemaVersion": 1, "kind": "pixel-source-oauth-code", "flowId": journal["flowId"],
             "state": request["state"], "code": request["code"]})
-        result = custody.exchange(PATHS, RUN, journal["flowId"])
+        try:
+            result = custody.exchange(PATHS, RUN, journal["flowId"])
+        except custody.CustodyError as error:
+            _sign_in_failed(bridge, error.code)
+            raise
         if result["outcome"] != "connected":
-            _clear_lifecycle(bridge)
-            return _failed(result["errorClass"] or "unknown")
+            return _sign_in_failed(bridge, result["errorClass"] or "unknown")
         wanted = journal["request"]
         granted = _granted(wanted["capabilities"], result["grantedScopes"])
         missing = [name for name in CAPABILITY_IDS if wanted["capabilities"][name] and not granted[name]]
         if result["account"] is None or not any(granted.values()):
             # Nothing usable came back, so nothing of it may stay on this box.
             custody.revoke(PATHS, RUN)
-            _clear_lifecycle(bridge)
-            return _failed("account-unverified" if result["account"] is None else "missing-scope")
+            return _sign_in_failed(bridge, "account-unverified" if result["account"] is None else "missing-scope")
         record = _record() or {"schemaVersion": state.SCHEMA_VERSION, "kind": state.KIND, "updatedAt": None,
                                "ownerTimeZone": None, "connectors": {}}
         data = catalog.GOOGLE["data"]
@@ -558,6 +565,9 @@ def activate(bridge, request: Any) -> dict[str, Any]:
         lifecycle = read_lifecycle(_lifecycle_path(bridge))
         if lifecycle and lifecycle["phase"] == "consent":
             raise AccessError("sign-in-in-progress")
+        if lifecycle and lifecycle["phase"] == "failed":
+            # A sign-in that did not connect leaves Portal nothing to finish.
+            lifecycle = None
         record, held = _record(), custody.holds_sign_in(PATHS)
         try:
             outcome = _change_gateway(bridge, gateway_target(record, custody_held=held),

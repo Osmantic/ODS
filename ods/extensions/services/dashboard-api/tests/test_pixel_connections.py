@@ -92,6 +92,19 @@ def test_nothing_connected_is_reported(client, mock_request, tmp_path):
     assert response.json()["connectors"]["google"]["state"] == "not-connected"
 
 
+def test_why_the_last_sign_in_did_not_connect_reaches_settings(client, mock_request, tmp_path):
+    reply = host_reply(tmp_path, connected=False)
+    reply["connectors"]["google"]["pending"] = {"action": "connect", "phase": "failed", "expiresAt": None,
+                                                "error": "access-denied", "since": "2026-10-25T20:30:00Z"}
+    mock_request.return_value = copy.deepcopy(reply)
+    response = client.get("/api/pixel/connections", headers=AUTH)
+    assert response.status_code == 200, response.text
+    assert response.json()["connectors"]["google"]["pending"]["error"] == "access-denied"
+    reply["connectors"]["google"]["pending"]["error"] = None
+    mock_request.return_value = reply
+    assert client.get("/api/pixel/connections", headers=AUTH).status_code == 502
+
+
 @pytest.mark.parametrize("failure,expected", [
     (AgentUnavailable("private-sentinel"), 503),
     (AgentHTTPError(503, "private-sentinel", '{"error":"private-sentinel"}'), 503),

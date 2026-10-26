@@ -68,10 +68,11 @@ class Capabilities(Strict):
 
 
 class Pending(Strict):
-    """A connection step in progress: waiting for Google, or Portal's gateway still to update."""
+    """A connection step in progress (waiting for Google, or Portal's gateway still to
+    update), or why the last sign-in did not connect."""
 
     action: Literal["connect", "disconnect"]
-    phase: Literal["consent", "activating", "deactivating"]
+    phase: Literal["consent", "activating", "deactivating", "failed"]
     expiresAt: str | None = Field(pattern=SECOND)
     error: str | None = Field(pattern=r"^[a-z][a-z0-9-]{0,95}$")
     since: str = Field(pattern=SECOND)
@@ -79,7 +80,8 @@ class Pending(Strict):
     @model_validator(mode="after")
     def _consistent(self):
         if self.action != ("disconnect" if self.phase == "deactivating" else "connect") or \
-                (self.expiresAt is None) != (self.phase != "consent"):
+                (self.expiresAt is None) != (self.phase != "consent") or \
+                self.phase == "failed" and self.error is None:
             raise ValueError("inconsistent pending step")
         return self
 

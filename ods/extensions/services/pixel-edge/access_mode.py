@@ -66,9 +66,10 @@ def _connection_pending(value):
         return True
     if (type(value) is not dict or set(value) != {'action', 'phase', 'expiresAt', 'error', 'since'}
             or not _maybe(value['since'], _PENDING_INSTANT) or value['since'] is None
-            or value['phase'] not in ('consent', 'activating', 'deactivating')
+            or value['phase'] not in ('consent', 'activating', 'deactivating', 'failed')
             or value['action'] != ('disconnect' if value['phase'] == 'deactivating' else 'connect')
-            or not _maybe(value['error'], _PENDING_ERROR)):
+            or not _maybe(value['error'], _PENDING_ERROR)
+            or value['phase'] == 'failed' and value['error'] is None):
         return False
     if value['phase'] == 'consent':
         return type(value['expiresAt']) is str and _PENDING_INSTANT.fullmatch(value['expiresAt']) is not None

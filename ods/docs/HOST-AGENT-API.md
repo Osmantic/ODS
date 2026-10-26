@@ -418,10 +418,12 @@ means the record of a step in progress could not be read; the next action replac
 ```
 
 `phase` is `consent` (waiting for Google; `expiresAt` is when the sign-in ends),
-`activating` (connected; Portal still has to load the Calendar and Gmail tools) or
-`deactivating` (disconnected; Portal still has to drop them). `error` is why the
+`activating` (connected; Portal still has to load the Calendar and Gmail tools),
+`deactivating` (disconnected; Portal still has to drop them) or `failed` (the last
+sign-in did not connect; `error` says why, for example `access-denied` when the
+owner cancelled at Google). For `activating` and `deactivating`, `error` is why the
 last attempt to update Portal stopped, for example `runtime-busy` while a chat is
-running. `finish` completes the step.
+running, and `finish` completes the step. A new sign-in replaces a `failed` step.
 
 **Error responses:**
 | Code | Condition |
