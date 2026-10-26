@@ -301,7 +301,7 @@ def _catalog_management(test_client):
 
 
 def test_catalog_reuses_a_proof_the_live_runtime_agrees_with(test_client, model_runtime, monkeypatch):
-    calls = []
+    calls: list[str] = []
     monkeypatch.setattr(model_runtime, "request_agent_json", _recording(calls, [MANAGED]))
     monkeypatch.setattr(model_runtime, "get_loaded_model", AsyncMock(return_value="fixture"))
     assert [_catalog_management(test_client) for _ in range(3)] == [MANAGED] * 3
@@ -309,7 +309,7 @@ def test_catalog_reuses_a_proof_the_live_runtime_agrees_with(test_client, model_
 
 
 def test_catalog_proves_again_when_the_live_runtime_disagrees(test_client, model_runtime, monkeypatch):
-    calls = []
+    calls: list[str] = []
     answers = [MANAGED]
     monkeypatch.setattr(model_runtime, "request_agent_json", _recording(calls, answers))
     loaded = AsyncMock(return_value="fixture")
@@ -328,7 +328,7 @@ def test_catalog_proves_again_when_the_live_runtime_disagrees(test_client, model
     {"status": "idle", "modelTransactionPending": True},
 ])
 def test_owned_lifecycle_operations_always_get_a_fresh_proof(test_client, model_runtime, monkeypatch, status):
-    calls = []
+    calls: list[str] = []
     monkeypatch.setattr(model_runtime, "request_agent_json", _recording(calls, [MANAGED]))
     monkeypatch.setattr(model_runtime, "get_loaded_model", AsyncMock(return_value="fixture"))
     _catalog_management(test_client)
@@ -383,7 +383,7 @@ def test_catalog_proves_ownership_alongside_the_other_reads(test_client, model_r
 
 def test_older_proof_is_shown_while_a_fresh_one_is_taken_in_the_background(model_runtime, monkeypatch):
     fresh = {**MANAGED, "reason": "fresh"}
-    calls = []
+    calls: list[str] = []
     monkeypatch.setattr(model_runtime, "request_agent_json", _recording(calls, [fresh]))
     monkeypatch.setattr(model_runtime, "_model_management_remembered", (time.monotonic() - 20, MANAGED))
 
@@ -397,7 +397,7 @@ def test_older_proof_is_shown_while_a_fresh_one_is_taken_in_the_background(model
 
 
 def test_catalog_never_reuses_a_proof_past_its_age_limit(model_runtime, monkeypatch):
-    calls = []
+    calls: list[str] = []
     monkeypatch.setattr(model_runtime, "request_agent_json", _recording(calls, [STOPPED]))
     expired = time.monotonic() - model_runtime._MODEL_MANAGEMENT_MAX_AGE_SECONDS - 1
     monkeypatch.setattr(model_runtime, "_model_management_remembered", (expired, STOPPED))
@@ -483,7 +483,8 @@ def test_one_unverified_proof_keeps_the_last_good_one(model_runtime, monkeypatch
     assert model_runtime._model_management_remembered[1] == MANAGED
     monkeypatch.setattr(model_runtime, "_model_management_remembered", (time.monotonic() - 20, MANAGED))
     asyncio.run(refresh())  # a second miss in a row: dropped
-    assert model_runtime._model_management_remembered is None
+    # getattr: a narrowed attribute would stay None for mypy after the next read.
+    assert getattr(model_runtime, "_model_management_remembered") is None
     asyncio.run(model_runtime._catalog_model_management(None, {"status": "idle"}, "fixture"))
     # A good proof ends the run of misses.
     assert model_runtime._model_management_remembered[1] == MANAGED
