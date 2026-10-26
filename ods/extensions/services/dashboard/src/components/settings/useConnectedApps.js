@@ -23,9 +23,7 @@ export class ConnectedAppsError extends Error {
   }
 }
 
-async function action(name, body) {
-  const response = await fetch(`/api/pixel/connections/google/${name}`, {
-    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})
+async function reply(response) {
   const value = await response.json().catch(() => null)
   if (response.ok) return value
   const detail = value?.detail
@@ -35,12 +33,23 @@ async function action(name, body) {
   throw new ConnectedAppsError('unknown', GENERIC, true)
 }
 
+async function action(name, body) {
+  return reply(await fetch(`/api/pixel/connections/google/${name}`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}))
+}
+
 export const connectGoogle = choices => action('connect', choices)
 export const completeGoogle = (flowId, address) => action('complete', {flowId, address})
 export const cancelGoogle = flowId => action('cancel', {flowId})
 export const disconnectGoogle = () => action('disconnect', {})
 export const syncGoogle = () => action('sync', {})
 export const finishGoogle = () => action('finish', {})
+
+// Calendar changes Portal suggested. An approval carries the hash shown with the change.
+export const listCalendarChanges = async () => reply(await fetch('/api/pixel/connections/google/changes', {cache: 'no-store'}))
+export const approveCalendarChange = entry => action('changes/approve', {proposalId: entry.proposalId, sha256: entry.sha256})
+export const declineCalendarChange = entry => action('changes/decline', {proposalId: entry.proposalId})
+export const checkCalendarChange = entry => action('changes/check', {proposalId: entry.proposalId})
 
 // Whether Settings shows Connected apps at all. Unknown until the dashboard answers.
 export function useConnectedAppsEnabled() {

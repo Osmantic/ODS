@@ -45,7 +45,8 @@ def host_reply(tmp_path, *, connected=True):
     tmp_path.chmod(0o755)
     owners = (0, os.getuid()) if hasattr(os, "getuid") else (0,)
     value = status.report(surface="linux-systemd", record_path=record, token_path=token, status_path=broker,
-                          lifecycle_path=tmp_path / "connection.json", now=NOW, owners=owners)
+                          lifecycle_path=tmp_path / "connection.json", now=NOW, owners=owners,
+                          broker_state=tmp_path / "broker")
     return dict(status.validate_public(value), catalog=catalog.public_catalog())
 
 
@@ -179,6 +180,22 @@ CONNECT = {"client": GOOGLE_CLIENT, "capabilities": READ_BOTH, "cloudModels": Fa
            "ownerTimeZone": "America/Chicago", "loginHint": None}
 CONNECTED = {"outcome": "connected", "errorClass": None, "account": "owner@example.com",
              "capabilities": READ_BOTH, "missing": []}
+CHANGE_ID = "calendar-1761500000000-0badc0de"
+# Calendar changes Portal suggested, as root lists them for the owner.
+WAITING = {"proposalId": CHANGE_ID, "sha256": "c" * 64, "state": "waiting", "action": "create",
+           "createdAt": "2026-10-26T15:00:00.000Z", "event": None, "tooLarge": False,
+           "change": {"summary": "Dentist", "start": "2026-10-27T15:00:00-05:00", "end": "2026-10-27T16:00:00-05:00",
+                      "allDay": False, "timeZone": "America/Chicago", "location": "12 Main St",
+                      "description": "Bring\nthe form", "attendees": ["pat@example.com"], "sendUpdates": "all"}}
+MOVE = {"proposalId": "calendar-1761500000001-0badc0de", "sha256": "d" * 64, "state": "unconfirmed",
+        "action": "update", "createdAt": None, "tooLarge": False,
+        "change": {"summary": None, "start": "2026-10-27", "end": "2026-10-28", "allDay": True, "timeZone": None,
+                   "location": None, "description": None, "attendees": None, "sendUpdates": "none"},
+        "event": {"title": "Team sync", "start": "2026-10-27T10:00:00-05:00", "end": None, "allDay": False}}
+UNREADABLE = {"proposalId": "calendar-1761500000002-0badc0de", "sha256": None, "state": "invalid", "action": None,
+              "createdAt": None, "change": None, "event": None, "tooLarge": False}
+TOO_LARGE = dict(WAITING, proposalId="calendar-1761500000003-0badc0de", sha256=None, change=None, tooLarge=True)
+CHANGES = {"proposals": [WAITING, MOVE, UNREADABLE, TOO_LARGE], "more": 2}
 ACTIONS = [
     ("connect", CONNECT, "begin", {"flowId": FLOW, "expiresAt": "2026-10-25T20:45:00Z", "redirect": "loopback",
                                    "authUrl": "https://accounts.google.com/o/oauth2/auth?client_id=x&state=y"}, 90),
@@ -187,6 +204,10 @@ ACTIONS = [
     ("disconnect", {}, "disconnect", {"outcome": "disconnected", "revoked": True}, 180),
     ("sync", {}, "sync", {"outcome": "started"}, 45),
     ("finish", {}, "finish", {"outcome": "applied"}, 330),
+    ("changes/approve", {"proposalId": CHANGE_ID, "sha256": "c" * 64}, "approve",
+     {"proposalId": CHANGE_ID, "outcome": "applied"}, 180),
+    ("changes/decline", {"proposalId": CHANGE_ID}, "decline", {"proposalId": CHANGE_ID, "outcome": "declined"}, 45),
+    ("changes/check", {"proposalId": CHANGE_ID}, "check", {"proposalId": CHANGE_ID, "outcome": "unconfirmed"}, 180),
 ]
 
 
@@ -250,6 +271,11 @@ def test_refusals_say_what_happened_and_what_to_do(client, mock_request, failure
     ("cancel", {"flowId": FLOW, "extra": True}),
     ("disconnect", {"connector": "google"}),
     ("finish", {"force": True}),
+    ("changes/approve", {"proposalId": CHANGE_ID}),
+    ("changes/approve", {"proposalId": CHANGE_ID, "sha256": "C" * 64}),
+    ("changes/approve", {"proposalId": "calendar-1-0badc0de", "sha256": "c" * 64}),
+    ("changes/decline", {"proposalId": CHANGE_ID, "sha256": "c" * 64}),
+    ("changes/check", {}),
 ])
 def test_requests_outside_the_contract_never_reach_the_host(client, mock_request, action, body):
     response = client.post(f"/api/pixel/connections/google/{action}", json=body, headers=AUTH)
@@ -266,6 +292,9 @@ def test_requests_outside_the_contract_never_reach_the_host(client, mock_request
      dict(CONNECTED, token="private-sentinel")),
     ("disconnect", {}, {"outcome": "disconnected"}),
     ("sync", {}, {"outcome": "started", "revoked": False}),
+    ("changes/approve", {"proposalId": CHANGE_ID, "sha256": "c" * 64}, {"proposalId": "private-sentinel",
+                                                                        "outcome": "applied"}),
+    ("changes/decline", {"proposalId": CHANGE_ID}, {"proposalId": CHANGE_ID, "outcome": "private-sentinel"}),
 ])
 def test_a_reply_of_any_other_shape_is_refused_without_echoing_it(client, mock_request, action, body, reply):
     mock_request.return_value = reply
@@ -273,6 +302,64 @@ def test_a_reply_of_any_other_shape_is_refused_without_echoing_it(client, mock_r
     assert response.status_code == 502
     assert response.json()["detail"]["code"] == "connection-change-unconfirmed"
     assert "private-sentinel" not in response.text
+
+
+def test_the_calendar_changes_portal_suggested_reach_the_owner_exactly(client, mock_request):
+    assert client.get("/api/pixel/connections/google/changes").status_code == 401
+    mock_request.return_value = copy.deepcopy(CHANGES)
+    response = client.get("/api/pixel/connections/google/changes", headers=AUTH)
+    assert response.status_code == 200, response.text
+    assert response.json() == CHANGES and response.headers["cache-control"] == "no-store"
+    mock_request.assert_awaited_once_with("POST", "/v1/pixel/connections/google/changes", payload={}, timeout=45)
+
+
+def test_calendar_changes_are_hidden_while_the_owner_has_connected_apps_off(client, mock_request, monkeypatch):
+    flag(monkeypatch, "false")
+    assert client.get("/api/pixel/connections/google/changes", headers=AUTH).status_code == 404
+    mock_request.assert_not_called()
+
+
+@pytest.mark.parametrize("change", [
+    lambda value: value["proposals"][0].update(sha256=None),
+    lambda value: value["proposals"][0].update(token="private-sentinel"),
+    lambda value: value["proposals"][0]["change"].update(attendees=["private-sentinel"] * 101),
+    lambda value: value["proposals"][0]["change"].update(description="private-sentinel" * 2000),
+    lambda value: value["proposals"][1].update(event={"title": "private-sentinel"}),
+    lambda value: value["proposals"][2].update(action="create"),
+    lambda value: value["proposals"][3].update(change=WAITING["change"]),
+    lambda value: value.update(more=-1),
+    lambda value: value.update(proposals=[WAITING] * 21),
+])
+def test_a_change_list_of_any_other_shape_is_refused_without_echoing_it(client, mock_request, change):
+    reply = copy.deepcopy(CHANGES)
+    change(reply)
+    mock_request.return_value = reply
+    response = client.get("/api/pixel/connections/google/changes", headers=AUTH)
+    assert response.status_code == 502
+    assert response.json()["detail"]["code"] == "connection-change-unconfirmed"
+    assert "private-sentinel" not in response.text
+
+
+def test_every_calendar_refusal_tells_the_owner_what_to_do():
+    for code in ("calendar-changes-off", "calendar-change-mismatch", "calendar-change-unknown", "calendar-change-invalid",
+                 "calendar-change-unconfirmed", "calendar-change-not-made", "calendar-change-not-checkable",
+                 "calendar-change-result-invalid", "calendar-change-unsafe"):
+        message, _needs_help = api.MESSAGES[code]
+        assert message.endswith(".") and "error" not in message.lower(), code
+
+
+def test_acting_on_a_change_refreshes_the_chat_line_at_once(client, mock_request, monkeypatch):
+    monkeypatch.setattr(api, "_attention", {"until": 10 ** 9, "value": {"step": "changes-waiting"}})
+    mock_request.return_value = {"proposalId": CHANGE_ID, "outcome": "declined"}
+    assert client.post("/api/pixel/connections/google/changes/decline", json={"proposalId": CHANGE_ID},
+                       headers=AUTH).status_code == 200
+    assert api._attention["until"] == 0.0
+    monkeypatch.setattr(api, "_attention", {"until": 10 ** 9, "value": None})
+    mock_request.side_effect = AgentHTTPError(409, "calendar-change-mismatch")
+    response = client.post("/api/pixel/connections/google/changes/approve",
+                           json={"proposalId": CHANGE_ID, "sha256": "c" * 64}, headers=AUTH)
+    assert response.status_code == 409 and response.json()["detail"]["code"] == "calendar-change-mismatch"
+    assert api._attention["until"] == 0.0
 
 
 # ---------------------------------------------------------------- chat attention
@@ -289,14 +376,21 @@ def with_google(reply, **changes):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("changes,expected", [
-    ({"state": "needs-reconnect", "reason": "invalid-grant"}, {"state": "needs-reconnect", "reason": "invalid-grant", "step": None}),
-    ({"state": "missing-permission", "reason": "missing-scope"}, {"state": "missing-permission", "reason": "missing-scope", "step": None}),
-    ({"state": "behind", "reason": "sync-stopped"}, {"state": "behind", "reason": "sync-stopped", "step": None}),
+    ({"state": "needs-reconnect", "reason": "invalid-grant"},
+     {"state": "needs-reconnect", "reason": "invalid-grant", "step": None, "waiting": 0}),
+    ({"state": "missing-permission", "reason": "missing-scope"},
+     {"state": "missing-permission", "reason": "missing-scope", "step": None, "waiting": 0}),
+    ({"state": "behind", "reason": "sync-stopped"}, {"state": "behind", "reason": "sync-stopped", "step": None, "waiting": 0}),
+    ({"waitingChanges": 2}, {"state": "connected", "reason": None, "step": "changes-waiting", "waiting": 2}),
+    # Reconnecting comes first: an approval cannot be made without the sign-in.
+    ({"state": "needs-reconnect", "reason": "invalid-grant", "waitingChanges": 1},
+     {"state": "needs-reconnect", "reason": "invalid-grant", "step": None, "waiting": 1}),
     ({"state": "behind", "reason": "network"}, None),
     ({"state": "first-sync", "reason": None}, None),
     ({}, None),
     ({"pending": {"action": "connect", "phase": "activating", "expiresAt": None, "error": "runtime-busy",
-                  "since": "2026-10-25T20:30:00Z"}}, {"state": "connected", "reason": None, "step": "update-stopped"}),
+                  "since": "2026-10-25T20:30:00Z"}},
+     {"state": "connected", "reason": None, "step": "update-stopped", "waiting": 0}),
     ({"pending": {"action": "connect", "phase": "activating", "expiresAt": None, "error": None,
                   "since": "2026-10-25T20:30:00Z"}}, None),
 ])

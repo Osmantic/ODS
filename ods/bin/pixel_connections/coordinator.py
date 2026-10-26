@@ -25,7 +25,7 @@ from pixel_access_bridge import AccessError, atomic_json, remaining, runtime_con
 from pixel_model_coordinator import _managed_marker, _marker_digest
 from pixel_settings.coordinator import _identity, _read, _valid_identity
 
-from . import catalog, custody, lifecycle, oauth, planner, state
+from . import approvals, catalog, custody, lifecycle, oauth, planner, state
 
 LIFECYCLE = lifecycle.PATH.name
 PATHS = custody.Paths()
@@ -39,6 +39,7 @@ GRANTED_BY = {
     "calendar.read": frozenset({catalog.CALENDAR_READ_SCOPE, catalog.CALENDAR_WRITE_SCOPE,
                                 "https://www.googleapis.com/auth/calendar.readonly",
                                 "https://www.googleapis.com/auth/calendar"}),
+    "calendar.write": frozenset({catalog.CALENDAR_WRITE_SCOPE, "https://www.googleapis.com/auth/calendar"}),
     "gmail.read": frozenset({catalog.GMAIL_READ_SCOPE, "https://www.googleapis.com/auth/gmail.modify",
                              "https://mail.google.com/"}),
 }
@@ -327,6 +328,88 @@ def sync(bridge, request: Any) -> dict[str, Any]:
         return {"outcome": "started"}
 
 
+# ---------------------------------------------------------------- calendar changes Portal suggests
+
+def _approval_ids(bridge) -> approvals.Ids | None:
+    """None before the broker identity exists, when Portal cannot have suggested anything."""
+    try:
+        broker_uid, _gid = custody.broker_ids()
+    except KeyError:
+        return None
+    return approvals.Ids(reader_uid=bridge.owner.pw_uid, reader_gid=bridge.owner.pw_gid, broker_uid=broker_uid)
+
+
+def _change_request(request: Any, keys: set) -> dict[str, Any]:
+    if (not isinstance(request, dict) or set(request) != keys or type(request["proposalId"]) is not str
+            or not approvals.PROPOSAL_ID.fullmatch(request["proposalId"])
+            or "sha256" in keys and (type(request["sha256"]) is not str
+                                     or not approvals.SHA256.fullmatch(request["sha256"]))):
+        raise AccessError("invalid-connection-request")
+    return request
+
+
+def _connected_google() -> dict[str, Any]:
+    google = (_record() or {"connectors": {}})["connectors"].get("google")
+    if not google or not custody.holds_sign_in(PATHS):
+        raise AccessError("connection-not-connected")
+    return google
+
+
+def proposals(bridge, request: Any) -> dict[str, Any]:
+    """The calendar changes Portal suggested, oldest first, each with the hash that approves it."""
+    if request != {}:
+        raise AccessError("invalid-connection-request")
+    with bridge.bounded(30), bridge.locked():
+        bridge.discover()
+        ids = _approval_ids(bridge)
+        return approvals.listing(PATHS, ids) if ids else {"proposals": [], "more": 0}
+
+
+def approve(bridge, request: Any) -> dict[str, Any]:
+    """Make the one change the owner approved, exactly as they saw it."""
+    request = _change_request(request, {"proposalId", "sha256"})
+    with bridge.bounded(150), bridge.locked():
+        bridge.discover()
+        if not _connected_google()["capabilities"]["calendar.write"]:
+            raise AccessError("calendar-changes-off")
+        ids = _approval_ids(bridge)
+        if ids is None:
+            raise AccessError("calendar-change-unknown")
+        try:
+            result = approvals.approve(PATHS, RUN, ids, request)
+        except custody.CustodyError:
+            # systemctl did not answer in time. The broker's journal keeps the change from happening twice.
+            raise AccessError("calendar-change-unconfirmed") from None
+        if result["outcome"] == "applied":
+            try:
+                custody.sync(RUN)
+            except custody.CustodyError:
+                pass  # Only a faster refresh is lost: the timer refreshes within a minute.
+        return result
+
+
+def reconcile(bridge, request: Any) -> dict[str, Any]:
+    """Ask Google whether an unconfirmed new event was made; nothing is sent again."""
+    request = _change_request(request, {"proposalId"})
+    with bridge.bounded(150), bridge.locked():
+        bridge.discover()
+        _connected_google()
+        ids = _approval_ids(bridge)
+        if ids is None:
+            raise AccessError("calendar-change-unknown")
+        try:
+            return approvals.reconcile(PATHS, RUN, ids, request)
+        except custody.CustodyError:
+            raise AccessError("calendar-change-unconfirmed") from None
+
+
+def decline(bridge, request: Any) -> dict[str, Any]:
+    """Take a suggested change off the list, connected or not."""
+    request = _change_request(request, {"proposalId"})
+    with bridge.bounded(30), bridge.locked():
+        return approvals.decline(PATHS, request)
+
+
 # ---------------------------------------------------------------- Portal's gateway
 
 def _journal(value: Any) -> dict[str, Any]:
@@ -590,7 +673,9 @@ def activate(bridge, request: Any) -> dict[str, Any]:
 
 
 OPERATIONS = {"connection-begin": begin, "connection-complete": complete, "connection-activate": activate,
-              "connection-cancel": cancel, "connection-disconnect": disconnect, "connection-sync": sync}
+              "connection-cancel": cancel, "connection-disconnect": disconnect, "connection-sync": sync,
+              "connection-proposals": proposals, "connection-approve": approve, "connection-decline": decline,
+              "connection-reconcile": reconcile}
 
 
 def control(bridge, operation: str, request: Any) -> dict[str, Any]:
@@ -599,5 +684,5 @@ def control(bridge, operation: str, request: Any) -> dict[str, Any]:
         raise AccessError("invalid-connection-operation")
     try:
         return handler(bridge, request)
-    except custody.CustodyError as error:
+    except (custody.CustodyError, approvals.ApprovalError) as error:
         raise AccessError(error.code) from None

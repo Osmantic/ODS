@@ -44,7 +44,9 @@ KEYS.update({"connection-owner-status": BASE | {"answers_path"},
 HOOKS.update({"connection-owner-status": (), "connection-apply": ("busy", "connection-activate"),
               "connection-recover": ("busy", "connection-activate")})
 CONNECTION_OPERATIONS = ("connection-begin", "connection-complete", "connection-activate",
-                         "connection-cancel", "connection-disconnect", "connection-sync")
+                         "connection-cancel", "connection-disconnect", "connection-sync",
+                         "connection-proposals", "connection-approve", "connection-decline",
+                         "connection-reconcile")
 
 
 class ProtocolError(ValueError):

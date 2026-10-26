@@ -25,6 +25,7 @@ from pixel_connections import catalog, host_api, status  # noqa: E402
 
 KEY = "synthetic-connections-test-key"
 FLOW = "a" * 32
+CHANGE = "calendar-1761500000000-0badc0de"
 STATE = "s" * 43
 READ_BOTH = {"calendar.read": True, "calendar.write": False, "calendar.direct": False,
              "gmail.read": True, "gmail.drafts": False}
@@ -114,7 +115,12 @@ class ConnectionsHostAPITests(unittest.TestCase):
         for action, operation, request, reply in (
                 ("sync", "connection-sync", {}, {"outcome": "started"}),
                 ("finish", "connection-activate", {}, {"outcome": "applied"}),
-                ("cancel", "connection-cancel", {"flowId": FLOW}, {"outcome": "cancelled"})):
+                ("cancel", "connection-cancel", {"flowId": FLOW}, {"outcome": "cancelled"}),
+                ("changes", "connection-proposals", {}, {"proposals": [], "more": 0}),
+                ("approve", "connection-approve", {"proposalId": CHANGE, "sha256": "c" * 64},
+                 {"proposalId": CHANGE, "outcome": "applied"}),
+                ("decline", "connection-decline", {"proposalId": CHANGE}, {"proposalId": CHANGE, "outcome": "declined"}),
+                ("check", "connection-reconcile", {"proposalId": CHANGE}, {"proposalId": CHANGE, "outcome": "waiting"})):
             with self.subTest(action=action), patch.object(pixel_access_relay, "request_runtime_connection_action",
                                                            return_value=(200, reply)) as relay:
                 self.assertEqual(self.post(action, request), (200, reply))
@@ -127,6 +133,10 @@ class ConnectionsHostAPITests(unittest.TestCase):
             for action in ("anything", "sync?force=1", "../sync", ""):
                 self.assertEqual(self.post(action, {})[0], 404, action)
             self.assertEqual(self.post("sync", {"force": True}), (400, {"error": "invalid-request"}))
+            for action, body in (("changes", {"all": True}), ("approve", {"proposalId": CHANGE}),
+                                 ("approve", {"proposalId": CHANGE, "sha256": 7}),
+                                 ("decline", {"proposalId": CHANGE, "sha256": "c" * 64}), ("check", {"proposalId": 7})):
+                self.assertEqual(self.post(action, body), (400, {"error": "invalid-request"}), action)
         relay.assert_not_called()
 
     def test_root_refusals_pass_through_and_a_lost_reply_is_a_plain_unavailable(self):

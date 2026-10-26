@@ -6,8 +6,11 @@ status reply is content-free: no tokens, messages or events ever pass through he
 
 The actions start and finish a Google sign-in, retry a stuck step, sync and
 disconnect. The owner's Google client file passes straight through to the root
-custodian; nothing here stores it. Status and the actions answer only while
-PORTAL_CONNECTED_APPS_ENABLED is true; Settings asks whether it is.
+custodian; nothing here stores it. The calendar changes Portal suggests are the
+one exception to content-free replies: each carries what it would write, so the
+owner approves exactly that, and root makes only the change whose hash comes back.
+Status and the actions answer only while PORTAL_CONNECTED_APPS_ENABLED is true;
+Settings asks whether it is.
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from config import read_live_env_value
 from fastapi import APIRouter, Depends, HTTPException
@@ -37,6 +40,8 @@ FLOW = r"^[a-f0-9]{32}$"
 SCOPE_PATTERN = re.compile(r"^(?:https://www\.googleapis\.com/auth/[a-z0-9._-]{1,100}|https://mail\.google\.com/|openid|email|profile)$")
 AUTH_URL = r"^https://accounts\.google\.com/o/oauth2/auth\?[A-Za-z0-9._~%&=+-]{1,4000}$"
 MAX_CLIENT_BYTES = 4096
+PROPOSAL = r"^calendar-[0-9]{13}-[a-f0-9]{8}$"
+HEX = r"^[a-f0-9]{64}$"
 State = Literal["not-connected", "first-sync", "connected", "needs-reconnect", "blocked-by-admin",
                 "setup-broken", "missing-permission", "unknown-error", "behind"]
 
@@ -98,6 +103,7 @@ class GoogleConnection(Strict):
     checkedAt: str | None = Field(pattern=INSTANT)
     sources: Sources
     pending: Pending | None
+    waitingChanges: int | None = Field(ge=0, le=50)
 
 
 class Connectors(Strict):
@@ -157,6 +163,7 @@ def _projection(raw) -> dict:
     google = status.connectors.google
     connected = google.state != "not-connected"
     if ((google.account is None) == connected or (google.capabilities is None) == connected
+            or (google.waitingChanges is None) == connected
             or any(SCOPE_PATTERN.fullmatch(scope) is None for scope in google.grantedScopes or [])):
         raise HTTPException(502, "Connected apps status could not be verified", headers=NO_STORE)
     return status.model_dump(by_alias=True)
@@ -213,11 +220,14 @@ def _attention_of(status: dict) -> dict | None:
     google = status["connectors"]["google"] if status["available"] else None
     if google is None:
         return None
-    pending = google["pending"]
+    pending, waiting = google["pending"], google["waitingChanges"] or 0
     if pending and pending["error"] and pending["phase"] in ("activating", "deactivating"):
-        return {"state": google["state"], "reason": google["reason"], "step": "update-stopped"}
+        return {"state": google["state"], "reason": google["reason"], "step": "update-stopped", "waiting": waiting}
     if google["state"] in ATTENTION_STATES or google["reason"] == "sync-stopped":
-        return {"state": google["state"], "reason": google["reason"], "step": None}
+        return {"state": google["state"], "reason": google["reason"], "step": None, "waiting": waiting}
+    if waiting:
+        # A calendar change Portal suggested waits for the owner's approval.
+        return {"state": google["state"], "reason": google["reason"], "step": "changes-waiting", "waiting": waiting}
     return None
 
 
@@ -275,6 +285,23 @@ MESSAGES: dict[str, tuple[str, bool]] = {
                                 "running, then try again.", True),
     "connection-change-unconfirmed": ("ODS couldn't confirm this step. Connected apps shows where it stands; try "
                                       "again from there.", True),
+    "calendar-changes-off": ("Calendar changes are off for this connection. Decline this change, or connect "
+                             "Google again with calendar changes on.", False),
+    "calendar-change-mismatch": ("This change is different from the one shown. Look it over again, then approve "
+                                 "it.", False),
+    "calendar-change-unknown": ("This change is no longer waiting. Refresh the list.", False),
+    "calendar-change-invalid": ("ODS can't make this change. Decline it, and ask Portal again if you still want "
+                                "it.", False),
+    "calendar-change-unconfirmed": ("Google hasn't confirmed this change yet, so ODS won't send it again. Check "
+                                    "your calendar in a minute.", False),
+    "calendar-change-not-made": ("The change wasn't made. Try again, or decline it and ask Portal to suggest it "
+                                 "again.", True),
+    "calendar-change-not-checkable": ("Google can't confirm this kind of change afterwards. Check your calendar, "
+                                      "then dismiss it here.", False),
+    "calendar-change-result-invalid": ("ODS couldn't confirm what happened with this change. Check your calendar "
+                                       "before trying again.", True),
+    "calendar-change-unsafe": ("ODS couldn't read this change safely. Decline it, and ask Portal again if you "
+                               "still want it.", True),
 }
 FALLBACK = ("ODS couldn't finish this step. Try again, and ask on Discord if it keeps happening.", True)
 
@@ -336,6 +363,72 @@ class CompleteReply(Strict):
                 or (self.capabilities is None) == connected):
             raise ValueError("inconsistent sign-in result")
         return self
+
+
+Short = Annotated[str, Field(max_length=64)]
+Attendee = Annotated[str, Field(min_length=3, max_length=320)]
+
+
+class CalendarChange(Strict):
+    """Every value the change sends to Google; None keeps what the event has."""
+
+    summary: str | None = Field(max_length=1000)
+    start: Short | None
+    end: Short | None
+    allDay: bool | None
+    timeZone: str | None = Field(max_length=100)
+    location: str | None = Field(max_length=1000)
+    description: str | None = Field(max_length=20000)
+    attendees: list[Attendee] | None = Field(max_length=100)
+    sendUpdates: Literal["none", "all"]
+
+
+class CalendarEvent(Strict):
+    """The event an update or delete targets, as the last calendar sync saw it."""
+
+    title: str | None = Field(max_length=1000)
+    start: Short | None
+    end: Short | None
+    allDay: bool
+
+
+class CalendarProposal(Strict):
+    proposalId: str = Field(pattern=PROPOSAL)
+    sha256: str | None = Field(pattern=HEX)
+    state: Literal["waiting", "unconfirmed", "applied", "rejected", "not-applied", "invalid"]
+    action: Literal["create", "update", "delete"] | None
+    createdAt: Short | None
+    change: CalendarChange | None
+    event: CalendarEvent | None
+    tooLarge: bool
+
+    @model_validator(mode="after")
+    def _consistent(self):
+        unreadable = self.state == "invalid"
+        shown = not unreadable and not self.tooLarge
+        if ((self.action is None) != unreadable or (self.sha256 is None) == shown or (self.change is None) == shown
+                or not shown and self.event is not None or unreadable and (self.tooLarge or self.createdAt)):
+            raise ValueError("inconsistent calendar change")
+        return self
+
+
+class ProposalsReply(Strict):
+    proposals: list[CalendarProposal] = Field(max_length=20)
+    more: int = Field(ge=0)
+
+
+class ApproveRequest(Strict):
+    proposalId: str = Field(pattern=PROPOSAL)
+    sha256: str = Field(pattern=HEX)
+
+
+class ChangeRequest(Strict):
+    proposalId: str = Field(pattern=PROPOSAL)
+
+
+class ChangeReply(Strict):
+    proposalId: str = Field(pattern=PROPOSAL)
+    outcome: Literal["applied", "rejected", "not-applied", "unconfirmed", "waiting", "declined"]
 
 
 class OutcomeReply(Strict):
@@ -401,3 +494,36 @@ async def sync_google(request: EmptyRequest):
 async def finish_google(request: EmptyRequest):
     """Finish connecting or disconnecting when Portal was busy, or after an interruption."""
     return await _action("/v1/pixel/connections/google/finish", {}, OutcomeReply, 330)
+
+
+# ---------------------------------------------------------------- calendar changes Portal suggests
+
+@router.get("/api/pixel/connections/google/changes", dependencies=[Depends(verify_api_key)])
+async def google_changes():
+    """Calendar changes Portal suggested, oldest first; approving one carries the hash shown with it."""
+    return await _action("/v1/pixel/connections/google/changes", {}, ProposalsReply, 45)
+
+
+async def _change_action(path: str, payload: dict, timeout: float) -> JSONResponse:
+    try:
+        return await _action(path, payload, ChangeReply, timeout)
+    finally:
+        # Portal's chat line counts waiting changes; let it see this one at once.
+        _attention.update(until=0.0)
+
+
+@router.post("/api/pixel/connections/google/changes/approve", dependencies=[Depends(verify_api_key)])
+async def approve_google_change(request: ApproveRequest):
+    """Make exactly the change the owner saw: root checks the hash before Google is asked."""
+    return await _change_action("/v1/pixel/connections/google/approve", request.model_dump(), 180)
+
+
+@router.post("/api/pixel/connections/google/changes/decline", dependencies=[Depends(verify_api_key)])
+async def decline_google_change(request: ChangeRequest):
+    return await _change_action("/v1/pixel/connections/google/decline", request.model_dump(), 45)
+
+
+@router.post("/api/pixel/connections/google/changes/check", dependencies=[Depends(verify_api_key)])
+async def check_google_change(request: ChangeRequest):
+    """Ask whether Google made a new event it did not confirm; nothing is sent again."""
+    return await _change_action("/v1/pixel/connections/google/check", request.model_dump(), 180)

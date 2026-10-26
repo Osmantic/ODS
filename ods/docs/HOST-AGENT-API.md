@@ -395,7 +395,8 @@ Source Broker needs Linux or WSL systemd.
                   "lastSuccessAt": "2026-10-25T20:29:30Z", "failingSince": null,
                   "recordCount": 812, "complete": true}
       },
-      "pending": null
+      "pending": null,
+      "waitingChanges": 0
     }
   },
   "catalog": [{"id": "google", "name": "Google", "summary": "Calendar and Gmail", "...": "..."}]
@@ -425,6 +426,10 @@ owner cancelled at Google). For `activating` and `deactivating`, `error` is why 
 last attempt to update Portal stopped, for example `runtime-busy` while a chat is
 running, and `finish` completes the step. A new sign-in replaces a `failed` step.
 
+`waitingChanges` counts the calendar changes Portal suggested that wait for the
+owner (see `changes` below); it is `null` while nothing is connected. Only the
+count is reported here, never what a change says.
+
 **Error responses:**
 | Code | Condition |
 |------|-----------|
@@ -452,6 +457,10 @@ the dashboard or a log.
 | `disconnect` | `{}` | `{"outcome": "disconnected", "revoked": true}` |
 | `sync` | `{}` | `{"outcome": "started"}` |
 | `finish` | `{}` | `{"outcome": "applied" \| "unchanged"}` |
+| `changes` | `{}` | `{"proposals": [...], "more": 0}` |
+| `approve` | `{"proposalId", "sha256"}` | `{"proposalId", "outcome": "applied" \| "rejected" \| "not-applied" \| "unconfirmed"}` |
+| `decline` | `{"proposalId"}` | `{"proposalId", "outcome": "declined"}` |
+| `check` | `{"proposalId"}` | `{"proposalId", "outcome": "applied" \| "rejected" \| "not-applied" \| "unconfirmed" \| "waiting"}` |
 
 `begin` opens `http://127.0.0.1:<port>/` on the machine that runs the host agent
 (the Windows host for a WSL install) and returns Google's consent address. When
@@ -473,13 +482,37 @@ interrupted: while a chat runs, the step stays pending with `runtime-busy` and
 Google, deletes the sign-in and everything the broker derived from the account,
 then lets Portal drop the tools; running it again is safe.
 
+`changes`, `approve`, `decline` and `check` handle the calendar changes Portal
+suggests when **Suggest calendar changes you approve** (`calendar.write`) is on.
+Portal's proposal tools only write a proposal; nothing reaches Google until the
+owner approves it. This is Pixel's operator path (`source-show`, `source-approve`,
+`source-reconcile`) run by root for the signed-in dashboard:
+
+- `changes` freezes each new proposal into a snapshot that only the Source Broker's
+  account owns, then lists the waiting ones, oldest first, with every value each
+  would send to Google, the event an update or delete targets (from the last
+  calendar sync), and the snapshot's SHA-256. It is the one connected-apps reply
+  that carries content. A change too long to show whole in one reply comes back
+  with `"tooLarge": true` and no hash; it can only be declined. A proposal that is
+  not valid comes back as `"state": "invalid"`.
+- `approve` carries the hash shown. Root refuses any other hash
+  (`calendar-change-mismatch`), then runs `pixel-source-action@<id>.service`, and
+  reports only an outcome bound to that hash. Approving again reports the first
+  outcome without calling Google. `unconfirmed` means Google may have the change but
+  did not confirm it; it is never sent again.
+- `check` asks Google whether an unconfirmed new event exists
+  (`pixel-source-reconcile@<id>.service`); it never writes. Only new events can be
+  checked (`calendar-change-not-checkable`).
+- `decline` takes a change off the list. When nothing reached Google, its snapshot
+  goes too; otherwise the snapshot and the broker's records stay as evidence.
+
 **Error responses:**
 | Code | Condition |
 |------|-----------|
 | 400 | The body is outside the action's exact shape, or the client file is not a Desktop-app client (`client-not-desktop`, `client-invalid`) |
 | 401/403 | Missing or invalid API key |
 | 404 | Unknown action |
-| 409 | The coordinator refused the step; `error` is its code, for example `runtime-busy`, `sign-in-flow-expired` or `not-available-on-this-system` |
+| 409 | The coordinator refused the step; `error` is its code, for example `runtime-busy`, `sign-in-flow-expired`, `not-available-on-this-system`, `calendar-changes-off`, `calendar-change-mismatch` or `calendar-change-not-made` |
 | 503 | The coordinator or the agent's relay is unavailable; status shows where the step stands |
 
 ## Security Boundaries

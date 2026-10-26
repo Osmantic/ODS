@@ -14,6 +14,7 @@ from pixel_connections import catalog, lifecycle, status  # noqa: E402
 OWNERS = (0, os.getuid()) if hasattr(os, "getuid") else (0,)
 NOW = datetime(2026, 10, 25, 20, 30, tzinfo=timezone.utc)
 CALENDAR_READ = "https://www.googleapis.com/auth/calendar.events.readonly"
+CALENDAR_WRITE = "https://www.googleapis.com/auth/calendar.events"
 GMAIL_READ = "https://www.googleapis.com/auth/gmail.readonly"
 
 
@@ -71,7 +72,8 @@ class Fixture:
 
     def report(self, surface="linux-systemd", now=NOW):
         value = status.report(surface=surface, record_path=self.record, token_path=self.token,
-                              status_path=self.broker, lifecycle_path=self.lifecycle, now=now, owners=OWNERS)
+                              status_path=self.broker, lifecycle_path=self.lifecycle, now=now, owners=OWNERS,
+                              broker_state=self.root / "broker")
         status.validate_public(value)
         return value
 
@@ -215,10 +217,38 @@ class ConnectionStatusTests(unittest.TestCase):
                 self.assertIsNone(value["connectors"]["google"]["pending"])
 
 
+class WaitingChangeTests(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "connected apps run under Linux and WSL")
+    def test_waiting_calendar_changes_are_counted_and_never_shown(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        fixture = Fixture(directory.name).write(record_value=record(**{"calendar.write": True}), token=True,
+                                                broker_value=broker())
+        proposals, results = fixture.root / "broker" / "proposals", fixture.root / "broker" / "results"
+        proposals.mkdir(parents=True)
+        results.mkdir()
+        waiting = ({"status": "pending-operator-approval", "values": {"summary": "Lunch with Sam"}},
+                   {"status": "pending-bounded-direct"}, "{not json", {"status": "pending-operator-approval"})
+        for index, value in enumerate(waiting):
+            path = proposals / f"calendar-17615000000{index:02d}-0badc0de.json"
+            path.write_text(value if isinstance(value, str) else json.dumps(value))
+            os.chmod(path, 0o640)
+        (proposals / "notes.json").write_text("{}")
+        settled = results / "calendar-1761500000003-0badc0de.json"
+        settled.write_text("{}")
+        os.chmod(settled, 0o640)
+        value = fixture.report()
+        # The suggestion and the unreadable file wait; Pixel makes the direct one, and one is settled.
+        self.assertEqual(value["connectors"]["google"]["waitingChanges"], 2)
+        self.assertNotIn("Lunch with Sam", json.dumps(value))
+        fixture.record.unlink()
+        self.assertIsNone(fixture.report()["connectors"]["google"]["waitingChanges"], "nothing connected, no count")
+
+
 class CatalogTests(unittest.TestCase):
     def test_scopes_follow_only_the_available_capabilities_the_owner_chose(self):
         chosen = {"calendar.read": True, "gmail.read": True, "calendar.write": True, "gmail.drafts": True}
-        self.assertEqual(catalog.scopes_for("google", chosen), [CALENDAR_READ, GMAIL_READ])
+        self.assertEqual(catalog.scopes_for("google", chosen), [CALENDAR_READ, CALENDAR_WRITE, GMAIL_READ])
         self.assertEqual(catalog.scopes_for("google", {"calendar.read": True}), [CALENDAR_READ])
         self.assertEqual(catalog.scopes_for("google", {}), [])
 

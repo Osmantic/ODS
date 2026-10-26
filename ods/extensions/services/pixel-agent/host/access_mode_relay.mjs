@@ -134,6 +134,8 @@ export function requestAccessController(payload, {socketPath = ACCESS_SOCKET_PAT
 const CONNECTION_ACTIONS = {
   'connection-begin': 65000, 'connection-complete': 155000, 'connection-activate': 305000,
   'connection-cancel': 25000, 'connection-disconnect': 155000, 'connection-sync': 25000,
+  'connection-proposals': 25000, 'connection-approve': 155000, 'connection-decline': 25000,
+  'connection-reconcile': 155000,
 };
 
 // Connected-apps status (GET, no body) or one custodian action (POST). The

@@ -236,5 +236,40 @@ def finish(body: Any, *, config: dict, relay: Relay, log: Callable[[str], None] 
     return relay("connection-activate", {}, config=config)
 
 
+def changes(body: Any, *, config: dict, relay: Relay, log: Callable[[str], None] = print) -> tuple:
+    """The calendar changes Portal suggested, each with the hash its approval must carry."""
+    if body != {}:
+        return 400, {"error": "invalid-request"}
+    return relay("connection-proposals", {}, config=config)
+
+
+def _change(body: Any, keys: set) -> dict | None:
+    if not isinstance(body, dict) or set(body) != keys or any(type(body[key]) is not str for key in keys):
+        return None
+    return body
+
+
+def approve(body: Any, *, config: dict, relay: Relay, log: Callable[[str], None] = print) -> tuple:
+    request = _change(body, {"proposalId", "sha256"})
+    if request is None:
+        return 400, {"error": "invalid-request"}
+    return relay("connection-approve", request, config=config)
+
+
+def decline(body: Any, *, config: dict, relay: Relay, log: Callable[[str], None] = print) -> tuple:
+    request = _change(body, {"proposalId"})
+    if request is None:
+        return 400, {"error": "invalid-request"}
+    return relay("connection-decline", request, config=config)
+
+
+def check(body: Any, *, config: dict, relay: Relay, log: Callable[[str], None] = print) -> tuple:
+    """Ask again whether Google made a change it did not confirm."""
+    request = _change(body, {"proposalId"})
+    if request is None:
+        return 400, {"error": "invalid-request"}
+    return relay("connection-reconcile", request, config=config)
+
+
 ACTIONS = {"begin": begin, "complete": complete, "cancel": cancel, "disconnect": disconnect, "sync": sync,
-           "finish": finish}
+           "finish": finish, "changes": changes, "approve": approve, "decline": decline, "check": check}

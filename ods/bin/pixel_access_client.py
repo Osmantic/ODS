@@ -16,7 +16,9 @@ def request_access(operation, request=None, *, settings_data_dir=None):
                          "installer-release-prepare", "installer-release-publish", "installer-release-finish", "installer-release-abort", "installer-source-begin",
                           "settings-status", "settings-change", "provider-status", "provider-change",
                           "connection-status", "connection-begin", "connection-complete", "connection-activate",
-                          "connection-cancel", "connection-disconnect", "connection-sync"):
+                          "connection-cancel", "connection-disconnect", "connection-sync",
+                          "connection-proposals", "connection-approve", "connection-decline",
+                          "connection-reconcile"):
         raise ValueError("invalid access operation")
     payload = {"operation": operation}
     if (operation.startswith("installer-") or operation in ("change", "model-finish", "settings-change", "provider-change")
