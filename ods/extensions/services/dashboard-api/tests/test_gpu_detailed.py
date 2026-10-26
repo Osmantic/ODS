@@ -134,8 +134,9 @@ class TestDecodeGpuAssignment:
 
 
 class TestGetGpuInfoNvidiaDetailed:
-    def test_parses_single_gpu(self, monkeypatch):
-        csv = "0, GPU-abc123, NVIDIA GeForce RTX 4090, 2048, 24564, 35, 62, 285.5"
+    @pytest.mark.parametrize("temperature", ["62", "62.00", "62.60"])
+    def test_parses_single_gpu(self, monkeypatch, temperature):
+        csv = f"0, GPU-abc123, NVIDIA GeForce RTX 4090, 2048, 24564, 35, {temperature}, 285.5"
         monkeypatch.setattr("gpu.run_command", lambda cmd, **kw: (True, csv))
         monkeypatch.delenv("GPU_ASSIGNMENT_JSON_B64", raising=False)
 
@@ -210,6 +211,21 @@ class TestGetGpuInfoNvidiaDetailed:
         result = get_gpu_info_nvidia_detailed()
         assert result is not None
         assert result[0].power_w is None
+
+    @pytest.mark.parametrize("temperature", ["NaN", "inf", "-inf"])
+    def test_skips_nonfinite_temperature_row(self, monkeypatch, temperature):
+        csv = (
+            f"0, GPU-bad, RTX 4090, 2048, 24564, 35, {temperature}, 285.5\n"
+            "1, GPU-good, RTX 4090, 4096, 24564, 50, 70.25, 300.0"
+        )
+        monkeypatch.setattr("gpu.run_command", lambda cmd, **kw: (True, csv))
+        monkeypatch.delenv("GPU_ASSIGNMENT_JSON_B64", raising=False)
+
+        result = get_gpu_info_nvidia_detailed()
+        assert result is not None
+        assert [gpu.uuid for gpu in result] == ["GPU-good"]
+        assert result[0].memory_total_mb == 24564
+        assert result[0].temperature_c == 70
 
     def test_returns_none_on_failure(self, monkeypatch):
         monkeypatch.setattr("gpu.run_command", lambda cmd, **kw: (False, ""))
