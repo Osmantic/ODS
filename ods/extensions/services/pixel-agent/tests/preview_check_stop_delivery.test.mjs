@@ -181,7 +181,7 @@ test('Spark stopwatch: without an answer the owner reads one plain line and the 
   const delivery = guard.deliveryVerificationForRun(runId);
   assert.equal(delivery.status, 'failed', 'Portal certifies nothing');
   assert.equal(delivery.text, `${PREVIEW_UNFINISHED_NOTE}\n\n${receiptOf(guard)}`);
-  assert.match(delivery.text, new RegExp(`\\n\\nYour preview is ready\\.\\n\\n\\[Open preview\\]\\(${preview.url.replaceAll('.', '\\.')}\\)\\n\\n`));
+  assert.ok(delivery.text.includes(`\n\nYour preview is ready.\n\n[Open preview](${preview.url})\n\n`), 'the receipt becomes the card');
   assert.doesNotMatch(delivery.text, ALARM);
   assert.equal(delivery.preview.siteId, preview.siteId, 'the preview card stays');
   // The record keeps every check fact, as the model read them.

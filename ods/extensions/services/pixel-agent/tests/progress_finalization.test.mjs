@@ -305,7 +305,7 @@ test('visual stops never gain an unverified preview or localhost claim', () => {
   const delivery = guard.deliveryVerificationForRun(context.runId);
   const recorded = guard.verificationForRun(context.runId).text;
   const receipt = recorded.slice(recorded.indexOf('Your preview is ready.'));
-  assert.match(receipt, new RegExp(`^Your preview is ready\\.\\n\\n\\[Open preview\\]\\(${details.url.replace(/[.]/g, '\\.')}\\)\\n\\n`));
+  assert.ok(receipt.startsWith(`Your preview is ready.\n\n[Open preview](${details.url})\n\n`), receipt);
   assert.equal(delivery.text, `${answer}\n\n${PREVIEW_UNFINISHED_NOTE}\n\n${receipt}`);
   assert.doesNotMatch(delivery.text, /not proof|not completed|stopped after|tool limit|Open last published preview/);
   assert.equal(delivery.preview.sha256, details.sha256);
