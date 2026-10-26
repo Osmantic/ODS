@@ -987,6 +987,9 @@ export default function Pixel({ systemStatus = null }) {
               }
               // The sender may already have saved, or another request may now
               // own this chat. Adopt its authoritative record without writing.
+              // The receipt settled this turn, so a Continue still answering
+              // for it has nothing left to release.
+              continueRequested.current = null
               conversationWriter.current = createConversationWriter(chat.persistenceSnapshot)
               hydrating.current = true; hydrationAction.current = null; savedView.current = null
               requestIdRef.current = chat.requestId
@@ -1331,6 +1334,8 @@ export default function Pixel({ systemStatus = null }) {
     setRefusal('')
     holdSend(null)
     setContinuing('')
+    // A Continue for an earlier turn never releases this one unchecked.
+    continueRequested.current = null
     setExampleError(null)
     // Text typed while this turn runs is a new draft. A turn that does not
     // start returns its own text to the composer without replacing that draft.

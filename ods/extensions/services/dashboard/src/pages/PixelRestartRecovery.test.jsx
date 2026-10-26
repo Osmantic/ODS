@@ -260,6 +260,37 @@ it('keeps one working Continue in this chat while activity stays unknown, and fr
   expect(calls('/api/pixel/chat/stream')).toHaveLength(1)
 })
 
+it('a Continue that the receipt answered first never settles a later turn unchecked',async()=>{
+  saveCutOffChat()
+  let finishCancel,cancelled=false
+  server.cancel=()=>new Promise(resolve=>{finishCancel=resolve})
+  server.result=body=>response(body.request_id==='checking-in'
+    ?(cancelled?{state:'cancelled',events:TASK_ONLY}:{state:'unknown',events:''})
+    :{state:'active',events:''})
+  vi.useFakeTimers()
+  await act(async()=>{render(<Pixel/>)})
+  await act(async()=>vi.advanceTimersByTimeAsync(10))
+  await act(async()=>{fireEvent.click(within(row()).getByRole('button',CONTINUE))})
+  // The server stops the old turn, and the next scheduled check reads that
+  // receipt before the owner's Continue hears back.
+  cancelled=true
+  await act(async()=>vi.advanceTimersByTimeAsync(5000))
+  expect(row()).toBeNull()
+  await act(async()=>{finishCancel(response({aborted:true}))})
+  await act(async()=>vi.advanceTimersByTimeAsync(10))
+  // A later turn is cut off. It is checked against its own receipt, which
+  // is still being written, and its answer can still arrive.
+  server.streams.push(()=>cutOffStream())
+  fireEvent.change(field(),{target:{value:'Next question'}})
+  await act(async()=>{fireEvent.click(screen.getByTitle('Send'))})
+  await act(async()=>vi.advanceTimersByTimeAsync(100))
+  const next=JSON.parse(calls('/api/pixel/chat/stream')[0][1].body).request_id
+  expect(calls('/api/pixel/chat/result').some(([,options])=>JSON.parse(options.body).request_id===next)).toBe(true)
+  expect(within(row()).getByText('Portal is still working on your last request. Its answer will appear here when it’s done. You can stop it.')).toBeVisible()
+  expect(stored().messages.at(-1).status).not.toBe('stopped')
+  expect(calls('/api/pixel/chat/cancel')).toHaveLength(1)
+})
+
 it('offers Continue in this chat only once a check cannot tell, never while that check runs',async()=>{
   saveCutOffChat()
   // The restarting API does not answer; each check gives up after 15 s.
