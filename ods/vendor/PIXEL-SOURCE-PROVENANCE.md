@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`8cae7723c0098f7c8b39bdf52a54b2f3a553e97d`, and its SHA-256 is
-`4124cb5e940123c2ee1a9d0cb48664341058fb2b91359ada7f99c43c6e9f585f`.
+`4e176a0d158166bad230e62c4e0d81501ca0e1b4`, and its SHA-256 is
+`8300883de8b9e2bfd6c67d8baaddc10b8671873521dbaa794ffea6060ef4b1d2`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -298,3 +298,33 @@ after a source is turned on is still running. The functional source checkpoint i
 now `9a50d0522cbf97cc9fa1991c431ea8e3ef74238a`. Two independent builds were
 byte-identical. This replaces the unpublished candidate commit
 `9942dbb6f85b90dea02c5c490274f29bc3ef81ee`.
+
+## ODS-maintained 4.3.35 Gmail drafts candidate
+
+This candidate adds Gmail drafts the owner approves: a proposal-only
+`pixel_gmail_draft_propose` tool behind the answers-file key `emailDraftsEnabled`
+(off by default), and a broker actuator that creates exactly the approved,
+hash-bound snapshot in the owner's Drafts folder, once. A Message-ID fixed before
+any Gmail call lets reconciliation find an unconfirmed draft instead of creating
+another. There is no send tool. With the key left out, drafts stay off and the
+rendered configuration denies the new tool like every other inactive source tool.
+`pixel/ODS-QUALIFICATION-4.3.35.md` records the automated evidence and the
+installed upgrade qualification still required. The version advance preserves the
+strictly increasing source-upgrade gate.
+
+The public vendor tree is `e3f5d13ce68c9a0b2baf8b71b841a18dd82a7ffa`. The
+functional source checkpoint is `0194de8a3e81fc5e27f20d87c836956a5587c1d6`. Two
+independent empty bare repositories using the alternates procedure above produced
+byte-identical bundles with the retained public synthetic author, timestamp and
+root message (Git on Windows, `pack.threads=1`); the same procedure first rebuilt
+the 4.3.34 bundle from its tree `18d78dbf9770cc1a639f8a4157621790eaf69b1d` byte
+for byte. The bundle advertises one root commit and no private history. Current
+pins above identify this candidate. The prior 4.3.34 bundle commit
+`8cae7723c0098f7c8b39bdf52a54b2f3a553e97d` and digest
+`4124cb5e940123c2ee1a9d0cb48664341058fb2b91359ada7f99c43c6e9f585f` remain historical
+identities in Git and in existing clients' retained receipts. On Windows,
+`scripts/verify-pixel-bundle.py` needs `core.autocrlf=false` for its temporary
+clone (for example `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.autocrlf
+GIT_CONFIG_VALUE_0=false`), because Git for Windows checks text out with CRLF by
+default. No release signature was generated and no private source history or
+signing credentials were used.
