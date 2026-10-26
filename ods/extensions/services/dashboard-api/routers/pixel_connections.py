@@ -302,6 +302,8 @@ MESSAGES: dict[str, tuple[str, bool]] = {
                                        "before trying again.", True),
     "calendar-change-unsafe": ("ODS couldn't read this change safely. Decline it, and ask Portal again if you "
                                "still want it.", True),
+    "calendar-undo-unavailable": ("This change can't be undone any more: the event changed or is gone. Check "
+                                  "your calendar.", False),
 }
 FALLBACK = ("ODS couldn't finish this step. Try again, and ask on Discord if it keeps happening.", True)
 
@@ -426,6 +428,31 @@ class ChangeRequest(Strict):
     proposalId: str = Field(pattern=PROPOSAL)
 
 
+class CalendarMoment(Strict):
+    start: Short | None
+    end: Short | None
+    allDay: bool
+
+
+class CalendarActivity(Strict):
+    """A private change Portal made by itself, and whether it can be undone."""
+
+    proposalId: str = Field(pattern=PROPOSAL)
+    action: Literal["create", "update"]
+    title: str | None = Field(max_length=1000)
+    start: Short | None
+    end: Short | None
+    allDay: bool
+    previous: CalendarMoment | None
+    appliedAt: Short | None
+    undo: Literal["available", "syncing", "done", "refused", "unconfirmed", "changed", "gone"]
+
+
+class ActivityReply(Strict):
+    changes: list[CalendarActivity] = Field(max_length=20)
+    more: int = Field(ge=0)
+
+
 class ChangeReply(Strict):
     proposalId: str = Field(pattern=PROPOSAL)
     outcome: Literal["applied", "rejected", "not-applied", "unconfirmed", "waiting", "declined"]
@@ -527,3 +554,16 @@ async def decline_google_change(request: ChangeRequest):
 async def check_google_change(request: ChangeRequest):
     """Ask whether Google made a new event it did not confirm; nothing is sent again."""
     return await _change_action("/v1/pixel/connections/google/check", request.model_dump(), 180)
+
+
+
+@router.get("/api/pixel/connections/google/activity", dependencies=[Depends(verify_api_key)])
+async def google_activity():
+    """The private changes Portal made by itself this week, newest first, each with whether it can be undone."""
+    return await _action("/v1/pixel/connections/google/activity", {}, ActivityReply, 45)
+
+
+@router.post("/api/pixel/connections/google/activity/undo", dependencies=[Depends(verify_api_key)])
+async def undo_google_change(request: ChangeRequest):
+    """Reverse one change Portal made by itself; the owner's click is the approval."""
+    return await _change_action("/v1/pixel/connections/google/undo", request.model_dump(), 180)

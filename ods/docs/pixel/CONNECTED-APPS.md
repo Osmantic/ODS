@@ -123,6 +123,13 @@ stops them the moment you turn Full Access on, and Portal asks for your approval
 instead. They start again when you switch Portal back to Sandbox. Your choice
 stays on the card throughout.
 
+**Changes Portal made by itself**, under the Google card, lists this week's,
+newest first. **Undo** removes an event Portal added, or moves an event back to
+where it was. ODS undoes a change only while the event is exactly as Portal left
+it: if you or a guest changed it since, or you added guests, the list says so and
+leaves it alone. Each change can be undone once. A change made in the last minute
+shows Undo after the next calendar sync.
+
 ## Disconnect
 
 Press **Disconnect** on the card. ODS stops syncing, removes its access at

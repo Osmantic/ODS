@@ -271,5 +271,20 @@ def check(body: Any, *, config: dict, relay: Relay, log: Callable[[str], None] =
     return relay("connection-reconcile", request, config=config)
 
 
+def activity(body: Any, *, config: dict, relay: Relay, log: Callable[[str], None] = print) -> tuple:
+    """The private changes Portal made by itself this week, each with whether it can be undone."""
+    if body != {}:
+        return 400, {"error": "invalid-request"}
+    return relay("connection-activity", {}, config=config)
+
+
+def undo(body: Any, *, config: dict, relay: Relay, log: Callable[[str], None] = print) -> tuple:
+    request = _change(body, {"proposalId"})
+    if request is None:
+        return 400, {"error": "invalid-request"}
+    return relay("connection-undo", request, config=config)
+
+
 ACTIONS = {"begin": begin, "complete": complete, "cancel": cancel, "disconnect": disconnect, "sync": sync,
-           "finish": finish, "changes": changes, "approve": approve, "decline": decline, "check": check}
+           "finish": finish, "changes": changes, "approve": approve, "decline": decline, "check": check,
+           "activity": activity, "undo": undo}

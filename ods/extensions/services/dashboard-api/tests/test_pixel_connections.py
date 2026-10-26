@@ -208,6 +208,7 @@ ACTIONS = [
      {"proposalId": CHANGE_ID, "outcome": "applied"}, 180),
     ("changes/decline", {"proposalId": CHANGE_ID}, "decline", {"proposalId": CHANGE_ID, "outcome": "declined"}, 45),
     ("changes/check", {"proposalId": CHANGE_ID}, "check", {"proposalId": CHANGE_ID, "outcome": "unconfirmed"}, 180),
+    ("activity/undo", {"proposalId": CHANGE_ID}, "undo", {"proposalId": CHANGE_ID, "outcome": "applied"}, 180),
 ]
 
 
@@ -313,6 +314,31 @@ def test_the_calendar_changes_portal_suggested_reach_the_owner_exactly(client, m
     mock_request.assert_awaited_once_with("POST", "/v1/pixel/connections/google/changes", payload={}, timeout=45)
 
 
+ACTIVITY = {"changes": [
+    {"proposalId": CHANGE_ID, "action": "create", "title": "Focus time", "start": "2026-10-27T15:00:00-05:00",
+     "end": "2026-10-27T16:00:00-05:00", "allDay": False, "previous": None, "appliedAt": "2026-10-26T15:00:01Z",
+     "undo": "available"},
+    {"proposalId": "calendar-1761500000001-0badc0de", "action": "update", "title": None, "start": "2026-10-28",
+     "end": "2026-10-29", "allDay": True, "previous": {"start": "2026-10-27", "end": "2026-10-28", "allDay": True},
+     "appliedAt": None, "undo": "done"}], "more": 1}
+
+
+def test_what_portal_changed_by_itself_reaches_the_owner_exactly(client, mock_request):
+    assert client.get("/api/pixel/connections/google/activity").status_code == 401
+    mock_request.return_value = copy.deepcopy(ACTIVITY)
+    response = client.get("/api/pixel/connections/google/activity", headers=AUTH)
+    assert response.status_code == 200 and response.json() == ACTIVITY
+    mock_request.assert_awaited_once_with("POST", "/v1/pixel/connections/google/activity", payload={}, timeout=45)
+    for change in (lambda value: value["changes"][0].update(undo="private-sentinel"),
+                   lambda value: value["changes"][0].update(action="delete"),
+                   lambda value: value["changes"][1].update(previous={"start": "private-sentinel"})):
+        reply = copy.deepcopy(ACTIVITY)
+        change(reply)
+        mock_request.return_value = reply
+        refused = client.get("/api/pixel/connections/google/activity", headers=AUTH)
+        assert refused.status_code == 502 and "private-sentinel" not in refused.text
+
+
 def test_calendar_changes_are_hidden_while_the_owner_has_connected_apps_off(client, mock_request, monkeypatch):
     flag(monkeypatch, "false")
     assert client.get("/api/pixel/connections/google/changes", headers=AUTH).status_code == 404
@@ -343,7 +369,7 @@ def test_a_change_list_of_any_other_shape_is_refused_without_echoing_it(client, 
 def test_every_calendar_refusal_tells_the_owner_what_to_do():
     for code in ("calendar-changes-off", "calendar-change-mismatch", "calendar-change-unknown", "calendar-change-invalid",
                  "calendar-change-unconfirmed", "calendar-change-not-made", "calendar-change-not-checkable",
-                 "calendar-change-result-invalid", "calendar-change-unsafe"):
+                 "calendar-change-result-invalid", "calendar-change-unsafe", "calendar-undo-unavailable"):
         message, _needs_help = api.MESSAGES[code]
         assert message.endswith(".") and "error" not in message.lower(), code
 

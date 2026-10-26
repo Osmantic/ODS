@@ -151,7 +151,7 @@ def request_runtime_connections(*, config):
 CONNECTION_TIMEOUTS = {'connection-begin': 70, 'connection-complete': 160, 'connection-activate': 310,
                        'connection-cancel': 30, 'connection-disconnect': 160, 'connection-sync': 30,
                        'connection-proposals': 30, 'connection-approve': 160, 'connection-decline': 30,
-                       'connection-reconcile': 160}
+                       'connection-reconcile': 160, 'connection-activity': 30, 'connection-undo': 160}
 
 
 def request_runtime_connection_action(operation, request, *, config):
@@ -216,7 +216,7 @@ def _request_runtime_controller(request, *, config, path, timeout):
 _CONNECTION_OPERATIONS = ('connection-begin', 'connection-complete', 'connection-activate',
                           'connection-cancel', 'connection-disconnect', 'connection-sync',
                           'connection-proposals', 'connection-approve', 'connection-decline',
-                          'connection-reconcile')
+                          'connection-reconcile', 'connection-activity', 'connection-undo')
 _CAPABILITY_IDS = ('calendar.read', 'calendar.write', 'calendar.direct', 'gmail.read', 'gmail.drafts')
 _FLOW = re.compile(r'[a-f0-9]{32}')
 _STATE = re.compile(r'[A-Za-z0-9_-]{32,128}')
@@ -235,7 +235,8 @@ _ATTENDEE = re.compile(r'[^\s@<>\x00-\x1f\x7f]+@[^\s@<>\x00-\x1f\x7f]+')
 _CONTROL = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
 _CHANGE_OUTCOMES = {'connection-approve': ('applied', 'rejected', 'not-applied', 'unconfirmed'),
                     'connection-reconcile': ('applied', 'rejected', 'not-applied', 'unconfirmed', 'waiting'),
-                    'connection-decline': ('declined',)}
+                    'connection-decline': ('declined',),
+                    'connection-undo': ('applied', 'rejected', 'not-applied', 'unconfirmed')}
 
 
 def _text(value, pattern):
@@ -287,17 +288,33 @@ def _calendar_entry(value):
             and (_calendar_event(value['event']) if shown else value['event'] is None))
 
 
+def _calendar_moment(value):
+    return value is None or (type(value) is dict and set(value) == {'start', 'end', 'allDay'}
+                             and _words(value['start'], 64) and _words(value['end'], 64)
+                             and type(value['allDay']) is bool)
+
+
+def _calendar_activity(value):
+    return (type(value) is dict and set(value) == {'proposalId', 'action', 'title', 'start', 'end', 'allDay',
+                                                   'previous', 'appliedAt', 'undo'}
+            and _text(value['proposalId'], _PROPOSAL) and value['action'] in ('create', 'update')
+            and _words(value['title'], 1000) and _words(value['start'], 64) and _words(value['end'], 64)
+            and type(value['allDay']) is bool and _calendar_moment(value['previous'])
+            and _words(value['appliedAt'], 64)
+            and value['undo'] in ('available', 'syncing', 'done', 'refused', 'unconfirmed', 'changed', 'gone'))
+
+
 def valid_connection_action(value):
     if (type(value) is not dict or set(value) != {'operation', 'request'}
             or value['operation'] not in _CONNECTION_OPERATIONS or type(value['request']) is not dict):
         return False
     operation, request = value['operation'], value['request']
-    if operation in ('connection-activate', 'connection-sync', 'connection-proposals'):
+    if operation in ('connection-activate', 'connection-sync', 'connection-proposals', 'connection-activity'):
         return request == {}
     if operation == 'connection-approve':
         return (set(request) == {'proposalId', 'sha256'} and _text(request['proposalId'], _PROPOSAL)
                 and _text(request['sha256'], _HEX))
-    if operation in ('connection-decline', 'connection-reconcile'):
+    if operation in ('connection-decline', 'connection-reconcile', 'connection-undo'):
         return set(request) == {'proposalId'} and _text(request['proposalId'], _PROPOSAL)
     if operation == 'connection-disconnect':
         return request == {'connector': 'google'}
@@ -345,6 +362,10 @@ def public_connection_action(operation, value):
         valid = (set(value) == {'proposals', 'more'} and type(value['more']) is int and value['more'] >= 0
                  and type(value['proposals']) is list and len(value['proposals']) <= 20
                  and all(_calendar_entry(item) for item in value['proposals']))
+    elif operation == 'connection-activity':
+        valid = (set(value) == {'changes', 'more'} and type(value['more']) is int and value['more'] >= 0
+                 and type(value['changes']) is list and len(value['changes']) <= 20
+                 and all(_calendar_activity(item) for item in value['changes']))
     elif operation in _CHANGE_OUTCOMES:
         valid = (set(value) == {'proposalId', 'outcome'} and _text(value['proposalId'], _PROPOSAL)
                  and value['outcome'] in _CHANGE_OUTCOMES[operation])

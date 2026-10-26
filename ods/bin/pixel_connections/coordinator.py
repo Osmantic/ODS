@@ -25,7 +25,7 @@ from pixel_access_bridge import AccessError, atomic_json, remaining, runtime_con
 from pixel_model_coordinator import _managed_marker, _marker_digest
 from pixel_settings.coordinator import _identity, _read, _valid_identity
 
-from . import approvals, catalog, custody, lifecycle, oauth, planner, state
+from . import activity, approvals, catalog, custody, lifecycle, oauth, planner, state
 
 LIFECYCLE = lifecycle.PATH.name
 PATHS = custody.Paths()
@@ -483,6 +483,43 @@ def reconcile(bridge, request: Any) -> dict[str, Any]:
             raise AccessError("calendar-change-unconfirmed") from None
 
 
+def _undo_ledger(bridge) -> Path:
+    return Path(bridge.state) / "calendar-undo.json"
+
+
+def changes_made(bridge, request: Any) -> dict[str, Any]:
+    """The private changes Portal made by itself this week, each with whether it can be undone."""
+    if request != {}:
+        raise AccessError("invalid-connection-request")
+    with bridge.bounded(30), bridge.locked():
+        bridge.discover()
+        ids = _approval_ids(bridge)
+        return activity.listing(PATHS, ids, _undo_ledger(bridge)) if ids else {"changes": [], "more": 0}
+
+
+def undo(bridge, request: Any) -> dict[str, Any]:
+    """Reverse one change Portal made by itself; the owner's click is the approval."""
+    request = _change_request(request, {"proposalId"})
+    with bridge.bounded(150), bridge.locked():
+        bridge.discover()
+        if not _connected_google()["capabilities"]["calendar.write"]:
+            raise AccessError("calendar-changes-off")
+        ids = _approval_ids(bridge)
+        if ids is None:
+            raise AccessError("calendar-change-unknown")
+        try:
+            result = activity.undo(PATHS, RUN, ids, _undo_ledger(bridge), request)
+        except custody.CustodyError:
+            # systemctl did not answer in time. The broker's journal keeps the reversal from happening twice.
+            raise AccessError("calendar-change-unconfirmed") from None
+        if result["outcome"] == "applied":
+            try:
+                custody.sync(RUN)
+            except custody.CustodyError:
+                pass  # Only a faster refresh is lost: the timer refreshes within a minute.
+        return result
+
+
 def decline(bridge, request: Any) -> dict[str, Any]:
     """Take a suggested change off the list, connected or not."""
     request = _change_request(request, {"proposalId"})
@@ -761,7 +798,7 @@ def activate(bridge, request: Any) -> dict[str, Any]:
 OPERATIONS = {"connection-begin": begin, "connection-complete": complete, "connection-activate": activate,
               "connection-cancel": cancel, "connection-disconnect": disconnect, "connection-sync": sync,
               "connection-proposals": proposals, "connection-approve": approve, "connection-decline": decline,
-              "connection-reconcile": reconcile}
+              "connection-reconcile": reconcile, "connection-activity": changes_made, "connection-undo": undo}
 
 
 def control(bridge, operation: str, request: Any) -> dict[str, Any]:

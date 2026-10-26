@@ -120,7 +120,9 @@ class ConnectionsHostAPITests(unittest.TestCase):
                 ("approve", "connection-approve", {"proposalId": CHANGE, "sha256": "c" * 64},
                  {"proposalId": CHANGE, "outcome": "applied"}),
                 ("decline", "connection-decline", {"proposalId": CHANGE}, {"proposalId": CHANGE, "outcome": "declined"}),
-                ("check", "connection-reconcile", {"proposalId": CHANGE}, {"proposalId": CHANGE, "outcome": "waiting"})):
+                ("check", "connection-reconcile", {"proposalId": CHANGE}, {"proposalId": CHANGE, "outcome": "waiting"}),
+                ("activity", "connection-activity", {}, {"changes": [], "more": 0}),
+                ("undo", "connection-undo", {"proposalId": CHANGE}, {"proposalId": CHANGE, "outcome": "applied"})):
             with self.subTest(action=action), patch.object(pixel_access_relay, "request_runtime_connection_action",
                                                            return_value=(200, reply)) as relay:
                 self.assertEqual(self.post(action, request), (200, reply))
@@ -135,7 +137,8 @@ class ConnectionsHostAPITests(unittest.TestCase):
             self.assertEqual(self.post("sync", {"force": True}), (400, {"error": "invalid-request"}))
             for action, body in (("changes", {"all": True}), ("approve", {"proposalId": CHANGE}),
                                  ("approve", {"proposalId": CHANGE, "sha256": 7}),
-                                 ("decline", {"proposalId": CHANGE, "sha256": "c" * 64}), ("check", {"proposalId": 7})):
+                                 ("decline", {"proposalId": CHANGE, "sha256": "c" * 64}), ("check", {"proposalId": 7}),
+                                 ("activity", {"days": 7}), ("undo", {})):
                 self.assertEqual(self.post(action, body), (400, {"error": "invalid-request"}), action)
         relay.assert_not_called()
 

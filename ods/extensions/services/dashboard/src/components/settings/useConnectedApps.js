@@ -51,6 +51,10 @@ export const approveCalendarChange = entry => action('changes/approve', {proposa
 export const declineCalendarChange = entry => action('changes/decline', {proposalId: entry.proposalId})
 export const checkCalendarChange = entry => action('changes/check', {proposalId: entry.proposalId})
 
+// Private changes Portal made by itself, and undoing one; the owner's click is the approval.
+export const listCalendarActivity = async () => reply(await fetch('/api/pixel/connections/google/activity', {cache: 'no-store'}))
+export const undoCalendarChange = entry => action('activity/undo', {proposalId: entry.proposalId})
+
 // Whether Settings shows Connected apps at all. Unknown until the dashboard answers.
 export function useConnectedAppsEnabled() {
   const [enabled, setEnabled] = useState(null)

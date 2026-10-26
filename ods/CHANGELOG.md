@@ -26,7 +26,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   with no guests, and moving an event to a new time, at most 20 an hour. Every
   other change still waits for your approval. While Portal has Full Access, it
   asks for these too; they resume when you switch back to Sandbox. The Full
-  Access confirmation now names what it means for connected apps.
+  Access confirmation now names what it means for connected apps. Settings lists
+  what Portal changed by itself this week, with Undo for each change, as long as
+  the event is still exactly as Portal left it.
 - Portal's workspace includes one finished example project, Elf of Doom, a
   small browser game Portal wrote in ODS from natural-language prompts. The
   installer adds `Playground/elf-of-doom` whenever that name is absent and the
