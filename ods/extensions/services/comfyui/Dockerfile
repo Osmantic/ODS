@@ -1,5 +1,5 @@
 # =============================================================================
-# ComfyUI Production Image — SDXL Lightning + NVFP4 Acceleration
+# ComfyUI Production Image — NVIDIA CUDA 12.8 (x86-64), SDXL Lightning
 #
 # Layers ordered for optimal Docker cache:
 #   1. System deps (rarely changes)
@@ -83,6 +83,10 @@ RUN cd "$COMFYUI_DIR/custom_nodes" \
 
 # ---------------------------------------------------------------------------
 # Layer 5: comfy-kitchen — NVIDIA NVFP4 acceleration
+#
+# Its CUDA kernels need a PyTorch built for CUDA 13 (cu130, driver r580+);
+# with this cu128 build ComfyUI logs "You need pytorch with cu130 or higher"
+# and uses comfy-kitchen's eager backend instead.
 # ---------------------------------------------------------------------------
 RUN pip3 install --no-cache-dir "comfy-kitchen[cublas]"
 
@@ -99,7 +103,8 @@ RUN python3 -c "import torch, torchvision, torchaudio; \
 assert torch.__version__ == '2.11.0+cu128', torch.__version__; \
 assert torchvision.__version__ == '0.26.0+cu128', torchvision.__version__; \
 assert torchaudio.__version__ == '2.11.0+cu128', torchaudio.__version__" \
-    && mkdir -p /tmp/ods-quick-test/user \
+    && mkdir -p /tmp/ods-quick-test/user /tmp/ods-quick-test/output \
+        /tmp/ods-quick-test/input /tmp/ods-quick-test/temp \
     && cd "$COMFYUI_DIR" \
     && { python3 main.py --cpu --quick-test-for-ci --disable-assets-autoscan \
             --database-url sqlite:///:memory: \
