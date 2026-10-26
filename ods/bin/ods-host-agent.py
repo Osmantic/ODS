@@ -167,7 +167,7 @@ def _activation_architecture_refusal(target: Path, env: dict, *, windows_hosted:
         return None
     backend = str(env.get("GPU_BACKEND") or "nvidia").strip().lower()
     image = str(env.get("LLAMA_SERVER_IMAGE") or "").strip() if backend not in {"apple", "amd"} and not windows_hosted else ""
-    if image and (not image.startswith("ghcr.io/ggml-org/llama.cpp:server-")
+    if image and (not image.startswith(f"{_LLAMA_CPP_REPOSITORY}:server-")
                   or _model_preflight.build_from_image(image) is None):
         return None
     policy = _model_preflight.load_runtime_policy(INSTALL_DIR / "config/llama-cpp-architectures.json")
