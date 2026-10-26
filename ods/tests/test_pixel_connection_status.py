@@ -248,7 +248,10 @@ class WaitingChangeTests(unittest.TestCase):
 class CatalogTests(unittest.TestCase):
     def test_scopes_follow_only_the_available_capabilities_the_owner_chose(self):
         chosen = {"calendar.read": True, "gmail.read": True, "calendar.write": True, "gmail.drafts": True}
-        self.assertEqual(catalog.scopes_for("google", chosen), [CALENDAR_READ, CALENDAR_WRITE, GMAIL_READ])
+        self.assertEqual(catalog.scopes_for("google", chosen),
+                         [CALENDAR_READ, CALENDAR_WRITE, GMAIL_READ, catalog.GMAIL_COMPOSE_SCOPE])
+        # Gmail drafts ask Google only for compose, never for send.
+        self.assertNotIn("https://www.googleapis.com/auth/gmail.send", catalog.scopes_for("google", chosen))
         self.assertEqual(catalog.scopes_for("google", {"calendar.read": True}), [CALENDAR_READ])
         self.assertEqual(catalog.scopes_for("google", {}), [])
 

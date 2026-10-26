@@ -53,11 +53,11 @@ def request(operation="settings-apply", **changes):
     if operation in ('connection-apply', 'connection-recover'):
         value['transaction_id'] = 'b' * 64
     if operation == 'connection-apply':
-        value['connection_target'] = dict(email=True, calendar=True, calendarWrite=False, calendarDirect=False,
-                                          userTimezone='America/Chicago')
+        value['connection_target'] = dict(email=True, emailDrafts=False, calendar=True, calendarWrite=False,
+                                          calendarDirect=False, userTimezone='America/Chicago')
         value['connection_answers'] = dict(timeZone='America/Chicago', googleAccount='owner@example.com',
             calendarId='primary', emailLimbEnabled=True, calendarLimbEnabled=True, calendarDirectEnabled=False,
-            userTimezone='America/Chicago', calendarWriteEnabled=False, gmailWindowDays=180)
+            userTimezone='America/Chicago', calendarWriteEnabled=False, gmailWindowDays=180, emailDraftsEnabled=False)
     if operation.endswith("status"):
         value["config_sha256"] = None
     value.update(changes)
