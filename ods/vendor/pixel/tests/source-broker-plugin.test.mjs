@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { register } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -136,6 +136,52 @@ test("email answers carry their source's sync state and tolerate a missing statu
   assert.equal((await call(tools, "pixel_gmail_inbox", {})).sync.errorClass, "api-disabled");
   await rm(join(directory, "status.json"));
   assert.equal((await call(tools, "pixel_gmail_inbox", {})).sync, null);
+});
+
+test("a missing source argument gives a repairable error before projection access", async (t) => {
+  const directory = await withProjections(t, {}); // No projection exists to read.
+  const tools = await loadPlugin({ PIXEL_LIMB_WEB_ENABLED: "0", PIXEL_SOURCE_PROJECTION_DIR: directory });
+  for (const [name, params, field] of [
+    ["pixel_gmail_read", { id: "private-message-value" }, "messageId"],
+    ["pixel_gmail_search", {}, "query"],
+    ["pixel_gmail_thread", null, "threadId"],
+    ["pixel_calendar_get", {}, "eventId"],
+    ["pixel_calendar_list", { timeMin: iso(1) }, "timeMax"],
+  ]) {
+    const response = await tools.get(name).execute("bad-call", params);
+    assert.equal(response.isError, true, name);
+    assert.match(response.content[0].text, new RegExp(`Missing required parameter\\(s\\): ${field}`));
+    assert.ok(response.content[0].text.includes(`tool_describe for ${name}`));
+    assert.doesNotMatch(response.content[0].text, /private-message-value|ENOENT|projection record not found/);
+  }
+});
+
+test("after a malformed Gmail read, the declared messageId reads the actual record", async (t) => {
+  const email = { schemaVersion: 1, generatedAt: iso(0), boundary,
+    records: [{ id: "email-1", summary: "Kickoff Thursday at 14:20. Confirmation JADE-TEST." }] };
+  const directory = await withProjections(t, { email });
+  const tools = await loadPlugin({ PIXEL_LIMB_WEB_ENABLED: "0", PIXEL_SOURCE_PROJECTION_DIR: directory });
+  const refused = await tools.get("pixel_gmail_read").execute("bad-call", { id: "email-1" });
+  assert.equal(refused.isError, true);
+  assert.match(refused.content[0].text, /Missing required parameter\(s\): messageId/);
+  const read = await call(tools, "pixel_gmail_read", { messageId: "email-1" });
+  assert.equal(read.id, "email-1");
+  assert.equal(read.summary, email.records[0].summary);
+});
+
+test("missing proposal fields never create a partial draft or calendar proposal", async (t) => {
+  const directory = await withProjections(t, {});
+  const tools = await loadPlugin({ PIXEL_LIMB_WEB_ENABLED: "0", PIXEL_LIMB_EMAIL_DRAFTS_ENABLED: "1",
+    PIXEL_ACTION_PROPOSAL_DIR: directory });
+  for (const [name, params, field] of [
+    ["pixel_gmail_draft_propose", { to: [{ email: "pat@example.com" }] }, "body"],
+    ["pixel_calendar_propose_delete", { eventId: "event-1" }, "expectedEtag"],
+  ]) {
+    const response = await tools.get(name).execute("bad-proposal", params);
+    assert.equal(response.isError, true);
+    assert.ok(response.content[0].text.includes(`Missing required parameter(s): ${field}`));
+  }
+  assert.deepEqual(await readdir(directory), []);
 });
 
 test("a meeting already running or an all-day event counts as busy", async (t) => {

@@ -86,7 +86,16 @@ const guarded = (name, context, execute) => async (id, params) => {
 };
 
 function register(api, name, description, parameters, execute) {
-  api.registerTool(onlyPixel((context) => ({ name, description, parameters, execute: guarded(name, context, (id, params) => execute(id, params, context)) })), { names: [name] });
+  // Deferred dispatch can reach the handler without checking required fields.
+  // Explain a malformed call before reading a projection or creating a proposal;
+  // never interpret another field (for example `id`) as the required messageId.
+  const required = parameters.required ?? [];
+  api.registerTool(onlyPixel((context) => ({ name, description, parameters, execute: guarded(name, context, (id, params) => {
+    const missing = required.filter((key) => !params || typeof params !== "object"
+      || !Object.hasOwn(params, key) || params[key] === undefined);
+    if (missing.length) throw new Error(`Missing required parameter(s): ${missing.join(", ")}. Use tool_describe for ${name} before retrying.`);
+    return execute(id, params, context);
+  }) })), { names: [name] });
 }
 
 async function loadProjection(source) {

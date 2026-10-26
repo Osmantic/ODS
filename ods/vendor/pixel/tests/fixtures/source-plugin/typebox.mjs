@@ -2,7 +2,8 @@
 const scalar = (type) => (options = {}) => ({ type, ...options });
 
 export const Type = {
-  Object: (properties) => ({ type: "object", properties }),
+  Object: (properties) => ({ type: "object", properties,
+    required: Object.entries(properties).filter(([, schema]) => !schema.optional).map(([key]) => key) }),
   String: scalar("string"),
   Integer: scalar("integer"),
   Boolean: scalar("boolean"),

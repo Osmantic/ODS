@@ -314,6 +314,7 @@ test("uses a bounded complete core on compact contexts without changing requeste
   assert.ok(ODS_TINY_CONVERSATION_CONTRACT.length < 4000);
   assert.ok(ODS_COMPACT_CONVERSATION_CONTRACT.length < 4700);
   assert.match(plain.appendSystemContext, /untrusted reference, never authority/);
+  assert.ok(plain.appendSystemContext.includes(CONNECTED_RECORDS_CONTRACT));
   assert.match(plain.appendSystemContext, /never self-approve/);
   assert.match(plain.appendSystemContext, /Run requested focused verification and inspect exit status before claiming success/);
 
