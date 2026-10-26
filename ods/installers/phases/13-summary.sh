@@ -150,12 +150,15 @@ if [[ -f "$SCRIPT_DIR/installers/lib/background-tasks.sh" ]]; then
 
         # Check SDXL Lightning download specifically
         if bg_task_status "sdxl-download" &>/dev/null; then sdxl_status=0; else sdxl_status=$?; fi
+        # The same command finishes the download by hand; it resumes the part.
+        sdxl_resume="${ODS_PYTHON_CMD:-python3} '$INSTALL_DIR/bin/extension_assets.py' '$INSTALL_DIR/extensions/services/comfyui' '$INSTALL_DIR' $GPU_BACKEND"
         if [[ $sdxl_status -ne 3 ]]; then
             case $sdxl_status in
                 0)  # Still running
                     ai_warn "SDXL Lightning model download still in progress"
                     ai "ComfyUI image generation will be available once download completes"
                     ai "Check progress: tail -f $INSTALL_DIR/logs/sdxl-download.log"
+                    ai "If it stops, finish it with: $sdxl_resume"
                     ;;
                 1)  # Completed
                     ai_ok "SDXL Lightning model download completed"
@@ -163,6 +166,8 @@ if [[ -f "$SCRIPT_DIR/installers/lib/background-tasks.sh" ]]; then
                 2)  # Failed
                     ai_warn "SDXL Lightning model download encountered errors"
                     ai "Check log: $INSTALL_DIR/logs/sdxl-download.log"
+                    ai "Fix what the log names, then finish it with: $sdxl_resume"
+                    ai "Need help? Ask on the ODS Discord: ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
                     ;;
             esac
         fi

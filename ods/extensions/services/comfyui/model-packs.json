@@ -14,7 +14,7 @@
         {
           "subdir": "checkpoints",
           "file": "sdxl_lightning_4step.safetensors",
-          "url": "https://huggingface.co/ByteDance/SDXL-Lightning/resolve/main/sdxl_lightning_4step.safetensors",
+          "url": "https://huggingface.co/ByteDance/SDXL-Lightning/resolve/c9a24f48e1c025556787b0c58dd67a091ece2e44/sdxl_lightning_4step.safetensors",
           "sha256": "e0d996ee0013e79d9d3561f50fcafb9a17e3ff07b780358e3b66d67932c4d490",
           "bytes": 6938040682,
           "license": "openrail++"

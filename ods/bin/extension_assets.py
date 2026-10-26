@@ -16,17 +16,28 @@ Standard library only: the installer runs this with the host's python3.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import errno
 import hashlib
+import http.client
 import json
 import os
 import re
+import shlex
 import shutil
 import sys
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Callable
+from pathlib import Path, PurePosixPath
+from typing import Callable, Iterator
+
+try:
+    import fcntl
+except ImportError:  # Windows; see _folder_lock
+    fcntl = None
 
 PACKS_FILE = "model-packs.json"
 SCHEMA = "ods.model-packs.v1"
@@ -41,7 +52,14 @@ _SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
 class AssetError(Exception):
-    """A pack file that could not be prepared; the message is for the owner."""
+    """A pack file that could not be prepared; the message is for the owner.
+
+    ``retryable`` marks a dropped connection, where trying again resumes.
+    """
+
+    def __init__(self, message: str, *, retryable: bool = False):
+        super().__init__(message)
+        self.retryable = retryable
 
 
 @dataclass(frozen=True)
@@ -72,9 +90,12 @@ def _parse(path: Path, doc: dict, install: Path, backend: str) -> list[PackFile]
     root_name = doc["model_root"].get(backend)
     if root_name is None:
         return []
-    root = (install / root_name).resolve()
-    if not root.is_relative_to(install):
-        raise ValueError(f"{path}: model_root for {backend} leaves the install directory")
+    # Checked by name, not resolved: a data folder linked to another disk is
+    # the owner's layout, while a pack list may not climb out of the install.
+    parts = PurePosixPath(root_name).parts if isinstance(root_name, str) else ()
+    if not parts or not all(_PLAIN_NAME.fullmatch(part) for part in parts):
+        raise ValueError(f"{path}: model_root for {backend} must be a relative path of plain names")
+    root = install.joinpath(*parts)
     files = []
     for pack in doc["packs"]:
         if pack.get("default") is not True:
@@ -106,7 +127,7 @@ def check_space(files: list[PackFile]) -> None:
     """Refuse before downloading when the disk cannot hold the files plus a margin."""
     if not files:
         return
-    needed = sum(item.size - _part_bytes(item) for item in files)
+    needed = sum(_remaining(item) for item in files)
     folder = files[0].target.parent
     while not folder.exists():
         folder = folder.parent
@@ -120,40 +141,48 @@ def check_space(files: list[PackFile]) -> None:
 
 def fetch(item: PackFile, report: Callable[[int], None], *,
           opener: Callable | None = None) -> None:
-    """Download one file into place, resuming a partial download."""
+    """Download one file into place, resuming a partial download.
+
+    Every failure is an AssetError that says what to do next.
+    """
     opener = opener or urllib.request.urlopen
-    part = item.target.with_name(item.target.name + ".part")
-    part.parent.mkdir(parents=True, exist_ok=True)
-    offset = _part_bytes(item)
-    if offset >= item.size:
-        part.unlink()  # a complete or oversized part is checked again from zero
-        offset = 0
-    digest = hashlib.sha256()
-    if offset:
-        with part.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(CHUNK_BYTES), b""):
-                digest.update(chunk)
-    headers = {"User-Agent": USER_AGENT}
-    if offset:
-        headers["Range"] = f"bytes={offset}-"
-    done = offset
+    folder = item.target.parent
     try:
-        with opener(urllib.request.Request(item.url, headers=headers),
-                    timeout=READ_TIMEOUT_SECONDS) as response:
-            if offset and response.status != 206:  # the server sent the whole file again
-                digest, done = hashlib.sha256(), 0
-            with part.open("ab" if done else "wb") as out:
-                for chunk in iter(lambda: response.read(CHUNK_BYTES), b""):
+        folder.mkdir(parents=True, exist_ok=True)
+        with _folder_lock(folder, item):
+            _download(item, report, opener)
+    except PermissionError as exc:
+        raise _not_writable(item, exc) from exc
+    except OSError as exc:  # the disk: _request and _read turn network errors into AssetError
+        raise AssetError(f"ODS could not save {item.label} in {folder} ({_reason(exc)}). "
+                         "Fix that, then try again; the part already downloaded is kept.") from exc
+
+
+def _download(item: PackFile, report: Callable[[int], None], opener: Callable) -> None:
+    part = item.target.with_name(item.target.name + ".part")
+    with open(part, "a+b") as out:
+        done = out.seek(0, os.SEEK_END)
+        if done > item.size:  # not this file: start over
+            out.truncate(0)
+            done = 0
+        digest = hashlib.sha256()
+        out.seek(0)
+        for chunk in iter(lambda: out.read(CHUNK_BYTES), b""):
+            digest.update(chunk)
+        # A part already at full size (the rename failed last time) is only checked.
+        if done < item.size:
+            with _request(item, out, done, opener) as response:
+                if done and response.status != 206:  # the server sent the whole file again
+                    out.truncate(0)
+                    digest, done = hashlib.sha256(), 0
+                for chunk in iter(lambda: _read(item, response), b""):
                     out.write(chunk)
                     digest.update(chunk)
                     done += len(chunk)
                     report(done)
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise AssetError(f"The download of {item.label} stopped ({_reason(exc)}). "
-                         "Try again to resume it; the part already downloaded is kept.") from exc
     if done != item.size:
         raise AssetError(f"The download of {item.label} ended at {_gb(done)} of {_gb(item.size)} GB. "
-                         "Try again to resume it.")
+                         "Try again to resume it.", retryable=True)
     if digest.hexdigest() != item.sha256:
         part.unlink()
         raise AssetError(f"{item.label} did not match its pinned SHA-256, so it was deleted. "
@@ -161,18 +190,115 @@ def fetch(item: PackFile, report: Callable[[int], None], *,
     os.replace(part, item.target)
 
 
-def _part_bytes(item: PackFile) -> int:
+def _request(item: PackFile, out, offset: int, opener: Callable):
+    headers = {"User-Agent": USER_AGENT}
+    if offset:
+        headers["Range"] = f"bytes={offset}-"
+    try:
+        return opener(urllib.request.Request(item.url, headers=headers),
+                      timeout=READ_TIMEOUT_SECONDS)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 416:  # the server's copy is shorter than the part, so it cannot resume
+            out.truncate(0)
+            raise AssetError(f"The server's copy of {item.label} is not the pinned file, so the partial "
+                             "download was deleted. Try again to download it from the start.") from exc
+        if exc.code in (408, 429) or exc.code >= 500:
+            raise _interrupted(item, exc) from exc
+        host = urllib.parse.urlsplit(item.url).netloc
+        raise AssetError(f"The server refused {item.label} (HTTP {exc.code} {exc.reason}). "
+                         f"Check that this machine can reach {host}, then try again.") from exc
+    except (http.client.HTTPException, OSError) as exc:  # URLError and timeouts are OSErrors
+        raise _interrupted(item, exc) from exc
+
+
+def _read(item: PackFile, response) -> bytes:
+    try:
+        return response.read(CHUNK_BYTES)
+    except (http.client.HTTPException, OSError) as exc:
+        raise _interrupted(item, exc) from exc
+
+
+@contextlib.contextmanager
+def _folder_lock(folder: Path, item: PackFile) -> Iterator[None]:
+    """Let one download at a time write into ``folder``.
+
+    On Linux the installer's background download and the Extensions page can
+    both start one, and two writers would spoil the same part file. Windows
+    has no fcntl; its installer fetches no packs, and the host agent runs one
+    prepare per extension at a time.
+    """
+    if fcntl is None:
+        yield
+        return
+    handle = os.open(folder, os.O_RDONLY)
+    try:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise AssetError(f"{item.label} is already downloading, started by the installer or an "
+                             "earlier add. Wait for it to finish, then try again.") from exc
+        except OSError as exc:
+            # Some network file systems offer no locks; the download then runs unguarded.
+            if exc.errno != errno.ENOLCK:
+                raise
+        yield
+    finally:
+        os.close(handle)
+
+
+def _interrupted(item: PackFile, exc: BaseException) -> AssetError:
+    return AssetError(f"The download of {item.label} stopped ({_reason(exc)}). "
+                      "Try again to resume it; the part already downloaded is kept.", retryable=True)
+
+
+def _not_writable(item: PackFile, exc: OSError) -> AssetError:
+    folder = item.target.parent
+    while not folder.exists():
+        folder = folder.parent
+    fix = (f"To fix it, run this, then try again: sudo chown -R {os.getuid()}:{os.getgid()} "
+           f"{shlex.quote(str(folder))}" if hasattr(os, "getuid")
+           else "Give the folder to your account, then try again.")
+    return AssetError(f"ODS cannot write {item.label} into {folder} ({_reason(exc)}). The folder belongs "
+                      f"to another account, often a container that runs as root. {fix}")
+
+
+def _remaining(item: PackFile) -> int:
+    """Bytes still to download; a part larger than the file starts over."""
     part = item.target.with_name(item.target.name + ".part")
-    return part.stat().st_size if part.is_file() else 0
+    have = part.stat().st_size if part.is_file() else 0
+    return item.size - have if have <= item.size else item.size
 
 
 def _reason(exc: BaseException) -> str:
     reason = getattr(exc, "reason", None) or exc
-    return str(reason) or type(exc).__name__
+    return str(reason) or type(reason).__name__
 
 
 def _gb(count: int) -> str:
     return f"{count / 1e9:.1f}"
+
+
+def _fetch_with_attempts(item: PackFile, attempts: int, delay: float) -> None:
+    step = [0]
+
+    def report(done: int) -> None:
+        percent = done * 100 // item.size
+        if percent >= step[0] + 10:
+            step[0] = percent - percent % 10
+            print(f"  {item.label}: {step[0]}%", flush=True)
+
+    for attempt in range(1, attempts + 1):
+        try:
+            fetch(item, report)
+            return
+        except AssetError as exc:
+            if not exc.retryable or attempt == attempts:
+                raise
+            # No raw reason here: the installer summary reads words like
+            # "failed" in this log as a failure, even after a later try works.
+            print(f"  The connection dropped; resuming in {delay:g} s (try {attempt + 1} of {attempts})",
+                  flush=True)
+            time.sleep(delay)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -180,23 +306,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("ext_dir", type=Path)
     parser.add_argument("install_dir", type=Path)
     parser.add_argument("backend")
+    # The installer's unattended download keeps going through dropped
+    # connections, as its curl --retry did; each try resumes the part.
+    parser.add_argument("--attempts", type=int, default=1, help="tries per file; each resumes the last")
+    parser.add_argument("--retry-delay", type=float, default=10.0, help="seconds between tries")
     args = parser.parse_args(argv)
-    todo = missing(default_files(args.ext_dir, args.install_dir, args.backend))
     try:
+        todo = missing(default_files(args.ext_dir, args.install_dir, args.backend))
         check_space(todo)
         for item in todo:
             print(f"Downloading {item.label} ({_gb(item.size)} GB) to {item.target}", flush=True)
-            step = [0]
-
-            def report(done: int, item: PackFile = item) -> None:
-                percent = done * 100 // item.size
-                if percent >= step[0] + 10:
-                    step[0] = percent - percent % 10
-                    print(f"  {item.label}: {step[0]}%", flush=True)
-
-            fetch(item, report)
+            _fetch_with_attempts(item, max(1, args.attempts), args.retry_delay)
             print(f"{item.label} is ready (SHA-256 verified)", flush=True)
-    except AssetError as exc:
+    except (AssetError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
     if not todo:

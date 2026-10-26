@@ -111,10 +111,15 @@ def test_image_model_name_agrees_everywhere():
 
     installer = (ODS / "installers/phases/11-services.sh").read_text(encoding="utf-8")
     assert f'SDXL_MODEL="{MODEL}"' in installer
-    # The installer downloads through the same pinned pack list as the Extensions page.
-    assert '"$INSTALL_DIR/bin/extension_assets.py"' in installer
-    assert '"$INSTALL_DIR/extensions/services/comfyui" "$INSTALL_DIR" "$GPU_BACKEND"' in installer
+    # The installer downloads through the same pinned pack list as the Extensions
+    # page, keeps going through dropped connections, and logs ERROR on any failure
+    # (the summary reads the log, not the exit code).
+    assert 'ODS_ASSETS="$INSTALL_DIR/bin/extension_assets.py"' in installer
+    assert 'COMFYUI_EXT_DIR="$INSTALL_DIR/extensions/services/comfyui"' in installer
+    assert ('"$ODS_ASSETS_PYTHON" "$ODS_ASSETS" --attempts 6 "$COMFYUI_EXT_DIR" "$INSTALL_DIR" "$GPU_BACKEND" \\\n'
+            '                            || echo "[SDXL] ERROR: ') in installer
     assert "huggingface.co/ByteDance" not in installer
+    assert "/resolve/main/" not in json.dumps(packs)
 
     n8n = (ODS / "extensions/library/workflows/comfyui/llm-to-image.json").read_text(encoding="utf-8")
     assert f"$env.COMFYUI_MODEL_NAME || '{MODEL}'" in n8n

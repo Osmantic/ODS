@@ -56,29 +56,37 @@ Open WebUI's image generation reads these from `.env` each time it starts:
 ## Image model
 
 ComfyUI's default image pack is SDXL Lightning 4-step (`sdxl_lightning_4step.safetensors`, 6.94 GB). It is pinned
-by URL, size and SHA-256 in `model-packs.json` and goes into `checkpoints/`. It is downloaded:
+by URL (a fixed Hugging Face revision), size and SHA-256 in `model-packs.json` and goes into `checkpoints/`. It is
+downloaded:
 - when you add ComfyUI from the Extensions page, after its image, with progress on the card;
-- by the installer, in the background, when image generation is chosen there.
+- by the Linux installer, in the background, when image generation is chosen there. It keeps going through up to
+  five dropped connections.
 
-Both use `bin/extension_assets.py`. It checks free disk first, resumes a partial download (`*.part`), deletes a file
-that fails its checksum, and puts the model in place only once it is verified. If a download stops, add ComfyUI
-again to resume it. `ods enable comfyui` from the command line does not download it yet.
+The Windows installer and `ods enable comfyui` do not download it yet; fetch it by hand (below), or disable and add
+ComfyUI again on the Extensions page.
 
-To fetch it by hand (offline machines, or `ods enable`), run this from your ODS install directory, then click
+Both downloads use `bin/extension_assets.py`. It checks free disk first, resumes a partial download (`*.part`),
+deletes a file that fails its checksum, and puts the model in place only once it is verified. If a download stops,
+try again: click **Add** on the Extensions page again, or run the command below. Either way it resumes.
+
+To fetch it by hand, run this from your ODS install directory (on Windows, `python` in PowerShell), then click
 **Refresh** in ComfyUI:
 
 ```bash
 python3 bin/extension_assets.py extensions/services/comfyui . nvidia   # or amd
 ```
 
-Or with curl. On AMD the folder is `data/comfyui/ComfyUI/models/checkpoints`. If `mkdir` or `curl` reports
-"Permission denied" (the AMD container runs as root and owns its folder), run the commands with `sudo`.
+On AMD the folder is `data/comfyui/ComfyUI/models/checkpoints`. The AMD container runs as root and owns what it
+creates there, so a download may report that the folder belongs to another account. Run the `sudo chown` command
+the error prints, then try again.
+
+Or with curl (`sudo` on AMD if `mkdir` or `curl` reports "Permission denied"):
 
 ```bash
 dir=data/comfyui/models/checkpoints
 mkdir -p "$dir"
 curl -fL -C - -o "$dir/sdxl_lightning_4step.safetensors.part" \
-  https://huggingface.co/ByteDance/SDXL-Lightning/resolve/main/sdxl_lightning_4step.safetensors
+  https://huggingface.co/ByteDance/SDXL-Lightning/resolve/c9a24f48e1c025556787b0c58dd67a091ece2e44/sdxl_lightning_4step.safetensors
 echo "e0d996ee0013e79d9d3561f50fcafb9a17e3ff07b780358e3b66d67932c4d490  $dir/sdxl_lightning_4step.safetensors.part" | sha256sum -c - \
   && mv "$dir/sdxl_lightning_4step.safetensors.part" "$dir/sdxl_lightning_4step.safetensors"
 ```

@@ -3,9 +3,12 @@
 The prepare step and the installer fetch them; these tests drive the module
 with a fake HTTP opener, so nothing leaves the machine.
 """
+import errno
 import hashlib
+import http.client
 import io
 import json
+import os
 import shutil
 import sys
 import urllib.error
@@ -38,9 +41,15 @@ def _pack_list(tmp_path, *, sha256=DIGEST, size=len(PAYLOAD), default=True, root
 
 
 class Response(io.BytesIO):
-    def __init__(self, body, status=200):
+    def __init__(self, body, status=200, fail_after=None, failure=None):
         super().__init__(body)
         self.status = status
+        self.fail_after, self.failure = fail_after, failure
+
+    def read(self, size=-1):
+        if self.fail_after is not None and self.tell() >= self.fail_after:
+            raise self.failure
+        return super().read(size if self.fail_after is None else min(size, self.fail_after - self.tell()))
 
 
 def opener_for(body, status=200, seen=None):
@@ -49,6 +58,28 @@ def opener_for(body, status=200, seen=None):
             seen.append((dict(request.header_items()), timeout))
         return Response(body, status)
     return opener
+
+
+def opener_sequence(*answers, seen=None):
+    """Answer each request with the next Response, or raise the next exception."""
+    pending = list(answers)
+
+    def opener(request, timeout):
+        if seen is not None:
+            seen.append(dict(request.header_items()))
+        answer = pending.pop(0)
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+    return opener
+
+
+def no_network(request, timeout):
+    raise AssertionError("fetch made a request it did not need")
+
+
+def _http_error(code, reason):
+    return urllib.error.HTTPError("https://example.invalid/test.safetensors", code, reason, {}, None)
 
 
 def test_default_files_follow_the_backend_and_skip_optional_packs(tmp_path):
@@ -66,6 +97,9 @@ def test_default_files_follow_the_backend_and_skip_optional_packs(tmp_path):
 
 @pytest.mark.parametrize("change", [
     {"root": "../outside"},
+    {"root": "data/../../outside"},
+    {"root": "/etc/ods"},
+    {"root": ""},
     {"sha256": "ABC"},
     {"size": 0},
 ])
@@ -73,6 +107,19 @@ def test_unsafe_or_incomplete_pack_lists_are_refused(tmp_path, change):
     ext_dir, install = _pack_list(tmp_path, **change)
     with pytest.raises(ValueError):
         assets.default_files(ext_dir, install, "nvidia")
+
+
+def test_a_data_folder_linked_to_another_disk_is_accepted(tmp_path):
+    ext_dir, install = _pack_list(tmp_path)
+    elsewhere = tmp_path / "other-disk"
+    elsewhere.mkdir()
+    try:
+        (install / "data").symlink_to(elsewhere, target_is_directory=True)
+    except OSError as exc:  # Windows without symlink rights
+        pytest.skip(f"cannot create a symlink here: {exc}")
+    [item] = assets.default_files(ext_dir, install, "nvidia")
+    assets.fetch(item, lambda done: None, opener=opener_for(PAYLOAD))
+    assert (elsewhere / "comfyui/models/checkpoints/test.safetensors").read_bytes() == PAYLOAD
 
 
 def test_a_malformed_pack_list_is_a_value_error(tmp_path):
@@ -154,8 +201,137 @@ def test_a_network_failure_names_the_cause_and_keeps_the_part(tmp_path):
     def offline(request, timeout):
         raise urllib.error.URLError("Temporary failure in name resolution")
 
-    with pytest.raises(assets.AssetError, match="Temporary failure in name resolution"):
+    with pytest.raises(assets.AssetError, match="Temporary failure in name resolution") as caught:
         assets.fetch(item, lambda done: None, opener=offline)
+    assert caught.value.retryable
+
+
+def test_a_connection_dropped_mid_transfer_keeps_what_arrived(tmp_path):
+    ext_dir, install = _pack_list(tmp_path)
+    [item] = assets.default_files(ext_dir, install, "nvidia")
+    dropped = Response(PAYLOAD, fail_after=7000, failure=http.client.IncompleteRead(b""))
+    with pytest.raises(assets.AssetError, match="Try again to resume it") as caught:
+        assets.fetch(item, lambda done: None, opener=opener_sequence(dropped))
+    assert caught.value.retryable
+    assert item.target.with_name("test.safetensors.part").read_bytes() == PAYLOAD[:7000]
+
+
+def test_a_complete_part_is_checked_and_renamed_without_downloading(tmp_path):
+    ext_dir, install = _pack_list(tmp_path)
+    [item] = assets.default_files(ext_dir, install, "nvidia")
+    part = item.target.with_name("test.safetensors.part")
+    part.parent.mkdir(parents=True)
+    part.write_bytes(PAYLOAD)
+    assets.fetch(item, lambda done: None, opener=no_network)
+    assert item.target.read_bytes() == PAYLOAD and not part.exists()
+
+
+def test_a_complete_part_with_the_wrong_bytes_is_deleted(tmp_path):
+    ext_dir, install = _pack_list(tmp_path)
+    [item] = assets.default_files(ext_dir, install, "nvidia")
+    part = item.target.with_name("test.safetensors.part")
+    part.parent.mkdir(parents=True)
+    part.write_bytes(b"y" * len(PAYLOAD))
+    with pytest.raises(assets.AssetError, match="did not match its pinned SHA-256") as caught:
+        assets.fetch(item, lambda done: None, opener=no_network)
+    assert not caught.value.retryable and not part.exists()
+
+
+def test_a_part_larger_than_the_file_starts_over(tmp_path):
+    ext_dir, install = _pack_list(tmp_path)
+    [item] = assets.default_files(ext_dir, install, "nvidia")
+    part = item.target.with_name("test.safetensors.part")
+    part.parent.mkdir(parents=True)
+    part.write_bytes(PAYLOAD + b"extra")
+    assert assets._remaining(item) == len(PAYLOAD)
+    seen = []
+    assets.fetch(item, lambda done: None, opener=opener_for(PAYLOAD, seen=seen))
+    assert "Range" not in seen[0][0]
+    assert item.target.read_bytes() == PAYLOAD
+
+
+def test_a_refused_range_deletes_the_part_instead_of_looping(tmp_path):
+    ext_dir, install = _pack_list(tmp_path)
+    [item] = assets.default_files(ext_dir, install, "nvidia")
+    part = item.target.with_name("test.safetensors.part")
+    part.parent.mkdir(parents=True)
+    part.write_bytes(PAYLOAD[:1000])
+    with pytest.raises(assets.AssetError, match="not the pinned file") as caught:
+        assets.fetch(item, lambda done: None,
+                     opener=opener_sequence(_http_error(416, "Range Not Satisfiable")))
+    assert not caught.value.retryable
+    assert part.stat().st_size == 0
+
+
+def test_http_errors_say_whether_trying_again_can_help(tmp_path):
+    ext_dir, install = _pack_list(tmp_path)
+    [item] = assets.default_files(ext_dir, install, "nvidia")
+    with pytest.raises(assets.AssetError) as busy:
+        assets.fetch(item, lambda done: None, opener=opener_sequence(_http_error(503, "Service Unavailable")))
+    assert busy.value.retryable
+    with pytest.raises(assets.AssetError, match=r"refused Test model \(HTTP 404 Not Found\).*example\.invalid") as gone:
+        assets.fetch(item, lambda done: None, opener=opener_sequence(_http_error(404, "Not Found")))
+    assert not gone.value.retryable
+
+
+def test_a_folder_owned_by_another_account_says_how_to_fix_it(tmp_path, monkeypatch):
+    ext_dir, install = _pack_list(tmp_path)
+    [item] = assets.default_files(ext_dir, install, "nvidia")
+
+    def denied(*args, **kwargs):
+        raise PermissionError(errno.EACCES, "Permission denied", str(args[0]))
+
+    monkeypatch.setattr(assets, "open", denied, raising=False)
+    with pytest.raises(assets.AssetError, match="belongs to another account") as caught:
+        assets.fetch(item, lambda done: None, opener=no_network)
+    message = str(caught.value)
+    assert str(item.target.parent) in message and not caught.value.retryable
+    if hasattr(os, "getuid"):
+        assert message.endswith(f"sudo chown -R {os.getuid()}:{os.getgid()} {item.target.parent}")
+    assert "Try again to resume" not in message
+
+
+def test_a_full_disk_while_writing_is_reported_as_the_disk(tmp_path, monkeypatch):
+    ext_dir, install = _pack_list(tmp_path)
+    [item] = assets.default_files(ext_dir, install, "nvidia")
+    real_open = open
+
+    class FullDisk:
+        def __init__(self, path, mode):
+            self.handle = real_open(path, mode)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.handle.close()
+
+        def write(self, data):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        def __getattr__(self, name):
+            return getattr(self.handle, name)
+
+    monkeypatch.setattr(assets, "open", FullDisk, raising=False)
+    with pytest.raises(assets.AssetError, match=r"could not save Test model .*No space left") as caught:
+        assets.fetch(item, lambda done: None, opener=opener_for(PAYLOAD))
+    assert not caught.value.retryable
+
+
+@pytest.mark.skipif(assets.fcntl is None, reason="the folder lock uses fcntl (POSIX)")
+def test_a_second_download_into_the_same_folder_is_refused(tmp_path):
+    ext_dir, install = _pack_list(tmp_path)
+    [item] = assets.default_files(ext_dir, install, "nvidia")
+    item.target.parent.mkdir(parents=True)
+    holder = os.open(item.target.parent, os.O_RDONLY)
+    try:
+        assets.fcntl.flock(holder, assets.fcntl.LOCK_EX | assets.fcntl.LOCK_NB)
+        with pytest.raises(assets.AssetError, match="already downloading"):
+            assets.fetch(item, lambda done: None, opener=no_network)
+    finally:
+        os.close(holder)
+    assets.fetch(item, lambda done: None, opener=opener_for(PAYLOAD))
+    assert item.target.read_bytes() == PAYLOAD
 
 
 def test_space_check_counts_partial_downloads_and_refuses_with_numbers(tmp_path, monkeypatch):
@@ -185,6 +361,39 @@ def test_the_command_line_reports_a_failure(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(assets.urllib.request, "urlopen", opener_for(PAYLOAD))
     assert assets.main([str(ext_dir), str(install), "nvidia"]) == 1
     assert "ERROR:" in capsys.readouterr().err
+
+
+def test_the_command_line_resumes_through_dropped_connections(tmp_path, monkeypatch, capsys):
+    ext_dir, install = _pack_list(tmp_path)
+    seen = []
+    monkeypatch.setattr(assets.urllib.request, "urlopen", opener_sequence(
+        urllib.error.URLError("[SSL: CERTIFICATE_VERIFY_FAILED] failed"),
+        Response(PAYLOAD[:5000]),
+        Response(PAYLOAD[5000:], status=206),
+        seen=seen))
+    assert assets.main([str(ext_dir), str(install), "nvidia", "--attempts", "3", "--retry-delay", "0"]) == 0
+    assert "Range" not in seen[1] and seen[2]["Range"] == "bytes=5000-"
+    out = capsys.readouterr().out
+    assert "resuming in 0 s (try 3 of 3)" in out and "Test model is ready" in out
+    # The installer summary would read these words as a failure.
+    assert not any(word in out for word in ("ERROR", "FAILED", "failed"))
+
+
+def test_the_command_line_does_not_retry_what_a_retry_cannot_fix(tmp_path, monkeypatch, capsys):
+    ext_dir, install = _pack_list(tmp_path, sha256="0" * 64)
+    seen = []
+    monkeypatch.setattr(assets.urllib.request, "urlopen", opener_sequence(Response(PAYLOAD), seen=seen))
+    assert assets.main([str(ext_dir), str(install), "nvidia", "--attempts", "6", "--retry-delay", "0"]) == 1
+    assert len(seen) == 1
+    assert "did not match its pinned SHA-256" in capsys.readouterr().err
+
+
+def test_the_command_line_reports_a_malformed_pack_list(tmp_path, capsys):
+    ext_dir = tmp_path / "ext"
+    ext_dir.mkdir()
+    (ext_dir / "model-packs.json").write_text('{"schema": "ods.model-packs.v1", "packs": []}', encoding="utf-8")
+    assert assets.main([str(ext_dir), str(tmp_path), "nvidia"]) == 1
+    assert capsys.readouterr().err.startswith("ERROR: ")
 
 
 def test_the_comfyui_pack_list_parses_for_both_gpu_backends(tmp_path):

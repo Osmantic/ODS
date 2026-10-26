@@ -1160,16 +1160,25 @@ else
             # This daemon must not inherit the installer model lifecycle lock;
             # otherwise full-model activation waits for an unrelated 6.9 GB
             # image download after the installer itself releases the lock.
-            # It is the downloader the Extensions page uses: the pinned URL,
-            # size and SHA-256 come from model-packs.json, a partial download
-            # resumes, a file that fails its checksum is deleted, and it exits
-            # non-zero on failure so the summary reports it. It runs the copy in
-            # the install directory, which outlives the installer's source.
+            # It runs the downloader the Extensions page uses, from the install
+            # directory (which outlives the installer's source): the pinned URL,
+            # size and SHA-256 come from model-packs.json, a dropped connection
+            # resumes (six tries, as curl --retry 5 did), and a file that fails
+            # its checksum is deleted. The summary reads this log for ERROR, so
+            # any non-zero exit, even one the downloader did not foresee, ends
+            # with an ERROR line.
             (
                 _phase11_close_inherited_fds_for_daemon
-                exec nohup "${ODS_PYTHON_CMD:-python3}" "$INSTALL_DIR/bin/extension_assets.py" \
-                    "$INSTALL_DIR/extensions/services/comfyui" "$INSTALL_DIR" "$GPU_BACKEND" \
-                    > "$INSTALL_DIR/logs/sdxl-download.log" 2>&1
+                exec nohup env \
+                    ODS_ASSETS_PYTHON="${ODS_PYTHON_CMD:-python3}" \
+                    ODS_ASSETS="$INSTALL_DIR/bin/extension_assets.py" \
+                    COMFYUI_EXT_DIR="$INSTALL_DIR/extensions/services/comfyui" \
+                    INSTALL_DIR="$INSTALL_DIR" \
+                    GPU_BACKEND="$GPU_BACKEND" \
+                    bash -c '
+                        "$ODS_ASSETS_PYTHON" "$ODS_ASSETS" --attempts 6 "$COMFYUI_EXT_DIR" "$INSTALL_DIR" "$GPU_BACKEND" \
+                            || echo "[SDXL] ERROR: the model download exited with status $?; see the lines above"
+                    ' > "$INSTALL_DIR/logs/sdxl-download.log" 2>&1
             ) &
 
             sdxl_pid=$!
