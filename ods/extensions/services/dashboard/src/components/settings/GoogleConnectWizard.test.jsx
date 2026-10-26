@@ -80,11 +80,10 @@ it('checks the client file before anything leaves the browser', async () => {
 it("sends exactly the owner's choices, opens Google, and keeps no secret afterwards", async () => {
   const calls = api({'POST /api/pixel/connections/google/connect': [200, BEGUN]})
   const {container, refresh} = wizard()
-  fireEvent.click(screen.getByRole('checkbox', {name: 'Also while Portal runs on a cloud model'}))
   fireEvent.change(screen.getByLabelText('Google account to use (optional)'), {target: {value: 'owner@example.com'}})
   const sent = await begin(calls)
   const zone = Intl.DateTimeFormat().resolvedOptions().timeZone
-  expect(sent).toEqual({client: {installed: INSTALLED}, capabilities: READ_BOTH, cloudModels: false,
+  expect(sent).toEqual({client: {installed: INSTALLED}, capabilities: READ_BOTH, cloudModels: true,
     ownerTimeZone: /^[A-Za-z][A-Za-z0-9_+\-/]{0,63}$/.test(zone) ? zone : null, loginHint: 'owner@example.com'})
   expect(window.open).toHaveBeenCalledWith('', '_blank')
   expect(tab.opener).toBeNull()
@@ -95,12 +94,15 @@ it("sends exactly the owner's choices, opens Google, and keeps no secret afterwa
   expect(refresh).toHaveBeenCalled()
 })
 
-it('defaults to the capabilities ODS can deliver and allows cloud models, as decided', async () => {
+it('defaults to the capabilities ODS can deliver, and says a cloud model sees what Portal reads', async () => {
   const calls = api({'POST /api/pixel/connections/google/connect': [200, BEGUN]})
   wizard()
   for (const name of [/Suggest calendar changes/, /Write Gmail drafts/]) {
     expect(screen.getByRole('checkbox', {name})).toBeDisabled()
   }
+  expect(screen.getByText(/When Portal runs on a cloud model, that model's provider sees what Portal reads/)).toBeVisible()
+  // Cloud models may use connected data, as decided; no switch offers what nothing enforces yet.
+  expect(screen.queryByRole('checkbox', {name: /cloud model/})).toBeNull()
   const sent = await begin(calls)
   expect(sent.capabilities).toEqual(READ_BOTH)
   expect(sent.cloudModels).toBe(true)
@@ -193,10 +195,9 @@ it('shows the Discord link for a real failure only', async () => {
 
 it('reconnects with the choices already made, without the first-time steps open', () => {
   api({})
-  wizard({initial: {capabilities: {...READ_BOTH, 'gmail.read': false}, cloudModels: false}})
+  wizard({initial: {capabilities: {...READ_BOTH, 'gmail.read': false}, cloudModels: true}})
   expect(screen.getByRole('heading', {name: 'Reconnect Google'})).toBeVisible()
   expect(screen.getByRole('checkbox', {name: 'Read your calendar'})).toBeChecked()
   expect(screen.getByRole('checkbox', {name: 'Read email summaries'})).not.toBeChecked()
-  expect(screen.getByRole('checkbox', {name: 'Also while Portal runs on a cloud model'})).not.toBeChecked()
   expect(screen.getByText('Create your Google sign-in app (first time only)').closest('details')).not.toHaveAttribute('open')
 })

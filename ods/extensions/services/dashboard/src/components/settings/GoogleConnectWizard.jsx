@@ -27,7 +27,6 @@ export default function GoogleConnectWizard({catalog, initial = null, status, re
   const reconnect = initial !== null
   const [choices, setChoices] = useState(() => Object.fromEntries(catalog.capabilities.map(capability =>
     [capability.id, capability.available && (initial ? Boolean(initial.capabilities?.[capability.id]) : capability.default)])))
-  const [cloudModels, setCloudModels] = useState(initial ? initial.cloudModels !== false : true)
   const [loginHint, setLoginHint] = useState('')
   const [client, setClient] = useState(null)
   const [projectId, setProjectId] = useState(savedProject)
@@ -96,7 +95,9 @@ export default function GoogleConnectWizard({catalog, initial = null, status, re
     setProblem(null)
     // Open the tab while the click still counts as the owner's, then send it to Google.
     const tab = window.open('', '_blank')
-    const choice = {client, capabilities: requested, cloudModels, ownerTimeZone: ownerTimeZone(),
+    // Portal may use connected data on a cloud model (the owner's decision). The
+    // per-connector switch that turns this off ships together with its enforcement.
+    const choice = {client, capabilities: requested, cloudModels: true, ownerTimeZone: ownerTimeZone(),
       loginHint: loginHint.trim() || null}
     forgetClient()
     try {
@@ -170,11 +171,7 @@ export default function GoogleConnectWizard({catalog, initial = null, status, re
             onChange={event => setChoices(previous => ({...previous, [capability.id]: event.target.checked}))} />
           <span>{capability.label}{capability.available ? '' : ' (coming in a later update)'}</span>
         </label>)}
-        <label className="flex items-start gap-2">
-          <input type="checkbox" checked={cloudModels} disabled={busy} onChange={event => setCloudModels(event.target.checked)} />
-          <span>Also while Portal runs on a cloud model</span>
-        </label>
-        <p className="text-sm text-theme-text-muted">Portal reads summaries of your mail and the details of your events, never attachments. On a cloud model, the model&apos;s provider sees what Portal reads.</p>
+        <p className="text-sm text-theme-text-muted">Portal reads summaries of your mail and the details of your events, never attachments. When Portal runs on a cloud model, that model&apos;s provider sees what Portal reads.</p>
       </fieldset>
       <details open={!reconnect} className="space-y-2">
         <summary className="cursor-pointer font-medium">Create your Google sign-in app (first time only)</summary>
