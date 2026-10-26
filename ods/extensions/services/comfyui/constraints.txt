@@ -6,8 +6,8 @@
 # the Dockerfile without the PIP_CONSTRAINT line, run the image's GPU test, then
 # replace the pins below with that image's `pip3 freeze`.
 #
-# Source: pip3 freeze of the image built from Dockerfile 9f37ed9d (2026-10-25),
-# which generated SDXL Lightning images on an RTX 5090.
+# Source: pip3 freeze of the image built under these constraints (Dockerfile
+# 9b430de3, 2026-10-25), which generated SDXL Lightning images on an RTX 5090.
 aiohappyeyeballs==2.7.1
 aiohttp==3.14.5
 aiosignal==1.4.0
@@ -52,9 +52,7 @@ greenlet==3.5.6
 h11==0.16.0
 hf-xet==1.7.0
 httpcore==1.0.9
-httpcore2==2.14.0
 httpx==0.28.1
-httpx2==2.14.0
 huggingface_hub==1.33.0
 idna==3.20
 ImageIO==2.38.0
@@ -131,7 +129,6 @@ tqdm==4.70.1
 trampoline==0.1.2
 transformers==5.20.2
 triton==3.6.0
-truststore==0.10.5
 typer==0.27.3
 typing-inspection==0.4.4
 typing_extensions==4.16.0
