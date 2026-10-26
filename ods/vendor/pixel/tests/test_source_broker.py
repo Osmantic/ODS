@@ -1,11 +1,17 @@
 import base64
+import contextlib
 import importlib.util
+import io
 import json
 import os
+import secrets
 import tempfile
 import threading
 import time
 import unittest
+import urllib.error
+import urllib.parse
+from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1680,6 +1686,467 @@ class SourceBrokerTests(unittest.TestCase):
                         os.environ.pop(name, None)
                     else:
                         os.environ[name] = value
+
+
+GMAIL_READ = "https://www.googleapis.com/auth/gmail.readonly"
+CALENDAR_READ = "https://www.googleapis.com/auth/calendar.events.readonly"
+
+
+class FakeResponse:
+    def __init__(self, raw):
+        self.raw = raw
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def read(self):
+        return self.raw
+
+
+class FakeGoogle:
+    """Answer the broker's HTTP calls from a handler and record each request."""
+
+    def __init__(self, handler):
+        self.handler = handler
+        self.calls = []
+
+    def __call__(self, request, timeout=None):
+        method, url = request.get_method(), request.full_url
+        body = request.data.decode("ascii") if request.data else ""
+        self.calls.append((method, url, body))
+        outcome = self.handler(method, url, body)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        status, payload = outcome
+        raw = json.dumps(payload).encode("utf-8")
+        if status >= 400:
+            raise urllib.error.HTTPError(url, status, "fixture error", {}, io.BytesIO(raw))
+        return FakeResponse(raw)
+
+
+def google_api_error(code, status, reason, message="Request failed for project 123; see the console."):
+    return code, {"error": {
+        "code": code, "message": message, "status": status,
+        "errors": [{"message": message, "domain": "global", "reason": reason}],
+        "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": reason, "domain": "googleapis.com"}],
+    }}
+
+
+def calendar_event(event_id, summary="Planning"):
+    return {
+        "id": event_id, "etag": f'"{event_id}-etag"', "status": "confirmed", "summary": summary,
+        "start": {"dateTime": "2026-08-05T10:00:00Z"}, "end": {"dateTime": "2026-08-05T10:30:00Z"},
+    }
+
+
+def write_token(path, granted=(GMAIL_READ, CALENDAR_READ)):
+    write_protected(path, json.dumps({
+        "client_id": "fixture-client.apps.googleusercontent.com",
+        "client_secret": "fixture-client-secret",
+        "refresh_token": "fixture-refresh-token",
+        "token_uri": BROKER.GOOGLE_TOKEN_URI,
+        "scope": " ".join(granted),
+        "grantedScope": " ".join(granted),
+        "email": "owner@example.com",
+    }))
+
+
+class SourceBrokerReadinessTests(unittest.TestCase):
+    def broker_env(self, root, **values):
+        settings = {
+            "PIXEL_SOURCE_TOKEN_PATH": str(root / "private" / "google-token.json"),
+            "PIXEL_SOURCE_PROJECTION_DIR": str(root / "projection"),
+            "PIXEL_SOURCE_OAUTH_DIR": str(root / "private" / "oauth"),
+            "PIXEL_LIMB_EMAIL_ENABLED": "1",
+            "PIXEL_LIMB_CALENDAR_ENABLED": "1",
+            "PIXEL_LIMB_SOCIAL_ENABLED": "0",
+        }
+        settings.update(values)
+        (root / "private" / "oauth").mkdir(parents=True, exist_ok=True)
+        (root / "projection").mkdir(parents=True, exist_ok=True)
+        return patch.dict(os.environ, settings)
+
+    def read(self, root, name):
+        return json.loads((root / "projection" / f"{name}.json").read_text(encoding="utf-8"))
+
+    def run_refresh(self, handler):
+        fake = FakeGoogle(handler)
+        with patch.object(BROKER.urllib.request, "urlopen", fake), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(BROKER.refresh(), 0)
+        return fake
+
+    def google(self, *, gmail=None, calendar=None, token=None):
+        def handler(method, url, _body):
+            if url == BROKER.GOOGLE_TOKEN_URI:
+                return token or (200, {"access_token": "fixture-access-token", "expires_in": 3599})
+            if url.startswith(BROKER.GMAIL_API + "/messages?"):
+                return gmail or (200, {"messages": [], "resultSizeEstimate": 0})
+            if url.startswith(BROKER.CALENDAR_API + "/calendars/primary/events?"):
+                return calendar or (200, {"items": [calendar_event("event-1")]})
+            raise AssertionError(f"unexpected request {method} {url}")
+        return handler
+
+    def test_calendar_pagination_follows_page_tokens_and_proves_the_window(self):
+        calls = []
+
+        def fake_get(_base, path, _token, params):
+            calls.append(params)
+            if params.get("pageToken") == "page-2":
+                return {"items": [calendar_event("event-2"), calendar_event("event-3")]}
+            return {"items": [calendar_event("event-1"), calendar_event("event-2")], "nextPageToken": "page-2"}
+
+        with patch.object(BROKER, "google_get", fake_get):
+            records, coverage = BROKER.calendar_records("fixture-token")
+        self.assertEqual([record["id"] for record in records], ["event-1", "event-2", "event-3"])
+        self.assertEqual(calls[1]["pageToken"], "page-2")
+        self.assertEqual(calls[0]["maxResults"], 250)
+        self.assertEqual(coverage["pagesFetched"], 2)
+        self.assertEqual(coverage["fetched"], 3)
+        self.assertFalse(coverage["truncated"])
+        self.assertTrue(coverage["completeWithinWindow"])
+        self.assertEqual((coverage["windowStart"], coverage["windowEnd"]), (calls[0]["timeMin"], calls[0]["timeMax"]))
+        self.assertTrue(BROKER.valid_iso_timestamp(coverage["windowStart"]))
+
+    def test_calendar_pagination_marks_truncation_instead_of_dropping_events_silently(self):
+        def endless(_base, _path, _token, params):
+            page = int(params.get("pageToken", "page-0").split("-")[1]) + 1
+            return {"items": [calendar_event(f"event-{page}")], "nextPageToken": f"page-{page}"}
+
+        def repeating(_base, _path, _token, _params):
+            return {"items": [calendar_event("event-1")], "nextPageToken": "same-page"}
+
+        with patch.dict(os.environ, {"PIXEL_SOURCE_CALENDAR_MAX_PAGES": "3"}):
+            with patch.object(BROKER, "google_get", endless):
+                records, coverage = BROKER.calendar_records("fixture-token")
+            self.assertEqual(len(records), 3)
+            self.assertEqual((coverage["truncated"], coverage["truncationReason"]), (True, "safety-page-limit"))
+            self.assertFalse(coverage["completeWithinWindow"])
+            with patch.object(BROKER, "google_get", repeating):
+                _records, coverage = BROKER.calendar_records("fixture-token")
+            self.assertEqual((coverage["truncated"], coverage["truncationReason"]), (True, "repeated-page-token"))
+
+    def test_a_failing_gmail_source_leaves_calendar_fresh_and_keeps_its_last_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory, self.broker_env(Path(directory)):
+            root = Path(directory)
+            write_token(root / "private" / "google-token.json")
+            previous = BROKER.projection("gmail", [BROKER.email_projection(message("An older inbound update."))],
+                                         "2026-08-04T20:00:00Z", True, {"bounded": True, "folders": {}})
+            BROKER.atomic_json(root / "projection" / "email.json", previous)
+            email_before = (root / "projection" / "email.json").read_bytes()
+            self.run_refresh(self.google(gmail=google_api_error(403, "PERMISSION_DENIED", "accessNotConfigured")))
+
+            self.assertEqual((root / "projection" / "email.json").read_bytes(), email_before)
+            calendar = self.read(root, "calendar")
+            self.assertEqual([record["id"] for record in calendar["records"]], ["event-1"])
+            self.assertTrue(calendar["coverage"]["completeWithinWindow"])
+            self.assertTrue(BROKER.valid_iso_timestamp(calendar["generatedAt"]))
+            status = self.read(root, "status")
+            self.assertEqual(status["kind"], "pixel-source-broker-status")
+            self.assertEqual(status["boundary"], {"contentFree": True, "credentialsIncluded": False})
+            self.assertEqual(status["grantedScopes"], sorted([GMAIL_READ, CALENDAR_READ]))
+            email = status["sources"]["email"]
+            self.assertEqual((email["state"], email["errorClass"], email["httpStatus"]), ("error", "api-disabled", 403))
+            self.assertEqual(email["recordCount"], 1)
+            self.assertIsNone(email["lastSuccessAt"])
+            self.assertEqual(email["failingSince"], email["lastAttemptAt"])
+            self.assertEqual(status["sources"]["calendar"]["state"], "ok")
+            self.assertTrue(status["sources"]["calendar"]["complete"])
+            self.assertEqual(status["sources"]["social"]["state"], "disabled")
+            text = json.dumps(status)
+            for private in ("owner@example.com", "fixture-refresh-token", "fixture-client-secret", "project 123", "Planning"):
+                self.assertNotIn(private, text)
+
+    def test_revoked_access_marks_both_google_sources_while_social_still_refreshes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            social_input = root / "social.json"
+            social_input.write_text(json.dumps([{"id": "post-1", "author": "Neighbor", "text": "Garden club meets Tuesday."}]), encoding="utf-8")
+            with self.broker_env(root, PIXEL_LIMB_SOCIAL_ENABLED="1", PIXEL_SOURCE_SOCIAL_INPUT=str(social_input)):
+                write_token(root / "private" / "google-token.json")
+                fake = self.run_refresh(self.google(token=(400, {"error": "invalid_grant", "error_description": "Token has been expired or revoked."})))
+                self.assertEqual([url for _method, url, _body in fake.calls], [BROKER.GOOGLE_TOKEN_URI])
+                status = self.read(root, "status")
+                for source in ("email", "calendar"):
+                    self.assertEqual(status["sources"][source]["errorClass"], "invalid-grant")
+                    unavailable = self.read(root, source)
+                    self.assertTrue(unavailable["enabled"])
+                    self.assertIsNone(unavailable["generatedAt"])
+                    self.assertEqual(unavailable["records"], [])
+                    self.assertEqual(unavailable["coverage"], {"bounded": True, "available": False, "reason": "invalid-grant"})
+                    self.assertTrue(unavailable["boundary"]["projectionOnly"])
+                self.assertEqual(status["sources"]["social"]["state"], "ok")
+                self.assertEqual(self.read(root, "social")["recordCount"], 1)
+                self.assertNotIn("expired or revoked", json.dumps(status))
+
+    def test_status_keeps_the_last_success_and_when_the_failure_began(self):
+        instants = iter(BROKER.datetime(2026, 8, 5, 12, minute, second, tzinfo=BROKER.timezone.utc)
+                        for minute in range(10) for second in range(0, 60, 5))
+        with tempfile.TemporaryDirectory() as directory, self.broker_env(Path(directory), PIXEL_LIMB_EMAIL_ENABLED="0"):
+            root = Path(directory)
+            write_token(root / "private" / "google-token.json")
+            with patch.object(BROKER, "utc_now", lambda: next(instants)):
+                self.run_refresh(self.google())
+                first_success = self.read(root, "status")["sources"]["calendar"]["lastSuccessAt"]
+                self.run_refresh(self.google(calendar=(503, {"error": {"code": 503, "status": "UNAVAILABLE"}})))
+                failing = self.read(root, "status")["sources"]["calendar"]
+                self.assertEqual((failing["state"], failing["errorClass"]), ("error", "network"))
+                self.assertEqual(failing["lastSuccessAt"], first_success)
+                self.assertEqual(self.read(root, "calendar")["generatedAt"], first_success)
+                self.run_refresh(self.google(calendar=(429, {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED"}})))
+                still = self.read(root, "status")["sources"]["calendar"]
+                self.assertEqual(still["errorClass"], "rate-limited")
+                self.assertEqual(still["failingSince"], failing["failingSince"])
+                self.assertNotEqual(still["lastAttemptAt"], failing["lastAttemptAt"])
+                self.run_refresh(self.google())
+                healed = self.read(root, "status")["sources"]["calendar"]
+                self.assertEqual((healed["state"], healed["failingSince"], healed["errorClass"]), ("ok", None, None))
+                self.assertGreater(healed["lastSuccessAt"], first_success)
+
+    def test_a_scope_google_did_not_grant_is_reported_without_calling_that_api(self):
+        with tempfile.TemporaryDirectory() as directory, self.broker_env(Path(directory)):
+            root = Path(directory)
+            write_token(root / "private" / "google-token.json", granted=(CALENDAR_READ,))
+            fake = self.run_refresh(self.google())
+            self.assertFalse(any(url.startswith(BROKER.GMAIL_API) for _method, url, _body in fake.calls))
+            status = self.read(root, "status")
+            self.assertEqual((status["sources"]["email"]["errorClass"], status["sources"]["email"]["httpStatus"]), ("missing-scope", None))
+            self.assertEqual(status["sources"]["calendar"]["state"], "ok")
+
+    def test_no_stored_connection_reports_not_connected_without_network(self):
+        with tempfile.TemporaryDirectory() as directory, self.broker_env(Path(directory)):
+            root = Path(directory)
+            fake = self.run_refresh(self.google())
+            self.assertEqual(fake.calls, [])
+            status = self.read(root, "status")
+            self.assertEqual({status["sources"][name]["errorClass"] for name in ("email", "calendar")}, {"not-connected"})
+            self.assertIsNone(status["grantedScopes"])
+
+    def test_error_classes_name_the_owner_fix(self):
+        cases = [
+            (BROKER.UpstreamHTTPError(400, frozenset({"invalid_grant"})), "invalid-grant"),
+            (BROKER.UpstreamHTTPError(400, frozenset({"admin_policy_enforced"})), "blocked-by-admin"),
+            (BROKER.UpstreamHTTPError(401, frozenset({"invalid_client"})), "client-invalid"),
+            (BROKER.UpstreamHTTPError(400, frozenset({"redirect_uri_mismatch"})), "redirect-mismatch"),
+            (BROKER.UpstreamHTTPError(429), "rate-limited"),
+            (BROKER.UpstreamHTTPError(403, frozenset({"rateLimitExceeded"})), "rate-limited"),
+            (BROKER.UpstreamHTTPError(403, frozenset({"accessNotConfigured", "PERMISSION_DENIED"})), "api-disabled"),
+            (BROKER.UpstreamHTTPError(403, frozenset({"SERVICE_DISABLED"})), "api-disabled"),
+            (BROKER.UpstreamHTTPError(403, frozenset({"insufficientPermissions"})), "missing-scope"),
+            (BROKER.UpstreamHTTPError(503), "network"),
+            (BROKER.UpstreamHTTPError(404), "unknown"),
+            (urllib.error.URLError("unreachable"), "network"),
+            (TimeoutError(), "network"),
+            (ConnectionResetError(), "network"),
+            (BROKER.SourceUnavailable("not-connected", "no token"), "not-connected"),
+            (KeyError("items"), "unknown"),
+        ]
+        for error, expected in cases:
+            with self.subTest(error=repr(error)):
+                self.assertEqual(BROKER.classify_source_error(error), expected)
+                self.assertEqual(BROKER.failure_record(error)["errorClass"], expected)
+        _status, body = google_api_error(403, "PERMISSION_DENIED", "SERVICE_DISABLED", message="Gmail API has not been used in project 42")
+        self.assertEqual(BROKER.error_reasons(json.dumps(body).encode()), frozenset({"PERMISSION_DENIED", "SERVICE_DISABLED"}))
+        self.assertEqual(BROKER.error_reasons(b'{"error": "invalid_grant", "error_description": "Bad Request"}'), frozenset({"invalid_grant"}))
+        self.assertEqual(BROKER.error_reasons(b"<html>not json</html>"), frozenset())
+        self.assertEqual(BROKER.error_reasons(b'{"error": "spaces are not a reason"}'), frozenset())
+
+    def test_calendar_changes_turned_off_refuse_approval_and_direct_execution(self):
+        proposal_id = "calendar-1785876500000-a1b2c3d4"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_protected(root / f"{proposal_id}.approved.json", json.dumps(calendar_proposal(proposal_id, "create", {
+                "summary": "One meeting", "start": "2026-08-05T10:00:00Z", "end": "2026-08-05T10:30:00Z",
+            })))
+            with patch.dict(os.environ, {"PIXEL_ACTION_RESULT_DIR": str(root), "PIXEL_LIMB_CALENDAR_WRITE_ENABLED": "0",
+                                         "PIXEL_CALENDAR_DIRECT_ENABLED": "1"}), \
+                    patch.object(BROKER, "access_token", lambda _path: self.fail("no token may be used")), \
+                    patch.object(BROKER, "google_call", lambda *args, **kwargs: self.fail("no write may run")):
+                with self.assertRaisesRegex(RuntimeError, "turned off"):
+                    BROKER.approve(proposal_id)
+                with self.assertRaisesRegex(RuntimeError, "turned off"):
+                    BROKER.direct(proposal_id)
+            self.assertFalse((root / f"{proposal_id}.processing.json").exists())
+            self.assertFalse((root / f"{proposal_id}.json").exists())
+
+    def test_a_projection_from_an_older_sanitizer_is_not_kept_as_a_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "calendar.json"
+            current = BROKER.projection("google-calendar", [], "2026-08-04T20:00:00Z", True, {"bounded": True})
+            BROKER.atomic_json(path, current)
+            self.assertIsNotNone(BROKER.retained_projection(path, "google-calendar"))
+            self.assertIsNone(BROKER.retained_projection(path, "gmail"))
+            older = dict(current)
+            del older["sanitizerRevision"]
+            BROKER.atomic_json(path, older)
+            self.assertIsNone(BROKER.retained_projection(path, "google-calendar"))
+
+    # Sign-in exchange: a root-written handoff becomes a token only this identity holds.
+
+    def handoff(self, root, **changes):
+        flow_id = secrets.token_hex(16)
+        state = secrets.token_urlsafe(32)
+        now = BROKER.utc_now()
+        flow = {
+            "schemaVersion": 1, "kind": "pixel-source-oauth-flow", "flowId": flow_id, "state": state,
+            "codeVerifier": secrets.token_urlsafe(48), "redirectUri": "http://127.0.0.1:53682",
+            "client": {"installed": {"client_id": "fixture-client.apps.googleusercontent.com", "client_secret": "fixture-client-secret",
+                                     "auth_uri": BROKER.GOOGLE_AUTH_URI, "token_uri": BROKER.GOOGLE_TOKEN_URI}},
+            "requestedScopes": [GMAIL_READ, CALENDAR_READ], "account": "owner@example.com",
+            "createdAt": BROKER.iso(now), "expiresAt": BROKER.iso(now + timedelta(minutes=10)),
+        }
+        completion = {"schemaVersion": 1, "kind": "pixel-source-oauth-code", "flowId": flow_id, "state": state,
+                      "code": "4/fixture-authorization-code"}
+        flow.update(changes.pop("flow", {}))
+        completion.update(changes.pop("completion", {}))
+        oauth = root / "private" / "oauth"
+        write_protected(oauth / f"{flow_id}.flow.json", json.dumps(flow))
+        write_protected(oauth / f"{flow_id}.code.json", json.dumps(completion))
+        return flow_id, flow
+
+    def run_exchange(self, flow_id, handler):
+        fake = FakeGoogle(handler)
+        output = io.StringIO()
+        with patch.object(BROKER.urllib.request, "urlopen", fake), contextlib.redirect_stdout(output):
+            status = BROKER.exchange(flow_id)
+        return status, fake, output.getvalue()
+
+    def exchange_result(self, root, flow_id):
+        return json.loads((root / "private" / "oauth" / f"{flow_id}.result.json").read_text(encoding="utf-8"))
+
+    def assert_handoff_consumed(self, root, flow_id):
+        self.assertFalse((root / "private" / "oauth" / f"{flow_id}.flow.json").exists())
+        self.assertFalse((root / "private" / "oauth" / f"{flow_id}.code.json").exists())
+
+    def test_exchange_stores_the_token_with_the_scopes_google_granted(self):
+        with tempfile.TemporaryDirectory() as directory, self.broker_env(Path(directory)):
+            root = Path(directory)
+            flow_id, flow = self.handoff(root)
+            granted = f"{CALENDAR_READ} {GMAIL_READ}"
+            status, fake, output = self.run_exchange(flow_id, lambda method, url, body: (200, {
+                "access_token": "fixture-access-token", "refresh_token": "1//fixture-refresh", "scope": granted,
+                "token_type": "Bearer", "expires_in": 3599,
+            }))
+            self.assertEqual(status, 0)
+            self.assertEqual([(method, url) for method, url, _body in fake.calls], [("POST", BROKER.GOOGLE_TOKEN_URI)])
+            sent = urllib.parse.parse_qs(fake.calls[0][2])
+            self.assertEqual(sent["grant_type"], ["authorization_code"])
+            self.assertEqual(sent["code_verifier"], [flow["codeVerifier"]])
+            self.assertEqual(sent["redirect_uri"], ["http://127.0.0.1:53682"])
+            self.assertEqual(sent["code"], ["4/fixture-authorization-code"])
+            token_path = root / "private" / "google-token.json"
+            token = json.loads(token_path.read_text(encoding="utf-8"))
+            self.assertEqual(token["refresh_token"], "1//fixture-refresh")
+            self.assertEqual(token["grantedScope"], " ".join(sorted([CALENDAR_READ, GMAIL_READ])))
+            self.assertEqual(token["token_uri"], BROKER.GOOGLE_TOKEN_URI)
+            self.assertEqual(BROKER.granted_scopes(token), frozenset({CALENDAR_READ, GMAIL_READ}))
+            if os.name != "nt":
+                self.assertEqual(token_path.stat().st_mode & 0o777, 0o600)
+            self.assert_handoff_consumed(root, flow_id)
+            result = self.exchange_result(root, flow_id)
+            self.assertEqual((result["outcome"], result["errorClass"]), ("connected", None))
+            self.assertEqual(result["grantedScopes"], sorted([CALENDAR_READ, GMAIL_READ]))
+            for secret in (flow["codeVerifier"], "1//fixture-refresh", "4/fixture-authorization-code", "fixture-client-secret"):
+                self.assertNotIn(secret, json.dumps(result))
+                self.assertNotIn(secret, output)
+
+    def test_exchange_refuses_a_completion_from_another_sign_in(self):
+        with tempfile.TemporaryDirectory() as directory, self.broker_env(Path(directory)):
+            root = Path(directory)
+            flow_id, _flow = self.handoff(root, completion={"state": secrets.token_urlsafe(32)})
+            status, fake, _output = self.run_exchange(flow_id, lambda *args: self.fail("no exchange may run"))
+            self.assertEqual((status, fake.calls), (1, []))
+            self.assertEqual(self.exchange_result(root, flow_id)["errorClass"], "state-mismatch")
+            self.assert_handoff_consumed(root, flow_id)
+            self.assertFalse((root / "private" / "google-token.json").exists())
+
+    def test_exchange_reports_a_rejected_code_or_verifier_without_storing_anything(self):
+        with tempfile.TemporaryDirectory() as directory, self.broker_env(Path(directory)):
+            root = Path(directory)
+            flow_id, _flow = self.handoff(root)
+            status, fake, _output = self.run_exchange(flow_id, lambda *args: (400, {"error": "invalid_grant", "error_description": "Bad code verifier."}))
+            self.assertEqual((status, len(fake.calls)), (1, 1))
+            result = self.exchange_result(root, flow_id)
+            self.assertEqual((result["outcome"], result["errorClass"], result["httpStatus"]), ("failed", "invalid-grant", 400))
+            self.assertNotIn("verifier", json.dumps(result).lower())
+            self.assert_handoff_consumed(root, flow_id)
+            self.assertFalse((root / "private" / "google-token.json").exists())
+
+    def test_exchange_only_talks_to_googles_fixed_endpoint_and_loopback_or_https_redirects(self):
+        cases = [
+            ({"client": {"client_id": "fixture-client", "client_secret": "fixture-client-secret", "token_uri": "https://attacker.example/token"}}, "client-invalid"),
+            ({"client": {"client_id": "fixture-client", "client_secret": "fixture-client-secret", "auth_uri": "https://accounts.example/auth"}}, "client-invalid"),
+            ({"redirectUri": "http://192.168.1.20:53682"}, "invalid-flow"),
+            ({"redirectUri": "http://dashboard.ods.local/api/callback"}, "invalid-flow"),
+            ({"expiresAt": "2026-01-01T00:00:00Z", "createdAt": "2025-12-31T23:55:00Z"}, "flow-expired"),
+            ({"requestedScopes": ["https://attacker.example/scope"]}, "invalid-flow"),
+            ({"unexpected": True}, "invalid-flow"),
+        ]
+        for change, expected in cases:
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory, self.broker_env(Path(directory)):
+                root = Path(directory)
+                flow_id, _flow = self.handoff(root, flow=change)
+                status, fake, _output = self.run_exchange(flow_id, lambda *args: self.fail("no exchange may run"))
+                self.assertEqual((status, fake.calls), (1, []))
+                self.assertEqual(self.exchange_result(root, flow_id)["errorClass"], expected)
+                self.assert_handoff_consumed(root, flow_id)
+
+    @unittest.skipIf(os.name == "nt", "POSIX file modes")
+    def test_exchange_refuses_a_handoff_other_accounts_can_read(self):
+        with tempfile.TemporaryDirectory() as directory, self.broker_env(Path(directory)):
+            root = Path(directory)
+            flow_id, _flow = self.handoff(root)
+            (root / "private" / "oauth" / f"{flow_id}.flow.json").chmod(0o640)
+            status, fake, _output = self.run_exchange(flow_id, lambda *args: self.fail("no exchange may run"))
+            self.assertEqual((status, fake.calls), (1, []))
+            self.assertEqual(self.exchange_result(root, flow_id)["errorClass"], "invalid-flow")
+            self.assert_handoff_consumed(root, flow_id)
+
+    def test_exchange_requires_a_refresh_token_and_a_safe_flow_id(self):
+        with tempfile.TemporaryDirectory() as directory, self.broker_env(Path(directory)):
+            root = Path(directory)
+            flow_id, _flow = self.handoff(root)
+            status, _fake, _output = self.run_exchange(flow_id, lambda *args: (200, {"access_token": "fixture-access-token", "scope": GMAIL_READ}))
+            self.assertEqual(status, 1)
+            self.assertEqual(self.exchange_result(root, flow_id)["errorClass"], "no-refresh-token")
+            self.assertFalse((root / "private" / "google-token.json").exists())
+            with self.assertRaisesRegex(RuntimeError, "unsafe OAuth flow ID"):
+                BROKER.exchange("../google-token")
+
+    def run_revoke(self, handler):
+        fake = FakeGoogle(handler)
+        with patch.object(BROKER.urllib.request, "urlopen", fake), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(BROKER.revoke(), 0)
+        return fake
+
+    def test_revoke_tells_google_then_deletes_the_token(self):
+        cases = [
+            ((200, {}), "revoked", None),
+            ((400, {"error": "invalid_token", "error_description": "Token expired or revoked"}), "revoked", None),
+            (urllib.error.URLError("offline"), "local-only", "network"),
+            ((503, {"error": {"code": 503, "status": "UNAVAILABLE"}}), "local-only", "network"),
+        ]
+        for answer, outcome, error_class in cases:
+            with self.subTest(outcome=outcome, error_class=error_class), tempfile.TemporaryDirectory() as directory, self.broker_env(Path(directory)):
+                root = Path(directory)
+                write_token(root / "private" / "google-token.json")
+                fake = self.run_revoke(lambda *args, answer=answer: answer)
+                self.assertEqual([(method, url) for method, url, _body in fake.calls], [("POST", BROKER.GOOGLE_REVOKE_URI)])
+                self.assertEqual(urllib.parse.parse_qs(fake.calls[0][2]), {"token": ["fixture-refresh-token"]})
+                self.assertFalse((root / "private" / "google-token.json").exists())
+                result = json.loads((root / "private" / "oauth" / "revoke.result.json").read_text(encoding="utf-8"))
+                self.assertEqual((result["outcome"], result["errorClass"]), (outcome, error_class))
+                self.assertNotIn("fixture-refresh-token", json.dumps(result))
+
+    def test_revoke_without_a_stored_connection_needs_no_network(self):
+        with tempfile.TemporaryDirectory() as directory, self.broker_env(Path(directory)):
+            root = Path(directory)
+            fake = self.run_revoke(lambda *args: self.fail("no revoke may run"))
+            self.assertEqual(fake.calls, [])
+            result = json.loads((root / "private" / "oauth" / "revoke.result.json").read_text(encoding="utf-8"))
+            self.assertEqual(result["outcome"], "not-connected")
 
 
 if __name__ == "__main__":

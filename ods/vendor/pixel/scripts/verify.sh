@@ -113,6 +113,25 @@ if [[ ${PIXEL_SOURCE_BROKER_ENABLED:-1} == 1 ]]; then
   jq -e ".enabled == $([[ ${PIXEL_LIMB_CALENDAR_ENABLED:-1} == 1 ]] && echo true || echo false)" "$PIXEL_SOURCE_PROJECTION_DIR/calendar.json" >/dev/null || pixel_die "Calendar projection does not match limb state"
   jq -e ".enabled == $([[ ${PIXEL_LIMB_SOCIAL_ENABLED:-0} == 1 ]] && echo true || echo false)" "$PIXEL_SOURCE_PROJECTION_DIR/social.json" >/dev/null || pixel_die "Social projection does not match limb state"
   pixel_courier_systemctl_read show "$broker_unit" -p Result --value | grep -Fx success >/dev/null || pixel_die "Source Broker last refresh failed"
+  # Each source reports on its own: a source the provider refuses is a warning with its
+  # recorded cause, while a missing, malformed or limb-mismatched status file fails.
+  source_status="$PIXEL_SOURCE_PROJECTION_DIR/status.json"
+  jq -e '.schemaVersion == 1 and .kind == "pixel-source-broker-status" and .boundary.contentFree == true and .boundary.credentialsIncluded == false and (.sources | type == "object")' "$source_status" >/dev/null ||
+    pixel_die "Source Broker status is missing or invalid; run sudo systemctl start ${broker_unit} and verify again"
+  for source in email calendar social; do
+    case "$source" in
+      email) limb_enabled=${PIXEL_LIMB_EMAIL_ENABLED:-1} ;;
+      calendar) limb_enabled=${PIXEL_LIMB_CALENDAR_ENABLED:-1} ;;
+      social) limb_enabled=${PIXEL_LIMB_SOCIAL_ENABLED:-0} ;;
+    esac
+    expected=false; [[ $limb_enabled == 1 ]] && expected=true
+    jq -e --arg source "$source" --argjson enabled "$expected" '.sources[$source] as $s | ($s | type == "object") and $s.enabled == $enabled and (if $enabled then ($s.state == "ok" or $s.state == "error") else $s.state == "disabled" end)' "$source_status" >/dev/null ||
+      pixel_die "Source Broker status does not match the $source limb state"
+    source_error=$(jq -r --arg source "$source" '.sources[$source] | select(.state == "error") | .errorClass // "unknown"' "$source_status")
+    if [[ -n "$source_error" ]]; then
+      pixel_warn "Source Broker cannot refresh $source right now ($source_error); Portal answers from its last snapshot until it recovers"
+    fi
+  done
 fi
 active_release=$(realpath -e "$PIXEL_INSTALL_DIR/current") || pixel_die "Active release path is unavailable"
 [[ "$active_release" == "$PIXEL_INSTALL_DIR/releases/$PIXEL_RELEASE_VERSION" ]] || pixel_die "Active release path does not match the configured release"

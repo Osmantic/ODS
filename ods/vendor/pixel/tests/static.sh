@@ -63,6 +63,7 @@ node --check scripts/work-capability-retention.mjs
 node --check tests/work-capability-image-live.mjs
 node --test plugin/oauth-security.test.mjs
 node --test tests/web-browse.test.mjs
+node --test tests/source-broker-plugin.test.mjs
 node --test tests/ops-shell-propose-schema.test.mjs
 node --test scripts/upstream.test.mjs
 node --test scripts/upstream-diff.test.mjs
