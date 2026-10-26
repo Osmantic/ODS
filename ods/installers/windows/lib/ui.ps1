@@ -200,7 +200,7 @@ function Get-ODSHuggingFaceDownloadHelper {
 
     foreach ($root in $roots) {
         $candidate = Join-Path $root "scripts\download-hf-artifact.py"
-        if (Test-Path $candidate) {
+        if (Test-Path -LiteralPath $candidate) {
             return $candidate
         }
     }
@@ -392,7 +392,7 @@ function Invoke-ODSHuggingFaceDownloadFallback {
     Write-AI "Retrying with Hugging Face client..."
     $downloadArgs = @($python.PrefixArgs) + @($helper, $Url, $Destination)
     & $python.FilePath @downloadArgs
-    if ($LASTEXITCODE -eq 0 -and (Test-Path $Destination) -and ((Get-Item $Destination).Length -gt 0)) {
+    if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $Destination) -and ((Get-Item -LiteralPath $Destination).Length -gt 0)) {
         return $true
     }
     return $false
@@ -423,13 +423,13 @@ function Show-ProgressDownload {
     $curlArgs += @("-o", $partFile, $Url)
     & curl.exe @curlArgs
     $curlExit = $LASTEXITCODE
-    if ($curlExit -eq 0 -and (Test-Path $partFile)) {
-        Move-Item -Path $partFile -Destination $Destination -Force
+    if ($curlExit -eq 0 -and (Test-Path -LiteralPath $partFile)) {
+        Move-Item -LiteralPath $partFile -Destination $Destination -Force
         Write-AISuccess "$Label complete"
         return $true
     } else {
         if (Invoke-ODSHuggingFaceDownloadFallback -Url $Url -Destination $partFile) {
-            Move-Item -Path $partFile -Destination $Destination -Force
+            Move-Item -LiteralPath $partFile -Destination $Destination -Force
             Write-AISuccess "$Label complete"
             return $true
         }
@@ -477,7 +477,7 @@ function Invoke-DownloadWithRetry {
 
         if ($success) {
             # Verify file exists and has content
-            if ((Test-Path $Destination) -and ((Get-Item $Destination).Length -gt 0)) {
+            if ((Test-Path -LiteralPath $Destination) -and ((Get-Item -LiteralPath $Destination).Length -gt 0)) {
                 return $true
             } else {
                 Write-AIWarn "Download reported success but file is missing or empty"
