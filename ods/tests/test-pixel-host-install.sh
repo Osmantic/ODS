@@ -683,7 +683,8 @@ PY
         _ods_pixel_write_operations_policy _ods_pixel_write_extension_manager_unit \
         _ods_pixel_write_artifact_promoter_unit _ods_pixel_write_workspace_preview_unit \
         _ods_pixel_harden_operations_state_profiles \
-        _ods_pixel_verify_operations_policy_custody _ods_pixel_sandbox_candidate_has_node; do
+        _ods_pixel_verify_operations_policy_custody _ods_pixel_sandbox_candidate_has_node \
+        _ods_pixel_install_source_broker_kit _ods_pixel_install_source_broker_if_connected; do
         eval "$stub() { :; }"
     done
     eval "_repair_run_as_owner() $(declare -f ods_pixel_run_as_owner | tail -n +2)"

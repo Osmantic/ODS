@@ -396,6 +396,23 @@ def test_an_unusable_record_never_fails_an_install(contract, tmp_path, content, 
     assert "https://discord.gg/4ntNp9MAwC" in result.stderr
 
 
+@pytest.mark.parametrize("record,custody", [
+    (None, "absent"), (CONNECTED_GOOGLE, "present"), (CONNECTED_GOOGLE, "absent"),
+    ({**CONNECTED_GOOGLE, "connectors": {}}, "absent"), ({**CONNECTED_GOOGLE, "ownerTimeZone": None}, "present"),
+])
+def test_the_custodian_writes_the_connection_answers_a_render_would(contract, tmp_path, record, custody):
+    # Root's coordinator updates these keys in place when the owner connects or
+    # disconnects; a later render (an update, a model change) must agree.
+    sys.path.insert(0, str(LIB.parents[1] / "bin"))
+    from pixel_connections import state
+    answers, args = contract
+    path = write_record(tmp_path, record) if record else tmp_path / "missing" / "portal-connections.json"
+    assert render([*args, str(path), custody]).returncode == 0
+    value = json.loads(answers.read_text())
+    assert ({key: value.get(key) for key in state.ANSWER_KEYS}
+            == state.connection_answers(record, google_custody=custody == "present"))
+
+
 def test_connection_arguments_are_validated(contract, tmp_path):
     answers, args = contract
     path = write_record(tmp_path, CONNECTED_GOOGLE)

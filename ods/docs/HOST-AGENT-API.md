@@ -394,7 +394,8 @@ Source Broker needs Linux or WSL systemd.
         "email": {"state": "ok", "errorClass": null, "httpStatus": null,
                   "lastSuccessAt": "2026-10-25T20:29:30Z", "failingSince": null,
                   "recordCount": 812, "complete": true}
-      }
+      },
+      "pending": null
     }
   },
   "catalog": [{"id": "google", "name": "Google", "summary": "Calendar and Gmail", "...": "..."}]
@@ -406,13 +407,80 @@ Source Broker needs Linux or WSL systemd.
 `unknown-error`; `reason` names the cause (for example `sign-in-missing`,
 `invalid-grant`, `api-disabled` or `sync-stopped`). A top-level
 `"reason": "record-unusable"` means the saved choices could not be read, so
-connected apps are off until the owner reconnects.
+connected apps are off until the owner reconnects. `"reason": "journal-unusable"`
+means the record of a step in progress could not be read; the next action replaces it.
+
+`pending` describes a step still in progress, or `null`:
+
+```json
+{"action": "connect", "phase": "activating", "expiresAt": null, "error": "runtime-busy",
+ "since": "2026-10-25T20:30:00Z"}
+```
+
+`phase` is `consent` (waiting for Google; `expiresAt` is when the sign-in ends),
+`activating` (connected; Portal still has to load the Calendar and Gmail tools),
+`deactivating` (disconnected; Portal still has to drop them) or `failed` (the last
+sign-in did not connect; `error` says why, for example `access-denied` when the
+owner cancelled at Google). For `activating` and `deactivating`, `error` is why the
+last attempt to update Portal stopped, for example `runtime-busy` while a chat is
+running, and `finish` completes the step. A new sign-in replaces a `failed` step.
 
 **Error responses:**
 | Code | Condition |
 |------|-----------|
 | 401/403 | Missing or invalid API key |
 | 503 | The coordinator or the agent's relay is unavailable |
+
+### `POST /v1/pixel/connections/google/{action}`
+
+The owner's connected-apps actions. The agent's root access coordinator decides
+and records each one; the host agent only checks the request's shape, relays it
+the same way as the status above, and holds the one-shot loopback address that
+Google's redirect returns to. Each owner uses their own Google Cloud project: an
+OAuth client of type **Desktop app**, whose downloaded JSON file is the `client`
+below. The sign-in uses PKCE (S256); the code, the PKCE verifier and the refresh
+token reach only the Source Broker's own system account, never the host agent,
+the dashboard or a log.
+
+**Authentication:** Required
+
+| Action | Body | Reply |
+|--------|------|-------|
+| `begin` | `{"client": <Google's JSON file>, "capabilities": {...}, "cloudModels": false, "ownerTimeZone": "America/Chicago", "loginHint": null}` | `{"flowId", "authUrl", "expiresAt", "redirect": "loopback"}` |
+| `complete` | `{"flowId", "address": "http://127.0.0.1:<port>/?state=...&code=..."}` | `{"outcome": "connected" \| "failed", "errorClass", "account", "capabilities", "missing"}` |
+| `cancel` | `{"flowId"}` | `{"outcome": "cancelled"}` |
+| `disconnect` | `{}` | `{"outcome": "disconnected", "revoked": true}` |
+| `sync` | `{}` | `{"outcome": "started"}` |
+| `finish` | `{}` | `{"outcome": "applied" \| "unchanged"}` |
+
+`begin` opens `http://127.0.0.1:<port>/` on the machine that runs the host agent
+(the Windows host for a WSL install) and returns Google's consent address. When
+Google redirects the browser there, the host agent completes the sign-in and
+shows a short page; that page and its request line are never logged. A page from
+an older sign-in leaves the current one open. When the browser is on another
+device, the owner pastes the address of the page that did not load into
+`complete`. The sign-in ends after 15 minutes.
+
+`capabilities` uses the catalog's capability IDs; one not `available` in this ODS
+release is refused with `capability-unavailable`. Google may grant fewer scopes
+than requested: `missing` lists what stayed off. Without a verified account
+email from Google, the sign-in is revoked and deleted (`account-unverified`).
+
+After `complete` connects and after `disconnect`, the host agent asks the
+coordinator to update Portal's gateway in the background. Portal is never
+interrupted: while a chat runs, the step stays pending with `runtime-busy` and
+`finish` completes it later. `disconnect` stops syncing, revokes the grant at
+Google, deletes the sign-in and everything the broker derived from the account,
+then lets Portal drop the tools; running it again is safe.
+
+**Error responses:**
+| Code | Condition |
+|------|-----------|
+| 400 | The body is outside the action's exact shape, or the client file is not a Desktop-app client (`client-not-desktop`, `client-invalid`) |
+| 401/403 | Missing or invalid API key |
+| 404 | Unknown action |
+| 409 | The coordinator refused the step; `error` is its code, for example `runtime-busy`, `sign-in-flow-expired` or `not-available-on-this-system` |
+| 503 | The coordinator or the agent's relay is unavailable; status shows where the step stands |
 
 ## Security Boundaries
 

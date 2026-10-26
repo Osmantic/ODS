@@ -28,7 +28,8 @@ from runtime_identity import project_runtime_identity, unknown_runtime_identity
 from chat_context import project_context, valid_history_snapshot
 from image_admission import ImageWorkBudget
 from access_mode import (public_status as public_access_status, valid_change as valid_access_change,
-                         valid_model_control, public_model_control, public_connections)
+                         valid_model_control, public_model_control, public_connections,
+                         valid_connection_action, public_connection_action)
 
 
 def valid_live_task_event(event):
@@ -1205,14 +1206,50 @@ async def handle_access_mode(request: web.Request):
         return web.json_response({'error':'access-service-unavailable'}, status=503)
 
 
+_CONNECTION_TIMEOUTS = {'connection-begin': 70, 'connection-complete': 160, 'connection-activate': 308,
+                        'connection-cancel': 30, 'connection-disconnect': 160, 'connection-sync': 30}
+
+
+async def handle_connection_action(request: web.Request):
+    """One custodian action (sign-in, activation, disconnect): owner-authenticated, exact shapes only."""
+    if request.content_type != 'application/json':
+        return web.json_response({'error': 'invalid-content-type'}, status=415)
+    try:
+        data = strict_json(await _read_bounded(request.content, 2048))
+        if not valid_connection_action(data):
+            raise ValueError()
+    except (ValueError, OSError, RecursionError):
+        return web.json_response({'error': 'invalid-request'}, status=400)
+    try:
+        connector, origin = _access_transport()
+        timeout = ClientTimeout(total=_CONNECTION_TIMEOUTS[data['operation']], sock_connect=3)
+        async with ClientSession(connector=connector, timeout=timeout, trust_env=False) as session:
+            async with session.post(origin + '/v1/connections', json=data, allow_redirects=False,
+                    headers={'Authorization': 'Bearer ' + preview_proxy_token}) as response:
+                raw = await _read_bounded(response.content, 65536)
+                if response.status != 200:
+                    status = response.status if response.status in (400, 403, 409, 503) else 503
+                    return web.json_response({'error': _controller_reason(raw) or 'connection-change-unconfirmed'},
+                                             status=status)
+                value = public_connection_action(data['operation'], strict_json(raw))
+        return web.json_response(value, headers={'Cache-Control': 'no-store'})
+    except Exception:
+        # A lost reply does not undo the custodian's journaled step; status shows it.
+        return web.json_response({'error': 'connections-unavailable'}, status=503)
+
+
 async def handle_connections(request: web.Request):
-    """Read-only connected-apps status: owner-authenticated, no request body."""
+    """Connected-apps status (GET, no body) or one custodian action (POST)."""
     fail = _check_preview_auth(request)
     if fail is not None:
         return fail
     if _constant_time_compare(config_token, preview_proxy_token):
         return web.json_response({'error': 'owner-auth-unavailable'}, status=503)
-    if request.query_string or request.can_read_body:
+    if request.query_string:
+        return web.json_response({'error': 'invalid-request'}, status=400)
+    if request.method == 'POST':
+        return await handle_connection_action(request)
+    if request.can_read_body:
         return web.json_response({'error': 'invalid-request'}, status=400)
     try:
         connector, origin = _access_transport()
@@ -1991,6 +2028,7 @@ def create_app() -> web.Application:
     app.router.add_post('/v1/access-mode', handle_access_mode)
     app.router.add_post('/v1/model-control', handle_model_control)
     app.router.add_get('/v1/connections', handle_connections, allow_head=False)
+    app.router.add_post('/v1/connections', handle_connections)
     app.router.add_get("/v1/transition", handle_transition)
     app.router.add_post("/v1/transition/{operation:acquire|drain|release|recover}", handle_transition)
     app.router.add_post("/v1/chat/completions", handle_chat_completions)

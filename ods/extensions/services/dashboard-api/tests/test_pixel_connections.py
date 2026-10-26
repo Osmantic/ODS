@@ -45,7 +45,7 @@ def host_reply(tmp_path, *, connected=True):
     tmp_path.chmod(0o755)
     owners = (0, os.getuid()) if hasattr(os, "getuid") else (0,)
     value = status.report(surface="linux-systemd", record_path=record, token_path=token, status_path=broker,
-                          now=NOW, owners=owners)
+                          lifecycle_path=tmp_path / "connection.json", now=NOW, owners=owners)
     return dict(status.validate_public(value), catalog=catalog.public_catalog())
 
 
@@ -92,6 +92,19 @@ def test_nothing_connected_is_reported(client, mock_request, tmp_path):
     assert response.json()["connectors"]["google"]["state"] == "not-connected"
 
 
+def test_why_the_last_sign_in_did_not_connect_reaches_settings(client, mock_request, tmp_path):
+    reply = host_reply(tmp_path, connected=False)
+    reply["connectors"]["google"]["pending"] = {"action": "connect", "phase": "failed", "expiresAt": None,
+                                                "error": "access-denied", "since": "2026-10-25T20:30:00Z"}
+    mock_request.return_value = copy.deepcopy(reply)
+    response = client.get("/api/pixel/connections", headers=AUTH)
+    assert response.status_code == 200, response.text
+    assert response.json()["connectors"]["google"]["pending"]["error"] == "access-denied"
+    reply["connectors"]["google"]["pending"]["error"] = None
+    mock_request.return_value = reply
+    assert client.get("/api/pixel/connections", headers=AUTH).status_code == 502
+
+
 @pytest.mark.parametrize("failure,expected", [
     (AgentUnavailable("private-sentinel"), 503),
     (AgentHTTPError(503, "private-sentinel", '{"error":"private-sentinel"}'), 503),
@@ -122,4 +135,119 @@ def test_any_other_shape_is_refused_without_echoing_it(client, mock_request, tmp
     mock_request.return_value = reply
     response = client.get("/api/pixel/connections", headers=AUTH)
     assert response.status_code == 502
+    assert "private-sentinel" not in response.text
+
+
+# ---------------------------------------------------------------- owner actions
+
+FLOW = "a" * 32
+READ_BOTH = {"calendar.read": True, "calendar.write": False, "calendar.direct": False,
+             "gmail.read": True, "gmail.drafts": False}
+GOOGLE_CLIENT = {"installed": {
+    "client_id": "123456789012-abcdefghijklmnopqrstuvwxyz012345.apps.googleusercontent.com",
+    "client_secret": "test-secret-test", "project_id": "ods-owner-calendar",
+    "auth_uri": "https://accounts.google.com/o/oauth2/auth", "token_uri": "https://oauth2.googleapis.com/token",
+    "redirect_uris": ["http://localhost"]}}
+CONNECT = {"client": GOOGLE_CLIENT, "capabilities": READ_BOTH, "cloudModels": False,
+           "ownerTimeZone": "America/Chicago", "loginHint": None}
+CONNECTED = {"outcome": "connected", "errorClass": None, "account": "owner@example.com",
+             "capabilities": READ_BOTH, "missing": []}
+ACTIONS = [
+    ("connect", CONNECT, "begin", {"flowId": FLOW, "expiresAt": "2026-10-25T20:45:00Z", "redirect": "loopback",
+                                   "authUrl": "https://accounts.google.com/o/oauth2/auth?client_id=x&state=y"}, 90),
+    ("complete", {"flowId": FLOW, "address": "http://127.0.0.1:53682/?state=s&code=c"}, "complete", CONNECTED, 180),
+    ("cancel", {"flowId": FLOW}, "cancel", {"outcome": "cancelled"}, 45),
+    ("disconnect", {}, "disconnect", {"outcome": "disconnected", "revoked": True}, 180),
+    ("sync", {}, "sync", {"outcome": "started"}, 45),
+    ("finish", {}, "finish", {"outcome": "applied"}, 330),
+]
+
+
+@pytest.fixture
+def enabled(monkeypatch):
+    monkeypatch.setattr(api, "read_live_env_value", lambda key: "true" if key == "PORTAL_CONNECTED_APPS_ENABLED" else "")
+
+
+def test_main_registers_the_action_routes(test_client):
+    assert test_client.post("/api/pixel/connections/google/sync", json={}).status_code == 401
+
+
+@pytest.mark.parametrize("action,body,host,reply,timeout", ACTIONS)
+def test_actions_stay_hidden_until_connected_apps_are_turned_on(client, mock_request, monkeypatch,
+                                                                action, body, host, reply, timeout):
+    monkeypatch.setattr(api, "read_live_env_value", lambda key: "")
+    response = client.post(f"/api/pixel/connections/google/{action}", json=body, headers=AUTH)
+    assert response.status_code == 404
+    mock_request.assert_not_called()
+
+
+@pytest.mark.parametrize("action,body,host,reply,timeout", ACTIONS)
+def test_each_action_reaches_its_host_route_with_exactly_the_owners_choices(client, mock_request, enabled,
+                                                                            action, body, host, reply, timeout):
+    assert client.post(f"/api/pixel/connections/google/{action}", json=body).status_code == 401
+    mock_request.return_value = copy.deepcopy(reply)
+    response = client.post(f"/api/pixel/connections/google/{action}", json=body, headers=AUTH)
+    assert response.status_code == 200, response.text
+    assert response.json() == reply
+    assert response.headers["cache-control"] == "no-store"
+    mock_request.assert_awaited_once_with("POST", f"/v1/pixel/connections/google/{host}", payload=body,
+                                          timeout=timeout)
+
+
+@pytest.mark.parametrize("failure,status_code,code,needs_help", [
+    (AgentHTTPError(409, "runtime-busy"), 409, "runtime-busy", False),
+    (AgentHTTPError(409, "sign-in-flow-expired"), 409, "sign-in-flow-expired", False),
+    (AgentHTTPError(400, "client-not-desktop"), 400, "client-not-desktop", False),
+    (AgentHTTPError(409, "gateway-change-rolled-back"), 409, "gateway-change-rolled-back", True),
+    (AgentHTTPError(503, "connections-unavailable"), 503, "connections-unavailable", True),
+    (AgentHTTPError(409, "a-code-this-release-does-not-know"), 409, "a-code-this-release-does-not-know", True),
+    (AgentHTTPError(500, "private sentinel text"), 502, "unknown", True),
+    (AgentUnavailable("private-sentinel"), 503, "connections-unavailable", True),
+    (AgentProtocolError("private-sentinel"), 502, "connection-change-unconfirmed", True),
+])
+def test_refusals_say_what_happened_and_what_to_do(client, mock_request, enabled, failure, status_code, code,
+                                                   needs_help):
+    mock_request.side_effect = failure
+    response = client.post("/api/pixel/connections/google/finish", json={}, headers=AUTH)
+    assert response.status_code == status_code
+    detail = response.json()["detail"]
+    assert detail["code"] == code
+    assert detail["message"] and "private" not in response.text
+    assert detail["help"] == (api.ODS_HELP_DISCORD_URL if needs_help else None)
+    assert detail["message"] == api.MESSAGES.get(code, api.FALLBACK)[0]
+
+
+@pytest.mark.parametrize("action,body", [
+    ("connect", dict(CONNECT, extra=True)),
+    ("connect", dict(CONNECT, capabilities={"calendar.read": True})),
+    ("connect", dict(CONNECT, ownerTimeZone="not a zone")),
+    ("connect", dict(CONNECT, loginHint="not-an-address")),
+    ("connect", dict(CONNECT, client={"installed": {"client_secret": "x" * 5000}})),
+    ("complete", {"flowId": "not-a-flow", "address": "http://127.0.0.1:53682/?code=c"}),
+    ("complete", {"flowId": FLOW}),
+    ("cancel", {"flowId": FLOW, "extra": True}),
+    ("disconnect", {"connector": "google"}),
+    ("finish", {"force": True}),
+])
+def test_requests_outside_the_contract_never_reach_the_host(client, mock_request, enabled, action, body):
+    response = client.post(f"/api/pixel/connections/google/{action}", json=body, headers=AUTH)
+    assert response.status_code == 422
+    mock_request.assert_not_called()
+
+
+@pytest.mark.parametrize("action,body,reply", [
+    ("connect", CONNECT, {"flowId": FLOW, "expiresAt": "2026-10-25T20:45:00Z", "redirect": "loopback",
+                          "authUrl": "https://example.com/o/oauth2/auth?private-sentinel"}),
+    ("complete", {"flowId": FLOW, "address": "http://127.0.0.1:53682/?state=s&code=c"},
+     dict(CONNECTED, account=None)),
+    ("complete", {"flowId": FLOW, "address": "http://127.0.0.1:53682/?state=s&code=c"},
+     dict(CONNECTED, token="private-sentinel")),
+    ("disconnect", {}, {"outcome": "disconnected"}),
+    ("sync", {}, {"outcome": "started", "revoked": False}),
+])
+def test_a_reply_of_any_other_shape_is_refused_without_echoing_it(client, mock_request, enabled, action, body, reply):
+    mock_request.return_value = reply
+    response = client.post(f"/api/pixel/connections/google/{action}", json=body, headers=AUTH)
+    assert response.status_code == 502
+    assert response.json()["detail"]["code"] == "connection-change-unconfirmed"
     assert "private-sentinel" not in response.text

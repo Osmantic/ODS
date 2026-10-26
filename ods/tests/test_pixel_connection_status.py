@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bin"))
-from pixel_connections import catalog, status  # noqa: E402
+from pixel_connections import catalog, lifecycle, status  # noqa: E402
 
 OWNERS = (0, os.getuid()) if hasattr(os, "getuid") else (0,)
 NOW = datetime(2026, 10, 25, 20, 30, tzinfo=timezone.utc)
@@ -55,6 +55,7 @@ class Fixture:
         self.record = self.root / "portal-connections.json"
         self.token = self.root / "google-token.json"
         self.broker = self.root / "status.json"
+        self.lifecycle = self.root / "connection.json"
 
     def write(self, *, record_value=None, token=False, broker_value=None, raw_broker=None):
         if record_value is not None:
@@ -70,7 +71,7 @@ class Fixture:
 
     def report(self, surface="linux-systemd", now=NOW):
         value = status.report(surface=surface, record_path=self.record, token_path=self.token,
-                              status_path=self.broker, now=now, owners=OWNERS)
+                              status_path=self.broker, lifecycle_path=self.lifecycle, now=now, owners=OWNERS)
         status.validate_public(value)
         return value
 
@@ -190,6 +191,28 @@ class ConnectionStatusTests(unittest.TestCase):
             change(broken)
             with self.assertRaises(status.StatusError):
                 status.validate_public(broken)
+
+    @unittest.skipIf(os.name == "nt", "POSIX ownership and links")
+    def test_a_step_in_progress_is_shown_and_an_unusable_journal_never_hides_the_connection(self):
+        fixture = self.fixture().write(record_value=record(), token=True, broker_value=broker())
+        journal = {"kind": "connection", "connector": "google", "phase": "activating", "flowId": None,
+                   "stateHash": None, "redirectUri": None, "expiresAt": None, "request": None,
+                   "error": "runtime-busy", "updatedAt": "2026-10-25T20:29:00Z"}
+        lifecycle.write(fixture.lifecycle, journal)
+        self.assertEqual(self.google(fixture.report())["pending"], {
+            "action": "connect", "phase": "activating", "expiresAt": None, "error": "runtime-busy",
+            "since": "2026-10-25T20:29:00Z"})
+        for name, plant in (("not json", lambda path: path.write_text("{not json")),
+                            ("a planted link", lambda path: path.symlink_to(fixture.record)),
+                            ("readable by others", lambda path: (path.write_text(json.dumps(journal)),
+                                                                 path.chmod(0o644)))):
+            with self.subTest(name):
+                fixture.lifecycle.unlink()
+                plant(fixture.lifecycle)
+                value = fixture.report()
+                self.assertEqual(value["reason"], "journal-unusable")
+                self.assertEqual(value["connectors"]["google"]["state"], "connected")
+                self.assertIsNone(value["connectors"]["google"]["pending"])
 
 
 class CatalogTests(unittest.TestCase):

@@ -452,6 +452,31 @@ asks the owner to reconnect. A record that fails validation also leaves them off
 it never fails an install. Without the file, the onboarding contract is the same
 as before connected apps existed.
 
+Connecting happens in Settings, Connected apps, while `PORTAL_CONNECTED_APPS_ENABLED`
+is `true` (it is `false` by default). The owner brings their own Google Cloud
+project: a Desktop-app OAuth client whose JSON file they upload. The agent's root
+access coordinator does the rest, without running owner code as root. Each install
+copies the exact Pixel broker, its systemd units and its environment template
+into a root-owned kit beside the coordinator
+(`/usr/local/libexec/ods-pixel-access/pixel_connections/source-broker-kit`);
+connecting installs only those bytes, creates the `pixel-source-broker` system
+account, and hands the sign-in to it through files only that account can read.
+The broker exchanges the code with Google, so the refresh token never passes
+through the coordinator, the host agent or the dashboard, and it records only
+the account email Google verified.
+
+Pixel never re-applies its active release, so the coordinator then changes
+Portal's gateway on the live files: it plans the same Source Broker plugin,
+tools and limb flags Pixel's renderer and the ODS overlay would write (a test
+renders both and compares them), and keeps the onboarding answers in step so a
+later model change or update renders the same connection. The change runs under
+the same admission gates, rollback and runtime access proof as every other
+Portal change, and never interrupts a running chat: a busy Portal leaves the
+step pending until the owner presses Finish or the next update converges it.
+Disconnecting stops the broker, revokes the grant at Google, and deletes the
+sign-in and every projection, proposal and result derived from the account.
+Uninstalling ODS does the same and removes the broker's account, units and files.
+
 The installer writes an owner-private, mode-`0600` policy at
 `$INSTALL_DIR/data/pixel/operations-policy.json`. Pixel copies the reviewed
 policy into root-controlled broker custody. The gateway can write typed request
