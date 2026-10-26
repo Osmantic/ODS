@@ -4386,7 +4386,7 @@ def _install_extension(service_id: str, api_key: str, operation_id: str | None =
 
 
 def _extension_backup_dir(service_id: str) -> Path:
-    return USER_EXTENSIONS_DIR / ".backups" / service_id
+    return _contained_path(USER_EXTENSIONS_DIR / ".backups", service_id)
 
 
 def _set_extension_compose_state(extension_dir: Path, *, enabled: bool) -> bool:
