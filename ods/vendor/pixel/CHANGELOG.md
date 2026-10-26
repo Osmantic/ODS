@@ -11,8 +11,12 @@
     without calling that API.
   - `--exchange FLOW` turns a root-written sign-in handoff into a token held
     only by the broker identity; `--revoke` revokes the grant and deletes it.
+    The token and result name only the account Google's ID token verifies,
+    never the requested account hint.
     `./pixel source-broker --prepare` installs the identity and units without
     starting anything.
+  - Every release carries the plugin's `typebox` dependency, so a source turned
+    on later loads the plugin from the active release.
 - Optional answers-file keys `calendarWriteEnabled`, `gmailWindowDays` and
   `userTimezone` default to the previous behaviour. The gateway environment
   carries the real web and Calendar-write flags.

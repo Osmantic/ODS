@@ -56,7 +56,12 @@ pixel_build_release_stage() {
   cp "$root/plugin-frontier/package.json" "$root/plugin-frontier/package-lock.json" "$root/plugin-frontier/openclaw.plugin.json" \
      "$root/plugin-frontier/index.js" "$root/plugin-frontier/chat-audit.js" "$root/plugin-frontier/publish-json.js" \
      "$root/plugin-frontier/secure-read.js" "$root/plugin-frontier/local-finalize.js" "$target/plugin-frontier/"
-  [[ ${PIXEL_SOURCE_BROKER_ENABLED:-1} == 0 ]] || (cd "$target/plugin" && npm ci --omit=dev --ignore-scripts)
+  # The Source Broker plugin's one dependency ships in every release, so a source turned on
+  # later loads the plugin from this release instead of needing a new one. Offline test
+  # builds of a disabled broker opt out with PIXEL_SKIP_NPM_CI=1.
+  if [[ ${PIXEL_SOURCE_BROKER_ENABLED:-1} == 1 || ${PIXEL_SKIP_NPM_CI:-0} != 1 ]]; then
+    (cd "$target/plugin" && npm ci --omit=dev --ignore-scripts)
+  fi
   [[ ${PIXEL_OPS_BROKER_ENABLED:-0} == 0 ]] || (cd "$target/plugin-ops" && npm ci --omit=dev --ignore-scripts)
   [[ ${PIXEL_FRONTIER_BROKER_ENABLED:-0} == 0 ]] || (cd "$target/plugin-frontier" && npm ci --omit=dev --ignore-scripts)
   install -m 600 "$root/deploy/web-courier/courier.py" "$root/deploy/web-courier/requirements.lock" "$target/web-courier/"

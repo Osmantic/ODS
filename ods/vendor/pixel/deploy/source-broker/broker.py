@@ -2713,6 +2713,30 @@ def validated_oauth_flow(flow: dict[str, Any], completion: dict[str, Any], flow_
     }
 
 
+def id_token_email(token: Any, client_id: str) -> str:
+    """The account email Google verified, read from an ID token the token endpoint returned.
+
+    The token came straight from Google's fixed token endpoint over TLS, so its claims
+    are read without a signature check (OpenID Connect Core 3.1.3.7). An absent,
+    malformed or unverified token gives no account; an owner-typed hint never does.
+    """
+    if not isinstance(token, str) or len(token) > 16384 or token.count(".") != 2:
+        return ""
+    payload = token.split(".")[1]
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    except (ValueError, UnicodeError):
+        return ""
+    if (not isinstance(claims, dict) or claims.get("aud") != client_id
+            or claims.get("iss") not in ("https://accounts.google.com", "accounts.google.com")
+            or claims.get("email_verified") is not True):
+        return ""
+    email = claims.get("email")
+    if not isinstance(email, str) or len(email) > 320 or not EMAIL_PATTERN.fullmatch(email):
+        return ""
+    return email
+
+
 def oauth_result(path: Path, kind: str, value: dict[str, Any]) -> None:
     atomic_json(path, {"schemaVersion": SCHEMA_VERSION, "kind": kind, "finishedAt": iso(utc_now()), **value}, mode=0o600)
 
@@ -2747,6 +2771,7 @@ def exchange(flow_id: str) -> int:
             raise SourceUnavailable("no-refresh-token", "Google returned no refresh token")
         reported = response.get("scope")
         granted = sorted({item for item in reported.split() if GOOGLE_SCOPE.fullmatch(item)}) if isinstance(reported, str) else []
+        account = id_token_email(response.get("id_token"), client["client_id"])
         atomic_json(token_path, {
             "client_id": client["client_id"],
             "client_secret": client["client_secret"],
@@ -2755,15 +2780,15 @@ def exchange(flow_id: str) -> int:
             "scope": " ".join(granted),
             "grantedScope": " ".join(granted),
             "requestedScope": " ".join(handoff["requestedScopes"]),
-            "email": handoff["account"],
+            "email": account,
             "obtainedAt": iso(utc_now()),
         }, mode=0o600)
     except Exception as error:  # Every failure leaves a content-free result for the custodian.
         failure = failure_record(error)
-        oauth_result(result_path, "pixel-source-oauth-result", {"flowId": flow_id, "outcome": "failed", **failure, "grantedScopes": []})
+        oauth_result(result_path, "pixel-source-oauth-result", {"flowId": flow_id, "outcome": "failed", **failure, "grantedScopes": [], "account": None})
         print(json.dumps({"flowId": flow_id, "outcome": "failed", "errorClass": failure["errorClass"]}))
         return 1
-    oauth_result(result_path, "pixel-source-oauth-result", {"flowId": flow_id, "outcome": "connected", "errorClass": None, "httpStatus": None, "errorType": None, "grantedScopes": granted})
+    oauth_result(result_path, "pixel-source-oauth-result", {"flowId": flow_id, "outcome": "connected", "errorClass": None, "httpStatus": None, "errorType": None, "grantedScopes": granted, "account": account or None})
     print(json.dumps({"flowId": flow_id, "outcome": "connected", "grantedScopes": granted}))
     return 0
 

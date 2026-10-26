@@ -2067,6 +2067,44 @@ class SourceBrokerReadinessTests(unittest.TestCase):
                 self.assertNotIn(secret, json.dumps(result))
                 self.assertNotIn(secret, output)
 
+    @staticmethod
+    def id_token(**claims):
+        values = {"iss": "https://accounts.google.com", "aud": "fixture-client.apps.googleusercontent.com",
+                  "email": "verified@example.com", "email_verified": True, **claims}
+        def encode(value):
+            return base64.urlsafe_b64encode(json.dumps(value).encode()).rstrip(b"=").decode()
+        return ".".join((encode({"alg": "RS256"}), encode(values), "fixture-signature"))
+
+    def test_exchange_records_only_the_account_google_verified(self):
+        # The flow's account hint is owner-typed; only Google's ID token names the account.
+        cases = [
+            (self.id_token(), "verified@example.com"),
+            (self.id_token(iss="accounts.google.com"), "verified@example.com"),
+            (self.id_token(aud="another-client.apps.googleusercontent.com"), None),
+            (self.id_token(iss="https://attacker.example"), None),
+            (self.id_token(email_verified=False), None),
+            (self.id_token(email="not an address"), None),
+            ("not-a-token", None),
+            (None, None),
+        ]
+        for id_token, expected in cases:
+            with self.subTest(expected=expected, id_token=id_token), tempfile.TemporaryDirectory() as directory, \
+                    self.broker_env(Path(directory)):
+                root = Path(directory)
+                flow_id, _flow = self.handoff(root)
+                response = {"access_token": "fixture-access-token", "refresh_token": "example-refresh-from-google",
+                            "scope": f"openid https://www.googleapis.com/auth/userinfo.email {GMAIL_READ}"}
+                if id_token is not None:
+                    response["id_token"] = id_token
+                status, _fake, output = self.run_exchange(flow_id, lambda *args, response=response: (200, response))
+                self.assertEqual(status, 0)
+                token = json.loads((root / "private" / "google-token.json").read_text(encoding="utf-8"))
+                self.assertEqual(token["email"], expected or "")
+                result = self.exchange_result(root, flow_id)
+                self.assertEqual(result["account"], expected)
+                self.assertNotIn("owner@example.com", json.dumps([token, result]))
+                self.assertNotIn("verified@example.com", output)
+
     def test_exchange_refuses_a_completion_from_another_sign_in(self):
         with tempfile.TemporaryDirectory() as directory, self.broker_env(Path(directory)):
             root = Path(directory)
