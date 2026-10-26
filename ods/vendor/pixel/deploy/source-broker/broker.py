@@ -19,6 +19,8 @@ import urllib.parse
 import urllib.request
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
+from email.policy import SMTP
 from email.utils import parseaddr
 from html.parser import HTMLParser
 from pathlib import Path
@@ -1600,7 +1602,10 @@ def calendar_create_event_id(proposal_id: str, proposal_hash: str) -> str:
     return "p1e1" + hashlib.sha256(f"{proposal_id}:{proposal_hash}".encode("ascii")).hexdigest()
 
 
-def claim_proposal(path: Path, proposal_id: str, proposal_hash: str, *, expected_event_id: str | None = None) -> None:
+def claim_proposal(
+    path: Path, proposal_id: str, proposal_hash: str, *, expected_event_id: str | None = None,
+    recovery: str | None = None,
+) -> None:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(path, flags, 0o600)
@@ -1617,6 +1622,8 @@ def claim_proposal(path: Path, proposal_id: str, proposal_hash: str, *, expected
     if expected_event_id is not None:
         record["expectedEventId"] = expected_event_id
         record["recovery"] = "Do not retry automatically; reconcile the exact provider event ID from the actuator journal."
+    if recovery is not None:
+        record["recovery"] = recovery
     payload = (json.dumps(record, sort_keys=True) + "\n").encode("utf-8")
     with os.fdopen(descriptor, "wb") as stream:
         stream.write(payload)
@@ -2163,6 +2170,8 @@ def projection_placeholders(value: Any, path: str = "values") -> list[str]:
 
 
 def approve(proposal_id: str, *, required_status: str = "pending-operator-approval") -> int:
+    if DRAFT_ID.fullmatch(proposal_id) and required_status == "pending-operator-approval":
+        return approve_draft(proposal_id)
     if not env_enabled("PIXEL_LIMB_CALENDAR_ENABLED", True):
         raise RuntimeError("Calendar limb is disabled")
     if not env_enabled("PIXEL_LIMB_CALENDAR_WRITE_ENABLED", True):
@@ -2549,6 +2558,8 @@ def reconcile_update(proposal_id: str) -> int:
 
 def reconcile(proposal_id: str) -> int:
     """Dispatch recovery by the exact protected proposal action."""
+    if DRAFT_ID.fullmatch(proposal_id):
+        return reconcile_draft(proposal_id)
     if not re.fullmatch(r"calendar-[0-9]{13}-[a-f0-9]{8}", proposal_id):
         raise RuntimeError("unsafe proposal ID")
     result_dir = Path(os.environ.get("PIXEL_ACTION_RESULT_DIR", "/var/lib/pixel-source-broker/results"))
@@ -2559,6 +2570,317 @@ def reconcile(proposal_id: str) -> int:
     if action == "update":
         return reconcile_update(proposal_id)
     raise RuntimeError("only an indeterminate Calendar create or update can be reconciled")
+
+
+# ---------------------------------------------------------------------------
+# Gmail drafts. The owner approves one exact draft; Gmail creates it in the
+# owner's Drafts folder. Pixel has no send capability: the owner reviews and
+# sends the draft from Gmail.
+
+DRAFT_ID = re.compile(r"^gmail-draft-[0-9]{13}-[a-f0-9]{8}$")
+DRAFT_BOUNDARY = "This file is a proposal only. No Gmail draft has been created."
+DRAFT_FIELDS = {"to", "cc", "subject", "body", "replyToMessageId"}
+DRAFT_MAX_RECIPIENTS = 50
+DRAFT_MAX_BODY = 100_000
+GMAIL_OBJECT_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+MESSAGE_ID_HEADER = re.compile(r"<[^<>\s]{1,900}>")
+DRAFT_RECOVERY = "Do not create the draft again; reconcile by its exact Message-ID from the actuator journal."
+
+
+def validated_recipients(fields: dict[str, Any], key: str, *, required: bool) -> list[str]:
+    value = fields.get(key)
+    if value is None and not required:
+        return []
+    if not isinstance(value, list) or (required and not value) or len(value) > DRAFT_MAX_RECIPIENTS:
+        raise RuntimeError(f"draft {key} must list 1 to {DRAFT_MAX_RECIPIENTS} addresses")
+    result: list[str] = []
+    observed: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict) or set(item) != {"email"}:
+            raise RuntimeError(f"draft {key} entries may contain only email")
+        email = proposal_string(item, "email", 320, required=True)
+        if not EMAIL_PATTERN.fullmatch(email) or email.casefold() in observed:
+            raise RuntimeError(f"draft {key} contains an invalid or repeated address")
+        observed.add(email.casefold())
+        result.append(email)
+    return result
+
+
+def validate_draft_proposal(value: dict[str, Any], proposal_id: str) -> dict[str, Any]:
+    """The exact draft an owner may approve; RuntimeError for anything else."""
+    required_top = {"schemaVersion", "proposalId", "source", "action", "status", "createdAt", "values", "boundary"}
+    if set(value) != required_top:
+        raise RuntimeError("draft proposal contains missing or unknown top-level fields")
+    if value.get("schemaVersion") != 1 or value.get("proposalId") != proposal_id or not DRAFT_ID.fullmatch(proposal_id):
+        raise RuntimeError("draft proposal schema or identity is invalid")
+    if value.get("source") != "pixel-owner-conversation" or value.get("status") != "pending-operator-approval":
+        raise RuntimeError("draft proposal source or status is invalid")
+    if value.get("boundary") != DRAFT_BOUNDARY or not isinstance(value.get("createdAt"), str):
+        raise RuntimeError("draft proposal boundary or creation time is invalid")
+    fields = value.get("values")
+    if value.get("action") != "create-draft" or not isinstance(fields, dict) or not set(fields) <= DRAFT_FIELDS:
+        raise RuntimeError("draft proposal action or values are invalid")
+    to = validated_recipients(fields, "to", required=True)
+    cc = validated_recipients(fields, "cc", required=False)
+    if len(to) + len(cc) > DRAFT_MAX_RECIPIENTS or {item.casefold() for item in to} & {item.casefold() for item in cc}:
+        raise RuntimeError("draft recipients exceed the limit or repeat an address")
+    subject = proposal_string(fields, "subject", 998) or ""
+    if "\r" in subject or "\n" in subject:
+        raise RuntimeError("draft subject must be one line")
+    body = proposal_string(fields, "body", DRAFT_MAX_BODY, required=True)
+    reply = fields.get("replyToMessageId")
+    if reply is not None and (not isinstance(reply, str) or not GMAIL_OBJECT_ID.fullmatch(reply)):
+        raise RuntimeError("draft replyToMessageId is invalid")
+    cleaned = {"to": to, "cc": cc, "subject": subject, "body": body, "replyToMessageId": reply}
+    placeholders = projection_placeholders(cleaned)
+    if placeholders:
+        raise RuntimeError(f"draft contains projection placeholders: {', '.join(placeholders)}")
+    found = find_vendor_secret(subject, body)
+    if found:
+        raise RuntimeError(f"draft content contains what looks like a {found}; a credential must not be written to email")
+    return cleaned
+
+
+def draft_message_id(proposal_id: str, proposal_hash: str) -> str:
+    """A Message-ID fixed before any Gmail call, so an unconfirmed draft can be found without creating another."""
+    if not DRAFT_ID.fullmatch(proposal_id) or not re.fullmatch(r"[a-f0-9]{64}", proposal_hash):
+        raise RuntimeError("draft identity inputs are invalid")
+    return "<pixel-draft-" + hashlib.sha256(f"{proposal_id}:{proposal_hash}".encode("ascii")).hexdigest()[:32] + "@pixel.invalid>"
+
+
+def draft_reply_headers(token: str, message_id: str) -> dict[str, str]:
+    """Threading headers for a reply, read from the original message before anything is written."""
+    original = google_get(GMAIL_API, f"/messages/{urllib.parse.quote(message_id, safe='')}", token, {
+        "format": "metadata", "metadataHeaders": ["Message-ID", "References"],
+    })
+    headers: dict[str, str] = {}
+    for item in (original.get("payload") or {}).get("headers") or []:
+        if isinstance(item, dict) and isinstance(item.get("name"), str) and isinstance(item.get("value"), str):
+            headers.setdefault(item["name"].casefold(), item["value"])
+    own = headers.get("message-id", "").strip()
+    thread = original.get("threadId")
+    if not MESSAGE_ID_HEADER.fullmatch(own) or not isinstance(thread, str) or not GMAIL_OBJECT_ID.fullmatch(thread):
+        raise RuntimeError("the message to reply to has no usable Message-ID or thread")
+    chain = MESSAGE_ID_HEADER.findall(headers.get("references", ""))[-20:]
+    return {"inReplyTo": own, "references": " ".join(dict.fromkeys([*chain, own])), "threadId": thread}
+
+
+def draft_mime(fields: dict[str, Any], message_id: str, reply: dict[str, str] | None) -> bytes:
+    message = EmailMessage(policy=SMTP)
+    message["To"] = ", ".join(fields["to"])
+    if fields["cc"]:
+        message["Cc"] = ", ".join(fields["cc"])
+    message["Subject"] = fields["subject"]
+    message["Message-ID"] = message_id
+    if reply:
+        message["In-Reply-To"] = reply["inReplyTo"]
+        message["References"] = reply["references"]
+    message.set_content(fields["body"])
+    return message.as_bytes()
+
+
+def draft_completed_result(
+    proposal_id: str, proposal_hash: str, message_id: str, gmail_message_id: str, *,
+    reconciliation: str, provider_observation_sha256: str, action_journal_head_sha256: str,
+) -> dict[str, Any]:
+    return {
+        "schemaVersion": 1,
+        "proposalId": proposal_id,
+        "status": "applied",
+        "action": "create-draft",
+        "affectedMessageId": bounded_text(gmail_message_id, 128),
+        "messageIdHeader": message_id,
+        "emailSent": False,
+        "proposalSha256": proposal_hash,
+        "providerObservationSha256": provider_observation_sha256,
+        "actionJournalHeadSha256": action_journal_head_sha256,
+        "approvalBinding": "sha256-protected-proposal-snapshot",
+        "reconciliation": reconciliation,
+        "appliedAt": iso(utc_now()),
+    }
+
+
+def draft_rejected_result(
+    proposal_id: str, proposal_hash: str, message_id: str, *,
+    provider_observation_sha256: str, action_journal_head_sha256: str,
+) -> dict[str, Any]:
+    return {
+        "schemaVersion": 1,
+        "proposalId": proposal_id,
+        "status": "rejected",
+        "action": "create-draft",
+        "messageIdHeader": message_id,
+        "emailSent": False,
+        "retryAllowed": False,
+        "nextAction": "none",
+        "reasonCode": "provider-definite-rejection",
+        "proposalSha256": proposal_hash,
+        "providerObservationSha256": provider_observation_sha256,
+        "actionJournalHeadSha256": action_journal_head_sha256,
+        "approvalBinding": "sha256-protected-proposal-snapshot",
+        "reconciliation": "definitive-provider-rejection",
+        "handledAt": iso(utc_now()),
+        "boundary": "Gmail definitively rejected the exact approved draft; nothing was created and it must not be retried.",
+    }
+
+
+def validate_draft_terminal_result(result_dir: Path, proposal_id: str, proposal_hash: str, message_id: str) -> dict[str, Any] | None:
+    """An existing result, only when it is bound to this exact draft and its terminal journal."""
+    result_path = result_dir / f"{proposal_id}.json"
+    if not os.path.lexists(result_path):
+        return None
+    settled, _settled_hash = protected_proposal(result_path)
+    if (
+        settled.get("schemaVersion") != 1
+        or settled.get("proposalId") != proposal_id
+        or settled.get("proposalSha256") != proposal_hash
+        or settled.get("action") != "create-draft"
+        or settled.get("messageIdHeader") != message_id
+        or settled.get("approvalBinding") != "sha256-protected-proposal-snapshot"
+        or settled.get("status") not in {"applied", "rejected"}
+        or settled.get("emailSent") is not False
+    ):
+        raise RuntimeError("existing draft result is not bound to the exact approved draft")
+    status = ExternalActionJournal(result_dir / ".journal").status(proposal_id)
+    if (
+        not status["terminal"]
+        or status["proposalSha256"] != proposal_hash
+        or settled.get("providerObservationSha256") != status["observationSha256"]
+        or settled.get("actionJournalHeadSha256") != status["headSha256"]
+        or (settled.get("status") == "applied") != (status["state"] == "succeeded")
+    ):
+        raise RuntimeError("existing draft result differs from the terminal shared action journal")
+    return settled
+
+
+def draft_journal(result_dir: Path, proposal_id: str, proposal_hash: str, message_id: str) -> tuple[ExternalActionJournal, dict[str, Any]]:
+    journal = ExternalActionJournal(result_dir / ".journal")
+    state = journal.propose(
+        action_id=proposal_id,
+        connector="google-gmail",
+        operation="create-draft",
+        proposal_sha256=proposal_hash,
+        idempotency_key_sha256=journal_sha256(message_id),
+        idempotency_mode="provider-reconciliation-marker",
+        provider_target_sha256=journal_sha256("users/me/drafts"),
+    )
+    return journal, state
+
+
+def _draft_paths(proposal_id: str) -> tuple[Path, Path, Path]:
+    result_dir = Path(os.environ.get("PIXEL_ACTION_RESULT_DIR", "/var/lib/pixel-source-broker/results"))
+    return result_dir, result_dir / f"{proposal_id}.json", result_dir / f"{proposal_id}.processing.json"
+
+
+def approve_draft(proposal_id: str) -> int:
+    """Create exactly the Gmail draft the owner approved, once. Nothing is ever sent."""
+    if not env_enabled("PIXEL_LIMB_EMAIL_ENABLED", True):
+        raise RuntimeError("Email limb is disabled")
+    if not env_enabled("PIXEL_LIMB_EMAIL_DRAFTS_ENABLED", False):
+        raise RuntimeError("Gmail drafts are turned off for this deployment")
+    result_dir, result_path, claim_path = _draft_paths(proposal_id)
+    value, proposal_hash = protected_proposal(result_dir / f"{proposal_id}.approved.json")
+    fields = validate_draft_proposal(value, proposal_id)
+    message_id = draft_message_id(proposal_id, proposal_hash)
+    settled = validate_draft_terminal_result(result_dir, proposal_id, proposal_hash, message_id)
+    if settled is not None:
+        # Already settled: report it without another Gmail call.
+        claim_path.unlink(missing_ok=True)
+        print(json.dumps(settled))
+        return 0
+    if os.path.lexists(claim_path):
+        raise RuntimeError("a draft processing claim requires reconciliation; the draft was not created again")
+    journal, journal_state = draft_journal(result_dir, proposal_id, proposal_hash, message_id)
+    if journal_state["state"] != "proposed":
+        raise RuntimeError("draft is already processing or requires reconciliation; it was not created again")
+    token_path = Path(os.environ.get("PIXEL_SOURCE_TOKEN_PATH", "/var/lib/pixel-source-broker/private/google-token.json"))
+    token = access_token(token_path)
+    reply = draft_reply_headers(token, fields["replyToMessageId"]) if fields["replyToMessageId"] else None
+    message: dict[str, Any] = {"raw": base64.urlsafe_b64encode(draft_mime(fields, message_id, reply)).decode("ascii").rstrip("=")}
+    if reply:
+        message["threadId"] = reply["threadId"]
+    submission_started = False
+    provider_call_started = False
+    try:
+        try:
+            journal.begin_submit(proposal_id)
+        except JournalError as error:
+            raise RuntimeError("draft is already processing or requires reconciliation; it was not created again") from error
+        submission_started = True
+        claim_proposal(claim_path, proposal_id, proposal_hash, recovery=DRAFT_RECOVERY)
+        provider_call_started = True
+        response = google_call(GMAIL_API, "/drafts", token, method="POST", params={}, value={"message": message})
+        created = (response.get("message") or {}).get("id")
+        if not isinstance(created, str) or not GMAIL_OBJECT_ID.fullmatch(created):
+            raise RuntimeError("Gmail returned no draft message identity")
+        observation = calendar_observation_sha256({"id": response.get("id"), "messageId": created})
+        journal.succeed(proposal_id, observation)
+    except Exception as error:
+        if submission_started:
+            settle_calendar_journal_error(journal, proposal_id, error, definitely_before_provider=not provider_call_started)
+            if provider_call_started and _definite_provider_rejection(error):
+                status = journal.status(proposal_id)
+                rejected = draft_rejected_result(
+                    proposal_id, proposal_hash, message_id,
+                    provider_observation_sha256=status["observationSha256"], action_journal_head_sha256=status["headSha256"],
+                )
+                atomic_json(result_path, rejected)
+                claim_path.unlink(missing_ok=True)
+                print(json.dumps(rejected))
+                return 0
+        raise
+    completed = draft_completed_result(
+        proposal_id, proposal_hash, message_id, created, reconciliation="synchronous-provider-response",
+        provider_observation_sha256=observation, action_journal_head_sha256=journal.status(proposal_id)["headSha256"],
+    )
+    atomic_json(result_path, completed)
+    claim_path.unlink(missing_ok=True)
+    print(json.dumps(completed))
+    return 0
+
+
+def reconcile_draft(proposal_id: str) -> int:
+    """Settle an unconfirmed draft by searching Gmail for its exact Message-ID; nothing is created again."""
+    if not env_enabled("PIXEL_LIMB_EMAIL_ENABLED", True):
+        raise RuntimeError("Email limb is disabled")
+    result_dir, result_path, claim_path = _draft_paths(proposal_id)
+    value, proposal_hash = protected_proposal(result_dir / f"{proposal_id}.approved.json")
+    validate_draft_proposal(value, proposal_id)
+    message_id = draft_message_id(proposal_id, proposal_hash)
+    settled = validate_draft_terminal_result(result_dir, proposal_id, proposal_hash, message_id)
+    if settled is not None:
+        claim_path.unlink(missing_ok=True)
+        print(json.dumps(settled))
+        return 0
+    if not os.path.lexists(claim_path):
+        raise RuntimeError("draft has no processing claim to reconcile")
+    journal = ExternalActionJournal(result_dir / ".journal")
+    journal.begin_reconcile(proposal_id)
+    token_path = Path(os.environ.get("PIXEL_SOURCE_TOKEN_PATH", "/var/lib/pixel-source-broker/private/google-token.json"))
+    token = access_token(token_path)
+    listing = google_get(GMAIL_API, "/messages", token, {
+        "q": f"rfc822msgid:{message_id[1:-1]}", "includeSpamTrash": "true", "maxResults": 5,
+    })
+    found = [item.get("id") for item in listing.get("messages") or [] if isinstance(item, dict)]
+    created = next((item for item in found if isinstance(item, str) and GMAIL_OBJECT_ID.fullmatch(item)), None)
+    if created is None:
+        journal.mark_unknown(proposal_id, "provider-not-observable", calendar_observation_sha256({"found": 0}))
+        print(json.dumps({
+            "schemaVersion": 1, "proposalId": proposal_id, "status": "unknown", "action": "create-draft",
+            "retryAllowed": False, "nextAction": "reconcile-later", "checkedAt": iso(utc_now()),
+            "boundary": "Gmail does not show the draft yet. The original request remains unconfirmed and must not be repeated.",
+        }))
+        return 3
+    observation = calendar_observation_sha256({"messageId": created})
+    journal.succeed(proposal_id, observation, "provider-reconciliation-match")
+    completed = draft_completed_result(
+        proposal_id, proposal_hash, message_id, created, reconciliation="provider-search-after-indeterminate-write",
+        provider_observation_sha256=observation, action_journal_head_sha256=journal.status(proposal_id)["headSha256"],
+    )
+    atomic_json(result_path, completed)
+    claim_path.unlink(missing_ok=True)
+    print(json.dumps(completed))
+    return 0
 
 
 def direct(proposal_id: str) -> int:

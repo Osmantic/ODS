@@ -1,5 +1,25 @@
 # Changelog
 
+## 4.3.35 - ODS-maintained candidate
+
+- Gmail drafts the owner approves, behind a new answers-file key,
+  `emailDraftsEnabled` (default off, needs the email limb):
+  - `pixel_gmail_draft_propose` writes a proposal only: recipients, subject,
+    body, and optionally the projected message it replies to. There is no send
+    tool; the owner sends the draft from Gmail.
+  - `--approve gmail-draft-…` creates exactly the approved snapshot in the
+    owner's Drafts folder through `users.drafts.create`, once. The draft carries
+    a Message-ID fixed before any Gmail call, so `--reconcile` finds an
+    unconfirmed draft by `rfc822msgid:` instead of creating another. A definite
+    Gmail refusal settles it as rejected.
+  - A draft is refused before Gmail when it has a multi-line subject, an
+    invalid, repeated or Bcc recipient, a projection placeholder, or what looks
+    like a vendor credential. Replies take `In-Reply-To`, `References` and the
+    thread from the original message.
+  - The gateway and broker environments carry `PIXEL_LIMB_EMAIL_DRAFTS_ENABLED`.
+- See `ODS-QUALIFICATION-4.3.35.md` for scoped validation and pending installed
+  upgrade qualification. Prior compatibility records remain historical.
+
 ## 4.3.34 - ODS-maintained candidate
 
 - Source Broker readiness for owner-connected Google accounts:

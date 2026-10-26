@@ -239,6 +239,8 @@ const emailLimbEnabled = boolean(await answer("emailLimbEnabled", "Enable email 
 const calendarLimbEnabled = boolean(await answer("calendarLimbEnabled", "Enable Calendar limb", capabilityDefaults.limbs.calendar), "calendarLimbEnabled");
 // Answers-file only, so interactive configure asks the same questions as before.
 const calendarWriteEnabled = calendarLimbEnabled && boolean(supplied.calendarWriteEnabled ?? true, "calendarWriteEnabled");
+// Answers-file only, like calendarWriteEnabled: Gmail drafts the owner approves; there is no send tool.
+const emailDraftsEnabled = emailLimbEnabled && boolean(supplied.emailDraftsEnabled ?? false, "emailDraftsEnabled");
 const calendarDirectEnabled = calendarLimbEnabled && calendarWriteEnabled && boolean(await answer("calendarDirectEnabled", "Directly apply bounded private creates and time-only reschedules", true), "calendarDirectEnabled");
 const userTimezone = [undefined, null, ""].includes(supplied.userTimezone) ? "" : text(supplied.userTimezone, "userTimezone");
 if (userTimezone) {
@@ -485,6 +487,7 @@ const values = {
   PIXEL_AGENT_SKILLS: JSON.stringify(agentSkills),
   PIXEL_PRIVATE_ONBOARDING_PATH: privateOnboardingPath,
   PIXEL_LIMB_EMAIL_ENABLED: emailLimbEnabled ? "1" : "0",
+  PIXEL_LIMB_EMAIL_DRAFTS_ENABLED: emailDraftsEnabled ? "1" : "0",
   PIXEL_LIMB_CALENDAR_ENABLED: calendarLimbEnabled ? "1" : "0",
   PIXEL_LIMB_SOCIAL_ENABLED: socialLimbEnabled ? "1" : "0",
   PIXEL_LIMB_WEB_ENABLED: webLimbEnabled ? "1" : "0",
@@ -632,6 +635,7 @@ const gatewayValues = {
   PIXEL_SOURCE_STALE_AFTER_MS: values.PIXEL_SOURCE_STALE_AFTER_MS,
   PIXEL_CALENDAR_DIRECT_ENABLED: values.PIXEL_CALENDAR_DIRECT_ENABLED,
   PIXEL_LIMB_EMAIL_ENABLED: values.PIXEL_LIMB_EMAIL_ENABLED,
+  PIXEL_LIMB_EMAIL_DRAFTS_ENABLED: values.PIXEL_LIMB_EMAIL_DRAFTS_ENABLED,
   PIXEL_LIMB_CALENDAR_ENABLED: values.PIXEL_LIMB_CALENDAR_ENABLED,
   PIXEL_LIMB_CALENDAR_WRITE_ENABLED: values.PIXEL_LIMB_CALENDAR_WRITE_ENABLED,
   PIXEL_LIMB_SOCIAL_ENABLED: values.PIXEL_LIMB_SOCIAL_ENABLED,
@@ -685,6 +689,7 @@ const sourceBrokerValues = {
   PIXEL_SOURCE_CALENDAR_FUTURE_DAYS: values.PIXEL_SOURCE_CALENDAR_FUTURE_DAYS,
   PIXEL_SOURCE_CALENDAR_MAX_PAGES: values.PIXEL_SOURCE_CALENDAR_MAX_PAGES,
   PIXEL_LIMB_EMAIL_ENABLED: values.PIXEL_LIMB_EMAIL_ENABLED,
+  PIXEL_LIMB_EMAIL_DRAFTS_ENABLED: values.PIXEL_LIMB_EMAIL_DRAFTS_ENABLED,
   PIXEL_LIMB_CALENDAR_ENABLED: values.PIXEL_LIMB_CALENDAR_ENABLED,
   PIXEL_LIMB_CALENDAR_WRITE_ENABLED: values.PIXEL_LIMB_CALENDAR_WRITE_ENABLED,
   PIXEL_LIMB_SOCIAL_ENABLED: values.PIXEL_LIMB_SOCIAL_ENABLED,

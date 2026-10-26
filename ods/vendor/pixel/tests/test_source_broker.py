@@ -2228,5 +2228,154 @@ class SourceBrokerReadinessTests(unittest.TestCase):
             self.assertEqual(result["outcome"], "not-connected")
 
 
+
+DRAFT_ID = "gmail-draft-1785876500000-a1b2c3d4"
+
+
+def draft_proposal(values, proposal_id=DRAFT_ID):
+    return {
+        "schemaVersion": 1,
+        "proposalId": proposal_id,
+        "source": "pixel-owner-conversation",
+        "action": "create-draft",
+        "status": "pending-operator-approval",
+        "createdAt": "2026-10-26T12:00:00Z",
+        "values": values,
+        "boundary": BROKER.DRAFT_BOUNDARY,
+    }
+
+
+DRAFT = {"to": [{"email": "pat@example.com"}], "cc": [{"email": "sam@example.com"}],
+         "subject": "Lunch on Friday", "body": "Hi Pat,\n\nFriday at noon works for me.\n"}
+
+
+class GmailDraftTests(unittest.TestCase):
+    """Gmail drafts the owner approves: created once, never sent, unconfirmed ones found by Message-ID."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.results = Path(directory.name)
+        self.calls, self.gets = [], []
+        self.reply = {"id": "r-draft-1", "message": {"id": "msg-1", "threadId": "thread-1", "labelIds": ["DRAFT"]}}
+        names = ["PIXEL_ACTION_RESULT_DIR", "PIXEL_LIMB_EMAIL_ENABLED", "PIXEL_LIMB_EMAIL_DRAFTS_ENABLED"]
+        previous = {name: os.environ.get(name) for name in names}
+        originals = BROKER.access_token, BROKER.google_get, BROKER.google_call
+
+        def restore():
+            BROKER.access_token, BROKER.google_get, BROKER.google_call = originals
+            for name, item in previous.items():
+                if item is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = item
+        self.addCleanup(restore)
+        os.environ.update({"PIXEL_ACTION_RESULT_DIR": str(self.results), "PIXEL_LIMB_EMAIL_ENABLED": "1",
+                           "PIXEL_LIMB_EMAIL_DRAFTS_ENABLED": "1"})
+        BROKER.access_token = lambda _path: "fixture-token"
+        BROKER.google_get = lambda *args, **kwargs: self.gets.append(args) or self.answer_get(*args)
+        BROKER.google_call = lambda *args, **kwargs: self.calls.append((args, kwargs)) or self.answer_call()
+
+    def answer_get(self, _base, path, _token, params):
+        if path == "/messages":
+            return {"messages": [{"id": "msg-9", "threadId": "thread-9"}]} if self.found else {}
+        return {"id": "orig-1", "threadId": "thread-7", "payload": {"headers": [
+            {"name": "Message-ID", "value": "<orig@example.com>"},
+            {"name": "References", "value": "<first@example.com>"}]}}
+
+    found = True
+
+    def answer_call(self):
+        return self.reply
+
+    def snapshot(self, values, proposal_id=DRAFT_ID):
+        write_protected(self.results / f"{proposal_id}.approved.json", json.dumps(draft_proposal(values, proposal_id)))
+        return BROKER.protected_proposal(self.results / f"{proposal_id}.approved.json")[1]
+
+    def raw(self, call):
+        message = call[1]["value"]["message"]
+        padded = message["raw"] + "=" * (-len(message["raw"]) % 4)
+        return message, base64.urlsafe_b64decode(padded).decode("utf-8")
+
+    def result(self, proposal_id=DRAFT_ID):
+        return json.loads((self.results / f"{proposal_id}.json").read_text(encoding="utf-8"))
+
+    def test_an_approved_draft_is_created_once_and_never_sent(self):
+        proposal_hash = self.snapshot(DRAFT)
+        self.assertEqual(BROKER.approve(DRAFT_ID), 0)
+        ((args, kwargs),) = self.calls
+        self.assertEqual((args[0], args[1], kwargs["method"]), (BROKER.GMAIL_API, "/drafts", "POST"))
+        message, raw = self.raw(self.calls[0])
+        self.assertNotIn("threadId", message)
+        self.assertIn("To: pat@example.com\r\n", raw)
+        self.assertIn("Cc: sam@example.com\r\n", raw)
+        self.assertIn("Subject: Lunch on Friday\r\n", raw)
+        self.assertIn(f"Message-ID: {BROKER.draft_message_id(DRAFT_ID, proposal_hash)}\r\n", raw)
+        self.assertIn("Friday at noon works for me.", raw)
+        result = self.result()
+        self.assertEqual((result["status"], result["emailSent"], result["affectedMessageId"]), ("applied", False, "msg-1"))
+        self.assertEqual((result["proposalSha256"], result["approvalBinding"]),
+                         (proposal_hash, "sha256-protected-proposal-snapshot"))
+        self.assertFalse((self.results / f"{DRAFT_ID}.processing.json").exists())
+        # Approving again reports the draft that exists and creates no second one.
+        self.assertEqual(BROKER.approve(DRAFT_ID), 0)
+        self.assertEqual(len(self.calls), 1)
+
+    def test_a_reply_draft_threads_with_the_message_it_answers(self):
+        self.snapshot(dict(DRAFT, replyToMessageId="orig-1"))
+        self.assertEqual(BROKER.approve(DRAFT_ID), 0)
+        message, raw = self.raw(self.calls[0])
+        self.assertEqual(message["threadId"], "thread-7")
+        self.assertIn("In-Reply-To: <orig@example.com>\r\n", raw)
+        self.assertIn("References: <first@example.com> <orig@example.com>\r\n", raw)
+
+    def test_drafts_off_and_unsafe_drafts_never_reach_gmail(self):
+        self.snapshot(DRAFT)
+        os.environ["PIXEL_LIMB_EMAIL_DRAFTS_ENABLED"] = "0"
+        with self.assertRaisesRegex(RuntimeError, "turned off"):
+            BROKER.approve(DRAFT_ID)
+        os.environ["PIXEL_LIMB_EMAIL_DRAFTS_ENABLED"] = "1"
+        for index, values in enumerate((
+                dict(DRAFT, subject="Hi\r\nBcc: someone@example.com"),
+                dict(DRAFT, bcc=[{"email": "someone@example.com"}]),
+                dict(DRAFT, to=[{"email": "Pat <pat@example.com>"}]),
+                dict(DRAFT, body="Use ghp_" + "a" * 36 + " to sign in."),
+                dict(DRAFT, body="[quarantined email body]"))):
+            proposal_id = f"gmail-draft-178587650000{index}-a1b2c3d4"
+            self.snapshot(values, proposal_id)
+            with self.assertRaises(RuntimeError):
+                BROKER.approve(proposal_id)
+        self.assertEqual(self.calls, [])
+
+    def test_an_unconfirmed_draft_is_found_by_its_message_id_and_never_created_twice(self):
+        self.snapshot(DRAFT)
+        self.answer_call = lambda: (_ for _ in ()).throw(RuntimeError("lost response"))
+        with self.assertRaisesRegex(RuntimeError, "lost response"):
+            BROKER.approve(DRAFT_ID)
+        self.assertTrue((self.results / f"{DRAFT_ID}.processing.json").exists())
+        with self.assertRaisesRegex(RuntimeError, "requires reconciliation"):
+            BROKER.approve(DRAFT_ID)
+        self.found = False
+        self.assertEqual(BROKER.reconcile(DRAFT_ID), 3, "Gmail does not show it yet: still unconfirmed")
+        self.found = True
+        self.assertEqual(BROKER.reconcile(DRAFT_ID), 0)
+        query = [args for args in self.gets if args[1] == "/messages"][-1][3]["q"]
+        self.assertTrue(query.startswith("rfc822msgid:pixel-draft-") and query.endswith("@pixel.invalid"))
+        result = self.result()
+        self.assertEqual((result["status"], result["reconciliation"], result["affectedMessageId"]),
+                         ("applied", "provider-search-after-indeterminate-write", "msg-9"))
+        self.assertEqual(BROKER.approve(DRAFT_ID), 0)
+        self.assertEqual(len(self.calls), 1, "nothing was created a second time")
+
+    def test_gmail_refusing_a_draft_settles_it_without_retry(self):
+        self.snapshot(DRAFT)
+        self.answer_call = lambda: (_ for _ in ()).throw(BROKER.UpstreamHTTPError(400))
+        self.assertEqual(BROKER.approve(DRAFT_ID), 0)
+        result = self.result()
+        self.assertEqual((result["status"], result["retryAllowed"], result["emailSent"]), ("rejected", False, False))
+        self.assertEqual(BROKER.approve(DRAFT_ID), 0)
+        self.assertEqual(len(self.calls), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

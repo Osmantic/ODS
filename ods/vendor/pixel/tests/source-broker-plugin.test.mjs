@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { register } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,7 +11,8 @@ register("./fixtures/source-plugin/loader.mjs", import.meta.url);
 
 const PROPOSE_TOOLS = ["pixel_calendar_propose_create", "pixel_calendar_propose_update", "pixel_calendar_propose_delete"];
 const LIMB_KEYS = ["PIXEL_LIMB_EMAIL_ENABLED", "PIXEL_LIMB_CALENDAR_ENABLED", "PIXEL_LIMB_CALENDAR_WRITE_ENABLED",
-  "PIXEL_LIMB_SOCIAL_ENABLED", "PIXEL_LIMB_WEB_ENABLED", "PIXEL_SOURCE_PROJECTION_DIR"];
+  "PIXEL_LIMB_SOCIAL_ENABLED", "PIXEL_LIMB_WEB_ENABLED", "PIXEL_SOURCE_PROJECTION_DIR",
+  "PIXEL_LIMB_EMAIL_DRAFTS_ENABLED", "PIXEL_ACTION_PROPOSAL_DIR"];
 let instance = 0;
 
 // The plugin reads its limb flags once at load, so each case loads a fresh module instance.
@@ -162,4 +163,26 @@ test("window coverage needs both bounds and a valid request", () => {
   assert.equal(calendarWindowCovers(coverage, iso(-8), iso(1)), false);
   assert.equal(calendarWindowCovers(coverage, "not a time", iso(1)), null);
   assert.equal(calendarWindowCovers(null, iso(1), iso(2)), null);
+});
+
+test("the Gmail draft tool registers only while drafts are on, and only proposes", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "pixel-draft-proposals-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const off = await loadPlugin({ PIXEL_LIMB_WEB_ENABLED: "0" });
+  assert.equal(off.has("pixel_gmail_draft_propose"), false, "drafts are off by default");
+  assert.equal((await call(off, "pixel_limb_status")).limbs.emailDrafts, false);
+  const noEmail = await loadPlugin({ PIXEL_LIMB_WEB_ENABLED: "0", PIXEL_LIMB_EMAIL_ENABLED: "0", PIXEL_LIMB_EMAIL_DRAFTS_ENABLED: "1" });
+  assert.equal(noEmail.has("pixel_gmail_draft_propose"), false, "drafts need the email limb");
+  const on = await loadPlugin({ PIXEL_LIMB_WEB_ENABLED: "0", PIXEL_LIMB_EMAIL_DRAFTS_ENABLED: "1", PIXEL_ACTION_PROPOSAL_DIR: directory });
+  assert.equal((await call(on, "pixel_limb_status")).limbs.emailDrafts, true);
+  const draft = await call(on, "pixel_gmail_draft_propose", { to: [{ email: "pat@example.com" }], subject: "Lunch", body: "Friday at noon?" });
+  assert.match(draft.proposalId, /^gmail-draft-[0-9]{13}-[a-f0-9]{8}$/);
+  assert.equal(draft.status, "pending-operator-approval");
+  assert.equal(draft.action, "create-draft");
+  assert.match(draft.operatorInstruction, /never sends email/);
+  const written = JSON.parse(await readFile(join(directory, `${draft.proposalId}.json`), "utf8"));
+  assert.deepEqual(written.values, { to: [{ email: "pat@example.com" }], subject: "Lunch", body: "Friday at noon?" });
+  assert.equal(written.boundary, "This file is a proposal only. No Gmail draft has been created.");
+  const refused = await on.get("pixel_gmail_draft_propose").execute("call-2", { to: [{ email: "pat@example.com" }], body: "[quarantined email body]" });
+  assert.equal(refused.isError, true);
 });

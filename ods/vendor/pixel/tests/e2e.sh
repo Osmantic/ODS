@@ -154,6 +154,9 @@ grep -Fx "PIXEL_SOURCE_STALE_AFTER_MS='180000'" .generated/gateway.env >/dev/nul
 grep -Fx "PIXEL_LIMB_CALENDAR_WRITE_ENABLED='1'" .generated/source-broker.env >/dev/null
 grep -Fx "PIXEL_LIMB_CALENDAR_WRITE_ENABLED='1'" .generated/gateway.env >/dev/null
 grep -Fx "PIXEL_LIMB_WEB_ENABLED='0'" .generated/gateway.env >/dev/null
+# Gmail drafts stay off unless an answers file turns them on; there is no send tool.
+grep -Fx "PIXEL_LIMB_EMAIL_DRAFTS_ENABLED='0'" .generated/source-broker.env >/dev/null
+grep -Fx "PIXEL_LIMB_EMAIL_DRAFTS_ENABLED='0'" .generated/gateway.env >/dev/null
 grep -Fx "PIXEL_SOURCE_CALENDAR_MAX_PAGES='20'" .generated/source-broker.env >/dev/null
 grep -Fx "PIXEL_SOURCE_OAUTH_DIR='/var/lib/pixel-source-broker/private/oauth'" .generated/source-broker.env >/dev/null
 grep -Fx "PIXEL_USER_TIMEZONE=''" .env >/dev/null
@@ -679,6 +682,7 @@ jq -e --arg path "$repo/plugin" '
   PIXEL_LIMB_CALENDAR_WRITE_ENABLED=1 PIXEL_USER_TIMEZONE='' node scripts/render-config.mjs "$tmp/calendar-write-openclaw.json" >/dev/null
   PIXEL_LIMB_CALENDAR_WRITE_ENABLED=0 node scripts/render-config.mjs "$tmp/calendar-read-only-openclaw.json" >/dev/null
   PIXEL_USER_TIMEZONE=America/Chicago node scripts/render-config.mjs "$tmp/calendar-timezone-openclaw.json" >/dev/null
+  PIXEL_LIMB_EMAIL_DRAFTS_ENABLED=1 node scripts/render-config.mjs "$tmp/email-drafts-openclaw.json" >/dev/null
   if PIXEL_USER_TIMEZONE='America/Chicago; rm' node scripts/render-config.mjs "$tmp/calendar-bad-timezone-openclaw.json" >/dev/null 2>&1; then
     echo "Renderer accepted an unsafe user time zone" >&2; exit 1
   fi
@@ -696,6 +700,10 @@ jq -e '
   (.agents.list[0].tools.deny | contains(["pixel_calendar_list"]) | not)
 ' "$tmp/calendar-read-only-openclaw.json" >/dev/null
 jq -e '.agents.defaults.userTimezone == "America/Chicago"' "$tmp/calendar-timezone-openclaw.json" >/dev/null
+jq -e '(.tools.alsoAllow | index("pixel_gmail_draft_propose") | not) and (.tools.alsoAllow | index("pixel_gmail_read"))' \
+  "$tmp/calendar-default-openclaw.json" >/dev/null
+jq -e '(.tools.alsoAllow | index("pixel_gmail_draft_propose")) and (.tools.sandbox.tools.allow | index("pixel_gmail_draft_propose"))' \
+  "$tmp/email-drafts-openclaw.json" >/dev/null
 jq -e '(.plugins.allow | index("evil") | not) and (.plugins.allow | index("pixel-frontier-broker") | not) and (.plugins.entries.evil == null) and (.plugins.entries["pixel-frontier-broker"] == null)' "$tmp/home/.openclaw/openclaw.json" >/dev/null
 jq -e '(.agents.list[] | select(.id=="pixel") | .tools.deny | contains(["pixel_frontier_plan_review","pixel_frontier_failure_triage","pixel_frontier_job_get","pixel_frontier_job_wait","pixel_frontier_job_events","pixel_frontier_job_cancel","pixel_frontier_usage","pixel_frontier_finalize"]))' "$tmp/home/.openclaw/openclaw.json" >/dev/null
 jq -e --arg old "$tmp/old-source-plugin" --arg current "$tmp/home/.local/share/pixel/current/plugin" '(.plugins.load.paths | index($old) | not) and (.plugins.load.paths | index($current) != null)' "$tmp/home/.openclaw/openclaw.json" >/dev/null

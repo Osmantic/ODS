@@ -116,12 +116,14 @@ const frontierPluginId = "pixel-frontier-broker";
 const allSourceTools = [
   "pixel_limb_status",
   "pixel_gmail_inbox", "pixel_gmail_sent", "pixel_gmail_search", "pixel_gmail_read", "pixel_gmail_thread",
+  "pixel_gmail_draft_propose",
   "pixel_calendar_list", "pixel_calendar_get", "pixel_calendar_propose_create",
   "pixel_calendar_propose_update", "pixel_calendar_propose_delete",
   "pixel_social_feed", "pixel_social_search", "pixel_web_browse",
 ];
-const emailTools = allSourceTools.filter((name) => name.startsWith("pixel_gmail_"));
 const enabled = (name, fallback) => !["0", "false", "off", "no"].includes(String(process.env[name] ?? fallback).toLowerCase());
+const emailDraftsEnabled = enabled("PIXEL_LIMB_EMAIL_DRAFTS_ENABLED", "0");
+const emailTools = allSourceTools.filter((name) => name.startsWith("pixel_gmail_") && (emailDraftsEnabled || name !== "pixel_gmail_draft_propose"));
 const calendarWriteEnabled = enabled("PIXEL_LIMB_CALENDAR_WRITE_ENABLED", "1");
 const calendarTools = allSourceTools.filter((name) => name.startsWith("pixel_calendar_") && (calendarWriteEnabled || !name.startsWith("pixel_calendar_propose_")));
 const socialTools = allSourceTools.filter((name) => name.startsWith("pixel_social_"));
