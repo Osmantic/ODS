@@ -377,6 +377,18 @@ are the questions it doesn't answer. The full guide is
 
 **Fix:** for a new event, press **Check again**. For a move or a deletion, look at your calendar to see whether it happened, then press **Dismiss**; ask Portal again if it didn't.
 
+### Portal says it wrote a Gmail draft, but it isn't in Gmail
+
+**Cause:** Portal writes drafts for your approval. Gmail gets one only after you press **Create draft** in Settings, and Portal never sends email.
+
+**Fix:** open **Settings, Connected apps**. **Gmail drafts from Portal** under the Google card lists every draft that waits. Press **Create draft**, then open your Gmail Drafts to send it. If Portal says it can't write drafts at all, press **Change access** and connect again with **Write Gmail drafts you send yourself** checked.
+
+### A Gmail draft says Gmail hasn't confirmed it
+
+**Cause:** the draft was sent to Gmail, but Gmail's answer didn't arrive. ODS never creates a draft twice, so it can't simply try again.
+
+**Fix:** press **Check again**. If Gmail still doesn't show it, look in your Gmail Drafts, then press **Dismiss** and ask Portal again if it isn't there.
+
 Still stuck? Ask on the ODS Discord: <https://discord.gg/4ntNp9MAwC>.
 
 ---

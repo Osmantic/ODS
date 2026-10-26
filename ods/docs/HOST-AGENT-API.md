@@ -463,6 +463,7 @@ the dashboard or a log.
 | `check` | `{"proposalId"}` | `{"proposalId", "outcome": "applied" \| "rejected" \| "not-applied" \| "unconfirmed" \| "waiting"}` |
 | `activity` | `{}` | `{"changes": [...], "more": 0}` |
 | `undo` | `{"proposalId"}` | `{"proposalId", "outcome": "applied" \| "rejected" \| "not-applied" \| "unconfirmed"}` |
+| `drafts` | `{}` | `{"drafts": [...], "more": 0}` |
 
 `begin` opens `http://127.0.0.1:<port>/` on the machine that runs the host agent
 (the Windows host for a WSL install) and returns Google's consent address. When
@@ -528,6 +529,21 @@ Portal left it, and makes it through `pixel-source-action@<id>.service` with the
 event's current ETag, so Google refuses it if the event changed since. The owner's
 click is the approval. A root ledger (`calendar-undo.json` in the coordinator's
 state) keeps each reversal, so a second `undo` reports the first outcome.
+
+`drafts` lists the Gmail drafts Portal wrote when **Write Gmail drafts you send
+yourself** (`gmail.drafts`, scope `gmail.compose`) is on, the same way `changes`
+lists calendar changes: each new proposal is frozen into a broker-owned snapshot
+and listed, oldest first, with every recipient, the subject, the whole message,
+the snapshot's SHA-256, and for a reply the sender and subject of the email it
+answers (from the last email sync; `null` when that sync does not hold it). A
+draft too long to show whole comes back with `"tooLarge": true` and no hash. Its
+IDs start `gmail-draft-`. `approve`, `check` and `decline` take them too:
+`approve` needs `gmail.drafts` on (`gmail-drafts-off`) and has the broker create
+exactly that draft once with Gmail's `users.drafts.create`; `check` finds an
+unconfirmed draft by the Message-ID the broker fixed before calling Gmail. Pixel
+has no tool that sends email, and nothing here sends one: the owner sends the
+draft from Gmail. Failures use the `gmail-draft-*` codes, which mirror the
+calendar ones. `undo` never takes a draft.
 
 **Error responses:**
 | Code | Condition |

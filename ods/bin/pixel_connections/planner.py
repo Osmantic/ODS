@@ -1,7 +1,7 @@
 """The gateway side of a connection, exactly as Pixel's renderer would write it.
 
 A connection changes only the Source Broker plugin's entries, which of its tools
-Portal may call, the owner's time zone, and four limb flags in ``gateway.env``.
+Portal may call, the owner's time zone, and five limb flags in ``gateway.env``.
 Pixel refuses to re-apply the release that is already active, so ODS applies this
 transformation to the live files instead. It mirrors ``scripts/render-config.mjs``
 followed by the ODS runtime overlay, which sorts both tool allow lists; a test
@@ -19,21 +19,27 @@ PLUGIN_ID = "pixel-source-broker"
 SOURCE_TOOLS = (
     "pixel_limb_status",
     "pixel_gmail_inbox", "pixel_gmail_sent", "pixel_gmail_search", "pixel_gmail_read", "pixel_gmail_thread",
+    "pixel_gmail_draft_propose",
     "pixel_calendar_list", "pixel_calendar_get", "pixel_calendar_propose_create",
     "pixel_calendar_propose_update", "pixel_calendar_propose_delete",
     "pixel_social_feed", "pixel_social_search", "pixel_web_browse",
 )
 GMAIL_TOOLS = SOURCE_TOOLS[1:6]
-CALENDAR_READ_TOOLS = SOURCE_TOOLS[6:8]
-CALENDAR_WRITE_TOOLS = SOURCE_TOOLS[8:11]
-SOCIAL_TOOLS = SOURCE_TOOLS[11:13]
-WEB_TOOLS = SOURCE_TOOLS[13:]
+GMAIL_DRAFT_TOOLS = SOURCE_TOOLS[6:7]
+CALENDAR_READ_TOOLS = SOURCE_TOOLS[7:9]
+CALENDAR_WRITE_TOOLS = SOURCE_TOOLS[9:12]
+SOCIAL_TOOLS = SOURCE_TOOLS[12:14]
+WEB_TOOLS = SOURCE_TOOLS[14:]
 LIMB_KEYS = {
     "email": "PIXEL_LIMB_EMAIL_ENABLED",
+    "emailDrafts": "PIXEL_LIMB_EMAIL_DRAFTS_ENABLED",
     "calendar": "PIXEL_LIMB_CALENDAR_ENABLED",
     "calendarWrite": "PIXEL_LIMB_CALENDAR_WRITE_ENABLED",
     "calendarDirect": "PIXEL_CALENDAR_DIRECT_ENABLED",
 }
+# Pixel 4.3.35 added Gmail drafts. A gateway environment or a journaled target
+# from before it has no drafts flag, which means drafts are off.
+SINCE_DRAFTS = frozenset({"emailDrafts"})
 TIME_ZONE = re.compile(r"^[A-Za-z][A-Za-z0-9_+\-/]{0,63}$")
 # Pixel's configure quotes every value, escaping a quote inside it as '\''.
 ENV_LINE = re.compile(r"^([A-Z][A-Z0-9_]*)='((?:[^']|'\\'')*)'$")
@@ -46,18 +52,26 @@ class PlanError(ValueError):
 def limbs(capabilities: dict[str, bool] | None) -> dict[str, bool]:
     """Gateway limb flags for a Google connection's capabilities; all off without one."""
     capabilities = capabilities or {}
+    email = capabilities.get("gmail.read") is True
     calendar = capabilities.get("calendar.read") is True
     write = calendar and capabilities.get("calendar.write") is True
-    return {"email": capabilities.get("gmail.read") is True, "calendar": calendar,
+    return {"email": email, "emailDrafts": email and capabilities.get("gmail.drafts") is True, "calendar": calendar,
             "calendarWrite": write, "calendarDirect": write and capabilities.get("calendar.direct") is True}
 
 
 def target(value: Any) -> dict[str, Any]:
-    """Validate a gateway target: the four limb flags and an optional time zone."""
-    if (not isinstance(value, dict) or set(value) != {*LIMB_KEYS, "userTimezone"}
-            or any(type(value[key]) is not bool for key in LIMB_KEYS)):
+    """Validate a gateway target, the five limb flags and an optional time zone, and return it whole.
+
+    A target journaled before Gmail drafts comes back with drafts off.
+    """
+    keys = {*LIMB_KEYS, "userTimezone"}
+    if not isinstance(value, dict) or set(value) not in (keys, keys - SINCE_DRAFTS):
         raise PlanError("invalid connection target")
-    if value["calendarWrite"] and not value["calendar"] or value["calendarDirect"] and not value["calendarWrite"]:
+    value = {"emailDrafts": False, **value}
+    if any(type(value[key]) is not bool for key in LIMB_KEYS):
+        raise PlanError("invalid connection target")
+    if (value["emailDrafts"] and not value["email"] or value["calendarWrite"] and not value["calendar"]
+            or value["calendarDirect"] and not value["calendarWrite"]):
         raise PlanError("invalid connection target")
     zone = value["userTimezone"]
     if zone is not None and (type(zone) is not str or not TIME_ZONE.fullmatch(zone) or ".." in zone):
@@ -114,7 +128,7 @@ def active_tools(config: Any, gateway: dict[str, Any]) -> list[str]:
     email, calendar = gateway["email"], gateway["calendar"]
     tools = ["pixel_limb_status"] if email or calendar or social or web else []
     if email:
-        tools += GMAIL_TOOLS
+        tools += GMAIL_TOOLS + (GMAIL_DRAFT_TOOLS if gateway["emailDrafts"] else ())
     if calendar:
         tools += CALENDAR_READ_TOOLS + (CALENDAR_WRITE_TOOLS if gateway["calendarWrite"] else ())
     if social:
@@ -164,9 +178,9 @@ def plan_config(config: Any, gateway: dict[str, Any], *, install_dir: str) -> di
 
 
 def gateway_limbs(text: str) -> dict[str, bool]:
-    """The four limb flags a gateway environment file sets."""
+    """The five limb flags a gateway environment file sets."""
     values = _env_values(text)
-    return {name: values[key] == "1" for name, key in LIMB_KEYS.items()}
+    return {name: values.get(key) == "1" for name, key in LIMB_KEYS.items()}
 
 
 def _env_values(text: str) -> dict[str, str]:
@@ -178,18 +192,20 @@ def _env_values(text: str) -> dict[str, str]:
         if match.group(1) in values:
             raise PlanError("gateway environment repeats a key")
         values[match.group(1)] = match.group(2)
-    for key in LIMB_KEYS.values():
-        if values.get(key) not in ("0", "1"):
+    for name, key in LIMB_KEYS.items():
+        if values.get(key) not in ("0", "1") and not (name in SINCE_DRAFTS and key not in values):
             raise PlanError(f"gateway environment has no 0 or 1 value for {key}")
     return values
 
 
 def plan_gateway_env(text: str, gateway: dict[str, Any]) -> str:
-    """The gateway environment with only the four limb flags set for ``gateway``."""
+    """The gateway environment with only the five limb flags set for ``gateway``."""
     gateway = target(gateway)
     if not text.endswith("\n"):
         raise PlanError("gateway environment does not end with a newline")
-    _env_values(text)
+    values = _env_values(text)
+    if gateway["emailDrafts"] and LIMB_KEYS["emailDrafts"] not in values:
+        raise PlanError("this Pixel has no Gmail drafts; update ODS to turn them on")
     wanted = {key: "1" if gateway[name] else "0" for name, key in LIMB_KEYS.items()}
     lines = []
     for line in text.splitlines():

@@ -9,6 +9,7 @@ const link = 'underline'
 const NOTES = {
   'calendar.write': 'Portal suggests each change; nothing happens until you approve it in Settings.',
   'calendar.direct': 'Only events without guests, and moving an event to a new time. At most 20 an hour, and paused while Portal has Full Access.',
+  'gmail.drafts': 'Portal writes each draft; Gmail gets it only when you approve it in Settings. Portal never sends email: you send the draft from Gmail.',
 }
 
 function ownerTimeZone() {

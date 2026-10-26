@@ -24,7 +24,7 @@ CONNECTED = dict(
         cloudModels=True, connectedAt='2026-10-25T20:00:00Z',
         grantedScopes=['https://www.googleapis.com/auth/calendar.events.readonly'],
         checkedAt='2026-10-25T20:29:30Z', sources=dict(email=SOURCE, calendar=SOURCE), pending=None,
-        waitingChanges=1)))
+        waitingChanges=1, waitingDrafts=1)))
 OWNER = {'Authorization': 'Bearer ' + 'o' * 64}
 # One calendar change Portal suggested, as root lists it for the owner's approval.
 CHANGE = {'proposalId': 'calendar-1761500000000-0badc0de', 'sha256': 'c' * 64, 'state': 'waiting', 'action': 'create',
@@ -32,6 +32,11 @@ CHANGE = {'proposalId': 'calendar-1761500000000-0badc0de', 'sha256': 'c' * 64, '
           'change': {'summary': 'Dentist', 'start': '2026-10-27T15:00:00-05:00', 'end': '2026-10-27T16:00:00-05:00',
                      'allDay': False, 'timeZone': 'America/Chicago', 'location': None, 'description': None,
                      'attendees': ['pat@example.com'], 'sendUpdates': 'all'}}
+# One Gmail draft Portal wrote, a reply, as root lists it for the owner's approval.
+DRAFT = {'proposalId': 'gmail-draft-1761500000000-0badc0de', 'sha256': 'd' * 64, 'state': 'waiting',
+         'createdAt': '2026-10-26T15:00:00.000Z', 'tooLarge': False,
+         'draft': {'to': ['pat@example.com'], 'cc': [], 'subject': 'Re: Lunch', 'body': 'Thursday works.\n\nSam',
+                   'replyTo': {'from': 'Pat <pat@example.com>', 'subject': 'Lunch'}}}
 FLOW = 'a' * 32
 BEGIN = {'connector': 'google', 'capabilities': CONNECTED['connectors']['google']['capabilities'],
          'client': {'clientId': '123456789012-abcdefghijklmnopqrstuvwxyz012345.apps.googleusercontent.com',
@@ -140,7 +145,13 @@ class ConnectionsRelayTests(unittest.IsolatedAsyncioTestCase):
                                'allDay': False, 'previous': None, 'appliedAt': '2026-10-26T15:00:01Z',
                                'undo': 'available'}], 'more': 0}),
                 ({'operation': 'connection-undo', 'request': {'proposalId': CHANGE['proposalId']}},
-                 {'proposalId': CHANGE['proposalId'], 'outcome': 'applied'})):
+                 {'proposalId': CHANGE['proposalId'], 'outcome': 'applied'}),
+                ({'operation': 'connection-drafts', 'request': {}}, {'drafts': [DRAFT], 'more': 0}),
+                ({'operation': 'connection-approve', 'request': {'proposalId': DRAFT['proposalId'],
+                                                                'sha256': DRAFT['sha256']}},
+                 {'proposalId': DRAFT['proposalId'], 'outcome': 'applied'}),
+                ({'operation': 'connection-reconcile', 'request': {'proposalId': DRAFT['proposalId']}},
+                 {'proposalId': DRAFT['proposalId'], 'outcome': 'waiting'})):
             with self.subTest(operation=payload['operation']):
                 self.calls.clear()
                 self.reply = reply

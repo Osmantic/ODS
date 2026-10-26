@@ -157,7 +157,7 @@ def read(path: Path = PATH, *, owners: tuple[int, ...] = (0,)) -> dict[str, Any]
 # the optional ones are left out entirely.
 DISCONNECTED_ANSWERS = {"timeZone": "UTC", "googleAccount": "ods@localhost.local", "calendarId": "primary",
                         "emailLimbEnabled": False, "calendarLimbEnabled": False, "calendarDirectEnabled": False}
-OPTIONAL_ANSWERS = ("userTimezone", "calendarWriteEnabled", "gmailWindowDays")
+OPTIONAL_ANSWERS = ("userTimezone", "calendarWriteEnabled", "gmailWindowDays", "emailDraftsEnabled")
 ANSWER_KEYS = (*DISCONNECTED_ANSWERS, *OPTIONAL_ANSWERS)
 
 
@@ -173,13 +173,14 @@ def valid_connection_answers(value: Any) -> bool:
     if not isinstance(value, dict) or set(value) != set(ANSWER_KEYS):
         return False
     window, write, zone = value["gmailWindowDays"], value["calendarWriteEnabled"], value["userTimezone"]
+    drafts = value["emailDraftsEnabled"]
     return (isinstance(value["timeZone"], str) and bool(TIME_ZONE.fullmatch(value["timeZone"]))
             and (zone is None or isinstance(zone, str) and bool(TIME_ZONE.fullmatch(zone)))
             and isinstance(value["googleAccount"], str) and bool(EMAIL.fullmatch(value["googleAccount"]))
             and isinstance(value["calendarId"], str) and bool(CALENDAR_ID.fullmatch(value["calendarId"]))
             and all(type(value[key]) is bool for key in ("emailLimbEnabled", "calendarLimbEnabled",
                                                          "calendarDirectEnabled"))
-            and (write is None or type(write) is bool)
+            and (write is None or type(write) is bool) and (drafts is None or type(drafts) is bool)
             and (window is None or type(window) is int and 1 <= window <= 3650))
 
 
@@ -210,6 +211,7 @@ def onboarding_overrides(record: dict[str, Any] | None, *, google_custody: bool)
         writes = capabilities["calendar.read"] and capabilities["calendar.write"]
         overrides.update(
             emailLimbEnabled=capabilities["gmail.read"],
+            emailDraftsEnabled=capabilities["gmail.read"] and capabilities["gmail.drafts"],
             calendarLimbEnabled=capabilities["calendar.read"],
             calendarWriteEnabled=writes,
             calendarDirectEnabled=writes and capabilities["calendar.direct"],

@@ -47,8 +47,8 @@ GOOGLE: dict[str, Any] = {
         },
         {
             "id": "gmail.drafts", "label": "Write Gmail drafts you send yourself", "effect": "draft",
-            "scopes": [GMAIL_COMPOSE_SCOPE], "tools": [], "default": False, "available": False,
-            "requires": ["gmail.read"],
+            "scopes": [GMAIL_COMPOSE_SCOPE], "tools": ["pixel_gmail_draft_propose"], "default": False,
+            "available": True, "requires": ["gmail.read"],
         },
     ],
     # Decision 7: the primary calendar, and Inbox plus Sent metadata for 180 days.

@@ -42,21 +42,43 @@ def disconnected_config():
 
 
 class PlannerTests(unittest.TestCase):
-    def test_capabilities_map_to_the_four_limb_flags(self):
-        self.assertEqual(planner.limbs(None), dict(email=False, calendar=False, calendarWrite=False, calendarDirect=False))
-        self.assertEqual(planner.limbs(READ_ONLY), dict(email=True, calendar=True, calendarWrite=False, calendarDirect=False))
-        # Direct changes need writes, and writes need Calendar read.
+    def test_capabilities_map_to_the_five_limb_flags(self):
+        off = dict(email=False, emailDrafts=False, calendar=False, calendarWrite=False, calendarDirect=False)
+        self.assertEqual(planner.limbs(None), off)
+        self.assertEqual(planner.limbs(READ_ONLY), dict(off, email=True, calendar=True))
+        # Direct changes need writes, writes need Calendar read, and drafts need Gmail read.
         self.assertFalse(planner.limbs(dict(READ_ONLY, **{"calendar.direct": True}))["calendarDirect"])
         self.assertFalse(planner.limbs({"calendar.write": True})["calendarWrite"])
-        writes = dict(READ_ONLY, **{"calendar.write": True, "calendar.direct": True})
-        self.assertEqual(planner.limbs(writes), dict(email=True, calendar=True, calendarWrite=True, calendarDirect=True))
+        self.assertFalse(planner.limbs({"gmail.drafts": True})["emailDrafts"])
+        everything = dict(READ_ONLY, **{"calendar.write": True, "calendar.direct": True, "gmail.drafts": True})
+        self.assertEqual(planner.limbs(everything), dict(email=True, emailDrafts=True, calendar=True,
+                                                         calendarWrite=True, calendarDirect=True))
 
     def test_targets_are_exact(self):
         for bad in ({}, dict(gateway(), extra=True), dict(gateway(), email="yes"),
-                    dict(gateway(), calendarWrite=True), dict(gateway(), userTimezone="../etc"),
+                    dict(gateway(), calendarWrite=True), dict(gateway(), emailDrafts=True),
+                    dict(gateway(), emailDrafts="yes"), dict(gateway(), userTimezone="../etc"),
                     dict(gateway(), userTimezone="Not a zone")):
             with self.subTest(bad=bad), self.assertRaises(planner.PlanError):
                 planner.target(bad)
+
+    def test_a_target_journaled_before_gmail_drafts_has_drafts_off(self):
+        legacy = {key: value for key, value in gateway(READ_ONLY).items() if key != "emailDrafts"}
+        self.assertEqual(planner.target(legacy), gateway(READ_ONLY))
+        self.assertEqual(planner.plan_config(disconnected_config(), legacy, install_dir=INSTALL),
+                         planner.plan_config(disconnected_config(), gateway(READ_ONLY), install_dir=INSTALL))
+
+    def test_gmail_drafts_add_only_the_draft_tool(self):
+        drafts = dict(READ_ONLY, **{"gmail.drafts": True})
+        before = planner.plan_config(disconnected_config(), gateway(READ_ONLY), install_dir=INSTALL)
+        after = planner.plan_config(before, gateway(drafts), install_dir=INSTALL)
+        self.assertEqual(set(after["tools"]["alsoAllow"]) - set(before["tools"]["alsoAllow"]),
+                         set(planner.GMAIL_DRAFT_TOOLS))
+        self.assertFalse(set(planner.GMAIL_DRAFT_TOOLS) & set(after["agents"]["list"][0]["tools"]["deny"]))
+        # Turning drafts off denies the tool again; Gmail read stays.
+        off = planner.plan_config(after, gateway(READ_ONLY), install_dir=INSTALL)
+        self.assertEqual(off["tools"]["alsoAllow"], before["tools"]["alsoAllow"])
+        self.assertIn(planner.GMAIL_DRAFT_TOOLS[0], off["agents"]["list"][0]["tools"]["deny"])
 
     def test_connecting_adds_the_plugin_and_only_the_granted_tools(self):
         before = disconnected_config()
@@ -131,6 +153,25 @@ class PlannerTests(unittest.TestCase):
                     text.replace("PIXEL_LIMB_EMAIL_ENABLED='0'\n", "")):
             with self.subTest(bad=bad), self.assertRaises(planner.PlanError):
                 planner.plan_gateway_env(bad, gateway(READ_ONLY))
+
+    def test_the_drafts_flag_is_set_where_pixel_wrote_it(self):
+        drafts = gateway(dict(READ_ONLY, **{"gmail.drafts": True}))
+        # Pixel 4.3.35 writes the flag; an earlier Pixel has none, which means drafts are off.
+        text = ("PIXEL_LIMB_EMAIL_DRAFTS_ENABLED='0'\nPIXEL_CALENDAR_DIRECT_ENABLED='0'\nPIXEL_LIMB_EMAIL_ENABLED='0'\n"
+                "PIXEL_LIMB_CALENDAR_ENABLED='0'\nPIXEL_LIMB_CALENDAR_WRITE_ENABLED='0'\n")
+        planned = planner.plan_gateway_env(text, drafts)
+        self.assertIn("PIXEL_LIMB_EMAIL_DRAFTS_ENABLED='1'\n", planned)
+        self.assertEqual(planner.gateway_limbs(planned), planner.limbs(dict(READ_ONLY, **{"gmail.drafts": True})))
+        self.assertEqual(planner.plan_gateway_env(planned, gateway(READ_ONLY)),
+                         text.replace("PIXEL_LIMB_EMAIL_ENABLED='0'", "PIXEL_LIMB_EMAIL_ENABLED='1'")
+                         .replace("PIXEL_LIMB_CALENDAR_ENABLED='0'", "PIXEL_LIMB_CALENDAR_ENABLED='1'"))
+        earlier = text.replace("PIXEL_LIMB_EMAIL_DRAFTS_ENABLED='0'\n", "")
+        self.assertFalse(planner.gateway_limbs(earlier)["emailDrafts"])
+        self.assertNotIn("DRAFTS", planner.plan_gateway_env(earlier, gateway(READ_ONLY)))
+        with self.assertRaisesRegex(planner.PlanError, "update ODS"):
+            planner.plan_gateway_env(earlier, drafts)
+        with self.assertRaises(planner.PlanError):
+            planner.gateway_limbs(text.replace("DRAFTS_ENABLED='0'", "DRAFTS_ENABLED='yes'"))
 
 
 GATEWAY_ENV = ("OPENCLAW_STATE_DIR='/home/owner/.openclaw'\nPIXEL_CALENDAR_DIRECT_ENABLED='0'\n"
@@ -295,10 +336,11 @@ class RenderCrossCheckTests(unittest.TestCase):
 
     def test_connect_and_disconnect_match_the_renderer(self):
         writes = dict(READ_ONLY, **{"calendar.write": True})
+        drafts = dict(writes, **{"gmail.drafts": True})
         calendar_only = dict(READ_ONLY, **{"gmail.read": False})
         disconnected = self.render(None)
-        steps = [(READ_ONLY, "America/Chicago"), (writes, "America/Chicago"), (calendar_only, "Europe/Berlin"),
-                 (None, "Europe/Berlin")]
+        steps = [(READ_ONLY, "America/Chicago"), (writes, "America/Chicago"), (drafts, "America/Chicago"),
+                 (writes, "America/Chicago"), (calendar_only, "Europe/Berlin"), (None, "Europe/Berlin")]
         previous = disconnected
         for capabilities, zone in steps:
             with self.subTest(capabilities=capabilities, zone=zone):

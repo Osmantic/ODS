@@ -22,7 +22,7 @@ TEMPLATE = ("PIXEL_SOURCE_CALENDAR_ID='primary'\nPIXEL_SOURCE_TIME_ZONE='UTC'\n"
             "PIXEL_SOURCE_GMAIL_QUERY='in:inbox newer_than:30d'\nPIXEL_SOURCE_GMAIL_SENT_QUERY='in:sent'\n"
             "PIXEL_LIMB_EMAIL_ENABLED='0'\nPIXEL_LIMB_CALENDAR_ENABLED='0'\nPIXEL_LIMB_CALENDAR_WRITE_ENABLED='0'\n"
             "PIXEL_CALENDAR_DIRECT_ENABLED='0'\nPIXEL_SOURCE_LABEL='Owner'\\''s calendar'\n")
-LIMBS = {"email": True, "calendar": True, "calendarWrite": False, "calendarDirect": False}
+LIMBS = {"email": True, "emailDrafts": False, "calendar": True, "calendarWrite": False, "calendarDirect": False}
 
 
 @pytest.fixture
@@ -137,6 +137,19 @@ def test_the_broker_environment_keeps_every_key_and_quote_it_was_given(paths):
             custody.parse_env(broken)
     with pytest.raises(custody.CustodyError, match="source-broker-env-invalid"):
         custody.env_text([("A", "1")], {"B": "2"})
+
+
+def test_gmail_drafts_reach_the_broker_only_through_a_kit_that_knows_them(paths):
+    def env(gateway):
+        return custody.connection_env(paths, gateway=gateway, calendar_id="primary", time_zone=None,
+                                      gmail_window_days=180)
+    # The kit above comes from a Pixel before Gmail drafts: off leaves it as it was, on is refused.
+    assert "DRAFTS" not in env(LIMBS)
+    with pytest.raises(custody.CustodyError, match="source-broker-env-invalid"):
+        env(dict(LIMBS, emailDrafts=True))
+    (paths.kit / "source-broker.env").write_text(TEMPLATE + f"{custody.DRAFTS_FLAG}='0'\n")
+    assert dict(custody.parse_env(env(dict(LIMBS, emailDrafts=True))))[custody.DRAFTS_FLAG] == "1"
+    assert dict(custody.parse_env(env(LIMBS)))[custody.DRAFTS_FLAG] == "0"
 
 
 def test_revocation_always_ends_with_no_sign_in_here(paths):

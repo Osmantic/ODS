@@ -6,9 +6,10 @@ status reply is content-free: no tokens, messages or events ever pass through he
 
 The actions start and finish a Google sign-in, retry a stuck step, sync and
 disconnect. The owner's Google client file passes straight through to the root
-custodian; nothing here stores it. The calendar changes Portal suggests are the
-one exception to content-free replies: each carries what it would write, so the
-owner approves exactly that, and root makes only the change whose hash comes back.
+custodian; nothing here stores it. The calendar changes and Gmail drafts Portal
+suggests are the one exception to content-free replies: each carries what it
+would write, so the owner approves exactly that, and root makes only the change
+or draft whose hash comes back.
 Status and the actions answer only while PORTAL_CONNECTED_APPS_ENABLED is true;
 Settings asks whether it is.
 """
@@ -41,6 +42,7 @@ SCOPE_PATTERN = re.compile(r"^(?:https://www\.googleapis\.com/auth/[a-z0-9._-]{1
 AUTH_URL = r"^https://accounts\.google\.com/o/oauth2/auth\?[A-Za-z0-9._~%&=+-]{1,4000}$"
 MAX_CLIENT_BYTES = 4096
 PROPOSAL = r"^calendar-[0-9]{13}-[a-f0-9]{8}$"
+DRAFT = r"^gmail-draft-[0-9]{13}-[a-f0-9]{8}$"
 HEX = r"^[a-f0-9]{64}$"
 State = Literal["not-connected", "first-sync", "connected", "needs-reconnect", "blocked-by-admin",
                 "setup-broken", "missing-permission", "unknown-error", "behind"]
@@ -104,6 +106,7 @@ class GoogleConnection(Strict):
     sources: Sources
     pending: Pending | None
     waitingChanges: int | None = Field(ge=0, le=50)
+    waitingDrafts: int | None = Field(ge=0, le=50)
 
 
 class Connectors(Strict):
@@ -163,7 +166,7 @@ def _projection(raw) -> dict:
     google = status.connectors.google
     connected = google.state != "not-connected"
     if ((google.account is None) == connected or (google.capabilities is None) == connected
-            or (google.waitingChanges is None) == connected
+            or (google.waitingChanges is None) == connected or (google.waitingDrafts is None) == connected
             or any(SCOPE_PATTERN.fullmatch(scope) is None for scope in google.grantedScopes or [])):
         raise HTTPException(502, "Connected apps status could not be verified", headers=NO_STORE)
     return status.model_dump(by_alias=True)
@@ -220,14 +223,15 @@ def _attention_of(status: dict) -> dict | None:
     google = status["connectors"]["google"] if status["available"] else None
     if google is None:
         return None
-    pending, waiting = google["pending"], google["waitingChanges"] or 0
+    pending, waiting, drafts = google["pending"], google["waitingChanges"] or 0, google["waitingDrafts"] or 0
+    found = {"state": google["state"], "reason": google["reason"], "waiting": waiting, "drafts": drafts}
     if pending and pending["error"] and pending["phase"] in ("activating", "deactivating"):
-        return {"state": google["state"], "reason": google["reason"], "step": "update-stopped", "waiting": waiting}
+        return dict(found, step="update-stopped")
     if google["state"] in ATTENTION_STATES or google["reason"] == "sync-stopped":
-        return {"state": google["state"], "reason": google["reason"], "step": None, "waiting": waiting}
-    if waiting:
-        # A calendar change Portal suggested waits for the owner's approval.
-        return {"state": google["state"], "reason": google["reason"], "step": "changes-waiting", "waiting": waiting}
+        return dict(found, step=None)
+    if waiting or drafts:
+        # A calendar change or Gmail draft Portal suggested waits for the owner's approval.
+        return dict(found, step="changes-waiting")
     return None
 
 
@@ -304,6 +308,24 @@ MESSAGES: dict[str, tuple[str, bool]] = {
                                "still want it.", True),
     "calendar-undo-unavailable": ("This change can't be undone any more: the event changed or is gone. Check "
                                   "your calendar.", False),
+    "gmail-drafts-off": ("Gmail drafts are off for this connection. Decline this draft, or connect Google again "
+                         "with Gmail drafts on.", False),
+    "gmail-draft-mismatch": ("This draft is different from the one shown. Read it again, then approve it.", False),
+    "gmail-draft-unknown": ("This draft is no longer waiting. Refresh the list.", False),
+    "gmail-draft-invalid": ("ODS can't create this draft. Decline it, and ask Portal again if you still want it.",
+                            False),
+    "gmail-draft-unconfirmed": ("Gmail hasn't confirmed this draft yet, so ODS won't create it again. Check your "
+                                "Drafts folder in a minute.", False),
+    "gmail-draft-not-made": ("The draft wasn't created. Try again, or decline it and ask Portal to write it "
+                             "again.", True),
+    "gmail-draft-not-checkable": ("Gmail can't confirm this draft afterwards. Check your Drafts folder, then dismiss "
+                                  "it here.", False),
+    "gmail-draft-result-invalid": ("ODS couldn't confirm what happened with this draft. Check your Drafts folder "
+                                   "before trying again.", True),
+    "gmail-draft-unsafe": ("ODS couldn't read this draft safely. Decline it, and ask Portal again if you still "
+                           "want it.", True),
+    "source-broker-env-invalid": ("Connected apps need an ODS update on this machine. Update ODS, then try "
+                                  "again.", True),
 }
 FALLBACK = ("ODS couldn't finish this step. Try again, and ask on Discord if it keeps happening.", True)
 
@@ -458,6 +480,63 @@ class ChangeReply(Strict):
     outcome: Literal["applied", "rejected", "not-applied", "unconfirmed", "waiting", "declined"]
 
 
+Recipient = Annotated[str, Field(min_length=3, max_length=320)]
+
+
+class DraftReplyTo(Strict):
+    """The message a reply answers, as the last email sync saw it; None when that sync does not hold it."""
+
+    sender: str | None = Field(alias="from", max_length=320)
+    subject: str | None = Field(max_length=998)
+
+
+class GmailDraft(Strict):
+    """Everything the draft holds; Gmail keeps it in Drafts, and the owner sends it."""
+
+    to: list[Recipient] = Field(min_length=1, max_length=50)
+    cc: list[Recipient] = Field(max_length=50)
+    subject: str = Field(max_length=998, pattern=r"^[^\r\n]*$")
+    body: str = Field(min_length=1, max_length=100000)
+    replyTo: DraftReplyTo | None
+
+
+class DraftProposal(Strict):
+    proposalId: str = Field(pattern=DRAFT)
+    sha256: str | None = Field(pattern=HEX)
+    state: Literal["waiting", "unconfirmed", "applied", "rejected", "not-applied", "invalid"]
+    createdAt: Short | None
+    draft: GmailDraft | None
+    tooLarge: bool
+
+    @model_validator(mode="after")
+    def _consistent(self):
+        unreadable = self.state == "invalid"
+        shown = not unreadable and not self.tooLarge
+        if ((self.sha256 is None) == shown or (self.draft is None) == shown
+                or unreadable and (self.tooLarge or self.createdAt)):
+            raise ValueError("inconsistent Gmail draft")
+        return self
+
+
+class DraftsReply(Strict):
+    drafts: list[DraftProposal] = Field(max_length=20)
+    more: int = Field(ge=0)
+
+
+class DraftApproveRequest(Strict):
+    proposalId: str = Field(pattern=DRAFT)
+    sha256: str = Field(pattern=HEX)
+
+
+class DraftRequest(Strict):
+    proposalId: str = Field(pattern=DRAFT)
+
+
+class DraftActionReply(Strict):
+    proposalId: str = Field(pattern=DRAFT)
+    outcome: Literal["applied", "rejected", "not-applied", "unconfirmed", "waiting", "declined"]
+
+
 class OutcomeReply(Strict):
     outcome: Literal["applied", "unchanged", "cancelled", "started", "disconnected"]
     revoked: bool | None = None
@@ -531,11 +610,12 @@ async def google_changes():
     return await _action("/v1/pixel/connections/google/changes", {}, ProposalsReply, 45)
 
 
-async def _change_action(path: str, payload: dict, timeout: float) -> JSONResponse:
+async def _change_action(path: str, payload: dict, timeout: float,
+                         reply_model: type[BaseModel] = ChangeReply) -> JSONResponse:
     try:
-        return await _action(path, payload, ChangeReply, timeout)
+        return await _action(path, payload, reply_model, timeout)
     finally:
-        # Portal's chat line counts waiting changes; let it see this one at once.
+        # Portal's chat line counts waiting changes and drafts; let it see this one at once.
         _attention.update(until=0.0)
 
 
@@ -567,3 +647,28 @@ async def google_activity():
 async def undo_google_change(request: ChangeRequest):
     """Reverse one change Portal made by itself; the owner's click is the approval."""
     return await _change_action("/v1/pixel/connections/google/undo", request.model_dump(), 180)
+
+
+# ---------------------------------------------------------------- Gmail drafts Portal writes
+
+@router.get("/api/pixel/connections/google/drafts", dependencies=[Depends(verify_api_key)])
+async def google_drafts():
+    """Gmail drafts Portal wrote, oldest first; approving one carries the hash shown with it."""
+    return await _action("/v1/pixel/connections/google/drafts", {}, DraftsReply, 45)
+
+
+@router.post("/api/pixel/connections/google/drafts/approve", dependencies=[Depends(verify_api_key)])
+async def approve_google_draft(request: DraftApproveRequest):
+    """Create exactly the draft the owner read, in Gmail's Drafts; nothing is sent."""
+    return await _change_action("/v1/pixel/connections/google/approve", request.model_dump(), 180, DraftActionReply)
+
+
+@router.post("/api/pixel/connections/google/drafts/decline", dependencies=[Depends(verify_api_key)])
+async def decline_google_draft(request: DraftRequest):
+    return await _change_action("/v1/pixel/connections/google/decline", request.model_dump(), 45, DraftActionReply)
+
+
+@router.post("/api/pixel/connections/google/drafts/check", dependencies=[Depends(verify_api_key)])
+async def check_google_draft(request: DraftRequest):
+    """Ask whether Gmail made a draft it did not confirm; nothing is created again."""
+    return await _change_action("/v1/pixel/connections/google/check", request.model_dump(), 180, DraftActionReply)

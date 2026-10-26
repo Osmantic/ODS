@@ -153,10 +153,24 @@ class OnboardingMappingTests(unittest.TestCase):
     def test_a_connected_account_turns_on_exactly_its_capabilities(self):
         self.assertEqual(state.onboarding_overrides(record(), google_custody=True), {
             "timeZone": "America/Chicago", "userTimezone": "America/Chicago",
-            "emailLimbEnabled": True, "calendarLimbEnabled": True,
+            "emailLimbEnabled": True, "emailDraftsEnabled": False, "calendarLimbEnabled": True,
             "calendarWriteEnabled": False, "calendarDirectEnabled": False,
             "googleAccount": "owner@example.com", "calendarId": "primary", "gmailWindowDays": 180,
         })
+
+    def test_gmail_drafts_need_gmail_read(self):
+        capabilities = {"calendar.read": True, "calendar.write": False, "calendar.direct": False,
+                        "gmail.read": False, "gmail.drafts": True}
+        overrides = state.onboarding_overrides(record(capabilities=dict(capabilities)), google_custody=True)
+        self.assertEqual((overrides["emailLimbEnabled"], overrides["emailDraftsEnabled"]), (False, False))
+        capabilities["gmail.read"] = True
+        overrides = state.onboarding_overrides(record(capabilities=dict(capabilities)), google_custody=True)
+        self.assertEqual((overrides["emailLimbEnabled"], overrides["emailDraftsEnabled"]), (True, True))
+        # Nothing connected leaves the answer out, so a disconnected render keeps its bytes.
+        answers = state.connection_answers(None, google_custody=False)
+        self.assertIsNone(answers["emailDraftsEnabled"])
+        self.assertTrue(state.valid_connection_answers(answers))
+        self.assertFalse(state.valid_connection_answers(dict(answers, emailDraftsEnabled="yes")))
 
     def test_calendar_writes_need_reads_and_direct_writes_need_writes(self):
         capabilities = {"calendar.read": False, "calendar.write": True, "calendar.direct": True,
