@@ -105,6 +105,12 @@ jobs:
         env:
           OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node --test ods/extensions/services/pixel-agent/tests/runtime_8k_prompt_budget.integration.mjs
+      - name: Verify native scheduled tasks survive restart and retain real run history
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: python3 ods/extensions/services/pixel-agent/tests/test_scheduled_tasks_runtime.py
       - name: Verify deferred delegation through the real gateway and Portal ingress
         shell: bash
         env:

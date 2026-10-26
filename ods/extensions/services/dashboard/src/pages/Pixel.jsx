@@ -71,6 +71,7 @@ import {
   CheckCircle2,
   Code2,
   Copy,
+  Clock3,
   Loader2,
   Plus,
   PanelRightOpen,
@@ -2220,6 +2221,9 @@ export default function Pixel({ systemStatus = null }) {
               <PixelProviderScopes chatId={chatIdRef.current} sending={sending} />
             </div></details>
           </div></details>
+          <button type="button" aria-label="Scheduled tasks" onClick={() => { setWorkspaceOpen(true); setPreviewCollapsed(false); setWorkspaceRequest({chatId:chatIdRef.current,kind:'schedules'}) }} className="inline-flex items-center gap-1.5 bg-transparent px-2.5 py-1.5 text-xs text-theme-text-secondary hover:text-theme-text">
+            <Clock3 size={14}/><span className="hidden sm:inline">Scheduled tasks</span>
+          </button>
           <button type="button" aria-label="Workspace" aria-expanded={workspaceOpen} onClick={() => { setWorkspaceOpen(value => !value); setPreviewCollapsed(false) }} className="inline-flex items-center gap-1.5 bg-transparent px-2.5 py-1.5 text-xs text-theme-text-secondary hover:text-theme-text">
             <PanelRightOpen size={14}/><span>Workspace</span>
           </button>

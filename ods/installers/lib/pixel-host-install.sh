@@ -3108,7 +3108,7 @@ def write(path, content, mode, uid=0, gid=0):
         if os.path.exists(temporary): os.unlink(temporary)
 
 host = code_source / 'extensions/services/pixel-agent/host'
-for name in ('access_mode_server.py', 'unix_peer.py', 'access_mode_worker.py', 'pixel_access_mode.py', 'access_mode_config.py', 'settings_transaction.py', 'provider_transaction.py', 'model_transaction.py', 'access_release_transaction.py'):
+for name in ('access_mode_server.py', 'unix_peer.py', 'access_mode_worker.py', 'pixel_access_mode.py', 'access_mode_config.py', 'settings_transaction.py', 'provider_transaction.py', 'model_transaction.py', 'access_release_transaction.py', 'scheduled_tasks_owner.py', 'scheduled_tasks_gateway.mjs'):
     write(target / name, (host / name).read_bytes(), 0o644)
 write(target / 'pixel_access_bridge.py', (code_source / 'bin/pixel_access_bridge.py').read_bytes(), 0o644)
 write(target / 'pixel_gateway_service.py', (code_source / 'bin/pixel_gateway_service.py').read_bytes(), 0o644)
@@ -3117,7 +3117,7 @@ write(target / 'pixel_access_reconcile.py', (code_source / 'bin/pixel_access_rec
 write(target / 'pixel_model_transition.py', (code_source / 'bin/pixel_model_transition.py').read_bytes(), 0o644)
 write(target / 'pixel_source_upgrade.py', (code_source / 'bin/pixel_source_upgrade.py').read_bytes(), 0o644)
 write(target / 'pixel_access_protocol.py', (code_source / 'bin/pixel_access_protocol.py').read_bytes(), 0o644)
-for name in ('pixel_model_contract.py', 'pixel_model_coordinator.py'):
+for name in ('pixel_model_contract.py', 'pixel_model_coordinator.py', 'pixel_schedules.py'):
     write(target / name, (code_source / 'bin' / name).read_bytes(), 0o644)
 settings_package = target / 'pixel_settings'
 settings_package.mkdir(mode=0o755, exist_ok=True)

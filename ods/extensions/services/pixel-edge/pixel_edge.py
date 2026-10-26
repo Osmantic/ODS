@@ -29,6 +29,7 @@ from chat_context import project_context, valid_history_snapshot
 from image_admission import ImageWorkBudget
 from access_mode import (public_status as public_access_status, valid_change as valid_access_change,
                          valid_model_control, public_model_control)
+from schedule_contract import parse_request as parse_schedule_request, validate_reply as schedule_reply
 
 
 def valid_live_task_event(event):
@@ -1310,6 +1311,37 @@ async def handle_model_control(request: web.Request):
         return web.json_response({'error': 'model-control-unavailable'}, status=503)
 
 
+async def handle_schedules(request: web.Request):
+    """Owner-only fixed task operations; neither chat credentials nor arbitrary RPCs."""
+    headers = {'Cache-Control': 'no-store'}
+    fail = _check_preview_auth(request)
+    if fail is not None:
+        fail.headers.update(headers)
+        return fail
+    if _constant_time_compare(config_token, preview_proxy_token):
+        return web.json_response({'error': 'owner-auth-unavailable'}, status=503, headers=headers)
+    if request.query_string or request.content_type != 'application/json':
+        return web.json_response({'error': 'invalid-task'}, status=400, headers=headers)
+    try:
+        data = parse_schedule_request(await _read_bounded(request.content, 16384))
+    except (ValueError, OSError, RecursionError):
+        return web.json_response({'error': 'invalid-task'}, status=400, headers=headers)
+    try:
+        connector, origin = _access_transport()
+        async with ClientSession(connector=connector, timeout=ClientTimeout(total=188, sock_connect=3), trust_env=False) as session:
+            async with session.post(origin + '/v1/schedules', json=data, allow_redirects=False,
+                    headers={'Authorization': 'Bearer ' + preview_proxy_token}) as response:
+                raw = await _read_bounded(response.content, 525312)
+                if response.status != 200:
+                    status = response.status if response.status in (400, 403, 409, 503) else 503
+                    return web.json_response({'error': _controller_reason(raw) or 'scheduler-unavailable'}, status=status, headers=headers)
+                value = schedule_reply(data, strict_json(raw))
+        return web.json_response(value, headers=headers)
+    except (ClientError, asyncio.TimeoutError, OSError, ValueError, RecursionError):
+        # An uncertain write is reconciled through the owner's ledger, never retried here.
+        return web.json_response({'error': 'scheduler-unavailable'}, status=503, headers=headers)
+
+
 async def handle_transition(request: web.Request):
     # Reuse the server-injected Dashboard credential, never the model/chat key.
     # This credential already authenticates the private preview relay and must
@@ -2017,6 +2049,7 @@ def create_app() -> web.Application:
     app.router.add_get('/v1/access-mode', handle_access_mode, allow_head=False)
     app.router.add_post('/v1/access-mode', handle_access_mode)
     app.router.add_post('/v1/model-control', handle_model_control)
+    app.router.add_post('/v1/schedules', handle_schedules)
     app.router.add_get("/v1/transition", handle_transition)
     app.router.add_post("/v1/transition/{operation:acquire|drain|release|recover}", handle_transition)
     app.router.add_post("/v1/chat/completions", handle_chat_completions)

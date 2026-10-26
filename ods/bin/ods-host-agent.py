@@ -10370,6 +10370,41 @@ class AgentHandler(BaseHTTPRequestHandler):
         else:
             json_response(self, 404, {"error": "Not found"})
 
+    def _handle_pixel_schedules(self):
+        if not check_auth(self):
+            return
+        from pixel_schedules import MAX_REQUEST, ScheduleError, parse_request
+        from pixel_access_relay import AccessRelayError, request_runtime_schedules
+        try:
+            lengths = self.headers.get_all('Content-Length', [])
+            if (len(lengths) != 1 or not re.fullmatch(r'[0-9]{1,6}', lengths[0])
+                    or self.headers.get('Transfer-Encoding')
+                    or self.headers.get_content_type() != 'application/json'):
+                raise ScheduleError('invalid-task')
+            length = int(lengths[0])
+            if not 1 <= length <= MAX_REQUEST:
+                raise ScheduleError('task-too-large')
+            raw = _read_request_body_bytes(self, length)
+            if len(raw) != length:
+                raise ScheduleError('invalid-task')
+            request = parse_request(raw)
+        except (ValueError, RecursionError):
+            json_response(self, 400, {'error': 'invalid-task'}, no_store=True)
+            return
+        except (OSError, TimeoutError):
+            json_response(self, 408, {'error': 'invalid-task'}, no_store=True)
+            return
+        try:
+            status, body = request_runtime_schedules(request, config=load_env(INSTALL_DIR / '.env'), data_dir=DATA_DIR)
+            if status != 200:
+                code = body.get('error') if type(body) is dict else None
+                if type(code) is not str or not re.fullmatch(r'[a-z][a-z0-9-]{0,95}', code):
+                    code = 'scheduler-unavailable'
+                body = {'error': code}
+            json_response(self, status, body, no_store=True)
+        except (AccessRelayError, OSError, ValueError, RecursionError):
+            json_response(self, 503, {'error': 'scheduler-unavailable'}, no_store=True)
+
     def _handle_pixel_access_mode(self, change: bool):
         if not check_auth(self):
             return
@@ -10960,6 +10995,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_pixel_approval_terminal()
         elif self.path == "/v1/pixel/access-mode":
             self._handle_pixel_access_mode(True)
+        elif self.path == "/v1/pixel/schedules":
+            self._handle_pixel_schedules()
         elif self.path == "/v1/pixel/apps/open":
             self._handle_pixel_open_app()
         elif self.path in ("/v1/opencode/start", "/v1/opencode/setup"):

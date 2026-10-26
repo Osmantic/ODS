@@ -28,6 +28,29 @@ class ScheduleError(ValueError):
         self.code = code
 
 
+def parse_request(raw):
+    """Bounded strict JSON shared by owner-authenticated HTTP boundaries."""
+    if len(raw) > MAX_REQUEST:
+        raise ScheduleError("task-too-large")
+
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError()
+            result[key] = value
+        return result
+
+    def constant(_value):
+        raise ValueError()
+
+    try:
+        value = json.loads(raw, object_pairs_hook=pairs, parse_constant=constant)
+        return validate_request(value)
+    except (ValueError, RecursionError):
+        raise ScheduleError("invalid-task") from None
+
+
 def _text(value, maximum, *, empty=False):
     if (type(value) is not str or (not value.strip() and not empty)
             or len(value.encode("utf-8")) > maximum or "\x00" in value):
@@ -56,7 +79,7 @@ def request_id(value):
     return value
 
 
-def schedule(value):
+def schedule(value, *, verify_timezone=True):
     """Compile familiar frequency/time inputs to native at/cron definitions."""
     if type(value) is not dict:
         raise ScheduleError("invalid-task")
@@ -79,10 +102,13 @@ def schedule(value):
     if type(clock) is not str or not re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", clock):
         raise ScheduleError("invalid-task-time")
     zone = _text(value["timeZone"], 100)
-    try:
-        ZoneInfo(zone)
-    except (ZoneInfoNotFoundError, ValueError):
-        raise ScheduleError("invalid-task-timezone") from None
+    if not re.fullmatch(r"[A-Za-z0-9_+-]+(?:/[A-Za-z0-9_.+-]+)*", zone) or any(part in ('.', '..') for part in zone.split('/')):
+        raise ScheduleError('invalid-task-timezone')
+    if verify_timezone:
+        try:
+            ZoneInfo(zone)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ScheduleError("invalid-task-timezone") from None
     day = value["weekday"]
     if frequency == "weekly":
         _integer(day, 0, 6)
@@ -120,7 +146,9 @@ def validate_request(value):
         if any(ord(char) < 32 for char in value["name"]):
             raise ScheduleError("invalid-task")
         _text(value["task"], TASK_BYTES)
-        schedule(value["schedule"])
+        # Public relays validate the shape without installing another timezone
+        # database. The owner compiles and verifies the IANA name before any RPC.
+        schedule(value["schedule"], verify_timezone=False)
     if len(json.dumps(value).encode("utf-8")) > MAX_REQUEST:
         raise ScheduleError("task-too-large")
     return value
@@ -289,4 +317,20 @@ def validate_response(value):
         raise ScheduleError("invalid-scheduler-response")
     if len(json.dumps(value, allow_nan=False).encode()) > MAX_RESPONSE:
         raise ScheduleError("task-result-too-large")
+    return value
+
+
+def validate_reply(request, value):
+    """Refuse a valid-looking response for a different page or task."""
+    validate_request(request)
+    validate_response(value)
+    expected = 'tasks' if request['action'] in ('list', 'archived') else 'runs' if request['action'] == 'runs' else 'change'
+    if value['kind'] != expected:
+        raise ScheduleError('invalid-scheduler-response')
+    if expected in ('tasks', 'runs') and value['offset'] != request['offset']:
+        raise ScheduleError('invalid-scheduler-response')
+    if expected == 'runs' and value['taskId'] != request['id']:
+        raise ScheduleError('invalid-scheduler-response')
+    if request['action'] in ('set-enabled', 'remove') and value['task'] is not None and value['task']['id'] != request['id']:
+        raise ScheduleError('invalid-scheduler-response')
     return value

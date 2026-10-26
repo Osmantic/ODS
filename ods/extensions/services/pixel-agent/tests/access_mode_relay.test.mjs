@@ -5,10 +5,45 @@ import net from 'node:net';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import {handleAccessMode, readAccessOwnerKey, requestAccessController} from '../host/access_mode_relay.mjs';
+import {handleAccessMode, handleSchedules, readAccessOwnerKey, requestAccessController} from '../host/access_mode_relay.mjs';
+import {createHash} from 'node:crypto';
 
 const ownerKey = 'o'.repeat(64);
 const change = {mode:'full-access', confirmed:true, revision:'a'.repeat(64)};
+
+test('schedule relay binds the authenticated ingress key, not caller-selected authority', async t => {
+  const calls=[];
+  const page={kind:'tasks',items:[],offset:0,hasMore:false,nextOffset:null,pendingCreates:[],pendingCount:0,pendingRemovals:[]};
+  const server=http.createServer((req,res)=>void handleSchedules(req,res,{ownerKey,request:async value=>{calls.push(value);return {status:200,body:page}}}));
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const url=`http://127.0.0.1:${server.address().port}/v1/schedules`;
+  const body=JSON.stringify({action:'list',offset:0});
+  for (const key of ['', 'c'.repeat(64)]) {
+    assert.equal((await fetch(url,{method:'POST',headers:{authorization:`Bearer ${key}`,'content-type':'application/json'},body})).status,403);
+  }
+  assert.equal(calls.length,0);
+  const response=await fetch(url,{method:'POST',headers:{authorization:`Bearer ${ownerKey}`,'content-type':'application/json'},body});
+  assert.equal(response.status,200);assert.deepEqual(await response.json(),page);
+  assert.equal(response.headers.get('cache-control'),'no-store');
+  assert.deepEqual(calls,[{operation:'schedules',request:{action:'list',offset:0},source:{kind:'owner-key',identity:createHash('sha256').update(ownerKey).digest('hex')}}]);
+  assert.equal((await fetch(url+'?owner=other',{method:'POST',headers:{authorization:`Bearer ${ownerKey}`,'content-type':'application/json'},body})).status,400);
+  assert.equal(calls.length,1);
+});
+
+test('large schedule results use their own bounded socket frame; legacy frame cap stays intact', async t => {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'schedules-socket-'));
+  const socketPath=path.join(dir,'control.sock');
+  const body={kind:'runs',taskId:'fixture-job',items:[{timestamp:1,status:'ok',summary:'A'.repeat(100000),summaryTruncated:false,durationMs:1}],offset:0,hasMore:false,nextOffset:null};
+  const server=net.createServer(socket=>socket.once('data',()=>socket.end(JSON.stringify({status:200,body})+'\n')));
+  await new Promise(resolve=>server.listen(socketPath,resolve));
+  t.after(async()=>{await new Promise(resolve=>server.close(resolve));fs.rmSync(dir,{recursive:true,force:true});});
+  const payload={operation:'schedules',request:{action:'runs',id:'fixture-job',offset:0}};
+  assert.deepEqual((await requestAccessController(payload,{socketPath,timeout:1000})).body,body);
+  await assert.rejects(requestAccessController({operation:'status'},{socketPath,timeout:1000}));
+  body.items[0].summary='A'.repeat(525313);
+  await assert.rejects(requestAccessController(payload,{socketPath,timeout:1000}));
+});
 
 test('owner-authenticated relay keeps the exact change and rejects ordinary chat authority', async t => {
   const calls=[];

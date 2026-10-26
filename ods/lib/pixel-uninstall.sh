@@ -201,6 +201,9 @@ sources = {
     "pixel_access_protocol.py": install / "bin/pixel_access_protocol.py",
     "pixel_model_contract.py": install / "bin/pixel_model_contract.py",
     "pixel_model_coordinator.py": install / "bin/pixel_model_coordinator.py",
+    "pixel_schedules.py": install / "bin/pixel_schedules.py",
+    "scheduled_tasks_owner.py": install / "extensions/services/pixel-agent/host/scheduled_tasks_owner.py",
+    "scheduled_tasks_gateway.mjs": install / "extensions/services/pixel-agent/host/scheduled_tasks_gateway.mjs",
 }
 for name in ("__init__.py", "contract.py", "projection.py", "runtime.py", "coordinator.py"):
     sources[f"pixel_settings/{name}"] = install / "bin/pixel_settings" / name
@@ -218,7 +221,8 @@ for name in (
 # absence.  If either side exists, normal byte and completeness validation
 # remains mandatory, so a partial current bundle still fails closed.
 expected_sources = set(sources)
-for later_module in ("pixel_gateway_service.py", "access_release_transaction.py", "pixel_source_upgrade.py"):
+for later_module in ("pixel_gateway_service.py", "access_release_transaction.py", "pixel_source_upgrade.py",
+                     "pixel_schedules.py", "scheduled_tasks_owner.py", "scheduled_tasks_gateway.mjs"):
     if (not present(sources[later_module])
             and not present(program / later_module)):
         expected_sources.remove(later_module)

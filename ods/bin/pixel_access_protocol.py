@@ -5,9 +5,11 @@ from pathlib import PurePosixPath
 import re
 import uuid
 from pixel_model_contract import target as model_target, ModelError
+from pixel_schedules import validate_request as schedule_request, validate_response as schedule_response, ScheduleError
 
 MAX_REQUEST = 16384
 MAX_REPLY = 8192
+SCHEDULE_REPLY = 525312
 BASE = {"operation", "openclaw", "config_sha256", "confirmed"}
 KEYS = {"status": BASE, "full-access": BASE, "sandboxed": BASE, "settings-status": BASE,
         "settings-apply": BASE | {"transaction_id", "settings_revision", "preferences", "capabilities"},
@@ -26,6 +28,8 @@ KEYS.update({"model-status": BASE, "model-begin": BASE | {"transaction_id"},
 HOOKS.update({name: (() if name == "model-status" else ("busy",)) for name in KEYS if name.startswith("model-")})
 KEYS['access-relocate'] = BASE | {'relocation'}
 HOOKS['access-relocate'] = ('busy',)
+KEYS['schedules'] = BASE | {'schedule_request', 'gateway_port'}
+HOOKS['schedules'] = ()
 KEYS.update({
     'release-baseline': BASE | {'transaction_id'},
     'release-abort': BASE | {'transaction_id', 'receipt_sha256'},
@@ -97,13 +101,22 @@ def control_request(value):
             "settings-status": {"operation", "data_dir_id"},
             "settings-change": {"operation", "data_dir_id", "request"},
             "provider-status": {"operation", "data_dir_id"},
-            "provider-change": {"operation", "data_dir_id", "request"}}
+            "provider-change": {"operation", "data_dir_id", "request"},
+            "schedules": {"operation", "source", "request"}}
     if operation not in keys or set(value) != keys[operation]:
         raise ProtocolError("invalid-request")
     if operation.startswith(("settings-", "provider-")) and (type(value["data_dir_id"]) is not str or not HEX.fullmatch(value["data_dir_id"])):
         raise ProtocolError("invalid-request")
     if "request" in value and type(value["request"]) is not dict:
         raise ProtocolError("invalid-request")
+    if operation == 'schedules':
+        source = value['source']
+        if (type(source) is not dict or set(source) != {'kind', 'identity'}
+                or source['kind'] not in ('data-directory', 'owner-key')
+                or type(source['identity']) is not str or not HEX.fullmatch(source['identity'])):
+            raise ProtocolError('invalid-request')
+        try: schedule_request(value['request'])
+        except ScheduleError: raise ProtocolError('invalid-request') from None
     if operation == 'installer-source-begin' and value['request'] != {}:
         raise ProtocolError('invalid-request')
     if operation.startswith('installer-release-'):
@@ -176,6 +189,11 @@ def request(value):
             raise ProtocolError("owner-protocol-failed")
     elif type(value["config_sha256"]) is not str or not HEX.fullmatch(value["config_sha256"]):
         raise ProtocolError("owner-protocol-failed")
+    if operation == 'schedules':
+        if value['confirmed'] is not False or type(value['gateway_port']) is not int or not 1 <= value['gateway_port'] <= 65535:
+            raise ProtocolError('owner-protocol-failed')
+        try: schedule_request(value['schedule_request'])
+        except ScheduleError: raise ProtocolError('owner-protocol-failed') from None
     if operation.startswith('release-'):
         if (value['confirmed'] is not False or type(value['transaction_id']) is not str
                 or not HEX.fullmatch(value['transaction_id'])):
@@ -270,6 +288,9 @@ def hook_reply(operation, name, value):
 def result(operation, value):
     if type(value) is not dict:
         raise ProtocolError("owner-protocol-failed")
+    if operation == 'schedules':
+        try: return schedule_response(value)
+        except ScheduleError: raise ProtocolError('owner-protocol-failed') from None
     if operation.startswith('release-'):
         keys = ({'beforeSha', 'afterSha'} if operation == 'release-prepare'
                 else {'configSha256', 'receiptSha256'} if operation == 'release-baseline' else {'configSha256'})

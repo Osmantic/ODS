@@ -1,0 +1,42 @@
+.portal-schedules { width:100%; min-width:0; overflow:auto; padding:22px; font-size:13px; color:rgb(var(--theme-text-secondary)); background:transparent; }
+.portal-schedules-heading,.portal-schedules-result header { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+.portal-schedules h2 { margin:0; font-size:17px; font-weight:600; color:rgb(var(--theme-text)); }
+.portal-schedules h3 { margin:0 0 8px; font-size:14px; font-weight:600; color:rgb(var(--theme-text)); overflow-wrap:anywhere; }
+.portal-schedules h4 { margin:24px 0 12px; font-size:13px; font-weight:500; color:rgb(var(--theme-text)); }
+.portal-schedules p { margin:6px 0; line-height:1.6; }
+.portal-schedules button { display:inline-flex; align-items:center; justify-content:center; gap:6px; padding:7px 9px; border-radius:8px; color:rgb(var(--theme-text-secondary)); font-size:12px; background:transparent; }
+.portal-schedules button:hover:not(:disabled) { color:rgb(var(--theme-text)); background:rgb(var(--theme-text) / .05); }
+.portal-schedules button:disabled { opacity:.5; cursor:default; }
+.portal-schedules :is(button,input,select,textarea):focus-visible { outline:2px solid var(--theme-focus); outline-offset:2px; }
+.portal-schedules .portal-schedules-help,.portal-schedules-time,.portal-schedules-next { color:rgb(var(--theme-text-muted)); font-size:12px; }
+.portal-schedules>.portal-schedules-help { margin:18px 0; }
+.portal-schedules-notice,.portal-schedules-pending { padding:12px; margin:14px 0; border:1px solid rgb(var(--theme-border)); border-radius:10px; background:rgb(var(--theme-text) / .025); overflow-wrap:anywhere; }
+.portal-schedules-pending small { display:block; margin-top:8px; color:rgb(var(--theme-text-muted)); line-height:1.5; }
+.portal-schedules-pending>div,.portal-schedules-actions { display:flex; flex-wrap:wrap; gap:6px; }
+.portal-schedules-switch { display:flex; gap:8px; margin:18px 0 14px; border-bottom:1px solid rgb(var(--theme-border) / .6); padding-bottom:8px; }
+.portal-schedules-switch button[aria-pressed=true] { color:rgb(var(--theme-text)); }
+.portal-schedules .portal-schedules-new { border:1px solid rgb(var(--theme-border)); }
+.portal-schedules-row { display:flex!important; width:100%; text-align:left; justify-content:space-between!important; gap:16px!important; padding:15px 4px!important; border-bottom:1px solid rgb(var(--theme-border) / .5); border-radius:0!important; }
+.portal-schedules-row>span:first-child { display:flex; flex-direction:column; min-width:0; gap:5px; overflow-wrap:anywhere; }
+.portal-schedules-row strong { color:rgb(var(--theme-text)); font-weight:500; }
+.portal-schedules-row small { color:rgb(var(--theme-text-muted)); }
+.portal-schedules-next { max-width:130px; flex-shrink:0; text-align:right; line-height:1.5; }
+.portal-schedules-empty { display:flex; align-items:center; text-align:center; flex-direction:column; gap:10px; padding:45px 15px; color:rgb(var(--theme-text-muted)); }
+.portal-schedules-empty p { max-width:290px; }
+.portal-schedules-pages { display:flex; justify-content:space-between; gap:8px; margin:16px 0 4px; }
+.portal-schedules-form { display:flex; flex-direction:column; gap:14px; margin-top:20px; }
+.portal-schedules-form label { display:flex; flex-direction:column; gap:7px; color:rgb(var(--theme-text-secondary)); font-size:12px; }
+.portal-schedules-form :is(input,textarea,select) { width:100%; min-width:0; padding:10px 12px; background:rgb(var(--theme-text) / .025); border:1px solid rgb(var(--theme-border)); border-radius:8px; color:rgb(var(--theme-text)); font:inherit; }
+.portal-schedules-form textarea { resize:vertical; min-height:100px; }
+.portal-schedules-form select option { color:rgb(var(--theme-text)); background:rgb(var(--theme-card)); }
+.portal-schedules .portal-schedules-form button[type=submit] { color:rgb(var(--theme-text)); border:1px solid rgb(var(--theme-border)); }
+.portal-schedules-detail { margin-top:20px; }
+.portal-schedules .portal-schedules-back { margin:0 0 16px -9px; }
+.portal-schedules-instructions { white-space:pre-wrap; overflow-wrap:anywhere; margin:18px 0!important; }
+.portal-schedules-result { border-top:1px solid rgb(var(--theme-border) / .6); padding:14px 0; }
+.portal-schedules-result header { font-size:11px; gap:10px; color:rgb(var(--theme-text-muted)); }
+.portal-schedules-result strong { color:rgb(var(--theme-text-secondary)); font-weight:500; }
+.portal-schedules-result p { white-space:pre-wrap; overflow-wrap:anywhere; margin-top:14px; }
+.portal-schedules-result small { display:block; margin-top:12px; color:rgb(var(--theme-text-muted)); }
+.portal-schedules-loading { color:rgb(var(--theme-text-muted)); font-size:12px; }
+@container portal-workbench (max-width:420px) { .portal-schedules { padding:16px; }.portal-schedules-next { max-width:100px; }.portal-schedules-result header { flex-wrap:wrap; } }

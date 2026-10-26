@@ -20,7 +20,7 @@ for path in (directory, *directory.parents, *(directory / name for name in (
         "pixel_access_mode.py", "access_mode_config.py", "settings_transaction.py", "pixel_access_protocol.py", "model_transaction.py", "pixel_model_contract.py", "access_release_transaction.py",
         "pixel_settings", "pixel_settings/__init__.py", "pixel_settings/contract.py", "pixel_settings/projection.py",
         "provider_transaction.py", "pixel_provider", "pixel_provider/__init__.py", "pixel_provider/store.py",
-        "pixel_provider/activation_config.py"))):
+        "pixel_provider/activation_config.py", "pixel_schedules.py", "scheduled_tasks_owner.py", "scheduled_tasks_gateway.mjs"))):
     info = path.lstat()
     if stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
         raise RuntimeError("controller program custody unavailable")
@@ -73,6 +73,22 @@ def main():
             return False
 
     try:
+        if request['operation'] == 'schedules':
+            from pixel_schedules import ScheduleError
+            from scheduled_tasks_owner import NativeTasks, gateway_call
+            try:
+                _path, _mode, raw, config = controller._load_config(path)
+                if controller._sha256_bytes(raw) != request['config_sha256']:
+                    raise ScheduleError('task-config-changed')
+                token = config.get('gateway', {}).get('auth', {}).get('token')
+                if type(token) is not str or not 16 <= len(token) <= 4096:
+                    raise ScheduleError('scheduler-auth-unavailable')
+                call = gateway_call(request['openclaw'], request['gateway_port'], token)
+                tasks = NativeTasks(os.path.join(os.environ['HOME'], '.openclaw', '.ods-scheduled-tasks'), call)
+                emit({'result': tasks.operate(request['schedule_request'])})
+            except ScheduleError as error:
+                emit({'error': error.code})
+            return
         if request['operation'].startswith('release-'):
             # Root chooses these inputs on the private worker pipe. No public
             # socket operation accepts candidate paths or release operations.

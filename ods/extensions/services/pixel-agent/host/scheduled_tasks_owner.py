@@ -225,7 +225,10 @@ class NativeTasks:
         if action == "dismiss-create":
             receipt = saved["requests"].get(request["requestId"])
             if receipt is None:
-                raise ScheduleError("task-request-not-found")
+                # A lost HTTP request may never have reached this controller.
+                # Dismissing its UI notice is still harmless; it is not a
+                # cancellation and must never issue a native mutation.
+                return self._change("unchanged")
             if receipt["state"] == "pending":
                 receipt["state"] = "dismissed"
                 self.store.write(saved)

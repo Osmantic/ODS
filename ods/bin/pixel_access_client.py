@@ -14,16 +14,20 @@ ACCESS_SOCKET_PATH = ("/private/var/run/ods-pixel-access/control.sock"
 def request_access(operation, request=None, *, settings_data_dir=None):
     if operation not in ("status", "change", "model-status", "model-begin", "model-finish", "installer-model-verify",
                          "installer-release-prepare", "installer-release-publish", "installer-release-finish", "installer-release-abort", "installer-source-begin",
-                          "settings-status", "settings-change", "provider-status", "provider-change"):
+                          "settings-status", "settings-change", "provider-status", "provider-change", "schedules"):
         raise ValueError("invalid access operation")
     payload = {"operation": operation}
-    if operation.startswith("installer-") or operation in ("change", "model-finish", "settings-change", "provider-change"):
+    if operation.startswith("installer-") or operation in ("change", "model-finish", "settings-change", "provider-change", "schedules"):
         payload["request"] = request
     if operation.startswith(("settings-", "provider-")):
         # Supplied by the host agent's actual DATA_DIR, never the HTTP request.
         if settings_data_dir is None or not Path(settings_data_dir).is_absolute():
             raise ValueError("unqualified settings data directory")
         payload["data_dir_id"] = hashlib.sha256(str(Path(settings_data_dir)).encode("utf-8")).hexdigest()
+    if operation == 'schedules':
+        if settings_data_dir is None or not Path(settings_data_dir).is_absolute():
+            raise ValueError('unqualified schedule data directory')
+        payload['source'] = {'kind': 'data-directory', 'identity': hashlib.sha256(str(Path(settings_data_dir)).encode()).hexdigest()}
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
         connection.settimeout(1850 if operation in ("model-begin", "installer-source-begin") else 335)
         connection.connect(ACCESS_SOCKET_PATH)
@@ -37,8 +41,9 @@ def request_access(operation, request=None, *, settings_data_dir=None):
                 raise ValueError("installer verification requires root coordinator")
         connection.sendall(json.dumps(payload).encode() + b"\n")
         with connection.makefile("rb") as stream:
-            raw = stream.readline(65537)
-        if len(raw) > 65536 or not raw.endswith(b"\n"): raise ValueError("invalid access response")
+            maximum = 525312 if operation == 'schedules' else 65536
+            raw = stream.readline(maximum + 1)
+        if len(raw) > maximum or not raw.endswith(b"\n"): raise ValueError("invalid access response")
         value = json.loads(raw)
         if set(value) != {"status", "body"} or value["status"] not in (200, 400, 403, 409, 503) or not isinstance(value["body"], dict):
             raise ValueError("invalid access response")

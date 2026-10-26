@@ -35,6 +35,8 @@ for name in ("access_mode_server.py", "unix_peer.py", "pixel_access_bridge.py", 
     protected(PROGRAM / name)
 for name in ("pixel_model_contract.py", "pixel_model_coordinator.py", "model_transaction.py"):
     protected(PROGRAM / name)
+for name in ('pixel_schedules.py', 'scheduled_tasks_owner.py', 'scheduled_tasks_gateway.mjs'):
+    protected(PROGRAM / name)
 if platform.system() == "Linux":
     protected(PROGRAM / "pixel_source_upgrade.py")
 if platform.system() == "Darwin":
@@ -108,9 +110,10 @@ def main(*, reprove_installer_access=False):
             try:
                 uid, _gid = peer_ids(self.connection)
                 if uid not in (0, owner.pw_uid): raise PermissionError()
-                raw = self.rfile.readline(2049)
-                if len(raw) > 2048 or not raw.endswith(b"\n"): raise ValueError()
-                request = control_request(decode_frame(raw.decode("utf-8"), 2048))
+                raw = self.rfile.readline(16385)
+                if len(raw) > 16384 or not raw.endswith(b"\n"): raise ValueError()
+                request = control_request(decode_frame(raw.decode("utf-8"), 16384))
+                if request['operation'] != 'schedules' and len(raw) > 2048: raise ValueError()
                 if request["operation"] in ("model-begin", "model-route-begin", "installer-source-begin"):
                     self.connection.settimeout(1850)
                 adapter = make_adapter()
@@ -118,6 +121,11 @@ def main(*, reprove_installer_access=False):
                     status, body = 200, adapter.status()
                 elif request == {"operation": "model-status"}:
                     status, body = 200, adapter.model_status()
+                elif request['operation'] == 'schedules':
+                    if platform.system() != 'Linux':
+                        status, body = 503, {'error': 'scheduler-platform-unavailable'}
+                    else:
+                        status, body = 200, adapter.schedules(request['request'], source=request['source'])
                 elif set(request) == {"operation", "request"} and request["operation"] == "change":
                     status, body = 200, adapter.change(request["request"])
                 elif request == {"operation": "model-begin"}:

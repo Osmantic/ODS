@@ -127,6 +127,14 @@ def test_recovery_never_adopts_a_task_with_different_content(owner):
     assert [method for method, _ in calls].count("cron.add") == 1
 
 
+def test_a_notice_can_be_dismissed_when_the_request_never_reached_the_owner(owner):
+    api, _jobs, calls, _runs, _call = owner
+    result = api.operate({'action': 'dismiss-create', 'requestId': str(uuid.uuid4())})
+    assert result == {'kind': 'change', 'outcome': 'unchanged', 'task': None}
+    assert calls == []
+    assert api.store.read()['requests'] == {}
+
+
 def test_foreign_agents_and_command_jobs_cannot_be_changed_or_read_through_this_surface(owner):
     api, jobs, calls, _runs, _call = owner
     created = api.operate(proposal())["task"]

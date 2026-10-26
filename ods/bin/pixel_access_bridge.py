@@ -316,6 +316,31 @@ class SystemdAccessBridge:
             if data_dir_id != self.settings_source(): raise AccessError("settings-data-directory-changed")
             return status(self)
 
+    def schedules(self, request, *, source):
+        from pixel_schedules import validate_request
+        validate_request(request)
+        with self.bounded(180), self.locked():
+            self.discover()
+            # A Windows host and its WSL guest have different path namespaces.
+            # The private ingress instead binds this request to its installed
+            # owner key, which root already binds to this exact deployment.
+            if source['kind'] == 'data-directory':
+                expected = self.settings_source()
+            else:
+                if type(self.edge_key) is not str or not 32 <= len(self.edge_key) <= 4096:
+                    raise AccessError('access-owner-auth-unavailable')
+                expected = hashlib.sha256(self.edge_key.encode('ascii')).hexdigest()
+            if source['identity'] != expected:
+                raise AccessError('schedule-installation-mismatch')
+            starting = request['action'] == 'create' or (request['action'] == 'set-enabled' and request['enabled'])
+            if starting and self.pending() is not None:
+                raise AccessError('runtime-change-pending')
+            snapshot = self.worker('settings-status')
+            if starting and snapshot['pending']:
+                raise AccessError('runtime-change-pending')
+            return self.worker('schedules', config_hash=snapshot['configSha256'], schedule_request=request,
+                               gateway_port=self.native_port)
+
     def settings_source(self):
         from pixel_settings.runtime import settings_data_directory
         env_file = self.install / ".env"
@@ -760,9 +785,11 @@ class SystemdAccessBridge:
                binding=None, activate_provider=None, expected_projection=None, provider_probe=None,
                model_target=None, model_outcome=None, relocation=None,
                candidate_path=None, candidate_sha256=None, release_outcome=None, verify_release=None,
-               receipt_sha256=None):
+               receipt_sha256=None, schedule_request=None, gateway_port=None):
         env = self.worker_environment()
         request = dict(operation=operation, openclaw=self.binary, config_sha256=config_hash, confirmed=confirmed)
+        if operation == 'schedules':
+            request.update(schedule_request=schedule_request, gateway_port=gateway_port)
         if operation.startswith('release-'):
             request['transaction_id'] = transaction_id
             if operation == 'release-prepare':
@@ -795,6 +822,7 @@ class SystemdAccessBridge:
         except (ValueError, TypeError, RecursionError):
             raise AccessError("owner-protocol-failed") from None
         deadline = time.monotonic() + remaining(OWNER_TIMEOUT)
+        reply_limit = protocol.SCHEDULE_REPLY if operation == 'schedules' else protocol.MAX_REPLY
         process = self._launch_owner_worker(env)
         try:
             _pipe_send(process.stdin, encoded, deadline)
@@ -807,15 +835,15 @@ class SystemdAccessBridge:
                     # and retain framing without losing the outer deadline.
                     if b"\n" not in buffered:
                         if not selector.select(min(1, max(0, deadline - time.monotonic()))): continue
-                        chunk = os.read(process.stdout.fileno(), protocol.MAX_REPLY + 1)
+                        chunk = os.read(process.stdout.fileno(), reply_limit + 1)
                         if not chunk: raise AccessError("owner-protocol-failed")
                         buffered += chunk
                     raw, separator, rest = buffered.partition(b"\n")
-                    if len(raw) + 1 > protocol.MAX_REPLY: raise AccessError("owner-protocol-failed")
+                    if len(raw) + 1 > reply_limit: raise AccessError("owner-protocol-failed")
                     if not separator: continue
                     buffered = rest
                     try:
-                        value = protocol.decode_frame(raw.decode("utf-8") + "\n", protocol.MAX_REPLY)
+                        value = protocol.decode_frame(raw.decode("utf-8") + "\n", reply_limit)
                         if type(value) is not dict: raise ValueError()
                     except ValueError:
                         raise AccessError("owner-protocol-failed") from None

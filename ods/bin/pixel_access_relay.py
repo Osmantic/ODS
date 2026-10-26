@@ -19,18 +19,22 @@ class AccessRelayError(RuntimeError):
 _CLIENT = r'''
 import http.client, json, sys
 try:
-    value = json.loads(sys.stdin.buffer.read(8193))
+    raw_request = sys.stdin.buffer.read(32769)
+    if len(raw_request) > 32768: raise ValueError()
+    value = json.loads(raw_request)
     request = value['request']
     connection = http.client.HTTPConnection('127.0.0.1', 9595, timeout=value['timeout'])
     path = value.get('path', '/v1/access-mode')
-    if path not in ('/v1/access-mode', '/v1/model-control'):
+    if path not in ('/v1/access-mode', '/v1/model-control', '/v1/schedules'):
         raise ValueError()
+    if path != '/v1/schedules' and len(raw_request) > 8192: raise ValueError()
     connection.request('GET' if request is None else 'POST', path,
         None if request is None else json.dumps(request).encode(),
         {'Authorization': 'Bearer ' + value['key'], 'Content-Type': 'application/json'})
     response = connection.getresponse()
-    raw = response.read(65537)
-    if len(raw) > 65536 or response.status not in (200, 400, 403, 409, 503):
+    maximum = 525312 if path == '/v1/schedules' else 65536
+    raw = response.read(maximum + 1)
+    if len(raw) > maximum or response.status not in (200, 400, 403, 409, 503):
         raise ValueError()
     body = json.loads(raw)
     if type(body) is not dict:
@@ -120,6 +124,23 @@ def request_runtime_model_control(operation, request=None, *, config):
     return status, body
 
 
+def request_runtime_schedules(request, *, config, data_dir):
+    from pixel_schedules import validate_request, validate_reply
+    validate_request(request)
+    if platform.system() == 'Darwin':
+        return 503, {'error': 'scheduler-platform-unavailable'}
+    if config.get('PIXEL_OPENWEBUI_KEY'):
+        status, body = _request_runtime_controller(request,config=config,path='/v1/schedules',timeout=190)
+    elif platform.system() == 'Linux':
+        from pixel_access_client import request_access
+        status, body = request_access('schedules',request,settings_data_dir=data_dir)
+    else:
+        return 503, {'error': 'scheduler-platform-unavailable'}
+    if status == 200:
+        validate_reply(request, body)
+    return status, body
+
+
 def request_runtime_access(operation, request=None, *, config):
     if operation not in ('status', 'change') or operation == 'change' and not valid_change(request):
         return 400, {'error': 'invalid-request'}
@@ -152,7 +173,7 @@ def _request_runtime_controller(request, *, config, path, timeout):
         payload = json.dumps({'key': key, 'request': request, 'path': path, 'timeout': timeout}).encode()
         result = subprocess.run(['docker', 'exec', '-i', inspected[0], 'python3', '-I', '-c', _CLIENT],
                                 input=payload, timeout=timeout + 3, **options)
-        if len(result.stdout) > 65536:
+        if len(result.stdout) > (525312 if path == '/v1/schedules' else 65536):
             raise ValueError()
         value = json.loads(result.stdout)
         if (type(value) is not dict or set(value) != {'status', 'body'}

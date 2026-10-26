@@ -44,6 +44,8 @@ def request(operation="settings-apply", **changes):
         value['binding'] = None
     if operation == 'access-relocate':
         value['relocation'] = {'source_config': '/opt/ods/openclaw.json', 'source_sha256': 'c' * 64}
+    if operation == 'schedules':
+        value.update(schedule_request={'action': 'list', 'offset': 0}, gateway_port=18789)
     if operation == 'provider-worker-status':
         value['provider_probe'] = {'python': '/usr/bin/python3',
             'launcher': '/opt/ods/bin/ods-pixel-route-lease', 'providerDirectory': '/home/owner/data/pixel-providers',

@@ -71,6 +71,7 @@ HOST_FILES = (
     "pixel_access_client.py", "pixel_access_reconcile.py", "pixel_model_transition.py",
     "pixel_access_protocol.py", "pixel_macos_custody.py", "pixel_macos_process.py",
     "pixel_model_contract.py", "pixel_model_coordinator.py", "pixel_macos_policy.py",
+    "pixel_schedules.py", "scheduled_tasks_owner.py", "scheduled_tasks_gateway.mjs",
 )
 SETTINGS_FILES = ("__init__.py", "contract.py", "projection.py", "runtime.py", "coordinator.py")
 PROVIDER_FILES = ("__init__.py", "config.py", "store.py", "activation_config.py", "managed_deployment.py",
