@@ -67,7 +67,7 @@ def owner(tmp_path, monkeypatch):
 
 
 def target(capabilities, zone=None):
-    return dict(planner.limbs(capabilities), userTimezone=zone)
+    return dict(planner.limbs(capabilities), userTimezone=zone, plugins=[])
 
 
 def apply(owner, gateway, answers, **kwargs):
