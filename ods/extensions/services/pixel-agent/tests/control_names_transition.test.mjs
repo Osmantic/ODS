@@ -17,6 +17,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {createToolLoopGuard, WORKSPACE_PREVIEW_COMPLETE_REASON} from '../plugin/tool-loop-guard.mjs';
 import {REQUESTED_CONTROL_NAME_REVISION_INSTRUCTION} from '../plugin/requested-literals.mjs';
+import {PREVIEW_MISSING_NOTE} from '../plugin/preview-explanation.mjs';
 import {PREVIEW_INSPECTION_TOOL, boundInspectionControls, boundInspectionPageErrors, boundStaticPreviewInspection,
   boundVisibilityInspection} from '../plugin/preview-interaction-assurance.mjs';
 import {INSPECTION_KIND, INSPECTION_SCOPE, TRANSITION_UNTESTED, createWorkspacePreviewInspectTool, inspectionPlanHash,
@@ -176,7 +177,8 @@ function fixture(t, prompt = TOWER2.prompt) {
   };
   const finalize = answer => guard.beforeAgentFinalize({lastAssistantMessage: answer}, context);
   const delivered = () => guard.deliveryVerificationForRun(context.runId);
-  return {publish, inspect, finalize, delivered};
+  const recorded = () => guard.verificationForRun(context.runId);
+  return {publish, inspect, finalize, delivered, recorded};
 }
 
 // Laptop round 100's plan shape: the button, a click, the card afterwards; the
@@ -208,7 +210,7 @@ for (const transport of ['direct', 'tool_call']) {
         const args = assertIncomplete(incomplete, receipt);
         assert.doesNotMatch(incomplete.text, NAME_REPAIR, 'a correct name is never reported missing');
         assert.equal(f.delivered().status, 'failed', 'the show/hide change is still untested');
-        assert.doesNotMatch(f.delivered().text, /has no button named/);
+        assert.doesNotMatch(f.recorded().text, /has no button named/);
         const corrected = await f.inspect(receipt, args.steps, 'corrected', transport);
         assert.equal(corrected.result.details.status, 'passed');
         assert.doesNotMatch(corrected.text, NAME_REPAIR);
@@ -233,7 +235,9 @@ for (const transport of ['direct', 'tool_call']) {
       reason: 'Pixel has not completed every owner-requested verified step.',
       retry: {instruction: REQUESTED_CONTROL_NAME_REVISION_INSTRUCTION.join('["Show sold out"]'),
         idempotencyKey: 'pixel-ods-workspace-preview-control-name', maxAttempts: 1}});
-    assert.ok(f.delivered().text.startsWith(FAILURE_NOTE), f.delivered().text);
+    // The record names the control; the owner reads Portal's line about it.
+    assert.ok(f.recorded().text.startsWith(FAILURE_NOTE), f.recorded().text);
+    assert.ok(f.delivered().text.startsWith(PREVIEW_MISSING_NOTE), f.delivered().text);
     assert.equal(f.delivered().status, 'failed');
     // The repaired snapshot needs its own show/hide check; the same untested
     // plan is INCOMPLETE again, now without a name repair.
@@ -258,7 +262,8 @@ test('a failed direct inspection with the harness error set still records the lo
   assert.equal(failed.result.details.status, 'failed');
   assert.ok(failed.text.includes(NEXT), failed.text);
   assert.equal(f.delivered().status, 'failed');
-  assert.ok(f.delivered().text.startsWith(FAILURE_NOTE), f.delivered().text);
+  assert.ok(f.recorded().text.startsWith(FAILURE_NOTE), f.recorded().text);
+  assert.ok(f.delivered().text.startsWith(PREVIEW_MISSING_NOTE), f.delivered().text);
 });
 
 test('the aria-hidden icon page: an exact-name click the inspector cannot match is no missing name', async t => {
@@ -288,7 +293,7 @@ test('the aria-hidden icon page: an exact-name click the inspector cannot match 
         '"Show sold out", so that name is on the page;') &&
         unmatched.own.includes('Address that button with a CSS selector such as its id in this step, keep the other steps unchanged'),
       unmatched.own);
-      assert.doesNotMatch(f.delivered().text, /has no button named/);
+      assert.doesNotMatch(f.recorded().text, /has no button named/);
       const css = await f.inspect(receipt, args.steps.map(step => step.action === 'click' ? {...step, locator: BUTTON_CSS} : step),
         'css', transport);
       assert.equal(css.result.details.status, 'passed');

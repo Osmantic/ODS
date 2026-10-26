@@ -1166,9 +1166,10 @@ describe('Pixel', () => {
     expect(send).toBeEnabled()
   })
 
-  // RTX Spark Elf of Doom: a failed preview check now keeps the agent's own
-  // explanation ahead of Portal's note instead of replacing it.
-  it('renders a kept agent explanation and the failed-check note as Markdown with the preview card', async () => {
+  // RTX Spark Elf of Doom: a failed preview check keeps the agent's own
+  // explanation, and (2026-10-25) Portal's line after it is one calm, muted
+  // sentence above a preview that works, never error-looking text.
+  it('renders a kept agent explanation as Markdown, then Portal\'s muted line, with the preview card', async () => {
     const matchMedia = globalThis.matchMedia
     vi.stubGlobal('matchMedia', query => query === '(prefers-reduced-motion: reduce)'
       ? { matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() }
@@ -1178,13 +1179,10 @@ describe('Pixel', () => {
     const preview = {schemaVersion: 1, kind: 'ods-pixel-workspace-preview', relativeDirectory: 'elf-of-doom', siteId, port: 9437,
       url: `http://${siteId}.localhost:9437/${siteId}/`, files: 3, bytes: 4096, sha256, entrySha256: 'd'.repeat(64)}
     previewManifests.set(`/pixel-preview/${siteId}/__ods_manifest__.json`, preview)
+    const note = "Portal couldn't test every control automatically. Try it, and tell Portal if something isn't right."
     const content = 'The cause is `ui.js:748`: a canvas is not a valid `fillStyle`, so the previous colour stays set.\n\n' +
       '- The last full-viewport fill covers the arena.\n\n' +
-      "**Portal check:** The reply above is the agent's own account, not a verified result. " +
-      "This request did not pass Portal's checks.\n\n" +
-      'Latest browser inspection of this preview: step 2 (assert-painted) on `#arena` captured one color only (#8fce3a).\n\n' +
-      'The attempted preview interaction checks have not passed browser inspection. ' +
-      'The published preview is available, but those checks remain unverified.\n\n' +
+      `${note}\n\n` +
       `Your preview is ready.\n\n[Open preview](${preview.url})\n\nPublished from your workspace.`
     globalThis.fetch.mockResolvedValueOnce(response({ available: true, model: 'pixel/default', detail: 'local' }))
     globalThis.fetch.mockResolvedValueOnce(sseResponse([
@@ -1193,25 +1191,113 @@ describe('Pixel', () => {
         pixel_outcome: { schemaVersion: 1, status: 'failed' } }),
       '[DONE]',
     ]))
-    render(<Pixel />)
+    const {container} = render(<Pixel />)
     await waitFor(() => expect(screen.getByText('Available')).toBeInTheDocument())
     fireEvent.change(screen.getByPlaceholderText('Message Portal...'), { target: { value: 'Fix the arena, then look at the preview.' } })
     fireEvent.click(screen.getByTitle('Send'))
 
-    const label = await screen.findByText('Portal check:')
-    expect(label.closest('strong')).not.toBeNull()
+    const line = await screen.findByText(note)
+    expect(line.closest('p')).toHaveClass('portal-delivery-note')
     expect(screen.getByText('ui.js:748').closest('code')).not.toBeNull()
     expect(screen.getByText('The last full-viewport fill covers the arena.').closest('li')).not.toBeNull()
-    expect(screen.getByText(/did not pass Portal's checks/)).toBeVisible()
-    expect(screen.getByText('#arena').closest('code')).not.toBeNull()
-    expect(screen.getByText(/attempted preview interaction checks have not passed browser inspection/)).toBeVisible()
+    expect(screen.getByText(/^The cause is/).closest('p')).not.toHaveClass('portal-delivery-note')
+    const reply = line.closest('[data-pixel-response]')
+    expect(reply.textContent).not.toMatch(/failed|did not pass|not verified|unverified|error|Portal check/i)
+    expect(within(reply).queryByRole('alert')).toBeNull()
+    expect(reply.querySelector('[class*="red-"]')).toBeNull()
     expect(screen.queryByText('Your preview is ready.')).toBeNull()
     expect(screen.queryByText(/Published from your workspace/)).toBeNull()
     expect(screen.queryByRole('link', { name: 'Open preview' })).toBeNull()
+    expect(within(reply).getByRole('button', { name: /Web preview/ })).toBeVisible()
     expect(await screen.findByTitle('Interactive Portal preview')).toHaveAttribute('src', `/pixel-preview/${siteId}/__ods_view__.html`)
+    expect(container.querySelector('.portal-embed-note')).toBeNull()
     // The stored reply and the model's history keep the full delivered text.
     await waitFor(() => expect(JSON.parse(globalThis.localStorage.getItem('ods.pixel.chat.v1')).messages.at(-1))
       .toMatchObject({ role: 'assistant', content, publication: preview }))
+  })
+
+  // RTX Spark, 2026-10-25: "Draw me a picture of a dragon" published an SVG
+  // site that the preview card showed, and the reply ended with the model's
+  // own embed of that site. Portal said it could not display it.
+  it.each([
+    ['after the reply', "Here's your dragon, curled around a mountain peak.\n\n"],
+    ['as the whole reply', ''],
+  ])('leaves out the embed of the preview its card shows, %s, and copies the original text', async (_name, prose) => {
+    const matchMedia = globalThis.matchMedia
+    vi.stubGlobal('matchMedia', query => query === '(prefers-reduced-motion: reduce)'
+      ? { matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() }
+      : matchMedia?.(query) ?? { matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })
+    const sha256 = 'fca81965eeec4e16e761822a' + 'b'.repeat(40)
+    const siteId = `site-${sha256.slice(0, 24)}`
+    const preview = {schemaVersion: 1, kind: 'ods-pixel-workspace-preview', relativeDirectory: 'Playground/dragon', siteId, port: 9437,
+      url: `http://${siteId}.localhost:9437/${siteId}/`, files: 1, bytes: 2048, sha256, entrySha256: 'e'.repeat(64)}
+    previewManifests.set(`/pixel-preview/${siteId}/__ods_manifest__.json`, preview)
+    const content = `${prose}[embed ref="${siteId}" title="Dragon" height="560" /]\n\n` +
+      `Your preview is ready.\n\n[Open preview](${preview.url})\n\nCreated by Portal.\n` +
+      'Publication scope: this receipt verifies the published snapshot, not functional behavior or completion of other requested work.'
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    const clipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    try {
+      globalThis.fetch.mockResolvedValueOnce(response({ available: true, model: 'pixel/default', detail: 'local' }))
+      globalThis.fetch.mockResolvedValueOnce(sseResponse([
+        JSON.stringify({ choices: [{ delta: { content } }] }),
+        JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }], pixel: { schemaVersion: 1, preview },
+          pixel_outcome: { schemaVersion: 1, status: 'passed' } }),
+        '[DONE]',
+      ]))
+      const {container} = render(<Pixel />)
+      await waitFor(() => expect(screen.getByText('Available')).toBeInTheDocument())
+      fireEvent.change(screen.getByPlaceholderText('Message Portal...'), { target: { value: 'Draw me a picture of a dragon' } })
+      fireEvent.click(screen.getByTitle('Send'))
+      expect(await screen.findByTitle('Interactive Portal preview')).toHaveAttribute('src', `/pixel-preview/${siteId}/__ods_view__.html`)
+      const reply = [...container.querySelectorAll('[data-pixel-response]')].at(-1)
+      expect(await within(reply).findByRole('button', { name: /Web preview/ })).toBeVisible()
+      if (prose) expect(await within(reply).findByText("Here's your dragon, curled around a mountain peak.")).toBeVisible()
+      await waitFor(() => expect(within(reply).getByRole('button', { name: 'Copy response' })).toBeVisible())
+      expect(reply.textContent).not.toMatch(/\[embed|embedded view|can’t display|Your preview is ready/)
+      expect(container.querySelector('.portal-embed-note')).toBeNull()
+      fireEvent.click(within(reply).getByRole('button', { name: 'Copy response' }))
+      await waitFor(() => expect(writeText).toHaveBeenCalledOnce())
+      expect(writeText.mock.calls[0][0]).toContain(`[embed ref="${siteId}" title="Dragon" height="560" /]`)
+      await waitFor(() => expect(JSON.parse(globalThis.localStorage.getItem('ods.pixel.chat.v1')).messages.at(-1))
+        .toMatchObject({ role: 'assistant', content, publication: preview }))
+    } finally {
+      if (clipboard) Object.defineProperty(navigator, 'clipboard', clipboard)
+      else delete navigator.clipboard
+    }
+  })
+
+  it('shows nothing, not a note, for a later reply of only an embed of a preview the chat already shows', async () => {
+    // Reveal replies at once, so a note would already show.
+    const matchMedia = globalThis.matchMedia
+    vi.stubGlobal('matchMedia', query => query === '(prefers-reduced-motion: reduce)'
+      ? { matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() }
+      : matchMedia?.(query) ?? { matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })
+    const sha256 = 'fca81965eeec4e16e761822a' + 'b'.repeat(40)
+    const siteId = `site-${sha256.slice(0, 24)}`
+    const preview = {schemaVersion: 1, kind: 'ods-pixel-workspace-preview', relativeDirectory: 'Playground/dragon', siteId, port: 9437,
+      url: `http://${siteId}.localhost:9437/${siteId}/`, files: 1, bytes: 2048, sha256, entrySha256: 'e'.repeat(64)}
+    const embed = `[embed ref="${siteId}" title="Dragon" height="560" /]`
+    globalThis.localStorage.setItem('ods.pixel.chat.v1', JSON.stringify({schema: 1, chatId: 'dragon-chat', messages: [
+      {role: 'user', content: 'Draw me a picture of a dragon'},
+      {role: 'assistant', content: `Here's your dragon.\n\nYour preview is ready.\n\n[Open preview](${preview.url})\n\nCreated by Portal.`,
+        publication: preview},
+    ]}))
+    globalThis.fetch.mockImplementation(async url => url === '/api/pixel/chat/stream'
+      ? sseResponse([JSON.stringify({choices: [{delta: {content: embed}}]}),
+        JSON.stringify({choices: [{delta: {}, finish_reason: 'stop'}], pixel_outcome: {schemaVersion: 1, status: 'none'}}), '[DONE]'])
+      : response({available: true, model: 'pixel/default'}))
+    const {container} = render(<Pixel />)
+    await screen.findByText('Available')
+    expect(screen.getByText("Here's your dragon.")).toBeVisible()
+    fireEvent.change(screen.getByPlaceholderText('Message Portal...'), {target: {value: 'Show it to me again'}})
+    fireEvent.click(screen.getByTitle('Send'))
+    await waitFor(() => expect(JSON.parse(globalThis.localStorage.getItem('ods.pixel.chat.v1')).messages.at(-1))
+      .toMatchObject({role: 'assistant', content: embed}))
+    await waitFor(() => expect(within([...container.querySelectorAll('[data-pixel-response]')].at(-1))
+      .getByRole('button', {name: 'Copy response'})).toBeVisible())
+    expect(container.textContent).not.toMatch(/embedded view|can’t display|\[embed/)
   })
 
   // Seen live: "what is 12 squared?" was answered exactly "144.", which

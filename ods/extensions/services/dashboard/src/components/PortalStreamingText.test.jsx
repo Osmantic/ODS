@@ -1,6 +1,7 @@
 import {act,render,screen} from '@testing-library/react'
 import PortalStreamingText from './PortalStreamingText'
-import {EMBED_NOTE,EMBED_ONLY_NOTE} from '../lib/embedDisplay'
+import {EMBED_ONLY_NOTE} from '../lib/embedDisplay'
+import {DELIVERY_NOTES} from '../lib/portalDeliveryNotes'
 
 const mediaReceipt=(digit='a')=>({schemaVersion:1,kind:'ods-pixel-workspace-artifact',relativePath:'report.csv',
   siteId:`site-${digit.repeat(24)}`,sha256:digit.repeat(64),file:{path:'report.csv',bytes:37,sha256:'c'.repeat(64)}})
@@ -178,12 +179,23 @@ it('does not replay delivered prose when a publication receipt is stripped',()=>
   expect(container.firstChild).toHaveAttribute('aria-busy','false')
 })
 it('mutes only paragraphs that are exactly a Portal note about an embed it cannot display',()=>{
-  const source=`Before\n\n${EMBED_NOTE}\n\n- Item\n\n  ${EMBED_ONLY_NOTE}\n\nThe model wrote ${EMBED_NOTE} inline.\n\n\`\`\`\n${EMBED_NOTE}\n\`\`\``
+  const source=`Before\n\n${EMBED_ONLY_NOTE}\n\n- Item\n\n  ${EMBED_ONLY_NOTE}\n\nThe model wrote ${EMBED_ONLY_NOTE} inline.\n\n\`\`\`\n${EMBED_ONLY_NOTE}\n\`\`\``
   const {container}=render(<PortalStreamingText>{source}</PortalStreamingText>)
   const muted=[...container.querySelectorAll('.portal-embed-note')].map(element=>[element.tagName,element.textContent])
-  expect(muted).toEqual([['P',EMBED_NOTE],['P',EMBED_ONLY_NOTE]])
+  expect(muted).toEqual([['P',EMBED_ONLY_NOTE],['P',EMBED_ONLY_NOTE]])
   expect(screen.getByText('Before').closest('p')).not.toHaveClass('portal-embed-note')
-  expect(container.querySelector('pre code')).toHaveTextContent(EMBED_NOTE)
+  expect(container.querySelector('pre code')).toHaveTextContent(EMBED_ONLY_NOTE)
+})
+
+// RTX Spark, 2026-10-25: a working preview was followed only by alarming
+// check text. Portal's line after a reply is a muted paragraph of its own.
+it.each(DELIVERY_NOTES)('mutes Portal\'s own line about a preview: %s',note=>{
+  const {container}=render(<PortalStreamingText>{`The arena draws again.\n\n${note}\n\nThe model wrote ${note} inline.`}</PortalStreamingText>)
+  const muted=[...container.querySelectorAll('.portal-delivery-note')]
+  expect(muted.map(element=>[element.tagName,element.textContent])).toEqual([['P',note]])
+  expect(screen.getByText('The arena draws again.').closest('p')).not.toHaveClass('portal-delivery-note')
+  expect(container.querySelector('[role="alert"]')).toBeNull()
+  expect(container.querySelector('svg')).toBeNull()
 })
 
 it('renders a document download image label as text before a receipt arrives',()=>{

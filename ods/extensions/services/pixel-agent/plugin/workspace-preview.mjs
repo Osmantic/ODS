@@ -177,6 +177,12 @@ function publishedPathFeedback(response) {
 // Informational only: empty files can be legitimate, so publication stands.
 export const EMPTY_PUBLISHED_FILES_PREFIX = "Published files that are empty (0 bytes): ";
 
+// OpenClaw teaches webchat models to show views with [embed ...] directives.
+// Portal's dashboard already shows this preview in its own card, so such a
+// directive (seen live: [embed ref="site-..." title="Dragon" height="560" /])
+// is at best repeated markup.
+export const PREVIEW_CARD_GUIDANCE = "Portal shows this preview to the owner in a card with your reply, so do not add an [embed ...] directive for it.";
+
 // Displayed with host-authoritative publication evidence, independently of model prose.
 export const PREVIEW_STORAGE_DISCLOSURE = "Inputs in the embedded preview may be lost on reload. Storage behavior can differ in a separate tab; publishing alone does not guarantee saved data.";
 
@@ -332,6 +338,7 @@ export function createWorkspacePreviewTool({ request, transport = "unix" } = {})
             text:
               `ODS independently published and read back ${response.files} workspace static files ` +
               `(${response.bytes} bytes). Verified browser URL: ${response.url}. ` +
+              PREVIEW_CARD_GUIDANCE + ' ' +
               `Inspection snapshot: ${JSON.stringify({siteId:response.siteId,sha256:response.sha256})}. ` +
               'Use pixel_ods_workspace_preview_inspect for this owned preview, not public web_fetch or shell HTTP. Copy both identifiers exactly; sha256 is the full snapshot digest, not entrySha256 or the shortened site suffix. ' +
               'Publication does not render the page; the inspection result also reports its rendered colors by area. Check them before claiming a visible color or style change. ' +

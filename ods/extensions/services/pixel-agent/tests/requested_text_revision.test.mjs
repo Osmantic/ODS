@@ -12,6 +12,7 @@ import path from 'node:path';
 import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
 import {REQUESTED_TEXT_REVISION_INSTRUCTION, requestedTextRevisionInstruction} from '../plugin/requested-literals.mjs';
 import {PREVIEW_INSPECTION_TOOL} from '../plugin/preview-interaction-assurance.mjs';
+import {PREVIEW_MISSING_NOTE} from '../plugin/preview-explanation.mjs';
 import {INSPECTION_KIND, INSPECTION_SCOPE, inspectionPlanHash, normalizeWorkspacePreviewInspectionParams}
   from '../plugin/workspace-preview-inspect.mjs';
 
@@ -27,12 +28,14 @@ const REVISION = '[ODS Pixel next step] Requested text is still missing from the
   'Add the exact text as requested (for example, as the card heading if the owner described it as a card title, ' +
   'or as the page title or h1 if the owner named them), republish with pixel_ods_workspace_preview, and keep everything else unchanged.';
 const NOTE = '[ODS Pixel next step] Requested text not found: "Midnight sold-out concert". Use the owner\'s exact wording, republish and re-inspect.';
-// Historical requested-text failure, as delivered now (no preview storage note).
+// Historical requested-text failure, as the guard records it (no preview
+// storage note), and as the owner reads it: Portal's line and the receipt.
 const FAILURE = 'The published page does not contain text the owner requested: "Midnight sold-out concert". ' +
   'The preview is available, but that requirement is not met.\n\n' +
   'Browser inspection passed for the submitted show/hide checks only; this does not verify all requested behavior.\n\n' +
   'Your preview is ready.\n\n[Open preview](http://site-877a095eea047108badd1b3b.localhost:9437/site-877a095eea047108badd1b3b/)\n\n' +
   'Published from your workspace.';
+const OWNER_FAILURE = `${PREVIEW_MISSING_NOTE}\n\n${FAILURE.slice(FAILURE.indexOf('Your preview is ready.'))}`;
 // The closing provenance line depends on whether Tool Search's inner hook
 // also reported the publication; it is independent of the requested text.
 const body = text => text.replace(/\n\n(?:Created by Portal|Published from your workspace)\.$/, '');
@@ -109,8 +112,9 @@ function fixture(t) {
   };
   const finalize = answer => guard.beforeAgentFinalize({lastAssistantMessage: answer}, context);
   const delivered = () => guard.deliveryVerificationForRun(context.runId);
+  const recorded = () => guard.verificationForRun(context.runId);
   const revisions = () => results.filter(text => text.includes(REVISION_START)).length;
-  return {guard, write, edit, publish, inspect, finalize, delivered, revisions, results};
+  return {guard, write, edit, publish, inspect, finalize, delivered, recorded, revisions, results};
 }
 const REVISION_START = 'Requested text is still missing from the published page';
 
@@ -151,7 +155,7 @@ test('tower1 round 067: the revision fires once and a republish with the literal
   assert.equal(f.revisions(), 1);
   const outcome = f.delivered();
   assert.equal(outcome.status, 'passed');
-  assert.doesNotMatch(outcome.text, /does not contain text the owner requested/);
+  assert.doesNotMatch(f.recorded().text, /does not contain text the owner requested/);
   assert.equal(outcome.preview.sha256, second.receipt.sha256);
 });
 
@@ -167,7 +171,8 @@ test('tower1 round 067: a second miss ends in the unchanged honest failure', t =
   assert.equal(f.revisions(), 1);
   const outcome = f.delivered();
   assert.equal(outcome.status, 'failed');
-  assert.equal(body(outcome.text), body(FAILURE).replaceAll(f.first.receipt.url, second.receipt.url));
+  assert.equal(body(f.recorded().text), body(FAILURE).replaceAll(f.first.receipt.url, second.receipt.url));
+  assert.equal(body(outcome.text), body(OWNER_FAILURE).replaceAll(f.first.receipt.url, second.receipt.url));
 });
 
 test('tower1 round 067: answering after the revision keeps the recorded failure delivery', t => {
@@ -176,7 +181,8 @@ test('tower1 round 067: answering after the revision keeps the recorded failure 
     {action: 'finalize', reason: 'Owner-requested text is still missing after the bounded revision.'});
   assert.equal(f.finalize(TOWER1.finalAnswer)?.action, 'finalize', 'no loop on a repeated finalization');
   assert.equal(f.revisions(), 1);
-  assert.deepEqual({status: f.delivered().status, text: body(f.delivered().text)}, {status: 'failed', text: body(FAILURE)});
+  assert.deepEqual({status: f.delivered().status, text: body(f.delivered().text)}, {status: 'failed', text: body(OWNER_FAILURE)});
+  assert.equal(body(f.recorded().text), body(FAILURE));
   // Further tool results for that snapshot may repeat the note, never the revision.
   assert.doesNotMatch(f.inspect(f.first.receipt, 'inspect-again'), new RegExp(REVISION_START));
   assert.equal(f.revisions(), 1);
@@ -196,7 +202,8 @@ test('an answer straight after the receipt gets the same revision once at finali
   assert.equal(f.inspect(f.publish(ORIGINAL, 'same-bytes').receipt, 'inspect').includes(REVISION_START), false,
     'the finalization revision was the one revision');
   assert.equal(f.delivered().status, 'failed');
-  assert.match(f.delivered().text, /^The published page does not contain text the owner requested: "Midnight sold-out concert"\./);
+  assert.match(f.recorded().text, /^The published page does not contain text the owner requested: "Midnight sold-out concert"\./);
+  assert.ok(f.delivered().text.startsWith(`${PREVIEW_MISSING_NOTE}\n\nYour preview is ready.`));
 });
 
 test('no revision after the owner cancelled', async t => {

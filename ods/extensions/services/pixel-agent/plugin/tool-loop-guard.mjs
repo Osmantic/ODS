@@ -51,7 +51,8 @@ import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehavio
   attemptedPreviewBehavior, boundPreviewBehavior, previewBehaviorInstruction, unassertedBehaviorStep } from './preview-interaction-assurance.mjs';
 import { workspaceRevalidationCandidate, workspaceReadOnlyCall, settledRevalidationReceipt, boundedPreviewVerification } from "./preview-revalidation.mjs";
 import { boundedPreviewDelivery } from './preview-delivery-recovery.mjs';
-import { explainedPreviewDelivery, inspectionFailureLine } from './preview-explanation.mjs';
+import { PREVIEW_EARLIER_NOTE, PREVIEW_STOPPED_NOTE, explainedPreviewDelivery, ownerPreviewText,
+  previewCheckNote } from './preview-explanation.mjs';
 import { extractRequestedLiterals, requestedTextCheck, requestedTextInstruction, requestedTextRevisionInstruction,
   requestedTextDeliveryNote, publishedElementOutline, extractRequestedControlNames, requestedControlSources,
   requestedControlNameCheck, requestedControlNameInstruction, requestedControlNameRevisionInstruction,
@@ -325,11 +326,13 @@ export const WORKSPACE_VISUAL_CONTINUATION_SCOPE_REASON =
   "Keep this visual follow-up in the bound artifact directory. Read existing files before editing or replacing them, use sandbox exec/process for inspection and verification, then republish the same directory with pixel_ods_workspace_preview. Do not blindly overwrite files, create a replacement project, or modify another directory.";
 
 
+// No preview was published: a real failure, said plainly with the next step.
+// The dashboard shows each muted, like Portal's other notes.
 export const WORKSPACE_PREVIEW_UNVERIFIED_DELIVERY_PREFIX =
-  "Portal saved the website files in your workspace, but ODS did not verify a browser-accessible preview. No localhost URL is live or claimed; ask Portal to continue and publish the static site through the workspace preview capability.";
+  "Portal saved the website files in your workspace but couldn't publish a preview of them, so they haven't been checked and there is no preview to open yet. Ask Portal to publish the preview.";
 
 export const WORKSPACE_PREVIEW_NOT_CREATED_DELIVERY_PREFIX =
-  "Portal did not create or verify the requested website files, so ODS did not publish a browser preview. No localhost URL is live or claimed; ask Portal to retry the build.";
+  "Portal didn't create the website files for this request, so there is no preview to open yet. Ask Portal to try the build again.";
 
 export const WORKSPACE_PREVIEW_PUBLISHED_DELIVERY_PREFIX =
   "Your preview is ready.";
@@ -7840,15 +7843,6 @@ export function createToolLoopGuard({
       gap.sessionId === state.currentSessionId && gap.sessionKey === state.currentSessionKey ? gap : undefined;
   }
 
-  // The failed step of the current snapshot's latest inspection, for the note
-  // beside a kept explanation (preview-explanation.mjs). Never evidence.
-  function workspaceInspectionFailureLine(state) {
-    const failure = state.workspaceInspectionFailure;
-    return visibilityInspectionMatches(failure, state.workspacePreview) &&
-      failure.sessionId === state.currentSessionId && failure.sessionKey === state.currentSessionKey
-      ? failure.line : undefined;
-  }
-
   function rememberSessionDownload(sessionId, jobId) {
     if (typeof sessionId !== "string" || !sessionId || !OPS_JOB_ID.test(jobId)) return;
     const jobs = sessionDownloadJobs.get(sessionId) ?? new Set();
@@ -8178,7 +8172,6 @@ export function createToolLoopGuard({
       state.workspaceVisibilityInspection = undefined;
       state.workspaceBehaviorInspection = undefined;
       state.workspaceRenderedInspection = undefined;
-      state.workspaceInspectionFailure = undefined;
       state.workspaceBehaviorGap = undefined;
       state.workspaceInspectionGeneration = (state.workspaceInspectionGeneration ?? 0) + 1;
     }
@@ -11341,11 +11334,6 @@ export function createToolLoopGuard({
           ? unassertedBehaviorStep(inspected.params.steps) : undefined;
         state.workspaceBehaviorGap = behaviorGap ? Object.freeze({...behaviorGap, siteId: renderedProof.siteId,
           sha256: renderedProof.sha256, sessionId: state.currentSessionId, sessionKey: state.currentSessionKey}) : undefined;
-        // Names the first failed step to the owner beside a kept explanation.
-        const failureLine = inspectionFailureLine(inspected.result?.details, state.workspacePreview);
-        state.workspaceInspectionFailure = failureLine ? Object.freeze({siteId: state.workspacePreview.siteId,
-          sha256: state.workspacePreview.sha256, sessionId: state.currentSessionId, sessionKey: state.currentSessionKey,
-          line: failureLine}) : undefined;
         state.workspaceVisibilityInspectionUnavailable =
           inspected.result?.details?.errorCode === 'unavailable';
         // Selects the repair instruction only; bound to this exact snapshot.
@@ -13765,11 +13753,24 @@ export function createToolLoopGuard({
 
   // Workspace preview outcomes (the preview branch of taskVerificationForRun),
   // also once lane-stop or extension facts are added to one. Delivered as is,
-  // a failed or pending one keeps the agent's final explanation ahead of its
-  // host facts (deliveryVerificationForRun, preview-explanation.mjs).
+  // a failed or pending one keeps the agent's final explanation ahead of
+  // Portal's text (deliveryVerificationForRun, preview-explanation.mjs).
   const previewOutcomes = new WeakSet();
-  const previewOutcome = result => (previewOutcomes.add(result), result);
-  const derivedOutcome = (from, result) => previewOutcomes.has(from) ? previewOutcome(result) : result;
+  // The owner's wording of a published preview's outcome ({text, rest, note},
+  // ownerPreviewText). The outcome's text keeps every check fact for this
+  // record, as the model read them in its tool results; the owner reads
+  // Portal's one line and `rest` (the receipt or link) instead.
+  const previewPresentations = new WeakMap();
+  const previewOutcome = (result, presentation) => {
+    previewOutcomes.add(result);
+    if (presentation) previewPresentations.set(result, presentation);
+    return result;
+  };
+  // A derived text starts with the outcome's own text, so its wording carries over.
+  const derivedOutcome = (from, result) => previewOutcomes.has(from)
+    ? previewOutcome(result, previewPresentations.get(from)) : result;
+  // A preview outcome's text as the owner reads it, where a stop text quotes it.
+  const ownerOutcomeText = result => ownerPreviewText(result.text, previewPresentations.get(result));
 
   function verificationForRun(runId) {
     const verification = mixedTaskVerificationForRun(runId);
@@ -13870,7 +13871,9 @@ export function createToolLoopGuard({
       !state.exactDownloadRequested
     ) {
       // Every result here is a preview outcome (previewOutcomes): the texts
-      // stay host-only, and delivery adds the agent's explanation.
+      // stay host-only, and delivery adds the agent's explanation. With a
+      // published preview, the owner reads Portal's line in place of the
+      // check facts (previewPresentations).
       if (!state.workspacePreview) {
         if (state.workspacePreviewRestrictions?.mutation && state.workspacePreviewAttempted) return previewOutcome({
           status: "failed",
@@ -13889,24 +13892,26 @@ export function createToolLoopGuard({
           const stopText = state.codingExhausted
             ? "Portal stopped before the requested work was complete. Saved files are preserved."
             : "";
+          const link = `[Open last published preview](${preview.url})`;
+          const text =
+            (stopText ? `${stopText}\n\n` : "") +
+            (checkText ? `${checkText}\n\n` : "") +
+            "Your last published preview is still available.\n\n" +
+            `${link}\n\n` +
+            "The workspace has not been verified again since later tool activity. " +
+            "This snapshot may not include subsequent changes and does not verify completion of this request. " +
+            (state.codingExhausted
+              ? "Start a fresh message to continue repairing, verifying, and publishing the current files."
+              : "Ask Portal to verify and publish the current files.");
           return previewOutcome({
             status: "failed",
-            text:
-              (stopText ? `${stopText}\n\n` : "") +
-              (checkText ? `${checkText}\n\n` : "") +
-              "Your last published preview is still available.\n\n" +
-              `[Open last published preview](${preview.url})\n\n` +
-              "The workspace has not been verified again since later tool activity. " +
-              "This snapshot may not include subsequent changes and does not verify completion of this request. " +
-              (state.codingExhausted
-                ? "Start a fresh message to continue repairing, verifying, and publishing the current files."
-                : "Ask Portal to verify and publish the current files."),
+            text,
             preview: {
               schemaVersion: 1,
               kind: "ods-pixel-workspace-preview",
               ...preview,
             },
-          });
+          }, {text, rest: link, note: state.codingExhausted ? PREVIEW_STOPPED_NOTE : PREVIEW_EARLIER_NOTE});
         }
         const hasIndexEvidence = [
           ...state.successfulWritePaths,
@@ -13936,29 +13941,38 @@ export function createToolLoopGuard({
       // showed missing withhold certification, whatever else passed.
       const requestedTextMissing = requestedTextDeliveryNote(state.workspacePreview, state.workspaceRequestedTextCheck,
         state.workspaceControlNameCheck);
+      const status = checkIncomplete ? checkStatus
+        : interactionUnverified || behaviorUnverified || renderedUnverified || requestedTextMissing ? "failed" : "passed";
+      const facts = [
+        checkText,
+        requestedTextMissing,
+        renderedUnverified && "The published page has not passed browser inspection. Its browser check remains unverified.",
+        interactionUnverified && "The requested show/hide interaction has not passed browser inspection. The published preview is available, but that behavior remains unverified.",
+        behaviorUnverified && "The attempted preview interaction checks have not passed browser inspection. The published preview is available, but those checks remain unverified.",
+        workspaceBehaviorAttempt(state) && !behaviorUnverified && !state.workspaceVisibilityInteractionRequired &&
+          "Browser inspection passed for the submitted interaction checks only; this does not verify all requested behavior.",
+        state.workspaceVisibilityInteractionRequired && !interactionUnverified &&
+          "Browser inspection passed for the submitted show/hide checks only; this does not verify all requested behavior.",
+      ].filter(Boolean);
+      const receipt = `${WORKSPACE_PREVIEW_PUBLISHED_DELIVERY_PREFIX}\n\n` +
+        `[Open preview](${state.workspacePreview.url})\n\n` +
+        (state.workspacePreviewModelAuthored
+          ? "Created by Portal."
+          : "Published from your workspace.");
+      const text = [...facts, receipt].join("\n\n");
       return previewOutcome({
-        status: checkIncomplete ? checkStatus : interactionUnverified || behaviorUnverified || renderedUnverified || requestedTextMissing ? "failed" : "passed",
-        text:
-          (checkText ? `${checkText}\n\n` : "") +
-          (requestedTextMissing ? `${requestedTextMissing}\n\n` : "") +
-          (renderedUnverified ? "The published page has not passed browser inspection. Its browser check remains unverified.\n\n" : "") +
-          (interactionUnverified ? "The requested show/hide interaction has not passed browser inspection. The published preview is available, but that behavior remains unverified.\n\n" : "") +
-          (behaviorUnverified ? "The attempted preview interaction checks have not passed browser inspection. The published preview is available, but those checks remain unverified.\n\n" : "") +
-          (workspaceBehaviorAttempt(state) && !behaviorUnverified && !state.workspaceVisibilityInteractionRequired
-            ? "Browser inspection passed for the submitted interaction checks only; this does not verify all requested behavior.\n\n" : "") +
-          (state.workspaceVisibilityInteractionRequired && !interactionUnverified
-            ? "Browser inspection passed for the submitted show/hide checks only; this does not verify all requested behavior.\n\n" : "") +
-          `${WORKSPACE_PREVIEW_PUBLISHED_DELIVERY_PREFIX}\n\n` +
-          `[Open preview](${state.workspacePreview.url})\n\n` +
-          (state.workspacePreviewModelAuthored
-            ? "Created by Portal."
-            : "Published from your workspace."),
+        status,
+        text,
         preview: {
           schemaVersion: 1,
           kind: "ods-pixel-workspace-preview",
           ...state.workspacePreview,
         },
-      });
+      }, {text, rest: receipt, note: status === "passed" ? undefined : previewCheckNote({
+        pending: status === "pending", testFailed: checkStatus === "failed", missing: Boolean(requestedTextMissing),
+        pageErrors: visibilityInspectionMatches(state.workspaceInspectionPageErrors, state.workspacePreview),
+        controls: interactionUnverified || behaviorUnverified,
+      })});
     }
     if (state.exactDownloadRequested) {
       const terminalText = exactDownloadTerminalText(state.exactDownloadTerminalOutcome);
@@ -14206,8 +14220,10 @@ export function createToolLoopGuard({
     const state=runs.get(runId);
     const artifacts=state?.workspaceArtifacts;
     // A preview outcome delivered as is (no stop, deadline or question text
-    // replaced it) keeps the agent's final reply ahead of all its host facts.
-    const explainable=previewOutcomes.has(result) && !state.clientCancelled;
+    // replaced it) reads in the owner's wording, with the agent's final reply
+    // ahead of Portal's text unless the owner cancelled.
+    const owner=previewOutcomes.has(result) ? {presentation: previewPresentations.get(result),
+      reply: state.clientCancelled ? undefined : state.finalReplyText} : undefined;
     // Passing tests or creating an archive cannot stand in for its download
     // receipt. Keep pending questions, cancellation and existing failure facts.
     if (state?.workspaceDocumentDeliveryRequested && state.artifactOwnerInteractive &&
@@ -14218,8 +14234,7 @@ export function createToolLoopGuard({
         ? `${missing}\n\n${result.text}`.slice(0, MAX_INGRESS_VERIFICATION_TEXT) : missing};
       delete result.deliveryMode;
     }
-    if (explainable) result=explainedPreviewDelivery(result, {reply: state.finalReplyText,
-      inspection: workspaceInspectionFailureLine(state)});
+    if (owner) result=explainedPreviewDelivery(result, owner);
     // The shipped example's one owner line, which Portal's ingress adds after
     // the reply it delivers (host/pixel_ingress.mjs). A pending question card
     // carries none.
@@ -14250,7 +14265,7 @@ export function createToolLoopGuard({
       const preview = failure?.preview ? undefined : progressStopPreview(state);
       return {status: 'failed', text: [runDeadlineStopText(state.runDeadline, state.workspaceMutationObserved),
         preview && `[Open last published preview](${preview.url})\n\nThis is the last verified publication, not proof that all requested work completed.`,
-        failure?.text].filter(Boolean).join('\n\n').slice(0, MAX_INGRESS_VERIFICATION_TEXT),
+        failure && ownerOutcomeText(failure)].filter(Boolean).join('\n\n').slice(0, MAX_INGRESS_VERIFICATION_TEXT),
       ...(failure?.preview ? {preview: failure.preview}
         : preview ? {preview: {schemaVersion: 1, kind: 'ods-pixel-workspace-preview', ...preview}} : {})};
     }
@@ -14265,7 +14280,7 @@ export function createToolLoopGuard({
       const preview = prior?.preview ? undefined : progressStopPreview(state);
       return {status: 'failed', text: [outputLimitStopText(outputLimit, {remote: remoteModelRoute() === true}),
         preview && `[Open last published preview](${preview.url})\n\nThis is the last verified publication, not proof that all requested work completed.`,
-        prior?.text].filter(Boolean).join('\n\n').slice(0, MAX_INGRESS_VERIFICATION_TEXT),
+        prior && ownerOutcomeText(prior)].filter(Boolean).join('\n\n').slice(0, MAX_INGRESS_VERIFICATION_TEXT),
       ...(prior?.preview ? {preview: prior.preview}
         : preview ? {preview: {schemaVersion: 1, kind: 'ods-pixel-workspace-preview', ...preview}} : {})};
     }
@@ -14416,7 +14431,6 @@ export function createToolLoopGuard({
       state.workspaceVisibilityInspection = undefined;
       state.workspaceBehaviorInspection = undefined;
       state.workspaceRenderedInspection = undefined;
-      state.workspaceInspectionFailure = undefined;
       state.workspaceBehaviorGap = undefined;
       state.previewVerificationGeneration = (state.previewVerificationGeneration ?? 0) + 1;
       sessionPreviews.delete(state.currentSessionId);

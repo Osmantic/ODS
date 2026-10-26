@@ -10,6 +10,7 @@ import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 import {createIngressServer} from '../host/pixel_ingress.mjs';
 import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
+import {PREVIEW_EARLIER_NOTE} from '../plugin/preview-explanation.mjs';
 import {RUN_PROGRESS_LIMITS, RUN_PROGRESS_STOP_REASON} from '../plugin/run-progress-budget.mjs';
 
 const RUN_ID = 'chatcmpl_3d1f6c0a-6b1e-4f7a-9a52-2e6f0c7d1a30';
@@ -288,7 +289,9 @@ test('a preview edited since it was published is linked once, with what it does 
   f.at(30);
   f.guard.observeAgentEnd(CUT_OFF, OWNER);
   const verification = f.guard.deliveryVerificationForRun(RUN_ID);
-  assert.equal(verification.text, `${STOP_COPY}\n\n${stale.text}`);
+  // The owner reads Portal's plain line about the stale preview, not its facts.
+  assert.equal(verification.text, `${STOP_COPY}\n\n${PREVIEW_EARLIER_NOTE}\n\n[Open last published preview](${url})`);
+  assert.match(stale.text, /may not include subsequent changes and does not verify completion/);
   assert.equal(verification.text.split(url).length, 2, 'one link');
   assert.deepEqual(verification.preview, stale.preview);
 });

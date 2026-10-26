@@ -1955,9 +1955,13 @@ export default function Pixel({ systemStatus = null }) {
           const publicationContent=message.role==='assistant' ? publicationDisplayText(message.content,message.publication) : message.content
           const displayedContent=message.role==='assistant' && message.status==='done'
             ? deliveredArtifactDisplayText(publicationContent,message.artifacts) : publicationContent
-          // Notes replace embeds Portal can't display; Copy keeps the reply's own text.
+          // Embeds Portal can't display are left out; a reply of only embeds gets
+          // a note unless a preview card or delivered files show, or the chat
+          // already shows each preview it names. Copy keeps the reply's own text.
           const shownContent=message.role==='assistant'
-            ? embedDisplayText(displayedContent,{streaming:message.status==='streaming'}) : displayedContent
+            ? embedDisplayText(displayedContent,{streaming:message.status==='streaming',
+              shown:Boolean(message.publication || deliveredArtifactMetadata(message).artifacts),
+              shownSite:siteId=>siteId===preview?.siteId || messages.some(item=>item.publication?.siteId===siteId)}) : displayedContent
           return (
           <div key={index} data-pixel-message-index={index} tabIndex={-1} data-pixel-response={message.role === 'assistant' ? '' : undefined} className={`mx-auto flex min-w-0 w-full max-w-5xl ${message.role === 'user' ? 'justify-end gap-2' : 'justify-start'}`}>
             {message.role === 'assistant' && <PixelMascot state={pixelReplyPose(message, sending && index === messages.length - 1)} settled={message.status !== 'streaming'} className="pixel-reply-character" />}

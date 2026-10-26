@@ -1,5 +1,6 @@
 import { RUN_PROGRESS_STOP_REASON } from "../plugin/run-progress-budget.mjs";
 import { PROGRESS_FINALIZATION_INSTRUCTION } from "../plugin/progress-finalization.mjs";
+import { PREVIEW_EARLIER_NOTE, PREVIEW_STOPPED_NOTE } from "../plugin/preview-explanation.mjs";
 import test from "node:test";
 import vm from 'node:vm';
 
@@ -16526,13 +16527,14 @@ test("historical preview cannot hide a later coding stop from the final reply", 
       result: deferred ? wrappedCoreResult("exec", result) : result,
     }, context, "pixel");
     assert.equal(invoke("exec", params).blockReason, CODING_RETRY_EXHAUSTED_REASON);
+    // The record keeps the stop and the failed check; the owner reads one line.
+    const verification = guard.verificationForRun("coding-run");
+    assert.equal(verification.status, "failed");
+    assert.match(verification.text, /stopped before the requested work was complete/);
+    assert.ok(verification.text.includes(VERIFICATION_FAILED_DELIVERY_PREFIX));
+    assert.doesNotMatch(verification.text, /publish again to verify/);
     const delivered = reply(guard, {event: {runId: "coding-run", payload: {text: ""}}});
-    assert.match(delivered.payload.text, /stopped before the requested work was complete/);
-    assert.ok(delivered.payload.text.includes(VERIFICATION_FAILED_DELIVERY_PREFIX));
-    assert.ok(delivered.payload.text.includes(details.url));
-    assert.match(delivered.payload.text, /last published preview/);
-    assert.doesNotMatch(delivered.payload.text, /publish again to verify/);
-    assert.equal(guard.verificationForRun("coding-run").status, "failed");
+    assert.equal(delivered.payload.text, `${PREVIEW_STOPPED_NOTE}\n\n[Open last published preview](${details.url})`);
   }
 });
 
@@ -16544,12 +16546,13 @@ test("historical publication preserves failed and pending verification truth", (
     call(guard, "exec", {event: {params}});
     afterCall(guard, "exec", {event: {params, result: {details: status === "pending"
       ? {status: "running", sessionId: "pending-check"} : {status: "completed", exitCode: 1}}}});
-    const result = reply(guard);
-    assert.ok(result.payload.text.includes(status === "pending"
+    const verification = guard.verificationForRun("run-1");
+    assert.equal(verification.status, "failed");
+    assert.ok(verification.text.includes(status === "pending"
       ? VERIFICATION_PENDING_DELIVERY_PREFIX : VERIFICATION_FAILED_DELIVERY_PREFIX));
-    assert.ok(result.payload.text.includes(details.url));
-    assert.match(result.payload.text, /last published preview/);
-    assert.equal(guard.verificationForRun("run-1").status, "failed");
+    // The owner reads that the preview is an earlier version, with its link.
+    const result = reply(guard);
+    assert.equal(result.payload.text, `${PREVIEW_EARLIER_NOTE}\n\n[Open last published preview](${details.url})`);
   }
 });
 
@@ -16740,7 +16743,7 @@ test('invalid JSON publication stays failed until repaired files are republished
   invoke('write',{path:'export-site/export.json',content:'{"source":"""broken"""}'},written);
   invoke('pixel_ods_workspace_preview',{relativeDirectory:'export-site'},{isError:true,content:[{type:'text',text:'Invalid JSON at export.json line 1 column 13'}],details:{schemaVersion:1,kind:'ods-pixel-workspace-preview',status:'failed',errorCode:'invalid_json_artifact'}});
   assert.equal(guard.verificationForRun(context.runId).status,'failed');
-  assert.match(guard.verificationForRun(context.runId).text,/did not verify a browser-accessible preview/i);
+  assert.equal(guard.verificationForRun(context.runId).text,WORKSPACE_PREVIEW_UNVERIFIED_DELIVERY_PREFIX);
   const repaired={path:'export-site/export.json',content:JSON.stringify({source:'"""valid source text"""\n'})};
   invoke('write',repaired,written);
   assert.equal(guard.verificationForRun(context.runId).status,'failed','a repair alone cannot publish a preview');

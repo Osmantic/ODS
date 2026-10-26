@@ -846,49 +846,88 @@ saw it. `preview-explanation.mjs` changes only that substitution: when a
 workspace preview outcome is `failed` or `pending` (a browser, interaction or
 requested-text check that did not pass, a stale snapshot, no publication, a
 verification command still running, or any of these with extension, lane-stop
-or missing-download facts added), the agent's final reply comes first. A fixed
-note follows under **Portal check:**, then the unchanged host result:
+or missing-download facts added), the agent's final reply comes first, then
+Portal's text in the owner's wording (next section).
 
-- The note always says "The reply above is the agent's own account, not a
-  verified result." and then "This request did not pass Portal's checks." (or,
-  when pending, "Portal's checks for this request have not finished."). No
-  wording heuristic decides this, so a claim of success in any wording, quoted,
-  in code or in a checklist, is still followed by that plain statement. The
-  reply itself is never rewritten.
 - When the reply promises more work ("I'll fix line 748 now") or ends by
-  narrating its next action, the note adds that Portal has stopped for this
-  message and the step has not started.
-- When the current snapshot's latest inspection failed, one host line names
-  the failed step from the validated receipt, for example "step 2
-  (assert-painted) on `#arena` captured one color only (#8fce3a)". Only the
-  step number, action, error code, the capsule's color and the plan's locator
-  (quoted as code) are used. This line is not added to a host-only delivery.
-- The outcome keeps its status, and every host failure line and the preview
-  receipt still follow, so the dashboard still shows the preview card and the
-  failure. An open code block in the reply is closed with its own fence, read
-  as the dashboard's `publicationDisplayText` reads it.
-- The host-only delivery stays as before when the reply is empty, silent, too
+  narrating its next action, Portal's line is "The next step above hasn't
+  started yet. Send a message to continue."
+- The outcome keeps its status and preview receipt, so the dashboard still
+  shows the preview card. An open code block in the reply is closed with its
+  own fence, read as the dashboard's `publicationDisplayText` reads it.
+- The host-only delivery stands alone when the reply is empty, silent, too
   short, tool-call text, over 20,000 characters, links any local URL other than
-  this outcome's own preview, or carries Portal's wording: its label or receipt
-  lines ("Your preview is ready.", "[Open preview]", "Published from your
-  workspace."), however markdown or HTML draws them (character references,
-  no-break or zero-width spaces, fullwidth letters, emphasis split across the
-  words).
+  this outcome's own preview, or carries Portal's wording: a "Portal check"
+  label or receipt lines ("Your preview is ready.", "[Open preview]",
+  "Published from your workspace."), however markdown or HTML draws them
+  (character references, no-break or zero-width spaces, fullwidth letters,
+  emphasis split across the words).
 - The reply is the `lastAssistantMessage` seen at `before_agent_finalize`, and
   only when the transcript's last assistant message, a turn without tool calls,
   holds exactly that visible text. When that turn has none, OpenClaw 2026.6.33
   fills `lastAssistantMessage` with the joined narration of earlier tool-call
   turns, which is no reply. Any later model call, and an owner cancel, clear it.
-- Passing (`append`) outcomes are unchanged, and so is the ingress verification
-  schema. A run-deadline, tool-limit, recursive-delete or clarification
-  delivery keeps its own text.
+- The ingress verification schema is unchanged. A tool-limit,
+  recursive-delete or clarification delivery keeps its own text; a run
+  deadline or output limit quotes the preview outcome in the owner's wording.
 - The reply is filtered like a tool-limit answer, not scrubbed: a path or other
-  text the agent quotes is delivered as in any passing reply.
+  text the agent quotes is delivered as in any passing reply. It is never
+  evidence, and no wording heuristic reads it: a claim of success in any
+  wording is followed by the same line.
+
+## What the owner reads after a preview
+
+On the RTX Spark (2026-10-25), two of four builds ended with only "The
+attempted preview interaction checks have not passed browser inspection. The
+published preview is available, but those checks remain unverified." under a
+preview that worked, and a kept explanation was followed by four host pieces
+(a "Portal check" note, the failed step, that text, the receipt). When a run
+publishes a preview that loads, the owner now reads no error-looking text.
+
+- The guard's record (`verificationForRun`) keeps every check fact, and the
+  model is told them during the run exactly as before, so it can repair the
+  page and cannot claim the checks passed. Only the delivered text changes
+  (`deliveryVerificationForRun`): its check facts become one short line
+  (`previewCheckNote`), and the preview receipt follows, which the dashboard
+  shows as the preview card. The dashboard shows Portal's line as a muted
+  paragraph (`dashboard/src/lib/portalDeliveryNotes.js`, kept equal to the
+  plugin's lines by `tests/preview_explanation_delivery.test.mjs`).
+- The line, by the facts: a page that threw uncaught script errors while it was
+  inspected ("The page ran into a script problem while Portal was testing it,
+  so parts of it may not work yet. Ask Portal to fix it."); requested text,
+  headings, files or control names missing ("The page doesn't match everything
+  you asked for yet. Ask Portal to fix it."); a verification command still
+  running ("Portal's checks were still running when it replied. ..."); an
+  interaction check that did not pass ("Portal couldn't test every control
+  automatically. Try it, and tell Portal if something isn't right."); anything
+  else, such as a failed test command or a page that was never inspected
+  ("Portal couldn't confirm everything automatically. ..."). Each line says
+  what Portal could not confirm, or what is wrong, and what to do next.
+- Steps, assertion names, colors and selectors leave the delivered text. The
+  model still reads the inspection result in full (the transcript keeps it);
+  the owner-facing failed-step line was removed.
+- A passing preview delivers only its receipt: the record's "Browser
+  inspection passed for the submitted ... checks only" scope line is dropped.
+- A snapshot edited after publication: "This preview shows the version from
+  before Portal's latest changes. Ask Portal to publish the current files.",
+  or, after Portal stopped a repeated coding loop, "Portal stopped before it
+  finished, so this preview shows an earlier version. Send a message to
+  continue.", each followed by the link to the last publication.
+- No preview at all is a real failure and says so plainly, with the next step:
+  "Portal saved the website files in your workspace but couldn't publish a
+  preview of them, so they haven't been checked and there is no preview to
+  open yet. Ask Portal to publish the preview." or "Portal didn't create the
+  website files for this request, so there is no preview to open yet. Ask
+  Portal to try the build again."
+- Other host lines of the same outcome (a requested download that was not
+  attached, a stopped lane, extension facts) are kept as they are.
 
 `tests/preview_explanation_delivery.test.mjs` replays the Elf of Doom case
 through the real guard, inspection receipt and ingress, plus the regression
 cases (success claims in many forms, empty, silent and narration-only replies,
-imitated notes, passing and pending checks, local links, code fences).
+imitated notes, passing, pending, page-error and stale checks, local links,
+code fences), and checks that no line after a published preview reads as an
+error.
 
 ## Passing checks that do not count
 

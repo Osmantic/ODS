@@ -10,6 +10,7 @@ import {dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
 import {createWorkspacePreviewVerifier} from '../plugin/workspace-preview.mjs';
+import {PREVIEW_EARLIER_NOTE} from '../plugin/preview-explanation.mjs';
 
 const HOST = fileURLToPath(new URL('../host/workspace_preview.py', import.meta.url));
 // Publication reuses publish_snapshot; verification goes through the real
@@ -98,10 +99,13 @@ async function finalAnswer({guard, context, url}) {
   await guard.revalidateWorkspacePreview({}, context);
   const delivered = guard.replyPayloadSending({runId: context.runId, kind: 'final',
     payload: {text: `${MODEL_ANSWER}\n\nPublished preview: ${url}`}});
-  return {status: guard.verificationForRun(context.runId).status, text: delivered?.payload?.text ?? ''};
+  const recorded = guard.verificationForRun(context.runId);
+  return {status: recorded.status, text: delivered?.payload?.text ?? '', recorded: recorded.text ?? ''};
 }
 
+// The guard records why a snapshot is stale; the owner reads Portal's line.
 const STALE = /has not been verified again since later tool activity/;
+const EARLIER = text => text.startsWith(`${PREVIEW_EARLIER_NOTE}\n\n[Open last published preview](`);
 const scenarios = {
   // Tower2 round 060: the extra CLI demo read files and wrote only stdout.
   'read-only exec': f => assert.equal(f.exec('python3 expense-report/report.py expense-report/data.csv', 'demo').status, 0),
@@ -129,10 +133,12 @@ for (const wrapped of [false, true]) for (const [name, act] of Object.entries(sc
       if (verified.has(name)) {
         assert.equal(delivered.status, 'passed');
         assert.ok(delivered.text.startsWith(MODEL_ANSWER), delivered.text);
-        assert.doesNotMatch(delivered.text, STALE);
+        assert.doesNotMatch(delivered.recorded, STALE);
+        assert.equal(EARLIER(delivered.text), false, delivered.text);
       } else {
         assert.equal(delivered.status, 'failed');
-        assert.match(delivered.text, STALE);
+        assert.match(delivered.recorded, STALE);
+        assert.ok(EARLIER(delivered.text), delivered.text);
         assert.doesNotMatch(delivered.text, new RegExp(MODEL_ANSWER), 'no verification claim for changed bytes');
       }
     });
@@ -148,7 +154,8 @@ test('read-only calls after the fleet exec neither advance nor revoke the pendin
   fixture.invoke('read', {path: 'expense-report/public/index.html'}, {content: [{type: 'text', text: 'Expense report'}]}, 'readback');
   const delivered = await finalAnswer(fixture);
   assert.equal(delivered.status, 'passed');
-  assert.doesNotMatch(delivered.text, STALE);
+  assert.doesNotMatch(delivered.recorded, STALE);
+  assert.equal(EARLIER(delivered.text), false, delivered.text);
 });
 
 // Tower2 round 061 (main 17dfce8a, #6673 installed): website-create and
@@ -245,6 +252,7 @@ for (const [name, run] of Object.entries(runs)) {
       assert.equal(delivered.status, 'passed');
       assert.ok(delivered.text.startsWith(run.final), delivered.text);
       assert.doesNotMatch(delivered.text, STALE);
+      assert.ok(!delivered.text.includes(PREVIEW_EARLIER_NOTE), delivered.text);
       const published = publication(run.calls.findLast(publication));
       assert.equal(PREVIEW_READY.exec(delivered.text)?.[1], published.details.url);
     });

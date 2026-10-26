@@ -2,7 +2,7 @@ import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { createHash } from 'node:crypto'
 import { render } from '../test/test-utils'
 import { saveConversation, SELECT_EVENT } from '../lib/pixelConversations'
-import { EMBED_NOTE, EMBED_ONLY_NOTE } from '../lib/embedDisplay'
+import { EMBED_ONLY_NOTE } from '../lib/embedDisplay'
 import Pixel from './Pixel'
 
 const bytes = new TextEncoder().encode('A verified document\n')
@@ -298,7 +298,7 @@ it('shows the verified download without a matching generated embed tag and retai
   const download=await screen.findByRole('button',{name:'Download report.md'})
   expect(screen.queryByText(content)).toBeNull()
   expect(screen.queryByText(EMBED_ONLY_NOTE)).toBeNull()
-  expect(screen.queryByText(EMBED_NOTE)).toBeNull()
+  expect(screen.queryByText(/can’t display/)).toBeNull()
   expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).messages.at(-1).content).toBe(content)
   fireEvent.click(download)
   await screen.findByText('Verified download started')

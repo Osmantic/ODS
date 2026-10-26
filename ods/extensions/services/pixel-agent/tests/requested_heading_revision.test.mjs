@@ -14,6 +14,7 @@ import {extractRequestedLiterals, missingRequestedText, requestedTextInstruction
   requestedTextDeliveryNote, REQUESTED_HEADING_REVISION_INSTRUCTION, REQUESTED_TEXT_REVISION_INSTRUCTION}
   from '../plugin/requested-literals.mjs';
 import {PREVIEW_INSPECTION_TOOL} from '../plugin/preview-interaction-assurance.mjs';
+import {PREVIEW_MISSING_NOTE} from '../plugin/preview-explanation.mjs';
 import {INSPECTION_KIND, INSPECTION_SCOPE, inspectionPlanHash, normalizeWorkspacePreviewInspectionParams}
   from '../plugin/workspace-preview-inspect.mjs';
 
@@ -109,8 +110,9 @@ function fixture(t) {
   };
   const finalize = answer => guard.beforeAgentFinalize({lastAssistantMessage: answer}, context);
   const delivered = () => guard.deliveryVerificationForRun(context.runId);
+  const recorded = () => guard.verificationForRun(context.runId);
   const revisions = () => results.filter(text => text.includes(REVISION_START)).length;
-  return {write, edit, publish, inspect, finalize, delivered, revisions};
+  return {write, edit, publish, inspect, finalize, delivered, recorded, revisions};
 }
 
 // Round 073 as recorded: three writes, publish (note), inspect the same snapshot.
@@ -214,7 +216,7 @@ test('tower2 round 073: the revision fires once and an exact card heading is ver
   assert.equal(f.revisions(), 1);
   const outcome = f.delivered();
   assert.equal(outcome.status, 'passed');
-  assert.doesNotMatch(outcome.text, /longer headings/);
+  assert.doesNotMatch(f.recorded().text, /longer headings/);
   assert.equal(outcome.preview.sha256, second.receipt.sha256);
 });
 
@@ -225,7 +227,9 @@ test('tower2 round 073: the recorded answer after the revision gets the honest d
   assert.equal(f.revisions(), 1);
   const outcome = f.delivered();
   assert.equal(outcome.status, 'failed');
-  assert.ok(outcome.text.startsWith(`${FAILURE_NOTE}\n\n`), outcome.text);
+  // The record names the headings; the owner reads Portal's line about them.
+  assert.ok(f.recorded().text.startsWith(`${FAILURE_NOTE}\n\n`), f.recorded().text);
+  assert.ok(outcome.text.startsWith(`${PREVIEW_MISSING_NOTE}\n\nYour preview is ready.`), outcome.text);
   assert.doesNotMatch(f.inspect(f.first.receipt, 'inspect-again'), new RegExp(REVISION_START), 'never a second revision');
   assert.equal(f.revisions(), 1);
 });
@@ -238,5 +242,6 @@ test('tower2 round 073: an answer straight after the receipt gets the same revis
     retry: {instruction: REVISION.replace('[ODS Pixel next step] ', ''),
       idempotencyKey: 'pixel-ods-workspace-preview-requested-text', maxAttempts: 1}});
   assert.equal(f.finalize(TOWER2.finalAnswer)?.action, 'finalize');
-  assert.ok(f.delivered().text.startsWith(FAILURE_NOTE));
+  assert.ok(f.recorded().text.startsWith(FAILURE_NOTE));
+  assert.ok(f.delivered().text.startsWith(PREVIEW_MISSING_NOTE));
 });

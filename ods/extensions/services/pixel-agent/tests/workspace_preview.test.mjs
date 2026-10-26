@@ -50,6 +50,7 @@ import {
   createWorkspacePreviewTool,
   EMPTY_PUBLISHED_FILES_PREFIX,
   normalizeWorkspacePreviewParams,
+  PREVIEW_CARD_GUIDANCE,
   testing,
 } from "../plugin/workspace-preview.mjs";
 
@@ -196,6 +197,10 @@ test("publishes only the exact existing workspace directory", async () => {
   assert.notEqual(snapshot.sha256,result.details.entrySha256);
   assert.match(result.content[0].text,/pixel_ods_workspace_preview_inspect/);
   assert.match(result.content[0].text, /independently published and read back/);
+  // RTX Spark, 2026-10-25: a dragon picture's reply ended with an embed of the
+  // site its own preview card was showing.
+  assert.ok(result.content[0].text.includes(`Verified browser URL: ${result.details.url}. ${PREVIEW_CARD_GUIDANCE} Inspection snapshot:`));
+  assert.match(PREVIEW_CARD_GUIDANCE, /card .*do not add an \[embed \.\.\.\] directive/);
   assert.match(result.content[0].text, /publication and HTTP readback only, not successful startup, interactions or durable browser storage/);
   // Publication renders nothing; the palette arrives with inspection.
   assert.match(result.content[0].text, /Publication does not render the page; the inspection result also reports its rendered colors by area\. Check them before claiming a visible color or style change\. /);

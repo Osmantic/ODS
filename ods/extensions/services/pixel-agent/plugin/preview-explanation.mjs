@@ -1,46 +1,62 @@
-// Keep the agent's own explanation when a workspace preview check fails.
+// What the owner reads after a workspace preview run.
 //
-// A failed or still-running preview outcome (a browser or interaction check
-// that did not pass, requested text missing, a stale or unpublished snapshot,
-// a verification command still running) used to replace the agent's whole
-// final reply with the host's delivery text. On the RTX Spark (Elf of Doom,
-// round 9) that hid the agent's correct root-cause explanation: the owner saw
-// only "The attempted preview interaction checks have not passed browser
-// inspection ... Your preview is ready."
+// Owner wording. The guard keeps every check fact of a preview outcome in its
+// own record (verificationForRun: "The attempted preview interaction checks
+// have not passed browser inspection ..."), and the model reads what failed
+// during the run (its inspection results and the guard's next-step
+// instructions), so it can repair the page. The owner reads one short, plain
+// line in place of those facts, which the dashboard shows muted. On the RTX Spark
+// (2026-10-25) two of four builds ended with only that fact text under a
+// preview that worked. The outcome keeps its status and its preview receipt,
+// and nothing here certifies anything: each line says what Portal could not
+// confirm, or what is wrong, and what the owner can do next.
 //
-// Now the agent's final prose comes first and the host facts follow it,
-// unchanged, under a fixed label. The prose is delivered as written and is
-// never evidence: the outcome keeps its status, every host failure line and
-// the preview receipt still follow it, and the note after it always says the
-// reply is the agent's own account and that the request did not pass (or has
-// not finished) Portal's checks. No wording heuristic decides that: it is true
-// for every outcome this applies to, whatever the prose claims.
+// The agent's explanation. A failed or still-running preview outcome (a
+// browser or interaction check that did not pass, requested text missing, a
+// stale or unpublished snapshot, a verification command still running) used
+// to replace the agent's whole final reply with the host's delivery text. On
+// the RTX Spark (Elf of Doom, round 9) that hid the agent's correct root-cause
+// explanation. Now the agent's final prose comes first and Portal's line and
+// the host's remaining text follow it. The prose is delivered as written and
+// is never evidence.
 //
 // The prose passes the filter every host-composed answer passes
 // (deliverableAnswer in progress-finalization.mjs). It is dropped, and the host
-// delivery stands alone as before, when it is empty or too short, silent
-// (NO_REPLY), tool-call text, when it links any local URL other than this
-// outcome's own preview, or when it carries Portal's own wording (its label or
-// receipt lines, however markdown or HTML draws them): a copied or imitated
-// host note must not read as Portal's. Everything added here is fixed English
-// text, apart from an inspection step's locator, which is quoted as code.
+// delivery stands alone, when it is empty or too short, silent (NO_REPLY),
+// tool-call text, when it links any local URL other than this outcome's own
+// preview, or when it carries Portal's own wording (its check label or receipt
+// lines, however markdown or HTML draws them): a copied or imitated host note
+// must not read as Portal's. Everything added here is fixed English text.
 import { NARRATION, deliverableAnswer } from './progress-finalization.mjs';
 import { promisesExecution } from './completion-assurance.mjs';
 import { silentReplyText } from './owner-visible-reply.mjs';
 
-export const PREVIEW_CHECK_LABEL = '**Portal check:**';
-export const PREVIEW_ACCOUNT_NOTE = "The reply above is the agent's own account, not a verified result.";
-export const PREVIEW_FAILED_NOTE = "This request did not pass Portal's checks.";
-export const PREVIEW_PENDING_NOTE = "Portal's checks for this request have not finished.";
-// The run has ended: a step the reply announces will not start on its own.
+// Portal's line after a preview outcome that did not pass. The dashboard
+// mutes these exact paragraphs (dashboard/src/lib/portalDeliveryNotes.js).
+export const PREVIEW_CONTROLS_NOTE =
+  "Portal couldn't test every control automatically. Try it, and tell Portal if something isn't right.";
+export const PREVIEW_UNCONFIRMED_NOTE =
+  "Portal couldn't confirm everything automatically. Have a look, and tell Portal if something isn't right.";
+export const PREVIEW_RUNNING_NOTE =
+  "Portal's checks were still running when it replied. Have a look, and tell Portal if something isn't right.";
+export const PREVIEW_SCRIPT_NOTE =
+  'The page ran into a script problem while Portal was testing it, so parts of it may not work yet. Ask Portal to fix it.';
+export const PREVIEW_MISSING_NOTE = "The page doesn't match everything you asked for yet. Ask Portal to fix it.";
+// The preview card shows the last publication; the files changed after it.
+export const PREVIEW_EARLIER_NOTE =
+  "This preview shows the version from before Portal's latest changes. Ask Portal to publish the current files.";
 export const PREVIEW_STOPPED_NOTE =
-  'Portal has stopped for this message, so the next step described above has not started. Send a message to continue.';
+  'Portal stopped before it finished, so this preview shows an earlier version. Send a message to continue.';
+// The run has ended: a step the reply announces will not start on its own.
+export const PREVIEW_CONTINUE_NOTE = "The next step above hasn't started yet. Send a message to continue.";
+export const PREVIEW_NOTES = Object.freeze([PREVIEW_CONTROLS_NOTE, PREVIEW_UNCONFIRMED_NOTE, PREVIEW_RUNNING_NOTE,
+  PREVIEW_SCRIPT_NOTE, PREVIEW_MISSING_NOTE, PREVIEW_EARLIER_NOTE, PREVIEW_STOPPED_NOTE, PREVIEW_CONTINUE_NOTE]);
 
 // The combined reply is host verification text (ingress limit: 32 KiB). Leave
 // room for the extension and progress-lane notes that can follow it.
 const MAX_EXPLAINED_CHARS = 24 * 1024;
 
-// Portal's label and receipt lines, matched on folded text (foldedText).
+// Portal's check label and receipt lines, matched on folded text (foldedText).
 const HOST_WORDING = /\bportal[\s\p{P}]{0,3}checks?\b|\byour (?:last published )?preview is (?:ready|still available)\b|\bpublished from your workspace\b|\bcreated by portal\b|\[open (?:last published )?preview\]|\bpublication scope\b/iu;
 
 const codePoint = value => value > 0 && value <= 0x10ffff ? String.fromCodePoint(value) : ' ';
@@ -81,60 +97,50 @@ function announcesMoreWork(answer) {
   return promisesExecution(answer) || NARRATION.test(sentence);
 }
 
-// A locator as an inline code span that no backtick inside it can close.
-function codeSpan(value) {
-  const text = value.replace(/\s+/g, ' ').trim();
-  if (!text.includes('`')) return `\`${text}\``;
-  const ticks = '`'.repeat(Math.max(0, ...[...text.matchAll(/`+/g)].map(match => match[0].length)) + 1);
-  return `${ticks} ${text} ${ticks}`;
+// Portal's line for a published preview whose checks did not pass, from the
+// guard's facts about it. A page that throws is broken and a requested text
+// that is missing is a known gap; anything else is what Portal could not
+// confirm, and the owner can try it.
+export function previewCheckNote({pending = false, pageErrors = false, missing = false, testFailed = false, controls = false} = {}) {
+  if (pageErrors) return PREVIEW_SCRIPT_NOTE;
+  if (missing) return PREVIEW_MISSING_NOTE;
+  if (pending) return PREVIEW_RUNNING_NOTE;
+  return controls && !testFailed ? PREVIEW_CONTROLS_NOTE : PREVIEW_UNCONFIRMED_NOTE;
 }
 
-const STEP_FAILURES = new Map([
-  ['no_match', 'matched no element'],
-  ['selector_not_unique', 'matched more than one element'],
-  ['invalid_selector', 'has an invalid CSS selector'],
-  ['visibility_mismatch', 'did not show the requested visibility'],
-  ['text_mismatch', 'did not show the expected text'],
-  ['not_in_viewport', 'captured nothing on screen'],
-  ['press_failed', 'could not complete the key press'],
-  ['focus_failed', 'could not focus the page'],
-  ['text_field_press_unsupported', 'was refused because its target accepts text'],
-]);
-
-// One fixed-English line naming the first failed step of a failed inspection
-// receipt of `preview` (the inspect tool validated the receipt), or undefined.
-// Only bounded fields are read: the step number, action, error code, the
-// capsule-computed color and the plan's own locator. Never page text.
-export function inspectionFailureLine(details, preview) {
-  if (!preview || details?.status !== 'failed' || details.siteId !== preview.siteId || details.sha256 !== preview.sha256) return undefined;
-  const lead = 'Latest browser inspection of this preview';
-  const code = value => typeof value === 'string' && /^[a-z_]{1,40}$/.test(value) ? value : undefined;
-  const step = Array.isArray(details.steps) ? details.steps.find(item => item?.status === 'failed') : undefined;
-  if (!step) return code(details.errorCode) ? `${lead} did not complete (${details.errorCode}).` : undefined;
-  if (!Number.isInteger(step.index) || step.index < 0 || step.index > 11 || !/^[a-z-]{1,20}$/.test(step.action ?? '')) return undefined;
-  const locator = step.locator ?? {};
-  const target = typeof locator.selector === 'string' && locator.selector.length <= 256 ? ` on ${codeSpan(locator.selector)}`
-    : /^[a-z]{1,20}$/.test(locator.role ?? '') && typeof locator.name === 'string' && locator.name.length <= 120
-      ? ` on the ${locator.role} named ${codeSpan(locator.name)}` : '';
-  const hex = step.paint?.dominant?.hex;
-  const failure = step.errorCode === 'uniform_paint' && /^#[0-9a-f]{6}$/.test(hex ?? '') ? `captured one color only (${hex})`
-    : STEP_FAILURES.get(step.errorCode) ?? (code(step.errorCode) ? `did not pass (${step.errorCode})` : 'did not pass');
-  return `${lead}: step ${step.index + 1} (${step.action})${target} ${failure}.`;
+// `text` as the owner reads it. `presentation` ({text, rest, note}) is a
+// preview outcome's own host text, the part of it the owner keeps (its preview
+// receipt or link) and Portal's line. Within `text`, which can carry other
+// host lines around that host text (a missing download, a stopped lane), the
+// host text becomes `line` and the kept part. Without it, `line` leads.
+export function ownerPreviewText(text, presentation, line = presentation?.note) {
+  const at = presentation ? text.indexOf(presentation.text) : -1;
+  if (at < 0) return line ? `${line}\n\n${text}` : text;
+  return text.slice(0, at) + [line, presentation.rest].filter(Boolean).join('\n\n') +
+    text.slice(at + presentation.text.length);
 }
 
-// Returns `result` with the agent's prose ahead of its host text, or `result`
-// itself when it is not a failed or pending outcome or the prose cannot be
-// delivered. `inspection` is a line from inspectionFailureLine.
-export function explainedPreviewDelivery(result, {reply, inspection} = {}) {
-  if (!['failed', 'pending'].includes(result?.status) || typeof result.text !== 'string' || !result.text) return result;
-  if (typeof reply !== 'string' || silentReplyText(reply)) return result;
+// The agent's final reply, when it can be delivered ahead of Portal's text.
+function keptAnswer(reply, result) {
+  if (typeof reply !== 'string' || silentReplyText(reply)) return undefined;
   const answer = deliverableAnswer(reply, {localUrlsForbidden: true,
     allowedUrls: result.preview?.url ? [result.preview.url] : []});
-  if (!answer || HOST_WORDING.test(foldedText(answer))) return result;
-  const fence = openFence(answer);
-  const note = [PREVIEW_ACCOUNT_NOTE, result.status === 'pending' ? PREVIEW_PENDING_NOTE : PREVIEW_FAILED_NOTE,
-    ...(announcesMoreWork(answer) ? [PREVIEW_STOPPED_NOTE] : [])].join(' ');
-  const text = [fence ? `${answer}\n${fence}` : answer, `${PREVIEW_CHECK_LABEL} ${note}`, inspection, result.text]
-    .filter(Boolean).join('\n\n');
-  return text.length > MAX_EXPLAINED_CHARS ? result : {...result, text};
+  return answer && !HOST_WORDING.test(foldedText(answer)) ? answer : undefined;
+}
+
+// Returns `result` in the owner's wording (ownerPreviewText), with the agent's
+// final reply first when the outcome is failed or pending and the reply can be
+// delivered. A reply that announces more work is followed by the line saying
+// that step has not started. Returns `result` itself when nothing changes.
+export function explainedPreviewDelivery(result, {reply, presentation} = {}) {
+  if (typeof result?.text !== 'string' || !result.text) return result;
+  const answer = ['failed', 'pending'].includes(result.status) ? keptAnswer(reply, result) : undefined;
+  if (answer) {
+    const fence = openFence(answer);
+    const line = announcesMoreWork(answer) ? PREVIEW_CONTINUE_NOTE : presentation?.note;
+    const text = [fence ? `${answer}\n${fence}` : answer, ownerPreviewText(result.text, presentation, line)].join('\n\n');
+    if (text.length <= MAX_EXPLAINED_CHARS) return {...result, text};
+  }
+  const text = ownerPreviewText(result.text, presentation);
+  return text === result.text ? result : {...result, text};
 }
