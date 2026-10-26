@@ -4,7 +4,7 @@ import {createHash} from 'node:crypto';
 import {createToolLoopGuard, DEFAULT_WEB_TOOL_LIMITS, FREE_CORRECTIONS_PER_KIND, PHANTOM_PROCESS_REASON,
   PROGRESS_STOP_HELP, PROGRESS_STOPPED_DELIVERY_PREFIX, WEB_LOOP_ABORT_REASON, WEB_LOOP_DELIVERY_REASON,
   WEB_SEARCH_BUDGET_EXHAUSTED_REASON, WORKSPACE_PREVIEW_NOT_CREATED_DELIVERY_PREFIX} from '../plugin/tool-loop-guard.mjs';
-import {PREVIEW_UNFINISHED_NOTE} from '../plugin/preview-explanation.mjs';
+import {PREVIEW_INCOMPLETE_NOTE} from '../plugin/preview-explanation.mjs';
 import {RUN_PROGRESS_LIMITS, RUN_PROGRESS_STOP_REASON} from '../plugin/run-progress-budget.mjs';
 import {composeProgressFinalization, createProgressFinalization, progressFinalizationAnswer,
   PROGRESS_FINALIZATION_INSTRUCTION, PROGRESS_FINALIZATION_NOTE, PROGRESS_READ_PAGES_HEADING} from '../plugin/progress-finalization.mjs';
@@ -306,7 +306,8 @@ test('visual stops never gain an unverified preview or localhost claim', () => {
   const recorded = guard.verificationForRun(context.runId).text;
   const receipt = recorded.slice(recorded.indexOf('Your preview is ready.'));
   assert.ok(receipt.startsWith(`Your preview is ready.\n\n[Open preview](${details.url})\n\n`), receipt);
-  assert.equal(delivery.text, `${answer}\n\n${PREVIEW_UNFINISHED_NOTE}\n\n${receipt}`);
+  // Failed fetches, not a preview check, stopped it: the page may be unfinished.
+  assert.equal(delivery.text, `${answer}\n\n${PREVIEW_INCOMPLETE_NOTE}\n\n${receipt}`);
   assert.doesNotMatch(delivery.text, /not proof|not completed|stopped after|tool limit|Open last published preview/);
   assert.equal(delivery.preview.sha256, details.sha256);
 });

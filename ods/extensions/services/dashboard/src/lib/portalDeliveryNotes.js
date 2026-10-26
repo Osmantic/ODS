@@ -14,6 +14,7 @@ export const DELIVERY_NOTES = Object.freeze([
   "This preview shows the version from before Portal's latest changes. Ask Portal to publish the current files.",
   'Portal stopped before it finished, so this preview shows an earlier version. Send a message to continue.',
   "Portal published your page but couldn't finish checking it automatically. Try it, and tell Portal if something isn't right.",
+  'Portal stopped before it finished, so this page may not have everything you asked for yet. Send a message to continue.',
   "The next step above hasn't started yet. Send a message to continue.",
   "Portal saved the website files in your workspace but couldn't publish a preview of them, so they haven't been checked and there is no preview to open yet. Ask Portal to publish the preview.",
   "Portal didn't create the website files for this request, so there is no preview to open yet. Ask Portal to try the build again.",

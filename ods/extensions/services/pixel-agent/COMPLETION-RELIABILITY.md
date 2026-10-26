@@ -968,12 +968,18 @@ and in a website build the owner reads Portal's wording instead
 
 - The answer the stop accepts, if any, comes first: the model's tool-free
   answer, a partial answer, or the stop synthesis with its note and pages. Links
-  it cites that no read receipt covers are still listed.
+  it cites that no read receipt covers are still listed. A partial answer (its
+  calls were refused) or one that announces more work ("Now let me add the Stop
+  and Lap buttons.") is followed by "The next step above hasn't started yet.
+  Send a message to continue." in place of the lines below.
 - With the current publication: one muted line, then the receipt, which the
   dashboard shows as the preview card. The line is the page's own known gap (a
-  script problem, requested text missing), else "Portal published your page but
-  couldn't finish checking it automatically. Try it, and tell Portal if
-  something isn't right."
+  script problem, requested text missing). Otherwise, when failed preview checks
+  stopped the run, it is "Portal published your page but couldn't finish
+  checking it automatically. Try it, and tell Portal if something isn't
+  right."; for any other stop (edits that kept failing, say) the build itself
+  may be unfinished: "Portal stopped before it finished, so this page may not
+  have everything you asked for yet. Send a message to continue."
 - With only an earlier publication (files changed since): "Portal stopped before
   it finished, so this preview shows an earlier version. Send a message to
   continue.", then the link to that publication.
@@ -984,9 +990,15 @@ and in a website build the owner reads Portal's wording instead
   ... Ask Portal to try the build again."), and "If it keeps happening, get help
   on Discord" with the invite link.
 
-Research, coding and receipt-based runs keep their stop texts.
-`tests/preview_check_stop_delivery.test.mjs` replays the stopwatch run through
-the real guard and inspection tool.
+Research and coding runs keep their stop texts, and so does every run that
+keeps the strict stop (finalization unavailable), a website build included when
+it also asked for a managed installation: its stop text says the request was not
+completed. When the runtime itself rejects a call made after the stop (before
+`before_tool_call` runs), the persisted result that carries the instruction
+counts as the instruction's delivery, so the next model call is the answer turn
+rather than a second uninstructed call that forfeits it.
+`tests/preview_check_stop_delivery.test.mjs` replays the stopwatch run and the
+review's four stops through the real guard and inspection tool.
 
 ## Passing checks that do not count
 

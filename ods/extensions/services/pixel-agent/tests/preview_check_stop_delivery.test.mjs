@@ -23,7 +23,8 @@ import {createToolLoopGuard, PROGRESS_STOP_HELP, PROGRESS_STOPPED_DELIVERY_PREFI
   WORKSPACE_PREVIEW_UNVERIFIED_DELIVERY_PREFIX} from '../plugin/tool-loop-guard.mjs';
 import {PREVIEW_INSPECTION_TOOL} from '../plugin/preview-interaction-assurance.mjs';
 import {INSPECTION_KIND, INSPECTION_SCOPE, createWorkspacePreviewInspectTool, inspectionPlanHash} from '../plugin/workspace-preview-inspect.mjs';
-import {PREVIEW_STOPPED_NOTE, PREVIEW_UNFINISHED_NOTE} from '../plugin/preview-explanation.mjs';
+import {PREVIEW_CONTINUE_NOTE, PREVIEW_INCOMPLETE_NOTE, PREVIEW_STOPPED_NOTE,
+  PREVIEW_UNFINISHED_NOTE} from '../plugin/preview-explanation.mjs';
 import {PREVIEW_CHECK_FINALIZATION_INSTRUCTION, PROGRESS_FINALIZATION_INSTRUCTION,
   PROGRESS_FINALIZATION_NOTE} from '../plugin/progress-finalization.mjs';
 import {RUN_PROGRESS_LIMITS, RUN_PROGRESS_STOP_REASON} from '../plugin/run-progress-budget.mjs';
@@ -253,4 +254,173 @@ test('the wrap-up never lets another tool run, and the budget is unchanged', asy
   assert.ok(decisions.every(decision => decision?.block === true), 'every call after the stop is refused');
   assert.deepEqual(decisions.map(decision => decision.blockReason), [PREVIEW_CHECK_FINALIZATION_INSTRUCTION,
     RUN_PROGRESS_STOP_REASON, RUN_PROGRESS_STOP_REASON, RUN_PROGRESS_STOP_REASON]);
+});
+
+// Review of #8198: four stops that the wording above must not misread. The page
+// has only a Start button; the edits that would add Stop and Lap keep failing.
+const START_ONLY = '<!doctype html><title>Stopwatch</title><div id="display">00:00.0</div>' +
+  '<button id="start">Start</button><ol id="laps"></ol><script src="app.js"></script>';
+const MIXED_PROMPT = '/extensions install https://github.com/example/project; also build a small status web page and publish a preview of it.';
+function harness(prompt = PROMPT) {
+  const aborts = [];
+  const guard = createToolLoopGuard({workspacePreviewInspectionAvailable: true,
+    abortRun: (sessionId) => { aborts.push(sessionId); return true; }});
+  guard.observeRun({...context, trigger: 'user'}, 'pixel', {prompt}, {executionHost: 'sandbox'});
+  let sequence = 0;
+  const persist = (toolName, toolCallId, result, ctx = {...context, toolName, toolCallId}) => {
+    const message = {role: 'toolResult', toolName, toolCallId, isError: result?.isError === true, content: result?.content ?? []};
+    const decision = guard.toolResultPersist({toolCallId, message}, ctx);
+    return (decision?.message ?? message).content.map(block => block.text).join('\n');
+  };
+  const round = () => { guard.observeModelEnd({}, context); guard.observeModelCall({}, context); };
+  const call = (toolName, params) => {
+    const ctx = {...context, toolName, toolCallId: `call-${sequence++}`};
+    const decision = guard.beforeToolCall({toolName, runId, toolCallId: ctx.toolCallId, params}, ctx);
+    return {ctx, decision, params: decision?.params ?? params};
+  };
+  // A call as the runtime runs it: refused (its refusal persisted) or run, then persisted.
+  const run = (toolName, params, result) => {
+    const {ctx, decision, params: actual} = call(toolName, params);
+    if (decision?.block) return {blocked: decision.blockReason,
+      persisted: persist(toolName, ctx.toolCallId, {isError: true, content: [{type: 'text', text: decision.blockReason}]})};
+    guard.afterToolCall({toolName, runId, toolCallId: ctx.toolCallId, params: actual, result,
+      ...(result.isError ? {error: result.content?.[0]?.text ?? 'failed'} : {})}, ctx);
+    return {params: actual, persisted: persist(toolName, ctx.toolCallId, result)};
+  };
+  const publish = (page = START_ONLY) => {
+    const written = run('write', {path: 'stopwatch/index.html', content: page}, {content: [{type: 'text', text: 'Successfully wrote file.'}]});
+    const relativeDirectory = written.params.path.slice(0, -'/index.html'.length);
+    round();
+    const sha256 = createHash('sha256').update(relativeDirectory + page).digest('hex'), siteId = `site-${sha256.slice(0, 24)}`;
+    const preview = {schemaVersion: 1, kind: 'ods-pixel-workspace-preview', status: 'succeeded', relativeDirectory, siteId, sha256,
+      entryFile: 'index.html', entrySha256: createHash('sha256').update(page).digest('hex'), files: 2, bytes: 2048, port: 9437,
+      url: `http://${siteId}.localhost:9437/${siteId}/`, httpStatus: 200, readbackVerified: true, executable: false, overwritten: false};
+    run('pixel_ods_workspace_preview', {relativeDirectory}, {details: preview});
+    return preview;
+  };
+  // Edits that try to add the missing buttons and fail: the fourth stops the run.
+  const failedEdits = () => {
+    let last;
+    for (let i = 0; i < RUN_PROGRESS_LIMITS.consecutiveFailures; i++) {
+      round();
+      last = run('edit', {path: 'stopwatch/index.html', edits: [{oldText: `<button id="lap-${i}">`, newText: '<button id="lap">Lap</button>'}]},
+        {isError: true, content: [{type: 'text', text: 'Could not find the exact text in stopwatch/index.html'}]});
+    }
+    return last;
+  };
+  return {guard, aborts, persist, round, call, run, publish, failedEdits};
+}
+const answerTurn = text => ({lastAssistantMessage: text, messages: [{role: 'user', content: PROMPT},
+  {role: 'assistant', content: [{type: 'text', text}], stopReason: 'stop'}]});
+
+test('a mixed request with a managed installation keeps the strict stop text, so the unverified install is not hidden', () => {
+  const h = harness(MIXED_PROMPT);
+  h.guard.observeModelCall({}, context);
+  for (let i = 0; i < RUN_PROGRESS_LIMITS.consecutiveFailures; i++) {
+    h.round();
+    assert.equal(h.run('pixel_ods_extension_request_prepare', {}, {isError: true,
+      content: [{type: 'text', text: 'Repository evidence unavailable'}]}).blocked, undefined);
+  }
+  h.round();
+  const preview = h.publish();
+  for (let i = 0; i < RUN_PROGRESS_LIMITS.consecutiveFailures; i++) {
+    h.round();
+    h.run('read', {path: `stopwatch/missing-${i}.js`}, {isError: true, content: [{type: 'text', text: 'ENOENT'}]});
+  }
+  h.round();
+  // Receipt-based work keeps the strict stop: no answer turn, no instruction.
+  const refused = h.run('read', {path: 'stopwatch/app.js'}, {});
+  assert.equal(refused.blocked, RUN_PROGRESS_STOP_REASON);
+  assert.equal(refused.persisted, RUN_PROGRESS_STOP_REASON);
+  h.guard.beforeAgentFinalize(answerTurn('The status page is published.'), context);
+  assert.match(h.guard.verificationForRun(runId).text, /ODS did not observe a verified managed installation receipt/);
+  const delivery = h.guard.deliveryVerificationForRun(runId);
+  assert.equal(delivery.status, 'failed');
+  assert.equal(delivery.text, `${RUN_PROGRESS_STOP_REASON}\n\n[Open last published preview](${preview.url})\n\n` +
+    'This is the last verified publication, not proof that all requested work completed.',
+  'the owner reads that the request was not completed, not only a calm line over the card');
+  assert.equal(delivery.preview.sha256, preview.sha256);
+});
+
+test('a stop after failed edits says the published page may be unfinished, not that its checks did not finish', () => {
+  const h = harness();
+  h.guard.observeModelCall({}, context);
+  const preview = h.publish();
+  // Edits stopped the run, not a preview check: the general instruction.
+  assert.equal(h.failedEdits().persisted, PROGRESS_FINALIZATION_INSTRUCTION);
+  h.round();
+  assert.equal(h.call('read', {path: 'stopwatch/app.js'}).decision.blockReason, PROGRESS_FINALIZATION_INSTRUCTION);
+  h.round();
+  h.call('read', {path: 'stopwatch/app.js'});
+  h.guard.beforeAgentFinalize({lastAssistantMessage: 'Let me check.'}, context);
+  assert.equal(h.guard.verificationForRun(runId).status, 'passed', 'the record: a publication without failed checks');
+  const delivery = h.guard.deliveryVerificationForRun(runId);
+  assert.equal(delivery.text, `${PREVIEW_INCOMPLETE_NOTE}\n\n${receiptOf(h.guard)}`);
+  assert.doesNotMatch(delivery.text, /couldn't finish checking/);
+  assert.match(PREVIEW_INCOMPLETE_NOTE, /^Portal stopped before it finished\b.*\. Send a message to continue\.$/);
+  assert.equal(delivery.preview.sha256, preview.sha256);
+});
+
+test('a call the runtime rejects after the stop hands over the instruction, and the answer that follows is kept', () => {
+  const answer = 'I built the stopwatch page in stopwatch/index.html with a running display and a Start button. ' +
+    'I could not add the Stop and Lap buttons: my edits to add them did not apply, so those are still missing.';
+  const reject = h => h.persist('edit', 'native-1', {isError: true,
+    content: [{type: 'text', text: 'Validation failed for tool "edit": edits must be an array'}]},
+  {agentId: 'pixel', sessionKey: context.sessionKey, toolName: 'edit', toolCallId: 'native-1'});
+  const h = harness();
+  h.guard.observeModelCall({}, context);
+  h.publish();
+  h.failedEdits();
+  // The next model call reads the instruction, but the runtime rejects its call
+  // before before_tool_call: that persisted result hands over the instruction.
+  h.round();
+  assert.equal(reject(h), PROGRESS_FINALIZATION_INSTRUCTION);
+  // The following model call is the single answer turn, so its answer is kept.
+  h.round();
+  h.guard.beforeAgentFinalize(answerTurn(answer), context);
+  const delivery = h.guard.deliveryVerificationForRun(runId);
+  assert.equal(delivery.text, `${answer}\n\n${PREVIEW_INCOMPLETE_NOTE}\n\n${receiptOf(h.guard)}`);
+  assert.deepEqual(h.aborts, []);
+
+  // The bound is unchanged: a tool call in that answer turn ends the run.
+  const bounded = harness();
+  bounded.guard.observeModelCall({}, context);
+  bounded.publish();
+  bounded.failedEdits();
+  bounded.round();
+  reject(bounded);
+  bounded.round();
+  assert.equal(bounded.call('read', {path: 'stopwatch/app.js'}).decision.blockReason, RUN_PROGRESS_STOP_REASON);
+  assert.equal(bounded.aborts.length, 1);
+  assert.equal(bounded.guard.deliveryVerificationForRun(runId).text, `${PREVIEW_INCOMPLETE_NOTE}\n\n${receiptOf(bounded.guard)}`);
+});
+
+test('an answer that ends unfinished is followed by the line that its next step has not started', () => {
+  const text = 'I built the stopwatch page in stopwatch/index.html. It shows the elapsed time and has a Start button that ' +
+    'starts the timer. The Stop and Lap buttons are not on the page yet because my edits to add them did not apply. ' +
+    'Now let me add the Stop and Lap buttons to the page.';
+  // A partial answer: the answer turn's message carried text and a tool call.
+  const partial = harness();
+  partial.guard.observeModelCall({}, context);
+  partial.publish();
+  partial.failedEdits();
+  partial.round();
+  assert.equal(partial.call('read', {path: 'stopwatch/app.js'}).decision.blockReason, PROGRESS_FINALIZATION_INSTRUCTION);
+  partial.round();
+  const id = 'partial-edit';
+  partial.guard.observeAssistantMessage({message: {role: 'assistant', content: [{type: 'text', text},
+    {type: 'toolCall', id, name: 'edit'}]}}, context);
+  assert.equal(partial.guard.beforeToolCall({toolName: 'edit', runId, toolCallId: id, params: {path: 'stopwatch/index.html'}},
+    {...context, toolName: 'edit', toolCallId: id}).blockReason, RUN_PROGRESS_STOP_REASON);
+  const refused = partial.guard.deliveryVerificationForRun(runId);
+  assert.equal(refused.text, `${text}\n\n${PREVIEW_CONTINUE_NOTE}\n\n${receiptOf(partial.guard)}`);
+  // A tool-free answer that announces more work reads the same way.
+  const announced = harness();
+  announced.guard.observeModelCall({}, context);
+  announced.publish();
+  announced.failedEdits();
+  announced.round();
+  announced.guard.beforeAgentFinalize(answerTurn(text), context);
+  assert.equal(announced.guard.deliveryVerificationForRun(runId).text,
+    `${text}\n\n${PREVIEW_CONTINUE_NOTE}\n\n${receiptOf(announced.guard)}`);
 });

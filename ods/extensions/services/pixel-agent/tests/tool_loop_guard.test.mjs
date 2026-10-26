@@ -1,6 +1,6 @@
 import { RUN_PROGRESS_STOP_REASON } from "../plugin/run-progress-budget.mjs";
 import { PROGRESS_FINALIZATION_INSTRUCTION } from "../plugin/progress-finalization.mjs";
-import { PREVIEW_EARLIER_NOTE, PREVIEW_STOPPED_NOTE, PREVIEW_UNFINISHED_NOTE } from "../plugin/preview-explanation.mjs";
+import { PREVIEW_EARLIER_NOTE, PREVIEW_INCOMPLETE_NOTE, PREVIEW_STOPPED_NOTE } from "../plugin/preview-explanation.mjs";
 import test from "node:test";
 import vm from 'node:vm';
 
@@ -344,9 +344,10 @@ test('malformed dispatch failures stop only their active run and retain its veri
   const delivery = guard.deliveryVerificationForRun('run-1');
   assert.equal(delivery.status,'failed');
   assert.equal(delivery.preview.sha256,details.sha256);
-  // The owner reads Portal's plain line and the receipt that becomes the
-  // preview card, not the stop facts (progressStopPresentation).
-  assert.ok(delivery.text.startsWith(`${PREVIEW_UNFINISHED_NOTE}\n\nYour preview is ready.\n\n[Open preview](${details.url})`),
+  // The owner reads Portal's plain line, that the build stopped unfinished,
+  // and the receipt that becomes the preview card, not the stop facts
+  // (progressStopPresentation).
+  assert.ok(delivery.text.startsWith(`${PREVIEW_INCOMPLETE_NOTE}\n\nYour preview is ready.\n\n[Open preview](${details.url})`),
     delivery.text);
   assert.doesNotMatch(delivery.text,/not completed|not proof|stopped after/);
   const other = {agentId:'pixel',runId:'run-2',sessionId:'session-2'};

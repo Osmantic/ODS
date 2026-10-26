@@ -52,8 +52,9 @@ import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehavio
   attemptedPreviewBehavior, boundPreviewBehavior, previewBehaviorInstruction, unassertedBehaviorStep } from './preview-interaction-assurance.mjs';
 import { workspaceRevalidationCandidate, workspaceReadOnlyCall, settledRevalidationReceipt, boundedPreviewVerification } from "./preview-revalidation.mjs";
 import { boundedPreviewDelivery } from './preview-delivery-recovery.mjs';
-import { PREVIEW_EARLIER_NOTE, PREVIEW_MISSING_NOTE, PREVIEW_SCRIPT_NOTE, PREVIEW_STOPPED_NOTE, PREVIEW_UNFINISHED_NOTE,
-  explainedPreviewDelivery, ownerPreviewText, previewCheckNote } from './preview-explanation.mjs';
+import { PREVIEW_CONTINUE_NOTE, PREVIEW_EARLIER_NOTE, PREVIEW_INCOMPLETE_NOTE, PREVIEW_MISSING_NOTE, PREVIEW_SCRIPT_NOTE,
+  PREVIEW_STOPPED_NOTE, PREVIEW_UNFINISHED_NOTE, announcesMoreWork, explainedPreviewDelivery, ownerPreviewText,
+  previewCheckNote } from './preview-explanation.mjs';
 import { extractRequestedLiterals, requestedTextCheck, requestedTextInstruction, requestedTextRevisionInstruction,
   requestedTextDeliveryNote, publishedElementOutline, extractRequestedControlNames, requestedControlSources,
   requestedControlNameCheck, requestedControlNameInstruction, requestedControlNameRevisionInstruction,
@@ -8517,8 +8518,25 @@ export function createToolLoopGuard({
   function observeProgress(state, outcome, tool) {
     const running = !state.progressBudget.exhausted;
     state.progressBudget.observeResult(outcome);
-    if (running && state.progressBudget.exhausted && outcome.failed && tool === PREVIEW_INSPECTION_TOOL &&
-        state.workspacePreview) state.progressStoppedByPreviewCheck = true;
+    if (!running || !state.progressBudget.exhausted) return;
+    // The calls of this model round were made before the stop (deliverInstruction).
+    state.progressStopRound = state.operationsPromptRound;
+    if (outcome.failed && tool === PREVIEW_INSPECTION_TOOL && state.workspacePreview) state.progressStoppedByPreviewCheck = true;
+  }
+
+  // A result persisted for a call made after the stop, that no refusal
+  // instructed (the runtime rejected it before before_tool_call), hands the
+  // model the instruction just as a refusal does: the next model call is the
+  // single answer turn, not a second uninstructed call that forfeits it. The
+  // result of a call made before the stop changes no phase, so the model call
+  // that reads it may still answer or be refused with the instruction.
+  function deliverInstruction(state, toolCallId) {
+    const finalization = progressFinalization(state);
+    if (finalization.phase === 'pending' && state.progressStopRound !== undefined &&
+        state.operationsPromptRound > state.progressStopRound) {
+      finalization.toolBoundary(state.operationsPromptRound, toolCallId);
+    }
+    return finalization;
   }
 
   // Session history can contain an unrelated publication. Preserve it for
@@ -11098,7 +11116,10 @@ export function createToolLoopGuard({
       state.compactionWindow = undefined;
     }
     state.operationsPromptRound += 1;
+    const running = !state.progressBudget.exhausted;
     state.progressBudget.beginModelRound();
+    // The round fuse stops the run as this call starts: its calls come after the stop.
+    if (running && state.progressBudget.exhausted) state.progressStopRound = state.operationsPromptRound - 1;
     if (state.progressBudget.exhausted && !compactionCall) progressFinalization(state).modelCallStarted();
     // A further agent turn means the reply seen at finalization was not final.
     if (!compactionCall) state.finalReplyText = undefined;
@@ -12890,7 +12911,7 @@ export function createToolLoopGuard({
     // says to continue "with a corrected approach", and on the RTX Spark
     // (2026-10-25) the model then kept calling tools and forfeited the turn.
     if (state?.progressBudget.exhausted) {
-      const answerTurnAhead = ['pending', 'instructed'].includes(progressFinalization(state).phase);
+      const answerTurnAhead = ['pending', 'instructed'].includes(deliverInstruction(state, toolCallId).phase);
       return {message: {...message, content: [{type: 'text',
         text: answerTurnAhead ? finalizationInstruction(state) : RUN_PROGRESS_STOP_REASON}]}};
     }
@@ -13804,22 +13825,29 @@ export function createToolLoopGuard({
   // A preview outcome's text as the owner reads it, where a stop text quotes it.
   const ownerOutcomeText = result => ownerPreviewText(result.text, previewPresentations.get(result));
   // The owner's wording of a tool-limit stop in a website build ({note, rest};
-  // the stop text stays the record, as the model read it). The current
+  // the stop text stays the record, as the model read it). An answer that
+  // ends unfinished (a partial answer, or one that announces more work) gets
+  // the line that its next step has not started. Otherwise the current
   // publication gets one plain line and its receipt, which becomes the preview
   // card: the page's own known gap (a script problem, missing requested text),
-  // else that its checks did not finish. An earlier publication keeps its link
-  // and the line that it is earlier. With none, the stop is said plainly with
-  // what there is, what to do next and where to get help. `facts` are other
-  // owner lines that stay. Undefined for every other run.
-  function progressStopPresentation(state, verification, facts = []) {
-    if (!previewOutcomes.has(verification)) return undefined;
+  // else that its checks did not finish when failed checks stopped the run,
+  // else that the page may be unfinished. An earlier publication keeps its
+  // link and the line that it is earlier. With none, the stop is said plainly
+  // with what there is, what to do next and where to get help. `facts` are
+  // other owner lines that stay. Undefined for every other run, and for a run
+  // that keeps the strict stop text (a mixed request with a managed
+  // installation, Operations): its record says what was not done.
+  function progressStopPresentation(state, verification, facts = [], {continues = false} = {}) {
+    if (!previewOutcomes.has(verification) || progressFinalization(state).phase === 'unavailable') return undefined;
     // Only an outcome with a publication has a presentation (its receipt or link).
     const shown = previewPresentations.get(verification);
+    const continued = note => continues ? PREVIEW_CONTINUE_NOTE : note;
     if (shown && state.workspacePreview) return {
-      note: [PREVIEW_SCRIPT_NOTE, PREVIEW_MISSING_NOTE].includes(shown.note) ? shown.note : PREVIEW_UNFINISHED_NOTE,
+      note: continued([PREVIEW_SCRIPT_NOTE, PREVIEW_MISSING_NOTE].includes(shown.note) ? shown.note
+        : state.progressStoppedByPreviewCheck ? PREVIEW_UNFINISHED_NOTE : PREVIEW_INCOMPLETE_NOTE),
       rest: [...facts, shown.rest].filter(Boolean).join('\n\n')};
-    if (shown) return {note: PREVIEW_STOPPED_NOTE, rest: [...facts, shown.rest].filter(Boolean).join('\n\n')};
-    return {note: PROGRESS_STOPPED_DELIVERY_PREFIX,
+    if (shown) return {note: continued(PREVIEW_STOPPED_NOTE), rest: [...facts, shown.rest].filter(Boolean).join('\n\n')};
+    return {note: continued(PROGRESS_STOPPED_DELIVERY_PREFIX),
       rest: [verification.text, ...facts, PROGRESS_STOP_HELP].filter(Boolean).join('\n\n')};
   }
 
@@ -14366,9 +14394,12 @@ export function createToolLoopGuard({
           ...(modelAnswer ? {} : {synthesis: {note: STOP_SYNTHESIS_NOTE, pages: synthesized.pages}})});
         // A website build's owner reads the answer, then Portal's line in
         // place of the stop facts after it; links the answer cites without a
-        // read receipt, and a host synthesis's source, stay said.
+        // read receipt, and a host synthesis's source, stay said. A partial
+        // answer (its calls were refused) or one that announces more work
+        // ends unfinished.
         const stop = progressStopPresentation(state, verification, [unverifiedLinksNote(unverified),
-          ...(modelAnswer ? [] : [STOP_SYNTHESIS_NOTE, composeReadPages(synthesized.pages)])]);
+          ...(modelAnswer ? [] : [STOP_SYNTHESIS_NOTE, composeReadPages(synthesized.pages)])],
+        {continues: state.progressFinalization.partial || announcesMoreWork(answer)});
         const result = {status: 'failed', text, ...receipt};
         return stop ? previewOutcome(result, {...stop, text: text.slice(progressFinalizationHead(answer).length + 2)})
           : result;

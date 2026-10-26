@@ -50,15 +50,19 @@ export const PREVIEW_EARLIER_NOTE =
 export const PREVIEW_STOPPED_NOTE =
   'Portal stopped before it finished, so this preview shows an earlier version. Send a message to continue.';
 // The tool limit stopped the run after the page was published: the page is
-// current and up, and Portal's checks of it did not finish (RTX Spark,
+// current and up, and failed checks of it are what stopped the run (RTX Spark,
 // 2026-10-25: the model's own check plans kept failing under a working page).
 export const PREVIEW_UNFINISHED_NOTE =
   "Portal published your page but couldn't finish checking it automatically. Try it, and tell Portal if something isn't right.";
+// The tool limit stopped the run for any other reason after the page was
+// published: the build itself may be unfinished (edits that kept failing).
+export const PREVIEW_INCOMPLETE_NOTE =
+  'Portal stopped before it finished, so this page may not have everything you asked for yet. Send a message to continue.';
 // The run has ended: a step the reply announces will not start on its own.
 export const PREVIEW_CONTINUE_NOTE = "The next step above hasn't started yet. Send a message to continue.";
 export const PREVIEW_NOTES = Object.freeze([PREVIEW_CONTROLS_NOTE, PREVIEW_UNCONFIRMED_NOTE, PREVIEW_RUNNING_NOTE,
   PREVIEW_SCRIPT_NOTE, PREVIEW_MISSING_NOTE, PREVIEW_EARLIER_NOTE, PREVIEW_STOPPED_NOTE, PREVIEW_UNFINISHED_NOTE,
-  PREVIEW_CONTINUE_NOTE]);
+  PREVIEW_INCOMPLETE_NOTE, PREVIEW_CONTINUE_NOTE]);
 
 // The combined reply is host verification text (ingress limit: 32 KiB). Leave
 // room for the extension and progress-lane notes that can follow it.
@@ -99,7 +103,7 @@ export function openFence(text) {
 
 // The reply announces more work: a first-person promise anywhere, or a last
 // sentence that narrates the next action ("Now let me republish the preview.").
-function announcesMoreWork(answer) {
+export function announcesMoreWork(answer) {
   const line = answer.split('\n').map(value => value.trim()).filter(Boolean).at(-1) ?? '';
   const sentence = line.split(/(?<=[.!?])\s+(?=\S)/).at(-1).replace(/^[\s>#*_`|~+\-–—•]*(?:\d{1,3}[.)]\s*)?[\s*_`]*/u, '');
   return promisesExecution(answer) || NARRATION.test(sentence);
