@@ -111,6 +111,14 @@ jobs:
         env:
           OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: python3 ods/extensions/services/pixel-agent/tests/test_scheduled_tasks_runtime.py
+      - name: Verify protected native schedule owner transport
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: |
+          export ODS_SCHEDULE_NODE="$(command -v node)"
+          sudo --preserve-env=OPENCLAW_PACKAGE_DIR,ODS_SCHEDULE_NODE python3 ods/extensions/services/pixel-agent/tests/test_scheduled_tasks_root.py
       - name: Verify deferred delegation through the real gateway and Portal ingress
         shell: bash
         env:

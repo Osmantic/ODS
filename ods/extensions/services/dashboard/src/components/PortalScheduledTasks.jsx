@@ -1,6 +1,6 @@
 import {useEffect,useRef,useState} from 'react'
 import {ArrowLeft,Check,Clock3,Pause,Play,Plus,RefreshCw,Trash2} from 'lucide-react'
-import {requestSchedules,scheduleError,scheduleLabel} from '../lib/portalSchedules'
+import {requestSchedules,scheduleError,scheduleLabel,newScheduleRequestId} from '../lib/portalSchedules'
 import './portal-scheduled-tasks.css'
 
 const stamp=value=>value===null?'Not yet':new Date(value).toLocaleString()
@@ -69,7 +69,9 @@ export default function PortalScheduledTasks() {
     }
     const schedule=form.frequency==='once'?{kind:'at',at:instant.toISOString()}
       :{kind:'recurring',frequency:form.frequency,time:form.time,timeZone:zone,weekday:form.frequency==='weekly'?Number(form.weekday):null}
-    const body={action:'create',requestId:crypto.randomUUID(),name:form.name,task:form.task,schedule}
+    let requestId
+    try {requestId=newScheduleRequestId()} catch {setError('This browser could not create a request identity. Try a current browser.');return}
+    const body={action:'create',requestId,name:form.name,task:form.task,schedule}
     operate(body,result=>{
       if(result.outcome==='unconfirmed') {
         setUnknown({requestId:body.requestId,name:body.name})

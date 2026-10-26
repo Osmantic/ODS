@@ -3,6 +3,17 @@ import {readBoundedBytes} from './pixelArtifacts'
 export class ScheduleFailure extends Error {
   constructor(code) { super(code); this.code=code }
 }
+
+export function newScheduleRequestId() {
+  // Portal also runs over plain HTTP on a private LAN. randomUUID requires a
+  // secure context there; getRandomValues remains available and preserves the
+  // same random UUIDv4 identity rather than weakening it to Math.random.
+  if (typeof globalThis.crypto?.randomUUID==='function') return globalThis.crypto.randomUUID()
+  const bytes=globalThis.crypto.getRandomValues(new Uint8Array(16))
+  bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128
+  const hex=Array.from(bytes,byte=>byte.toString(16).padStart(2,'0')).join('')
+  return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`
+}
 const keys=(value,expected)=>value && typeof value==='object' && !Array.isArray(value)
   && Object.keys(value).sort().join()===expected.slice().sort().join()
 const id=value=>typeof value==='string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value)

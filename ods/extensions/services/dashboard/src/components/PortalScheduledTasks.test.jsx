@@ -126,3 +126,12 @@ it('does not send instructions that exceed the runtime byte limit',async()=>{
   await waitFor(()=>expect(screen.getByRole('alert')).toHaveTextContent('Use a shorter name or instructions'))
   expect(calls.filter(item=>item.action==='create')).toHaveLength(0)
 })
+
+it('can schedule over private-LAN HTTP without crypto.randomUUID',async()=>{
+  vi.stubGlobal('crypto',{getRandomValues:values=>webcrypto.getRandomValues(values)})
+  render(<PortalScheduledTasks/>)
+  await fillForm()
+  fireEvent.click(screen.getByRole('button',{name:'Schedule task'}))
+  await screen.findByRole('button',{name:/Morning agenda.*Daily/})
+  expect(calls.find(item=>item.action==='create').requestId).toMatch(/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/)
+})
