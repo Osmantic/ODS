@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`cb3fe963dec251e2d2ae7639d5424bda2ddbfd85`, and its SHA-256 is
-`fa60234e95c6467bc911376a5c8be634291cc296b9d03af0e3afe0fb000ee8b1`.
+`9942dbb6f85b90dea02c5c490274f29bc3ef81ee`, and its SHA-256 is
+`ccf29ffcd5cbab3b7098f1eb973abfdafb74e4cbbb25be236d1862d3dc41ac7c`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -262,8 +262,8 @@ same `openclaw.json`. `pixel/ODS-QUALIFICATION-4.3.34.md` records the automated
 evidence and the installed upgrade qualification still required. The version
 advance preserves the strictly increasing source-upgrade gate.
 
-The public vendor tree is `f513634dbcd7388973fef07b20d8a003dd9134d9` at ODS source
-commit `2c922a0ae6cbc8736c0e8c641970dfb5bbed9b2d`. Two independent empty bare repositories using the alternates
+The public vendor tree is `710e681be3190274390d2fb7502208b08d721149` at ODS source
+commit `c596e56219a970258eab32311f083ca86d69f139`. Two independent empty bare repositories using the alternates
 procedure above produced byte-identical bundles with the retained public
 synthetic author, timestamp and root message (Git 2.53 on Windows,
 `pack.threads=1`); the same procedure first reproduced the 4.3.33 commit
@@ -284,3 +284,11 @@ inherits the new flags. The functional source checkpoint is
 `12225ccb390c84f4a08e60cfc25e966e6e45f08f`. The same procedure produced byte-identical
 bundles twice. This replaces the unpublished earlier candidate commit
 `0684f0791dcb56f9473d5fe4b06f9f22f028f74a`.
+
+It was rebuilt again for the owner connect flow: every release now carries the
+Source Broker plugin's locked `typebox` dependency, so a source turned on after
+install loads the plugin from the active release, and the sign-in exchange records
+only the account that Google's ID token verifies. The functional source checkpoint
+is now `096eba7f81d4bbbd588863b367fac343ecf6c86f`. Two independent builds were
+byte-identical. This replaces the unpublished candidate commit
+`cb3fe963dec251e2d2ae7639d5424bda2ddbfd85`.
