@@ -1,5 +1,5 @@
-import {fireEvent,render,screen,within} from '@testing-library/react'
-import PortalAgentActivity from './PortalAgentActivity'
+import {act,fireEvent,render,screen,within} from '@testing-library/react'
+import PortalAgentActivity,{QUIET_HINT} from './PortalAgentActivity'
 import PortalActivityChange,{activityChangeRows} from './PortalActivityChange'
 const start='2026-09-15T10:00:00.000Z',end='2026-09-15T10:00:05.000Z'
 const display=(type,label,extra={})=>({type,label,detail:null,sources:[],steps:[],change:null,...extra})
@@ -41,6 +41,34 @@ it('renders an empty file without crashing and distinguishes completed recovery 
  expect(screen.getByRole('button',{name:'Worked for 5s'})).toHaveAttribute('aria-expanded','false');
  expectCalm(container);
 });
+it('says a long silent step is expected instead of leaving only a growing timer',()=>{
+ vi.useFakeTimers()
+ try {
+  // The last step finished at 10:00:05; the model has been quiet since.
+  const running={...task,state:'running',finishedAt:null}
+  vi.setSystemTime(new Date('2026-09-15T10:00:30.000Z'))
+  const early=render(<PortalAgentActivity task={running} active/>)
+  expect(screen.queryByText(QUIET_HINT)).toBeNull()
+  early.unmount()
+  vi.setSystemTime(new Date('2026-09-15T10:01:00.000Z'))
+  const quiet=render(<PortalAgentActivity task={running} active/>)
+  expect(screen.getByRole('status')).toHaveTextContent(QUIET_HINT)
+  expectCalm(quiet.container)
+  quiet.unmount()
+  // A running tool reports its own progress, and a finished reply never says it is still working.
+  const tool=render(<PortalAgentActivity task={{...running,events:[call(1,'run','running',display('tool','Running a command'))]}} active/>)
+  expect(screen.queryByText(QUIET_HINT)).toBeNull()
+  tool.unmount()
+  const done=render(<PortalAgentActivity task={task}/>)
+  expect(screen.queryByText(QUIET_HINT)).toBeNull()
+  done.unmount()
+  // Before any step is recorded, the quiet stretch counts from when the reply started.
+  render(<PortalAgentActivity active/>)
+  expect(screen.queryByText(QUIET_HINT)).toBeNull()
+  act(()=>{vi.advanceTimersByTime(46000)})
+  expect(screen.getByRole('status')).toHaveTextContent(QUIET_HINT)
+ } finally {vi.useRealTimers()}
+})
 it('shows a compact thinking line immediately with no fake steps or technical placeholder',()=>{
  render(<PortalAgentActivity active/>);
  expect(screen.getByRole('button',{name:/Thinking/})).toHaveAttribute('aria-expanded','true');

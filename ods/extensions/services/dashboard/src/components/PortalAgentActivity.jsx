@@ -11,6 +11,11 @@ import './portal-agent-activity.css'
 const labels={read:'Reading files',run:'Running a command',edit:'Editing files',browser:'Browsing the web',preview:'Publishing a preview',action:'Running an operation',agent:'Coordinating agents',unknown:'Using a tool'}
 const icons={read:FileSearch,run:Terminal,edit:FilePenLine,browser:Globe2,preview:Layers,agent:MessageSquare}
 const completedLabels={'Reading a file':'Read','Writing a file':'Wrote','Editing a file':'Edited','Applying changes':'Applied changes','Running a command':'Ran','Finding available tools':'Found available tools','Checking tool parameters':'Checked tool parameters'}
+// A model step shows nothing until it is complete (the router validates tool
+// calls before they stream), so writing a whole page reads as one long, silent
+// "Thinking…". After this quiet stretch, say that it is expected.
+const QUIET_HINT_MS=45000
+export const QUIET_HINT='Still working. Bigger steps, like writing a whole page, can take a couple of minutes.'
 export function activityDuration(seconds) {
   const n=Math.max(0,Math.round(seconds))
   return n<60?`${n}s`:`${Math.floor(n/60)}m${n%60?` ${n%60}s`:''}`
@@ -76,6 +81,8 @@ export default function PortalAgentActivity({task:raw,active=false,status}) {
   const currentType=current?.display?.type
   const progress=[...events].reverse().find(event=>event.display?.type==='text' && event.state==='completed')?.display?.label
   const activeLabel=progress || (currentType==='search' || current?.kind==='browser'?'Searching the web…':currentType==='text' || !current?'Thinking…':currentType==='steps'?'Planning…':'Working…')
+  const lastChange=Math.max(start,...events.map(event=>Date.parse(event.finishedAt || event.startedAt) || 0))
+  const quiet=active && !current && now-lastChange>=QUIET_HINT_MS
   const label=active?activeLabel:stopped?'Stopped':ended?'Ended early · you can try again':seconds===null?'Activity recorded':`Worked for ${activityDuration(seconds)}`
   const refreshFade=()=>{const el=viewport.current;if(el)setFade({top:el.scrollTop>2,bottom:el.scrollTop+el.clientHeight<el.scrollHeight-2})}
   useEffect(()=>{
@@ -102,6 +109,7 @@ export default function PortalAgentActivity({task:raw,active=false,status}) {
       {active && seconds>=1 && <span className="portal-agent-time">{activityDuration(seconds)}</span>}
       <ChevronDown size={13} aria-hidden="true"/>
     </button>
+    {quiet && <p className="portal-agent-hint" role="status">{QUIET_HINT}</p>}
     <div id={`${id}-log`} role="region" aria-labelledby={`${id}-trigger`} hidden={!open}>
       <div ref={viewport} className="portal-agent-viewport" tabIndex={events.length?0:undefined} aria-label="Activity history" data-fade-top={fade.top} data-fade-bottom={fade.bottom} onScroll={()=>{const el=viewport.current;follow.current=el.scrollTop+el.clientHeight>=el.scrollHeight-12;refreshFade()}}>
         <ol ref={content} className="portal-agent-stream" aria-label="Execution steps">{progressRows.map(row=>row.event?<ActivityRow key={row.event.sequence} event={row.event} active={active} later={row.event.sequence<lastSequence}/>:<li key={row.id} className="portal-agent-progress"><p>{row.text}</p></li>)}</ol>
