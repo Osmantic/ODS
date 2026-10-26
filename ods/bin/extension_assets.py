@@ -25,6 +25,7 @@ import os
 import re
 import shlex
 import shutil
+import ssl
 import sys
 import time
 import urllib.error
@@ -49,6 +50,8 @@ MARGIN_MIN_BYTES = 2 * 1024 ** 3
 MARGIN_FRACTION = 0.05
 _PLAIN_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
+# flock errors that mean "this file system has no locks", not "someone holds it".
+_NO_LOCKS = {errno.ENOLCK, errno.EOPNOTSUPP, errno.ENOTSUP, errno.ENOSYS, errno.EINVAL}
 
 
 class AssetError(Exception):
@@ -150,6 +153,8 @@ def fetch(item: PackFile, report: Callable[[int], None], *,
     try:
         folder.mkdir(parents=True, exist_ok=True)
         with _folder_lock(folder, item):
+            if not missing([item]):  # finished meanwhile, by the installer's download say
+                return
             _download(item, report, opener)
     except PermissionError as exc:
         raise _not_writable(item, exc) from exc
@@ -165,35 +170,45 @@ def _download(item: PackFile, report: Callable[[int], None], opener: Callable) -
         if done > item.size:  # not this file: start over
             out.truncate(0)
             done = 0
-        digest = hashlib.sha256()
-        out.seek(0)
-        for chunk in iter(lambda: out.read(CHUNK_BYTES), b""):
-            digest.update(chunk)
         # A part already at full size (the rename failed last time) is only checked.
         if done < item.size:
             with _request(item, out, done, opener) as response:
                 if done and response.status != 206:  # the server sent the whole file again
                     out.truncate(0)
-                    digest, done = hashlib.sha256(), 0
-                for chunk in iter(lambda: _read(item, response), b""):
+                    done = 0
+                # Never more than the pinned size, whatever the server sends.
+                for chunk in iter(lambda: _read(item, response, item.size - done), b""):
                     out.write(chunk)
-                    digest.update(chunk)
                     done += len(chunk)
                     report(done)
-    if done != item.size:
-        raise AssetError(f"The download of {item.label} ended at {_gb(done)} of {_gb(item.size)} GB. "
-                         "Try again to resume it.", retryable=True)
-    if digest.hexdigest() != item.sha256:
+        if done != item.size:
+            raise AssetError(f"The download of {item.label} ended at {_gb(done)} of {_gb(item.size)} GB. "
+                             "Try again to resume it.", retryable=True)
+        # The bytes on disk are what gets renamed, so they are what is checked:
+        # without a lock (Windows, or a curl run by hand) another writer may
+        # have appended to the same part.
+        out.flush()
+        verified = os.fstat(out.fileno()).st_size == item.size and _sha256(out) == item.sha256
+    if not verified:
         part.unlink()
         raise AssetError(f"{item.label} did not match its pinned SHA-256, so it was deleted. "
                          "Try again to download it once more.")
     os.replace(part, item.target)
 
 
+def _sha256(handle) -> str:
+    handle.seek(0)
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: handle.read(CHUNK_BYTES), b""):
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _request(item: PackFile, out, offset: int, opener: Callable):
     headers = {"User-Agent": USER_AGENT}
     if offset:
         headers["Range"] = f"bytes={offset}-"
+    host = urllib.parse.urlsplit(item.url).netloc
     try:
         return opener(urllib.request.Request(item.url, headers=headers),
                       timeout=READ_TIMEOUT_SECONDS)
@@ -201,19 +216,26 @@ def _request(item: PackFile, out, offset: int, opener: Callable):
         if exc.code == 416:  # the server's copy is shorter than the part, so it cannot resume
             out.truncate(0)
             raise AssetError(f"The server's copy of {item.label} is not the pinned file, so the partial "
-                             "download was deleted. Try again to download it from the start.") from exc
+                             "download was discarded. Try again to download it from the start.") from exc
         if exc.code in (408, 429) or exc.code >= 500:
             raise _interrupted(item, exc) from exc
-        host = urllib.parse.urlsplit(item.url).netloc
-        raise AssetError(f"The server refused {item.label} (HTTP {exc.code} {exc.reason}). "
-                         f"Check that this machine can reach {host}, then try again.") from exc
+        if exc.code in (404, 410):
+            raise AssetError(f"The download link for {item.label} no longer works (HTTP {exc.code}). "
+                             "Update ODS for a current link, or ask for help on Discord.") from exc
+        raise AssetError(f"The server refused {item.label} (HTTP {exc.code} {exc.reason}). Check that "
+                         f"this machine can reach {host} (a proxy or firewall may block it), "
+                         "then try again.") from exc
     except (http.client.HTTPException, OSError) as exc:  # URLError and timeouts are OSErrors
+        if isinstance(getattr(exc, "reason", exc), ssl.SSLCertVerificationError):
+            raise AssetError(f"ODS could not verify the HTTPS certificate of {host} ({_reason(exc)}). "
+                             "Check the system clock and any proxy that inspects HTTPS traffic, "
+                             "then try again.") from exc
         raise _interrupted(item, exc) from exc
 
 
-def _read(item: PackFile, response) -> bytes:
+def _read(item: PackFile, response, limit: int) -> bytes:
     try:
-        return response.read(CHUNK_BYTES)
+        return response.read(min(CHUNK_BYTES, limit))
     except (http.client.HTTPException, OSError) as exc:
         raise _interrupted(item, exc) from exc
 
@@ -223,9 +245,9 @@ def _folder_lock(folder: Path, item: PackFile) -> Iterator[None]:
     """Let one download at a time write into ``folder``.
 
     On Linux the installer's background download and the Extensions page can
-    both start one, and two writers would spoil the same part file. Windows
-    has no fcntl; its installer fetches no packs, and the host agent runs one
-    prepare per extension at a time.
+    both start one. Windows has no fcntl; its installer fetches no packs and
+    the host agent runs one prepare per extension at a time, and the final
+    check of the bytes on disk catches any other writer.
     """
     if fcntl is None:
         yield
@@ -238,8 +260,9 @@ def _folder_lock(folder: Path, item: PackFile) -> Iterator[None]:
             raise AssetError(f"{item.label} is already downloading, started by the installer or an "
                              "earlier add. Wait for it to finish, then try again.") from exc
         except OSError as exc:
-            # Some network file systems offer no locks; the download then runs unguarded.
-            if exc.errno != errno.ENOLCK:
+            # Some file systems (often network ones) offer no locks; the
+            # download then runs unguarded, and the final check still holds.
+            if exc.errno not in _NO_LOCKS:
                 raise
         yield
     finally:
@@ -255,11 +278,14 @@ def _not_writable(item: PackFile, exc: OSError) -> AssetError:
     folder = item.target.parent
     while not folder.exists():
         folder = folder.parent
-    fix = (f"To fix it, run this, then try again: sudo chown -R {os.getuid()}:{os.getgid()} "
-           f"{shlex.quote(str(folder))}" if hasattr(os, "getuid")
-           else "Give the folder to your account, then try again.")
-    return AssetError(f"ODS cannot write {item.label} into {folder} ({_reason(exc)}). The folder belongs "
-                      f"to another account, often a container that runs as root. {fix}")
+    if hasattr(os, "getuid") and not os.access(folder, os.W_OK) and folder.stat().st_uid != os.getuid():
+        return AssetError(f"ODS cannot write {item.label} into {folder} ({_reason(exc)}). The folder "
+                          "belongs to another account, often a container that runs as root. To fix it, "
+                          f"run this, then try again: sudo chown -R {os.getuid()}:{os.getgid()} "
+                          f"{shlex.quote(str(folder))}")
+    return AssetError(f"ODS cannot write {item.label} ({_reason(exc)}). Check that your account can write "
+                      f"to {folder} and that no other program, such as an antivirus or sync tool, is "
+                      "holding the file, then try again.")
 
 
 def _remaining(item: PackFile) -> int:
@@ -294,11 +320,19 @@ def _fetch_with_attempts(item: PackFile, attempts: int, delay: float) -> None:
         except AssetError as exc:
             if not exc.retryable or attempt == attempts:
                 raise
-            # No raw reason here: the installer summary reads words like
+            # Only the error's kind here: the installer summary reads words like
             # "failed" in this log as a failure, even after a later try works.
-            print(f"  The connection dropped; resuming in {delay:g} s (try {attempt + 1} of {attempts})",
-                  flush=True)
+            print(f"  The connection dropped ({_kind(exc)}); resuming in {delay:g} s "
+                  f"(try {attempt + 1} of {attempts})", flush=True)
             time.sleep(delay)
+
+
+def _kind(exc: AssetError) -> str:
+    cause = exc.__cause__
+    if cause is None:
+        return "ended early"
+    reason = getattr(cause, "reason", None)
+    return type(reason if isinstance(reason, BaseException) else cause).__name__
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -10,6 +10,7 @@ import io
 import json
 import os
 import shutil
+import ssl
 import sys
 import urllib.error
 from pathlib import Path
@@ -269,26 +270,97 @@ def test_http_errors_say_whether_trying_again_can_help(tmp_path):
     with pytest.raises(assets.AssetError) as busy:
         assets.fetch(item, lambda done: None, opener=opener_sequence(_http_error(503, "Service Unavailable")))
     assert busy.value.retryable
-    with pytest.raises(assets.AssetError, match=r"refused Test model \(HTTP 404 Not Found\).*example\.invalid") as gone:
+    with pytest.raises(assets.AssetError, match=r"link for Test model no longer works \(HTTP 404\)") as gone:
         assets.fetch(item, lambda done: None, opener=opener_sequence(_http_error(404, "Not Found")))
     assert not gone.value.retryable
+    with pytest.raises(assets.AssetError, match=r"refused Test model \(HTTP 403 Forbidden\).*example\.invalid") as no:
+        assets.fetch(item, lambda done: None, opener=opener_sequence(_http_error(403, "Forbidden")))
+    assert not no.value.retryable
 
 
+def test_a_certificate_that_fails_to_verify_is_not_retried(tmp_path):
+    ext_dir, install = _pack_list(tmp_path)
+    [item] = assets.default_files(ext_dir, install, "nvidia")
+    bad_certificate = urllib.error.URLError(ssl.SSLCertVerificationError(1, "certificate verify failed"))
+    with pytest.raises(assets.AssetError, match="Check the system clock and any proxy") as caught:
+        assets.fetch(item, lambda done: None, opener=opener_sequence(bad_certificate))
+    assert not caught.value.retryable
+
+
+def _denied(*args, **kwargs):
+    raise PermissionError(errno.EACCES, "Permission denied", str(args[0]))
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason="file ownership is POSIX")
 def test_a_folder_owned_by_another_account_says_how_to_fix_it(tmp_path, monkeypatch):
     ext_dir, install = _pack_list(tmp_path)
     [item] = assets.default_files(ext_dir, install, "nvidia")
-
-    def denied(*args, **kwargs):
-        raise PermissionError(errno.EACCES, "Permission denied", str(args[0]))
-
-    monkeypatch.setattr(assets, "open", denied, raising=False)
+    uid, gid = os.getuid(), os.getgid()
+    monkeypatch.setattr(assets, "open", _denied, raising=False)
+    monkeypatch.setattr(assets.os, "access", lambda path, mode: False)
+    monkeypatch.setattr(assets.os, "getuid", lambda: uid + 1)  # the folder is now someone else's
     with pytest.raises(assets.AssetError, match="belongs to another account") as caught:
         assets.fetch(item, lambda done: None, opener=no_network)
     message = str(caught.value)
-    assert str(item.target.parent) in message and not caught.value.retryable
-    if hasattr(os, "getuid"):
-        assert message.endswith(f"sudo chown -R {os.getuid()}:{os.getgid()} {item.target.parent}")
-    assert "Try again to resume" not in message
+    assert message.endswith(f"sudo chown -R {uid + 1}:{gid} {item.target.parent}")
+    assert not caught.value.retryable and "Try again to resume" not in message
+
+
+def test_a_write_refused_in_your_own_folder_does_not_blame_its_owner(tmp_path, monkeypatch):
+    ext_dir, install = _pack_list(tmp_path)
+    [item] = assets.default_files(ext_dir, install, "nvidia")
+    monkeypatch.setattr(assets, "open", _denied, raising=False)
+    with pytest.raises(assets.AssetError, match="no other program, such as an antivirus") as caught:
+        assets.fetch(item, lambda done: None, opener=no_network)
+    message = str(caught.value)
+    assert str(item.target.parent) in message
+    assert "sudo chown" not in message and "another account" not in message
+
+
+def test_a_longer_answer_is_cut_at_the_pinned_size(tmp_path):
+    ext_dir, install = _pack_list(tmp_path)
+    [item] = assets.default_files(ext_dir, install, "nvidia")
+    assets.fetch(item, lambda done: None, opener=opener_for(PAYLOAD + b"junk" * 50000))
+    assert item.target.read_bytes() == PAYLOAD
+
+
+def test_bytes_another_writer_appended_fail_the_check(tmp_path):
+    ext_dir, install = _pack_list(tmp_path)
+    [item] = assets.default_files(ext_dir, install, "nvidia")
+    part = item.target.with_name("test.safetensors.part")
+
+    class Interleaved(Response):
+        def read(self, size=-1):
+            if self.tell() == 0:  # a second writer, with no lock to stop it, appends too
+                with open(part, "ab") as other:
+                    other.write(b"X" * 100)
+            return super().read(size)
+
+    with pytest.raises(assets.AssetError, match="did not match its pinned SHA-256"):
+        assets.fetch(item, lambda done: None, opener=opener_sequence(Interleaved(PAYLOAD)))
+    assert not item.target.exists() and not part.exists()
+
+
+def test_a_file_finished_meanwhile_is_not_downloaded_again(tmp_path):
+    ext_dir, install = _pack_list(tmp_path)
+    [item] = assets.default_files(ext_dir, install, "nvidia")
+    item.target.parent.mkdir(parents=True)
+    item.target.write_bytes(PAYLOAD)
+    assets.fetch(item, lambda done: None, opener=no_network)
+    assert not item.target.with_name("test.safetensors.part").exists()
+
+
+@pytest.mark.skipif(assets.fcntl is None, reason="the folder lock uses fcntl (POSIX)")
+def test_a_file_system_without_locks_still_downloads(tmp_path, monkeypatch):
+    ext_dir, install = _pack_list(tmp_path)
+    [item] = assets.default_files(ext_dir, install, "nvidia")
+
+    def unsupported(fd, operation):
+        raise OSError(errno.EOPNOTSUPP, "Operation not supported")
+
+    monkeypatch.setattr(assets.fcntl, "flock", unsupported)
+    assets.fetch(item, lambda done: None, opener=opener_for(PAYLOAD))
+    assert item.target.read_bytes() == PAYLOAD
 
 
 def test_a_full_disk_while_writing_is_reported_as_the_disk(tmp_path, monkeypatch):
@@ -367,14 +439,15 @@ def test_the_command_line_resumes_through_dropped_connections(tmp_path, monkeypa
     ext_dir, install = _pack_list(tmp_path)
     seen = []
     monkeypatch.setattr(assets.urllib.request, "urlopen", opener_sequence(
-        urllib.error.URLError("[SSL: CERTIFICATE_VERIFY_FAILED] failed"),
+        OSError("connect failed"),
         Response(PAYLOAD[:5000]),
         Response(PAYLOAD[5000:], status=206),
         seen=seen))
     assert assets.main([str(ext_dir), str(install), "nvidia", "--attempts", "3", "--retry-delay", "0"]) == 0
     assert "Range" not in seen[1] and seen[2]["Range"] == "bytes=5000-"
     out = capsys.readouterr().out
-    assert "resuming in 0 s (try 3 of 3)" in out and "Test model is ready" in out
+    assert "dropped (OSError); resuming in 0 s (try 2 of 3)" in out
+    assert "dropped (ended early); resuming in 0 s (try 3 of 3)" in out and "Test model is ready" in out
     # The installer summary would read these words as a failure.
     assert not any(word in out for word in ("ERROR", "FAILED", "failed"))
 
