@@ -128,3 +128,22 @@ def test_authenticated_status_never_caches_live_or_unknown_identity(monkeypatch,
     assert result.status_code == 200
     assert result.headers["Cache-Control"] == "no-store"
     assert result.json()["available"] is enabled
+
+
+@pytest.mark.parametrize("attention", [None, {"state": "needs-reconnect", "reason": "invalid-grant", "step": None}])
+def test_status_points_chat_to_connected_apps_only_when_the_owner_must_act(monkeypatch, attention):
+    monkeypatch.setattr(security, "DASHBOARD_API_KEY", "identity-test-owner-key")
+    monkeypatch.setenv("PIXEL_OPENWEBUI_KEY", "e" * 64)
+    async def host(*_args, **_kwargs):
+        return {"status": "idle"}
+    async def owner_attention():
+        return attention
+    monkeypatch.setattr(pixel, "request_agent_json", host)
+    monkeypatch.setattr(pixel, "owner_attention", owner_attention)
+    app = FastAPI()
+    app.include_router(pixel.router)
+    with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(FakeResponse(chunks=[b'{"data":[{"id":"portal/default"}]}']))):
+        body = TestClient(app).get("/api/pixel/status", headers={"Authorization": "Bearer identity-test-owner-key"}).json()
+    assert body["available"] is True
+    assert body.get("connectedApps") == attention
+    assert ("connectedApps" in body) is (attention is not None)
