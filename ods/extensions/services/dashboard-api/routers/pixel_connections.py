@@ -6,8 +6,8 @@ status reply is content-free: no tokens, messages or events ever pass through he
 
 The actions start and finish a Google sign-in, retry a stuck step, sync and
 disconnect. The owner's Google client file passes straight through to the root
-custodian; nothing here stores it. The actions answer only while
-PORTAL_CONNECTED_APPS_ENABLED is true.
+custodian; nothing here stores it. Status and the actions answer only while
+PORTAL_CONNECTED_APPS_ENABLED is true; Settings asks whether it is.
 """
 
 from __future__ import annotations
@@ -161,9 +161,25 @@ def _projection(raw) -> dict:
     return status.model_dump(by_alias=True)
 
 
+def _connected_apps_enabled() -> bool:
+    return read_live_env_value("PORTAL_CONNECTED_APPS_ENABLED").strip().lower() == "true"
+
+
+def _enabled() -> None:
+    if not _connected_apps_enabled():
+        raise HTTPException(404, "Not found", headers=NO_STORE)
+
+
+@router.get("/api/pixel/connections/enabled", dependencies=[Depends(verify_api_key)])
+async def get_connections_enabled():
+    """Whether Settings shows Connected apps; answered here, without asking the agent runtime."""
+    return JSONResponse(content={"enabled": _connected_apps_enabled()}, headers=NO_STORE)
+
+
 @router.get("/api/pixel/connections", dependencies=[Depends(verify_api_key)])
 async def get_connections():
     """Connected apps and their sync state, for Settings and the Portal Connect card."""
+    _enabled()
     try:
         raw = await request_agent_json("GET", "/v1/pixel/connections", timeout=25)
     except AgentHTTPError as exc:
@@ -221,11 +237,6 @@ def _refusal(status_code: int, code: str) -> HTTPException:
     return HTTPException(status_code, {"code": code if re.fullmatch(r"[a-z][a-z0-9-]{0,95}", code) else "unknown",
                                        "message": message, "help": ODS_HELP_DISCORD_URL if needs_help else None},
                          headers=NO_STORE)
-
-
-def _enabled() -> None:
-    if read_live_env_value("PORTAL_CONNECTED_APPS_ENABLED").strip().lower() != "true":
-        raise HTTPException(404, "Not found", headers=NO_STORE)
 
 
 class ConnectRequest(Strict):
