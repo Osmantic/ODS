@@ -71,6 +71,16 @@ def _no_hugging_face_header_reads(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_extension_job_probe(monkeypatch):
+    """Unit tests never ask a host agent which extension operations run: progress
+    then reads as written. A test of interrupted operations stubs the probe."""
+    from routers import extensions
+
+    monkeypatch.setattr(extensions, "_fetch_extension_jobs", lambda: None)
+    monkeypatch.setattr(extensions, "_jobs_cache", {"checked_at": None, "value": None})
+
+
+@pytest.fixture(autouse=True)
 def _no_runtime_probe_requests(monkeypatch):
     """Unit tests never probe a real llama-server (a developer machine may run one on
     127.0.0.1:8080). Every loaded copy of the host agent gets an unreachable runtime;

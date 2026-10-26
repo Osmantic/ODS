@@ -682,6 +682,9 @@ def _patch_mutation_config(monkeypatch, tmp_path, lib_dir=None, user_dir=None):
                         lambda sid, hook: True)
     monkeypatch.setattr("routers.extensions._call_agent_invalidate_compose_cache",
                         lambda: None)
+    monkeypatch.setattr("routers.extensions._call_agent_remove_containers",
+                        lambda sid, *, delete_volumes: {"containers": [f"ods-{sid}"],
+                                                        "volumes_removed": [], "volumes_kept": []})
     # Endpoint tests own a local stand-in for the host's selection RPC. The
     # real graph lock, stop and marker ordering are exercised in the host
     # selector tests; this stub keeps the Dashboard response contract local.

@@ -77,6 +77,8 @@ def test_chat_playground_preserves_owner_config(tmp_path, monkeypatch, layout):
     monkeypatch.setattr(extensions, "_call_agent_hook", lambda sid, hook: True)
     monkeypatch.setattr(extensions, "_call_agent_invalidate_compose_cache", lambda: None)
     monkeypatch.setattr(extensions, "_select_extensions_on_host", lambda *_a, **_kw: None)
+    monkeypatch.setattr(extensions, "_call_agent_remove_containers", lambda sid, *, delete_volumes: {
+        "containers": [f"ods-{sid}"], "volumes_removed": [], "volumes_kept": []})
 
     if layout == "removed":
         extensions._install_from_library("sillytavern")
