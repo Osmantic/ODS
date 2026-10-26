@@ -270,6 +270,9 @@ select option, select optgroup { background-color:rgb(var(--theme-card)); color:
 /* Legacy ODS surface classes use the same quiet cards and controls. */
 .portal-workspace { display:flex; min-width:0; overflow:hidden; height:calc(100dvh - 16px); }
 .portal-chat { flex:1; display:flex; flex-direction:column; min-width:0; min-height:0; height:100%; overflow:hidden; container-type:inline-size; container-name:portal-chat; }
+/* Full-width workspace page (control center on a Portal-less install). .portal-chat
+   clips, so the page owns its own scrolling. */
+.portal-workspace-page { flex:1; min-height:0; overflow-y:auto; height:100%; }
 /* The shell clips; conversation and preview stages own their scrolling. */
 @supports (overflow:clip) { .portal-chat { overflow:clip; } }
 .portal-chat .pixel-chat { flex:1; height:100%; min-height:0; }

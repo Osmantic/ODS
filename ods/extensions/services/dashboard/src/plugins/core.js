@@ -27,7 +27,7 @@ const PixelSettings = lazy(() => import('../pages/PixelSettings'))
 const OpenCodeApp = lazy(() => import('../pages/OpenCodeApp'))
 
 export const coreRoutes = [
-  { id: 'home', path: '/', label: 'Home', icon: Cloud, component: Pixel, getProps: ({ status }) => ({ systemStatus: status }), sidebar: false },
+  { id: 'home', path: '/', label: 'Home', icon: Cloud, component: Dashboard, getProps: ({ status, loading }) => ({ status, loading }), sidebar: false },
   { id: 'pixel-settings', path: '/pixel/settings', label: 'Portal settings', icon: Settings, component: PixelSettings, getProps: () => ({}), sidebar: false },
   {
     id: 'dashboard',

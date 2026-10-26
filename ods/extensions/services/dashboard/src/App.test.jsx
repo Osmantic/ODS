@@ -61,6 +61,11 @@ vi.mock('./components/InstallPromptBanner', () => ({
   default: () => null,
 }))
 
+// Root probe: the App checks /api/pixel/status to decide whether the
+// conversational home or the control center owns the root. Defaults to an
+// available Portal so existing tests keep the upstream behavior.
+let pixelStatusPayload = { available: true }
+
 describe('App', () => {
   test('opens legacy Pixel settings in the common utility panel', async () => {
     rtlRender(<MemoryRouter initialEntries={['/pixel/settings']}><ThemeProvider><App /></ThemeProvider></MemoryRouter>)
@@ -111,9 +116,11 @@ describe('App', () => {
     })
     useVersion.mockReturnValue({ version:{current:'2.6.0',update_available:false}, showUpdate:false, dismissUpdate:vi.fn() })
     getInternalRoutes.mockReturnValue([])
-    vi.stubGlobal('fetch', vi.fn(() =>
-      Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
-    ))
+    pixelStatusPayload = { available: true }
+    vi.stubGlobal('fetch', vi.fn(async url => {
+      if (url === '/api/pixel/status') return Promise.resolve({ ok: true, json: () => Promise.resolve(pixelStatusPayload) })
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
+    }))
     globalThis.localStorage.removeItem('ods-sidebar-collapsed')
     useFirstRun.mockReturnValue({ firstRun: false, loading: false, error: null, refresh: vi.fn() })
   })
@@ -125,6 +132,31 @@ describe('App', () => {
   test('renders without crashing', () => {
     render(<App />)
     expect(document.querySelector('aside')).toBeInTheDocument()
+  })
+
+  test('keeps the conversational home on the root while the Portal is available', async () => {
+    getInternalRoutes.mockReturnValue([
+      { id: 'home', path: '/', label: 'Home', component: () => <p>Home panel</p> },
+    ])
+    rtlRender(<MemoryRouter initialEntries={['/pixel']}><ThemeProvider><App /></ThemeProvider></MemoryRouter>)
+    expect(await screen.findByLabelText('Portal draft')).toBeVisible()
+    expect(screen.queryByText('Home panel')).toBeNull()
+    const calls = globalThis.fetch.mock.calls.filter(([url]) => url === '/api/pixel/status')
+    expect(calls).toHaveLength(1)
+    expect(calls[0][1]).toEqual(expect.objectContaining({ cache: 'no-store' }))
+  })
+
+  test('hands the root to the control center when the Portal is not enabled', async () => {
+    pixelStatusPayload = { available: false, detail: 'Portal is not enabled' }
+    getInternalRoutes.mockReturnValue([
+      { id: 'home', path: '/', label: 'Home', component: () => <p>Control center</p> },
+      { id: 'dashboard', path: '/dashboard', label: 'Dashboard', component: () => <p>Control center</p> },
+    ])
+    render(<App />)
+    expect(await screen.findByText('Control center')).toBeVisible()
+    expect(screen.queryByLabelText('Portal draft')).toBeNull()
+    // The control center takes the main area itself, so no side panel opens.
+    expect(screen.queryByRole('complementary', { name: 'Workspace panel' })).toBeNull()
   })
 
   test.each([
@@ -285,9 +317,16 @@ test.each(['localStorage', 'sessionStorage'])('opens the beta workspace when %s 
     throw new window.DOMException('Storage denied', 'SecurityError')
   })
   try {
+    vi.stubGlobal('fetch', vi.fn(async url => {
+      if (url === '/api/pixel/status') return Promise.resolve({ ok: true, json: () => Promise.resolve({ available: true }) })
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
+    }))
     render(<App />)
     expect(await screen.findByLabelText('Portal draft')).toBeVisible()
     fireEvent.click(screen.getByRole('button', {name:'Collapse sidebar'}))
     expect(screen.getByRole('button', {name:'Expand sidebar'})).toBeVisible()
-  } finally { getter.mockRestore() }
+  } finally {
+    getter.mockRestore()
+    vi.unstubAllGlobals()
+  }
 })

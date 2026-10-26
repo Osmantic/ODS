@@ -39,12 +39,84 @@ function setStorageValue(storage, key, value) {
   }
 }
 
+// The workspace routes, rendered in the side panel (compact) when Portal is
+// available, or full-width in the main area when Portal is not enabled —
+// that is the pre-v3 control-center layout, with the home route serving the
+// Dashboard. Portal's home path owns the conversational center. The center
+// owns its own scroll container because .portal-chat clips; the panel keeps
+// the .portal-panel-content class its styling already targets.
+function WorkspacePanelRoutes({ location, routes, status, loading, compact = true }) {
+  const routesElement = (
+    <Suspense fallback={
+      <div className="p-8 animate-pulse">
+        <div className="h-8 bg-theme-card rounded w-1/3 mb-4" />
+        <div className="grid grid-cols-3 gap-6">
+          {[...Array(6)].map((_, i) => <div key={i} className="h-40 bg-theme-card rounded-xl" />)}
+        </div>
+      </div>
+    }>
+      <Routes location={location}>
+        <Route path="/settings" element={<SettingsModal />} />
+        <Route path="/pixel/settings" element={<PixelSettings />} />
+        <Route path="/extensions/integrations" element={<Navigate to="/settings?section=integrations" replace />} />
+        <Route path="/remote-provider" element={<Navigate to="/settings?section=remote" replace />} />
+        {routes.filter(route => !['/pixel', '/pixel/settings', '/settings', '/extensions/integrations', '/remote-provider'].includes(route.path)).map(route => {
+          const Component = route.component
+          const props = typeof route.getProps === 'function' ? route.getProps({ status, loading }) : {}
+          return (
+            <Route
+              key={route.id || route.path}
+              path={route.path}
+              element={<Component {...props} compact={compact} />}
+            />
+          )
+        })}
+      </Routes>
+    </Suspense>
+  )
+  if (compact) return routesElement
+  return <div className="portal-workspace-page">{routesElement}</div>
+}
+
 function App() {
   const location = useLocation()
   const navigate = useNavigate()
+  // Fork deviation from upstream v3: Portal owns the conversational home at
+  // the root, but this install never enables it, so the root serves the
+  // control center instead. While Portal is available the Pixel page keeps
+  // the main area, exactly like upstream.
+  const [portalChecked, setPortalChecked] = useState(false)
+  const [portalAvailable, setPortalAvailable] = useState(false)
   useEffect(() => {
-    if (location.pathname === '/pixel') navigate('/', {replace:true})
-  }, [location.pathname, navigate])
+    let active = true
+    let timer
+    const probe = async () => {
+      try {
+        const response = await fetch('/api/pixel/status', { cache: 'no-store' })
+        if (!response.ok) throw new Error('Portal status unavailable')
+        const data = await response.json()
+        if (active) setPortalAvailable(data?.available === true || data?.state === 'model_incompatible')
+      } catch {
+        if (active) setPortalAvailable(false)
+      } finally {
+        // The route decision waits for a settled read, so the first paint
+        // never redirects before the install's Portal state is known.
+        if (active) {
+          setPortalChecked(true)
+          timer = globalThis.setTimeout(probe, 15000)
+        }
+      }
+    }
+    probe()
+    return () => { active = false; globalThis.clearTimeout(timer) }
+  }, [])
+  useEffect(() => {
+    // Upstream, /pixel redirects to the conversational home. Without Portal
+    // there is no home to land on, so send the user to the control center.
+    if (portalChecked && !portalAvailable && location.pathname === '/pixel') {
+      navigate('/dashboard', { replace: true })
+    }
+  }, [portalChecked, portalAvailable, location.pathname, navigate])
   const panelLocation = location
   const panelOpen = !['/', '/pixel'].includes(panelLocation.pathname)
   const [panelCollapsed, setPanelCollapsed] = useState(false)
@@ -82,6 +154,7 @@ function App() {
 
   const routes = useMemo(() => getInternalRoutes({ status, loading }), [status, loading])
   const handleToggle = useCallback(() => setSidebarCollapsed(c => !c), [])
+  const portalOpening = <p className="p-6 text-theme-text-muted">Opening Portal…</p>
 
   if (isTalkPath) {
     return (
@@ -130,38 +203,21 @@ function App() {
         <div className="portal-chat">
           {showUpdate && <PortalUpdateNotice version={version} onDismiss={dismissUpdate} onReview={() => navigate('/settings?section=updates')} />}
           {status?.bootstrap?.active && <BootstrapBanner bootstrap={status.bootstrap} />}
-          <Suspense fallback={<p className="p-6 text-theme-text-muted">Opening Portal…</p>}><Pixel systemStatus={status} /></Suspense>
+          <Suspense fallback={portalOpening}>
+            {portalAvailable
+              ? <Pixel systemStatus={status} />
+              : (portalChecked
+                ? <WorkspacePanelRoutes location={panelLocation} routes={routes} status={status} loading={loading} compact={false} />
+                : portalOpening)}
+          </Suspense>
         </div>
-        {panelOpen && <aside style={{'--portal-panel-width':`${panelWidth}px`}} className={`portal-side-panel ${panelCollapsed ? 'is-collapsed' : ''}`} aria-label="Workspace panel">
+        {/* Without Portal the pages own the whole main area, like the pre-v3
+            control center; the side panel only exists alongside Pixel. */}
+        {portalAvailable && panelOpen && <aside style={{'--portal-panel-width':`${panelWidth}px`}} className={`portal-side-panel ${panelCollapsed ? 'is-collapsed' : ''}`} aria-label="Workspace panel">
           {!panelCollapsed && <PanelResizeHandle width={panelWidth} onResize={setPanelWidth} />}
           <header><strong>{routes.find(route => route.path === panelLocation.pathname)?.label || 'Workspace'}</strong><button className="pixel-metal-control" aria-label={panelCollapsed ? 'Expand workspace panel' : 'Collapse workspace panel'} onClick={() => setPanelCollapsed(value => !value)}><MetalMetricIcon icon={panelCollapsed ? PanelRightOpen : PanelRightClose}/></button><button className="pixel-metal-control" aria-label="Close workspace panel" onClick={() => navigate('/')}><MetalMetricIcon icon={X}/></button></header>
           <div className="portal-panel-content" hidden={panelCollapsed}>
-        <Suspense fallback={
-          <div className="p-8 animate-pulse">
-            <div className="h-8 bg-theme-card rounded w-1/3 mb-4" />
-            <div className="grid grid-cols-3 gap-6">
-              {[...Array(6)].map((_, i) => <div key={i} className="h-40 bg-theme-card rounded-xl" />)}
-            </div>
-          </div>
-        }>
-          <Routes location={panelLocation}>
-            <Route path="/settings" element={<SettingsModal />} />
-            <Route path="/pixel/settings" element={<PixelSettings />} />
-            <Route path="/extensions/integrations" element={<Navigate to="/settings?section=integrations" replace />} />
-            <Route path="/remote-provider" element={<Navigate to="/settings?section=remote" replace />} />
-            {routes.filter(route => !['/', '/pixel', '/pixel/settings', '/settings', '/extensions/integrations', '/remote-provider'].includes(route.path)).map(route => {
-              const Component = route.component
-              const props = typeof route.getProps === 'function' ? route.getProps({ status, loading }) : {}
-              return (
-                <Route
-                  key={route.id || route.path}
-                  path={route.path}
-                  element={<Component {...props} compact />}
-                />
-              )
-            })}
-          </Routes>
-        </Suspense>
+            <WorkspacePanelRoutes location={panelLocation} routes={routes} status={status} loading={loading} />
           </div>
         </aside>}
       </main>
