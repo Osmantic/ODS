@@ -258,10 +258,13 @@ class Program {
     Assert ([IO.File]::ReadAllText($bracketDestination) -eq '1.2.18') 'curl failure preserves old binary'
     Assert (@(Get-ChildItem -LiteralPath (Split-Path $bracketDestination) -Filter '.ods-update-*').Count -eq 0) 'curl failure staging cleaned'
     $env:ODS_TEST_CURL_FAIL = '0'
+    $global:LASTEXITCODE = 0
 
 } finally {
     $env:PATH = $originalPath
+    $global:LASTEXITCODE = 0
     $resolved = [IO.Path]::GetFullPath($scratch)
     if (-not $resolved.StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()), [StringComparison]::OrdinalIgnoreCase)) { throw 'Invalid test cleanup path' }
     Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction SilentlyContinue
 }
+exit 0
