@@ -9,7 +9,7 @@ const page=items=>({kind:'tasks',items,offset:0,hasMore:false,nextOffset:null,pe
 const change=task=>({kind:'change',outcome:'applied',task})
 const runs=id=>({kind:'runs',taskId:id,offset:0,hasMore:false,nextOffset:null,
   items:[{timestamp:1800000000000,status:'ok',summary:'One synthetic meeting at 09:00.',summaryTruncated:false,durationMs:30}]})
-const reply=(body,status=200)=>new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json'}})
+const reply=(body,status=200)=>new globalThis.Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json'}})
 let jobs,archived,calls
 beforeEach(()=>{
   vi.stubGlobal('crypto',webcrypto)

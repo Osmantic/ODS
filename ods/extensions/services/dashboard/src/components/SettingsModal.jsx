@@ -41,12 +41,11 @@ export default function SettingsModal() {
   const content = useRef(null)
   const navigation = useRef(null)
   const [params, setParams] = useSearchParams()
-  const appsEnabled = useConnectedAppsEnabled()
-  const listed = sections.filter(([id]) => id !== 'apps' || appsEnabled === true)
+  const {enabled: appsEnabled, unavailable: appsUnavailable, refresh: refreshApps} = useConnectedAppsEnabled()
+  const listed = sections.filter(([id]) => id !== 'apps' || appsEnabled !== false)
   const requested = params.get('section')
-  // A link to Connected apps waits for the answer instead of flashing General first.
-  const section = requested === 'apps' && appsEnabled === null ? 'apps'
-    : listed.some(([id]) => id === requested) ? requested : 'general'
+  // Keep the requested section through a failed read; only a verified opt-out hides it.
+  const section = listed.some(([id]) => id === requested) ? requested : 'general'
   const [visited, setVisited] = useState(() => new Set([section]))
   function setSection(id) { setVisited(previous => new Set([...previous, id])); setParams({section:id}, {replace:true}) }
   useEffect(() => { setVisited(previous => previous.has(section) ? previous : new Set([...previous,section])) }, [section])
@@ -67,7 +66,12 @@ export default function SettingsModal() {
       {visited.has('profile') && <div hidden={section !== 'profile'} className="space-y-6"><ProfileSettings/><AssistantIdentitySettings/></div>}
       {section === 'portal-mascot' && <PortalMascotSettings/>}
       <Suspense fallback={<p>Loading settings…</p>}>
-        {section === 'apps' && (appsEnabled ? <ConnectedApps /> : <p>Loading settings…</p>)}
+        {section === 'apps' && (appsEnabled === true ? <ConnectedApps /> : appsUnavailable
+          ? <section aria-label="Connected apps" className="space-y-3">
+            <h2 className="text-lg font-semibold">Connected apps</h2>
+            <p role="status">Connected apps settings are unavailable right now.</p>
+            <button type="button" onClick={() => { void refreshApps() }} className="rounded-lg border border-white/20 px-3 py-2">Retry</button>
+          </section> : <p>Loading settings…</p>)}
         {section === 'pixel-diagnostics' && <PixelDiagnostics />}
         {visited.has('integrations') && <div hidden={section !== 'integrations'}><Integrations compact /></div>}
         {visited.has('remote') && <div hidden={section !== 'remote'}><RemoteGPU compact /></div>}

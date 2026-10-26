@@ -282,7 +282,8 @@ MESSAGES: dict[str, tuple[str, bool]] = {
     "sign-in-in-progress": ("A Google sign-in is still open. Finish it in the Google tab, or start again.", False),
     "sign-in-flow-expired": ("That sign-in took too long and expired. Start again.", False),
     "sign-in-flow-unknown": ("That sign-in is no longer open. Start again.", False),
-    "sign-in-state-mismatch": ("That address belongs to a different sign-in. Start again, then paste the new address.", False),
+    "sign-in-state-mismatch": ("That address belongs to a different sign-in. Paste the full address from the "
+                               "Google tab opened for this connection.", False),
     "address-not-from-sign-in": ("That isn't the address Google sent you to. Copy the whole address from the tab that "
                                  "didn't load, then paste it here.", False),
     "invalid-callback": ("That isn't the address Google sent you to. Copy the whole address from the tab that "

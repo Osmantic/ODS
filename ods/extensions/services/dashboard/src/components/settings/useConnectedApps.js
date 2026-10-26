@@ -68,16 +68,28 @@ export const undoCalendarChange = entry => action('activity/undo', {proposalId: 
 // Whether Settings shows Connected apps at all. Unknown until the dashboard answers.
 export function useConnectedAppsEnabled() {
   const [enabled, setEnabled] = useState(null)
-  useEffect(() => {
-    let current = true
-    fetch('/api/pixel/connections/enabled')
-      .then(response => response.ok ? response.json() : {enabled: false})
-      .then(value => { if (current) setEnabled(value?.enabled === true) })
-      // Without an answer the section stays hidden, as it is when switched off.
-      .catch(() => { if (current) setEnabled(false) })
-    return () => { current = false }
+  const [unavailable, setUnavailable] = useState(false)
+  const latest = useRef(0)
+  const refresh = useCallback(async () => {
+    const version = ++latest.current
+    try {
+      const response = await fetch('/api/pixel/connections/enabled')
+      if (!response.ok) throw new Error('Connected apps setting is unavailable')
+      const value = await response.json()
+      if (typeof value?.enabled !== 'boolean') throw new Error('Connected apps setting is invalid')
+      if (version === latest.current) { setEnabled(value.enabled); setUnavailable(false) }
+    } catch {
+      // A failed read is not the owner's decision to turn the feature off.
+      if (version === latest.current) setUnavailable(true)
+    }
   }, [])
-  return enabled
+  useEffect(() => {
+    const focus = () => { void refresh() }
+    void refresh()
+    window.addEventListener('focus', focus)
+    return () => { latest.current += 1; window.removeEventListener('focus', focus) }
+  }, [refresh])
+  return {enabled, unavailable, refresh}
 }
 
 // Connected-apps status, refreshed while a step runs, on focus, and on request.
