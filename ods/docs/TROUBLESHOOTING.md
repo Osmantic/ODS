@@ -389,6 +389,12 @@ are the questions it doesn't answer. The full guide is
 
 **Fix:** press **Check again**. If Gmail still doesn't show it, look in your Gmail Drafts, then press **Dismiss** and ask Portal again if it isn't there.
 
+### A Portal plugin won't turn on
+
+**Cause:** turning a plugin on restarts Portal with it. If Portal is busy, nothing changes. If Portal can't start with the plugin, ODS puts Portal back as it was, and the plugin stays off.
+
+**Fix:** wait until Portal has finished, then press **Turn on** again under **Portal plugins** in **Settings, Connected apps**. If the card says Portal couldn't start with the change, try once more, then ask on Discord.
+
 Still stuck? Ask on the ODS Discord: <https://discord.gg/4ntNp9MAwC>.
 
 ---

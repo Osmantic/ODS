@@ -10320,16 +10320,18 @@ class AgentHandler(BaseHTTPRequestHandler):
             _end_model_lifecycle("pixel_access_mode")
 
     def _handle_pixel_connections(self):
-        """Content-free connected-apps status, plus the connector catalog ODS ships."""
+        """Content-free connected-apps status, plus the connector and plugin catalogs ODS ships."""
         if not check_auth(self):
             return
         from pixel_access_relay import AccessRelayError, request_runtime_connections
         from pixel_connections import catalog as connection_catalog
+        from pixel_connections import plugins as connection_plugins
         from pixel_connections import status as connection_status
         try:
             status, body = request_runtime_connections(config=load_env(INSTALL_DIR / '.env'))
             if status == 200:
-                body = dict(connection_status.validate_public(body), catalog=connection_catalog.public_catalog())
+                body = dict(connection_status.validate_public(body), catalog=connection_catalog.public_catalog(),
+                            pluginCatalog=connection_plugins.public_catalog())
         except (AccessRelayError, connection_status.StatusError, OSError, ValueError):
             json_response(self, 503, {"error": "connections-unavailable"})
             return
@@ -10915,7 +10917,11 @@ class AgentHandler(BaseHTTPRequestHandler):
         elif self.path == "/v1/pixel/access-mode":
             self._handle_pixel_access_mode(True)
         elif self.path.startswith("/v1/pixel/connections/google/"):
-            self._handle_pixel_connection_action(self.path.removeprefix("/v1/pixel/connections/google/"))
+            action = self.path.removeprefix("/v1/pixel/connections/google/")
+            # The reviewed plugins have their own address; the Google one never reaches them.
+            self._handle_pixel_connection_action("" if action == "plugin" else action)
+        elif self.path == "/v1/pixel/connections/plugin":
+            self._handle_pixel_connection_action("plugin")
         elif self.path == "/v1/pixel/apps/open":
             self._handle_pixel_open_app()
         elif self.path in ("/v1/opencode/start", "/v1/opencode/setup"):

@@ -99,13 +99,22 @@ def _connection_google(value):
                     for key in ('waitingChanges', 'waitingDrafts')))
 
 
+def _connection_plugins(value):
+    # On or off for each reviewed plugin the release ships; the IDs are root's catalog.
+    return (type(value) is dict and len(value) <= 32
+            and all(type(key) is str and re.fullmatch(r'[a-z][a-z0-9-]{1,62}', key) is not None
+                    and type(flag) is bool for key, flag in value.items()))
+
+
 def public_connections(value):
     if (type(value) is not dict
-            or set(value) != {'schemaVersion', 'available', 'surface', 'reason', 'ownerTimeZone', 'connectors'}
+            or set(value) != {'schemaVersion', 'available', 'surface', 'reason', 'ownerTimeZone', 'connectors',
+                              'plugins'}
             or value['schemaVersion'] != 1 or type(value['available']) is not bool
             or value['surface'] not in ('linux-systemd', 'wsl-systemd', 'linux', 'darwin', 'windows')
             or not _maybe(value['reason'], _TOKEN) or not _maybe(value['ownerTimeZone'], _ZONE)
             or type(value['connectors']) is not dict or set(value['connectors']) != {'google'}
+            or not _connection_plugins(value['plugins'])
             or not _connection_google(value['connectors']['google'])):
         raise ValueError('invalid-connection-status')
     return value
@@ -172,7 +181,7 @@ _CONNECTION_OPERATIONS = ('connection-begin', 'connection-complete', 'connection
                           'connection-cancel', 'connection-disconnect', 'connection-sync',
                           'connection-proposals', 'connection-approve', 'connection-decline',
                           'connection-reconcile', 'connection-activity', 'connection-undo',
-                          'connection-drafts')
+                          'connection-drafts', 'connection-plugin')
 _CAPABILITY_IDS = ('calendar.read', 'calendar.write', 'calendar.direct', 'gmail.read', 'gmail.drafts')
 _FLOW = re.compile(r'[a-f0-9]{32}')
 _STATE = re.compile(r'[A-Za-z0-9_-]{32,128}')
@@ -187,6 +196,7 @@ _REASON = re.compile(r'[a-z][a-z0-9-]{0,95}')
 _AUTH_URL = re.compile(r'https://accounts\.google\.com/o/oauth2/auth\?[A-Za-z0-9._~%&=+-]{1,4000}')
 _PROPOSAL = re.compile(r'calendar-[0-9]{13}-[a-f0-9]{8}')
 _DRAFT = re.compile(r'gmail-draft-[0-9]{13}-[a-f0-9]{8}')
+_PLUGIN = re.compile(r'[a-z][a-z0-9-]{1,62}')
 _HEX = re.compile(r'[a-f0-9]{64}')
 _ATTENDEE = re.compile(r'[^\s@<>\x00-\x1f\x7f]+@[^\s@<>\x00-\x1f\x7f]+')
 _CONTROL = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
@@ -310,6 +320,9 @@ def valid_connection_action(value):
         return set(request) == {'proposalId'} and _suggestion(operation, request['proposalId'])
     if operation == 'connection-disconnect':
         return request == {'connector': 'google'}
+    if operation == 'connection-plugin':
+        return (set(request) == {'plugin', 'enabled'} and _text(request['plugin'], _PLUGIN)
+                and type(request['enabled']) is bool)
     if operation == 'connection-cancel':
         return set(request) == {'flowId'} and _text(request['flowId'], _FLOW)
     if operation == 'connection-complete':
@@ -366,7 +379,8 @@ def public_connection_action(operation, value):
         valid = (set(value) == {'proposalId', 'outcome'} and _suggestion(operation, value['proposalId'])
                  and value['outcome'] in _CHANGE_OUTCOMES[operation])
     else:
-        outcomes = {'connection-activate': ('applied', 'unchanged'), 'connection-cancel': ('cancelled',),
+        outcomes = {'connection-activate': ('applied', 'unchanged'), 'connection-plugin': ('applied', 'unchanged'),
+                    'connection-cancel': ('cancelled',),
                     'connection-sync': ('started',)}.get(operation, ())
         valid = set(value) == {'outcome'} and value['outcome'] in outcomes
     if not valid:

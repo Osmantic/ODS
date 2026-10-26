@@ -29,8 +29,14 @@ export function statusFor(google = {}, top = {}) {
       connectedAt: connected ? '2026-10-25T20:00:00Z' : null, grantedScopes: null, checkedAt: connected ? '2026-10-25T20:29:30Z' : null,
       sources: connected && google.state !== 'first-sync' ? {email: SOURCE, calendar: SOURCE} : {email: null, calendar: null},
       pending: null, waitingChanges: connected ? 0 : null, waitingDrafts: connected ? 0 : null, ...google}},
-    catalog: [GOOGLE_CATALOG]}
+    plugins: {'memory-wiki': false}, catalog: [GOOGLE_CATALOG], pluginCatalog: [MEMORY_WIKI], ...top}
 }
+
+// A reviewed OpenClaw plugin, as the host agent's catalog describes it.
+export const MEMORY_WIKI = {id: 'memory-wiki', label: 'Knowledge wiki',
+  summary: 'Portal keeps a wiki of what it learns about your people, projects and decisions.',
+  details: ['The pages stay on this machine.', "Portal can't use the wiki to reach the internet or run programs."],
+  tools: ['wiki_apply', 'wiki_get', 'wiki_lint', 'wiki_search', 'wiki_status']}
 
 export const pendingStep = (phase, error = null, expiresAt = null) => ({
   action: phase === 'deactivating' ? 'disconnect' : 'connect', phase, error,

@@ -108,7 +108,7 @@ test('each custodian action reaches the controller once, with its own time budge
       ['connection-approve', {proposalId:'calendar-1761500000000-0badc0de', sha256:'c'.repeat(64)}, 155000],
       ['connection-reconcile', {proposalId:'calendar-1761500000000-0badc0de'}, 155000],
       ['connection-activity', {}, 25000], ['connection-undo', {proposalId:'calendar-1761500000000-0badc0de'}, 155000],
-      ['connection-drafts', {}, 25000],
+      ['connection-drafts', {}, 25000], ['connection-plugin', {plugin:'memory-wiki', enabled:true}, 305000],
       ['connection-approve', {proposalId:'gmail-draft-1761500000000-0badc0de', sha256:'c'.repeat(64)}, 155000]]) {
     calls.length=0;
     const response=await post(JSON.stringify({operation, request}));

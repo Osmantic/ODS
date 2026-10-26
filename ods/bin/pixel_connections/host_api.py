@@ -243,6 +243,14 @@ def changes(body: Any, *, config: dict, relay: Relay, log: Callable[[str], None]
     return relay("connection-proposals", {}, config=config)
 
 
+def plugin(body: Any, *, config: dict, relay: Relay, log: Callable[[str], None] = print) -> tuple:
+    """Turn one reviewed plugin on or off for Portal; root restarts Portal's gateway with it."""
+    if (not isinstance(body, dict) or set(body) != {"plugin", "enabled"} or type(body["plugin"]) is not str
+            or type(body["enabled"]) is not bool):
+        return 400, {"error": "invalid-request"}
+    return relay("connection-plugin", body, config=config)
+
+
 def drafts(body: Any, *, config: dict, relay: Relay, log: Callable[[str], None] = print) -> tuple:
     """The Gmail drafts Portal wrote, each with the hash its approval must carry."""
     if body != {}:
@@ -294,4 +302,4 @@ def undo(body: Any, *, config: dict, relay: Relay, log: Callable[[str], None] = 
 
 ACTIONS = {"begin": begin, "complete": complete, "cancel": cancel, "disconnect": disconnect, "sync": sync,
            "finish": finish, "changes": changes, "approve": approve, "decline": decline, "check": check,
-           "activity": activity, "undo": undo, "drafts": drafts}
+           "activity": activity, "undo": undo, "drafts": drafts, "plugin": plugin}

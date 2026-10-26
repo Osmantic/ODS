@@ -1,16 +1,14 @@
 """The owner's connected-apps record: strict schema, safe reads, onboarding mapping."""
 import copy
-import importlib.util
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-SPEC = importlib.util.spec_from_file_location(
-    "ods_portal_connection_state", Path(__file__).resolve().parents[1] / "bin" / "pixel_connections" / "state.py")
-state = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(state)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bin"))
+from pixel_connections import state  # noqa: E402
 
 OWNERS = (0, os.getuid()) if hasattr(os, "getuid") else (0,)
 
@@ -87,6 +85,29 @@ class ConnectionRecordSchemaTests(unittest.TestCase):
             with self.subTest(raw=raw[:24]):
                 with self.assertRaises(state.StateError):
                     state.parse(raw)
+
+
+class PluginChoiceTests(unittest.TestCase):
+    def test_plugin_choices_are_optional_strict_and_tolerate_ids_this_release_lacks(self):
+        self.assertNotIn("plugins", record())
+        self.assertEqual(state.enabled_plugins(record()), [])
+        chosen = dict(record(), plugins={"memory-wiki": True, "from-a-later-ods": True})
+        self.assertIs(state.validate(chosen), chosen)
+        self.assertEqual(state.enabled_plugins(chosen), ["memory-wiki"])
+        self.assertEqual(state.enabled_plugins(dict(record(), plugins={"memory-wiki": False})), [])
+        for bad in ({"memory-wiki": "yes"}, {"Memory Wiki": True}, ["memory-wiki"],
+                    {f"plugin-{index}": True for index in range(33)}):
+            with self.subTest(bad=bad), self.assertRaises(state.StateError):
+                state.validate(dict(record(), plugins=bad))
+
+    def test_a_plugin_reaches_the_onboarding_contract_without_any_google_sign_in(self):
+        only_plugins = dict(record(), connectors={}, ownerTimeZone=None, plugins={"memory-wiki": True})
+        overrides = state.onboarding_overrides(only_plugins, google_custody=False)
+        self.assertEqual(overrides, {"portalPlugins": state.portal_plugins.answers(["memory-wiki"])})
+        answers = state.connection_answers(only_plugins, google_custody=False)
+        self.assertTrue(state.valid_connection_answers(answers))
+        self.assertEqual(state.connection_answers(None, google_custody=False)["portalPlugins"], None)
+        self.assertFalse(state.valid_connection_answers(dict(answers, portalPlugins=[{"id": "browser"}])))
 
 
 class ConnectionRecordReadTests(unittest.TestCase):

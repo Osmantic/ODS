@@ -153,6 +153,32 @@ it's for, the subject, the message, and for a reply, the email it answers.
 To turn drafts on later, press **Change access** on the card and connect again
 with the box checked. Google then asks you to allow Gmail drafts.
 
+## Portal plugins
+
+Below the Google card, **Portal plugins** offers extra abilities from OpenClaw,
+the agent runtime Portal is built on. Each plugin there:
+
+- was reviewed for ODS, and runs exactly as reviewed;
+- ships inside the OpenClaw that ODS already installs, so nothing is downloaded
+  when you turn it on;
+- starts off.
+
+Turning a plugin on or off restarts Portal, so do it when Portal isn't busy. If
+Portal is busy, nothing changes and the card says so.
+
+- **Knowledge wiki:** Portal keeps a wiki of what it learns about your people,
+  projects and decisions, notes where each fact came from, and checks the wiki
+  before it answers.
+  - The pages are Markdown in `~/.openclaw/wiki/portal`, which you can open in
+    Obsidian.
+  - The folder sits beside Portal's workspace, not inside it, so nothing Portal
+    does in its workspace can redirect the wiki to other files.
+  - Portal can't use the wiki to reach the internet or run programs.
+  - Turning it off keeps the pages.
+  - Review: `docs/pixel/plugins/memory-wiki.md`.
+
+Plugins don't need Google: they work whether or not Google is connected.
+
 ## Disconnect
 
 Press **Disconnect** on the card. ODS stops syncing, removes its access at

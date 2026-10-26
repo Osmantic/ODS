@@ -545,6 +545,20 @@ has no tool that sends email, and nothing here sends one: the owner sends the
 draft from Gmail. Failures use the `gmail-draft-*` codes, which mirror the
 calendar ones. `undo` never takes a draft.
 
+`POST /v1/pixel/connections/plugin` with `{"plugin": "memory-wiki", "enabled": true}`
+turns one reviewed OpenClaw plugin on or off for Portal and answers
+`{"outcome": "applied" | "unchanged"}`. The catalog
+(`bin/pixel_connections/plugins.py`) lists core plugins reviewed in the exact
+OpenClaw package Pixel installs, each with the configuration it was reviewed
+with. Root records the choice and makes the same gated gateway change as
+`finish`. OpenClaw must resolve the plugin before Portal restarts with it.
+
+If Portal is busy (`runtime-busy`) or the change is rolled back
+(`plugin-change-rolled-back`), the record keeps the previous choice, so nothing
+waits half done. The status reply carries `plugins`, which is on or off for each
+catalog plugin and nothing else. The host agent adds `pluginCatalog`: what
+Settings shows for each plugin, never its configuration.
+
 **Error responses:**
 | Code | Condition |
 |------|-----------|

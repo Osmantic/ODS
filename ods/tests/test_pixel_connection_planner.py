@@ -14,7 +14,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "bin"))
-from pixel_connections import planner  # noqa: E402
+from pixel_connections import planner, plugins  # noqa: E402
 
 INSTALL = "/home/owner/.local/share/pixel"
 EXTENSION = "/opt/ods/extensions/services/pixel-agent/plugin"
@@ -22,8 +22,8 @@ READ_ONLY = {"calendar.read": True, "calendar.write": False, "calendar.direct": 
              "gmail.read": True, "gmail.drafts": False}
 
 
-def gateway(capabilities=None, zone=None):
-    return dict(planner.limbs(capabilities), userTimezone=zone)
+def gateway(capabilities=None, zone=None, chosen=()):
+    return dict(planner.limbs(capabilities), userTimezone=zone, plugins=list(chosen))
 
 
 def disconnected_config():
@@ -63,10 +63,34 @@ class PlannerTests(unittest.TestCase):
                 planner.target(bad)
 
     def test_a_target_journaled_before_gmail_drafts_has_drafts_off(self):
-        legacy = {key: value for key, value in gateway(READ_ONLY).items() if key != "emailDrafts"}
+        legacy = {key: value for key, value in gateway(READ_ONLY).items() if key not in ("emailDrafts", "plugins")}
         self.assertEqual(planner.target(legacy), gateway(READ_ONLY))
         self.assertEqual(planner.plan_config(disconnected_config(), legacy, install_dir=INSTALL),
                          planner.plan_config(disconnected_config(), gateway(READ_ONLY), install_dir=INSTALL))
+        # One journaled before the plugin catalog loads none.
+        self.assertEqual(planner.target({key: value for key, value in gateway(READ_ONLY).items() if key != "plugins"}),
+                         gateway(READ_ONLY))
+
+    def test_a_chosen_plugin_loads_with_its_reviewed_configuration_and_unloads_whole(self):
+        before = planner.plan_config(disconnected_config(), gateway(READ_ONLY), install_dir=INSTALL)
+        after = planner.plan_config(before, gateway(READ_ONLY, chosen=["memory-wiki"]), install_dir=INSTALL)
+        self.assertEqual(after["plugins"]["allow"], before["plugins"]["allow"] + ["memory-wiki"])
+        self.assertEqual(after["plugins"]["entries"]["memory-wiki"],
+                         {"enabled": True, "config": plugins.MEMORY_WIKI["config"]})
+        self.assertEqual(set(after["tools"]["alsoAllow"]) - set(before["tools"]["alsoAllow"]),
+                         set(plugins.MEMORY_WIKI["tools"]))
+        self.assertEqual(after["tools"]["sandbox"]["tools"]["allow"], sorted(after["tools"]["sandbox"]["tools"]["allow"]))
+        self.assertEqual(plugins.enabled_in(after), ["memory-wiki"])
+        # A Google change keeps the plugin, and turning the plugin off restores the configuration exactly.
+        connected = planner.plan_config(after, gateway(dict(READ_ONLY, **{"calendar.write": True}),
+                                                       chosen=["memory-wiki"]), install_dir=INSTALL)
+        self.assertEqual(plugins.enabled_in(connected), ["memory-wiki"])
+        self.assertEqual(planner.plan_config(after, gateway(READ_ONLY), install_dir=INSTALL), before)
+
+    def test_only_catalog_plugins_in_catalog_order_can_be_chosen(self):
+        for chosen in (["browser"], ["memory-wiki", "memory-wiki"], "memory-wiki", [7]):
+            with self.subTest(chosen=chosen), self.assertRaises(planner.PlanError):
+                planner.target(dict(gateway(), plugins=chosen))
 
     def test_gmail_drafts_add_only_the_draft_tool(self):
         drafts = dict(READ_ONLY, **{"gmail.drafts": True})
@@ -321,35 +345,39 @@ class RenderCrossCheckTests(unittest.TestCase):
         live.chmod(0o600)
         return json.loads(live.read_text()), (self.pixel / ".generated" / "gateway.env").read_text()
 
-    def record(self, capabilities, zone="America/Chicago"):
+    def record(self, capabilities, zone="America/Chicago", chosen=()):
         google = {"status": "connected", "account": "owner@example.com", "calendarId": "primary",
                   "gmailWindowDays": 180, "capabilities": capabilities, "cloudModels": False,
                   "connectedAt": "2026-10-25T20:00:00Z"}
-        return {"schemaVersion": 1, "kind": "ods-portal-connections", "updatedAt": "2026-10-25T20:00:00Z",
-                "ownerTimeZone": zone, "connectors": {"google": google} if capabilities else {}}
+        value = {"schemaVersion": 1, "kind": "ods-portal-connections", "updatedAt": "2026-10-25T20:00:00Z",
+                 "ownerTimeZone": zone, "connectors": {"google": google} if capabilities else {}}
+        return dict(value, plugins=dict.fromkeys(chosen, True)) if chosen else value
 
-    def assert_planned(self, before, after, capabilities, zone):
+    def assert_planned(self, before, after, capabilities, zone, chosen=()):
         config, env = before
-        planned = planner.plan_config(config, gateway(capabilities, zone), install_dir=self.install)
+        planned = planner.plan_config(config, gateway(capabilities, zone, chosen), install_dir=self.install)
         self.assertEqual(json.dumps(planned, indent=2, sort_keys=True), json.dumps(after[0], indent=2, sort_keys=True))
-        self.assertEqual(planner.plan_gateway_env(env, gateway(capabilities, zone)), after[1])
+        self.assertEqual(planner.plan_gateway_env(env, gateway(capabilities, zone, chosen)), after[1])
 
     def test_connect_and_disconnect_match_the_renderer(self):
         writes = dict(READ_ONLY, **{"calendar.write": True})
         drafts = dict(writes, **{"gmail.drafts": True})
         calendar_only = dict(READ_ONLY, **{"gmail.read": False})
+        wiki = ["memory-wiki"]
         disconnected = self.render(None)
-        steps = [(READ_ONLY, "America/Chicago"), (writes, "America/Chicago"), (drafts, "America/Chicago"),
-                 (writes, "America/Chicago"), (calendar_only, "Europe/Berlin"), (None, "Europe/Berlin")]
+        steps = [(READ_ONLY, "America/Chicago", ()), (writes, "America/Chicago", ()),
+                 (drafts, "America/Chicago", ()), (drafts, "America/Chicago", wiki), (writes, "America/Chicago", wiki),
+                 (None, "America/Chicago", wiki), (calendar_only, "Europe/Berlin", ()), (None, "Europe/Berlin", ())]
         previous = disconnected
-        for capabilities, zone in steps:
-            with self.subTest(capabilities=capabilities, zone=zone):
-                current = self.render(self.record(capabilities, zone))
-                # Each step really changes what Pixel renders.
+        for capabilities, zone, chosen in steps:
+            with self.subTest(capabilities=capabilities, zone=zone, chosen=chosen):
+                current = self.render(self.record(capabilities, zone, chosen))
+                # Each step really changes what Pixel renders and ODS's overlay loads.
                 self.assertEqual(planner.PLUGIN_ID in current[0]["plugins"]["allow"], bool(capabilities))
                 self.assertEqual(planner.gateway_limbs(current[1]), planner.limbs(capabilities))
                 self.assertEqual(current[0]["agents"]["defaults"]["userTimezone"], zone)
-                self.assert_planned(previous, current, capabilities, zone)
+                self.assertEqual(plugins.enabled_in(current[0]), list(chosen))
+                self.assert_planned(previous, current, capabilities, zone, chosen)
                 previous = current
 
     def test_a_disconnected_render_is_a_fixed_point(self):

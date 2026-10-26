@@ -11,13 +11,13 @@ import pixel_access_protocol as protocol  # noqa: E402
 from pixel_connections import state  # noqa: E402
 
 MODULES = ("__init__.py", "state.py", "status.py", "catalog.py", "oauth.py", "custody.py", "planner.py",
-           "coordinator.py", "lifecycle.py", "approvals.py", "activity.py", "drafts.py")
+           "coordinator.py", "lifecycle.py", "approvals.py", "activity.py", "drafts.py", "plugins.py")
 ACTIONS = ("connection-begin", "connection-complete", "connection-activate", "connection-cancel",
            "connection-disconnect", "connection-sync", "connection-proposals", "connection-approve",
            "connection-decline", "connection-reconcile", "connection-activity", "connection-undo",
-           "connection-drafts")
+           "connection-drafts", "connection-plugin")
 TARGET = {"email": True, "emailDrafts": False, "calendar": True, "calendarWrite": False, "calendarDirect": False,
-          "userTimezone": "America/Chicago"}
+          "userTimezone": "America/Chicago", "plugins": []}
 ANSWERS = state.connection_answers(None, google_custody=False)
 ANSWERS_PATH = "/home/owner/ods/data/pixel/onboarding.json"
 

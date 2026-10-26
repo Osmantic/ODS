@@ -35,6 +35,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   whole; nothing reaches Gmail until you press **Create draft**, and ODS creates
   that exact draft once, in your Gmail Drafts. Portal can't send email: you send
   the draft from Gmail. ODS now bundles Pixel 4.3.35, which adds the draft tool.
+- Portal plugins: Settings, Connected apps lists OpenClaw plugins reviewed for
+  ODS, each off until you turn it on, set up exactly as reviewed, and pinned to
+  the OpenClaw that ODS already installs. The first is the **Knowledge wiki**
+  (OpenClaw's memory-wiki): Portal keeps Markdown pages of what it learns about
+  your people, projects and decisions in `~/.openclaw/wiki/portal`, notes where
+  each fact came from, and checks them before it answers. It can't reach the
+  internet or run programs. Review: `docs/pixel/plugins/memory-wiki.md`.
 - Portal's workspace includes one finished example project, Elf of Doom, a
   small browser game Portal wrote in ODS from natural-language prompts. The
   installer adds `Playground/elf-of-doom` whenever that name is absent and the

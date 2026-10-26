@@ -457,6 +457,7 @@ write_access_fixture() {
         "bin/pixel_connections/approvals.py"
         "bin/pixel_connections/activity.py"
         "bin/pixel_connections/drafts.py"
+        "bin/pixel_connections/plugins.py"
     )
     for relative in "${access_sources[@]}"; do
         source="$ROOT_DIR/$relative"

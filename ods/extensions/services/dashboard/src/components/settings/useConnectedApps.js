@@ -51,6 +51,10 @@ export const approveCalendarChange = entry => action('changes/approve', {proposa
 export const declineCalendarChange = entry => action('changes/decline', {proposalId: entry.proposalId})
 export const checkCalendarChange = entry => action('changes/check', {proposalId: entry.proposalId})
 
+// A reviewed plugin turned on or off for Portal; Portal's gateway restarts with it.
+export const changePlugin = async (plugin, enabled) => reply(await fetch('/api/pixel/connections/plugin', {
+  method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({plugin, enabled})}))
+
 // Gmail drafts Portal wrote. An approval carries the hash shown with the draft; nothing is ever sent.
 export const listGmailDrafts = async () => reply(await fetch('/api/pixel/connections/google/drafts', {cache: 'no-store'}))
 export const approveGmailDraft = entry => action('drafts/approve', {proposalId: entry.proposalId, sha256: entry.sha256})

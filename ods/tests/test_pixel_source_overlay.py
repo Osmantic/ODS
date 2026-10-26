@@ -51,7 +51,7 @@ def held_overlay(tmp_path, monkeypatch):
 
 
 def make_held_overlay(tmp_path, monkeypatch, provider='cloud', new_inspector=False, new_project=False,
-                      local_model='Qwen3.5-9B', thinking_control=None):
+                      local_model='Qwen3.5-9B', thinking_control=None, portal_plugins=None):
     uid, gid = os.getuid(), os.getgid()
     assert uid > 0, 'run these disposable fixtures as an ordinary user'
     home, installed, candidate = [tmp_path / name for name in ('home', 'installed', 'candidate')]
@@ -128,6 +128,9 @@ def make_held_overlay(tmp_path, monkeypatch, provider='cloud', new_inspector=Fal
         del sandbox['plugins']['entries']['pixel-ods']['config']['workspacePreviewInspectionTransport']
     if new_project:
         del sandbox['plugins']['entries']['pixel-ods']['config']['projectBuildSocket']
+    if portal_plugins:
+        # Pixel's renderer always writes the exclusive plugin allowlist the overlay extends.
+        sandbox['plugins']['allow'] = ['pixel-ods', 'llama-cpp']
     before_config, before_baseline = modes.enable(sandbox)
     before = upgrade.encoded(before_config)
     config_path = home / '.openclaw/openclaw.json'
@@ -178,6 +181,8 @@ def make_held_overlay(tmp_path, monkeypatch, provider='cloud', new_inspector=Fal
         answers['modelRouteFingerprint'] = 'f' * 64
     if thinking_control is not None:
         answers['modelThinkingControl'] = thinking_control
+    if portal_plugins:
+        answers['portalPlugins'] = portal_plugins
     answers_path = home / 'renderer-answers.json'
     save(answers_path, answers)
     renderer_args = [sys.executable, '-I', str(writer), str(config_path), '3004', str(answers_path), str(home / '.openclaw'), 'unix']
@@ -444,6 +449,38 @@ def test_measured_thinking_control_from_answers_is_derived(tmp_path, monkeypatch
     assert upgrade._render_overlay(renderer, anchor, f.bridge.home, os.getuid(), os.getgid(),
                                    thinking_control='always') == live
     assert f.bridge.model_finish(dict(transaction_id=TOKEN, outcome='applied'))['status'] == 'released'
+
+
+def test_reviewed_plugins_are_derived_from_roots_record_never_the_answers_file(tmp_path, monkeypatch):
+    from pixel_connections import plugins, state
+    chosen = plugins.answers(['memory-wiki'])
+    f = make_held_overlay(tmp_path, monkeypatch, provider='local', portal_plugins=chosen)
+    assert plugins.enabled_in(json.loads(f.config.read_bytes())) == ['memory-wiki']
+    anchor = (f.owner_state / 'access-release-config-after.json').read_bytes()
+    renderer = (ROOT / 'installers/lib/pixel-runtime-budget.py').read_bytes()
+    live = upgrade.sha(f.config.read_bytes())
+    assert upgrade._render_overlay(renderer, anchor, f.bridge.home, os.getuid(), os.getgid()) != live
+    assert upgrade._render_overlay(renderer, anchor, f.bridge.home, os.getuid(), os.getgid(),
+                                   portal_plugins=chosen) == live
+    # Root's own record says the wiki is on, so the completed release proves.
+    record = tmp_path / 'etc-ods' / 'portal-connections.json'
+    record.parent.mkdir(mode=0o755)
+    record.write_text(json.dumps({"schemaVersion": 1, "kind": "ods-portal-connections",
+                                  "updatedAt": "2026-10-26T15:00:00Z", "ownerTimeZone": None, "connectors": {},
+                                  "plugins": {"memory-wiki": True}}))
+    record.chmod(0o644)
+    monkeypatch.setattr(state, 'PATH', record)
+    assert upgrade._owner_plugins() == chosen
+    assert f.bridge.model_finish(dict(transaction_id=TOKEN, outcome='applied'))['status'] == 'released'
+
+
+def test_a_plugin_root_never_turned_on_is_not_derived(tmp_path, monkeypatch):
+    from pixel_connections import plugins, state
+    f = make_held_overlay(tmp_path, monkeypatch, provider='local', portal_plugins=plugins.answers(['memory-wiki']))
+    monkeypatch.setattr(state, 'PATH', tmp_path / 'no-record.json')
+    assert upgrade._owner_plugins() is None
+    with pytest.raises(access.AccessError, match='source-overlay-not-derived'):
+        f.bridge.model_finish(dict(transaction_id=TOKEN, outcome='applied'))
 
 
 def test_thinking_fields_no_renderer_policy_writes_are_not_derived(tmp_path, monkeypatch):
