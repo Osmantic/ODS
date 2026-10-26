@@ -16,6 +16,7 @@ import subprocess
 import sys
 import threading
 import unittest
+from unittest.mock import patch
 import urllib.request
 
 import test_connection_plugin_runtime as fixture
@@ -147,7 +148,8 @@ class NativeMcpRuntimeTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('native_mcp_renderer_fixture',
             ROOT / 'vendor/pixel/tests/test_native_search.py')
         rendering = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(rendering)
+        with patch.object(sys, 'dont_write_bytecode', True):
+            spec.loader.exec_module(rendering)
         rendering.NativeSearchTests.setUpClass()
         self.addCleanup(rendering.NativeSearchTests.tearDownClass)
         render_case = rendering.NativeSearchTests()

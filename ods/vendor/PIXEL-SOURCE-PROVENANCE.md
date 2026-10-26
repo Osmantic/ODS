@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`4e176a0d158166bad230e62c4e0d81501ca0e1b4`, and its SHA-256 is
-`8300883de8b9e2bfd6c67d8baaddc10b8671873521dbaa794ffea6060ef4b1d2`.
+`dbf6af6e9d6758a72c30585b3baab7ee4222c3bd`, and its SHA-256 is
+`71debee22f0505da32ee3984c99fed24e1c0929ba2fa39583e4cdf1d930b9cc5`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -328,3 +328,38 @@ clone (for example `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.autocrlf
 GIT_CONFIG_VALUE_0=false`), because Git for Windows checks text out with CRLF by
 default. No release signature was generated and no private source history or
 signing credentials were used.
+
+## ODS-maintained 4.3.36 native MCP preservation candidate
+
+This local candidate preserves the native OpenClaw MCP registry and explicit
+tool permissions when Pixel renders an updated configuration. It does not add
+another MCP implementation or OAuth store. The macOS preparation path renders
+against a private copy of the selected previous state and verifies that the
+registry is unchanged before activation. The functional checkpoint is
+`1220b3630f5d35ba687ec59a18a7638e127a3f6f`; see
+[`pixel/ODS-QUALIFICATION-4.3.36.md`](pixel/ODS-QUALIFICATION-4.3.36.md) for evidence
+and the remaining acceptance gates. This is not a claim of fleet acceptance.
+
+The public source tree is `f7725319283f20fb27ea159fc355cf9cec882150`.
+Two independent empty bare repositories, using the documented alternates
+procedure and `pack.threads=1`, produced byte-identical bundles with the retained
+public synthetic identity, timestamp and message. Recreating the previous tree
+also reproduced its exact synthetic commit. Only the new root commit is
+advertised; no private Git history, signing key or release signature is included.
+The current artifact is identified at the top of this document. The previous
+4.3.35 bundle commit `4e176a0d158166bad230e62c4e0d81501ca0e1b4` and digest
+`8300883de8b9e2bfd6c67d8baaddc10b8671873521dbaa794ffea6060ef4b1d2`
+remain historical identities in Git and existing clients' retained receipts.
+
+The renderer/overlay and live-planner cross-check passed through email/wiki
+connection changes with native MCP retained. A real pinned gateway test after
+re-render preserved an allowed read and refused an excluded write. Native Mac
+runtime/upgrade qualification, complete owner-account flows and the direct
+release-contract check remain as documented in the candidate record.
+
+The final exact Git bundle checkout also passed the existing isolated Pixel
+end-to-end suite on Linux. That suite uses controlled Docker/systemd boundaries;
+it does not constitute native Mac or complete installed fleet qualification.
+The existing source-upgrade and dashboard reconciliation suites passed against
+the final source identity. The comparison-fixture release gate described in
+the candidate record remains open and also fails on the untouched 4.3.35 bundle.
