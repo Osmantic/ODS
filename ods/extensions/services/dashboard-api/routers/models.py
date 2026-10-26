@@ -1941,25 +1941,35 @@ _model_management_lock = threading.Lock()
 _model_management_remembered: tuple[float, dict] | None = None
 _model_management_generation = 0
 _model_management_proof_future: asyncio.Future | None = None
+_model_management_missed = False
 
 
 def _forget_model_management() -> None:
     """Drop the remembered proof, and any proof still running from before a runtime change."""
     global _model_management_remembered, _model_management_generation, _model_management_proof_future
+    global _model_management_missed
     with _model_management_lock:
         _model_management_remembered = None
         _model_management_generation += 1
         _model_management_proof_future = None
+        _model_management_missed = False
 
 
 async def _prove_model_management(generation: int) -> tuple[int, dict]:
-    global _model_management_remembered
+    global _model_management_remembered, _model_management_missed
     value = await asyncio.to_thread(_model_management)
-    # An unverified proof is often an interop timeout; the next read asks again.
-    if value.get("managed") is not None:
-        with _model_management_lock:
-            if generation == _model_management_generation:
+    with _model_management_lock:
+        if generation == _model_management_generation:
+            if value.get("managed") is not None:
                 _model_management_remembered = (time.monotonic(), dict(value))
+                _model_management_missed = False
+            elif _model_management_missed:
+                # Two unverified proofs in a row: the host keeps failing, so the
+                # catalog stops showing the last good one. A single interop
+                # timeout leaves it in place.
+                _model_management_remembered = None
+            else:
+                _model_management_missed = True
     return generation, value
 
 

@@ -74,6 +74,7 @@ def _no_remembered_model_management(monkeypatch):
 
     monkeypatch.setattr(models, "_model_management_remembered", None)
     monkeypatch.setattr(models, "_model_management_proof_future", None)
+    monkeypatch.setattr(models, "_model_management_missed", False)
 
 
 @pytest.fixture(autouse=True)

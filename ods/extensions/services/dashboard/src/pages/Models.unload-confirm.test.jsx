@@ -97,11 +97,17 @@ test('Models opened again shows the last catalog at once and holds its controls 
     if (url === '/api/models') return new Promise(resolve => { answer = () => resolve(json(catalog())) })
     return json({}, 404)
   })
+  const profileReads = () => fetch.mock.calls.filter(([url]) => String(url).endsWith('/profile')).length
+  const profilesBefore = profileReads()
   render(createElement(MemoryRouter, null, createElement(Models)))
   const controls = within(screen.getByRole('region', { name: 'Model runtime controls' }))
   expect(controls.getByRole('button', { name: 'Unload model' })).toBeDisabled()
+  // The remembered model's profile, and its template button, wait for the fresh read too.
+  await act(async () => {})
+  expect(profileReads()).toBe(profilesBefore)
 
   await act(async () => { answer() })
   expect(await controls.findByRole('button', { name: 'Unload model' })).toBeEnabled()
+  expect(profileReads()).toBeGreaterThan(profilesBefore)
   expect(posts()).toEqual([])
 })

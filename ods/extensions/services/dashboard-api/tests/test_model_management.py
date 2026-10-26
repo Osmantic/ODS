@@ -438,3 +438,77 @@ def test_a_proof_overtaken_by_a_runtime_change_is_taken_again(model_runtime, mon
     assert asyncio.run(model_runtime._catalog_model_management(None, {"status": "idle"}, None)) == STOPPED
     assert calls == ["/v1/model/management"] * 2
     assert model_runtime._model_management_remembered[1] == STOPPED
+
+
+def test_a_host_that_keeps_failing_stops_hiding_behind_the_last_good_proof(model_runtime, monkeypatch):
+    calls = []
+
+    def request(_method, path, **_kwargs):
+        calls.append(path)
+        raise model_runtime.AgentHTTPError(503, "fixture ownership changed")
+
+    monkeypatch.setattr(model_runtime, "request_agent_json", request)
+    monkeypatch.setattr(model_runtime, "_model_management_remembered", (time.monotonic() - 20, MANAGED))
+
+    async def reads():
+        shown = []
+        for _ in range(2):
+            shown.append(await model_runtime._catalog_model_management(None, {"status": "idle"}, "fixture"))
+            await model_runtime._model_management_proof_future
+        shown.append(await model_runtime._catalog_model_management(None, {"status": "idle"}, "fixture"))
+        return shown
+
+    assert asyncio.run(reads()) == [MANAGED, MANAGED, UNVERIFIED]
+    assert model_runtime._model_management_remembered is None
+    assert calls == ["/v1/model/management"] * 3
+
+
+def test_one_unverified_proof_keeps_the_last_good_one(model_runtime, monkeypatch):
+    answers = [MANAGED, "fail", "fail"]
+
+    def request(_method, _path, **_kwargs):
+        answer = answers.pop()
+        if answer == "fail":
+            raise model_runtime.AgentHTTPError(503, "fixture interop timeout")
+        return answer
+
+    monkeypatch.setattr(model_runtime, "request_agent_json", request)
+    monkeypatch.setattr(model_runtime, "_model_management_remembered", (time.monotonic() - 20, MANAGED))
+
+    async def refresh():
+        await model_runtime._catalog_model_management(None, {"status": "idle"}, "fixture")
+        await model_runtime._model_management_proof_future
+
+    asyncio.run(refresh())  # one miss: kept
+    assert model_runtime._model_management_remembered[1] == MANAGED
+    monkeypatch.setattr(model_runtime, "_model_management_remembered", (time.monotonic() - 20, MANAGED))
+    asyncio.run(refresh())  # a second miss in a row: dropped
+    assert model_runtime._model_management_remembered is None
+    asyncio.run(model_runtime._catalog_model_management(None, {"status": "idle"}, "fixture"))
+    # A good proof ends the run of misses.
+    assert model_runtime._model_management_remembered[1] == MANAGED
+    assert model_runtime._model_management_missed is False
+
+
+def test_activation_forgets_the_proof(test_client, model_runtime, monkeypatch):
+    calls = []
+
+    def request(method, path, **kwargs):
+        calls.append(path)
+        if method == "GET":
+            return MANAGED
+        return {"status": "activated", "context_length": kwargs["payload"]["context_length"]}
+
+    monkeypatch.setattr(model_runtime, "request_agent_json", request)
+    monkeypatch.setattr(model_runtime, "get_loaded_model", AsyncMock(return_value="fixture"))
+    monkeypatch.setattr(model_runtime, "_find_loadable_model", lambda _id: {"id": "fixture", "gguf_file": "fixture.gguf"})
+    monkeypatch.setattr(model_runtime, "_already_active_model", lambda *_args: (False, None))
+    monkeypatch.setattr(model_runtime, "_bootstrap_upgrade_download_conflict", lambda: None)
+    _catalog_management(test_client)
+    response = test_client.post(
+        "/api/models/fixture/load", headers=test_client.auth_headers, json={"context_length": 8192},
+    )
+    assert response.status_code == 200
+    _catalog_management(test_client)
+    # The load's own ownership proof is fresh, never the catalog's remembered one.
+    assert calls == ["/v1/model/management", "/v1/model/management", "/v1/model/activate", "/v1/model/management"]

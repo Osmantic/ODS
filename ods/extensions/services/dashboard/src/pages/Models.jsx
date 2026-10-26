@@ -345,7 +345,7 @@ export default function Models({ compact = false }) {
 
       <ModelActivationNotice value={modelActivation} pending={modelLifecycle?.operation === 'model_activation'} onRefresh={refresh}/>
       {providerBusy && <p role="status">ODS is checking or changing the model connection. Wait for it to finish before switching models or requesting recovery.</p>}
-      <PortalModelRecovery active={Boolean(modelRecoveryPending || modelActivation?.outcome === 'rollback_unconfirmed') && !modelLifecycle?.active} operationActive={Boolean(modelLifecycle?.active)} refreshKey={modelActivation} onRecovered={refresh}/>
+      <PortalModelRecovery active={Boolean(modelRecoveryPending || modelActivation?.outcome === 'rollback_unconfirmed') && !modelLifecycle?.active && !catalogHeld} operationActive={Boolean(modelLifecycle?.active)} refreshKey={modelActivation} onRecovered={refresh}/>
 
       {error && (
         <div className="mb-5 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">
@@ -376,7 +376,7 @@ export default function Models({ compact = false }) {
         <DownloadProgressBar
           progress={visibleDownloadProgress}
           helpers={downloadProgress}
-          onRetry={retryModelId
+          onRetry={retryModelId && !catalogHeld
             ? () => handleDownload(retryModelId)
             : null}
         />
@@ -405,7 +405,7 @@ export default function Models({ compact = false }) {
         gpu={gpu}
         externalApi={externalApi}
         activeRuntime={activeRemoteRuntime}
-        showProfile={canActivateModels}
+        showProfile={canActivateModels && !catalogHeld}
         lifecycleActive={Boolean(modelLifecycle?.active || modelActivation?.active || activationLoading || runtimeActionLoading)}
       />
 
