@@ -22,6 +22,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   delete an event. Each change waits in Settings, Connected apps, showing exactly
   what it would write; nothing reaches Google until you press **Approve**, and
   ODS makes that exact change once. Portal's chat says when a change waits.
+- You can let Portal add or move your own private events without asking: events
+  with no guests, and moving an event to a new time, at most 20 an hour. Every
+  other change still waits for your approval. While Portal has Full Access, it
+  asks for these too; they resume when you switch back to Sandbox. The Full
+  Access confirmation now names what it means for connected apps.
 - Portal's workspace includes one finished example project, Elf of Doom, a
   small browser game Portal wrote in ODS from natural-language prompts. The
   installer adds `Playground/elf-of-doom` whenever that name is absent and the

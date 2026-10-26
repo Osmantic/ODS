@@ -90,8 +90,12 @@ const UPDATE = {
   'transition-recovery-required': ['ODS is finishing another Portal change.', 'Press Finish in a moment.', false],
   'gateway-change-rolled-back': ["Portal couldn't start with the new connection, so it's back on its previous setup.",
     'Press Finish to try again.', true],
+  stalled: ["Portal hasn't picked up the change yet.", 'Press Finish to try again.', false],
 }
 const UPDATE_FALLBACK = ["Portal hasn't picked up the change yet.", 'Press Finish to try again.', true]
+// The custodian gives a Portal update five minutes. One still silent after six has stopped, so Finish runs it again.
+const STALLED_AFTER = 6 * 60 * 1000
+const stalled = (pending, now) => !pending.error && now - Date.parse(pending.since) > STALLED_AFTER
 
 const REASONS = {
   'sign-in-missing': ["Google's sign-in isn't stored on this machine, for example after a restore.",
@@ -152,9 +156,9 @@ function pendingView(pending, now) {
       : {kind: 'expired', tone: 'neutral', message: 'That sign-in took too long and expired.', fix: 'Start again.', help: false, actions: ['connect']}
   }
   if (pending.phase === 'failed') return {kind: 'failed', tone: 'error', ...signInProblem(pending.error), actions: ['connect']}
-  const action = pending.phase === 'activating' ? 'Turning on your calendar and email in Portal.' : 'Removing your calendar and email from Portal.'
-  if (!pending.error) return {kind: 'updating', tone: 'progress', message: action, fix: null, help: false, actions: []}
-  return {kind: 'update-stopped', tone: 'warn', ...explain(UPDATE, UPDATE_FALLBACK, pending.error), actions: ['finish']}
+  const action = pending.phase === 'activating' ? "Bringing Portal's calendar and email tools up to date." : 'Removing your calendar and email from Portal.'
+  if (!pending.error && !stalled(pending, now)) return {kind: 'updating', tone: 'progress', message: action, fix: null, help: false, actions: []}
+  return {kind: 'update-stopped', tone: 'warn', ...explain(UPDATE, UPDATE_FALLBACK, pending.error ?? 'stalled'), actions: ['finish']}
 }
 
 // Everything the Google card shows, from one status reply.
@@ -188,7 +192,7 @@ export function refreshDelay(status, now = Date.now()) {
   const google = status?.connectors?.google
   if (!status?.available || !google) return null
   if (google.pending?.phase === 'consent' && Date.parse(google.pending.expiresAt) > now) return 2000
-  if (google.pending && !google.pending.error && google.pending.phase !== 'failed') return 3000
+  if (google.pending && !google.pending.error && google.pending.phase !== 'failed' && !stalled(google.pending, now)) return 3000
   if (google.state === 'first-sync') return 5000
   return null
 }

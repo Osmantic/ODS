@@ -453,6 +453,27 @@ def pending_count(paths) -> int:
     return count
 
 
+def discard_unsent_direct(paths) -> int:
+    """Remove private changes queued while they could not run, and return how many.
+
+    Portal was told each was not made, so none may happen late. Call this only
+    before the broker may run queued changes again.
+    """
+    removed = 0
+    for name in _names(paths):
+        if (os.path.lexists(paths.results / f"{name}.json")
+                or os.path.lexists(paths.results / f"{name}.processing.json")):
+            continue
+        try:
+            raw = _read(paths.proposals / f"{name}.json", owner=None, limit=MAX_PROPOSAL_BYTES)
+        except ApprovalError:
+            continue  # Not readable as a proposal; the owner's list shows it and can decline it.
+        if raw is not None and _status(raw) == DIRECT:
+            (paths.proposals / f"{name}.json").unlink(missing_ok=True)
+            removed += 1
+    return removed
+
+
 # ---------------------------------------------------------------- the owner's actions
 
 def _snapshot_for(paths, ids: Ids, proposal_id: str, sha256: str | None) -> tuple[bytes, str]:

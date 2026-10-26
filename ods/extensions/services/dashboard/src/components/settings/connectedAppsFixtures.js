@@ -12,7 +12,7 @@ export const GOOGLE_CATALOG = {id: 'google', name: 'Google', summary: 'Calendar 
   capabilities: [
     {id: 'calendar.read', label: 'Read your calendar', effect: 'read', scopes: [], tools: [], default: true, available: true, requires: []},
     {id: 'calendar.write', label: 'Suggest calendar changes you approve', effect: 'external-write', scopes: [], tools: [], default: false, available: true, requires: ['calendar.read']},
-    {id: 'calendar.direct', label: 'Add or move your own private events without asking', effect: 'private-write', scopes: [], tools: [], default: false, available: false, requires: ['calendar.write']},
+    {id: 'calendar.direct', label: 'Add or move your own private events without asking', effect: 'private-write', scopes: [], tools: [], default: false, available: true, requires: ['calendar.write']},
     {id: 'gmail.read', label: 'Read email summaries', effect: 'read', scopes: [], tools: [], default: true, available: true, requires: []},
     {id: 'gmail.drafts', label: 'Write Gmail drafts you send yourself', effect: 'draft', scopes: [], tools: [], default: false, available: false, requires: ['gmail.read']},
   ],

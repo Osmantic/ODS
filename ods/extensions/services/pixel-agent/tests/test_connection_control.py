@@ -120,6 +120,19 @@ def test_every_custody_list_names_the_connection_modules():
         assert f'"bin/pixel_connections/{name}"' in fixture
 
 
+def test_full_access_pauses_portals_own_calendar_changes_around_every_mode_change():
+    server = (ROOT / "extensions/services/pixel-agent/host/access_mode_server.py").read_text(encoding="utf-8")
+    branch = server.split('request["operation"] == "change":', 1)[1].split("\n                elif ", 1)[0]
+    # Paused before Portal gains Full Access, so the broker never runs a change made under it.
+    assert 'request["request"].get("mode") == "full-access"' in branch
+    assert branch.index("pause_for_full_access(adapter)") < branch.index('adapter.change(request["request"])')
+    # Followed after every attempt, so a refused or rolled-back change resumes them too.
+    assert "follow_connections(adapter)" in branch.split("finally:", 1)[1]
+    helper = server.split("def follow_connections(adapter):", 1)[1].split("\ndef ", 1)[0]
+    assert "follow_access_mode(adapter)" in helper and '"connection-activate"' in helper
+    assert "threading.Thread(target=catch_up, daemon=True).start()" in helper
+
+
 def test_the_installer_prepares_the_kit_before_the_broker_and_converges_before_comparing():
     from pixel_connections import custody
     installer = (ROOT / "installers/lib/pixel-host-install.sh").read_text(encoding="utf-8")

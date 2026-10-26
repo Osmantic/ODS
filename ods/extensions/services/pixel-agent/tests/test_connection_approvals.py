@@ -88,6 +88,11 @@ def unit(function, name):
 @pytest.fixture
 def owner(world, monkeypatch):
     """A connected Google account with calendar changes on, and the broker's action units."""
+    return connected(world, monkeypatch, WRITE)
+
+
+def connected(world, monkeypatch, capabilities):
+    """Connect Google with these capabilities against a fake calendar, with the broker's action units."""
     calendar = FakeCalendar()
     monkeypatch.setattr(BROKER.urllib.request, "urlopen", calendar)
     world.google = calendar
@@ -107,10 +112,10 @@ def owner(world, monkeypatch):
             return unit(BROKER.reconcile, name)
         return run(arguments, timeout)
     monkeypatch.setattr(c, "RUN", systemd)
-    flow = harness.begin(world, capabilities=WRITE)
+    flow = harness.begin(world, capabilities=capabilities)
     reply = c.control(world.bridge, "connection-complete", {
         "flowId": flow["flowId"], "state": harness.consent_state(world, flow["flowId"]), "code": "4/fixture-code"})
-    assert reply["capabilities"] == WRITE
+    assert reply["capabilities"] == capabilities
     world.writes = calendar.writes
     return world
 

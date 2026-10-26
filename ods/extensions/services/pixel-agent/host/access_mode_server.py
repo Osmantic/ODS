@@ -9,6 +9,7 @@ import socket as socket
 import socketserver
 import stat
 import sys
+import threading
 
 sys.dont_write_bytecode = True
 
@@ -50,6 +51,27 @@ from pixel_access_bridge import (AccessError, LaunchdAccessBridge,
                                  SystemdAccessBridge, private_json)
 from pixel_access_protocol import control_request, decode_frame
 from unix_peer import peer_ids
+
+
+def follow_connections(adapter):
+    """After an access-mode change, let Portal's gateway catch up with its calendar pause, in the background.
+
+    Linux and WSL only. The broker already follows the record; a catch-up that
+    cannot run now keeps its reason in the connection journal, and Settings offers Finish.
+    """
+    from pixel_connections.coordinator import follow_access_mode
+    try:
+        if not follow_access_mode(adapter):
+            return
+    except AccessError:
+        return  # An unusable record renders nothing; Connected apps status explains why.
+
+    def catch_up():
+        try:
+            adapter.connection_control("connection-activate", {})
+        except AccessError:
+            pass  # Recorded in the connection journal, where Settings shows it.
+    threading.Thread(target=catch_up, daemon=True).start()
 
 
 def main(*, reprove_installer_access=False):
@@ -130,7 +152,16 @@ def main(*, reprove_installer_access=False):
                 elif request["operation"].startswith("connection-") and platform.system() == "Linux":
                     status, body = 200, adapter.connection_control(request["operation"], request["request"])
                 elif set(request) == {"operation", "request"} and request["operation"] == "change":
-                    status, body = 200, adapter.change(request["request"])
+                    linux = platform.system() == "Linux"
+                    if linux and request["request"].get("mode") == "full-access":
+                        # Decision 4: Portal makes no calendar change by itself while it has Full Access.
+                        from pixel_connections.coordinator import pause_for_full_access
+                        pause_for_full_access(adapter)
+                    try:
+                        status, body = 200, adapter.change(request["request"])
+                    finally:
+                        if linux:
+                            follow_connections(adapter)
                 elif request == {"operation": "model-begin"}:
                     status, body = 200, adapter.model_begin()
                 elif request['operation'] == 'installer-source-begin':
