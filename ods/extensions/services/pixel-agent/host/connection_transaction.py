@@ -171,6 +171,8 @@ def _answers(raw, connection_answers):
 
 def _plugin_ready(openclaw, install_dir, *, enabled):
     """OpenClaw refreshes its plugin registry and, when enabled, resolves the plugin from the release."""
+    # Cold inspection reports "loaded" for a manifest whose module cannot run.
+    # Runtime inspection must actually import and register the active plugin.
     try:
         refreshed = subprocess.run([openclaw, "plugins", "registry", "--refresh", "--json"], stdin=subprocess.DEVNULL,
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
@@ -178,14 +180,15 @@ def _plugin_ready(openclaw, install_dir, *, enabled):
             return False
         if not enabled:
             return True
-        inspected = subprocess.run([openclaw, "plugins", "inspect", planner.PLUGIN_ID, "--json"],
+        inspected = subprocess.run([openclaw, "plugins", "inspect", planner.PLUGIN_ID, "--runtime", "--json"],
                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                    timeout=120)
         if inspected.returncode != 0 or len(inspected.stdout) > 1024 * 1024:
             return False
-        plugin = json.loads(inspected.stdout).get("plugin")
+        value = json.loads(inspected.stdout)
+        plugin = value.get("plugin") if isinstance(value, dict) else None
         expected = os.path.realpath(os.path.join(install_dir, "current", "plugin"))
-        return (isinstance(plugin, dict) and plugin.get("status") == "loaded"
+        return (isinstance(plugin, dict) and plugin.get("status") == "loaded" and plugin.get("imported") is True
                 and plugin.get("rootDir") == expected)
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return False
@@ -195,14 +198,15 @@ def _catalog_ready(openclaw, chosen):
     """Every reviewed plugin the owner turned on resolves from the release as loaded."""
     try:
         for plugin_id in chosen:
-            inspected = subprocess.run([openclaw, "plugins", "inspect", plugin_id, "--json"],
+            inspected = subprocess.run([openclaw, "plugins", "inspect", plugin_id, "--runtime", "--json"],
                                        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                        timeout=120)
             if inspected.returncode != 0 or len(inspected.stdout) > 1024 * 1024:
                 return False
             value = json.loads(inspected.stdout)
             plugin = value.get("plugin") if isinstance(value, dict) else None
-            if not isinstance(plugin, dict) or plugin.get("status") != "loaded":
+            if (not isinstance(plugin, dict) or plugin.get("status") != "loaded"
+                    or plugin.get("imported") is not True):
                 return False
         return True
     except (OSError, subprocess.TimeoutExpired, ValueError):

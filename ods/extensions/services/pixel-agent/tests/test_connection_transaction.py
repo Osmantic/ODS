@@ -7,6 +7,7 @@ if sys.platform == "win32":
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 import uuid
 
 import pytest
@@ -83,6 +84,47 @@ def apply(owner, gateway, answers, **kwargs):
 
 def connected_answers():
     return state.connection_answers(RECORD, google_custody=True)
+
+
+@pytest.mark.parametrize("catalog", [False, True], ids=["source-broker", "catalog-plugin"])
+def test_a_cold_registry_entry_does_not_prove_the_plugin_can_run(tmp_path, monkeypatch, catalog):
+    """OpenClaw 2026.6.33 reports cold entries as loaded, even if their module throws."""
+    def inspect(argv, **kwargs):
+        if "registry" in argv:
+            return subprocess.CompletedProcess(argv, 0)
+        runtime = "--runtime" in argv
+        plugin = {"status": "error" if runtime else "loaded", "imported": runtime,
+                  "rootDir": str(tmp_path / "current/plugin")}
+        return subprocess.CompletedProcess(argv, 0, json.dumps({"plugin": plugin}).encode())
+
+    monkeypatch.setattr(tx.subprocess, "run", inspect)
+    ready = tx._catalog_ready("openclaw", ["memory-wiki"]) if catalog else tx._plugin_ready(
+        "openclaw", str(tmp_path), enabled=True)
+    assert ready is False, "a module that fails to load must not reach activation"
+
+
+@pytest.mark.parametrize("catalog", [False, True], ids=["source-broker", "catalog-plugin"])
+@pytest.mark.parametrize("imported", [True, False, None, "true"])
+def test_plugin_readiness_requires_a_successful_runtime_import(tmp_path, monkeypatch, catalog, imported):
+    def inspect(argv, **kwargs):
+        if "registry" in argv:
+            return subprocess.CompletedProcess(argv, 0)
+        plugin = {"status": "loaded", "imported": imported, "rootDir": str(tmp_path / "current/plugin")}
+        return subprocess.CompletedProcess(argv, 0, json.dumps({"plugin": plugin}).encode())
+
+    monkeypatch.setattr(tx.subprocess, "run", inspect)
+    ready = tx._catalog_ready("openclaw", ["memory-wiki"]) if catalog else tx._plugin_ready(
+        "openclaw", str(tmp_path), enabled=True)
+    assert ready is (imported is True)
+
+
+@pytest.mark.parametrize("value", [None, [], "loaded", 1, {"plugin": None}])
+def test_source_plugin_inspection_refuses_an_unexpected_json_shape(tmp_path, monkeypatch, value):
+    def inspect(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 0, json.dumps(value).encode())
+
+    monkeypatch.setattr(tx.subprocess, "run", inspect)
+    assert tx._plugin_ready("openclaw", str(tmp_path), enabled=True) is False
 
 
 def test_connecting_writes_the_plan_into_all_three_owner_files(owner):
