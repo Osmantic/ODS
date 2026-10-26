@@ -146,6 +146,36 @@ def read(path: Path = PATH, *, owners: tuple[int, ...] = (0,)) -> dict[str, Any]
     return parse(raw)
 
 
+# The connection keys of pixel-onboarding.py's contract with nothing connected;
+# the optional ones are left out entirely.
+DISCONNECTED_ANSWERS = {"timeZone": "UTC", "googleAccount": "ods@localhost.local", "calendarId": "primary",
+                        "emailLimbEnabled": False, "calendarLimbEnabled": False, "calendarDirectEnabled": False}
+OPTIONAL_ANSWERS = ("userTimezone", "calendarWriteEnabled", "gmailWindowDays")
+ANSWER_KEYS = (*DISCONNECTED_ANSWERS, *OPTIONAL_ANSWERS)
+
+
+def connection_answers(record: dict[str, Any] | None, *, google_custody: bool) -> dict[str, Any]:
+    """Every connection key of the onboarding contract for the record; None removes a key."""
+    answers: dict[str, Any] = dict(DISCONNECTED_ANSWERS, **dict.fromkeys(OPTIONAL_ANSWERS))
+    answers.update(onboarding_overrides(record, google_custody=google_custody))
+    return answers
+
+
+def valid_connection_answers(value: Any) -> bool:
+    """The exact shape connection_answers produces, as it crosses the owner-worker pipe."""
+    if not isinstance(value, dict) or set(value) != set(ANSWER_KEYS):
+        return False
+    window, write, zone = value["gmailWindowDays"], value["calendarWriteEnabled"], value["userTimezone"]
+    return (isinstance(value["timeZone"], str) and bool(TIME_ZONE.fullmatch(value["timeZone"]))
+            and (zone is None or isinstance(zone, str) and bool(TIME_ZONE.fullmatch(zone)))
+            and isinstance(value["googleAccount"], str) and bool(EMAIL.fullmatch(value["googleAccount"]))
+            and isinstance(value["calendarId"], str) and bool(CALENDAR_ID.fullmatch(value["calendarId"]))
+            and all(type(value[key]) is bool for key in ("emailLimbEnabled", "calendarLimbEnabled",
+                                                         "calendarDirectEnabled"))
+            and (write is None or type(write) is bool)
+            and (window is None or type(window) is int and 1 <= window <= 3650))
+
+
 def onboarding_overrides(record: dict[str, Any] | None, *, google_custody: bool) -> dict[str, Any]:
     """Pixel onboarding answers the record implies; empty when nothing is connected.
 

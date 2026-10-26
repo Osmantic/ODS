@@ -1,0 +1,581 @@
+"""Connected apps inside the EXISTING privileged access coordinator: the custodian.
+
+It starts a Google sign-in, completes it through the Source Broker identity,
+keeps the owner's record, runs the broker units, and changes Portal's gateway
+under the same admission gates and access proof as every other Portal
+transition. All gateway authority is the supplied SystemdAccessBridge.
+
+A connection lives in a root journal (``connection.json``) from consent until
+Portal's gateway matches the record, so every stuck step is visible in status
+and resumable with one operation: ``connection-activate``.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+import hmac
+import json
+import os
+from pathlib import Path
+import re
+import tempfile
+import time
+from typing import Any
+
+from pixel_access_bridge import AccessError, atomic_json, remaining, runtime_config_path
+from pixel_model_coordinator import _managed_marker, _marker_digest
+from pixel_settings.coordinator import _identity, _read, _valid_identity
+
+from . import catalog, custody, lifecycle, oauth, planner, state
+
+LIFECYCLE = lifecycle.PATH.name
+PATHS = custody.Paths()
+RUN = custody.system_run
+RECORD = state.PATH
+HEX = re.compile(r"^[a-f0-9]{64}$")
+# Scopes that satisfy a capability, as the Source Broker reads them.
+GRANTED_BY = {
+    "calendar.read": frozenset({catalog.CALENDAR_READ_SCOPE, catalog.CALENDAR_WRITE_SCOPE,
+                                "https://www.googleapis.com/auth/calendar.readonly",
+                                "https://www.googleapis.com/auth/calendar"}),
+    "gmail.read": frozenset({catalog.GMAIL_READ_SCOPE, "https://www.googleapis.com/auth/gmail.modify",
+                             "https://mail.google.com/"}),
+}
+CAPABILITY_IDS = tuple(capability["id"] for capability in catalog.GOOGLE["capabilities"])
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _iso(moment: datetime) -> str:
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _instant(value: str) -> datetime:
+    return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+
+
+# ---------------------------------------------------------------- lifecycle
+
+def _lifecycle_path(bridge) -> Path:
+    return Path(bridge.state) / LIFECYCLE
+
+
+def read_lifecycle(path: Path) -> dict[str, Any] | None:
+    try:
+        return lifecycle.read(path)
+    except lifecycle.LifecycleError:
+        raise AccessError("invalid-connection-journal") from None
+
+
+def _write_lifecycle(bridge, value: dict[str, Any]) -> None:
+    lifecycle.write(_lifecycle_path(bridge), dict(value, updatedAt=_iso(_now())))
+
+
+def _clear_lifecycle(bridge) -> None:
+    _lifecycle_path(bridge).unlink(missing_ok=True)
+
+
+def _lifecycle(phase: str, **values: Any) -> dict[str, Any]:
+    base = {"kind": "connection", "connector": "google", "phase": phase, "flowId": None, "stateHash": None,
+            "redirectUri": None, "expiresAt": None, "request": None, "error": None, "updatedAt": None}
+    base.update(values)
+    return base
+
+
+# ---------------------------------------------------------------- the owner's record
+
+def _record() -> dict[str, Any] | None:
+    try:
+        return state.read(RECORD)
+    except state.StateError:
+        raise AccessError("connection-record-unusable") from None
+
+
+def _write_record(record: dict[str, Any] | None) -> None:
+    """Atomically replace /etc/ods/portal-connections.json; None removes it."""
+    if record is None:
+        RECORD.unlink(missing_ok=True)
+        return
+    data = (json.dumps(state.validate(record), indent=2, sort_keys=True) + "\n").encode("utf-8")
+    RECORD.parent.mkdir(mode=0o755, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=".portal-connections.", dir=RECORD.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fchmod(handle.fileno(), 0o644)
+            os.fsync(handle.fileno())
+        os.replace(temporary, RECORD)
+    finally:
+        if os.path.lexists(temporary):
+            os.unlink(temporary)
+
+
+def gateway_target(record: dict[str, Any] | None, *, custody_held: bool) -> dict[str, Any]:
+    """What Portal's gateway should run for the record, as the installer would render it."""
+    google = (record or {}).get("connectors", {}).get("google")
+    capabilities = google["capabilities"] if google and custody_held else None
+    return dict(planner.limbs(capabilities), userTimezone=(record or {}).get("ownerTimeZone"))
+
+
+# ---------------------------------------------------------------- requests
+
+def _capabilities(value: Any) -> dict[str, bool]:
+    if (not isinstance(value, dict) or set(value) != set(CAPABILITY_IDS)
+            or any(type(flag) is not bool for flag in value.values())):
+        raise AccessError("invalid-connection-request")
+    for capability in catalog.GOOGLE["capabilities"]:
+        if value[capability["id"]] and (not capability["available"]
+                                        or not all(value[need] for need in capability["requires"])):
+            raise AccessError("capability-unavailable")
+    if not any(value.values()):
+        raise AccessError("invalid-connection-request")
+    return value
+
+
+def _begin_request(request: Any) -> dict[str, Any]:
+    keys = {"connector", "client", "capabilities", "cloudModels", "ownerTimeZone", "loginHint", "redirectPort"}
+    if not isinstance(request, dict) or set(request) != keys or request["connector"] != "google":
+        raise AccessError("invalid-connection-request")
+    try:
+        google_client = oauth.client(request["client"])
+    except oauth.OAuthError as error:
+        raise AccessError(error.code) from None
+    zone, hint, port = request["ownerTimeZone"], request["loginHint"], request["redirectPort"]
+    if (type(request["cloudModels"]) is not bool
+            or zone is not None and not state.valid_time_zone(zone)
+            or hint is not None and (type(hint) is not str or not oauth.EMAIL.fullmatch(hint))
+            or type(port) is not int or not 1024 <= port <= 65535):
+        raise AccessError("invalid-connection-request")
+    return dict(request, client=google_client, capabilities=_capabilities(request["capabilities"]))
+
+
+def _granted(requested: dict[str, bool], scopes: list[str]) -> dict[str, bool]:
+    granted = dict.fromkeys(CAPABILITY_IDS, False)
+    for capability, satisfying in GRANTED_BY.items():
+        granted[capability] = requested[capability] and bool(satisfying & set(scopes))
+    return granted
+
+
+# ---------------------------------------------------------------- sign-in
+
+def begin(bridge, request: Any) -> dict[str, Any]:
+    """Start a consent flow; any unfinished step is replaced.
+
+    An interrupted gateway change is settled by the activation that follows
+    consent, which reconciles Portal's gateway with the record as it is then.
+    """
+    request = _begin_request(request)
+    with bridge.bounded(60), bridge.locked():
+        bridge.discover()
+        journal = read_lifecycle(_lifecycle_path(bridge))
+        if journal and journal["phase"] == "consent":
+            custody.discard_flow(PATHS, journal["flowId"])
+        _clear_lifecycle(bridge)
+        custody.prepare(PATHS, RUN, reader=bridge.owner.pw_name)
+        scopes = [*oauth.IDENTITY_SCOPES, *catalog.scopes_for("google", request["capabilities"])]
+        try:
+            handoff, public = oauth.new_flow(google_client=request["client"], scopes=scopes, now=_now(),
+                                             redirect_port=request["redirectPort"], login_hint=request["loginHint"])
+        except oauth.OAuthError as error:
+            raise AccessError(error.code) from None
+        custody.write_handoff(PATHS, f"{public['flowId']}.flow.json", handoff)
+        _write_lifecycle(bridge, _lifecycle(
+            "consent", flowId=public["flowId"], stateHash=public["stateHash"], redirectUri=public["redirectUri"],
+            expiresAt=public["expiresAt"], request={"capabilities": request["capabilities"],
+                                                    "cloudModels": request["cloudModels"],
+                                                    "ownerTimeZone": request["ownerTimeZone"]}))
+        return {"flowId": public["flowId"], "authUrl": public["authUrl"], "redirectUri": public["redirectUri"],
+                "expiresAt": public["expiresAt"]}
+
+
+def _complete_request(request: Any) -> dict[str, Any]:
+    if (not isinstance(request, dict) or set(request) not in ({"flowId", "state", "code"}, {"flowId", "state", "error"})
+            or type(request["flowId"]) is not str or not oauth.FLOW_ID.fullmatch(request["flowId"])
+            or type(request["state"]) is not str or not oauth.STATE.fullmatch(request["state"])):
+        raise AccessError("invalid-connection-request")
+    if "code" in request and (type(request["code"]) is not str or not oauth.CODE.fullmatch(request["code"])):
+        raise AccessError("invalid-connection-request")
+    if "error" in request and request["error"] not in ("access-denied", "consent-failed"):
+        raise AccessError("invalid-connection-request")
+    return request
+
+
+def _failed(error_class: str) -> dict[str, Any]:
+    return {"outcome": "failed", "errorClass": error_class, "account": None, "capabilities": None, "missing": []}
+
+
+def complete(bridge, request: Any) -> dict[str, Any]:
+    """Finish consent: the broker exchanges the code, and the owner's record names what Google granted."""
+    request = _complete_request(request)
+    with bridge.bounded(150), bridge.locked():
+        bridge.discover()
+        journal = read_lifecycle(_lifecycle_path(bridge))
+        if not journal or journal["phase"] != "consent" or journal["flowId"] != request["flowId"]:
+            raise AccessError("sign-in-flow-unknown")
+        if _now() >= _instant(journal["expiresAt"]):
+            custody.discard_flow(PATHS, journal["flowId"])
+            _clear_lifecycle(bridge)
+            raise AccessError("sign-in-flow-expired")
+        # A forged or stale callback leaves the owner's real flow open.
+        if not hmac.compare_digest(oauth.state_hash(request["state"]), journal["stateHash"]):
+            raise AccessError("sign-in-state-mismatch")
+        if "error" in request:
+            custody.discard_flow(PATHS, journal["flowId"])
+            _clear_lifecycle(bridge)
+            return _failed(request["error"])
+        custody.write_handoff(PATHS, f"{journal['flowId']}.code.json", {
+            "schemaVersion": 1, "kind": "pixel-source-oauth-code", "flowId": journal["flowId"],
+            "state": request["state"], "code": request["code"]})
+        result = custody.exchange(PATHS, RUN, journal["flowId"])
+        if result["outcome"] != "connected":
+            _clear_lifecycle(bridge)
+            return _failed(result["errorClass"] or "unknown")
+        wanted = journal["request"]
+        granted = _granted(wanted["capabilities"], result["grantedScopes"])
+        missing = [name for name in CAPABILITY_IDS if wanted["capabilities"][name] and not granted[name]]
+        if result["account"] is None or not any(granted.values()):
+            # Nothing usable came back, so nothing of it may stay on this box.
+            custody.revoke(PATHS, RUN)
+            _clear_lifecycle(bridge)
+            return _failed("account-unverified" if result["account"] is None else "missing-scope")
+        record = _record() or {"schemaVersion": state.SCHEMA_VERSION, "kind": state.KIND, "updatedAt": None,
+                               "ownerTimeZone": None, "connectors": {}}
+        data = catalog.GOOGLE["data"]
+        now = _iso(_now())
+        record = dict(record, updatedAt=now, ownerTimeZone=wanted["ownerTimeZone"] or record["ownerTimeZone"],
+                      connectors=dict(record["connectors"], google={
+                          "status": "connected", "account": result["account"], "calendarId": data["calendarId"],
+                          "gmailWindowDays": data["gmailWindowDays"], "capabilities": granted,
+                          "cloudModels": wanted["cloudModels"], "connectedAt": now}))
+        _write_record(record)
+        target = gateway_target(record, custody_held=True)
+        custody.install_env(PATHS, custody.connection_env(
+            PATHS, gateway=target, calendar_id=data["calendarId"], time_zone=record["ownerTimeZone"],
+            gmail_window_days=data["gmailWindowDays"]))
+        custody.start(RUN, direct=target["calendarDirect"])
+        _write_lifecycle(bridge, _lifecycle("activating"))
+        return {"outcome": "connected", "errorClass": None, "account": result["account"], "capabilities": granted,
+                "missing": missing}
+
+
+def cancel(bridge, request: Any) -> dict[str, Any]:
+    if (not isinstance(request, dict) or set(request) != {"flowId"} or type(request["flowId"]) is not str
+            or not oauth.FLOW_ID.fullmatch(request["flowId"])):
+        raise AccessError("invalid-connection-request")
+    with bridge.bounded(30), bridge.locked():
+        journal = read_lifecycle(_lifecycle_path(bridge))
+        if journal and journal["phase"] == "consent" and journal["flowId"] == request["flowId"]:
+            custody.discard_flow(PATHS, journal["flowId"])
+            _clear_lifecycle(bridge)
+        return {"outcome": "cancelled"}
+
+
+def disconnect(bridge, request: Any) -> dict[str, Any]:
+    """Stop syncing, revoke at Google, delete everything derived, then let Portal forget the tools.
+
+    Running it again is safe: every step accepts the state the previous run left.
+    """
+    if request != {"connector": "google"}:
+        raise AccessError("invalid-connection-request")
+    with bridge.bounded(150), bridge.locked():
+        bridge.discover()
+        journal = read_lifecycle(_lifecycle_path(bridge))
+        if journal and journal["phase"] == "consent":
+            custody.discard_flow(PATHS, journal["flowId"])
+        custody.stop(PATHS, RUN)
+        revoked = custody.revoke(PATHS, RUN)
+        custody.erase(PATHS)
+        custody.remove_env(PATHS)
+        record = _record()
+        if record is not None:
+            connectors = {name: value for name, value in record["connectors"].items() if name != "google"}
+            keep = connectors or record["ownerTimeZone"]
+            _write_record(dict(record, updatedAt=_iso(_now()), connectors=connectors) if keep else None)
+        _write_lifecycle(bridge, _lifecycle("deactivating"))
+        return {"outcome": "disconnected", "revoked": revoked == "revoked"}
+
+
+def sync(bridge, request: Any) -> dict[str, Any]:
+    if request != {}:
+        raise AccessError("invalid-connection-request")
+    with bridge.bounded(30), bridge.locked():
+        record = _record()
+        if not record or "google" not in record["connectors"] or not custody.holds_sign_in(PATHS):
+            raise AccessError("connection-not-connected")
+        custody.sync(RUN)
+        return {"outcome": "started"}
+
+
+# ---------------------------------------------------------------- Portal's gateway
+
+def _journal(value: Any) -> dict[str, Any]:
+    required = {"kind", "phase", "token", "transactionId", "edge_revision", "beforeSha", "boundary", "mode",
+                "beforeIdentity", "target", "markerBeforeSha"}
+    optional = {"error", "outcome", "restartIdentity", "noOwnerWrite"}
+    if (not isinstance(value, dict) or not required <= set(value) or set(value) - required - optional
+            or value["kind"] != "connection"
+            or value["phase"] not in ("acquiring", "invoking", "restarting", "releasing")
+            or any(type(value[key]) is not str or not HEX.fullmatch(value[key])
+                   for key in ("token", "transactionId", "edge_revision", "beforeSha"))
+            or value["markerBeforeSha"] is not None and not HEX.fullmatch(str(value["markerBeforeSha"]))
+            or value["mode"] not in ("sandboxed", "full-access")
+            or type(value["boundary"]) is not str or not 1 <= len(value["boundary"]) <= 4096
+            or not _valid_identity(value["beforeIdentity"])
+            or "restartIdentity" in value and not _valid_identity(value["restartIdentity"])):
+        raise AccessError("invalid-connection-transition")
+    planner.target(value["target"])
+    return value
+
+
+def _write(bridge, journal: dict[str, Any]) -> None:
+    atomic_json(Path(bridge.state) / "transition.json", _journal(journal))
+
+
+def _acquire(bridge, journal: dict[str, Any]) -> None:
+    edge = bridge.edge()
+    revision = edge["revision"] if edge.get("phase") == "idle" else journal["edge_revision"]
+    edge = bridge.edge("recover" if edge.get("phase") == "interrupted" else "acquire", journal["token"], revision)
+    journal["edge_revision"] = edge["revision"]
+    _write(bridge, journal)
+    bridge.native("acquire", journal["token"])
+
+
+def _busy(bridge, journal: dict[str, Any]) -> bool:
+    native = bridge.native("acquire", journal["token"])
+    edge = bridge.edge("acquire", journal["token"], journal["edge_revision"])
+    return (native.get("phase") != "held" or edge.get("phase") != "held"
+            or bool(native.get("active") or edge.get("streams")))
+
+
+def _release(bridge, journal: dict[str, Any]) -> None:
+    bridge.edge("release", journal["token"], journal["edge_revision"])
+    bridge.native("release", journal["token"])
+    (Path(bridge.state) / "transition.json").unlink()
+    fd = os.open(bridge.state, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _verify(bridge, journal: dict[str, Any]) -> dict[str, Any]:
+    """Re-prove the access mode on the restarted gateway; the proof binds this exact config."""
+    if _busy(bridge, journal):
+        raise AccessError("runtime-busy")
+    identity = _identity(bridge)
+    _current, config_hash = _read(runtime_config_path(bridge), bridge.owner.pw_uid)
+    native = bridge.native()
+    if native.get("pid") != identity["pid"]:
+        raise AccessError("connection-process-changed")
+    if bridge.unit_boundary() != journal["boundary"]:
+        raise AccessError("connection-access-boundary-changed")
+    bridge.provision_probe()
+    proof = bridge.native("probe", journal["token"])
+    if (proof.get("pid") != identity["pid"] or proof.get("proof", {}).get("mode") != journal["mode"]
+            or proof.get("proof", {}).get("executed") is not True or _identity(bridge) != identity
+            or _read(runtime_config_path(bridge), bridge.owner.pw_uid)[1] != config_hash
+            or bridge.unit_boundary() != journal["boundary"] or _busy(bridge, journal)):
+        raise AccessError("connection-runtime-proof-failed")
+    atomic_json(Path(bridge.state) / "verified.json", {"pid": proof["pid"], "proof": proof["proof"],
+                "config_sha256": config_hash, "boundary": journal["boundary"]})
+    return identity
+
+
+def _restart(bridge, journal: dict[str, Any]) -> str:
+    """The owner worker's connection-activate hook: restart the fixed unit and re-prove access."""
+    if _busy(bridge, journal):
+        return "unavailable"
+    try:
+        before = _identity(bridge)
+    except AccessError:
+        # Only a crash of our already-journaled restart can be resumed.
+        if journal["phase"] != "restarting" or "restartIdentity" not in journal:
+            return "unavailable"
+        if bridge.stopped_native(journal["token"]).get("stopped") is not True:
+            return "unavailable"
+        before = journal["restartIdentity"]
+    if bridge.unit_boundary() != journal["boundary"]:
+        return "unavailable"
+    journal.update(phase="restarting", restartIdentity=before)
+    _write(bridge, journal)
+    bridge.gateway_service.restart(timeout=60)
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        try:
+            now = _identity(bridge)
+            if now["boot"] == before["boot"] and now["pid"] != before["pid"] and now["started"] > before["started"]:
+                bridge.native("acquire", journal["token"], timeout=3)
+                if bridge.http(bridge.native_origin, "/health", bridge.native_key, timeout=3).get("ok") is True:
+                    _verify(bridge, journal)
+                    return "verified"
+        except AccessError as error:
+            if error.code == "operation-deadline-exceeded":
+                raise
+        time.sleep(remaining(1))
+    return "unavailable"
+
+
+def _bind_marker(bridge, journal: dict[str, Any]) -> None:
+    """Point the ODS-managed marker at the configuration this transaction left live."""
+    path, marker = _managed_marker(bridge)
+    if marker is None:
+        return
+    config, _config_hash = _read(runtime_config_path(bridge), bridge.owner.pw_uid)
+    current = _marker_digest(config)
+    if marker["configuration_sha256"] == current:
+        return
+    if marker["configuration_sha256"] != journal["markerBeforeSha"]:
+        raise AccessError("connection-marker-drifted")
+    original = path.lstat()
+    marker["configuration_sha256"] = current
+    descriptor, temporary = tempfile.mkstemp(prefix=".pixel-managed.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            os.fchown(handle.fileno(), bridge.owner.pw_uid, bridge.owner.pw_gid)
+            os.fchmod(handle.fileno(), 0o600)
+            json.dump(marker, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        observed = path.lstat()
+        if ((observed.st_dev, observed.st_ino, observed.st_mtime_ns, observed.st_size)
+                != (original.st_dev, original.st_ino, original.st_mtime_ns, original.st_size)):
+            raise AccessError("connection-marker-drifted")
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _finish(bridge, journal: dict[str, Any], outcome: str) -> str:
+    _verify(bridge, journal)
+    _bind_marker(bridge, journal)
+    journal.update(phase="releasing", outcome=outcome)
+    _write(bridge, journal)
+    _release(bridge, journal)
+    return outcome
+
+
+def _owner_outcome(bridge, journal: dict[str, Any], result: dict[str, Any]) -> str:
+    owner = bridge.worker("connection-status")
+    _current, config_hash = _read(runtime_config_path(bridge), bridge.owner.pw_uid)
+    outcome = {"runtime-verified": "applied", "rolled-back": "rolled-back"}.get(result.get("status"))
+    if (outcome is None or owner["pending"] or owner["configSha256"] != config_hash
+            or result.get("configSha256") != config_hash
+            or outcome == "rolled-back" and config_hash != journal["beforeSha"]):
+        raise AccessError("connection-completion-mismatch")
+    if not journal.get("noOwnerWrite") and owner["completion"] != {
+            "transactionId": journal["transactionId"], "outcome": outcome, "configSha256": config_hash}:
+        raise AccessError("connection-completion-mismatch")
+    return outcome
+
+
+def _resume(bridge, journal: dict[str, Any]) -> str:
+    """Settle a gateway change a crash or lost reply interrupted; never apply it twice."""
+    _journal(journal)
+    _acquire(bridge, journal)
+    owner = bridge.worker("connection-status")
+    hooks = dict(busy=lambda: _busy(bridge, journal), activate_connection=lambda: _restart(bridge, journal))
+    if owner["pending"]:
+        result = bridge.worker("connection-recover", config_hash=owner["configSha256"],
+                               transaction_id=journal["transactionId"], **hooks)
+    elif owner["completion"] and owner["completion"]["transactionId"] == journal["transactionId"]:
+        result = {"status": "runtime-verified" if owner["completion"]["outcome"] == "applied" else "rolled-back",
+                  "configSha256": owner["completion"]["configSha256"]}
+    elif owner["configSha256"] == journal["beforeSha"] and journal["phase"] in ("acquiring", "invoking"):
+        journal["noOwnerWrite"] = True
+        result = {"status": "rolled-back", "configSha256": journal["beforeSha"]}
+    else:
+        raise AccessError("connection-recovery-conflict")
+    return _finish(bridge, journal, _owner_outcome(bridge, journal, result))
+
+
+def _change_gateway(bridge, target: dict[str, Any], answers: dict[str, Any]) -> str:
+    """One gated gateway transaction toward ``target``: applied, rolled-back or unchanged.
+
+    ``answers`` keeps ODS's onboarding contract in step, so a later model change
+    renders the same connection that is live.
+    """
+    pending = bridge.pending()
+    if pending and pending.get("kind") == "connection":
+        _resume(bridge, pending)
+        pending = None
+    if pending:
+        raise AccessError("transition-recovery-required")
+    snapshot = bridge.inspect()
+    if snapshot["busy"]:
+        raise AccessError("runtime-busy")
+    if snapshot["configured_mode"] not in ("sandboxed", "full-access"):
+        raise AccessError("connection-access-mode-unknown")
+    owner = bridge.worker("connection-status")
+    _config, config_hash = _read(runtime_config_path(bridge), bridge.owner.pw_uid)
+    if owner["pending"] or owner["configSha256"] != config_hash:
+        raise AccessError("connection-owner-state-changed")
+    if owner["live"] == target and owner["answers"] == answers:
+        return "unchanged"
+    _path, marker = _managed_marker(bridge)
+    journal = {"kind": "connection", "phase": "acquiring", "token": os.urandom(32).hex(),
+               "transactionId": os.urandom(32).hex(), "edge_revision": snapshot["_edge"]["revision"],
+               "beforeSha": config_hash, "boundary": bridge.unit_boundary(), "mode": snapshot["configured_mode"],
+               "beforeIdentity": _identity(bridge), "target": target,
+               "markerBeforeSha": marker["configuration_sha256"] if marker else None}
+    _write(bridge, journal)
+    try:
+        _acquire(bridge, journal)
+        if _busy(bridge, journal):
+            # Nothing was written yet: let Portal keep working and try again later.
+            _release(bridge, journal)
+            raise AccessError("runtime-busy")
+        journal["phase"] = "invoking"
+        _write(bridge, journal)
+        result = bridge.worker("connection-apply", config_hash=journal["beforeSha"],
+                               transaction_id=journal["transactionId"], connection_target=target,
+                               connection_answers=answers, busy=lambda: _busy(bridge, journal),
+                               activate_connection=lambda: _restart(bridge, journal))
+        return _finish(bridge, journal, _owner_outcome(bridge, journal, result))
+    except AccessError as error:
+        if (Path(bridge.state) / "transition.json").exists():
+            journal["error"] = error.code if re.fullmatch(r"[a-z0-9-]{1,96}", error.code) else "connection-transition-failed"
+            _write(bridge, journal)  # Keep the held gates and phase for explicit recovery.
+        raise
+
+
+def activate(bridge, request: Any) -> dict[str, Any]:
+    """Bring Portal's gateway in line with the owner's record; also how a stuck step finishes."""
+    if request != {}:
+        raise AccessError("invalid-connection-request")
+    with bridge.bounded(300), bridge.locked():
+        bridge.discover()
+        lifecycle = read_lifecycle(_lifecycle_path(bridge))
+        if lifecycle and lifecycle["phase"] == "consent":
+            raise AccessError("sign-in-in-progress")
+        record, held = _record(), custody.holds_sign_in(PATHS)
+        try:
+            outcome = _change_gateway(bridge, gateway_target(record, custody_held=held),
+                                      state.connection_answers(record, google_custody=held))
+        except AccessError as error:
+            if lifecycle:
+                _write_lifecycle(bridge, dict(lifecycle, error=error.code))
+            raise
+        if outcome == "rolled-back":
+            if lifecycle:
+                _write_lifecycle(bridge, dict(lifecycle, error="gateway-change-rolled-back"))
+            raise AccessError("gateway-change-rolled-back")
+        _clear_lifecycle(bridge)
+        return {"outcome": outcome}
+
+
+OPERATIONS = {"connection-begin": begin, "connection-complete": complete, "connection-activate": activate,
+              "connection-cancel": cancel, "connection-disconnect": disconnect, "connection-sync": sync}
+
+
+def control(bridge, operation: str, request: Any) -> dict[str, Any]:
+    handler = OPERATIONS.get(operation)
+    if handler is None:
+        raise AccessError("invalid-connection-operation")
+    try:
+        return handler(bridge, request)
+    except custody.CustodyError as error:
+        raise AccessError(error.code) from None

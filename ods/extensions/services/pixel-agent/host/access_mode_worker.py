@@ -6,6 +6,7 @@ command or arbitrary path is returned to the caller.
 """
 import json
 import os
+import platform
 import subprocess
 import sys
 from pathlib import Path
@@ -24,6 +25,14 @@ for path in (directory, *directory.parents, *(directory / name for name in (
     info = path.lstat()
     if stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
         raise RuntimeError("controller program custody unavailable")
+if platform.system() == "Linux":
+    # Connected apps ship only with the Linux and WSL Source Broker.
+    for path in (directory / "connection_transaction.py", directory / "pixel_connections",
+                 directory / "pixel_connections" / "__init__.py", directory / "pixel_connections" / "planner.py",
+                 directory / "pixel_connections" / "state.py"):
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise RuntimeError("controller program custody unavailable")
 sys.path.insert(0, str(directory))
 import pixel_access_mode as controller
 import pixel_access_protocol as protocol
@@ -118,6 +127,30 @@ def main():
                 transaction_id=request.get("transaction_id"), proposed=request.get("model_target"),
                 outcome=request.get("model_outcome"), expected_config_sha256=request["config_sha256"],
                 validate_config=validate, check_no_active_run=lambda: hook("busy"))
+            emit({"result": result})
+            return
+        if request["operation"].startswith("connection-"):
+            import connection_transaction  # Linux only; see the custody check above.
+            home = os.environ["HOME"]
+            env_path = os.path.join(home, ".config", "pixel-agent", "gateway.env")
+            try:
+                if request["operation"] == "connection-status":
+                    result = connection_transaction.connection_status(path, state_dir=state_dir, env_path=env_path,
+                                                                      answers_path=request["answers_path"])
+                else:
+                    kwargs = dict(state_dir=state_dir, install_dir=os.path.join(home, ".local", "share", "pixel"),
+                                  openclaw=request["openclaw"], transaction_id=request["transaction_id"],
+                                  expected_config_sha256=request["config_sha256"], validate_config=validate,
+                                  check_no_active_run=lambda: hook("busy"),
+                                  activate=lambda: hook("connection-activate"))
+                    result = (connection_transaction.apply_connection(
+                                  path, request["connection_target"], request["connection_answers"],
+                                  env_path=env_path, answers_path=request["answers_path"], **kwargs)
+                              if request["operation"] == "connection-apply"
+                              else connection_transaction.recover_connection(path, **kwargs))
+            except connection_transaction.ConnectionTransactionError as error:
+                emit({"error": str(error)})
+                return
             emit({"result": result})
             return
         if request["operation"].startswith("provider-"):

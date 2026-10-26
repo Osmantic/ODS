@@ -10335,6 +10335,28 @@ class AgentHandler(BaseHTTPRequestHandler):
             return
         json_response(self, status, body)
 
+    def _handle_pixel_connection_action(self, action: str):
+        """The owner's connected-apps actions; root's custodian decides and records each one."""
+        if not check_auth(self):
+            return
+        from pixel_access_relay import AccessRelayError, request_runtime_connection_action
+        from pixel_connections import host_api as connection_host_api
+        handler = connection_host_api.ACTIONS.get(action)
+        if handler is None:
+            json_response(self, 404, {"error": "Not found"})
+            return
+        body = read_json_body(self)
+        if body is None:
+            return
+        try:
+            status, reply = handler(body, config=load_env(INSTALL_DIR / '.env'),
+                                    relay=request_runtime_connection_action, log=logger.warning)
+        except (AccessRelayError, OSError, ValueError):
+            # A lost reply never means the step was undone; status shows where it stands.
+            json_response(self, 503, {"error": "connections-unavailable"})
+            return
+        json_response(self, status, reply)
+
     def _handle_pixel_open_app(self):
         if not check_auth(self):
             return
@@ -10892,6 +10914,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_pixel_approval_terminal()
         elif self.path == "/v1/pixel/access-mode":
             self._handle_pixel_access_mode(True)
+        elif self.path.startswith("/v1/pixel/connections/google/"):
+            self._handle_pixel_connection_action(self.path.removeprefix("/v1/pixel/connections/google/"))
         elif self.path == "/v1/pixel/apps/open":
             self._handle_pixel_open_app()
         elif self.path in ("/v1/opencode/start", "/v1/opencode/setup"):

@@ -39,11 +39,25 @@ def broker(error_class=None):
             "grantedScopes": [], "sources": {"email": source, "calendar": source}}
 
 
+def journal(phase, error=None):
+    consent = phase == "consent"
+    return {"kind": "connection", "connector": "google", "phase": phase,
+            "flowId": "a" * 32 if consent else None, "stateHash": "b" * 64 if consent else None,
+            "redirectUri": "http://127.0.0.1:53682" if consent else None,
+            "expiresAt": "2026-10-25T20:45:00Z" if consent else None,
+            "request": {"capabilities": RECORD["connectors"]["google"]["capabilities"], "cloudModels": False,
+                        "ownerTimeZone": None} if consent else None,
+            "error": error, "updatedAt": "2026-10-25T20:30:00Z"}
+
+
 def samples():
     values = [status.unavailable("darwin"), status.unavailable("windows")]
-    for record, token, broker_value in ((None, False, None), (RECORD, False, None), (RECORD, True, None),
-                                        (RECORD, True, broker()), (RECORD, True, broker("network")),
-                                        (RECORD, True, broker("invalid-grant"))):
+    for record, token, broker_value, pending in (
+            (None, False, None, None), (RECORD, False, None, None), (RECORD, True, None, None),
+            (RECORD, True, broker(), None), (RECORD, True, broker("network"), None),
+            (RECORD, True, broker("invalid-grant"), None), (None, False, None, journal("consent")),
+            (RECORD, True, None, journal("activating", "runtime-busy")), (None, False, None, journal("deactivating")),
+            (RECORD, False, None, journal("consent"))):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             os.chmod(root, 0o755)
@@ -54,9 +68,12 @@ def samples():
                 (root / "token.json").write_text("{}")
             if broker_value:
                 (root / "status.json").write_text(json.dumps(broker_value))
+            if pending:
+                (root / "connection.json").write_text(json.dumps(pending))
+                os.chmod(root / "connection.json", 0o600)
             values.append(status.report(surface="wsl-systemd", record_path=root / "record.json",
                                         token_path=root / "token.json", status_path=root / "status.json",
-                                        now=NOW, owners=OWNERS))
+                                        lifecycle_path=root / "connection.json", now=NOW, owners=OWNERS))
     return values
 
 
@@ -71,12 +88,30 @@ MUTATIONS = (
     lambda v: v["connectors"]["google"].update(cloudModels="no"),
     lambda v: v["connectors"]["google"]["sources"].update(social=None),
     lambda v: v["connectors"]["google"].update(grantedScopes=["https://example.com/scope"]),
+    lambda v: v["connectors"]["google"].pop("pending"),
+    lambda v: v["connectors"]["google"].update(pending={"action": "connect", "phase": "consent", "expiresAt": None,
+                                                        "error": None, "since": "2026-10-25T20:30:00Z"}),
+    lambda v: v["connectors"]["google"].update(pending={"action": "connect", "phase": "deactivating", "expiresAt": None,
+                                                        "error": None, "since": "2026-10-25T20:30:00Z"}),
+    lambda v: v["connectors"]["google"].update(pending={"action": "connect", "phase": "activating", "expiresAt": None,
+                                                        "error": "Has Spaces", "since": "2026-10-25T20:30:00Z"}),
+    lambda v: v["connectors"]["google"].update(pending={"action": "connect", "phase": "activating", "expiresAt": None,
+                                                        "error": None, "since": None}),
+    lambda v: v["connectors"]["google"].update(pending={"action": "connect", "phase": "consent", "error": None,
+                                                        "expiresAt": "2026-10-25T20:45:00Z", "flowId": "a" * 32,
+                                                        "since": "2026-10-25T20:30:00Z"}),
 )
 
 
 class WireContractTests(unittest.TestCase):
     def test_both_relays_accept_every_status_the_controller_produces(self):
-        for value in samples():
+        produced = samples()
+        # Every step in progress reaches Settings, and none of the flow's secrets do.
+        phases = [value["connectors"]["google"]["pending"] for value in produced]
+        self.assertEqual({item["phase"] for item in phases if item}, {"consent", "activating", "deactivating"})
+        self.assertNotIn("b" * 64, json.dumps(produced))
+        self.assertNotIn("a" * 32, json.dumps(produced))
+        for value in produced:
             with self.subTest(state=value["connectors"]["google"]["state"], surface=value["surface"]):
                 self.assertEqual(status.validate_public(copy.deepcopy(value)), value)
                 self.assertEqual(edge.public_connections(copy.deepcopy(value)), value)

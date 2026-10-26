@@ -147,6 +147,35 @@ def request_runtime_connections(*, config):
     return _request_runtime_controller(None, config=config, path='/v1/connections', timeout=22)
 
 
+# Each action's controller budget; the relay waits a little longer than the controller.
+CONNECTION_TIMEOUTS = {'connection-begin': 70, 'connection-complete': 160, 'connection-activate': 310,
+                       'connection-cancel': 30, 'connection-disconnect': 160, 'connection-sync': 30}
+
+
+def request_runtime_connection_action(operation, request, *, config):
+    """One custodian action on the agent's root controller: sign-in, activation or disconnect."""
+    payload = {'operation': operation, 'request': request}
+    if not valid_connection_action(payload):
+        return 400, {'error': 'invalid-request'}
+    system = platform.system()
+    if system == 'Darwin' or not config.get('PIXEL_OPENWEBUI_KEY') and system != 'Linux':
+        return 409, {'error': 'not-available-on-this-system'}
+    if not config.get('PIXEL_OPENWEBUI_KEY'):
+        from pixel_access_client import request_access
+        status, body = request_access(operation, request)
+    else:
+        status, body = _request_runtime_controller(payload, config=config, path='/v1/connections',
+                                                   timeout=CONNECTION_TIMEOUTS[operation])
+    if status == 200:
+        try:
+            body = public_connection_action(operation, body)
+        except ValueError:
+            raise AccessRelayError('connection-change-unconfirmed') from None
+    elif not (set(body) == {'error'} and isinstance(body['error'], str) and _REASON.fullmatch(body['error'])):
+        body = {'error': 'connection-change-unconfirmed'}
+    return status, body
+
+
 def _request_runtime_controller(request, *, config, path, timeout):
     key = config.get('DASHBOARD_API_KEY', '')
     if (not isinstance(key, str) or not re.fullmatch(r'[!-~]{32,4096}', key)
@@ -177,3 +206,89 @@ def _request_runtime_controller(request, *, config, path, timeout):
         # A timeout never means the mutation was cancelled. Refresh status;
         # only the durable controller may recover or release admission holds.
         raise AccessRelayError('agent-access-runtime-unavailable') from None
+
+
+# Connected-apps actions: the custodian's exact request and reply shapes. The root
+# coordinator validates again; tests/test_pixel_connection_wire.py keeps the host
+# relay and the Edge copies identical.
+_CONNECTION_OPERATIONS = ('connection-begin', 'connection-complete', 'connection-activate',
+                          'connection-cancel', 'connection-disconnect', 'connection-sync')
+_CAPABILITY_IDS = ('calendar.read', 'calendar.write', 'calendar.direct', 'gmail.read', 'gmail.drafts')
+_FLOW = re.compile(r'[a-f0-9]{32}')
+_STATE = re.compile(r'[A-Za-z0-9_-]{32,128}')
+_CODE = re.compile(r'[\x21-\x7e]{1,2048}')
+_CLIENT_ID = re.compile(r'[0-9]{4,32}-[a-z0-9]{8,64}\.apps\.googleusercontent\.com')
+_CLIENT_SECRET = re.compile(r'[\x21-\x7e]{8,256}')
+_PROJECT = re.compile(r'[a-z][a-z0-9-]{4,28}[a-z0-9]')
+_ACCOUNT = re.compile(r'[^@\s<>\x00-\x1f\x7f]{1,64}@[^@\s<>\x00-\x1f\x7f]{1,253}')
+_TIME_ZONE = re.compile(r'[A-Za-z][A-Za-z0-9_+\-/]{0,63}')
+_SECOND = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z')
+_REASON = re.compile(r'[a-z][a-z0-9-]{0,95}')
+_AUTH_URL = re.compile(r'https://accounts\.google\.com/o/oauth2/auth\?[A-Za-z0-9._~%&=+-]{1,4000}')
+
+
+def _text(value, pattern):
+    return type(value) is str and pattern.fullmatch(value) is not None
+
+
+def _capability_flags(value):
+    return (type(value) is dict and set(value) == set(_CAPABILITY_IDS)
+            and all(type(flag) is bool for flag in value.values()))
+
+
+def valid_connection_action(value):
+    if (type(value) is not dict or set(value) != {'operation', 'request'}
+            or value['operation'] not in _CONNECTION_OPERATIONS or type(value['request']) is not dict):
+        return False
+    operation, request = value['operation'], value['request']
+    if operation in ('connection-activate', 'connection-sync'):
+        return request == {}
+    if operation == 'connection-disconnect':
+        return request == {'connector': 'google'}
+    if operation == 'connection-cancel':
+        return set(request) == {'flowId'} and _text(request['flowId'], _FLOW)
+    if operation == 'connection-complete':
+        return (set(request) in ({'flowId', 'state', 'code'}, {'flowId', 'state', 'error'})
+                and _text(request['flowId'], _FLOW) and _text(request['state'], _STATE)
+                and ('code' not in request or _text(request['code'], _CODE))
+                and ('error' not in request or request['error'] in ('access-denied', 'consent-failed')))
+    client = request.get('client')
+    port = request.get('redirectPort')
+    return (set(request) == {'connector', 'client', 'capabilities', 'cloudModels', 'ownerTimeZone', 'loginHint',
+                             'redirectPort'}
+            and request['connector'] == 'google'
+            and type(client) is dict and set(client) == {'clientId', 'clientSecret', 'projectId'}
+            and _text(client['clientId'], _CLIENT_ID) and _text(client['clientSecret'], _CLIENT_SECRET)
+            and _text(client['projectId'], _PROJECT)
+            and _capability_flags(request['capabilities']) and type(request['cloudModels']) is bool
+            and (request['ownerTimeZone'] is None or _text(request['ownerTimeZone'], _TIME_ZONE))
+            and (request['loginHint'] is None or _text(request['loginHint'], _ACCOUNT))
+            and type(port) is int and 1024 <= port <= 65535)
+
+
+def public_connection_action(operation, value):
+    """The coordinator's reply, refused unless it is exactly the shape of its operation."""
+    if type(value) is not dict:
+        raise ValueError('invalid-connection-reply')
+    if operation == 'connection-begin':
+        valid = (set(value) == {'flowId', 'authUrl', 'redirectUri', 'expiresAt'} and _text(value['flowId'], _FLOW)
+                 and _text(value['authUrl'], _AUTH_URL) and _text(value['expiresAt'], _SECOND)
+                 and type(value['redirectUri']) is str
+                 and re.fullmatch(r'http://127\.0\.0\.1:[0-9]{4,5}', value['redirectUri']) is not None)
+    elif operation == 'connection-complete':
+        connected = value.get('outcome') == 'connected'
+        valid = (set(value) == {'outcome', 'errorClass', 'account', 'capabilities', 'missing'}
+                 and value['outcome'] in ('connected', 'failed')
+                 and (value['errorClass'] is None) == connected and (connected or _text(value['errorClass'], _REASON))
+                 and (_text(value['account'], _ACCOUNT) if connected else value['account'] is None)
+                 and (_capability_flags(value['capabilities']) if connected else value['capabilities'] is None)
+                 and type(value['missing']) is list and all(item in _CAPABILITY_IDS for item in value['missing']))
+    elif operation == 'connection-disconnect':
+        valid = set(value) == {'outcome', 'revoked'} and value['outcome'] == 'disconnected' and type(value['revoked']) is bool
+    else:
+        outcomes = {'connection-activate': ('applied', 'unchanged'), 'connection-cancel': ('cancelled',),
+                    'connection-sync': ('started',)}.get(operation, ())
+        valid = set(value) == {'outcome'} and value['outcome'] in outcomes
+    if not valid:
+        raise ValueError('invalid-connection-reply')
+    return value

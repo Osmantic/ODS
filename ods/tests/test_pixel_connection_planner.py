@@ -1,0 +1,256 @@
+"""The gateway planner matches what Pixel's renderer and the ODS overlay write."""
+
+from __future__ import annotations
+
+import copy
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "bin"))
+from pixel_connections import planner  # noqa: E402
+
+INSTALL = "/home/owner/.local/share/pixel"
+EXTENSION = "/opt/ods/extensions/services/pixel-agent/plugin"
+READ_ONLY = {"calendar.read": True, "calendar.write": False, "calendar.direct": False,
+             "gmail.read": True, "gmail.drafts": False}
+
+
+def gateway(capabilities=None, zone=None):
+    return dict(planner.limbs(capabilities), userTimezone=zone)
+
+
+def disconnected_config():
+    """The shape of a disconnected ODS render after the overlay, trimmed to what the planner reads."""
+    deny = ["discord", "message", *planner.SOURCE_TOOLS, "pixel_frontier_plan_review"]
+    allow = sorted(["read", "write", "exec", "pixel_ods_status", "pixel_ops_run", "update_plan"])
+    return {
+        "plugins": {"allow": ["pixel-ods", "searxng", "llama-cpp", "pixel-operations-broker"],
+                    "entries": {"pixel-ods": {"enabled": True}, "llama-cpp": {"enabled": True},
+                                "pixel-operations-broker": {"enabled": True}},
+                    "load": {"paths": [EXTENSION, f"{INSTALL}/current/plugin-ops"]}},
+        "tools": {"alsoAllow": list(allow), "sandbox": {"tools": {"allow": list(allow)}}, "profile": "coding"},
+        "agents": {"defaults": {"bootstrapMaxChars": 32000},
+                   "list": [{"id": "pixel", "tools": {"deny": deny}}]},
+    }
+
+
+class PlannerTests(unittest.TestCase):
+    def test_capabilities_map_to_the_four_limb_flags(self):
+        self.assertEqual(planner.limbs(None), dict(email=False, calendar=False, calendarWrite=False, calendarDirect=False))
+        self.assertEqual(planner.limbs(READ_ONLY), dict(email=True, calendar=True, calendarWrite=False, calendarDirect=False))
+        # Direct changes need writes, and writes need Calendar read.
+        self.assertFalse(planner.limbs(dict(READ_ONLY, **{"calendar.direct": True}))["calendarDirect"])
+        self.assertFalse(planner.limbs({"calendar.write": True})["calendarWrite"])
+        writes = dict(READ_ONLY, **{"calendar.write": True, "calendar.direct": True})
+        self.assertEqual(planner.limbs(writes), dict(email=True, calendar=True, calendarWrite=True, calendarDirect=True))
+
+    def test_targets_are_exact(self):
+        for bad in ({}, dict(gateway(), extra=True), dict(gateway(), email="yes"),
+                    dict(gateway(), calendarWrite=True), dict(gateway(), userTimezone="../etc"),
+                    dict(gateway(), userTimezone="Not a zone")):
+            with self.subTest(bad=bad), self.assertRaises(planner.PlanError):
+                planner.target(bad)
+
+    def test_connecting_adds_the_plugin_and_only_the_granted_tools(self):
+        before = disconnected_config()
+        after = planner.plan_config(before, gateway(READ_ONLY, "America/Chicago"), install_dir=INSTALL)
+        wanted = ["pixel_limb_status", *planner.GMAIL_TOOLS, *planner.CALENDAR_READ_TOOLS]
+        plugins = after["plugins"]
+        self.assertEqual(plugins["allow"], ["pixel-ods", "searxng", "llama-cpp", planner.PLUGIN_ID, "pixel-operations-broker"])
+        self.assertEqual(plugins["entries"][planner.PLUGIN_ID], {"enabled": True})
+        self.assertEqual(plugins["load"]["paths"], [EXTENSION, f"{INSTALL}/current/plugin", f"{INSTALL}/current/plugin-ops"])
+        self.assertEqual(after["tools"]["alsoAllow"], sorted(before["tools"]["alsoAllow"] + wanted))
+        self.assertEqual(after["tools"]["sandbox"]["tools"]["allow"], sorted(before["tools"]["alsoAllow"] + wanted))
+        deny = after["agents"]["list"][0]["tools"]["deny"]
+        self.assertEqual(deny, [name for name in before["agents"]["list"][0]["tools"]["deny"] if name not in wanted])
+        self.assertTrue(set(planner.CALENDAR_WRITE_TOOLS) <= set(deny))
+        self.assertEqual(after["agents"]["defaults"]["userTimezone"], "America/Chicago")
+        self.assertEqual(before, disconnected_config(), "planning must not change its input")
+        self.assertEqual(planner.plan_config(after, gateway(READ_ONLY, "America/Chicago"), install_dir=INSTALL), after)
+
+    def test_disconnecting_appends_the_tools_to_deny_in_render_order(self):
+        connected = planner.plan_config(disconnected_config(), gateway(READ_ONLY), install_dir=INSTALL)
+        after = planner.plan_config(connected, gateway(), install_dir=INSTALL)
+        self.assertNotIn(planner.PLUGIN_ID, after["plugins"]["allow"])
+        self.assertNotIn(planner.PLUGIN_ID, after["plugins"]["entries"])
+        self.assertEqual(after["plugins"]["load"]["paths"], [EXTENSION, f"{INSTALL}/current/plugin-ops"])
+        self.assertEqual(after["tools"]["alsoAllow"], disconnected_config()["tools"]["alsoAllow"])
+        restored = [name for name in disconnected_config()["agents"]["list"][0]["tools"]["deny"]
+                    if name not in ("pixel_limb_status", *planner.GMAIL_TOOLS, *planner.CALENDAR_READ_TOOLS)]
+        restored += ["pixel_limb_status", *planner.GMAIL_TOOLS, *planner.CALENDAR_READ_TOOLS]
+        self.assertEqual(after["agents"]["list"][0]["tools"]["deny"], restored)
+        self.assertNotIn("userTimezone", after["agents"]["defaults"])
+
+    def test_calendar_writes_add_the_proposal_tools(self):
+        writes = dict(READ_ONLY, **{"calendar.write": True})
+        after = planner.plan_config(disconnected_config(), gateway(writes), install_dir=INSTALL)
+        self.assertTrue(set(planner.CALENDAR_WRITE_TOOLS) <= set(after["tools"]["alsoAllow"]))
+        self.assertFalse(set(planner.CALENDAR_WRITE_TOOLS) & set(after["agents"]["list"][0]["tools"]["deny"]))
+
+    def test_a_live_web_limb_keeps_the_plugin_after_google_disconnects(self):
+        config = disconnected_config()
+        config["tools"]["alsoAllow"] = sorted(config["tools"]["alsoAllow"] + ["pixel_limb_status", "pixel_web_browse"])
+        config["plugins"]["allow"].insert(3, planner.PLUGIN_ID)
+        after = planner.plan_config(config, gateway(), install_dir=INSTALL)
+        self.assertIn(planner.PLUGIN_ID, after["plugins"]["allow"])
+        self.assertIn("pixel_web_browse", after["tools"]["alsoAllow"])
+
+    def test_a_configuration_outside_the_rendered_shape_is_refused(self):
+        broken = []
+        for path in (("plugins", "allow"), ("tools", "alsoAllow"), ("agents", "list")):
+            value = disconnected_config()
+            value[path[0]][path[1]] = "not a list"
+            broken.append(value)
+        no_llama = disconnected_config()
+        no_llama["plugins"]["allow"].remove("llama-cpp")
+        broken.append(no_llama)
+        two = disconnected_config()
+        two["agents"]["list"].append(copy.deepcopy(two["agents"]["list"][0]))
+        broken.append(two)
+        for value in broken:
+            with self.subTest(value=value), self.assertRaises(planner.PlanError):
+                planner.plan_config(value, gateway(READ_ONLY), install_dir=INSTALL)
+
+    def test_the_gateway_environment_changes_only_its_limb_flags(self):
+        text = ("OPENCLAW_STATE_DIR='/home/owner/.openclaw'\nPIXEL_CALENDAR_DIRECT_ENABLED='0'\n"
+                "PIXEL_LIMB_EMAIL_ENABLED='0'\nPIXEL_LIMB_CALENDAR_ENABLED='0'\n"
+                "PIXEL_LIMB_CALENDAR_WRITE_ENABLED='0'\nPIXEL_LIMB_WEB_ENABLED='0'\n")
+        planned = planner.plan_gateway_env(text, gateway(READ_ONLY))
+        self.assertEqual(planned, text.replace("PIXEL_LIMB_EMAIL_ENABLED='0'", "PIXEL_LIMB_EMAIL_ENABLED='1'")
+                         .replace("PIXEL_LIMB_CALENDAR_ENABLED='0'", "PIXEL_LIMB_CALENDAR_ENABLED='1'"))
+        self.assertEqual(planner.gateway_limbs(planned), planner.limbs(READ_ONLY))
+        self.assertEqual(planner.plan_gateway_env(planned, gateway()), text)
+        for bad in (text.rstrip("\n"), text + "export X=1\n", text + "PIXEL_LIMB_EMAIL_ENABLED='1'\n",
+                    text.replace("PIXEL_LIMB_EMAIL_ENABLED='0'\n", "")):
+            with self.subTest(bad=bad), self.assertRaises(planner.PlanError):
+                planner.plan_gateway_env(bad, gateway(READ_ONLY))
+
+
+def _env_file(path: Path) -> dict[str, str]:
+    values = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line or line.startswith("#"):
+            continue
+        key, _, quoted = line.partition("=")
+        values[key] = quoted[1:-1].replace("'\\''", "'")
+    return values
+
+
+@unittest.skipIf(os.name == "nt" or shutil.which("node") is None, "renders with Pixel's configure on Linux with Node.js")
+class RenderCrossCheckTests(unittest.TestCase):
+    """Pixel's configure and renderer plus the ODS overlay produce what the planner predicts."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.workdir = tempfile.TemporaryDirectory()
+        root = Path(cls.workdir.name)
+        os.umask(0o022)
+        cls.pixel = root / "pixel"
+        shutil.copytree(ROOT / "vendor" / "pixel", cls.pixel, ignore=shutil.ignore_patterns(
+            ".git", ".generated", ".env", "dist", "node_modules", "__pycache__"))
+        cls.home = root / "home"
+        (cls.home / ".openclaw").mkdir(parents=True, mode=0o700)
+        cls.data = root / "data"
+        cls.data.mkdir(mode=0o700)
+        key = cls.data / "relay-key"
+        key.write_text("test-only-relay-key")
+        key.chmod(0o600)
+        (cls.data / "operations-policy.json").write_text(json.dumps({"schemaVersion": 2, "targets": {}, "actions": {}}))
+        (cls.data / "operations-policy.json").chmod(0o600)
+        plugin = ROOT / "extensions" / "services" / "pixel-agent" / "plugin"
+        digest = subprocess.run(["node", str(cls.pixel / "scripts" / "hash-gateway-extension.mjs"), str(plugin)],
+                                check=True, capture_output=True, text=True).stdout.strip()
+        cls.openclaw = cls.pixel / "tests" / "fixtures" / "bin" / "openclaw"
+        cls.answers = cls.data / "onboarding.json"
+        cls.contract = [str(cls.answers), str(cls.openclaw), str(cls.home), "Qwen3.5-9B", "16384", "4096", "false",
+                        "ods/current", "Current", "4006", "18789", str(key), "8888", str(plugin), digest,
+                        "searxng", "", ""]
+        cls.install = str(cls.home / ".local" / "share" / "pixel")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.workdir.cleanup()
+
+    def setUp(self):
+        (self.home / ".openclaw" / "openclaw.json").unlink(missing_ok=True)
+
+    def onboard(self, record):
+        arguments = list(self.contract)
+        if record is not None:
+            directory = Path(self.workdir.name) / "etc-ods"
+            directory.mkdir(mode=0o755, exist_ok=True)
+            path = directory / "portal-connections.json"
+            path.write_text(json.dumps(record))
+            path.chmod(0o640)
+            arguments += [str(path), "present"]
+        subprocess.run([sys.executable, "-I", str(ROOT / "installers" / "lib" / "pixel-onboarding.py"), *arguments],
+                       cwd="/", check=True, capture_output=True, text=True)
+
+    def render(self, record):
+        """One installer render of ``record``: onboarding, configure, render, overlay; the result goes live."""
+        self.onboard(record)
+        env = dict(os.environ, HOME=str(self.home), XDG_CONFIG_HOME=str(self.home / ".config"),
+                   PATH=f"{self.openclaw.parent}{os.pathsep}{os.environ['PATH']}")
+        result = subprocess.run(["node", "scripts/configure.mjs", "--answers", str(self.answers), "--force"],
+                                cwd=self.pixel, env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        env.update(_env_file(self.pixel / ".env"))
+        env.update(PIXEL_PLUGIN_PATH=f"{self.install}/current/plugin",
+                   PIXEL_OPS_PLUGIN_PATH=f"{self.install}/current/plugin-ops",
+                   PIXEL_FRONTIER_PLUGIN_PATH=f"{self.install}/current/plugin-frontier")
+        rendered = Path(self.workdir.name) / "rendered.json"
+        result = subprocess.run(["node", "scripts/render-config.mjs", str(rendered)], cwd=self.pixel, env=env,
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        staged = subprocess.run([sys.executable, str(ROOT / "installers" / "lib" / "pixel-runtime-budget.py"),
+                                 str(rendered), "3004", str(self.answers), str(self.home / ".openclaw")],
+                                check=True, capture_output=True, text=True).stdout.strip()
+        live = self.home / ".openclaw" / "openclaw.json"
+        shutil.copyfile(rendered if staged == "unchanged" else staged, live)
+        live.chmod(0o600)
+        return json.loads(live.read_text()), (self.pixel / ".generated" / "gateway.env").read_text()
+
+    def record(self, capabilities, zone="America/Chicago"):
+        google = {"status": "connected", "account": "owner@example.com", "calendarId": "primary",
+                  "gmailWindowDays": 180, "capabilities": capabilities, "cloudModels": False,
+                  "connectedAt": "2026-10-25T20:00:00Z"}
+        return {"schemaVersion": 1, "kind": "ods-portal-connections", "updatedAt": "2026-10-25T20:00:00Z",
+                "ownerTimeZone": zone, "connectors": {"google": google} if capabilities else {}}
+
+    def assert_planned(self, before, after, capabilities, zone):
+        config, env = before
+        planned = planner.plan_config(config, gateway(capabilities, zone), install_dir=self.install)
+        self.assertEqual(json.dumps(planned, indent=2, sort_keys=True), json.dumps(after[0], indent=2, sort_keys=True))
+        self.assertEqual(planner.plan_gateway_env(env, gateway(capabilities, zone)), after[1])
+
+    def test_connect_and_disconnect_match_the_renderer(self):
+        writes = dict(READ_ONLY, **{"calendar.write": True})
+        calendar_only = dict(READ_ONLY, **{"gmail.read": False})
+        disconnected = self.render(None)
+        steps = [(READ_ONLY, "America/Chicago"), (writes, "America/Chicago"), (calendar_only, "Europe/Berlin"),
+                 (None, "Europe/Berlin")]
+        previous = disconnected
+        for capabilities, zone in steps:
+            with self.subTest(capabilities=capabilities, zone=zone):
+                current = self.render(self.record(capabilities, zone))
+                # Each step really changes what Pixel renders.
+                self.assertEqual(planner.PLUGIN_ID in current[0]["plugins"]["allow"], bool(capabilities))
+                self.assertEqual(planner.gateway_limbs(current[1]), planner.limbs(capabilities))
+                self.assertEqual(current[0]["agents"]["defaults"]["userTimezone"], zone)
+                self.assert_planned(previous, current, capabilities, zone)
+                previous = current
+
+    def test_a_disconnected_render_is_a_fixed_point(self):
+        disconnected = self.render(None)
+        self.assert_planned(disconnected, self.render(None), None, None)
+
+
+if __name__ == "__main__":
+    unittest.main()

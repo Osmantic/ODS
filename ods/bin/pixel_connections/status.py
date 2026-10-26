@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from . import catalog, state
+from . import catalog, lifecycle, state
 
 TOKEN = Path("/var/lib/pixel-source-broker/private/google-token.json")
 BROKER_STATUS = Path("/var/lib/pixel-source-broker/projection/status.json")
@@ -129,17 +129,17 @@ def google_state(google: dict[str, Any], *, custody: bool, broker: dict[str, Any
     return "connected", None
 
 
-def not_connected() -> dict[str, Any]:
+def not_connected(pending: dict[str, Any] | None = None) -> dict[str, Any]:
     return {"state": "not-connected", "reason": None, "account": None, "capabilities": None,
             "cloudModels": None, "connectedAt": None, "grantedScopes": None, "checkedAt": None,
-            "sources": {"email": None, "calendar": None}}
+            "sources": {"email": None, "calendar": None}, "pending": pending}
 
 
 def google_view(record: dict[str, Any] | None, *, custody: bool, broker: dict[str, Any] | None,
-                broker_error: bool, now: datetime) -> dict[str, Any]:
+                broker_error: bool, now: datetime, pending: dict[str, Any] | None = None) -> dict[str, Any]:
     google = (record or {}).get("connectors", {}).get("google")
     if google is None:
-        return not_connected()
+        return not_connected(pending)
     name, reason = google_state(google, custody=custody, broker=broker, broker_error=broker_error, now=now)
     sources = (broker or {}).get("sources", {})
     return {
@@ -153,13 +153,14 @@ def google_view(record: dict[str, Any] | None, *, custody: bool, broker: dict[st
         "checkedAt": (broker or {}).get("generatedAt"),
         "sources": {name: sources.get(name) for name in SOURCES} if custody and not broker_error else
                    {"email": None, "calendar": None},
+        "pending": pending,
     }
 
 
 SURFACES = frozenset({"linux-systemd", "wsl-systemd", "linux", "darwin", "windows"})
 CAPABILITY_IDS = frozenset(capability["id"] for capability in catalog.GOOGLE["capabilities"])
 GOOGLE_KEYS = {"state", "reason", "account", "capabilities", "cloudModels", "connectedAt", "grantedScopes",
-               "checkedAt", "sources"}
+               "checkedAt", "sources", "pending"}
 SOURCE_KEYS = {"state", "errorClass", "httpStatus", "lastSuccessAt", "failingSince", "recordCount", "complete"}
 
 
@@ -193,7 +194,8 @@ def _valid_google(value: Any) -> bool:
             and _optional(value["grantedScopes"], lambda item: isinstance(item, list)
                           and all(isinstance(scope, str) and SCOPE.fullmatch(scope) for scope in item))
             and isinstance(value["sources"], dict) and set(value["sources"]) == set(SOURCES)
-            and all(_valid_source(item) for item in value["sources"].values()))
+            and all(_valid_source(item) for item in value["sources"].values())
+            and lifecycle.valid_public(value["pending"]))
 
 
 def validate_public(value: Any) -> dict[str, Any]:
@@ -218,19 +220,28 @@ def unavailable(surface: str) -> dict[str, Any]:
             "connectors": {"google": not_connected()}}
 
 
+def _pending(path: Path, owners: tuple) -> tuple[dict[str, Any] | None, bool]:
+    try:
+        return lifecycle.public(lifecycle.read(path, owners=owners)), False
+    except lifecycle.LifecycleError:
+        return None, True
+
+
 def report(*, surface: str, record_path: Path = state.PATH, token_path: Path = TOKEN,
-           status_path: Path = BROKER_STATUS, now: datetime | None = None,
+           status_path: Path = BROKER_STATUS, lifecycle_path: Path = lifecycle.PATH, now: datetime | None = None,
            owners: tuple[int, ...] = (0,)) -> dict[str, Any]:
     """The complete public status. Runs as root, which alone can see the sign-in."""
     if surface not in SUPPORTED_SURFACES:
         return unavailable(surface)
     now = now or datetime.now(timezone.utc)
+    pending, journal_unusable = _pending(lifecycle_path, owners)
     try:
         record = state.read(record_path, owners=owners)
     except state.StateError:
         # Settings offers to reconnect; the install already kept everything off.
         return {"schemaVersion": SCHEMA_VERSION, "available": True, "surface": surface,
-                "reason": "record-unusable", "ownerTimeZone": None, "connectors": {"google": not_connected()}}
+                "reason": "record-unusable", "ownerTimeZone": None,
+                "connectors": {"google": not_connected(pending)}}
     custody = token_path.is_file()
     broker, broker_error = None, False
     if record is not None and "google" in record["connectors"] and custody:
@@ -242,7 +253,8 @@ def report(*, surface: str, record_path: Path = state.PATH, token_path: Path = T
         "schemaVersion": SCHEMA_VERSION,
         "available": True,
         "surface": surface,
-        "reason": None,
+        "reason": "journal-unusable" if journal_unusable else None,
         "ownerTimeZone": record["ownerTimeZone"] if record else None,
-        "connectors": {"google": google_view(record, custody=custody, broker=broker, broker_error=broker_error, now=now)},
+        "connectors": {"google": google_view(record, custody=custody, broker=broker, broker_error=broker_error,
+                                             now=now, pending=pending)},
     }

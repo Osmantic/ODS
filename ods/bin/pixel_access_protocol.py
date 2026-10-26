@@ -36,6 +36,15 @@ KEYS.update({
 HOOKS.update({'release-prepare': ('busy',), 'release-recover': ('busy',),
               'release-finish': ('busy', 'release-verify'), 'release-baseline': ('busy',),
               'release-abort': ('busy', 'release-verify')})
+# Connected apps: the owner writes the Source Broker's gateway entries and limb
+# flags; root restarts the gateway and re-proves access through the hook.
+KEYS.update({"connection-status": BASE | {"answers_path"},
+             "connection-apply": BASE | {"transaction_id", "connection_target", "connection_answers", "answers_path"},
+             "connection-recover": BASE | {"transaction_id"}})
+HOOKS.update({"connection-status": (), "connection-apply": ("busy", "connection-activate"),
+              "connection-recover": ("busy", "connection-activate")})
+CONNECTION_OPERATIONS = ("connection-begin", "connection-complete", "connection-activate",
+                         "connection-cancel", "connection-disconnect", "connection-sync")
 
 
 class ProtocolError(ValueError):
@@ -99,7 +108,9 @@ def control_request(value):
             "provider-status": {"operation", "data_dir_id"},
             "provider-change": {"operation", "data_dir_id", "request"},
             # Read-only and content-free: the owner's connected apps and their sync state.
-            "connection-status": {"operation"}}
+            "connection-status": {"operation"},
+            # The custodian's actions; pixel_connections.coordinator validates each request.
+            **{name: {"operation", "request"} for name in CONNECTION_OPERATIONS}}
     if operation not in keys or set(value) != keys[operation]:
         raise ProtocolError("invalid-request")
     if operation.startswith(("settings-", "provider-")) and (type(value["data_dir_id"]) is not str or not HEX.fullmatch(value["data_dir_id"])):
@@ -215,8 +226,24 @@ def request(value):
                        for key in ('python', 'launcher', 'providerDirectory'))
                 or PurePosixPath(probe['launcher']).name != 'ods-pixel-route-lease'):
             raise ProtocolError('owner-protocol-failed')
-    if operation in ("settings-apply", "settings-recover", "provider-change", "provider-recover"):
+    if operation in ("settings-apply", "settings-recover", "provider-change", "provider-recover",
+                     "connection-apply", "connection-recover"):
         if type(value["transaction_id"]) is not str or not HEX.fullmatch(value["transaction_id"]):
+            raise ProtocolError("owner-protocol-failed")
+    if operation in ("connection-status", "connection-apply"):
+        answers_path = value["answers_path"]
+        if (type(answers_path) is not str
+                or not answers_path.startswith("/") or not answers_path.endswith("/data/pixel/onboarding.json")
+                or any(c in answers_path for c in "\x00\n\r\t")
+                or any(p in ("", ".", "..") for p in answers_path.split("/")[1:])):
+            raise ProtocolError("owner-protocol-failed")
+    if operation == "connection-apply":
+        # Linux only: macOS ships no connected apps, so these are imported here.
+        from pixel_connections.planner import PlanError, target as connection_target
+        from pixel_connections.state import valid_connection_answers
+        try: connection_target(value["connection_target"])
+        except PlanError: raise ProtocolError("owner-protocol-failed") from None
+        if not valid_connection_answers(value["connection_answers"]):
             raise ProtocolError("owner-protocol-failed")
     if operation.startswith("model-") and operation != "model-status":
         if type(value["transaction_id"]) is not str or not HEX.fullmatch(value["transaction_id"]):
@@ -260,7 +287,7 @@ def provider_binding(value):
 def hook_reply(operation, name, value):
     if name not in HOOKS.get(operation, ()):
         raise ProtocolError("owner-protocol-failed")
-    if name in ("settings-activate", "provider-activate", "release-verify"):
+    if name in ("settings-activate", "provider-activate", "release-verify", "connection-activate"):
         valid = type(value) is str and value in ("verified", "rejected", "unavailable")
     else:
         valid = type(value) is bool
@@ -306,6 +333,8 @@ def result(operation, value):
         return value
     if operation.startswith("provider-"):
         return provider_result(operation, value)
+    if operation.startswith("connection-"):
+        return connection_result(operation, value)
     if not operation.startswith("settings-"):
         return value  # Existing access status contract is interpreted by inspect.
     def revision(item):
@@ -355,6 +384,34 @@ def provider_result(operation, value):
         valid = (valid and set(value) == {"status", "binding", "configSha256"}
                  and (value.get("status") == "rolled-back" or
                       operation == "provider-change" and value.get("status") == "registration-verified"))
+    if not valid:
+        raise ProtocolError("owner-protocol-failed")
+    return value
+
+
+def connection_result(operation, value):
+    def checksum(item):
+        return type(item) is str and HEX.fullmatch(item) is not None
+    if operation == "connection-status":
+        from pixel_connections.planner import PlanError, target as connection_target
+        from pixel_connections.state import ANSWER_KEYS
+        completed = value.get("completion")
+        answers = value.get("answers")
+        valid = (set(value) == {"configSha256", "envSha256", "pending", "live", "answers", "completion"}
+                 and type(answers) is dict and set(answers) == set(ANSWER_KEYS)
+                 and checksum(value["configSha256"]) and checksum(value["envSha256"])
+                 and type(value["pending"]) is bool
+                 and (completed is None or not value["pending"] and type(completed) is dict
+                      and set(completed) == {"transactionId", "outcome", "configSha256"}
+                      and checksum(completed["transactionId"]) and checksum(completed["configSha256"])
+                      and completed["outcome"] in ("applied", "rolled-back")))
+        if valid:
+            try: connection_target(value["live"])
+            except PlanError: valid = False
+    else:
+        valid = (set(value) == {"status", "configSha256"} and checksum(value["configSha256"])
+                 and (value["status"] == "rolled-back"
+                      or operation == "connection-apply" and value["status"] == "runtime-verified"))
     if not valid:
         raise ProtocolError("owner-protocol-failed")
     return value

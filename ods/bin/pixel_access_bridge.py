@@ -360,6 +360,11 @@ class SystemdAccessBridge:
         from pixel_model_coordinator import control
         return control(self, operation, request)
 
+    def connection_control(self, operation, request):
+        # Linux and WSL only: the Source Broker is a set of systemd units.
+        from pixel_connections.coordinator import control
+        return control(self, operation, request)
+
     def command(self, args, timeout=20):
         timeout = remaining(timeout)
         try:
@@ -760,7 +765,7 @@ class SystemdAccessBridge:
                binding=None, activate_provider=None, expected_projection=None, provider_probe=None,
                model_target=None, model_outcome=None, relocation=None,
                candidate_path=None, candidate_sha256=None, release_outcome=None, verify_release=None,
-               receipt_sha256=None):
+               receipt_sha256=None, connection_target=None, connection_answers=None, activate_connection=None):
         env = self.worker_environment()
         request = dict(operation=operation, openclaw=self.binary, config_sha256=config_hash, confirmed=confirmed)
         if operation.startswith('release-'):
@@ -775,8 +780,13 @@ class SystemdAccessBridge:
             request['relocation'] = relocation
         if operation == 'provider-worker-status':
             request['provider_probe'] = provider_probe
-        if operation in ("settings-apply", "settings-recover", "provider-change", "provider-recover"):
+        if operation in ("settings-apply", "settings-recover", "provider-change", "provider-recover",
+                         "connection-apply", "connection-recover"):
             request["transaction_id"] = transaction_id
+        if operation in ("connection-status", "connection-apply"):
+            request["answers_path"] = str(self.install / "data/pixel/onboarding.json")
+        if operation == "connection-apply":
+            request.update(connection_target=connection_target, connection_answers=connection_answers)
         if operation.startswith("model-") and operation != "model-status":
             request["transaction_id"] = transaction_id
         if operation == "model-apply": request["model_target"] = model_target
@@ -836,7 +846,8 @@ class SystemdAccessBridge:
                         raise AccessError("owner-protocol-failed")
                     callback = {"busy": busy, "restart": restart, "settings-activate": activate_settings,
                                 "provider-activate": activate_provider,
-                                "release-verify": verify_release}.get(value["hook"])
+                                "release-verify": verify_release,
+                                "connection-activate": activate_connection}.get(value["hook"])
                     if callback is None: raise AccessError("owner-protocol-failed")
                     remaining(deadline - time.monotonic())
                     answer = callback()
