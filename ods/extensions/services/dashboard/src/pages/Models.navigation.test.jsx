@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import Models from './Models'
+import { forgetLastCatalog } from '../hooks/useModels'
 
 // Keep the production inventory/activation hook and page together. Downloads
 // are a separate transport and are not involved in these navigation cases.
@@ -38,6 +39,7 @@ async function startActivation() {
 }
 
 beforeEach(() => {
+  forgetLastCatalog()
   vi.useFakeTimers()
   Object.defineProperty(document, 'hidden', { configurable: true, value: false })
   vi.stubGlobal('fetch', vi.fn((url, options) => {

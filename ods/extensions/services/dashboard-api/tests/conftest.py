@@ -68,6 +68,15 @@ def _no_remembered_portal_status(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_remembered_model_management(monkeypatch):
+    """Each test starts without a model management proof remembered by an earlier one."""
+    from routers import models
+
+    monkeypatch.setattr(models, "_model_management_remembered", None)
+    monkeypatch.setattr(models, "_model_management_proof_future", None)
+
+
+@pytest.fixture(autouse=True)
 def _no_hugging_face_header_reads(monkeypatch):
     """Unit tests never reach Hugging Face; a test that needs a header stubs one."""
     import hf_gguf_header

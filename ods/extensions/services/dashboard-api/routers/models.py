@@ -1928,6 +1928,94 @@ def _model_management() -> dict:
     return {key: value for key, value in proof.items() if key != "vision"}
 
 
+# The ownership proof runs a controller on the Windows host and takes seconds,
+# more under load: on an RTX Spark it took 3.6-5.4 s during a Portal build and
+# was the slowest part of every GET /api/models. The catalog reuses the last
+# conclusive proof while the live runtime agrees with it and refreshes it in
+# the background. A runtime change made here forgets it, an owned lifecycle
+# operation always gets a fresh one, and the host proves ownership again
+# before any control acts.
+_MODEL_MANAGEMENT_REFRESH_SECONDS = 15.0
+_MODEL_MANAGEMENT_MAX_AGE_SECONDS = 6 * 3600.0
+_model_management_lock = threading.Lock()
+_model_management_remembered: tuple[float, dict] | None = None
+_model_management_generation = 0
+_model_management_proof_future: asyncio.Future | None = None
+
+
+def _forget_model_management() -> None:
+    """Drop the remembered proof, and any proof still running from before a runtime change."""
+    global _model_management_remembered, _model_management_generation, _model_management_proof_future
+    with _model_management_lock:
+        _model_management_remembered = None
+        _model_management_generation += 1
+        _model_management_proof_future = None
+
+
+async def _prove_model_management(generation: int) -> tuple[int, dict]:
+    global _model_management_remembered
+    value = await asyncio.to_thread(_model_management)
+    # An unverified proof is often an interop timeout; the next read asks again.
+    if value.get("managed") is not None:
+        with _model_management_lock:
+            if generation == _model_management_generation:
+                _model_management_remembered = (time.monotonic(), dict(value))
+    return generation, value
+
+
+def _log_model_management_crash(done: asyncio.Future) -> None:
+    # A background refresh has no reader, so its crash is logged here.
+    if not done.cancelled() and done.exception() is not None:
+        logger.error("Model management proof crashed", exc_info=done.exception())
+
+
+def _model_management_in_flight() -> asyncio.Future:
+    """The proof already running, or a new one; concurrent catalog reads share it."""
+    global _model_management_proof_future
+    with _model_management_lock:
+        future = _model_management_proof_future
+        if future is None or future.done():
+            future = asyncio.ensure_future(_prove_model_management(_model_management_generation))
+            future.add_done_callback(_log_model_management_crash)
+            _model_management_proof_future = future
+    return future
+
+
+def _remembered_model_management() -> tuple[float, dict] | None:
+    with _model_management_lock:
+        remembered = _model_management_remembered
+    if remembered is None or time.monotonic() - remembered[0] > _MODEL_MANAGEMENT_MAX_AGE_SECONDS:
+        return None
+    return remembered
+
+
+async def _fresh_model_management(future: asyncio.Future) -> dict:
+    """The proof ``future`` yields, taken again if a runtime change landed meanwhile."""
+    generation, value = await asyncio.shield(future)
+    if generation != _model_management_generation:
+        _generation, value = await asyncio.shield(_model_management_in_flight())
+    return dict(value)
+
+
+async def _catalog_model_management(prefetch: asyncio.Future | None, agent_status: object,
+                                    loaded_model: str | None) -> dict:
+    """A fresh proof, or the remembered one when the live runtime agrees with it."""
+    if prefetch is not None:
+        return await _fresh_model_management(prefetch)
+    remembered = _remembered_model_management()
+    lifecycle = isinstance(agent_status, dict) and (
+        agent_status.get("lifecycleActive") is True or agent_status.get("modelTransactionPending") is True)
+    if remembered is not None and not lifecycle:
+        taken_at, value = remembered
+        # An owned runtime runs exactly when its model answers, so a crash or
+        # a stop made elsewhere never keeps the earlier controls on screen.
+        if value.get("managed") is not True or value.get("running") is (loaded_model is not None):
+            if time.monotonic() - taken_at > _MODEL_MANAGEMENT_REFRESH_SECONDS:
+                _model_management_in_flight()
+            return dict(value)
+    return await _fresh_model_management(_model_management_in_flight())
+
+
 # Docker Desktop installs whose host agent launches llama-server.exe on
 # Windows itself (the host agent's _WINDOWS_NATIVE_RUNTIME_MODES); that
 # launch takes no projector.
@@ -1965,6 +2053,10 @@ async def _discover_loaded_model() -> str | None:
 async def list_models(api_key: str = Depends(verify_api_key)):
     """List model catalog entries with source-labelled performance metadata."""
     global _last_recorded_throughput_sample
+    host_runtime = _windows_hosted_runtime()
+    # With no proof to reuse, the slow ownership proof runs alongside these reads.
+    management_prefetch = (_model_management_in_flight()
+                           if host_runtime and _remembered_model_management() is None else None)
     gpu_info, loaded_model, agent_status = await asyncio.gather(
         asyncio.to_thread(get_gpu_info),
         _await_or_default(
@@ -2043,9 +2135,10 @@ async def list_models(api_key: str = Depends(verify_api_key)):
         # what serves chat. The installer refuses URLs with credentials.
         payload["externalModel"] = read_env_value("EXTERNAL_LLM_MODEL", INSTALL_DIR).strip() or None
         payload["externalHost"] = _external_api_host(read_env_value("EXTERNAL_LLM_URL", INSTALL_DIR))
-    payload["hostRuntime"] = _windows_hosted_runtime()
-    if payload["hostRuntime"]:
-        payload["modelManagement"] = await asyncio.to_thread(_model_management)
+    payload["hostRuntime"] = host_runtime
+    if host_runtime:
+        payload["modelManagement"] = await _catalog_model_management(
+            management_prefetch, agent_status, loaded_model)
     # A held transition does not establish which route currently serves chat.
     payload["activeRuntime"] = (
         None if payload.get("modelRecoveryPending") or (payload.get("modelLifecycle") or {}).get("active")
@@ -2905,7 +2998,11 @@ def recover_model_switch(body: dict | None = Body(default=None), api_key: str = 
     if body is None or not any(body == allowed and all(type(body[key]) is type(value) for key, value in allowed.items())
                                for allowed in _RECOVERY_REQUESTS):
         raise HTTPException(status_code=400, detail='Recovery accepts {} or {"releaseUnverified": true} only.')
-    value = _model_recovery_request('POST', dict(body))
+    try:
+        value = _model_recovery_request('POST', dict(body))
+    finally:
+        # Recovery can restore the earlier runtime.
+        _forget_model_management()
     return value if isinstance(value, JSONResponse) else JSONResponse(value, headers={'Cache-Control': 'no-store'})
 
 
@@ -2940,6 +3037,7 @@ def manage_model_runtime(operation: str, body: dict | None = Body(default=None),
         value = _call_agent_model(f"/v1/model/runtime/{operation}", {}, timeout=1200)
     finally:
         _invalidate_agent_model_status_cache()
+        _forget_model_management()
     expected = "started" if operation == "start" else "stopped"
     if not isinstance(value, dict) or value.get("status") != expected:
         raise HTTPException(status_code=502, detail="The runtime operation was not confirmed; refresh its status")
@@ -3084,6 +3182,7 @@ def _activate_model(model_id: str, body: dict[str, Any] | None, *, chat_template
         # lifecycle as active. Drop it so the dashboard's confirming poll,
         # sent as soon as this response lands, sees the settled state.
         _invalidate_agent_model_status_cache()
+        _forget_model_management()
     return result
 
 

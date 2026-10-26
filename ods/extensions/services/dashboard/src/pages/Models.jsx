@@ -89,6 +89,7 @@ export default function Models({ compact = false }) {
     hermesMinimumContext,
     pixelMinimumContext,
     loading,
+    catalogConfirmed,
     error,
     actionLoading,
     actionLoadingModels,
@@ -98,7 +99,9 @@ export default function Models({ compact = false }) {
     benchmarkModel,
     deleteModel,
     refresh,
-  } = useModels()
+  } = useModels({ reuseLastCatalog: true })
+  // Opened again, the page shows the last catalog at once; actions wait for its fresh read.
+  const catalogHeld = catalogConfirmed === false
 
   const [downloadStarting, setDownloadStarting] = useState(null)
   const [downloadAwaitingStatus, setDownloadAwaitingStatus] = useState(false)
@@ -236,7 +239,7 @@ export default function Models({ compact = false }) {
     await deleteModel(modelId)
   }
 
-  const activationBusy = Boolean(activationLoading || runtimeActionLoading || modelLifecycle?.active || modelRecoveryPending)
+  const activationBusy = Boolean(catalogHeld || activationLoading || runtimeActionLoading || modelLifecycle?.active || modelRecoveryPending)
   const providerBusy = Boolean(modelLifecycle?.active && ['remote_provider_apply', 'remote_provider_proof'].includes(modelLifecycle.operation))
   const activeRemoteRuntime = !activationBusy && activeRuntime?.source === 'remote-provider' ? activeRuntime : null
   const remoteRouteActive = Boolean(activeRemoteRuntime)
@@ -259,7 +262,7 @@ export default function Models({ compact = false }) {
   }
 
   const pendingModelActions = actionLoadingModels ?? (actionLoading ? [actionLoading] : [])
-  const runtimeControlsBusy = Boolean(runtimeActionLoading || activationLoading || modelLifecycle?.active || pendingModelActions.length || downloadProgress.isDownloading)
+  const runtimeControlsBusy = Boolean(catalogHeld || runtimeActionLoading || activationLoading || modelLifecycle?.active || pendingModelActions.length || downloadProgress.isDownloading)
   // Unloading stops Portal and Hermes until Resume, so it asks first. The
   // question closes for good if the model stops or another operation starts.
   const unloadAvailable = Boolean(modelManagement?.managed === true && modelManagement.canUnload === true
@@ -285,7 +288,7 @@ export default function Models({ compact = false }) {
     hermesMinimumContext={hermesMinimumContext} pixelMinimumContext={pixelMinimumContext}
     isCurrentModel={model.id === currentModel} isLoading={pendingModelActions.includes(model.id)}
     loadBusy={pendingModelActions.length > 0} activationBusy={activationBusy}
-    downloadBusy={downloadProgress.isDownloading || !!downloadStarting} downloadStarting={downloadStarting === model.id}
+    downloadBusy={catalogHeld || downloadProgress.isDownloading || !!downloadStarting} downloadStarting={downloadStarting === model.id}
     onDownload={() => handleDownload(model.id)} onLoad={() => { if (canActivateModels && !activationBusy) setActivationConfigModel(model) }}
     onBenchmark={() => benchmarkModel(model.id)} onDelete={() => setDeleteConfirmModel(model)}/>
 
@@ -439,7 +442,7 @@ export default function Models({ compact = false }) {
         >
           <HuggingFaceModelBrowser
             gpu={gpu}
-            downloadBusy={downloadProgress.isDownloading || Boolean(downloadStarting || runtimeActionLoading)}
+            downloadBusy={catalogHeld || downloadProgress.isDownloading || Boolean(downloadStarting || runtimeActionLoading)}
             onImportStarted={handleHuggingFaceImportStarted}
           />
         </section>
