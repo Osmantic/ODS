@@ -38,10 +38,10 @@ HOOKS.update({'release-prepare': ('busy',), 'release-recover': ('busy',),
               'release-abort': ('busy', 'release-verify')})
 # Connected apps: the owner writes the Source Broker's gateway entries and limb
 # flags; root restarts the gateway and re-proves access through the hook.
-KEYS.update({"connection-status": BASE | {"answers_path"},
+KEYS.update({"connection-owner-status": BASE | {"answers_path"},
              "connection-apply": BASE | {"transaction_id", "connection_target", "connection_answers", "answers_path"},
              "connection-recover": BASE | {"transaction_id"}})
-HOOKS.update({"connection-status": (), "connection-apply": ("busy", "connection-activate"),
+HOOKS.update({"connection-owner-status": (), "connection-apply": ("busy", "connection-activate"),
               "connection-recover": ("busy", "connection-activate")})
 CONNECTION_OPERATIONS = ("connection-begin", "connection-complete", "connection-activate",
                          "connection-cancel", "connection-disconnect", "connection-sync")
@@ -230,7 +230,7 @@ def request(value):
                      "connection-apply", "connection-recover"):
         if type(value["transaction_id"]) is not str or not HEX.fullmatch(value["transaction_id"]):
             raise ProtocolError("owner-protocol-failed")
-    if operation in ("connection-status", "connection-apply"):
+    if operation in ("connection-owner-status", "connection-apply"):
         answers_path = value["answers_path"]
         if (type(answers_path) is not str
                 or not answers_path.startswith("/") or not answers_path.endswith("/data/pixel/onboarding.json")
@@ -392,7 +392,7 @@ def provider_result(operation, value):
 def connection_result(operation, value):
     def checksum(item):
         return type(item) is str and HEX.fullmatch(item) is not None
-    if operation == "connection-status":
+    if operation == "connection-owner-status":
         from pixel_connections.planner import PlanError, target as connection_target
         from pixel_connections.state import ANSWER_KEYS
         completed = value.get("completion")

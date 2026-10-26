@@ -98,15 +98,24 @@ class Paths:
         return self.state / "results"
 
 
-def broker_ids() -> tuple[int, int]:
-    record = pwd.getpwnam(BROKER_USER)
+def account(name: str) -> tuple[int, int]:
+    """The UID and primary GID of a system account; KeyError when it does not exist."""
+    record = pwd.getpwnam(name)
     return record.pw_uid, record.pw_gid
 
 
+def broker_ids() -> tuple[int, int]:
+    return account(BROKER_USER)
+
+
 def _kit_bytes(paths: Paths, name: str) -> bytes:
-    """One kit file, refused unless root owns it and nobody else can write it."""
+    """One kit file, refused unless root owns it and nobody else can write it.
+
+    The access server proves its own program directory, which holds the kit,
+    before it serves anything; this checks the kit inside that directory.
+    """
     path = paths.kit / name
-    for item in (path, *path.parents):
+    for item in (path, path.parent, path.parent.parent):
         info = item.lstat()
         if stat.S_ISLNK(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
             raise CustodyError("source-broker-kit-unavailable")
@@ -152,17 +161,17 @@ def prepare(paths: Paths, run: Run, *, reader: str) -> None:
     except KeyError:
         _check(run, ["useradd", "--system", "--home-dir", "/nonexistent", "--shell", "/usr/sbin/nologin", BROKER_USER])
     uid, gid = broker_ids()
-    reader_record = pwd.getpwnam(reader)
-    if reader_record.pw_uid == 0:
+    reader_uid, reader_gid = account(reader)
+    if reader_uid == 0:
         raise CustodyError("source-broker-reader-unsafe")
     files = {name: _kit_bytes(paths, name) for name in KIT_FILES}
     _directory(paths.install, 0, 0, 0o755)
     _directory(paths.state, 0, 0, 0o755)
     _directory(paths.private, uid, gid, 0o700)
     _directory(paths.oauth, uid, gid, 0o700)
-    _directory(paths.projection, uid, reader_record.pw_gid, 0o2750)
-    _directory(paths.results, uid, reader_record.pw_gid, 0o2750)
-    _directory(paths.proposals, reader_record.pw_uid, gid, 0o2750)
+    _directory(paths.projection, uid, reader_gid, 0o2750)
+    _directory(paths.results, uid, reader_gid, 0o2750)
+    _directory(paths.proposals, reader_uid, gid, 0o2750)
     _install(paths.install / "broker.py", files["broker.py"], 0, 0, 0o755)
     for unit in UNITS:
         _install(paths.units / unit, files[unit], 0, 0, 0o644)

@@ -31,6 +31,8 @@ LIFECYCLE = lifecycle.PATH.name
 PATHS = custody.Paths()
 RUN = custody.system_run
 RECORD = state.PATH
+# Accounts that may own the record and the journal: root in production.
+OWNERS = (0,)
 HEX = re.compile(r"^[a-f0-9]{64}$")
 # Scopes that satisfy a capability, as the Source Broker reads them.
 GRANTED_BY = {
@@ -63,7 +65,7 @@ def _lifecycle_path(bridge) -> Path:
 
 def read_lifecycle(path: Path) -> dict[str, Any] | None:
     try:
-        return lifecycle.read(path)
+        return lifecycle.read(path, owners=OWNERS)
     except lifecycle.LifecycleError:
         raise AccessError("invalid-connection-journal") from None
 
@@ -87,7 +89,7 @@ def _lifecycle(phase: str, **values: Any) -> dict[str, Any]:
 
 def _record() -> dict[str, Any] | None:
     try:
-        return state.read(RECORD)
+        return state.read(RECORD, owners=OWNERS)
     except state.StateError:
         raise AccessError("connection-record-unusable") from None
 
@@ -459,7 +461,7 @@ def _finish(bridge, journal: dict[str, Any], outcome: str) -> str:
 
 
 def _owner_outcome(bridge, journal: dict[str, Any], result: dict[str, Any]) -> str:
-    owner = bridge.worker("connection-status")
+    owner = bridge.worker("connection-owner-status")
     _current, config_hash = _read(runtime_config_path(bridge), bridge.owner.pw_uid)
     outcome = {"runtime-verified": "applied", "rolled-back": "rolled-back"}.get(result.get("status"))
     if (outcome is None or owner["pending"] or owner["configSha256"] != config_hash
@@ -476,7 +478,7 @@ def _resume(bridge, journal: dict[str, Any]) -> str:
     """Settle a gateway change a crash or lost reply interrupted; never apply it twice."""
     _journal(journal)
     _acquire(bridge, journal)
-    owner = bridge.worker("connection-status")
+    owner = bridge.worker("connection-owner-status")
     hooks = dict(busy=lambda: _busy(bridge, journal), activate_connection=lambda: _restart(bridge, journal))
     if owner["pending"]:
         result = bridge.worker("connection-recover", config_hash=owner["configSha256"],
@@ -509,7 +511,7 @@ def _change_gateway(bridge, target: dict[str, Any], answers: dict[str, Any]) -> 
         raise AccessError("runtime-busy")
     if snapshot["configured_mode"] not in ("sandboxed", "full-access"):
         raise AccessError("connection-access-mode-unknown")
-    owner = bridge.worker("connection-status")
+    owner = bridge.worker("connection-owner-status")
     _config, config_hash = _read(runtime_config_path(bridge), bridge.owner.pw_uid)
     if owner["pending"] or owner["configSha256"] != config_hash:
         raise AccessError("connection-owner-state-changed")

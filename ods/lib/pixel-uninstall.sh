@@ -192,6 +192,7 @@ sources = {
     "provider_transaction.py": install / "extensions/services/pixel-agent/host/provider_transaction.py",
     "model_transaction.py": install / "extensions/services/pixel-agent/host/model_transaction.py",
     "access_release_transaction.py": install / "extensions/services/pixel-agent/host/access_release_transaction.py",
+    "connection_transaction.py": install / "extensions/services/pixel-agent/host/connection_transaction.py",
     "pixel_access_bridge.py": install / "bin/pixel_access_bridge.py",
     "pixel_source_upgrade.py": install / "bin/pixel_source_upgrade.py",
     "pixel_gateway_service.py": install / "bin/pixel_gateway_service.py",
@@ -210,7 +211,16 @@ for name in (
     "runtime_custody.py", "coordinator.py",
 ):
     sources[f"pixel_provider/{name}"] = install / "bin/pixel_provider" / name
-CONNECTION_MODULES = tuple(f"pixel_connections/{name}" for name in ("__init__.py", "state.py", "status.py", "catalog.py"))
+CONNECTION_MODULES = tuple(f"pixel_connections/{name}" for name in (
+    "__init__.py", "state.py", "status.py", "catalog.py", "oauth.py", "custody.py", "planner.py", "coordinator.py",
+    "lifecycle.py"))
+# The root-owned copy of Pixel's broker that a connect installs from. It mirrors this
+# install's Pixel checkout, which later configures may rewrite, so only its exact
+# names and root custody are checked.
+SOURCE_BROKER_KIT = tuple(f"pixel_connections/source-broker-kit/{name}" for name in (
+    "broker.py", "source-broker.env", "pixel-source-broker.service", "pixel-source-broker.timer",
+    "pixel-source-action@.service", "pixel-source-reconcile@.service", "pixel-source-direct.service",
+    "pixel-source-direct.path", "pixel-source-exchange@.service", "pixel-source-revoke.service"))
 for name in CONNECTION_MODULES:
     sources[name] = install / "bin" / name
 
@@ -222,7 +232,7 @@ for name in CONNECTION_MODULES:
 # remains mandatory, so a partial current bundle still fails closed.
 expected_sources = set(sources)
 for later_module in ("pixel_gateway_service.py", "access_release_transaction.py", "pixel_source_upgrade.py",
-                     *CONNECTION_MODULES):
+                     "connection_transaction.py", *CONNECTION_MODULES):
     if (not present(sources[later_module])
             and not present(program / later_module)):
         expected_sources.remove(later_module)
@@ -301,6 +311,7 @@ if present(program):
         pathlib.PurePosixPath("pixel_settings"),
         pathlib.PurePosixPath("pixel_provider"),
         pathlib.PurePosixPath("pixel_connections"),
+        pathlib.PurePosixPath("pixel_connections/source-broker-kit"),
         pathlib.PurePosixPath("__pycache__"),
         pathlib.PurePosixPath("pixel_settings/__pycache__"),
         pathlib.PurePosixPath("pixel_provider/__pycache__"),
@@ -327,6 +338,9 @@ if present(program):
                 if str(child) not in source_mirror and child.read_bytes() != source.read_bytes():
                     raise SystemExit(f"installed Pixel access program drifted: {relative}")
                 seen.add(relative)
+                continue
+            if relative in SOURCE_BROKER_KIT:
+                regular(child, root_uid, root_gid, 2 * 1024 * 1024)
                 continue
             parent = pathlib.PurePosixPath(relative).parent
             match = re.fullmatch(r"([A-Za-z0-9_]+)\.cpython-[0-9]{2,3}(?:\.opt-[0-9]+)?\.pyc", name)
@@ -424,6 +438,8 @@ state_limits = {
     "provider-root-managed.json": 8 * 1024 * 1024,
     "provider-verified.json": 512 * 1024,
     "provider-service-environment.json": 1024 * 1024,
+    # A connected app's step in progress; uninstall removes it with everything else.
+    "connection.json": 8192,
 }
 # A hard stop between mkstemp and os.replace can leave an incomplete
 # root-owned bridge write behind. It is not a receipt or pending transaction,
@@ -543,6 +559,94 @@ except OSError as error:
         raise
 print("removed")
 PY
+}
+
+# A connected Google account's Source Broker, installed by the access coordinator:
+# stop syncing, tell Google to forget ODS while the sign-in is still here, and delete
+# every token, projection, unit and the broker account. Nothing of it outlives ODS.
+# validate checks the targets only; remove changes them.
+ods_pixel_uninstall_source_broker() {
+    local mode="$1"
+    local systemd_dir="${ODS_PIXEL_UNINSTALL_SYSTEMD_DIR:-/etc/systemd/system}"
+    local etc_dir="${ODS_PIXEL_UNINSTALL_ETC_DIR:-/etc/ods}"
+    local source_env="${ODS_PIXEL_UNINSTALL_SOURCE_ENV:-/etc/pixel-source-broker.env}"
+    local source_install="${ODS_PIXEL_UNINSTALL_SOURCE_INSTALL_DIR:-/opt/pixel-source-broker}"
+    local source_state="${ODS_PIXEL_UNINSTALL_SOURCE_STATE_DIR:-/var/lib/pixel-source-broker}"
+    local source_user=pixel-source-broker record="$etc_dir/portal-connections.json"
+    local -a units=(pixel-source-broker.timer pixel-source-direct.path pixel-source-broker.service
+        pixel-source-direct.service pixel-source-action@.service pixel-source-reconcile@.service
+        pixel-source-exchange@.service pixel-source-revoke.service)
+    local unit present=false passwd_entry
+    [[ "$mode" == validate || "$mode" == remove ]] || return 1
+    [[ "$source_install" == /* && "${source_install##*/}" == pixel-source-broker \
+        && "$source_state" == /* && "${source_state##*/}" == pixel-source-broker \
+        && "$source_env" == /* && "${source_env##*/}" == pixel-source-broker.env ]] || {
+        log_error "Refusing Source Broker cleanup for unexpected targets"
+        return 1
+    }
+    for unit in "${units[@]}"; do
+        [[ -e "$systemd_dir/$unit" || -L "$systemd_dir/$unit" ]] && present=true
+    done
+    for path in "$source_state" "$source_install" "$source_env" "$record"; do
+        [[ -e "$path" || -L "$path" ]] && present=true
+    done
+    passwd_entry="$(getent passwd "$source_user" || true)"
+    [[ -n "$passwd_entry" ]] && present=true
+    [[ "$present" == true ]] || return 0
+    # Only the account the custodian creates: a system user with no home and no shell.
+    if [[ -n "$passwd_entry" && "$passwd_entry" != "$source_user:"*":/nonexistent:/usr/sbin/nologin" ]]; then
+        log_error "The pixel-source-broker account is not the one ODS created; nothing of the Source Broker was removed"
+        return 1
+    fi
+    for path in "$source_state" "$source_install"; do
+        if [[ -L "$path" ]] || { [[ -e "$path" ]] && [[ ! -d "$path" ]]; }; then
+            log_error "Refusing Source Broker cleanup for an unexpected $path"
+            return 1
+        fi
+    done
+    [[ "$mode" == remove ]] || return 0
+
+    for unit in pixel-source-broker.timer pixel-source-direct.path; do
+        [[ -e "$systemd_dir/$unit" ]] || continue
+        if ! timeout 30s sudo systemctl disable --now "$unit"; then
+            log_error "Could not stop the Source Broker's sync; nothing of it was removed"
+            return 1
+        fi
+    done
+    for unit in pixel-source-broker.service pixel-source-direct.service; do
+        [[ -e "$systemd_dir/$unit" ]] || continue
+        if ! timeout 120s sudo systemctl stop "$unit"; then
+            log_error "Could not stop the Source Broker's sync; nothing of it was removed"
+            return 1
+        fi
+    done
+    if sudo test -e "$source_state/private/google-token.json" && [[ -e "$systemd_dir/pixel-source-revoke.service" ]] \
+        && ! timeout 90s sudo systemctl start pixel-source-revoke.service; then
+        # Deleting the sign-in below is what removes ODS's access from this machine.
+        log_info "Google could not be told to forget ODS. Its sign-in is deleted from this machine; you can also remove ODS at https://myaccount.google.com/permissions"
+    fi
+    if ! sudo rm -rf -- "$source_state" "$source_install"; then
+        log_error "Could not delete the Source Broker's data; run the uninstall again"
+        return 1
+    fi
+    for unit in "${units[@]}"; do
+        if ! sudo rm -f -- "$systemd_dir/$unit"; then
+            log_error "Could not remove the Source Broker's units; run the uninstall again"
+            return 1
+        fi
+    done
+    if ! sudo rm -f -- "$source_env" "$record"; then
+        log_error "Could not remove the connected-apps settings; run the uninstall again"
+        return 1
+    fi
+    if ! timeout 30s sudo systemctl daemon-reload; then
+        log_error "Could not reload systemd after removing the Source Broker; run the uninstall again"
+        return 1
+    fi
+    if [[ -n "$passwd_entry" ]] && ! timeout 30s sudo userdel "$source_user"; then
+        log_error "Could not remove the pixel-source-broker account; run the uninstall again"
+        return 1
+    fi
 }
 
 ods_pixel_uninstall_managed() {
@@ -2312,6 +2416,7 @@ PY
         done
     fi
 
+    ods_pixel_uninstall_source_broker validate || return 1
     # Nothing above changes the deployment. ods-uninstall.sh runs this pass
     # before it changes Windows startup, then calls again to validate and remove.
     if [[ "${ODS_PIXEL_UNINSTALL_VALIDATE_ONLY:-false}" == true ]]; then
@@ -2319,6 +2424,8 @@ PY
     fi
 
     log_info "Removing the ODS-managed Pixel host deployment..."
+    # A connected Google account must not keep syncing once ODS is gone.
+    ods_pixel_uninstall_source_broker remove || return 1
     # Inspection has a separate root-only Docker broker. Validate its fixed
     # artifacts before stopping anything, and retire it before its publisher.
     local inspection_present=false project_present=false

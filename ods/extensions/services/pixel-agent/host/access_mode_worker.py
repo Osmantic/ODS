@@ -134,7 +134,7 @@ def main():
             home = os.environ["HOME"]
             env_path = os.path.join(home, ".config", "pixel-agent", "gateway.env")
             try:
-                if request["operation"] == "connection-status":
+                if request["operation"] == "connection-owner-status":
                     result = connection_transaction.connection_status(path, state_dir=state_dir, env_path=env_path,
                                                                       answers_path=request["answers_path"])
                 else:

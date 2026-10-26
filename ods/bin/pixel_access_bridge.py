@@ -783,7 +783,7 @@ class SystemdAccessBridge:
         if operation in ("settings-apply", "settings-recover", "provider-change", "provider-recover",
                          "connection-apply", "connection-recover"):
             request["transaction_id"] = transaction_id
-        if operation in ("connection-status", "connection-apply"):
+        if operation in ("connection-owner-status", "connection-apply"):
             request["answers_path"] = str(self.install / "data/pixel/onboarding.json")
         if operation == "connection-apply":
             request.update(connection_target=connection_target, connection_answers=connection_answers)
