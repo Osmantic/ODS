@@ -64,6 +64,7 @@ from performance_oracle import (
     find_catalog_model,
     load_model_catalog,
     model_files_dir as model_files_dir,
+    normalize_catalog_entry,
     planned_model_context,
     read_env_file_value,
     read_env_value,
@@ -2585,6 +2586,20 @@ def _find_loadable_model(model_id: str) -> Optional[dict]:
 
 def _find_normalized_model(model_id: str) -> Optional[dict]:
     return find_catalog_model(load_model_catalog(INSTALL_DIR), model_id, None)
+
+
+def loaded_model_display_name(loaded_model: str | None) -> str | None:
+    """The name the Models page shows for the model a runtime serves.
+
+    A runtime serves the model file name as its id (llama-server --alias), so
+    a status reader would show a file name. The first catalog entry matching
+    it is the one the Models page shows as loaded; None when none matches.
+    """
+    if not loaded_model:
+        return None
+    catalog = [entry for entry in map(normalize_catalog_entry, _load_library()) if entry is not None]
+    entry = find_catalog_model(catalog, loaded_model, loaded_model)
+    return entry["name"] if entry else None
 
 
 def _external_api_host(url: str) -> str | None:

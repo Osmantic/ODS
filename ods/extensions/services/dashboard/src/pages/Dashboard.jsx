@@ -660,6 +660,16 @@ function metricScopeLabel(scope) {
   return {host:'Host',wsl:'WSL',vm:'Virtual machine',container:'Container',unknown:'Scope unavailable'}[scope] || ''
 }
 
+// A runtime serves its model file name as the model id, sometimes with a
+// content hash. The API adds the name the Models page shows; without one,
+// show the id without its folder, file extension, shard number or hash.
+function loadedModelName(inference) {
+  if (inference?.loadedModelDisplayName) return inference.loadedModelDisplayName
+  const id = String(inference?.loadedModel || '').trim().split(/[\\/]/).pop()
+  return id.replace(/\.[a-z][a-z\d]{1,11}$/i, '').replace(/-\d{5}-of-\d{5}$/i, '')
+    .replace(/[-_.](?=[a-f\d]*[a-f])(?=[a-f\d]*\d)[a-f\d]{8,64}$/i, '') || id
+}
+
 function TelemetryNotice({telemetry}) {
   if (!telemetry?.stale) return null
   const sampledAt = Number.isFinite(telemetry.sampledAt) ? new Date(telemetry.sampledAt) : null
@@ -854,12 +864,16 @@ export default function Dashboard({ status, loading, compact = false }) {
     })
   }
 
-  systemMetrics.push({
-    icon: Thermometer,
-    label: remoteInference ? 'Client CPU Temp' : 'CPU Temp',
-    value: Number.isFinite(status?.cpu?.temp_c) ? `${status.cpu.temp_c}°C` : '—',
-    subvalue: Number.isFinite(status?.cpu?.temp_c) ? 'sensor reading' : 'telemetry unavailable',
-  })
+  // Windows and macOS host readings never include a CPU temperature, so the
+  // tile appears only with a reading instead of always saying unavailable.
+  if (Number.isFinite(status?.cpu?.temp_c)) {
+    systemMetrics.push({
+      icon: Thermometer,
+      label: remoteInference ? 'Client CPU Temp' : 'CPU Temp',
+      value: `${status.cpu.temp_c}°C`,
+      subvalue: 'sensor reading',
+    })
+  }
 
   if (status?.ram && (remoteInference || status?.gpu?.memoryType !== 'unified')) {
     systemMetrics.push({
@@ -914,7 +928,7 @@ export default function Dashboard({ status, loading, compact = false }) {
     {
       icon: Brain,
       label: 'Model',
-      value: (remoteInference ? status?.currentModel : status?.inference?.loadedModel) || '—',
+      value: (remoteInference ? status?.currentModel : loadedModelName(status?.inference)) || '—',
       subvalue: remoteInference ? (status?.currentModel ? 'selected API model' : 'not reported') : 'loaded',
     }
   )

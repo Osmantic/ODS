@@ -300,6 +300,44 @@ class TestBuildApiStatus:
         assert result["model"]["contextLength"] == 20480
         assert result["inference"]["contextSize"] == 20480
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("served,display_name", [
+        ("Qwen3.8-27B-UD-IQ4_XS.gguf", "Qwen 3.8 27B"),
+        ("community-Q4_K_M.gguf", "community-model · Q4_K_M"),
+        ("Uncatalogued-12B-NVFP4-6c01ac37.pack", None),
+    ], ids=["catalog", "hub-import", "uncatalogued"])
+    async def test_names_the_served_model_as_the_models_page_does(self, monkeypatch, tmp_path, served, display_name):
+        import routers.models as models_router
+        from models import BootstrapStatus, ModelInfo
+
+        # The runtime serves the file name; the Models page shows the catalog name.
+        library = tmp_path / "model-library.json"
+        library.write_text(json.dumps({"models": [
+            {"id": "qwen3.8-27b-iq4-xs", "name": "Qwen 3.8 27B", "gguf_file": "Qwen3.8-27B-UD-IQ4_XS.gguf"},
+        ]}), encoding="utf-8")
+        (tmp_path / "model-imports.json").write_text(json.dumps({"models": [
+            {"id": "hf-community", "name": "community-model · Q4_K_M", "gguf_file": "community-Q4_K_M.gguf",
+             "source": "huggingface"},
+        ]}), encoding="utf-8")
+        monkeypatch.setattr(models_router, "_LIBRARY_PATH", library)
+        monkeypatch.setattr(models_router, "DATA_DIR", str(tmp_path))
+        monkeypatch.setattr("main.get_gpu_info", lambda: None)
+        monkeypatch.setattr("main.get_all_services", AsyncMock(return_value=[]))
+        monkeypatch.setattr("main.get_model_info", lambda: ModelInfo(name="qwen3.8-27b-iq4-xs", size_gb=14.0, context_length=65536))
+        monkeypatch.setattr("main.get_bootstrap_status", lambda: BootstrapStatus(active=False))
+        monkeypatch.setattr("main.get_loaded_model", AsyncMock(return_value=served))
+        monkeypatch.setattr("main.get_llama_metrics", AsyncMock(return_value={"tokens_per_second": 0, "lifetime_tokens": 0}))
+        monkeypatch.setattr("main.get_llama_context_size", AsyncMock(return_value=65536))
+        monkeypatch.setattr("main.get_uptime", lambda: 0)
+        monkeypatch.setattr("main.get_cpu_metrics", lambda: {"percent": 0, "temp_c": None})
+        monkeypatch.setattr("main.get_ram_metrics", lambda: {"used_gb": 0, "total_gb": 0, "percent": 0})
+
+        result = await _build_api_status()
+
+        # Identity stays the served id; only the display name is added.
+        assert result["loadedModel"] == result["inference"]["loadedModel"] == served
+        assert result["inference"]["loadedModelDisplayName"] == display_name
+
     def test_detected_gpu_count_overrides_stale_compose_default(self, monkeypatch):
         from main import _serialize_gpu
         from models import GPUInfo

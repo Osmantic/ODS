@@ -1522,7 +1522,7 @@ async def api_status(api_key: str = Depends(verify_api_key)):
                           "throughputSampledAt": last_inference.get("throughput_sampled_at"),
                           "throughputModel": last_inference.get("throughput_model"),
                           "inferenceActive": None,
-                          "loadedModel": None, "contextSize": None},
+                          "loadedModel": None, "loadedModelDisplayName": None, "contextSize": None},
             "manifest_errors": _public_manifest_errors(),
         }
         env_file_read_error = get_env_file_read_error()
@@ -1692,6 +1692,11 @@ async def _build_api_status() -> dict:
         }
 
     loaded_model_name = None if remote_runtime or cloud_mode else loaded_model or (model_data["name"] if model_data else None)
+    # The served id is a file name; the dashboard shows the Models page's name.
+    loaded_model_display_name = (
+        await asyncio.to_thread(models_router.loaded_model_display_name, loaded_model_name)
+        if loaded_model_name else None
+    )
     current_model_name = remote_runtime["model"] if remote_runtime else loaded_model_name
     configured_model_name = model_data["configuredModel"] if model_data else model_info.name if model_info else None
 
@@ -1717,6 +1722,7 @@ async def _build_api_status() -> dict:
             "throughputModel": llama_metrics_data.get("throughput_model"),
             "inferenceActive": llama_metrics_data.get("inference_active"),
             "loadedModel": loaded_model_name,
+            "loadedModelDisplayName": loaded_model_display_name,
             "contextSize": context_size or (model_data["contextLength"] if model_data else None),
         },
         "manifest_errors": _public_manifest_errors(),

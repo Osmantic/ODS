@@ -289,12 +289,47 @@ describe('Dashboard system overview', () => {
     expect(history[0]).toMatchObject({model:'new-owner',tokensPerSecond:24.8})
   })
 
-  it.each([[73,'73°C'],[0,'0°C'],[null,'—'],[undefined,'—']])('shows CPU thermal reading %s without substituting GPU or system temperature', async (temp_c,expected) => {
+  it.each([[73,'73°C'],[0,'0°C']])('shows CPU thermal reading %s without substituting GPU or system temperature', async (temp_c,expected) => {
     render(<Dashboard compact status={{...baseStatus,cpu:{percent:38,temp_c},gpu:{name:'GPU',temperature:55,memoryType:'discrete'}}} loading={false}/>)
     const thermal=screen.getByText('CPU Temp').closest('.dashboard-metric-row')
     expect(within(thermal).getByText(expected)).toBeVisible()
-    expect(within(thermal).getByText(temp_c == null ? 'telemetry unavailable' : 'sensor reading')).toBeVisible()
+    expect(within(thermal).getByText('sensor reading')).toBeVisible()
     expect(within(thermal).queryByText('55°C')).toBeNull()
+    await waitFor(()=>expect(fetch).toHaveBeenCalledWith('/api/features'))
+  })
+
+  it.each([null,undefined])('leaves out CPU Temp when the platform reports no CPU temperature (%s) and keeps the GPU and RAM readings', async temp_c => {
+    // Windows host readings carry CPU use but never a CPU temperature.
+    render(<Dashboard compact status={{...baseStatus,
+      cpu:{percent:12,temp_c,scope:'host',source:'windows-cim'},
+      ram:{used_gb:21.4,total_gb:128,percent:17,scope:'host'},
+      gpu:{name:'NVIDIA GeForce RTX 4090',memoryType:'discrete',utilization:3,vramUsed:10,vramTotal:24,temperature:41,powerDraw:4}}} loading={false}/>)
+    expect(screen.queryByText('CPU Temp')).toBeNull()
+    expect(screen.queryByText('telemetry unavailable')).toBeNull()
+    expect(within(screen.getByText('CPU').closest('.dashboard-metric-row')).getByText('12%')).toBeVisible()
+    const gpuTemp=screen.getByText('GPU Temp').closest('.dashboard-metric-row')
+    expect(within(gpuTemp).getByText('41°C')).toBeVisible()
+    expect(within(gpuTemp).getByText('normal')).toBeVisible()
+    const power=screen.getByText('GPU Power').closest('.dashboard-metric-row')
+    expect(within(power).getByText('4W')).toBeVisible()
+    expect(within(power).getByText('live')).toBeVisible()
+    expect(within(screen.getByText('RAM').closest('.dashboard-metric-row')).getByText('21.4 GB')).toBeVisible()
+    await waitFor(()=>expect(fetch).toHaveBeenCalledWith('/api/features'))
+  })
+
+  it.each([
+    [{loadedModel:'Qwen3.8-27B-UD-IQ4_XS.gguf',loadedModelDisplayName:'Qwen 3.8 27B'},'Qwen 3.8 27B'],
+    [{loadedModel:'Example-Chat-12B-NVFP4-6c01ac37.pack'},'Example-Chat-12B-NVFP4'],
+    [{loadedModel:'/models/Example-Chat-12B-Q4_K_M-00001-of-00003.gguf'},'Example-Chat-12B-Q4_K_M'],
+    [{loadedModel:'Qwen2.5-1.5B'},'Qwen2.5-1.5B'],
+    [{loadedModel:'example-chat-20250131'},'example-chat-20250131'],
+    [{loadedModel:null},'—'],
+  ])('names the loaded model %j by its display name, never its file name', async (inference,expected) => {
+    render(<Dashboard compact status={{...baseStatus,inference:{...baseStatus.inference,...inference}}} loading={false}/>)
+    const model=screen.getByText('Model').closest('.dashboard-metric-row')
+    expect(within(model).getByText(expected)).toBeVisible()
+    expect(within(model).getByText('loaded')).toBeVisible()
+    if(inference.loadedModel && inference.loadedModel !== expected) expect(within(model).queryByText(inference.loadedModel)).toBeNull()
     await waitFor(()=>expect(fetch).toHaveBeenCalledWith('/api/features'))
   })
 

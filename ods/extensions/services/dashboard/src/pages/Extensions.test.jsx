@@ -63,9 +63,14 @@ it.each([false, true])('shows LiteLLM as an API service without an unsupported A
   expect(gateway.queryByRole('link')).toBeNull()
   expect(gateway.getByRole('button', { name: 'Logs' })).toBeEnabled()
 
-  // Actual web applications retain their published launch port.
+  // Actual web applications open on their published launch port. The link
+  // says Open; the port is only in its tooltip.
   const webApp = within(screen.getByText('IT-Tools').closest('article'))
-  expect(webApp.getByRole('link', { name: ':8089' })).toHaveAttribute('href', 'http://localhost:8089')
+  const launch = webApp.getByRole('link', { name: 'Open IT-Tools' })
+  expect(launch).toHaveAttribute('href', 'http://localhost:8089')
+  expect(launch).toHaveTextContent(/^Open$/)
+  expect(launch).toHaveAttribute('title', 'Open IT-Tools on port 8089')
+  expect(webApp.queryByText(':8089')).toBeNull()
   expect(webApp.getByRole('button', { name: 'Logs' })).toBeEnabled()
 
   fireEvent.click(gateway.getByRole('button', { name: 'Details for LiteLLM (API Gateway)' }))
@@ -1031,8 +1036,10 @@ it('opens enabled Hermes through its ODS authenticated proxy entry', async () =>
   ],summary:baseSummary({total:2,installed:2})})
   render(<Extensions compact />)
   const agentCard = (await screen.findByRole('heading',{name:'Hermes Agent'})).closest('article')
-  expect(within(agentCard).getByRole('link',{name:':9120'})).toHaveAttribute(
-    'href','http://localhost:9120/auth/ods')
+  const launch = within(agentCard).getByRole('link',{name:'Open Hermes Agent'})
+  expect(launch).toHaveAttribute('href','http://localhost:9120/auth/ods')
+  expect(launch).toHaveTextContent(/^Open$/)
+  expect(launch).toHaveAttribute('title','Open Hermes Agent on port 9120')
 })
 
 it('re-checks the ODS session before opening Hermes from its card', async () => {
@@ -1052,7 +1059,7 @@ it('re-checks the ODS session before opening Hermes from its card', async () => 
   vi.spyOn(window, 'open').mockReturnValue(tab)
   render(<Extensions compact />)
   const agentCard = (await screen.findByRole('heading',{name:'Hermes Agent'})).closest('article')
-  expect(fireEvent.click(within(agentCard).getByRole('link',{name:':9120'}))).toBe(false)
+  expect(fireEvent.click(within(agentCard).getByRole('link',{name:'Open Hermes Agent'}))).toBe(false)
   expect(window.open).toHaveBeenCalledWith('', '_blank')
   await waitFor(() => expect(tab.location.replace).toHaveBeenCalledWith('http://localhost:9120/auth/ods'))
   expect(fetchMock).toHaveBeenCalledWith('/api/auth/admin-session', expect.objectContaining({method:'POST'}))
