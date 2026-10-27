@@ -62,6 +62,10 @@ const CONTROL_CHARACTERS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
 // Tool-call syntax emitted as text is an attempted call, not an answer.
 const TOOL_CALL_TEXT = /<\/?tool_call\b|<\|tool_call|<function[=\s>]|<\/function>|"tool_calls"\s*:|^\s*\{\s*"name"\s*:\s*"[^"\n]{1,128}"\s*,\s*"(?:arguments|parameters)"\s*:/m;
 const LOCAL_URL = /\b(?:https?|wss?):\/\/(?:[^\s/?#@]*@)?(?:localhost|[a-z0-9.-]*\.localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[::1?\]|host\.docker\.internal)(?::\d+)?(?:[/?#][^\s<>"'`)\]]*)?/gi;
+// Any link that names a workspace preview site, on whatever host. Unless it is
+// the allowed preview, the model made it up (Workstation06, 2026-10-27:
+// https://portal-odsp-….d.ods.workspace/preview/site-c9def…/… for a real site).
+const PREVIEW_SITE_URL = /\b(?:https?|wss?):\/\/[^\s<>"'`)\]]*\bsite-[0-9a-f]{24}\b[^\s<>"'`)\]]*/gi;
 
 // Returns the sanitized answer, or undefined when it cannot be delivered.
 export function progressFinalizationAnswer(text, options) {
@@ -73,7 +77,8 @@ export function progressFinalizationAnswer(text, options) {
 
 // The checks every host-composed answer needs (preview-explanation.mjs too):
 // visible text within bounds, no tool-call text or echoed stop text, and, when
-// local URLs are forbidden, none other than the allowed preview.
+// local URLs are forbidden, no local or preview-site link other than the
+// allowed preview.
 export function deliverableAnswer(text, {localUrlsForbidden = false, allowedUrls = []} = {}) {
   if (typeof text !== 'string') return undefined;
   const answer = text.replace(CONTROL_CHARACTERS, '').trim();
@@ -84,7 +89,7 @@ export function deliverableAnswer(text, {localUrlsForbidden = false, allowedUrls
   // Echoing the stop text or instruction is not an answer to the owner.
   if (answer.includes(RUN_PROGRESS_STOP_REASON) || answer.includes('[ODS Pixel tool limit]')) return undefined;
   if (localUrlsForbidden) {
-    for (const match of answer.matchAll(LOCAL_URL)) {
+    for (const match of [...answer.matchAll(LOCAL_URL), ...answer.matchAll(PREVIEW_SITE_URL)]) {
       const url = match[0].replace(/[.,;:!?]+$/, '');
       if (!allowedUrls.some(allowed => typeof allowed === 'string' && allowed && url.startsWith(allowed.replace(/\/$/, ''))))
         return undefined;
