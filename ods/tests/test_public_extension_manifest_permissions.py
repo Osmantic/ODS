@@ -109,7 +109,83 @@ def _snapshot_modes(paths: dict[str, Path]) -> dict[str, int]:
     return {k: _mode(v) for k, v in paths.items()}
 
 
+def _make_dashboard_files(root: Path) -> dict[str, Path]:
+    paths = {}
+    with _Umask(0o077):
+        for directory, names in _mod.PUBLIC_DASHBOARD_FILES.items():
+            parent = root / directory
+            parent.mkdir(exist_ok=True)
+            paths[directory] = parent
+            for name in names:
+                leaf = parent / name
+                leaf.write_text("{}", encoding="utf-8")
+                paths[f"public_{directory}_{name}"] = leaf
+        (root / "config/n8n").mkdir()
+        for name in ("config/private.json", "config/n8n/catalog.json", "templates/custom-private.yaml"):
+            leaf = root / name
+            leaf.write_text("private fixture", encoding="utf-8")
+            paths[f"private_{name}"] = leaf
+    return paths
+
+
 class PrepareExtensionManifestsTests(unittest.TestCase):
+    def test_dashboard_public_scope_and_private_preservation(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            paths = _make_tree(root, 0o077)
+            paths.update(_make_dashboard_files(root))
+            before = {key: path.read_bytes() for key, path in paths.items() if path.is_file()}
+            self._run(root)
+            self.assertEqual(_mode(paths["config"]), 0o711)
+            self.assertEqual(_mode(paths["templates"]), 0o755)
+            for key, path in paths.items():
+                if key.startswith("public_"):
+                    self.assertEqual(_mode(path), 0o644)
+                if key.startswith("private_") or key == "env":
+                    self.assertEqual(_mode(path), 0o600)
+            self.assertEqual(_mode(root / "config/n8n"), 0o700)
+            self.assertEqual({key: paths[key].read_bytes() for key in before}, before)
+            self.assertEqual(self._run(root)[1], 0)
+
+    def test_dashboard_unsafe_leaf_refused_before_any_mutation(self) -> None:
+        for kind in ("symlink", "hardlink", "fifo"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                paths = _make_tree(root, 0o077)
+                paths.update(_make_dashboard_files(root))
+                leaf = root / "config/core-service-ids.json"
+                if kind == "hardlink":
+                    os.link(leaf, root / "linked-copy")
+                else:
+                    leaf.unlink()
+                    if kind == "symlink":
+                        leaf.symlink_to(root / ".env")
+                    else:
+                        os.mkfifo(leaf)
+                before = _snapshot_modes(paths)
+                with self.assertRaises(_mod.ManifestPermissionError):
+                    self._run(root)
+                self.assertEqual(_snapshot_modes(paths), before)
+
+    def test_dashboard_private_protected_leaf_refused_before_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            paths = _make_tree(root, 0o077)
+            paths.update(_make_dashboard_files(root))
+            for key, path in paths.items():
+                if key.startswith("manifest_") or key.startswith("public_"):
+                    path.chmod(0o644)
+            (root / "templates/voice-assistant.yaml").chmod(0o600)
+            before = _snapshot_modes(paths)
+            with self.assertRaisesRegex(_mod.ManifestPermissionError, "protected source"):
+                _mod.prepare(root, preserve_file_modes=True)
+            self.assertEqual(_snapshot_modes(paths), before)
+
+    def test_dashboard_template_allowlist_matches_bundled_templates(self) -> None:
+        templates = _HERE.parent.parent / "templates"
+        self.assertEqual(set(_mod.PUBLIC_DASHBOARD_FILES["templates"]),
+                         {path.name for path in templates.glob("*.yaml")})
+
     def test_protected_source_inventory_is_unchanged(self) -> None:
         spec = importlib.util.spec_from_file_location(
             "pixel_source_upgrade", _HERE.parent.parent / "bin/pixel_source_upgrade.py"
@@ -120,6 +196,10 @@ class PrepareExtensionManifestsTests(unittest.TestCase):
             root = Path(td) / "install"
             root.mkdir(mode=0o700)
             paths = _make_tree(root, 0o077)
+            paths.update(_make_dashboard_files(root))
+            for key, path in paths.items():
+                if key.startswith("public_"):
+                    path.chmod(0o644)
             for name in upgrade.ROOTS:
                 (root / name).mkdir(exist_ok=True)
             for key, mode in (("manifest_ape", 0o644), ("manifest_beta", 0o755),
@@ -351,6 +431,7 @@ class PrepareExtensionManifestsTests(unittest.TestCase):
             root.mkdir()
             paths = _make_tree(root, 0o077)
             nobody = pwd.getpwnam("nobody")
+            paths.update(_make_dashboard_files(root))
 
             def can_read(path):
                 pid = os.fork()
@@ -372,6 +453,11 @@ class PrepareExtensionManifestsTests(unittest.TestCase):
             for key in ("manifest_ape", "manifest_beta", "manifest_gamma"):
                 self.assertTrue(can_read(paths[key]), key)
             self.assertFalse(can_read(paths["private_ape"]))
+            for key, path in paths.items():
+                if key.startswith("public_"):
+                    self.assertTrue(can_read(path), key)
+                if key.startswith("private_") or key == "env":
+                    self.assertFalse(can_read(path), key)
 
 
 if __name__ == "__main__":
