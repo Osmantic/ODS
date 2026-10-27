@@ -1304,7 +1304,8 @@ app.include_router(talk.router)
 app.include_router(tailscale.router)
 app.include_router(usage.router)
 app.include_router(node.router)
-from routers import pixel_approval_terminal
+from routers import pixel_approval_terminal, local_chat
+app.include_router(local_chat.router)
 app.include_router(pixel_approval_terminal.router)
 app.include_router(pixel.router)
 app.include_router(pixel_teams.router)
