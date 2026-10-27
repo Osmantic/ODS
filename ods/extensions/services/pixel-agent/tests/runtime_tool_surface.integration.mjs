@@ -130,6 +130,56 @@ test('disabled search preserves the input tools', () => {
   assert.deepEqual(result.tools, [...controls, read]);
 });
 
+test('discovery bounds long manuals while describe and dispatch retain the complete original tool', async () => {
+  const description='Calendar read summary. '+ 'Detailed operating instructions. '.repeat(160)
+    + 'Final approval rule and distinctive-calendar-needle.';
+  const original={...tool('calendar_specialist'),description,
+    parameters:{type:'object',required:['date'],properties:{date:{type:'string',description:'Use the full date.'}}}};
+  const {catalogRef}=run([original]);
+  const dispatched=[];
+  const ctx={agentId:'pixel',catalogRef,config:{tools:{toolSearch:{enabled:true,mode:'tools'}}},
+    executeTool:async params=>{dispatched.push(params);return {content:[{type:'text',text:'original-read-receipt'}]};}};
+  const api=Object.fromEntries(createControls(ctx).map(value=>[value.name,value]));
+  // Matching still uses the full description, including text outside the summary.
+  const found=await api.tool_search.execute('find',{query:'distinctive-calendar-needle'});
+  assert.equal(found.details.length,1);
+  const entry=found.details[0];
+  assert.equal(entry.name,original.name);
+  assert.ok(entry.description.length<=180,'discovery must not inject the complete manual');
+  assert.ok(entry.description.endsWith('...'),'a shortened summary must be recognizable');
+  assert.deepEqual(JSON.parse(found.content[0].text),found.details,'the bounded search reply stays valid JSON');
+  const described=await api.tool_describe.execute('describe',{id:entry.id});
+  assert.equal(described.details.description,description,'full instructions remain available through describe');
+  assert.deepEqual(described.details.parameters,original.parameters);
+  for(const key of ['id','source','sourceName','name','label'])assert.equal(entry[key],described.details[key]);
+  const args={date:'2026-10-29'};
+  await api.tool_call.execute('read',{id:entry.id,args});
+  assert.equal(dispatched.length,1);
+  assert.equal(dispatched[0].tool,original);
+  assert.deepEqual(dispatched[0].input,args);
+  assert.equal(original.description,description);
+});
+
+test('ordinary discovery pages fit the result limit and keep upstream descriptions outside the Portal tools mode', async () => {
+  const originals=Array.from({length:5},(_,index)=>({...tool('calendar_'+index),description:'Calendar manual. '+ 'Details. '.repeat(600)}));
+  // Directory mode does not register search controls or a searchable catalog.
+  for(const [agentId,mode] of [['pixel','tools'],['other-agent','tools'],['pixel','code']]) {
+    const config={tools:{toolSearch:{enabled:true,mode}}};
+    const catalogRef=createRef();
+    const ctx={agentId,catalogRef,config,runId:randomUUID()};
+    const nativeControls=createControls(ctx);
+    const applied=apply({...ctx,tools:[...nativeControls,...originals]});
+    assert.equal(applied.catalogRegistered,true,`${agentId}/${mode} must have a real catalog`);
+    const api=Object.fromEntries(nativeControls.map(value=>[value.name,value]));
+    const found=await api.tool_search.execute('find',{query:'calendar',limit:5});
+    assert.equal(found.details.length,5);
+    if(agentId==='pixel' && mode==='tools') {
+      assert.ok(found.content[0].text.length<3000,'a normal five-result page must not be cut at the 4K tool-result limit');
+      assert.deepEqual(JSON.parse(found.content[0].text),found.details);
+    } else for(const entry of found.details)assert.equal(entry.description,originals[0].description);
+  }
+});
+
 test('tool visibility is independent of owner language and request content', () => {
   const tools = [tool('read'), tool('pixel_ods_skill'), tool('specialist')];
   for (const prompt of ['instale a extensÃ£o', 'do not install; research only', 'sim', 'éŸ³æ¥½']) {
