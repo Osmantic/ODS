@@ -740,7 +740,7 @@ if [[ "$BOOTSTRAP_REINSTALL" == "true" || "$BOOTSTRAP_RECOVER_STRANDED" == "true
 
     if [[ "$BOOTSTRAP_REINSTALL" == "true" ]]; then
         log "Removing the existing installation with the requested candidate uninstaller..."
-        candidate_uninstall_args=(--install-dir "$INSTALL_DIR" --force)
+        candidate_uninstall_args=(--install-dir "$INSTALL_DIR" --force --preserve-broker-state)
         if [[ "$BOOTSTRAP_KEEP_MODELS" == true ]]; then
             candidate_uninstall_args+=(--keep-models)
         fi
