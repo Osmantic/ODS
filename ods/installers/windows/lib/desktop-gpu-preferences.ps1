@@ -240,7 +240,8 @@ function Set-ODSWindowsUserGpuPreference {
         [ValidateSet('high_performance', 'power_saving', 'let_windows_decide')]
         [string]$Mode = 'high_performance',
         [bool]$RespectExisting = $true,
-        [string]$RegistryPath = $script:ODSDirectXGpuPreferencesRegistryPath
+        [string]$RegistryPath = $script:ODSDirectXGpuPreferencesRegistryPath,
+        [AllowNull()][System.Collections.IDictionary]$MockRegistry = $null
     )
 
     $code = switch ($Mode) {
@@ -249,11 +250,15 @@ function Set-ODSWindowsUserGpuPreference {
         default              { 2 }
     }
 
-    if (-not (Test-Path -LiteralPath $RegistryPath)) {
+    if ($null -eq $MockRegistry -and -not (Test-Path -LiteralPath $RegistryPath)) {
         New-Item -Path $RegistryPath -Force | Out-Null
     }
 
-    $existingEntries = Get-ODSDirectXGpuPreferenceEntries -RegistryPath $RegistryPath
+    $existingEntries = if ($null -ne $MockRegistry) {
+        $MockRegistry
+    } else {
+        Get-ODSDirectXGpuPreferenceEntries -RegistryPath $RegistryPath
+    }
     $results = [Collections.Generic.List[object]]::new()
 
     foreach ($rawPath in $ExecutablePaths) {
@@ -285,7 +290,11 @@ function Set-ODSWindowsUserGpuPreference {
 
         $targetKey = if ($existingKey) { $existingKey } else { $fullPath }
         $newRaw = ConvertTo-ODSDirectXGpuPreferenceString -PreferenceCode $code -ExistingRawValue $existingRaw
-        New-ItemProperty -LiteralPath $RegistryPath -Name $targetKey -Value $newRaw -PropertyType String -Force | Out-Null
+        if ($null -ne $MockRegistry) {
+            $MockRegistry[$targetKey] = $newRaw
+        } else {
+            New-ItemProperty -LiteralPath $RegistryPath -Name $targetKey -Value $newRaw -PropertyType String -Force | Out-Null
+        }
         $parsedNew = ConvertFrom-ODSDirectXGpuPreferenceString -RawValue $newRaw
         $results.Add([pscustomobject]@{
             ExecutablePath    = $fullPath
