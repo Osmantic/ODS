@@ -4978,6 +4978,29 @@ function ownerRequestsFileHandoff(lane) {
   });
 }
 
+// An explicit artifact-tool request is a file handoff even when the owner
+// says "re-publish" instead of "download". Keep the verb, object and tool in
+// one direct request; publishing a site or quoting an example does not count.
+function ownerRequestsArtifactPublication(lane) {
+  const clauses=lane.split(/[!?;\n]+|\.(?=\s|$)/).map(value=>value.trim());
+  const named=String.raw`["'\x60]?(?:[A-Za-z0-9_.-]+[/\\])*[A-Za-z0-9_.-]+\.(?:md|txt|csv|tsv|json|pdf|zip|rar|docx|xlsx|pptx)["'\x60]?`;
+  const object=`(?:(?:the|this|that|my|our|a|an)\\s+)?(?:project|files?|documents?|archives?|bundle|${named})`;
+  const request=new RegExp(`^(?:please\\s+)?(?:(?:can|could|would|will)\\s+you\\s+(?:please\\s+)?)?`+
+    `(?:re-?publish|publish)\\s+(${object})\\s+(?:with|using|via)\\s+(?:the\\s+)?`+
+    `(?:(?:sourcePath\\s+)?(?:workspace\\s+)?artifact(?:\\s+publication)?|pixel_ods_workspace_artifact)\\s+tool`+
+    `(?:\\s*,?\\s+and\\s+(?:give|provide|return)\\s+(?:me\\s+)?(?:a\\s+)?(?:concise\\s+)?final\\s+(?:response|answer))?\\s*$`,'i');
+  const withdrawal=new RegExp(`^(?:actually,?\\s+)?(?:please\\s+)?(?:do\\s+not|don['’]t|never|must\\s+not|should\\s+not)\\s+`+
+    `(?:re-?publish|publish|send|attach|deliver)\\s+(anything|it|them|${object})(?:\\s+(?:with|using|via)\\s+.*)?\\s*$`,'i');
+  const normalize=value=>value.toLowerCase().replace(/^(?:the|this|that|my|our|a|an)\s+/,'').replace(/["'`]/g,'');
+  const refused=clauses.map(clause=>withdrawal.exec(clause)?.[1]).filter(Boolean).map(normalize);
+  return clauses.some(clause=>{
+    const match=request.exec(clause);
+    if(!match)return false;
+    const target=normalize(match[1]);
+    return !refused.some(value=>['anything','it','them','files','documents','archives'].includes(value)||value===target);
+  });
+}
+
 // This selects prompt guidance only; it grants no tool or publication authority.
 export function userMessageRequestsWorkspaceDocumentDelivery(messages, prompt = undefined) {
   const text = currentOwnerIntentText(messages, prompt);
@@ -5018,6 +5041,7 @@ export function userMessageRequestsWorkspaceDocumentDelivery(messages, prompt = 
   // a publication request. Preserve the existing download/attachment phrases
   // and deliver verb without combining a schedule with a file mention.
   if (ownerRequestsFileHandoff(lane)) return true;
+  if (ownerRequestsArtifactPublication(lane)) return true;
   return /\b(?:download(?:able)?|attach(?:ment)?|deliver)\b/i.test(positive) &&
     (/\.(?:md|markdown|txt|csv|tsv|json|pdf|zip|rar|docx|xlsx|pptx)\b/i.test(positive) ||
       (/\b(?:documents?|files?|archives?|projects?|source\s+(?:code|filenames?))\b/i.test(positive) &&
