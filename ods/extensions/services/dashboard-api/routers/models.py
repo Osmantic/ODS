@@ -83,7 +83,20 @@ _MODELS_DIR = Path(DATA_DIR) / "models"
 
 def _installed_model_paths() -> dict[str, Path]:
     from model_stores import scan_model_files
-    return scan_model_files(Path(DATA_DIR), container=Path("/.dockerenv").exists(), default_dir=_MODELS_DIR)
+    paths = dict(scan_model_files(Path(DATA_DIR), container=Path("/.dockerenv").exists(), default_dir=_MODELS_DIR))
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        from native_llm import get_native_models_directories
+        for directory in get_native_models_directories():
+            if not directory.is_dir():
+                continue
+            try:
+                for entry in directory.iterdir():
+                    if entry.is_file() and entry.name.lower().endswith(".gguf"):
+                        paths.setdefault(entry.name, entry)
+            except OSError:
+                continue
+    return paths
 
 
 def _installed_model_path(filename: str) -> Path | None:
@@ -3337,3 +3350,42 @@ def delete_model(model_id: str, api_key: str = Depends(verify_api_key)):
     # 20 s leaves the delete itself inside the Models page's 35 s deadline.
     return _request_agent_waiting_short_holds("/v1/model/delete", payload, "this model cannot be deleted yet",
                                               grace_seconds=20.0)
+
+
+@router.get("/api/models/native-desktop/status", dependencies=[Depends(verify_api_key)])
+async def native_desktop_models_status() -> dict[str, Any]:
+    """Return local GGUF models, active model, and GPU preference in Windows Desktop mode."""
+    from native_llm import get_native_llm_status
+
+    return await get_native_llm_status()
+
+
+@router.post("/api/models/native-desktop/select", dependencies=[Depends(verify_api_key)])
+async def native_desktop_select_model(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Select an installed local .gguf model for the Windows Desktop runtime."""
+    from native_llm import list_local_gguf_models
+
+    gguf_file = str(body.get("ggufFile") or body.get("model") or "").strip()
+    context_size = int(body.get("contextLength") or body.get("contextSize") or 8192)
+    if not gguf_file or not gguf_file.lower().endswith(".gguf") or "/" in gguf_file or "\\" in gguf_file:
+        raise HTTPException(status_code=400, detail="Valid .gguf filename is required")
+    if context_size < 1024 or context_size > 262144:
+        raise HTTPException(status_code=400, detail="contextLength must be between 1024 and 262144")
+
+    installed = list_local_gguf_models()
+    matched = next((m for m in installed if m["filename"].lower() == gguf_file.lower()), None)
+    if matched is None:
+        raise HTTPException(status_code=404, detail=f"Model {gguf_file!r} is not installed in the local model store")
+
+    selection_path = Path(DATA_DIR) / "selected-model.json"
+    selection_record = {
+        "schemaVersion": 1,
+        "ggufFile": matched["filename"],
+        "modelPath": matched["path"],
+        "contextLength": context_size,
+        "updatedAt": int(time.time() * 1000),
+    }
+    selection_path.parent.mkdir(parents=True, exist_ok=True)
+    selection_path.write_text(json.dumps(selection_record, indent=2), encoding="utf-8")
+    return {"status": "selected", "selection": selection_record}
+

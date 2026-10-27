@@ -28,7 +28,7 @@ from runtime_projection import active_runtime_projection as _active_runtime_proj
 from pixel_runtime_state import begin_pixel_stream, end_pixel_stream, try_begin_pixel_stream
 from pixel_chat_results import ChatResultStore, ResultCapacity, ResultConflict, owner_namespace
 from security import verify_api_key
-from config import read_live_env_value
+from config import WINDOWS_DESKTOP_PROFILE, read_live_env_value
 from context_policy import PIXEL_MIN_CONTEXT
 from helpers import get_loaded_model, get_llama_context_size
 from pixel_chat_identity import messages_with_identity
@@ -755,10 +755,58 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
     return result
 
 
+async def _native_windows_status_projection() -> tuple[dict[str, object], bool]:
+    """Return Pixel status projection backed directly by native llama-server on Windows Desktop."""
+    from native_llm import get_native_llm_status
+
+    native = await get_native_llm_status()
+    available = bool(native.get("available"))
+    loaded_model = native.get("model")
+    ctx_len = int(native.get("contextLength") or 8192)
+    identity = unknown_runtime_identity()
+    readiness = project_readiness(
+        available,
+        {
+            "available": True,
+            "runtime_verified": True,
+            "effective_mode": "sandboxed",
+            "pending": False,
+            "reason": None,
+        },
+        identity,
+        None,
+    )
+    if not available:
+        return {
+            "available": False,
+            "model": None,
+            "state": "model_unavailable",
+            "detail": str(native.get("detail") or _RUNTIME_STOPPED_DETAIL),
+            "readiness": readiness,
+            "gpuPreference": native.get("gpuPreference"),
+        }, False
+    return {
+        "available": True,
+        "model": _MODEL,
+        "detail": f"Owner agent ready ({loaded_model})",
+        "runtime": {
+            "source": "windows-desktop",
+            "model": loaded_model,
+            "contextLength": ctx_len,
+        },
+        "runtimeIdentity": identity,
+        "runtimeMatchesRelease": identity["runtimeMatchesRelease"],
+        "readiness": readiness,
+        "gpuPreference": native.get("gpuPreference"),
+    }, False
+
+
 async def _status_projection() -> tuple[dict[str, object], bool]:
     """The status answer, and whether it is only a transient edge failure."""
     config = _pixel_config()
     if config is None:
+        if WINDOWS_DESKTOP_PROFILE:
+            return await _native_windows_status_projection()
         return {"available": False, "model": None, "detail": "Portal is not enabled"}, False
     host_status, (access, access_issue) = await asyncio.gather(
         _host_model_status(), _current_access_readiness())
@@ -1643,11 +1691,36 @@ async def pixel_chat_stream(request: Request, body: ChatStreamRequest, owner: st
     """Forward one bounded chat over authenticated, unbuffered SSE."""
     if isinstance(owner, str):
         await conversation_storage("assert_available", owner, body.chat_id)
+    config = _pixel_config()
+    if config is None and WINDOWS_DESKTOP_PROFILE:
+        from native_llm import get_native_llm_status, stream_native_chat_completion
+
+        status = await get_native_llm_status()
+        if not status.get("available"):
+            raise HTTPException(
+                status_code=503,
+                detail=str(status.get("detail") or _RUNTIME_STOPPED_DETAIL),
+            )
+        prepared = await _prepare_chat_messages(body, owner)
+        ctx_len = int(status.get("contextLength") or 8192)
+        gen = stream_native_chat_completion(
+            prepared,
+            context_window=ctx_len,
+            model_name=str(status.get("model") or ""),
+        )
+        return StreamingResponse(
+            gen,
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-store",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
     if body.request_id is not None:
         return await _retained_chat_stream(request, body, owner)
     if isinstance(owner, str) and _result_store is not None and _result_store.has_pending((owner_namespace(owner), body.chat_id)):
         raise HTTPException(status_code=423, detail="Recover or stop the retained attempt before starting another turn")
-    config = _pixel_config()
     if config is None:
         raise HTTPException(status_code=503, detail="Portal is not enabled")
     readiness_issue = await _model_readiness_issue()
