@@ -144,7 +144,8 @@ for _ in $(seq 1 100); do
 done
 [[ -s "$TMP_DIR/port" ]] || fail "the stand-in llama-server did not start: $(cat "$TMP_DIR/server.err")"
 # Only the install's .env knows the port, as on a real install.
-printf 'OLLAMA_PORT=%s\n' "$(cat "$TMP_DIR/port")" > "$INSTALL/.env"
+# This fixture is the direct llama-server lane, not a configured gateway.
+printf 'ODS_MODEL_SWITCHBOARD=disabled\nOLLAMA_PORT=%s\n' "$(cat "$TMP_DIR/port")" > "$INSTALL/.env"
 
 # run_check <mode> <service> [explicit|default]: run one section with --json.
 # "explicit" names the install and its .env the way the other ods-test tests
