@@ -807,21 +807,14 @@ load_env() {
 #=============================================================================
 . "$SCRIPT_DIR/lib/service-registry.sh"
 
-# Resolve a user-provided service name to a compose service ID
+# Resolve a user-provided service name to the compose service ID that serves
+# it on this install. With LLM_BACKEND=vllm the vLLM engine serves the model
+# and the in-stack llama-server is profiled out (docker-compose.vllm.yml).
+# Naming llama-server to Compose would enable its profile and start a second
+# engine on the GPU, so "llm" and "llama-server" mean vllm-server there.
 resolve_service() {
-    local resolved
-    resolved=$(sr_resolve "$1")
-    echo "$resolved"
-}
-
-# Resolve the target of start, stop, restart and logs. With LLM_BACKEND=vllm
-# the vLLM engine serves the model and the in-stack llama-server is profiled
-# out (docker-compose.vllm.yml). Naming llama-server to Compose would enable
-# its profile and start a second engine on the GPU, so "llm" and
-# "llama-server" mean vllm-server there.
-resolve_lifecycle_service() {
     local resolved backend="${LLM_BACKEND:-}"
-    resolved=$(resolve_service "$1")
+    resolved=$(sr_resolve "$1")
     if [[ "$resolved" == "llama-server" && "${backend,,}" == "vllm" ]]; then
         resolved="vllm-server"
     fi
@@ -1801,7 +1794,7 @@ cmd_logs() {
         exit 1
     fi
 
-    service=$(resolve_lifecycle_service "$service")
+    service=$(resolve_service "$service")
     local flags_str
     flags_str=$(get_compose_flags)
     local -a flags
@@ -1927,11 +1920,11 @@ cmd_restart() {
     # A full restart or a llama-server restart under a model switch leaves the
     # switch half-applied, as an update would. Refuse before changing CPU
     # budgets in .env or dispatching to the native Mac llama helper.
-    if [[ -z "$service" || "$(resolve_lifecycle_service "$service")" == llama-server ]]; then
+    if [[ -z "$service" || "$(resolve_service "$service")" == llama-server ]]; then
         _ods_cli_refuse_under_model_lifecycle restart
     fi
     ensure_llama_cpu_budget
-    if [[ -n "$service" && "$(resolve_lifecycle_service "$service")" == llama-server ]] \
+    if [[ -n "$service" && "$(resolve_service "$service")" == llama-server ]] \
         && _ods_cli_macos_native_llama; then
         _ods_cli_macos_llama restart
         return 0
@@ -1946,7 +1939,7 @@ cmd_restart() {
 
     local resolved_service="$service"
     if [[ -n "$resolved_service" ]]; then
-        resolved_service=$(resolve_lifecycle_service "$resolved_service")
+        resolved_service=$(resolve_service "$resolved_service")
     fi
 
     if [[ "$resolved_service" == "ods-proxy" ]]; then
@@ -2152,14 +2145,14 @@ cmd_stop() {
     load_env
 
     local service="${1:-}"
-    if [[ -n "$service" && "$(resolve_lifecycle_service "$service")" == llama-server ]] \
+    if [[ -n "$service" && "$(resolve_service "$service")" == llama-server ]] \
         && _ods_cli_macos_native_llama; then
         _ods_cli_macos_llama stop
         return 0
     fi
     local flags_str
     if ! flags_str=$(get_compose_flags); then
-        [[ -n "$service" ]] && service=$(resolve_lifecycle_service "$service")
+        [[ -n "$service" ]] && service=$(resolve_service "$service")
         _stop_owned_containers_for_recovery "$service"
         return $?
     fi
@@ -2171,7 +2164,7 @@ cmd_stop() {
         # later uninstall needs those labels to prove which volumes it owns.
         _compose_run_with_summary "Stopping all services" "${flags[@]}" stop
     else
-        service=$(resolve_lifecycle_service "$service")
+        service=$(resolve_service "$service")
         _compose_run_with_summary "Stopping $service" "${flags[@]}" stop "$service"
     fi
 }
@@ -2219,7 +2212,7 @@ cmd_start() {
     if [[ "$restart_wsl_agent" == false && -n "$service" ]]; then
         error "Deferred WSL agent restart requires a complete stack start."
     fi
-    if [[ -n "$service" && "$(resolve_lifecycle_service "$service")" == llama-server ]] \
+    if [[ -n "$service" && "$(resolve_service "$service")" == llama-server ]] \
         && _ods_cli_macos_native_llama; then
         _ods_cli_macos_llama start
         return 0
@@ -2234,7 +2227,7 @@ cmd_start() {
 
     local resolved_service="$service"
     if [[ -n "$resolved_service" ]]; then
-        resolved_service=$(resolve_lifecycle_service "$resolved_service")
+        resolved_service=$(resolve_service "$resolved_service")
     fi
 
     if [[ -z "$resolved_service" && -f "$INSTALL_DIR/lib/wsl-agent-address.sh" ]]; then
@@ -4221,9 +4214,9 @@ EOF
 cmd_mode() {
     check_install; cd "$INSTALL_DIR"
     load_env || true
-    # shellcheck source=lib/preflight-llm-route.sh
-    . "$SCRIPT_DIR/lib/preflight-llm-route.sh"
     local mode="${1:-}"
+    local configured_backend
+    configured_backend=$(grep -m1 "^LLM_BACKEND=" .env 2>/dev/null | cut -d= -f2- | tr -d '"\047\r' || true)
 
     if [[ -z "$mode" ]]; then
         # Show current mode
@@ -4233,7 +4226,7 @@ cmd_mode() {
         local model=$(grep "^LLM_MODEL=" .env 2>/dev/null | cut -d= -f2 || true)
         local tier=$(grep "^TIER=" .env 2>/dev/null | cut -d= -f2 || true)
         local engine="llama-server"
-        ods_preflight_vllm_engine && engine="vLLM engine (vllm-server)"
+        [[ "${configured_backend,,}" != "vllm" ]] || engine="vLLM engine (vllm-server)"
         echo -e "${BLUE}━━━ ODS Mode ━━━${NC}"
         echo ""
         echo -e "Current mode: ${GREEN}${current}${NC}"
@@ -4272,8 +4265,6 @@ cmd_mode() {
         *) error "Unknown mode: $mode. Use: local, cloud, hybrid" ;;
     esac
 
-    local configured_backend
-    configured_backend=$(grep -m1 "^LLM_BACKEND=" .env 2>/dev/null | cut -d= -f2- | tr -d '"\047\r' || true)
     if [[ "${configured_backend,,}" == "external" ]]; then
         # Fleet row 4: "installer-managed" did not say what to do or where.
         echo -e "${RED}✗${NC} ODS is in API mode, which only the installer turns on and off. Nothing was changed." >&2
