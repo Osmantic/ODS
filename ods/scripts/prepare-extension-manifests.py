@@ -200,12 +200,12 @@ def _build_plan(install_dir: Path, *, preserve_file_modes: bool = False) -> _Pla
         for name in names:
             leaf = parent / name
             try:
-                entry = _require_regular_manifest(leaf)
+                leaf_stat = _require_regular_manifest(leaf)
             except ManifestPermissionError as exc:
                 if isinstance(exc.__cause__, FileNotFoundError):
                     continue
                 raise
-            mode = stat.S_IMODE(entry.st_mode)
+            mode = stat.S_IMODE(leaf_stat.st_mode)
             if preserve_file_modes:
                 if mode & 0o444 != 0o444 or mode & 0o022:
                     raise ManifestPermissionError(
