@@ -1138,9 +1138,9 @@ else
         fi
         # NVIDIA ComfyUI also needs output/input/workflows bind-mount dirs
         if [[ "$GPU_BACKEND" == "nvidia" ]]; then
-            mkdir -p "$INSTALL_DIR/data/comfyui"/{output,input,workflows,user}
+            mkdir -p "$INSTALL_DIR/data/comfyui"/{output,input,workflows,user,cuda-cache}
             if ! _phase11_prepare_uid1000_bind_data \
-                "$INSTALL_DIR/data/comfyui" models output input user; then
+                "$INSTALL_DIR/data/comfyui" models output input user cuda-cache; then
                 ai_bad "Could not prepare NVIDIA ComfyUI data for its container user."
                 exit 1
             fi

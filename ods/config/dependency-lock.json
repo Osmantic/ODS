@@ -206,6 +206,12 @@
       "value": "ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.1@sha256:b7772cdd9dcbced147b16a7dff17d4aed1ab36333f8d3e686c50d2175e1d2126"
     },
     {
+      "id": "embeddings.tei-arm64",
+      "type": "image",
+      "path": "extensions/services/embeddings/compose.arm64.yaml",
+      "value": "ghcr.io/huggingface/text-embeddings-inference:cpu-arm64-sha-e80ef22@sha256:798cd7615e060a72ccbdf19aa0ada52289c6a0147490195bafaece6ce04d70f1"
+    },
+    {
       "id": "hermes.agent",
       "type": "image",
       "path": "extensions/services/hermes/compose.yaml",

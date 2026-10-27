@@ -60,6 +60,7 @@ tests/test-cli-status-optional-webui.sh
 tests/test-cli-stt-env.py
 tests/test-cli-update-verification.sh
 tests/test-comfyui-user-dir-persisted.sh
+tests/test-comfyui-cuda-cache-persisted.sh
 tests/test_comfyui_extension_contract.py
 tests/test_extension_assets.py
 tests/test-compose-failure-evidence.sh
@@ -212,6 +213,7 @@ tests/test-preview-inspection.mjs
 tests/test-resolve-compose-nondict-service.sh
 tests/test-resolve-compose-symlinked-install.sh
 tests/test-resolver-assume-enabled.py
+tests/test-resolver-arm64-overlay.py
 tests/test-resolver-host-requirements.py
 tests/test-restore-data-transaction-contract.sh
 tests/test-restore-empty-config.sh

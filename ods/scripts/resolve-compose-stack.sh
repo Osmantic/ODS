@@ -178,6 +178,12 @@ enable_open_webui = os.environ.get("ENABLE_OPEN_WEBUI", "true").lower() == "true
 
 IS_DARWIN = platform.system() == "Darwin"
 APPLE_OVERLAY = "installers/macos/docker-compose.macos.yml" if IS_DARWIN else "docker-compose.apple.yml"
+# Docker runs images natively except on macOS, where Docker Desktop runs amd64
+# images under Rosetta 2. A bundled service whose upstream publishes no arm64
+# image under its pinned tag ships an arm64 pin in compose.arm64.yaml (TEI).
+# HOST_ARCH is the installer's detect_host_arch value (amd64/arm64).
+ARM64_HOST = not IS_DARWIN and (
+    os.environ.get("HOST_ARCH") or platform.machine()).strip().lower() in {"arm64", "aarch64"}
 macos_cloud_auth = script_dir / "data" / "generated" / "docker-compose.macos-cloud-auth.yml"
 
 def existing(overlays):
@@ -1391,6 +1397,9 @@ if selected_stack is None and ext_dir.exists():
             gpu_overlay = service_dir / f"compose.{gpu_backend}.yaml"
             if service_dir.name.lower() not in skip_gpu_overlays and gpu_overlay.exists():
                 resolved.append(str(gpu_overlay.relative_to(script_dir)))
+            arch_overlay = service_dir / "compose.arm64.yaml"
+            if ARM64_HOST and arch_overlay.exists():
+                resolved.append(str(arch_overlay.relative_to(script_dir)))
 
             # Mode-specific overlay — depends_on for local/hybrid mode only.
             # Skip on Apple Silicon: macOS runs llama-server natively on the host

@@ -479,7 +479,7 @@ ods_prepare_comfyui_data_ownership() {
     [[ "$host_uid" != 1000 ]] || return 0
     host_gid=$(id -g) || return 1
     [[ "$host_gid" =~ ^[0-9]+$ ]] || return 1
-    for path in models output input user; do
+    for path in models output input user cuda-cache; do
         [[ -d "$install_dir/data/comfyui/$path" && ! -L "$install_dir/data/comfyui/$path" ]] || {
             echo "[error] The ComfyUI $path folder is not a real directory." >&2
             return 1

@@ -185,6 +185,8 @@ test: ## Run unit and contract tests
 	@bash tests/test-validate-manifest-schema.sh
 	@echo "=== ComfyUI user directory is persisted ==="
 	@bash tests/test-comfyui-user-dir-persisted.sh
+	@echo "=== ComfyUI CUDA kernel cache is persisted ==="
+	@bash tests/test-comfyui-cuda-cache-persisted.sh
 	@echo ""
 	@echo "=== macOS ods config show secret-mask ==="
 	@bash tests/test-macos-config-show-secret-mask.sh
