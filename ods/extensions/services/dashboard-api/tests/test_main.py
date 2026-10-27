@@ -456,6 +456,55 @@ class TestReadinessPayload:
         assert result["canUseVoice"] is False
         assert any(check["id"] == "voice" and check["status"] == "disabled" for check in result["checks"])
 
+    def test_switched_off_open_webui_is_disabled_not_blocking(self):
+        # Workstation06 (10-27): a fresh Pixel install leaves Open WebUI out
+        # (ENABLE_OPEN_WEBUI=false), and readiness read "blocked" with the
+        # repair "ods restart open-webui" while chat was ready.
+        from models import BootstrapStatus, ServiceStatus
+
+        statuses = [
+            ServiceStatus(id="llama-server", name="LLM", port=8080, external_port=8080, status="healthy"),
+            ServiceStatus(id="open-webui", name="Open WebUI", port=3000, external_port=3000, status="not_deployed"),
+        ]
+
+        result = _build_readiness_payload(
+            service_statuses=statuses,
+            loaded_model="Test-32B",
+            context_size=32768,
+            bootstrap_info=BootstrapStatus(active=False),
+            host_agent={"available": True},
+            stt_model_cached=None,
+            stt_model_name="Systran/faster-whisper-base",
+        )
+
+        webui = next(check for check in result["checks"] if check["id"] == "open-webui")
+        assert result["ready"] is True and result["status"] == "ready"
+        assert webui["status"] == "disabled" and webui["required"] is False
+        assert webui.get("repair") is None
+        assert "ods restart open-webui" not in result.get("repairHints", [])
+
+    def test_unhealthy_deployed_open_webui_still_blocks(self):
+        from models import BootstrapStatus, ServiceStatus
+
+        statuses = [
+            ServiceStatus(id="llama-server", name="LLM", port=8080, external_port=8080, status="healthy"),
+            ServiceStatus(id="open-webui", name="Open WebUI", port=3000, external_port=3000, status="unhealthy"),
+        ]
+
+        result = _build_readiness_payload(
+            service_statuses=statuses,
+            loaded_model="Test-32B",
+            context_size=32768,
+            bootstrap_info=BootstrapStatus(active=False),
+            host_agent={"available": True},
+            stt_model_cached=None,
+            stt_model_name="Systran/faster-whisper-base",
+        )
+
+        webui = next(check for check in result["checks"] if check["id"] == "open-webui")
+        assert result["ready"] is False
+        assert webui["status"] == "blocked" and webui["required"] is True
+
     def test_missing_model_blocks_chat(self):
         from models import BootstrapStatus, ServiceStatus
 

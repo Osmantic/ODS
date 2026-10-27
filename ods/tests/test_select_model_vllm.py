@@ -115,7 +115,8 @@ def test_dgx_station_gets_the_top_priority_vllm_model_on_its_gb300():
     assert env["MAX_CONTEXT"] == str(best["context_length"]) == "131072"
     assert env["LLM_MODEL_SIZE_MB"] == str(best["size_mb"])
     assert env["GGUF_FILE"] == env["GGUF_URL"] == env["GGUF_SHA256"] == ""
-    assert env["PIXEL_AGENT_MODEL_READY"] == "false"
+    pixel = ((best.get("app_compatibility") or {}).get("pixel_agent") or {}).get("status")
+    assert env["PIXEL_AGENT_MODEL_READY"] == ("true" if pixel == "verified" else "false")
     assert env["MODEL_RECOMMENDATION_POLICY"] == "vllm-gpu-fit-v1"
     assert env["MODEL_RECOMMENDATION_SOURCE"] == "catalog_vllm_pre_download"
     assert "GPU-test-gb300 (compute capability 10.3, 256703 MiB)" in env["MODEL_RECOMMENDATION_REASON"]

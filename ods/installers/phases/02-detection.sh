@@ -11,7 +11,8 @@
 #           fix_nvidia_secure_boot(), normalize_profile_tier(), tier_rank(),
 #           resolve_tier_config(), resolve_compose_config(),
 #           show_hardware_summary(), show_tier_recommendation(),
-#           chapter(), ai(), ai_ok(), log(), warn(), success()
+#           chapter(), ai(), ai_ok(), log(), warn(), success(),
+#           LLM_BACKEND_REQUESTED (--llm-backend; empty lets this phase choose)
 # Provides: GPU_BACKEND, GPU_NAME, GPU_VRAM, GPU_COUNT, GPU_MEMORY_TYPE,
 #           TIER, TIER_NAME, LLM_MODEL, GGUF_FILE, GGUF_URL, MAX_CONTEXT,
 #           COMPOSE_FILE, COMPOSE_FLAGS, RAM_KB, RAM_GB, MODEL_TIER_RAM_GB,
@@ -19,7 +20,11 @@
 #           DISK_AVAIL, BACKEND_ID,
 #           LLM_HEALTHCHECK_URL, LLM_PUBLIC_API_PORT,
 #           GPU_TOPOLOGY_JSON, GPU_HAS_NVLINK, GPU_TOTAL_VRAM,
-#           LLM_MODEL_SIZE_MB, AMD_GFX_TARGET, AMD_INFERENCE_BACKEND
+#           LLM_MODEL_SIZE_MB, AMD_GFX_TARGET, AMD_INFERENCE_BACKEND,
+#           LLM_BACKEND (llama-server or vllm; exported for vllm and when a
+#           run leaves vllm); with vllm also VLLM_IMAGE, VLLM_MODEL_DIR,
+#           VLLM_SERVED_MODEL, VLLM_ARGS, VLLM_GPU_UUID, and on a rerun that
+#           keeps a vLLM model the VLLM_GPU_MEMORY_UTILIZATION it was given
 #
 # Modder notes:
 #   Change tier auto-detection thresholds or add new hardware classes here.
@@ -34,9 +39,47 @@ declare -F ods_native_llm_owns_host_gpu >/dev/null 2>&1 \
 
 [[ -f "${SCRIPT_DIR:-}/lib/safe-env.sh" ]] && . "$SCRIPT_DIR/lib/safe-env.sh"
 . "$SCRIPT_DIR/installers/lib/wsl-memory.sh"
+declare -F ods_vllm_route_blocker >/dev/null || . "$SCRIPT_DIR/installers/lib/llm-backend.sh"
 
 ods_progress 12 "detection" "Detecting GPU hardware"
 chapter "SYSTEM DETECTION"
+
+# The model server this run uses: llama-server, or vllm when the vLLM choice
+# below makes it; phase 06 writes it to .env.
+LLM_BACKEND=llama-server
+
+# --llm-backend vllm, or a rerun of a vLLM installation (_phase02_vllm_kept),
+# where the vLLM engine cannot run stops before anything is changed, naming
+# why.
+_phase02_vllm_refused() {
+    if [[ "${LLM_BACKEND_REQUESTED:-}" == "vllm" ]]; then
+        error "--llm-backend vllm cannot be used here: $1. Rerun without --llm-backend to let ODS choose, or with --llm-backend llama-server. Need help? Ask on the ODS Discord: ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
+    else
+        error "This installation runs its model on the vLLM engine, which this run cannot use: $1. ODS stopped before changing anything. To run it without the vLLM engine, rerun with --llm-backend llama-server, or with --reselect-model to choose the model again. Need help? Ask on the ODS Discord: ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
+    fi
+    exit 1
+}
+
+# A rerun of a vLLM installation keeps the vLLM engine and its model, as
+# --llm-backend vllm would: it never quietly becomes a llama.cpp installation
+# (a GGUF download and another model). --llm-backend llama-server or
+# --reselect-model chooses again.
+_phase02_vllm_kept() {
+    [[ "${LLM_BACKEND_REQUESTED:-}" != "llama-server" && "${ODS_RESELECT_MODEL:-false}" != "true" \
+        && -f "${INSTALL_DIR:-}/.env" ]] \
+        && [[ "$(external_llm_env_value "$INSTALL_DIR/.env" LLM_BACKEND)" == "vllm" ]]
+}
+
+# The Compose resolver reads LLM_BACKEND from the environment before .env.
+# Export this run's choice when it is vllm, or when it leaves an installation
+# that ran vLLM, so the resolver never selects from a .env that phase 06 has
+# not rewritten yet. Every other run leaves the environment as it was.
+_phase02_export_llm_backend() {
+    if [[ "$LLM_BACKEND" == "vllm" ]] || { [[ -f "${INSTALL_DIR:-}/.env" ]] \
+        && [[ "$(external_llm_env_value "$INSTALL_DIR/.env" LLM_BACKEND)" == "vllm" ]]; }; then
+        export LLM_BACKEND
+    fi
+}
 
 GPU_BACKEND_REQUESTED="${GPU_BACKEND:-}"
 GPU_BACKEND_FORCED=false
@@ -71,6 +114,10 @@ fi
 
 # Cloud mode: skip GPU detection entirely
 if [[ "${ODS_MODE:-local}" == "cloud" ]]; then
+    if [[ "${LLM_BACKEND_REQUESTED:-}" == "vllm" ]] || _phase02_vllm_kept; then
+        _phase02_vllm_refused "ODS runs in cloud mode, which has no local model server"
+    fi
+    _phase02_export_llm_backend
     ai "Cloud mode — skipping GPU detection"
     GPU_BACKEND="cpu"
     GPU_NAME="Cloud (no local GPU)"
@@ -526,6 +573,107 @@ else
     log "Using specified tier: $TIER"
 fi
 
+# -----------------------------------------------------------------------------
+# Model server: llama.cpp (llama-server) or the vLLM engine
+# -----------------------------------------------------------------------------
+# The vLLM engine (docker-compose.vllm.yml) serves a vLLM catalog model,
+# NVIDIA's NVFP4 builds, on one NVIDIA datacenter GPU (compute capability 10.x
+# with room for the model). Only Linux (not WSL) with an NVIDIA GPU, in local
+# mode and with no external, host-native or cloud model route, can run it
+# (installers/lib/llm-backend.sh).
+#
+# Without --llm-backend, a fresh install or --reselect-model uses vLLM when a
+# vLLM model fits; a rerun of a llama.cpp installation keeps the llama.cpp
+# path below unchanged, without querying the GPUs for vLLM. --llm-backend vllm
+# and a rerun of a vLLM installation (_phase02_vllm_kept) stop when vLLM
+# cannot run or no vLLM model fits; --llm-backend llama-server never considers
+# vLLM. On the vLLM path every selector failure other than "nothing fits"
+# (exit 2) stops the install: there is no tier-map fallback. The pick
+# (VLLM_SELECTOR_ENV) is loaded after the tier map, which it replaces; on a
+# rerun of a vLLM installation it is the recommendation, and the installed
+# vLLM model stays active (_phase02_keep_vllm_model).
+_phase02_choose_llm_backend() {
+    local requested="${LLM_BACKEND_REQUESTED:-}" external="${EXTERNAL_LLM_URL:-}"
+    local existing=false retained="" required=false wsl=false blocker python rows status=0
+    local env_text error_text error_file
+    local -a gpu_rows=()
+    VLLM_SELECTOR_ENV=""
+    if [[ "$requested" == "llama-server" ]]; then
+        log "Model server: llama.cpp (--llm-backend llama-server)"
+        return 0
+    fi
+    if [[ -f "$INSTALL_DIR/.env" ]]; then
+        existing=true
+        retained="$(external_llm_env_value "$INSTALL_DIR/.env" LLM_BACKEND)"
+        # Phase 02b keeps the installation's external model unless --no-external-llm.
+        if [[ -z "$external" && "${EXTERNAL_LLM_DISABLE:-false}" != "true" ]]; then
+            external="$(external_llm_env_value "$INSTALL_DIR/.env" EXTERNAL_LLM_URL)"
+        fi
+    fi
+    if [[ "$requested" == "vllm" ]] || _phase02_vllm_kept; then
+        required=true
+    fi
+    if ods_is_wsl_host; then
+        wsl=true
+    fi
+    blocker="$(ods_vllm_route_blocker "$(uname -s)" "$wsl" "${GPU_BACKEND:-}" "${ODS_MODE:-local}" \
+        "$external" "${NATIVE_LLM_BASE_URL:-}" "${ODS_GATEWAY_ONLY:-false}")"
+    if [[ -z "$blocker" && "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" == "true" ]]; then
+        blocker="ODS_DISABLE_CATALOG_MODEL_SELECTOR=true turns the model catalog off"
+    fi
+    if [[ -n "$blocker" ]]; then
+        [[ "$required" != true ]] || _phase02_vllm_refused "$blocker"
+        log "Model server: llama.cpp ($blocker)"
+        return 0
+    fi
+    if [[ "$required" != true ]] \
+        && ! ods_vllm_auto_considered "$existing" "$retained" "${ODS_RESELECT_MODEL:-false}"; then
+        log "Model server: llama.cpp, which this installation runs (--llm-backend vllm or --reselect-model lets ODS choose vLLM)"
+        return 0
+    fi
+    python="$(ods_model_selector_python)"
+    if [[ -z "$python" ]]; then
+        [[ "$required" != true ]] || _phase02_vllm_refused "Python is unavailable for the model catalog"
+        log "Model server: llama.cpp (Python is unavailable for the vLLM model catalog)"
+        return 0
+    fi
+    if ! rows="$(nvidia-smi --query-gpu=uuid,compute_cap,memory.total --format=csv,noheader,nounits 2>>"$LOG_FILE")"; then
+        [[ "$required" != true ]] || _phase02_vllm_refused "nvidia-smi could not list this host's GPUs (details in $LOG_FILE)"
+        log "Model server: llama.cpp (nvidia-smi could not list the GPUs for the vLLM engine)"
+        return 0
+    fi
+    mapfile -t gpu_rows < <(printf '%s\n' "$rows" | sed '/^[[:space:]]*$/d')
+    error_file="$(mktemp "${TMPDIR:-/tmp}/ods-vllm-selector.XXXXXX")"
+    env_text="$(ods_run_vllm_selector "$python" ${gpu_rows[@]+"${gpu_rows[@]}"} 2>"$error_file")" || status=$?
+    error_text="$(cat "$error_file")"
+    rm -f -- "$error_file"
+    [[ -z "$error_text" ]] || printf '%s\n' "$error_text" >> "$LOG_FILE"
+    case "$status" in
+        0)
+            LLM_BACKEND=vllm
+            VLLM_SELECTOR_ENV="$env_text"
+            ;;
+        2)
+            [[ "$required" != true ]] || _phase02_vllm_refused "${error_text#error: }"
+            log "Model server: llama.cpp (${error_text#error: })"
+            ;;
+        *)
+            error "The vLLM model selector stopped (exit $status): ${error_text:-no details}. The ODS files may be incomplete: download ODS again and rerun the installer. Need help? Ask on the ODS Discord: ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
+            exit 1
+            ;;
+    esac
+}
+_phase02_choose_llm_backend
+if [[ "$LLM_BACKEND" == "vllm" ]]; then
+    # docker-compose.vllm.yml defaults to the same pin; .env records it.
+    if ! VLLM_IMAGE="$(ods_vllm_image_from_lock "$SCRIPT_DIR/config/dependency-lock.json")"; then
+        error "$SCRIPT_DIR/config/dependency-lock.json names no digest-pinned vLLM image (entry vllm.vllm-server), so ODS stopped before changing anything. The ODS files may be incomplete: download ODS again and rerun the installer. Need help? Ask on the ODS Discord: ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
+        exit 1
+    fi
+    export VLLM_IMAGE
+fi
+_phase02_export_llm_backend
+
 # Resolve compose overlay files
 resolve_compose_config
 
@@ -556,10 +704,19 @@ if [[ -z "${MODEL_PROFILE:-}" ]]; then
 fi
 resolve_tier_config
 
+# The vLLM pick replaces the tier map's llama.cpp model (GGUF_* empty, the
+# VLLM_* keys set); the llama.cpp catalog selector below does not run. The
+# choice is shown once active-model preservation below is final.
+if [[ "${LLM_BACKEND:-}" == "vllm" ]]; then
+    load_model_selector_env_from_output <<< "$VLLM_SELECTOR_ENV"
+    export PIXEL_AGENT_MODEL_READY
+    log "vLLM model selector: ${MODEL_RECOMMENDATION_REASON:-$LLM_MODEL}"
+fi
+
 # Refine the tier's model choice using the versioned catalog before any GGUF is
 # downloaded. This keeps install-time selection aligned with the dashboard
 # oracle while preserving the tier map as a no-Python fallback.
-if [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "${TIER:-}" != "CLOUD" ]]; then
+if [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "${TIER:-}" != "CLOUD" && "${LLM_BACKEND:-}" != "vllm" ]]; then
     _selector_script="$SCRIPT_DIR/scripts/select-model.py"
     _selector_catalog="$SCRIPT_DIR/config/model-library.json"
     if [[ -f "$_selector_script" && -f "$_selector_catalog" ]] \
@@ -678,6 +835,55 @@ if ods_native_llm_requested && [[ "${TIER:-}" != "CLOUD" ]]; then
     unset _native_args _native_model_env
 fi
 
+# A rerun of a vLLM installation whose model cannot be kept stops before
+# anything is changed: replacing the model would download another one.
+# STATUS is scripts/preserve-active-model.py's exit status; 2 means the saved
+# snapshot is incomplete or is not this release's catalog entry.
+_phase02_vllm_keep_refused() {
+    local status="$1" model folder
+    model="$(external_llm_env_value "$INSTALL_DIR/.env" LLM_MODEL)"
+    folder="$(external_llm_env_value "$INSTALL_DIR/.env" VLLM_MODEL_DIR)"
+    if [[ "$status" == "2" ]]; then
+        error "This installation runs ${model:-its model} on the vLLM engine, but its saved vLLM model is incomplete or is no longer this release's catalog model (details in ${LOG_FILE}). ODS stopped before changing anything. To download the catalog's vLLM model, rerun the installer with --reselect-model. If the model folder data/models/${folder:-<VLLM_MODEL_DIR>} was moved or deleted, restore it and run the same command again. Need help? Ask on the ODS Discord: ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
+    else
+        error "This installation runs ${model:-its model} on the vLLM engine, but ODS could not read its saved vLLM model (scripts/preserve-active-model.py exit ${status}; details in ${LOG_FILE}). ODS stopped before changing anything. The ODS files may be incomplete: download ODS again and run the same command. Need help? Ask on the ODS Discord: ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
+    fi
+    exit 1
+}
+
+# A rerun of a vLLM installation keeps its model: the same catalog snapshot,
+# served id and GPU, which scripts/preserve-active-model.py prints from .env
+# (LLM_BACKEND=vllm, the VLLM_* keys, empty GGUF_* keys). The vLLM pick above
+# stays the recommendation. The VLLM_* keys are cleared first, so a key the
+# loader dropped cannot leave the pick's value in place.
+_phase02_keep_vllm_model() {
+    local python status=0 contract
+    python="$(ods_model_selector_python)"
+    contract="$("$python" "$SCRIPT_DIR/scripts/preserve-active-model.py" \
+        --env "$INSTALL_DIR/.env" \
+        --catalog "$SCRIPT_DIR/config/model-library.json" \
+        --imports "$INSTALL_DIR/data/model-imports.json" \
+        --models-dir "$INSTALL_DIR/data/models" \
+        --state "$INSTALL_DIR/data/model-state.json" \
+        --backend "${GPU_BACKEND:-unknown}" \
+        --memory-type "${GPU_MEMORY_TYPE:-discrete}" \
+        --vram-mb "${GPU_VRAM:-0}" \
+        --ram-gb "${RAM_GB:-0}" \
+        --host-arch "${HOST_ARCH:-unknown}" \
+        --chat-templates "$SCRIPT_DIR/config/chat-templates" \
+        --local-model \
+        2>>"$LOG_FILE")" || status=$?
+    [[ "$status" -eq 0 && -n "$contract" ]] || _phase02_vllm_keep_refused "$status"
+    unset VLLM_MODEL_DIR VLLM_SERVED_MODEL VLLM_ARGS VLLM_GPU_UUID
+    load_model_selector_env_from_output <<< "$contract"
+    if [[ "$LLM_BACKEND" != "vllm" || -z "${VLLM_MODEL_DIR:-}" || -z "${VLLM_SERVED_MODEL:-}" \
+        || -z "${VLLM_ARGS:-}" || -z "${VLLM_GPU_UUID:-}" ]]; then
+        log "The saved vLLM model contract is incomplete after loading: $(printf '%s' "$contract" | tr '\n' ' ')"
+        _phase02_vllm_keep_refused "0 with an incomplete contract"
+    fi
+    log "Kept this installation's vLLM model across installer rerun: ${LLM_MODEL} (${VLLM_MODEL_DIR}) on GPU ${VLLM_GPU_UUID}, selected by ${MODEL_SELECTION_SOURCE}"
+}
+
 # The tier/catalog result is a recommendation.  A valid local model already
 # activated through the Dashboard is operator state and must survive routine
 # installer reruns.  Keep those two concepts separate so updates can advertise
@@ -690,7 +896,21 @@ MODEL_SELECTION_SOURCE="installer"
 # template. Only the preserved contract of that same model sets them below;
 # never the recommendation or a value exported by the caller.
 unset LLAMA_ARG_MMPROJ MODEL_CHAT_TEMPLATE_OVERRIDE LLAMA_ARG_CHAT_TEMPLATE_FILE
-if [[ -f "$INSTALL_DIR/.env" && "${ODS_RESELECT_MODEL:-false}" != "true" && "${TIER:-}" != "CLOUD" ]]; then
+_phase02_retained_backend=""
+[[ ! -f "$INSTALL_DIR/.env" ]] \
+    || _phase02_retained_backend="$(external_llm_env_value "$INSTALL_DIR/.env" LLM_BACKEND)"
+if [[ "${LLM_BACKEND:-}" == "vllm" && "$_phase02_retained_backend" != "vllm" ]]; then
+    # This run moves the installation to the vLLM engine: the vLLM pick above
+    # is the active model; a retained GGUF must not replace it.
+    log "Model server: vLLM; the vLLM pick is used, not a retained llama.cpp model"
+elif [[ "$_phase02_retained_backend" == "vllm" && "${LLM_BACKEND:-}" != "vllm" ]]; then
+    # This run leaves the vLLM engine (--llm-backend llama-server, or
+    # --reselect-model where no vLLM model fits). llama.cpp cannot serve the
+    # vLLM model, so the pick above is the active model.
+    log "Leaving the vLLM engine: this installation's vLLM model is not carried over (its files stay in data/models)"
+elif [[ "${LLM_BACKEND:-}" == "vllm" && "${ODS_RESELECT_MODEL:-false}" != "true" ]]; then
+    _phase02_keep_vllm_model
+elif [[ -f "$INSTALL_DIR/.env" && "${ODS_RESELECT_MODEL:-false}" != "true" && "${TIER:-}" != "CLOUD" ]]; then
     # The model of a host-native llama-server belongs to Windows setup, which
     # passes it on every run. A rerun without it must not quietly switch the
     # install to a model in this Linux environment. (The helper fails only
@@ -790,8 +1010,14 @@ if [[ -f "$INSTALL_DIR/.env" && "${ODS_RESELECT_MODEL:-false}" != "true" && "${T
 elif [[ "${ODS_RESELECT_MODEL:-false}" == "true" ]]; then
     log "Active-model preservation disabled by --reselect-model"
 fi
+unset _phase02_retained_backend
 
 unset _native_python
+
+# The model server and the model it serves, now that preservation is final.
+if [[ "${LLM_BACKEND:-}" == "vllm" ]]; then
+    ai_ok "Model server: vLLM engine, serving ${VLLM_SERVED_MODEL} on GPU ${VLLM_GPU_UUID}"
+fi
 
 # Display hardware summary with nice formatting
 CPU_INFO=$(grep "model name" /proc/cpuinfo 2>/dev/null | head -1 | cut -d: -f2 | xargs || echo "Unknown")
@@ -808,6 +1034,7 @@ if [[ "$INTERACTIVE" == "true" ]]; then
     fi
 
     _shown_model="$LLM_MODEL"
+    [[ "${LLM_BACKEND:-}" != "vllm" ]] || _shown_model="${VLLM_SERVED_MODEL:-$LLM_MODEL} (vLLM)"
     if [[ -n "${EXTERNAL_LLM_URL:-}" ]]; then
         # The API serves the model; the local pick is not downloaded.
         _shown_model="${EXTERNAL_LLM_MODEL:-the API's model} (API)"
@@ -827,6 +1054,7 @@ else
     if [[ -n "${EXTERNAL_LLM_URL:-}" ]]; then
         log "  Model: ${EXTERNAL_LLM_MODEL:-the API's model}, served by ${EXTERNAL_LLM_URL}"
     else
+        [[ "${LLM_BACKEND:-}" != "vllm" ]] || log "  Engine: vLLM on GPU ${VLLM_GPU_UUID}"
         log "  Model: $LLM_MODEL"
         log "  Context: ${MAX_CONTEXT} tokens"
     fi
