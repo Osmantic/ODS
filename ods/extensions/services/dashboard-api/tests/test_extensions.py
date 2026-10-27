@@ -368,6 +368,57 @@ class TestExtensionsCatalog:
         assert by_id["aider"]["installable"] is True
         assert by_id["gpu-only"]["status"] == "incompatible"
 
+    @pytest.mark.parametrize("requirements,arch,page,backend,reason", [
+        ({"max_page_size": 4096}, "arm64", 65536, "nvidia",
+         "Vector DB's image cannot run with this machine's 64 KB memory pages."),
+        ({"architectures": ["amd64"]}, "arm64", 4096, "nvidia",
+         "Vector DB's image is built for amd64 only; this machine is arm64."),
+        ({"max_page_size": 4096}, "arm64", 4096, "nvidia", None),
+        ({"architectures": ["amd64"]}, "amd64", 4096, "nvidia", None),
+        # Docker Desktop on macOS runs amd64 images under Rosetta 2.
+        ({"architectures": ["amd64"]}, "arm64", 4096, "apple", None),
+    ])
+    def test_an_image_this_host_cannot_run_is_incompatible(
+        self, test_client, monkeypatch, tmp_path, requirements, arch, page, backend, reason,
+    ):
+        """Workstation06 (arm64, 64 KB pages, 2026-10-27): Qdrant aborted on its
+        page size and Fooocus has no arm64 image, yet both were offered."""
+        from routers import extensions as ext_mod
+
+        entry = {**_make_catalog_ext("vector-db", "Vector DB", gpu_backends=["all"]),
+                 "host_requirements": requirements}
+        _patch_extensions_config(monkeypatch, [entry], gpu_backend=backend, tmp_path=tmp_path)
+        monkeypatch.setattr(ext_mod, "_HOST_ARCH", arch)
+        monkeypatch.setattr(ext_mod, "_HOST_PAGE_SIZE", page)
+
+        with patch("helpers.get_all_services", new_callable=AsyncMock, return_value=[]):
+            row = test_client.get("/api/extensions/catalog", headers=test_client.auth_headers).json()["extensions"][0]
+            detail = test_client.get("/api/extensions/vector-db", headers=test_client.auth_headers).json()
+
+        assert (row["status"] == "incompatible") is (reason is not None)
+        assert row.get("incompatible_reason") == reason
+        assert detail["incompatible_reason"] == reason
+
+    def test_enable_refuses_an_image_this_host_cannot_run(self, test_client, monkeypatch, tmp_path):
+        from routers import extensions as ext_mod
+
+        builtin_root = tmp_path / "builtin"
+        (builtin_root / "fooocus").mkdir(parents=True)
+        (builtin_root / "fooocus" / "compose.yaml.disabled").write_text(_SAFE_COMPOSE)
+        _patch_mutation_config(monkeypatch, tmp_path)
+        monkeypatch.setattr(ext_mod, "EXTENSIONS_DIR", builtin_root)
+        monkeypatch.setattr(ext_mod, "EXTENSION_CATALOG", [{
+            "id": "fooocus", "name": "Fooocus", "gpu_backends": ["nvidia"],
+            "host_requirements": {"architectures": ["amd64"]},
+        }])
+        monkeypatch.setattr(ext_mod, "_HOST_ARCH", "arm64")
+
+        resp = test_client.post("/api/extensions/fooocus/enable", headers=test_client.auth_headers)
+
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == "Fooocus's image is built for amd64 only; this machine is arm64."
+        assert (builtin_root / "fooocus" / "compose.yaml.disabled").exists()
+
     def test_catalog_summary_counts(self, test_client, monkeypatch, tmp_path):
         """Summary counts correctly reflect extension statuses."""
         catalog = [

@@ -16,6 +16,10 @@ service:
   startup_timeout: 600
   type: docker
   gpu_backends: [nvidia]
+  # Upstream publishes this image for amd64 only, and Linux has no amd64
+  # emulation by default ("exec format error" on arm64).
+  host_requirements:
+    architectures: [amd64]
   compose_file: compose.yaml
   category: optional
   depends_on: []
