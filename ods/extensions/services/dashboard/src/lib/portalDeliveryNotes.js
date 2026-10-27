@@ -16,6 +16,7 @@ export const DELIVERY_NOTES = Object.freeze([
   "Portal published your page but couldn't finish checking it automatically. Try it, and tell Portal if something isn't right.",
   'Portal stopped before it finished, so this page may not have everything you asked for yet. Send a message to continue.',
   "The next step above hasn't started yet. Send a message to continue.",
+  "Portal's previews run isolated, so anything the page saves resets when it reloads. To keep data between visits, ask Portal to add export and import.",
   "Portal saved the website files in your workspace but couldn't publish a preview of them, so they haven't been checked and there is no preview to open yet. Ask Portal to publish the preview.",
   "Portal didn't create the website files for this request, so there is no preview to open yet. Ask Portal to try the build again.",
   "Portal stopped before it finished because it wasn't making progress.",

@@ -60,9 +60,14 @@ export const PREVIEW_INCOMPLETE_NOTE =
   'Portal stopped before it finished, so this page may not have everything you asked for yet. Send a message to continue.';
 // The run has ended: a step the reply announces will not start on its own.
 export const PREVIEW_CONTINUE_NOTE = "The next step above hasn't started yet. Send a message to continue.";
+// The owner asked for data that outlasts a reload (requestsReloadPersistence).
+// Portal's previews cannot keep it, whatever the page does or the reply says.
+// Downloads and file inputs still work there, so export and import do.
+export const PREVIEW_STORAGE_NOTE =
+  "Portal's previews run isolated, so anything the page saves resets when it reloads. To keep data between visits, ask Portal to add export and import.";
 export const PREVIEW_NOTES = Object.freeze([PREVIEW_CONTROLS_NOTE, PREVIEW_UNCONFIRMED_NOTE, PREVIEW_RUNNING_NOTE,
   PREVIEW_SCRIPT_NOTE, PREVIEW_MISSING_NOTE, PREVIEW_EARLIER_NOTE, PREVIEW_STOPPED_NOTE, PREVIEW_UNFINISHED_NOTE,
-  PREVIEW_INCOMPLETE_NOTE, PREVIEW_CONTINUE_NOTE]);
+  PREVIEW_INCOMPLETE_NOTE, PREVIEW_CONTINUE_NOTE, PREVIEW_STORAGE_NOTE]);
 
 // The combined reply is host verification text (ingress limit: 32 KiB). Leave
 // room for the extension and progress-lane notes that can follow it.

@@ -50,12 +50,13 @@ import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehavio
   boundInspectionPageErrors, boundInspectionControls, boundRenderedPreviewInspection, renderedInspectionInstruction,
   pageErrorRepairInstruction, visibilityInspectionMatches,
   visibilityInspectionInstruction, requestedVisibilityTransition, inheritedVisibilityTransition,
-  attemptedPreviewBehavior, boundPreviewBehavior, previewBehaviorInstruction, unassertedBehaviorStep } from './preview-interaction-assurance.mjs';
+  attemptedPreviewBehavior, boundPreviewBehavior, previewBehaviorInstruction, unassertedBehaviorStep,
+  requestsReloadPersistence } from './preview-interaction-assurance.mjs';
 import { workspaceRevalidationCandidate, workspaceReadOnlyCall, settledRevalidationReceipt, boundedPreviewVerification } from "./preview-revalidation.mjs";
 import { boundedPreviewDelivery } from './preview-delivery-recovery.mjs';
 import { PREVIEW_CONTINUE_NOTE, PREVIEW_EARLIER_NOTE, PREVIEW_INCOMPLETE_NOTE, PREVIEW_MISSING_NOTE, PREVIEW_SCRIPT_NOTE,
-  PREVIEW_STOPPED_NOTE, PREVIEW_UNFINISHED_NOTE, announcesMoreWork, explainedPreviewDelivery, ownerPreviewText,
-  previewCheckNote } from './preview-explanation.mjs';
+  PREVIEW_STOPPED_NOTE, PREVIEW_STORAGE_NOTE, PREVIEW_UNFINISHED_NOTE, announcesMoreWork, explainedPreviewDelivery,
+  ownerPreviewText, previewCheckNote } from './preview-explanation.mjs';
 import { extractRequestedLiterals, requestedTextCheck, requestedTextInstruction, requestedTextRevisionInstruction,
   requestedTextDeliveryNote, publishedElementOutline, extractRequestedControlNames, requestedControlSources,
   requestedControlNameCheck, requestedControlNameInstruction, requestedControlNameRevisionInstruction,
@@ -10910,6 +10911,9 @@ export function createToolLoopGuard({
           inheritedVisibility.sessionKey === state.currentSessionKey && inheritedVisibility.ownerIntent === ownerIntent;
         state.workspaceVisibilityInteractionRequired = workspacePreviewInspectionAvailable &&
           state.workspacePreviewRequired && (requestsVisibilityInteraction(ownerLaneText(ownerIntent)) || inheritsVisibility);
+        // Read only where a published preview's outcome is built, so it needs no
+        // preview gate of its own; it adds Portal's storage line and gates nothing.
+        state.workspaceReloadPersistenceRequested = requestsReloadPersistence(ownerLaneText(ownerIntent));
         // Checked only against a successful publication; never gates publishing.
         state.requestedLiterals = extractRequestedLiterals(ownerIntent);
         // Checked only against a browser inspection's load-time names.
@@ -14149,11 +14153,11 @@ export function createToolLoopGuard({
           kind: "ods-pixel-workspace-preview",
           ...state.workspacePreview,
         },
-      }, {text, rest: receipt, note: status === "passed" ? undefined : previewCheckNote({
+      }, {text, rest: receipt, note: [status === "passed" ? undefined : previewCheckNote({
         pending: status === "pending", testFailed: checkStatus === "failed", missing: Boolean(requestedTextMissing),
         pageErrors: visibilityInspectionMatches(state.workspaceInspectionPageErrors, state.workspacePreview),
         controls: interactionUnverified || behaviorUnverified,
-      })});
+      }), state.workspaceReloadPersistenceRequested && PREVIEW_STORAGE_NOTE].filter(Boolean).join("\n\n") || undefined});
     }
     if (state.exactDownloadRequested) {
       const terminalText = exactDownloadTerminalText(state.exactDownloadTerminalOutcome);
