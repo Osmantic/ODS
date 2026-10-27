@@ -166,8 +166,10 @@ try {
 
     # --- Installable check ---------------------------------------------------------
     $single = Test-ODSCatalogModelArtifacts -Model (Get-CatalogModelById -Catalog $catalog -ModelId $top)
-    Check (@($single).Count -eq 1 -and $single[0].File -ceq 'Qwen3.6-35B-A3B-UD-Q4_K_M.gguf' -and $single[0].SizeBytes -eq 22134528992 -and
-        $single[0].Sha256 -cmatch '^[0-9a-f]{64}$' -and $single[0].Url -like 'https://huggingface.co/*') 'a single-file model is one artifact with its URL, SHA-256 and size'
+    Check (@($single).Count -eq 2 -and $single[0].File -ceq 'Qwen3.6-35B-A3B-UD-Q4_K_M.gguf' -and $single[0].SizeBytes -eq 22134528992 -and
+        $single[0].Sha256 -cmatch '^[0-9a-f]{64}$' -and $single[0].Url -like 'https://huggingface.co/*' -and
+        $single[1].File -ceq 'Qwen3.6-35B-A3B-mmproj-F16.gguf' -and $single[1].SizeBytes -eq 899283680 -and
+        $single[1].Sha256 -cmatch '^[0-9a-f]{64}$') 'a single-file vision model is its weights and its projector, each with URL, SHA-256 and size'
     $parts = Test-ODSCatalogModelArtifacts -Model (Get-CatalogModelById -Catalog $catalog -ModelId 'qwen2.5-7b-instruct-q4')
     Check (@($parts).Count -eq 2 -and $parts[0].File -like '*-00001-of-00002.gguf' -and $parts[1].File -like '*-00002-of-00002.gguf') 'a split model with every part pinned is all its parts'
     Check ($null -eq (Test-ODSCatalogModelArtifacts -Model (Get-CatalogModelById -Catalog $catalog -ModelId 'llama4-scout-q4'))) 'a split model whose parts lack a size is not installable'
