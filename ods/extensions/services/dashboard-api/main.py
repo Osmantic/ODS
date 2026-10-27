@@ -350,16 +350,30 @@ def _build_readiness_payload(
                 if not chat_ready and not bootstrap_info.active and not engine_starting else None),
     ))
 
-    webui_ready = _service_is_healthy(service_statuses, "open-webui")
-    checks.append(_readiness_check(
-        check_id="open-webui",
-        name="Open WebUI",
-        required=True,
-        ready=webui_ready,
-        status="ready" if webui_ready else "blocked",
-        detail="Open WebUI is reachable" if webui_ready else "Open WebUI is not healthy",
-        repair="ods restart open-webui" if not webui_ready else None,
-    ))
+    webui = _service_by_id(service_statuses, "open-webui")
+    if webui is not None and webui.status == "not_deployed":
+        # The install switched Open WebUI off (ENABLE_OPEN_WEBUI; Portal is
+        # the chat app on fresh Pixel installs): nothing waits for it, and
+        # restarting a service the install leaves out repairs nothing.
+        checks.append(_readiness_check(
+            check_id="open-webui",
+            name="Open WebUI",
+            required=False,
+            ready=False,
+            status="disabled",
+            detail="Open WebUI is switched off in this install",
+        ))
+    else:
+        webui_ready = _service_is_healthy(service_statuses, "open-webui")
+        checks.append(_readiness_check(
+            check_id="open-webui",
+            name="Open WebUI",
+            required=True,
+            ready=webui_ready,
+            status="ready" if webui_ready else "blocked",
+            detail="Open WebUI is reachable" if webui_ready else "Open WebUI is not healthy",
+            repair="ods restart open-webui" if not webui_ready else None,
+        ))
 
     checks.append(_readiness_check(
         check_id="dashboard-api",
