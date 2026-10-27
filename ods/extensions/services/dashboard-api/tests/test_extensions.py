@@ -1687,6 +1687,36 @@ class TestDisableExtension:
         assert resp.status_code == 200
         assert not progress_file.exists()
 
+    def test_disable_completes_when_the_owner_record_cannot_be_removed(
+        self, test_client, monkeypatch, tmp_path, caplog,
+    ):
+        """Workstation06 (2026-10-27): the host agent writes start records as the
+        install owner, UID 1001. This API runs as UID 1000 and could not remove
+        them, so a disable that had already stopped the service answered 500."""
+        user_dir = _setup_user_ext(tmp_path, "my-ext", enabled=True)
+        _patch_mutation_config(monkeypatch, tmp_path, user_dir=user_dir)
+        progress_file = tmp_path / "extension-progress" / "my-ext.json"
+        progress_file.parent.mkdir(parents=True, exist_ok=True)
+        progress_file.write_text('{"status": "started", "updated_at": "2026-10-27T08:26:00+00:00"}')
+        real_unlink = Path.unlink
+
+        def owner_only(path, *args, **kwargs):
+            if path == progress_file:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", owner_only)
+        with caplog.at_level(logging.WARNING):
+            resp = test_client.post(
+                "/api/extensions/my-ext/disable",
+                headers=test_client.auth_headers,
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["action"] == "disabled"
+        assert (user_dir / "my-ext" / "compose.yaml.disabled").exists()
+        assert "Failed to clear progress file for my-ext" in caplog.text
+
     def test_disable_already_disabled_409(self, test_client, monkeypatch, tmp_path):
         """409 when extension is already disabled."""
         user_dir = _setup_user_ext(tmp_path, "my-ext", enabled=False)

@@ -8452,6 +8452,22 @@ def _resolve_local_gguf_filename(model_id: str, models_dir: Path) -> str | None:
     return None
 
 
+def _clear_disabled_progress(service_id: str) -> None:
+    """Remove a just-disabled service's progress record.
+
+    A recent ``started`` record outranks a disabled selection on the Extensions
+    page. The host writes these records as the install owner, so where that
+    owner is not UID 1000 the Dashboard cannot remove them, and its disable
+    failed with HTTP 500 after the service had stopped (Workstation06,
+    2026-10-27). The selection is already committed; a leftover record is
+    logged rather than reported as a failed disable.
+    """
+    try:
+        (DATA_DIR / "extension-progress" / f"{service_id}.json").unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning("Could not clear the progress record of disabled %s: %s", service_id, exc)
+
+
 def _read_progress_status(service_id: str) -> str | None:
     """Return the ``status`` field of the progress file, or None if absent/unreadable.
 
@@ -12764,6 +12780,8 @@ class AgentHandler(BaseHTTPRequestHandler):
         if outcome == "already_disabled":
             json_response(self, 409, {"error": f"Extension already disabled: {service_ids[0]}"})
             return
+        if outcome == "disabled":
+            _clear_disabled_progress(service_ids[0])
         json_response(self, 200, {"status": "ok", "service_ids": service_ids, "action": outcome})
 
     def _handle_extension_sync_config(self):

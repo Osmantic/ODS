@@ -5246,8 +5246,8 @@ def disable_extension(service_id: str, include_data_info: bool = Query(True), ap
     # time, so companions go first.
     for target in (*companions, service_id):
         _select_extensions_on_host("disable", [target])
-        progress_file = Path(DATA_DIR) / "extension-progress" / f"{target}.json"
-        progress_file.unlink(missing_ok=True)
+        # The host clears its own record; this covers an older host agent.
+        _clear_progress(target)
 
     logger.info("Disabled extension: %s (companions: %s)", service_id, companions or "none")
 
@@ -5363,8 +5363,7 @@ def uninstall_extension(service_id: str, include_data_info: bool = Query(True), 
             shutil.rmtree(backup)
         _invalidate_extension_digest_cache(ext_dir, backup)
 
-        progress_file = Path(DATA_DIR) / "extension-progress" / f"{service_id}.json"
-        progress_file.unlink(missing_ok=True)
+        _clear_progress(service_id)
 
     logger.info("Uninstalled extension: %s (stopped first: %s)", service_id, stopped_before_removal)
     message = "Extension uninstalled. Docker volumes may remain; run 'docker volume ls' to check."
@@ -5442,8 +5441,7 @@ def purge_extension_data(
         # Also clean up the per-service install-progress file so
         # _compute_extension_status does not keep showing a stale "installing"
         # entry after the user purges an extension's data.
-        progress_file = Path(DATA_DIR) / "extension-progress" / f"{service_id}.json"
-        progress_file.unlink(missing_ok=True)
+        _clear_progress(service_id)
 
         return {"id": service_id, "action": "purged", "size_gb_freed": size_gb}
 
