@@ -814,6 +814,20 @@ resolve_service() {
     echo "$resolved"
 }
 
+# Resolve the target of start, stop, restart and logs. With LLM_BACKEND=vllm
+# the vLLM engine serves the model and the in-stack llama-server is profiled
+# out (docker-compose.vllm.yml). Naming llama-server to Compose would enable
+# its profile and start a second engine on the GPU, so "llm" and
+# "llama-server" mean vllm-server there.
+resolve_lifecycle_service() {
+    local resolved backend="${LLM_BACKEND:-}"
+    resolved=$(resolve_service "$1")
+    if [[ "$resolved" == "llama-server" && "${backend,,}" == "vllm" ]]; then
+        resolved="vllm-server"
+    fi
+    echo "$resolved"
+}
+
 # Regenerate .compose-flags after enable/disable
 _regenerate_compose_flags() {
     if [[ -x "$INSTALL_DIR/scripts/resolve-compose-stack.sh" ]]; then
@@ -955,6 +969,18 @@ get_compose_flags() {
                 stale=1
             fi
             if [[ "$_ods_mode" != "cloud" ]] && [[ "$cached" == *"docker-compose.cloud.yml"* ]]; then
+                stale=1
+            fi
+            # LLM_BACKEND=vllm swaps the in-stack llama-server for the vLLM
+            # engine overlay, which (like a host-native route) leaves out the
+            # compose.local.yaml waits on llama-server. A cache from the other
+            # route starts the wrong engine.
+            local _llm_backend="${LLM_BACKEND:-}"
+            if [[ "${_llm_backend,,}" == "vllm" ]]; then
+                if [[ "$cached" != *"docker-compose.vllm.yml"* || "$cached" == *"compose.local.yaml"* ]]; then
+                    stale=1
+                fi
+            elif [[ "$cached" == *"docker-compose.vllm.yml"* ]]; then
                 stale=1
             fi
             # The retired Lemonade overlay can outlive an update that kept
@@ -1452,6 +1478,29 @@ _ods_cli_service_health() {
     fi
 }
 
+# The vLLM engine (LLM_BACKEND=vllm) publishes no host port. Its Docker
+# healthcheck asks /health, which answers only once the model is loaded, so
+# Docker's state is its status: healthy, starting (a cold start loads the
+# weights and compiles kernels for up to 15 minutes), unhealthy, or stopped.
+_ODS_VLLM_NAME="vLLM (LLM Inference)"
+_ods_cli_vllm_health() {
+    local inspect state="" health=""
+    if ! inspect=$(docker inspect --format \
+        '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+        ods-vllm-server 2>&1); then
+        printf 'stopped\n'
+        return 0
+    fi
+    read -r state health <<<"$inspect"
+    if [[ "$state" != "running" ]]; then
+        printf 'stopped\n'
+    elif [[ "$health" == "healthy" || "$health" == "starting" ]]; then
+        printf '%s\n' "$health"
+    else
+        printf 'unhealthy\n'
+    fi
+}
+
 cmd_status() {
     local json_mode="false"
     while [[ $# -gt 0 ]]; do
@@ -1568,6 +1617,13 @@ cmd_status() {
             fi
         fi
     done
+    if ods_preflight_vllm_engine; then
+        case "$(_ods_cli_vllm_health)" in
+            healthy) success "$_ODS_VLLM_NAME: healthy" ;;
+            starting) log "$_ODS_VLLM_NAME: starting. A first start loads the model and compiles kernels, which can take 15 minutes. Follow it with: ods logs llm" ;;
+            *) warn "$_ODS_VLLM_NAME: not responding. See why with: ods logs llm" ;;
+        esac
+    fi
 
     echo ""
 
@@ -1675,6 +1731,17 @@ cmd_status_json() {
             --arg containerStatus "$container_status" \
             '{id: $id, name: $name, category: $category, port: $port, status: $status, containerStatus: $containerStatus}' >> "$tmp"
     done
+    if ods_preflight_vllm_engine; then
+        local vllm_status vllm_container="unknown"
+        vllm_status="$(_ods_cli_vllm_health)"
+        if [[ "$container_state_known" == "true" ]]; then
+            vllm_container="stopped"
+            grep -Fxq -- vllm-server <<<"$running_services" && vllm_container="running"
+        fi
+        # No host port: model-router and LiteLLM reach it on the ODS network.
+        jq -n --arg name "$_ODS_VLLM_NAME" --arg status "$vllm_status" --arg containerStatus "$vllm_container" \
+            '{id: "vllm-server", name: $name, category: "core", port: "", status: $status, containerStatus: $containerStatus}' >> "$tmp"
+    fi
 
     # GPU summary (optional)
     local gpu_summary_json="null"
@@ -1734,7 +1801,7 @@ cmd_logs() {
         exit 1
     fi
 
-    service=$(resolve_service "$service")
+    service=$(resolve_lifecycle_service "$service")
     local flags_str
     flags_str=$(get_compose_flags)
     local -a flags
@@ -1860,11 +1927,11 @@ cmd_restart() {
     # A full restart or a llama-server restart under a model switch leaves the
     # switch half-applied, as an update would. Refuse before changing CPU
     # budgets in .env or dispatching to the native Mac llama helper.
-    if [[ -z "$service" || "$(resolve_service "$service")" == llama-server ]]; then
+    if [[ -z "$service" || "$(resolve_lifecycle_service "$service")" == llama-server ]]; then
         _ods_cli_refuse_under_model_lifecycle restart
     fi
     ensure_llama_cpu_budget
-    if [[ -n "$service" && "$(resolve_service "$service")" == llama-server ]] \
+    if [[ -n "$service" && "$(resolve_lifecycle_service "$service")" == llama-server ]] \
         && _ods_cli_macos_native_llama; then
         _ods_cli_macos_llama restart
         return 0
@@ -1879,7 +1946,7 @@ cmd_restart() {
 
     local resolved_service="$service"
     if [[ -n "$resolved_service" ]]; then
-        resolved_service=$(resolve_service "$resolved_service")
+        resolved_service=$(resolve_lifecycle_service "$resolved_service")
     fi
 
     if [[ "$resolved_service" == "ods-proxy" ]]; then
@@ -2085,14 +2152,14 @@ cmd_stop() {
     load_env
 
     local service="${1:-}"
-    if [[ -n "$service" && "$(resolve_service "$service")" == llama-server ]] \
+    if [[ -n "$service" && "$(resolve_lifecycle_service "$service")" == llama-server ]] \
         && _ods_cli_macos_native_llama; then
         _ods_cli_macos_llama stop
         return 0
     fi
     local flags_str
     if ! flags_str=$(get_compose_flags); then
-        [[ -n "$service" ]] && service=$(resolve_service "$service")
+        [[ -n "$service" ]] && service=$(resolve_lifecycle_service "$service")
         _stop_owned_containers_for_recovery "$service"
         return $?
     fi
@@ -2104,7 +2171,7 @@ cmd_stop() {
         # later uninstall needs those labels to prove which volumes it owns.
         _compose_run_with_summary "Stopping all services" "${flags[@]}" stop
     else
-        service=$(resolve_service "$service")
+        service=$(resolve_lifecycle_service "$service")
         _compose_run_with_summary "Stopping $service" "${flags[@]}" stop "$service"
     fi
 }
@@ -2152,7 +2219,7 @@ cmd_start() {
     if [[ "$restart_wsl_agent" == false && -n "$service" ]]; then
         error "Deferred WSL agent restart requires a complete stack start."
     fi
-    if [[ -n "$service" && "$(resolve_service "$service")" == llama-server ]] \
+    if [[ -n "$service" && "$(resolve_lifecycle_service "$service")" == llama-server ]] \
         && _ods_cli_macos_native_llama; then
         _ods_cli_macos_llama start
         return 0
@@ -2167,7 +2234,7 @@ cmd_start() {
 
     local resolved_service="$service"
     if [[ -n "$resolved_service" ]]; then
-        resolved_service=$(resolve_service "$resolved_service")
+        resolved_service=$(resolve_lifecycle_service "$resolved_service")
     fi
 
     if [[ -z "$resolved_service" && -f "$INSTALL_DIR/lib/wsl-agent-address.sh" ]]; then
@@ -4154,6 +4221,8 @@ EOF
 cmd_mode() {
     check_install; cd "$INSTALL_DIR"
     load_env || true
+    # shellcheck source=lib/preflight-llm-route.sh
+    . "$SCRIPT_DIR/lib/preflight-llm-route.sh"
     local mode="${1:-}"
 
     if [[ -z "$mode" ]]; then
@@ -4163,6 +4232,8 @@ cmd_mode() {
         local api_url=$(grep "^LLM_API_URL=" .env 2>/dev/null | cut -d= -f2 || true)
         local model=$(grep "^LLM_MODEL=" .env 2>/dev/null | cut -d= -f2 || true)
         local tier=$(grep "^TIER=" .env 2>/dev/null | cut -d= -f2 || true)
+        local engine="llama-server"
+        ods_preflight_vllm_engine && engine="vLLM engine (vllm-server)"
         echo -e "${BLUE}━━━ ODS Mode ━━━${NC}"
         echo ""
         echo -e "Current mode: ${GREEN}${current}${NC}"
@@ -4177,11 +4248,11 @@ cmd_mode() {
                 echo "  Cost: ~\$0.003-0.06/1K tokens"
                 ;;
             local)
-                echo "  LLM:  Local llama-server"
+                echo "  LLM:  Local $engine"
                 echo "  Cost: \$0 (electricity only)"
                 ;;
             hybrid)
-                echo "  LLM:  Local llama-server → Cloud fallback on failure"
+                echo "  LLM:  Local $engine → Cloud fallback on failure"
                 echo "  Cost: \$0 when local works, cloud rates on fallback"
                 ;;
         esac
@@ -4210,6 +4281,14 @@ cmd_mode() {
         echo "  Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC" >&2
         exit 1
     fi
+    if [[ "${configured_backend,,}" == "vllm" && "$mode" != "local" ]]; then
+        # Cloud mode has no local model server, and the resolver refuses the
+        # vLLM engine with it; hybrid mode was never proven with vLLM.
+        echo -e "${RED}✗${NC} ODS runs this model on the vLLM engine, which works only in local mode. Nothing was changed." >&2
+        echo "  To use $mode mode, run the ODS installer again without the vLLM engine." >&2
+        echo "  Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC" >&2
+        exit 1
+    fi
 
     # Update .env
     _env_set "ODS_MODE" "$mode"
@@ -4219,9 +4298,12 @@ cmd_mode() {
         local switchboard_mode native_llm
         switchboard_mode=$(grep -m1 "^ODS_MODEL_SWITCHBOARD=" .env 2>/dev/null | cut -d= -f2- | tr -d '"\047\r' || true)
         native_llm=$(grep -m1 "^NATIVE_LLM_BASE_URL=" .env 2>/dev/null | cut -d= -f2- | tr -d '"\047\r' || true)
-        # A host-native llama-server install keeps the in-stack llama-server
-        # off; LiteLLM is what reaches the native server (06-directories.sh).
-        if [[ -n "$native_llm" ]]; then
+        # A host-native llama-server install and a vLLM install keep the
+        # in-stack llama-server off; LiteLLM is what reaches the model
+        # (06-directories.sh), through model-router for vLLM.
+        local llama_off="false"
+        [[ -n "$native_llm" || "${configured_backend,,}" == "vllm" ]] && llama_off="true"
+        if [[ "$llama_off" == "true" ]]; then
             api_url="http://litellm:4000"
         else
             api_url="http://llama-server:8080"
@@ -4230,7 +4312,7 @@ cmd_mode() {
         if [[ "${switchboard_mode,,}" == "enabled" ]]; then
             _env_set "HERMES_LLM_BASE_URL" "http://model-router:9099/v1"
             _env_set "HERMES_LLM_API_KEY" "no-key"
-        elif [[ -n "$native_llm" ]]; then
+        elif [[ "$llama_off" == "true" ]]; then
             _env_set "HERMES_LLM_BASE_URL" "http://litellm:4000/v1"
             if [[ -n "${LITELLM_KEY:-}" ]]; then
                 _env_set "HERMES_LLM_API_KEY" "$LITELLM_KEY"

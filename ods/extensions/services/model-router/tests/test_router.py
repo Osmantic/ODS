@@ -1502,6 +1502,114 @@ class TestVllmRoute:
                 "key": "ok"}
 
 
+# The two catalog maps (config/model-library.json thinking_template_kwargs),
+# as render-runtime-configs.py writes them into the vllm endpoint.
+_GLM_THINKING = {"default": "medium", "templateKwargs": {
+    "off": {"reasoning_effort": "low"}, "low": {"reasoning_effort": "low"},
+    "medium": {"reasoning_effort": "high"}, "high": {}}}
+_QWEN_THINKING = {"default": "medium", "templateKwargs": {
+    "off": {"enable_thinking": False}, "low": {"reasoning_effort": "low"},
+    "medium": {"reasoning_effort": "medium"}, "high": {"reasoning_effort": "xhigh"}}}
+
+
+def _write_vllm_thinking_route(tmp_path, write_state, thinking):
+    (tmp_path / "endpoints.json").write_text(json.dumps({"endpoints": [
+        {"id": "vllm-default", "baseUrl": "http://vllm-server:8000", "thinking": thinking},
+    ]}), encoding="utf-8")
+    write_state(runtime=_VLLM_MODEL, endpoint="vllm-default",
+                mutate=lambda doc: doc["active"]["backend"].update(kind="vllm"))
+
+
+class TestVllmThinking:
+    """ODS thinking levels reach vLLM in the served model's own template terms."""
+
+    def _send(self, router, tmp_path, thinking, extra, kind="vllm"):
+        mod, client, write_state, _calls = router
+        if kind == "vllm":
+            _write_vllm_thinking_route(tmp_path, write_state, thinking)
+        else:
+            write_state()
+        sent = []
+
+        def handler(request):
+            sent.append(json.loads(request.content))
+            return httpx.Response(200, json={"model": sent[-1]["model"], "choices": [
+                {"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}]})
+
+        _use_upstream(mod, handler)
+        response = client.post("/v1/chat/completions", json={
+            "model": "ods/current", "messages": [{"role": "user", "content": "hi"}], **extra})
+        return response, sent
+
+    @pytest.mark.parametrize("thinking,extra,expected,level", [
+        # No hint: the catalog default, medium, which GLM spells "high".
+        (_GLM_THINKING, {}, {"reasoning_effort": "high"}, "medium"),
+        (_QWEN_THINKING, {}, {"reasoning_effort": "medium"}, "medium"),
+        # The ODS consumers' switch: false is off; GLM cannot stop thinking.
+        (_GLM_THINKING, {"chat_template_kwargs": {"enable_thinking": False}},
+         {"reasoning_effort": "low"}, "off"),
+        (_QWEN_THINKING, {"chat_template_kwargs": {"enable_thinking": False}},
+         {"enable_thinking": False}, "off"),
+        (_QWEN_THINKING, {"chat_template_kwargs": {"enable_thinking": True}},
+         {"reasoning_effort": "medium"}, "medium"),
+        # OpenAI's reasoning_effort, never forwarded literally: Qwen's
+        # template fails on "high" and GLM's thinks at max on "medium".
+        (_QWEN_THINKING, {"reasoning_effort": "high"}, {"reasoning_effort": "xhigh"}, "high"),
+        (_GLM_THINKING, {"reasoning_effort": "high"}, None, "high"),
+        (_GLM_THINKING, {"reasoning_effort": "low"}, {"reasoning_effort": "low"}, "low"),
+        (_QWEN_THINKING, {"reasoning_effort": "none"}, {"enable_thinking": False}, "off"),
+        (_QWEN_THINKING, {"reasoning_effort": "minimal"}, {"reasoning_effort": "low"}, "low"),
+        # vLLM hands chat_template_kwargs.reasoning_effort to the template
+        # like the top-level field, so it is translated the same way.
+        (_QWEN_THINKING, {"chat_template_kwargs": {"reasoning_effort": "high"}},
+         {"reasoning_effort": "xhigh"}, "high"),
+        (_GLM_THINKING, {"chat_template_kwargs": {"reasoning_effort": "medium"}},
+         {"reasoning_effort": "high"}, "medium"),
+        # A client's other template arguments are the model's own and stay.
+        (_QWEN_THINKING, {"chat_template_kwargs": {"enable_thinking": True, "preserve_thinking": True}},
+         {"reasoning_effort": "medium", "preserve_thinking": True}, "medium"),
+    ])
+    def test_level_becomes_the_models_template_arguments(
+            self, router, tmp_path, thinking, extra, expected, level):
+        response, sent = self._send(router, tmp_path, thinking, extra)
+
+        assert response.status_code == 200
+        assert len(sent) == 1
+        assert sent[0].get("chat_template_kwargs") == expected
+        assert "reasoning_effort" not in sent[0]
+        assert response.headers["X-ODS-Thinking-Level"] == level
+
+    def test_unknown_reasoning_effort_is_refused_before_vllm(self, router, tmp_path):
+        response, sent = self._send(router, tmp_path, _QWEN_THINKING, {"reasoning_effort": "max"})
+
+        assert response.status_code == 400
+        assert response.json()["error"]["type"] == "invalid_request_error"
+        assert sent == []
+
+    def test_non_object_template_arguments_are_refused(self, router, tmp_path):
+        response, sent = self._send(router, tmp_path, _GLM_THINKING, {"chat_template_kwargs": ["x"]})
+
+        assert response.status_code == 400
+        assert sent == []
+
+    def test_llama_server_route_forwards_thinking_unchanged(self, router, tmp_path):
+        extra = {"chat_template_kwargs": {"enable_thinking": False}, "reasoning_effort": "high"}
+        response, sent = self._send(router, tmp_path, None, extra, kind="llama-server")
+
+        assert response.status_code == 200
+        assert sent[0]["chat_template_kwargs"] == {"enable_thinking": False}
+        assert sent[0]["reasoning_effort"] == "high"
+        assert "X-ODS-Thinking-Level" not in response.headers
+
+    def test_malformed_thinking_map_fails_the_route_closed(self, router, tmp_path):
+        broken = {"default": "medium", "templateKwargs": {"off": {}, "low": {}, "medium": {}}}
+        response, sent = self._send(router, tmp_path, broken, {})
+
+        assert response.status_code == 503
+        assert response.json()["error"]["type"] == "endpoint_not_allowlisted"
+        assert sent == []
+
+
 class TestStateTrust:
     def test_schema_invalid_state_is_not_routable(self, router):
         mod, client, write_state, calls = router

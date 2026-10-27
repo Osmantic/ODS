@@ -528,8 +528,20 @@ def test_llama_server_backends_render_todays_bytes() -> None:
             assert flagged["files"] == baseline["files"], value
 
 
+# The vllm endpoint carries the served model's thinking map (catalog
+# reasoning + thinking_template_kwargs): model-router translates a request's
+# level with it, since GLM-5.3 and Qwen3.8 read different template arguments.
+VLLM_MODEL = ("--model", "glm-5.3-flash-nvfp4")
+GLM_THINKING = {"default": "medium", "templateKwargs": {
+    "off": {"reasoning_effort": "low"}, "low": {"reasoning_effort": "low"},
+    "medium": {"reasoning_effort": "high"}, "high": {}}}
+QWEN_THINKING = {"default": "medium", "templateKwargs": {
+    "off": {"enable_thinking": False}, "low": {"reasoning_effort": "low"},
+    "medium": {"reasoning_effort": "medium"}, "high": {"reasoning_effort": "xhigh"}}}
+
+
 def test_vllm_backend_routes_model_router_to_vllm_server() -> None:
-    surface = ("--surface", "model-router-endpoints")
+    surface = ("--surface", "model-router-endpoints", *VLLM_MODEL)
     for payload in (
         run_renderer(*surface, "--llm-backend", "vllm", env=llm_backend_env()),
         run_renderer(*surface, env=llm_backend_env("vllm")),
@@ -541,14 +553,42 @@ def test_vllm_backend_routes_model_router_to_vllm_server() -> None:
         assert payload["inputs"]["llm_backend"] == "vllm"
         content = file_by_surface(payload, "model-router-endpoints")["content"]
         assert json.loads(content) == {
-            "endpoints": [{"id": "vllm-default", "baseUrl": "http://vllm-server:8000"}],
+            "endpoints": [{"id": "vllm-default", "baseUrl": "http://vllm-server:8000",
+                           "thinking": GLM_THINKING}],
         }
 
 
+def test_vllm_endpoint_carries_each_models_own_thinking_map() -> None:
+    surface = ("--surface", "model-router-endpoints", "--llm-backend", "vllm")
+    for model, thinking in (("glm-5.3-flash-nvfp4", GLM_THINKING),
+                            ("qwen3.8-flash-next-nvfp4", QWEN_THINKING),
+                            # The catalog id names the same entry.
+                            ("qwen3.8-flash-next-nvfp4-vllm", QWEN_THINKING)):
+        payload = run_renderer(*surface, "--model", model, env=llm_backend_env())
+        endpoint = json.loads(file_by_surface(payload, "model-router-endpoints")["content"])["endpoints"][0]
+        assert endpoint["thinking"] == thinking, model
+
+
+def test_vllm_endpoint_refuses_a_model_without_a_vllm_catalog_entry() -> None:
+    for model in ("qwen3.5-9b", "no-such-model"):
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--surface", "model-router-endpoints",
+             "--llm-backend", "vllm", "--model", model],
+            cwd=ROOT, env=llm_backend_env(), text=True, capture_output=True,
+        )
+        assert proc.returncode == 2, model
+        assert "needs --model to name one vLLM catalog entry" in proc.stderr, proc.stderr
+    # Only the router endpoint needs the entry; other surfaces render as before.
+    switchboard = run_renderer("--surface", "litellm-switchboard", "--llm-backend", "vllm",
+                               "--litellm-key", "sk-test-litellm", env=llm_backend_env())
+    assert switchboard["inputs"]["vllm_thinking"] is None
+
+
 def test_vllm_backend_changes_only_the_router_endpoint_and_env_backend() -> None:
-    baseline = run_renderer(*ALL_ENABLED, env=llm_backend_env())
-    vllm = run_renderer(*ALL_ENABLED, "--llm-backend", "vllm", env=llm_backend_env())
-    assert file_by_surface(vllm, "env")["content"] == LLAMA_SERVER_ENV.replace(
+    baseline = run_renderer(*ALL_ENABLED, *VLLM_MODEL, env=llm_backend_env())
+    vllm = run_renderer(*ALL_ENABLED, *VLLM_MODEL, "--llm-backend", "vllm", env=llm_backend_env())
+    assert "LLM_BACKEND=vllm\n" in file_by_surface(vllm, "env")["content"]
+    assert file_by_surface(vllm, "env")["content"] == file_by_surface(baseline, "env")["content"].replace(
         "LLM_BACKEND=llama-server\n", "LLM_BACKEND=vllm\n")
     changed = {after["surface"] for after, before in zip(vllm["files"], baseline["files"])
                if after != before}
@@ -934,6 +974,8 @@ def main() -> int:
         test_router_endpoints_strip_trailing_v1,
         test_llama_server_backends_render_todays_bytes,
         test_vllm_backend_routes_model_router_to_vllm_server,
+        test_vllm_endpoint_carries_each_models_own_thinking_map,
+        test_vllm_endpoint_refuses_a_model_without_a_vllm_catalog_entry,
         test_vllm_backend_changes_only_the_router_endpoint_and_env_backend,
         test_retired_lemonade_flags_are_accepted_and_ignored,
         test_litellm_lemonade_surface_is_retired,

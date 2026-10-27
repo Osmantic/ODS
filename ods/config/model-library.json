@@ -2846,6 +2846,12 @@
       "min_gpu_mib": 158720,
       "compute_capability": ["10.0", "10.3"],
       "reasoning": "medium",
+      "thinking_template_kwargs": {
+        "off": {"enable_thinking": false},
+        "low": {"reasoning_effort": "low"},
+        "medium": {"reasoning_effort": "medium"},
+        "high": {"reasoning_effort": "xhigh"}
+      },
       "tool_call_parser": "qwen3_coder",
       "reasoning_parser": "qwen3",
       "vllm_args": ["--quantization", "modelopt", "--max-model-len", "131072", "--max-num-seqs", "32", "--max-num-batched-tokens", "8192", "--enable-prefix-caching", "--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder", "--reasoning-parser", "qwen3", "--trust-remote-code", "--engram-config.cpu_offload=false", "--speculative-config.method=mtp", "--speculative-config.num_speculative_tokens=3"],
@@ -2904,6 +2910,12 @@
       "min_gpu_mib": 244736,
       "compute_capability": ["10.0", "10.3"],
       "reasoning": "medium",
+      "thinking_template_kwargs": {
+        "off": {"reasoning_effort": "low"},
+        "low": {"reasoning_effort": "low"},
+        "medium": {"reasoning_effort": "high"},
+        "high": {}
+      },
       "tool_call_parser": "glm47",
       "reasoning_parser": "glm47",
       "vllm_args": ["--max-model-len", "131072", "--kv-cache-dtype", "fp8", "--max-num-seqs", "32", "--max-num-batched-tokens", "8192", "--enable-prefix-caching", "--enable-auto-tool-choice", "--tool-call-parser", "glm47", "--reasoning-parser", "glm47", "--trust-remote-code", "--speculative-config.method=mtp", "--speculative-config.num_speculative_tokens=5", "--no-enable-flashinfer-autotune"],

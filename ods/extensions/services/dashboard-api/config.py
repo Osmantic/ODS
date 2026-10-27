@@ -321,6 +321,40 @@ def _apply_external_llm_service_override(
     )
 
 
+VLLM_SERVICE_HOST = "vllm-server"
+VLLM_SERVICE_PORT = 8000
+VLLM_CONTAINER = "ods-vllm-server"
+
+
+def _apply_vllm_service_override(
+    services: dict[str, dict[str, Any]],
+    environment: Mapping[str, str] | None = None,
+) -> None:
+    """Route the LLM row's probes to the vLLM engine (LLM_BACKEND=vllm).
+
+    docker-compose.vllm.yml profiles the in-stack llama-server out and runs
+    vllm-server on the ODS network: /health answers 200 with an empty body once
+    the model is loaded, /v1/models lists the served id. As for a host-native
+    or external route, the row keeps the llama-server id that chat, readiness
+    and features key on; its container is ods-vllm-server, which the host
+    agent's Docker health snapshot reports (a cold start reads as starting),
+    and it publishes no host port to link to.
+    """
+    env = environment if environment is not None else os.environ
+    if str(env.get("LLM_BACKEND", "")).strip().lower() != "vllm":
+        return
+    service = services.get("llama-server")
+    if not service:
+        return
+    service["host"] = VLLM_SERVICE_HOST
+    service["port"] = VLLM_SERVICE_PORT
+    service["health"] = "/health"
+    service["container_name"] = VLLM_CONTAINER
+    service["name"] = "vLLM (LLM Inference)"
+    service["external_link"] = False
+    logger.info("vLLM engine selected; routing LLM probes to %s:%d", VLLM_SERVICE_HOST, VLLM_SERVICE_PORT)
+
+
 def _read_env_value(key: str) -> str:
     return (os.environ.get(key) or _read_env_from_file(key)).strip()
 
@@ -655,6 +689,7 @@ if not SERVICES:
 LLM_BACKEND = normalize_llm_backend(os.environ.get("LLM_BACKEND", ""))
 _apply_host_native_llm_service_override(SERVICES, GPU_BACKEND)
 _apply_external_llm_service_override(SERVICES)
+_apply_vllm_service_override(SERVICES)
 
 # --- Features ---
 

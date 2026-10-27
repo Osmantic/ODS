@@ -879,10 +879,36 @@ class RouterError(Exception):
         self.message = message
 
 
+# ODS thinking levels. A vllm endpoint maps each to the served model's own
+# chat-template arguments (config/model-library.json thinking_template_kwargs,
+# rendered into endpoints.json as "thinking").
+THINKING_LEVELS = ("off", "low", "medium", "high")
+# OpenAI reasoning_effort values, read as ODS levels.
+_REASONING_EFFORT_LEVELS = {
+    "none": "off", "off": "off", "minimal": "low", "low": "low",
+    "medium": "medium", "high": "high", "xhigh": "high",
+}
+
+
+def _valid_thinking(value: Any) -> bool:
+    """An endpoint ``thinking`` map: {"default": level, "templateKwargs": {level: {...}}}."""
+    if not _has_keys(value, {"default", "templateKwargs"}, {"default", "templateKwargs"}):
+        return False
+    levels = value["templateKwargs"]
+    return (
+        value["default"] in THINKING_LEVELS
+        and isinstance(levels, dict)
+        and set(levels) == set(THINKING_LEVELS)
+        and all(isinstance(kwargs, dict) and all(isinstance(key, str) for key in kwargs)
+                for kwargs in levels.values())
+    )
+
+
 def _load_endpoints() -> dict[str, dict[str, Any]]:
-    """Allowlist endpointId -> {baseUrl, apiKeyEnv?}, re-read when the file
-    changes on disk (activation re-renders it). Retains the last good
-    allowlist while the file is missing or invalid."""
+    """Allowlist endpointId -> {baseUrl, apiKeyEnv?, thinking?}, re-read when
+    the file changes on disk (activation re-renders it). Retains the last good
+    allowlist while the file is missing or invalid. An endpoint whose thinking
+    map is malformed is left out, so its route fails closed."""
     try:
         stat = ENDPOINTS_PATH.stat()
     except OSError as exc:
@@ -900,9 +926,14 @@ def _load_endpoints() -> dict[str, dict[str, Any]]:
             base_url = str(entry.get("baseUrl") or "")
             if not endpoint_id or not base_url.startswith(("http://", "https://")):
                 continue
+            thinking = entry.get("thinking")
+            if thinking is not None and not _valid_thinking(thinking):
+                logger.error("endpoint %s has a malformed thinking map; it is not allowlisted", endpoint_id)
+                continue
             endpoints[endpoint_id] = {
                 "baseUrl": base_url.rstrip("/"),
                 "apiKeyEnv": str(entry.get("apiKeyEnv") or ""),
+                "thinking": thinking,
             }
     except (OSError, ValueError) as exc:
         logger.error("endpoints allowlist unreadable; retaining previous: %s", exc)
@@ -1129,6 +1160,7 @@ def _active_route() -> dict[str, Any]:
         "endpointId": endpoint_id,
         "baseUrl": endpoint["baseUrl"],
         "apiKeyEnv": endpoint["apiKeyEnv"],
+        "thinking": endpoint.get("thinking"),
         "queueMode": str(availability.get("mode") or "serve_active") == "queue",
     }
 
@@ -1144,6 +1176,60 @@ def _llama_tool_compat(route: dict[str, Any]) -> bool:
     --tool-call-parser and --reasoning-parser.
     """
     return route["backendKind"] == "llama-server"
+
+
+def _thinking_level(payload: dict[str, Any], default: str) -> str:
+    """The ODS thinking level a chat request asks for.
+
+    A ``reasoning_effort`` names it, top-level (OpenAI's field) or in
+    ``chat_template_kwargs`` (vLLM passes both to the template alike);
+    otherwise the ODS consumers' on/off switch,
+    ``chat_template_kwargs.enable_thinking`` (false is off, true the route's
+    default level, at least medium); otherwise the default.
+    """
+    options = payload.get("chat_template_kwargs")
+    options = options if isinstance(options, dict) else {}
+    effort = payload.get("reasoning_effort")
+    if effort is None:
+        effort = options.get("reasoning_effort")
+    if effort is not None:
+        level = _REASONING_EFFORT_LEVELS.get(effort.strip().lower()) if isinstance(effort, str) else None
+        if level is None:
+            raise RouterError(400, "invalid_request_error",
+                              "reasoning_effort must be one of " + ", ".join(_REASONING_EFFORT_LEVELS))
+        return level
+    enabled = options.get("enable_thinking")
+    if enabled is False:
+        return "off"
+    if enabled is True and default == "off":
+        return "medium"
+    return default
+
+
+def _vllm_thinking_payload(payload: dict[str, Any], thinking: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """The request with its thinking level in the served model's own template terms.
+
+    Chat templates disagree: GLM-5.3 reads only reasoning_effort low or high
+    (any other value thinks at "max", about twice as slow) and Qwen3.8 fails
+    with HTTP 400 on any reasoning_effort but xhigh, medium and low, so no
+    level, reasoning_effort or enable_thinking is forwarded as sent. The
+    level's arguments replace them; the other chat_template_kwargs a client
+    sends are the model's own and stay. Returns the new payload and the level.
+    """
+    options = payload.get("chat_template_kwargs")
+    if options is not None and not isinstance(options, dict):
+        raise RouterError(400, "invalid_request_error", "chat_template_kwargs must be an object")
+    level = _thinking_level(payload, thinking["default"])
+    kwargs = {
+        **thinking["templateKwargs"][level],
+        **{key: value for key, value in (options or {}).items()
+           if key not in {"enable_thinking", "reasoning_effort"}},
+    }
+    translated = {key: value for key, value in payload.items()
+                  if key not in {"reasoning_effort", "chat_template_kwargs"}}
+    if kwargs:
+        translated["chat_template_kwargs"] = kwargs
+    return translated, level
 
 
 def _offered_tool_evidence(payload: dict[str, Any]) -> dict[str, Any]:
@@ -2039,6 +2125,15 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                 "type": "route_changed", "code": "409"}}, status_code=409), False
 
     payload["model"] = route["runtimeModelId"]
+    thinking_level = None
+    if path == "/v1/chat/completions" and route["backendKind"] == "vllm" and route["thinking"]:
+        try:
+            payload, thinking_level = _vllm_thinking_payload(payload, route["thinking"])
+        except RouterError as exc:
+            return JSONResponse(
+                {"error": {"message": exc.message, "type": exc.code, "code": str(exc.status)}},
+                status_code=exc.status,
+            ), False
     # The stable client alias hides the selected template from agents. Adapt
     # only outgoing Nemo history after resolving the current route; audit and
     # response IDs remain unchanged, including across model switches.
@@ -2094,6 +2189,8 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
     }
     if thinking_tool_compat:
         ods_headers["X-ODS-Tool-Stream-Compatibility"] = "thinking-nonstream"
+    if thinking_level is not None:
+        ods_headers["X-ODS-Thinking-Level"] = thinking_level
 
     url = route["baseUrl"] + path
     client: httpx.AsyncClient = app.state.http

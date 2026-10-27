@@ -68,6 +68,7 @@ def write_catalog(path: Path, files: dict[str, bytes], **overrides) -> Path:
         "served_model_name": "Test-Model-NVFP4", "llm_model_name": "test-model-nvfp4",
         "context_length": 8192, "min_gpu_mib": 1024, "compute_capability": ["10.0"],
         "reasoning": "off", "tool_call_parser": "hermes", "reasoning_parser": "qwen3",
+        "thinking_template_kwargs": {"off": {"enable_thinking": False}, "low": {}, "medium": {}, "high": {}},
         "vllm_args": ["--max-model-len", "8192", "--enable-auto-tool-choice",
                       "--tool-call-parser", "hermes", "--reasoning-parser", "qwen3"],
         "selection": {"discrete": 0, "unified": 0, "cpu": 0, "vllm": 1},

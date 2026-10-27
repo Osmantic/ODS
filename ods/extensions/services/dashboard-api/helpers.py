@@ -857,6 +857,8 @@ async def get_llama_context_size(model_hint: Optional[str] = None) -> Optional[i
         return context if type(context) is int and context > 0 else None
     if "llama-server" not in SERVICES:
         return None
+    if LLM_BACKEND == "vllm":
+        return await _vllm_context_size(model_hint)
     try:
         host = SERVICES["llama-server"]["host"]
         port = SERVICES["llama-server"]["port"]
@@ -873,12 +875,35 @@ async def get_llama_context_size(model_hint: Optional[str] = None) -> Optional[i
         return None
 
 
+async def _vllm_context_size(model_hint: Optional[str]) -> Optional[int]:
+    """The context vLLM serves: ``max_model_len`` of its /v1/models row.
+
+    vLLM has no /props; its --max-model-len fixes the context, and the row of
+    the served model reports it.
+    """
+    try:
+        host = SERVICES["llama-server"]["host"]
+        port = SERVICES["llama-server"]["port"]
+        client = await _get_httpx_client()
+        resp = await client.get(f"http://{host}:{port}{_LLM_API_PREFIX}/models")
+        payload = resp.json()
+    except (httpx.HTTPError, httpx.TimeoutException, ValueError) as e:
+        logger.debug("vLLM context size unavailable: %s", e)
+        return None
+    rows = payload.get("data") if isinstance(payload, dict) else None
+    for row in rows if isinstance(rows, list) else ():
+        if isinstance(row, dict) and (model_hint is None or row.get("id") == model_hint):
+            context = row.get("max_model_len")
+            return context if type(context) is int and context > 0 else None
+    return None
+
+
 async def get_llama_vision_support() -> Optional[bool]:
     """Whether the active llama-server loaded a vision projector.
 
     llama-server reports it as ``/props`` ``modalities.vision``. None when that
-    cannot be read: the owner's own server, an unreachable runtime, or a build
-    without the field.
+    cannot be read: the owner's own server, an unreachable runtime, a build
+    without the field, or the vLLM engine, which reports no modalities.
     """
     if _host_native_llm():
         try:
@@ -886,7 +911,7 @@ async def get_llama_vision_support() -> Optional[bool]:
         except (AgentClientError, OSError, ValueError):
             return None
         return vision if type(vision) is bool else None
-    if LLM_BACKEND == "external" or "llama-server" not in SERVICES:
+    if LLM_BACKEND in {"external", "vllm"} or "llama-server" not in SERVICES:
         return None
     try:
         host = SERVICES["llama-server"]["host"]

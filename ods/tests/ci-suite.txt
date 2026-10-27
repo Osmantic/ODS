@@ -63,6 +63,8 @@ tests/test-comfyui-user-dir-persisted.sh
 tests/test-comfyui-cuda-cache-persisted.sh
 tests/test-llama-cuda-cache-persisted.sh
 tests/test-vllm-engine-service.sh
+tests/test-cli-vllm-engine.sh
+tests/test-doctor-vllm-engine.sh
 tests/test_comfyui_extension_contract.py
 tests/test_extension_assets.py
 tests/test-compose-failure-evidence.sh
@@ -145,6 +147,9 @@ tests/test-model-library-coverage.py
 tests/test-model-library-verdicts.py
 tests/test-model-library-vllm.py
 tests/test_select_model_vllm.py
+tests/test_host_agent_vllm.py
+tests/test_preserve_active_model_vllm.py
+tests/test_doctor_vllm_route.py
 tests/test-native-llm-phase02.sh
 tests/test-network-security.sh
 tests/test-network-timeouts.sh
