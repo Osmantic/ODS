@@ -85,8 +85,9 @@ env = dict(item.split("=", 1) for item in env) if isinstance(env, list) else {k:
 for key, value in {"VLLM_ENGINE_READY_TIMEOUT_S": "3600", "HF_HUB_OFFLINE": "1",
                    "VLLM_NO_USAGE_STATS": "1", "DO_NOT_TRACK": "1"}.items():
     check(env.get(key) == value, f"vllm-server must set {key}={value}")
-check(env.get("CUDA_CACHE_PATH", "").startswith("/root/.cache/"),
-      "the CUDA kernel cache must live in the mounted cache folder")
+for key in ("CUDA_CACHE_PATH", "TILELANG_CACHE_DIR", "TRITON_CACHE_DIR", "TORCHINDUCTOR_CACHE_DIR"):
+    check(env.get(key, "").startswith("/root/.cache/"),
+          f"{key} must point into the mounted cache folder, or a recreate rebuilds that kernel cache")
 
 # Mounts: one model folder read-only, the compile/autotune cache writable.
 mounts = {}

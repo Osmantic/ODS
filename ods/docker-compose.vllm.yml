@@ -48,6 +48,12 @@ services:
       # in docker-compose.nvidia.yml); 4 GiB is the driver's maximum.
       - CUDA_CACHE_PATH=/root/.cache/nv/ComputeCache
       - CUDA_CACHE_MAXSIZE=4294967296
+      # The other kernel caches default outside /root/.cache (~/.tilelang,
+      # ~/.triton, /tmp/torchinductor_root), so every recreate rebuilt them:
+      # GLM-5.3-Flash JIT-compiles 136 TileLang kernels on each start.
+      - TILELANG_CACHE_DIR=/root/.cache/tilelang
+      - TRITON_CACHE_DIR=/root/.cache/triton
+      - TORCHINDUCTOR_CACHE_DIR=/root/.cache/torchinductor
     volumes:
       # The model's snapshot folder under data/models, read-only.
       - ./data/models/${VLLM_MODEL_DIR:?VLLM_MODEL_DIR must name the model folder under data/models}:/model:ro,z
