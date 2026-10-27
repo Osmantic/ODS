@@ -10732,6 +10732,24 @@ export function createToolLoopGuard({
       state.artifactSurfaceReason = state.artifactOwnerInteractive ? undefined :
         state.artifactIdentityConflict ? 'run-identity-conflict' : state.artifactNoninteractiveObserved ? 'noninteractive-turn' :
         artifactContext.trigger == null ? 'trigger-unavailable' : 'owner-session-required';
+      // agent_end closes an embedded attempt, not necessarily the outer
+      // request. A fresh native prompt hook can start its next attempt.
+      // Reopen only this owner's still-current request; retain all stop flags,
+      // budgets and receipts. Replaying a previous hook cannot revive it.
+      const promptBuildEvents = state.promptBuildEvents ??= new WeakSet();
+      const freshPromptBuild = event && typeof event === 'object' && !promptBuildEvents.has(event);
+      if (event && typeof event === 'object') promptBuildEvents.add(event);
+      if (freshPromptBuild && typeof event.prompt === 'string' && event.prompt.trim()
+          && state.runEnded && state.artifactOwnerInteractive && !state.managedTeamWorker
+          && !state.clientCancelled && !state.odsAborted && !state.recursiveDeleteDenied
+          && !state.progressBudget.exhausted
+          && state.currentSessionId === context.sessionId && state.currentSessionKey === context.sessionKey
+          && sessionRuns.get(context.sessionId) === runId) {
+        state.runEnded = false;
+        // A broker response reserved by the ended attempt must not attach to
+        // its successor. Each admitted call has its own private scope object.
+        state.artifactReservations = new WeakSet();
+      }
       state.completionAssurance.begin(currentOwnerIntentText(event?.messages, event?.prompt), event);
       const ownerIntent=currentOwnerIntentText(event?.messages,event?.prompt);
       if (ownerIntent && state.ownerNoTools === undefined) state.ownerNoTools=ownerForbidsTools(ownerIntent);
@@ -13638,6 +13656,11 @@ export function createToolLoopGuard({
     recordExampleOutcome({...context, runId}, examples.end(runId));
     const state = runs.get(runId);
     if (!state) return;
+    const endEvents = state.agentEndEvents ??= new WeakSet();
+    if (event && typeof event === 'object') {
+      if (endEvents.has(event)) return;
+      endEvents.add(event);
+    }
     state.runEnded = true;
     state.runDeadlineReached = !state.clientCancelled && !state.odsAborted && !state.progressBudget.exhausted &&
       !state.recursiveDeleteDenied && runDeadlineReached(state.runDeadline, event, now());
@@ -14504,11 +14527,12 @@ export function createToolLoopGuard({
       if (workspaceArtifactUnavailableReason(scope)) return false;
       const state=runs.get(scope.runId);
       state.artifactAttempts=(state.artifactAttempts ?? 0)+1;
+      (state.artifactReservations ??= new WeakSet()).add(scope);
       return true;
     },
     acceptWorkspaceArtifact(scope,receipt) {
       const state=artifactScopeState(scope);
-      if (!state || !state.artifactAttempts || !validDeliveredArtifact(receipt)) return false;
+      if (!state || !state.artifactReservations?.has(scope) || !validDeliveredArtifact(receipt)) return false;
       const artifacts=state.workspaceArtifacts ??= [];
       if (artifacts.some(item=>item.siteId === receipt.siteId && item.file.path === receipt.file.path)) return true;
       if (artifacts.length >= 4) return false;

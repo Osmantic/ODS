@@ -9590,33 +9590,42 @@ def _image_prepare_context(service_ids: list[str]) -> tuple[list[str], dict[str,
 
 
 def _services_missing_images(flags: list[str], service_ids: list[str],
-                             env: dict[str, str]) -> list[str]:
+                             env: dict[str, str]) -> tuple[list[str], list[str]]:
     """The services among ``service_ids`` whose Compose image is not on this host.
 
-    Locally built images are left to their own build step. The resolved
-    configuration carries credential values, so it is parsed and never logged.
+    Returns ``(to_pull, to_build)``. A locally built service is checked under
+    the name ``up`` gives its image: its ``image``, else Compose's
+    ``<project>-<service>``. The resolved configuration carries credential
+    values, so it is parsed and never logged.
     """
     command = ["docker", "compose", *flags, "config", "--format", "json"]
     result = subprocess.run(command, cwd=str(INSTALL_DIR), env=env,
                             capture_output=True, text=True, timeout=60)
     if result.returncode:
         raise RuntimeError("Could not resolve the Compose configuration for these services")
-    services = json.loads(result.stdout).get("services")
+    config = json.loads(result.stdout)
+    services = config.get("services")
     if not isinstance(services, dict):
         raise RuntimeError("Invalid Compose configuration")
-    missing = []
+    pulls, builds = [], []
     for service_id in service_ids:
         definition = services.get(service_id)
         if not isinstance(definition, dict):
             raise RuntimeError(f"The Compose stack does not define {service_id}")
+        built = bool(definition.get("build"))
         image = definition.get("image")
-        if definition.get("build") or not isinstance(image, str) or not image:
+        if built and not image:
+            project = config.get("name")
+            if not isinstance(project, str) or not project:
+                raise RuntimeError("Invalid Compose configuration")
+            image = f"{project}-{service_id}"
+        if not isinstance(image, str) or not image:
             continue
         inspected = subprocess.run(["docker", "image", "inspect", image],
                                    capture_output=True, text=True, timeout=30)
         if inspected.returncode:
-            missing.append(service_id)
-    return missing
+            (builds if built else pulls).append(service_id)
+    return pulls, builds
 
 
 def _missing_model_files(service_ids: list[str]) -> list:
@@ -9654,6 +9663,53 @@ def _fetch_model_files(progress_id: str, files: list) -> tuple[bool, str]:
     return True, ""
 
 
+def _follow_image_command(command: list[str], progress_id: str, label: str, detail,
+                          subject: str, *, env: dict[str, str] | None = None) -> tuple[int, str, list[str]]:
+    """Run a Compose image command with live progress under ``progress_id``.
+
+    ``detail(line)`` reads each output line and returns the progress detail to
+    show after the elapsed time, or None to keep the last one. The command is
+    stopped only when it prints nothing for IMAGE_PULL_STALL_SECONDS or
+    IMAGE_PULL_MAX_SECONDS pass. Returns ``(returncode, failure, tail)``:
+    ``failure`` says why the command was stopped, ``tail`` is its last output.
+    """
+    proc = subprocess.Popen(command, cwd=str(INSTALL_DIR), env=env, text=True, errors="replace",
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    tail: collections.deque = collections.deque(maxlen=40)
+    seen = {"last": time.monotonic(), "detail": detail("") or ""}
+
+    def _read_output() -> None:
+        for line in proc.stdout:
+            tail.append(line.rstrip())
+            seen["last"] = time.monotonic()
+            seen["detail"] = detail(line) or seen["detail"]
+
+    reader = threading.Thread(target=_read_output, daemon=True)
+    reader.start()
+    started = reported = time.monotonic()
+    _write_progress(progress_id, "pulling", label)
+    failure = ""
+    while proc.poll() is None:
+        time.sleep(1)
+        now = time.monotonic()
+        if now - seen["last"] > IMAGE_PULL_STALL_SECONDS:
+            failure = f"{subject} made no progress for {IMAGE_PULL_STALL_SECONDS // 60} minutes."
+        elif now - started > IMAGE_PULL_MAX_SECONDS:
+            failure = f"{subject} did not finish within {IMAGE_PULL_MAX_SECONDS // 3600} hours."
+        if failure:
+            proc.kill()
+            break
+        if now - reported >= _IMAGE_PULL_PROGRESS_SECONDS:
+            reported = now
+            minutes, seconds = divmod(int(now - started), 60)
+            elapsed = f"{label} {minutes}:{seconds:02d} elapsed"
+            _write_progress(progress_id, "pulling",
+                            f"{elapsed}, {seen['detail']}" if seen["detail"] else elapsed)
+    proc.wait()
+    reader.join(timeout=5)
+    return proc.returncode, failure, list(tail)
+
+
 def _pull_compose_images(flags: list[str], service_ids: list[str], progress_id: str,
                          *, env: dict[str, str] | None = None) -> tuple[bool, str]:
     """Download the images of ``service_ids`` with live progress under ``progress_id``.
@@ -9663,45 +9719,54 @@ def _pull_compose_images(flags: list[str], service_ids: list[str], progress_id: 
     reports nothing for IMAGE_PULL_STALL_SECONDS or IMAGE_PULL_MAX_SECONDS pass.
     """
     command = ["docker", "compose", "--progress", "plain", *flags, "pull", *service_ids]
-    proc = subprocess.Popen(command, cwd=str(INSTALL_DIR), env=env, text=True, errors="replace",
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    tail: collections.deque = collections.deque(maxlen=40)
-    seen = {"last": time.monotonic(), "layers": 0}
+    layers = [0]
 
-    def _read_output() -> None:
-        for line in proc.stdout:
-            tail.append(line.rstrip())
-            seen["last"] = time.monotonic()
-            if "Pull complete" in line or "Already exists" in line:
-                seen["layers"] += 1
+    def detail(line: str) -> str:
+        if "Pull complete" in line or "Already exists" in line:
+            layers[0] += 1
+        return f"{layers[0]} layers done"
 
-    reader = threading.Thread(target=_read_output, daemon=True)
-    reader.start()
-    started = reported = time.monotonic()
-    _write_progress(progress_id, "pulling", "Downloading images...")
-    failure = ""
-    while proc.poll() is None:
-        time.sleep(1)
-        now = time.monotonic()
-        if now - seen["last"] > IMAGE_PULL_STALL_SECONDS:
-            failure = f"Image download made no progress for {IMAGE_PULL_STALL_SECONDS // 60} minutes."
-        elif now - started > IMAGE_PULL_MAX_SECONDS:
-            failure = f"Image download did not finish within {IMAGE_PULL_MAX_SECONDS // 3600} hours."
-        if failure:
-            proc.kill()
-            break
-        if now - reported >= _IMAGE_PULL_PROGRESS_SECONDS:
-            reported = now
-            minutes, seconds = divmod(int(now - started), 60)
-            _write_progress(progress_id, "pulling",
-                            f"Downloading images... {minutes}:{seconds:02d} elapsed, "
-                            f"{seen['layers']} layers done")
-    proc.wait()
-    reader.join(timeout=5)
+    returncode, failure, tail = _follow_image_command(
+        command, progress_id, "Downloading images...", detail, "Image download", env=env)
     if failure:
         return False, failure
-    if proc.returncode:
-        return False, "Image download failed:\n" + "\n".join(list(tail)[-12:])
+    if returncode:
+        return False, "Image download failed:\n" + "\n".join(tail[-12:])
+    return True, ""
+
+
+# Compose's plain build progress (Compose 5.2): "#14 [comfyui 10/15] RUN ..."
+# starts a Dockerfile step, "#20 [comfyui] exporting to image" saves the image.
+_BUILD_STEP_RE = re.compile(r"#\d+ \[(?:[^\]]* )?\s*(\d+)/(\d+)\]")
+_BUILD_EXPORT_RE = re.compile(r"#\d+ (?:\[[^\]]*\] )?exporting to ")
+
+
+def _build_compose_images(flags: list[str], service_ids: list[str], progress_id: str,
+                          *, env: dict[str, str] | None = None) -> tuple[bool, str]:
+    """Build the local images of ``service_ids`` with live progress under ``progress_id``.
+
+    Compose builds from the same files ``up`` uses, so ``up`` then only
+    creates the container. A first ComfyUI build for NVIDIA installs its
+    Python stack and saves a 7 GB image: ten minutes on Workstation06
+    (2026-10-26), all of the 600 s start allowance, so its first ``up`` timed
+    out. Returns ``(ok, error)``; the build is stopped only when BuildKit
+    prints nothing for IMAGE_PULL_STALL_SECONDS or IMAGE_PULL_MAX_SECONDS pass.
+    """
+    command = ["docker", "compose", "--progress", "plain", *flags, "build", *service_ids]
+
+    def detail(line: str) -> str | None:
+        if _BUILD_EXPORT_RE.match(line):
+            return "saving the image"
+        step = _BUILD_STEP_RE.match(line)
+        return f"step {step[1]} of {step[2]}" if step else None
+
+    returncode, failure, tail = _follow_image_command(
+        command, progress_id, "Building images...", detail, "Image build", env=env)
+    if failure:
+        return False, failure
+    if returncode:
+        return False, _install_build_diagnostic(
+            subprocess.CompletedProcess(command, returncode, "\n".join(tail), ""), {})
     return True, ""
 
 
@@ -13494,11 +13559,13 @@ class AgentHandler(BaseHTTPRequestHandler):
         """Download the images and models a planned enable needs before anything is selected.
 
         Takes service ids only: bundled extensions and Open WebUI, whose images
-        Compose resolves from their shipped files and pinned digests. Their
-        default model packs (model-packs.json) follow the images. Answers 200
-        when everything is already here, otherwise 202 and downloads in the
-        background, reporting progress under ``progress_id`` until it records
-        ``prepared`` or ``error``. Each service allows one operation.
+        Compose resolves from their shipped files and pinned digests. Images a
+        service builds from its shipped Dockerfile are built here too, so the
+        start that follows only creates containers. Their default model packs
+        (model-packs.json) follow the images. Answers 200 when everything is
+        already here, otherwise 202 and works in the background, reporting
+        progress under ``progress_id`` until it records ``prepared`` or
+        ``error``. Each service allows one operation.
         """
         if not check_auth(self):
             return
@@ -13533,32 +13600,40 @@ class AgentHandler(BaseHTTPRequestHandler):
 
         try:
             flags, env = _image_prepare_context(service_ids)
-            missing = _services_missing_images(flags, service_ids, env)
+            pulls, builds = _services_missing_images(flags, service_ids, env)
             model_files = _missing_model_files(service_ids)
         except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:
             _release()
             logger.warning("Image preparation could not resolve %s: %s", progress_id, type(exc).__name__)
             json_response(self, 503, {"error": str(exc)[:300]})
             return
-        if not missing and not model_files:
+        if not pulls and not builds and not model_files:
             _release()
             json_response(self, 200, {"status": "ready", "service_ids": service_ids})
             return
 
         def _download() -> None:
             try:
-                if missing:
-                    pulled, error = _pull_compose_images(flags, missing, progress_id, env=env)
+                if pulls:
+                    pulled, error = _pull_compose_images(flags, pulls, progress_id, env=env)
                     if not pulled:
                         _write_progress(progress_id, "error", "Image download failed", error=error)
+                        return
+                if builds:
+                    built, error = _build_compose_images(flags, builds, progress_id, env=env)
+                    if not built:
+                        _write_progress(progress_id, "error", "Image build failed", error=error)
                         return
                 if model_files:
                     fetched, error = _fetch_model_files(progress_id, model_files)
                     if not fetched:
                         _write_progress(progress_id, "error", "Model download failed", error=error)
                         return
-                _write_progress(progress_id, "prepared",
-                                "Images and models downloaded" if model_files else "Images downloaded")
+                if builds:
+                    label = "Images built and models downloaded" if model_files else "Images built"
+                else:
+                    label = "Images and models downloaded" if model_files else "Images downloaded"
+                _write_progress(progress_id, "prepared", label)
             except (OSError, ValueError, subprocess.SubprocessError) as exc:
                 logger.exception("Image preparation failed for %s", progress_id)
                 _write_progress(progress_id, "error", "Image download failed", error=str(exc)[:500])
@@ -13570,8 +13645,8 @@ class AgentHandler(BaseHTTPRequestHandler):
         except Exception:
             _release()
             raise
-        json_response(self, 202, {"status": "accepted", "service_ids": service_ids, "pulling": missing,
-                                  "models": [item.target.name for item in model_files]})
+        json_response(self, 202, {"status": "accepted", "service_ids": service_ids, "pulling": pulls,
+                                  "building": builds, "models": [item.target.name for item in model_files]})
 
 
     # ── Model management handlers ──
