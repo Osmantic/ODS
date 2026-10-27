@@ -199,11 +199,13 @@ test("publishes only the exact existing workspace directory", async () => {
   assert.match(result.content[0].text, /independently published and read back/);
   // RTX Spark, 2026-10-25: a dragon picture's reply ended with an embed of the
   // site its own preview card was showing.
-  assert.ok(result.content[0].text.includes(`Verified browser URL: ${result.details.url}. ${PREVIEW_CARD_GUIDANCE} Inspection snapshot:`));
-  assert.match(PREVIEW_CARD_GUIDANCE, /card .*do not add an \[embed \.\.\.\] directive/);
-  // DGX Station: replies ended with "Preview is live: http://site-….localhost:9437/…", which
-  // opens only on the ODS machine itself; the card is how the owner opens the preview.
-  assert.match(PREVIEW_CARD_GUIDANCE, /or paste its localhost URL: that address opens only on this machine/);
+  assert.ok(result.content[0].text.includes(`bytes). ${PREVIEW_CARD_GUIDANCE} Inspection snapshot:`));
+  assert.match(PREVIEW_CARD_GUIDANCE, /card .*do not add an \[embed \.\.\.\] directive or a link for it/);
+  // DGX Station: even when told not to, the model pasted "Preview is live: http://site-….localhost:9437/…"
+  // from this text; that address opens only on the ODS machine. The card and guard read details.url.
+  assert.ok(!result.content[0].text.includes(result.details.url));
+  assert.doesNotMatch(result.content[0].text, /localhost/);
+  assert.match(result.details.url, /^http:\/\/site-[0-9a-f]+\.localhost:\d+\//);
   assert.match(result.content[0].text, /publication and HTTP readback only, not successful startup, interactions or durable browser storage/);
   // Publication renders nothing; the palette arrives with inspection.
   assert.match(result.content[0].text, /Publication does not render the page; the inspection result also reports its rendered colors by area\. Check them before claiming a visible color or style change\. /);
@@ -399,7 +401,7 @@ test("receipt names zero-byte published files without failing publication", asyn
   assert.equal(EMPTY_PUBLISHED_FILES_PREFIX, "Published files that are empty (0 bytes): ");
   assert.ok(text.includes("Published files that are empty (0 bytes): test-results.txt. "), text);
   assert.equal(text.split(EMPTY_PUBLISHED_FILES_PREFIX).length, 2);
-  assert.match(text, /Verified browser URL: http:\/\/site-/);
+  assert.match(text, /^ODS independently published and read back /);
 });
 
 test("empty-file note lists every shown path and counts the omitted ones", async () => {
