@@ -20,7 +20,7 @@ import httpx
 
 from config import (
     SERVICES, INSTALL_DIR, DATA_DIR, LLM_BACKEND, EXTENSIONS_DIR, GPU_BACKEND,
-    LIBRARY_MANAGEABLE_BUILTINS, load_extension_manifests, read_live_env_value,
+    LIBRARY_MANAGEABLE_BUILTINS, get_env_file_read_error, load_extension_manifests, read_live_env_value,
 )
 from env_values import parse_env_value
 from host_metrics import apple_host_metrics, linux_scope, windows_host_metrics
@@ -1109,21 +1109,42 @@ async def check_service_health(
     )
 
 
-def _switched_off_status(service_id: str, config: dict):
-    """An awaitable not-deployed status for a service the install switched off, else None.
+def _switched_off_status(service_id: str, config: dict, **health_kwargs):
+    """An awaitable status for Open WebUI when the install switched it off, else None.
 
     The Compose resolver leaves Open WebUI out when ENABLE_OPEN_WEBUI is not
     "true" (docker-compose.gateway-only.yml). Probing it then failed on name
     resolution, and only two exact DNS error texts count as not deployed;
     Docker in WSL words it differently, so Windows counted a core service
     offline (fleet, Strixy: "6/7 core services online").
+
+    Where this API cannot read the owner's .env (an install owner other than
+    UID 1000), the flag is the one Compose passed when the container started.
+    A Library add changes the choice later, and Open WebUI then read "not
+    deployed" beside a healthy container (Workstation06, 2026-10-27), so the
+    host agent's reading of the owner's choice decides.
     """
-    if service_id != "open-webui" or (read_live_env_value("ENABLE_OPEN_WEBUI") or "true").strip().lower() == "true":
+    if service_id != "open-webui":
+        return None
+    flag = read_live_env_value("ENABLE_OPEN_WEBUI")
+    env_unreadable = get_env_file_read_error() is not None
+    if (flag or "true").strip().lower() == "true":
         return None
 
-    async def not_deployed():
+    async def switched_off():
+        if env_unreadable and await _owner_selected_open_webui():
+            return await check_service_health(service_id, config, **health_kwargs)
         return _service_status_from_config(service_id, config, "not_deployed")
-    return not_deployed()
+    return switched_off()
+
+
+async def _owner_selected_open_webui() -> bool:
+    """Whether the install owner's .env selects Open WebUI, as the host agent reads it."""
+    try:
+        selection = await request_agent_json("GET", "/v1/webui/selection", timeout=3)
+    except (AgentClientError, ValueError):
+        return False
+    return isinstance(selection, dict) and selection.get("enabled") is True
 
 
 # Last time each service's own probe succeeded (monotonic seconds).
@@ -1186,8 +1207,8 @@ async def get_all_services(*, only_service_ids: Optional[set[str]] = None) -> li
                 service_configs.pop(service_id, None)
     if only_service_ids is not None:
         service_configs = {sid: cfg for sid, cfg in service_configs.items() if sid in only_service_ids}
-    tasks = [_switched_off_status(sid, cfg) or check_service_health(
-                 sid, cfg, **({"timeout": _CATALOG_HEALTH_TIMEOUT} if only_service_ids is not None else {}))
+    health_kwargs = {"timeout": _CATALOG_HEALTH_TIMEOUT} if only_service_ids is not None else {}
+    tasks = [_switched_off_status(sid, cfg, **health_kwargs) or check_service_health(sid, cfg, **health_kwargs)
              for sid, cfg in service_configs.items()]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 

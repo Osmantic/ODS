@@ -809,6 +809,51 @@ class TestGetAllServices:
         assert config.get_env_file_read_error() is not None
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("selected", "expected", "probes"), [
+        (True, "healthy", ["open-webui"]), (False, "not_deployed", []),
+    ])
+    async def test_open_webui_follows_the_owner_choice_when_env_file_is_unreadable(
+        self, monkeypatch, tmp_path, selected, expected, probes,
+    ):
+        # Workstation06 (2026-10-27): a Library add set ENABLE_OPEN_WEBUI=true in
+        # the owner's .env and started a healthy container, but this API kept the
+        # false Compose started it with and read "not deployed".
+        import config
+        monkeypatch.setattr(config, "INSTALL_DIR", str(tmp_path))
+        config._reset_env_permission_state()
+        env_file = tmp_path / ".env"
+        env_file.write_text("ENABLE_OPEN_WEBUI=true\n", encoding="utf-8")
+        read_text = Path.read_text
+
+        def denied(path, *args, **kwargs):
+            if path == env_file:
+                raise PermissionError("Simulated EACCES on .env")
+            return read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", denied)
+        monkeypatch.setenv("ENABLE_OPEN_WEBUI", "false")
+        monkeypatch.setattr("helpers.load_extension_manifests", lambda *args, **kwargs: ({}, [], []))
+        monkeypatch.setattr("helpers.SERVICES", {"open-webui": {
+            "name": "Open WebUI (Chat)", "port": 8080, "external_port": 3000, "health": "/health", "host": "open-webui"}})
+        probed: list[str] = []
+
+        async def fake_health(sid, cfg):
+            probed.append(sid)
+            return ServiceStatus(id=sid, name=cfg["name"], port=cfg["port"],
+                                 external_port=cfg["external_port"], status="healthy")
+
+        async def agent(method, path, **kwargs):
+            if path == "/v1/webui/selection":
+                return {"enabled": selected, "supported": True}
+            raise ValueError("no service snapshot")
+
+        monkeypatch.setattr("helpers.check_service_health", fake_health)
+        monkeypatch.setattr("helpers.request_agent_json", agent)
+        result = await get_all_services()
+        assert [item.status for item in result] == [expected]
+        assert probed == probes
+
+    @pytest.mark.asyncio
     async def test_empty_services_returns_empty(self, monkeypatch):
         monkeypatch.setattr("helpers.load_extension_manifests", lambda *args, **kwargs: ({}, [], []))
         monkeypatch.setattr("helpers.SERVICES", {})
