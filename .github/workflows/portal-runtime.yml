@@ -65,6 +65,8 @@ jobs:
         run: node --test ods/extensions/services/pixel-agent/tests/repository_acquisition_routing.test.mjs ods/extensions/services/pixel-agent/tests/prompt_contract.test.mjs ods/extensions/services/pixel-agent/tests/english_default.test.mjs ods/extensions/services/pixel-agent/tests/response_language.test.mjs ods/extensions/services/pixel-agent/tests/operations_composition.test.mjs ods/extensions/services/pixel-agent/tests/download_promote.test.mjs ods/extensions/services/pixel-agent/tests/network_interface_intent.test.mjs ods/extensions/services/pixel-agent/tests/host_service_constraint_intent.test.mjs ods/extensions/services/pixel-agent/tests/download_terminal_receipt.test.mjs
       - name: Verify host report download continuation across platforms
         run: node --test ods/extensions/services/pixel-agent/tests/host_workspace_artifact_continuation.test.mjs
+      - name: Verify activity and downloads across native attempts
+        run: node --test ods/extensions/services/pixel-agent/tests/attempt_lifecycle.test.mjs ods/extensions/services/pixel-agent/tests/task_activity.test.mjs
       - name: Verify bounded preview delivery across platforms
         run: |
           node --test ods/extensions/services/pixel-agent/tests/preview_delivery_recovery.test.mjs
