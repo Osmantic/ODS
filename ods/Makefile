@@ -190,6 +190,9 @@ test: ## Run unit and contract tests
 	@bash tests/test-llama-cuda-cache-persisted.sh
 	@echo "=== vLLM engine service and its compose selection ==="
 	@bash tests/test-vllm-engine-service.sh
+	@echo "=== vLLM engine choice and installer phases ==="
+	@bash tests/test-vllm-installer-route.sh
+	@bash tests/test-vllm-installer-phases.sh
 	@echo ""
 	@echo "=== macOS ods config show secret-mask ==="
 	@bash tests/test-macos-config-show-secret-mask.sh

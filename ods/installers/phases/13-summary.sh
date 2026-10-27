@@ -13,7 +13,8 @@
 #           COMPOSE_FLAGS, SUMMARY_JSON_FILE, PREFLIGHT_REPORT_FILE,
 #           BGRN, GRN, AMB, WHT, NC, DASHBOARD_PORT (:-3001),
 #           CAP_HARDWARE_CLASS_ID (:-unknown), CAP_HARDWARE_CLASS_LABEL (:-Unknown),
-#           BACKEND_SERVICE_NAME (:-llama-server),
+#           BACKEND_SERVICE_NAME (:-llama-server), LLM_BACKEND (vllm names the
+#           vLLM engine, VLLM_GPU_UUID and VLLM_SERVED_MODEL),
 #           SDXL_CHECKPOINT_DIR, SDXL_MODEL (set by phase 11 when ComfyUI is enabled),
 #           show_success_card(), bootline(), signal(), ai_ok(), log()
 # Provides: Desktop shortcut, sidebar pin, summary JSON
@@ -217,6 +218,8 @@ bootline
 echo "  • Dashboard:     http://localhost:${SERVICE_PORTS[dashboard]:-3001}"
 if [[ -n "${EXTERNAL_LLM_URL:-}" || "${ODS_MODE:-local}" == "cloud" || -n "${NATIVE_LLM_BASE_URL:-}" ]]; then
     echo "  • LLM API:       http://localhost:${SERVICE_PORTS[litellm]:-4000}/v1  (managed LiteLLM gateway)"
+elif [[ "${LLM_BACKEND:-}" == "vllm" ]]; then
+    echo "  • LLM API:       http://localhost:${SERVICE_PORTS[litellm]:-4000}/v1  (LiteLLM gateway to the vLLM engine)"
 else
     echo "  • LLM API:       http://localhost:${SERVICE_PORTS[llama-server]:-11434}/v1  (llama-server)"
 fi
@@ -244,6 +247,9 @@ bootline
 echo "  • Tier: $TIER ($TIER_NAME)"
 if [[ "${ODS_GATEWAY_ONLY:-false}" == true ]]; then
     echo "  • External model: ${EXTERNAL_LLM_MODEL:-unknown}"
+elif [[ "${LLM_BACKEND:-}" == "vllm" ]]; then
+    echo "  • Engine: vLLM on GPU ${VLLM_GPU_UUID:-unknown}"
+    echo "  • Model: ${VLLM_SERVED_MODEL:-$LLM_MODEL} (${LLM_MODEL}, ${MAX_CONTEXT:-?} tokens of context)"
 else
     echo "  • Model: $LLM_MODEL"
 fi
@@ -549,7 +555,10 @@ if [[ -n "$SUMMARY_JSON_FILE" ]]; then
         PYTHON_CMD="python"
     fi
 
-    "$PYTHON_CMD" - "$SUMMARY_JSON_FILE" "$VERSION" "$INSTALL_DIR" "$TIER" "$TIER_NAME" "$GPU_BACKEND" "${BACKEND_SERVICE_NAME:-llama-server}" "$LLM_MODEL" "$COMPOSE_FLAGS" "$DRY_RUN" "$PREFLIGHT_REPORT_FILE" "${CAP_HARDWARE_CLASS_ID:-unknown}" "${CAP_HARDWARE_CLASS_LABEL:-Unknown}" "${PIXEL_AGENT_MODE:-hermes}" <<'PY'
+    # The model server's compose service: vllm-server for the vLLM engine.
+    _summary_backend_service="${BACKEND_SERVICE_NAME:-llama-server}"
+    [[ "${LLM_BACKEND:-}" != "vllm" ]] || _summary_backend_service=vllm-server
+    "$PYTHON_CMD" - "$SUMMARY_JSON_FILE" "$VERSION" "$INSTALL_DIR" "$TIER" "$TIER_NAME" "$GPU_BACKEND" "$_summary_backend_service" "$LLM_MODEL" "$COMPOSE_FLAGS" "$DRY_RUN" "$PREFLIGHT_REPORT_FILE" "${CAP_HARDWARE_CLASS_ID:-unknown}" "${CAP_HARDWARE_CLASS_LABEL:-Unknown}" "${PIXEL_AGENT_MODE:-hermes}" <<'PY'
 import json
 import os
 import pathlib

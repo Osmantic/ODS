@@ -63,6 +63,8 @@ tests/test-comfyui-user-dir-persisted.sh
 tests/test-comfyui-cuda-cache-persisted.sh
 tests/test-llama-cuda-cache-persisted.sh
 tests/test-vllm-engine-service.sh
+tests/test-vllm-installer-route.sh
+tests/test-vllm-installer-phases.sh
 tests/test_comfyui_extension_contract.py
 tests/test_extension_assets.py
 tests/test-compose-failure-evidence.sh

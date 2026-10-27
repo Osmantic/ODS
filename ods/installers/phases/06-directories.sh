@@ -13,6 +13,8 @@
 #           GPU_ASSIGNMENT_JSON, COMFYUI_GPU_UUID, WHISPER_GPU_UUID,
 #           EMBEDDINGS_GPU_UUID, LLAMA_SERVER_GPU_UUIDS, LLAMA_ARG_SPLIT_MODE,
 #           LLAMA_ARG_TENSOR_SPLIT, GPU_COMPUTE_CAP (optional),
+#           LLM_BACKEND (phase 02; with vllm also VLLM_IMAGE, VLLM_MODEL_DIR,
+#           VLLM_SERVED_MODEL, VLLM_ARGS, VLLM_GPU_UUID),
 #           chapter(), ai(), ai_ok(), ai_warn(), log(), warn(), error()
 # Provides: WEBUI_SECRET, N8N_PASS, LITELLM_KEY, LIVEKIT_SECRET,
 #           DASHBOARD_API_KEY, SHIELD_API_KEY, TOKEN_SPY_API_KEY,
@@ -566,6 +568,11 @@ else
     mkdir -p "$INSTALL_DIR"/data/{open-webui,whisper,tts,n8n,qdrant,models,privacy-shield,ape,token-spy,hermes,persona}
     # llama-server's CUDA kernel cache (docker-compose.nvidia.yml).
     mkdir -p "$INSTALL_DIR"/data/llama-server/cuda-cache
+    # The vLLM engine's compile, autotune and CUDA kernel caches
+    # (docker-compose.vllm.yml), made here so Docker does not create it.
+    if [[ "${LLM_BACKEND:-}" == "vllm" ]]; then
+        mkdir -p "$INSTALL_DIR"/data/vllm/cache
+    fi
     # The host agent writes extension progress as the install owner. Created
     # here, the Dashboard API (UID 1000, which may be another user) cannot
     # make it first and lock the owner's host agent out of it.
@@ -1300,6 +1307,12 @@ SERVICE_PORT_DEFAULTS
         ai_warn "External LLM reuse uses the authenticated LiteLLM gateway directly; setting ODS_MODEL_SWITCHBOARD=observe."
         ODS_MODEL_SWITCHBOARD_VALUE="observe"
     fi
+    # Only model-router knows the vLLM engine's endpoint (vllm-default); the
+    # legacy and observe LiteLLM maps send ods/current to llama-server.
+    if [[ "${LLM_BACKEND:-}" == "vllm" && "$ODS_MODEL_SWITCHBOARD_VALUE" != "enabled" ]]; then
+        ai_warn "The vLLM engine is reached through model-router; setting ODS_MODEL_SWITCHBOARD=enabled."
+        ODS_MODEL_SWITCHBOARD_VALUE="enabled"
+    fi
     # Compose inherits exported installer variables ahead of the generated
     # .env. Keep the live process value aligned with the effective value so an
     # external-model install cannot select switchboard.yaml while its router
@@ -1307,8 +1320,10 @@ SERVICE_PORT_DEFAULTS
     ODS_MODEL_SWITCHBOARD="$ODS_MODEL_SWITCHBOARD_VALUE"
     export ODS_MODEL_SWITCHBOARD
     # A host-native llama-server is reachable only through LiteLLM, which holds
-    # its key; the in-stack llama-server serves every other local install.
-    _default_llm_api_url="$(if [[ "$NATIVE_LLM_ACTIVE" == "true" ]]; then echo "http://litellm:4000"; elif [[ "${ODS_MODE:-local}" == "local" ]]; then echo "http://llama-server:8080"; else echo "http://litellm:4000"; fi)"
+    # its key. The vLLM engine has no in-stack llama-server either: LiteLLM
+    # sends every model name to model-router as ods/current. The in-stack
+    # llama-server serves every other local install.
+    _default_llm_api_url="$(if [[ "$NATIVE_LLM_ACTIVE" == "true" || "${LLM_BACKEND:-}" == "vllm" ]]; then echo "http://litellm:4000"; elif [[ "${ODS_MODE:-local}" == "local" ]]; then echo "http://llama-server:8080"; else echo "http://litellm:4000"; fi)"
     if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then
         LLM_API_URL_VALUE="http://litellm:4000"
         OPEN_WEBUI_LLM_BASE_URL_VALUE="http://litellm:4000/v1"
@@ -1324,9 +1339,10 @@ SERVICE_PORT_DEFAULTS
         if [[ "${ODS_REMOTE_ROUTE_PAUSED:-false}" == "true" ]]; then
             LLM_API_URL_VALUE="${ODS_REMOTE_ROUTE_PREVIOUS_API_URL:-$_default_llm_api_url}"
         fi
-        # The in-stack llama-server is off for a host-native route. Preserve
-        # other existing values as operator-selected endpoints.
-        if [[ "$NATIVE_LLM_ACTIVE" == "true" ]]; then
+        # The in-stack llama-server is off for a host-native route and for the
+        # vLLM engine. Preserve other existing values as operator-selected
+        # endpoints.
+        if [[ "$NATIVE_LLM_ACTIVE" == "true" || "${LLM_BACKEND:-}" == "vllm" ]]; then
             case "$LLM_API_URL_VALUE" in
                 http://llama-server:8080|http://llama-server:8080/v1)
                     LLM_API_URL_VALUE="$_default_llm_api_url"
@@ -1386,6 +1402,24 @@ SERVICE_PORT_DEFAULTS
         # non-default custom endpoint exactly as supplied by the operator.
         HERMES_LLM_BASE_URL_VALUE="http://model-router:9099/v1"
         HERMES_LLM_API_KEY_VALUE="no-key"
+    fi
+    # The vLLM engine replaces the in-stack llama-server, as the host-native
+    # route does: Open WebUI reaches the model through LiteLLM and Hermes
+    # through model-router. A retained URL that names llama-server, or an
+    # empty one an API-mode reset left, would reach no server.
+    if [[ "${LLM_BACKEND:-}" == "vllm" ]]; then
+        case "$OPEN_WEBUI_LLM_BASE_URL_VALUE" in
+            ""|http://llama-server:8080|http://llama-server:8080/v1)
+                OPEN_WEBUI_LLM_BASE_URL_VALUE="http://litellm:4000"
+                OPEN_WEBUI_LLM_API_KEY_VALUE="${LITELLM_KEY}"
+                ;;
+        esac
+        case "$HERMES_LLM_BASE_URL_VALUE" in
+            http://llama-server:8080|http://llama-server:8080/v1)
+                HERMES_LLM_BASE_URL_VALUE="http://model-router:9099/v1"
+                HERMES_LLM_API_KEY_VALUE="no-key"
+                ;;
+        esac
     fi
     # Owner-card gating is opt-in; a rerun must not silently turn it back off.
     HERMES_REQUIRE_OWNER_CARD_VALUE="$(_env_get_explicit_first HERMES_REQUIRE_OWNER_CARD false)"
@@ -1588,6 +1622,33 @@ SERVICE_PORT_DEFAULTS
         ONEAPI_DEVICE_SELECTOR_VALUE="$(_env_get ONEAPI_DEVICE_SELECTOR level_zero:gpu)"
     fi
 
+    # The vLLM engine's settings (LLM_BACKEND=vllm), appended after the
+    # template below so every other install writes the same bytes as before.
+    # Resolved here, before the template truncates the .env _env_get reads.
+    # ODS Talk image attachments reach the model through LiteLLM, as the
+    # host-native overlay sets; an owner's own vision server is kept.
+    VLLM_GPU_MEMORY_UTILIZATION_VALUE=""
+    VLLM_TALK_VISION_URL_VALUE=""
+    VLLM_TALK_VISION_KEY_VALUE=""
+    if [[ "${LLM_BACKEND:-}" == "vllm" ]]; then
+        for _vllm_key in VLLM_IMAGE VLLM_MODEL_DIR VLLM_SERVED_MODEL VLLM_GPU_UUID; do
+            [[ -n "${!_vllm_key:-}" ]] || {
+                error "The vLLM engine needs ${_vllm_key}, which this run's model choice did not set, so .env was not written. Rerun the installer; if it happens again, rerun with --llm-backend llama-server. Need help? Ask on the ODS Discord: ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
+                return 1
+            }
+        done
+        unset _vllm_key
+        VLLM_GPU_MEMORY_UTILIZATION_VALUE="$(_env_get_explicit_first VLLM_GPU_MEMORY_UTILIZATION "")"
+        VLLM_TALK_VISION_URL_VALUE="$(_env_get ODS_TALK_VISION_URL "http://litellm:4000/v1")"
+        VLLM_TALK_VISION_KEY_VALUE="$(_env_get ODS_TALK_VISION_KEY "${LITELLM_KEY}")"
+        case "$VLLM_TALK_VISION_URL_VALUE" in
+            http://llama-server:*|http://ods-llama-server:*)
+                VLLM_TALK_VISION_URL_VALUE="http://litellm:4000/v1"
+                VLLM_TALK_VISION_KEY_VALUE="${LITELLM_KEY}"
+                ;;
+        esac
+    fi
+
     # Generate .env file
     if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true ]]; then
         _phase06_pixel_runtime_layout || {
@@ -1639,7 +1700,7 @@ LLM_API_URL=$(dotenv_value "${LLM_API_URL_VALUE}")
 OPEN_WEBUI_LLM_BASE_URL=$(dotenv_value "${OPEN_WEBUI_LLM_BASE_URL_VALUE}")
 OPEN_WEBUI_LLM_API_KEY=$(dotenv_value "${OPEN_WEBUI_LLM_API_KEY_VALUE}")
 OPEN_WEBUI_TASK_MODEL=$(dotenv_value "${OPEN_WEBUI_TASK_MODEL_VALUE}")
-LLM_BACKEND=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo "external"; else echo "llama-server"; fi)
+LLM_BACKEND=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo "external"; elif [[ "${LLM_BACKEND:-}" == "vllm" ]]; then echo "vllm"; else echo "llama-server"; fi)
 LLM_API_BASE_PATH=/v1
 EXTERNAL_LLM_URL=${EXTERNAL_LLM_URL_VALUE}
 EXTERNAL_LLM_CONTAINER_URL=${EXTERNAL_LLM_CONTAINER_URL_VALUE}
@@ -1924,6 +1985,26 @@ fi)
 
 ENV_EOF
     )
+    if [[ "${LLM_BACKEND:-}" == "vllm" ]]; then
+        {
+            printf '\n#=== vLLM engine (LLM_BACKEND=vllm, docker-compose.vllm.yml) ===\n'
+            printf '# The vLLM catalog model the installer chose for one GPU, with that\n'
+            printf "# entry's vLLM arguments. Installer reruns rewrite these lines.\n"
+            printf 'VLLM_IMAGE=%s\n' "$(dotenv_value "$VLLM_IMAGE")"
+            printf 'VLLM_MODEL_DIR=%s\n' "$(dotenv_value "$VLLM_MODEL_DIR")"
+            printf 'VLLM_SERVED_MODEL=%s\n' "$(dotenv_value "$VLLM_SERVED_MODEL")"
+            printf 'VLLM_ARGS=%s\n' "$(dotenv_value "${VLLM_ARGS:-}")"
+            printf 'VLLM_GPU_UUID=%s\n' "$(dotenv_value "$VLLM_GPU_UUID")"
+            if [[ -n "$VLLM_GPU_MEMORY_UTILIZATION_VALUE" ]]; then
+                printf 'VLLM_GPU_MEMORY_UTILIZATION=%s\n' "$(dotenv_value "$VLLM_GPU_MEMORY_UTILIZATION_VALUE")"
+            fi
+            printf 'ODS_TALK_VISION_URL=%s\n' "$(dotenv_value "$VLLM_TALK_VISION_URL_VALUE")"
+            printf 'ODS_TALK_VISION_KEY=%s\n' "$(dotenv_value "$VLLM_TALK_VISION_KEY_VALUE")"
+        } >> "$INSTALL_DIR/.env"
+    fi
+    # Compose reads an LLM_BACKEND phase 02 exported ahead of .env; keep the
+    # two equal (an API route writes external).
+    [[ "$EXTERNAL_LLM_ACTIVE" != "true" ]] || LLM_BACKEND=external
 
     chmod 600 "$INSTALL_DIR/.env"  # Secure secrets file
     if [[ -n "$_phase06_previous_env" ]]; then
@@ -2020,12 +2101,17 @@ ENV_EOF
     if [[ "$NATIVE_LLM_ACTIVE" == "true" ]]; then
         _router_llm_base_url="$NATIVE_LLM_CONTAINER_BASE_URL_VALUE"
     fi
+    # The vLLM engine's endpoint is vllm-default (http://vllm-server:8000);
+    # every other route keeps the llama-server endpoint.
+    _router_llm_backend=llama-server
+    [[ "${LLM_BACKEND:-}" != "vllm" ]] || _router_llm_backend=vllm
     _router_common_args=(
         --switchboard-mode "${ODS_MODEL_SWITCHBOARD_VALUE:-enabled}"
         --ods-mode "$_router_ods_mode"
         --gpu-backend "${GPU_BACKEND:-nvidia}"
         --gguf-file "${GGUF_FILE:-}"
         --llm-base-url "$_router_llm_base_url"
+        --llm-backend "$_router_llm_backend"
         --output-root "$INSTALL_DIR"
         --write
     )
@@ -2033,6 +2119,9 @@ ENV_EOF
     # and the switchboard map name LLAMA_SERVER_API_KEY, as the host agent's
     # activation render does.
     [[ "$NATIVE_LLM_ACTIVE" != "true" ]] || _router_common_args+=(--llm-api-key-env LLAMA_SERVER_API_KEY)
+    # The vllm-default endpoint carries the served model's thinking map, which
+    # the renderer reads from the vLLM catalog entry --model names (LLM_MODEL).
+    [[ "$_router_llm_backend" != "vllm" ]] || _router_common_args+=(--model "$LLM_MODEL")
     _router_surfaces=(model-router-endpoints)
     if [[ "$_router_ods_mode" != "cloud" ]]; then
         _router_surfaces+=(litellm-switchboard)
@@ -2047,7 +2136,7 @@ ENV_EOF
         fi
     done
     unset _router_renderer_py _router_surface _router_common_args
-    unset _router_ods_mode _router_surfaces _router_llm_base_url
+    unset _router_ods_mode _router_surfaces _router_llm_base_url _router_llm_backend
 
     # Validate generated .env against schema (fails fast on missing/unknown keys).
     _phase06_step "validate-env"
