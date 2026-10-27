@@ -73,6 +73,8 @@ jobs:
         run: node --test ods/extensions/services/pixel-agent/tests/ingress_owner_no_tools.test.mjs
       - name: Verify explicit Python execution requests and bounded recovery
         run: node --test ods/extensions/services/pixel-agent/tests/explicit_python_compute.test.mjs
+      - name: Verify same-chat source receipts and follow-up execution
+        run: node --test ods/extensions/services/pixel-agent/tests/current_source_receipts.test.mjs ods/extensions/services/pixel-agent/tests/prior_source_reuse.test.mjs
       - name: Verify bounded preview delivery across platforms
         run: |
           node --test ods/extensions/services/pixel-agent/tests/preview_delivery_recovery.test.mjs

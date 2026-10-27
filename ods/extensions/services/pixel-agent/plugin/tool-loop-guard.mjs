@@ -8258,7 +8258,7 @@ export function createToolLoopGuard({
     if (!state) {
       pruneRuns();
       state = {
-        completionAssurance: createCompletionAssurance({englishOnly: englishOnly(responseLanguage)}),
+        completionAssurance: createCompletionAssurance({englishOnly: englishOnly(responseLanguage), now}),
         extensionCompletionGate: undefined,
         workspaceLaneRequested: false,
         workspaceExtensionIsolated: false,
@@ -10764,7 +10764,29 @@ export function createToolLoopGuard({
         // its successor. Each admitted call has its own private scope object.
         state.artifactReservations = new WeakSet();
       }
-      state.completionAssurance.begin(currentOwnerIntentText(event?.messages, event?.prompt), event);
+      // Page receipts cross turns only within this trusted owner chat. The
+      // assurance object freezes the first owner intent and receipt selection.
+      let priorSourceReceipts;
+      if (!teamRole && state.artifactOwnerInteractive && !state.managedTeamWorker &&
+          !state.clientCancelled && !state.odsAborted && !state.recursiveDeleteDenied &&
+          artifactContext.agentId === agentId && artifactContext.sessionId && artifactContext.sessionKey) {
+        priorSourceReceipts = [];
+        for (const [otherRunId, other] of runs) {
+          if (otherRunId === runId || !other.artifactOwnerInteractive || other.managedTeamWorker ||
+              other.artifactIdentityConflict || other.artifactNoninteractiveObserved ||
+              other.clientCancelled || other.odsAborted || other.recursiveDeleteDenied ||
+              other.artifactOwnerContext?.agentId !== agentId ||
+              other.currentSessionId !== artifactContext.sessionId ||
+              other.currentSessionKey !== artifactContext.sessionKey) continue;
+          priorSourceReceipts.push(...other.completionAssurance.currentRunSourceReceipts());
+        }
+        priorSourceReceipts.sort((a, b) => b.timestamp - a.timestamp);
+      }
+      if (teamRole || state.managedTeamWorker || state.artifactIdentityConflict ||
+          state.artifactNoninteractiveObserved || state.clientCancelled || state.odsAborted ||
+          state.recursiveDeleteDenied) state.completionAssurance.discardPriorSources();
+      state.completionAssurance.begin(currentOwnerIntentText(event?.messages, event?.prompt), event,
+        priorSourceReceipts);
       const ownerIntent=currentOwnerIntentText(event?.messages,event?.prompt);
       if (ownerIntent && state.ownerNoTools === undefined) state.ownerNoTools=ownerForbidsTools(ownerIntent);
       const pictureIds=attachedPictureIds(currentUserText(event?.messages,event?.prompt));
@@ -13757,6 +13779,13 @@ export function createToolLoopGuard({
     // Before the reply, so the owner's notice can travel with it.
     recordExampleOutcome({...context, runId}, examples.check(runId));
     const state = runs.get(runId);
+    // A final hook cannot carry accepted history across an identity change.
+    if (state && (state.artifactIdentityConflict || state.artifactNoninteractiveObserved ||
+        (context.trigger && context.trigger !== 'user') ||
+        [context, event].some(value =>
+          (value?.sessionId && value.sessionId !== state.artifactOwnerContext?.sessionId) ||
+          (value?.sessionKey && value.sessionKey !== state.artifactOwnerContext?.sessionKey) ||
+          (value?.runId && value.runId !== runId)))) state.completionAssurance.discardPriorSources();
     // The agent's latest final reply. A failed preview delivery keeps it ahead
     // of the host facts (preview-explanation.mjs). The pinned harness refuses a
     // revision after side effects, so this text is usually what is sent; a
