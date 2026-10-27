@@ -10,6 +10,8 @@ This script only fixes the runtime manifest bind-mount surface:
   - services root: 0755
   - service child dirs: traversal only (add x, remove g/o w)
   - public manifest files (manifest.yaml/.yml/.json): 0644
+  - config/: traversal only; the two bundled Dashboard catalogs: 0644
+  - templates/: 0755 for enumeration; named bundled templates: 0644
 
 It validates the full scoped tree before any mutation, refuses symlinks,
 special files, hardlinked manifests, and wrong path types. It does not descend
@@ -28,6 +30,16 @@ import sys
 from pathlib import Path
 
 MANIFEST_NAMES = ("manifest.yaml", "manifest.yml", "manifest.json")
+PUBLIC_DASHBOARD_FILES = {
+    "config": ("core-service-ids.json", "extensions-catalog.json"),
+    "templates": (
+        "ai-coding-workspace.yaml", "chat-playground.yaml", "creative-studio.yaml",
+        "developer-homelab.yaml", "llm-platform.yaml", "ml-data-workshop.yaml",
+        "multi-agent-laboratory.yaml", "no-code-ai-builder.yaml", "onboarding-agents.yaml",
+        "onboarding-full-stack.yaml", "personal-knowledge-base.yaml",
+        "private-research-hub.yaml", "voice-assistant.yaml",
+    ),
+}
 
 
 class ManifestPermissionError(Exception):
@@ -172,6 +184,38 @@ def _build_plan(install_dir: Path, *, preserve_file_modes: bool = False) -> _Pla
                 mode = _manifest_mode(mst.st_mode)
             plan.add(manifest, mode)
             plan.manifest_count += 1
+
+    # These source files are bundled public catalogs, not arbitrary config or
+    # user templates. A single plan validates every scope before any chmod.
+    for directory, names in PUBLIC_DASHBOARD_FILES.items():
+        parent = install_dir / directory
+        try:
+            parent_stat = _require_dir(parent, f"public {directory} directory")
+        except ManifestPermissionError as exc:
+            if isinstance(exc.__cause__, FileNotFoundError):
+                continue
+            raise
+        mode = 0o755 if directory == "templates" else _dir_traversal_mode(parent_stat.st_mode)
+        plan.add(parent, mode)
+        for name in names:
+            leaf = parent / name
+            try:
+                leaf_stat = _require_regular_manifest(leaf)
+            except ManifestPermissionError as exc:
+                if isinstance(exc.__cause__, FileNotFoundError):
+                    continue
+                raise
+            mode = stat.S_IMODE(leaf_stat.st_mode)
+            if preserve_file_modes:
+                if mode & 0o444 != 0o444 or mode & 0o022:
+                    raise ManifestPermissionError(
+                        f"public Dashboard file is unreadable under a protected source "
+                        f"transaction: {leaf}; preserve the pending upgrade "
+                        "and resolve its source permissions before retrying"
+                    )
+            else:
+                mode = 0o644
+            plan.add(leaf, mode)
 
     return plan
 

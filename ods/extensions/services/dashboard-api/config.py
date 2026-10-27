@@ -671,7 +671,13 @@ def resolve_workflow_dir() -> Path:
     if env_dir:
         return Path(env_dir)
     canonical = Path(INSTALL_DIR) / "config" / "n8n"
-    if canonical.exists():
+    try:
+        if canonical.exists():
+            return canonical
+    except PermissionError:
+        # Optional host configuration may belong to a different UID. Keep
+        # the canonical path so the workflow endpoint can report unavailable
+        # access, rather than crashing startup or selecting an empty fallback.
         return canonical
     return Path(INSTALL_DIR) / "workflows"
 

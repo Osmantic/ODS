@@ -82,7 +82,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --install-dir) INSTALL_DIR=$2; shift 2 ;;
         --keep-models) keep=true; shift ;;
-        --force|--non-interactive) shift ;;
+        --force|--non-interactive|--preserve-broker-state) shift ;;
         *) exit 66 ;;
     esac
 done
@@ -94,6 +94,30 @@ rm -rf "$INSTALL_DIR"
 
 
 class ReinstallPreflightTests(unittest.TestCase):
+    def test_older_candidate_keeps_its_strict_uninstall_contract(self):
+        self.make_installed()
+        older = self.root / 'older-uninstaller'
+        shutil.copytree(self.repo, older)
+        write(older / 'ods/ods-uninstall.sh', CANDIDATE_UNINSTALL.replace(
+            '--force|--non-interactive|--preserve-broker-state)',
+            '--force|--non-interactive)'), 0o755)
+        self.env.update(ODS_REPO_URL=str(older), ODS_REF=self.commit(older, 'older uninstaller'))
+        result, output = self.bootstrap()
+        self.assertEqual(result.returncode, 0, output)
+        self.assertNotIn('--preserve-broker-state', self.uninstall_args.read_text().split())
+        self.assertEqual(json.loads(self.result.read_text())['model'], MODEL.hex())
+
+    def test_broker_preservation_rejects_non_reinstall_invocations(self):
+        for flags in ([], ['--force', '--keep-data']):
+            with self.subTest(flags=flags):
+                result = subprocess.run(
+                    [real('bash'), str(ROOT / 'ods-uninstall.sh'),
+                     '--preserve-broker-state', '--non-interactive', *flags],
+                    text=True, capture_output=True, timeout=15)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('requires --force without --keep-data; nothing was changed',
+                              result.stdout + result.stderr)
+
     @classmethod
     def setUpClass(cls):
         cls.fixture = tempfile.TemporaryDirectory()
@@ -283,6 +307,7 @@ esac
         result, output = self.bootstrap()
         self.assertEqual(result.returncode, 0, output)
         self.assertIn('--keep-models', self.uninstall_args.read_text().split())
+        self.assertIn('--preserve-broker-state', self.uninstall_args.read_text().split())
         value = json.loads(self.result.read_text())
         self.assertEqual(value['args'], ['--non-interactive', '--force', '--recommended', '--pixel', '--no-bootstrap'])
         self.assertEqual(value['model'], MODEL.hex())

@@ -741,6 +741,11 @@ if [[ "$BOOTSTRAP_REINSTALL" == "true" || "$BOOTSTRAP_RECOVER_STRANDED" == "true
     if [[ "$BOOTSTRAP_REINSTALL" == "true" ]]; then
         log "Removing the existing installation with the requested candidate uninstaller..."
         candidate_uninstall_args=(--install-dir "$INSTALL_DIR" --force)
+        # A pinned older candidate can still use its strict cleanup contract.
+        # New candidates retain unrecognized broker state in private custody.
+        if grep -q -- '--preserve-broker-state)' "$candidate_uninstaller"; then
+            candidate_uninstall_args+=(--preserve-broker-state)
+        fi
         if [[ "$BOOTSTRAP_KEEP_MODELS" == true ]]; then
             candidate_uninstall_args+=(--keep-models)
         fi

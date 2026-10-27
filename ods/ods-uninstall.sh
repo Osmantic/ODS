@@ -132,6 +132,8 @@ KEEP_MODELS=false
 KEEP_DATA=false
 FORCE=false
 NON_INTERACTIVE=false
+PRESERVE_BROKER_STATE=false
+PIXEL_BROKER_STATE_MODE=strict
 
 validate_requested_install_dir() {
     local target_dir="$1" target_real home_real script_real
@@ -156,6 +158,7 @@ validate_requested_install_dir() {
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --keep-models) KEEP_MODELS=true; shift ;;
+        --preserve-broker-state) PRESERVE_BROKER_STATE=true; shift ;;
         --keep-data)   KEEP_DATA=true; shift ;;
         --force)       FORCE=true; shift ;;
         --non-interactive) NON_INTERACTIVE=true; shift ;;
@@ -179,6 +182,8 @@ Options:
     --keep-models   Keep models beside the install in <install>.models-backup
     --keep-data     Keep user data (chat history, n8n workflows, etc.), backups
                     in .backups/, presets, and update snapshots in ~/.ods
+    --preserve-broker-state  With --force, retain unrecognized Linux Pixel broker
+                    state in private custody instead of deleting its contents
     --force         Skip confirmation prompts
     --non-interactive  Never prompt for sudo; require cached or passwordless sudo
     --install-dir   Uninstall a separately located, fingerprinted ODS installation
@@ -207,6 +212,17 @@ EOF
         *) log_error "Unknown option: $1"; exit 1 ;;
     esac
 done
+
+# Forced reinstalls can retain a legacy broker home instead of classifying
+# unexpected distro skeleton files as safe to delete. This changes only the
+# entry cleanup plan: root, parent, ownership and mount checks still apply.
+if $PRESERVE_BROKER_STATE; then
+    if ! $FORCE || $KEEP_DATA; then
+        log_error "--preserve-broker-state requires --force without --keep-data; nothing was changed."
+        exit 1
+    fi
+    PIXEL_BROKER_STATE_MODE=source-transition
+fi
 
 # The installer refuses root, so the install, its unit templates and Pixel
 # belong to the account that installed them. Under sudo, HOME and the user
@@ -395,7 +411,7 @@ if [[ "$(uname -s)" == "Linux" ]]; then
     if [[ -f "$SCRIPT_DIR/lib/pixel-uninstall.sh" ]]; then
         # shellcheck source=lib/pixel-uninstall.sh
         . "$SCRIPT_DIR/lib/pixel-uninstall.sh"
-        if ! ODS_PIXEL_UNINSTALL_VALIDATE_ONLY=true ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME"; then
+        if ! ODS_PIXEL_UNINSTALL_VALIDATE_ONLY=true ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME" "$PIXEL_BROKER_STATE_MODE"; then
             log_error "Pixel validation failed; nothing was changed"
             exit 1
         fi
@@ -459,7 +475,7 @@ if [[ "$(uname -s)" == "Linux" ]]; then
     if [[ -f "$SCRIPT_DIR/lib/pixel-uninstall.sh" ]]; then
         # shellcheck source=lib/pixel-uninstall.sh
         . "$SCRIPT_DIR/lib/pixel-uninstall.sh"
-        if ! ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME"; then
+        if ! ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME" "$PIXEL_BROKER_STATE_MODE"; then
             log_error "Pixel cleanup failed; remaining installation retained"
             if [[ -n "${_ods_wsl_retire_helper:-}" ]]; then
                 log_warn "Windows startup changes already applied for this uninstall remain in effect."
