@@ -25,6 +25,22 @@ test('invalid inspection arguments never contact the broker or report it unavail
   assert.equal(calls,0);
 });
 
+test('a step without the field its action needs names that field',async()=>{
+  const tool=createWorkspacePreviewInspectTool({request:async()=>{throw Error('should not execute');}});
+  for(const [step,hint] of [
+    [{action:'assert-text',locator:{selector:'#moves'}},/Step 1 \(steps\[0\]\.expectedText\): assert-text needs expectedText.*use assert-visible\./],
+    [{action:'fill',locator:{selector:'#name'}},/Step 1 \(steps\[0\]\.value\): select-option and fill need value/],
+    [{action:'press',locator:{selector:'#game'}},/Step 1 \(steps\[0\]\.key\): press needs key/],
+  ]) {
+    const params=valid();params.steps=[step];
+    const result=await tool.execute('missing-field',params);
+    assert.equal(result.details.errorCode,'invalid_request');
+    assert.match(result.content[0].text,hint);
+    // Only the missing field, not every action's rules.
+    assert.doesNotMatch(result.content[0].text,/download must be last/);
+  }
+});
+
 test('valid input still distinguishes unavailable transport and cancellation',async()=>{
   let calls=0;
   const tool=createWorkspacePreviewInspectTool({request:async()=>{calls++;throw Error('not reachable');}});

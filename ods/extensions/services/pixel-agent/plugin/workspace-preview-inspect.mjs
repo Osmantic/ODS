@@ -343,6 +343,9 @@ const INPUT_HINTS = new Map([
   ['invalid preview inspection steps','Provide 1 to 12 supported steps per inspection.'],
   ['unsupported inspection navigation','path is allowed only for a final download assertion. The inspector opens the published snapshot entry page and has no navigation or reload action. Verify supported in-page interactions and report cross-reload persistence as unverified; do not simulate a reload or use sibling test pages as persistence evidence.'],
   ['invalid inspection step','Each step needs action and locator; assert-text additionally requires expectedText (normalized visible text, 1 to 256 characters); select-option or fill requires value (exact option value or synthetic text, 0 to 256 printable characters); download must be last and requires path, expectedBytes and expectedSha256 for one existing snapshot PDF/ZIP up to 4 MiB; press requires key (ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Space, Enter, Escape, Tab, one lowercase letter a-z or one digit 0-9; no modifiers, chords or text) and accepts holdMs (integer 0 to 1000 milliseconds, default 100); assert-painted takes only action and locator.'],
+  ['missing expectedText','assert-text needs expectedText: the exact visible text the element should show after the earlier steps (normalized, 1 to 256 characters). To check only that it is shown, use assert-visible.'],
+  ['missing value','select-option and fill need value: the exact option value, or synthetic text of 0 to 256 printable characters.'],
+  ['missing key','press needs key: ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Space, Enter, Escape, Tab, one lowercase letter a-z or one digit 0-9.'],
   ['invalid CSS locator','Use one non-empty CSS selector of 1 to 256 printable characters, without Playwright engine prefixes or chaining.'],
   ['invalid CSS locator exact','A CSS locator has no matching mode: omit exact or use exact:true.'],
   ['invalid semantic locator','Use a supported role and its exact accessible name ({role, name}, exact:true optional), or a CSS selector ({selector}).'],
@@ -355,7 +358,15 @@ const INPUT_HINTS = new Map([
 // per invalid step identifies all affected steps in a single bounded response.
 // This validates the same request; it never edits a plan or contacts Chromium.
 function inspectionStepProblem(step,index,count) {
-  const problem=(reason,field='')=>({reason,hint:`Step ${index+1} (steps[${index}]${field?'.'+field:''}): ${INPUT_HINTS.get(reason)}`});
+  const problem=(reason,field='',hint=reason)=>({reason,hint:`Step ${index+1} (steps[${index}]${field?'.'+field:''}): ${INPUT_HINTS.get(hint)}`});
+  // The usual slip names an action and its locator but leaves out the field the
+  // action needs; name it rather than every action's rules (Workstation06,
+  // 2026-10-27: assert-text without expectedText cost each run a checked call).
+  if(exact(step,['action','locator'])) {
+    if(step.action==='assert-text') return problem('invalid inspection step','expectedText','missing expectedText');
+    if(['select-option','fill'].includes(step.action)) return problem('invalid inspection step','value','missing value');
+    if(step.action==='press') return problem('invalid inspection step','key','missing key');
+  }
   if(step && typeof step==='object' && !Array.isArray(step) && step.action!=='download' && Object.hasOwn(step,'path')) return problem('unsupported inspection navigation','path');
   if(!exact(step,['action','locator',...(step?.action==='assert-text'?['expectedText']:['select-option','fill'].includes(step?.action)?['value']:step?.action==='download'?downloadKeys:step?.action==='press'?pressKeys(step):[])]) || !['assert-visible','assert-hidden','assert-text','click','select-option','fill','download','press','assert-painted'].includes(step.action)) return problem('invalid inspection step');
   if(step.action==='download' && (index!==count-1 || !downloadValid(step))) return problem('invalid inspection step');
