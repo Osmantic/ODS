@@ -14136,10 +14136,14 @@ class AgentHandler(BaseHTTPRequestHandler):
                             else f"{part_file_name} (part {part_idx}/{len(download_plan)})"
                         )
                         _write_model_status(status_path, "verifying", verify_label, final_size, final_size)
+                        # An inconclusive inspection must leave downloaded bytes
+                        # available for a verified retry, just like existing files.
+                        # Definitive size/checksum failures still return False.
                         valid, reason = _verify_model_artifact(
                             final_target,
                             artifact,
                             _model_download_cancel,
+                            raise_on_error=True,
                         )
                         if _model_download_cancel.is_set():
                             _finish_cancelled_download()

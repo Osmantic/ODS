@@ -9942,6 +9942,102 @@ class TestModelDeleteSafety:
 
 class TestModelDownloadFileIntegrity:
 
+    @pytest.mark.parametrize("failure", ["metadata-change", "read-error"])
+    def test_inconclusive_final_verification_retains_bytes_for_verified_retry(
+        self, tmp_path, monkeypatch, failure,
+    ):
+        payload = b"valid gguf bytes"
+        install_dir = self._setup_env(tmp_path, monkeypatch, expected_payload=payload)
+        target = install_dir / "data/models/test-model.gguf"
+        calls = self._patch_curl_download(monkeypatch, payload)
+        real_sha256 = hashlib.sha256
+        entered: list[bool] = []
+
+        class InterruptedDigest:
+            def __init__(self, *args, **kwargs):
+                self.digest = real_sha256(*args, **kwargs)
+
+            def update(self, chunk):
+                self.digest.update(chunk)
+                if entered:
+                    return
+                entered.append(True)
+                if failure == "read-error":
+                    raise OSError("Transient model read failure")
+                before = target.stat()
+                os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+
+            def hexdigest(self):
+                return self.digest.hexdigest()
+
+        monkeypatch.setattr(_mod.hashlib, "sha256", InterruptedDigest)
+        handler = _FakeHandler(self._body())
+        _mod.AgentHandler._handle_model_download(handler)
+        assert handler.response_code == 200
+        _mod._model_download_thread.join(timeout=3)
+        assert not _mod._model_download_thread.is_alive()
+        assert entered == [True]
+        status_path = install_dir / "data/model-download-status.json"
+        status = json.loads(status_path.read_text())
+        assert status["status"] == "failed"
+        expected = "file changed during verification" if failure == "metadata-change" else "Transient model read failure"
+        assert expected in status["error"]
+        assert target.read_bytes() == payload
+        assert calls == ["test-model.gguf.part"]
+
+        monkeypatch.setattr(_mod.hashlib, "sha256", real_sha256)
+        monkeypatch.setattr(_mod.subprocess, "Popen", lambda *a, **kw: pytest.fail("retry must reuse verified bytes"))
+        retry = _FakeHandler(self._body())
+        _mod.AgentHandler._handle_model_download(retry)
+        assert retry.response_code == 200
+        _mod._model_download_thread.join(timeout=3)
+        assert not _mod._model_download_thread.is_alive()
+        assert json.loads(status_path.read_text())["status"] == "complete"
+        assert target.read_bytes() == payload
+
+    def test_final_checksum_mismatch_still_removes_downloaded_bytes(self, tmp_path, monkeypatch):
+        payload = b"valid gguf bytes"
+        install_dir = self._setup_env(tmp_path, monkeypatch, expected_payload=payload)
+        self._patch_curl_download(monkeypatch, b"other gguf bytes")
+        assert len(payload) == len(b"other gguf bytes")
+        handler = _FakeHandler(self._body())
+        _mod.AgentHandler._handle_model_download(handler)
+        _mod._model_download_thread.join(timeout=3)
+        assert not _mod._model_download_thread.is_alive()
+        status = json.loads((install_dir / "data/model-download-status.json").read_text())
+        assert status["status"] == "failed"
+        assert "SHA256 mismatch" in status["error"]
+        assert not (install_dir / "data/models/test-model.gguf").exists()
+
+    def test_cancel_final_verification_still_removes_downloaded_bytes(self, tmp_path, monkeypatch):
+        payload = b"valid gguf bytes"
+        install_dir = self._setup_env(tmp_path, monkeypatch, expected_payload=payload)
+        self._patch_curl_download(monkeypatch, payload)
+        cancel = threading.Event()
+        monkeypatch.setattr(_mod, "_model_download_cancel", cancel)
+        real_sha256 = hashlib.sha256
+
+        class CancelDigest:
+            def __init__(self, *args, **kwargs):
+                self.digest = real_sha256(*args, **kwargs)
+
+            def update(self, chunk):
+                self.digest.update(chunk)
+                cancel.set()
+
+            def hexdigest(self):
+                return self.digest.hexdigest()
+
+        monkeypatch.setattr(_mod.hashlib, "sha256", CancelDigest)
+        handler = _FakeHandler(self._body())
+        _mod.AgentHandler._handle_model_download(handler)
+        _mod._model_download_thread.join(timeout=3)
+        assert not _mod._model_download_thread.is_alive()
+        status = json.loads((install_dir / "data/model-download-status.json").read_text())
+        assert status["status"] == "cancelled"
+        assert not (install_dir / "data/models/test-model.gguf").exists()
+        assert _mod._model_download_cancelable is False
+
     @pytest.mark.parametrize("sized", [False, True])
     def test_corrupt_existing_file_checks_space_before_any_network(self, tmp_path, monkeypatch, sized):
         payload = b"valid gguf bytes"
