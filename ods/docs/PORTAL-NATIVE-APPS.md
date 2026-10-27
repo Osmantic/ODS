@@ -56,6 +56,15 @@ request. The fixture must not weaken that guard to simulate cross-origin OAuth.
 This does not qualify a public remote OAuth provider, provider-side revocation,
 real Mac execution or the complete managed Portal enrollment journey.
 
+For the 8192-token primary Portal profile, native Tool Search keeps the schemas
+of `pixel_gmail_search`, `pixel_gmail_read`, `pixel_calendar_list` and
+`pixel_calendar_get` visible when those tools are already permitted and have
+unique names. This lets a small model read their required arguments before its
+first call. It retains the original tool objects, permissions and Source Broker
+handlers; it cannot connect an account or restore a denied tool. Other tools,
+including source writes, remain discoverable through the native catalog. The
+smaller-context and larger-context surfaces keep their existing behavior.
+
 ## Wiring required before offering Connect
 
 - The existing root custodian must select a reviewed app and native server

@@ -130,6 +130,43 @@ test('disabled search preserves the input tools', () => {
   assert.deepEqual(result.tools, [...controls, read]);
 });
 
+test('8K connected reads expose their original schemas without exposing source writes', async () => {
+  const names=['pixel_gmail_search','pixel_gmail_read','pixel_calendar_list','pixel_calendar_get'];
+  const reads=names.map(name=>({...tool(name),parameters:{type:'object',properties:{marker:{type:'string'}},required:['marker']},
+    execute:async(_id,args)=>({content:[{type:'text',text:name+':'+args.marker}]})}));
+  const write=tool('pixel_calendar_propose_create');
+  const config={agents:{defaults:{contextTokens:65536},list:[{id:'pixel',contextTokens:8192}]},
+    tools:{toolSearch:{enabled:true,mode:'tools'}}};
+  const result=run([...reads,write],{config});
+  assert.deepEqual(result.tools,[...controls,...reads]);
+  assert.equal(result.catalogToolCount,reads.length+1,'keep every permitted tool in native discovery');
+  for(const original of reads) {
+    const direct=result.tools.find(value=>value.name===original.name);
+    assert.equal(direct,original,'preserve the exact policy-filtered implementation and schema');
+    assert.equal((await direct.execute('read',{marker:'fresh-fact'})).content[0].text,original.name+':fresh-fact');
+  }
+  const api=Object.fromEntries(createControls({agentId:'pixel',catalogRef:result.catalogRef,config}).map(t=>[t.name,t]));
+  const found=await api.tool_search.execute('find',{query:write.name});
+  assert.ok(found.details.some(value=>value.name===write.name),'a permitted write remains discoverable');
+  for(const contextTokens of [4096,8191,16384]) {
+    config.agents.list[0].contextTokens=contextTokens;
+    assert.deepEqual(run(reads,{config}).tools,controls,'retain the existing surface outside the qualified 8K profile');
+  }
+});
+
+test('8K read visibility never restores a denied tool or selects an ambiguous implementation', () => {
+  const names=['pixel_gmail_search','pixel_gmail_read','pixel_calendar_list','pixel_calendar_get'];
+  const originals=names.map(tool);
+  const permitted=filterByPolicy(originals,{deny:[names[0]]});
+  const config={agents:{list:[{id:'pixel',contextTokens:8192}]},tools:{toolSearch:{enabled:true,mode:'tools'}}};
+  const denied=run(permitted,{config});
+  assert.deepEqual(denied.tools,[...controls,...originals.slice(1)]);
+  assert.equal(resolveExact({agentId:'pixel',catalogRef:denied.catalogRef},names[0]),undefined);
+  const ambiguous=run([...permitted,tool(names[1])],{config});
+  assert.deepEqual(ambiguous.tools,[...controls,...originals.slice(2)]);
+  assert.deepEqual(run(originals,{config,agentId:'another-agent'}).tools,controls);
+});
+
 test('discovery bounds long manuals while describe and dispatch retain the complete original tool', async () => {
   const description='Calendar read summary. '+ 'Detailed operating instructions. '.repeat(160)
     + 'Final approval rule and distinctive-calendar-needle.';
