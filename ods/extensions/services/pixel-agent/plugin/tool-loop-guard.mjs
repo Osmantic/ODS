@@ -2641,7 +2641,7 @@ function gpuEvidence(step) {
     return undefined;
   }
   const devices = [];
-  let measured = false;
+  const measured = { count: 0, totalMiB: 0, freeMiB: 0 };
   for (const device of value.devices) {
     if (value.backend === "metal") {
       if (!exactKeys(device, ["metal", "name"])) return undefined;
@@ -2650,20 +2650,30 @@ function gpuEvidence(step) {
       devices.push(`${name} (${device.metal})`);
       continue;
     }
-    // Free and in-use memory are present when the driver reports them
-    // (host/system_observe.py) and absent otherwise.
+    // Free and in-use memory are present when the driver reports them, and a
+    // unified-memory GPU (GB10, GB200) has no memory of its own to report
+    // (host/system_observe.py).
     const live = exactKeys(device, ["driver", "memoryFreeMiB", "memoryMiB", "memoryUsedMiB", "name"]);
-    if (!live && !exactKeys(device, ["driver", "memoryMiB", "name"])) return undefined;
+    const unified = exactKeys(device, ["driver", "name", "unifiedMemory"]);
+    if (!live && !unified && !exactKeys(device, ["driver", "memoryMiB", "name"])) return undefined;
     const name = cleanSingleLine(device.name, /^[A-Za-z0-9][A-Za-z0-9 ._+()/@-]{0,95}$/, 96);
     const driver = cleanSingleLine(device.driver, /^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/, 64);
-    if (!name || !driver || !Number.isInteger(device.memoryMiB) || device.memoryMiB < 1 || device.memoryMiB > 10_000_000) {
-      return undefined;
+    if (!name || !driver) return undefined;
+    if (unified) {
+      if (device.unifiedMemory !== true) return undefined;
+      devices.push(`${name} (unified memory shared with system RAM; driver ${driver})`);
+      continue;
     }
+    if (!Number.isInteger(device.memoryMiB) || device.memoryMiB < 1 || device.memoryMiB > 10_000_000) return undefined;
     if (live && [device.memoryFreeMiB, device.memoryUsedMiB].some((mib) =>
       !Number.isInteger(mib) || mib < 0 || mib > device.memoryMiB)) {
       return undefined;
     }
-    measured ||= live;
+    if (live) {
+      measured.count += 1;
+      measured.totalMiB += device.memoryMiB;
+      measured.freeMiB += device.memoryFreeMiB;
+    }
     devices.push(live
       ? `${name} (${device.memoryMiB} MiB total, ${device.memoryFreeMiB} MiB free, ${device.memoryUsedMiB} MiB in use; driver ${driver})`
       : `${name} (${device.memoryMiB} MiB; driver ${driver})`);
@@ -2674,8 +2684,14 @@ function gpuEvidence(step) {
   if (value.available && value.backend === "metal") {
     return `GPU capability: ${devices.join("; ")}. Runtime Metal utilization was not measured. Device identifiers and serial numbers are omitted.`;
   }
+  // Every GPU measured, two or more: the sums, so a reply copies them instead of
+  // adding (Workstation06, 2026-10-27: "519.2 GiB free out of 346.2 GiB total").
+  const together = measured.count >= 2 && measured.count === devices.length
+    ? ` Together: ${measured.freeMiB} MiB free of ${measured.totalMiB} MiB ` +
+      `(${formatHostBytes(measured.freeMiB * 1024 ** 2)} free of ${formatHostBytes(measured.totalMiB * 1024 ** 2)}).`
+    : "";
   return value.available
-    ? `GPU: ${devices.join("; ")}.${measured ? " Free and in-use memory are as of this check." : ""} Device identifiers and serial numbers are omitted.`
+    ? `GPU: ${devices.join("; ")}.${together}${measured.count ? " Free and in-use memory are as of this check." : ""} Device identifiers and serial numbers are omitted.`
     : "GPU telemetry is unavailable through the bounded host observer.";
 }
 

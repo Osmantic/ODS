@@ -7078,7 +7078,8 @@ test("NVIDIA host evidence names each GPU's free and in-use memory, once per lin
   ]);
   assert.match(text, new RegExp("\\n- GPU: NVIDIA RTX PRO 6000 Blackwell Workstation Edition \\(97887 MiB total, 84018 MiB free, " +
     "13247 MiB in use; driver 610\\.57\\.04\\); NVIDIA GB300 \\(256703 MiB total, 242945 MiB free, 12837 MiB in use; " +
-    "driver 610\\.57\\.04\\)\\. Free and in-use memory are as of this check\\. Device identifiers"));
+    "driver 610\\.57\\.04\\)\\. Together: 326963 MiB free of 354590 MiB \\(319\\.3 GiB free of 346\\.3 GiB\\)\\. " +
+    "Free and in-use memory are as of this check\\. Device identifiers"));
   assert.match(text, /\n- Memory: 8\.00 GiB used of 16\.0 GiB/);
   assert.doesNotMatch(text, /GPU: GPU:|Memory: Memory:/);
 });
@@ -7087,10 +7088,23 @@ test("NVIDIA host evidence without live use keeps the totals; impossible live fi
   const total = {name:"NVIDIA GeForce RTX 5070 Laptop GPU",memoryMiB:8151,driver:"573.22"};
   const text = hostGpuMemoryReply([total]);
   assert.match(text, /\n- GPU: NVIDIA GeForce RTX 5070 Laptop GPU \(8151 MiB; driver 573\.22\)\. Device identifiers/);
-  assert.doesNotMatch(text, /as of this check/);
+  assert.doesNotMatch(text, /as of this check|Together/);
+  // One GPU is its own total; a GPU without live figures leaves no sum to give.
+  assert.doesNotMatch(hostGpuMemoryReply([{...total, memoryUsedMiB:1203, memoryFreeMiB:6687}]), /Together/);
+  assert.doesNotMatch(hostGpuMemoryReply([{...total, memoryUsedMiB:1203, memoryFreeMiB:6687}, total]), /Together/);
   for (const live of [{memoryUsedMiB:1203,memoryFreeMiB:9000}, {memoryUsedMiB:-1,memoryFreeMiB:6687},
     {memoryUsedMiB:1203.5,memoryFreeMiB:6687}, {memoryUsedMiB:1203}]) {
     assert.doesNotMatch(hostGpuMemoryReply([{...total, ...live}]) ?? "", /MiB free|8151 MiB/, JSON.stringify(live));
+  }
+});
+
+test("a unified-memory NVIDIA GPU is named as sharing system RAM", () => {
+  const text = hostGpuMemoryReply([{name:"NVIDIA GB10",unifiedMemory:true,driver:"580.95.05"}]);
+  assert.match(text, /\n- GPU: NVIDIA GB10 \(unified memory shared with system RAM; driver 580\.95\.05\)\. Device identifiers/);
+  assert.match(text, /\n- Memory: 8\.00 GiB used of 16\.0 GiB/);
+  for (const device of [{name:"NVIDIA GB10",unifiedMemory:"yes",driver:"580.95.05"},
+    {name:"NVIDIA GB10",unifiedMemory:true,memoryMiB:8151,driver:"580.95.05"}]) {
+    assert.doesNotMatch(hostGpuMemoryReply([device]) ?? "", /NVIDIA GB10/, JSON.stringify(device));
   }
 });
 

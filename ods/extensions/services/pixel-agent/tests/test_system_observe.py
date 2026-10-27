@@ -176,6 +176,25 @@ class SystemObserveTests(unittest.TestCase):
             {"name": "NVIDIA L4", "memoryMiB": 23034, "driver": "550.54.15"},
         ])
 
+    def test_unified_memory_gpu_is_reported_and_a_memoryless_row_beside_gpus_is_not(self):
+        # GB10 and GB200 share system RAM and report [N/A] for memory; such a
+        # row beside a GPU with memory is not a GPU (installers/lib/detection.sh).
+        cases = [
+            ("NVIDIA GB10, [N/A], [N/A], [N/A], 580.95.05\n",
+             [{"name": "NVIDIA GB10", "unifiedMemory": True, "driver": "580.95.05"}]),
+            ("NVIDIA RTX PRO 500 Blackwell, 6144, 300, 5700, 581.42\nNVIDIA NPU, [N/A], [N/A], [N/A], 581.42\n",
+             [{"name": "NVIDIA RTX PRO 500 Blackwell", "memoryMiB": 6144, "memoryUsedMiB": 300,
+               "memoryFreeMiB": 5700, "driver": "581.42"}]),
+        ]
+        for stdout, devices in cases:
+            result = mock.Mock(returncode=0, stdout=stdout, stderr="")
+            with mock.patch.object(system_observe, "_trusted_executable", return_value="/usr/bin/nvidia-smi"), \
+                 mock.patch.object(system_observe, "_run", return_value=result):
+                value = system_observe.observe_gpu()
+            self.assertTrue(value["available"], stdout)
+            self.assertEqual(value["backend"], "nvidia")
+            self.assertEqual(value["devices"], devices)
+
     def test_gpu_parser_fails_closed_on_unexpected_output(self):
         result = mock.Mock(returncode=0, stdout="GPU, 123, driver, extra\n", stderr="")
         with mock.patch.object(system_observe, "_trusted_executable", return_value="/usr/bin/nvidia-smi"), \

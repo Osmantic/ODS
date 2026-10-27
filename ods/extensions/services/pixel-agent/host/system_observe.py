@@ -104,28 +104,7 @@ def observe_gpu() -> dict:
             ]
         )
         if result and result.returncode == 0 and not result.stderr.strip():
-            for line in result.stdout.splitlines()[:16]:
-                fields = [field.strip() for field in line.split(",")]
-                if len(fields) != 5 or not SAFE_NAME.fullmatch(fields[0]) or not SAFE_VERSION.fullmatch(fields[4]):
-                    devices = []
-                    break
-                try:
-                    memory_mib = int(fields[1])
-                except ValueError:
-                    devices = []
-                    break
-                if not 1 <= memory_mib <= 10_000_000:
-                    devices = []
-                    break
-                device = {"name": fields[0], "memoryMiB": memory_mib, "driver": fields[4]}
-                # Live use at the time of the check, so "how much GPU memory is
-                # free" has a host answer. A driver that reports "[N/A]" for
-                # either keeps the device without them.
-                if fields[2].isdecimal() and fields[3].isdecimal():
-                    used, free = int(fields[2]), int(fields[3])
-                    if used <= memory_mib and free <= memory_mib:
-                        device.update(memoryUsedMiB=used, memoryFreeMiB=free)
-                devices.append(device)
+            devices = _nvidia_devices(result.stdout.splitlines()[:16])
     return {
         "schemaVersion": 1,
         "kind": "ods-host-gpu",
@@ -133,6 +112,50 @@ def observe_gpu() -> dict:
         "backend": "nvidia" if devices else "unavailable",
         "devices": devices,
     }
+
+
+NOT_REPORTED = frozenset({"[N/A]", "N/A", "[Not Supported]", "Not Supported"})
+
+
+def _nvidia_devices(lines: Sequence[str]) -> list[dict]:
+    """nvidia-smi rows as devices, or none when any row is unexpected.
+
+    A GPU whose memory is not reported beside GPUs that report theirs is not a
+    GPU for ODS (Windows on Arm lists an NVIDIA NPU that way) and is left out.
+    When no row reports memory, the GPUs share system RAM (GB10, GB200). Both
+    follow installers/lib/detection.sh.
+    """
+    rows: list[tuple[list[str], int | None]] = []
+    for line in lines:
+        fields = [field.strip() for field in line.split(",")]
+        if len(fields) != 5 or not SAFE_NAME.fullmatch(fields[0]) or not SAFE_VERSION.fullmatch(fields[4]):
+            return []
+        if fields[1] in NOT_REPORTED:
+            rows.append((fields, None))
+            continue
+        try:
+            memory_mib = int(fields[1])
+        except ValueError:
+            return []
+        if not 1 <= memory_mib <= 10_000_000:
+            return []
+        rows.append((fields, memory_mib))
+    sized = [row for row in rows if row[1] is not None]
+    devices: list[dict] = []
+    for fields, memory_mib in sized or rows:
+        if memory_mib is None:
+            devices.append({"name": fields[0], "unifiedMemory": True, "driver": fields[4]})
+            continue
+        device = {"name": fields[0], "memoryMiB": memory_mib, "driver": fields[4]}
+        # Live use at the time of the check, so "how much GPU memory is free"
+        # has a host answer. A driver that reports [N/A] for either, or a
+        # figure above the total, keeps the device without them.
+        if fields[2].isdecimal() and fields[3].isdecimal():
+            used, free = int(fields[2]), int(fields[3])
+            if used <= memory_mib and free <= memory_mib:
+                device.update(memoryUsedMiB=used, memoryFreeMiB=free)
+        devices.append(device)
+    return devices
 
 
 def observe_metal() -> dict:
