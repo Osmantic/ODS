@@ -28,25 +28,15 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-
-          if (-not (Get-PackageProvider -Name NuGet -ListAvailable -ErrorAction SilentlyContinue)) {
-            Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Scope CurrentUser -Force -ForceBootstrap
-          }
-
-          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
-            Register-PSRepository -Default
-          }
-          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
-
-          Install-Module -Name PSScriptAnalyzer -Repository PSGallery -Scope CurrentUser -Force -AllowClobber
-          Import-Module PSScriptAnalyzer -ErrorAction Stop
+          # Hosted PowerShell 7 includes PSResourceGet. Avoid the legacy
+          # NuGet provider bootstrap, which can fail to register PSGallery.
+          Import-Module Microsoft.PowerShell.PSResourceGet -ErrorAction Stop
+          $requiredVersion = '1.25.0'
+          Install-PSResource -Name PSScriptAnalyzer -Version $requiredVersion `
+            -Repository PSGallery -Scope CurrentUser -TrustRepository -Reinstall -Quiet
+          Import-Module PSScriptAnalyzer -RequiredVersion $requiredVersion -ErrorAction Stop
           Get-Command Invoke-ScriptAnalyzer -Module PSScriptAnalyzer -ErrorAction Stop | Out-Null
           Get-Module PSScriptAnalyzer | Format-Table Name, Version, Path -AutoSize
-          # NuGet may leave a nonzero native exit code after a recovered setup
-          # error. Clear it only after the module and analyzer command load;
-          # installation/import failures still terminate before this point.
-          $global:LASTEXITCODE = 0
 
       - name: Run PowerShell Script Analyzer
         shell: pwsh
