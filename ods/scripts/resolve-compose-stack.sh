@@ -219,6 +219,12 @@ selected_stack = globals().get("_selected_stack")
 resolved = []
 primary = "docker-compose.yml"
 
+# LLM_BACKEND=vllm: the vllm-server container (docker-compose.vllm.yml)
+# serves the model on a big NVIDIA GPU. Like the host-native route it turns
+# the in-stack llama-server off and keeps model-router. Any other value,
+# including none, keeps today's selection.
+vllm_engine = selected_stack is None and _install_env_value("LLM_BACKEND").lower() == "vllm"
+
 # An ODS-managed host-native runtime owns inference selection, even when
 # hardware detection supplied a local CPU/AMD/NVIDIA profile to the installer.
 if selected_stack is not None:
@@ -306,6 +312,41 @@ if selected_stack is None and "docker-compose.amd.yml" in resolved:
             print("ERROR: AMD_INFERENCE_BACKEND=rocm but docker-compose.amd-rocm.yml is missing", file=sys.stderr)
             sys.exit(1)
         resolved.insert(resolved.index("docker-compose.amd.yml") + 1, "docker-compose.amd-rocm.yml")
+
+
+def _vllm_route_conflict(files):
+    """Why LLM_BACKEND=vllm cannot run with this selection, or "" if it can.
+
+    vLLM replaces only the in-stack llama-server on the NVIDIA stack, so a
+    route without that server, or another GPU vendor, is refused instead of
+    silently starting a different engine than .env asks for.
+    """
+    if host_native:
+        return "NATIVE_LLM_BASE_URL is set, so a host-native llama-server serves the model"
+    if external_llm:
+        return "EXTERNAL_LLM_URL is set, so an external model server serves the model"
+    if ods_mode == "cloud" or tier == "CLOUD":
+        return "ODS runs in cloud mode, which has no local model server"
+    if gpu_backend != "nvidia":
+        return f"the GPU backend is {gpu_backend}; the vLLM engine runs only on NVIDIA GPUs"
+    if "docker-compose.nvidia.yml" not in files:
+        return "this hardware selection does not include docker-compose.nvidia.yml"
+    return ""
+
+
+# The vLLM overlay comes right after the NVIDIA overlay (also when a hardware
+# profile chose it), which still supplies the GPU stack.
+if vllm_engine:
+    vllm_conflict = _vllm_route_conflict(resolved)
+    if vllm_conflict:
+        print(f"ERROR: LLM_BACKEND=vllm cannot be used: {vllm_conflict}. "
+              "Remove LLM_BACKEND=vllm or the conflicting setting from .env.", file=sys.stderr)
+        sys.exit(1)
+    if not (script_dir / "docker-compose.vllm.yml").exists():
+        print("ERROR: LLM_BACKEND=vllm but docker-compose.vllm.yml is missing", file=sys.stderr)
+        sys.exit(1)
+    if "docker-compose.vllm.yml" not in resolved:
+        resolved.insert(resolved.index("docker-compose.nvidia.yml") + 1, "docker-compose.vllm.yml")
 
 # A generated auth file is an override, never a primary/profile input. Remove
 # stale cached occurrences before extension discovery so it cannot make a
@@ -1436,8 +1477,9 @@ if selected_stack is None and ext_dir.exists():
             # A host-native runtime is also a host process. Its overlay
             # profiles out ODS's in-stack llama-server, so local-mode overlays
             # that wait on `llama-server: service_healthy` would point at a
-            # disabled service and break lifecycle commands.
-            if ods_mode in ("local", "hybrid") and tier != "CLOUD" and gpu_backend != "apple" and not host_native and not external_llm:
+            # disabled service and break lifecycle commands. The vLLM overlay
+            # profiles llama-server out the same way.
+            if ods_mode in ("local", "hybrid") and tier != "CLOUD" and gpu_backend != "apple" and not host_native and not external_llm and not vllm_engine:
                 local_mode_overlay = service_dir / "compose.local.yaml"
                 if local_mode_overlay.exists():
                     resolved.append(str(local_mode_overlay.relative_to(script_dir)))
@@ -1583,6 +1625,7 @@ if user_ext_dir.exists():
                             and tier != "CLOUD"
                             and not host_native
                             and not external_llm
+                            and not vllm_engine
                         )
                         if (
                             not managed_local_inference
@@ -1603,11 +1646,11 @@ if user_ext_dir.exists():
                 # service_healthy` inside compose.local.yaml overlays can never be
                 # satisfied and deadlocks the stack. The real LLM-ready gate on macOS
                 # is the `llama-server-ready` sidecar defined in the macOS overlay.
-                # A host-native runtime likewise disables ODS's in-stack
-                # llama-server, so user-local overlays must not add local
-                # llama-server health dependencies. Mirrors the same guard in
-                # the built-in loop above (PR #1004).
-                if ods_mode in ("local", "hybrid") and tier != "CLOUD" and gpu_backend != "apple" and not host_native and not external_llm:
+                # A host-native runtime (or the vLLM engine) likewise disables
+                # ODS's in-stack llama-server, so user-local overlays must not
+                # add local llama-server health dependencies. Mirrors the same
+                # guard in the built-in loop above (PR #1004).
+                if ods_mode in ("local", "hybrid") and tier != "CLOUD" and gpu_backend != "apple" and not host_native and not external_llm and not vllm_engine:
                     local_mode_overlay = service_dir / "compose.local.yaml"
                     if local_mode_overlay.exists():
                         # Same content scan as compose.yaml/gpu overlay above —

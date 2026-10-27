@@ -188,6 +188,8 @@ test: ## Run unit and contract tests
 	@echo "=== ComfyUI CUDA kernel cache is persisted ==="
 	@bash tests/test-comfyui-cuda-cache-persisted.sh
 	@bash tests/test-llama-cuda-cache-persisted.sh
+	@echo "=== vLLM engine service and its compose selection ==="
+	@bash tests/test-vllm-engine-service.sh
 	@echo ""
 	@echo "=== macOS ods config show secret-mask ==="
 	@bash tests/test-macos-config-show-secret-mask.sh

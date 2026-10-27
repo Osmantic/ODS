@@ -56,6 +56,16 @@
       "value": "ghcr.io/ggml-org/llama.cpp:server-cuda13-b11429@sha256:9d6ca9a08b5e0c0a6d2560bff7d4c76bdf946776bbde6a20d9d6403594d93a9f"
     },
     {
+      "id": "vllm.vllm-server",
+      "type": "image",
+      "path": "docker-compose.vllm.yml",
+      "value": "vllm/vllm-openai:v0.32.0@sha256:befccf0e7e4089aa23926bb6f887a85c0d46c2a99e6de5c5ffdf5cb7957c5b34",
+      "platforms": {
+        "linux/amd64": "sha256:6ee133356d49ed24cee03dd0cda3d3980279a11c107ce3e752c89e76540f41c9",
+        "linux/arm64": "sha256:6ff5ff0ddf3658d2c2d677dac5ca2d4726ce0156b4371166d918181b210bd4bc"
+      }
+    },
+    {
       "id": "amd.llama-server",
       "type": "image",
       "path": "docker-compose.amd.yml",
@@ -457,6 +467,12 @@
       "value": "${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda-b11429@sha256:883915ea20a4b350e98f7284098f4d400c21e9b366e248d397cd42d90602a84c}",
       "default": "ghcr.io/ggml-org/llama.cpp:server-cuda-b11429@sha256:883915ea20a4b350e98f7284098f4d400c21e9b366e248d397cd42d90602a84c",
       "reason": "NVIDIA llama.cpp image can be overridden for testing, but the shipped default is locked."
+    },
+    {
+      "path": "docker-compose.vllm.yml",
+      "value": "${VLLM_IMAGE:-vllm/vllm-openai:v0.32.0@sha256:befccf0e7e4089aa23926bb6f887a85c0d46c2a99e6de5c5ffdf5cb7957c5b34}",
+      "default": "vllm/vllm-openai:v0.32.0@sha256:befccf0e7e4089aa23926bb6f887a85c0d46c2a99e6de5c5ffdf5cb7957c5b34",
+      "reason": "The installer writes VLLM_IMAGE from the vllm.vllm-server entry; the shipped default is the same digest-pinned multi-arch image."
     },
     {
       "path": "docker-compose.cpu.yml",

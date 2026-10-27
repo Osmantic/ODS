@@ -1,0 +1,91 @@
+# ODS - vLLM engine overlay
+#
+# Used when .env sets LLM_BACKEND=vllm: vLLM serves the model on one big
+# NVIDIA GPU (datacenter Blackwell, compute capability 10.x) instead of the
+# in-stack llama-server. As on the host-native route, llama-server is off and
+# model-router stays; endpoints.json points model-router at vllm-server:8000.
+#
+# This file is intentionally not standalone. scripts/resolve-compose-stack.sh
+# layers it right after docker-compose.nvidia.yml when LLM_BACKEND=vllm, and
+# refuses it together with a host-native, external or cloud model route or a
+# non-NVIDIA GPU. The installer writes the VLLM_* values from the model
+# catalog; without VLLM_MODEL_DIR, VLLM_SERVED_MODEL or VLLM_GPU_UUID,
+# Compose stops and names the missing one.
+#
+# Validate the resolved stack with:
+#
+#   LLM_BACKEND=vllm ./scripts/resolve-compose-stack.sh --ods-mode local --gpu-backend nvidia --tier NV_ULTRA
+
+services:
+  llama-server:
+    profiles:
+      - local-inference
+    restart: "no"
+
+  vllm-server:
+    # Digest-pinned multi-arch image (config/dependency-lock.json). The
+    # installer writes the same reference to VLLM_IMAGE.
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.32.0@sha256:befccf0e7e4089aa23926bb6f887a85c0d46c2a99e6de5c5ffdf5cb7957c5b34}
+    container_name: ods-vllm-server
+    restart: unless-stopped
+    # Reached only on the ODS network (model-router); no host port.
+    expose:
+      - "8000"
+    security_opt:
+      - no-new-privileges:true
+    shm_size: 16g
+    environment:
+      # The first start loads 130-200 GB of weights and compiles kernels;
+      # vLLM's shorter default would give up first.
+      - VLLM_ENGINE_READY_TIMEOUT_S=3600
+      # The weights are local. Never reach the Hugging Face Hub.
+      - HF_HUB_OFFLINE=1
+      # vLLM sends anonymous usage reports to its developers unless told not to.
+      - VLLM_NO_USAGE_STATS=1
+      - DO_NOT_TRACK=1
+      # The CUDA driver's kernel cache, kept in the mounted cache folder. In
+      # the container layer it was lost on every recreate (see llama-server
+      # in docker-compose.nvidia.yml); 4 GiB is the driver's maximum.
+      - CUDA_CACHE_PATH=/root/.cache/nv/ComputeCache
+      - CUDA_CACHE_MAXSIZE=4294967296
+    volumes:
+      # The model's snapshot folder under data/models, read-only.
+      - ./data/models/${VLLM_MODEL_DIR:?VLLM_MODEL_DIR must name the model folder under data/models}:/model:ro,z
+      # FlashInfer autotune, torch.compile and CUDA kernel caches. Without
+      # this mount every recreate (ods update, a restart on a new model)
+      # compiles again. Rebuilt on start, so backups skip it.
+      - ./data/vllm/cache:/root/.cache:z
+    # Compose splits this string like a shell, so VLLM_ARGS (the catalog
+    # entry's argument string) becomes separate arguments to `vllm serve`.
+    command: >-
+      --model /model
+      --served-model-name ${VLLM_SERVED_MODEL:?VLLM_SERVED_MODEL must name the model id vLLM serves}
+      --host 0.0.0.0
+      --port 8000
+      --gpu-memory-utilization ${VLLM_GPU_MEMORY_UTILIZATION:-0.90}
+      ${VLLM_ARGS:-}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            # Exactly the GPU the installer picked. Do not add a second entry
+            # in another overlay: Compose appends reservation lists, and the
+            # container would get an extra GPU.
+            - driver: nvidia
+              device_ids: ["${VLLM_GPU_UUID:?VLLM_GPU_UUID must name the GPU vLLM owns}"]
+              capabilities: [gpu]
+    healthcheck:
+      # /health answers 200 with an empty body once the engine is ready.
+      # The image has python3 because vLLM runs on it; curl may be missing.
+      test: ["CMD", "python3", "-c", "import sys,urllib.request;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=5).status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      # As long as VLLM_ENGINE_READY_TIMEOUT_S, so Docker does not call a
+      # first start unhealthy before vLLM itself gives up.
+      start_period: 60m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -60,6 +60,7 @@ ODS_BACKUP_EXCLUDED_DATA_PATHS=(
     "data/whisper"       # STT model cache
     "data/embeddings"    # TEI model cache
     "data/llama-server"  # CUDA kernel cache, root-owned; rebuilt on the next start
+    "data/vllm"          # vLLM compile/autotune cache, rebuilt on start
     # dashboard-api runtime files: progress, status and receipts that the
     # running stack rewrites, or copies of state captured elsewhere.
     "data/extensions-library"            # catalog copy; re-copied by the installer
