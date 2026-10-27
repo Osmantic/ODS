@@ -164,6 +164,19 @@ while [[ $# -gt 0 ]]; do
         --all)           ALL_FEATURES=true; shift ;;
         --cloud)         CLOUD_MODE=true; shift ;;
         --no-bootstrap)  NO_BOOTSTRAP=true; shift ;;
+        # The vLLM engine needs Linux and an NVIDIA datacenter GPU. macOS
+        # always runs llama.cpp, so llama-server is accepted and changes
+        # nothing (get-ods.sh passes the same options to every installer).
+        --llm-backend)
+            case "${2:-}" in
+                llama-server) shift 2 ;;
+                vllm)
+                    echo "--llm-backend vllm needs Linux with an NVIDIA datacenter GPU; macOS runs llama.cpp. Nothing was changed." >&2
+                    echo "Rerun without --llm-backend, or with --llm-backend llama-server." >&2
+                    echo "Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC" >&2
+                    exit 1 ;;
+                *) echo "--llm-backend requires vllm or llama-server" >&2; exit 1 ;;
+            esac ;;
         # API mode is not in this installer yet; say so and name the way
         # to connect an API after installing, not "Unknown option".
         --external-llm-url|--external-llm-provider|--external-llm-model|--external-llm-key-file|--external-llm-key-env|--no-external-llm|--reuse-external-llm)

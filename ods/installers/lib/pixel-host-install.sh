@@ -3698,11 +3698,34 @@ _ods_pixel_runtime_model_identity() {
     if [[ -n "${EXTERNAL_LLM_URL:-}" ]]; then
         model="${EXTERNAL_LLM_MODEL:-}"
         [[ -n "$model" ]] || return 1
+    elif [[ "${LLM_BACKEND:-}" == "vllm" ]]; then
+        # The vLLM engine serves its --served-model-name, VLLM_SERVED_MODEL.
+        model="${VLLM_SERVED_MODEL:-}"
+        [[ -n "$model" ]] || return 1
     fi
-    # llama-server serves the GGUF file name (its --alias) on every runtime,
-    # the Windows Portal's host-native server included.
+    # llama-server serves the GGUF file name (its --alias) on every other
+    # runtime, the Windows Portal's host-native server included.
     [[ -n "$model" ]] || model="${GGUF_FILE:-${LLM_MODEL:-default}}"
     printf '%s\n' "$model"
+}
+
+# The onboarding renderer's unspecified reasoning setting for the vLLM model
+# LLM_MODEL: model-router gives it its catalog entry's thinking level
+# ("reasoning": off, low, medium or high) in its own template arguments, so
+# the Portal starts from the same default. "bootstrap" is the renderer's
+# default-on value and "default" its default-off one; both keep a validated
+# preference for the same route.
+_ods_pixel_vllm_reasoning_default() {
+    local level
+    level="$(jq -r --arg model "${LLM_MODEL:-}" '
+        [.models[]? | select(.runtime == "vllm" and (.llm_model_name == $model or .id == $model)) | .reasoning]
+        | if length == 1 and (.[0] | type) == "string" then .[0] else "" end' \
+        "${SCRIPT_DIR:?}/config/model-library.json")" || return 1
+    case "$level" in
+        off) printf '%s\n' default ;;
+        low|medium|high) printf '%s\n' bootstrap ;;
+        *) return 1 ;;
+    esac
 }
 
 _ods_pixel_wait_model_gateway() {
@@ -4844,8 +4867,15 @@ _ods_pixel_write_onboarding() {
     # a local built-in Qwen3.5-2B bootstrap route defaults to reasoning on so
     # the Portal can complete simple tasks without tool loops; every other
     # route keeps the historical no-think default. The renderer preserves a
-    # previously validated reasoning preference for the same model route.
-    if [[ -n "${LLAMA_REASONING+x}" ]]; then
+    # previously validated reasoning preference for the same model route. On
+    # the vLLM engine the catalog entry's thinking default decides, which
+    # model-router applies; LLAMA_REASONING is llama-server's setting.
+    if [[ -z "${EXTERNAL_LLM_URL:-}" && "${LLM_BACKEND:-}" == "vllm" ]]; then
+        reasoning="$(_ods_pixel_vllm_reasoning_default)" || {
+            ai_bad "Pixel could not read the thinking default of ${LLM_MODEL:-the vLLM model} from config/model-library.json. The ODS files may be incomplete: download ODS again and rerun the installer. Need help? Ask on the ODS Discord: ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
+            return 1
+        }
+    elif [[ -n "${LLAMA_REASONING+x}" ]]; then
         # Case-insensitive, as ods-host-agent.py reads LLAMA_REASONING.
         if [[ "$(printf '%s' "${LLAMA_REASONING:-off}" | tr '[:upper:]' '[:lower:]')" =~ ^(off|none|false|0)$ ]]; then
             reasoning=false
