@@ -94,6 +94,7 @@ extensions/services/
     compose.yaml       # Docker Compose fragment (for extension services)
     compose.amd.yaml   # GPU overlay for AMD (optional)
     compose.nvidia.yaml # GPU overlay for NVIDIA (optional)
+    compose.arm64.yaml # arm64 image pin, when upstream tags are amd64 only (optional, bundled services)
 ```
 
 **Core services** (llama-server, open-webui, dashboard, dashboard-api) have only a `manifest.yaml` — their compose definitions live in `docker-compose.base.yml`.
@@ -581,7 +582,7 @@ If the host agent is unreachable, file-level operations (install, enable, disabl
 
 1. Selects the base compose files based on GPU backend and tier (e.g., `docker-compose.base.yml` + `docker-compose.nvidia.yml`)
 2. Walks `extensions/services/*/` and includes each extension's `compose.yaml` if it exists (not `.disabled`), skipping extensions incompatible with the current GPU backend
-3. Picks up GPU-specific overlays (`compose.<backend>.yaml`) and mode-specific overlays (`compose.local.yaml`) per extension
+3. Picks up GPU-specific overlays (`compose.<backend>.yaml`) and mode-specific overlays (`compose.local.yaml`) per extension, and on arm64 hosts other than macOS a bundled extension's `compose.arm64.yaml` (an arm64 pin for an image whose release tags are amd64 only; Docker Desktop on macOS runs those under Rosetta 2)
 4. Walks `data/user-extensions/*/` and includes compose files from user-installed extensions
 5. Appends `docker-compose.override.yml` if it exists (user customizations)
 

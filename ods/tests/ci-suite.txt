@@ -212,6 +212,7 @@ tests/test-preview-inspection.mjs
 tests/test-resolve-compose-nondict-service.sh
 tests/test-resolve-compose-symlinked-install.sh
 tests/test-resolver-assume-enabled.py
+tests/test-resolver-arm64-overlay.py
 tests/test-restore-data-transaction-contract.sh
 tests/test-restore-empty-config.sh
 tests/test-restore-safety-ux.sh
