@@ -28,19 +28,28 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          # Hosted PowerShell 7 includes PSResourceGet. Avoid the legacy
-          # NuGet provider bootstrap, which can fail to register PSGallery.
-          Import-Module Microsoft.PowerShell.PSResourceGet -ErrorAction Stop
+          # The Gallery package endpoint intermittently returns 404 on hosted
+          # runners. Use the same version's official release asset, pinned by
+          # its published SHA-256, in a job-private module directory.
           $requiredVersion = '1.25.0'
-          Install-PSResource -Name PSScriptAnalyzer -Version $requiredVersion `
-            -Repository PSGallery -Scope CurrentUser -TrustRepository -Reinstall -Quiet
-          Import-Module PSScriptAnalyzer -RequiredVersion $requiredVersion -ErrorAction Stop
+          $package = Join-Path $env:RUNNER_TEMP 'PSScriptAnalyzer.zip'
+          $moduleRoot = Join-Path $env:RUNNER_TEMP "PSScriptAnalyzer/$requiredVersion"
+          Invoke-WebRequest -Uri "https://github.com/PowerShell/PSScriptAnalyzer/releases/download/$requiredVersion/PSScriptAnalyzer.$requiredVersion.nupkg" `
+            -OutFile $package -TimeoutSec 90 -MaximumRetryCount 3 -RetryIntervalSec 2
+          $expectedHash = '14e634c828eb98efb9f40b2918ba90f139ed5eccdf663a2a747736d996995d60'
+          if ((Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash -ne $expectedHash) {
+            throw 'PSScriptAnalyzer release checksum mismatch'
+          }
+          Expand-Archive -LiteralPath $package -DestinationPath $moduleRoot
+          Import-Module (Join-Path $moduleRoot 'PSScriptAnalyzer.psd1') -RequiredVersion $requiredVersion -ErrorAction Stop
           Get-Command Invoke-ScriptAnalyzer -Module PSScriptAnalyzer -ErrorAction Stop | Out-Null
           Get-Module PSScriptAnalyzer | Format-Table Name, Version, Path -AutoSize
 
       - name: Run PowerShell Script Analyzer
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          Import-Module (Join-Path $env:RUNNER_TEMP 'PSScriptAnalyzer/1.25.0/PSScriptAnalyzer.psd1') -RequiredVersion '1.25.0' -ErrorAction Stop
           $scripts = @()
           $scripts += Get-ChildItem -Path installers -Filter *.ps1 -Recurse
 
