@@ -89,6 +89,66 @@ it('leaves refused creation editable rather than inventing an unknown task',asyn
   expect(screen.getByRole('button',{name:'Schedule task'})).toBeEnabled()
 })
 
+it.each(['network','invalid-reply','transition-busy'])('can explicitly refresh a failed task-list read without suggesting an uncertain change (%s)',async failure=>{
+  const normal=fetch.getMockImplementation()
+  fetch.mockImplementation(async(url,options)=>{
+    calls.push(JSON.parse(options.body))
+    if(failure==='network')throw new TypeError('Connection lost during list')
+    return failure==='transition-busy'?reply({detail:{code:'controller-transition-busy'}},409):reply({kind:'tasks'})
+  })
+  render(<PortalScheduledTasks/>)
+  expect(await screen.findByRole('alert')).toHaveTextContent(failure==='transition-busy'
+    ?'ODS is applying another change. This request did not start. Try again in a moment.'
+    :'ODS could not load scheduled tasks. Refresh to try again.')
+  expect(calls).toEqual([{action:'list',offset:0}])
+  expect(screen.queryByRole('button',{name:'Check request'})).not.toBeInTheDocument()
+  fetch.mockImplementation(normal)
+  fireEvent.click(screen.getByRole('button',{name:'Refresh scheduled tasks'}))
+  expect(await screen.findByText('No scheduled tasks yet')).toBeVisible()
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  expect(calls).toEqual([{action:'list',offset:0},{action:'list',offset:0}])
+})
+
+it('reports a result-read failure without implying a task change and keeps explicit refresh read-only',async()=>{
+  jobs=[job()]
+  const normal=fetch.getMockImplementation()
+  render(<PortalScheduledTasks/>)
+  const row=await screen.findByRole('button',{name:/Morning agenda.*Daily/})
+  fetch.mockImplementation(async(url,options)=>{
+    const body=JSON.parse(options.body)
+    if(body.action==='runs') {calls.push(body);throw new TypeError('Connection lost during result read')}
+    return normal(url,options)
+  })
+  fireEvent.click(row)
+  expect(await screen.findByRole('alert')).toHaveTextContent('ODS could not load saved results. Refresh to try again.')
+  fetch.mockImplementation(normal)
+  fireEvent.click(screen.getByRole('button',{name:'Refresh scheduled tasks'}))
+  expect(await screen.findByText('One synthetic meeting at 09:00.')).toBeVisible()
+  expect(calls.map(item=>item.action)).toEqual(['list','runs','runs'])
+})
+
+it.each(['transition-busy','controller-transition-busy'])('keeps a creation refused by the controller lock editable and requires a new explicit submission (%s)',async code=>{
+  const normal=fetch.getMockImplementation()
+  fetch.mockImplementation(async(url,options)=>{
+    const body=JSON.parse(options.body)
+    if(body.action==='create') {calls.push(body);return reply({detail:{code}},409)}
+    return normal(url,options)
+  })
+  render(<PortalScheduledTasks/>)
+  await fillForm()
+  fireEvent.click(screen.getByRole('button',{name:'Schedule task'}))
+  expect(await screen.findByRole('alert')).toHaveTextContent('This request did not start.')
+  expect(screen.queryByRole('button',{name:'Check request'})).not.toBeInTheDocument()
+  expect(screen.getByLabelText('Name')).toHaveValue('Morning agenda')
+  expect(screen.getByRole('button',{name:'Schedule task'})).toBeEnabled()
+  fetch.mockImplementation(normal)
+  expect(calls.filter(item=>item.action==='create')).toHaveLength(1)
+  fireEvent.click(screen.getByRole('button',{name:'Schedule task'}))
+  expect(await screen.findByRole('button',{name:/Morning agenda.*Daily/})).toBeVisible()
+  expect(calls.filter(item=>item.action==='create')).toHaveLength(2)
+  expect(jobs).toHaveLength(1)
+})
+
 it('clears an old result during refresh and ignores a reply after unmount',async()=>{
   jobs=[job()]
   const {unmount}=render(<PortalScheduledTasks/>)

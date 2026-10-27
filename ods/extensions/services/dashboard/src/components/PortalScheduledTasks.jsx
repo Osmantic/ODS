@@ -7,9 +7,10 @@ const stamp=value=>value===null?'Not yet':new Date(value).toLocaleString()
 const status={ok:'Completed',error:'Needs attention',skipped:'Skipped',unknown:'Unconfirmed'}
 const emptyForm=()=>({name:'',task:'',frequency:'daily',time:'09:00',at:'',weekday:'1'})
 const timezone=()=>Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+// transition-busy is the Root lock refusal, before any owner task or receipt.
 const refusedCreate=error=>new Set(['invalid-task','task-too-large','task-time-passed','task-time-too-far',
   'invalid-task-timezone','task-history-full','task-config-changed','runtime-change-pending',
-  'schedule-installation-mismatch']).has(error?.code?.replace(/^controller-/,''))
+  'schedule-installation-mismatch','transition-busy']).has(error?.code?.replace(/^controller-/,''))
 
 export default function PortalScheduledTasks() {
   const [view,setView]=useState('list'),[offset,setOffset]=useState(0),[page,setPage]=useState(null)
@@ -30,7 +31,7 @@ export default function PortalScheduledTasks() {
       if (mounted.current && current.current===request) onSuccess(result)
     } catch (cause) {
       if (mounted.current && current.current===request) {
-        setError(scheduleError(cause))
+        setError(scheduleError(cause,body.action))
         if (body.action==='create' && !refusedCreate(cause)) setUnknown({requestId:body.requestId,name:body.name})
       }
     } finally {

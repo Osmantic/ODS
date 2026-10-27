@@ -92,7 +92,7 @@ export function scheduleLabel(schedule) {
   return `${frequency} at ${hour.padStart(2,'0')}:${minute.padStart(2,'0')}${schedule.tz?` · ${schedule.tz}`:''}`
 }
 
-export function scheduleError(error) {
+export function scheduleError(error,action) {
   const code=error?.code?.replace(/^controller-/,'')
   return {
     'scheduler-update-required':'Update your installed ODS to use scheduled tasks.',
@@ -102,8 +102,11 @@ export function scheduleError(error) {
     'task-time-too-far':'Choose a time within the next 10 years.',
     'invalid-task-timezone':'This timezone is not supported by the runtime. Check your system timezone.',
     'runtime-change-pending':'Finish the pending runtime change before starting another task.',
+    'transition-busy':'ODS is applying another change. This request did not start. Try again in a moment.',
     'task-history-full':'The local task history is full. Existing tasks have been preserved.',
     'invalid-schedule-state':'Saved task state needs repair. It has been preserved.',
     'unsafe-schedule-state':'Saved task state could not be verified. It has been preserved.',
-  }[code] || 'ODS could not confirm the result. Check the task list before making another change.'
+  }[code] || (['list','archived'].includes(action)?'ODS could not load scheduled tasks. Refresh to try again.'
+    :action==='runs'?'ODS could not load saved results. Refresh to try again.'
+      :'ODS could not confirm the result. Check the task list before making another change.')
 }
