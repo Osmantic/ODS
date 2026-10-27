@@ -25,8 +25,9 @@
 // The prose passes the filter every host-composed answer passes
 // (deliverableAnswer in progress-finalization.mjs). It is dropped, and the host
 // delivery stands alone, when it is empty or too short, silent (NO_REPLY),
-// tool-call text, when it links any local URL other than this outcome's own
-// preview, or when it carries Portal's own wording (its check label or receipt
+// tool-call text, when it links any local URL, or any URL naming a preview
+// site, other than this outcome's own preview (a made-up preview link on an
+// invented host), or when it carries Portal's own wording (its check label or receipt
 // lines, however markdown or HTML draws them): a copied or imitated host note
 // must not read as Portal's. Everything added here is fixed English text.
 import { NARRATION, deliverableAnswer } from './progress-finalization.mjs';

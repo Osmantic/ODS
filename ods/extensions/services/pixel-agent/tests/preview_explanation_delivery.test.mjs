@@ -249,6 +249,9 @@ for (const [name, reply] of [['empty', ''], ['whitespace', ' \n\t '], ['silent',
   ['copied stale link', 'Compare the earlier build: [Open last published preview](https://example.invalid/).'],
   ['another local URL', 'The arena draws again on the dev server at http://localhost:3000/ so it looks fixed to me.'],
   ['a stale preview link', 'Open the earlier build at http://site-0123456789abcdef01234567.localhost:9437/site-0123456789abcdef01234567/ to compare.'],
+  // Workstation06 visitor round 4 (2026-10-27): the real site id on an invented host.
+  ['a made-up link to this preview', preview => `The splitter is complete and verified.\n\n**Preview:** ` +
+    `https://portal-odsp-6682973191603e0a3ef78eca1.d.ods.workspace/preview/${preview.siteId}/${preview.sha256}`],
   ['too long', `The arena fill comes from line 748. ${'Detail. '.repeat(3000)}`]]) {
   test(`${name} final reply keeps the existing host-only delivery`, async () => {
     const plain = await elfTurn();
