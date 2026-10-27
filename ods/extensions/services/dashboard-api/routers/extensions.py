@@ -550,9 +550,10 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
             # show "installing". If older, the user likely stopped the
             # container afterwards â€” fall through to normal status logic.
             if not _is_stale(progress.get("updated_at", ""), max_age_seconds=300):
-                # Long-running services still need an observed healthy state.
+                # Long-running services still need an observed healthy state;
+                # a crash loop is a failure, not a slow first health check.
                 svc = services_by_id.get(ext_id)
-                if not (svc and svc.status == "healthy"):
+                if not (svc and (svc.status == "healthy" or getattr(svc, "crash_looping", False))):
                     return "installing"
 
     # The process imported SERVICES before a Library action could have
@@ -1893,14 +1894,19 @@ async def _inspect_non_http_user_services(configs: dict, statuses: dict) -> None
             containers = snapshot["containers"]
     except (AgentClientError, ValueError):
         pass
+    from helpers import container_crash_looping  # noqa: PLC0415 - avoid import cycle
+
     for sid, cfg in candidates.items():
         matches = [item for item in containers if isinstance(item, dict) and item.get("service_id") == sid]
         state = "unknown"
         startup_pending = False
+        crash_looping = False
         # Ambiguous snapshots cannot establish readiness of this extension.
         if len(matches) == 1:
             item = matches[0]
-            if item.get("state") == "running":
+            if container_crash_looping(item):
+                state, crash_looping = "unhealthy", True
+            elif item.get("state") == "running":
                 state = {"healthy": "healthy", "unhealthy": "unhealthy"}.get(item.get("health"), "degraded")
                 startup_pending = item.get("health") == "starting"
             elif item.get("state") in {"exited", "dead", "removing", "created"}:
@@ -1909,7 +1915,7 @@ async def _inspect_non_http_user_services(configs: dict, statuses: dict) -> None
             id=sid, name=cfg.get("name", sid), port=cfg["port"],
             external_port=cfg.get("external_port", cfg["port"]),
             status=state, response_time_ms=None,
-            startup_pending=startup_pending,
+            startup_pending=startup_pending, crash_looping=crash_looping,
         )
 
 
@@ -5246,8 +5252,8 @@ def disable_extension(service_id: str, include_data_info: bool = Query(True), ap
     # time, so companions go first.
     for target in (*companions, service_id):
         _select_extensions_on_host("disable", [target])
-        progress_file = Path(DATA_DIR) / "extension-progress" / f"{target}.json"
-        progress_file.unlink(missing_ok=True)
+        # The host clears its own record; this covers an older host agent.
+        _clear_progress(target)
 
     logger.info("Disabled extension: %s (companions: %s)", service_id, companions or "none")
 
@@ -5363,8 +5369,7 @@ def uninstall_extension(service_id: str, include_data_info: bool = Query(True), 
             shutil.rmtree(backup)
         _invalidate_extension_digest_cache(ext_dir, backup)
 
-        progress_file = Path(DATA_DIR) / "extension-progress" / f"{service_id}.json"
-        progress_file.unlink(missing_ok=True)
+        _clear_progress(service_id)
 
     logger.info("Uninstalled extension: %s (stopped first: %s)", service_id, stopped_before_removal)
     message = "Extension uninstalled. Docker volumes may remain; run 'docker volume ls' to check."
@@ -5442,8 +5447,7 @@ def purge_extension_data(
         # Also clean up the per-service install-progress file so
         # _compute_extension_status does not keep showing a stale "installing"
         # entry after the user purges an extension's data.
-        progress_file = Path(DATA_DIR) / "extension-progress" / f"{service_id}.json"
-        progress_file.unlink(missing_ok=True)
+        _clear_progress(service_id)
 
         return {"id": service_id, "action": "purged", "size_gb_freed": size_gb}
 

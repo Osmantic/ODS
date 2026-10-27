@@ -5072,6 +5072,20 @@ function namesAttachedPicture(params, ids) {
 // boundary only; it grants no tool or execution authority. Explanations,
 // quoted commands, code fences, ordinary math, no-tools directives and
 // negations are excluded. A request to write AND execute code is preserved.
+// An explicit choice of Python for a computation also requests execution,
+// even when the owner never says "run". Examples and explanations are not
+// requests to execute. This records an obligation, not additional authority.
+function ownerRequestsPythonCompute(text) {
+  if (!text || ownerForbidsTools(text)) return false;
+  const lane = ownerLaneText(text);
+  if (/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|without)\s+(?:(?:actually|really)\s+)?(?:execute|executing|run|running|interpret|interpreting|use|using|call|calling|invoke|invoking|calculate|compute|evaluate|check|verify)\b/i.test(lane)) return false;
+  return lane.split(/[!?;\n]+|\.(?=\s|$)/).some(raw => {
+    const clause = raw.trim().replace(/^(?:please|can\s+you|could\s+you|would\s+you)\s+/i, '');
+    return /^use\s+(?:(?:the|your)\s+)?python(?:\s+(?:tool|interpreter|execution\s+tool|exec\s+tool))?\s+to\s+(?:calculate|compute|evaluate|check|verify)\b/i.test(clause) ||
+      /^(?:calculate|compute|evaluate|check|verify)\b[^.!?;\n]{0,200}\b(?:using|with)\s+(?:(?:the|your)\s+)?python\b/i.test(clause);
+  });
+}
+
 function ownerRequestsCodeExecution(text) {
   if (!text || ownerForbidsTools(text)) return false;
   const lane = ownerLaneText(text);
@@ -8402,6 +8416,8 @@ export function createToolLoopGuard({
         // owner request to execute code.
         executionReceiptObserved: false,
         executionRequested: false,
+        explicitPythonComputeRequested: false,
+        explicitPythonComputeRetried: false,
         // Phantom-process bookkeeping: allowed exec calls whose receipt has
         // not been observed yet, and whether any exec went to the background.
         execCallsInFlight: new Set(),
@@ -10911,7 +10927,10 @@ export function createToolLoopGuard({
         state.workspaceMutationRequested =
           state.workspacePreviewRequired ||
           userMessageRequestsWorkspaceMutation(event?.messages, event?.prompt);
-        state.executionRequested = ownerRequestsCodeExecution(laneText);
+        // Later native attempts carry a harness instruction, not a new owner
+        // request. Keep the computation obligation bound to the first request.
+        state.explicitPythonComputeRequested = ownerRequestsPythonCompute(state.ownerRequestText);
+        state.executionRequested = ownerRequestsCodeExecution(laneText) || state.explicitPythonComputeRequested;
         state.workspaceTaskPath = userMessageWorkspaceContinuationPath(
           event?.messages,
           event?.prompt
@@ -13806,6 +13825,26 @@ export function createToolLoopGuard({
             WORKSPACE_ARTIFACT_DELIVERY_GUIDANCE + ' Do not repeat already completed creation or checks. ' +
             'Do not substitute a raw path, Markdown link or image for publication.',
           idempotencyKey:'pixel-ods-workspace-document-delivery', maxAttempts:1}};
+      }
+      // A prose-only answer can omit the Python execution the owner requested.
+      // Let the model correct that once before any effectful tool attempt.
+      // Existing continuations take precedence, and the normal tool admission
+      // and terminal execution-receipt checks still decide what may run/pass.
+      if (state?.explicitPythonComputeRequested && !state.explicitPythonComputeRetried &&
+          !state.executionReceiptObserved && !state.toolExecutionAttempted &&
+          !state.ownerNoTools && !state.extensionCompletionGate?.active &&
+          !state.odsAborted && !state.codingExhausted && !state.runDeadlineReached &&
+          !state.progressBudget.exhaustedLanes.length &&
+          !state.pendingExecSessions.size && !state.execCallsInFlight.size && !state.backgroundExecStarted &&
+          (!event?.runId || event.runId === runId) &&
+          (!event?.sessionId || event.sessionId === state.currentSessionId) &&
+          (!event?.sessionKey || event.sessionKey === state.currentSessionKey) &&
+          !workspaceArtifactUnavailableReason({...context, runId})) {
+        state.explicitPythonComputeRetried = true;
+        return {action:'revise', reason:'The requested Python computation has no execution receipt.', retry:{
+          instruction:'The owner asked you to use Python for a computation. Use the exec tool to run Python, ' +
+            'then report the command and its observed output. Do not substitute an estimated or inferred answer.',
+          idempotencyKey:'pixel-ods-explicit-python-compute', maxAttempts:1}};
       }
       const decision = state?.extensionCompletionGate?.active && !extensionStopped
         ? state.extensionCompletionGate.finalize()

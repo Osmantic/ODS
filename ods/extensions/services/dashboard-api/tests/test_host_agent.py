@@ -320,6 +320,47 @@ def test_host_selection_endpoint_requires_auth_and_preserves_batch(
         thread.join(timeout=2)
 
 
+def test_host_disable_clears_the_progress_record_it_wrote(
+    monkeypatch, tmp_path, host_agent_wire_client,
+):
+    """The host writes start records as the install owner; where that owner is
+    not UID 1000 only the host can remove them (Workstation06, 2026-10-27)."""
+    from http.server import HTTPServer
+
+    from fastapi import HTTPException
+
+    from routers import extensions as ext_router
+
+    monkeypatch.setattr(_mod, "AGENT_API_KEY", "selection-wire-secret")
+    monkeypatch.setattr(_mod, "DATA_DIR", tmp_path)
+    outcomes = iter(["disabled", "already_disabled"])
+    monkeypatch.setattr(
+        _mod, "_apply_extension_selection",
+        lambda service_ids, activate, expected_sha256=None: next(outcomes),
+    )
+    record = tmp_path / "extension-progress" / "whisper.json"
+    record.parent.mkdir()
+    server = HTTPServer(("127.0.0.1", 0), _mod.AgentHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host_agent_wire_client(server.server_address[1], key="selection-wire-secret")
+        record.write_text('{"status": "started"}', encoding="utf-8")
+        assert ext_router._select_extensions_on_host("disable", ["whisper"])["action"] == "disabled"
+        assert not record.exists()
+
+        # Nothing was disabled, so the record stays.
+        record.write_text('{"status": "started"}', encoding="utf-8")
+        with pytest.raises(HTTPException) as refused:
+            ext_router._select_extensions_on_host("disable", ["whisper"])
+        assert refused.value.status_code == 409
+        assert record.exists()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 @pytest.mark.parametrize("model,settings,override", [
     ("Systran/faster-whisper-base", "AUDIO_STT_MODEL=Systran/faster-whisper-base\n", False),
     ("deepdml/faster-whisper-large-v3-turbo-ct2", "GPU_BACKEND=nvidia\n", False),
@@ -11316,8 +11357,27 @@ class TestDockerServiceHealthSnapshot:
             "container_name": "ods-dashboard",
             "state": "running",
             "health": "healthy",
+            "restart_count": 0,
         }]
         assert len(calls) == 2
+
+    @pytest.mark.parametrize(("restarts", "expected"), [(7, 7), (-1, 0), ("7", 0), (True, 0), (None, 0)])
+    def test_reports_restart_policy_restarts(self, monkeypatch, restarts, expected):
+        """A crash loop (Qdrant and TEI on Workstation06's ARM64, 2026-10-27)
+        restarts its health check each time; the restart count tells them apart."""
+        monkeypatch.setattr(_mod, "_service_health_cache", (0.0, None))
+
+        def run(cmd, **kwargs):
+            if cmd[1] == "ps":
+                return types.SimpleNamespace(returncode=0, stdout="ods-qdrant\n", stderr="")
+            return types.SimpleNamespace(returncode=0, stdout=json.dumps([{
+                "Name": "/ods-qdrant", "RestartCount": restarts,
+                "State": {"Status": "restarting", "Health": {"Status": "starting"}},
+                "Config": {"Labels": {"com.docker.compose.service": "qdrant"}},
+            }]), stderr="")
+
+        monkeypatch.setattr(_mod.subprocess, "run", run)
+        assert _mod._docker_service_health_snapshot()["containers"][0]["restart_count"] == expected
 
 
 # .env values that name no model: the configured model's identities are all None.

@@ -33,6 +33,8 @@ class ServiceStatus(BaseModel):
     response_time_ms: Optional[float] = None
     # Internal health provenance; a slow HTTP probe alone cannot establish startup.
     startup_pending: bool = Field(default=False, exclude=True)
+    # Internal: the restart policy keeps bringing a crashing container back up.
+    crash_looping: bool = Field(default=False, exclude=True)
 
 
 class NodeCapabilities(BaseModel):

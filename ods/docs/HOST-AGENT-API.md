@@ -182,12 +182,18 @@ and custom names from non-Docker definitions are excluded.
       "service_id": "dashboard",
       "container_name": "ods-dashboard",
       "state": "running",
-      "health": "healthy"
+      "health": "healthy",
+      "restart_count": 0
     }
   ],
   "sampled_at": "2026-07-20T22:00:00+00:00"
 }
 ```
+
+`restart_count` is Docker's count of restart-policy restarts since the
+container was last started by hand. The dashboard treats three or more, while
+the container is restarting or still in its first health check, as a crash
+loop and shows the extension as unhealthy instead of starting.
 
 Returns 503 when Docker cannot provide a complete snapshot.
 
