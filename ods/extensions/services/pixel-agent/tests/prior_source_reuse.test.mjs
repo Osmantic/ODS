@@ -186,3 +186,154 @@ test('reuse intent excludes quoted examples and source refreshes while allowing 
     'Use the official documentation.',
   ])assert.equal(ownerAuthorizesPriorSourceReuse(text),false,text);
 });
+
+// Append to prior_source_reuse.test.mjs
+
+test('exact natural citation-repair prompt authorizes prior reuse', () => {
+  const text = 'Please add clickable links to the official documentation you actually consulted. Keep the observed stdout unchanged.';
+  assert.equal(ownerAuthorizesPriorSourceReuse(text), true, text);
+  // Variants that must also match the new branch.
+  for (const variant of [
+    'Please include links to the docs you already read.',
+    'Provide URLs for the sources you previously opened.',
+    'Show citations for the pages you consulted.',
+    'Give me clickable links to the documentation you used.',
+    'Attach links to the docs you actually consulted.',
+    'Insert URLs for the sources you read.',
+  ]) assert.equal(ownerAuthorizesPriorSourceReuse(variant), true, variant);
+});
+
+test('exact natural citation-repair prompt retains real CSV prior receipt but neutralises unread decimal link', () => {
+  // Real CSV prior receipt (read in the first turn) plus a decimal link that
+  // was never read. The repair prompt authorizes reuse of the CSV receipt.
+  const csvUrl = 'https://docs.python.org/3/library/csv.html';
+  const decimalUrl = 'https://docs.python.org/3/library/decimal.html';
+  const repairPrompt = 'Please add clickable links to the official documentation you actually consulted. Keep the observed stdout unchanged.';
+  const answerWithBoth = `Observed stdout: 1.01. CSV docs: ${csvUrl}. Decimal docs: ${decimalUrl}`;
+
+  const a = createCompletionAssurance({now: () => 100});
+  a.begin(repairPrompt, {}, [{url: csvUrl, timestamp: 99}]);
+  // First finalize arms a revision (decimal link is unread).
+  const first = a.finalize(answerWithBoth);
+  assert.equal(first?.action, 'revise', JSON.stringify(first));
+  assert.equal(a.terminalStatus, 'failed');
+  // Second finalize exhausts revision: partial answer must keep the CSV link,
+  // neutralise the decimal link, retain stdout, and add the historical note.
+  const second = a.finalize(answerWithBoth);
+  assert.equal(second?.action, 'finalize', JSON.stringify(second));
+  assert.equal(a.terminalStatus, 'failed');
+  const delivered = a.terminal;
+  assert.match(delivered, /1\.01/, 'stdout retained');
+  assert.ok(delivered.includes(csvUrl), 'real CSV prior receipt retained');
+  assert.ok(!delivered.includes(decimalUrl), 'unread decimal link neutralised');
+  assert.match(delivered, /\[source not verified\]/);
+  assert.match(delivered, /read earlier in this chat and were not reread this turn/);
+});
+
+test('valid CSV-only citation passes with historical note', () => {
+  const csvUrl = 'https://docs.python.org/3/library/csv.html';
+  const repairPrompt = 'Please add clickable links to the official documentation you actually consulted. Keep the observed stdout unchanged.';
+  const a = createCompletionAssurance({now: () => 100});
+  a.begin(repairPrompt, {}, [{url: csvUrl, timestamp: 99}]);
+  const result = a.finalize(`Observed stdout: 1.01. CSV docs: ${csvUrl}`);
+  assert.equal(result?.action, 'finalize', JSON.stringify(result));
+  assert.equal(a.terminalStatus, 'passed');
+  assert.match(a.terminal, /read earlier in this chat and were not reread this turn/);
+});
+
+test('wrong chat, expired, or cancelled prior receipts are blocked for the repair prompt', async () => {
+  const csvUrl = 'https://docs.python.org/3/library/csv.html';
+  const repairPrompt = 'Please add clickable links to the official documentation you actually consulted. Keep the observed stdout unchanged.';
+  const answer = `Observed stdout: 1.01. CSV docs: ${csvUrl}`;
+
+  // Wrong chat: receipt timestamp is fine but session differs.
+  {
+    const f = fixture();
+    const c1 = f.begin('first', 'Read official documentation.');
+    f.read(c1, csvUrl);
+    f.guard.observeAgentEnd({success: true}, c1);
+    const c2 = f.begin('second', repairPrompt, {sessionId: 'other-chat'});
+    f.exec(c2);
+    failed(f.finish(c2, answer));
+  }
+  // Expired: receipt older than 30 minutes at finalize.
+  {
+    const a = createCompletionAssurance({now: () => 100});
+    a.begin(repairPrompt, {}, [{url: csvUrl, timestamp: 100 - 31 * 60 * 1000}]);
+    const result = a.finalize(answer);
+    assert.equal(result?.action, 'revise', JSON.stringify(result));
+    assert.equal(a.terminalStatus, 'failed');
+  }
+  // Cancelled prior run withdraws the receipt.
+  {
+    const f = fixture();
+    const c1 = f.begin('first', 'Read official documentation.');
+    f.read(c1, csvUrl);
+    assert.equal(await f.guard.abortUserRun(user), true);
+    const c2 = f.begin('second', repairPrompt);
+    f.exec(c2);
+    failed(f.finish(c2, answer));
+  }
+});
+
+test('exact repair prompt does not gain prior on quoted, negated, refresh, or bare-doc requests', () => {
+  const blocked = [
+    // Quoted / example forms of the repair prompt.
+    'The example says: "Please add clickable links to the official documentation you actually consulted. Keep the observed stdout unchanged."',
+    'Explain the phrase "add clickable links to the documentation pages you actually consulted".',
+    '```\nPlease add clickable links to the official documentation you actually consulted. Keep the observed stdout unchanged.\n```',
+    '> Please add clickable links to the official documentation you actually consulted. Keep the observed stdout unchanged.',
+    // Negated.
+    'Do not add clickable links to the documentation pages you actually consulted.',
+    'Without adding links to the docs you already read, answer.',
+    // Refresh.
+    'Add clickable links to the documentation pages you actually consulted, then refresh the sources.',
+    'Add clickable links to the documentation pages you actually consulted and fetch the latest docs.',
+    // Bare-doc request (no "you consulted/read/opened/used").
+    'Add clickable links to the documentation pages.',
+    'Provide links to the official documentation.',
+  ];
+  for (const request of blocked) {
+    assert.equal(ownerAuthorizesPriorSourceReuse(request), false, request);
+
+  }
+});
+
+test('a previously attribution-incomplete initial answer still stores genuine read receipts', () => {
+  // First turn: model reads the CSV page but answers without citing it, so
+  // attribution is incomplete. The read receipt must still be recorded and
+  // exported via currentRunSourceReceipts so a later repair turn can reuse it.
+  const csvUrl = 'https://docs.python.org/3/library/csv.html';
+  const a = createCompletionAssurance({now: () => 100});
+  a.begin('Read the official CSV documentation.', {});
+  a.observe('web_fetch', {
+    params: {url: csvUrl},
+    result: {
+      details: {status: 200, url: csvUrl, finalUrl: csvUrl, text: 'CSV module documentation.'},
+      content: [{type: 'text', text: 'CSV module documentation.'}],
+    },
+  });
+  // Answer omits the URL entirely: attribution incomplete.
+  const result = a.finalize('The CSV module handles delimited text.');
+  assert.equal(result?.action, 'revise', JSON.stringify(result));
+  assert.equal(a.terminalStatus, 'failed');
+  // Genuine read receipt is still stored and exported.
+  const receipts = a.currentRunSourceReceipts();
+  assert.equal(receipts.length, 1, JSON.stringify(receipts));
+  assert.equal(receipts[0].url, csvUrl);
+  assert.equal(receipts[0].timestamp, 100);
+  // And it is a real read page, not a prior import.
+  assert.deepEqual(a.readPages.map(p => p.url), [csvUrl]);
+});
+
+test('an attribution-incomplete first turn can be repaired through the same-chat guard', () => {
+  const csvUrl='https://docs.python.org/3/library/csv.html';
+  const f=fixture();
+  const c1=f.begin('first','Read the official CSV documentation.');
+  f.read(c1,csvUrl);
+  failed(f.finish(c1,'The CSV module can parse quoted category names into a dictionary.'));
+  f.guard.observeAgentEnd({success:false},c1);
+  const c2=f.begin('second','Please add clickable links to the official documentation you actually consulted. Keep the observed stdout unchanged.');
+  const result=f.finish(c2,`Observed stdout: 1.01. CSV documentation: ${csvUrl}`);
+  passed(result);
+});

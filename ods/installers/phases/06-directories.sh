@@ -564,6 +564,8 @@ else
     ods_progress 38 "directories" "Creating directory structure"
     mkdir -p "$INSTALL_DIR"/{config,data,models}
     mkdir -p "$INSTALL_DIR"/data/{open-webui,whisper,tts,n8n,qdrant,models,privacy-shield,ape,token-spy,hermes,persona}
+    # llama-server's CUDA kernel cache (docker-compose.nvidia.yml).
+    mkdir -p "$INSTALL_DIR"/data/llama-server/cuda-cache
     # The host agent writes extension progress as the install owner. Created
     # here, the Dashboard API (UID 1000, which may be another user) cannot
     # make it first and lock the owner's host agent out of it.

@@ -220,7 +220,7 @@ function unreadCitations(text, opened) {
 export const UNREAD_SOURCES_REPLACEMENT = 'The cited source reads were not confirmed in this response. The research is incomplete; I cannot present those references as verified pages.';
 export const UNREAD_SOURCE_MARKER = '[source not verified]';
 export const UNREAD_SOURCE_NOTE = '**Source check:** Pixel could not confirm a successful read of every page this answer cited. ' +
-  `Links without a confirmed read in this response were replaced with ${UNREAD_SOURCE_MARKER}; the claims marked that way lack a verified source.`;
+  `Links without a confirmed read were replaced with ${UNREAD_SOURCE_MARKER}; the claims marked that way lack a verified source.`;
 export const UNREAD_SOURCES_REVISION_INSTRUCTION = [
   'The owner requested source reads. These cited URLs were not read successfully in this response: ',
   '. Revise your answer: replace each listed URL with a page you actually read successfully in this response that supports the same claim, ' +
@@ -388,10 +388,13 @@ export function ownerAuthorizesPriorSourceReuse(ownerText) {
   if (/\b(?:refresh|reread|re-read|re-?fetch|re-?open|re-?check)\b[^,.!?;\n]{0,60}\b(?:sources?|pages?|docs?|documentation|links?)\b/.test(value) ||
       /\b(?:latest|newest|up-?to-?date|current)\s+(?:official\s+)?(?:(?:version|versions)\s+of\s+(?:the\s+)?)?(?:sources?|pages?|docs?|documentation|links?)\b/.test(value)) return false;
   if (/\b(?:sources?|pages?|docs?|documentation|links?)\b[^.!?\n]{0,60}\b(?:refresh|reread|re-read|re-?fetch|re-?open|re-?check|latest|newest|up-?to-?date)\b/.test(value)) return false;
+  // Asking for links to pages the assistant already consulted is explicit
+  // reuse too. This only selects existing receipts; it cannot verify new URLs.
+  if (/\b(?:add|include|provide|show|give|attach|insert)\b[^.!?\n]{0,60}\b(?:clickable\s+)?(?:links?|urls?|citations?)\b[^.!?\n]{0,80}\b(?:documentation|docs?|sources?|pages?)\b[^.!?\n]{0,80}\byou\s+(?:(?:actually|already|previously)\s+)?(?:consulted|read|opened|used)\b/.test(value)) return true;
   // Explicit affirmative reuse of a source/page/doc already read or found.
-  return /\b(?:reuse|re-use|use|cite|reference|rely on)\b[^.!?\n]{0,60}\b(?:sources?|pages?|docs?|documentation|links?)\b[^.!?\n]{0,60}\b(?:you (?:already )?(?:read|found|opened|consulted)|already (?:read|found|opened|consulted)|read earlier|found earlier|opened earlier|consulted earlier|from earlier|from before|previously (?:read|found|opened|consulted))\b/.test(value) ||
-    /\b(?:sources?|pages?|docs?|documentation|links?)\b[^.!?\n]{0,60}\b(?:you (?:already )?(?:read|found|opened|consulted)|already (?:read|found|opened|consulted)|read earlier|found earlier|opened earlier|consulted earlier|from earlier|from before|previously (?:read|found|opened|consulted))\b[^.!?\n]{0,60}\b(?:reuse|re-use|use|cite|reference|rely on)\b/.test(value) ||
-    /\b(?:the|that|this|same)\b[^.!?\n]{0,40}\b(?:official )?(?:documentation|docs?|page|source)\b[^.!?\n]{0,60}\b(?:you (?:already )?(?:found|read|opened|consulted)|already (?:found|read|opened|consulted)|found earlier|read earlier|opened earlier|consulted earlier)\b/.test(value);
+  return /\b(?:reuse|re-use|use|cite|reference|rely on)\b[^.!?\n]{0,60}\b(?:sources?|pages?|docs?|documentation|links?)\b[^.!?\n]{0,60}\b(?:you (?:(?:already|actually) )?(?:read|found|opened|consulted)|already (?:read|found|opened|consulted)|read earlier|found earlier|opened earlier|consulted earlier|from earlier|from before|previously (?:read|found|opened|consulted))\b/.test(value) ||
+    /\b(?:sources?|pages?|docs?|documentation|links?)\b[^.!?\n]{0,60}\b(?:you (?:(?:already|actually) )?(?:read|found|opened|consulted)|already (?:read|found|opened|consulted)|read earlier|found earlier|opened earlier|consulted earlier|from earlier|from before|previously (?:read|found|opened|consulted))\b[^.!?\n]{0,60}\b(?:reuse|re-use|use|cite|reference|rely on)\b/.test(value) ||
+    /\b(?:the|that|this|same)\b[^.!?\n]{0,40}\b(?:official )?(?:documentation|docs?|page|source)\b[^.!?\n]{0,60}\b(?:you (?:(?:already|actually) )?(?:found|read|opened|consulted)|already (?:found|read|opened|consulted)|found earlier|read earlier|opened earlier|consulted earlier)\b/.test(value);
 }
 
 export function createCompletionAssurance({englishOnly = false, now = Date.now} = {}) {
@@ -644,8 +647,14 @@ export function createCompletionAssurance({englishOnly = false, now = Date.now} 
         // Armed before the revision (the harness may refuse another pass); a
         // later corrected answer clears it.
         terminalStatus = 'failed';
-        const partial = partialCitationAnswer(text, read);
-        terminal = partial ?? UNREAD_SOURCES_REPLACEMENT;
+        const partial = partialCitationAnswer(text, combinedRead);
+        const retainedPrior = partial && citationSpans(partial).some(span =>
+          span.key && priorKeys.has(span.key) && !currentKeys.has(span.key));
+        terminal = partial
+          ? partial + (retainedPrior
+            ? '\n\nSome cited pages were read earlier in this chat and were not reread this turn.'
+            : '')
+          : UNREAD_SOURCES_REPLACEMENT;
         if (attributionAttempts++ < 1) return {action:'revise', reason:'Cited pages lack current-turn read receipts.', retry:{
           idempotencyKey:'ods-opened-source-attribution', maxAttempts:1,
           instruction:UNREAD_SOURCES_REVISION_INSTRUCTION.join(JSON.stringify(unread)),
