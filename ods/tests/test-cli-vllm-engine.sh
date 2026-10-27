@@ -184,3 +184,15 @@ grep -qx 'LLM_API_URL=http://litellm:4000' "$install_dir/.env" || fail 'mode-swi
 cli mode > "$FIXTURE/mode.out" 2>&1
 grep -q 'LLM:  Local vLLM engine (vllm-server)' "$FIXTURE/mode.out" || fail 'ods mode did not name the vLLM engine'
 pass 'ods mode refuses cloud and hybrid on vLLM and local keeps clients off llama-server'
+
+# 5. ods doctor's summary names the vLLM engine as ODS's own local model server.
+awk '/python3 - "\$report_file" <<'"'"'PY'"'"'/ {take=1; next} take && /^PY$/ {exit} take {print}' "$ROOT_DIR/ods-cli" > "$FIXTURE/doctor-view.py"
+[[ -s "$FIXTURE/doctor-view.py" ]] || fail 'the doctor report renderer was not found in ods-cli'
+printf '%s\n' '{"runtime": {"llm_backend": {"status": "ok", "provider": "vLLM", "url": "http://vllm-server:8000 (ODS network only)"}}}' > "$FIXTURE/doctor.json"
+# The renderer exits 1 when this partial report lacks the Docker checks; only its LLM line matters here.
+view_status=0
+PYTHONIOENCODING=utf-8 python3 "$FIXTURE/doctor-view.py" "$FIXTURE/doctor.json" > "$FIXTURE/doctor.out" 2>&1 || view_status=$?
+[[ "$view_status" -le 1 ]] || fail "the doctor report renderer crashed ($view_status): $(cat "$FIXTURE/doctor.out")"
+grep -q 'LLM Backend: vLLM (local) — responding' "$FIXTURE/doctor.out" \
+    || fail "ods doctor must call the vLLM engine local: $(cat "$FIXTURE/doctor.out")"
+pass 'ods doctor names the vLLM engine as a local model server'

@@ -255,6 +255,18 @@ def test_every_vllm_entry_has_a_thinking_map():
     assert {model["id"] for model in _vllm_models()} == set(THINKING)
 
 
+@pytest.mark.parametrize("model_id", sorted(MEASURED_FLAGS))
+def test_the_entries_declare_tools_and_vision(model_id):
+    # The host agent's route proof publishes these catalog booleans as the
+    # route's capabilities (model-state, Pixel connection metadata). Both
+    # checkpoints are image-text-to-text and run vLLM's tool parser; on the
+    # DGX Station GB300 GLM made tool calls (streamed and not) and read an
+    # image through model-router. Without them the route claimed neither.
+    model = {item["id"]: item for item in _vllm_models()}[model_id]
+    assert model.get("tools") is True and model.get("vision") is True, model_id
+    assert "--enable-auto-tool-choice" in model["vllm_args"], model_id
+
+
 def test_the_broken_entry_cases_edit_what_they_name():
     # "repeats README.md" needs README.md after files[0]; "sha256 must be
     # lowercase hex" needs files[8] to be an LFS file.

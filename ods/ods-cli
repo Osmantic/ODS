@@ -3068,8 +3068,9 @@ if llm_backend:
     local_warn = llm_backend.get('local_running_warning', False)
     recovery = llm_backend.get('recovery_hint', '')
 
-    is_external = llm_provider != "llama-server"
-    backend_label = f"{llm_provider} (external)" if is_external else "llama-server (local)"
+    # The vLLM engine (vllm-server) is ODS's own local model server, like llama-server.
+    is_external = llm_provider not in ("llama-server", "vLLM")
+    backend_label = f"{llm_provider} (external)" if is_external else f"{llm_provider} (local)"
 
     if llm_status == 'ok':
         print(f"  {GREEN}✓{NC} LLM Backend: {backend_label} — responding")
