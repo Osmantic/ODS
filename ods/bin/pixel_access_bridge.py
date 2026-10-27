@@ -681,7 +681,15 @@ class SystemdAccessBridge:
                                      payload, timeout=min(3, budget()))
             pending = self.pending()
             if operation is None and pending:
-                return self.stopped_native(pending["token"])
+                try:
+                    return self.stopped_native(pending["token"])
+                except AccessError as stopped_error:
+                    if stopped_error.code != "native-idle-unconfirmed":
+                        raise
+                    # An active/restarting unit is not proof of stopped idle.
+                    # Keep the original read failure so readiness callers can
+                    # distinguish a transient channel loss from an HTTP refusal.
+                    # This neither retries a POST nor fabricates an idle state.
             raise
 
     def owns_native_hold(self, snapshot, token):
