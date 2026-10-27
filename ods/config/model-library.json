@@ -2857,7 +2857,7 @@
       },
       "quantization": "NVFP4",
       "specialty": "Reasoning and coding",
-      "description": "NVIDIA's NVFP4 build of Qwen 3.8 Flash Next for the vLLM engine (not llama.cpp): a mixture-of-experts model with 125B parameters, 6B active, plus n-gram embeddings and an MTP head. It needs one NVIDIA datacenter Blackwell GPU (compute capability 10.x, such as a B200, B300 or GB300) with at least 155 GiB of memory, and 133 GB of disk. Served at 128K context with medium thinking. NVIDIA tested it on B200 and B300; no ODS fleet results yet.",
+      "description": "NVIDIA's NVFP4 build of Qwen 3.8 Flash Next for the vLLM engine (not llama.cpp): a mixture-of-experts model with 125B parameters, 6B active, plus n-gram embeddings and an MTP head. It reads text, images and video. It needs one NVIDIA datacenter Blackwell GPU (compute capability 10.x, such as a B200, B300 or GB300) with at least 155 GiB of memory, and 133 GB of disk. Served at 128K context with medium thinking and MTP speculative decoding. On a DGX Station GB300 it wrote about 510 tokens/s on one coding stream and read prompts at about 31,000 tokens/s.",
       "files": [
         {"path": ".gitattributes", "size": 1635, "git_blob_sha1": "a09db2ea4d1bd1fc1c09f6fca45e8e4054953535"},
         {"path": "README.md", "size": 12109, "git_blob_sha1": "f3edfc5b8f2cae8ae751162626d4c5aa3ed071a6"},
@@ -2915,7 +2915,7 @@
       },
       "quantization": "NVFP4",
       "specialty": "Quality",
-      "description": "NVIDIA's NVFP4 build of GLM-5.3 Flash for the vLLM engine (not llama.cpp): a mixture-of-experts model with 320B parameters, 18B active. It needs one NVIDIA datacenter Blackwell GPU (compute capability 10.x) with at least 239 GiB of memory, such as a GB300, and 204 GB of disk. Served at 128K context with an FP8 KV cache and medium thinking. NVIDIA tested it on GB200; no ODS fleet results yet.",
+      "description": "NVIDIA's NVFP4 build of GLM-5.3 Flash for the vLLM engine (not llama.cpp): a mixture-of-experts model with 320B parameters, 18B active. It reads text, images and video. It needs one NVIDIA datacenter Blackwell GPU (compute capability 10.x) with at least 239 GiB of memory, such as a GB300, and 204 GB of disk. Served at 128K context with an FP8 KV cache, medium thinking and MTP speculative decoding. On a DGX Station GB300 it wrote about 390 tokens/s on one coding stream and read prompts at about 24,000 tokens/s.",
       "files": [
         {"path": ".gitattributes", "size": 1635, "git_blob_sha1": "a09db2ea4d1bd1fc1c09f6fca45e8e4054953535"},
         {"path": ".quant_summary.txt", "size": 616642, "git_blob_sha1": "388d3ad297bef5d95516a0400716d27af6e0eec7"},
