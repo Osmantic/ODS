@@ -520,6 +520,9 @@ jobs:
       - name: CPU-Only Path Tests
         run: bash tests/test-cpu-only-path.sh
 
+      - name: Docker Reasoning Mode Entrypoint
+        run: python3 -m unittest discover -s tests -p 'test_llama_reasoning_*.py' -v
+
       - name: Hermes Default and Opt-in Owner-card Access
         run: |
           bash tests/test-hermes-proxy-caddyfile.sh

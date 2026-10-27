@@ -25,6 +25,9 @@ services:
     image: ${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b9014@sha256:2e7953dfef88f302bf0683bffa7dc1f8d86ef75910380bc41126ec5b8bedaf53}
     container_name: ods-llama-server
     restart: unless-stopped
+    # Normalize reasoning modes on every launch, including CLI restarts,
+    # model switches and direct Compose use. The wrapper execs the server.
+    entrypoint: ["/bin/sh", "/opt/ods/llama-server-entrypoint.sh"]
     # config/llama-server/models.ini is not mounted: llama-server reads a
     # preset file only with --models-preset (router mode), which ODS does not
     # use; the model comes from --model below. ODS still writes models.ini as
@@ -34,6 +37,7 @@ services:
       # Fixed chat templates ODS vendors from llama.cpp (any-model WP5), read
       # only when LLAMA_ARG_CHAT_TEMPLATE_FILE below names one.
       - ./config/chat-templates:/chat-templates:ro,z
+      - ./extensions/services/llama-server/llama-server-entrypoint.sh:/opt/ods/llama-server-entrypoint.sh:ro,z
     ports:
       - "127.0.0.1:${OLLAMA_PORT:-11434}:8080"
     command:
