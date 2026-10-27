@@ -8413,7 +8413,7 @@ class TestEnableRetry:
         # Hook failure must NOT proceed to compose start
         assert compose_calls == []
 
-    def test_no_progress_file_uses_sync_path_without_progress_write(self, retry_env, monkeypatch):
+    def test_no_progress_file_uses_sync_path_and_records_the_start(self, retry_env, monkeypatch):
         _, data_dir, builtin_root, _ = retry_env
         ext_dir = builtin_root / "fakesvc"
         self._write_manifest(ext_dir, with_hook=True)
@@ -8427,8 +8427,13 @@ class TestEnableRetry:
                                                stdout="", stderr="")
 
         monkeypatch.setattr(_mod.subprocess, "run", fake_run)
-        monkeypatch.setattr(_mod, "docker_compose_action",
-                            lambda sid, act: (True, ""))
+        during = []
+
+        def fake_compose(sid, act):
+            during.append(self._progress(data_dir, sid))
+            return True, ""
+
+        monkeypatch.setattr(_mod, "docker_compose_action", fake_compose)
 
         handler = _FakeHandler(self._body("fakesvc"))
         _mod.AgentHandler._handle_extension(handler, "start")
@@ -8441,7 +8446,75 @@ class TestEnableRetry:
             len(c) >= 2 and c[0] == "bash" and c[1].endswith("setup.sh")
             for c in hook_cmds
         )
-        # Sync path must not write a progress file
+        # The owner-side agent records the start: the Dashboard API (UID 1000)
+        # cannot write this record when the install owner is another user.
+        assert (during[0]["status"], during[0]["phase_label"]) == ("starting", "Starting container...")
+        progress = self._progress(data_dir, "fakesvc")
+        assert (progress["status"], progress["phase_label"]) == ("started", "Service started")
+
+    def test_sync_start_failure_records_the_hosts_reason(self, retry_env, monkeypatch):
+        """Workstation06 (2026-10-26): ComfyUI's first start timed out, and the
+        Dashboard API's PermissionError on the record left the card stopped."""
+        _, data_dir, builtin_root, _ = retry_env
+        self._write_manifest(builtin_root / "fakesvc", with_hook=False)
+        self._write_progress_file(data_dir, "fakesvc", "prepared")
+        monkeypatch.setattr(_mod, "docker_compose_action",
+                            lambda sid, act: (False, "Docker compose operation timed out (600s)"))
+
+        handler = _FakeHandler(self._body("fakesvc"))
+        _mod.AgentHandler._handle_extension(handler, "start")
+
+        assert handler.response_code == 503
+        progress = self._progress(data_dir, "fakesvc")
+        assert (progress["status"], progress["phase_label"]) == ("error", "Start failed")
+        assert progress["error"] == "Docker compose operation timed out (600s)"
+        assert not _mod._service_locks["fakesvc"].locked()
+
+    def test_sync_start_keeps_a_verified_one_shot_record(self, retry_env, monkeypatch):
+        _, data_dir, builtin_root, _ = retry_env
+        self._write_manifest(builtin_root / "fakesvc", with_hook=False)
+
+        def fake_compose(sid, act):
+            # docker_compose_action records a one-shot CLI's verified exit itself.
+            _mod._write_progress(sid, "started", "CLI verification complete", exit_verified=True)
+            return True, ""
+
+        monkeypatch.setattr(_mod, "docker_compose_action", fake_compose)
+
+        handler = _FakeHandler(self._body("fakesvc"))
+        _mod.AgentHandler._handle_extension(handler, "start")
+
+        assert handler.response_code == 200
+        progress = self._progress(data_dir, "fakesvc")
+        assert (progress["phase_label"], progress["exit_verified"]) == ("CLI verification complete", True)
+
+    def test_unexpected_start_error_is_recorded_released_and_raised(self, retry_env, monkeypatch):
+        _, data_dir, builtin_root, _ = retry_env
+        self._write_manifest(builtin_root / "fakesvc", with_hook=False)
+
+        def fake_compose(sid, act):
+            raise ValueError("Compose policy rejected the recipe")
+
+        monkeypatch.setattr(_mod, "docker_compose_action", fake_compose)
+
+        handler = _FakeHandler(self._body("fakesvc"))
+        with pytest.raises(ValueError, match="Compose policy rejected"):
+            _mod.AgentHandler._handle_extension(handler, "start")
+
+        progress = self._progress(data_dir, "fakesvc")
+        assert progress["status"] == "error"
+        assert progress["error"] == "The start stopped unexpectedly; see the host agent log."
+        assert not _mod._service_locks["fakesvc"].locked()
+
+    def test_stop_writes_no_progress(self, retry_env, monkeypatch):
+        _, data_dir, builtin_root, _ = retry_env
+        self._write_manifest(builtin_root / "fakesvc", with_hook=False)
+        monkeypatch.setattr(_mod, "docker_compose_action", lambda sid, act: (True, ""))
+
+        handler = _FakeHandler(self._body("fakesvc"))
+        _mod.AgentHandler._handle_extension(handler, "stop")
+
+        assert handler.response_code == 200
         assert self._progress(data_dir, "fakesvc") is None
 
     def test_progress_status_started_uses_sync_path(self, retry_env, monkeypatch):

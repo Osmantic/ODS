@@ -8437,6 +8437,19 @@ def _read_progress_status(service_id: str) -> str | None:
     return status if isinstance(status, str) else None
 
 
+def _start_records_outcome(service_id: str) -> bool:
+    """Whether a synchronous start replaces the service's progress record.
+
+    No record, ``prepared`` (this enable's images are ready), ``started`` and
+    the Dashboard's own ``pulling`` receipt for this start are replaced. An
+    unreadable record or another operation's phase is left as it is; a
+    running install or image preparation holds the service lock.
+    """
+    if not (DATA_DIR / "extension-progress" / f"{service_id}.json").exists():
+        return True
+    return _read_progress_status(service_id) in {"prepared", "started", "pulling"}
+
+
 def _run_post_install_hook(service_id: str, ext_dir: Path) -> tuple[bool, str]:
     """Run an extension's ``post_install`` hook with sandboxed env.
 
@@ -12561,7 +12574,15 @@ class AgentHandler(BaseHTTPRequestHandler):
             _start_enable_retry(self, service_id, lock)
             return
 
+        # The start's outcome is recorded here, on the owner's side: the
+        # Dashboard API runs as UID 1000 and cannot write the record when the
+        # install owner is another user (Workstation06: nvuser, UID 1001).
+        records = action == "start" and _start_records_outcome(service_id)
+        # Kept when an unexpected error escapes; that error is then raised.
+        ok, err, status = False, "The start stopped unexpectedly; see the host agent log.", 500
         try:
+            if records:
+                _write_progress(service_id, "starting", "Starting container...")
             ok, err = docker_compose_action(service_id, action)
             status = 503 if "timed out" in err else 500
         except RuntimeError as exc:
@@ -12569,7 +12590,15 @@ class AgentHandler(BaseHTTPRequestHandler):
         except subprocess.CalledProcessError as exc:
             ok, err, status = False, f"Compose resolution failed: {exc.stderr[:300]}", 500
         finally:
-            lock.release()
+            try:
+                # A one-shot CLI start records its own verified outcome.
+                if records and _read_progress_status(service_id) == "starting":
+                    if ok:
+                        _write_progress(service_id, "started", "Service started")
+                    else:
+                        _write_progress(service_id, "error", "Start failed", error=err)
+            finally:
+                lock.release()
         if ok:
             json_response(self, 200, {"status": "ok", "service_id": service_id, "action": action})
             return

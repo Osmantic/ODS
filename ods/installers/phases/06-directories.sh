@@ -564,6 +564,10 @@ else
     ods_progress 38 "directories" "Creating directory structure"
     mkdir -p "$INSTALL_DIR"/{config,data,models}
     mkdir -p "$INSTALL_DIR"/data/{open-webui,whisper,tts,n8n,qdrant,models,privacy-shield,ape,token-spy,hermes,persona}
+    # The host agent writes extension progress as the install owner. Created
+    # here, the Dashboard API (UID 1000, which may be another user) cannot
+    # make it first and lock the owner's host agent out of it.
+    mkdir -p "$INSTALL_DIR"/data/extension-progress
     mkdir -p "$INSTALL_DIR"/data/hermes-proxy/{caddy-data,caddy-config}
     mkdir -p "$INSTALL_DIR"/data/langfuse/{postgres,clickhouse,redis,minio}
     mkdir -p "$INSTALL_DIR"/data/remote-provider/secrets

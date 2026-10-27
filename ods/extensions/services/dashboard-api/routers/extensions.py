@@ -265,21 +265,46 @@ def _cleanup_stale_progress() -> None:
             pass
 
 
+def _store_progress(service_id: str, record: dict) -> None:
+    """Replace a service's progress record, never rewriting it in place.
+
+    The host agent replaces the same records and the Extensions page polls
+    them, so a reader sees the old record or the new one. Where the install
+    owner is not UID 1000 this API cannot write the owner's progress
+    directory, and the refusal turned a failed start into an HTTP 500 that
+    also broke Retry (Workstation06, 2026-10-26). The host agent records the
+    outcome of starts and installs itself, so a refusal is logged instead.
+    """
+    progress_dir = Path(DATA_DIR) / "extension-progress"
+    temporary = None
+    try:
+        progress_dir.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(dir=progress_dir, prefix=f".{service_id}-", suffix=".tmp")
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(record, stream)
+        # mkstemp creates 0600; the host agent reads these records as the owner.
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, progress_dir / f"{service_id}.json")
+        temporary = None
+    except PermissionError as exc:
+        logger.warning("Progress record for %s was not written (%s); the host agent records "
+                       "start and install outcomes itself.", service_id, exc)
+    finally:
+        if temporary is not None:
+            Path(temporary).unlink(missing_ok=True)
+
+
 def _write_initial_progress(service_id: str) -> None:
     """Write an initial progress file so the UI sees 'installing' immediately."""
-    progress_dir = Path(DATA_DIR) / "extension-progress"
-    progress_dir.mkdir(parents=True, exist_ok=True)
     now = datetime.now(timezone.utc).isoformat()
-    progress = {
+    _store_progress(service_id, {
         "service_id": service_id,
         "status": "pulling",
         "phase_label": "Starting installation...",
         "error": None,
         "started_at": now,
         "updated_at": now,
-    }
-    progress_file = progress_dir / f"{service_id}.json"
-    progress_file.write_text(json.dumps(progress), encoding="utf-8")
+    })
 
 
 def _write_error_progress(service_id: str, error_msg: str) -> None:
@@ -296,8 +321,7 @@ def _write_error_progress(service_id: str, error_msg: str) -> None:
     data["status"] = "error"
     data["error"] = error_msg
     data["updated_at"] = now
-    progress_file.parent.mkdir(parents=True, exist_ok=True)
-    progress_file.write_text(json.dumps(data), encoding="utf-8")
+    _store_progress(service_id, data)
 
 
 def _write_started_progress(service_id: str) -> None:
@@ -315,8 +339,7 @@ def _write_started_progress(service_id: str) -> None:
         return
     progress.update(status="started", phase_label="Service started", error=None,
                     updated_at=datetime.now(timezone.utc).isoformat())
-    progress_file = Path(DATA_DIR) / "extension-progress" / f"{service_id}.json"
-    progress_file.write_text(json.dumps(progress), encoding="utf-8")
+    _store_progress(service_id, progress)
 
 
 def _has_error_progress(service_id: str) -> bool:

@@ -3,7 +3,9 @@
 import contextlib
 import hashlib
 import json
+import logging
 import os
+import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -1215,6 +1217,37 @@ class TestEnableExtension:
         assert data["action"] == "enabled"
         # compose.yaml still exists (no rename happened)
         assert (user_dir / "my-ext" / "compose.yaml").exists()
+
+    def test_enable_stopped_survives_an_unwritable_progress_record(
+        self, test_client, monkeypatch, tmp_path, caplog,
+    ):
+        """Retry answered HTTP 500 on Workstation06 (2026-10-26): the install
+        owner is UID 1001, so this API (UID 1000) could not write the owner's
+        progress record. The host agent records the start there itself."""
+        user_dir = _setup_user_ext(tmp_path, "my-ext", enabled=True)
+        _patch_mutation_config(monkeypatch, tmp_path, user_dir=user_dir)
+        starts = []
+        monkeypatch.setattr("routers.extensions._call_agent",
+                            lambda action, sid: starts.append((action, sid)) or True)
+        progress_dir = tmp_path / "extension-progress"
+        real_mkstemp = tempfile.mkstemp
+
+        def refuse_progress(*args, **kwargs):
+            if Path(kwargs.get("dir", "")) == progress_dir:
+                raise PermissionError(13, "Permission denied", str(progress_dir))
+            return real_mkstemp(*args, **kwargs)
+
+        monkeypatch.setattr(tempfile, "mkstemp", refuse_progress)
+
+        with caplog.at_level(logging.WARNING, logger="routers.extensions"):
+            resp = test_client.post(
+                "/api/extensions/my-ext/enable",
+                headers=test_client.auth_headers,
+            )
+
+        assert resp.status_code == 200
+        assert ("start", "my-ext") in starts
+        assert "Progress record for my-ext was not written" in caplog.text
 
     def test_enable_allows_core_service_dependency(self, test_client, monkeypatch, tmp_path):
         """Enable succeeds when depends_on includes a core service."""
@@ -4793,6 +4826,57 @@ class TestWriteErrorProgress:
         assert data["status"] == "error"
         assert data["error"] == "Agent unreachable"
         assert "phase_label" in data
+
+    def test_records_are_replaced_whole_and_leave_no_temporary_file(self, monkeypatch, tmp_path):
+        """The host agent and the Extensions page read these records while
+        they change, so a record is replaced, never truncated in place."""
+        from routers.extensions import _write_error_progress, _write_initial_progress
+
+        monkeypatch.setattr("routers.extensions.DATA_DIR", str(tmp_path))
+        directory = tmp_path / "extension-progress"
+        replaced = []
+        real_replace = os.replace
+
+        def record_replace(source, target):
+            replaced.append((Path(source).parent, Path(target)))
+            real_replace(source, target)
+
+        monkeypatch.setattr(os, "replace", record_replace)
+
+        _write_initial_progress("my-ext")
+        _write_error_progress("my-ext", "Host agent failed")
+
+        assert replaced == [(directory, directory / "my-ext.json")] * 2
+        assert [path.name for path in directory.iterdir()] == ["my-ext.json"]
+        assert json.loads((directory / "my-ext.json").read_text())["error"] == "Host agent failed"
+        if os.name == "posix":
+            # The host agent reads the record as the install owner.
+            assert (directory / "my-ext.json").stat().st_mode & 0o777 == 0o644
+
+    @pytest.mark.parametrize("refused", ["mkstemp", "replace"])
+    def test_a_refused_write_is_logged_and_keeps_the_owner_record(self, monkeypatch, tmp_path, caplog, refused):
+        """An install owner other than UID 1000 keeps this API out of its
+        progress directory; the host agent's own record must stay intact."""
+        from routers.extensions import _write_error_progress
+
+        monkeypatch.setattr("routers.extensions.DATA_DIR", str(tmp_path))
+        directory = tmp_path / "extension-progress"
+        directory.mkdir()
+        owner_record = {"service_id": "comfyui", "status": "error", "phase_label": "Start failed",
+                        "error": "Docker compose operation timed out (600s)"}
+        (directory / "comfyui.json").write_text(json.dumps(owner_record))
+
+        def refuse(*args, **kwargs):
+            raise PermissionError(13, "Permission denied", str(directory))
+
+        monkeypatch.setattr(tempfile if refused == "mkstemp" else os, refused, refuse)
+
+        with caplog.at_level(logging.WARNING, logger="routers.extensions"):
+            _write_error_progress("comfyui", "Host agent failed to start extension.")
+
+        assert json.loads((directory / "comfyui.json").read_text()) == owner_record
+        assert [path.name for path in directory.iterdir()] == ["comfyui.json"]
+        assert "Progress record for comfyui was not written" in caplog.text
 
 # --- _activate_service: built-in (EXTENSIONS_DIR) branch ---
 
