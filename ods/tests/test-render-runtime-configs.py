@@ -491,6 +491,27 @@ def test_router_endpoints_strip_trailing_v1() -> None:
     assert content == {"endpoints": [{"id": "llama-server-default", "baseUrl": "http://llama-server:8080"}]}
 
 
+def test_intel_arc_backends_render_the_phase06_router_surfaces() -> None:
+    # The Intel Arc tiers set GPU_BACKEND=sycl (detection records intel) and
+    # phase 06 passes it to these renders. The renderer refused both values, so
+    # an install with the Arc tier stopped in phase 06. The backend changes no
+    # route; only the env surface echoes it.
+    tier_map = (ROOT / "installers" / "lib" / "tier-map.sh").read_text(encoding="utf-8")
+    phase06 = (ROOT / "installers" / "phases" / "06-directories.sh").read_text(encoding="utf-8")
+    assert 'GPU_BACKEND="sycl"' in tier_map
+    assert '--gpu-backend "${GPU_BACKEND:-nvidia}"' in phase06
+    common = ("--switchboard-mode", "enabled", "--ods-mode", "local",
+              "--gguf-file", "Qwen3.5-9B-Q4_K_M.gguf", "--llm-base-url", "http://llama-server:8080/v1")
+    for surface in ("model-router-endpoints", "litellm-switchboard"):
+        reference = file_by_surface(run_renderer("--surface", surface, "--gpu-backend", "nvidia", *common), surface)
+        for backend in ("sycl", "intel"):
+            rendered = run_renderer("--surface", surface, "--gpu-backend", backend, *common)
+            assert file_by_surface(rendered, surface) == reference, (surface, backend)
+    for backend in ("sycl", "intel"):
+        env_content = file_by_surface(run_renderer("--surface", "env", "--gpu-backend", backend), "env")["content"]
+        assert f"GPU_BACKEND={backend}\n" in env_content
+
+
 def test_retired_lemonade_flags_are_accepted_and_ignored() -> None:
     payload = run_renderer(
         "--surface",
@@ -868,6 +889,7 @@ def main() -> int:
         test_enabled_hermes_uses_stable_switchboard_alias,
         test_enabled_opencode_uses_stable_switchboard_alias,
         test_router_endpoints_strip_trailing_v1,
+        test_intel_arc_backends_render_the_phase06_router_surfaces,
         test_retired_lemonade_flags_are_accepted_and_ignored,
         test_litellm_lemonade_surface_is_retired,
         test_amd_local_env_has_no_lemonade_keys,

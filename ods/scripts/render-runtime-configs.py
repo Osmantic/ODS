@@ -732,7 +732,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     # from before round F still passes them on every render (R13).
     parser.add_argument("--lemonade-model-id", default="", help=argparse.SUPPRESS)
     parser.add_argument("--lemonade-api-base", default="", help=argparse.SUPPRESS)
-    parser.add_argument("--gpu-backend", choices=["amd", "apple", "cpu", "nvidia"], default="nvidia")
+    # Intel Arc runs llama.cpp through oneAPI: the Arc tiers set sycl
+    # (installers/lib/tier-map.sh) and detection records intel, the values the
+    # compose overlays and .env use. No rendered route depends on the backend;
+    # only .env.generated echoes it.
+    parser.add_argument(
+        "--gpu-backend", choices=["amd", "apple", "cpu", "intel", "nvidia", "sycl"], default="nvidia",
+    )
     parser.add_argument(
         "--ods-mode", choices=["local", "cloud", "hybrid", *LEGACY_ODS_MODES], default="local",
     )
