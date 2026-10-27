@@ -251,6 +251,9 @@ test("host observation accepts only unique fixed read-only actions", () => {
 test("host observation schema exposes no broker target, command, or approval input", async () => {
   const tool = createHostObserveTool();
   assert.equal(tool.name, "pixel_ods_host_observe");
+  // DGX Station: asked what the machine has, the agent read its sandbox and never
+  // mentioned the two GPUs; machine questions belong to this tool.
+  assert.match(tool.description, /questions about this machine, such as its GPUs.*sandbox sees only its own container and no GPUs/);
   assert.deepEqual(tool.parameters.required, ["actions"]);
   assert.deepEqual(Object.keys(tool.parameters.properties), [
     "actions", "includeOdsStatus", "peer", "ports",

@@ -201,6 +201,9 @@ test("publishes only the exact existing workspace directory", async () => {
   // site its own preview card was showing.
   assert.ok(result.content[0].text.includes(`Verified browser URL: ${result.details.url}. ${PREVIEW_CARD_GUIDANCE} Inspection snapshot:`));
   assert.match(PREVIEW_CARD_GUIDANCE, /card .*do not add an \[embed \.\.\.\] directive/);
+  // DGX Station: replies ended with "Preview is live: http://site-….localhost:9437/…", which
+  // opens only on the ODS machine itself; the card is how the owner opens the preview.
+  assert.match(PREVIEW_CARD_GUIDANCE, /or paste its localhost URL: that address opens only on this machine/);
   assert.match(result.content[0].text, /publication and HTTP readback only, not successful startup, interactions or durable browser storage/);
   // Publication renders nothing; the palette arrives with inspection.
   assert.match(result.content[0].text, /Publication does not render the page; the inspection result also reports its rendered colors by area\. Check them before claiming a visible color or style change\. /);

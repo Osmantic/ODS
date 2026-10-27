@@ -181,7 +181,7 @@ export const EMPTY_PUBLISHED_FILES_PREFIX = "Published files that are empty (0 b
 // Portal's dashboard already shows this preview in its own card, so such a
 // directive (seen live: [embed ref="site-..." title="Dragon" height="560" /])
 // is at best repeated markup.
-export const PREVIEW_CARD_GUIDANCE = "Portal shows this preview to the owner in a card with your reply, so do not add an [embed ...] directive for it.";
+export const PREVIEW_CARD_GUIDANCE = "Portal shows this preview to the owner in a card with your reply, so do not add an [embed ...] directive for it or paste its localhost URL: that address opens only on this machine, and the card opens the preview for the owner.";
 
 // Displayed with host-authoritative publication evidence, independently of model prose.
 export const PREVIEW_STORAGE_DISCLOSURE = "Inputs in the embedded preview may be lost on reload. Storage behavior can differ in a separate tab; publishing alone does not guarantee saved data.";
