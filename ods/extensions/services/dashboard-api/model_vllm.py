@@ -16,8 +16,12 @@ the vLLM engine (``.env`` ``LLM_BACKEND=vllm``), not llama.cpp. They carry no
 * ``reasoning`` (the thinking default), plus ``tool_call_parser`` and
   ``reasoning_parser``, which name the same parsers as ``vllm_args``;
 * ``selection``: 0 for every llama.cpp memory class, so no llama.cpp install
-  ever picks the entry, and a ``vllm`` priority for ``--llm-runtime vllm``;
-* optionally ``mtp``, a speculative-decoding config (not read yet).
+  ever picks the entry, and a ``vllm`` priority for ``--llm-runtime vllm``.
+
+JSON-valued vLLM options go in ``vllm_args`` as vLLM's dotted flags, so each
+argument stays a plain token: ``--speculative-config.method=mtp
+--speculative-config.num_speculative_tokens=3`` parses to the same config as
+``--speculative-config '{"method":"mtp","num_speculative_tokens":3}'``.
 
 scripts/select-model.py (``--llm-runtime vllm``), scripts/download-hf-manifest.py
 and the catalog tests share these rules. Standard library only and no sibling
@@ -219,8 +223,6 @@ def _serving_problems(model: dict[str, Any]) -> list[str]:
     for key in ("tool_call_parser", "reasoning_parser"):
         if not isinstance(model.get(key), str) or not _ARG.fullmatch(model[key]):
             problems.append(f"{key} must name a vLLM parser")
-    if "mtp" in model and not isinstance(model["mtp"], dict):
-        problems.append("mtp must be an object when set")
     return problems
 
 

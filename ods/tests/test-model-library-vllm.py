@@ -165,6 +165,41 @@ def test_the_schema_catches_broken_entries(path, value, expected):
     assert any(expected in problem for problem in problems), problems
 
 
+def _dotted_config(args: list[str], flag: str) -> dict:
+    """The config vLLM builds from ``flag.key=value`` tokens: JSON values, else the text."""
+    config = {}
+    for arg in args:
+        if arg.startswith(flag + "."):
+            key, value = arg[len(flag) + 1:].split("=", 1)
+            try:
+                config[key] = json.loads(value)
+            except json.JSONDecodeError:
+                config[key] = value
+    return config
+
+
+# Measured on the DGX Station GB300 (vLLM v0.32.0, 10-27): MTP drafts lifted one-stream
+# writing from about 200 to 313 tokens/s on Qwen and from 145 to 210 on GLM, and Qwen's
+# n-gram embedding table on the GPU (not offloaded to the CPU) is part of that best setup.
+MEASURED_FLAGS = {
+    "qwen3.8-flash-next-nvfp4-vllm": {
+        "--speculative-config": {"method": "mtp", "num_speculative_tokens": 3},
+        "--engram-config": {"cpu_offload": False},
+    },
+    "glm-5.3-flash-nvfp4-vllm": {
+        "--speculative-config": {"method": "mtp", "num_speculative_tokens": 5},
+        "--engram-config": {},
+    },
+}
+
+
+@pytest.mark.parametrize("model_id", sorted(MEASURED_FLAGS))
+def test_the_entries_keep_the_flags_measured_on_a_dgx_station(model_id):
+    model = {item["id"]: item for item in _vllm_models()}[model_id]
+    for flag, expected in MEASURED_FLAGS[model_id].items():
+        assert _dotted_config(model["vllm_args"], flag) == expected, (model_id, flag)
+
+
 def test_the_broken_entry_cases_edit_what_they_name():
     # "repeats README.md" needs README.md after files[0]; "sha256 must be
     # lowercase hex" needs files[8] to be an LFS file.
