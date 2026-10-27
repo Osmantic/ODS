@@ -11286,8 +11286,27 @@ class TestDockerServiceHealthSnapshot:
             "container_name": "ods-dashboard",
             "state": "running",
             "health": "healthy",
+            "restart_count": 0,
         }]
         assert len(calls) == 2
+
+    @pytest.mark.parametrize(("restarts", "expected"), [(7, 7), (-1, 0), ("7", 0), (True, 0), (None, 0)])
+    def test_reports_restart_policy_restarts(self, monkeypatch, restarts, expected):
+        """A crash loop (Qdrant and TEI on Workstation06's ARM64, 2026-10-27)
+        restarts its health check each time; the restart count tells them apart."""
+        monkeypatch.setattr(_mod, "_service_health_cache", (0.0, None))
+
+        def run(cmd, **kwargs):
+            if cmd[1] == "ps":
+                return types.SimpleNamespace(returncode=0, stdout="ods-qdrant\n", stderr="")
+            return types.SimpleNamespace(returncode=0, stdout=json.dumps([{
+                "Name": "/ods-qdrant", "RestartCount": restarts,
+                "State": {"Status": "restarting", "Health": {"Status": "starting"}},
+                "Config": {"Labels": {"com.docker.compose.service": "qdrant"}},
+            }]), stderr="")
+
+        monkeypatch.setattr(_mod.subprocess, "run", run)
+        assert _mod._docker_service_health_snapshot()["containers"][0]["restart_count"] == expected
 
 
 # .env values that name no model: the configured model's identities are all None.

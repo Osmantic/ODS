@@ -8125,11 +8125,14 @@ def _docker_service_health_snapshot() -> dict:
                 service_id = declared_containers.get(container_name, service_id)
                 if not service_id and container_name.startswith("ods-"):
                     service_id = container_name.removeprefix("ods-")
+                restarts = item.get("RestartCount")
                 containers.append({
                     "service_id": str(service_id or ""),
                     "container_name": container_name,
                     "state": str(state.get("Status") or "unknown"),
                     "health": str(health.get("Status") or "none"),
+                    # Restart-policy restarts; tells a crash loop from a start.
+                    "restart_count": restarts if type(restarts) is int and restarts >= 0 else 0,
                 })
         payload = {
             "schema_version": "ods.host-service-health.v1",

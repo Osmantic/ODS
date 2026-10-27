@@ -1141,6 +1141,25 @@ def _timeout_override_allowed(service_id: str, now: float) -> bool:
     return anchor is not None and now - anchor <= _TIMEOUT_OVERRIDE_GRACE_S
 
 
+_CRASH_LOOP_RESTARTS = 3
+
+
+def container_crash_looping(item: dict) -> bool:
+    """Whether a host service-health row shows a restart policy reviving a crash.
+
+    Each restart begins the container's health check anew, so a crash loop
+    reads as "starting" and its card said "installing" indefinitely
+    (Workstation06, 2026-10-27: Qdrant and TEI on ARM64). One or two
+    restarts can be a start-up race; a third is a loop.
+    """
+    restarts = item.get("restart_count")
+    if type(restarts) is not int or restarts < _CRASH_LOOP_RESTARTS:
+        return False
+    state = str(item.get("state") or "").casefold()
+    return state == "restarting" or (
+        state == "running" and str(item.get("health") or "").casefold() == "starting")
+
+
 async def get_all_services(*, only_service_ids: Optional[set[str]] = None) -> list[ServiceStatus]:
     """Get all service health statuses.
 
@@ -1219,10 +1238,14 @@ async def get_all_services(*, only_service_ids: Optional[set[str]] = None) -> li
         item = by_service.get(status.id) or by_name.get(str(config.get("container_name") or ""))
         replacement = status.status
         startup_pending = False
+        crash_looping = False
         if item and config.get("type", "docker") == "docker":
             health = str(item.get("health") or "none").casefold()
             state = str(item.get("state") or "unknown").casefold()
-            if health == "healthy" and status.status == "degraded" and _timeout_override_allowed(status.id, now):
+            if container_crash_looping(item):
+                replacement = "unhealthy"
+                crash_looping = True
+            elif health == "healthy" and status.status == "degraded" and _timeout_override_allowed(status.id, now):
                 # A successful declared Docker healthcheck is authoritative for
                 # transient dashboard-network timeouts, but never masks HTTP
                 # errors or connection refusal from the application probe.
@@ -1244,8 +1267,10 @@ async def get_all_services(*, only_service_ids: Optional[set[str]] = None) -> li
                 startup_pending = len(matches) == 1
             elif state in {"exited", "dead", "removing"}:
                 replacement = "down"
-        if replacement != status.status or startup_pending != status.startup_pending:
-            status = status.model_copy(update={"status": replacement, "startup_pending": startup_pending})
+        if (replacement != status.status or startup_pending != status.startup_pending
+                or crash_looping != status.crash_looping):
+            status = status.model_copy(update={"status": replacement, "startup_pending": startup_pending,
+                                               "crash_looping": crash_looping})
         reconciled.append(status)
 
     if _host_native_llm():

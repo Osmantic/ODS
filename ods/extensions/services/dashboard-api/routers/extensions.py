@@ -550,9 +550,10 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
             # show "installing". If older, the user likely stopped the
             # container afterwards â€” fall through to normal status logic.
             if not _is_stale(progress.get("updated_at", ""), max_age_seconds=300):
-                # Long-running services still need an observed healthy state.
+                # Long-running services still need an observed healthy state;
+                # a crash loop is a failure, not a slow first health check.
                 svc = services_by_id.get(ext_id)
-                if not (svc and svc.status == "healthy"):
+                if not (svc and (svc.status == "healthy" or getattr(svc, "crash_looping", False))):
                     return "installing"
 
     # The process imported SERVICES before a Library action could have
@@ -1893,14 +1894,19 @@ async def _inspect_non_http_user_services(configs: dict, statuses: dict) -> None
             containers = snapshot["containers"]
     except (AgentClientError, ValueError):
         pass
+    from helpers import container_crash_looping  # noqa: PLC0415 - avoid import cycle
+
     for sid, cfg in candidates.items():
         matches = [item for item in containers if isinstance(item, dict) and item.get("service_id") == sid]
         state = "unknown"
         startup_pending = False
+        crash_looping = False
         # Ambiguous snapshots cannot establish readiness of this extension.
         if len(matches) == 1:
             item = matches[0]
-            if item.get("state") == "running":
+            if container_crash_looping(item):
+                state, crash_looping = "unhealthy", True
+            elif item.get("state") == "running":
                 state = {"healthy": "healthy", "unhealthy": "unhealthy"}.get(item.get("health"), "degraded")
                 startup_pending = item.get("health") == "starting"
             elif item.get("state") in {"exited", "dead", "removing", "created"}:
@@ -1909,7 +1915,7 @@ async def _inspect_non_http_user_services(configs: dict, statuses: dict) -> None
             id=sid, name=cfg.get("name", sid), port=cfg["port"],
             external_port=cfg.get("external_port", cfg["port"]),
             status=state, response_time_ms=None,
-            startup_pending=startup_pending,
+            startup_pending=startup_pending, crash_looping=crash_looping,
         )
 
 
