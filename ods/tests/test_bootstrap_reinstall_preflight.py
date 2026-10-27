@@ -94,6 +94,19 @@ rm -rf "$INSTALL_DIR"
 
 
 class ReinstallPreflightTests(unittest.TestCase):
+    def test_older_candidate_keeps_its_strict_uninstall_contract(self):
+        self.make_installed()
+        older = self.root / 'older-uninstaller'
+        shutil.copytree(self.repo, older)
+        write(older / 'ods/ods-uninstall.sh', CANDIDATE_UNINSTALL.replace(
+            '--force|--non-interactive|--preserve-broker-state)',
+            '--force|--non-interactive)'), 0o755)
+        self.env.update(ODS_REPO_URL=str(older), ODS_REF=self.commit(older, 'older uninstaller'))
+        result, output = self.bootstrap()
+        self.assertEqual(result.returncode, 0, output)
+        self.assertNotIn('--preserve-broker-state', self.uninstall_args.read_text().split())
+        self.assertEqual(json.loads(self.result.read_text())['model'], MODEL.hex())
+
     def test_broker_preservation_rejects_non_reinstall_invocations(self):
         for flags in ([], ['--force', '--keep-data']):
             with self.subTest(flags=flags):
