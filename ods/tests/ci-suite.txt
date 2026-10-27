@@ -323,6 +323,7 @@ tests/test_todo_fixes.py
 tests/test_validate_compose_stack_spaces.py
 tests/test-linux-service-port-rerun.py
 tests/test-migrate-shield-key.sh
+tests/test-multigpu-context-fit.sh
 tests/test-ods-cli-update-shield-key.sh
 tests/test-backup-publication.sh
 tests/test-restore-compose-flags.sh
