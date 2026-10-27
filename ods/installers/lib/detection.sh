@@ -968,6 +968,7 @@ fix_nvidia_secure_boot() {
     [[ -n "$TIER" ]] && resume_args="$resume_args --tier $TIER"
     [[ "$OFFLINE_MODE" == "true" ]] && resume_args="$resume_args --offline"
     [[ "${ODS_RESELECT_MODEL:-false}" == "true" ]] && resume_args="$resume_args --reselect-model"
+    [[ -n "${LLM_BACKEND_REQUESTED:-}" ]] && resume_args="$resume_args --llm-backend $LLM_BACKEND_REQUESTED"
     local resume_command="cd \"${SCRIPT_DIR}\" && ./install.sh${resume_args}"
     log "Secure Boot key enrollment pending; resume with: $resume_command"
 

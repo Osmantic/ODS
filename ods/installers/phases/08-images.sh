@@ -35,6 +35,22 @@ if [[ "${DRY_RUN:-false}" != true ]] && ods_native_llm_requested; then
     fi
     unset _host_native_compose_flags
 fi
+if [[ "${DRY_RUN:-false}" != true && "${LLM_BACKEND:-}" == "vllm" ]]; then
+    # Inherited profiles (COMPOSE_PROFILES=local-inference) could start the
+    # in-stack llama-server beside the vLLM engine on the same GPU. Phase 11
+    # rechecks before container launch.
+    [[ -n "${COMPOSE_FLAGS:-}" ]] || {
+        ai_bad "The vLLM engine's Compose selection is unavailable before image pulls."
+        exit 1
+    }
+    read -ra _vllm_compose_flags <<< "$COMPOSE_FLAGS"
+    if ! ods_vllm_assert_engine_stack_before_pixel_identity "${_vllm_compose_flags[@]}" \
+        2>>"$LOG_FILE"; then
+        ai_bad "The vLLM engine's Compose stack is not the expected one (details in $LOG_FILE); clear COMPOSE_PROFILES and rerun the installer."
+        exit 1
+    fi
+    unset _vllm_compose_flags
+fi
 if [[ "${ODS_GATEWAY_ONLY:-false}" == true && "${DRY_RUN:-false}" != true ]]; then
     # Compose merges profile lists from overlays. A caller's inherited
     # COMPOSE_PROFILES=local-inference can therefore re-enable a managed model
@@ -78,7 +94,12 @@ if [[ "${ODS_MODE:-local}" != "cloud" && -z "${EXTERNAL_LLM_URL:-}" ]] && ! ods_
     # In WSL the Linux capability probe can report CPU while Windows owns the
     # model, so selecting this image from GPU_BACKEND alone wastes time and
     # disk.
-    if [[ "$GPU_BACKEND" == "amd" ]]; then
+    if [[ "${LLM_BACKEND:-}" == "vllm" ]]; then
+        # The vLLM engine serves the model: no llama.cpp image (and no
+        # bootstrap GGUF) runs on this route. Phase 02 read the pin from
+        # config/dependency-lock.json.
+        PULL_LIST+=("${VLLM_IMAGE}|VLLM — downloading the vLLM engine (NVIDIA)")
+    elif [[ "$GPU_BACKEND" == "amd" ]]; then
         # The AMD overlays pin their images and ignore LLAMA_SERVER_IMAGE,
         # which a model profile can set to another backend's image.
         if [[ "${AMD_INFERENCE_BACKEND:-vulkan}" == "rocm" ]]; then

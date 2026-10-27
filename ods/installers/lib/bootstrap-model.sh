@@ -8,7 +8,7 @@
 #          while the full tier-appropriate model downloads in the background.
 #
 # Expects: TIER, GGUF_FILE, INSTALL_DIR, NO_BOOTSTRAP, OFFLINE_MODE,
-#           ODS_MODE, tier_rank()
+#           ODS_MODE, LLM_BACKEND, tier_rank()
 # Provides: BOOTSTRAP_* constants (incl. BOOTSTRAP_GGUF_SIZE_MB), bootstrap_needed()
 # ============================================================================
 
@@ -33,6 +33,8 @@ BOOTSTRAP_MAX_CONTEXT=65536
 #   4. Not in offline mode (can't download anything)
 #   5. Not in cloud mode (no local model needed)
 #   6. No host-native llama-server (it serves the model chosen on Windows)
+#   7. Not the vLLM engine (LLM_BACKEND=vllm): it serves its own model and
+#      runs no llama.cpp GGUF, so there is nothing to fast-start
 #
 bootstrap_needed() {
     local tier_rank
@@ -53,6 +55,7 @@ bootstrap_needed() {
     # Cloud mode — no local model needed
     [[ "${ODS_MODE:-local}" == "cloud" ]] && return 1
     [[ -n "${NATIVE_LLM_BASE_URL:-}" ]] && return 1
+    [[ "${LLM_BACKEND:-}" == "vllm" ]] && return 1
 
     return 0
 }

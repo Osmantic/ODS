@@ -8,6 +8,7 @@
 #
 # Expects: DRY_RUN, GPU_BACKEND, ENABLE_VOICE, ENABLE_WORKFLOWS, ENABLE_RAG, ENABLE_QDRANT,
 #           ENABLE_EMBEDDINGS, ENABLE_HERMES, LLM_MODEL,
+#           LLM_BACKEND and VLLM_SERVED_MODEL (vllm waits on vllm-server),
 #           LOG_FILE, BGRN, AMB, NC,
 #           WHISPER_PORT, TTS_PORT,
 #           PERPLEXICA_PORT (:-3004), COMFYUI_PORT (:-8188),
@@ -51,6 +52,8 @@ if $DRY_RUN; then
     log "[DRY RUN] Would verify service health:"
     if [[ -n "${EXTERNAL_LLM_URL:-}" ]]; then
         log "[DRY RUN]   - External model through LiteLLM"
+    elif [[ "${LLM_BACKEND:-}" == "vllm" ]]; then
+        log "[DRY RUN]   - vLLM engine (${VLLM_SERVED_MODEL:-the vLLM model}) and its route through model-router"
     else
         log "[DRY RUN]   - Managed llama-server"
     fi
@@ -353,6 +356,174 @@ else:
     ai "A completed user-visible answer still requires a real Pixel turn."
 }
 
+# The vLLM engine (LLM_BACKEND=vllm) runs in ods-vllm-server, which has no
+# host port. Its compose healthcheck turns healthy once vLLM's /health answers
+# 200; a first start reads 130-200 GB of weights and compiles kernels, so the
+# wait allows as long as the healthcheck's start period (an hour).
+_phase12_vllm_engine() {
+    [[ "${LLM_BACKEND:-$(_phase12_env_get LLM_BACKEND "")}" == "vllm" ]]
+}
+
+# A vLLM failure ends the install with its cause, what to do next and where
+# to ask. vLLM's own log is saved to the install log first.
+_phase12_vllm_stop() {
+    local cause="$1" recovery="$2"
+    local -a docker_cmd_arr=()
+    read -r -a docker_cmd_arr <<< "${DOCKER_CMD:-docker}"
+    {
+        printf '=== docker logs --tail 200 ods-vllm-server\n'
+        "${docker_cmd_arr[@]}" logs --tail 200 ods-vllm-server 2>&1 \
+            || printf '(the vLLM container log is unavailable)\n'
+    } >> "$LOG_FILE"
+    ai_bad "$cause"
+    ai "$recovery"
+    ai "Need help? Ask on the ODS Discord: ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
+    exit 1
+}
+
+# Run in the background under spin_task: returns 0 once vllm-server is
+# healthy, 1 when the engine stopped (why goes to REASON_FILE), 2 when the
+# wait ran out. A restart counts only when it happens during this wait.
+_phase12_poll_vllm_health() {
+    local reason_file="$1" interval="${ODS_VLLM_POLL_SECONDS:-10}"
+    local deadline=$((SECONDS + ${ODS_VLLM_READY_TIMEOUT_SECONDS:-3600}))
+    local state restarts health first_restarts=""
+    local -a docker_cmd_arr=()
+    read -r -a docker_cmd_arr <<< "${DOCKER_CMD:-docker}"
+    while (( SECONDS < deadline )); do
+        if ! read -r state restarts health < <("${docker_cmd_arr[@]}" inspect \
+            --format '{{.State.Status}} {{.RestartCount}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+            ods-vllm-server 2>>"$LOG_FILE"); then
+            state=missing restarts=0 health=none
+        fi
+        [[ "$restarts" =~ ^[0-9]+$ ]] || restarts=0
+        [[ -n "$first_restarts" ]] || first_restarts="$restarts"
+        if [[ "$health" == "healthy" ]]; then
+            return 0
+        fi
+        case "$state" in
+            exited|dead|missing)
+                printf 'The vLLM container stopped before the model was ready (container %s)' "$state" > "$reason_file"
+                return 1
+                ;;
+        esac
+        if (( restarts > first_restarts )); then
+            printf 'vLLM stopped while loading the model, and Docker restarted it' > "$reason_file"
+            return 1
+        fi
+        if [[ "$health" == "unhealthy" ]]; then
+            printf "vLLM's health check failed" > "$reason_file"
+            return 1
+        fi
+        sleep "$interval"
+    done
+    return 2
+}
+
+_phase12_vllm_wait_status() {
+    printf 'a first start reads the weights and compiles kernels'
+}
+
+_phase12_wait_for_vllm() {
+    local model="${VLLM_SERVED_MODEL:-the vLLM model}" limit="${ODS_VLLM_READY_TIMEOUT_SECONDS:-3600}"
+    local reason_file pid rc=0 reason
+    reason_file="$(mktemp "${TMPDIR:-/tmp}/ods-vllm-wait.XXXXXX")"
+    ai "vLLM is loading ${model}. A first start reads the whole model into GPU memory and compiles kernels before it answers; later starts are faster."
+    _phase12_poll_vllm_health "$reason_file" &
+    pid=$!
+    spin_task "$pid" "Loading ${model} into GPU memory" "" 0 _phase12_vllm_wait_status || rc=$?
+    reason="$(cat "$reason_file")"
+    rm -f -- "$reason_file"
+    case "$rc" in
+        0)
+            ui_status_line ok "vLLM engine ready (${model})"
+            ;;
+        2)
+            _phase12_vllm_stop "vLLM did not finish loading ${model} within $((limit / 60)) minutes." \
+                "See what it is doing with: docker logs --tail 100 ods-vllm-server. Once it reports the model loaded, run the same install command again; the downloaded model is kept."
+            ;;
+        *)
+            _phase12_vllm_stop "${reason:-vLLM stopped before ${model} was ready}." \
+                "vLLM's log says why (docker logs --tail 100 ods-vllm-server; also saved to ${LOG_FILE}). Fix that, for example by freeing the GPU's memory, then run the same install command again; the downloaded model is kept."
+            ;;
+    esac
+}
+
+# True when the chat completion in FILE carries text (an answer, or reasoning
+# a short reply can stop in).
+_phase12_completion_has_text() {
+    "${ODS_PYTHON_CMD:-python3}" -c '
+import json
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        body = json.load(handle)
+except (OSError, ValueError):
+    sys.exit(1)
+choices = body.get("choices") if isinstance(body, dict) else None
+first = choices[0] if isinstance(choices, list) and choices else None
+message = first.get("message") if isinstance(first, dict) else None
+texts = [message.get(key) for key in ("content", "reasoning_content", "reasoning")] if isinstance(message, dict) else []
+sys.exit(0 if any(isinstance(text, str) and text.strip() for text in texts) else 1)
+' "$1"
+}
+
+# Run in the background under spin_task: asks ods/current for a short answer
+# through LiteLLM, which sends it to model-router, which routes it to the vLLM
+# engine, the path every ODS service uses. Returns 0 once an answer has text,
+# 2 when the wait ran out; the last HTTP status goes to STATUS_FILE and the
+# last reply to the install log.
+_phase12_poll_vllm_route() {
+    local status_file="$1" interval="${ODS_VLLM_POLL_SECONDS:-10}"
+    local deadline=$((SECONDS + ${ODS_VLLM_ROUTE_TIMEOUT_SECONDS:-900}))
+    local port="${SERVICE_PORTS[litellm]:-4000}" key="${LITELLM_KEY:-$(_phase12_env_get LITELLM_KEY "")}"
+    local body='{"model":"ods/current","messages":[{"role":"user","content":"Reply with exactly OK."}],"max_tokens":64,"temperature":0,"stream":false,"chat_template_kwargs":{"enable_thinking":false}}'
+    local response_file http_status="000"
+    response_file="$(mktemp "${TMPDIR:-/tmp}/ods-vllm-route.XXXXXX")"
+    while (( SECONDS < deadline )); do
+        if ! http_status="$(_phase12_curl_bearer "$key" -sS --max-time 120 -o "$response_file" -w '%{http_code}' \
+            -X POST "http://127.0.0.1:${port}/v1/chat/completions" \
+            -H "Content-Type: application/json" -d "$body" 2>>"$LOG_FILE")"; then
+            http_status="000"
+        fi
+        printf '%s' "$http_status" > "$status_file"
+        if [[ "$http_status" == 2?? ]] && _phase12_completion_has_text "$response_file"; then
+            rm -f -- "$response_file"
+            return 0
+        fi
+        sleep "$interval"
+    done
+    {
+        printf 'vLLM model route check, last reply (HTTP %s):\n' "$http_status"
+        head -c 4096 "$response_file"
+        printf '\n'
+    } >> "$LOG_FILE"
+    rm -f -- "$response_file"
+    return 2
+}
+
+_phase12_vllm_route_status() {
+    printf 'waiting for the model route'
+}
+
+_phase12_verify_vllm_route() {
+    local model="${VLLM_SERVED_MODEL:-the vLLM model}" limit="${ODS_VLLM_ROUTE_TIMEOUT_SECONDS:-900}"
+    local status_file pid rc=0 http_status
+    status_file="$(mktemp "${TMPDIR:-/tmp}/ods-vllm-route-status.XXXXXX")"
+    _phase12_poll_vllm_route "$status_file" &
+    pid=$!
+    spin_task "$pid" "Asking ${model} for a first answer through model-router" "" 0 _phase12_vllm_route_status || rc=$?
+    http_status="$(cat "$status_file")"
+    rm -f -- "$status_file"
+    if [[ "$rc" -eq 0 ]]; then
+        ui_status_line ok "Model route verified: ods/current answers through model-router (vLLM)"
+        return 0
+    fi
+    _phase12_vllm_stop "vLLM is running, but ${model} did not answer through LiteLLM and model-router within $((limit / 60)) minutes (last HTTP status ${http_status:-none})." \
+        "The ODS host agent proves the vLLM route once the engine is up. Check ods status, then run the same install command again; the model stays downloaded. The last reply is saved to ${LOG_FILE}."
+}
+
 # Core service health checks with adaptive timeouts.
 # Cloud mode does not launch local llama-server; LiteLLM/external APIs are the
 # LLM surface, so do not wait on a container that intentionally is not running.
@@ -370,6 +541,13 @@ elif [[ "${ODS_MODE:-local}" == "cloud" ]] || _phase12_host_native_llm; then
             exit 1
         fi
     fi
+elif _phase12_vllm_engine; then
+    # No llama-server runs here: wait for the vLLM engine, then for an answer
+    # through model-router, the route every consumer uses.
+    ods_progress 86 "health" "Waiting for the vLLM engine"
+    _phase12_wait_for_vllm
+    ods_progress 87 "health" "Verifying the model route"
+    _phase12_verify_vllm_route
 else
     # Format: _check_health "name" "url" max_attempts timeout_per_request
     # llama-server: 150 attempts * adaptive backoff (2s->8s) = up to ~20 minutes (model loading can be slow)
@@ -430,6 +608,8 @@ fi
 # llama-server doesn't hang phase 12.
 if [[ "${ODS_MODE:-local}" == "cloud" ]] || _phase12_host_native_llm || _phase12_external_llm; then
     ai "The LLM runs outside the stack - skipping local llama-server pre-warm"
+elif _phase12_vllm_engine; then
+    log "The vLLM engine already answered the model route check; there is no llama-server to pre-warm"
 else
     ods_progress 87 "health" "Pre-warming LLM slot"
     # llama-server serves the GGUF file name (--alias) under /v1 on every GPU.

@@ -123,6 +123,7 @@ source "$SCRIPT_DIR/installers/lib/lemonade-migration.sh"
 source "$SCRIPT_DIR/installers/lib/host-arch.sh"
 source "$SCRIPT_DIR/installers/lib/tier-map.sh"
 source "$SCRIPT_DIR/installers/lib/model-selector.sh"
+source "$SCRIPT_DIR/installers/lib/llm-backend.sh"
 source "$SCRIPT_DIR/installers/lib/docker-images.sh"
 source "$SCRIPT_DIR/installers/lib/compose-images.sh"
 source "$SCRIPT_DIR/installers/lib/compose-select.sh"
@@ -251,6 +252,9 @@ EXTERNAL_LLM_API_KEY_DISABLE=false
 EXTERNAL_LLM_AUTO_REUSE="${EXTERNAL_LLM_AUTO_REUSE:-false}"
 EXTERNAL_LLM_DISABLE=false
 ODS_RESELECT_MODEL="${ODS_RESELECT_MODEL:-false}"
+# The model server --llm-backend asks for: vllm, llama-server, or empty, which
+# lets phase 02 choose (installers/lib/llm-backend.sh).
+LLM_BACKEND_REQUESTED=""
 
 usage() {
     cat << EOF
@@ -313,6 +317,11 @@ Options:
     --no-external-llm
                       Disable a persisted external LLM selection on this rerun
     --reselect-model  Replace a valid active local model with the current installer recommendation
+    --llm-backend vllm|llama-server
+                      Model server. Without it, a new Linux install runs the vLLM engine
+                      when a vLLM catalog model fits one NVIDIA datacenter GPU, and
+                      llama.cpp (llama-server) otherwise; a rerun keeps its engine.
+                      vllm stops when no vLLM model fits; llama-server never uses vLLM
     --voice           Enable voice services (Whisper + Kokoro)
     --no-voice        Disable voice services
     --workflows       Enable n8n workflow automation
@@ -432,6 +441,9 @@ while [[ $# -gt 0 ]]; do
         --reuse-external-llm) EXTERNAL_LLM_AUTO_REUSE=true; shift ;;
         --no-external-llm) EXTERNAL_LLM_DISABLE=true; shift ;;
         --reselect-model) ODS_RESELECT_MODEL=true; shift ;;
+        --llm-backend)
+            case "${2:-}" in vllm|llama-server) LLM_BACKEND_REQUESTED="$2" ;; *) echo "--llm-backend requires vllm or llama-server" >&2; exit 1 ;; esac
+            shift 2 ;;
         --voice) ENABLE_VOICE=true; shift ;;
         --no-voice) ENABLE_VOICE=false; shift ;;
         --workflows) ENABLE_WORKFLOWS=true; shift ;;
