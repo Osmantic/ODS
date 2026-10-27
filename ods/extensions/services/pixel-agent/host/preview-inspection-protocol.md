@@ -8,7 +8,9 @@ socket or browser authority.
 ## Request
 
 The plugin sends one JSON object with `schemaVersion: 1`, `action: "inspect"`,
-`siteId`, the full snapshot `sha256`, `viewport: {width, height}`, and `steps`.
+`siteId`, the full snapshot `sha256`, `viewport: {width, height}`, and `steps`,
+plus an optional `page` that names the page of the same snapshot to start on
+instead of its entry page (see "Page" below).
 Each step has `action` (`assert-visible`, `assert-hidden`, `assert-text`,
 `click`, `select-option`, `fill`, `download`, `press`, or `assert-painted`)
 and `locator`. `assert-text` adds `expectedText`; `select-option` and `fill`
@@ -148,14 +150,14 @@ visible. Publication is byte-only and renders nothing, so the capsule reports
 the painted palette with every receipt it builds.
 
 After the step context is closed and its receipt is final, the capsule loads
-the same snapshot once more in a separate context of the same browser: a fixed
-1280x720 desktop viewport, default (light) color scheme, device scale 0.25.
-It uses the same loopback server, request guard, navigation limit, and popup,
-download and websocket blocking, and registers no page-error listener. It
-waits 100 ms after `load`, takes a 320x180 PNG screenshot of the viewport (one
-device pixel per 4x4 CSS pixels) and decodes it with the standard library. The
-page as first loaded is captured, never the state left by the inspected
-clicks, and never hover or focus styles.
+the same page of the snapshot once more in a separate context of the same
+browser: a fixed 1280x720 desktop viewport, default (light) color scheme,
+device scale 0.25. It uses the same loopback server, request guard, navigation
+limit, and popup, download and websocket blocking, and registers no page-error
+listener. It waits 100 ms after `load`, takes a 320x180 PNG screenshot of the
+viewport (one device pixel per 4x4 CSS pixels) and decodes it with the
+standard library. The page as first loaded is captured, never the state left
+by the inspected clicks, and never hover or focus styles.
 
 Each pixel's exact color goes to one fixed bucket. A color with chroma under
 26/255 is neutral and named by HSL lightness: `black` (<0.13), `dark gray`
@@ -236,7 +238,8 @@ quoted evidence copy; when an exact role/name locator matched nothing and a
 control of that role shows the locator's name as its text (or differs only in
 letter case), the locator feedback states the actual name and what supplied it.
 The plugin checks owner-requested control names against them (see
-`COMPLETION-RELIABILITY.md`). A host keeps producing receipts without
+`COMPLETION-RELIABILITY.md`), from entry-page receipts only: a `page` receipt
+lists another page's controls. A host keeps producing receipts without
 `controls` until the installer rebuilds the inspection image.
 
 ## Host custody and isolation
@@ -275,8 +278,12 @@ read-only root, UID/GID 65534, all capabilities dropped, no-new-privileges,
 256 MiB temporary filesystem. No host mounts, sockets, credentials, or host
 URLs enter it. The only stdin is the validated plan and base64 immutable file
 map. The loopback server reproduces production iframe sandbox, CSP, MIME/UTF-8,
-and CORS/security headers. Foreign requests, extra navigation, popups, and
-downloads are blocked; service workers are disabled.
+and CORS/security headers. The request guard admits at most two navigations,
+the fixed wrapper document and the one page it frames: the site entry
+(`/<siteId>/`) or the requested `page`. Only an explicit download step adds
+one, to its own snapshot file. Foreign requests, any other navigation (a link
+to another page of the same snapshot included), popups, and downloads are
+blocked; service workers are disabled.
 
 The runner permits at most 45 seconds and 32 KiB of receipt output, plus one
 bounded JPEG when the request directs a viewport screenshot (see "Viewport
@@ -605,6 +612,73 @@ during a downscaled capture, and WebGL. `inspection_paint.test.mjs` checks the
 schema, the Python/JavaScript scope, bounds and plan hash, capsule summaries as
 receipts, forged paint evidence, feedback, the unchanged-fingerprint note and
 the evidence policy.
+
+## Page
+
+An inspection loads one page: without `page`, the snapshot's entry page,
+exactly as before. A multi-page site ("a three-page bakery site: home, menu and
+contact") needs its other pages checked too, so a request may name one. `page`
+is the path of a published `.html` file relative to the site root, such as
+`menu.html` or `about/team.html`, or a folder ending in `/` for that folder's
+`index.html` (`blog/` is `blog/index.html`), the rule by which the capsule's
+loopback server resolves URL paths (`snapshot_file`).
+
+`page`, with a trailing `/` read as `/index.html`, must be a name the snapshot's
+file map can hold (`snapshot_name`, shared with `validate_bundle`): at most 512
+characters and 12 segments of at most 128 ASCII letters, digits, `.`, `_`, `-`,
+`[` and `]`, ending in `.html`. That excludes a leading `/`, `\`, NUL and other
+control characters, `.` and `..` segments, empty segments, a scheme, query or
+fragment, percent-encoding, hidden names (a leading `.`, which the publisher
+skips) and the reserved `__ods_` and `__pycache__` names. The plugin applies
+the same rules (`workspace-preview-inspect.mjs`), but only the immutable file
+map shows whether that file exists. The broker binds `page` to it after reading
+the snapshot and before any browser runs; a page that names no file of it
+returns a bound `page_not_found` failure. The capsule checks it again in
+`validate_bundle`. The publisher-side export never sees `page`, since it reads
+the whole snapshot either way, so an older export helper keeps working.
+
+`page` changes only where the inspection starts. The wrapper document frames
+`/<siteId>/` plus the URL-quoted page instead of `/<siteId>/`, and the request
+guard admits that page as the one entry navigation in place of the site entry,
+which is then refused like any other navigation. Links between pages are not
+followed: a click or key that navigates to another page is blocked, recorded in
+`blockedRequests` and fails the receipt, exactly as before. Asset requests,
+popups, downloads, the CSP, the iframe sandbox and every capsule isolation
+property above are unchanged. A download step's `path` stays relative to the
+site root, and the rendered palette is captured from the same page.
+
+`page` is part of the plan, so `planSha256` binds it; a request without it
+validates and hashes exactly as before, and `schemaVersion` stays 1. Every
+receipt of a page plan, passed or failed, carries the same `page`, and its
+scope ends `Only the requested page of this snapshot was loaded; links between
+pages were not followed.` Receipts of plans without `page` carry neither. The
+broker and the plugin reject a receipt whose `page` differs from the
+request's, and the tool names the page in its result (`Preview inspection of
+page "menu.html" passed.`). A passing page plan counts as browser evidence for
+its snapshot like any other inspection, while owner-requested control names are
+checked against entry-page receipts only (see "Load-time control names"). An
+untested show/hide change gets corrective steps on the same page, without the
+entry page's outline.
+
+The immutable capsule must advertise
+`org.osmantic.ods.inspection.page=snapshot-page-v1`. The broker checks it
+before reading the snapshot, and the installer requires it, as for paint. An
+older image returns a bound `unsupported_capability` failure without executing
+the plan, and the tool asks to inspect the entry page without `page` until the
+inspector is updated; deploy plugin, broker and rebuilt capsule together.
+
+`test_preview_inspection_page.py` covers the page rules, unchanged legacy
+hashes and scope, the file-map binding, the broker's label check, its
+`page_not_found` refusal before any capsule runs, the export without `page` on
+both transports and the receipt binding; through a scripted browser it loads
+the wrapper from the capsule's loopback server and checks its `src`, the
+guard's one entry navigation, a blocked click-through to a sibling page, the
+receipt and the palette. With the opt-in Chromium or image settings above it
+also checks every page of a small multi-page site and a link that is not
+followed. `inspection_page.test.mjs` checks the plugin rules, hash, scope and
+failure receipt against Python's, the schema and description, receipt binding,
+the not-found, unsupported, passing and blocked results, the evidence policy
+and the corrective steps.
 
 ## Viewport screenshot
 

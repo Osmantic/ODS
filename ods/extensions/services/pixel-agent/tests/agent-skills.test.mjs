@@ -75,6 +75,15 @@ test('verification guide keeps scratch work in a hidden project folder that neve
   assert.doesNotMatch(guide, /mktemp -d or tempfile\.mkdtemp in the project;/);
 });
 
+// A multi-page site ("home, menu and contact") needs its other pages checked:
+// the inspector's page opens one, and still never navigates or reloads.
+test('guides point to the inspector page field for other pages without promising navigation', () => {
+  assert.match(AGENT_SKILLS.workspace, /Verify nested routes too \(inspector page\)\./);
+  assert.match(AGENT_SKILLS.verification, /The inspector opens the entry page \(or page\) with no navigation\/reload; report cross-reload persistence unverified\./);
+  assert.match(AGENT_SKILLS.verification, /Simulated reloads and sibling pages are not persistence evidence\./);
+  assert.doesNotMatch(AGENT_SKILLS.verification, /starts at the entry page/);
+});
+
 // Elf of Doom on the RTX Spark: without a runtime the model could only read its
 // canvas game, so a save() leak and a per-hit freeze survived many turns.
 test('verification guide shows offline node checks for browser JavaScript, scoped to the sandbox', () => {

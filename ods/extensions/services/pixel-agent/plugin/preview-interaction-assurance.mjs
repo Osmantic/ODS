@@ -151,11 +151,13 @@ export function boundInspectionPageErrors(params, result, preview) {
 // capsule receipt passed): they are observed before any step runs, so a
 // failed step or a missing transition does not void them. `controls` is
 // undefined when the receipt carries none (an older capsule or a transport
-// failure). Never interaction evidence.
+// failure). Never interaction evidence. Only the entry page's names count:
+// a receipt of another page (`page`) lists that page's buttons and links,
+// which can neither show nor rule out a control of the entry page.
 export function boundInspectionControls(params, result, preview) {
   try {
-    const {receipt} = boundReceipt(params, result, preview, {incomplete: true}) ?? {};
-    return receipt ? Object.freeze({siteId: receipt.siteId, sha256: receipt.sha256,
+    const {request, receipt} = boundReceipt(params, result, preview, {incomplete: true}) ?? {};
+    return receipt && request.page === undefined ? Object.freeze({siteId: receipt.siteId, sha256: receipt.sha256,
       controls: inspectionControls(receipt)}) : undefined;
   } catch { return undefined; }
 }

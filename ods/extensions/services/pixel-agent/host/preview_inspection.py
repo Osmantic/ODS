@@ -22,11 +22,13 @@ from preview_inspection_protocol import (
     MAX_REQUEST_FRAME,
     MAX_RESULT,
     MAX_SCREENSHOT_RESULT,
+    MissingPage,
     SELECT_CAPABILITY,
     FILL_CAPABILITY,
     DOWNLOAD_CAPABILITY,
     PRESS_CAPABILITY,
     PAINT_CAPABILITY,
+    PAGE_CAPABILITY,
     SCREENSHOT_CAPABILITY,
     canonical,
     exact,
@@ -308,6 +310,13 @@ def inspect_request(request, config, cancelled=None):
             b'', timeout=5, limit=128, cancelled=cancelled)
         if capability.decode().strip() != PAINT_CAPABILITY:
             return failure('unsupported_capability', request)
+    if 'page' in request:
+        capability = bounded_process(
+            [*docker_prefix(config), 'image', 'inspect', '--format',
+             '{{index .Config.Labels "org.osmantic.ods.inspection.page"}}', config['imageId']],
+            b'', timeout=5, limit=128, cancelled=cancelled)
+        if capability.decode().strip() != PAGE_CAPABILITY:
+            return failure('unsupported_capability', request)
     # The snapshot and its export never carry the screenshot directive, so an
     # older publisher-side export helper keeps working and the bundle binds the
     # plan alone. An image without the label still runs the plan; only the
@@ -321,8 +330,13 @@ def inspect_request(request, config, cancelled=None):
             b'', timeout=5, limit=128, cancelled=cancelled)
         if capability.decode().strip() != SCREENSHOT_CAPABILITY:
             directive, omitted = None, {"status": "omitted", "reason": "capability_missing"}
+    # The export reads the whole snapshot, so it never sees the page either and
+    # an older export helper keeps working. The page is bound to that
+    # snapshot's file map here, before any browser runs; one that names no
+    # file of the snapshot is refused.
+    snapshot = {key: value for key, value in plan.items() if key != "page"}
     if config["transport"] == "local":
-        bundle = snapshot_bundle(config["snapshotRoot"], plan, config["ownerUid"])
+        bundle = snapshot_bundle(config["snapshotRoot"], snapshot, config["ownerUid"])
     else:
         raw = bounded_process(
             [
@@ -334,15 +348,21 @@ def inspect_request(request, config, cancelled=None):
                 "/source/preview_inspection.py",
                 "export",
             ],
-            canonical(plan),
+            canonical(snapshot),
             timeout=15,
             limit=MAX_BUNDLE,
             cancelled=cancelled,
         )
         bundle = strict_json(raw)
         bound, _files = validate_bundle(bundle)
-        if bound != plan:
+        if bound != snapshot:
             raise Invalid("snapshot mismatch")
+    if "page" in plan:
+        bundle = {**bundle, "request": plan}
+        try:
+            validate_bundle(bundle)
+        except MissingPage:
+            return failure("page_not_found", request)
     if directive is not None:
         bundle = {**bundle, "request": {**plan, "screenshot": directive}}
     name = "ods-preview-inspection-" + uuid.uuid4().hex
@@ -365,6 +385,7 @@ def inspect_request(request, config, cancelled=None):
             or result.get("siteId") != request["siteId"]
             or result.get("sha256") != request["sha256"]
             or result.get("planSha256") != plan_hash(request)
+            or result.get("page") != request.get("page")
             or result.get("status") not in ("passed", "failed")
             or result.get("scope") != inspection_scope(request)
             or len(canonical(result)) > MAX_RESULT
