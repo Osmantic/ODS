@@ -1543,6 +1543,57 @@ class TestGetModelInfoErrors:
         monkeypatch.setattr(builtins, "open", failing_open)
         assert get_model_info() is None
 
+    @staticmethod
+    def _deny_env(monkeypatch):
+        import builtins
+        orig_open = builtins.open
+
+        def denied(path, *a, **kw):
+            if str(path).endswith(".env"):
+                raise PermissionError(13, "Permission denied", str(path))
+            return orig_open(path, *a, **kw)
+
+        monkeypatch.setattr(builtins, "open", denied)
+
+    def test_private_owner_env_uses_the_owner_host_agent(self, install_dir, monkeypatch):
+        """Workstation06 (owner UID 1001): every status poll logged the
+        refusal and the Dashboard header showed no configured model."""
+        import helpers
+
+        (install_dir / ".env").write_text('LLM_MODEL=stale-process-model\n')
+        self._deny_env(monkeypatch)
+        calls = []
+
+        def owner(method, path, *, timeout):
+            calls.append((method, path, timeout))
+            return {"configuredMode": "local", "effectiveMode": "local", "configuredModel": {
+                "llmModel": "qwen3.6-35b-a3b", "ggufFile": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+                "contextSize": 131072}}
+
+        monkeypatch.setattr(helpers, "request_agent_json_sync", owner)
+        info = get_model_info()
+        assert (info.name, info.context_length, info.quantization) == ("qwen3.6-35b-a3b", 131072, "GGUF")
+        assert calls == [("GET", "/v1/model/config", 5)]
+
+    @pytest.mark.parametrize("answer", [
+        "unavailable", None, {"configuredMode": "local"}, {"configuredModel": None},
+        {"configuredModel": {"llmModel": None, "ggufFile": None, "contextSize": None}},
+    ])
+    def test_private_owner_env_without_an_owner_model_has_none(self, install_dir, monkeypatch, answer):
+        import helpers
+        from host_agent_client import AgentUnavailable
+
+        (install_dir / ".env").write_text('LLM_MODEL=stale-process-model\n')
+        self._deny_env(monkeypatch)
+
+        def owner(method, path, *, timeout):
+            if answer == "unavailable":
+                raise AgentUnavailable("host agent unavailable")
+            return answer
+
+        monkeypatch.setattr(helpers, "request_agent_json_sync", owner)
+        assert get_model_info() is None
+
 
 # --- get_bootstrap_status eta/percent branches ---
 

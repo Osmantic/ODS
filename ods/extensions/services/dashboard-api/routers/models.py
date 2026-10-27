@@ -43,6 +43,7 @@ from helpers import (
     get_llama_metrics,
     get_loaded_model,
     is_plausible_single_request_tps,
+    owner_model_config,
     record_model_performance,
 )
 from host_agent_client import (
@@ -394,6 +395,10 @@ def _read_active_model() -> Optional[str]:
         for line in _ENV_PATH.read_text(encoding="utf-8").splitlines():
             if line.startswith("GGUF_FILE="):
                 return parse_env_value(line.split("=", 1)[1])
+    except PermissionError:
+        # The install owner's private .env (an owner other than UID 1000):
+        # its host agent reads the active file for this API.
+        return (owner_model_config() or {}).get("ggufFile")
     except OSError:
         pass
     return None

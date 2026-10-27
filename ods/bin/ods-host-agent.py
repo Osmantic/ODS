@@ -8369,6 +8369,26 @@ def _valid_gguf_filename(value: object) -> bool:
     )
 
 
+def _configured_model_identity(env: dict) -> dict:
+    """The configured model's name, GGUF file and context from .env, each bounded.
+
+    For the Dashboard API when it cannot read the owner's private .env. A
+    value that does not validate is reported as None, never echoed.
+    """
+    context = None
+    for key in ("CTX_SIZE", "MAX_CONTEXT"):
+        value = str(env.get(key) or "")
+        if re.fullmatch(r"[1-9][0-9]{0,8}", value):
+            context = int(value)
+            break
+    llm_model, gguf_file = env.get("LLM_MODEL"), env.get("GGUF_FILE")
+    return {
+        "llmModel": llm_model if _valid_pixel_model_name(llm_model) else None,
+        "ggufFile": gguf_file if _valid_gguf_filename(gguf_file) else None,
+        "contextSize": context,
+    }
+
+
 def _local_gguf_filename_from_id(model_id: str) -> str | None:
     """Map a Dashboard/local model id to a safe GGUF filename candidate."""
     token = str(model_id or "").strip()
@@ -13732,16 +13752,22 @@ class AgentHandler(BaseHTTPRequestHandler):
             json_response(self, 500, {"error": f"Failed to list models: {exc}"})
 
     def _handle_model_config(self):
-        """Expose the two bounded mode identities, never private .env values."""
+        """Expose bounded configuration identities, never private .env values.
+
+        The Dashboard API asks here when the install owner's private .env is
+        not readable by its UID: the persisted mode, and the configured
+        model's name, GGUF file and context, each validated.
+        """
         if not check_auth(self):
             return
         try:
-            mode = _normalize_ods_mode(load_env(INSTALL_DIR / ".env").get("ODS_MODE"))
+            env = load_env(INSTALL_DIR / ".env")
         except (OSError, UnicodeError):
-            mode = "unknown"
+            env = None
         json_response(self, 200, {
-            "configuredMode": mode,
+            "configuredMode": _normalize_ods_mode(env.get("ODS_MODE")) if env is not None else "unknown",
             "effectiveMode": _normalize_ods_mode(STARTUP_ODS_MODE),
+            "configuredModel": _configured_model_identity(env) if env is not None else None,
         }, no_store=True)
 
     def _handle_model_status(self):

@@ -25,6 +25,7 @@ from config import (
 from env_values import parse_env_value
 from host_metrics import apple_host_metrics, linux_scope, windows_host_metrics
 from host_agent_client import AgentClientError, AgentHTTPError, async_request_json as request_agent_json
+from host_agent_client import request_json as request_agent_json_sync
 from models import ServiceStatus, DiskUsage, ModelInfo, BootstrapStatus
 from service_health_dns import ServiceHealthResolver
 
@@ -1313,86 +1314,110 @@ def get_disk_usage() -> DiskUsage:
     return DiskUsage(path=path, used_gb=round(used / (1024**3), 2), total_gb=round(total / (1024**3), 2), percent=percent)
 
 
+def owner_model_config() -> Optional[dict]:
+    """The configured model as the install owner's host agent reads it from .env.
+
+    For an install owner other than UID 1000, whose private .env this API
+    cannot read (Workstation06, 2026-10-26: nvuser, UID 1001). The agent
+    returns only validated identities. None when it cannot answer.
+    """
+    try:
+        snapshot = request_agent_json_sync("GET", "/v1/model/config", timeout=5)
+    except AgentClientError:
+        return None
+    model = snapshot.get("configuredModel") if isinstance(snapshot, dict) else None
+    return model if isinstance(model, dict) else None
+
+
 def get_model_info() -> Optional[ModelInfo]:
     """Get current model info from .env config."""
     env_path = Path(INSTALL_DIR) / ".env"
-    if env_path.exists():
+    if not env_path.exists():
+        return None
+    try:
+        env_values = {}
+        with open(env_path) as f:
+            for line in f:
+                if "=" not in line or line.lstrip().startswith("#"):
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if not key:
+                    continue
+                value = parse_env_value(value)
+                env_values[key] = value
+    except PermissionError:
+        # An install owner other than UID 1000 keeps its private .env from this
+        # API: every status poll logged the refusal and the Dashboard showed no
+        # configured model. The owner's host agent reads it instead.
+        owner = owner_model_config() or {}
+        env_values = {"LLM_MODEL": owner.get("llmModel") or "", "GGUF_FILE": owner.get("ggufFile") or "",
+                      "CTX_SIZE": str(owner.get("contextSize") or "")}
+    except OSError as e:
+        logger.warning("Failed to read .env for model info: %s", e)
+        return None
+
+    model_name = env_values.get("LLM_MODEL")
+    if not model_name:
+        return None
+    size_gb, quant = 15.0, None
+    # CTX_SIZE/MAX_CONTEXT come straight from .env and may be
+    # non-numeric (e.g. "auto", "8k", or a trailing comment); fall
+    # back to the default rather than 500-ing every caller. Mirrors
+    # the guard already used in routers/models.py.
+    context = 32768
+    for key in ("CTX_SIZE", "MAX_CONTEXT"):
         try:
-            env_values = {}
-            with open(env_path) as f:
-                for line in f:
-                    if "=" not in line or line.lstrip().startswith("#"):
-                        continue
-                    key, value = line.split("=", 1)
-                    key = key.strip()
-                    if not key:
-                        continue
-                    value = parse_env_value(value)
-                    env_values[key] = value
+            candidate = int(env_values.get(key) or 0)
+        except (TypeError, ValueError):
+            continue
+        if candidate > 0:
+            context = candidate
+            break
 
-            model_name = env_values.get("LLM_MODEL")
-            if model_name:
-                size_gb, quant = 15.0, None
-                # CTX_SIZE/MAX_CONTEXT come straight from .env and may be
-                # non-numeric (e.g. "auto", "8k", or a trailing comment); fall
-                # back to the default rather than 500-ing every caller. Mirrors
-                # the guard already used in routers/models.py.
-                context = 32768
-                for key in ("CTX_SIZE", "MAX_CONTEXT"):
-                    try:
-                        candidate = int(env_values.get(key) or 0)
-                    except (TypeError, ValueError):
-                        continue
-                    if candidate > 0:
-                        context = candidate
-                        break
+    import re as _re
 
-                import re as _re
+    name_lower = model_name.lower()
+    if "gemma-4-e2b" in name_lower:
+        size_gb = 2.8
+    elif "gemma-4-e4b" in name_lower:
+        size_gb = 5.3
+    elif "gemma-4-26b" in name_lower:
+        size_gb = 18.0
+    elif "gemma-4-31b" in name_lower:
+        size_gb = 19.8
+    elif _re.search(r'\b2b\b', name_lower):
+        size_gb = 1.5
+    elif _re.search(r'\b4b\b', name_lower):
+        size_gb = 2.8
+    elif _re.search(r'\b7b\b', name_lower):
+        size_gb = 4.0
+    elif _re.search(r'\b8b\b', name_lower):
+        size_gb = 4.5
+    elif _re.search(r'\b9b\b', name_lower):
+        size_gb = 5.8
+    elif _re.search(r'\b14b\b', name_lower):
+        size_gb = 8.0
+    elif _re.search(r'\b26b\b', name_lower):
+        size_gb = 18.0
+    elif _re.search(r'\b30b\b', name_lower):
+        size_gb = 18.6
+    elif _re.search(r'\b31b\b', name_lower):
+        size_gb = 19.8
+    elif _re.search(r'\b32b\b', name_lower):
+        size_gb = 16.0
+    elif _re.search(r'\b70b\b', name_lower):
+        size_gb = 35.0
 
-                name_lower = model_name.lower()
-                if "gemma-4-e2b" in name_lower:
-                    size_gb = 2.8
-                elif "gemma-4-e4b" in name_lower:
-                    size_gb = 5.3
-                elif "gemma-4-26b" in name_lower:
-                    size_gb = 18.0
-                elif "gemma-4-31b" in name_lower:
-                    size_gb = 19.8
-                elif _re.search(r'\b2b\b', name_lower):
-                    size_gb = 1.5
-                elif _re.search(r'\b4b\b', name_lower):
-                    size_gb = 2.8
-                elif _re.search(r'\b7b\b', name_lower):
-                    size_gb = 4.0
-                elif _re.search(r'\b8b\b', name_lower):
-                    size_gb = 4.5
-                elif _re.search(r'\b9b\b', name_lower):
-                    size_gb = 5.8
-                elif _re.search(r'\b14b\b', name_lower):
-                    size_gb = 8.0
-                elif _re.search(r'\b26b\b', name_lower):
-                    size_gb = 18.0
-                elif _re.search(r'\b30b\b', name_lower):
-                    size_gb = 18.6
-                elif _re.search(r'\b31b\b', name_lower):
-                    size_gb = 19.8
-                elif _re.search(r'\b32b\b', name_lower):
-                    size_gb = 16.0
-                elif _re.search(r'\b70b\b', name_lower):
-                    size_gb = 35.0
+    gguf_file = env_values.get("GGUF_FILE", "").lower()
+    if "awq" in name_lower:
+        quant = "AWQ"
+    elif "gptq" in name_lower:
+        quant = "GPTQ"
+    elif "gguf" in name_lower or gguf_file.endswith(".gguf"):
+        quant = "GGUF"
 
-                gguf_file = env_values.get("GGUF_FILE", "").lower()
-                if "awq" in name_lower:
-                    quant = "AWQ"
-                elif "gptq" in name_lower:
-                    quant = "GPTQ"
-                elif "gguf" in name_lower or gguf_file.endswith(".gguf"):
-                    quant = "GGUF"
-
-                return ModelInfo(name=model_name, size_gb=size_gb, context_length=context, quantization=quant)
-        except OSError as e:
-            logger.warning("Failed to read .env for model info: %s", e)
-    return None
+    return ModelInfo(name=model_name, size_gb=size_gb, context_length=context, quantization=quant)
 
 
 def get_bootstrap_status() -> BootstrapStatus:

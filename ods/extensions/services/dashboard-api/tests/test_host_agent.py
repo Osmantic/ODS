@@ -11191,6 +11191,10 @@ class TestDockerServiceHealthSnapshot:
         assert len(calls) == 2
 
 
+# .env values that name no model: the configured model's identities are all None.
+_NO_CONFIGURED_MODEL = {"llmModel": None, "ggufFile": None, "contextSize": None}
+
+
 class TestModelConfig:
 
     @pytest.mark.parametrize(("startup", "expected"), [
@@ -11205,7 +11209,8 @@ class TestModelConfig:
         (tmp_path / ".env").write_text("ODS_MODE=local\nHF_TOKEN=private-fixture\n", encoding="utf-8")
         handler = _FakeHandler(b"")
         _mod.AgentHandler._handle_model_config(handler)
-        assert handler.parse_response() == {"configuredMode": "local", "effectiveMode": expected}
+        assert handler.parse_response() == {"configuredMode": "local", "effectiveMode": expected,
+                                            "configuredModel": _NO_CONFIGURED_MODEL}
 
     @pytest.mark.parametrize(("contents", "expected"), [
         (None, "unknown"), ("", "unknown"), ("ODS_MODE=\n", "unknown"),
@@ -11224,7 +11229,8 @@ class TestModelConfig:
         handler = _FakeHandler(b"")
         _mod.AgentHandler._handle_model_config(handler)
         assert handler.response_code == 200
-        assert handler.parse_response() == {"configuredMode": expected, "effectiveMode": "hybrid"}
+        assert handler.parse_response() == {"configuredMode": expected, "effectiveMode": "hybrid",
+                                            "configuredModel": _NO_CONFIGURED_MODEL}
         assert ("Cache-Control", "no-store") in handler.response_headers
 
     @pytest.mark.parametrize("failure", [PermissionError, UnicodeError])
@@ -11241,7 +11247,30 @@ class TestModelConfig:
         monkeypatch.setattr(_mod, "load_env", denied)
         handler = _FakeHandler(b"")
         _mod.AgentHandler._handle_model_config(handler)
-        assert handler.parse_response() == {"configuredMode": "unknown", "effectiveMode": "local"}
+        assert handler.parse_response() == {"configuredMode": "unknown", "effectiveMode": "local",
+                                            "configuredModel": None}
+
+    @pytest.mark.parametrize(("contents", "expected"), [
+        ("LLM_MODEL=qwen3.6-35b-a3b\nGGUF_FILE=Qwen3.6-35B-A3B-UD-Q4_K_M.gguf\nCTX_SIZE=131072\n",
+         {"llmModel": "qwen3.6-35b-a3b", "ggufFile": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf", "contextSize": 131072}),
+        # The legacy context key counts when the canonical one is not a positive count.
+        ("LLM_MODEL=qwen3:30b-a3b\nCTX_SIZE=auto\nMAX_CONTEXT=65536\n",
+         {"llmModel": "qwen3:30b-a3b", "ggufFile": None, "contextSize": 65536}),
+        # A value that does not validate is reported as None, never echoed.
+        ("LLM_MODEL=$(reboot)\nGGUF_FILE=../models/x.gguf\nCTX_SIZE=0\n", _NO_CONFIGURED_MODEL),
+    ])
+    def test_configured_model_identity_is_bounded(self, tmp_path, monkeypatch, contents, expected):
+        """The Dashboard API reads this when the owner's private .env is not
+        readable by its UID (Workstation06: owner nvuser, UID 1001)."""
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+        monkeypatch.setattr(_mod, "STARTUP_ODS_MODE", "local")
+        (tmp_path / ".env").write_text(contents + "HF_TOKEN=private-fixture\n", encoding="utf-8")
+        handler = _FakeHandler(b"")
+        _mod.AgentHandler._handle_model_config(handler)
+        response = handler.parse_response()
+        assert response["configuredModel"] == expected
+        assert "private-fixture" not in json.dumps(response)
 
     def test_authenticated_fixed_route_reads_atomic_replacement(self, tmp_path, monkeypatch):
         import urllib.error
@@ -11274,7 +11303,8 @@ class TestModelConfig:
             headers = {"Authorization": "Bearer model-config-secret"}
             for mode in ("local", "cloud"):
                 with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=2) as response:
-                    assert json.load(response) == {"configuredMode": mode, "effectiveMode": "hybrid"}
+                    assert json.load(response) == {"configuredMode": mode, "effectiveMode": "hybrid",
+                                                   "configuredModel": _NO_CONFIGURED_MODEL}
                     assert response.headers["Cache-Control"] == "no-store"
                 if mode == "local":
                     replacement = tmp_path / ".env-new"

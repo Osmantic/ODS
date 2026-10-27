@@ -201,6 +201,7 @@ ods_prepare_dashboard_data "$INSTALL_DIR" false
             _load_permission_fixture_source(ROOT / "bin/ods-host-agent.py", namespace, {
                 "load_env", "parse_env_text", "_normalize_ods_mode", "_ODS_MODES",
                 "_LEGACY_ODS_MODE_ALIASES", "check_auth", "json_response",
+                "_configured_model_identity", "_valid_pixel_model_name", "_valid_gguf_filename",
             }, handler_methods={"do_GET", "log_message", "_handle_model_config"})
             context = multiprocessing.get_context("fork")
             port_receiver, port_sender = context.Pipe(duplex=False)
@@ -249,7 +250,7 @@ ods_prepare_dashboard_data "$INSTALL_DIR" false
                                     raw = response.read()
                                 assert b"private-fixture-secret" not in raw and b"OPENAI_API_KEY" not in raw
                                 snapshot = json.loads(raw)
-                                assert set(snapshot) == {"configuredMode", "effectiveMode"}
+                                assert set(snapshot) == {"configuredMode", "effectiveMode", "configuredModel"}
                                 snapshots.append(snapshot)
                                 return snapshot
 
@@ -266,8 +267,9 @@ ods_prepare_dashboard_data "$INSTALL_DIR" false
                         result = result_receiver.recv()
                         client.join(5)
                         self.assertEqual(client.exitcode, 0)
-                        self.assertEqual(result, {"mode": mode, "denied": True,
-                                                  "snapshots": [{"configuredMode": mode, "effectiveMode": "local"}]})
+                        no_model = {"llmModel": None, "ggufFile": None, "contextSize": None}
+                        self.assertEqual(result, {"mode": mode, "denied": True, "snapshots": [
+                            {"configuredMode": mode, "effectiveMode": "local", "configuredModel": no_model}]})
                     finally:
                         if client.is_alive():
                             client.terminate()
