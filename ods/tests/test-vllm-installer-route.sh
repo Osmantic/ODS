@@ -281,20 +281,35 @@ decide dgx-auto
 [[ "$(value dgx-auto BACKEND)" == vllm && "$(value dgx-auto EXPORTED)" == vllm ]] \
     || fail "the DGX Station must choose vLLM: $(cat "$tmp/dgx-auto/out")"
 [[ "$(value dgx-auto VLLM_GPU_UUID)" == GPU-aaaaaaaa-gb300 ]] || fail "vLLM must own the GB300, not the RTX PRO 6000"
-[[ "$(value dgx-auto MODEL)" == qwen3.8-flash-next-nvfp4 \
-    && "$(value dgx-auto VLLM_SERVED_MODEL)" == Qwen3.8-Flash-Next-NVFP4 \
-    && "$(value dgx-auto VLLM_MODEL_DIR)" == 'nvidia--Qwen3.8-Flash-Next-NVFP4@fc694b54' ]] \
-    || fail "the DGX Station must get the highest-priority vLLM model: $(cat "$tmp/dgx-auto/out")"
+# The expected pick is the catalog's highest-priority vLLM entry that fits the GB300
+# (model_vllm.rank_entries), so a priority change in the catalog needs no edit here.
+read -r want_model want_served want_dir want_size < <("$real_python" - "$ROOT_DIR" <<'PY'
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+sys.path.insert(0, str(root / "extensions/services/dashboard-api"))
+from model_vllm import Gpu, model_dir_name, rank_entries
+models = json.loads((root / "config/model-library.json").read_text(encoding="utf-8"))["models"]
+best = rank_entries(models, [Gpu("GPU-aaaaaaaa-gb300", "10.3", 256703)])[0].model
+print(best["llm_model_name"], best["served_model_name"], model_dir_name(best), best["size_mb"])
+PY
+)
+want_size="${want_size%$'\r'}"   # a Windows Python ends the line with CRLF
+[[ -n "$want_model" ]] || fail "the catalog must hold a vLLM model that fits the GB300"
+[[ "$(value dgx-auto MODEL)" == "$want_model" \
+    && "$(value dgx-auto VLLM_SERVED_MODEL)" == "$want_served" \
+    && "$(value dgx-auto VLLM_MODEL_DIR)" == "$want_dir" ]] \
+    || fail "the DGX Station must get the highest-priority vLLM model ($want_model): $(cat "$tmp/dgx-auto/out")"
 [[ -z "$(value dgx-auto GGUF_FILE)" && -z "$(value dgx-auto GGUF_URL)" && "$(value dgx-auto MAX_CONTEXT)" == 131072 \
-    && "$(value dgx-auto SIZE_MB)" == 132735 ]] \
+    && "$(value dgx-auto SIZE_MB)" == "$want_size" ]] \
     || fail "the vLLM pick must replace the tier map's GGUF: $(cat "$tmp/dgx-auto/out")"
 [[ "$(value dgx-auto VLLM_IMAGE)" == "$pinned" ]] || fail "VLLM_IMAGE must be the locked pin"
 [[ "$(value dgx-auto VLLM_ARGS)" == *'--max-model-len 131072'* ]] || fail "VLLM_ARGS must carry the catalog arguments"
 [[ "$(calls dgx-auto)" == 1 ]] && grep -qx -- '--query-gpu=uuid,compute_cap,memory.total --format=csv,noheader,nounits' "$tmp/dgx-auto/calls" \
     || fail "the decision must read each GPU's uuid, compute capability and memory once"
-grep -q '^OK Model server: vLLM engine, serving Qwen3.8-Flash-Next-NVFP4 on GPU GPU-aaaaaaaa-gb300$' "$tmp/dgx-auto/out" \
+grep -qx "OK Model server: vLLM engine, serving $want_served on GPU GPU-aaaaaaaa-gb300" "$tmp/dgx-auto/out" \
     || fail "the choice must be shown: $(cat "$tmp/dgx-auto/out")"
-pass "a fresh DGX Station install chooses vLLM on the GB300 with the catalog's Qwen 3.8 NVFP4"
+pass "a fresh DGX Station install chooses vLLM on the GB300 with the catalog's top vLLM pick ($want_served)"
 
 decide b200 "export FAKE_GPU_ROWS='GPU-dddddddd-b200, 10.0, 183359\n'"
 [[ "$(value b200 BACKEND)" == vllm && "$(value b200 VLLM_GPU_UUID)" == GPU-dddddddd-b200 ]] \
@@ -356,7 +371,7 @@ decide rerun-reselect 'ODS_RESELECT_MODEL=true'
 name=rerun-forced; mkdir -p "$tmp/$name/install"; retained 'LLM_BACKEND=llama-server' 'GGUF_FILE=Qwen3.6-35B-A3B-UD-Q4_K_M.gguf'
 decide rerun-forced 'LLM_BACKEND_REQUESTED=vllm'
 [[ "$(rc_of rerun-forced)" == 0 && "$(value rerun-forced BACKEND)" == vllm \
-    && "$(value rerun-forced MODEL)" == qwen3.8-flash-next-nvfp4 && "$(preserve_calls rerun-forced)" == 0 ]] \
+    && "$(value rerun-forced MODEL)" == "$want_model" && "$(preserve_calls rerun-forced)" == 0 ]] \
     || fail "--llm-backend vllm must move a llama.cpp install to the vLLM pick, not keep its GGUF: $(cat "$tmp/rerun-forced/out" "$tmp/rerun-forced/err")"
 name=retained-external; mkdir -p "$tmp/$name/install"; retained 'LLM_BACKEND=external' 'EXTERNAL_LLM_URL=http://127.0.0.1:1234'
 decide retained-external 'ODS_RESELECT_MODEL=true'
@@ -388,7 +403,7 @@ decide rerun-vllm "export FAKE_PRESERVE_OUT='$GLM_CONTRACT'"
     && -z "$(value rerun-vllm GGUF_FILE)" && "$(value rerun-vllm MAX_CONTEXT)" == 131072 \
     && "$(value rerun-vllm SIZE_MB)" == 204476 && "$(value rerun-vllm SELECTION_SOURCE)" == dashboard ]] \
     || fail "a rerun must keep the installed vLLM model, folder, served id, GPU and memory share: $(cat "$tmp/rerun-vllm/out")"
-[[ "$(value rerun-vllm RECOMMENDED)" == qwen3.8-flash-next-nvfp4 ]] \
+[[ "$(value rerun-vllm RECOMMENDED)" == "$want_model" ]] \
     || fail "the fresh vLLM pick must stay the recommendation, not the active model: $(cat "$tmp/rerun-vllm/out")"
 [[ "$(preserve_calls rerun-vllm)" == 1 ]] \
     && grep -qF -- "--env $tmp/rerun-vllm/install/.env " "$tmp/rerun-vllm/preserve-calls" \
@@ -450,7 +465,7 @@ expect_llama rerun-vllm-forced-off llama-server
 grep -qF 'LOG Leaving the vLLM engine' "$tmp/rerun-vllm-forced-off/install.log" || fail "leaving vLLM must be logged"
 name=rerun-vllm-reselect; mkdir -p "$tmp/$name/install"; vllm_install
 decide rerun-vllm-reselect 'ODS_RESELECT_MODEL=true' "export FAKE_PRESERVE_OUT='$GLM_CONTRACT'"
-[[ "$(value rerun-vllm-reselect BACKEND)" == vllm && "$(value rerun-vllm-reselect MODEL)" == qwen3.8-flash-next-nvfp4 \
+[[ "$(value rerun-vllm-reselect BACKEND)" == vllm && "$(value rerun-vllm-reselect MODEL)" == "$want_model" \
     && "$(preserve_calls rerun-vllm-reselect)" == 0 ]] \
     || fail "--reselect-model must replace the installed vLLM model with the fresh pick: $(cat "$tmp/rerun-vllm-reselect/out")"
 name=rerun-vllm-reselect-gone; mkdir -p "$tmp/$name/install"; vllm_install
