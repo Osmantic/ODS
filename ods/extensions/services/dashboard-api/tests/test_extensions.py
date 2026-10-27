@@ -1227,8 +1227,12 @@ class TestEnableExtension:
         user_dir = _setup_user_ext(tmp_path, "my-ext", enabled=True)
         _patch_mutation_config(monkeypatch, tmp_path, user_dir=user_dir)
         starts = []
-        monkeypatch.setattr("routers.extensions._call_agent",
-                            lambda action, sid: starts.append((action, sid)) or True)
+
+        def start(action, sid):
+            starts.append((action, sid))
+            return True
+
+        monkeypatch.setattr("routers.extensions._call_agent", start)
         progress_dir = tmp_path / "extension-progress"
         real_mkstemp = tempfile.mkstemp
 
