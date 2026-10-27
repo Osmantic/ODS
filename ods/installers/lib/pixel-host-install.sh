@@ -4846,7 +4846,8 @@ _ods_pixel_write_onboarding() {
     # route keeps the historical no-think default. The renderer preserves a
     # previously validated reasoning preference for the same model route.
     if [[ -n "${LLAMA_REASONING+x}" ]]; then
-        if [[ "${LLAMA_REASONING:-off}" =~ ^(off|none|false|0)$ ]]; then
+        # Case-insensitive, as ods-host-agent.py reads LLAMA_REASONING.
+        if [[ "$(printf '%s' "${LLAMA_REASONING:-off}" | tr '[:upper:]' '[:lower:]')" =~ ^(off|none|false|0)$ ]]; then
             reasoning=false
         else
             reasoning=true

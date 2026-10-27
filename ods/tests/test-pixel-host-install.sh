@@ -2121,6 +2121,12 @@ _ods_pixel_write_onboarding "$owner" "$home" "$TEST_ROOT/qwen-reasoning-onboardi
     /usr/bin/openclaw /opt/ods/pixel-plugin "$digest"
 check python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); assert v["modelReasoning"] is True' \
     "$TEST_ROOT/qwen-reasoning-onboarding.json"
+# Case-insensitive, as the host agent reads LLAMA_REASONING: OFF is off.
+LLAMA_REASONING=OFF
+_ods_pixel_write_onboarding "$owner" "$home" "$TEST_ROOT/qwen-reasoning-upper-off.json" \
+    /usr/bin/openclaw /opt/ods/pixel-plugin "$digest"
+check python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); assert v["modelReasoning"] is False' \
+    "$TEST_ROOT/qwen-reasoning-upper-off.json"
 LLAMA_REASONING=off
 MAX_CONTEXT=4096
 if _ods_pixel_write_onboarding "$owner" "$home" "$TEST_ROOT/undersized-onboarding.json" \
