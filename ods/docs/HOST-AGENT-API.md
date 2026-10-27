@@ -290,12 +290,14 @@ Compose resolves the images from the services' shipped files and pinned digests.
 {"status": "ready", "service_ids": ["searxng", "hermes", "hermes-proxy"]}
 ```
 
-**Response (202)** while the missing images download in the background:
+**Response (202)** while the missing images download or build in the background:
 ```json
-{"status": "accepted", "service_ids": ["searxng", "hermes", "hermes-proxy"], "pulling": ["hermes"]}
+{"status": "accepted", "service_ids": ["searxng", "hermes", "hermes-proxy"], "pulling": ["hermes"], "building": [], "models": []}
 ```
 
-The progress record under `progress_id` shows `pulling`, with an elapsed time and completed layer count in `phase_label`, then `prepared` or `error`. The download stops only when Docker reports nothing for `ODS_IMAGE_PULL_STALL_SECONDS` (default 900) or after `ODS_IMAGE_PULL_MAX_SECONDS` (default 21600), not after a fixed request timeout. The Library install path downloads its images the same way.
+`building` lists the services whose image Compose builds from the shipped Dockerfile (a `build:` section, such as ComfyUI on NVIDIA) and is not on the host yet, checked under the `image` name or Compose's `<project>-<service>` default. They are built after the downloads, so the start that follows only creates containers; a first ComfyUI build takes about ten minutes, longer than the 600 s start allowance.
+
+The progress record under `progress_id` shows `pulling`, with an elapsed time and completed layer count (downloads) or the current Dockerfile step (builds) in `phase_label`, then `prepared` or `error`. A download or build stops only when Docker reports nothing for `ODS_IMAGE_PULL_STALL_SECONDS` (default 900) or after `ODS_IMAGE_PULL_MAX_SECONDS` (default 21600), not after a fixed request timeout. The Library install path downloads its images the same way.
 
 **Error responses:**
 | Code | Condition |
