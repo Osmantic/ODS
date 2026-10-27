@@ -151,13 +151,26 @@ OBSERVE_ELEMENT = "function(includeText, selectValue, fillValue, performFill, fo
 # say whether it hosts a closed shadow root that hides the real focus.
 FOCUSED_ELEMENT = "function() {\n" + DEEP_FOCUS + "  return focused();\n}"
 
+# Rendered [hidden] elements, and the first three by computed shape only: an
+# overlay that CSS shows covered a generated game's board (Workstation06,
+# 2026-10-27). Author text never leaves the page: a tag outside this list
+# reads "element", and no id, class or text is read.
 DIAGNOSTIC = r"""function() {
-  let count=0, untilFound=0;
+  const tags=new Set(['a','article','aside','button','canvas','dialog','div','fieldset','figure','footer','form','header','iframe','img','input','label','li','main','menu','nav','ol','p','section','select','span','table','textarea','ul','video']);
+  let count=0, untilFound=0; const shapes=[];
   for (const element of document.querySelectorAll('[hidden]')) {
     if(element.getAttribute('hidden')==='until-found') { untilFound++; continue; }
-    if(element.checkVisibility({checkOpacity:true,checkVisibilityCSS:true,contentVisibilityAuto:true}) && [...element.getClientRects()].some(r=>r.width>0 && r.height>0)) count++;
+    if(!element.checkVisibility({checkOpacity:true,checkVisibilityCSS:true,contentVisibilityAuto:true}) || ![...element.getClientRects()].some(r=>r.width>0 && r.height>0)) continue;
+    count++;
+    if(shapes.length<3) {
+      const style=getComputedStyle(element), box=element.getBoundingClientRect(), z=Number.parseInt(style.zIndex,10);
+      const width=Math.max(0,Math.min(innerWidth,box.right)-Math.max(0,box.left)), height=Math.max(0,Math.min(innerHeight,box.bottom)-Math.max(0,box.top));
+      shapes.push({tag:tags.has(element.localName)?element.localName:'element', position:style.position,
+        zIndex:Number.isSafeInteger(z)?z:null,
+        viewportPercent:innerWidth*innerHeight?Math.min(100,Math.round(100*width*height/(innerWidth*innerHeight))):0});
+    }
   }
-  return {renderedHiddenAttributeCount:count, hiddenUntilFoundCount:untilFound};
+  return {renderedHiddenAttributeCount:count, hiddenUntilFoundCount:untilFound, ...(shapes.length?{renderedHidden:shapes}:{})};
 }"""
 
 # Catch only the browser's selector-parser failure in the isolated world. Do
