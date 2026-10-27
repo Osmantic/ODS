@@ -773,6 +773,42 @@ class TestGetAllServices:
         assert probed == ([] if expected == "not_deployed" else ["open-webui"])
 
     @pytest.mark.asyncio
+    async def test_open_webui_switched_off_reads_not_deployed_when_env_file_is_unreadable(self, monkeypatch, tmp_path):
+        # DGX Station: the install owner is UID 1001 and the API runs as 1000, so
+        # the 0600 .env is unreadable and the overview read "8/9 core services online".
+        # The switch then comes from the process environment Compose passes.
+        import config
+        monkeypatch.setattr(config, "INSTALL_DIR", str(tmp_path))
+        config._reset_env_permission_state()
+        env_file = tmp_path / ".env"
+        env_file.write_text("ENABLE_OPEN_WEBUI=true\n", encoding="utf-8")
+        read_text = Path.read_text
+
+        def denied(path, *args, **kwargs):
+            if path == env_file:
+                raise PermissionError("Simulated EACCES on .env")
+            return read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", denied)
+        monkeypatch.setenv("ENABLE_OPEN_WEBUI", "false")
+        monkeypatch.setattr("helpers.load_extension_manifests", lambda *args, **kwargs: ({}, [], []))
+        monkeypatch.setattr("helpers.SERVICES", {"open-webui": {
+            "name": "Open WebUI (Chat)", "port": 8080, "external_port": 3000, "health": "/health", "host": "open-webui"}})
+        probed: list[str] = []
+
+        async def fake_health(sid, cfg):
+            probed.append(sid)
+            return ServiceStatus(id=sid, name=cfg["name"], port=cfg["port"],
+                                 external_port=cfg["external_port"], status="down")
+
+        monkeypatch.setattr("helpers.check_service_health", fake_health)
+        monkeypatch.setattr("helpers.request_agent_json", AsyncMock(side_effect=ValueError("no agent")))
+        result = await get_all_services()
+        assert [item.status for item in result] == ["not_deployed"]
+        assert probed == []
+        assert config.get_env_file_read_error() is not None
+
+    @pytest.mark.asyncio
     async def test_empty_services_returns_empty(self, monkeypatch):
         monkeypatch.setattr("helpers.load_extension_manifests", lambda *args, **kwargs: ({}, [], []))
         monkeypatch.setattr("helpers.SERVICES", {})

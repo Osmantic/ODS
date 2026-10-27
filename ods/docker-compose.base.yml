@@ -281,6 +281,10 @@ services:
       - ODS_DATA_DIR=/data
       - ODS_EXTENSIONS_LIBRARY_DIR=/data/extensions-library
       - ODS_MODE=${ODS_MODE:-local}
+      # Service status reads this live from .env. An install owner other than
+      # UID 1000 leaves the 0600 .env unreadable here, and the status must then
+      # fall back to this copy instead of counting Open WebUI as a core service down.
+      - ENABLE_OPEN_WEBUI=${ENABLE_OPEN_WEBUI:-true}
       - ODS_AGENT_HOST=${ODS_AGENT_HOST:-}
       - ODS_AGENT_PORT=${ODS_AGENT_PORT:-7710}
       - GPU_BACKEND=${GPU_BACKEND:-nvidia}
