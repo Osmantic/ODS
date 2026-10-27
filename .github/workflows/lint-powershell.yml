@@ -41,7 +41,12 @@ jobs:
 
           Install-Module -Name PSScriptAnalyzer -Repository PSGallery -Scope CurrentUser -Force -AllowClobber
           Import-Module PSScriptAnalyzer -ErrorAction Stop
+          Get-Command Invoke-ScriptAnalyzer -Module PSScriptAnalyzer -ErrorAction Stop | Out-Null
           Get-Module PSScriptAnalyzer | Format-Table Name, Version, Path -AutoSize
+          # NuGet may leave a nonzero native exit code after a recovered setup
+          # error. Clear it only after the module and analyzer command load;
+          # installation/import failures still terminate before this point.
+          $global:LASTEXITCODE = 0
 
       - name: Run PowerShell Script Analyzer
         shell: pwsh
