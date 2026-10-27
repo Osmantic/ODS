@@ -6834,6 +6834,10 @@ def _precreate_compose_data_dirs(service_id: str, ext_dir: Path, compose_path: P
             except ValueError:
                 logger.warning("Skipping out-of-tree volume path in %s: %s", service_id, vol_str)
                 continue
+            # A file the extension ships (Whisper's docker-entrypoint.sh) is not
+            # a data directory; mkdir on it logged "File exists" on every start.
+            if dir_path.exists() and not dir_path.is_dir():
+                continue
             try:
                 dir_path.mkdir(parents=True, exist_ok=True)
                 # Native Windows Python has no os.getuid (or POSIX owners);

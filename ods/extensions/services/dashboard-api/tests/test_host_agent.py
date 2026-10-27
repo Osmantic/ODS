@@ -7697,6 +7697,36 @@ class TestPrecreateDataDirs:
         assert (install_dir / "upload").is_dir()
         assert (install_dir / "data" / "state").is_dir()
 
+    def test_leaves_a_bind_mounted_file_alone(self, tmp_path, monkeypatch, caplog):
+        """Whisper bind-mounts its docker-entrypoint.sh; mkdir on that file logged
+        "Failed to pre-create ... File exists" on every start (Workstation06)."""
+        pytest.importorskip("yaml")
+        user_root = tmp_path / "user"
+        builtin_root = tmp_path / "builtin"
+        install_dir = tmp_path / "install"
+        user_root.mkdir()
+        builtin_root.mkdir()
+        install_dir.mkdir()
+        ext_dir = builtin_root / "svc-f"
+        self._write_compose(ext_dir, [
+            "./extensions/services/svc-f/docker-entrypoint.sh:/app/docker-entrypoint.sh:ro",
+            "./data/svc-f:/cache",
+        ])
+        entrypoint = install_dir / "extensions" / "services" / "svc-f" / "docker-entrypoint.sh"
+        entrypoint.parent.mkdir(parents=True)
+        entrypoint.write_text("#!/bin/sh\n", encoding="utf-8")
+
+        monkeypatch.setattr(_mod, "EXTENSIONS_DIR", builtin_root)
+        monkeypatch.setattr(_mod, "USER_EXTENSIONS_DIR", user_root)
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+
+        with caplog.at_level("WARNING"):
+            _mod._precreate_data_dirs("svc-f")
+
+        assert entrypoint.read_text(encoding="utf-8") == "#!/bin/sh\n"
+        assert (install_dir / "data" / "svc-f").is_dir()
+        assert "Failed to pre-create" not in caplog.text
+
     def test_manifest_container_uid_fallback_chowns_when_root(
         self, tmp_path, monkeypatch,
     ):
