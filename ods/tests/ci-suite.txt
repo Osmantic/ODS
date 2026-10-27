@@ -60,6 +60,7 @@ tests/test-cli-status-optional-webui.sh
 tests/test-cli-stt-env.py
 tests/test-cli-update-verification.sh
 tests/test-comfyui-user-dir-persisted.sh
+tests/test-comfyui-cuda-cache-persisted.sh
 tests/test_comfyui_extension_contract.py
 tests/test_extension_assets.py
 tests/test-compose-failure-evidence.sh
