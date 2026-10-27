@@ -1,8 +1,9 @@
 """Pinned native MCP filtering through Pixel and an actual embedded agent turn.
 
 The provider is a controlled loopback SSE fixture, not model inference. It
-deliberately requests an excluded write, then an allowed read as a positive
-control. No owner configuration, credentials, network app or Docker is used.
+requests an unrelated server's read and an excluded write, then the permitted
+read. Exact tool grants must not authorize every configured MCP server. No
+owner configuration, credentials, network app or Docker is used.
 """
 import http.server
 import importlib.util
@@ -47,18 +48,19 @@ for line in sys.stdin:
 @unittest.skipUnless(fixture.PACKAGE and sys.platform == 'linux',
                      'Set OPENCLAW_PACKAGE_DIR for the pinned Linux/WSL native MCP check')
 class NativeMcpRuntimeTests(unittest.TestCase):
-    def test_excluded_write_is_refused_and_allowed_read_reaches_the_model(self):
+    def test_exact_grant_isolates_servers_and_preserves_the_allowed_read(self):
         fixture.PluginRuntimeTests.setUpClass()
         world = fixture.PluginRuntimeTests()
         world.setUp()
         self.addCleanup(world.doCleanups)
         fact = 'Project Cedar: Friday 10:15. ' + secrets.token_hex(12)
         calls = world.home / 'mcp-calls.jsonl'
+        unrelated_calls = world.home / 'unrelated-mcp-calls.jsonl'
         server = world.home / 'project_mcp.py'
         server.write_text(SERVER)
         server.chmod(0o600)
         requests, failures = [], []
-        tool_ids = ('qa-project__project_delete', 'qa-project__project_status')
+        tool_ids = ('qa-unrelated__project_status', 'qa-project__project_delete', 'qa-project__project_status')
 
         class Provider(http.server.BaseHTTPRequestHandler):
             protocol_version = 'HTTP/1.1'
@@ -73,7 +75,8 @@ class NativeMcpRuntimeTests(unittest.TestCase):
                 step = len(requests)
                 choices = [('tool_search', {'query': 'project_status', 'limit': 5}),
                            ('tool_call', {'id': tool_ids[0], 'args': {}}),
-                           ('tool_call', {'id': tool_ids[1], 'args': {}})]
+                           ('tool_call', {'id': tool_ids[1], 'args': {}}),
+                           ('tool_call', {'id': tool_ids[2], 'args': {}})]
                 if step <= len(choices):
                     name, args = choices[step - 1]
                     delta = {'role': 'assistant', 'tool_calls': [{'index': 0, 'id': 'call-' + str(step),
@@ -81,7 +84,7 @@ class NativeMcpRuntimeTests(unittest.TestCase):
                     finish = 'tool_calls'
                 else:
                     tool_results = [item.get('content') for item in request['messages'] if item.get('role') == 'tool']
-                    if step != 4 or fact not in json.dumps(tool_results):
+                    if step != 5 or fact not in json.dumps(tool_results):
                         failures.append('Allowed MCP read did not reach the provider in a tool result')
                     delta, finish = {'role': 'assistant', 'content': fact}, 'stop'
                 chunks = [{'id': 'native-mcp-qa', 'object': 'chat.completion.chunk',
@@ -142,11 +145,14 @@ class NativeMcpRuntimeTests(unittest.TestCase):
         config['models']['providers']['ods-local']['baseUrl'] = 'http://127.0.0.1:%d/v1' % provider.server_port
         # Fixture-only grant: the native registry is not yet exposed in Portal's
         # supported app catalog. This test does not authorize arbitrary servers.
-        config['agents']['list'][0]['tools']['allow'] = ['bundle-mcp']
-        config['tools']['sandbox']['tools']['allow'].append('bundle-mcp')
+        config['agents']['list'][0]['tools']['allow'] = [tool_ids[2]]
+        config['tools']['sandbox']['tools']['allow'].append(tool_ids[2])
         config['mcp'] = {'servers': {'qa-project': {'enabled': True, 'transport': 'stdio',
                          'command': sys.executable, 'args': ['-I', str(server), str(calls), fact],
-                         'toolFilter': {'include': ['project_status']}}}}
+                         'toolFilter': {'include': ['project_status']}},
+                         'qa-unrelated': {'enabled': True, 'transport': 'stdio',
+                         'command': sys.executable,
+                         'args': ['-I', str(server), str(unrelated_calls), 'UNGRANTED ACCOUNT DATA']}}}
         world.write_config(config)
         # Reconfigure with Pixel's real renderer before exercising the native
         # server. A catalog/probe-only test would miss losing the registry or
@@ -175,7 +181,8 @@ class NativeMcpRuntimeTests(unittest.TestCase):
         environment['PIXEL_GATEWAY_TOKEN'] = token
         rendered = render_case.render(environment)
         self.assertEqual(rendered['mcp'], config['mcp'])
-        self.assertIn('bundle-mcp', rendered['tools']['sandbox']['tools']['allow'])
+        self.assertIn(tool_ids[2], rendered['tools']['sandbox']['tools']['allow'])
+        self.assertNotIn('bundle-mcp', rendered['tools']['sandbox']['tools']['allow'])
         candidate.write_text(json.dumps(rendered))
         staged = subprocess.run([sys.executable, str(ROOT / 'installers/lib/pixel-runtime-budget.py'),
             str(candidate), '3004', '', str(world.state)], env={**os.environ, **world.env},
@@ -212,10 +219,16 @@ class NativeMcpRuntimeTests(unittest.TestCase):
         with urllib.request.urlopen(request, timeout=90) as response:
             result = json.load(response)
         self.assertEqual(failures, [])
-        self.assertEqual(len(requests), 4, json.dumps(result))
-        rejected = [item['content'] for item in requests[2]['messages'] if item.get('role') == 'tool']
-        self.assertIn('Unknown tool id', json.dumps(rejected))
-        self.assertIn(tool_ids[0], json.dumps(rejected))
+        self.assertEqual(len(requests), 5, json.dumps(result))
+        for step, tool_id in ((2, tool_ids[0]), (3, tool_ids[1])):
+            rejected = [item['content'] for item in requests[step]['messages'] if item.get('role') == 'tool']
+            self.assertIn('Unknown tool id', json.dumps(rejected))
+            self.assertIn(tool_id, json.dumps(rejected))
+        self.assertNotIn(tool_ids[0], json.dumps(requests[0]['tools']))
+        discovered = json.dumps([item['content'] for item in requests[1]['messages'] if item.get('role') == 'tool'])
+        self.assertNotIn(tool_ids[0], discovered)
+        self.assertNotIn(tool_ids[1], discovered)
+        self.assertFalse(unrelated_calls.exists(), 'An ungranted MCP server must receive no tool calls')
         self.assertEqual([json.loads(line)['name'] for line in calls.read_text().splitlines()], ['project_status'])
         self.assertEqual(result['choices'][0]['message']['content'], fact)
 

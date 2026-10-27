@@ -5,6 +5,9 @@ its pinned OpenClaw package. It does not implement another MCP client, credentia
 vault or scheduler. The local implementation is still in preparation; there is
 no new public native-app enrollment endpoint or catalog item yet.
 
+The combined branch's implemented work, remaining gates and coordination with
+Coffee are recorded in [Portal integrations status](PORTAL-INTEGRATIONS-STATUS.md).
+
 ## Implemented seams
 
 Pixel's renderer retains native `mcp` configuration and the owner's existing
@@ -55,6 +58,16 @@ loopback origin is refused by OpenClaw's network guard before it receives a
 request. The fixture must not weaken that guard to simulate cross-origin OAuth.
 This does not qualify a public remote OAuth provider, provider-side revocation,
 real Mac execution or the complete managed Portal enrollment journey.
+
+`test_native_mcp_runtime.py` also configures two real native stdio servers and
+grants the Pixel agent only one exact tool name, `qa-project__project_status`.
+After Pixel configure/render and the ODS overlay, the actual agent can discover
+and call that read. An excluded write and the other configured server's read
+are absent from its catalog and refused when a controlled provider requests
+them anyway. Only the granted read reaches either server. The fixture does not
+grant the broad `bundle-mcp` group: an app's consent must not implicitly enable
+other configured servers. This proves native permission isolation, not managed
+app enrollment or a real provider login.
 
 For the 8192-token primary Portal profile, native Tool Search keeps the schemas
 of `pixel_gmail_search`, `pixel_gmail_read`, `pixel_calendar_list` and
