@@ -4,7 +4,7 @@ import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
 import {RUN_PROGRESS_LIMITS} from '../plugin/run-progress-budget.mjs';
 
 const prompt='Use Python to calculate sum(i*i for i in range(1, 21)). Show the exact command and its result.';
-const retryKey='pixel-ods-explicit-python-compute';
+const retryKey='pixel-ods-explicit-code-execution';
 const user='ods-'+ 'c'.repeat(64);
 function turn(options={}) {
   const guard=createToolLoopGuard({abortRunAndDrain:async()=>({aborted:true,drained:true,forceCleared:false})});

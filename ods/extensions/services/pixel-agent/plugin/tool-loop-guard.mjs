@@ -5088,13 +5088,20 @@ function ownerRequestsPythonCompute(text) {
 
 function ownerRequestsCodeExecution(text) {
   if (!text || ownerForbidsTools(text)) return false;
-  const lane = ownerLaneText(text);
+  // An inline command is an operand only when owner prose asks to execute it.
+  // Replace its contents with a fixed noun; code cannot supply intent or a ban.
+  const lane = ownerLaneText(text, {preserveCommands:true}).replace(/`[^`\n]*`/g,
+    (value, offset, prose) => /\b(?:execute|run|interpret)\s+$/i.test(prose.slice(0, offset))
+      ? 'command' : ' ');
   // A later instruction can withdraw an earlier execution request. Keep such
   // turns outside this delivery obligation; tool authority is handled elsewhere.
   if (/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|without)\s+(?:(?:actually|really)\s+)?(?:execute|executing|run|running|interpret|interpreting)\b/i.test(lane)) return false;
   const clauses = lane.split(/[!?;\n]+|\.(?=\s|$)/);
   const executionVerb = /\b(?:execute|run|interpret)\b/i;
   const codeObject = /\b(?:code|script|program|python|javascript|typescript|node|command|interpreter|execution\s+tool|exec\s+tool)\b/i;
+  // Require an invocation, rather than adding ordinary nouns like shell or
+  // terminal to codeObject. Version dots are part of the executable token.
+  const interpreterInvocation = /\b(?:execute|run|interpret)\s+(?:python(?:\d+(?:\.\d+)*)?|py|nodejs|deno|bun|ruby|perl|php|lua|rscript|bash|sh|zsh|pwsh|powershell)(?=\s|$)/i;
   const toolPhrase = /\b(?:use|call|invoke)\s+(?:your\s+)?(?:python\s+)?(?:execution|exec|interpreter|terminal|shell)\s+tool\b/i;
   // Meta/instructional framings that mention execution without requesting it.
   const metaPrefix = /^\s*(?:please\s+)?(?:how\b|what\b|why\b|where\b|when\b|explain\b|describe\b|show\s+(?:me\s+)?(?:a\s+)?command\b|tell\s+me\s+how\b|give\s+me\b|print\s+(?:the\s+)?(?:words?|text|string)\b|quote\b|write\s+(?:the\s+)?(?:words?|text|string)\b|say\s+(?:the\s+)?(?:words?|text|string)\b)/i;
@@ -5108,7 +5115,7 @@ function ownerRequestsCodeExecution(text) {
     if (metaPrefix.test(clause)) return false;
     if (codeToRun.test(clause)) return false;
     if (toolPhrase.test(clause)) return true;
-    return executionVerb.test(clause) && codeObject.test(clause);
+    return (executionVerb.test(clause) && codeObject.test(clause)) || interpreterInvocation.test(clause);
   });
 }
 
@@ -8416,8 +8423,7 @@ export function createToolLoopGuard({
         // owner request to execute code.
         executionReceiptObserved: false,
         executionRequested: false,
-        explicitPythonComputeRequested: false,
-        explicitPythonComputeRetried: false,
+        executionRequestRetried: false,
         // Phantom-process bookkeeping: allowed exec calls whose receipt has
         // not been observed yet, and whether any exec went to the background.
         execCallsInFlight: new Set(),
@@ -10950,9 +10956,10 @@ export function createToolLoopGuard({
           state.workspacePreviewRequired ||
           userMessageRequestsWorkspaceMutation(event?.messages, event?.prompt);
         // Later native attempts carry a harness instruction, not a new owner
-        // request. Keep the computation obligation bound to the first request.
-        state.explicitPythonComputeRequested = ownerRequestsPythonCompute(state.ownerRequestText);
-        state.executionRequested = ownerRequestsCodeExecution(laneText) || state.explicitPythonComputeRequested;
+        // request. Keep the execution obligation bound to the first request,
+        // including inline command operands stripped from other intent lanes.
+        state.executionRequested = ownerRequestsCodeExecution(state.ownerRequestText) ||
+          ownerRequestsPythonCompute(state.ownerRequestText);
         state.workspaceTaskPath = userMessageWorkspaceContinuationPath(
           event?.messages,
           event?.prompt
@@ -13855,11 +13862,11 @@ export function createToolLoopGuard({
             'Do not substitute a raw path, Markdown link or image for publication.',
           idempotencyKey:'pixel-ods-workspace-document-delivery', maxAttempts:1}};
       }
-      // A prose-only answer can omit the Python execution the owner requested.
+      // A prose-only answer can omit the code execution the owner requested.
       // Let the model correct that once before any effectful tool attempt.
       // Existing continuations take precedence, and the normal tool admission
       // and terminal execution-receipt checks still decide what may run/pass.
-      if (state?.explicitPythonComputeRequested && !state.explicitPythonComputeRetried &&
+      if (state?.executionRequested && !state.executionRequestRetried &&
           !state.executionReceiptObserved && !state.toolExecutionAttempted &&
           !state.ownerNoTools && !state.extensionCompletionGate?.active &&
           !state.odsAborted && !state.codingExhausted && !state.runDeadlineReached &&
@@ -13869,11 +13876,11 @@ export function createToolLoopGuard({
           (!event?.sessionId || event.sessionId === state.currentSessionId) &&
           (!event?.sessionKey || event.sessionKey === state.currentSessionKey) &&
           !workspaceArtifactUnavailableReason({...context, runId})) {
-        state.explicitPythonComputeRetried = true;
-        return {action:'revise', reason:'The requested Python computation has no execution receipt.', retry:{
-          instruction:'The owner asked you to use Python for a computation. Use the exec tool to run Python, ' +
+        state.executionRequestRetried = true;
+        return {action:'revise', reason:'The requested code run has no execution receipt.', retry:{
+          instruction:'The owner requested actual code execution. Use the exec tool to run the requested code, ' +
             'then report the command and its observed output. Do not substitute an estimated or inferred answer.',
-          idempotencyKey:'pixel-ods-explicit-python-compute', maxAttempts:1}};
+          idempotencyKey:'pixel-ods-explicit-code-execution', maxAttempts:1}};
       }
       const decision = state?.extensionCompletionGate?.active && !extensionStopped
         ? state.extensionCompletionGate.finalize()
