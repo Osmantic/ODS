@@ -169,6 +169,8 @@ const ALLOWED_SERVICES = new Set([
   "dashboard-api",
   "ods-llama-server",
   "llama-server",
+  "ods-vllm-server",
+  "vllm-server",
   "ods-searxng",
   "searxng",
   "ods-langfuse",
@@ -1786,6 +1788,46 @@ export async function dockerRuntime(deps = defaultDeps) {
   return { model, context_length: contextLength };
 }
 
+function commandFlag(command, flag) {
+  const index = command.indexOf(flag);
+  if (index >= 0) return command[index + 1];
+  const joined = command.find((item) => item.startsWith(`${flag}=`));
+  return joined === undefined ? undefined : joined.slice(flag.length + 1);
+}
+
+// LLM_BACKEND=vllm: ods-vllm-server serves --served-model-name with the
+// context its --max-model-len (catalog VLLM_ARGS) fixes; there is no
+// ods-llama-server, or only one an earlier install left stopped.
+export async function dockerVllmRuntime(deps = defaultDeps) {
+  const { stdout } = await execFilePromise(
+    deps.execFile,
+    "docker",
+    ["inspect", "ods-vllm-server", "--format", "{{json .Config.Cmd}}"],
+    { timeout: DOCKER_TIMEOUT_MS, maxBuffer: 64 * 1024, windowsHide: true }
+  );
+  let command;
+  try {
+    command = JSON.parse(String(stdout || ""));
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(command) || !command.every((item) => typeof item === "string")) {
+    return null;
+  }
+  const model = commandFlag(command, "--served-model-name");
+  const contextLength = Number(commandFlag(command, "--max-model-len"));
+  if (
+    typeof model !== "string" ||
+    !MODEL_NAME_RE.test(model) ||
+    !Number.isInteger(contextLength) ||
+    contextLength < 4096 ||
+    contextLength > 10_000_000
+  ) {
+    return null;
+  }
+  return { model, context_length: contextLength };
+}
+
 export async function dockerRouterRuntime(deps = defaultDeps) {
   const { stdout } = await execFilePromise(
     deps.execFile,
@@ -1884,7 +1926,9 @@ export async function writeStatus(
   // to label that provider with an unrelated local llama model.
   if (configuredRuntime === undefined && runtime === null && docker === "ok") {
     try {
-      runtime = await dockerRuntime(deps);
+      runtime = apps.some(({ name }) => name === "ods-vllm-server")
+        ? await dockerVllmRuntime(deps)
+        : await dockerRuntime(deps);
     } catch {
       runtime = null;
     }

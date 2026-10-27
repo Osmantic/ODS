@@ -2832,6 +2832,8 @@
       "name": "Qwen 3.8 Flash Next NVFP4 (vLLM)",
       "family": "qwen",
       "runtime": "vllm",
+      "tools": true,
+      "vision": true,
       "hf_repo": "nvidia/Qwen3.8-Flash-Next-NVFP4",
       "revision": "fc694b54fb0174e0913e6adf86691ef85a4ead47",
       "source_url": "https://huggingface.co/nvidia/Qwen3.8-Flash-Next-NVFP4",
@@ -2846,6 +2848,12 @@
       "min_gpu_mib": 158720,
       "compute_capability": ["10.0", "10.3"],
       "reasoning": "medium",
+      "thinking_template_kwargs": {
+        "off": {"enable_thinking": false},
+        "low": {"reasoning_effort": "low"},
+        "medium": {"reasoning_effort": "medium"},
+        "high": {"reasoning_effort": "xhigh"}
+      },
       "tool_call_parser": "qwen3_coder",
       "reasoning_parser": "qwen3",
       "vllm_args": ["--quantization", "modelopt", "--max-model-len", "131072", "--max-num-seqs", "32", "--max-num-batched-tokens", "8192", "--enable-prefix-caching", "--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder", "--reasoning-parser", "qwen3", "--trust-remote-code", "--engram-config.cpu_offload=false", "--speculative-config.method=mtp", "--speculative-config.num_speculative_tokens=3"],
@@ -2891,6 +2899,19 @@
       "name": "GLM 5.3 Flash NVFP4 (vLLM)",
       "family": "glm",
       "runtime": "vllm",
+      "tools": true,
+      "vision": true,
+      "app_compatibility": {
+        "pixel_agent": {
+          "status": "verified",
+          "label": "Pixel verified on a DGX Station (vLLM)",
+          "reason": "A fresh LLM_BACKEND=vllm install on Workstation06 (DGX Station GB300) served this model and passed Portal visitor rounds 5 and 7: a mood journal that remembers entries, built and checked in 48.6 s; a cited answer that matched GitHub; a CSV download; exact free GPU memory; a follow-up feature; a false bug report investigated without changing code; a three-page site checked page by page; and a clarifying question for an ambiguous request.",
+          "evidence": "Workstation06 ~/.local/state/claude-e2e/round5-glm-vllm.json and round7-glm-vllm.json; summarized on Osmantic/ODS#8298",
+          "recordedAt": "2026-10-27T22:05:00Z",
+          "productSha": "43143c59c1bb031394432af11c120d927e113d5b",
+          "hostScope": ["workstation06"]
+        }
+      },
       "hf_repo": "nvidia/GLM-5.3-Flash-NVFP4",
       "revision": "da920bb0b9f4a06727223a349e55468e38352348",
       "source_url": "https://huggingface.co/nvidia/GLM-5.3-Flash-NVFP4",
@@ -2904,6 +2925,12 @@
       "min_gpu_mib": 244736,
       "compute_capability": ["10.0", "10.3"],
       "reasoning": "medium",
+      "thinking_template_kwargs": {
+        "off": {"reasoning_effort": "low"},
+        "low": {"reasoning_effort": "low"},
+        "medium": {"reasoning_effort": "high"},
+        "high": {}
+      },
       "tool_call_parser": "glm47",
       "reasoning_parser": "glm47",
       "vllm_args": ["--max-model-len", "131072", "--kv-cache-dtype", "fp8", "--max-num-seqs", "32", "--max-num-batched-tokens", "8192", "--enable-prefix-caching", "--enable-auto-tool-choice", "--tool-call-parser", "glm47", "--reasoning-parser", "glm47", "--trust-remote-code", "--speculative-config.method=mtp", "--speculative-config.num_speculative_tokens=5", "--no-enable-flashinfer-autotune"],

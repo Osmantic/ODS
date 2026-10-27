@@ -15,6 +15,13 @@ the vLLM engine (``.env`` ``LLM_BACKEND=vllm``), not llama.cpp. They carry no
   compute capabilities;
 * ``reasoning`` (the thinking default), plus ``tool_call_parser`` and
   ``reasoning_parser``, which name the same parsers as ``vllm_args``;
+* ``thinking_template_kwargs``: for each ODS thinking level (off, low,
+  medium, high) the ``chat_template_kwargs`` that select it in this model's
+  own chat template. Templates disagree (GLM-5.3 reads only
+  ``reasoning_effort`` low or high and thinks at "max" for any other value;
+  Qwen3.8 turns thinking off with ``enable_thinking`` and fails on an
+  unknown ``reasoning_effort``), so a level is never passed through
+  literally: model-router applies this map on the vllm route;
 * ``selection``: 0 for every llama.cpp memory class, so no llama.cpp install
   ever picks the entry, and a ``vllm`` priority for ``--llm-runtime vllm``.
 
@@ -55,6 +62,7 @@ _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 # splitting, so they hold no whitespace, quotes or shell syntax.
 _ARG = re.compile(r"[A-Za-z0-9_.:/=,+-]+")
 _GPU_UUID = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*")
+_TEMPLATE_KWARG = re.compile(r"[a-z][a-z0-9_]{0,63}")
 _GPU_MEMORY = re.compile(r"([0-9]+)(?:\s*MiB)?")
 _FILE_KEYS = ({"path", "size", "sha256"}, {"path", "size", "git_blob_sha1"})
 _SELECTION_KEYS = frozenset(LLAMA_MEMORY_CLASSES) | {VLLM_RUNTIME}
@@ -226,6 +234,28 @@ def _serving_problems(model: dict[str, Any]) -> list[str]:
     return problems
 
 
+def _thinking_problems(value: Any) -> list[str]:
+    if not isinstance(value, dict) or set(value) != set(REASONING_LEVELS):
+        return [f"thinking_template_kwargs must map each of {', '.join(REASONING_LEVELS)} "
+                "to chat_template_kwargs"]
+    problems = []
+    for level in REASONING_LEVELS:
+        kwargs = value[level]
+        if not isinstance(kwargs, dict) or not all(
+            isinstance(key, str) and _TEMPLATE_KWARG.fullmatch(key)
+            and (isinstance(item, bool) or (isinstance(item, str) and _NAME.fullmatch(item)))
+            for key, item in kwargs.items()
+        ):
+            problems.append(f"thinking_template_kwargs.{level} must map template argument names "
+                            "to booleans or plain words")
+    return problems
+
+
+def thinking_template_kwargs(model: dict[str, Any], level: str) -> dict[str, Any]:
+    """The ``chat_template_kwargs`` that select ODS thinking ``level`` in this model."""
+    return dict(model["thinking_template_kwargs"][level])
+
+
 def _size_problems(model: dict[str, Any]) -> list[str]:
     total = manifest_bytes(model)
     problems = []
@@ -245,6 +275,7 @@ def entry_problems(model: Any) -> list[str]:
         *_identity_problems(model),
         *files,
         *_serving_problems(model),
+        *_thinking_problems(model.get("thinking_template_kwargs")),
         *_args_problems(model),
         *_selection_problems(model.get("selection")),
         *([] if files else _size_problems(model)),
