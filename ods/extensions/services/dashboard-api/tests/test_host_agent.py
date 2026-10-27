@@ -9951,7 +9951,7 @@ class TestModelDownloadFileIntegrity:
         target = install_dir / "data/models/test-model.gguf"
         calls = self._patch_curl_download(monkeypatch, payload)
         real_sha256 = hashlib.sha256
-        entered = []
+        entered: list[bool] = []
 
         class InterruptedDigest:
             def __init__(self, *args, **kwargs):
