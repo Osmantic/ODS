@@ -289,7 +289,9 @@ fi
 # older drivers while selecting CPU Whisper and suppressing only its GPU
 # overlay. This mirrors the existing Windows installer contract.
 ods_configure_whisper_acceleration "$GPU_BACKEND" "${DRIVER_VERSION:-0}"
-if [[ "$WHISPER_ACCELERATION_FORCED_CPU" == "true" ]]; then
+if [[ "$WHISPER_ACCELERATION_FORCED_CPU" == "true" ]] && ods_host_is_arm64; then
+    log "Whisper's CUDA image has no GPU support on arm64; using CPU Whisper with the base model while keeping GPU inference enabled"
+elif [[ "$WHISPER_ACCELERATION_FORCED_CPU" == "true" ]]; then
     ai_warn "Whisper CUDA requires NVIDIA driver ${MIN_WHISPER_CUDA_DRIVER_VERSION}+; detected ${DRIVER_VERSION:-unknown}. Using CPU Whisper while keeping GPU inference enabled."
 elif [[ "$WHISPER_ACCELERATION" == "cpu" && "$GPU_BACKEND" == "nvidia" ]]; then
     log "Whisper CPU acceleration explicitly selected; NVIDIA inference remains enabled"
