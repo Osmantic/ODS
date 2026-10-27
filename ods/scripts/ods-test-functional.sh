@@ -280,7 +280,7 @@ echo "========================================"
 # TESTS_PASSED / TESTS_FAILED counters are updated inside pass/fail and
 # drive the final exit code below, so suspending strict mode for exactly
 # this block is the explicit expression of "errors here are accounted for."
-# (CLAUDE.md forbids `|| true` / silent swallow; this bounded toggle makes
+# (AGENTS.md forbids `|| true` / silent swallow; this bounded toggle makes
 # the intent visible instead of hiding it behind a trailing `|| true`.)
 set +e
 test_llm_functional

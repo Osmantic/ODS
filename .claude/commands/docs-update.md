@@ -15,7 +15,7 @@ Review all project documentation against recent git changes with full project co
 - **--scope**: Limit scope to specific docs (default: all)
   - `all` - All documentation files
   - `readme` - README.md only
-  - `claude` - CLAUDE.md only
+  - `claude` - AGENTS.md only
   - `extensions` - Extension-related docs only
   - `dashboard-api` - Dashboard API README only
 
@@ -33,7 +33,7 @@ Review all project documentation against recent git changes with full project co
 | Doc File | Purpose | Scope Key |
 |----------|---------|-----------|
 | `README.md` | Main project documentation | readme |
-| `CLAUDE.md` | Claude Code instructions | claude |
+| `AGENTS.md` | Coding agent instructions | claude |
 | `ods/README.md` | Core product documentation (if exists) | readme |
 | `ods/extensions/services/dashboard-api/README.md` | Dashboard API documentation | dashboard-api |
 | `ods/extensions/services/dashboard/README.md` | Dashboard UI documentation (if exists) | readme |
@@ -63,20 +63,20 @@ Use this mapping table to identify which docs need updating:
 
 | Code Pattern | Affected Documentation |
 |--------------|----------------------|
-| `ods/installers/lib/*.sh` | CLAUDE.md (installer architecture, key file paths) |
-| `ods/installers/phases/*.sh` | CLAUDE.md (installer architecture) |
-| `ods/scripts/*.sh` | CLAUDE.md (build commands, key file paths) |
-| `ods/ods-cli` | README.md, CLAUDE.md |
-| `ods/extensions/services/*/manifest.yaml` | CLAUDE.md (extension system) |
-| `ods/docker-compose*.yml` | README.md, CLAUDE.md (Docker compose layering) |
-| `ods/config/backends/*.json` | CLAUDE.md (GPU backend / tier system) |
-| `ods/extensions/services/dashboard-api/**` | CLAUDE.md, dashboard-api/README.md |
-| `ods/extensions/services/dashboard/**` | CLAUDE.md, README.md |
-| `ods/tests/**` | CLAUDE.md (build commands) |
-| `ods/Makefile` | CLAUDE.md (build commands) |
-| `.github/workflows/*` | CLAUDE.md (CI workflows) |
-| `ods/.env.example` | CLAUDE.md, README.md |
-| `ods/.env.schema.json` | CLAUDE.md |
+| `ods/installers/lib/*.sh` | AGENTS.md (installer architecture, key file paths) |
+| `ods/installers/phases/*.sh` | AGENTS.md (installer architecture) |
+| `ods/scripts/*.sh` | AGENTS.md (build commands, key file paths) |
+| `ods/ods-cli` | README.md, AGENTS.md |
+| `ods/extensions/services/*/manifest.yaml` | AGENTS.md (extension system) |
+| `ods/docker-compose*.yml` | README.md, AGENTS.md (Docker compose layering) |
+| `ods/config/backends/*.json` | AGENTS.md (GPU backend / tier system) |
+| `ods/extensions/services/dashboard-api/**` | AGENTS.md, dashboard-api/README.md |
+| `ods/extensions/services/dashboard/**` | AGENTS.md, README.md |
+| `ods/tests/**` | AGENTS.md (build commands) |
+| `ods/Makefile` | AGENTS.md (build commands) |
+| `.github/workflows/*` | AGENTS.md (CI workflows) |
+| `ods/.env.example` | AGENTS.md, README.md |
+| `ods/.env.schema.json` | AGENTS.md |
 | `install.sh`, `install.ps1` | README.md |
 
 ---
@@ -89,8 +89,8 @@ If `--scope` argument provided, filter affected docs:
 |-----------|-----------------|
 | `all` | All documentation files |
 | `readme` | README.md, ods/README.md |
-| `claude` | CLAUDE.md only |
-| `extensions` | Extension manifests, CLAUDE.md (extension system section) |
+| `claude` | AGENTS.md only |
+| `extensions` | Extension manifests, AGENTS.md (extension system section) |
 | `dashboard-api` | dashboard-api/README.md only |
 
 ---
@@ -116,7 +116,7 @@ For each affected document, validate against its source-of-truth files.
 5. **Environment variables** - Match `.env.example`
 6. **Docker Compose commands** - Correct file references
 
-### 3.2 CLAUDE.md Validation
+### 3.2 AGENTS.md Validation
 
 **Source of truth files:**
 - `ods/install-core.sh` - Installer orchestrator
@@ -163,7 +163,7 @@ For each affected document, validate against its source-of-truth files.
 ### 4.1 Consistency Checks
 
 Ensure information is consistent across docs:
-- Build commands in CLAUDE.md match Makefile targets
+- Build commands in AGENTS.md match Makefile targets
 - Extension list matches actual `extensions/services/*/` directories
 - Docker compose file names consistent everywhere
 - Environment variables match across all docs
@@ -188,7 +188,7 @@ Verify documented commands are accurate:
 
 ### 4.4 Ask About Cross-Doc Inconsistencies
 
-If information conflicts between documents (e.g., different build commands in README.md vs CLAUDE.md):
+If information conflicts between documents (e.g., different build commands in README.md vs AGENTS.md):
 
 ```
 AskUserQuestion:
@@ -234,7 +234,7 @@ AskUserQuestion:
 
 ---
 
-### CLAUDE.md
+### AGENTS.md
 **Status**: Stale / Up-to-date
 **Affected by**: [list of changed files]
 
@@ -269,7 +269,7 @@ AskUserQuestion:
   options:
     - label: "README.md"
       description: "<N issues found — <brief summary>>"
-    - label: "CLAUDE.md"
+    - label: "AGENTS.md"
       description: "<N issues found — <brief summary>>"
     - label: "dashboard-api/README.md"
       description: "<N issues found — <brief summary>>"
@@ -278,8 +278,8 @@ AskUserQuestion:
 ```
 
 1. Process each user-selected doc in order:
-   - CLAUDE.md first (primary developer reference)
-   - README.md second (must stay consistent with CLAUDE.md)
+   - AGENTS.md first (primary developer reference)
+   - README.md second (must stay consistent with AGENTS.md)
    - Other docs after
 
 2. For each doc:
@@ -308,20 +308,20 @@ AskUserQuestion:
 | Document | Status | Sections Updated | Changes |
 |----------|--------|------------------|---------|
 | README.md | Updated/Skipped | X | [brief] |
-| CLAUDE.md | Updated/Skipped | X | [brief] |
+| AGENTS.md | Updated/Skipped | X | [brief] |
 | dashboard-api/README.md | Updated/Skipped | X | [brief] |
 
 ### Verification Commands
 
 # Review all documentation changes
-git diff README.md CLAUDE.md ods/extensions/services/dashboard-api/README.md
+git diff README.md AGENTS.md ods/extensions/services/dashboard-api/README.md
 
 # Commit all doc updates
-git add README.md CLAUDE.md ods/extensions/services/dashboard-api/README.md
+git add README.md AGENTS.md ods/extensions/services/dashboard-api/README.md
 git commit -m "docs: update documentation for recent changes"
 
 # Revert all doc changes if needed
-git checkout README.md CLAUDE.md ods/extensions/services/dashboard-api/README.md
+git checkout README.md AGENTS.md ods/extensions/services/dashboard-api/README.md
 ```
 
 ---

@@ -348,7 +348,7 @@ For each agent, provide a detailed brief:
 - **Objective**: What this agent must accomplish
 - **Inputs**: What context/files it needs
 - **Outputs**: What it produces
-- **Constraints**: Rules it must follow (from CLAUDE.md design principles)
+- **Constraints**: Rules it must follow (from AGENTS.md design principles)
 - **Done when**: Clear completion criteria
 - **Output Contract**: Every agent brief MUST end with the following instruction:
 
@@ -772,7 +772,7 @@ If every agent in a wave fails or crashes, abort execution immediately. Present 
 - Handoff documents must stay under 2000 tokens (concise summaries, not full output)
 - Each workstream must have exactly one owning role
 - Agent briefs must reference specific files discovered during Phase 1 exploration
-- All plans must respect CLAUDE.md design principles (Let It Crash, KISS, Pure Functions, SOLID)
+- All plans must respect AGENTS.md design principles (Let It Crash, KISS, Pure Functions, SOLID)
 - Do not propose workstreams for work that doesn't exist (e.g., no "Docs" workstream if no docs need updating)
 - Orchestrator stays active throughout supervised execution — do not yield control between waves
 - Agents must report `files_modified` with absolute paths in their `AGENT_REPORT`

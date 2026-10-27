@@ -488,6 +488,6 @@ Then attempt fixes using `Edit` and report results.
 - Requires PAL MCP server configured with at least one model provider
 - Models are discovered dynamically via `mcp__pal__listmodels`
 - Review depth scales with diff size (larger diffs get chunked)
-- Shell files get additional `set -euo pipefail` and POSIX compatibility review per CLAUDE.md
+- Shell files get additional `set -euo pipefail` and POSIX compatibility review per AGENTS.md
 - Extended diff context (-U10) provides better code understanding
 - Binary files are noted but excluded from diff review

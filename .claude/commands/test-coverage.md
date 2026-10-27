@@ -481,4 +481,4 @@ cd ods && make gate                                           # Full gate
 - Python coverage = pytest-cov line-level coverage
 - BATS tests load `bats-support` and `bats-assert` from `tests/bats/`
 - Never mock Pydantic validation — let ValidationError propagate per Let It Crash
-- ODS CLAUDE.md forbids `2>/dev/null` — never suppress errors in tests
+- ODS AGENTS.md forbids `2>/dev/null` — never suppress errors in tests

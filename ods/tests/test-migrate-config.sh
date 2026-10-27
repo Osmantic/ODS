@@ -196,18 +196,18 @@ if grep -q "|| true" "$MIGRATE_CONFIG_SCRIPT"; then
 fi
 
 if [[ $suppression_count -eq 0 ]]; then
-    pass "CLAUDE.md compliance: no silent error suppressions found"
+    pass "AGENTS.md compliance: no silent error suppressions found"
 else
-    fail "CLAUDE.md compliance: found $suppression_count error suppressions (2>/dev/null, || true)"
+    fail "AGENTS.md compliance: found $suppression_count error suppressions (2>/dev/null, || true)"
 fi
 
 # ============================================================================
 # Test 10: Script uses inline exit code capture
 # ============================================================================
 if grep -q "_exit=0" "$MIGRATE_CONFIG_SCRIPT" && grep -q "|| .*_exit=\$?" "$MIGRATE_CONFIG_SCRIPT"; then
-    pass "CLAUDE.md compliance: uses inline exit code capture pattern"
+    pass "AGENTS.md compliance: uses inline exit code capture pattern"
 else
-    fail "CLAUDE.md compliance: missing inline exit code capture pattern"
+    fail "AGENTS.md compliance: missing inline exit code capture pattern"
 fi
 
 # ============================================================================

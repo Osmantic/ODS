@@ -5,7 +5,7 @@ Do NOT use AskUserQuestion. Do NOT pause for user input.
 
 ## Rules
 
-1. Follow ALL design principles from CLAUDE.md: **Let It Crash** (primary), **KISS**, **Pure Functions**, **SOLID**
+1. Follow ALL design principles from AGENTS.md: **Let It Crash** (primary), **KISS**, **Pure Functions**, **SOLID**
 2. Keep changes **minimal and focused** — only implement what the issue requests
 3. **Prefer no change over a wrong change** — if the issue is vague, ambiguous, or not actionable, make zero changes
 4. Do NOT modify protected files:
@@ -32,7 +32,7 @@ Read the issue details (appended below). Determine:
 
 ### Step 2: Explore the Codebase
 
-1. Read `CLAUDE.md` for project structure and conventions
+1. Read `AGENTS.md` for project structure and conventions
 2. Use Glob and Grep to find the files relevant to the issue
 3. Read the relevant source files to understand existing patterns and conventions
 4. Identify the minimal set of files that need changes
@@ -56,7 +56,7 @@ Read the issue details (appended below). Determine:
 ## What NOT to Change
 
 - **Protected files** listed in Rule 4 above
-- **Design philosophy** sections in CLAUDE.md (Let It Crash, SOLID, KISS, Pure Functions)
+- **Design philosophy** sections in AGENTS.md (Let It Crash, SOLID, KISS, Pure Functions)
 - **Unrelated code** — do not refactor, clean up, or "improve" code outside the issue scope
 - **Test files** — unless the issue specifically requests test changes
 - **Frontend code** — unless the issue specifically involves the frontend

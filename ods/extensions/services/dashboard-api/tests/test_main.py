@@ -1242,7 +1242,7 @@ class TestApiStatusFallback:
     def test_runtime_error_propagates_as_500(self, test_client, monkeypatch):
         """Programming errors (RuntimeError) inside _build_api_status must
         propagate so they surface in tests / monitoring rather than being
-        silently masked as 200-with-zeros (CLAUDE.md "Let It Crash")."""
+        silently masked as 200-with-zeros (AGENTS.md "Let It Crash")."""
         from fastapi.testclient import TestClient
         from main import app
 

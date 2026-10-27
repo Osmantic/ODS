@@ -1056,7 +1056,7 @@ get_compose_flags() {
 # nounset/exit-code audit change), grep's no-match or a SIGPIPE from
 # `head -20` on >20 matches would abort this function before the caller
 # sees the compose log path or the compose exit code. `|| warn "..."`
-# is the project-blessed form (per CLAUDE.md) for "tolerate this specific
+# is the project-blessed form (per AGENTS.md) for "tolerate this specific
 # non-match and log why the summary is empty" — it costs nothing today
 # and keeps the function correct under future pipefail.
 _compose_run_with_summary() {

@@ -9,7 +9,7 @@ Do NOT use AskUserQuestion. Do NOT pause for user input. Do NOT use Write to cre
 2. NEVER modify: `.github/`, `.env*`, `*.py`, `*.sh`, `*.ts`, `*.tsx`, `*.yml`, `*.yaml`
 3. Be CONSERVATIVE — only update sections where code has demonstrably changed
 4. Do NOT add new sections, restructure documents, or change formatting/style
-5. Do NOT modify design principles, philosophy, or instructional content in CLAUDE.md
+5. Do NOT modify design principles, philosophy, or instructional content in AGENTS.md
 6. Focus on: factual data (tables, file paths, model names, env vars, API routes, command examples)
 7. When cross-doc inconsistency found: code is the source of truth — update the doc to match code
 8. When ambiguous: SKIP the change entirely (do not guess)
@@ -56,7 +56,7 @@ Use this mapping to determine which code files to read when validating each docu
 | Test commands | `ods/Makefile`, `ods/tests/` directory layout |
 | Install instructions | `ods/install-core.sh`, `ods/installers/phases/` |
 
-### CLAUDE.md
+### AGENTS.md
 
 | Doc Section | Source of Truth |
 |-------------|----------------|
@@ -76,7 +76,7 @@ Use this mapping to determine which code files to read when validating each docu
 - Environment variables must match `.env.example`
 - Do NOT modify the project description, badges, or contribution guidelines
 
-### CLAUDE.md
+### AGENTS.md
 - Repository Structure section paths must point to files that exist
 - Build commands must match Makefile targets
 - Extension list must match `extensions/services/` directory
