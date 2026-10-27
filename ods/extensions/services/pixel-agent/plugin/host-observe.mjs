@@ -342,7 +342,7 @@ export function createHostObserveTool({
   return {
     name: "pixel_ods_host_observe",
     description:
-      "Read selected ODS host facts through the external Operations Broker and return their receipt. Use it for questions about this machine, such as its GPUs, memory, storage or services: your sandbox sees only its own container and no GPUs. Choose the typed host.* actions useful for this task, respecting the owner's exclusions. You can gather more facts in later calls. If a read times out, check its existing job ID before retrying. host.network-peer may resolve and probe one owner-named private LAN or Tailscale peer with bounded ports. This tool cannot scan a range, authenticate, execute commands, mutate a host, or approve plans.",
+      "Read selected ODS host facts through the external Operations Broker and return their receipt. Use it for questions about this machine, such as its GPUs (host.gpu includes each GPU's free memory), RAM, storage or services: your sandbox sees only its own container and no GPUs. Choose the typed host.* actions useful for this task, respecting the owner's exclusions. You can gather more facts in later calls. If a read times out, check its existing job ID before retrying. host.network-peer may resolve and probe one owner-named private LAN or Tailscale peer with bounded ports. This tool cannot scan a range, authenticate, execute commands, mutate a host, or approve plans.",
     parameters: {
       type: "object",
       additionalProperties: false,
