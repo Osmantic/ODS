@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`449c05965b0b53f0f335fd719693caa860e05406`, and its SHA-256 is
-`666f0a1d085849573a2e89dd781d1190e8965c76aac06bd10815478630befad6`.
+`ce11c0236dee8f2a22588d1ddfcb5185776fb9eb`, and its SHA-256 is
+`c0cfc968cf82b5b3b1f8ef68e5124ec4b43c8a3dff5b0f136b8d2d7bd60854eb`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -340,7 +340,7 @@ registry is unchanged before activation. The functional checkpoint is
 [`pixel/ODS-QUALIFICATION-4.3.36.md`](pixel/ODS-QUALIFICATION-4.3.36.md) for evidence
 and the remaining acceptance gates. This is not a claim of fleet acceptance.
 
-The public source tree is `b54fdd1abdec74df1fc03341d850f15aaaba3227`.
+The public source tree is `fe3f735f790280532b6c2229ce8b9b7fcf8621ce`.
 Two independent empty bare repositories, using the documented alternates
 procedure and `pack.threads=1`, produced byte-identical bundles with the retained
 public synthetic identity, timestamp and message. Recreating the previous tree
@@ -382,7 +382,7 @@ The existing Source Broker plugin suite covers these cases, including execution
 with a different host timezone. Calendar interval schemas describe full timestamp
 bounds. No tool permission, custody or provider action changes with these labels.
 
-The current `449c05965b0b53f0f335fd719693caa860e05406` exact bundle checkout
+The earlier `449c05965b0b53f0f335fd719693caa860e05406` exact bundle checkout
 passed the isolated Linux end-to-end suite in 110.54 seconds. Both independently
 built artifacts matched, and source/commit/digest/executable-mode verification
 passed. The local 2B/8K experiments used an unpromoted compact operating context
@@ -390,3 +390,19 @@ and read-tool surface; accurate Calendar answers there do not establish complete
 prompt-budget or model-reliability acceptance. The provider trace still shows
 output-budget clamping after catalog searches. Those experiments are not claimed
 as production behavior or as a completed model-quality gate.
+
+The current candidate additionally validates Calendar query intervals. A bound
+must name a real date and an explicit Z/UTC offset; floating times, date-only
+bounds, unknown offsets, malformed dates and reversed/empty intervals return
+an actionable error instead of using the machine timezone or widening the
+query. Equivalent offset/fractional timestamps retain the same events and
+coverage. Source timestamps, stored projections and tool permissions are
+unchanged. Both new plugin regressions failed on the preceding source and pass
+with this change, including under a different host timezone. The older bundle's
+end-to-end result above does not qualify this new artifact.
+
+The current exact bundle checkout passed the same isolated Linux end-to-end
+suite in 79.32 seconds. Independent builds matched byte for byte, and the
+source/commit/digest/executable-mode verifier passed. These checks retain the
+controlled Docker/systemd, real-account, native Mac and model-reliability limits
+documented above; no fleet or release acceptance is implied.

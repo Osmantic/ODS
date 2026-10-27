@@ -69,18 +69,30 @@ export function overlapsRequest(record, from, to) {
   return end > start ? start < to && end > from : start >= from && start < to;
 }
 
+// A query has no independent timezone field. Never let the host timezone or
+// Date.parse's normalization choose the owner's requested interval for them.
+function queryInstant(value) {
+  const match = typeof value === "string" && value.length <= 64
+    && /^(\d{4}-\d{2}-\d{2})T(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/.exec(value);
+  if (!match || !civilDate(match[1]) || match[2] === "-00:00") return NaN;
+  return Date.parse(value);
+}
+
 export function calendarWindowCovers(coverage, timeMin, timeMax) {
-  const bounds = [coverage?.windowStart, coverage?.windowEnd, timeMin, timeMax].map((value) => Date.parse(value ?? ""));
+  const bounds = [coverage?.windowStart, coverage?.windowEnd, timeMin, timeMax].map(queryInstant);
   if (!bounds.every(Number.isFinite)) return null;
   const [start, end, from, to] = bounds;
+  if (end <= start || to <= from) return null;
   return from >= start && to <= end;
 }
 
 export function listCalendar(data, params, limit) {
-  const parsedFrom = Date.parse(params.timeMin);
-  const parsedTo = Date.parse(params.timeMax);
-  const from = Number.isFinite(parsedFrom) ? parsedFrom : -Infinity;
-  const to = Number.isFinite(parsedTo) ? parsedTo : Infinity;
+  const from = queryInstant(params.timeMin);
+  const to = queryInstant(params.timeMax);
+  for (const [key, value] of [["timeMin", from], ["timeMax", to]]) {
+    if (!Number.isFinite(value)) throw new Error(`${key} must be a valid full ISO 8601 timestamp with date and Z or an explicit UTC offset. Read tool_describe before retrying.`);
+  }
+  if (to <= from) throw new Error("timeMax must be later than timeMin.");
   const query = String(params.query ?? "").toLowerCase();
   const matches = data.records.filter((item) => overlapsRequest(item, from, to)
     && (!query || [item.title, item.notesSummary, item.location].join(" ").toLowerCase().includes(query)));

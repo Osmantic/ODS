@@ -263,6 +263,51 @@ test("window coverage needs both bounds and a valid request", () => {
   assert.equal(calendarWindowCovers(null, iso(1), iso(2)), null);
 });
 
+test("Calendar refuses ambiguous or malformed intervals instead of silently widening the search", async (t) => {
+  const projection = calendarProjection({records:[{id:"precise-event",title:"Private appointment",
+    start:{dateTime:"2026-10-29T01:00:00Z"},end:{dateTime:"2026-10-29T01:30:00Z"}}]});
+  const directory = await withProjections(t,{calendar:projection});
+  const tools = await loadPlugin({PIXEL_LIMB_WEB_ENABLED:"0",PIXEL_SOURCE_PROJECTION_DIR:directory});
+  const before = await readFile(join(directory,"calendar.json"));
+  const valid = {timeMin:"2026-10-29T00:00:00Z",timeMax:"2026-10-29T02:00:00Z"};
+  for (const bad of ["2026-10-29T00:00", "2026-10-29", "not-a-valid-time", "2026-02-30T00:00:00Z",
+    "2026-10-29T24:00:00Z", "2026-10-29T00:00:00+24:00", "2026-10-29T00:00:00-00:00",null]) {
+    for (const key of ["timeMin","timeMax"]) {
+      const response = await tools.get("pixel_calendar_list").execute("bad-interval",{...valid,[key]:bad});
+      assert.equal(response.isError,true,`${key}: ${bad}`);
+      assert.match(response.content[0].text,new RegExp(key));
+      assert.ok(!JSON.stringify(response).includes("Private appointment"));
+    }
+  }
+  for (const timeMax of [valid.timeMin,"2026-10-28T23:59:00Z"]) {
+    const response = await tools.get("pixel_calendar_list").execute("reversed-interval",{...valid,timeMax});
+    assert.equal(response.isError,true);
+    assert.match(response.content[0].text,/timeMax.*later than timeMin/);
+  }
+  assert.deepEqual(await readFile(join(directory,"calendar.json")),before);
+});
+
+test("Calendar queries compare explicit instants consistently across offsets and precision", async (t) => {
+  const directory = await withProjections(t,{calendar:calendarProjection({records:[{id:"offset-event",title:"Review",
+    start:{dateTime:"2026-10-29T01:00:00Z"},end:{dateTime:"2026-10-29T01:30:00Z"}}],
+    coverage:{windowStart:"2026-10-28T00:00:00Z",windowEnd:"2026-10-30T00:00:00Z",completeWithinWindow:true}})});
+  const tools = await loadPlugin({PIXEL_LIMB_WEB_ENABLED:"0",PIXEL_SOURCE_PROJECTION_DIR:directory});
+  for (const [timeMin,timeMax] of [
+    ["2026-10-29T00:00:00Z","2026-10-29T02:00:00Z"],
+    ["2026-10-28T21:00:00-03:00","2026-10-28T23:00:00-03:00"],
+    ["2026-10-29T09:00:00+09:00","2026-10-29T11:00:00+09:00"],
+    ["2026-10-29T00:00Z","2026-10-29T02:00Z"],
+    ["2026-10-29T00:00:00.000000Z","2026-10-29T02:00:00.000Z"],
+  ]) {
+    const response = await call(tools,"pixel_calendar_list",{timeMin,timeMax});
+    assert.deepEqual(response.events.map(({id})=>id),["offset-event"]);
+    assert.equal(response.requestCoveredByWindow,true);
+  }
+  const coverage = {windowStart:"2026-10-28T00:00:00Z",windowEnd:"2026-10-30T00:00:00Z"};
+  assert.equal(calendarWindowCovers(coverage,"2026-10-29T00:00","2026-10-29T02:00"),null);
+  assert.equal(calendarWindowCovers(coverage,"2026-10-29T02:00Z","2026-10-29T00:00Z"),null);
+});
+
 test("the Gmail draft tool registers only while drafts are on, and only proposes", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "pixel-draft-proposals-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
