@@ -265,6 +265,8 @@ tests/test_build_installation_context_port.py
 tests/test_chromadb_healthcheck.py
 tests/test_cleanup_wsl_pixel_mounts.py
 tests/test_compose_failure_report_port_check.py
+tests/test_containerd_console_policy.py
+tests/test_public_extension_manifest_permissions.py
 tests/test_extension_audit_library.py
 tests/test_generate_llama_architectures.py
 tests/test_healthcheck_redirect_policy.py

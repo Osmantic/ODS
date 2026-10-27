@@ -442,6 +442,11 @@ jobs:
       - name: Installer Created Container Ownership Tests
         run: bash tests/test-phase11-created-container-ownership.sh
 
+      - name: Installer Public Manifests and Containerd Device Policy
+        run: |
+          python3 tests/test_containerd_console_policy.py
+          sudo -n env ODS_MIXED_UID_TEST=1 python3 tests/test_public_extension_manifest_permissions.py
+
       - name: Dotenv Serializer Tests
         run: bash tests/test-dotenv-serializer.sh
 

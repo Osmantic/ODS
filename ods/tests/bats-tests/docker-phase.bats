@@ -37,7 +37,10 @@ setup() {
     export DOCKER_COMPOSE_CMD=""
     export DOCKER_NEEDS_SUDO=false
 
-    mkdir -p "$SCRIPT_DIR"
+    mkdir -p "$SCRIPT_DIR/installers/lib"
+    cp "$BATS_TEST_DIRNAME/../../installers/lib/podman-registries.sh" \
+        "$BATS_TEST_DIRNAME/../../installers/lib/containerd-console.sh" \
+        "$SCRIPT_DIR/installers/lib/"
     touch "$LOG_FILE"
 }
 
