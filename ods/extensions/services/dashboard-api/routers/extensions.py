@@ -5771,9 +5771,6 @@ def uninstall_extension(service_id: str, include_data_info: bool = Query(True),
         stopped_before_removal = True
 
     name = _extension_display_name(service_id)
-    # While the definition still names the extension's companions. A stopped
-    # container nothing manages any more stayed behind otherwise.
-    removed = _call_agent_remove_containers(service_id, delete_volumes=delete_data)
     data_info = _get_service_data_info(service_id) if include_data_info and not delete_data else None
     data_freed_gb = None
 
@@ -5792,6 +5789,11 @@ def uninstall_extension(service_id: str, include_data_info: bool = Query(True),
                 status_code=409,
                 detail=f"Extension selection changed: {service_id}; disable it and retry removal",
             )
+
+        # Keep CLI selection excluded from this recheck through container,
+        # volume and definition deletion. The removal RPC does not acquire
+        # the graph lock; the earlier disable RPC does and must stay outside.
+        removed = _call_agent_remove_containers(service_id, delete_volumes=delete_data)
 
         if delete_data:
             # Before the definition goes: a failure leaves a Remove to retry.
