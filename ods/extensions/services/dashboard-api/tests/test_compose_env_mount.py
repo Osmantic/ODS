@@ -26,3 +26,10 @@ def test_dashboard_api_receives_the_offline_update_switch_for_an_unreadable_env(
     service = yaml.safe_load(compose.read_text(encoding="utf-8"))["services"]["dashboard-api"]
 
     assert "DISABLE_UPDATE_CHECK=${DISABLE_UPDATE_CHECK:-false}" in service["environment"]
+
+
+def test_dashboard_api_receives_whisper_acceleration_for_an_unreadable_env():
+    compose = Path(__file__).resolve().parents[4] / "docker-compose.base.yml"
+    service = yaml.safe_load(compose.read_text(encoding="utf-8"))["services"]["dashboard-api"]
+
+    assert "WHISPER_ACCELERATION=${WHISPER_ACCELERATION:-}" in service["environment"]

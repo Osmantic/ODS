@@ -292,6 +292,9 @@ services:
       - GPU_BACKEND=${GPU_BACKEND:-nvidia}
       - GPU_COUNT=${GPU_COUNT:-1}
       - GPU_ASSIGNMENT_JSON_B64=${GPU_ASSIGNMENT_JSON_B64:-}
+      # The GPU page leaves CPU Whisper off its assigned GPU; the same
+      # unreadable-.env fallback as ENABLE_OPEN_WEBUI above.
+      - WHISPER_ACCELERATION=${WHISPER_ACCELERATION:-}
       - LLAMA_ARG_SPLIT_MODE=${LLAMA_ARG_SPLIT_MODE:-}
       - LLAMA_ARG_TENSOR_SPLIT=${LLAMA_ARG_TENSOR_SPLIT:-}
       - HOST_RAM_GB=${HOST_RAM_GB:-0}
