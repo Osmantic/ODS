@@ -2901,6 +2901,17 @@
       "runtime": "vllm",
       "tools": true,
       "vision": true,
+      "app_compatibility": {
+        "pixel_agent": {
+          "status": "verified",
+          "label": "Pixel verified on a DGX Station (vLLM)",
+          "reason": "A fresh LLM_BACKEND=vllm install on Workstation06 (DGX Station GB300) served this model and passed Portal visitor rounds 5 and 7: a mood journal that remembers entries, built and checked in 48.6 s; a cited answer that matched GitHub; a CSV download; exact free GPU memory; a follow-up feature; a false bug report investigated without changing code; a three-page site checked page by page; and a clarifying question for an ambiguous request.",
+          "evidence": "Workstation06 ~/.local/state/claude-e2e/round5-glm-vllm.json and round7-glm-vllm.json; summarized on Osmantic/ODS#8298",
+          "recordedAt": "2026-10-27T22:05:00Z",
+          "productSha": "43143c59c1bb031394432af11c120d927e113d5b",
+          "hostScope": ["workstation06"]
+        }
+      },
       "hf_repo": "nvidia/GLM-5.3-Flash-NVFP4",
       "revision": "da920bb0b9f4a06727223a349e55468e38352348",
       "source_url": "https://huggingface.co/nvidia/GLM-5.3-Flash-NVFP4",
