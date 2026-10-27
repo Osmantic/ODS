@@ -36,6 +36,21 @@ export const MAX_PAGE_ERRORS = 1000;
 const MAX_PAGE_ERROR_MESSAGES = 3, MAX_PAGE_ERROR_CHARS = 200;
 const roles = new Set(['button','link','checkbox','radio','textbox','combobox','heading','tab','switch']);
 const exact = (v,keys) => v && typeof v==='object' && !Array.isArray(v) && Object.keys(v).sort().join(',')===[...keys].sort().join(',');
+// The capsule describes rendered [hidden] elements by computed shape only;
+// its tag list matches DIAGNOSTIC in host/preview_inspection_capsule.py.
+const HIDDEN_SHAPE_TAGS = new Set(['a','article','aside','button','canvas','dialog','div','fieldset','figure','footer','form','header','iframe','img','input','label','li','main','menu','nav','ol','p','section','select','span','table','textarea','ul','video','element']);
+const HIDDEN_SHAPE_POSITIONS = new Set(['static','relative','absolute','fixed','sticky']);
+const hiddenShapeValid = shape => exact(shape,['tag','position','zIndex','viewportPercent']) &&
+  HIDDEN_SHAPE_TAGS.has(shape.tag) && HIDDEN_SHAPE_POSITIONS.has(shape.position) &&
+  (shape.zIndex===null || Number.isSafeInteger(shape.zIndex) && Math.abs(shape.zIndex)<=2147483647) &&
+  Number.isInteger(shape.viewportPercent) && shape.viewportPercent>=0 && shape.viewportPercent<=100;
+function diagnosticsValid(diagnostics) {
+  const counts=['renderedHiddenAttributeCount','hiddenUntilFoundCount'], shapes=diagnostics?.renderedHidden;
+  return exact(diagnostics,[...counts,...(shapes===undefined?[]:['renderedHidden'])]) &&
+    counts.every(key=>Number.isSafeInteger(diagnostics[key]) && diagnostics[key]>=0 && diagnostics[key]<=100000) &&
+    (shapes===undefined || Array.isArray(shapes) && shapes.length>=1 && shapes.length<=3 &&
+      shapes.length<=diagnostics.renderedHiddenAttributeCount && shapes.every(hiddenShapeValid));
+}
 const printable = (v,max) => typeof v==='string' && Array.from(v).length>0 && Array.from(v).length<=max && Buffer.byteLength(v)<=max*4 && !/[\p{C}\u2028\u2029]/u.test(v);
 const optionValue = v => v === '' || printable(v,256);
 const selectionPlan = request => request.steps.some(s=>s.action==='select-option');
@@ -151,8 +166,12 @@ function unchangedPaintNote(result) {
 function renderedHiddenNote(result) {
   const count = result.diagnostics?.renderedHiddenAttributeCount ?? 0;
   if (count < 1) return '';
+  const shapes = (result.diagnostics.renderedHidden ?? []).map(shape =>
+    `${shape.tag === 'element' ? 'an element' : `a <${shape.tag}>`}${shape.position === 'static' ? '' : ` with position: ${shape.position}`}` +
+    `${shape.zIndex === null ? '' : `, z-index ${shape.zIndex},`} covering ${shape.viewportPercent}% of the view`);
+  const which = shapes.length === 0 ? '' : count === 1 ? ` It is ${shapes[0]}.` : ` They include ${shapes.join('; ')}.`;
   return ` Note: ${count === 1 ? 'one element carries the hidden attribute but is' : `${count} elements carry the hidden attribute but are`} rendered anyway, ` +
-    'because an author style such as display: flex overrides hidden. An overlay, dialog or panel meant to stay hidden then shows, and can cover the page and take its clicks. ' +
+    `because an author style such as display: flex overrides hidden.${which} An overlay, dialog or panel meant to stay hidden then shows, and can cover the page and take its clicks. ` +
     'Keep the display value for its shown state only, or add [hidden] { display: none !important; }.';
 }
 // A passed paint step whose box is almost all one color: a cleared canvas with a
@@ -432,7 +451,7 @@ export function validateWorkspacePreviewInspectionReceipt(value, request) {
   // pageErrors, renderedColors and controls are optional: absent when none
   // was observed or captured, or when an older capsule produced the receipt.
   // Present, each must be exactly bounded.
-  if(!exact(value,['schemaVersion','kind','status','siteId','sha256','planSha256','viewport','steps','diagnostics','blockedRequests',...(value.pageErrors===undefined?[]:['pageErrors']),...(value.renderedColors===undefined?[]:['renderedColors']),...(value.controls===undefined?[]:['controls']),'scope']) || (value.pageErrors!==undefined&&!pageErrorsValid(value.pageErrors)) || (value.renderedColors!==undefined&&!renderedColorsValid(value.renderedColors)) || (value.controls!==undefined&&!controlsValid(value.controls)) || canonical(value.viewport)!==canonical(request.viewport)||!Array.isArray(value.steps)||value.steps.length<1||value.steps.length>request.steps.length||!exact(value.diagnostics,['renderedHiddenAttributeCount','hiddenUntilFoundCount'])||Object.values(value.diagnostics).some(v=>!Number.isSafeInteger(v)||v<0||v>100000)||!Array.isArray(value.blockedRequests)||value.blockedRequests.length>32||value.blockedRequests.some(v=>!['navigation','network','popup','download','websocket'].includes(v))) throw Error('invalid inspection receipt');
+  if(!exact(value,['schemaVersion','kind','status','siteId','sha256','planSha256','viewport','steps','diagnostics','blockedRequests',...(value.pageErrors===undefined?[]:['pageErrors']),...(value.renderedColors===undefined?[]:['renderedColors']),...(value.controls===undefined?[]:['controls']),'scope']) || (value.pageErrors!==undefined&&!pageErrorsValid(value.pageErrors)) || (value.renderedColors!==undefined&&!renderedColorsValid(value.renderedColors)) || (value.controls!==undefined&&!controlsValid(value.controls)) || canonical(value.viewport)!==canonical(request.viewport)||!Array.isArray(value.steps)||value.steps.length<1||value.steps.length>request.steps.length||!diagnosticsValid(value.diagnostics)||!Array.isArray(value.blockedRequests)||value.blockedRequests.length>32||value.blockedRequests.some(v=>!['navigation','network','popup','download','websocket'].includes(v))) throw Error('invalid inspection receipt');
   value.steps.forEach((step,i)=>{
     const textStep=step.action==='assert-text', selectStep=step.action==='select-option', fillStep=step.action==='fill', downloadStep=step.action==='download', pressStep=step.action==='press', paintStep=step.action==='assert-painted', textKeys=textStep?['expectedText']:(selectStep||fillStep)?['value']:downloadStep?downloadKeys:pressStep?pressKeys(request.steps[i]):[];
     if(textStep && step.expectedText!==request.steps[i].expectedText) throw Error('invalid text binding');
