@@ -129,6 +129,28 @@ def _make_dashboard_files(root: Path) -> dict[str, Path]:
 
 
 class PrepareExtensionManifestsTests(unittest.TestCase):
+    def test_factory_model_discovery_metadata_under_private_umask(self) -> None:
+        names = ("model-library.json", "llama-cpp-architectures.json")
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            paths = _make_tree(root, 0o077)
+            paths.update(_make_dashboard_files(root))
+            # Independent factory inputs: a missing allowlist entry must fail,
+            # even though the general fixture follows PUBLIC_DASHBOARD_FILES.
+            with _Umask(0o077):
+                for name in names:
+                    leaf = root / "config" / name
+                    leaf.write_bytes((_HERE.parent.parent / "config" / name).read_bytes())
+                    self.assertEqual(_mode(leaf), 0o600)
+            before = {name: (root / "config" / name).read_bytes() for name in names}
+            self._run(root)
+            for name in names:
+                self.assertEqual(_mode(root / "config" / name), 0o644)
+                self.assertEqual((root / "config" / name).read_bytes(), before[name])
+            self.assertEqual(_mode(root / "config/private.json"), 0o600)
+            self.assertEqual(_mode(root / "config/n8n"), 0o700)
+            self.assertEqual(_mode(root / ".env"), 0o600)
+
     def test_dashboard_public_scope_and_private_preservation(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

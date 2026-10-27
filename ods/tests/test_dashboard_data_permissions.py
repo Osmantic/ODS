@@ -52,6 +52,125 @@ def _load_permission_fixture_source(path, namespace, names, *, handler_methods=(
 
 @unittest.skipUnless(hasattr(os, "geteuid") and os.geteuid() == 0, "requires Linux root to drop numeric IDs")
 class DashboardDataPermissions(unittest.TestCase):
+    def test_real_helper_grants_runtime_group_without_touching_children(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            install = Path(temporary)
+            install.chmod(0o755)
+            data = install / "data"
+            data.mkdir(mode=0o700)
+            os.chown(data, 1001, 2001)
+            models = data / "models"
+            models.mkdir(mode=0o700)
+            os.chown(models, 1001, 2001)
+            public = models / "public.gguf"
+            public.write_bytes(b"public-weights")
+            public.chmod(0o644)
+            os.chown(public, 1001, 2001)
+            private_weight = models / "private.gguf"
+            private_weight.write_bytes(b"private-weights")
+            private_weight.chmod(0o600)
+            os.chown(private_weight, 1001, 2001)
+            private = models / "private"
+            private.mkdir(mode=0o700)
+            os.chown(private, 1001, 2001)
+            nested = private / "nested"
+            nested.mkdir(mode=0o700)
+            os.chown(nested, 1001, 2001)
+            secret = nested / "turn.json"
+            secret.write_bytes(b"private-chat")
+            secret.chmod(0o600)
+            os.chown(secret, 1001, 2001)
+            outside = install / "outside"
+            outside.write_bytes(b"untouched")
+            os.chown(outside, 2001, 2001)
+            linked = private / "external"
+            linked.symlink_to(outside)
+            snapshot = {}
+            for path in (public, private_weight, private, nested, secret, linked):
+                info = path.lstat()
+                snapshot[path] = (info.st_uid, info.st_gid, info.st_mode & 0o777,
+                                  path.read_bytes() if path.is_file() and not path.is_symlink() else None)
+            script = ('set -euo pipefail\n'
+                      + (ROOT / "installers/lib/dashboard-data.sh").read_text() + r'''
+ods_sudo_available() { return 0; }
+ods_sudo() { "$@"; }
+ods_prepare_dashboard_data "$INSTALL_DIR" false
+''')
+            environment = dict(os.environ, SCRIPT_DIR=str(ROOT), INSTALL_DIR=str(install))
+            probe = '''
+import os, pathlib
+data = pathlib.Path(os.environ["INSTALL_DIR"]) / "data"
+os.setgroups([])
+os.setgid(1000)
+os.setuid(1000)
+assert os.geteuid() == os.getegid() == 1000
+assert sorted(p.name for p in (data / "models").iterdir()) == ["private", "private.gguf", "public.gguf"]
+assert (data / "models/public.gguf").read_bytes() == b"public-weights"
+for denied in (data / "models/private.gguf", data / "models/private", data / "models/private/nested",
+               data / "models/private/nested/turn.json"):
+    try:
+        if denied.is_dir():
+            list(denied.iterdir())
+        else:
+            denied.read_bytes()
+    except PermissionError:
+        pass
+    else:
+        raise AssertionError(f"UID1000 accessed private path {denied}")
+'''
+            denied = subprocess.run(["python3", "-c", probe], env=environment,
+                                    capture_output=True, text=True, check=False)
+            self.assertNotEqual(denied.returncode, 0)
+            self.assertIn("PermissionError", denied.stderr)
+            for attempt in range(2):
+                subprocess.run(["bash", "-c", script], env=environment, check=True)
+                subprocess.run(["python3", "-c", probe], env=environment, check=True)
+                self.assertEqual((data.stat().st_uid, data.stat().st_gid), (1001, 1000))
+                self.assertEqual(data.stat().st_mode & 0o070, 0o070)
+                self.assertEqual((models.stat().st_uid, models.stat().st_gid), (1001, 1000))
+                self.assertEqual(models.stat().st_mode & 0o050, 0o050)
+                for path, expected in snapshot.items():
+                    info = path.lstat()
+                    self.assertEqual((info.st_uid, info.st_gid, info.st_mode & 0o777), expected[:3], path)
+                    if expected[3] is not None:
+                        self.assertEqual(path.read_bytes(), expected[3], path)
+                self.assertEqual(outside.stat().st_uid, 2001)
+                self.assertEqual(outside.read_bytes(), b"untouched")
+
+    def test_rejects_modeldir_symlink_or_file_before_mutation(self):
+        for kind in ("symlink", "file"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as temporary:
+                install = Path(temporary)
+                install.chmod(0o755)
+                data = install / "data"
+                data.mkdir(mode=0o700)
+                os.chown(data, 1001, 2001)
+                models = data / "models"
+                if kind == "symlink":
+                    target = install / "elsewhere"
+                    target.mkdir()
+                    models.symlink_to(target)
+                else:
+                    models.write_bytes(b"not-a-directory")
+                before = (data.stat().st_uid, data.stat().st_gid, data.stat().st_mode & 0o777)
+                script = ('set -euo pipefail\n'
+                          + (ROOT / "installers/lib/dashboard-data.sh").read_text() + r'''
+ods_sudo_available() { return 0; }
+ods_sudo() { "$@"; }
+ods_prepare_dashboard_data "$INSTALL_DIR" false
+''')
+                result = subprocess.run(["bash", "-c", script],
+                    env=dict(os.environ, SCRIPT_DIR=str(ROOT), INSTALL_DIR=str(install)),
+                    capture_output=True, text=True, check=False)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Model data must be a real directory", result.stderr)
+                self.assertEqual((data.stat().st_uid, data.stat().st_gid, data.stat().st_mode & 0o777), before)
+                self.assertFalse((data / ".extensions-lock").exists())
+                if kind == "symlink":
+                    self.assertTrue(models.is_symlink())
+                else:
+                    self.assertEqual(models.read_bytes(), b"not-a-directory")
+
     def test_private_env_mode_fallback_uses_owner_host_without_chmod(self):
         with tempfile.TemporaryDirectory() as temporary:
             install = Path(temporary)
@@ -279,6 +398,13 @@ with sqlite3.connect(database) as db:
                 data = install / "data"
                 data.mkdir(mode=0o770)
                 os.chown(data, 1001, 1000)
+                models = data / "models"
+                models.mkdir(mode=0o700)
+                os.chown(models, 1001, 2001)
+                weight = models / "model.gguf"
+                weight.write_bytes(b"retained-weights")
+                weight.chmod(0o644)
+                os.chown(weight, 1001, 2001)
                 images = data / "pixel-images"
                 images.mkdir(mode=0o700)
                 saved = images / "images.sqlite3"
@@ -309,6 +435,11 @@ ods_prepare_dashboard_data "$INSTALL_DIR" "$ROOTLESS"
                 subprocess.run(["bash", "-c", script], check=True,
                                env=dict(os.environ, SCRIPT_DIR=str(ROOT), INSTALL_DIR=str(install), ROOTLESS=rootless))
                 self.assertTrue((install / "helper-used").exists())
+                self.assertEqual((models.stat().st_uid, models.stat().st_gid, models.stat().st_mode & 0o777),
+                                 (1001, 1000, 0o750))
+                self.assertEqual((weight.stat().st_uid, weight.stat().st_gid, weight.stat().st_mode & 0o777),
+                                 (1001, 2001, 0o644))
+                self.assertEqual(weight.read_bytes(), b"retained-weights")
                 self.assertEqual((data.stat().st_uid, data.stat().st_gid), (1001, 1000))
                 self.assertEqual((images.stat().st_uid, images.stat().st_gid, images.stat().st_mode & 0o777),
                                  (1000, 1000, 0o700))

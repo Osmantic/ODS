@@ -10,7 +10,7 @@ This script only fixes the runtime manifest bind-mount surface:
   - services root: 0755
   - service child dirs: traversal only (add x, remove g/o w)
   - public manifest files (manifest.yaml/.yml/.json): 0644
-  - config/: traversal only; the two bundled Dashboard catalogs: 0644
+  - config/: traversal only; the named bundled Dashboard/model metadata: 0644
   - templates/: 0755 for enumeration; named bundled templates: 0644
 
 It validates the full scoped tree before any mutation, refuses symlinks,
@@ -31,7 +31,10 @@ from pathlib import Path
 
 MANIFEST_NAMES = ("manifest.yaml", "manifest.yml", "manifest.json")
 PUBLIC_DASHBOARD_FILES = {
-    "config": ("core-service-ids.json", "extensions-catalog.json"),
+    "config": (
+        "core-service-ids.json", "extensions-catalog.json",
+        "model-library.json", "llama-cpp-architectures.json",
+    ),
     "templates": (
         "ai-coding-workspace.yaml", "chat-playground.yaml", "creative-studio.yaml",
         "developer-homelab.yaml", "llm-platform.yaml", "ml-data-workshop.yaml",
