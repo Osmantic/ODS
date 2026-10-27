@@ -90,6 +90,12 @@ def _github(monkeypatch, response=None, error=None):
     return client.get
 
 
+def _hold_seconds() -> float:
+    until = updates._version_hold['until']
+    assert isinstance(until, float)
+    return until - time.monotonic()
+
+
 def _response(status, headers=None, data=None):
     return httpx.Response(status, json=data if data is not None else {'message': 'x'}, headers=headers or {},
                           request=httpx.Request('GET', updates._GITHUB_RELEASES_API))
@@ -120,7 +126,7 @@ def test_rate_limited_check_holds_every_request_until_github_resets(monkeypatch)
     assert asyncio.run(updates.get_version())['check_status'] == 'unavailable'
     assert get.await_count == 1
     assert updates._version_hold['rate_limited'] is True
-    assert 1100 < updates._version_hold['until'] - time.monotonic() <= 1200
+    assert 1100 < _hold_seconds() <= 1200
 
     for force in (False, True, False):
         assert asyncio.run(updates.get_version(force=force))['check_status'] == 'unavailable'
@@ -145,7 +151,7 @@ def test_hold_is_capped_at_an_hour_and_cleared_by_a_good_check(monkeypatch):
     reset = str(int(time.time()) + 7200)
     _github(monkeypatch, _response(403, {'x-ratelimit-remaining': '0', 'x-ratelimit-reset': reset}))
     asyncio.run(updates.get_version())
-    assert updates._version_hold['until'] - time.monotonic() <= 3600
+    assert _hold_seconds() <= 3600
 
     monkeypatch.setattr(updates, '_version_hold', {'until': 0.0, 'rate_limited': True})
     _github(monkeypatch, _response(200, data={'tag_name': 'v3.0.0', 'html_url': 'https://github.com/x'}))
