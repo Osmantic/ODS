@@ -148,6 +148,15 @@ if _gguf_inspector_spec is None or _gguf_inspector_spec.loader is None:
 _gguf_inspector = importlib.util.module_from_spec(_gguf_inspector_spec)
 _gguf_inspector_spec.loader.exec_module(_gguf_inspector)
 
+# vLLM catalog entries ("runtime": "vllm"): the installer sets them up with
+# LLM_BACKEND=vllm; local model switching manages GGUF models only.
+_model_vllm_spec = importlib.util.spec_from_file_location(
+    "_ods_model_vllm", _MODEL_MEMORY_PATH.with_name("model_vllm.py"))
+if _model_vllm_spec is None or _model_vllm_spec.loader is None:
+    raise ImportError("Cannot load shared vLLM catalog policy")
+_model_vllm = importlib.util.module_from_spec(_model_vllm_spec)
+_model_vllm_spec.loader.exec_module(_model_vllm)
+
 
 def _activation_architecture_refusal(target: Path, env: dict, *, windows_hosted: bool,
                                     registered_runtime: dict | None) -> dict | None:
@@ -312,7 +321,7 @@ WINDOWS_WHISPER_CUDA_MIN_DRIVER_MAJOR = 575
 # Distinct from CORE_SERVICE_IDS (which is the allowlist of known service IDs).
 ALWAYS_ON_SERVICES: frozenset = frozenset({
     "llama-server", "model-router", "remote-provider-egress", "remote-provider-ssh-tunnel",
-    "open-webui", "dashboard", "dashboard-api",
+    "open-webui", "dashboard", "dashboard-api", "vllm-server",
 })
 USER_EXTENSIONS_DIR: Path = Path()
 EXTENSIONS_DIR: Path = Path()
@@ -758,12 +767,56 @@ def _model_activation_public_failure(diagnosis: dict, healthy: bool) -> str:
 
 
 # .env keys that decide whether inference is a container or a host-native
-# llama-server. Compose resolution must read them from installed state. The
-# LEMONADE_EXTERNAL selector stays one release for un-migrated installs.
+# llama-server, and LLM_BACKEND, which selects the vLLM engine overlay
+# (LLM_BACKEND=vllm). Compose resolution must read them from installed state.
+# The LEMONADE_EXTERNAL selector stays one release for un-migrated installs.
 _HOST_LLM_COMPOSE_SELECTORS = (
     "AMD_INFERENCE_RUNTIME", "AMD_INFERENCE_RUNTIME_MODE", "AMD_INFERENCE_LOCATION",
     "AMD_INFERENCE_MANAGED", "ODS_HOST_LLM_TRANSPORT", "LEMONADE_EXTERNAL",
+    "LLM_BACKEND",
 )
+
+# LLM_BACKEND=vllm (docker-compose.vllm.yml): vllm-server serves the one model
+# in its own container on the ODS network, without a host port, and the
+# in-stack llama-server is profiled out. Naming llama-server in a Compose
+# command would enable its profile again, so nothing here may do that.
+_VLLM_CONTAINER = "ods-vllm-server"
+_VLLM_ORIGIN = "http://vllm-server:8000"
+_VLLM_ENDPOINT_ID = "vllm-default"
+
+
+def _vllm_engine(env: dict) -> bool:
+    """Whether .env selects the vLLM engine (LLM_BACKEND=vllm)."""
+    return str(env.get("LLM_BACKEND") or "").strip().casefold() == "vllm"
+
+
+_ODS_HELP = "Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC"
+_VLLM_LLAMA_SERVER_OFF = (
+    "llama-server is off on this install: the vLLM engine (vllm-server) serves the model. "
+    "Restart vllm-server instead, or run the ODS installer again to change the engine."
+)
+
+
+def _vllm_activation_refusal(model_id: str) -> dict:
+    """409 body for a model switch on an install the vLLM engine serves."""
+    return {
+        "error": "This install runs its model on the vLLM engine, and models cannot be switched here.",
+        "code": "vllm_runtime_installer_managed",
+        "hint": f"To use another model, run the ODS installer again and choose it. {_ODS_HELP}",
+        "requestedModelId": model_id,
+    }
+
+
+def _vllm_model_refusal(model: dict) -> dict:
+    """409 body for a vLLM catalog entry asked of llama-server's model lifecycle."""
+    return {
+        "error": f"{model.get('name') or model.get('id')} runs only on the vLLM engine, "
+                 "which only the ODS installer sets up.",
+        "code": "vllm_model_installer_only",
+        "hint": ("It needs one NVIDIA datacenter Blackwell GPU. Run the ODS installer and "
+                 f"choose the vLLM engine to use it. {_ODS_HELP}"),
+        "requestedModelId": model.get("id"),
+    }
 
 
 _SWITCHBOARD_ROUTE_ENV_KEYS = (
@@ -2969,14 +3022,23 @@ def _switchboard_state_needs_current_env_verification(
 
 
 def _catalog_model_for_current_env(env: dict) -> tuple[str, dict]:
-    gguf_file = str(env.get("GGUF_FILE") or "").strip()
+    """The catalog id and entry the configured route serves.
+
+    Without a catalog entry: the configured model name and ``{}``.
+
+    A vLLM route (LLM_BACKEND=vllm) serves a vLLM entry, found by LLM_MODEL; a
+    GGUF_FILE left from an earlier llama-server install never names it. Every
+    other route serves a GGUF entry.
+    """
+    vllm = _vllm_engine(env)
+    gguf_file = "" if vllm else str(env.get("GGUF_FILE") or "").strip()
     llm_model_name = str(env.get("LLM_MODEL") or "").strip()
     try:
         library = _load_model_library_records()
     except RuntimeError:
         library = []
     for entry in library:
-        if not isinstance(entry, dict):
+        if not isinstance(entry, dict) or _model_vllm.is_vllm_entry(entry) != vllm:
             continue
         entry_id = str(entry.get("id") or "")
         entry_gguf = str(entry.get("gguf_file") or "")
@@ -2992,7 +3054,13 @@ def _catalog_model_for_current_env(env: dict) -> tuple[str, dict]:
 
 
 def _initial_switchboard_backend(env: dict) -> tuple[str, str, str | None]:
-    """Every managed runtime is upstream llama-server behind one endpoint."""
+    """The route's backend kind and router endpoint for the configured runtime.
+
+    LLM_BACKEND=vllm routes to vllm-server; every other managed runtime is
+    upstream llama-server behind the llama-server-default endpoint.
+    """
+    if _vllm_engine(env):
+        return "vllm", _VLLM_ENDPOINT_ID, None
     return "llama-server", "llama-server-default", None
 
 
@@ -7602,6 +7670,9 @@ def docker_compose_recreate(service_ids: list[str], *, force_recreate: bool = Tr
         ok, error = validate_core_recreate_ids(service_ids)
         if not ok:
             return False, error
+    if "llama-server" in service_ids and _vllm_engine(load_env(INSTALL_DIR / ".env")):
+        # Naming the service would enable its profile and start a second engine.
+        return False, _VLLM_LLAMA_SERVER_OFF
 
     try:
         flags = _core_recreate_compose_flags(resolve_compose_flags(), service_ids)
@@ -13103,6 +13174,11 @@ class AgentHandler(BaseHTTPRequestHandler):
         if not isinstance(sid, str) or not SERVICE_ID_RE.fullmatch(sid):
             json_response(self, 400, {"error": "Invalid service_id"})
             return
+        if sid == "llama-server" and _vllm_engine(load_env(INSTALL_DIR / ".env")):
+            # A container left by an earlier llama-server install would start
+            # beside vLLM on the same GPU.
+            json_response(self, 409, {"error": _VLLM_LLAMA_SERVER_OFF, "code": "llama_server_off"})
+            return
 
         has_container, restart_error = _service_has_docker_container(sid)
         if not has_container:
@@ -13751,6 +13827,12 @@ class AgentHandler(BaseHTTPRequestHandler):
         model = next((entry for entry in library if entry.get("id") == model_id), None)
         if model is None:
             json_response(self, 404, {"error": "Unknown model"})
+            return
+        if _model_vllm.is_vllm_entry(model) or _vllm_engine(env):
+            # The probes read llama.cpp's /props and chat-template errors.
+            json_response(self, 409, {"error": "Model checks measure llama.cpp models; "
+                                               "a model on the vLLM engine is not checked",
+                                      "code": "vllm_not_profiled"})
             return
         if str(model.get("gguf_file") or "") != str(env.get("GGUF_FILE") or ""):
             json_response(self, 409, {"error": "Only the running model can be checked; run it first", "code": "not_running"})
@@ -14684,6 +14766,12 @@ class AgentHandler(BaseHTTPRequestHandler):
                 "requestedModelId": model_id,
             })
             return
+        if _vllm_engine(persisted_env):
+            # Activation swaps llama-server's GGUF and rolls back by restoring
+            # it; the vLLM engine serves one installed snapshot instead, and
+            # starting llama-server here would run a second engine.
+            json_response(self, 409, _vllm_activation_refusal(model_id))
+            return
 
         def local_gguf_model_from_id(raw_model_id: str) -> dict | None:
             matching = []
@@ -14746,6 +14834,9 @@ class AgentHandler(BaseHTTPRequestHandler):
             if model is None:
                 json_response(self, 404, {"error": f"Model '{model_id}' not found in library or local GGUF files"})
                 return
+        if _model_vllm.is_vllm_entry(model):
+            json_response(self, 409, _vllm_model_refusal(model))
+            return
 
         gguf_file = model.get("gguf_file", "")
         llm_model_name = model.get("llm_model_name", model_id)
@@ -16495,15 +16586,21 @@ def _runtime_uses_router_transport(env: dict) -> bool:
 
 
 def _runtime_endpoint(env: dict) -> tuple[str, str]:
-    """Return ``(origin, transport)`` of the configured llama-server runtime.
+    """Return ``(origin, transport)`` of the configured model server.
 
-    Every managed runtime is upstream llama-server. ``transport`` is
-    ``router`` when this agent runs in WSL and the server is the owned
-    Windows task: WSL localhost is not Windows localhost, so proofs run in
-    the owned model-router container against its ``llama-server-default``
-    origin. Every other runtime is reached ``direct``: the container by
-    Docker DNS or its published port, a host-native server on loopback.
+    ``transport`` is ``router`` when this agent runs in WSL and the server is
+    the owned Windows llama-server task: WSL localhost is not Windows
+    localhost, so proofs run in the owned model-router container against its
+    ``llama-server-default`` origin. The vLLM engine (LLM_BACKEND=vllm)
+    publishes no host port, so a host agent proves it the same way, against
+    the router's ``vllm-default`` origin. Every other runtime is reached
+    ``direct``: the container by Docker DNS or its published port, a
+    host-native server on loopback.
     """
+    if _vllm_engine(env):
+        if os.environ.get("ODS_HOST_INSTALL_DIR"):
+            return f"http://{_VLLM_CONTAINER}:8000", "direct"
+        return _VLLM_ORIGIN, "router"
     if _runtime_uses_router_transport(env):
         return _native_llm_container_origin(env), "router"
     if _is_windows_host_llama_server(env):
@@ -16514,6 +16611,14 @@ def _runtime_endpoint(env: dict) -> tuple[str, str]:
     if os.environ.get("ODS_HOST_INSTALL_DIR"):
         return "http://ods-llama-server:8080", "direct"
     return f"http://127.0.0.1:{env.get('OLLAMA_PORT') or '8080'}", "direct"
+
+
+def _runtime_router_endpoint(env: dict) -> dict:
+    """The router endpoint a router-transport proof names (keyword arguments).
+
+    The WSL route keeps the transport's default, ``llama-server-default``.
+    """
+    return {"endpoint_id": _VLLM_ENDPOINT_ID} if _vllm_engine(env) else {}
 
 
 def _runtime_api_key(env: dict) -> str:
@@ -16542,6 +16647,7 @@ def _runtime_http(
     if transport == "router":
         return _router_transport_request(
             INSTALL_DIR, origin, path, payload=payload, api_key=api_key, timeout=timeout,
+            **_runtime_router_endpoint(env),
         )
     command = ["curl", "-s", "--max-time", str(timeout)]
     if payload is not None:
@@ -16599,6 +16705,7 @@ def _runtime_exchange(
     if transport == "router":
         return _router_transport_exchange(
             INSTALL_DIR, origin, path, payload=payload, api_key=api_key, timeout=timeout,
+            **_runtime_router_endpoint(env),
         )
     headers = {"Content-Type": "application/json"}
     if api_key:
@@ -16995,8 +17102,44 @@ def _profiled_capabilities(capabilities: object, traits: dict | None, model: dic
     }
 
 
+def _container_health(container: str) -> str:
+    """Docker's health status of ``container`` (starting, healthy, unhealthy, none).
+
+    Empty when Docker cannot inspect it, for example when it does not exist.
+    """
+    result = subprocess.run(
+        ["docker", "inspect", "--type", "container", "--format",
+         "{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}", container],
+        capture_output=True, text=True, timeout=15,
+    )
+    return result.stdout.strip().casefold() if result.returncode == 0 else ""
+
+
+def _vllm_runtime_health(env: dict) -> str:
+    """Return ``ok``, ``loading`` or ``error`` for the vLLM engine.
+
+    vLLM's ``/health`` answers 200 with an empty body once the engine is
+    ready, and its server listens only from then on. A cold first start loads
+    the weights and compiles kernels for 3 to 15 minutes, during which Docker
+    reports the container ``starting`` (docker-compose.vllm.yml allows 60
+    minutes): that is ``loading``, not an error. Raises OSError when vLLM is
+    unreachable and its container is not starting.
+    """
+    try:
+        status, _body = _runtime_exchange(env, "/health", timeout=5)
+    except OSError:
+        if _container_health(_VLLM_CONTAINER) == "starting":
+            return "loading"
+        raise
+    if status == 200:
+        return "ok"
+    return "loading" if _container_health(_VLLM_CONTAINER) == "starting" else "error"
+
+
 def _runtime_health(env: dict) -> str:
-    """Return ``ok``, ``loading`` or ``error`` from llama-server ``/health``."""
+    """Return ``ok``, ``loading`` or ``error`` from the model server's ``/health``."""
+    if _vllm_engine(env):
+        return _vllm_runtime_health(env)
     body = _runtime_http(env, "/health")
     try:
         data = json.loads(body or "{}")
@@ -17159,6 +17302,24 @@ def _llama_runtime_context_length(env: dict) -> int:
     return _llama_runtime_props(env)[0]
 
 
+def _vllm_served_context_length(body: str, runtime_identity: str) -> int:
+    """Return the ``max_model_len`` vLLM's /v1/models reports for its served row.
+
+    vLLM has no /props; the row of the model it serves carries the context
+    its --max-model-len fixed.
+    """
+    try:
+        data = json.loads(body)
+    except (json.JSONDecodeError, TypeError):
+        return 0
+    rows = data.get("data") if isinstance(data, dict) else None
+    for row in rows if isinstance(rows, list) else ():
+        if isinstance(row, dict) and str(row.get("id") or "").strip() == runtime_identity:
+            value = row.get("max_model_len")
+            return value if type(value) is int and value > 0 else 0
+    return 0
+
+
 def _llama_training_context_length(body: str, runtime_identity: str) -> int:
     """Return the GGUF training context llama.cpp reports for a loaded row."""
     try:
@@ -17243,11 +17404,11 @@ def _completion_text(data: object, *, include_reasoning: bool = True) -> str:
         if text.strip():
             return text[:4096]
     if include_reasoning:
-        reasoning_content = (
-            message.get("reasoning_content")
-            if isinstance(message, dict)
-            else choice.get("reasoning_content")
-        )
+        source = message if isinstance(message, dict) else choice
+        reasoning_content = source.get("reasoning_content")
+        if not isinstance(reasoning_content, str):
+            # vLLM's reasoning parsers return the field as ``reasoning``.
+            reasoning_content = source.get("reasoning")
         if isinstance(reasoning_content, str):
             return reasoning_content[:4096]
     if isinstance(content, str):
@@ -17275,7 +17436,14 @@ _COMPLETION_PROBE_THINKING_SECONDS = 120
 
 
 def _completion_probe_payload(model_name: str, *, disable_thinking: bool,
-                              max_tokens: int = _COMPLETION_PROBE_TOKENS) -> dict:
+                              max_tokens: int = _COMPLETION_PROBE_TOKENS,
+                              thinking_off: dict | None = None) -> dict:
+    """The bounded readiness probe; ``thinking_off`` replaces enable_thinking=false.
+
+    A vLLM entry names the chat-template arguments that turn its thinking
+    down (catalog ``thinking_template_kwargs.off``); GLM's template has no
+    enable_thinking at all.
+    """
     payload = {
         "model": model_name,
         "messages": [{
@@ -17288,8 +17456,19 @@ def _completion_probe_payload(model_name: str, *, disable_thinking: bool,
         "temperature": 0,
     }
     if disable_thinking:
-        payload["chat_template_kwargs"] = {"enable_thinking": False}
+        payload["chat_template_kwargs"] = (
+            dict(thinking_off) if thinking_off is not None else {"enable_thinking": False})
     return payload
+
+
+def _vllm_probe_thinking_off(env: dict) -> dict | None:
+    """The configured vLLM entry's thinking-off template arguments, if any."""
+    if not _vllm_engine(env):
+        return None
+    _model_id, model = _catalog_model_for_current_env(env)
+    if not _model_vllm.is_vllm_entry(model):
+        return None
+    return dict(model["thinking_template_kwargs"]["off"])
 
 
 def _reasoning_cut_short(response: object) -> bool:
@@ -17338,6 +17517,7 @@ def _chat_completion_ready(
     base_url: str = "",
     disable_thinking: bool = False,
     require_visible_content: bool = False,
+    thinking_off: dict | None = None,
 ) -> bool:
     """Require a meaningful completion and, when requested, its model identity."""
     prefix = "/" + api_prefix.strip("/")
@@ -17346,7 +17526,8 @@ def _chat_completion_ready(
 
     def probe(max_tokens: int, seconds: int):
         payload = json.dumps(_completion_probe_payload(
-            model_name, disable_thinking=disable_thinking, max_tokens=max_tokens))
+            model_name, disable_thinking=disable_thinking, max_tokens=max_tokens,
+            thinking_off=thinking_off))
         command = [
             "curl", "-sf", "--max-time", str(seconds), "--max-filesize", "65536",
             "-X", "POST", url,
@@ -17398,9 +17579,11 @@ def _runtime_completion_ready(
 
     A reasoning-only answer does not prove the runtime is ready to serve
     consumers, so every runtime family must return visible content from the
-    same model it reported in /v1/models.
+    same model it reported in /v1/models. A vLLM entry turns its thinking down
+    with its own template arguments (``_vllm_probe_thinking_off``).
     """
     origin, transport = _runtime_endpoint(env)
+    thinking_off = _vllm_probe_thinking_off(env)
     expected = {
         "expected_model_id": expected_model_id,
         "expected_gguf_file": expected_gguf_file,
@@ -17410,13 +17593,14 @@ def _runtime_completion_ready(
         return _chat_completion_ready(
             "", "", model_name, "/v1", api_key=_runtime_api_key(env),
             base_url=origin, disable_thinking=True, require_visible_content=True,
-            **expected,
+            thinking_off=thinking_off, **expected,
         )
     try:
         body = _runtime_http(
             env,
             "/v1/chat/completions",
-            payload=_completion_probe_payload(model_name, disable_thinking=True),
+            payload=_completion_probe_payload(
+                model_name, disable_thinking=True, thinking_off=thinking_off),
             timeout=30,
         )
         response = json.loads(body or "{}")
@@ -17425,7 +17609,8 @@ def _runtime_completion_ready(
                 env,
                 "/v1/chat/completions",
                 payload=_completion_probe_payload(
-                    model_name, disable_thinking=True, max_tokens=_COMPLETION_PROBE_THINKING_TOKENS),
+                    model_name, disable_thinking=True, max_tokens=_COMPLETION_PROBE_THINKING_TOKENS,
+                    thinking_off=thinking_off),
                 timeout=_COMPLETION_PROBE_THINKING_SECONDS,
             )
             response = json.loads(body or "{}")
@@ -17582,7 +17767,10 @@ def _wait_for_model_readiness(
     requested model, ``/props`` serves its file with an ``n_ctx`` that meets
     the request (llama.cpp may pad a custom size up to the next 256-cell
     boundary), and one bounded completion with thinking disabled returns
-    visible content from the same model.
+    visible content from the same model. The vLLM engine (LLM_BACKEND=vllm)
+    proves the same steps without ``/props``: its ``/v1/models`` row reports
+    the served context as ``max_model_len``, and the completion names the
+    exact id that row lists (vLLM refuses any other model name).
 
     Legacy callers receive a boolean. Identity callers receive the concrete
     runtime identity. Adapters receive identity, actual context, and proof time,
@@ -17608,6 +17796,7 @@ def _wait_for_model_readiness(
         diagnosis = {}
     not_ready = {} if return_proof else "" if return_identity else False
     origin, transport = _runtime_endpoint(env)
+    vllm = _vllm_engine(env)
     completion_model = llm_model_name or gguf_file
     expected_context = _positive_int(env.get("CTX_SIZE") or env.get("MAX_CONTEXT"))
 
@@ -17671,7 +17860,10 @@ def _wait_for_model_readiness(
                 logger.info("Model readiness aborted: route env changed after probing %s", gguf_file)
                 return not_ready
             if health == "loading":
-                diagnosis["reason"] = "llama-server is still loading the model"
+                diagnosis["reason"] = (
+                    "vLLM is still starting: a first start loads the weights and compiles "
+                    "kernels, which can take 15 minutes" if vllm
+                    else "llama-server is still loading the model")
             runtime_identity = _llama_loaded_model_identity(
                 body,
                 model_id=model_id,
@@ -17679,7 +17871,11 @@ def _wait_for_model_readiness(
                 llm_model_name=llm_model_name,
             ) if body else ""
             if runtime_identity:
-                runtime_context, served_file, runtime_vision = _llama_runtime_props(env)
+                if vllm:
+                    runtime_context = _vllm_served_context_length(body, runtime_identity)
+                    served_file, runtime_vision = "", None
+                else:
+                    runtime_context, served_file, runtime_vision = _llama_runtime_props(env)
                 if served_file and not _runtime_model_identity_matches(
                     served_file, gguf_file=gguf_file,
                 ):
@@ -17710,7 +17906,7 @@ def _wait_for_model_readiness(
                     runtime_identity = ""
             if runtime_identity and _runtime_completion_ready(
                 env,
-                str(completion_model),
+                str(runtime_identity if vllm else completion_model),
                 expected_model_id=str(runtime_identity),
                 expected_gguf_file=gguf_file,
                 expected_llm_model_name=llm_model_name,
@@ -17878,6 +18074,7 @@ def _render_runtime_config(
     remote_llm_transport: str = "",
     remote_llm_base_url: str = "",
     remote_llm_model: str = "",
+    llm_backend: str = "llama-server",
 ) -> bool:
     renderer = install_dir / "scripts" / "render-runtime-configs.py"
     if not renderer.exists():
@@ -17887,6 +18084,8 @@ def _render_runtime_config(
         str(renderer),
         "--surface",
         surface,
+        "--llm-backend",
+        llm_backend,
         "--switchboard-mode",
         switchboard_mode,
         "--ods-mode",
@@ -17968,6 +18167,11 @@ def _runtime_api_key_env(env: dict) -> str:
     return "LLAMA_SERVER_API_KEY" if _runtime_api_key(env) else ""
 
 
+def _render_llm_backend(env: dict) -> str:
+    """The renderer's --llm-backend: the .env LLM_BACKEND, llama-server when unset."""
+    return str(env.get("LLM_BACKEND") or "").strip().lower() or "llama-server"
+
+
 def _litellm_render_key(env: dict) -> str:
     return str(env.get("LITELLM_KEY") or env.get("LITELLM_MASTER_KEY") or "")
 
@@ -17993,6 +18197,9 @@ def _render_model_router_runtime_configs(
         "gpu_backend": env.get("GPU_BACKEND", "nvidia"),
         "context_length": int(context_length),
         "switchboard_mode": switchboard_mode,
+        # The installed backend, never this process's environment: vllm
+        # points model-router at vllm-server with the model's thinking map.
+        "llm_backend": _render_llm_backend(env),
     }
     surfaces = ["model-router-endpoints"]
     if str(common["ods_mode"]).strip().lower() != "cloud":

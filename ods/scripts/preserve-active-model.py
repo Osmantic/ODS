@@ -13,6 +13,9 @@ installs wrote. Every mode emits a small allowlisted dotenv fragment without
 ``eval``. The default mode also keeps the settings model activation owns for
 the same model on this host's llama-server container: an import's vision
 projector and a fixed chat template, each only while it still checks out.
+On a vLLM install (``LLM_BACKEND=vllm``) the default mode keeps the vLLM
+route, its catalog snapshot and GPU instead (``preserved_vllm_contract``),
+and exits 2 rather than let the rerun fall back to a llama.cpp model.
 
 Round F serves every model as ``--alias <GGUF_FILE>``, so a served model id is
 the GGUF filename. For one release the retired Lemonade forms of the same id
@@ -548,6 +551,100 @@ def repaired_served_model_contract(
     return env, served_id, contract
 
 
+def is_vllm_runtime(env: dict[str, str]) -> bool:
+    """A ``.env`` whose model the vLLM engine serves (LLM_BACKEND=vllm)."""
+    return env.get("LLM_BACKEND", "").strip().lower() == "vllm"
+
+
+_VLLM_GPU_UUID = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*")
+_VLLM_MEMORY_SHARE = re.compile(r"(?:0(?:\.[0-9]+)?|1(?:\.0+)?)")
+
+
+def vllm_snapshot_installed(models_dir: Path, folder: str, files: list[dict[str, Any]]) -> bool:
+    """Every manifest file is in ``models_dir/folder`` under its final name, at its size.
+
+    scripts/download-hf-manifest.py renames a file into place only after its
+    digest matched, so a complete set of final names at the catalog sizes is a
+    complete verified download. Links are refused, as the GGUF check does.
+    """
+    try:
+        root = models_dir.resolve()
+        snapshot = models_dir / folder
+        if snapshot.is_symlink() or not snapshot.is_dir() or snapshot.resolve().parent != root:
+            return False
+        for item in files:
+            info = (snapshot / item["path"]).lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_size != item["size"]:
+                return False
+            if not (snapshot / item["path"]).resolve().is_relative_to(snapshot.resolve()):
+                return False
+    except (OSError, RuntimeError):
+        return False
+    return True
+
+
+def preserved_vllm_contract(args: argparse.Namespace) -> dict[str, str] | None:
+    """The retained vLLM route, while its catalog snapshot is still installed.
+
+    The route stays on vLLM (LLM_BACKEND=vllm) with the same model and GPU, and
+    clears the GGUF keys so no llama.cpp model is downloaded or started. The
+    model folder and served id must be the catalog entry's (a new revision is
+    a new download, which this never starts). VLLM_ARGS comes from this
+    release's catalog entry for that snapshot: its flags are measured with the
+    release's vLLM image, which the installer pins separately (VLLM_IMAGE).
+    The GPU and its memory share are the host's and stay as installed.
+    """
+    env = parse_dotenv(args.env)
+    if (
+        not is_vllm_runtime(env)
+        or env.get("ODS_MODE", "local").strip().lower() != "local"
+        or env.get("EXTERNAL_LLM_URL")
+        or env.get("NATIVE_LLM_BASE_URL")
+    ):
+        return None
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "extensions/services/dashboard-api"))
+    import model_vllm
+
+    llm_model = env.get("LLM_MODEL", "").strip()
+    matches = [
+        item for item in load_records(args.catalog, None)
+        if model_vllm.is_vllm_entry(item) and item.get("llm_model_name") == llm_model
+    ]
+    if len(matches) != 1 or model_vllm.entry_problems(matches[0]):
+        return None
+    model = matches[0]
+    folder = model_vllm.model_dir_name(model)
+    gpu_uuid = env.get("VLLM_GPU_UUID", "")
+    share = env.get("VLLM_GPU_MEMORY_UTILIZATION", "")
+    if (
+        env.get("VLLM_MODEL_DIR") != folder
+        or env.get("VLLM_SERVED_MODEL") != model["served_model_name"]
+        or not _VLLM_GPU_UUID.fullmatch(gpu_uuid)
+        or (share and (not _VLLM_MEMORY_SHARE.fullmatch(share) or float(share) <= 0))
+        or not vllm_snapshot_installed(args.models_dir, folder, model["files"])
+    ):
+        return None
+    source = env.get("MODEL_SELECTION_SOURCE", "")
+    contract = {
+        "LLM_BACKEND": "vllm",
+        "LLM_MODEL": str(model["llm_model_name"]),
+        # A vLLM route has no GGUF; empty values override the tier map's.
+        "GGUF_FILE": "",
+        "GGUF_URL": "",
+        "GGUF_SHA256": "",
+        "MAX_CONTEXT": str(model["context_length"]),
+        "LLM_MODEL_SIZE_MB": str(round(model_vllm.manifest_bytes(model) / 1_000_000)),
+        "MODEL_SELECTION_SOURCE": source if source in {"installer", "dashboard", "operator"} else "preserved-local",
+        "VLLM_MODEL_DIR": folder,
+        "VLLM_SERVED_MODEL": str(model["served_model_name"]),
+        "VLLM_ARGS": model_vllm.vllm_args_text(model),
+        "VLLM_GPU_UUID": gpu_uuid,
+    }
+    if share:
+        contract["VLLM_GPU_MEMORY_UTILIZATION"] = share
+    return contract
+
+
 def is_local_runtime(env: dict[str, str]) -> bool:
     """A ``.env`` whose model this host's managed llama-server serves."""
     if env.get("EXTERNAL_LLM_URL", "") or env.get("LEMONADE_EXTERNAL", "false").lower() == "true":
@@ -981,6 +1078,16 @@ def main() -> int:
         )
         print(f"Repairing the saved description of the served model ({served_id}): "
               f"{changes}. The served model is unchanged.", file=sys.stderr)
+    elif not (args.native_llm or args.external_lemonade) and is_vllm_runtime(parse_dotenv(args.env)):
+        contract = preserved_vllm_contract(args)
+        if contract is None:
+            # Falling through to the recommendation would turn the vLLM
+            # install into a llama.cpp one and download a GGUF.
+            print("This installation runs its model on the vLLM engine, but its saved model is not "
+                  "a complete vLLM catalog snapshot for the GPU it names; refusing to replace it. "
+                  "Run the installer again and choose the vLLM model, or use --reselect-model.",
+                  file=sys.stderr)
+            return 2
     else:
         contract = preserved_contract(args)
         if contract is None:

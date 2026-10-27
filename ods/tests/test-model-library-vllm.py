@@ -159,6 +159,11 @@ def _mutate(path: str, value):
     ("selection.discrete", 50, "selection.discrete must be 0"),
     ("selection.vllm", KeyError, "selection.vllm must be a whole number"),
     ("served_model_name", "GLM 5.3", "served_model_name must be letters, digits and ._-"),
+    ("thinking_template_kwargs", KeyError, "thinking_template_kwargs must map each of off, low, medium, high"),
+    ("thinking_template_kwargs.high", KeyError, "thinking_template_kwargs must map each of"),
+    ("thinking_template_kwargs.medium", "high", "thinking_template_kwargs.medium must map"),
+    ("thinking_template_kwargs.off", {"reasoning_effort": "lo w"}, "thinking_template_kwargs.off must map"),
+    ("thinking_template_kwargs.low", {"Reasoning-Effort": "low"}, "thinking_template_kwargs.low must map"),
 ])
 def test_the_schema_catches_broken_entries(path, value, expected):
     problems = entry_problems(_mutate(path, value))
@@ -211,6 +216,43 @@ def test_the_entries_keep_the_flags_measured_on_a_dgx_station(model_id):
         assert _dotted_config(model["vllm_args"], flag) == expected, (model_id, flag)
     switches = {arg for arg in model["vllm_args"] if arg == "--no-enable-flashinfer-autotune"}
     assert switches == MEASURED_SWITCHES[model_id], model_id
+
+
+# Each ODS level in the model's own chat-template arguments, read from the
+# templates on the DGX Station (10-27). GLM-5.3's template has no
+# enable_thinking and accepts only reasoning_effort low or high: any other
+# value (none, medium, xhigh) thinks at "max", so "low" is the nearest to off
+# and high omits the field. Qwen3.8's turns thinking off with enable_thinking
+# false and answers HTTP 400 for any reasoning_effort but xhigh (its
+# default), medium and low. Measured (GB300, temperature 0.6): GLM max 7.5 s
+# vs high 3.4 s and low 2.8 s; Qwen xhigh 5.0 s, medium 3.7 s, low 3.4 s.
+THINKING = {
+    "glm-5.3-flash-nvfp4-vllm": {
+        "off": {"reasoning_effort": "low"}, "low": {"reasoning_effort": "low"},
+        "medium": {"reasoning_effort": "high"}, "high": {},
+    },
+    "qwen3.8-flash-next-nvfp4-vllm": {
+        "off": {"enable_thinking": False}, "low": {"reasoning_effort": "low"},
+        "medium": {"reasoning_effort": "medium"}, "high": {"reasoning_effort": "xhigh"},
+    },
+}
+TEMPLATE_EFFORTS = {
+    "glm-5.3-flash-nvfp4-vllm": {"low", "high"},
+    "qwen3.8-flash-next-nvfp4-vllm": {"low", "medium", "xhigh"},
+}
+
+
+@pytest.mark.parametrize("model_id", sorted(THINKING))
+def test_each_level_uses_the_models_own_template_arguments(model_id):
+    model = {item["id"]: item for item in _vllm_models()}[model_id]
+    assert model["thinking_template_kwargs"] == THINKING[model_id]
+    # No level hands the template a reasoning_effort it does not accept.
+    for level, kwargs in model["thinking_template_kwargs"].items():
+        assert kwargs.get("reasoning_effort", "low") in TEMPLATE_EFFORTS[model_id], (model_id, level)
+
+
+def test_every_vllm_entry_has_a_thinking_map():
+    assert {model["id"] for model in _vllm_models()} == set(THINKING)
 
 
 def test_the_broken_entry_cases_edit_what_they_name():

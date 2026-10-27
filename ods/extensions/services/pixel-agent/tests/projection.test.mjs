@@ -196,6 +196,24 @@ test("application payloads expose allowlisted purposes and configured local URLs
   ]);
 });
 
+test("the vLLM engine is an allowlisted app with no local URL", async () => {
+  const raw = JSON.stringify(goodProjection({
+    apps: [
+      { name: "ods-vllm-server", status: "starting" },
+      { name: "vllm-server", status: "healthy" },
+    ],
+  }));
+  const fsImpl = memoryFs({ [FIXED]: makeEntry(raw) });
+  const projection = await readProjection(FIXED, fsImpl, Date.now());
+
+  assert.deepEqual(appsPayload(projection).apps, [
+    { name: "ods-vllm-server", status: "starting", display_name: "vLLM",
+      purpose: "local model engine behind the model router" },
+    { name: "vllm-server", status: "healthy", display_name: "vLLM",
+      purpose: "local model engine behind the model router" },
+  ]);
+});
+
 test("starting application status is accepted", async () => {
   const raw = JSON.stringify(
     goodProjection({
