@@ -307,6 +307,15 @@ def _ensure_release_refresh(force: bool = False) -> Optional[asyncio.Task]:
 @router.get("/api/version", response_model=VersionInfo, dependencies=[Depends(verify_api_key)])
 async def get_version(force: bool = False):
     """Get current ODS version without blocking page load on GitHub."""
+    result = await _version_result(force)
+    # While a failed check holds requests, say why there is no confirmed
+    # release: "try again" would be wrong for up to an hour.
+    if result["check_status"] in ("unavailable", "stale") and _release_checks_held(force=False):
+        result["check_error"] = _held_check_error()
+    return result
+
+
+async def _version_result(force: bool) -> dict:
     current = await asyncio.to_thread(_read_current_version)
     if await asyncio.to_thread(_update_check_disabled):
         return _build_version_result(current, None, "disabled")

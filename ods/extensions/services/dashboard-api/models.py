@@ -113,6 +113,8 @@ class VersionInfo(BaseModel):
     changelog_url: Optional[str] = None
     checked_at: Optional[str] = None
     check_status: str = "unavailable"
+    # Why GitHub gave no release, while a failed check holds further requests.
+    check_error: Optional[str] = None
 
 
 class UpdateAction(BaseModel):

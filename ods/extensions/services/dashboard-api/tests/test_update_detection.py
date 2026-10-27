@@ -222,3 +222,21 @@ def test_dry_run_shares_the_dashboard_cache_and_rate_limit_hold(test_client, mon
     assert get.await_count == 0
     assert data['latest_version'] is None
     assert data['version_check_error'] == "GitHub's request limit for this network is used up; try again in 10 min"
+
+
+def test_a_held_check_says_why_it_has_no_release(test_client, monkeypatch):
+    # Settings told the owner to "try again", which the hold refuses for up to an hour.
+    monkeypatch.setattr(updates, '_read_current_version', lambda: '3.0.0')
+    reset = str(int(time.time()) + 600)
+    _github(monkeypatch, _response(403, {'x-ratelimit-remaining': '0', 'x-ratelimit-reset': reset}))
+
+    data = test_client.get('/api/version?force=true', headers=test_client.auth_headers).json()
+
+    assert data['check_status'] == 'unavailable'
+    assert data['check_error'] == "GitHub's request limit for this network is used up; try again in 10 min"
+
+    monkeypatch.setattr(updates, '_version_hold', {'until': 0.0, 'rate_limited': False})
+    _github(monkeypatch, _response(200, data={'tag_name': 'v3.0.0', 'html_url': 'https://github.com/x'}))
+    data = test_client.get('/api/version?force=true', headers=test_client.auth_headers).json()
+    assert data['check_status'] == 'checked'
+    assert data['check_error'] is None
