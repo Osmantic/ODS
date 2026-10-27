@@ -39,7 +39,30 @@ values are not forwarded. Consent requires an explicit host loopback redirect,
 so OpenClaw's legacy fixed-port fallback cannot redirect a Portal flow elsewhere.
 The adapter neither edits the registry nor grants tools, restarts a service,
 accepts HTTP requests or reads another account's state. It is currently exercised
-by qualification, not installed as an independently callable public service.
+by qualification and installed inside the protected Linux/WSL owner bundle,
+not exposed as an independently callable public service.
+
+`pixel_connections/native_mcp.py` now records Root's native consent intent under
+the existing access lock. Both Root and `native_mcp_owner.py` independently bind
+the owner, home, exact config/state directory, selected existing server, native
+package/module, launcher and Node executable before work. The owner operation
+uses the existing owner apply lock, refuses pending transactions and runs the
+native adapter after the UID drop. Codes cross only its private pipe/stdin.
+
+The journal is private, atomic and directory-fsynced before beginning consent
+and before exchanging a callback code. It holds only metadata and hashes. The
+full callback redirect and state must match the unexpired flow; duplicate
+callbacks cannot start another exchange. If an exchange reply is lost, recovery
+records an unknown outcome without replaying the code or inferring success
+from credential presence. A subsequent explicit sign-in can reuse valid native
+credentials, without claiming it selected a different account. Cancellation
+retains existing credentials. A private guardian socket makes the native child
+exit if its owner worker dies, preventing it from continuing an abandoned flow.
+
+This internal seam currently selects an existing native registry entry. Its
+`portalAccessVerified: false` result means this consent step has not proved
+Portal access; it does not claim to withdraw permissions a server already had.
+No public socket/API enrollment operation or reviewed app item is added yet.
 
 ## Actual runtime qualification
 
@@ -80,15 +103,11 @@ smaller-context and larger-context surfaces keep their existing behavior.
 
 ## Wiring required before offering Connect
 
-- The existing root custodian must select a reviewed app and native server
-  entry, bind the managed config hash, owner, runtime package and exact native
-  state directory, then launch the adapter under that identity with a deadline.
-  Browser and model requests must not select package paths, launch commands or
-  arbitrary server configuration.
-- Persist only the connection intent/pending transition under root custody:
-  native entry identity, state hash, exact redirect, expiry and phase. OpenClaw
-  retains PKCE/client/token material. Claim a callback durably before exchange;
-  reject replay, expiry, another server/config and unknown prior completion.
+- Join the bound custodian/owner consent seam to a reviewed app selection and
+  managed registry entry. Browser/model requests must not select package paths,
+  launch commands or arbitrary server configuration. Qualify its intent/claim
+  journal through the complete authenticated public/host route, beyond the
+  real owner/native operation and callback tests.
 - Reuse the host agent's loopback listener and owner-authenticated relay. On
   WSL the listener is on Windows while authorization runs under the bound Linux
   runtime. For a remote browser, validate the full pasted callback against its

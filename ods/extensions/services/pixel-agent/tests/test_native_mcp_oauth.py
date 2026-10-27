@@ -6,15 +6,19 @@ crosses stdin to the native helper. No real account or installed state is used.
 This qualifies the native seam; the managed app enrollment/UI is still separate.
 """
 import base64
+import contextlib
 import hashlib
 import http.server
 import json
+import os
 from pathlib import Path
 import secrets
 import subprocess
 import sys
 import threading
 import unittest
+from unittest.mock import patch
+from types import SimpleNamespace
 import urllib.parse
 import urllib.request
 
@@ -58,6 +62,8 @@ class OAuthProvider:
         self.refreshes = 0
         self.reads = 0
         self.token_failure = None
+        self.token_entered = threading.Event()
+        self.token_gate = None
         self.authority = self
         self.headers_seen = []
         self.failures = []
@@ -127,6 +133,9 @@ class OAuthProvider:
                     provider.clients[client_id] = body
                     self.reply(201, {**body, "client_id": client_id})
                 elif self.path == "/token":
+                    provider.token_entered.set()
+                    if provider.token_gate is not None:
+                        provider.token_gate.wait(20)
                     if provider.token_failure is not None:
                         self.reply(400, provider.token_failure)
                         return
@@ -359,6 +368,125 @@ class NativeMcpOAuthTests(unittest.TestCase):
         self.assertIs(self.call("probe")["connected"], False)
         self.assertEqual(self.provider.exchanges, 1)
         self.assertEqual(self.provider.failures, [])
+
+    @unittest.skipIf(hasattr(os, 'geteuid') and os.geteuid() == 0, 'Owner-side operation must run as an unprivileged UID')
+    def test_durable_claim_recovers_a_lost_real_exchange_without_replaying_it(self):
+        from native_mcp_owner import operate
+        from pixel_connections import native_mcp as native
+        world = self.world
+        world.write_config({'mcp': {'servers': {'qa-notes': self.server}}})
+        journal_dir = world.home / 'private-custodian'
+        journal_dir.mkdir(mode=0o700)
+
+        class OwnerBridge:
+            # The real owner operation/native store and callback run here. This
+            # fixture does not claim Root socket authentication or UID dropping.
+            state, home, binary = journal_dir, world.home, world.openclaw
+            owner = SimpleNamespace(pw_uid=os.geteuid())
+            lock = threading.RLock()
+            lose_complete_reply = True
+
+            def bounded(self, _seconds):
+                return contextlib.nullcontext()
+
+            def locked(self):
+                return self.lock
+
+            def discover(self):
+                pass
+
+            def pending(self):
+                return None
+
+            def worker_environment(self):
+                return world.env
+
+            def worker(self, operation, *, config_hash, native_oauth_request):
+                assert operation == 'native-mcp-oauth'
+                result = operate(str(world.state / 'openclaw.json'), str(world.state / '.ods-access-mode'),
+                                 openclaw=world.openclaw, request=native_oauth_request,
+                                 expected_config_sha256=config_hash)
+                if self.lose_complete_reply and native_oauth_request['action'] == 'complete':
+                    raise RuntimeError('fixture: response lost after native tokens saved')
+                return result
+
+        bridge = OwnerBridge()
+        consent = native.Consent(bridge, app='notes', server_name='qa-notes')
+        with patch.dict(os.environ, world.env, clear=True):
+            begin = consent.begin(redirect_port=self.listener.port)
+            with self.assertRaisesRegex(native.NativeError, 'state-mismatch'):
+                consent.complete(flow_id=begin['flowId'], callback_url=self.server['oauth']['redirectUrl'] + '?' +
+                    urllib.parse.urlencode({'state': secrets.token_urlsafe(32), 'code': 'other-flow'}))
+            self.assertEqual(self.provider.exchanges, 0)
+            callbacks = []
+
+            def callback(query):
+                callbacks.append(self.server['oauth']['redirectUrl'] + '?' + query)
+                try:
+                    consent.complete(flow_id=begin['flowId'], callback_url=callbacks[-1])
+                except RuntimeError:
+                    return 'Recovery required', 'Saved state retained.', None, True
+                raise AssertionError('The fixture must lose the successful reply')
+
+            self.listener.serve(begin['flowId'], callback)
+            with urllib.request.urlopen(begin['authUrl'], timeout=35) as response:
+                self.assertIn(b'Recovery required', response.read())
+            self.assertEqual(self.provider.exchanges, 1)
+            self.assertEqual(consent.status()['phase'], 'exchanging')
+            with self.assertRaisesRegex(native.NativeError, 'native-callback-already-claimed'):
+                consent.complete(flow_id=begin['flowId'], callback_url=callbacks[0])
+            recovered = consent.recover(flow_id=begin['flowId'])
+            self.assertEqual(recovered['error'], 'native-oauth-attempt-unconfirmed')
+            self.assertIs(recovered['portalAccessVerified'], False)
+            # Explicit fresh sign-in may reuse saved valid native credentials.
+            # It does not repeat the code exchange or claim a new account choice.
+            resumed = consent.begin(redirect_port=self.listener.port)
+            self.assertEqual((resumed['phase'], resumed['authUrl']), ('authorized', None))
+            self.assertEqual(self.provider.exchanges, 1)
+            self.assertIn(self.provider.fact, json.dumps(self.call('read')['read']))
+            raw = (journal_dir / 'native-mcp-consent.json').read_text()
+            for private in (self.provider.access, self.provider.refresh, urllib.parse.urlsplit(callbacks[0]).query):
+                self.assertNotIn(private, raw)
+            self.assertEqual((journal_dir / 'native-mcp-consent.json').stat().st_mode & 0o777, 0o600)
+            self.assertEqual(self.provider.failures, [])
+
+    def test_guardian_eof_stops_native_child_during_a_pending_exchange(self):
+        import http.client
+        import socket
+        begin = self.call('begin')
+        parts = urllib.parse.urlsplit(begin['authUrl'])
+        connection = http.client.HTTPConnection(parts.hostname, parts.port, timeout=5)
+        connection.request('GET', parts.path + '?' + parts.query)
+        response = connection.getresponse()
+        self.assertEqual(response.status, 302)
+        callback = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(response.getheader('Location')).query))
+        response.read()
+        connection.close()
+        self.provider.token_gate = threading.Event()
+        self.addCleanup(self.provider.token_gate.set)
+        guardian, watched = socket.socketpair()
+        with guardian, watched:
+            environment = dict(self.world.env, ODS_NATIVE_OAUTH_GUARD_FD=str(watched.fileno()))
+            child = subprocess.Popen(['node', str(ROOT / 'extensions/services/pixel-agent/host/native_mcp_oauth.mjs')],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment,
+                cwd=self.world.home, text=True, pass_fds=(watched.fileno(),))
+            try:
+                watched.close()
+                child.stdin.write(json.dumps({'operation': 'complete', 'packageDir': str(self.world.package),
+                    'serverName': 'qa-notes', 'server': self.server, 'authorizationCode': callback['code']}))
+                child.stdin.close()
+                self.assertTrue(self.provider.token_entered.wait(10), 'Native exchange never started')
+                guardian.close()  # Models abrupt owner-worker death, not a native timeout.
+                self.assertNotEqual(child.wait(timeout=5), 0)
+                self.assertNotIn(callback['code'], child.stdout.read() + child.stderr.read())
+                self.assertFalse(json.loads(next((self.world.state / 'mcp-oauth').glob('*.json')).read_bytes()).get('tokens'))
+            finally:
+                self.provider.token_gate.set()
+                if child.poll() is None:
+                    child.kill()
+                    child.wait(timeout=5)
+                child.stdout.close()
+                child.stderr.close()
 
 
 if __name__ == "__main__":

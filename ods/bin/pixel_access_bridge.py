@@ -799,11 +799,13 @@ class SystemdAccessBridge:
                model_target=None, model_outcome=None, relocation=None,
                candidate_path=None, candidate_sha256=None, release_outcome=None, verify_release=None,
                receipt_sha256=None, connection_target=None, connection_answers=None, activate_connection=None,
-               schedule_request=None, gateway_port=None):
+               schedule_request=None, gateway_port=None, native_oauth_request=None):
         env = self.worker_environment()
         request = dict(operation=operation, openclaw=self.binary, config_sha256=config_hash, confirmed=confirmed)
         if operation == 'schedules':
             request.update(schedule_request=schedule_request, gateway_port=gateway_port)
+        if operation == 'native-mcp-oauth':
+            request['native_oauth_request'] = native_oauth_request
         if operation.startswith('release-'):
             request['transaction_id'] = transaction_id
             if operation == 'release-prepare':

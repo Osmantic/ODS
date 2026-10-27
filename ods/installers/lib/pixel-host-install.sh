@@ -3108,7 +3108,7 @@ def write(path, content, mode, uid=0, gid=0):
         if os.path.exists(temporary): os.unlink(temporary)
 
 host = code_source / 'extensions/services/pixel-agent/host'
-for name in ('access_mode_server.py', 'unix_peer.py', 'access_mode_worker.py', 'pixel_access_mode.py', 'access_mode_config.py', 'settings_transaction.py', 'provider_transaction.py', 'model_transaction.py', 'access_release_transaction.py', 'connection_transaction.py', 'scheduled_tasks_owner.py', 'scheduled_tasks_gateway.mjs'):
+for name in ('access_mode_server.py', 'unix_peer.py', 'access_mode_worker.py', 'pixel_access_mode.py', 'access_mode_config.py', 'settings_transaction.py', 'provider_transaction.py', 'model_transaction.py', 'access_release_transaction.py', 'connection_transaction.py', 'scheduled_tasks_owner.py', 'scheduled_tasks_gateway.mjs', 'native_mcp_owner.py', 'native_mcp_oauth.mjs'):
     write(target / name, (host / name).read_bytes(), 0o644)
 write(target / 'pixel_access_bridge.py', (code_source / 'bin/pixel_access_bridge.py').read_bytes(), 0o644)
 write(target / 'pixel_gateway_service.py', (code_source / 'bin/pixel_gateway_service.py').read_bytes(), 0o644)
@@ -3144,7 +3144,7 @@ if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid !
     raise SystemExit("Pixel connections program directory is not root protected")
 os.chmod(connections_package, 0o755, follow_symlinks=False)
 for name in ('__init__.py', 'state.py', 'status.py', 'catalog.py', 'oauth.py', 'custody.py', 'planner.py',
-             'coordinator.py', 'lifecycle.py', 'approvals.py', 'activity.py', 'drafts.py', 'plugins.py'):
+             'coordinator.py', 'lifecycle.py', 'approvals.py', 'activity.py', 'drafts.py', 'plugins.py', 'native_mcp.py'):
     write(connections_package / name, (code_source / 'bin/pixel_connections' / name).read_bytes(), 0o644)
 config_dir = pathlib.Path('/etc/ods')
 config_dir.mkdir(mode=0o755, exist_ok=True)

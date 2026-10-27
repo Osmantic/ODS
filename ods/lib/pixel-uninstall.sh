@@ -193,6 +193,8 @@ sources = {
     "model_transaction.py": install / "extensions/services/pixel-agent/host/model_transaction.py",
     "access_release_transaction.py": install / "extensions/services/pixel-agent/host/access_release_transaction.py",
     "connection_transaction.py": install / "extensions/services/pixel-agent/host/connection_transaction.py",
+    "native_mcp_owner.py": install / "extensions/services/pixel-agent/host/native_mcp_owner.py",
+    "native_mcp_oauth.mjs": install / "extensions/services/pixel-agent/host/native_mcp_oauth.mjs",
     "pixel_access_bridge.py": install / "bin/pixel_access_bridge.py",
     "pixel_source_upgrade.py": install / "bin/pixel_source_upgrade.py",
     "pixel_gateway_service.py": install / "bin/pixel_gateway_service.py",
@@ -216,7 +218,7 @@ for name in (
     sources[f"pixel_provider/{name}"] = install / "bin/pixel_provider" / name
 CONNECTION_MODULES = tuple(f"pixel_connections/{name}" for name in (
     "__init__.py", "state.py", "status.py", "catalog.py", "oauth.py", "custody.py", "planner.py", "coordinator.py",
-    "lifecycle.py", "approvals.py", "activity.py", "drafts.py", "plugins.py"))
+    "lifecycle.py", "approvals.py", "activity.py", "drafts.py", "plugins.py", "native_mcp.py"))
 # The root-owned copy of Pixel's broker that a connect installs from. It mirrors this
 # install's Pixel checkout, which later configures may rewrite, so only its exact
 # names and root custody are checked.
@@ -236,7 +238,7 @@ for name in CONNECTION_MODULES:
 expected_sources = set(sources)
 for later_module in ("pixel_gateway_service.py", "access_release_transaction.py", "pixel_source_upgrade.py",
                      "pixel_schedules.py", "scheduled_tasks_owner.py", "scheduled_tasks_gateway.mjs",
-                     "connection_transaction.py", *CONNECTION_MODULES):
+                     "connection_transaction.py", "native_mcp_owner.py", "native_mcp_oauth.mjs", *CONNECTION_MODULES):
     if (not present(sources[later_module])
             and not present(program / later_module)):
         expected_sources.remove(later_module)
@@ -444,6 +446,7 @@ state_limits = {
     "provider-service-environment.json": 1024 * 1024,
     # A connected app's step in progress; uninstall removes it with everything else.
     "connection.json": 8192,
+    "native-mcp-consent.json": 8192,
 }
 # A hard stop between mkstemp and os.replace can leave an incomplete
 # root-owned bridge write behind. It is not a receipt or pending transaction,

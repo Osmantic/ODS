@@ -29,7 +29,9 @@ if platform.system() == "Linux":
     # Connected apps ship only with the Linux and WSL Source Broker.
     for path in (directory / "connection_transaction.py", directory / "pixel_connections",
                  directory / "pixel_connections" / "__init__.py", directory / "pixel_connections" / "planner.py",
-                 directory / "pixel_connections" / "state.py", directory / "pixel_connections" / "plugins.py"):
+                 directory / "pixel_connections" / "state.py", directory / "pixel_connections" / "plugins.py",
+                 directory / "pixel_connections" / "native_mcp.py", directory / "pixel_connections" / "oauth.py",
+                 directory / "native_mcp_owner.py", directory / "native_mcp_oauth.mjs"):
         info = path.lstat()
         if stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
             raise RuntimeError("controller program custody unavailable")
@@ -82,6 +84,16 @@ def main():
             return False
 
     try:
+        if request['operation'] == 'native-mcp-oauth':
+            from pixel_connections.native_mcp import NativeError
+            from native_mcp_owner import operate
+            try:
+                result = operate(path, state_dir, openclaw=request['openclaw'],
+                    request=request['native_oauth_request'], expected_config_sha256=request['config_sha256'])
+                emit({'result': result})
+            except NativeError as error:
+                emit({'error': error.code})
+            return
         if request['operation'] == 'schedules':
             from pixel_schedules import ScheduleError
             from scheduled_tasks_owner import NativeTasks, gateway_call

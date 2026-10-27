@@ -42,9 +42,11 @@ if platform.system() == "Linux":
     protected(PROGRAM / "pixel_source_upgrade.py")
     # Connected apps use the systemd Source Broker, so only Linux and WSL ship them.
     for name in ("__init__.py", "state.py", "status.py", "catalog.py", "oauth.py", "custody.py",
-                 "planner.py", "coordinator.py", "lifecycle.py", "approvals.py", "activity.py", "drafts.py", "plugins.py"):
+                 "planner.py", "coordinator.py", "lifecycle.py", "approvals.py", "activity.py", "drafts.py", "plugins.py", "native_mcp.py"):
         protected(PROGRAM / "pixel_connections" / name)
     protected(PROGRAM / "connection_transaction.py")
+    protected(PROGRAM / "native_mcp_owner.py")
+    protected(PROGRAM / "native_mcp_oauth.mjs")
 if platform.system() == "Darwin":
     for name in ("pixel_macos_custody.py", "pixel_macos_process.py", "pixel_macos_policy.py"):
         protected(PROGRAM / name)

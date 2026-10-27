@@ -21,6 +21,10 @@ mark them merged or replace their review.
   candidate and public bundle.
 - Added an owner-side, version/hash-bound adapter to OpenClaw's MCP OAuth,
   retaining its discovery, registration, PKCE, token storage and refresh.
+- Added internal Root consent intent/callback claiming, an independently bound
+  owner operation and safe recovery of an exchange whose reply was lost. It
+  preserves native credentials and does not claim Portal access or expose a
+  public enrollment operation yet.
 - Improved source argument feedback, explicit calendar timestamps and source
   labels; kept permitted email/calendar read schemas available in the 8K
   Portal profile and bounded native tool-discovery/compaction metadata.

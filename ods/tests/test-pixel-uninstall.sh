@@ -423,6 +423,8 @@ write_access_fixture() {
         "extensions/services/pixel-agent/host/model_transaction.py"
         "extensions/services/pixel-agent/host/access_release_transaction.py"
         "extensions/services/pixel-agent/host/connection_transaction.py"
+        "extensions/services/pixel-agent/host/native_mcp_owner.py"
+        "extensions/services/pixel-agent/host/native_mcp_oauth.mjs"
         "bin/pixel_access_bridge.py"
         "bin/pixel_gateway_service.py"
         "bin/pixel_access_client.py"
@@ -458,6 +460,7 @@ write_access_fixture() {
         "bin/pixel_connections/activity.py"
         "bin/pixel_connections/drafts.py"
         "bin/pixel_connections/plugins.py"
+        "bin/pixel_connections/native_mcp.py"
     )
     for relative in "${access_sources[@]}"; do
         source="$ROOT_DIR/$relative"
@@ -2786,6 +2789,8 @@ chmod 0755 "$kit_dir"
 chmod 0644 "$kit_dir/broker.py" "$kit_dir/pixel-source-revoke.service"
 printf '%s\n' '{"kind":"connection"}' > "$ACCESS_STATE/connection.json"
 chmod 0600 "$ACCESS_STATE/connection.json"
+printf '%s\n' '{"kind":"native-mcp-consent"}' > "$ACCESS_STATE/native-mcp-consent.json"
+chmod 0600 "$ACCESS_STATE/native-mcp-consent.json"
 : > "$SYSTEMCTL_LOG"
 : > "$OPS_IDENTITY_LOG"
 if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR" && ! source_broker_remains \

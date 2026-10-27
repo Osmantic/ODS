@@ -124,6 +124,7 @@ jobs:
             tests/pixel_settings/test_host_body_deadline.py \
             extensions/services/pixel-agent/tests/test_settings_transaction.py \
             extensions/services/pixel-agent/tests/test_settings_worker_protocol.py \
+            extensions/services/pixel-agent/tests/test_native_mcp_consent.py \
             extensions/services/pixel-agent/tests/test_access_bridge.py \
             extensions/services/pixel-agent/tests/test_access_native_origin.py \
             extensions/services/pixel-agent/tests/test_access_deadlines.py \

@@ -5,6 +5,7 @@
 import {createHash} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import path from 'node:path';
+import {Socket} from 'node:net';
 import {pathToFileURL} from 'node:url';
 
 const VERSION = '2026.6.33';
@@ -103,7 +104,17 @@ async function operate(input) {
 
 // One subprocess is the I/O boundary. Native errors can contain remote response
 // bodies, URLs or tokens; only fixed ODS codes leave this boundary.
+let guardian;
 try {
+  if (process.env.ODS_NATIVE_OAUTH_GUARD_FD !== undefined) {
+    const value = process.env.ODS_NATIVE_OAUTH_GUARD_FD;
+    if (!/^[0-9]{1,6}$/.test(value) || Number(value) < 3) throw new Refusal('invalid-native-oauth-guardian');
+    guardian = new Socket({fd: Number(value), readable: true, writable: false});
+    guardian.on('end', () => process.exit(1));
+    guardian.on('error', () => process.exit(1));
+    guardian.resume();
+    guardian.unref();
+  }
   const result = await operate(await readRequest());
   const frame = JSON.stringify({ok: true, result});
   if (Buffer.byteLength(frame) > 8192) throw new Refusal('native-oauth-response-too-large');
@@ -112,4 +123,6 @@ try {
   const code = error instanceof Refusal ? error.message : 'native-oauth-failed';
   process.stdout.write(`${JSON.stringify({ok: false, code})}\n`);
   process.exitCode = 1;
+} finally {
+  guardian?.destroy();
 }

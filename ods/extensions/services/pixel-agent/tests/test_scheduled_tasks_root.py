@@ -34,6 +34,10 @@ config={'gateway':{'mode':'local','port':port,'bind':'loopback','auth':{'mode':'
         'logging':{'file':str(home/'gateway.log')},'plugins':{'allow':[],'entries':{}},
         'agents':{'defaults':{'heartbeat':{'every':'0m'}},'list':[{'id':'pixel','default':True,'workspace':str(home/'workspace')}]}}
 path=state/'openclaw.json';path.write_text(json.dumps(config));path.chmod(0o600)
+if len(sys.argv)>4:
+    config['mcp']={'servers':{'qa-notes':{'enabled':True,'transport':'streamable-http','url':sys.argv[4]+'/mcp',
+        'auth':'oauth','oauth':{'scope':'notes.read'},'toolFilter':{'include':['notes_read']}}}}
+    path.write_text(json.dumps(config));path.chmod(0o600)
 env={'PATH':str(Path(binary).parent)+':/usr/local/bin:/usr/bin:/bin','HOME':str(home),'USER':owner_name,'LOGNAME':owner_name,'NO_COLOR':'1',
      'OPENCLAW_CONFIG_PATH':str(path),'OPENCLAW_STATE_DIR':str(state)}
 with (home/'startup.log').open('w') as output:
@@ -53,7 +57,8 @@ with (home/'startup.log').open('w') as output:
 '''
 
 DRIVER = r'''
-import json,os,pwd,sys,time,uuid
+import http.client,json,os,pwd,sys,time,uuid
+from urllib.parse import urlsplit,parse_qsl
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).parent))
 import pixel_access_bridge as bridge
@@ -96,8 +101,50 @@ try:
     except bridge.AccessError as error:
         assert error.code=='owner-protocol-failed'
 finally:module.chmod(0o644)
+from pixel_connections import native_mcp
+config_path=home/'.openclaw/openclaw.json'
+environment=adapter.worker_environment()
+binding=native_mcp.derive_binding(config_path=config_path,uid=owner.pw_uid,home=home,state_dir=home/'.openclaw',
+    binary=value['binary'],search_path=environment['PATH'],server_name='qa-notes')
+native_request={'action':'begin','binding':binding,'serverName':'qa-notes','redirectUri':'http://127.0.0.1:43123/'}
+# Fixed QA resource selection replaces installed deployment discovery only.
+# The actual Root journal/lock, UID drop, owner lock and native adapter still run.
+adapter.state=Path(__file__).parent.parent/'custodian'
+adapter.discover=lambda:None
+consent=native_mcp.Consent(adapter,app='notes',server_name='qa-notes')
+begun=consent.begin(redirect_port=43123);assert begun['phase']=='consent'
+parts=urlsplit(begun['authUrl']);connection=http.client.HTTPConnection(parts.hostname,parts.port,timeout=5)
+connection.request('GET',parts.path+'?'+parts.query);response=connection.getresponse();assert response.status==302
+callback_url=response.getheader('Location')
+callback=dict(parse_qsl(urlsplit(callback_url).query));response.read();connection.close()
+native_request=dict(native_request,action='complete',authorizationCode=callback['code'])
+authorized=consent.complete(flow_id=begun['flowId'],callback_url=callback_url)
+assert authorized=={'phase':'authorized','error':None,'portalAccessVerified':False}
+root_journal=adapter.state/'native-mcp-consent.json'
+assert root_journal.stat().st_uid==0 and root_journal.stat().st_mode&0o777==0o600
+assert callback['code'] not in root_journal.read_text() and callback['state'] not in root_journal.read_text()
+try:
+    consent.complete(flow_id=begun['flowId'],callback_url=callback_url)
+    raise AssertionError('Root replayed a claimed callback')
+except native_mcp.NativeError as error:assert error.code=='native-callback-already-claimed'
+native_store=list((home/'.openclaw/mcp-oauth').glob('*.json'));assert len(native_store)==1
+assert native_store[0].stat().st_uid==owner.pw_uid and native_store[0].stat().st_mode&0o777==0o600
+assert json.loads(native_store[0].read_bytes()).get('tokens')
+try:
+    adapter.worker('native-mcp-oauth',config_hash='0'*64,
+        native_oauth_request=dict(native_request,binding=dict(binding,configSha256='0'*64)))
+    raise AssertionError('Changed native config accepted')
+except bridge.AccessError as error:assert error.code=='controller-native-mcp-binding-changed'
+module=Path(__file__).with_name('native_mcp_owner.py');module.chmod(0o666)
+try:
+    try:
+        adapter.worker('native-mcp-oauth',config_hash=binding['configSha256'],native_oauth_request=native_request)
+        raise AssertionError('Writable native owner helper accepted')
+    except bridge.AccessError as error:assert error.code=='owner-protocol-failed'
+finally:module.chmod(0o644)
 print(json.dumps({'rootOwnedBundle':True,'realOwnerWorker':True,'privateLedger':True,
-    'createPauseRemove':True,'changedConfigRefused':True,'writableCodeRefused':True}))
+    'createPauseRemove':True,'changedConfigRefused':True,'writableCodeRefused':True,
+    'nativeOAuthOwnerDrop':True,'nativeConfigBound':True,'nativeHelperCustody':True,'nativeRootClaim':True}))
 '''
 
 
@@ -114,6 +161,8 @@ class NativeOwnerRootTests(unittest.TestCase):
         base = Path(tempfile.mkdtemp(prefix='ods-schedules-qa-', dir='/usr/local/lib'))
         created = mounted = False
         child = owner = None
+        from test_native_mcp_oauth import OAuthProvider
+        provider = OAuthProvider()
         try:
             base.chmod(0o755)
             home = base / 'owner'
@@ -125,16 +174,24 @@ class NativeOwnerRootTests(unittest.TestCase):
             self.assertEqual(owner.pw_dir, str(home))
             home.mkdir(mode=0o700)
             os.chown(home, owner.pw_uid, owner.pw_gid)
+            # The input package can belong to the developer rather than the
+            # disposable service account. Stage a root-owned private copy;
+            # never chown the input or relax the product's runtime custody.
+            private_package = base / 'runtime-source'
+            shutil.copytree(package, private_package, symlinks=True)
             runtime = base / 'runtime'
             runtime.mkdir(mode=0o755)
-            subprocess.run(['/usr/bin/mount', '--bind', str(package), str(runtime)], check=True)
+            subprocess.run(['/usr/bin/mount', '--bind', str(private_package), str(runtime)], check=True)
             mounted = True
             subprocess.run(['/usr/bin/mount', '-o', 'remount,bind,ro', str(runtime)], check=True)
             options = subprocess.check_output(['/usr/bin/findmnt', '-T', str(runtime), '-n', '-o', 'OPTIONS'], text=True)
             self.assertIn('ro', options.strip().split(','))
             executables = base / 'bin'
             executables.mkdir(mode=0o755)
-            (executables / 'node').symlink_to(node)
+            # setup-node's cache can belong to the CI runner. The bound native
+            # interpreter for this other UID must be root-owned too.
+            shutil.copy2(node, executables / 'node')
+            (executables / 'node').chmod(0o755)
             (executables / 'openclaw').symlink_to(runtime / 'openclaw.mjs')
             binary = str(executables / 'openclaw')
             programs = base / 'programs'
@@ -155,7 +212,7 @@ class NativeOwnerRootTests(unittest.TestCase):
             helper.chmod(0o644)
             driver.chmod(0o644)
             env = {'PATH': '/usr/local/bin:/usr/bin:/bin', 'HOME': str(home), 'USER': name, 'LOGNAME': name, 'LANG': 'C.UTF-8'}
-            child = subprocess.Popen(['/usr/bin/python3', '-I', str(helper), str(home), binary, name],
+            child = subprocess.Popen(['/usr/bin/python3', '-I', str(helper), str(home), binary, name, provider.origin],
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                 text=True, env=env, cwd=home, user=owner.pw_uid, group=owner.pw_gid, extra_groups=[])
             ready = json.loads(child.stdout.readline(4096))
@@ -164,8 +221,12 @@ class NativeOwnerRootTests(unittest.TestCase):
                 text=True, input=json.dumps({'home': str(home), 'owner': name, 'binary': binary, 'port': ready['port']}))
             self.assertEqual(result.returncode, 0, result.stderr[-3000:])
             self.assertEqual(json.loads(result.stdout), {key: True for key in ('rootOwnedBundle', 'realOwnerWorker',
-                'privateLedger', 'createPauseRemove', 'changedConfigRefused', 'writableCodeRefused')})
+                'privateLedger', 'createPauseRemove', 'changedConfigRefused', 'writableCodeRefused',
+                'nativeOAuthOwnerDrop', 'nativeConfigBound', 'nativeHelperCustody', 'nativeRootClaim')})
+            self.assertEqual(provider.exchanges, 1)
+            self.assertEqual(provider.failures, [])
         finally:
+            provider.close()
             if child and child.poll() is None:
                 (base / 'owner/stop-fixture').touch()
                 try:

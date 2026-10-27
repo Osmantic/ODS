@@ -30,6 +30,8 @@ KEYS['access-relocate'] = BASE | {'relocation'}
 HOOKS['access-relocate'] = ('busy',)
 KEYS['schedules'] = BASE | {'schedule_request', 'gateway_port'}
 HOOKS['schedules'] = ()
+KEYS['native-mcp-oauth'] = BASE | {'native_oauth_request'}
+HOOKS['native-mcp-oauth'] = ()
 KEYS.update({
     'release-baseline': BASE | {'transaction_id'},
     'release-abort': BASE | {'transaction_id', 'receipt_sha256'},
@@ -210,6 +212,14 @@ def request(value):
             raise ProtocolError('owner-protocol-failed')
         try: schedule_request(value['schedule_request'])
         except ScheduleError: raise ProtocolError('owner-protocol-failed') from None
+    if operation == 'native-mcp-oauth':
+        from pixel_connections.native_mcp import NativeError, worker_request
+        try:
+            worker_request(value['native_oauth_request'])
+            if value['confirmed'] is not False or value['native_oauth_request']['binding']['configSha256'] != value['config_sha256']:
+                raise NativeError('invalid-native-mcp-binding')
+        except NativeError:
+            raise ProtocolError('owner-protocol-failed') from None
     if operation.startswith('release-'):
         if (value['confirmed'] is not False or type(value['transaction_id']) is not str
                 or not HEX.fullmatch(value['transaction_id'])):
@@ -320,6 +330,10 @@ def hook_reply(operation, name, value):
 def result(operation, value):
     if type(value) is not dict:
         raise ProtocolError("owner-protocol-failed")
+    if operation == 'native-mcp-oauth':
+        from pixel_connections.native_mcp import NativeError, worker_result
+        try: return worker_result(value)
+        except NativeError: raise ProtocolError('owner-protocol-failed') from None
     if operation == 'schedules':
         try: return schedule_response(value)
         except ScheduleError: raise ProtocolError('owner-protocol-failed') from None
