@@ -15914,6 +15914,9 @@ class AgentHandler(BaseHTTPRequestHandler):
                         "verifiedAt": str(final_runtime_proof.get("verifiedAt") or _iso_now()),
                         **({'modelTransactionId':pixel_transaction.id} if pixel_transaction is not None else {}),
                     },
+                    # Non-secret completion proof read by dashboard-api, whose
+                    # container UID can differ from the installing host user.
+                    mode=0o644,
                 )
                 committed = True  # system state is committed before the response write
                 if pixel_transaction is not None:
