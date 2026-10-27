@@ -1005,7 +1005,7 @@ def _validate_state_schema(doc: Any) -> bool:
         # A pre-round-F state names the retired "lemonade" kind. It stays
         # readable for one release so the host agent can replace it (contract
         # section 6.7); no route path treats it specially.
-        if backend["kind"] not in {"llama-server", "lemonade", "hipfire", "unknown"}:
+        if backend["kind"] not in {"llama-server", "vllm", "lemonade", "hipfire", "unknown"}:
             return False
         if not isinstance(backend["endpointId"], str) or not backend["endpointId"]:
             return False
@@ -1131,6 +1131,19 @@ def _active_route() -> dict[str, Any]:
         "apiKeyEnv": endpoint["apiKeyEnv"],
         "queueMode": str(availability.get("mode") or "serve_active") == "queue",
     }
+
+
+def _llama_tool_compat(route: dict[str, Any]) -> bool:
+    """Whether the router's llama.cpp tool-call workarounds apply to a route.
+
+    Only llama-server routes get them: buffered tool streams, the non-stream
+    request for thinking-enabled tool streams, bounded tool-protocol repair
+    and native tool-markup cleanup (tool_id_compat keeps its Nemo tool-id
+    rewrite llama-server-only too). Other kinds are forwarded unchanged; a
+    vllm route parses tool calls and reasoning itself with its own
+    --tool-call-parser and --reasoning-parser.
+    """
+    return route["backendKind"] == "llama-server"
 
 
 def _offered_tool_evidence(payload: dict[str, Any]) -> dict[str, Any]:
@@ -2040,7 +2053,7 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
     completed_tool_stream = (
         is_stream
         and path == "/v1/chat/completions"
-        and route["backendKind"] == "llama-server"
+        and _llama_tool_compat(route)
         and isinstance(payload.get("tools"), list)
         and bool(payload["tools"])
     )
@@ -2361,7 +2374,7 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
     # model decision, not an executed action; no host/tool operation is
     # replayed here. Every rejected decision is logged by shape, never values.
     if (path == "/v1/chat/completions"
-            and route["backendKind"] == "llama-server"
+            and _llama_tool_compat(route)
             and _repairable_native_tool_request(payload)
             and isinstance(payload.get("messages"), list)
             and 200 <= upstream.status_code < 300):
@@ -2491,7 +2504,7 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
 
     if (parsed is not None and 200 <= upstream.status_code < 300
             and path == "/v1/chat/completions"
-            and route["backendKind"] == "llama-server"
+            and _llama_tool_compat(route)
             and isinstance(payload.get("tools"), list) and payload["tools"]
             and _normalize_native_tool_markup(parsed, payload)):
         content = json.dumps(parsed).encode("utf-8")

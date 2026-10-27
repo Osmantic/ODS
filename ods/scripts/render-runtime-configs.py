@@ -38,6 +38,14 @@ LEGACY_ODS_MODES = {"lemonade": "local"}
 PUBLIC_MODEL_ALIAS = "ods/current"
 REMOTE_PROVIDER_EGRESS_BASE_URL = "http://remote-provider-egress:8091/v1"
 REMOTE_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,255}$")
+# .env LLM_BACKEND values. vllm routes model-router to the vllm-server
+# container; every other value keeps today's llama-server routes (external
+# installs replace the router through their overlay, hipfire routes share the
+# llama-server endpoint, and lemonade and litellm are retired values still
+# accepted for upgrade compatibility).
+LLM_BACKEND_VALUES = ("llama-server", "vllm", "external", "hipfire", "lemonade", "litellm")
+VLLM_ENDPOINT_ID = "vllm-default"
+VLLM_SERVER_ORIGIN = "http://vllm-server:8000"
 
 
 def atomic_write_text(target: Path, content: str, *, file_mode: int | None = None) -> None:
@@ -126,6 +134,8 @@ class RenderInputs:
     llm_api_key_env: str = ""
     # Switchboard rollout mode: legacy | observe | enabled (plan section 8)
     switchboard_mode: str = "enabled"
+    # Model server behind model-router: llama-server | vllm (model_server()).
+    llm_backend: str = "llama-server"
 
 
 @dataclass(frozen=True)
@@ -155,6 +165,11 @@ def normalize_openai_base_url(value: str) -> str:
 
 def remote_route_enabled(inputs: RenderInputs) -> bool:
     return inputs.remote_llm_enabled
+
+
+def model_server(llm_backend: str) -> str:
+    """The model server an .env LLM_BACKEND value routes to."""
+    return "vllm" if llm_backend == "vllm" else "llama-server"
 
 
 def hermes_model_id(inputs: RenderInputs) -> str:
@@ -555,7 +570,7 @@ def render_env(inputs: RenderInputs) -> RenderedFile:
     lines = [
         f"ODS_MODE={inputs.ods_mode}",
         f"ODS_MODEL_SWITCHBOARD={inputs.switchboard_mode}",
-        "LLM_BACKEND=llama-server",
+        f"LLM_BACKEND={inputs.llm_backend}",
         f"LLM_MODEL={inputs.model}",
         f"GGUF_FILE={inputs.gguf_file}",
         f"GPU_BACKEND={inputs.gpu_backend}",
@@ -652,13 +667,19 @@ def render_model_router_endpoints(inputs: RenderInputs) -> RenderedFile:
             raise ValueError("model router endpoint origin must be an HTTP URL without embedded credentials")
         return base
 
-    # Every managed runtime is upstream llama-server; a host-native one is
-    # reached at http://host.docker.internal:<port> with its key, which the
-    # router reads from the named env var (never from this file).
-    endpoint = {"id": "llama-server-default",
-                "baseUrl": _origin_base(inputs.llm_base_url, "http://llama-server:8080")}
-    if inputs.llm_api_key_env:
-        endpoint["apiKeyEnv"] = inputs.llm_api_key_env
+    if inputs.llm_backend == "vllm":
+        # The in-stack vllm-server container on its internal port. It takes no
+        # key; the llama-server origin and key inputs do not describe it.
+        endpoint = {"id": VLLM_ENDPOINT_ID, "baseUrl": VLLM_SERVER_ORIGIN}
+    else:
+        # Otherwise the model server is upstream llama-server: the in-stack
+        # container, or a host-native one reached at
+        # http://host.docker.internal:<port> with its key, which the router
+        # reads from the named env var (never from this file).
+        endpoint = {"id": "llama-server-default",
+                    "baseUrl": _origin_base(inputs.llm_base_url, "http://llama-server:8080")}
+        if inputs.llm_api_key_env:
+            endpoint["apiKeyEnv"] = inputs.llm_api_key_env
     content = json.dumps({"endpoints": [endpoint]}, indent=2) + "\n"
     return RenderedFile(
         "model-router-endpoints", "config/model-router/endpoints.json", content
@@ -737,6 +758,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--ods-mode", choices=["local", "cloud", "hybrid", *LEGACY_ODS_MODES], default="local",
     )
     parser.add_argument("--llm-base-url", default="http://llama-server:8080/v1")
+    llm_backend = parser.add_argument(
+        "--llm-backend",
+        choices=LLM_BACKEND_VALUES,
+        default=(os.environ.get("LLM_BACKEND") or "").strip().lower() or "llama-server",
+        help=(
+            "The .env LLM_BACKEND value. vllm points model-router at vllm-server; "
+            "every other value keeps the llama-server routes."
+        ),
+    )
     parser.add_argument(
         "--llm-api-key-env", default="",
         help=(
@@ -789,7 +819,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     # environment. A typo must not silently select a different routing mode
     # and overwrite working runtime configs. Validate effective values so an
     # explicit valid CLI override can still repair a bad environment default.
-    for action in (switchboard_mode, remote_enabled, remote_transport):
+    for action in (switchboard_mode, remote_enabled, remote_transport, llm_backend):
         value = getattr(args, action.dest)
         if value not in action.choices:
             parser.error(f"{action.option_strings[0]}: invalid choice {value!r}; choose from {action.choices}")
@@ -883,6 +913,7 @@ def render(args: argparse.Namespace) -> dict[str, object]:
         remote_llm_model=args.remote_llm_model,
         external_llm_authenticated=args.external_llm_authenticated,
         llm_api_key_env=getattr(args, "llm_api_key_env", ""),
+        llm_backend=model_server(getattr(args, "llm_backend", "llama-server")),
     )
     validate_render_inputs(inputs)
     if args.surface == "litellm-switchboard" and inputs.ods_mode == "cloud":
