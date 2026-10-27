@@ -5,7 +5,9 @@ import contextlib
 import hashlib
 import json
 import logging
+import mmap
 import os
+import platform
 import re
 import shutil
 import stat
@@ -506,6 +508,33 @@ def _gpu_compatible(ext: dict) -> bool:
     return not gpu_backends or "all" in gpu_backends or GPU_BACKEND in gpu_backends
 
 
+# Containers share the host kernel, so this API sees the Docker host's CPU
+# architecture and page size.
+_HOST_ARCH = {"x86_64": "amd64", "aarch64": "arm64"}.get(platform.machine().lower(), platform.machine().lower())
+_HOST_PAGE_SIZE = mmap.PAGESIZE
+
+
+def _host_unsupported_reason(ext: dict) -> str:
+    """Why this host cannot run the entry's image, or "" when it can.
+
+    Some upstream images exist for one CPU architecture, or abort on kernel
+    pages larger than 4 KB; on Workstation06 (arm64, 64 KB pages) they
+    crash-looped after an enable (#8257). Docker Desktop on macOS runs amd64
+    images under Rosetta 2, so architectures do not apply there.
+    """
+    requirements = ext.get("host_requirements")
+    if not isinstance(requirements, dict):
+        return ""
+    name = ext.get("name") or ext.get("id", "This extension")
+    architectures = requirements.get("architectures")
+    if isinstance(architectures, list) and GPU_BACKEND != "apple" and _HOST_ARCH not in architectures:
+        return f"{name}'s image is built for {' and '.join(architectures)} only; this machine is {_HOST_ARCH}."
+    max_page_size = requirements.get("max_page_size")
+    if type(max_page_size) is int and _HOST_PAGE_SIZE > max_page_size:
+        return f"{name}'s image cannot run with this machine's {_HOST_PAGE_SIZE // 1024} KB memory pages."
+    return ""
+
+
 def _service_starting(service) -> bool:
     """Startup requires declared container health, not a slow/failed HTTP probe."""
     return (service is not None and service.status in {"down", "degraded"}
@@ -522,7 +551,7 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
     # A Library built-in this host's backend cannot run (ComfyUI needs AMD or
     # NVIDIA) stays incompatible even though other hosts may add it; its
     # selection and any receipt from a refused attempt are moot here.
-    if ext_id in LIBRARY_MANAGEABLE_BUILTINS and not _gpu_compatible(ext):
+    if ext_id in LIBRARY_MANAGEABLE_BUILTINS and (not _gpu_compatible(ext) or _host_unsupported_reason(ext)):
         return "incompatible"
 
     # Check for in-flight install operations (progress files take priority)
@@ -605,8 +634,8 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
         if (user_dir / "compose.yaml.disabled").exists():
             return "disabled"
 
-    # GPU incompatibility
-    if not _gpu_compatible(ext):
+    # GPU incompatibility, or an image this host cannot run
+    if not _gpu_compatible(ext) or _host_unsupported_reason(ext):
         return "incompatible"
 
     if ext.get("catalog_source") == "builtin":
@@ -2080,6 +2109,9 @@ async def extensions_catalog(
         }
         if ext_id == "opencode" and ext_id in SERVICES:
             enriched.update(_opencode_catalog_fields(status))
+        unsupported = _host_unsupported_reason(ext)
+        if unsupported:
+            enriched["incompatible_reason"] = unsupported
         llm_contract = _llm_contract_for_extension(ext)
         if llm_contract is not None:
             enriched["llm"] = llm_contract
@@ -3553,6 +3585,7 @@ async def extension_detail(
         "description": ext.get("description", ""),
         "status": status,
         "error_message": error_message,
+        "incompatible_reason": _host_unsupported_reason(ext) or None,
         "runtime_starting": status == "installing" and _service_starting(services_by_id.get(service_id)),
         "source": source,
         "installable": installable,
@@ -4813,6 +4846,9 @@ def prepare_extension_images(
                 status_code=409,
                 detail=f"{entry.get('name', service_id)} is not available on this hardware.",
             )
+        unsupported = _host_unsupported_reason(entry)
+        if unsupported:
+            raise HTTPException(status_code=409, detail=unsupported)
         bundled = EXTENSIONS_DIR.resolve()
         if not _resolve_extension_dir(service_id).is_relative_to(bundled):
             raise HTTPException(status_code=400, detail="Only services shipped with ODS prepare images ahead of enabling")
@@ -4862,6 +4898,9 @@ def enable_extension(
             detail=f"{entry.get('name', service_id)} needs one of these GPU backends: {backends}. "
                    "It is not available on this hardware.",
         )
+    unsupported = _host_unsupported_reason(entry)
+    if unsupported:
+        raise HTTPException(status_code=409, detail=unsupported)
 
     ext_dir = _resolve_extension_dir(service_id)
 

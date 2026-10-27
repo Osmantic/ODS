@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-26T00:13:51Z",
+  "generated_at": "2026-10-27T08:46:30Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -2544,6 +2544,11 @@
           }
         }
       ],
+      "host_requirements": {
+        "architectures": [
+          "amd64"
+        ]
+      },
       "startup_check": true,
       "startup_timeout": 600,
       "catalog_source": "builtin",
@@ -8887,6 +8892,9 @@
       "env_vars": [],
       "tags": [],
       "features": [],
+      "host_requirements": {
+        "max_page_size": 4096
+      },
       "ui_path": "/dashboard",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"

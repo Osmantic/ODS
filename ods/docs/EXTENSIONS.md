@@ -290,7 +290,8 @@ Optional root field:
 Service section:
 - required: `id`, `name`, `port`, `health`
 - recommended: `aliases`, `container_name`, `compose_file`, `category`, `depends_on`
-- optional: `host_env`, `default_host`, `external_port_env`, `external_port_default`, `type`, `gpu_backends`, `env_vars`
+- optional: `host_env`, `default_host`, `external_port_env`, `external_port_default`, `type`, `gpu_backends`, `env_vars`, `host_requirements`
+- `host_requirements` — for an image upstream does not build for every host: `architectures` (`amd64`, `arm64`) and `max_page_size` (bytes, e.g. `4096` for a jemalloc built for 4 KB pages). On a Linux host outside them the Dashboard marks the extension incompatible and refuses to prepare or enable it, and the Compose resolver leaves it out of the stack. Docker Desktop on macOS runs amd64 images under Rosetta 2 in a 4 KB-page VM, so they do not apply there.
 
 Feature section (optional list):
 - required per feature: `id`, `name`, `description`, `icon`, `category`, `requirements`, `priority`

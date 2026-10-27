@@ -178,12 +178,36 @@ enable_open_webui = os.environ.get("ENABLE_OPEN_WEBUI", "true").lower() == "true
 
 IS_DARWIN = platform.system() == "Darwin"
 APPLE_OVERLAY = "installers/macos/docker-compose.macos.yml" if IS_DARWIN else "docker-compose.apple.yml"
+# HOST_ARCH is the installer's detect_host_arch value (amd64/arm64) and
+# HOST_PAGE_SIZE its getconf PAGE_SIZE; each falls back to this machine's.
+_host_arch = (os.environ.get("HOST_ARCH") or platform.machine()).strip().lower()
+HOST_ARCH = {"x86_64": "amd64", "aarch64": "arm64"}.get(_host_arch, _host_arch)
+_host_page_size = os.environ.get("HOST_PAGE_SIZE", "").strip()
+HOST_PAGE_SIZE = int(_host_page_size) if _host_page_size.isdecimal() else (
+    os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096)
 # Docker runs images natively except on macOS, where Docker Desktop runs amd64
 # images under Rosetta 2. A bundled service whose upstream publishes no arm64
 # image under its pinned tag ships an arm64 pin in compose.arm64.yaml (TEI).
-# HOST_ARCH is the installer's detect_host_arch value (amd64/arm64).
-ARM64_HOST = not IS_DARWIN and (
-    os.environ.get("HOST_ARCH") or platform.machine()).strip().lower() in {"arm64", "aarch64"}
+ARM64_HOST = not IS_DARWIN and HOST_ARCH == "arm64"
+
+
+def _host_runs(service):
+    """Whether this host can run a bundled service's image (host_requirements).
+
+    The Dashboard marks a service it cannot run incompatible and hides it.
+    Leaving it out of the stack as well means one selected before that, such
+    as Qdrant on 64 KB pages or Fooocus on arm64 (Workstation06, 2026-10-27),
+    cannot keep crash-looping with no card left to disable it. Docker Desktop
+    on macOS runs a 4 KB-page VM with Rosetta 2, so nothing applies there.
+    """
+    requirements = service.get("host_requirements")
+    if IS_DARWIN or not isinstance(requirements, dict):
+        return True
+    architectures = requirements.get("architectures")
+    if isinstance(architectures, list) and HOST_ARCH not in architectures:
+        return False
+    max_page_size = requirements.get("max_page_size")
+    return not (type(max_page_size) is int and HOST_PAGE_SIZE > max_page_size)
 macos_cloud_auth = script_dir / "data" / "generated" / "docker-compose.macos-cloud-auth.yml"
 
 def existing(overlays):
@@ -1378,6 +1402,8 @@ if selected_stack is None and ext_dir.exists():
             backends = service.get("gpu_backends", ["amd", "nvidia"])
             # "none" means CPU-only — compatible with any GPU backend
             if gpu_backend not in backends and "all" not in backends and "none" not in backends:
+                continue
+            if not _host_runs(service):
                 continue
             compose_rel = service.get("compose_file")
             if compose_rel:

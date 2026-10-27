@@ -98,3 +98,15 @@ def test_prepare_refuses_a_service_this_hardware_cannot_run(test_client, install
     response = _prepare(test_client, "hermes")
     assert response.status_code == 409 and "not available on this hardware" in response.json()["detail"]
     agent.assert_not_called()
+
+
+def test_prepare_refuses_an_image_this_host_cannot_run(test_client, installation, agent, monkeypatch):  # noqa: F811
+    """Workstation06 (2026-10-27): Qdrant's arm64 image aborts on 64 KB pages."""
+    monkeypatch.setattr(extensions, "EXTENSION_CATALOG", [{"id": "hermes", "name": "Hermes Agent",
+                                                           "gpu_backends": ["all"],
+                                                           "host_requirements": {"max_page_size": 4096}}])
+    monkeypatch.setattr(extensions, "_HOST_PAGE_SIZE", 65536)
+    response = _prepare(test_client, "hermes")
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Hermes Agent's image cannot run with this machine's 64 KB memory pages."
+    agent.assert_not_called()
