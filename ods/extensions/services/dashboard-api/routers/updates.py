@@ -3,6 +3,8 @@
 import asyncio
 import json
 import logging
+import math
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -35,6 +37,12 @@ _GITHUB_HEADERS = {"Accept": "application/vnd.github.v3+json"}
 _VERSION_CACHE_TTL = 300.0
 _version_cache: dict[str, object] = {"expires_at": 0.0, "payload": None}
 _version_refresh_task: Optional[asyncio.Task] = None
+# A failed check holds further GitHub requests. The dashboard asks again every
+# minute while a check is unavailable, and GitHub allows 60 unauthenticated
+# requests an hour per address, which every machine behind a shared NAT spends.
+_VERSION_RETRY_SECONDS = 300.0
+_VERSION_MAX_HOLD_SECONDS = 3600.0
+_version_hold: dict[str, object] = {"until": 0.0, "rate_limited": False}
 
 
 def _read_utf8(path: Path) -> str:
@@ -144,6 +152,10 @@ def _update_check_disabled() -> bool:
             if line.startswith("DISABLE_UPDATE_CHECK="):
                 value = parse_env_value(line.split("=", 1)[1]).strip().lower()
                 disabled = value in {"true", "1", "yes"}
+    except PermissionError:
+        # An install owner other than UID 1000 leaves the 0600 .env unreadable
+        # here; compose passes the value it read instead.
+        return os.environ.get("DISABLE_UPDATE_CHECK", "").strip().lower() in {"true", "1", "yes"}
     except OSError:
         return False
     return disabled
@@ -225,8 +237,41 @@ def _release_payload(response: httpx.Response) -> dict:
     }
 
 
+def _rate_limit_seconds(response: httpx.Response) -> Optional[float]:
+    """Seconds GitHub asks this address to wait, or None when it set no limit."""
+    if response.status_code not in (403, 429):
+        return None
+    retry_after = response.headers.get("retry-after", "").strip()
+    if retry_after.isdigit():
+        return float(retry_after)
+    if response.headers.get("x-ratelimit-remaining") == "0":
+        reset = response.headers.get("x-ratelimit-reset", "").strip()
+        return max(0.0, int(reset) - time.time()) if reset.isdigit() else 0.0
+    return 0.0 if response.status_code == 429 else None
+
+
+def _hold_release_checks(rate_limit_seconds: Optional[float], reason: str) -> None:
+    global _version_hold
+    wait = min(max(rate_limit_seconds or 0.0, _VERSION_RETRY_SECONDS), _VERSION_MAX_HOLD_SECONDS)
+    _version_hold = {"until": time.monotonic() + wait, "rate_limited": rate_limit_seconds is not None}
+    logger.info("Release check failed (%s); next GitHub request in %d s", reason, wait)
+
+
+def _release_checks_held(force: bool) -> bool:
+    """A manual check retries an ordinary failure, but not a rate limit GitHub would refuse."""
+    held = time.monotonic() < float(_version_hold["until"])  # type: ignore[arg-type]
+    return held and (bool(_version_hold["rate_limited"]) or not force)
+
+
+def _held_check_error() -> str:
+    if not _version_hold["rate_limited"]:
+        return "Could not reach GitHub"
+    minutes = max(1, math.ceil((float(_version_hold["until"]) - time.monotonic()) / 60))  # type: ignore[arg-type]
+    return f"GitHub's request limit for this network is used up; try again in {minutes} min"
+
+
 async def _refresh_release_cache() -> Optional[dict]:
-    global _version_cache
+    global _version_cache, _version_hold
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.get(
@@ -234,19 +279,28 @@ async def _refresh_release_cache() -> Optional[dict]:
                 headers=_GITHUB_HEADERS,
             )
         payload = _release_payload(response)
-        _version_cache = {
-            "expires_at": time.monotonic() + _VERSION_CACHE_TTL,
-            "payload": payload,
-        }
-        return payload
-    except (httpx.HTTPError, httpx.TimeoutException, json.JSONDecodeError, OSError, ValueError):
+    except httpx.HTTPStatusError as exc:
+        _hold_release_checks(_rate_limit_seconds(exc.response), f"GitHub answered {exc.response.status_code}")
         return None
+    except (httpx.HTTPError, httpx.TimeoutException, json.JSONDecodeError, OSError, ValueError) as exc:
+        _hold_release_checks(None, type(exc).__name__)
+        return None
+    _version_cache = {
+        "expires_at": time.monotonic() + _VERSION_CACHE_TTL,
+        "payload": payload,
+    }
+    _version_hold = {"until": 0.0, "rate_limited": False}
+    return payload
 
 
-def _ensure_release_refresh() -> asyncio.Task:
+def _ensure_release_refresh(force: bool = False) -> Optional[asyncio.Task]:
+    """Start one GitHub check, or return None while a failed one holds them."""
     global _version_refresh_task
-    if _version_refresh_task is None or _version_refresh_task.done():
-        _version_refresh_task = asyncio.create_task(_refresh_release_cache())
+    if _version_refresh_task is not None and not _version_refresh_task.done():
+        return _version_refresh_task
+    if _release_checks_held(force):
+        return None
+    _version_refresh_task = asyncio.create_task(_refresh_release_cache())
     return _version_refresh_task
 
 
@@ -261,10 +315,12 @@ async def get_version(force: bool = False):
         return _build_version_result(current, cached)
 
     stale = _get_cached_release_payload(allow_stale=True)
-    refresh_task = _ensure_release_refresh()
+    refresh_task = _ensure_release_refresh(force)
 
     if stale and not force:
         return _build_version_result(current, stale, "stale")
+    if refresh_task is None:
+        return _build_version_result(current, stale, "stale" if stale else "unavailable")
 
     try:
         payload = await asyncio.wait_for(asyncio.shield(refresh_task), timeout=6.0 if force else 1.25)
@@ -329,21 +385,23 @@ async def get_update_dry_run():
     update_available = False
     version_check_error: Optional[str] = None
 
-    try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            resp = await client.get(
-                f"{_GITHUB_RELEASES_API}/latest",
-                headers=_GITHUB_HEADERS,
-            )
-        version = _build_version_result(current, _release_payload(resp))
-        latest = version["latest"]
-        changelog_url = version["changelog_url"]
-        update_available = version["update_available"]
-        if version["check_status"] == "current-unknown":
-            version_check_error = "Installed version is unknown; automatic version comparison is unavailable."
-    except (httpx.HTTPError, httpx.TimeoutException, OSError, json.JSONDecodeError, ValueError) as e:
-        logger.warning("update dry-run version check failed: %s", e)
-        version_check_error = "Could not reach GitHub"
+    if await asyncio.to_thread(_update_check_disabled):
+        version_check_error = "Update checks are off (DISABLE_UPDATE_CHECK)"
+    else:
+        # A dry run is a manual check that shares the dashboard's cache and hold.
+        payload = _get_cached_release_payload()
+        refresh_task = None if payload else _ensure_release_refresh(force=True)
+        if refresh_task is not None:
+            payload = await asyncio.shield(refresh_task)
+        if payload is None:
+            version_check_error = _held_check_error()
+        else:
+            version = _build_version_result(current, payload)
+            latest = version["latest"]
+            changelog_url = version["changelog_url"]
+            update_available = version["update_available"]
+            if version["check_status"] == "current-unknown":
+                version_check_error = "Installed version is unknown; automatic version comparison is unavailable."
 
     # ── configured image tags from compose files ──────────────────────────────
     images: list[str] = []
@@ -360,14 +418,19 @@ async def get_update_dry_run():
 
     # ── .env keys relevant to the update path ────────────────────────────────
     env_snapshot: dict[str, str] = {}
-    if env_file.exists():
-        for line in _read_utf8(env_file).splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, val = line.partition("=")
-            if key in _UPDATE_ENV_KEYS:
-                env_snapshot[key] = val
+    env_readable = True
+    try:
+        env_lines = _read_utf8(env_file).splitlines() if env_file.exists() else []
+    except PermissionError:
+        env_readable = False
+        env_lines = []
+    for line in env_lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        if key in _UPDATE_ENV_KEYS:
+            env_snapshot[key] = val
 
     return {
         "dry_run": True,
@@ -376,7 +439,10 @@ async def get_update_dry_run():
         "update_available": update_available,
         "changelog_url": changelog_url,
         "images": images,
-        "env_keys": env_snapshot,
+        # An install owner other than UID 1000 leaves the 0600 .env unreadable
+        # here. Null keys make `ods dry-run` read the file as the owner instead.
+        "env_keys": env_snapshot if env_readable else None,
+        "env_keys_error": None if env_readable else "The install's .env is readable only by its owner",
         "version_check_error": version_check_error,
     }
 

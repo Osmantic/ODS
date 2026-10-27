@@ -2275,10 +2275,11 @@ cmd_dry_run() {
             "http://127.0.0.1:${dashboard_api_port}/api/update/dry-run" 2>/dev/null || true)
     fi
 
-    local latest_ver="" changelog_url="" update_status=""
+    local latest_ver="" changelog_url="" update_status="" check_error=""
     if [[ -n "$api_json" ]] && echo "$api_json" | jq -e '.current_version' >/dev/null 2>&1; then
         latest_ver=$(echo "$api_json" | jq -r '.latest_version // empty')
         changelog_url=$(echo "$api_json" | jq -r '.changelog_url // empty')
+        check_error=$(echo "$api_json" | jq -r '.version_check_error // empty')
         local api_available
         api_available=$(echo "$api_json" | jq -r '.update_available // false')
         [[ "$api_available" == "true" ]] && update_status="update available" || update_status="up to date"
@@ -2311,7 +2312,7 @@ cmd_dry_run() {
         fi
         [[ -n "$changelog_url" ]] && echo "  Changelog : ${changelog_url}"
     else
-        echo "  Available : (could not reach GitHub)"
+        echo "  Available : (${check_error:-could not reach GitHub})"
     fi
     echo ""
 

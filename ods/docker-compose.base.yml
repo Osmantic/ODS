@@ -285,6 +285,8 @@ services:
       # UID 1000 leaves the 0600 .env unreadable here, and the status must then
       # fall back to this copy instead of counting Open WebUI as a core service down.
       - ENABLE_OPEN_WEBUI=${ENABLE_OPEN_WEBUI:-true}
+      # The same fallback keeps --offline's switch off the GitHub release check.
+      - DISABLE_UPDATE_CHECK=${DISABLE_UPDATE_CHECK:-false}
       - ODS_AGENT_HOST=${ODS_AGENT_HOST:-}
       - ODS_AGENT_PORT=${ODS_AGENT_PORT:-7710}
       - GPU_BACKEND=${GPU_BACKEND:-nvidia}
