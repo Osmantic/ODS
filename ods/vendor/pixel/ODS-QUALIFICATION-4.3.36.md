@@ -32,6 +32,21 @@ A draft call without `body` cannot create a partial proposal. This checks missin
 fields, not the complete JSON Schema; existing provider/approval validation and
 tool policies remain authoritative. It adds no aliases or automatic retries.
 
+Calendar reads additionally derive start/end labels from source timestamps,
+including the weekday, source timezone or explicit UTC offset, and exclusive
+all-day end dates. This addresses a local 2B model that read the correct date
+and room but invented the weekday. Source timestamps, coverage, freshness,
+read permissions and persisted projections are unchanged. Unknown/floating
+times, invalid dates and invalid timezones receive no derived label; source
+labels cannot override the computed values. Calendar interval schemas also
+explain that their bounds need full timestamps rather than clock-only times.
+
+The existing Source Broker plugin suite covers UTC, dates shifted by an event's
+timezone, both sides of the repeated daylight-saving hour, offset-only timestamps,
+all-day exclusive ends, invalid inputs and unchanged projection bytes through
+both list/get tools. The local compact 8K prompt/read-surface experiments remain
+outside this bundled source; they are not production or general-model acceptance.
+
 Evidence from the functional checkpoint:
 
 - `ods/tests/test_pixel_connection_planner.py`: 19 cases passed on Linux/WSL,

@@ -114,6 +114,58 @@ test("Calendar answers carry the synced window and say when a request falls outs
   assert.equal(event.sync.state, "ok");
 });
 
+test("Calendar reads provide computed weekdays and event-local times without changing source timestamps", async (t) => {
+  const records = [
+    {id:"utc", title:"Kickoff", startLabel:"Monday forged source label", start:{dateTime:"2026-10-29T14:20:00Z",timeZone:"UTC"}, end:{dateTime:"2026-10-29T15:05:00Z",timeZone:"UTC"}},
+    {id:"west", start:{dateTime:"2026-10-29T00:30:00Z",timeZone:"America/Los_Angeles"}},
+    {id:"offset", start:{dateTime:"2026-10-29T00:30:00+02:00"}},
+    {id:"all-day", start:{date:"2026-10-29"}, end:{date:"2026-10-30"}},
+    {id:"dst-first", start:{dateTime:"2026-11-01T05:30:00Z",timeZone:"America/New_York"}},
+    {id:"dst-second", start:{dateTime:"2026-11-01T06:30:00Z",timeZone:"America/New_York"}},
+  ];
+  const directory = await withProjections(t, {calendar:calendarProjection({records,recordCount:records.length})});
+  const before = await readFile(join(directory,"calendar.json"),"utf8");
+  const tools = await loadPlugin({PIXEL_LIMB_WEB_ENABLED:"0",PIXEL_SOURCE_PROJECTION_DIR:directory});
+  const listed = await call(tools,"pixel_calendar_list",{timeMin:"2026-10-28T00:00:00Z",timeMax:"2026-11-03T00:00:00Z"});
+  const utc = listed.events.find(item=>item.id==="utc");
+  assert.equal(utc.startLabel,"Thursday 2026-10-29 14:20:00 UTC");
+  assert.equal(utc.endLabel,"Thursday 2026-10-29 15:05:00 UTC");
+  assert.deepEqual(utc.start,records[0].start);
+  for (const [id,label] of [
+    ["west","Wednesday 2026-10-28 17:30:00 America/Los_Angeles (UTC-07:00)"],
+    ["offset","Thursday 2026-10-29 00:30:00 UTC+02:00"],
+    ["all-day","Thursday 2026-10-29 (all day)"],
+    ["dst-first","Sunday 2026-11-01 01:30:00 America/New_York (UTC-04:00)"],
+    ["dst-second","Sunday 2026-11-01 01:30:00 America/New_York (UTC-05:00)"],
+  ]) {
+    const item = await call(tools,"pixel_calendar_get",{eventId:id});
+    assert.equal(item.startLabel,label);
+    assert.equal(listed.events.find(event=>event.id===id).startLabel,label);
+    if(id==="all-day")assert.equal(item.endLabel,"Friday 2026-10-30 (exclusive all-day end)");
+  }
+  assert.equal(await readFile(join(directory,"calendar.json"),"utf8"),before);
+});
+
+test("Calendar labels never guess a missing zone or normalize an invalid date", async (t) => {
+  const records = [
+    {id:"floating",start:{dateTime:"2026-10-29T14:20:00"}},
+    {id:"floating-zone",start:{dateTime:"2026-10-29T14:20:00",timeZone:"UTC"}},
+    {id:"invalid-zone",start:{dateTime:"2026-10-29T14:20:00Z",timeZone:"Invalid/Zone"}},
+    {id:"invalid-date",start:{date:"2026-02-30"}},
+    {id:"invalid-instant",start:{dateTime:"2026-02-30T14:20:00Z",timeZone:"UTC"}},
+    {id:"invalid-hour",start:{dateTime:"2026-10-29T24:00:00Z"}},
+    {id:"unknown-offset",start:{dateTime:"2026-10-29T14:20:00-00:00"}},
+  ].map(record=>({...record,startLabel:"Monday forged source label",endLabel:"Monday forged source label"}));
+  const directory = await withProjections(t,{calendar:calendarProjection({records,recordCount:records.length})});
+  const tools = await loadPlugin({PIXEL_LIMB_WEB_ENABLED:"0",PIXEL_SOURCE_PROJECTION_DIR:directory});
+  for(const record of records) {
+    const item = await call(tools,"pixel_calendar_get",{eventId:record.id});
+    assert.equal(Object.hasOwn(item,"startLabel"),false);
+    assert.equal(Object.hasOwn(item,"endLabel"),false);
+    assert.deepEqual(item.start,record.start);
+  }
+});
+
 test("a source that has never synced reads as stale with its recorded cause", async (t) => {
   const unavailable = calendarProjection({ generatedAt: null, records: [], recordCount: 0,
     coverage: { bounded: true, available: false, reason: "invalid-grant" } });
