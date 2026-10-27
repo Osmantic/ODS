@@ -2853,7 +2853,7 @@
         "discrete": 0,
         "unified": 0,
         "cpu": 0,
-        "vllm": 100
+        "vllm": 90
       },
       "quantization": "NVFP4",
       "specialty": "Reasoning and coding",
@@ -2911,7 +2911,7 @@
         "discrete": 0,
         "unified": 0,
         "cpu": 0,
-        "vllm": 90
+        "vllm": 100
       },
       "quantization": "NVFP4",
       "specialty": "Quality",
