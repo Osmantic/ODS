@@ -1459,6 +1459,35 @@ class TestGetLifetimeTokens:
 
 class TestCheckServiceHealthSystemd:
 
+    _PIXEL_INGRESS = {
+        "name": "Pixel Agent (host ingress)", "port": 0, "external_port": 0, "health": "/health",
+        "host": "localhost", "type": "host-systemd", "socket_only": True,
+    }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("edge_status", "expected"), [(200, "healthy"), (503, "unknown")])
+    async def test_socket_only_pixel_ingress_follows_pixel_edge(self, mock_aiohttp_session, monkeypatch,
+                                                                 edge_status, expected):
+        # Workstation06: the ingress listens only on a Unix socket, so its row read
+        # "Not Deployed" while Portal worked. Pixel Edge's /health requires that socket.
+        session = mock_aiohttp_session(status=edge_status)
+        monkeypatch.setattr("helpers._get_aio_session", AsyncMock(return_value=session))
+        monkeypatch.setattr("helpers.SERVICES", {"pixel-edge": {
+            "name": "Pixel Edge", "port": 9595, "external_port": 9595, "health": "/health", "host": "pixel-edge"}})
+        agent = AsyncMock(side_effect=AssertionError("no host port probe for a socket-only service"))
+        monkeypatch.setattr("helpers.request_agent_json", agent)
+
+        result = await check_service_health("pixel-agent", self._PIXEL_INGRESS)
+        assert result.status == expected
+        assert result.id == "pixel-agent"
+        assert result.name == "Pixel Agent (host ingress)"
+
+    @pytest.mark.asyncio
+    async def test_socket_only_pixel_ingress_without_pixel_edge_is_not_deployed(self, monkeypatch):
+        monkeypatch.setattr("helpers.SERVICES", {})
+        result = await check_service_health("pixel-agent", self._PIXEL_INGRESS)
+        assert result.status == "not_deployed"
+
     @pytest.mark.asyncio
     async def test_host_systemd_returns_healthy_when_host_agent_proves_port(self, monkeypatch):
         async def fake_request(method, path, *, params, timeout):

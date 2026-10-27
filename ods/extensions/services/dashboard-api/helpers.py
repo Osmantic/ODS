@@ -234,10 +234,28 @@ async def _check_opencode_health(service_id: str, config: dict) -> ServiceStatus
     )
 
 
+async def _check_pixel_ingress_health(service_id: str, config: dict) -> ServiceStatus:
+    """Prove the socket-only Pixel host ingress through Pixel Edge.
+
+    The ingress listens only on a Unix socket, so no port can be probed and it
+    read "Not Deployed" while Portal worked (Workstation06, 2026-10-26). Pixel
+    Edge's /health answers ok only when that socket's /health does; an edge
+    that is down proves nothing about the socket.
+    """
+    edge = SERVICES.get("pixel-edge")
+    if edge is None:
+        return _service_status_from_config(service_id, config, "not_deployed")
+    edge_status = (await check_service_health("pixel-edge", edge)).status
+    status = edge_status if edge_status in ("healthy", "not_deployed") else "unknown"
+    return _service_status_from_config(service_id, config, status)
+
+
 async def _check_host_systemd_health(service_id: str, config: dict) -> ServiceStatus:
     """Check a host-managed service through the authenticated host-agent."""
     if service_id == "opencode":
         return await _check_opencode_health(service_id, config)
+    if service_id == "pixel-agent" and config.get("socket_only"):
+        return await _check_pixel_ingress_health(service_id, config)
     return await _check_host_port_health(service_id, config)
 
 
