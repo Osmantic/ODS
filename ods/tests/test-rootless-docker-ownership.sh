@@ -273,7 +273,7 @@ pass "rootless APE add-back keeps its namespace repair; other services are refus
 
 # Workstation06 (2026-10-26): the install owner is UID 1001 and ComfyUI was
 # added from the Dashboard, so Phase 11 never prepared its UID 1000 folders.
-mkdir -p "$INSTALL_DIR/data/comfyui"/{models,output,input,user}
+mkdir -p "$INSTALL_DIR/data/comfyui"/{models,output,input,user,cuda-cache}
 : > "$CALLS"
 (
     source "$LIB"
@@ -287,7 +287,7 @@ mkdir -p "$INSTALL_DIR/data/comfyui"/{models,output,input,user}
     docker() { printf 'docker %s\n' "$*" >> "$CALLS"; }
     ods_prepare_comfyui_data_ownership "$INSTALL_DIR" nvidia
 ) || fail "rootful ComfyUI add-back preparation failed: $(cat "$CALLS")"
-for path in models output input user; do
+for path in models output input user cuda-cache; do
     grep -qx "fix data/comfyui/$path|1000:4242|ods-comfyui|775" "$CALLS" \
         || fail "rootful ComfyUI add-back did not prepare data/comfyui/$path for UID 1000: $(cat "$CALLS")"
     grep -q "^docker run .* -v $INSTALL_DIR/data/comfyui/$path:/data .* chmod -R ug+rwX /data\$" "$CALLS" \
