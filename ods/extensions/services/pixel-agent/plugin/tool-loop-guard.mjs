@@ -5032,6 +5032,19 @@ function ownerRequestsArtifactPublication(lane) {
   });
 }
 
+// The owner says something in existing work misbehaves and asks for a fix
+// (Workstation06, 2026-10-27: "the time keeps running after I press Stop. Can
+// you fix it?"; Stop worked, and the agent invented a cause and a fix). A new
+// project's spec ("a timer that doesn't drift") is not a report. This selects
+// prompt guidance only.
+export function userMessageReportsDefect(messages, prompt = undefined) {
+  const text = currentOwnerIntentText(messages, prompt);
+  if (!text || ownerForbidsTools(text) || userMessageRequestsNewPlaygroundProject(messages, prompt)) return false;
+  const lane = ownerLaneText(text);
+  return /\b(?:fix|repair|debug)\b/i.test(lane) &&
+    /\b(?:doesn['’]t|does\s+not|won['’]t|will\s+not|isn['’]t|is\s+not|aren['’]t|can['’]t|cannot|keeps|stopped|broken|bugs?|buggy|crash(?:es|ed|ing)?|freez(?:es|ing)|not\s+working|no\s+longer|fails?|failing)\b/i.test(lane);
+}
+
 // This selects prompt guidance only; it grants no tool or publication authority.
 export function userMessageRequestsWorkspaceDocumentDelivery(messages, prompt = undefined) {
   const text = currentOwnerIntentText(messages, prompt);
