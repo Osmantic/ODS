@@ -49,6 +49,7 @@ def run(installation, **kwargs):
                                          repair_module.TOOL_RESULT_PROJECTION_MODULE,
                                          repair_module.DIAGNOSTIC_STREAM_MODULE,
                                          repair_module.UTF8_OUTPUT_MODULE,
+                                         repair_module.NO_TOOLS_INGRESS_MODULE,
                                          *repair_module.SANDBOX_MKDIR_MODULES.values()])
 def test_additional_module_has_separate_exact_byte_custody(installation, module_name):
     runtime, state, manifest, module, original, patched = installation
@@ -510,6 +511,7 @@ def test_unchanged_compaction_repair_checks_its_dependency(compaction_installati
     ('OPENCLAW_HOOK_CONTEXT_MODULE', 'openclaw-hook-provenance.json', repair_module.HOOK_PROVENANCE_MODULE),
     ('OPENCLAW_REDACT_MODULE', 'openclaw-run-id-redaction.json', repair_module.RUN_ID_REDACTION_MODULE),
     ('OPENCLAW_ATTEMPT_EXECUTION_MODULE', 'openclaw-context-usage.json', repair_module.CONTEXT_USAGE_MODULE),
+    ('OPENCLAW_OPENAI_HTTP_MODULE', 'openclaw-no-tools-ingress.json', repair_module.NO_TOOLS_INGRESS_MODULE),
     ('OPENCLAW_EMBEDDED_AGENT_MODULE', 'openclaw-yield-usage.json', repair_module.YIELD_USAGE_MODULE),
     ('OPENCLAW_CORE_PROXY_MODULE', 'openclaw-compaction-empty.json', repair_module.COMPACTION_EMPTY_MODULE),
     ('OPENCLAW_COMPACT_MODULE', 'openclaw-compaction-no-work.json', repair_module.COMPACTION_NO_WORK_MODULE),

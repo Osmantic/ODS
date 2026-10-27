@@ -23,6 +23,7 @@ import {createChatHistoryLedger,HistoryError} from './chat_history_ledger.mjs';
 import {createChatImageStore,createChatImageReadHandler,ChatImageError} from './chat_image_store.mjs';
 import {currentImageNote,decodeChatImageTurn,nativeHistoryMessages,validateImageRoute} from './chat_image_transport.mjs';
 import {handleAccessMode, handleModelControl, publicModelControl, readAccessOwnerKey, requestAccessController} from './access_mode_relay.mjs';
+import {ownerForbidsTools} from './owner_tool_policy.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -636,6 +637,16 @@ function readBody(req, limit) {
 // Allowlisted request construction.
 // ---------------------------------------------------------------------------
 
+// Latest current user message raw text, restricted to type:text parts. Never
+// inspects images, system/assistant/tool messages, or older user turns.
+function userTextParts(message) {
+  const content = message?.content;
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content.filter(part => part?.type === 'text' && typeof part.text === 'string')
+    .map(part => part.text).join('\n');
+}
+
 export function buildOutgoing(parsed, sessionUser) {
   const out = { model: "openclaw/default" };
   for (const key of Object.keys(ALLOWED_FIELDS)) {
@@ -647,6 +658,16 @@ export function buildOutgoing(parsed, sessionUser) {
     out[key] = v;
   }
   if (sessionUser) out.user = sessionUser;
+  // An explicit owner no-tools directive in the latest current user message
+  // forces tool_choice:'none' and tools:[] for this attempt only. This is a
+  // restrictive hint for any authenticated gateway client; it grants no
+  // authority and is never persisted to history or config. A tool-result
+  // continuation (latest message not user) never infers from earlier turns.
+  const latest = Array.isArray(parsed.messages) ? parsed.messages[parsed.messages.length - 1] : undefined;
+  if (latest && latest.role === 'user' && ownerForbidsTools(userTextParts(latest))) {
+    out.tool_choice = 'none';
+    out.tools = [];
+  }
   return out;
 }
 
