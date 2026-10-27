@@ -7908,6 +7908,32 @@ class TestRootlessDataOwnershipRepair:
             "ods-service-state", str(helper), str(tmp_path), service_id,
         ]]
 
+    def test_comfyui_uses_rootful_or_rootless_data_preparation(self, tmp_path, monkeypatch):
+        """A Dashboard add-back on Workstation06 (owner UID 1001) crash-looped on
+        mkdir /models/text_encoders: Phase 11 prepares these folders only at install."""
+        helper = tmp_path / "lib" / "rootless-ownership.sh"
+        helper.parent.mkdir()
+        helper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        calls = []
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(_mod, "GPU_BACKEND", "nvidia")
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_mod, "_find_usable_bash", lambda: "/bin/bash")
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+
+        _mod._repair_rootless_data_ownership("comfyui")
+
+        assert calls == [[
+            "/bin/bash", "-c",
+            'source "$1"; ods_prepare_comfyui_data_ownership "$2" "$3"',
+            "ods-comfyui-data", str(helper), str(tmp_path), "nvidia",
+        ]]
+
     def test_runs_targeted_helper_for_builtin_linux_service(
         self, tmp_path, monkeypatch,
     ):

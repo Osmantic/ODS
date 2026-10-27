@@ -6898,6 +6898,15 @@ def _repair_rootless_data_ownership(service_id: str) -> None:
             bash, "-c", 'source "$1"; ods_prepare_service_state_ownership "$2" "$3"',
             "ods-service-state", str(helper), str(INSTALL_DIR), service_id,
         ]
+    elif service_id == "comfyui":
+        # Phase 11 prepares ComfyUI's UID 1000 bind sources only when it is
+        # enabled at install. A Dashboard add-back on rootful Docker under
+        # another owner UID crash-looped on mkdir /models/text_encoders
+        # (Workstation06, 2026-10-26). The backend picks the image's layout.
+        command = [
+            bash, "-c", 'source "$1"; ods_prepare_comfyui_data_ownership "$2" "$3"',
+            "ods-comfyui-data", str(helper), str(INSTALL_DIR), GPU_BACKEND,
+        ]
     try:
         result = subprocess.run(
             command,
