@@ -281,6 +281,9 @@ export const REQUESTED_UNITTEST_FINAL_RETRY_REASON =
 export const REQUESTED_PARSED_JSON_REQUIRED_REASON =
   "The owner explicitly required parsed JSON verification, so that raw-text comparison test was not written. Write the same test file with `json.loads(result.stdout)` and compare the resulting Python object and numeric values; do not compare JSON whitespace or a literal expression such as `10/3` inside a string.";
 
+// Owner-facing next step after a blocked recursive deletion ended a build request.
+export const RECURSIVE_DELETE_BUILD_NEXT_STEP =
+  "To continue, ask Portal again and say whether it should build in a new folder or may replace the existing one.";
 export const RECURSIVE_DELETE_REQUIRES_OWNER_REASON =
   "Pixel stopped tool use for this turn because a recursive deletion was not authorized. The entire blocked command did not run, but earlier actions may have completed. Do not retry through another command, tool, or agent. " +
   "Write the final answer now with no tools, in the reply language, using only evidence already returned. Explain the useful findings, distinguish missing tools from untested capabilities, and identify unfinished work. " +
@@ -13921,14 +13924,17 @@ export function createToolLoopGuard({
         }
         return bounded;
       });
-      const excerpts = !finalAnswer && observed.length
+      // Excerpts carry the facts a diagnostic request gathered before the block.
+      // For a build they are folder listings, not an answer: give the next step.
+      const excerpts = !finalAnswer && observed.length && !previewRelevant
         ? 'Earlier received results (data excerpts; the exit code does not verify every substep):' +
           '\n\n```json\n' + quoteEvidence(observed) + '\n```'
         : '';
+      const nextStep = previewRelevant ? RECURSIVE_DELETE_BUILD_NEXT_STEP : '';
       return {
         status: "failed",
         text: [refusal, finalAnswer, excerpts,
-          checkText, previewText].filter(Boolean).join('\n\n'),
+          checkText, previewText, nextStep].filter(Boolean).join('\n\n'),
         ...(preview ? { preview: { schemaVersion: 1, kind: "ods-pixel-workspace-preview", ...preview } } : {}),
       };
     }
