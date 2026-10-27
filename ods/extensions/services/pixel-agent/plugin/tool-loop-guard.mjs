@@ -2641,6 +2641,7 @@ function gpuEvidence(step) {
     return undefined;
   }
   const devices = [];
+  let measured = false;
   for (const device of value.devices) {
     if (value.backend === "metal") {
       if (!exactKeys(device, ["metal", "name"])) return undefined;
@@ -2649,13 +2650,23 @@ function gpuEvidence(step) {
       devices.push(`${name} (${device.metal})`);
       continue;
     }
-    if (!exactKeys(device, ["driver", "memoryMiB", "name"])) return undefined;
+    // Free and in-use memory are present when the driver reports them
+    // (host/system_observe.py) and absent otherwise.
+    const live = exactKeys(device, ["driver", "memoryFreeMiB", "memoryMiB", "memoryUsedMiB", "name"]);
+    if (!live && !exactKeys(device, ["driver", "memoryMiB", "name"])) return undefined;
     const name = cleanSingleLine(device.name, /^[A-Za-z0-9][A-Za-z0-9 ._+()/@-]{0,95}$/, 96);
     const driver = cleanSingleLine(device.driver, /^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/, 64);
     if (!name || !driver || !Number.isInteger(device.memoryMiB) || device.memoryMiB < 1 || device.memoryMiB > 10_000_000) {
       return undefined;
     }
-    devices.push(`${name} (${device.memoryMiB} MiB; driver ${driver})`);
+    if (live && [device.memoryFreeMiB, device.memoryUsedMiB].some((mib) =>
+      !Number.isInteger(mib) || mib < 0 || mib > device.memoryMiB)) {
+      return undefined;
+    }
+    measured ||= live;
+    devices.push(live
+      ? `${name} (${device.memoryMiB} MiB total, ${device.memoryFreeMiB} MiB free, ${device.memoryUsedMiB} MiB in use; driver ${driver})`
+      : `${name} (${device.memoryMiB} MiB; driver ${driver})`);
   }
   if (value.available !== (devices.length > 0)) return undefined;
   if (!value.available && (value.backend !== "unavailable" || devices.length > 0)) return undefined;
@@ -2664,7 +2675,7 @@ function gpuEvidence(step) {
     return `GPU capability: ${devices.join("; ")}. Runtime Metal utilization was not measured. Device identifiers and serial numbers are omitted.`;
   }
   return value.available
-    ? `GPU: ${devices.join("; ")}. Device identifiers and serial numbers are omitted.`
+    ? `GPU: ${devices.join("; ")}.${measured ? " Free and in-use memory are as of this check." : ""} Device identifiers and serial numbers are omitted.`
     : "GPU telemetry is unavailable through the bounded host observer.";
 }
 
@@ -3094,28 +3105,30 @@ function operationsHostEvidenceText(
     if (!value || osRelease.stderr.trim() || osRelease.riskSignals.length > 0) return undefined;
     lines.push(`- Operating system: \`${value}\` (job \`${osRelease.jobId}\`)`);
   }
+  // Each renderer's text names its own fact ("Memory: ...", "GPU: ..."), so a
+  // line carries no second label (Workstation06, 2026-10-27: "- Memory: Memory: ...").
   const renderers = [
-    ["host.uptime", "Uptime and load", uptimeEvidence],
-    ["host.cpu", "Hardware", cpuEvidence],
-    ["host.gpu", "GPU", gpuEvidence],
-    ["host.memory", "Memory", memoryEvidence],
-    ["host.storage", "Storage", storageEvidence],
-    ["host.processes", "Processes", processEvidence],
-    ["host.services", "Services", serviceEvidence],
-    ["host.network-addresses", "Addresses", networkAddressEvidence],
-    ["host.network-routes", "Routes", networkRouteEvidence],
-    ["host.listening-ports", "Listening ports", listeningPortEvidence],
-    ["host.tailscale", "Tailscale", tailscaleEvidence],
-    ["host.network-peer", "Network peer", networkPeerEvidence],
+    ["host.uptime", uptimeEvidence],
+    ["host.cpu", cpuEvidence],
+    ["host.gpu", gpuEvidence],
+    ["host.memory", memoryEvidence],
+    ["host.storage", storageEvidence],
+    ["host.processes", processEvidence],
+    ["host.services", serviceEvidence],
+    ["host.network-addresses", networkAddressEvidence],
+    ["host.network-routes", networkRouteEvidence],
+    ["host.listening-ports", listeningPortEvidence],
+    ["host.tailscale", tailscaleEvidence],
+    ["host.network-peer", networkPeerEvidence],
   ];
-  for (const [action, label, renderer] of renderers) {
+  for (const [action, renderer] of renderers) {
     const step = steps.get(action);
     if (!step) continue;
     const observations = action === "host.network-peer" && peerSteps.length ? peerSteps : [step];
     for (const observation of observations) {
       const value = renderer(observation);
       if (!value) return undefined;
-      lines.push(`- ${label}: ${value} (job \`${observation.jobId}\`)`);
+      lines.push(`- ${value} (job \`${observation.jobId}\`)`);
     }
   }
   if (odsAppsProjection) {
@@ -5190,10 +5203,10 @@ const HOST_OBSERVATION_FACETS = new Map([
   ["host.uptime", "uptime|load averages?|system load"],
   ["host.processes", "process|processes|process inventory"],
   ["host.services", "systemd|system services?|service inventory"],
-  ["host.cpu", "cpu|processor|hardware"],
-  ["host.gpu", "gpu|graphics(?:\\s+(?:card|processor))?|video\\s+card"],
+  ["host.cpu", "cpus?|processors?|hardware"],
+  ["host.gpu", "gpus?|graphics(?:\\s+(?:cards?|processors?))?|video\\s+cards?"],
   ["host.memory", "memory|ram|swap"],
-  ["host.storage", "disk|filesystem|storage|mounts?"],
+  ["host.storage", "disks?|filesystems?|storage|mounts?"],
   ["host.network-addresses", "network interfaces?|interfaces?|addresses?|ip addresses?"],
   ["host.network-routes", "routes?|routing"],
   ["host.listening-ports", "ports?|listeners?"],
@@ -5885,10 +5898,10 @@ export function userMessageOperationsRequirements(messages, prompt = undefined) 
     /\b(?:hostname|host identity|kernel|machine architecture|architecture|cpu architecture|host platform|operating[- ]system(?: signature)?|(?:host\s+)?os(?:\s+(?:signature|release))?|linux distribution|distro|uptime|load averages?|system load)\b/i,
     /\b(?:process|processes|process inventory)\b/i,
     /\b(?:systemd|system services?|service inventory)\b/i,
-    /\b(?:cpu|processor|hardware)\b/i,
-    /\b(?:gpu|graphics(?:\s+(?:card|processor))?|video\s+card)\b/i,
+    /\b(?:cpus?|processors?|hardware)\b/i,
+    /\b(?:gpus?|graphics(?:\s+(?:cards?|processors?))?|video\s+cards?)\b/i,
     /\b(?:memory|ram|swap)\b/i,
-    /\b(?:disk|filesystem|storage|mounts?)\b/i,
+    /\b(?:disks?|filesystems?|storage|mounts?)\b/i,
     /\b(?:network|interfaces?|addresses?|ip addresses?|routes?|routing|ports?|listeners?)\b/i,
     /\btailscale\b/i,
   ];
@@ -5974,7 +5987,7 @@ export function userMessageOperationsRequirements(messages, prompt = undefined) 
     !networkDiscoveryClause(clause) && !artifactOrExplanation.test(clause) &&
     !negatedObservationClause(clause) && !/^\s*(?:but\s+)?no\b/i.test(clause));
   const hardwareOverviewIntent = hostContext &&
-    !/\b(?:cpu|processor|gpu|graphics|video\s+card|memory|ram|swap|disk|filesystem|storage|mounts?)\b/i.test(hardwareRequestClauses.join(" ")) &&
+    !/\b(?:cpus?|processors?|gpus?|graphics|video\s+cards?|memory|ram|swap|disks?|filesystems?|storage|mounts?)\b/i.test(hardwareRequestClauses.join(" ")) &&
     hardwareRequestClauses.some((clause) =>
       /\b(?:hardware|specs?|specifications?|components?)\b/i.test(clause) &&
       /\b(?:what|which|tell|show|report|describe|list|give|get|check|inspect)\b/i.test(clause) &&
@@ -6023,16 +6036,16 @@ export function userMessageOperationsRequirements(messages, prompt = undefined) 
   if (broadHostExploration || (hostContext && /\b(?:systemd|(?:system\s+)?services?|service inventory)\b/i.test(localHostFacetText))) {
     actions.push("host.services");
   }
-  if (broadHostExploration || hardwareOverviewIntent || (hostContext && /\b(?:cpu|processor|hardware)\b/i.test(hostText))) {
+  if (broadHostExploration || hardwareOverviewIntent || (hostContext && /\b(?:cpus?|processors?|hardware)\b/i.test(hostText))) {
     actions.push("host.cpu");
   }
-  if (broadHostExploration || hardwareOverviewIntent || (hostContext && /\b(?:gpu|graphics(?:\s+(?:card|processor))?|video\s+card)\b/i.test(hostText))) {
+  if (broadHostExploration || hardwareOverviewIntent || (hostContext && /\b(?:gpus?|graphics(?:\s+(?:cards?|processors?))?|video\s+cards?)\b/i.test(hostText))) {
     actions.push("host.gpu");
   }
   if (broadHostExploration || hardwareOverviewIntent || (hostContext && /\b(?:memory|ram|swap)\b/i.test(hostText))) {
     actions.push("host.memory");
   }
-  if (broadHostExploration || hardwareOverviewIntent || (hostContext && /\b(?:disk|filesystem|storage|mounts?)\b/i.test(hostText))) {
+  if (broadHostExploration || hardwareOverviewIntent || (hostContext && /\b(?:disks?|filesystems?|storage|mounts?)\b/i.test(hostText))) {
     actions.push("host.storage");
   }
   if (broadHostExploration || networkDiscoveryRequested || localNetworkOverview || (hostContext && (networkInterfaceObservation || /\b(?:addresses?|ip addresses?)\b/i.test(hostText)))) {

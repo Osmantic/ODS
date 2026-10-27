@@ -99,14 +99,14 @@ def observe_gpu() -> dict:
         result = _run(
             [
                 executable,
-                "--query-gpu=name,memory.total,driver_version",
+                "--query-gpu=name,memory.total,memory.used,memory.free,driver_version",
                 "--format=csv,noheader,nounits",
             ]
         )
         if result and result.returncode == 0 and not result.stderr.strip():
             for line in result.stdout.splitlines()[:16]:
                 fields = [field.strip() for field in line.split(",")]
-                if len(fields) != 3 or not SAFE_NAME.fullmatch(fields[0]) or not SAFE_VERSION.fullmatch(fields[2]):
+                if len(fields) != 5 or not SAFE_NAME.fullmatch(fields[0]) or not SAFE_VERSION.fullmatch(fields[4]):
                     devices = []
                     break
                 try:
@@ -117,9 +117,15 @@ def observe_gpu() -> dict:
                 if not 1 <= memory_mib <= 10_000_000:
                     devices = []
                     break
-                devices.append(
-                    {"name": fields[0], "memoryMiB": memory_mib, "driver": fields[2]}
-                )
+                device = {"name": fields[0], "memoryMiB": memory_mib, "driver": fields[4]}
+                # Live use at the time of the check, so "how much GPU memory is
+                # free" has a host answer. A driver that reports "[N/A]" for
+                # either keeps the device without them.
+                if fields[2].isdecimal() and fields[3].isdecimal():
+                    used, free = int(fields[2]), int(fields[3])
+                    if used <= memory_mib and free <= memory_mib:
+                        device.update(memoryUsedMiB=used, memoryFreeMiB=free)
+                devices.append(device)
     return {
         "schemaVersion": 1,
         "kind": "ods-host-gpu",
