@@ -89,6 +89,7 @@ export default function Models({ compact = false }) {
     hermesMinimumContext,
     pixelMinimumContext,
     loading,
+    catalogConfirmed,
     error,
     actionLoading,
     actionLoadingModels,
@@ -98,7 +99,9 @@ export default function Models({ compact = false }) {
     benchmarkModel,
     deleteModel,
     refresh,
-  } = useModels()
+  } = useModels({ reuseLastCatalog: true })
+  // Opened again, the page shows the last catalog at once; actions wait for its fresh read.
+  const catalogHeld = catalogConfirmed === false
 
   const [downloadStarting, setDownloadStarting] = useState(null)
   const [downloadAwaitingStatus, setDownloadAwaitingStatus] = useState(false)
@@ -168,12 +171,18 @@ export default function Models({ compact = false }) {
     () => models.filter(model => ['downloaded', 'loaded'].includes(model.status)),
     [models]
   )
-  const odsCatalogModels = useMemo(
-    () => models
+  const odsCatalogModels = useMemo(() => {
+    // The catalog's own picks for this hardware follow the recommended model.
+    // Where every model fits (a DGX Station's 346 GB), catalog order alone put
+    // the smallest models right after it.
+    const fitRank = new Map(recommendationAlternatives.map((item, index) => [item.id, index]))
+    const rank = model => fitRank.get(model.id) ?? fitRank.size
+    return models
       .filter(model => model.metadata?.catalogSource !== 'huggingface' && model.metadata?.source !== 'runtime')
-      .sort((left, right) => Number(Boolean(right.recommended)) - Number(Boolean(left.recommended)) || Number(Boolean(right.fitsVram)) - Number(Boolean(left.fitsVram))),
-    [models]
-  )
+      .sort((left, right) => Number(Boolean(right.recommended)) - Number(Boolean(left.recommended))
+        || rank(left) - rank(right)
+        || Number(Boolean(right.fitsVram)) - Number(Boolean(left.fitsVram)))
+  }, [models, recommendationAlternatives])
   const scopedModels = libraryScope === 'installed' ? installedModels : odsCatalogModels
   const categoryOptions = useMemo(
     () => buildCategoryOptions(scopedModels, hermesMinimumContext),
@@ -236,7 +245,7 @@ export default function Models({ compact = false }) {
     await deleteModel(modelId)
   }
 
-  const activationBusy = Boolean(activationLoading || runtimeActionLoading || modelLifecycle?.active || modelRecoveryPending)
+  const activationBusy = Boolean(catalogHeld || activationLoading || runtimeActionLoading || modelLifecycle?.active || modelRecoveryPending)
   const providerBusy = Boolean(modelLifecycle?.active && ['remote_provider_apply', 'remote_provider_proof'].includes(modelLifecycle.operation))
   const activeRemoteRuntime = !activationBusy && activeRuntime?.source === 'remote-provider' ? activeRuntime : null
   const remoteRouteActive = Boolean(activeRemoteRuntime)
@@ -259,7 +268,7 @@ export default function Models({ compact = false }) {
   }
 
   const pendingModelActions = actionLoadingModels ?? (actionLoading ? [actionLoading] : [])
-  const runtimeControlsBusy = Boolean(runtimeActionLoading || activationLoading || modelLifecycle?.active || pendingModelActions.length || downloadProgress.isDownloading)
+  const runtimeControlsBusy = Boolean(catalogHeld || runtimeActionLoading || activationLoading || modelLifecycle?.active || pendingModelActions.length || downloadProgress.isDownloading)
   // Unloading stops Portal and Hermes until Resume, so it asks first. The
   // question closes for good if the model stops or another operation starts.
   const unloadAvailable = Boolean(modelManagement?.managed === true && modelManagement.canUnload === true
@@ -285,7 +294,7 @@ export default function Models({ compact = false }) {
     hermesMinimumContext={hermesMinimumContext} pixelMinimumContext={pixelMinimumContext}
     isCurrentModel={model.id === currentModel} isLoading={pendingModelActions.includes(model.id)}
     loadBusy={pendingModelActions.length > 0} activationBusy={activationBusy}
-    downloadBusy={downloadProgress.isDownloading || !!downloadStarting} downloadStarting={downloadStarting === model.id}
+    downloadBusy={catalogHeld || downloadProgress.isDownloading || !!downloadStarting} downloadStarting={downloadStarting === model.id}
     onDownload={() => handleDownload(model.id)} onLoad={() => { if (canActivateModels && !activationBusy) setActivationConfigModel(model) }}
     onBenchmark={() => benchmarkModel(model.id)} onDelete={() => setDeleteConfirmModel(model)}/>
 
@@ -342,7 +351,7 @@ export default function Models({ compact = false }) {
 
       <ModelActivationNotice value={modelActivation} pending={modelLifecycle?.operation === 'model_activation'} onRefresh={refresh}/>
       {providerBusy && <p role="status">ODS is checking or changing the model connection. Wait for it to finish before switching models or requesting recovery.</p>}
-      <PortalModelRecovery active={Boolean(modelRecoveryPending || modelActivation?.outcome === 'rollback_unconfirmed') && !modelLifecycle?.active} operationActive={Boolean(modelLifecycle?.active)} refreshKey={modelActivation} onRecovered={refresh}/>
+      <PortalModelRecovery active={Boolean(modelRecoveryPending || modelActivation?.outcome === 'rollback_unconfirmed') && !modelLifecycle?.active && !catalogHeld} operationActive={Boolean(modelLifecycle?.active)} refreshKey={modelActivation} onRecovered={refresh}/>
 
       {error && (
         <div className="mb-5 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">
@@ -373,7 +382,7 @@ export default function Models({ compact = false }) {
         <DownloadProgressBar
           progress={visibleDownloadProgress}
           helpers={downloadProgress}
-          onRetry={retryModelId
+          onRetry={retryModelId && !catalogHeld
             ? () => handleDownload(retryModelId)
             : null}
         />
@@ -402,7 +411,7 @@ export default function Models({ compact = false }) {
         gpu={gpu}
         externalApi={externalApi}
         activeRuntime={activeRemoteRuntime}
-        showProfile={canActivateModels}
+        showProfile={canActivateModels && !catalogHeld}
         lifecycleActive={Boolean(modelLifecycle?.active || modelActivation?.active || activationLoading || runtimeActionLoading)}
       />
 
@@ -439,7 +448,7 @@ export default function Models({ compact = false }) {
         >
           <HuggingFaceModelBrowser
             gpu={gpu}
-            downloadBusy={downloadProgress.isDownloading || Boolean(downloadStarting || runtimeActionLoading)}
+            downloadBusy={catalogHeld || downloadProgress.isDownloading || Boolean(downloadStarting || runtimeActionLoading)}
             onImportStarted={handleHuggingFaceImportStarted}
           />
         </section>

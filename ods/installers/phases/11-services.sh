@@ -1138,19 +1138,19 @@ else
         fi
         # NVIDIA ComfyUI also needs output/input/workflows bind-mount dirs
         if [[ "$GPU_BACKEND" == "nvidia" ]]; then
-            mkdir -p "$INSTALL_DIR/data/comfyui"/{output,input,workflows,user}
+            mkdir -p "$INSTALL_DIR/data/comfyui"/{output,input,workflows,user,cuda-cache}
             if ! _phase11_prepare_uid1000_bind_data \
-                "$INSTALL_DIR/data/comfyui" models output input user; then
+                "$INSTALL_DIR/data/comfyui" models output input user cuda-cache; then
                 ai_bad "Could not prepare NVIDIA ComfyUI data for its container user."
                 exit 1
             fi
         fi
 
+        # The checkpoint ComfyUI's default image pack (comfyui/model-packs.json) pins.
         SDXL_MODEL="sdxl_lightning_4step.safetensors"
-        SDXL_URL="https://huggingface.co/ByteDance/SDXL-Lightning/resolve/main/sdxl_lightning_4step.safetensors"
 
         if [[ ! -f "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL" ]]; then
-            ai "Downloading SDXL Lightning 4-step (~6.5GB) for image generation..."
+            ai "Downloading SDXL Lightning 4-step (6.9 GB) for image generation..."
 
             # Source background task tracking
             if [[ -f "$SCRIPT_DIR/installers/lib/background-tasks.sh" ]]; then
@@ -1158,27 +1158,26 @@ else
             fi
 
             # This daemon must not inherit the installer model lifecycle lock;
-            # otherwise full-model activation waits for an unrelated 6.5 GB
+            # otherwise full-model activation waits for an unrelated 6.9 GB
             # image download after the installer itself releases the lock.
+            # It runs the downloader the Extensions page uses, from the install
+            # directory (which outlives the installer's source): the pinned URL,
+            # size and SHA-256 come from model-packs.json, a dropped connection
+            # resumes (six tries, as curl --retry 5 did), and a file that fails
+            # its checksum is deleted. The summary reads this log for ERROR, so
+            # any non-zero exit, even one the downloader did not foresee, ends
+            # with an ERROR line.
             (
                 _phase11_close_inherited_fds_for_daemon
                 exec nohup env \
-                    SDXL_CHECKPOINT_DIR="$SDXL_CHECKPOINT_DIR" \
-                    SDXL_MODEL="$SDXL_MODEL" \
-                    SDXL_URL="$SDXL_URL" \
+                    ODS_ASSETS_PYTHON="${ODS_PYTHON_CMD:-python3}" \
+                    ODS_ASSETS="$INSTALL_DIR/bin/extension_assets.py" \
+                    COMFYUI_EXT_DIR="$INSTALL_DIR/extensions/services/comfyui" \
+                    INSTALL_DIR="$INSTALL_DIR" \
+                    GPU_BACKEND="$GPU_BACKEND" \
                     bash -c '
-                        echo "[SDXL] Starting SDXL Lightning model download..."
-                        if [[ ! -f "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL" ]]; then
-                            echo "[SDXL] Downloading $SDXL_MODEL (~6.5GB)..."
-                            curl -fSL -C - --connect-timeout 30 --max-time 3600 \
-                                --retry 5 --retry-delay 10 --retry-all-errors \
-                                -o "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL.part" \
-                                "$SDXL_URL" 2>&1 && \
-                                mv "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL.part" "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL" && \
-                                echo "[SDXL] $SDXL_MODEL complete" || \
-                                echo "[SDXL] ERROR: Failed to download $SDXL_MODEL"
-                        fi
-                        echo "[SDXL] SDXL Lightning model download finished."
+                        "$ODS_ASSETS_PYTHON" "$ODS_ASSETS" --attempts 6 "$COMFYUI_EXT_DIR" "$INSTALL_DIR" "$GPU_BACKEND" \
+                            || echo "[SDXL] ERROR: the model download exited with status $?; see the lines above"
                     ' > "$INSTALL_DIR/logs/sdxl-download.log" 2>&1
             ) &
 
@@ -1190,7 +1189,7 @@ else
             fi
 
             log "Background SDXL download started (PID: $sdxl_pid). Check: tail -f $INSTALL_DIR/logs/sdxl-download.log"
-            ai "SDXL Lightning downloading in background (~6.5GB). ComfyUI will be ready once complete."
+            ai "SDXL Lightning downloading in background (6.9 GB). ComfyUI will be ready once complete."
         else
             ai_ok "SDXL Lightning model already present"
         fi

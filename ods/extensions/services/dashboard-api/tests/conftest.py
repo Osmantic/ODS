@@ -60,6 +60,34 @@ def mock_edge_read_transport(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_remembered_portal_status(monkeypatch):
+    """Each test starts without an available Portal status remembered by an earlier one."""
+    from routers import pixel
+
+    monkeypatch.setattr(pixel, "_last_available_status", None)
+
+
+@pytest.fixture(autouse=True)
+def _no_remembered_release_check(monkeypatch):
+    """Each test starts without a release or a failed check remembered by an earlier one."""
+    from routers import updates
+
+    monkeypatch.setattr(updates, "_version_cache", {"expires_at": 0.0, "payload": None})
+    monkeypatch.setattr(updates, "_version_hold", {"until": 0.0, "rate_limited": False})
+    monkeypatch.setattr(updates, "_version_refresh_task", None)
+
+
+@pytest.fixture(autouse=True)
+def _no_remembered_model_management(monkeypatch):
+    """Each test starts without a model management proof remembered by an earlier one."""
+    from routers import models
+
+    monkeypatch.setattr(models, "_model_management_remembered", None)
+    monkeypatch.setattr(models, "_model_management_proof_future", None)
+    monkeypatch.setattr(models, "_model_management_missed", False)
+
+
+@pytest.fixture(autouse=True)
 def _no_hugging_face_header_reads(monkeypatch):
     """Unit tests never reach Hugging Face; a test that needs a header stubs one."""
     import hf_gguf_header

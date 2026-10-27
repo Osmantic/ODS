@@ -25,6 +25,9 @@ services:
     image: ${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b9014@sha256:2e7953dfef88f302bf0683bffa7dc1f8d86ef75910380bc41126ec5b8bedaf53}
     container_name: ods-llama-server
     restart: unless-stopped
+    # Normalize reasoning modes on every launch, including CLI restarts,
+    # model switches and direct Compose use. The wrapper execs the server.
+    entrypoint: ["/bin/sh", "/opt/ods/llama-server-entrypoint.sh"]
     # config/llama-server/models.ini is not mounted: llama-server reads a
     # preset file only with --models-preset (router mode), which ODS does not
     # use; the model comes from --model below. ODS still writes models.ini as
@@ -34,6 +37,7 @@ services:
       # Fixed chat templates ODS vendors from llama.cpp (any-model WP5), read
       # only when LLAMA_ARG_CHAT_TEMPLATE_FILE below names one.
       - ./config/chat-templates:/chat-templates:ro,z
+      - ./extensions/services/llama-server/llama-server-entrypoint.sh:/opt/ods/llama-server-entrypoint.sh:ro,z
     ports:
       - "127.0.0.1:${OLLAMA_PORT:-11434}:8080"
     command:
@@ -205,10 +209,12 @@ services:
       # users would otherwise hit a missing-engine error from Open WebUI.
       ENABLE_IMAGE_GENERATION: "${ENABLE_IMAGE_GENERATION:-false}"
       IMAGE_GENERATION_ENGINE: "comfyui"
-      COMFYUI_BASE_URL: "http://comfyui:8188"
-      IMAGE_SIZE: "1024x1024"
-      IMAGE_STEPS: "4"
-      IMAGE_GENERATION_MODEL: "sdxl_lightning_4step.safetensors"
+      # Owner-settable in .env (Settings applies them by recreating Open WebUI).
+      # The workflow below stays fixed; IMAGE_GENERATION_MODEL fills its loader.
+      COMFYUI_BASE_URL: "${COMFYUI_BASE_URL:-http://comfyui:8188}"
+      IMAGE_SIZE: "${IMAGE_SIZE:-1024x1024}"
+      IMAGE_STEPS: "${IMAGE_STEPS:-4}"
+      IMAGE_GENERATION_MODEL: "${IMAGE_GENERATION_MODEL:-sdxl_lightning_4step.safetensors}"
       COMFYUI_WORKFLOW: >-
         {"3":{"inputs":{"seed":42,"steps":4,"cfg":1.5,"sampler_name":"euler","scheduler":"sgm_uniform","denoise":1.0,"model":["4",0],"positive":["6",0],"negative":["7",0],"latent_image":["5",0]},"class_type":"KSampler"},
         "4":{"inputs":{"ckpt_name":"sdxl_lightning_4step.safetensors"},"class_type":"CheckpointLoaderSimple"},
@@ -285,11 +291,20 @@ services:
       - ODS_DATA_DIR=/data
       - ODS_EXTENSIONS_LIBRARY_DIR=/data/extensions-library
       - ODS_MODE=${ODS_MODE:-local}
+      # Service status reads this live from .env. An install owner other than
+      # UID 1000 leaves the 0600 .env unreadable here, and the status must then
+      # fall back to this copy instead of counting Open WebUI as a core service down.
+      - ENABLE_OPEN_WEBUI=${ENABLE_OPEN_WEBUI:-true}
+      # The same fallback keeps --offline's switch off the GitHub release check.
+      - DISABLE_UPDATE_CHECK=${DISABLE_UPDATE_CHECK:-false}
       - ODS_AGENT_HOST=${ODS_AGENT_HOST:-}
       - ODS_AGENT_PORT=${ODS_AGENT_PORT:-7710}
       - GPU_BACKEND=${GPU_BACKEND:-nvidia}
       - GPU_COUNT=${GPU_COUNT:-1}
       - GPU_ASSIGNMENT_JSON_B64=${GPU_ASSIGNMENT_JSON_B64:-}
+      # The GPU page leaves CPU Whisper off its assigned GPU; the same
+      # unreadable-.env fallback as ENABLE_OPEN_WEBUI above.
+      - WHISPER_ACCELERATION=${WHISPER_ACCELERATION:-}
       - LLAMA_ARG_SPLIT_MODE=${LLAMA_ARG_SPLIT_MODE:-}
       - LLAMA_ARG_TENSOR_SPLIT=${LLAMA_ARG_TENSOR_SPLIT:-}
       - HOST_RAM_GB=${HOST_RAM_GB:-0}

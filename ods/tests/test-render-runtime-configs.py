@@ -27,16 +27,39 @@ def load_renderer_module() -> ModuleType:
     return module
 
 
-def run_renderer(*args: str) -> dict[str, object]:
+def run_renderer(*args: str, env: dict[str, str] | None = None) -> dict[str, object]:
     proc = subprocess.run(
         [sys.executable, str(SCRIPT), *args],
         cwd=ROOT,
+        env=env,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=True,
     )
     return json.loads(proc.stdout)
+
+
+def llm_backend_env(value: str | None = None) -> dict[str, str]:
+    """This environment with LLM_BACKEND unset, or set to ``value``."""
+    env = {key: item for key, item in os.environ.items() if key != "LLM_BACKEND"}
+    if value is not None:
+        env["LLM_BACKEND"] = value
+    return env
+
+
+# Byte for byte what the renderer wrote before LLM_BACKEND became an input.
+LLAMA_SERVER_ENDPOINTS = (
+    '{\n  "endpoints": [\n    {\n      "id": "llama-server-default",\n'
+    '      "baseUrl": "http://llama-server:8080"\n    }\n  ]\n}\n'
+)
+LLAMA_SERVER_ENV = (
+    "ODS_MODE=local\nODS_MODEL_SWITCHBOARD=enabled\nLLM_BACKEND=llama-server\n"
+    "LLM_MODEL=qwen3.5-9b\nGGUF_FILE=Qwen3.5-9B-Q4_K_M.gguf\nGPU_BACKEND=nvidia\n"
+    "LLM_API_URL=http://llama-server:8080/v1\nCTX_SIZE=131072\nMAX_CONTEXT=131072\n"
+    "OPEN_WEBUI_LLM_BASE_URL=http://litellm:4000\nOPEN_WEBUI_LLM_API_KEY=sk-test-litellm\n"
+)
+ALL_ENABLED = ("--surface", "all", "--switchboard-mode", "enabled", "--litellm-key", "sk-test-litellm")
 
 
 def file_by_surface(payload: dict[str, object], surface: str) -> dict[str, str]:
@@ -491,6 +514,47 @@ def test_router_endpoints_strip_trailing_v1() -> None:
     assert content == {"endpoints": [{"id": "llama-server-default", "baseUrl": "http://llama-server:8080"}]}
 
 
+def test_llama_server_backends_render_todays_bytes() -> None:
+    baseline = run_renderer(*ALL_ENABLED, env=llm_backend_env())
+    assert baseline["inputs"]["llm_backend"] == "llama-server"
+    assert file_by_surface(baseline, "model-router-endpoints")["content"] == LLAMA_SERVER_ENDPOINTS
+    assert file_by_surface(baseline, "env")["content"] == LLAMA_SERVER_ENV
+    # Every other .env LLM_BACKEND value, by flag or environment, renders
+    # every surface exactly as before.
+    for value in ("", "llama-server", "external", "hipfire", "lemonade", "litellm"):
+        assert run_renderer(*ALL_ENABLED, env=llm_backend_env(value))["files"] == baseline["files"], value
+        if value:
+            flagged = run_renderer(*ALL_ENABLED, "--llm-backend", value, env=llm_backend_env())
+            assert flagged["files"] == baseline["files"], value
+
+
+def test_vllm_backend_routes_model_router_to_vllm_server() -> None:
+    surface = ("--surface", "model-router-endpoints")
+    for payload in (
+        run_renderer(*surface, "--llm-backend", "vllm", env=llm_backend_env()),
+        run_renderer(*surface, env=llm_backend_env("vllm")),
+        # The llama-server origin and key inputs do not describe vllm-server.
+        run_renderer(*surface, "--llm-backend", "vllm",
+                     "--llm-base-url", "http://host.docker.internal:18080/v1",
+                     "--llm-api-key-env", "LLAMA_SERVER_API_KEY", env=llm_backend_env()),
+    ):
+        assert payload["inputs"]["llm_backend"] == "vllm"
+        content = file_by_surface(payload, "model-router-endpoints")["content"]
+        assert json.loads(content) == {
+            "endpoints": [{"id": "vllm-default", "baseUrl": "http://vllm-server:8000"}],
+        }
+
+
+def test_vllm_backend_changes_only_the_router_endpoint_and_env_backend() -> None:
+    baseline = run_renderer(*ALL_ENABLED, env=llm_backend_env())
+    vllm = run_renderer(*ALL_ENABLED, "--llm-backend", "vllm", env=llm_backend_env())
+    assert file_by_surface(vllm, "env")["content"] == LLAMA_SERVER_ENV.replace(
+        "LLM_BACKEND=llama-server\n", "LLM_BACKEND=vllm\n")
+    changed = {after["surface"] for after, before in zip(vllm["files"], baseline["files"])
+               if after != before}
+    assert changed == {"env", "model-router-endpoints"}
+
+
 def test_retired_lemonade_flags_are_accepted_and_ignored() -> None:
     payload = run_renderer(
         "--surface",
@@ -868,6 +932,9 @@ def main() -> int:
         test_enabled_hermes_uses_stable_switchboard_alias,
         test_enabled_opencode_uses_stable_switchboard_alias,
         test_router_endpoints_strip_trailing_v1,
+        test_llama_server_backends_render_todays_bytes,
+        test_vllm_backend_routes_model_router_to_vllm_server,
+        test_vllm_backend_changes_only_the_router_endpoint_and_env_backend,
         test_retired_lemonade_flags_are_accepted_and_ignored,
         test_litellm_lemonade_surface_is_retired,
         test_amd_local_env_has_no_lemonade_keys,

@@ -9,9 +9,9 @@ import http from 'node:http';
 import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 import {createIngressServer, parseVerificationResponse} from '../host/pixel_ingress.mjs';
-import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
+import {createToolLoopGuard, PROGRESS_STOPPED_DELIVERY_PREFIX} from '../plugin/tool-loop-guard.mjs';
 import {outputLimitCut} from '../plugin/output-limit.mjs';
-import {RUN_PROGRESS_LIMITS, RUN_PROGRESS_STOP_REASON} from '../plugin/run-progress-budget.mjs';
+import {RUN_PROGRESS_LIMITS} from '../plugin/run-progress-budget.mjs';
 
 const RUN_ID = 'chatcmpl_8b0f4f8e-7f6d-4c1a-9f3e-6d2a1c5b7e90';
 const NEXT_RUN_ID = 'chatcmpl_0c6e2d3b-1a4f-4e8d-b2c7-5f9a8e7d6c41';
@@ -223,7 +223,8 @@ test('a budget stop keeps its own text', () => {
   }
   f.end([CUT_WRITE]);
   const verification = f.guard.deliveryVerificationForRun(RUN_ID);
-  assert.match(verification.text, new RegExp('^' + RUN_PROGRESS_STOP_REASON.slice(0, 40)));
+  // A website build: the stop in the owner's wording, never the output-limit copy.
+  assert.ok(verification.text.startsWith(`${PROGRESS_STOPPED_DELIVERY_PREFIX}\n\n`), verification.text);
   assert.doesNotMatch(verification.text, /output limit/);
 });
 

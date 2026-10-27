@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import hashlib
 import hmac
 import json
@@ -40,7 +41,7 @@ from typing import Any, AsyncIterator
 import anyio
 import httpx
 from jsonschema import validators as jsonschema_validators
-from jsonschema.exceptions import SchemaError, ValidationError
+from jsonschema.exceptions import SchemaError, ValidationError, best_match
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from .completed_tool_sse import (
@@ -334,6 +335,303 @@ def _repaired_tool_decision_invalid(
         except (ValueError, TypeError, SchemaError, ValidationError):
             return True
     return False
+
+
+# A rejected tool decision is described by its shape only, for the router log
+# and for the repair feedback: function names, the JSON Schema keyword that
+# failed, the path to that point and argument key names. Argument values never
+# appear in either; they can carry page or prompt text. The feedback names only
+# what the request's own tool schemas declare.
+_DIAGNOSTIC_NAME = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
+_MAX_DIAGNOSTIC_NAMES = 16
+# A complete call whose only fault is its arguments against the offered
+# function's schema can be repaired a second time; a model often fixes such a
+# call once it is told which rule failed. Any other rejection keeps one repair.
+_SCHEMA_REPAIR_LIMIT = 2
+_BOUND_RULES = {"minLength", "maxLength", "minItems", "maxItems", "minimum", "maximum",
+                "exclusiveMinimum", "exclusiveMaximum", "minProperties", "maxProperties"}
+
+
+def _diagnostic_names(values: Any) -> list[str]:
+    """Bounded log form of model-produced names and indices, never a value."""
+    names = [str(value) if type(value) is int
+             else value if isinstance(value, str) and _DIAGNOSTIC_NAME.fullmatch(value)
+             else "?" for value in values]
+    return names[:_MAX_DIAGNOSTIC_NAMES] + (["..."] if len(names) > _MAX_DIAGNOSTIC_NAMES else [])
+
+
+def _declared_names(values: Any, declared: set[str]) -> list[str]:
+    """Log form of argument keys and paths: indices and names the schema declares.
+
+    Any other key comes from the arguments themselves (a map-shaped schema keys
+    by contact, file or user name), so it may be user data and logs as "*".
+    """
+    names = [str(value) if type(value) is int
+             else value if isinstance(value, str) and value in declared and _DIAGNOSTIC_NAME.fullmatch(value)
+             else "*" for value in values]
+    return names[:_MAX_DIAGNOSTIC_NAMES] + (["..."] if len(names) > _MAX_DIAGNOSTIC_NAMES else [])
+
+
+def _offered_function_schemas(payload: dict[str, Any]) -> dict[str, Any]:
+    offered = payload.get("tools")
+    return {
+        item["function"]["name"]: item["function"].get("parameters")
+        for item in (offered if isinstance(offered, list) else [])
+        if isinstance(item, dict) and item.get("type") == "function"
+        and isinstance(item.get("function"), dict)
+        and isinstance(item["function"].get("name"), str)
+    }
+
+
+def _declared_property_names(schema: Any) -> set[str]:
+    """Every property name a schema declares, at any depth (bounded walk)."""
+    names: set[str] = set()
+    pending, visited = [schema], 0
+    while pending and visited < 4096:
+        node = pending.pop()
+        visited += 1
+        if isinstance(node, dict):
+            properties = node.get("properties")
+            if isinstance(properties, dict):
+                names.update(key for key in properties if isinstance(key, str))
+            pending.extend(node.values())
+        elif isinstance(node, list):
+            pending.extend(node)
+    return names
+
+
+def _closest_schema_error(error: ValidationError) -> ValidationError:
+    """For oneOf/anyOf, the error of the one alternative the value came closest to."""
+    for _ in range(8):
+        if error.validator not in ("oneOf", "anyOf") or not error.context:
+            return error
+        branches: dict[Any, list[ValidationError]] = {}
+        for child in error.context:
+            branch = child.relative_schema_path[0] if child.relative_schema_path else None
+            branches.setdefault(branch, []).append(child)
+        fewest = min(len(errors) for errors in branches.values())
+        closest = [errors for errors in branches.values() if len(errors) == fewest]
+        if len(closest) != 1:
+            return error
+        error = best_match(closest[0])
+    return error
+
+
+def _described_schema_error(error: ValidationError) -> dict[str, Any]:
+    """The failed keyword, with a feedback clause built from schema names only."""
+    rule, value, instance = str(error.validator), error.validator_value, error.instance
+    described: dict[str, Any] = {"rule": rule}
+    if rule == "required" and isinstance(value, list):
+        missing = [name for name in value if isinstance(name, str)
+                   and not (isinstance(instance, dict) and name in instance)]
+        described["missing"] = missing[:_MAX_DIAGNOSTIC_NAMES]
+        described["detail"] = ("it is missing the required "
+                               + ("property " if len(missing) == 1 else "properties ")
+                               + ", ".join(missing[:8]))
+    elif rule == "additionalProperties":
+        declared = error.schema.get("properties") if isinstance(error.schema, dict) else None
+        declared = declared if isinstance(declared, dict) else {}
+        if isinstance(instance, dict):
+            # Undeclared keys come from the arguments and may be user data: count them only.
+            described["unexpected"] = sum(1 for key in instance if isinstance(key, str) and key not in declared)
+        allowed = sorted(key for key in declared if isinstance(key, str))
+        described["detail"] = ("it has a property its schema does not allow"
+                               + ("; use only " + ", ".join(allowed[:24]) if allowed else ""))
+    elif rule == "enum" and isinstance(value, list):
+        options = [json.dumps(option, ensure_ascii=False)[:64] for option in value[:24]]
+        described["detail"] = ("the value must be one of " + ", ".join(options)
+                               + (", ..." if len(value) > 24 else ""))
+    elif rule == "const":
+        described["detail"] = "the value must be exactly " + json.dumps(value, ensure_ascii=False)[:64]
+    elif rule == "type" and isinstance(value, (str, list)):
+        types = [value] if isinstance(value, str) else [kind for kind in value if isinstance(kind, str)]
+        described["detail"] = "the value must be of type " + " or ".join(types)
+    elif rule in ("oneOf", "anyOf") and isinstance(value, list):
+        forms = ["{" + ", ".join(branch["required"]) + "}" for branch in value[:8]
+                 if isinstance(branch, dict) and isinstance(branch.get("required"), list)
+                 and branch["required"] and all(isinstance(name, str) for name in branch["required"])]
+        described["detail"] = ("it must match exactly one of its allowed forms"
+                               + (": " + " or ".join(forms) if forms else ""))
+    elif rule in _BOUND_RULES and type(value) in (int, float):
+        described["detail"] = f"the value does not meet its {rule} of {value}"
+    elif rule == "pattern" and isinstance(value, str):
+        described["detail"] = "the value must match the pattern " + value[:120]
+    else:
+        described["detail"] = f"the value does not satisfy its {rule} rule"
+    return described
+
+
+def _schema_path_text(path: Any, declared: set[str]) -> str:
+    """steps[3].locator, naming only properties the schema declares."""
+    text = ""
+    for part in path:
+        if type(part) is int:
+            text += f"[{part}]"
+        else:
+            name = part if isinstance(part, str) and part in declared and _DIAGNOSTIC_NAME.fullmatch(part) else "*"
+            text += ("." if text else "") + name
+    return text or "the top level"
+
+
+def _type_only_tools(payload: dict[str, Any]) -> list[Any]:
+    """The offered tools with each schema reduced to its property types.
+
+    The native envelope parser reads a string property verbatim and any other
+    as JSON. With every constraint removed, an envelope that parses this way
+    failed only its schema."""
+    tools = []
+    for item in payload.get("tools") or []:
+        function = item.get("function") if isinstance(item, dict) else None
+        schema = function.get("parameters") if isinstance(function, dict) else None
+        properties = schema.get("properties") if isinstance(schema, dict) else None
+        if not isinstance(properties, dict):
+            tools.append(item)
+            continue
+        reduced = {key: {"type": "string"} if isinstance(value, dict) and value.get("type") == "string" else {}
+                   for key, value in properties.items()}
+        tools.append({**item, "function": {**function, "parameters": {"type": "object", "properties": reduced}}})
+    return tools
+
+
+def _structured_calls(
+    completion: dict[str, Any], payload: dict[str, Any],
+) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None]:
+    """The calls of a structured decision, or why its envelope was rejected.
+
+    Mirrors the checks of _repaired_tool_decision_invalid before its schema check.
+    """
+    def protocol(rule: str) -> tuple[None, dict[str, Any]]:
+        return None, {"kind": "protocol", "channel": "structured", "rule": rule}
+
+    choices = completion.get("choices")
+    if not isinstance(choices, list) or len(choices) != 1:
+        return protocol("choices")
+    choice = choices[0]
+    message = choice.get("message") if isinstance(choice, dict) else None
+    if not isinstance(message, dict) or message.get("role") != "assistant":
+        return protocol("message")
+    content = message.get("content")
+    if isinstance(content, str) and content.strip().startswith("<tool_call>"):
+        return None, {"kind": "native-markup", "channel": "native"}
+    calls = message.get("tool_calls")
+    if calls is None:
+        return protocol("answer")
+    if not isinstance(calls, list) or not calls or choice.get("finish_reason") != "tool_calls":
+        return protocol("finish_reason")
+    if payload.get("parallel_tool_calls") is False and len(calls) > 1:
+        return protocol("parallel_tool_calls")
+    for call in calls:
+        function = call.get("function") if isinstance(call, dict) else None
+        if (not isinstance(function, dict) or not isinstance(call.get("id"), str) or not call["id"]
+                or call.get("type") != "function" or not isinstance(function.get("name"), str)
+                or not isinstance(function.get("arguments"), str)):
+            return protocol("call")
+    tool_choice = payload.get("tool_choice")
+    forced = tool_choice.get("function") if isinstance(tool_choice, dict) else None
+    forced_name = forced.get("name") if isinstance(forced, dict) else None
+    if forced_name is not None and any(call["function"]["name"] != forced_name for call in calls):
+        return protocol("tool_choice")
+    return calls, None
+
+
+def _tool_decision_rejection(
+    completion: dict[str, Any], payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Why _repaired_tool_decision_invalid rejected a decision, by shape only.
+
+    kind is "schema" when every call names an offered function with a JSON
+    object of arguments and only that function's schema failed; otherwise
+    "unknown-function", "arguments", "native-markup" or "protocol" (with the
+    fixed name of the failed check). Side-effect free.
+    """
+    offered = _offered_function_schemas(payload)
+    native_names = _complete_native_envelope_names(completion)
+    if native_names is not None:
+        channel, names = "native", native_names
+    else:
+        calls, envelope_rejection = _structured_calls(completion, payload)
+        if envelope_rejection is not None:
+            return envelope_rejection
+        channel, names = "structured", [call["function"]["name"] for call in calls]
+    functions = _diagnostic_names(names)
+    if any(name not in offered for name in names):
+        return {"kind": "unknown-function", "channel": channel, "functions": functions}
+    if native_names is not None:
+        parsed = copy.deepcopy(completion)
+        if not _normalize_native_tool_markup(parsed, {**payload, "tools": _type_only_tools(payload)}):
+            return {"kind": "native-markup", "channel": channel, "functions": functions}
+        calls = parsed["choices"][0]["message"]["tool_calls"]
+    for call in calls:
+        name, schema = call["function"]["name"], offered[call["function"]["name"]]
+        if not isinstance(schema, dict) or _schema_has_references(schema):
+            return {"kind": "protocol", "channel": channel, "rule": "schema", "functions": functions}
+        try:
+            args = json.loads(call["function"]["arguments"])
+        except ValueError:
+            return {"kind": "arguments", "channel": channel, "functions": functions}
+        validator_class = jsonschema_validators.validator_for(schema)
+        try:
+            validator_class.check_schema(schema)
+        except SchemaError:
+            return {"kind": "protocol", "channel": channel, "rule": "schema", "functions": functions}
+        try:
+            error = best_match(validator_class(schema).iter_errors(args))
+        except (ValueError, TypeError):
+            # The validator cannot evaluate these arguments (NaN against multipleOf);
+            # _repaired_tool_decision_invalid rejects them alike: one ordinary repair.
+            return {"kind": "protocol", "channel": channel, "rule": "unevaluable", "functions": functions}
+        if error is None:
+            continue
+        error = _closest_schema_error(error)
+        declared = _declared_property_names(schema)
+        return {
+            "kind": "schema", "channel": channel, "functions": functions, "function": name,
+            "at": "/".join(_declared_names(error.absolute_path, declared)),
+            "where": _schema_path_text(error.absolute_path, declared),
+            "keys": _declared_names(sorted(args), declared) if isinstance(args, dict) else [],
+            "keysAt": _declared_names(sorted(error.instance), declared) if isinstance(error.instance, dict) else [],
+            **_described_schema_error(error),
+        }
+    return {"kind": "protocol", "channel": channel, "rule": "unclassified", "functions": functions}
+
+
+def _log_tool_rejection(stage: str, rejection: dict[str, Any]) -> None:
+    """One bounded line per rejected decision: names, rule and path, no values."""
+    fields = {key: rejection[key] for key in (
+        "kind", "channel", "rule", "functions", "at", "missing", "unexpected", "keys", "keysAt",
+    ) if key in rejection}
+    if "function" in rejection:
+        fields["function"] = _diagnostic_names([rejection["function"]])[0]
+    logger.warning("Rejected model tool decision (%s): %s", stage,
+                   json.dumps(fields, sort_keys=True, separators=(",", ":")))
+
+
+def _tool_repair_feedback(
+    rejection: dict[str, Any], payload: dict[str, Any], native_names: list[str] | None,
+) -> str:
+    """The repair instruction for this rejection, from schema names only."""
+    if rejection.get("kind") == "schema":
+        return (
+            "Tool protocol error: your previous completion was discarded before any tool ran. "
+            f"The arguments for {rejection['function']} did not satisfy its JSON parameter "
+            f"schema at {rejection['where']}: {rejection['detail']}. Call it again through "
+            "the API tool-call channel with arguments that follow that attached schema "
+            "exactly. Respect tool_choice and parallel_tool_calls. If tool_choice permits "
+            "it and no tool is appropriate, answer normally."
+        )
+    if native_names is not None:
+        return _native_tool_repair_feedback(native_names, payload)
+    if rejection.get("kind") == "unknown-function":
+        # The offered names come from the request; the rejected one is not repeated.
+        return (
+            "Tool protocol error: your previous completion was discarded before any tool ran. "
+            "It named a function that this request does not offer. Available function names: "
+            + ", ".join(_offered_function_schemas(payload)) + ". Return a valid function call "
+            "through the API tool-call channel using exactly the provided tools and their "
+            "JSON parameter schemas. Respect tool_choice and parallel_tool_calls. If "
+            "tool_choice permits it and no tool is appropriate, answer normally."
+        )
+    return _structured_tool_repair_feedback()
 
 
 app = FastAPI(title="ODS Model Router", docs_url=None, redoc_url=None,
@@ -707,7 +1005,7 @@ def _validate_state_schema(doc: Any) -> bool:
         # A pre-round-F state names the retired "lemonade" kind. It stays
         # readable for one release so the host agent can replace it (contract
         # section 6.7); no route path treats it specially.
-        if backend["kind"] not in {"llama-server", "lemonade", "hipfire", "unknown"}:
+        if backend["kind"] not in {"llama-server", "vllm", "lemonade", "hipfire", "unknown"}:
             return False
         if not isinstance(backend["endpointId"], str) or not backend["endpointId"]:
             return False
@@ -833,6 +1131,19 @@ def _active_route() -> dict[str, Any]:
         "apiKeyEnv": endpoint["apiKeyEnv"],
         "queueMode": str(availability.get("mode") or "serve_active") == "queue",
     }
+
+
+def _llama_tool_compat(route: dict[str, Any]) -> bool:
+    """Whether the router's llama.cpp tool-call workarounds apply to a route.
+
+    Only llama-server routes get them: buffered tool streams, the non-stream
+    request for thinking-enabled tool streams, bounded tool-protocol repair
+    and native tool-markup cleanup (tool_id_compat keeps its Nemo tool-id
+    rewrite llama-server-only too). Other kinds are forwarded unchanged; a
+    vllm route parses tool calls and reasoning itself with its own
+    --tool-call-parser and --reasoning-parser.
+    """
+    return route["backendKind"] == "llama-server"
 
 
 def _offered_tool_evidence(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1742,7 +2053,7 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
     completed_tool_stream = (
         is_stream
         and path == "/v1/chat/completions"
-        and route["backendKind"] == "llama-server"
+        and _llama_tool_compat(route)
         and isinstance(payload.get("tools"), list)
         and bool(payload["tools"])
     )
@@ -1892,6 +2203,7 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                         invalid = _repaired_tool_decision_invalid(complete, payload)
                         if (invalid and _complete_native_envelope_names(complete) is None
                                 and not _complete_structured_tool_decision(complete)):
+                            _log_tool_rejection("stream", _tool_decision_rejection(complete, payload))
                             _finish_probe_attempt(attempt_handle, "stream-error",
                                                   streaming_upstream.status_code)
                             return JSONResponse({"error": {
@@ -2056,11 +2368,13 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
             status_code=502, headers=ods_headers,
         ), False
 
-    # One bounded protocol repair is allowed only before the agent has seen a
-    # tool call. A complete native envelope is a model decision, not an
-    # executed action; no host/tool operation is replayed here.
+    # Bounded protocol repair, only before the agent has seen a tool call: one
+    # repair, or _SCHEMA_REPAIR_LIMIT while the latest decision's only fault is
+    # its arguments against the offered schema. A complete native envelope is a
+    # model decision, not an executed action; no host/tool operation is
+    # replayed here. Every rejected decision is logged by shape, never values.
     if (path == "/v1/chat/completions"
-            and route["backendKind"] == "llama-server"
+            and _llama_tool_compat(route)
             and _repairable_native_tool_request(payload)
             and isinstance(payload.get("messages"), list)
             and 200 <= upstream.status_code < 300):
@@ -2084,49 +2398,55 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                     return JSONResponse({'error': {'message': 'Backend response identity changed',
                         'type': 'response_identity_mismatch', 'code': '502'}},
                         status_code=502, headers=ods_headers), False
-                remaining = UPSTREAM_TIMEOUT_SECONDS - (time.monotonic() - telemetry_started)
-                if remaining <= 0:
-                    return JSONResponse({"error": {
-                        "message": "Upstream model runtime timed out during tool protocol repair",
-                        "type": "upstream_timeout", "code": "504",
-                    }}, status_code=504, headers=ods_headers), False
-                repair_payload = {**payload, "stream": False,
-                    "messages": [*payload["messages"], {"role": "user",
-                        "content": (_structured_tool_repair_feedback() if structured_invalid
-                                    else _native_tool_repair_feedback(native_names, payload))}]}
-                repair_payload.pop("stream_options", None)
-                repair_handle = None
-                try:
-                    repair_body = json.dumps(repair_payload).encode("utf-8")
-                    repair_handle = _begin_probe_attempt(
-                        probe_id, request_id, next_attempt, repair_body, route,
-                    )
-                    upstream = await client.post(
-                        url, content=repair_body,
-                        headers=headers, timeout=remaining,
-                    )
-                    _finish_probe_attempt(repair_handle, "complete", upstream.status_code)
-                    # The common response parser must attribute the repaired
-                    # response to this send, not to the original tool decision.
-                    attempt_handle = repair_handle
-                    response_metadata = {"failed": False}
-                except asyncio.CancelledError:
-                    _finish_probe_attempt(repair_handle, "cancelled")
-                    raise
-                except httpx.TimeoutException:
-                    _finish_probe_attempt(repair_handle, "timeout")
-                    return JSONResponse({"error": {
-                        "message": "Upstream model runtime timed out during tool protocol repair",
-                        "type": "upstream_timeout", "code": "504",
-                    }}, status_code=504, headers=ods_headers), False
-                except httpx.HTTPError as exc:
-                    _finish_probe_attempt(repair_handle, "transport-error")
-                    logger.warning("Upstream model runtime unavailable during tool protocol repair: %s", exc)
-                    return JSONResponse({"error": {
-                        "message": "Upstream model runtime unavailable during tool protocol repair",
-                        "type": "upstream_unavailable", "code": "502",
-                    }}, status_code=502, headers=ods_headers), False
-                if 200 <= upstream.status_code < 300:
+                rejection = _tool_decision_rejection(initial_decision, payload)
+                _log_tool_rejection("initial", rejection)
+                repairs = 0
+                while True:
+                    repairs += 1
+                    remaining = UPSTREAM_TIMEOUT_SECONDS - (time.monotonic() - telemetry_started)
+                    if remaining <= 0:
+                        return JSONResponse({"error": {
+                            "message": "Upstream model runtime timed out during tool protocol repair",
+                            "type": "upstream_timeout", "code": "504",
+                        }}, status_code=504, headers=ods_headers), False
+                    repair_payload = {**payload, "stream": False,
+                        "messages": [*payload["messages"], {"role": "user",
+                            "content": _tool_repair_feedback(rejection, payload, native_names)}]}
+                    repair_payload.pop("stream_options", None)
+                    repair_handle = None
+                    try:
+                        repair_body = json.dumps(repair_payload).encode("utf-8")
+                        repair_handle = _begin_probe_attempt(
+                            probe_id, request_id, next_attempt, repair_body, route,
+                        )
+                        next_attempt += 1
+                        upstream = await client.post(
+                            url, content=repair_body,
+                            headers=headers, timeout=remaining,
+                        )
+                        _finish_probe_attempt(repair_handle, "complete", upstream.status_code)
+                        # The common response parser must attribute the repaired
+                        # response to this send, not to the original tool decision.
+                        attempt_handle = repair_handle
+                        response_metadata = {"failed": False}
+                    except asyncio.CancelledError:
+                        _finish_probe_attempt(repair_handle, "cancelled")
+                        raise
+                    except httpx.TimeoutException:
+                        _finish_probe_attempt(repair_handle, "timeout")
+                        return JSONResponse({"error": {
+                            "message": "Upstream model runtime timed out during tool protocol repair",
+                            "type": "upstream_timeout", "code": "504",
+                        }}, status_code=504, headers=ods_headers), False
+                    except httpx.HTTPError as exc:
+                        _finish_probe_attempt(repair_handle, "transport-error")
+                        logger.warning("Upstream model runtime unavailable during tool protocol repair: %s", exc)
+                        return JSONResponse({"error": {
+                            "message": "Upstream model runtime unavailable during tool protocol repair",
+                            "type": "upstream_unavailable", "code": "502",
+                        }}, status_code=502, headers=ods_headers), False
+                    if not 200 <= upstream.status_code < 300:
+                        break
                     try:
                         repaired = json.loads(upstream.content.decode("utf-8"))
                     except (ValueError, UnicodeDecodeError):
@@ -2139,12 +2459,19 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                             "message": "Backend response identity changed",
                             "type": "response_identity_mismatch", "code": "502",
                         }}, status_code=502, headers=ods_headers), False
-                    if (not isinstance(repaired, dict)
-                            or _repaired_tool_decision_invalid(repaired, payload)):
+                    if (isinstance(repaired, dict)
+                            and not _repaired_tool_decision_invalid(repaired, payload)):
+                        break
+                    rejection = (_tool_decision_rejection(repaired, payload)
+                                 if isinstance(repaired, dict) else {"kind": "protocol", "rule": "response"})
+                    _log_tool_rejection(f"repair {repairs}", rejection)
+                    if repairs >= (_SCHEMA_REPAIR_LIMIT if rejection["kind"] == "schema" else 1):
                         return JSONResponse({"error": {
-                            "message": "Model returned an invalid tool decision after one protocol repair",
+                            "message": "Model returned an invalid tool decision after "
+                                       + ("one protocol repair" if repairs == 1 else f"{repairs} protocol repairs"),
                             "type": "tool_protocol_invalid", "code": "502",
                         }}, status_code=502, headers=ods_headers), False
+                    native_names = _complete_native_envelope_names(repaired)
 
     response_model = None
     response_usage = {
@@ -2177,7 +2504,7 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
 
     if (parsed is not None and 200 <= upstream.status_code < 300
             and path == "/v1/chat/completions"
-            and route["backendKind"] == "llama-server"
+            and _llama_tool_compat(route)
             and isinstance(payload.get("tools"), list) and payload["tools"]
             and _normalize_native_tool_markup(parsed, payload)):
         content = json.dumps(parsed).encode("utf-8")

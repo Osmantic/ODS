@@ -646,8 +646,18 @@ ods_wsl_nvidia_driver_too_old() {
 ods_whisper_cuda_supported() {
     local backend="${1:-${GPU_BACKEND:-cpu}}"
     local driver_major="${2:-${DRIVER_VERSION:-0}}"
+    # The pinned Speaches CUDA image has CUDA on amd64 only: its arm64 variant
+    # ships a CTranslate2 "not compiled with CUDA support". A GB300 then ran
+    # large-v3-turbo on 4 CPU cores, 17 s per 4 s clip; the CPU image's base
+    # model took 1.2 s (Workstation06, 2026-10-27).
+    ods_host_is_arm64 && return 1
     [[ "$backend" == "nvidia" && "$driver_major" =~ ^[0-9]+$ \
         && "$driver_major" -ge "$MIN_WHISPER_CUDA_DRIVER_VERSION" ]]
+}
+
+# HOST_ARCH is detect_host_arch's value (amd64/arm64) once Phase 02 has run.
+ods_host_is_arm64() {
+    [[ "${HOST_ARCH:-$(uname -m 2>/dev/null || echo unknown)}" =~ ^(arm64|aarch64)$ ]]
 }
 
 _ods_csv_add_unique() {

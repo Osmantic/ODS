@@ -11,6 +11,7 @@ import {readFileSync} from 'node:fs';
 import {createIngressServer} from '../host/pixel_ingress.mjs';
 import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
 import {PREVIEW_EARLIER_NOTE} from '../plugin/preview-explanation.mjs';
+import {PROGRESS_FINALIZATION_INSTRUCTION} from '../plugin/progress-finalization.mjs';
 import {RUN_PROGRESS_LIMITS, RUN_PROGRESS_STOP_REASON} from '../plugin/run-progress-budget.mjs';
 
 const RUN_ID = 'chatcmpl_3d1f6c0a-6b1e-4f7a-9a52-2e6f0c7d1a30';
@@ -206,7 +207,9 @@ test('a budget stop keeps its own text, and its tool-free turn gets no notice', 
       content: [{type: 'text', text: 'Web fetch failed (403)'}]}}, {...OWNER, toolName: 'web_fetch', toolCallId});
   }
   f.at(26);
-  assert.deepEqual(f.read().persisted.content, [{type: 'text', text: RUN_PROGRESS_STOP_REASON}]);
+  // The answer turn is still ahead, so the persisted result carries its
+  // instruction (progress-finalization.mjs), never a deadline notice.
+  assert.deepEqual(f.read().persisted.content, [{type: 'text', text: PROGRESS_FINALIZATION_INSTRUCTION}]);
   f.at(30);
   f.guard.observeAgentEnd(CUT_OFF, OWNER);
   const verification = f.guard.deliveryVerificationForRun(RUN_ID);

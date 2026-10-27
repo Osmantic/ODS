@@ -23,6 +23,7 @@ import {createChatHistoryLedger,HistoryError} from './chat_history_ledger.mjs';
 import {createChatImageStore,createChatImageReadHandler,ChatImageError} from './chat_image_store.mjs';
 import {currentImageNote,decodeChatImageTurn,nativeHistoryMessages,validateImageRoute} from './chat_image_transport.mjs';
 import {handleAccessMode, handleModelControl, publicModelControl, readAccessOwnerKey, requestAccessController} from './access_mode_relay.mjs';
+import {ownerForbidsTools} from './owner_tool_policy.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -60,6 +61,9 @@ const GATEWAY_ABORT_MAX_ATTEMPTS = 30;
 const DOCKER_TIMEOUT_MS = 10000;
 const MAX_TOKEN_LEN = 4096;
 const MAX_CANCEL_BODY = 256;
+// Settle reads one native context under the history lock; keep it well inside
+// the edge's relay deadline so a slow gateway answers "unconfirmed", not a hang.
+const SETTLE_CONTEXT_TIMEOUT_MS = 5000;
 const MAX_STATUS_INTERVAL_MS = 86400000; // 1 day
 const STATUS_MODE = 0o640; // group-readable, service-owner-writable projection
 const ODS_VERSION_RE = /^(?:unknown|[0-9]+(?:\.[0-9]+){1,3}(?:[-+][A-Za-z0-9.-]+)?)$/;
@@ -633,6 +637,16 @@ function readBody(req, limit) {
 // Allowlisted request construction.
 // ---------------------------------------------------------------------------
 
+// Latest current user message raw text, restricted to type:text parts. Never
+// inspects images, system/assistant/tool messages, or older user turns.
+function userTextParts(message) {
+  const content = message?.content;
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content.filter(part => part?.type === 'text' && typeof part.text === 'string')
+    .map(part => part.text).join('\n');
+}
+
 export function buildOutgoing(parsed, sessionUser) {
   const out = { model: "openclaw/default" };
   for (const key of Object.keys(ALLOWED_FIELDS)) {
@@ -644,6 +658,16 @@ export function buildOutgoing(parsed, sessionUser) {
     out[key] = v;
   }
   if (sessionUser) out.user = sessionUser;
+  // An explicit owner no-tools directive in the latest current user message
+  // forces tool_choice:'none' and tools:[] for this attempt only. This is a
+  // restrictive hint for any authenticated gateway client; it grants no
+  // authority and is never persisted to history or config. A tool-result
+  // continuation (latest message not user) never infers from earlier turns.
+  const latest = Array.isArray(parsed.messages) ? parsed.messages[parsed.messages.length - 1] : undefined;
+  if (latest && latest.role === 'user' && ownerForbidsTools(userTextParts(latest))) {
+    out.tool_choice = 'none';
+    out.tools = [];
+  }
   return out;
 }
 
@@ -1984,6 +2008,24 @@ export function createIngressServer({ token, gatewayPort, deps = defaultDeps, hi
       return;
     }
 
+    if (pathname === "/v1/chat/settle") {
+      if (req.method !== "POST") {
+        sendError(res, 405, "method not allowed");
+        return;
+      }
+      if (req.url !== pathname) {
+        sendError(res, 400, "invalid settle request");
+        return;
+      }
+      const contentType = String(req.headers["content-type"] || "").toLowerCase();
+      if (contentType.split(";", 1)[0].trim() !== "application/json") {
+        sendError(res, 415, "content type must be application/json");
+        return;
+      }
+      void handleSettle(req, res, token, gatewayPort, deps, historyLedger);
+      return;
+    }
+
     sendError(res, 404, "not found");
   });
 }
@@ -2046,6 +2088,60 @@ async function handleCancel(req, res, token, gatewayPort, deps, ledger, historyA
   } catch {sendError(res,503,'cancellation-unconfirmed');}
 }
 
+// A restart can cut a turn off and leave its history outcome unknown while
+// nothing runs any more. Settle proves that without stopping anything: under
+// the history lock no turn of this ingress is in flight, and an idle native
+// session has no run of this chat. Only then is the unresolved turn recorded
+// as interrupted. A held lock or a busy session answers "active" and changes
+// nothing; Stop stays the only way to end work that may still be running.
+async function handleSettle(req, res, token, gatewayPort, deps, ledger) {
+  let parsed;
+  try {
+    parsed = JSON.parse((await readBody(req, MAX_CANCEL_BODY)).toString("utf8"));
+  } catch (error) {
+    sendError(res, error instanceof HttpError ? error.status : 400,
+      error instanceof HttpError ? error.message : "invalid settle request");
+    return;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || Object.keys(parsed).length !== 1
+      || typeof parsed.user !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(parsed.user)) {
+    sendError(res, 400, "invalid settle request");
+    return;
+  }
+  if (!ledger) {
+    sendError(res, 503, "history-storage-unavailable");
+    return;
+  }
+  const user = computeSessionUser({ user: parsed.user });
+  let release;
+  try {
+    try {
+      release = ledger.lock(user);
+    } catch (error) {
+      if (error instanceof HistoryError && error.status === 409) {
+        sendJson(res, 200, { state: "active" });
+        return;
+      }
+      throw error;
+    }
+    const native = await nativeContextRequest("context", { user }, token, gatewayPort, deps, undefined, SETTLE_CONTEXT_TIMEOUT_MS);
+    if (native.status === "busy") {
+      sendJson(res, 200, { state: "active" });
+      return;
+    }
+    if (!["ready", "missing"].includes(native.status)) throw new HistoryError("context-unavailable", 503);
+    const current = ledger.read(user);
+    if (current && ["pending", "unknown"].includes(current.status) && !ledger.interrupt(user, current.requestId)) {
+      throw new HistoryError("history-settle-unconfirmed", 503);
+    }
+    sendJson(res, 200, { state: "settled" });
+  } catch {
+    sendError(res, 503, "settle-unconfirmed");
+  } finally {
+    try { release?.(); } catch { /* The next lock() reclaims a lock it could not remove, once removal works. */ }
+  }
+}
+
 async function handleImageDelete(req,res,{imageStore,historyLedger,imageRoutes,token,gatewayPort,deps}) {
   let release;
   try {
@@ -2070,7 +2166,7 @@ async function handleImageDelete(req,res,{imageStore,historyLedger,imageRoutes,t
     imageStore.deleteConversation(user);
     sendJson(res,200,{schemaVersion:1,deleted:true});
   } catch(error) {sendError(res,error instanceof HistoryError || error instanceof ChatImageError?error.status:400,error instanceof HistoryError || error instanceof ChatImageError?error.message:'invalid-image-deletion-request');}
-  finally {try {release?.();}catch{/* Keep failed lock custody closed. */}}
+  finally {try {release?.();}catch{/* The next lock() reclaims a lock it could not remove, once removal works. */}}
 }
 
 async function handleImageRead(req,res,{policyOnly,imageStore,historyLedger,imageRoutes,token,gatewayPort,deps}) {
@@ -2253,7 +2349,7 @@ async function handleContextControl(req,res,pathname,token,gatewayPort,deps,ledg
     const native=await nativeContextRequest(compact?'compact':'context',{user,...compact?{request_id:body.request_id}:{}},token,gatewayPort,deps);
     sendJson(res,200,publicContext(native,ledger.projection(user)));
   } catch(error) {sendError(res,error instanceof HistoryError?error.status:400,error instanceof HistoryError?error.message:'invalid-context-request')}
-  finally {try {release?.()} catch { /* Persistent lock keeps subsequent writes closed. */ }}
+  finally {try {release?.()} catch { /* The next lock() reclaims a lock it could not remove, once removal works. */ }}
 }
 
 function listenUnix(server, socketPath) {

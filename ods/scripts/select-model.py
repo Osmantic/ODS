@@ -5,6 +5,11 @@ This script is intentionally offline and deterministic. It only uses the
 installer's detected hardware envelope plus the versioned model catalog; it
 does not download GGUF metadata and it never treats catalog tok/s estimates as
 measured performance.
+
+By default it picks a llama.cpp (GGUF) model and never looks at the catalog's
+vLLM entries (``"runtime": "vllm"``). ``--llm-runtime vllm`` picks only among
+those, for one GPU named by ``--gpu``, and fails rather than fall back to a
+GGUF model when none fits.
 """
 
 from __future__ import annotations
@@ -17,7 +22,9 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "extensions/services/dashboard-api"))
 from model_memory import (  # noqa: E402
+    VLLM_GPU_MEMORY_UTILIZATION,
     context_fitting_model as context_fitting_model,
+    estimate_model_memory,
     estimated_context_kv_gb as estimated_context_kv_gb,
     estimated_param_billions as estimated_param_billions,
     memory_metadata,
@@ -42,6 +49,18 @@ from model_selection import (  # noqa: E402
 )
 from model_selection import pixel_agent_ready as _pixel_agent_ready  # noqa: E402
 from model_selection import usable_memory_gb as _usable_memory_gb  # noqa: E402
+from model_vllm import (  # noqa: E402
+    GPU_QUERY,
+    Candidate as VllmCandidate,
+    Gpu,
+    is_vllm_entry,
+    manifest_bytes,
+    model_dir_name,
+    parse_gpu,
+    rank_entries,
+    requirement_text,
+    vllm_args_text,
+)
 
 
 VRAM_FIT_TOLERANCE_GB = 0.25
@@ -56,6 +75,8 @@ SPARK_AARCH64_MODEL_ID = "qwen3.6-35b-a3b-ud-q4"
 # about why the substitution fired.
 UNIFIED_MEMORY_POLICY = "unified-memory-coder-next-a3b-v1"
 UNIFIED_MEMORY_MODEL_ID = SPARK_AARCH64_MODEL_ID
+VLLM_POLICY = "vllm-gpu-fit-v1"
+VLLM_SOURCE = "catalog_vllm_pre_download"
 EXIT_NO_FIT = 2
 EXIT_CHECK_FIT_FAILED = 3
 
@@ -142,13 +163,14 @@ def curated_source_allowed(model: dict[str, Any]) -> bool:
 
 
 def load_catalog(path: Path) -> list[dict[str, Any]]:
+    """The curated llama.cpp (GGUF) models; vLLM entries are left to _vllm_main."""
     with path.open("r", encoding="utf-8") as fh:
         data = json.load(fh)
     return [
         model for model in (
             normalize_model(raw)
             for raw in data.get("models", [])
-            if curated_source_allowed(raw)
+            if curated_source_allowed(raw) and not is_vllm_entry(raw)
         )
         if model is not None
     ]
@@ -445,7 +467,134 @@ def _check_fit_main(args: argparse.Namespace, catalog: list[dict[str, Any]],
     return 0 if result["fits"] else EXIT_CHECK_FIT_FAILED
 
 
-def main() -> int:
+def _vllm_reason(candidate: VllmCandidate, min_context: int) -> str:
+    model, gpu = candidate.model, candidate.gpu
+    weights_gib = estimate_model_memory(model).weights_gib
+    room_gib = gpu.memory_mib * VLLM_GPU_MEMORY_UTILIZATION / 1024.0 - weights_gib
+    reason = (
+        f"Curated vLLM fit ({VLLM_POLICY}): {model['name']} is the highest-priority vLLM "
+        f"catalog model for GPU {gpu.uuid} (compute capability {gpu.compute_capability}, "
+        f"{gpu.memory_mib} MiB), which meets its {model['min_gpu_mib']} MiB minimum. Its "
+        f"{weights_gib:.1f} GiB of weights leave about {room_gib:.1f} GiB of vLLM's "
+        f"{VLLM_GPU_MEMORY_UTILIZATION:.2f} share of that GPU for KV cache and activations at "
+        f"{model['context_length'] // 1024}K context. Throughput requires a local benchmark "
+        f"after first launch."
+    )
+    if min_context and not candidate.meets_min_context:
+        reason += (
+            f" No vLLM catalog model serves the {min_context} context floor here; "
+            f"this one serves {model['context_length']}."
+        )
+    return reason
+
+
+def _vllm_no_fit(pool: list[dict[str, Any]], gpus: list[Gpu], args: argparse.Namespace) -> str:
+    if not pool:
+        if args.agent_ready_only:
+            return "no vLLM catalog model has an explicit verified Pixel capability verdict"
+        return "the catalog has no vLLM models"
+    if not gpus:
+        return f"--llm-runtime vllm needs the host's NVIDIA GPUs: pass each one as --gpu ({GPU_QUERY})"
+    seen = ", ".join(
+        f"{gpu.uuid} (compute capability {gpu.compute_capability}, {gpu.memory_mib} MiB)" for gpu in gpus
+    )
+    floor = f" at the {args.min_context} context floor" if args.require_min_context and args.min_context else ""
+    needs = "; ".join(f"{model['id']} needs {requirement_text(model)}" for model in pool)
+    return f"no vLLM catalog model fits this host{floor}. GPUs: {seen}. {needs}"
+
+
+def _vllm_payload(ranked: list[VllmCandidate], reason: str, min_context: int, host_arch: str) -> dict[str, Any]:
+    selected = ranked[0]
+    model, gpu = selected.model, selected.gpu
+    return {
+        "policy": VLLM_POLICY,
+        "source": VLLM_SOURCE,
+        "confidence": "high",
+        "runtime": "vllm",
+        "host_arch": normalize_host_arch(host_arch),
+        "gpu": gpu._asdict(),
+        "memory_capacity_gb": round(gpu.memory_mib / 1024.0, 1),
+        "memory_label": "GPU memory",
+        "memory_class": "discrete",
+        "min_context": min_context,
+        "meets_min_context": selected.meets_min_context,
+        "selected": {
+            **{key: value for key, value in model.items() if key != "files"},
+            "file_count": len(model["files"]),
+            "model_dir": model_dir_name(model),
+            "estimate": estimate_model_memory(model).as_dict(),
+        },
+        "reason": reason,
+        "alternatives": [
+            {"id": item.model["id"], "name": item.model["name"],
+             "context_length": item.model["context_length"], "min_gpu_mib": item.model["min_gpu_mib"],
+             "gpu": item.gpu.uuid, "model_dir": model_dir_name(item.model)}
+            for item in ranked[:3]
+        ],
+    }
+
+
+def _vllm_env(ranked: list[VllmCandidate], reason: str) -> dict[str, Any]:
+    """The installer contract for a vLLM pick (VLLM_* are .env keys as named)."""
+    model, gpu = ranked[0].model, ranked[0].gpu
+    return {
+        "LLM_MODEL": model["llm_model_name"],
+        # A vLLM pick has no GGUF: clear the tier map's so nothing downloads one.
+        "GGUF_FILE": "",
+        "GGUF_URL": "",
+        "GGUF_SHA256": "",
+        "MAX_CONTEXT": model["context_length"],
+        "LLM_MODEL_SIZE_MB": int(round(manifest_bytes(model) / 1_000_000)),
+        "MODEL_RECOMMENDATION_SOURCE": VLLM_SOURCE,
+        "MODEL_RECOMMENDATION_POLICY": VLLM_POLICY,
+        "MODEL_RECOMMENDATION_CONFIDENCE": "high",
+        "MODEL_RECOMMENDATION_REASON": reason,
+        "MODEL_RECOMMENDED_ALTERNATIVES": ";".join(
+            f"{item.model['id']}:{item.model['context_length']}:{item.model['min_gpu_mib'] / 1024.0:g}"
+            for item in ranked[:3]
+        ),
+        "PIXEL_AGENT_MODEL_READY": "true" if pixel_agent_ready(model) else "false",
+        "VLLM_MODEL_DIR": model_dir_name(model),
+        "VLLM_SERVED_MODEL": model["served_model_name"],
+        "VLLM_ARGS": vllm_args_text(model),
+        "VLLM_GPU_UUID": gpu.uuid,
+    }
+
+
+def _vllm_main(args: argparse.Namespace) -> int:
+    """``--llm-runtime vllm``: pick the best vLLM entry for one GPU, never a GGUF."""
+    if args.check_fit:
+        print("error: --check-fit checks llama.cpp models; a vLLM entry serves only "
+              "the context its --max-model-len fixes", file=sys.stderr)
+        return 1
+    try:
+        gpus = [parse_gpu(text) for text in args.gpu]
+    except ValueError as exc:
+        print(f"error: --gpu {exc}", file=sys.stderr)
+        return EXIT_NO_FIT
+    if normalize_backend(args.backend) != "nvidia":
+        print(f"error: vLLM models need NVIDIA GPUs; the detected backend is {args.backend}", file=sys.stderr)
+        return EXIT_NO_FIT
+    with args.catalog.open("r", encoding="utf-8") as fh:
+        pool = [model for model in json.load(fh).get("models", []) if is_vllm_entry(model)]
+    if args.agent_ready_only:
+        pool = [model for model in pool if pixel_agent_ready(model)]
+    min_context = max(int(args.min_context or 0), 0)
+    ranked = rank_entries(pool, gpus, min_context=min_context, require_min_context=args.require_min_context,
+                          installable_only=args.installable_only)
+    if not ranked:
+        print(f"error: {_vllm_no_fit(pool, gpus, args)}", file=sys.stderr)
+        return EXIT_NO_FIT
+    reason = _vllm_reason(ranked[0], min_context)
+    if not args.env:
+        print(json.dumps(_vllm_payload(ranked, reason, min_context, args.host_arch), indent=2))
+        return 0
+    for key, value in _vllm_env(ranked, reason).items():
+        print(f"{key}={shell_value(value)}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--catalog", required=True, type=Path)
     parser.add_argument("--backend", default="unknown")
@@ -484,8 +633,22 @@ def main() -> int:
     parser.add_argument("--model-id", default="")
     parser.add_argument("--context", type=int, default=0)
     parser.add_argument("--runtime-profile", default="")
+    parser.add_argument(
+        "--llm-runtime", choices=("llama-server", "vllm"), default="llama-server",
+        help="The model server (.env LLM_BACKEND). llama-server (default) picks a GGUF "
+             "and never a vLLM entry; vllm picks only vLLM entries, for one --gpu, and "
+             "exits 2 when none fits. With vllm the fit comes from --gpu alone: --vram-mb, "
+             "--ram-gb, --memory-type, --tier, --profile and --max-size-mb are not read.",
+    )
+    parser.add_argument(
+        "--gpu", action="append", default=[], metavar="UUID,COMPUTE_CAP,MEMORY_MIB",
+        help=f"One NVIDIA GPU, a row of `{GPU_QUERY}`; repeat per GPU. "
+             "Read only with --llm-runtime vllm.",
+    )
     parser.add_argument("--env", action="store_true", help="print shell assignments")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.llm_runtime == "vllm":
+        return _vllm_main(args)
 
     catalog = load_catalog(args.catalog)
     if not catalog:

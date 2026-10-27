@@ -50,7 +50,8 @@ def merge_local_catalog(catalog, directory, schema_path, *, proposals_only=False
                 continue
             entry = {key: service[key] for key in (
                 'id', 'name', 'description', 'category', 'gpu_backends', 'compose_file',
-                'depends_on', 'port', 'external_port_default', 'startup_check', 'startup_timeout'
+                'depends_on', 'port', 'external_port_default', 'startup_check', 'startup_timeout',
+                'host_requirements',
             ) if key in service}
             entry.setdefault('description', '')
             entry.setdefault('category', 'optional')

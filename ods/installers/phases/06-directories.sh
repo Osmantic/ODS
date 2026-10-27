@@ -564,6 +564,12 @@ else
     ods_progress 38 "directories" "Creating directory structure"
     mkdir -p "$INSTALL_DIR"/{config,data,models}
     mkdir -p "$INSTALL_DIR"/data/{open-webui,whisper,tts,n8n,qdrant,models,privacy-shield,ape,token-spy,hermes,persona}
+    # llama-server's CUDA kernel cache (docker-compose.nvidia.yml).
+    mkdir -p "$INSTALL_DIR"/data/llama-server/cuda-cache
+    # The host agent writes extension progress as the install owner. Created
+    # here, the Dashboard API (UID 1000, which may be another user) cannot
+    # make it first and lock the owner's host agent out of it.
+    mkdir -p "$INSTALL_DIR"/data/extension-progress
     mkdir -p "$INSTALL_DIR"/data/hermes-proxy/{caddy-data,caddy-config}
     mkdir -p "$INSTALL_DIR"/data/langfuse/{postgres,clickhouse,redis,minio}
     mkdir -p "$INSTALL_DIR"/data/remote-provider/secrets
@@ -752,6 +758,23 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     [[ -d "$INSTALL_DIR" && ! -L "$INSTALL_DIR" ]] || error "Unsafe installed root"
     chmod go-w "$INSTALL_DIR" || error "Could not secure installed root"
     unset _installed_code_root
+
+    # Dashboard runs as a different UID and reads these public bind-mounted
+    # manifests. Keep .env, service-private files and runtime data private.
+    _phase06_step "prepare-extension-manifests"
+    _phase06_manifest_args=()
+    if [[ -n "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]; then
+        # Pixel installed candidate file modes from its staged inventory.
+        # Preserve those and retained custom files while preparing traversal.
+        _phase06_manifest_args+=(--preserve-file-modes)
+    fi
+    if ! python3 "$INSTALL_DIR/scripts/prepare-extension-manifests.py" "$INSTALL_DIR" \
+        "${_phase06_manifest_args[@]}" \
+        >> "$LOG_FILE" 2>&1; then
+        error "Could not prepare public service manifests for the Dashboard API. See $LOG_FILE for details."
+        return 1
+    fi
+    unset _phase06_manifest_args
 
     # Source staging under umask 077 makes the two public policy bind mounts
     # unreadable to APE and remote-provider-egress, which run as non-root.

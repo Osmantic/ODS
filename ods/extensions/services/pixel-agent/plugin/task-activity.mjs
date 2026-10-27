@@ -62,12 +62,12 @@ export function createTaskActivity({agentId = 'pixel', now = () => new Date().to
       const run = knownRun(event, context);
       const freshPromptBuild = event && typeof event === 'object' && !run.promptBuildEvents.has(event);
       if (event && typeof event === 'object') run.promptBuildEvents.add(event);
-      // OpenClaw emits agent_end for each embedded attempt, including a
-      // context-overflow precheck that it subsequently compacts and retries.
-      // Only a fresh owned before_prompt_build may reopen a failed attempt.
+      // OpenClaw ends each embedded attempt, including an empty successful
+      // attempt followed by real work under the same request ID.
+      // Only a fresh owned before_prompt_build may reopen a settled attempt.
       // Preserve all prior tool failures and the original request start time.
       if (freshPromptBuild && typeof event.prompt === 'string' && event.prompt.trim()
-          && run.state === 'failed' && run.finishedAt && !run.sessionConflict
+          && ['failed', 'completed', 'finished'].includes(run.state) && run.finishedAt && !run.sessionConflict
           && typeof run.sessionId === 'string' && run.sessionId
           && context?.sessionId === run.sessionId
           && typeof run.sessionKey === 'string' && run.sessionKey
@@ -144,6 +144,11 @@ export function createTaskActivity({agentId = 'pixel', now = () => new Date().to
     finish(event, context) {
       const run = knownRun(event, context);
       if (!run) return;
+      const endEvents = run.endEvents ??= new WeakSet();
+      if (event && typeof event === 'object') {
+        if (endEvents.has(event)) return;
+        endEvents.add(event);
+      }
       if (run.finishedAt) return;
       run.finishedAt = [...run.calls.values()].reduce((latest,call)=>
         noEarlierThan(latest,call.finishedAt ?? call.startedAt),noEarlierThan(now(),run.startedAt));

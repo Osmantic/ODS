@@ -1,10 +1,11 @@
 import {render,screen} from '@testing-library/react'
-import PortalResponseError from './PortalResponseError'
+import PortalResponseError, {UNDELIVERED_REPLY} from './PortalResponseError'
 
-it('explains a generic transport failure without claiming that the work succeeded',()=>{
+it('explains an older undelivered reply without claiming success or blaming the connection',()=>{
   render(<PortalResponseError content="Request failed"/>);
-  expect(screen.getByRole('status')).toHaveTextContent('The response could not be received.')
-  expect(screen.getByRole('status')).toHaveTextContent('check the connection before continuing')
+  expect(screen.getByRole('status')).toHaveTextContent(UNDELIVERED_REPLY)
+  expect(screen.getByRole('status')).not.toHaveTextContent(/connection|could not be received/)
+  expect(screen.getByRole('link',{name:/Get help on Discord/})).toBeVisible()
   expect(screen.queryByText('Request failed')).toBeNull()
 })
 it('names the cause of a generic failure when the latest model call failed',async()=>{

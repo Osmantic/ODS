@@ -49,6 +49,14 @@ class DetectionTests(unittest.TestCase):
             tool_id_compat.route_requires_strict9_tool_ids(NEMO_ID, "hipfire")
         )
 
+    def test_negative_vllm_backend(self):
+        # vLLM's own tool parser owns tool-call ids on a vllm route.
+        self.assertFalse(
+            tool_id_compat.route_requires_strict9_tool_ids(
+                "mistralai/Mistral-Nemo-Instruct-2407", "vllm"
+            )
+        )
+
     def test_negative_caller_alias(self):
         self.assertFalse(
             tool_id_compat.route_requires_strict9_tool_ids("ods/current", "llama-server")

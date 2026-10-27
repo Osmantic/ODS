@@ -2379,6 +2379,10 @@ else
         # from consuming the entire token budget on internal reasoning)
         _reasoning=$(grep '^LLAMA_REASONING=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 || echo "")
         [[ -z "$_reasoning" ]] && _reasoning="off"
+        # Modes are case-insensitive, as in ods-host-agent.py; llama-server
+        # only accepts the lowercase spelling.
+        _reasoning_lower="$(printf '%s' "$_reasoning" | tr '[:upper:]' '[:lower:]')"
+        case "$_reasoning_lower" in off|on|auto) _reasoning="$_reasoning_lower" ;; esac
         # Map .env values (off/on/auto) to llama-server --reasoning-format values
         case "$_reasoning" in
             off)  _reasoning_fmt="none" ;;

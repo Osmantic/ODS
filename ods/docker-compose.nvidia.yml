@@ -14,6 +14,16 @@ services:
       # per-model LLAMA_ARG_SPEC_TYPE (e.g. draft-mtp) wins. Set
       # LLAMA_SPEC_TYPE=none in .env to turn it off.
       - LLAMA_ARG_SPEC_TYPE=${LLAMA_ARG_SPEC_TYPE:-${LLAMA_SPEC_TYPE:-ngram-mod}}
+      # The image has native kernels for compute capability 8.6, 8.9 and 12.0a
+      # only. On Hopper, datacenter Blackwell and GB10 the driver compiles the
+      # rest at load and on first use, and in the container layer that repeated
+      # after every recreate: on Workstation06's GB300 (2026-10-27), 25 s to
+      # ready and 42 s for the first long prompt, against 3 s and 1.3 s with
+      # this cache. Elsewhere nothing is compiled and the folder stays empty.
+      - CUDA_CACHE_PATH=/cuda-cache
+      - CUDA_CACHE_MAXSIZE=4294967296
+    volumes:
+      - ./data/llama-server/cuda-cache:/cuda-cache:z
     deploy:
       resources:
         reservations:

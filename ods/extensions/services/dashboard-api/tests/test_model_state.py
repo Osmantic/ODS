@@ -49,6 +49,40 @@ class TestStateModule:
         schema = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
         jsonschema.validate(read, schema)
 
+    def test_vllm_route_roundtrips_and_matches_schema(self, tmp_path):
+        path = tmp_path / "model-state.json"
+        doc = _record(path, model="glm-5.3-flash-nvfp4", runtime="GLM-5.3-Flash-NVFP4",
+                      backend="vllm", endpoint="vllm-default", context=131072)
+        assert doc["active"]["backend"] == {
+            "kind": "vllm", "endpointId": "vllm-default", "nativeRoute": None,
+        }
+        read, errors = sb.read_state(path)
+        assert errors == [] and read == doc
+        assert sb.validate_state(read) == []
+        jsonschema = pytest.importorskip("jsonschema")
+        schema = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
+        jsonschema.validate(read, schema)
+
+    def test_backend_kinds_agree_with_schema(self):
+        schema = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
+        active = next(option for option in schema["properties"]["active"]["oneOf"]
+                      if option.get("type") == "object")
+        kinds = active["properties"]["backend"]["properties"]["kind"]["enum"]
+        assert set(kinds) == sb._BACKEND_KINDS
+
+    @pytest.mark.parametrize("kind,endpoint", [
+        ("llama-server", "llama-server-default"),
+        ("hipfire", "llama-server-default"),
+        ("unknown", "llama-server-default"),
+        ("vllm", "vllm-default"),
+    ])
+    def test_default_endpoint_per_backend_kind(self, kind, endpoint):
+        assert sb.default_endpoint_id(kind) == endpoint
+
+    def test_retired_kind_has_no_default_endpoint(self):
+        with pytest.raises(KeyError):
+            sb.default_endpoint_id("lemonade")
+
     def test_state_file_is_readable_by_model_router_user(self, tmp_path):
         path = tmp_path / "model-state.json"
         _record(path)
@@ -183,12 +217,43 @@ class TestStateModule:
                 "runtimeModelId": "stale.gguf",
                 "backendKind": "llama-server",
             }),
+            # vLLM serves --served-model-name; a GGUF_FILE left by an earlier
+            # llama-server install never names the route.
+            ({
+                "LLM_BACKEND": "vllm",
+                "VLLM_SERVED_MODEL": "GLM-5.3-Flash-NVFP4",
+                "LLM_MODEL": "glm-5.3-flash-nvfp4",
+                "GGUF_FILE": "Qwen3.5-9B-Q4_K_M.gguf",
+                "MAX_CONTEXT": "131072",
+            }, {
+                "catalogId": "glm-5.3-flash-nvfp4",
+                "runtimeModelId": "GLM-5.3-Flash-NVFP4",
+                "backendKind": "vllm",
+                "contextLength": 131072,
+            }),
+            ({"LLM_BACKEND": "vllm", "LLM_MODEL": "glm-5.3-flash-nvfp4",
+              "GGUF_FILE": "Qwen3.5-9B-Q4_K_M.gguf"},
+             {"catalogId": "glm-5.3-flash-nvfp4", "runtimeModelId": "glm-5.3-flash-nvfp4",
+              "backendKind": "vllm"}),
+            ({"LLM_BACKEND": " VLLM ", "VLLM_SERVED_MODEL": "Served-Model",
+              "CTX_SIZE": "65536", "MAX_CONTEXT": "131072"},
+             {"catalogId": "Served-Model", "runtimeModelId": "Served-Model",
+              "backendKind": "vllm", "contextLength": 65536}),
+            # VLLM_SERVED_MODEL names only a vllm route.
+            ({"LLM_BACKEND": "llama-server", "VLLM_SERVED_MODEL": "Served-Model",
+              "GGUF_FILE": "M.gguf"},
+             {"catalogId": "M", "runtimeModelId": "M.gguf", "backendKind": "llama-server"}),
         ],
     )
     def test_migrate_env_forms(self, env, expected):
         got = sb.migrate_env_identity(env)
         for key, value in expected.items():
             assert got[key] == value
+
+    def test_migrate_vllm_env_never_takes_the_gguf_identity(self):
+        assert sb.migrate_env_identity({
+            "LLM_BACKEND": "vllm", "GGUF_FILE": "Qwen3.5-9B-Q4_K_M.gguf",
+        }) is None
 
     def test_migrate_cloud_only_yields_none(self):
         env = {
@@ -257,6 +322,46 @@ class TestStateModule:
             "kind": "llama-server", "endpointId": "llama-server-default", "nativeRoute": None,
         }
         assert doc["active"]["runtimeModelId"] == "Model.gguf"
+
+    @pytest.mark.parametrize("env,kind,endpoint", [
+        ({"GGUF_FILE": "M.gguf"}, "llama-server", "llama-server-default"),
+        ({"LLM_BACKEND": "hipfire", "LLM_MODEL": "Qwen3.5-2B"}, "hipfire", "llama-server-default"),
+        ({"LLM_BACKEND": "external", "LLM_MODEL": "lan-model"}, "unknown", "llama-server-default"),
+        ({"LLM_BACKEND": "vllm", "VLLM_SERVED_MODEL": "GLM-5.3-Flash-NVFP4"}, "vllm", "vllm-default"),
+    ])
+    def test_initialize_uses_the_backend_kinds_default_endpoint(self, tmp_path, env, kind, endpoint):
+        doc = sb.initialize_if_missing(tmp_path / "model-state.json", env)
+        assert doc["active"]["backend"] == {"kind": kind, "endpointId": endpoint, "nativeRoute": None}
+        assert sb.validate_state(doc) == []
+
+    def test_initialize_for_a_vllm_env_reconstructs_the_served_model(self, tmp_path):
+        path = tmp_path / "model-state.json"
+        doc = sb.initialize_if_missing(path, {
+            "LLM_BACKEND": "vllm",
+            "VLLM_SERVED_MODEL": "GLM-5.3-Flash-NVFP4",
+            "LLM_MODEL": "glm-5.3-flash-nvfp4",
+            "GGUF_FILE": "Qwen3.5-9B-Q4_K_M.gguf",
+            "MAX_CONTEXT": "131072",
+        })
+        assert doc["active"]["catalogId"] == "glm-5.3-flash-nvfp4"
+        assert doc["active"]["runtimeModelId"] == "GLM-5.3-Flash-NVFP4"
+        assert doc["active"]["contextLength"] == 131072
+        assert doc["active"]["reconstructed"] is True
+        assert doc["active"]["proof"] == {"identity": "GLM-5.3-Flash-NVFP4", "completion": False}
+        read, errors = sb.read_state(path)
+        assert errors == [] and read == doc
+        jsonschema = pytest.importorskip("jsonschema")
+        jsonschema.validate(read, json.loads(_SCHEMA_PATH.read_text(encoding="utf-8")))
+
+    def test_initialize_keeps_a_caller_named_endpoint(self, tmp_path):
+        doc = sb.initialize_if_missing(
+            tmp_path / "model-state.json",
+            {"LLM_BACKEND": "vllm", "VLLM_SERVED_MODEL": "GLM-5.3-Flash-NVFP4"},
+            endpoint_id="vllm-native",
+        )
+        assert doc["active"]["backend"] == {
+            "kind": "vllm", "endpointId": "vllm-native", "nativeRoute": None,
+        }
 
     def test_legacy_lemonade_route_is_readable_but_never_written(self, tmp_path):
         path = tmp_path / "model-state.json"

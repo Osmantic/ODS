@@ -9,7 +9,9 @@
 // (2026-10-25) two of four builds ended with only that fact text under a
 // preview that worked. The outcome keeps its status and its preview receipt,
 // and nothing here certifies anything: each line says what Portal could not
-// confirm, or what is wrong, and what the owner can do next.
+// confirm, or what is wrong, and what the owner can do next. A tool-limit stop
+// in a website build reads the same way (tool-loop-guard.mjs,
+// progressStopPresentation).
 //
 // The agent's explanation. A failed or still-running preview outcome (a
 // browser or interaction check that did not pass, requested text missing, a
@@ -23,8 +25,9 @@
 // The prose passes the filter every host-composed answer passes
 // (deliverableAnswer in progress-finalization.mjs). It is dropped, and the host
 // delivery stands alone, when it is empty or too short, silent (NO_REPLY),
-// tool-call text, when it links any local URL other than this outcome's own
-// preview, or when it carries Portal's own wording (its check label or receipt
+// tool-call text, when it links any local URL, or any URL naming a preview
+// site, other than this outcome's own preview (a made-up preview link on an
+// invented host), or when it carries Portal's own wording (its check label or receipt
 // lines, however markdown or HTML draws them): a copied or imitated host note
 // must not read as Portal's. Everything added here is fixed English text.
 import { NARRATION, deliverableAnswer } from './progress-finalization.mjs';
@@ -47,10 +50,25 @@ export const PREVIEW_EARLIER_NOTE =
   "This preview shows the version from before Portal's latest changes. Ask Portal to publish the current files.";
 export const PREVIEW_STOPPED_NOTE =
   'Portal stopped before it finished, so this preview shows an earlier version. Send a message to continue.';
+// The tool limit stopped the run after the page was published: the page is
+// current and up, and failed checks of it are what stopped the run (RTX Spark,
+// 2026-10-25: the model's own check plans kept failing under a working page).
+export const PREVIEW_UNFINISHED_NOTE =
+  "Portal published your page but couldn't finish checking it automatically. Try it, and tell Portal if something isn't right.";
+// The tool limit stopped the run for any other reason after the page was
+// published: the build itself may be unfinished (edits that kept failing).
+export const PREVIEW_INCOMPLETE_NOTE =
+  'Portal stopped before it finished, so this page may not have everything you asked for yet. Send a message to continue.';
 // The run has ended: a step the reply announces will not start on its own.
 export const PREVIEW_CONTINUE_NOTE = "The next step above hasn't started yet. Send a message to continue.";
+// The owner asked for data that outlasts a reload (requestsReloadPersistence).
+// Portal's previews cannot keep it, whatever the page does or the reply says.
+// Downloads and file inputs still work there, so export and import do.
+export const PREVIEW_STORAGE_NOTE =
+  "Portal's previews run isolated, so anything the page saves resets when it reloads. To keep data between visits, ask Portal to add export and import.";
 export const PREVIEW_NOTES = Object.freeze([PREVIEW_CONTROLS_NOTE, PREVIEW_UNCONFIRMED_NOTE, PREVIEW_RUNNING_NOTE,
-  PREVIEW_SCRIPT_NOTE, PREVIEW_MISSING_NOTE, PREVIEW_EARLIER_NOTE, PREVIEW_STOPPED_NOTE, PREVIEW_CONTINUE_NOTE]);
+  PREVIEW_SCRIPT_NOTE, PREVIEW_MISSING_NOTE, PREVIEW_EARLIER_NOTE, PREVIEW_STOPPED_NOTE, PREVIEW_UNFINISHED_NOTE,
+  PREVIEW_INCOMPLETE_NOTE, PREVIEW_CONTINUE_NOTE, PREVIEW_STORAGE_NOTE]);
 
 // The combined reply is host verification text (ingress limit: 32 KiB). Leave
 // room for the extension and progress-lane notes that can follow it.
@@ -91,7 +109,7 @@ export function openFence(text) {
 
 // The reply announces more work: a first-person promise anywhere, or a last
 // sentence that narrates the next action ("Now let me republish the preview.").
-function announcesMoreWork(answer) {
+export function announcesMoreWork(answer) {
   const line = answer.split('\n').map(value => value.trim()).filter(Boolean).at(-1) ?? '';
   const sentence = line.split(/(?<=[.!?])\s+(?=\S)/).at(-1).replace(/^[\s>#*_`|~+\-–—•]*(?:\d{1,3}[.)]\s*)?[\s*_`]*/u, '');
   return promisesExecution(answer) || NARRATION.test(sentence);
@@ -112,9 +130,11 @@ export function previewCheckNote({pending = false, pageErrors = false, missing =
 // preview outcome's own host text, the part of it the owner keeps (its preview
 // receipt or link) and Portal's line. Within `text`, which can carry other
 // host lines around that host text (a missing download, a stopped lane), the
-// host text becomes `line` and the kept part. Without it, `line` leads.
+// host text becomes `line` and the kept part. Without it, `line` leads. Host
+// text follows any answer in `text` (a tool-limit stop's answer comes first),
+// so its last occurrence is the one replaced.
 export function ownerPreviewText(text, presentation, line = presentation?.note) {
-  const at = presentation ? text.indexOf(presentation.text) : -1;
+  const at = presentation ? text.lastIndexOf(presentation.text) : -1;
   if (at < 0) return line ? `${line}\n\n${text}` : text;
   return text.slice(0, at) + [line, presentation.rest].filter(Boolean).join('\n\n') +
     text.slice(at + presentation.text.length);

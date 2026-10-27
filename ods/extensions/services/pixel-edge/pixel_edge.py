@@ -997,6 +997,58 @@ async def handle_chat_activity(request: web.Request):
     return web.json_response({"state": state}, headers={"Cache-Control": "no-store"})
 
 
+async def handle_chat_settle(request: web.Request):
+    """Ask the ingress to settle a chat it proves idle; never stop a run.
+
+    A restart can leave a turn's outcome unknown while nothing runs any more.
+    The ingress proves that under its history lock and records the turn as
+    interrupted. A stream still passing through this edge, a held lock or a
+    busy native session answers "active" and nothing changes.
+    """
+    fail = _check_auth(request)
+    if fail is not None:
+        return fail
+    if request.content_type != "application/json":
+        return web.json_response({"error": "Content-Type must be application/json"}, status=415)
+    if request.query_string or (request.content_length and request.content_length > _MAX_CANCEL_BODY):
+        return web.json_response({"error": "invalid settle request"}, status=400)
+    try:
+        raw = await request.read()
+        if len(raw) > _MAX_CANCEL_BODY:
+            raise ValueError("request too large")
+        data = strict_json(raw)
+        if (not isinstance(data, dict) or set(data) != {"user"}
+                or not isinstance(data["user"], str) or not _SAFE_CHAT_ID.fullmatch(data["user"])):
+            raise ValueError("invalid settle request")
+    except (ValueError, UnicodeDecodeError, TypeError):
+        return web.json_response({"error": "invalid settle request"}, status=400)
+    chat_id = data["user"]
+    if request.app[_CANCEL_EVENTS_KEY].get(chat_id):
+        return web.json_response({"state": "active"}, headers={"Cache-Control": "no-store"})
+    try:
+        connector = UnixConnector(path=_SOCKET_PATH)
+        # The ingress bounds its own native read at 5 s under the history lock.
+        timeout = ClientTimeout(total=8, sock_connect=2, sock_read=7)
+        async with ClientSession(connector=connector, timeout=timeout) as session:
+            async with session.post(
+                "http://pixel-upstream/v1/chat/settle",
+                json={"user": chat_id},
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+            ) as resp:
+                if resp.status != 200 or "application/json" not in resp.headers.get("Content-Type", "").lower():
+                    raise ValueError("settle unconfirmed")
+                result = strict_json(await _read_bounded(resp.content, _MAX_CANCEL_RESPONSE_BYTES))
+        if (not isinstance(result, dict) or set(result) != {"state"}
+                or result["state"] not in ("settled", "active")):
+            raise ValueError("invalid settle receipt")
+    except (ConnectionError, OSError, asyncio.TimeoutError, ClientError, ValueError, TypeError,
+            UnicodeError, RecursionError):
+        return web.json_response({"error": "Portal settle unconfirmed"}, status=502)
+    if result["state"] == "settled" and not request.app[_CANCEL_EVENTS_KEY].get(chat_id):
+        _remember_chat_activity(request.app, chat_id, "terminal")
+    return web.json_response({"state": result["state"]}, headers={"Cache-Control": "no-store"})
+
+
 async def _context_upstream(data, *, compact=False):
     connector = UnixConnector(path=_SOCKET_PATH)
     timeout = ClientTimeout(total=18, sock_connect=2, sock_read=16)
@@ -1970,6 +2022,7 @@ def create_app() -> web.Application:
     app.router.add_post("/v1/chat/completions", handle_chat_completions)
     app.router.add_post("/v1/chat/cancel", handle_chat_cancel)
     app.router.add_post("/v1/chat/activity", handle_chat_activity)
+    app.router.add_post("/v1/chat/settle", handle_chat_settle)
     app.router.add_post("/v1/chat/context", handle_chat_context)
     app.router.add_post("/v1/chat/images-delete", handle_chat_images_delete)
     app.router.add_post("/v1/chat/compact", handle_chat_context)

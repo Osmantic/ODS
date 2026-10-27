@@ -194,7 +194,7 @@ def get_gpu_info_nvidia() -> Optional[GPUInfo]:
                 mem_used = int(parts[1])
                 mem_total = int(parts[2])
             util = int(parts[3]) if parts[3] not in na_values else 0
-            temp = int(parts[4]) if parts[4] not in na_values else 0
+            temp = int(float(parts[4])) if parts[4] not in na_values else 0
             gpus.append({
                 "name": parts[0],
                 "mem_used": mem_used,
@@ -264,7 +264,7 @@ def get_gpu_info_nvidia() -> Optional[GPUInfo]:
             utilization_available=all(g["utilization_available"] for g in gpus),
             temperature_available=any(g["temperature_available"] for g in gpus),
         )
-    except (ValueError, IndexError):
+    except (ValueError, OverflowError, IndexError):
         pass
 
     return None
@@ -685,14 +685,14 @@ def get_gpu_info_nvidia_detailed() -> Optional[list[IndividualGPU]]:
                 memory_total_mb=mem_total,
                 memory_percent=round(mem_used / mem_total * 100, 1) if mem_total > 0 else 0.0,
                 utilization_percent=int(parts[5]) if parts[5] not in na_values else 0,
-                temperature_c=int(parts[6]) if parts[6] not in na_values else 0,
+                temperature_c=int(float(parts[6])) if parts[6] not in na_values else 0,
                 power_w=power_w,
                 assigned_services=uuid_service_map.get(uuid, []),
                 memory_usage_available=not unified,
                 utilization_available=parts[5] not in na_values,
                 temperature_available=parts[6] not in na_values,
             ))
-        except (ValueError, IndexError):
+        except (ValueError, OverflowError, IndexError):
             logger.warning("Skipping unparseable nvidia-smi row: %s", line)
 
     return gpus or None

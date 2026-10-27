@@ -14,6 +14,7 @@
 #           BGRN, GRN, AMB, WHT, NC, DASHBOARD_PORT (:-3001),
 #           CAP_HARDWARE_CLASS_ID (:-unknown), CAP_HARDWARE_CLASS_LABEL (:-Unknown),
 #           BACKEND_SERVICE_NAME (:-llama-server),
+#           SDXL_CHECKPOINT_DIR, SDXL_MODEL (set by phase 11 when ComfyUI is enabled),
 #           show_success_card(), bootline(), signal(), ai_ok(), log()
 # Provides: Desktop shortcut, sidebar pin, summary JSON
 #
@@ -149,20 +150,34 @@ if [[ -f "$SCRIPT_DIR/installers/lib/background-tasks.sh" ]]; then
         bg_task_summary >> "$LOG_FILE" 2>&1
 
         # Check SDXL Lightning download specifically
-        if bg_task_status "sdxl-download" &>/dev/null; then sdxl_status=0; else sdxl_status=$?; fi
+        # The downloader renames only a verified file, so a model in place is
+        # ready whatever an older log in the task registry says.
+        if [[ -n "${SDXL_CHECKPOINT_DIR:-}" && -f "$SDXL_CHECKPOINT_DIR/${SDXL_MODEL:-}" ]]; then
+            sdxl_status=4
+        elif bg_task_status "sdxl-download" &>/dev/null; then sdxl_status=0; else sdxl_status=$?; fi
+        # The same command finishes the download by hand; it resumes the part.
+        printf -v sdxl_resume '%q ' "${ODS_PYTHON_CMD:-python3}" "$INSTALL_DIR/bin/extension_assets.py" \
+            "$INSTALL_DIR/extensions/services/comfyui" "$INSTALL_DIR" "$GPU_BACKEND"
+        sdxl_resume="${sdxl_resume% }"
         if [[ $sdxl_status -ne 3 ]]; then
             case $sdxl_status in
                 0)  # Still running
                     ai_warn "SDXL Lightning model download still in progress"
                     ai "ComfyUI image generation will be available once download completes"
                     ai "Check progress: tail -f $INSTALL_DIR/logs/sdxl-download.log"
+                    ai "If it stops, finish it with: $sdxl_resume"
                     ;;
                 1)  # Completed
                     ai_ok "SDXL Lightning model download completed"
                     ;;
+                4)  # In place
+                    ai_ok "SDXL Lightning model is in place"
+                    ;;
                 2)  # Failed
                     ai_warn "SDXL Lightning model download encountered errors"
                     ai "Check log: $INSTALL_DIR/logs/sdxl-download.log"
+                    ai "Fix what the log names, then finish it with: $sdxl_resume"
+                    ai "Need help? Ask on the ODS Discord: ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
                     ;;
             esac
         fi

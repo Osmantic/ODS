@@ -2275,10 +2275,11 @@ cmd_dry_run() {
             "http://127.0.0.1:${dashboard_api_port}/api/update/dry-run" 2>/dev/null || true)
     fi
 
-    local latest_ver="" changelog_url="" update_status=""
+    local latest_ver="" changelog_url="" update_status="" check_error=""
     if [[ -n "$api_json" ]] && echo "$api_json" | jq -e '.current_version' >/dev/null 2>&1; then
         latest_ver=$(echo "$api_json" | jq -r '.latest_version // empty')
         changelog_url=$(echo "$api_json" | jq -r '.changelog_url // empty')
+        check_error=$(echo "$api_json" | jq -r '.version_check_error // empty')
         local api_available
         api_available=$(echo "$api_json" | jq -r '.update_available // false')
         [[ "$api_available" == "true" ]] && update_status="update available" || update_status="up to date"
@@ -2311,7 +2312,7 @@ cmd_dry_run() {
         fi
         [[ -n "$changelog_url" ]] && echo "  Changelog : ${changelog_url}"
     else
-        echo "  Available : (could not reach GitHub)"
+        echo "  Available : (${check_error:-could not reach GitHub})"
     fi
     echo ""
 
@@ -2322,10 +2323,27 @@ cmd_dry_run() {
     local -a flags
     read -ra flags <<< "$flags_str"
 
-    # Prefer API response; fall back to parsing compose files directly.
+    # List what `ods update` pulls: its own discovery over this install's
+    # resolved stack (see _ods_cli_pull_external_images). The API can only read
+    # every compose file's image lines, unresolved and for every GPU backend,
+    # so its list is the fallback.
+    local images_shown=false image_output=""
+    local helper="$INSTALL_DIR/installers/lib/compose-images.sh"
+    if ! command -v ods_compose_external_images >/dev/null 2>&1 && [[ -f "$helper" ]]; then
+        . "$helper"
+    fi
+    if command -v ods_compose_external_images >/dev/null 2>&1 \
+        && image_output="$(ods_compose_external_images "docker compose" "${flags[@]}")"; then
+        local _img_line
+        while IFS= read -r _img_line; do
+            [[ -n "$_img_line" ]] && echo "  ${_img_line}"
+        done <<< "$image_output"
+        [[ -n "$image_output" ]] || echo "  (none: every service image is built locally)"
+        images_shown=true
+    fi
     # Use process substitution so flags like images_shown update in this shell (not a pipe subshell).
-    local images_shown=false
-    if [[ -n "$api_json" ]] && echo "$api_json" | jq -e '.images | length > 0' >/dev/null 2>&1; then
+    if [[ "$images_shown" == "false" ]] && [[ -n "$api_json" ]] \
+        && echo "$api_json" | jq -e '.images | length > 0' >/dev/null 2>&1; then
         local _img_line _any_api=false
         while IFS= read -r _img_line || [[ -n "$_img_line" ]]; do
             [[ -z "$_img_line" ]] && continue
@@ -2334,23 +2352,23 @@ cmd_dry_run() {
         done < <(echo "$api_json" | jq -r '.images[]' | sort -u)
         [[ "$_any_api" == "true" ]] && images_shown=true
     fi
-    if [[ "$images_shown" == "false" ]]; then
-        local _img_line _any_compose=false
-        while IFS= read -r _img_line || [[ -n "$_img_line" ]]; do
-            [[ -z "$_img_line" ]] && continue
-            echo "  ${_img_line}"
-            _any_compose=true
-        done < <(docker compose "${flags[@]}" config 2>/dev/null \
-            | grep -E '^\s+image:' | sed 's/.*image:\s*//' | sort -u)
-        [[ "$_any_compose" == "true" ]] && images_shown=true
-    fi
     [[ "$images_shown" == "false" ]] && echo "  (could not resolve compose config)"
 
     echo ""
     echo -e "${BLUE}━━━ Running image digests ━━━${NC}"
-    docker compose "${flags[@]}" images 2>/dev/null \
-        | awk 'NR>1 {printf "  %-30s %s\n", $1, $4}' \
-        || echo "  (services not running)"
+    # Read each running container's image ID. `docker compose images` moved
+    # that column when it added PLATFORM, so this section printed platforms.
+    # A preview that cannot list the stack reports it as not running.
+    local running_ids=""
+    running_ids=$(docker compose "${flags[@]}" ps -q 2>/dev/null || true)
+    if [[ -n "$running_ids" ]]; then
+        # shellcheck disable=SC2086  # one container ID per word
+        docker inspect --format '{{.Name}} {{.Image}}' $running_ids 2>/dev/null \
+            | awk '{sub(/^\//, "", $1); sub(/^sha256:/, "", $2); printf "  %-30s %s\n", $1, substr($2, 1, 12)}' \
+            || echo "  (could not read the running containers)"
+    else
+        echo "  (services not running)"
+    fi
     echo ""
 
     # ── model / GGUF ─────────────────────────────────────────────────────────

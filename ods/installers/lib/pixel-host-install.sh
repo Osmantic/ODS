@@ -4846,7 +4846,8 @@ _ods_pixel_write_onboarding() {
     # route keeps the historical no-think default. The renderer preserves a
     # previously validated reasoning preference for the same model route.
     if [[ -n "${LLAMA_REASONING+x}" ]]; then
-        if [[ "${LLAMA_REASONING:-off}" =~ ^(off|none|false|0)$ ]]; then
+        # Case-insensitive, as ods-host-agent.py reads LLAMA_REASONING.
+        if [[ "$(printf '%s' "${LLAMA_REASONING:-off}" | tr '[:upper:]' '[:lower:]')" =~ ^(off|none|false|0)$ ]]; then
             reasoning=false
         else
             reasoning=true
@@ -5136,6 +5137,7 @@ EOF
     ods_sudo install -o root -g root -m 0644 "$plugin_root/host/access_mode_relay.mjs" /usr/local/libexec/access_mode_relay.mjs
     ods_sudo install -o root -g root -m 0644 "$plugin_root/host/task_activity_schema.mjs" /usr/local/libexec/task_activity_schema.mjs
     ods_sudo install -o root -g root -m 0644 "$plugin_root/host/questions_schema.mjs" /usr/local/libexec/questions_schema.mjs
+    ods_sudo install -o root -g root -m 0644 "$plugin_root/host/owner_tool_policy.mjs" /usr/local/libexec/owner_tool_policy.mjs
     ods_sudo install -o root -g ods-pixel -m 0640 "$stage/pixel-agent.env" /etc/ods/pixel-agent.env
     ods_sudo install -o root -g root -m 0644 "$stage/pixel-ingress.service" /etc/systemd/system/pixel-ingress.service
     ods_sudo install -o root -g root -m 0644 "$rendered_extension_manager_unit" \
@@ -5458,6 +5460,7 @@ ods_pixel_install_default_agent() {
         && -f "$plugin_root/host/access_mode_relay.mjs" \
         && -f "$plugin_root/host/task_activity_schema.mjs" \
         && -f "$plugin_root/host/questions_schema.mjs" \
+        && -f "$plugin_root/host/owner_tool_policy.mjs" \
         && -f "$plugin_root/host/extension_search.py" \
         && -f "$plugin_root/host/extension_manager.py" \
         && -f "$plugin_root/host/pixel-extension-manager.service" \
@@ -5489,6 +5492,7 @@ ods_pixel_install_default_agent() {
         && -f "$plugin_root/host/openclaw-utf8-output.json" \
         && -f "$plugin_root/host/openclaw-image-envelope.json" \
         && -f "$plugin_root/host/openclaw-context-usage.json" \
+        && -f "$plugin_root/host/openclaw-no-tools-ingress.json" \
         && -f "$plugin_root/host/openclaw-yield-usage.json" \
         && -f "$plugin_root/host/openclaw-compaction-empty.json" \
         && -f "$plugin_root/host/openclaw-compaction-no-work.json" \
@@ -5936,7 +5940,7 @@ ods_pixel_install_default_agent() {
         --restore-foreign "$home/.openclaw/ods-runtime-patches" \
         --known tool-recovery completion-recovery image-envelope compaction-export \
             compaction-idle compaction-resume read-range tool-result-projection \
-            diagnostic-stream-writes command-attempt-warning utf8-output compaction-budget context-usage yield-usage compaction-empty compaction-no-work subagent-admission subagent-session hook-provenance run-id-redaction sandbox-mkdir-bridge sandbox-mkdir-secure \
+            diagnostic-stream-writes command-attempt-warning utf8-output compaction-budget context-usage no-tools-ingress yield-usage compaction-empty compaction-no-work subagent-admission subagent-session hook-provenance run-id-redaction sandbox-mkdir-bridge sandbox-mkdir-secure \
         >>"$pixel_log" 2>&1; then
         ai_bad "Pixel could not restore OpenClaw runtime patches left by another ODS build. See $pixel_log."
         return 1
@@ -6122,6 +6126,16 @@ ods_pixel_install_default_agent() {
         --state-dir "$home/.openclaw/ods-runtime-patches/context-usage" \
         >>"$pixel_log" 2>&1; then
         ai_bad "Pixel's context-usage repair could not verify its package bytes. See $pixel_log."
+        return 1
+    fi
+    # An explicit no-tools turn must reach the provider with no callable tools
+    # while the next normal turn in the same session regains them.
+    if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+        "$plugin_root/host/openclaw_tool_recovery.py" \
+        --openclaw-bin "$openclaw_bin" --no-tools-ingress \
+        --state-dir "$home/.openclaw/ods-runtime-patches/no-tools-ingress" \
+        >>"$pixel_log" 2>&1; then
+        ai_bad "Pixel's no-tools ingress repair could not verify its package bytes. See $pixel_log."
         return 1
     fi
     if ! ods_pixel_run_as_owner "$owner" "$home" python3 \

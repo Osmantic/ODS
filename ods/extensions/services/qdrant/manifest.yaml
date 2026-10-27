@@ -17,6 +17,10 @@ service:
   ui_path: /dashboard
   type: docker
   gpu_backends: [all]
+  # The pinned arm64 image's jemalloc aborts on 16 KB and 64 KB kernel pages
+  # ("Unsupported system page size", DGX Station, #8257).
+  host_requirements:
+    max_page_size: 4096
   compose_file: compose.yaml
   category: optional
   depends_on: []

@@ -501,14 +501,25 @@ web-loop terminal (a web tool requested again after two research-budget
 refusals) stops a response, the limits are unchanged and every tool stays
 blocked. `progress-finalization.mjs`
 grants one tool-free answer turn instead of discarding the gathered evidence.
-OpenClaw applies `tool_result_persist` to the saved transcript only, so the
-model learns of the stop through the refusal of its next tool call, whose text
-is one fixed instruction: answer from evidence already returned, keep the
-requested format, and mark missing or unverified items. The following model
+The model learns of the stop from one fixed instruction: answer from evidence
+already returned, keep the requested format, and mark missing or unverified
+items. On ODS's Pixel runtime the result persisted for a call is what the next
+model request carries (`host/openclaw-compaction-budget.json`), so while the
+answer turn is still ahead every result persisted after the stop carries that
+instruction, starting with the result that stopped the run, and the refusal of
+the next tool call carries it too. Before 2026-10-25 those results, the refusal
+included, were persisted as the stop text, which says to continue "with a
+corrected approach": the model never read the instruction, and on the RTX Spark
+it kept calling tools and forfeited the turn. The model call after a refused
 call is the answer turn. Parallel siblings in the refused call's model round
 receive the same instruction; with no observed model round, the next tool call
 ends the run. A model that answers without another tool call is treated the
-same way. OpenClaw's in-session auto-compaction summarizes through the run's own
+same way. Once the turn is spent, persisted results carry the stop text. When
+a failed preview check of the current publication is what stopped the run, the
+instruction is `PREVIEW_CHECK_FINALIZATION_INSTRUCTION`: stop checking, the page
+is published and the owner sees its preview, say briefly what was built and
+plainly what could not be verified, claim no check that did not pass, and add no
+preview link. OpenClaw's in-session auto-compaction summarizes through the run's own
 model stream; the summarization calls it starts (at most two, bracketed by
 `before_compaction`) are not counted as turns, so a compaction after the answer
 cannot forfeit it. Any other further model call still does.
@@ -518,7 +529,9 @@ the tool-limit note, a failed or pending test result, cited links that were
 never read (when the owner asked for sources to be opened), and the last
 verified preview (with any owner-requested text the published page lacks) or an
 explicit statement that none was verified. The outcome stays `failed`; a
-research-loop stop also notes that the web research allowance was used up.
+research-loop stop also notes that the web research allowance was used up. In a
+website build these facts stay the record, and the owner reads Portal's wording
+of them instead ("A tool-limit stop after a preview" below).
 
 Plugins cannot remove tools from a single model call, so some models still
 call a tool in the answer turn. That call is refused and the run is aborted at
@@ -543,8 +556,10 @@ current-run `web_fetch` and targeted-extraction read receipts plus host
 citation verifications, deduplicated, at most eight with a count of the rest,
 each with its page-reported title reduced to plain words when one is known.
 Only the list varies. Operations, exact downloads, managed extension requests
-and team coordination keep the strict stop text, with no list. The instruction
-is constant text at the end of the conversation, never system-prompt content.
+and team coordination keep the strict stop text, with no list. In a website
+build the owner reads Portal's wording of that fallback (below). Both
+instructions are constant text at the end of the conversation, never
+system-prompt content.
 
 ### Stop synthesis
 
@@ -867,9 +882,11 @@ Portal's text in the owner's wording (next section).
   holds exactly that visible text. When that turn has none, OpenClaw 2026.6.33
   fills `lastAssistantMessage` with the joined narration of earlier tool-call
   turns, which is no reply. Any later model call, and an owner cancel, clear it.
-- The ingress verification schema is unchanged. A tool-limit,
-  recursive-delete or clarification delivery keeps its own text; a run
-  deadline or output limit quotes the preview outcome in the owner's wording.
+- The ingress verification schema is unchanged. A recursive-delete or
+  clarification delivery keeps its own text; a run deadline or output limit
+  quotes the preview outcome in the owner's wording. A tool-limit stop in a
+  website build reads in the owner's wording too, with only the answer that stop
+  accepts ("A tool-limit stop after a preview").
 - The reply is filtered like a tool-limit answer, not scrubbed: a path or other
   text the agent quotes is delivered as in any passing reply. It is never
   evidence, and no wording heuristic reads it: a claim of success in any
@@ -928,6 +945,60 @@ cases (success claims in many forms, empty, silent and narration-only replies,
 imitated notes, passing, pending, page-error and stale checks, local links,
 code fences), and checks that no line after a published preview reads as an
 error.
+
+## A tool-limit stop after a preview
+
+On the RTX Spark (2026-10-25, "Make me a simple stopwatch web page with start,
+stop and lap buttons", seen twice), the model wrote and published the page,
+and the preview card worked. Its next three preview checks failed on its own
+plan mistakes ("Step 4 matched the element but did not observe its requested
+visibility", "Step 7 (assert-text) matched 2 elements", then a generic
+failure), which used up the run-progress budget. The model never read the
+answer instruction (see "Tool-limit finalization"), so every later call was
+refused, and the owner read under the working card: "This response was stopped
+after repeated tool failures or attempts without progress. ... The full request
+was not completed ... This is the last verified publication, not proof that all
+requested work completed."
+
+The budget, the refusals and the stop are unchanged; the third failed check now
+carries the wrap-up instruction to the model. The stop's text stays the record,
+and in a website build the owner reads Portal's wording instead
+(`progressStopPresentation` in `tool-loop-guard.mjs`, through the same
+`previewPresentations` as above):
+
+- The answer the stop accepts, if any, comes first: the model's tool-free
+  answer, a partial answer, or the stop synthesis with its note and pages. Links
+  it cites that no read receipt covers are still listed. A partial answer (its
+  calls were refused) or one that announces more work ("Now let me add the Stop
+  and Lap buttons.") is followed by "The next step above hasn't started yet.
+  Send a message to continue." in place of the lines below.
+- With the current publication: one muted line, then the receipt, which the
+  dashboard shows as the preview card. The line is the page's own known gap (a
+  script problem, requested text missing). Otherwise, when failed preview checks
+  stopped the run, it is "Portal published your page but couldn't finish
+  checking it automatically. Try it, and tell Portal if something isn't
+  right."; for any other stop (edits that kept failing, say) the build itself
+  may be unfinished: "Portal stopped before it finished, so this page may not
+  have everything you asked for yet. Send a message to continue."
+- With only an earlier publication (files changed since): "Portal stopped before
+  it finished, so this preview shows an earlier version. Send a message to
+  continue.", then the link to that publication.
+- With no publication, the stop is a real failure and says so plainly: "Portal
+  stopped before it finished because it wasn't making progress.", the line that
+  says what there is and what to do next ("Portal saved the website files ...
+  Ask Portal to publish the preview." or "Portal didn't create the website files
+  ... Ask Portal to try the build again."), and "If it keeps happening, get help
+  on Discord" with the invite link.
+
+Research and coding runs keep their stop texts, and so does every run that
+keeps the strict stop (finalization unavailable), a website build included when
+it also asked for a managed installation: its stop text says the request was not
+completed. When the runtime itself rejects a call made after the stop (before
+`before_tool_call` runs), the persisted result that carries the instruction
+counts as the instruction's delivery, so the next model call is the answer turn
+rather than a second uninstructed call that forfeits it.
+`tests/preview_check_stop_delivery.test.mjs` replays the stopwatch run and the
+review's four stops through the real guard and inspection tool.
 
 ## Passing checks that do not count
 

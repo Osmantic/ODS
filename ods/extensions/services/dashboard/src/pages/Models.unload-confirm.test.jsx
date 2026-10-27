@@ -1,7 +1,8 @@
 import { StrictMode, createElement } from 'react'
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import Models from './Models'
+import { forgetLastCatalog } from '../hooks/useModels'
 
 // The production model hook drives the page, so these tests see the requests
 // the runtime controls actually send. Downloads are a separate transport.
@@ -29,6 +30,7 @@ const catalog = () => ({
 })
 
 beforeEach(() => {
+  forgetLastCatalog()
   vi.stubGlobal('fetch', vi.fn(async (url, options) => {
     if (url === '/api/models') return json(catalog())
     if (options?.method === 'POST' && url === '/api/models/runtime/stop') {
@@ -82,4 +84,30 @@ test('Resume model starts a stopped runtime without asking', async () => {
   expect(screen.queryByRole('dialog')).toBeNull()
   expect(await controls.findByRole('button', { name: 'Unload model' })).toBeEnabled()
   expect(posts().map(([url]) => url)).toEqual(['/api/models/runtime/start'])
+})
+
+test('Models opened again shows the last catalog at once and holds its controls until the fresh read', async () => {
+  running = true
+  const first = await openRuntimeControls()
+  expect(first.getByRole('button', { name: 'Unload model' })).toBeEnabled()
+  cleanup()
+
+  let answer
+  fetch.mockImplementation(async url => {
+    if (url === '/api/models') return new Promise(resolve => { answer = () => resolve(json(catalog())) })
+    return json({}, 404)
+  })
+  const profileReads = () => fetch.mock.calls.filter(([url]) => String(url).endsWith('/profile')).length
+  const profilesBefore = profileReads()
+  render(createElement(MemoryRouter, null, createElement(Models)))
+  const controls = within(screen.getByRole('region', { name: 'Model runtime controls' }))
+  expect(controls.getByRole('button', { name: 'Unload model' })).toBeDisabled()
+  // The remembered model's profile, and its template button, wait for the fresh read too.
+  await act(async () => {})
+  expect(profileReads()).toBe(profilesBefore)
+
+  await act(async () => { answer() })
+  expect(await controls.findByRole('button', { name: 'Unload model' })).toBeEnabled()
+  expect(profileReads()).toBeGreaterThan(profilesBefore)
+  expect(posts()).toEqual([])
 })

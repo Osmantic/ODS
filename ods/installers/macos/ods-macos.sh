@@ -835,6 +835,11 @@ start_native_llama() {
     mkdir -p "$(dirname "$LLAMA_SERVER_PID_FILE")"
 
     local reasoning="${ENV_LLAMA_REASONING:-off}"
+    # Modes are case-insensitive, as in ods-host-agent.py; llama-server only
+    # accepts the lowercase spelling.
+    local reasoning_lower
+    reasoning_lower="$(printf '%s' "$reasoning" | tr '[:upper:]' '[:lower:]')"
+    case "$reasoning_lower" in off|on|auto) reasoning="$reasoning_lower" ;; esac
     # Map .env values (off/on/auto) to llama-server --reasoning-format values
     local reasoning_fmt
     case "$reasoning" in

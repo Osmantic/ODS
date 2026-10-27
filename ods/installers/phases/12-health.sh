@@ -455,7 +455,7 @@ if [[ "${ENABLE_PERPLEXICA:-false}" == "true" ]]; then
     ods_progress 91 "health" "Waiting for Research engine"
     _check_health "Perplexica" "http://127.0.0.1:${SERVICE_PORTS[perplexica]:-3004}${SERVICE_HEALTH[perplexica]:-/}" 150 10 "$(sr_container perplexica)"
 fi
-# ComfyUI: 150 attempts * adaptive backoff = up to ~20 minutes (FLUX model loading is slow)
+# ComfyUI: 150 attempts * adaptive backoff = up to ~20 minutes.
 if [[ "$ENABLE_COMFYUI" == "true" ]]; then
     ods_progress 93 "health" "Waiting for Image generation"
     _check_health "ComfyUI" "http://127.0.0.1:${SERVICE_PORTS[comfyui]:-8188}${SERVICE_HEALTH[comfyui]:-/}" 150 15 "$(sr_container comfyui)"

@@ -15,5 +15,7 @@ export function pixelReplyPose(message, active) {
   if (message.status === 'stopped' || message.goalState === 'cancelled') return 'idle'
   // A restored/abandoned streaming placeholder is not proof of ongoing work.
   if (message.status === 'streaming') return active ? (message.task?.state === 'running' && message.task?.calls > 0 ? 'working' : 'thinking') : 'waiting'
+  // A reply whose answer stopped arriving waits until Portal settles it.
+  if (message.status === 'unconfirmed') return 'waiting'
   return message.content ? 'done' : 'idle'
 }

@@ -493,11 +493,8 @@ if ! $DRY_RUN; then
                 ENABLE_QDRANT=false
             fi
         fi
-
-        if [[ "${ENABLE_EMBEDDINGS:-${ENABLE_RAG:-false}}" == "true" ]]; then
-            ai_warn "Embeddings (TEI): upstream image is amd64-only - disabled on aarch64."
-            ENABLE_EMBEDDINGS=false
-        fi
+        # Embeddings (TEI) runs here from its arm64 pin in
+        # extensions/services/embeddings/compose.arm64.yaml.
     fi
     unset _host_arch _host_page_size
 

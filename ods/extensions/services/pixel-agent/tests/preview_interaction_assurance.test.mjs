@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {createToolLoopGuard, userMessageRequestsWorkspaceVerificationContinuation, WORKSPACE_PREVIEW_COMPLETE_REASON} from '../plugin/tool-loop-guard.mjs';
 import {PREVIEW_INSPECTION_TOOL, PAGE_ERROR_REPAIR_INSTRUCTION, requestsVisibilityInteraction, requestsBehaviorPreservation, boundVisibilityInspection,
-  boundStaticPreviewInspection} from '../plugin/preview-interaction-assurance.mjs';
+  boundStaticPreviewInspection, requestsReloadPersistence} from '../plugin/preview-interaction-assurance.mjs';
 import {INSPECTION_KIND, INSPECTION_SCOPE, inspectionPlanHash, normalizeWorkspacePreviewInspectionParams, createWorkspacePreviewInspectTool} from '../plugin/workspace-preview-inspect.mjs';
 
 import {PREVIEW_STORAGE_DISCLOSURE} from '../plugin/workspace-preview.mjs';
@@ -176,6 +176,28 @@ test('visibility gate only requests checks supported by the installed capability
   for(const config of [{enabled:false},{prompt:'Create and publish a static website in a new workspace directory site.'},{prompt:'Create and publish a website in a new workspace directory site.\n> A button shows details.'}]) {
     const {guard}=setup(config);assert.equal(guard.verificationForRun('run').status,config.enabled===false?'passed':'failed');
   }
+});
+
+test('a request for data that outlasts a reload or a later visit is recognized, and nothing else is',()=>{
+  // Workstation06 visitor round 2 (2026-10-27) and the owner phrasings Portal sees for stateful pages.
+  for(const text of [
+    'In the habit tracker, make the ticks survive a page reload, and add a way to delete a habit.',
+    'Build a to-do list that saves my tasks so they are still there next time.',
+    'Keep the scores after a refresh.',
+    'It should remember my books.',
+    'Store the settings in localStorage.',
+    'The list must be persistent.',
+    'Make the notes persist between sessions.',
+  ]) assert.equal(requestsReloadPersistence(text),true,text);
+  for(const text of [
+    'Build a reading list as a new project: I add books with their author, mark them read, and filter between read and unread.',
+    'Add a refresh button that reloads the quotes.',
+    'Save the file as index.html.',
+    'Remember to add a delete button.',
+    'Do not use localStorage.',
+    'Build it without any local storage.',
+    'Reload the page and check the counter.',
+  ]) assert.equal(requestsReloadPersistence(text),false,text);
 });
 
 test('static page contents beside form controls do not request show/hide inspection',()=>{

@@ -20,11 +20,12 @@ import httpx
 
 from config import (
     SERVICES, INSTALL_DIR, DATA_DIR, LLM_BACKEND, EXTENSIONS_DIR, GPU_BACKEND,
-    LIBRARY_MANAGEABLE_BUILTINS, load_extension_manifests, read_live_env_value,
+    LIBRARY_MANAGEABLE_BUILTINS, get_env_file_read_error, load_extension_manifests, read_live_env_value,
 )
 from env_values import parse_env_value
 from host_metrics import apple_host_metrics, linux_scope, windows_host_metrics
 from host_agent_client import AgentClientError, AgentHTTPError, async_request_json as request_agent_json
+from host_agent_client import request_json as request_agent_json_sync
 from models import ServiceStatus, DiskUsage, ModelInfo, BootstrapStatus
 from service_health_dns import ServiceHealthResolver
 
@@ -234,10 +235,28 @@ async def _check_opencode_health(service_id: str, config: dict) -> ServiceStatus
     )
 
 
+async def _check_pixel_ingress_health(service_id: str, config: dict) -> ServiceStatus:
+    """Prove the socket-only Pixel host ingress through Pixel Edge.
+
+    The ingress listens only on a Unix socket, so no port can be probed and it
+    read "Not Deployed" while Portal worked (Workstation06, 2026-10-26). Pixel
+    Edge's /health answers ok only when that socket's /health does; an edge
+    that is down proves nothing about the socket.
+    """
+    edge = SERVICES.get("pixel-edge")
+    if edge is None:
+        return _service_status_from_config(service_id, config, "not_deployed")
+    edge_status = (await check_service_health("pixel-edge", edge)).status
+    status = edge_status if edge_status in ("healthy", "not_deployed") else "unknown"
+    return _service_status_from_config(service_id, config, status)
+
+
 async def _check_host_systemd_health(service_id: str, config: dict) -> ServiceStatus:
     """Check a host-managed service through the authenticated host-agent."""
     if service_id == "opencode":
         return await _check_opencode_health(service_id, config)
+    if service_id == "pixel-agent" and config.get("socket_only"):
+        return await _check_pixel_ingress_health(service_id, config)
     return await _check_host_port_health(service_id, config)
 
 
@@ -1090,21 +1109,42 @@ async def check_service_health(
     )
 
 
-def _switched_off_status(service_id: str, config: dict):
-    """An awaitable not-deployed status for a service the install switched off, else None.
+def _switched_off_status(service_id: str, config: dict, **health_kwargs):
+    """An awaitable status for Open WebUI when the install switched it off, else None.
 
     The Compose resolver leaves Open WebUI out when ENABLE_OPEN_WEBUI is not
     "true" (docker-compose.gateway-only.yml). Probing it then failed on name
     resolution, and only two exact DNS error texts count as not deployed;
     Docker in WSL words it differently, so Windows counted a core service
     offline (fleet, Strixy: "6/7 core services online").
+
+    Where this API cannot read the owner's .env (an install owner other than
+    UID 1000), the flag is the one Compose passed when the container started.
+    A Library add changes the choice later, and Open WebUI then read "not
+    deployed" beside a healthy container (Workstation06, 2026-10-27), so the
+    host agent's reading of the owner's choice decides.
     """
-    if service_id != "open-webui" or (read_live_env_value("ENABLE_OPEN_WEBUI") or "true").strip().lower() == "true":
+    if service_id != "open-webui":
+        return None
+    flag = read_live_env_value("ENABLE_OPEN_WEBUI")
+    env_unreadable = get_env_file_read_error() is not None
+    if (flag or "true").strip().lower() == "true":
         return None
 
-    async def not_deployed():
+    async def switched_off():
+        if env_unreadable and await _owner_selected_open_webui():
+            return await check_service_health(service_id, config, **health_kwargs)
         return _service_status_from_config(service_id, config, "not_deployed")
-    return not_deployed()
+    return switched_off()
+
+
+async def _owner_selected_open_webui() -> bool:
+    """Whether the install owner's .env selects Open WebUI, as the host agent reads it."""
+    try:
+        selection = await request_agent_json("GET", "/v1/webui/selection", timeout=3)
+    except (AgentClientError, ValueError):
+        return False
+    return isinstance(selection, dict) and selection.get("enabled") is True
 
 
 # Last time each service's own probe succeeded (monotonic seconds).
@@ -1120,6 +1160,25 @@ def _timeout_override_allowed(service_id: str, now: float) -> bool:
     last_ok = _last_probe_success.get(service_id)
     anchor = last_ok if last_ok is not None else _first_probe_seen.get(service_id)
     return anchor is not None and now - anchor <= _TIMEOUT_OVERRIDE_GRACE_S
+
+
+_CRASH_LOOP_RESTARTS = 3
+
+
+def container_crash_looping(item: dict) -> bool:
+    """Whether a host service-health row shows a restart policy reviving a crash.
+
+    Each restart begins the container's health check anew, so a crash loop
+    reads as "starting" and its card said "installing" indefinitely
+    (Workstation06, 2026-10-27: Qdrant and TEI on ARM64). One or two
+    restarts can be a start-up race; a third is a loop.
+    """
+    restarts = item.get("restart_count")
+    if type(restarts) is not int or restarts < _CRASH_LOOP_RESTARTS:
+        return False
+    state = str(item.get("state") or "").casefold()
+    return state == "restarting" or (
+        state == "running" and str(item.get("health") or "").casefold() == "starting")
 
 
 async def get_all_services(*, only_service_ids: Optional[set[str]] = None) -> list[ServiceStatus]:
@@ -1148,8 +1207,8 @@ async def get_all_services(*, only_service_ids: Optional[set[str]] = None) -> li
                 service_configs.pop(service_id, None)
     if only_service_ids is not None:
         service_configs = {sid: cfg for sid, cfg in service_configs.items() if sid in only_service_ids}
-    tasks = [_switched_off_status(sid, cfg) or check_service_health(
-                 sid, cfg, **({"timeout": _CATALOG_HEALTH_TIMEOUT} if only_service_ids is not None else {}))
+    health_kwargs = {"timeout": _CATALOG_HEALTH_TIMEOUT} if only_service_ids is not None else {}
+    tasks = [_switched_off_status(sid, cfg, **health_kwargs) or check_service_health(sid, cfg, **health_kwargs)
              for sid, cfg in service_configs.items()]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -1200,10 +1259,14 @@ async def get_all_services(*, only_service_ids: Optional[set[str]] = None) -> li
         item = by_service.get(status.id) or by_name.get(str(config.get("container_name") or ""))
         replacement = status.status
         startup_pending = False
+        crash_looping = False
         if item and config.get("type", "docker") == "docker":
             health = str(item.get("health") or "none").casefold()
             state = str(item.get("state") or "unknown").casefold()
-            if health == "healthy" and status.status == "degraded" and _timeout_override_allowed(status.id, now):
+            if container_crash_looping(item):
+                replacement = "unhealthy"
+                crash_looping = True
+            elif health == "healthy" and status.status == "degraded" and _timeout_override_allowed(status.id, now):
                 # A successful declared Docker healthcheck is authoritative for
                 # transient dashboard-network timeouts, but never masks HTTP
                 # errors or connection refusal from the application probe.
@@ -1225,8 +1288,10 @@ async def get_all_services(*, only_service_ids: Optional[set[str]] = None) -> li
                 startup_pending = len(matches) == 1
             elif state in {"exited", "dead", "removing"}:
                 replacement = "down"
-        if replacement != status.status or startup_pending != status.startup_pending:
-            status = status.model_copy(update={"status": replacement, "startup_pending": startup_pending})
+        if (replacement != status.status or startup_pending != status.startup_pending
+                or crash_looping != status.crash_looping):
+            status = status.model_copy(update={"status": replacement, "startup_pending": startup_pending,
+                                               "crash_looping": crash_looping})
         reconciled.append(status)
 
     if _host_native_llm():
@@ -1295,86 +1360,110 @@ def get_disk_usage() -> DiskUsage:
     return DiskUsage(path=path, used_gb=round(used / (1024**3), 2), total_gb=round(total / (1024**3), 2), percent=percent)
 
 
+def owner_model_config() -> Optional[dict]:
+    """The configured model as the install owner's host agent reads it from .env.
+
+    For an install owner other than UID 1000, whose private .env this API
+    cannot read (Workstation06, 2026-10-26: nvuser, UID 1001). The agent
+    returns only validated identities. None when it cannot answer.
+    """
+    try:
+        snapshot = request_agent_json_sync("GET", "/v1/model/config", timeout=5)
+    except AgentClientError:
+        return None
+    model = snapshot.get("configuredModel") if isinstance(snapshot, dict) else None
+    return model if isinstance(model, dict) else None
+
+
 def get_model_info() -> Optional[ModelInfo]:
     """Get current model info from .env config."""
     env_path = Path(INSTALL_DIR) / ".env"
-    if env_path.exists():
+    if not env_path.exists():
+        return None
+    try:
+        env_values = {}
+        with open(env_path) as f:
+            for line in f:
+                if "=" not in line or line.lstrip().startswith("#"):
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if not key:
+                    continue
+                value = parse_env_value(value)
+                env_values[key] = value
+    except PermissionError:
+        # An install owner other than UID 1000 keeps its private .env from this
+        # API: every status poll logged the refusal and the Dashboard showed no
+        # configured model. The owner's host agent reads it instead.
+        owner = owner_model_config() or {}
+        env_values = {"LLM_MODEL": owner.get("llmModel") or "", "GGUF_FILE": owner.get("ggufFile") or "",
+                      "CTX_SIZE": str(owner.get("contextSize") or "")}
+    except OSError as e:
+        logger.warning("Failed to read .env for model info: %s", e)
+        return None
+
+    model_name = env_values.get("LLM_MODEL")
+    if not model_name:
+        return None
+    size_gb, quant = 15.0, None
+    # CTX_SIZE/MAX_CONTEXT come straight from .env and may be
+    # non-numeric (e.g. "auto", "8k", or a trailing comment); fall
+    # back to the default rather than 500-ing every caller. Mirrors
+    # the guard already used in routers/models.py.
+    context = 32768
+    for key in ("CTX_SIZE", "MAX_CONTEXT"):
         try:
-            env_values = {}
-            with open(env_path) as f:
-                for line in f:
-                    if "=" not in line or line.lstrip().startswith("#"):
-                        continue
-                    key, value = line.split("=", 1)
-                    key = key.strip()
-                    if not key:
-                        continue
-                    value = parse_env_value(value)
-                    env_values[key] = value
+            candidate = int(env_values.get(key) or 0)
+        except (TypeError, ValueError):
+            continue
+        if candidate > 0:
+            context = candidate
+            break
 
-            model_name = env_values.get("LLM_MODEL")
-            if model_name:
-                size_gb, quant = 15.0, None
-                # CTX_SIZE/MAX_CONTEXT come straight from .env and may be
-                # non-numeric (e.g. "auto", "8k", or a trailing comment); fall
-                # back to the default rather than 500-ing every caller. Mirrors
-                # the guard already used in routers/models.py.
-                context = 32768
-                for key in ("CTX_SIZE", "MAX_CONTEXT"):
-                    try:
-                        candidate = int(env_values.get(key) or 0)
-                    except (TypeError, ValueError):
-                        continue
-                    if candidate > 0:
-                        context = candidate
-                        break
+    import re as _re
 
-                import re as _re
+    name_lower = model_name.lower()
+    if "gemma-4-e2b" in name_lower:
+        size_gb = 2.8
+    elif "gemma-4-e4b" in name_lower:
+        size_gb = 5.3
+    elif "gemma-4-26b" in name_lower:
+        size_gb = 18.0
+    elif "gemma-4-31b" in name_lower:
+        size_gb = 19.8
+    elif _re.search(r'\b2b\b', name_lower):
+        size_gb = 1.5
+    elif _re.search(r'\b4b\b', name_lower):
+        size_gb = 2.8
+    elif _re.search(r'\b7b\b', name_lower):
+        size_gb = 4.0
+    elif _re.search(r'\b8b\b', name_lower):
+        size_gb = 4.5
+    elif _re.search(r'\b9b\b', name_lower):
+        size_gb = 5.8
+    elif _re.search(r'\b14b\b', name_lower):
+        size_gb = 8.0
+    elif _re.search(r'\b26b\b', name_lower):
+        size_gb = 18.0
+    elif _re.search(r'\b30b\b', name_lower):
+        size_gb = 18.6
+    elif _re.search(r'\b31b\b', name_lower):
+        size_gb = 19.8
+    elif _re.search(r'\b32b\b', name_lower):
+        size_gb = 16.0
+    elif _re.search(r'\b70b\b', name_lower):
+        size_gb = 35.0
 
-                name_lower = model_name.lower()
-                if "gemma-4-e2b" in name_lower:
-                    size_gb = 2.8
-                elif "gemma-4-e4b" in name_lower:
-                    size_gb = 5.3
-                elif "gemma-4-26b" in name_lower:
-                    size_gb = 18.0
-                elif "gemma-4-31b" in name_lower:
-                    size_gb = 19.8
-                elif _re.search(r'\b2b\b', name_lower):
-                    size_gb = 1.5
-                elif _re.search(r'\b4b\b', name_lower):
-                    size_gb = 2.8
-                elif _re.search(r'\b7b\b', name_lower):
-                    size_gb = 4.0
-                elif _re.search(r'\b8b\b', name_lower):
-                    size_gb = 4.5
-                elif _re.search(r'\b9b\b', name_lower):
-                    size_gb = 5.8
-                elif _re.search(r'\b14b\b', name_lower):
-                    size_gb = 8.0
-                elif _re.search(r'\b26b\b', name_lower):
-                    size_gb = 18.0
-                elif _re.search(r'\b30b\b', name_lower):
-                    size_gb = 18.6
-                elif _re.search(r'\b31b\b', name_lower):
-                    size_gb = 19.8
-                elif _re.search(r'\b32b\b', name_lower):
-                    size_gb = 16.0
-                elif _re.search(r'\b70b\b', name_lower):
-                    size_gb = 35.0
+    gguf_file = env_values.get("GGUF_FILE", "").lower()
+    if "awq" in name_lower:
+        quant = "AWQ"
+    elif "gptq" in name_lower:
+        quant = "GPTQ"
+    elif "gguf" in name_lower or gguf_file.endswith(".gguf"):
+        quant = "GGUF"
 
-                gguf_file = env_values.get("GGUF_FILE", "").lower()
-                if "awq" in name_lower:
-                    quant = "AWQ"
-                elif "gptq" in name_lower:
-                    quant = "GPTQ"
-                elif "gguf" in name_lower or gguf_file.endswith(".gguf"):
-                    quant = "GGUF"
-
-                return ModelInfo(name=model_name, size_gb=size_gb, context_length=context, quantization=quant)
-        except OSError as e:
-            logger.warning("Failed to read .env for model info: %s", e)
-    return None
+    return ModelInfo(name=model_name, size_gb=size_gb, context_length=context, quantization=quant)
 
 
 def get_bootstrap_status() -> BootstrapStatus:

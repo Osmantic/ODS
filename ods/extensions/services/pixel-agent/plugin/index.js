@@ -694,8 +694,14 @@ export default definePluginEntry({
         handler:async (req,res) => {
           const parsed = await readContextRequest(req, operation === 'compact');
           if (parsed.status !== 200) {sendJson(res,parsed.status,{error:'invalid context request'});return true;}
-          const result = operation === 'compact' ? await contextCompaction.compact(parsed.user,parsed.requestId)
+          let result = operation === 'compact' ? await contextCompaction.compact(parsed.user,parsed.requestId)
             : contextCompaction.context(parsed.user);
+          // The owner session can be idle while children it delegated to still
+          // run or will report back into this chat. Then the chat is busy, so
+          // restart recovery and a new turn wait for that work instead of
+          // treating the turn as over.
+          if (operation === 'context' && ['ready','missing'].includes(result?.status)
+              && delegationDelivery.pending(parsed.user,key => Boolean(resolveActiveEmbeddedRunSessionId(key)))) result = {...result,status:'busy'};
           sendJson(res,200,result);return true;
         }});
     }

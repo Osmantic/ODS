@@ -60,7 +60,7 @@
     },
     {
       "parameters": {
-        "url": "={{ 'http://' + ($env.COMFYUI_HOST || 'localhost') + ':' + ($env.COMFYUI_PORT || '8188') + '/prompt' }}",
+        "url": "={{ 'http://' + ($env.COMFYUI_HOST || 'comfyui') + ':' + ($env.COMFYUI_PORT || '8188') + '/prompt' }}",
         "method": "POST",
         "headers": {
           "list": [

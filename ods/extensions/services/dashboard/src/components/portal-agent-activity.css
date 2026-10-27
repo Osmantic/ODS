@@ -30,7 +30,7 @@
 .portal-agent-plan li > span:last-child { overflow-wrap:anywhere; }
 .portal-agent-plan li[data-state=pending] { opacity:.65; }
 .portal-agent-dot { display:inline-block; width:7px; height:7px; margin:3px; border-radius:50%; background:currentColor; box-shadow:0 0 0 3px rgb(var(--theme-text) / .07); animation:portal-agent-pulse 1.5s ease-in-out infinite; }
-.portal-agent-empty,.portal-agent-follow { font-size:11px; margin:4px 0 0; color:rgb(var(--theme-text-muted)); }
+.portal-agent-empty,.portal-agent-follow,.portal-agent-hint { font-size:11px; margin:4px 0 0; color:rgb(var(--theme-text-muted)); }
 .portal-agent-follow { text-decoration:underline; text-underline-offset:3px; }
 .portal-agent-shimmer { background:linear-gradient(100deg,rgb(var(--theme-text-muted)) 20%,rgb(var(--theme-text)) 45%,rgb(var(--theme-text-muted)) 70%); background-size:250% 100%; background-clip:text; -webkit-background-clip:text; color:transparent; animation:portal-agent-shine 2.2s linear infinite; }
 .portal-agent-activity :is(button,a,.portal-agent-viewport):focus-visible { outline:2px solid rgb(var(--theme-text-muted)); outline-offset:3px; border-radius:4px; }

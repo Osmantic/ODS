@@ -134,12 +134,37 @@ describe('Dashboard system overview', () => {
     expect(screen.getByText('Accumulated Output')).toBeInTheDocument()
   })
 
-  it.each([[8.25, '8.3 tok/s'], [0, '0.0 tok/s'], [null, '—'], [undefined, '—']])('shows a real compact throughput reading for %s', async (tokensPerSecond, expected) => {
+  it.each([[8.25, '8.3 tok/s'], [0, '0.0 tok/s']])('shows a real compact throughput reading for %s', async (tokensPerSecond, expected) => {
     render(<Dashboard compact status={{...baseStatus, inference:{...baseStatus.inference, tokensPerSecond}}} loading={false}/>)
     const row = screen.getByText('Tokens / second').closest('.dashboard-metric-row')
     expect(within(row).getByText(expected)).toBeVisible()
-    expect(within(row).getByText(tokensPerSecond == null ? 'Telemetry unavailable' : 'Runtime reading')).toBeVisible()
+    expect(within(row).getByText('Runtime reading')).toBeVisible()
     await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/features'))
+  })
+
+  it.each([null, undefined])('leaves out Tokens / second while the runtime has reported no rate (%s)', async tokensPerSecond => {
+    // A native engine that never reports throughput: nothing reads as a fault.
+    render(<Dashboard compact status={{...baseStatus,
+      inference:{...baseStatus.inference, tokensPerSecond, throughputState:'unavailable', throughputMode:'unavailable', throughputSampledAt:null},
+      cpu:{percent:12,scope:'host'},
+      gpu:{name:'NVIDIA GeForce RTX 4090',memoryType:'discrete',utilization:3,vramUsed:10,vramTotal:24,temperature:41,powerDraw:4}}} loading={false}/>)
+    expect(screen.queryByText('Tokens / second')).toBeNull()
+    expect(screen.queryByText(/telemetry unavailable/i)).toBeNull()
+    expect(within(screen.getByText('Context').closest('.dashboard-metric-row')).getByText('32k')).toBeVisible()
+    expect(within(screen.getByText('Model').closest('.dashboard-metric-row')).getByText('qwen')).toBeVisible()
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/features'))
+  })
+
+  it('names a missing reading neutrally in the full overview charts', async () => {
+    await renderDashboard({...baseStatus,
+      inference:{...baseStatus.inference, tokensPerSecond:null, lifetimeTokens:null, tokenCountMode:'unavailable', throughputState:'unavailable'}})
+    const overview = screen.getByText('System Overview').closest('section')
+    const throughput = screen.getByRole('img', {name:'TOKENS PER SECOND chart'}).parentElement
+    expect(within(throughput).getByText('Not reported')).toBeVisible()
+    expect(within(throughput).getByText('—')).toBeVisible()
+    expect(within(overview).getAllByText('No data')).toHaveLength(2)
+    expect(within(overview).queryByText(/telemetry/i)).toBeNull()
+    expect(screen.queryByText('Tokens / second')).toBeNull()
   })
 
   it.each([[0, '0.0'], [null, '—'], [undefined, '—']])('keeps full throughput reading %s distinct from unavailable history', async (tokensPerSecond, expected) => {

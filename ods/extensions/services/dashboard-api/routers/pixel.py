@@ -248,6 +248,9 @@ _result_store: ChatResultStore | None = None
 _result_tasks: dict[tuple[str, str, str], asyncio.Task] = {}
 _result_preflights: set[tuple[str, str, str]] = set()
 _result_stops: set[tuple[str, str]] = set()
+# Chats whose last turn an activity check is settling right now. Kept apart
+# from Stop's fence, so neither can remove the other's.
+_result_settles: set[tuple[str, str]] = set()
 _result_abort_ack: set[tuple[str, str, str]] = set()
 
 
@@ -366,7 +369,7 @@ async def pixel_chat_result(body: ChatResultRequest, owner: str = Depends(verify
         # the request identity while its exact cancellation is still pending.
         return {"state": "active", "events": ""}
     if row["state"] == "unresolved":
-        activity = await pixel_chat_activity(ChatCancelRequest(chat_id=body.chat_id))
+        activity = await pixel_chat_activity(ChatCancelRequest(chat_id=body.chat_id), owner)
         if activity["state"] == "terminal":
             store.finish(key, "interrupted")
             row = store.get(key)
@@ -726,16 +729,37 @@ async def _current_runtime_identity(edge_url, key):
     return unknown_runtime_identity()
 
 
+# The gateway can answer its model list late while it works through a large
+# step. On the RTX Spark (2026-10-25) a status poll waited about 10 s while a
+# 27 KB page was being written, its edge call failed, and the composer flashed
+# "Portal is unavailable" mid-build. Within this grace a transient edge failure
+# repeats the last available answer; definitive states (unloaded, switching,
+# recovery, a missing model) answer at once and clear it.
+_STATUS_GRACE_SECONDS = 20.0
+_last_available_status: tuple[float, dict[str, object]] | None = None
+
+
 @router.get("/status", dependencies=[Depends(verify_api_key)])
 async def pixel_status(http_response: Response = None) -> dict[str, object]:
     """Return a fixed, nonsecret Pixel availability projection."""
+    global _last_available_status
     # The browser-facing response is newly constructed, so upstream no-store
     # headers do not survive automatically. Never cache a live identity check.
     if http_response is not None:
         http_response.headers["Cache-Control"] = "no-store"
+    result, transient = await _status_projection()
+    remembered = _last_available_status
+    if transient and remembered is not None and time.monotonic() - remembered[0] <= _STATUS_GRACE_SECONDS:
+        return dict(remembered[1])
+    _last_available_status = (time.monotonic(), dict(result)) if result.get("available") is True else None
+    return result
+
+
+async def _status_projection() -> tuple[dict[str, object], bool]:
+    """The status answer, and whether it is only a transient edge failure."""
     config = _pixel_config()
     if config is None:
-        return {"available": False, "model": None, "detail": "Portal is not enabled"}
+        return {"available": False, "model": None, "detail": "Portal is not enabled"}, False
     host_status, (access, access_issue) = await asyncio.gather(
         _host_model_status(), _current_access_readiness())
     activation = model_activation_status(host_status)
@@ -745,10 +769,10 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
     # probing the backend that the coordinator may currently be restarting.
     if access and access["available"] and access["pending"] and access["reason"] == "model-transition-pending":
         return {**activation_metadata, "available": False, "model": None, "state": "model_transition_pending",
-                "detail": _MODEL_HOLD_DETAIL}
+                "detail": _MODEL_HOLD_DETAIL}, False
     if access and access["available"] and access["reason"] == "chat-recovery-required":
         return {**activation_metadata, "available": False, "model": None, "state": "chat_recovery_required",
-                "detail": _CHAT_RECOVERY_DETAIL, **_recovery_field(_access_recovery(access))}
+                "detail": _CHAT_RECOVERY_DETAIL, **_recovery_field(_access_recovery(access))}, False
     readiness_issue = await _model_readiness_issue_for_status(host_status)
     if readiness_issue is not None:
         state, detail = readiness_issue
@@ -759,7 +783,7 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
             "state": state,
             "detail": detail,
             **_recovery_field(_STATE_RECOVERY.get(state)),
-        }
+        }, False
     edge_url, key = config
     try:
         timeout = httpx.Timeout(connect=5.0, read=5.0, write=5.0, pool=5.0)
@@ -771,9 +795,9 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
             timeout=timeout,
         ) as response:
             if response.status_code != 200:
-                return {**activation_metadata, "available": False, "model": None, "detail": "Portal service is unavailable"}
+                return {**activation_metadata, "available": False, "model": None, "detail": "Portal service is unavailable"}, True
             if not response.headers.get("content-type", "").lower().startswith("application/json"):
-                return {**activation_metadata, "available": False, "model": None, "detail": "Portal service returned an invalid response"}
+                return {**activation_metadata, "available": False, "model": None, "detail": "Portal service returned an invalid response"}, True
             raw = await _bounded_response_bytes(response, _MAX_STATUS_BYTES)
         payload = json.loads(raw)
         models = payload.get("data") if isinstance(payload, dict) else None
@@ -790,9 +814,12 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
             if inference_issue:
                 # A stopped runtime the host owns gets Models' Resume model.
                 stopped = await _owned_runtime_unloaded(_RUNTIME_HINT_SECONDS) is True
+                # A health probe that misses its 3 s while the runtime generates
+                # a large step (RTX Spark, 2026-10-25) is not proof it stopped:
+                # only a runtime the host proves stopped answers at once.
                 return {**activation_metadata, "available": False, "model": None, "state": "model_unavailable",
                         "detail": _RUNTIME_STOPPED_DETAIL if stopped else inference_issue,
-                        **_recovery_field("resume-model" if stopped else None)}
+                        **_recovery_field("resume-model" if stopped else None)}, not stopped
         runtime = _active_runtime_projection(host_status)
         if available and runtime is None:
             runtime = await _verified_external_host_runtime(host_status)
@@ -824,14 +851,14 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
                 result["detail"] = ("Owner agent available; model transition needs recovery; release readiness is unverified"
                                     if readiness["reasonCode"] == "model-transition-recovery-required" else
                                     "Owner agent available; access transition is unfinished; release readiness is unverified")
-        return result
+        return result, False
     except (httpx.HTTPError, asyncio.TimeoutError) as exc:
         # Exception text and request objects can contain upstream credentials.
         # Retain the failure phase/type without logging those sensitive values.
         logger.warning("Pixel edge status request failed (%s)", type(exc).__name__)
-        return {**activation_metadata, "available": False, "model": None, "detail": "Portal service is unavailable"}
+        return {**activation_metadata, "available": False, "model": None, "detail": "Portal service is unavailable"}, True
     except (json.JSONDecodeError, UnicodeDecodeError, ValueError, TypeError):
-        return {**activation_metadata, "available": False, "model": None, "detail": "Portal service returned an invalid response"}
+        return {**activation_metadata, "available": False, "model": None, "detail": "Portal service returned an invalid response"}, True
 
 
 @router.get("/ops/{job_id}", dependencies=[Depends(verify_api_key)])
@@ -977,34 +1004,129 @@ async def pixel_chat_cancel(body: ChatCancelRequest, owner: str = Depends(verify
         finally:
             _result_abort_ack.discard(identity)
             _result_stops.discard(identity[:2])
-    if isinstance(owner, str) and _result_store is not None and _result_store.has_pending((owner_namespace(owner), body.chat_id)):
-        return {"aborted": False}
+    if isinstance(owner, str):
+        conversation = (owner_namespace(owner), body.chat_id)
+        # A restarted API process has not opened the store yet, but receipts
+        # its predecessor left unfinished still hold this chat.
+        pending = _chat_results().pending_attempts(conversation)
+        if pending:
+            # A chat-level request ("Continue in this chat") never stops a turn
+            # this process is still streaming; that turn's own Stop names it.
+            # An attempt no producer owns any more is resolved by its exact ID.
+            if _owns_live_work(conversation):
+                return {"aborted": False}
+            return await pixel_chat_cancel(ChatCancelRequest(chat_id=body.chat_id, request_id=pending[0][2]), owner)
     return {"aborted": await _cancel_edge_run(edge_url, key, body.chat_id)}
 
 
-@router.post("/chat/activity", dependencies=[Depends(verify_api_key)])
-async def pixel_chat_activity(body: ChatCancelRequest) -> dict[str, str]:
-    """One authenticated chat lookup; global activity never supplies its state."""
-    config = _pixel_config()
-    if config is None:
-        return {"state": "unknown"}
-    edge_url, key = config
+def _owns_live_work(conversation) -> bool:
+    """True while this process streams, prepares or stops a turn of this chat."""
+    return (conversation in _result_stops
+            or any(identity[:2] == conversation for identity in _result_preflights)
+            or any(identity[:2] == conversation and not task.done() for identity, task in _result_tasks.items()))
+
+
+async def _edge_chat_activity(edge_url: str, key: str, chat_id: str) -> str | None:
+    """The edge's exact view of one chat, or None when it could not be read."""
     try:
         timeout = httpx.Timeout(connect=2.0, read=5.0, write=2.0, pool=2.0)
         async with httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=False) as client:
             async with client.stream("POST", f"{edge_url}/v1/chat/activity",
-                                     json={"user": body.chat_id},
+                                     json={"user": chat_id},
                                      headers=_edge_headers(key, accept="application/json")) as response:
                 if response.status_code != 200 or not response.headers.get("content-type", "").lower().startswith("application/json"):
-                    return {"state": "unknown"}
+                    return None
                 raw = await _bounded_response_bytes(response, 1024)
         parsed = json.loads(raw)
         if (isinstance(parsed, dict) and set(parsed) == {"state"}
                 and isinstance(parsed["state"], str) and parsed["state"] in {"active", "terminal", "unknown"}):
-            return {"state": parsed["state"]}
+            return parsed["state"]
     except (httpx.HTTPError, asyncio.TimeoutError, ValueError, TypeError):
         pass
-    return {"state": "unknown"}
+    return None
+
+
+async def _settle_edge_chat(edge_url: str, key: str, chat_id: str) -> str | None:
+    """Ask the ingress, through the edge, to settle a chat it proves idle.
+
+    "settled" means no run of this chat can still be alive and any turn a
+    restart cut off is recorded as interrupted; "active" means work may still
+    run. Nothing is ever stopped. None means it could not be confirmed, for
+    example while Portal is still restarting or on an older edge or ingress.
+    """
+    try:
+        timeout = httpx.Timeout(connect=2.0, read=10.0, write=2.0, pool=2.0)
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=False) as client:
+            async with client.stream("POST", f"{edge_url}/v1/chat/settle",
+                                     json={"user": chat_id},
+                                     headers=_edge_headers(key, accept="application/json")) as response:
+                if response.status_code != 200 or not response.headers.get("content-type", "").lower().startswith("application/json"):
+                    return None
+                raw = await _bounded_response_bytes(response, 1024)
+        parsed = json.loads(raw)
+        if (isinstance(parsed, dict) and set(parsed) == {"state"}
+                and isinstance(parsed["state"], str) and parsed["state"] in {"settled", "active"}):
+            return parsed["state"]
+    except (httpx.HTTPError, asyncio.TimeoutError, ValueError, TypeError):
+        pass
+    return None
+
+
+@router.post("/chat/activity")
+async def pixel_chat_activity(body: ChatCancelRequest, owner: str = Depends(verify_api_key)) -> dict[str, str]:
+    """One authenticated chat lookup; global activity never supplies its state.
+
+    A turn this process still streams is active. Otherwise, when no stream of
+    this chat passes through the edge, the host ingress is asked to settle the
+    chat: under its history lock it proves the native session idle before it
+    records a turn that a restart cut off as interrupted, and it never stops a
+    run. Only that proof turns the chat terminal here, and it also releases
+    receipts no producer owns any more, so the chat can take its next message.
+    """
+    config = _pixel_config()
+    if config is None:
+        return {"state": "unknown"}
+    edge_url, key = config
+    conversation = (owner_namespace(owner), body.chat_id) if isinstance(owner, str) else None
+    if conversation is not None and _owns_live_work(conversation):
+        return {"state": "active"}
+    state = await _edge_chat_activity(edge_url, key, body.chat_id)
+    if state is None:
+        return {"state": "unknown"}
+    if state == "active" or conversation is None:
+        return {"state": state}
+    # A Stop, a turn or another check may have started here during that read.
+    # It owns the chat now; settling beside it could race its outcome.
+    if _owns_live_work(conversation) or conversation in _result_settles:
+        return {"state": "active"}
+    # Fence this process's own next attempt so it cannot race the history
+    # lock. A Stop keeps its own fence; only this check removes this one.
+    _result_settles.add(conversation)
+    try:
+        settled = await _settle_edge_chat(edge_url, key, body.chat_id)
+        if settled == "settled" and _owns_live_work(conversation):
+            # A Stop that started meanwhile settles its own receipt.
+            settled = "active"
+        if settled == "settled":
+            store = _chat_results()
+            for identity in store.pending_attempts(conversation):
+                row = _result_state(store, identity)
+                if row is not None and row["state"] == "unresolved":
+                    # No producer owns this receipt and the ingress proved the
+                    # chat idle. Keep every saved chunk; never call it complete.
+                    store.finish(identity, "interrupted")
+    finally:
+        _result_settles.discard(conversation)
+    if settled == "settled":
+        return {"state": "terminal"}
+    if settled == "active":
+        return {"state": "active"}
+    # An older edge or ingress cannot settle. Its own memory that the chat
+    # ended does not free a chat that a receipt still holds: the next message
+    # would only be refused.
+    if state == "terminal" and _chat_results().pending_attempts(conversation):
+        return {"state": "unknown"}
+    return {"state": state}
 
 
 _EXAMPLE_PROJECT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -1133,6 +1255,8 @@ async def _retained_chat_stream(request, body, owner):
     try:
         if identity[:2] in _result_stops:
             raise ResultConflict("Stop is still being confirmed")
+        if identity[:2] in _result_settles:
+            raise ResultConflict("The last turn of this chat is still being checked")
         created = store.reserve(identity, fingerprint)
     except ResultConflict as exc:
         raise HTTPException(status_code=423, detail=str(exc)) from None

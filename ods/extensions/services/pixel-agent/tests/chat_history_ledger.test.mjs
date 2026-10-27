@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {createChatHistoryLedger,validateHistorySnapshot} from '../host/chat_history_ledger.mjs';
+import {spawnSync} from 'node:child_process';
+import {createChatHistoryLedger,staleLock,validateHistorySnapshot} from '../host/chat_history_ledger.mjs';
 
 const user='ods-'+'a'.repeat(64), other='ods-'+'b'.repeat(64);
 const ready={status:'ready',sessionRevision:'one',compaction:{count:0}};
@@ -91,6 +92,54 @@ test('same-chat locks cover independent instances while unrelated chats remain u
   const {dir,ledger}=fixture(t),release=ledger.lock(user),otherLedger=createChatHistoryLedger(dir);
   assert.throws(()=>otherLedger.lock(user),/history-busy/);const releaseOther=otherLedger.lock(other);releaseOther();release();release();
   otherLedger.lock(user)();
+});
+test('a crash-torn lock or one this process does not hold never closes a conversation for good',t=>{
+  const {dir,ledger}=fixture(t),file=path.join(dir,`${user}.lock`),old=new Date(Date.now()-60000);
+  const release=ledger.lock(user);assert.equal(JSON.parse(fs.readFileSync(file,'utf8')).pid,process.pid);release();
+  // A crash between creating the lock and writing its owner left it empty or torn.
+  for(const torn of ['','{"pi']) {fs.writeFileSync(file,torn,{mode:0o600});fs.utimesSync(file,old,old);ledger.lock(user)();}
+  // A just-created empty lock may still be mid-write by a live holder.
+  fs.writeFileSync(file,'',{mode:0o600});assert.throws(()=>ledger.lock(user),/history-busy/);fs.unlinkSync(file);
+  // This PID in a lock no ledger here holds came from an earlier incarnation.
+  fs.writeFileSync(file,JSON.stringify({pid:process.pid}),{mode:0o600});ledger.lock(user)();
+  // The holder exited without releasing.
+  const exited=spawnSync(process.execPath,['-e','']).pid;
+  fs.writeFileSync(file,JSON.stringify({pid:exited}),{mode:0o600});ledger.lock(user)();
+  // A PID no process can have is torn data, not a holder.
+  fs.writeFileSync(file,JSON.stringify({pid:3000000000}),{mode:0o600});fs.utimesSync(file,old,old);ledger.lock(user)();
+  assert.equal(fs.existsSync(file),false);
+});
+test('a lock write that fails leaves no empty lock behind',t=>{
+  const {dir,ledger}=fixture(t),file=path.join(dir,`${user}.lock`),write=fs.writeFileSync;
+  t.mock.method(fs,'writeFileSync',(target,...rest)=>{if(typeof target==='number') throw Object.assign(new Error('no space'),{code:'ENOSPC'});return write(target,...rest)});
+  assert.throws(()=>ledger.lock(user),/history-storage-unavailable/);
+  assert.equal(fs.existsSync(file),false);
+  t.mock.restoreAll();ledger.lock(user)();
+});
+test('a lock from an earlier boot is reclaimed even when its PID is alive again',{skip:!fs.existsSync('/proc/sys/kernel/random/boot_id')},t=>{
+  const {dir,ledger}=fixture(t),file=path.join(dir,`${user}.lock`),live=process.ppid;
+  const release=ledger.lock(user);assert.match(JSON.parse(fs.readFileSync(file,'utf8')).boot,/^[a-f0-9-]{36}$/);release();
+  fs.writeFileSync(file,JSON.stringify({pid:live,boot:'00000000-0000-0000-0000-000000000000'}),{mode:0o600});ledger.lock(user)();
+  // Older locks name no boot; one written before this boot is just as stale.
+  fs.writeFileSync(file,JSON.stringify({pid:live}),{mode:0o600});fs.utimesSync(file,new Date(0),new Date(0));ledger.lock(user)();
+  fs.writeFileSync(file,JSON.stringify({pid:live}),{mode:0o600});assert.throws(()=>ledger.lock(user),/history-busy/);
+});
+test('lock staleness separates live holders from crash leftovers',()=>{
+  const now=Date.now(),boot={bootId:'11111111-1111-1111-1111-111111111111',bootTime:now-3600000},file='/state/ods.lock',at=mtimeMs=>({mtimeMs});
+  const owner=(pid,extra={})=>JSON.stringify({pid,...extra});
+  assert.equal(staleLock(file,at(now),'',boot,now),false);
+  assert.equal(staleLock(file,at(now-60000),'',boot,now),true);
+  assert.equal(staleLock(file,at(now-60000),'{"pid":',boot,now),true);
+  assert.equal(staleLock(file,at(now),owner(process.ppid,{boot:'22222222-2222-2222-2222-222222222222'}),boot,now),true);
+  assert.equal(staleLock(file,at(now-7200000),owner(process.ppid),boot,now),true);
+  assert.equal(staleLock(file,at(now),owner(process.ppid,{boot:boot.bootId}),boot,now),false);
+  assert.equal(staleLock(file,at(now),owner(process.pid,{boot:boot.bootId}),boot,now),true);
+  // Ubuntu restarted inside a running WSL VM: same boot, the PID reused or gone.
+  for(const seen of ['reused','gone']) assert.equal(staleLock(file,at(now),owner(4242,{boot:boot.bootId,start:7}),boot,now,()=>seen),true);
+  assert.equal(staleLock(file,at(now),owner(4242,{boot:boot.bootId,start:7}),boot,now,()=>'alive'),false);
+  assert.equal(staleLock(file,at(now+60000),'',boot,now),true);
+  assert.equal(staleLock(file,at(now),owner(3000000000),boot,now),false);
+  assert.equal(staleLock(file,at(now),owner(process.ppid),null,now),false);
 });
 test('archives remain bounded, isolated and reject unsafe storage or injected authority',t=>{
   const {dir,ledger}=fixture(t);

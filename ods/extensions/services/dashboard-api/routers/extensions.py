@@ -5,7 +5,9 @@ import contextlib
 import hashlib
 import json
 import logging
+import mmap
 import os
+import platform
 import re
 import shutil
 import stat
@@ -438,16 +440,44 @@ def _cleanup_stale_progress() -> None:
             pass
 
 
+def _store_progress(service_id: str, record: dict) -> None:
+    """Replace a service's progress record, never rewriting it in place.
+
+    The host agent replaces the same records and the Extensions page polls
+    them, so a reader sees the old record or the new one. Where the install
+    owner is not UID 1000 this API cannot write the owner's progress
+    directory, and the refusal turned a failed start into an HTTP 500 that
+    also broke Retry (Workstation06, 2026-10-26). The host agent records the
+    outcome of starts and installs itself, so a refusal is logged instead.
+    """
+    progress_dir = Path(DATA_DIR) / "extension-progress"
+    temporary = None
+    try:
+        progress_dir.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(dir=progress_dir, prefix=f".{service_id}-", suffix=".tmp")
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(record, stream)
+        # mkstemp creates 0600; the host agent reads these records as the owner.
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, progress_dir / f"{service_id}.json")
+        temporary = None
+    except PermissionError as exc:
+        logger.warning("Progress record for %s was not written (%s); the host agent records "
+                       "start and install outcomes itself.", service_id, exc)
+    finally:
+        if temporary is not None:
+            Path(temporary).unlink(missing_ok=True)
+
+
 def _write_initial_progress(service_id: str, operation: str | None = None) -> None:
     """Write an initial progress file so the UI sees 'installing' immediately.
 
     ``operation`` ("install" or "start") tells a Retry after an interruption
     which request to repeat.
     """
-    progress_dir = Path(DATA_DIR) / "extension-progress"
-    progress_dir.mkdir(parents=True, exist_ok=True)
+
     now = datetime.now(timezone.utc).isoformat()
-    progress = {
+    _store_progress(service_id, {
         "service_id": service_id,
         "status": "pulling",
         "phase_label": "Starting installation...",
@@ -455,9 +485,8 @@ def _write_initial_progress(service_id: str, operation: str | None = None) -> No
         "started_at": now,
         "updated_at": now,
         **({"operation": operation} if operation else {}),
-    }
-    progress_file = progress_dir / f"{service_id}.json"
-    progress_file.write_text(json.dumps(progress), encoding="utf-8")
+    })
+
 
 
 def _write_error_progress(service_id: str, error_msg: str) -> None:
@@ -477,8 +506,8 @@ def _write_error_progress(service_id: str, error_msg: str) -> None:
     # This failure has its own cause; an earlier interruption is over.
     data.pop("interrupted", None)
     data.pop("interrupted_phase", None)
-    progress_file.parent.mkdir(parents=True, exist_ok=True)
-    progress_file.write_text(json.dumps(data), encoding="utf-8")
+    _store_progress(service_id, data)
+
 
 
 def _write_started_progress(service_id: str) -> None:
@@ -497,8 +526,7 @@ def _write_started_progress(service_id: str) -> None:
         return
     progress.update(status="started", phase_label="Service started", error=None,
                     updated_at=datetime.now(timezone.utc).isoformat())
-    progress_file = Path(DATA_DIR) / "extension-progress" / f"{service_id}.json"
-    progress_file.write_text(json.dumps(progress), encoding="utf-8")
+    _store_progress(service_id, progress)
 
 
 def _has_error_progress(service_id: str) -> bool:
@@ -665,6 +693,33 @@ def _gpu_compatible(ext: dict) -> bool:
     return not gpu_backends or "all" in gpu_backends or GPU_BACKEND in gpu_backends
 
 
+# Containers share the host kernel, so this API sees the Docker host's CPU
+# architecture and page size.
+_HOST_ARCH = {"x86_64": "amd64", "aarch64": "arm64"}.get(platform.machine().lower(), platform.machine().lower())
+_HOST_PAGE_SIZE = mmap.PAGESIZE
+
+
+def _host_unsupported_reason(ext: dict) -> str:
+    """Why this host cannot run the entry's image, or "" when it can.
+
+    Some upstream images exist for one CPU architecture, or abort on kernel
+    pages larger than 4 KB; on Workstation06 (arm64, 64 KB pages) they
+    crash-looped after an enable (#8257). Docker Desktop on macOS runs amd64
+    images under Rosetta 2, so architectures do not apply there.
+    """
+    requirements = ext.get("host_requirements")
+    if not isinstance(requirements, dict):
+        return ""
+    name = ext.get("name") or ext.get("id", "This extension")
+    architectures = requirements.get("architectures")
+    if isinstance(architectures, list) and GPU_BACKEND != "apple" and _HOST_ARCH not in architectures:
+        return f"{name}'s image is built for {' and '.join(architectures)} only; this machine is {_HOST_ARCH}."
+    max_page_size = requirements.get("max_page_size")
+    if type(max_page_size) is int and _HOST_PAGE_SIZE > max_page_size:
+        return f"{name}'s image cannot run with this machine's {_HOST_PAGE_SIZE // 1024} KB memory pages."
+    return ""
+
+
 def _service_starting(service) -> bool:
     """Startup requires declared container health, not a slow/failed HTTP probe."""
     return (service is not None and service.status in {"down", "degraded"}
@@ -681,7 +736,7 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
     # A Library built-in this host's backend cannot run (ComfyUI needs AMD or
     # NVIDIA) stays incompatible even though other hosts may add it; its
     # selection and any receipt from a refused attempt are moot here.
-    if ext_id in LIBRARY_MANAGEABLE_BUILTINS and not _gpu_compatible(ext):
+    if ext_id in LIBRARY_MANAGEABLE_BUILTINS and (not _gpu_compatible(ext) or _host_unsupported_reason(ext)):
         return "incompatible"
 
     # Check for in-flight install operations (progress files take priority)
@@ -713,9 +768,10 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
             # show "installing". If older, the user likely stopped the
             # container afterwards â€” fall through to normal status logic.
             if not _is_stale(progress.get("updated_at", ""), max_age_seconds=300):
-                # Long-running services still need an observed healthy state.
+                # Long-running services still need an observed healthy state;
+                # a crash loop is a failure, not a slow first health check.
                 svc = services_by_id.get(ext_id)
-                if not (svc and svc.status == "healthy"):
+                if not (svc and (svc.status == "healthy" or getattr(svc, "crash_looping", False))):
                     return "installing"
 
     # The process imported SERVICES before a Library action could have
@@ -767,8 +823,8 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
         if (user_dir / "compose.yaml.disabled").exists():
             return "disabled"
 
-    # GPU incompatibility
-    if not _gpu_compatible(ext):
+    # GPU incompatibility, or an image this host cannot run
+    if not _gpu_compatible(ext) or _host_unsupported_reason(ext):
         return "incompatible"
 
     if ext.get("catalog_source") == "builtin":
@@ -2080,14 +2136,19 @@ async def _inspect_non_http_user_services(configs: dict, statuses: dict) -> None
             containers = snapshot["containers"]
     except (AgentClientError, ValueError):
         pass
+    from helpers import container_crash_looping  # noqa: PLC0415 - avoid import cycle
+
     for sid, cfg in candidates.items():
         matches = [item for item in containers if isinstance(item, dict) and item.get("service_id") == sid]
         state = "unknown"
         startup_pending = False
+        crash_looping = False
         # Ambiguous snapshots cannot establish readiness of this extension.
         if len(matches) == 1:
             item = matches[0]
-            if item.get("state") == "running":
+            if container_crash_looping(item):
+                state, crash_looping = "unhealthy", True
+            elif item.get("state") == "running":
                 state = {"healthy": "healthy", "unhealthy": "unhealthy"}.get(item.get("health"), "degraded")
                 startup_pending = item.get("health") == "starting"
             elif item.get("state") in {"exited", "dead", "removing", "created"}:
@@ -2096,7 +2157,7 @@ async def _inspect_non_http_user_services(configs: dict, statuses: dict) -> None
             id=sid, name=cfg.get("name", sid), port=cfg["port"],
             external_port=cfg.get("external_port", cfg["port"]),
             status=state, response_time_ms=None,
-            startup_pending=startup_pending,
+            startup_pending=startup_pending, crash_looping=crash_looping,
         )
 
 
@@ -2263,6 +2324,9 @@ async def extensions_catalog(
         }
         if ext_id == "opencode" and ext_id in SERVICES:
             enriched.update(_opencode_catalog_fields(status))
+        unsupported = _host_unsupported_reason(ext)
+        if unsupported:
+            enriched["incompatible_reason"] = unsupported
         llm_contract = _llm_contract_for_extension(ext)
         if llm_contract is not None:
             enriched["llm"] = llm_contract
@@ -3801,7 +3865,9 @@ async def extension_detail(
         "description": ext.get("description", ""),
         "status": status,
         "error_message": error_message,
+        "incompatible_reason": _host_unsupported_reason(ext) or None,
         **interrupted,
+
         "runtime_starting": status == "installing" and _service_starting(services_by_id.get(service_id)),
         "source": source,
         "installable": installable,
@@ -5062,6 +5128,9 @@ def prepare_extension_images(
                 status_code=409,
                 detail=f"{entry.get('name', service_id)} is not available on this hardware.",
             )
+        unsupported = _host_unsupported_reason(entry)
+        if unsupported:
+            raise HTTPException(status_code=409, detail=unsupported)
         bundled = EXTENSIONS_DIR.resolve()
         if not _resolve_extension_dir(service_id).is_relative_to(bundled):
             raise HTTPException(status_code=400, detail="Only services shipped with ODS prepare images ahead of enabling")
@@ -5115,6 +5184,9 @@ def enable_extension(
             detail=f"{entry.get('name', service_id)} needs one of these GPU backends: {backends}. "
                    "It is not available on this hardware.",
         )
+    unsupported = _host_unsupported_reason(entry)
+    if unsupported:
+        raise HTTPException(status_code=409, detail=unsupported)
 
     ext_dir = _resolve_extension_dir(service_id)
 
@@ -5505,8 +5577,8 @@ def disable_extension(service_id: str, include_data_info: bool = Query(True), ap
     # time, so companions go first.
     for target in (*companions, service_id):
         _select_extensions_on_host("disable", [target])
-        progress_file = Path(DATA_DIR) / "extension-progress" / f"{target}.json"
-        progress_file.unlink(missing_ok=True)
+        # The host clears its own record; this covers an older host agent.
+        _clear_progress(target)
 
     logger.info("Disabled extension: %s (companions: %s)", service_id, companions or "none")
 
@@ -5743,8 +5815,8 @@ def uninstall_extension(service_id: str, include_data_info: bool = Query(True),
             shutil.rmtree(backup)
         _invalidate_extension_digest_cache(ext_dir, backup)
 
-        progress_file = _contained_path(Path(DATA_DIR) / "extension-progress", f"{service_id}.json")
-        progress_file.unlink(missing_ok=True)
+        _clear_progress(service_id)
+
 
     logger.info("Uninstalled extension: %s (stopped first: %s, containers: %s, data deleted: %s)",
                 service_id, stopped_before_removal,
@@ -5826,8 +5898,7 @@ def purge_extension_data(
         # Also clean up the per-service install-progress file so
         # _compute_extension_status does not keep showing a stale "installing"
         # entry after the user purges an extension's data.
-        progress_file = Path(DATA_DIR) / "extension-progress" / f"{service_id}.json"
-        progress_file.unlink(missing_ok=True)
+        _clear_progress(service_id)
 
         return {"id": service_id, "action": "purged", "size_gb_freed": size_gb}
 

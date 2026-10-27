@@ -181,7 +181,7 @@ export const EMPTY_PUBLISHED_FILES_PREFIX = "Published files that are empty (0 b
 // Portal's dashboard already shows this preview in its own card, so such a
 // directive (seen live: [embed ref="site-..." title="Dragon" height="560" /])
 // is at best repeated markup.
-export const PREVIEW_CARD_GUIDANCE = "Portal shows this preview to the owner in a card with your reply, so do not add an [embed ...] directive for it.";
+export const PREVIEW_CARD_GUIDANCE = "Portal shows this preview to the owner in a card with your reply, so do not add an [embed ...] directive or a link for it; the card opens the preview for the owner.";
 
 // Displayed with host-authoritative publication evidence, independently of model prose.
 export const PREVIEW_STORAGE_DISCLOSURE = "Inputs in the embedded preview may be lost on reload. Storage behavior can differ in a separate tab; publishing alone does not guarantee saved data.";
@@ -332,12 +332,15 @@ export function createWorkspacePreviewTool({ request, transport = "unix" } = {})
         const failureCode = validatedFailureCode(raw);
         if (failureCode) return failedResult(failureCode, raw.artifactError);
         const response = validResponse(raw, normalized);
+        // The verified URL stays in details for the card and the guard. In the
+        // model's text it ended up pasted into replies, and that localhost
+        // address opens only on the ODS machine (DGX Station, 2026-10-26).
         return {
           content: [{
             type: "text",
             text:
               `ODS independently published and read back ${response.files} workspace static files ` +
-              `(${response.bytes} bytes). Verified browser URL: ${response.url}. ` +
+              `(${response.bytes} bytes). ` +
               PREVIEW_CARD_GUIDANCE + ' ' +
               `Inspection snapshot: ${JSON.stringify({siteId:response.siteId,sha256:response.sha256})}. ` +
               'Use pixel_ods_workspace_preview_inspect for this owned preview, not public web_fetch or shell HTTP. Copy both identifiers exactly; sha256 is the full snapshot digest, not entrySha256 or the shortened site suffix. ' +

@@ -220,7 +220,7 @@ function unreadCitations(text, opened) {
 export const UNREAD_SOURCES_REPLACEMENT = 'The cited source reads were not confirmed in this response. The research is incomplete; I cannot present those references as verified pages.';
 export const UNREAD_SOURCE_MARKER = '[source not verified]';
 export const UNREAD_SOURCE_NOTE = '**Source check:** Pixel could not confirm a successful read of every page this answer cited. ' +
-  `Links without a confirmed read in this response were replaced with ${UNREAD_SOURCE_MARKER}; the claims marked that way lack a verified source.`;
+  `Links without a confirmed read were replaced with ${UNREAD_SOURCE_MARKER}; the claims marked that way lack a verified source.`;
 export const UNREAD_SOURCES_REVISION_INSTRUCTION = [
   'The owner requested source reads. These cited URLs were not read successfully in this response: ',
   '. Revise your answer: replace each listed URL with a page you actually read successfully in this response that supports the same claim, ' +
@@ -362,10 +362,97 @@ export function portugueseDateHint(ownerText) {
   return /\b(?:voce|noticias|hoje|consulte|pesquise|busque|procure|crie|arquivo|instale|instalar|baixar|configurar|quais|qual (?:e|o|a|os|as|sao))\b/.test(normalize(ownerText));
 }
 
-export function createCompletionAssurance({englishOnly = false} = {}) {
+// Conservative, English-only policy: the owner explicitly authorizes reusing
+// a source/page/documentation page that was already read or found earlier in
+// this chat. A bare "official" mention, a request to refresh/reread, or a
+// negated/quoted/code/example reuse phrase does not authorize reuse. "Execute
+// now" and freshness requests unrelated to sources (e.g. a current balance)
+// do not reject an otherwise explicit reuse authorization.
+export function ownerAuthorizesPriorSourceReuse(ownerText) {
+  const raw = String(ownerText ?? '');
+  // Strip fenced code, inline code, block quotes and quoted spans: reuse
+  // phrases inside them are examples, not owner instructions.
+  const stripped = raw
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`[^`\n]*`/g, ' ')
+    .replace(/^\s*>.*$/gm, ' ')
+    .replace(/"[^"\n]*"/g, ' ')
+    .replace(/(^|[\s([{])'[^'\n]*'(?=$|[\s)\]},.!?])/g, '$1 ')
+    .replace(/“[^”\n]*”|‘[^’\n]*’/g, ' ');
+  const value = normalize(stripped).replaceAll('’', "'");
+  if (/^\s*(?:(?:please|could you)\s+)?(?:explain|translate|quote|repeat|define|write an example|give an example)\b/.test(value) ||
+      /\b(?:example|phrase|quotation)\b[^.!?\n]{0,30}(?:says?|:)/.test(value)) return false;
+  // Explicit refusal to reuse prior sources.
+  if (/\b(?:without|do not|don't|never|ignore|discard|forget|no need to)\b[^.!?;\n]{0,100}\b(?:sources?|pages?|docs?|documentation|links?|reus(?:e|ing))\b/.test(value)) return false;
+  // Explicit refresh/reread requests override reuse authorization.
+  if (/\b(?:refresh|reread|re-read|re-?fetch|re-?open|re-?check)\b[^,.!?;\n]{0,60}\b(?:sources?|pages?|docs?|documentation|links?)\b/.test(value) ||
+      /\b(?:latest|newest|up-?to-?date|current)\s+(?:official\s+)?(?:(?:version|versions)\s+of\s+(?:the\s+)?)?(?:sources?|pages?|docs?|documentation|links?)\b/.test(value)) return false;
+  if (/\b(?:sources?|pages?|docs?|documentation|links?)\b[^.!?\n]{0,60}\b(?:refresh|reread|re-read|re-?fetch|re-?open|re-?check|latest|newest|up-?to-?date)\b/.test(value)) return false;
+  // Asking for links to pages the assistant already consulted is explicit
+  // reuse too. This only selects existing receipts; it cannot verify new URLs.
+  if (/\b(?:add|include|provide|show|give|attach|insert)\b[^.!?\n]{0,60}\b(?:clickable\s+)?(?:links?|urls?|citations?)\b[^.!?\n]{0,80}\b(?:documentation|docs?|sources?|pages?)\b[^.!?\n]{0,80}\byou\s+(?:(?:actually|already|previously)\s+)?(?:consulted|read|opened|used)\b/.test(value)) return true;
+  // Explicit affirmative reuse of a source/page/doc already read or found.
+  return /\b(?:reuse|re-use|use|cite|reference|rely on)\b[^.!?\n]{0,60}\b(?:sources?|pages?|docs?|documentation|links?)\b[^.!?\n]{0,60}\b(?:you (?:(?:already|actually) )?(?:read|found|opened|consulted)|already (?:read|found|opened|consulted)|read earlier|found earlier|opened earlier|consulted earlier|from earlier|from before|previously (?:read|found|opened|consulted))\b/.test(value) ||
+    /\b(?:sources?|pages?|docs?|documentation|links?)\b[^.!?\n]{0,60}\b(?:you (?:(?:already|actually) )?(?:read|found|opened|consulted)|already (?:read|found|opened|consulted)|read earlier|found earlier|opened earlier|consulted earlier|from earlier|from before|previously (?:read|found|opened|consulted))\b[^.!?\n]{0,60}\b(?:reuse|re-use|use|cite|reference|rely on)\b/.test(value) ||
+    /\b(?:the|that|this|same)\b[^.!?\n]{0,40}\b(?:official )?(?:documentation|docs?|page|source)\b[^.!?\n]{0,60}\b(?:you (?:(?:already|actually) )?(?:found|read|opened|consulted)|already (?:found|read|opened|consulted)|found earlier|read earlier|opened earlier|consulted earlier)\b/.test(value);
+}
+
+export function createCompletionAssurance({englishOnly = false, now = Date.now} = {}) {
   let initialized = false, research = false, portuguese = false, conversational = false, attempts = 0;
+  // Bounded current-run source receipts: URL -> timestamp of the actual
+  // successful openedSourceUrls observation. Insertion order is recency order
+  // (a re-observation moves the URL to the end and refreshes its timestamp).
+  const sourceReceipts = new Map();
+  const MAX_SOURCE_RECEIPTS = 32;
+  const SOURCE_RECEIPT_MAX_AGE_MS = 30 * 60 * 1000;
+  const recordSourceReceipt = url => {
+    const at = now();
+    if (!Number.isFinite(at)) return;
+    sourceReceipts.delete(url);
+    sourceReceipts.set(url, at);
+    while (sourceReceipts.size > MAX_SOURCE_RECEIPTS) {
+      sourceReceipts.delete(sourceReceipts.keys().next().value);
+    }
+  };
   let readsRequired = false, attributionAttempts = 0;
   let sourceReadAttempted = false, workspaceReadReminderIssued = false;
+  // Trusted same-chat prior receipts, seeded once at first begin() when the
+  // owner explicitly authorizes reuse. Kept separate from current-run
+  // receipts: never exported, never counted as current reads, never fed to
+  // readPages/synthesisSources/currentRunSourceReceipts.
+  const priorReceipts = new Map();
+  let priorReuseAuthorized = false, priorSeeded = false, ownerBeganAt;
+  const MAX_PRIOR_RECEIPTS = 32;
+  const PRIOR_RECEIPT_MAX_AGE_MS = 30 * 60 * 1000;
+  const seedPriorReceipts = (list) => {
+    if (!Array.isArray(list) || !list.length) return;
+    const at = now();
+    if (!Number.isFinite(at)) return;
+    const seen = new Set();
+    for (const entry of list) {
+      if (priorReceipts.size >= MAX_PRIOR_RECEIPTS) break;
+      const url = citationKey(entry?.url);
+      const timestamp = entry?.timestamp;
+      if (!url || !Number.isFinite(timestamp) || timestamp > at || timestamp > ownerBeganAt ||
+          at - timestamp > PRIOR_RECEIPT_MAX_AGE_MS) continue;
+      if (seen.has(url)) continue;
+      seen.add(url);
+      priorReceipts.set(url, timestamp);
+    }
+  };
+  // Fresh prior receipts at the moment of use: re-filtered for age so a
+  // receipt that expired during the turn no longer counts.
+  const freshPriorReceipts = () => {
+    const at = now();
+    if (!Number.isFinite(at)) return new Map();
+    const out = new Map();
+    for (const [url, timestamp] of priorReceipts) {
+      if (timestamp > at) continue;
+      if (at - timestamp > PRIOR_RECEIPT_MAX_AGE_MS) continue;
+      out.set(url, timestamp);
+    }
+    return out;
+  };
   let workObserved = false, webObserved = false, terminal, terminalStatus = 'failed';
   // Run binding. An owner cancel ends this run's assurance for good: no later
   // revision, host read or replacement text. A run that follows a cancel can
@@ -408,16 +495,32 @@ export function createCompletionAssurance({englishOnly = false} = {}) {
     readPages.push(page);
   };
   return {
-    begin(ownerText, event) {
-      if (initialized) return;
-      initialized = true;
-      ownerRequest = normalize(ownerText).trim();
-      const precedingRequest = continuedOwnerRequest(ownerText, event);
-      readsRequired = sourceReadsRequested(ownerText) || sourceReadsRequested(precedingRequest);
-      research = readsRequired || researchRequested(ownerText) || researchRequested(precedingRequest);
-      terms = requestTerms(ownerText, precedingRequest);
-      conversational = /^(?:(?:please|por favor)[,\s]+)?(?:traduza|translate|reescreva|rewrite|repita|repeat|diga apenas|say exactly|responda apenas|return exactly|explique|explain|rascunho|draft|exemplo|example)\b/.test(normalize(ownerText).trim()) && !research;
-      portuguese = !englishOnly && portugueseDateHint(ownerText);
+    begin(ownerText, event, priorReceiptsInput) {
+      if (!initialized) {
+        initialized = true;
+        ownerBeganAt = now();
+        ownerRequest = normalize(ownerText).trim();
+        const precedingRequest = continuedOwnerRequest(ownerText, event);
+        readsRequired = sourceReadsRequested(ownerText) || sourceReadsRequested(precedingRequest);
+        research = readsRequired || researchRequested(ownerText) || researchRequested(precedingRequest);
+        terms = requestTerms(ownerText, precedingRequest);
+        conversational = /^(?:(?:please|por favor)[,\s]+)?(?:traduza|translate|reescreva|rewrite|repita|repeat|diga apenas|say exactly|responda apenas|return exactly|explique|explain|rascunho|draft|exemplo|example)\b/.test(normalize(ownerText).trim()) && !research;
+        portuguese = !englishOnly && portugueseDateHint(ownerText);
+        priorReuseAuthorized = ownerAuthorizesPriorSourceReuse(ownerText);
+      }
+      // Native prompt hooks may omit the session key. The first fully bound
+      // hook may supply receipts later, but cannot change the owner's intent
+      // or import a read performed after this owner turn began.
+      if (!priorSeeded && Array.isArray(priorReceiptsInput)) {
+        priorSeeded = true;
+        if (priorReuseAuthorized) seedPriorReceipts(priorReceiptsInput);
+      }
+    },
+    discardPriorSources() {
+      priorSeeded = true;
+      priorReceipts.clear();
+      if (terminalStatus === 'passed') terminal = undefined;
+      terminalStatus = 'failed';
     },
     // The owner cancelled this run. Any revision it armed, its replacement
     // text and any pending host read are void; nothing here outlives it.
@@ -450,9 +553,12 @@ export function createCompletionAssurance({englishOnly = false} = {}) {
           publicSourceUrl(details.url) && event.result.content?.some(block =>
             block?.type === 'text' && typeof block.text === 'string' && block.text.trim()) &&
           browserSnapshots.size < 128) browserSnapshots.add(publicSourceUrl(details.url));
-      for (const url of openedSourceUrls(tool, event.result)) if (opened.size < 128) {
-        opened.add(url);
-        sources.add(url);
+      for (const url of openedSourceUrls(tool, event.result)) {
+        recordSourceReceipt(url);
+        if (opened.size < 128) {
+          opened.add(url);
+          sources.add(url);
+        }
       }
       recordReadPage(readPageEntry(tool, event.result), typeof event.params?.query === 'string' ? event.params.query : undefined);
       workObserved = true;
@@ -492,6 +598,22 @@ export function createCompletionAssurance({englishOnly = false} = {}) {
       }
     },
     get hostVerifiedSources() { return [...hostVerified]; },
+    // Current-run source receipts: cloned fresh entries with timestamp <= now
+    // and age <= 30 minutes. Cancelled runs return none. Never includes
+    // browser snapshots, host verifications, search-only results, or any
+    // imported prior-run receipts.
+    currentRunSourceReceipts() {
+      if (cancelled) return [];
+      const at = now();
+      if (!Number.isFinite(at)) return [];
+      const out = [];
+      for (const [url, timestamp] of sourceReceipts) {
+        if (timestamp > at) continue;
+        if (at - timestamp > SOURCE_RECEIPT_MAX_AGE_MS) continue;
+        out.push({url, timestamp});
+      }
+      return out;
+    },
     // Pages read successfully in this response: current-run model read
     // receipts (web_fetch, targeted extraction) and host verifications.
     get readPages() { return readPages.map(({url, title}) => (title ? {url, title} : {url})); },
@@ -510,7 +632,14 @@ export function createCompletionAssurance({englishOnly = false} = {}) {
       if (cancelled) return;
       if (conversational) return;
       const read = readSources();
-      const unread = readsRequired ? unreadCitations(text, read) : [];
+      // Prior receipts may satisfy the cited-page read check only when the
+      // owner authorized reuse and the receipt is still fresh. They never
+      // enter `read`/`opened`/`sources`; they are consulted only here.
+      const prior = freshPriorReceipts();
+      const priorKeys = new Set([...prior.keys()].map(citationKey).filter(Boolean));
+      const currentKeys = readKeys(read);
+      const combinedRead = priorKeys.size ? new Set([...read, ...prior.keys()]) : read;
+      const unread = readsRequired ? unreadCitations(text, combinedRead) : [];
       if (unread.length) {
         // Never mark the answer successful or leave an unread link presented
         // as a source. When some cited pages were read, keep the answer with
@@ -518,8 +647,14 @@ export function createCompletionAssurance({englishOnly = false} = {}) {
         // Armed before the revision (the harness may refuse another pass); a
         // later corrected answer clears it.
         terminalStatus = 'failed';
-        const partial = partialCitationAnswer(text, read);
-        terminal = partial ?? UNREAD_SOURCES_REPLACEMENT;
+        const partial = partialCitationAnswer(text, combinedRead);
+        const retainedPrior = partial && citationSpans(partial).some(span =>
+          span.key && priorKeys.has(span.key) && !currentKeys.has(span.key));
+        terminal = partial
+          ? partial + (retainedPrior
+            ? '\n\nSome cited pages were read earlier in this chat and were not reread this turn.'
+            : '')
+          : UNREAD_SOURCES_REPLACEMENT;
         if (attributionAttempts++ < 1) return {action:'revise', reason:'Cited pages lack current-turn read receipts.', retry:{
           idempotencyKey:'ods-opened-source-attribution', maxAttempts:1,
           instruction:UNREAD_SOURCES_REVISION_INSTRUCTION.join(JSON.stringify(unread)),
@@ -529,16 +664,22 @@ export function createCompletionAssurance({englishOnly = false} = {}) {
           : 'Bounded source-read attribution recovery exhausted.'};
       }
       const promise = promisesExecution(text);
-      const missingResearch = research && (!webObserved || sources.size === 0);
-      const cited = sources.size ? new Set(citationSpans(String(text)).map(span => span.key).filter(Boolean)) : new Set();
+      // A cited prior receipt that the owner authorized counts as evidence
+      // for the research gate even without a current web observation.
+      const citedPrior = priorKeys.size
+        ? citationSpans(String(text)).some(span => span.key && priorKeys.has(span.key) && !currentKeys.has(span.key))
+        : false;
+      const missingResearch = research && (!webObserved || sources.size === 0) && !citedPrior;
+      const cited = new Set(citationSpans(String(text)).map(span => span.key).filter(Boolean));
       // Returned web evidence normally answers this run's owner request. After
       // a cancel it may answer the withdrawn one instead (tower1 r067: a
       // conversational reply was revised into the cancelled research). Only
       // the current request, or a resend of the withdrawn one, binds it.
       const evidenceBound = !withdrawnRequest || research || readsRequired ||
         Boolean(withdrawnRequest.text && withdrawnRequest.text === ownerRequest);
-      const missingCitations = evidenceBound && sources.size > 0 && ![...sources, ...hostVerified].some(url => text.includes(url) ||
-        text.includes(url.replaceAll('(', '%28').replaceAll(')', '%29')) || cited.has(citationKey(url)));
+      const missingCitations = evidenceBound && (sources.size > 0 || priorKeys.size > 0) &&
+        ![...sources, ...hostVerified, ...prior.keys()].some(url => text.includes(url) ||
+          text.includes(url.replaceAll('(', '%28').replaceAll(')', '%29')) || cited.has(citationKey(url)));
       // A candid failure or clarification is a valid terminal answer. It must
       // not be turned into another attempt that repeats denied work.
       // "If a tool is unavailable, I will report it" is a contingency, not
@@ -550,7 +691,22 @@ export function createCompletionAssurance({englishOnly = false} = {}) {
         (/\?/.test(text) && /\b(?:posso|autoriza|confirma|may i|can i|would you|please confirm)\b/.test(normalize(text)));
       // After partial work a short promise still isn't a delivered result.
       const promiseOnly = promise && (!workObserved || (text.length < 900 && !/https?:\/\//.test(text)));
-      if ((!missingResearch && !promiseOnly && !missingCitations) || limitation) { terminal = undefined; return; }
+      if ((!missingResearch && !promiseOnly && !missingCitations) || limitation) {
+        // When the answer passes every gate and cites at least one prior
+        // receipt that was not reread this turn, attach a fixed short note so
+        // the owner sees the historical provenance. If every cited prior URL
+        // was reread this turn, no note is added.
+        const citedPriorOnly = priorKeys.size
+          ? citationSpans(String(text)).some(span => span.key && priorKeys.has(span.key) && !currentKeys.has(span.key))
+          : false;
+        if (!limitation && citedPriorOnly) {
+          terminalStatus = 'passed';
+          terminal = `${text}\n\n**Source check:** Some cited pages were read earlier in this chat and were not reread this turn.`;
+          return {action:'finalize', reason:'Answer passed with prior same-chat source receipts.'};
+        }
+        terminal = undefined;
+        return;
+      }
       // The harness may refuse a revision after a side effect. Arm truthful
       // delivery now, and clear it only if a later final answer passes.
       const attributionOnly = missingCitations && !promiseOnly && !missingResearch &&
