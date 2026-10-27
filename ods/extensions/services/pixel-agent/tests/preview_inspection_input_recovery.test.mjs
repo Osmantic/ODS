@@ -207,6 +207,7 @@ test('non-download paths explain navigation limits without transport or value di
   assert.match(result.content[0].text,/steps\[1\]\.path/);
   assert.match(result.content[0].text,/path is allowed only for a final download assertion/);
   assert.match(result.content[0].text,/no navigation or reload action/);
+  assert.match(result.content[0].text,/the entry page unless the top-level page names another/);
   assert.match(result.content[0].text,/cross-reload persistence as unverified/);
   assert.ok(!result.content[0].text.includes(marker));
   assert.ok(!result.content[0].text.includes('sibling-test.html'));
