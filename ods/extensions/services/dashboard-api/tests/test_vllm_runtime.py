@@ -85,6 +85,41 @@ async def test_vllm_context_is_the_served_rows_max_model_len(monkeypatch):
     client.get.assert_not_called()
 
 
+VLLM_METRICS = """# HELP vllm:num_requests_running Number of requests in model execution batches.
+# TYPE vllm:num_requests_running gauge
+vllm:num_requests_running{engine="0",model_name="GLM-5.3-Flash-NVFP4"} 1.0
+# TYPE vllm:generation_tokens_total counter
+vllm:generation_tokens_total{engine="0",model_name="GLM-5.3-Flash-NVFP4"} 4321.0
+vllm:generation_tokens_created{engine="0",model_name="GLM-5.3-Flash-NVFP4"} 1.7e9
+vllm:prompt_tokens_total{engine="0",model_name="GLM-5.3-Flash-NVFP4"} 9876.0
+"""
+
+
+@pytest.mark.asyncio
+async def test_vllm_metrics_count_tokens_without_claiming_a_rate(monkeypatch, tmp_path):
+    import helpers
+
+    monkeypatch.setattr("helpers.SERVICES", {"llama-server": {"host": "vllm-server", "port": 8000}})
+    monkeypatch.setattr("helpers.LLM_BACKEND", "vllm")
+    monkeypatch.setattr("helpers._host_native_llm", lambda: False)
+    monkeypatch.setattr(helpers, "_TOKEN_FILE", tmp_path / "token_counter.json")
+    helpers._prev_tokens.clear()
+    response = MagicMock()
+    response.text = VLLM_METRICS
+    response.raise_for_status = MagicMock()
+    client = AsyncMock()
+    client.get = AsyncMock(return_value=response)
+    monkeypatch.setattr("helpers._get_httpx_client", AsyncMock(return_value=client))
+
+    result = await helpers._fetch_llama_metrics(model_hint=SERVED)
+
+    assert result["tokens_per_second"] is None and result["_available"] is False
+    assert result["inference_active"] is True
+    assert result["_counters"] == (4321.0, None)
+    # One /metrics read: vLLM has no llama.cpp /slots to ask while it is busy.
+    assert [call.args[0] for call in client.get.call_args_list] == ["http://vllm-server:8000/metrics"]
+
+
 # --- readiness: names vllm-server, no restart while it starts ---
 
 

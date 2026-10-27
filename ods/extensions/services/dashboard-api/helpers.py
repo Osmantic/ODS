@@ -684,8 +684,17 @@ def _observe_live_output_slots(payload, sampled_at: float):
     return round(sum(count - previous["counts"][key] for key, count in counts.items()) / elapsed, 1)
 
 
+# vLLM's counters (LLM_BACKEND=vllm) under the names the sampler reads. vLLM
+# exports no generation-seconds counter, so its throughput reads unavailable
+# while its token count still accumulates.
+_VLLM_COUNTERS = {
+    "vllm:generation_tokens_total": "tokens_predicted_total",
+    "vllm:num_requests_running": "requests_processing",
+}
+
+
 def _parse_llama_prometheus(body: str) -> dict:
-    """Read the llama.cpp counters the dashboard samples from a /metrics body."""
+    """Read the llama.cpp (or vLLM) counters the dashboard samples from a /metrics body."""
     metrics: dict = {}
     for line in body.split("\n"):
         line = line.strip()
@@ -695,6 +704,12 @@ def _parse_llama_prometheus(body: str) -> dict:
         if len(parts) < 2:
             continue
         metric_name = parts[0].split("{", 1)[0]
+        if metric_name in _VLLM_COUNTERS:
+            try:
+                metrics[_VLLM_COUNTERS[metric_name]] = float(parts[1])
+            except ValueError:
+                pass
+            continue
         for counter in ("requests_processing", "tokens_predicted_total", "tokens_predicted_seconds_total"):
             if metric_name.endswith(counter):
                 try:
@@ -735,7 +750,8 @@ async def _fetch_llama_metrics(model_hint: Optional[str] = None, counter_id: Opt
             model_name = model_hint if model_hint is not None else (await get_loaded_model() or "")
             url = f"http://{host}:{metrics_port}/metrics"
             params = {"model": model_name} if model_name else {}
-            slots_url = f"http://{host}:{metrics_port}/slots"
+            # /slots is llama.cpp's; vLLM has no per-slot output timing.
+            slots_url = None if LLM_BACKEND == "vllm" else f"http://{host}:{metrics_port}/slots"
             client = await _get_httpx_client()
             resp = await client.get(url, params=params)
             resp.raise_for_status()
