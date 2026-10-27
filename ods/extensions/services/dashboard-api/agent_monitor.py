@@ -13,6 +13,7 @@ import os
 
 import aiohttp
 
+from config import WINDOWS_DESKTOP_PROFILE
 from helpers import get_llama_metrics, get_cached_llama_metrics
 
 logger = logging.getLogger(__name__)
@@ -231,10 +232,15 @@ async def collect_metrics():
     """Poll independent sources together on a five-second cadence."""
     while True:
         started = asyncio.get_running_loop().time()
-        results = await asyncio.gather(
-            cluster_status.refresh(), _fetch_token_spy_metrics(),
-            _fetch_runtime_metrics(), return_exceptions=True,
-        )
+        if WINDOWS_DESKTOP_PROFILE:
+            tasks = (_fetch_runtime_metrics(),)
+        else:
+            tasks = (
+                cluster_status.refresh(),
+                _fetch_token_spy_metrics(),
+                _fetch_runtime_metrics(),
+            )
+        results = await asyncio.gather(*tasks, return_exceptions=True)
         for result in results:
             if isinstance(result, Exception):
                 logger.debug("Metrics source unavailable: %s", type(result).__name__)
