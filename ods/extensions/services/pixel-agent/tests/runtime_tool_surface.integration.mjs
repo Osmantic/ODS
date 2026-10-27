@@ -180,6 +180,30 @@ test('ordinary discovery pages fit the result limit and keep upstream descriptio
   }
 });
 
+test('Portal discovery uses compact JSON without changing schema strings or structured metadata', async () => {
+  const original={...tool('calendar_layout'),description:'Preserve line one.\n  Preserve line two: "ação".',
+    parameters:{type:'object',required:['body'],properties:{body:{type:'string',
+      description:'Literal indentation:\n  do not trim\n\nfinal line',default:'  keep these spaces  '}}}};
+  for(const [agentId,mode] of [['pixel','tools'],['other-agent','tools'],['pixel','code']]) {
+    const config={tools:{toolSearch:{enabled:true,mode}}};
+    const catalogRef=createRef();
+    const ctx={agentId,catalogRef,config,runId:randomUUID()};
+    const nativeControls=createControls(ctx);
+    apply({...ctx,tools:[...nativeControls,original]});
+    const api=Object.fromEntries(nativeControls.map(value=>[value.name,value]));
+    const found=await api.tool_search.execute('find',{query:original.name});
+    const described=await api.tool_describe.execute('describe',{id:found.details[0].id});
+    for(const reply of [found,described]) {
+      assert.deepEqual(JSON.parse(reply.content[0].text),reply.details);
+      const expected=agentId==='pixel' && mode==='tools'
+        ? JSON.stringify(reply.details) : JSON.stringify(reply.details,null,2);
+      assert.equal(reply.content[0].text,expected,`${agentId}/${mode} discovery serialization`);
+    }
+    assert.equal(described.details.description,original.description);
+    assert.deepEqual(described.details.parameters,original.parameters);
+  }
+});
+
 test('tool visibility is independent of owner language and request content', () => {
   const tools = [tool('read'), tool('pixel_ods_skill'), tool('specialist')];
   for (const prompt of ['instale a extensÃ£o', 'do not install; research only', 'sim', 'éŸ³æ¥½']) {
