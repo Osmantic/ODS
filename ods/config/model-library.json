@@ -2906,7 +2906,7 @@
       "reasoning": "medium",
       "tool_call_parser": "glm47",
       "reasoning_parser": "glm47",
-      "vllm_args": ["--max-model-len", "131072", "--kv-cache-dtype", "fp8", "--max-num-seqs", "32", "--max-num-batched-tokens", "8192", "--enable-prefix-caching", "--enable-auto-tool-choice", "--tool-call-parser", "glm47", "--reasoning-parser", "glm47", "--trust-remote-code", "--speculative-config.method=mtp", "--speculative-config.num_speculative_tokens=5"],
+      "vllm_args": ["--max-model-len", "131072", "--kv-cache-dtype", "fp8", "--max-num-seqs", "32", "--max-num-batched-tokens", "8192", "--enable-prefix-caching", "--enable-auto-tool-choice", "--tool-call-parser", "glm47", "--reasoning-parser", "glm47", "--trust-remote-code", "--speculative-config.method=mtp", "--speculative-config.num_speculative_tokens=5", "--no-enable-flashinfer-autotune"],
       "selection": {
         "discrete": 0,
         "unified": 0,

@@ -193,11 +193,24 @@ MEASURED_FLAGS = {
 }
 
 
+# Plain switches measured the same way. The FlashInfer autotune loaded all 63 cached configs and
+# still ran its dummy passes for about 4 minutes on every GLM start; off, a restart was ready in
+# 156 s instead of 392 s at the same speed (1/4/16 streams: 349/965/2,276 tok/s against 349/961/2,246).
+# GLM fits only sm_103 GPUs (GB300/B300), where that was measured. Qwen3.8 also showed no loss on the
+# GB300 (226 s -> 155 s), but its main fit is B200-class sm_100, which is unmeasured, so it keeps it.
+MEASURED_SWITCHES = {
+    "qwen3.8-flash-next-nvfp4-vllm": set(),
+    "glm-5.3-flash-nvfp4-vllm": {"--no-enable-flashinfer-autotune"},
+}
+
+
 @pytest.mark.parametrize("model_id", sorted(MEASURED_FLAGS))
 def test_the_entries_keep_the_flags_measured_on_a_dgx_station(model_id):
     model = {item["id"]: item for item in _vllm_models()}[model_id]
     for flag, expected in MEASURED_FLAGS[model_id].items():
         assert _dotted_config(model["vllm_args"], flag) == expected, (model_id, flag)
+    switches = {arg for arg in model["vllm_args"] if arg == "--no-enable-flashinfer-autotune"}
+    assert switches == MEASURED_SWITCHES[model_id], model_id
 
 
 def test_the_broken_entry_cases_edit_what_they_name():
