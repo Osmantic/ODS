@@ -2154,15 +2154,17 @@ class TestUninstallExtension:
         directory = user_dir / "my-ext"
         removal_calls = []
         data_deletions = []
-        monkeypatch.setattr(
-            ext_module, "_call_agent_remove_containers",
-            lambda sid, *, delete_volumes: removal_calls.append((sid, delete_volumes))
-            or {"containers": [], "volumes_removed": [], "volumes_kept": []},
-        )
-        monkeypatch.setattr(
-            ext_module, "_delete_extension_data",
-            lambda sid: data_deletions.append(sid) or 0.0,
-        )
+
+        def remove_containers(sid, *, delete_volumes):
+            removal_calls.append((sid, delete_volumes))
+            return {"containers": [], "volumes_removed": [], "volumes_kept": []}
+
+        def delete_extension_data(sid):
+            data_deletions.append(sid)
+            return 0.0
+
+        monkeypatch.setattr(ext_module, "_call_agent_remove_containers", remove_containers)
+        monkeypatch.setattr(ext_module, "_delete_extension_data", delete_extension_data)
         if enabled:
             self._write_progress(tmp_path, "my-ext", "error", error="boom")
             host_selection = ext_module._select_extensions_on_host
