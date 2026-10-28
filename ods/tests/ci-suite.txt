@@ -7,6 +7,7 @@
 tests/test-installer-dry-run-jq.sh
 tests/test-phase06-gpu-env-rerun.py
 tests/test-inference-port-admission.sh
+tests/test-port-conflict-owner.sh
 tests/contracts/test-amd-llamacpp-contracts.sh
 tests/contracts/test-host-native-llm-contracts.sh
 tests/contracts/test-host-native-llm-cpu-fallback.sh
@@ -64,6 +65,7 @@ tests/test-comfyui-cuda-cache-persisted.sh
 tests/test-llama-cuda-cache-persisted.sh
 tests/test-vllm-engine-service.sh
 tests/test-vllm-installer-route.sh
+tests/test-gpu-memory-in-use.sh
 tests/test-vllm-installer-phases.sh
 tests/test-cli-vllm-engine.sh
 tests/test-doctor-vllm-engine.sh

@@ -11,7 +11,7 @@
 #           ENABLE_RAG, ENABLE_HERMES (all used by fix_nvidia_secure_boot),
 #           log/warn/ai/ai_ok/ai_warn/ai_bad helpers
 # Provides: detect_gpu(), load_capability_profile(), ods_is_wsl_host(),
-#           ods_windows_host_port_in_use(),
+#           ods_windows_host_port_in_use(), ods_gpu_memory_in_use_report(),
 #           normalize_profile_tier(), tier_rank(), load_backend_contract(),
 #           fix_nvidia_secure_boot(), MIN_DRIVER_VERSION
 #           Side-effect var on Jetson: JETSON_L4T_RELEASE (e.g. "R36.4.0")
@@ -24,6 +24,22 @@
 
 # Safe env loading (no eval) for script output KEY="value" lines
 [[ -f "${SCRIPT_DIR:-}/lib/safe-env.sh" ]] && . "${SCRIPT_DIR}/lib/safe-env.sh"
+
+# ods_gpu_memory_in_use_report
+# Reads `nvidia-smi --query-gpu=index,memory.total,memory.used
+# --format=csv,noheader,nounits` rows on stdin and prints one line per GPU
+# where programs already hold more than max(4 GiB, 10% of the card), such as
+# another model server: "GPU <index>: <used> of <total> GiB in use". A desktop
+# session stays under that floor; rows without numbers ([N/A] on
+# unified-memory GPUs) are skipped.
+ods_gpu_memory_in_use_report() {
+    awk -F', *' '
+        $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && $2 > 0 {
+            floor = $2 * 0.10
+            if (floor < 4096) floor = 4096
+            if ($3 + 0 > floor) printf "GPU %s: %.0f of %.0f GiB in use\n", $1, $3 / 1024, $2 / 1024
+        }'
+}
 
 # WSL2 forwards Docker-published ports through the Windows host. A port can
 # therefore look free to lsof/ss inside Linux while Docker Desktop still

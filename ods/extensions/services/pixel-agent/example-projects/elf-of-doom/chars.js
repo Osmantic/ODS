@@ -1,8 +1,8 @@
 // Elf of Doom — characters (cartoon canvas art)
 "use strict";
 
-// ---------- hero: Faelar Brightarrow with elven bow ----------
-function drawFaelar(g, p, time) {
+// ---------- hero: Gabriel with elven bow ----------
+function drawElf(g, p, time) {
   const s = p.face; // 1 right, -1 left
   const moving = p.moving;
   const legs = moving ? legSwing(time, .022) : [0, 0];

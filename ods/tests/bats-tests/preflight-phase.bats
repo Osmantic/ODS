@@ -197,6 +197,7 @@ MOCK
 @test "preflight: detects existing installation" {
     touch "$SCRIPT_DIR/docker-compose.base.yml"
     mkdir -p "$INSTALL_DIR"
+    touch "$INSTALL_DIR/.env"
 
     # Stub successful required-network probes and required tools.
     install_preflight_tool_stubs
@@ -225,6 +226,40 @@ MOCK
 
     # Should log about existing installation
     assert_output --partial "Existing installation"
+}
+
+@test "preflight: an install folder without .env is not an existing installation" {
+    touch "$SCRIPT_DIR/docker-compose.base.yml"
+    mkdir -p "$INSTALL_DIR"
+    install_preflight_tool_stubs
+
+    run bash -c '
+        export SCRIPT_DIR="'"$SCRIPT_DIR"'"
+        export INSTALL_DIR="'"$INSTALL_DIR"'"
+        export LOG_FILE="'"$LOG_FILE"'"
+        export INTERACTIVE=false
+        export DRY_RUN=false
+        export PKG_MANAGER="apt"
+        export VERSION="2.3.0"
+        export ODS_ALLOW_LEGACY_PARALLEL=1
+
+        log() { echo "LOG: $1"; }
+        warn() { :; }
+        error() { echo "ERROR: $1"; exit 1; }
+        ai() { :; }
+        ai_ok() { :; }
+        signal() { echo "SIGNAL: $1"; }
+        show_phase() { :; }
+        show_stranger_boot() { :; }
+        ods_progress() { :; }
+
+        source "'"$BATS_TEST_DIRNAME/../../installers/phases/01-preflight.sh"'"
+        echo "PHASE_COMPLETE"
+    '
+
+    # An empty folder or an unpacked source tree keeps no secrets to preserve.
+    assert_output --partial "PHASE_COMPLETE"
+    refute_output --partial "Existing install"
 }
 
 # ── Optional tools warning ──────────────────────────────────────────────────

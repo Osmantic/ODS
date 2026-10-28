@@ -159,7 +159,12 @@ cat > "$fakebin/nvidia-smi" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FAKE_NVIDIA_SMI_CALLS"
 [[ "${FAKE_NVIDIA_SMI_FAIL:-false}" != true ]] || { echo "NVIDIA-SMI has failed" >&2; exit 9; }
-printf '%b' "$FAKE_GPU_ROWS"
+# A row's fourth field is memory.free: print it only when it is queried.
+if [[ "$*" == *memory.free* ]]; then
+    printf '%b' "$FAKE_GPU_ROWS"
+else
+    printf '%b' "$FAKE_GPU_ROWS" | sed 's/^\([^,]*,[^,]*,[^,]*\),.*$/\1/'
+fi
 EOF
 # Python for phase 02: scripts/preserve-active-model.py answers from the
 # FAKE_PRESERVE_* settings (its vLLM contract lives on the runtime side);
@@ -203,7 +208,9 @@ source "$SCRIPT_DIR/installers/lib/llm-backend.sh"
 ods_model_selector_python() { printf '%s' "$FAKE_PYTHON_SHIM"; }
 ods_native_llm_requested() { [[ -n "${NATIVE_LLM_BASE_URL:-}" ]]; }
 log() { printf 'LOG %s\n' "$*" >> "$LOG_FILE"; }
+ai() { printf 'AI %s\n' "$*"; }
 ai_ok() { printf 'OK %s\n' "$*"; }
+ai_warn() { printf 'WARN %s\n' "$*"; }
 error() { printf 'ERROR %s\n' "$*" >&2; }
 ods_is_wsl_host() { [[ "${FAKE_WSL:-false}" == true ]]; }
 uname() { printf '%s\n' "${FAKE_KERNEL:-Linux}"; }
@@ -305,8 +312,9 @@ want_size="${want_size%$'\r'}"   # a Windows Python ends the line with CRLF
     || fail "the vLLM pick must replace the tier map's GGUF: $(cat "$tmp/dgx-auto/out")"
 [[ "$(value dgx-auto VLLM_IMAGE)" == "$pinned" ]] || fail "VLLM_IMAGE must be the locked pin"
 [[ "$(value dgx-auto VLLM_ARGS)" == *'--max-model-len 131072'* ]] || fail "VLLM_ARGS must carry the catalog arguments"
-[[ "$(calls dgx-auto)" == 1 ]] && grep -qx -- '--query-gpu=uuid,compute_cap,memory.total --format=csv,noheader,nounits' "$tmp/dgx-auto/calls" \
-    || fail "the decision must read each GPU's uuid, compute capability and memory once"
+[[ "$(calls dgx-auto)" == 1 ]] \
+    && grep -qx -- '--query-gpu=uuid,compute_cap,memory.total,memory.free --format=csv,noheader,nounits' "$tmp/dgx-auto/calls" \
+    || fail "a fresh install's decision must read each GPU's uuid, compute capability, total and free memory once"
 grep -qx "OK Model server: vLLM engine, serving $want_served on GPU GPU-aaaaaaaa-gb300" "$tmp/dgx-auto/out" \
     || fail "the choice must be shown: $(cat "$tmp/dgx-auto/out")"
 pass "a fresh DGX Station install chooses vLLM on the GB300 with the catalog's top vLLM pick ($want_served)"
@@ -348,6 +356,32 @@ p6k_share="${p6k_share%$'\r'}"   # a Windows Python ends the line with CRLF
     && "$(value pro6000-auto VLLM_SHARE)" == "$p6k_share" && "$p6k_share" == 0.5 ]] \
     || fail "one RTX PRO 6000 must choose vLLM with its entry's memory share: $(cat "$tmp/pro6000-auto/out" "$tmp/pro6000-auto/err")"
 pass "a lone RTX PRO 6000 chooses vLLM ($p6k_model) at its entry's $p6k_share memory share"
+
+# tower2 (2026-10-27): RTX PRO 6000s while another model server holds about
+# 84 GB of each. vLLM refuses to start unless its share (half the card,
+# 48944 MiB) is free beside its CUDA context (1 GiB), so a fresh install asks
+# for free memory too and keeps llama.cpp, saying why, instead of downloading
+# a vLLM model that cannot start.
+BUSY_ROWS='GPU-ffffffff-rtx6000, 12.0, 97887, 13278\nGPU-ffffffff-rtx6001, 12.0, 97887, 13298\n'
+decide pro6000-busy "export FAKE_GPU_ROWS='$BUSY_ROWS'"
+expect_llama pro6000-busy
+grep -q -- '--query-gpu=uuid,compute_cap,memory.total,memory.free ' "$tmp/pro6000-busy/calls" \
+    || fail "a fresh install must ask nvidia-smi for free memory: $(cat "$tmp/pro6000-busy/calls")"
+grep -qF 'WARN ODS uses llama.cpp, not the vLLM engine: other programs use the GPU memory the vLLM engine needs: ' \
+        "$tmp/pro6000-busy/out" \
+    && grep -qF 'needs 49968 MiB free when it starts (0.50 of the GPU plus 1024 MiB for its CUDA context), and the freest GPU it fits, GPU-ffffffff-rtx6001, has 13298 MiB free.' \
+        "$tmp/pro6000-busy/out" \
+    && grep -qF 'AI   Once that memory is free, rerun the installer with --llm-backend vllm' "$tmp/pro6000-busy/out" \
+    || fail "a busy GPU must be shown as the reason, with how to get vLLM later: $(cat "$tmp/pro6000-busy/out")"
+grep -q 'LOG Model server: llama.cpp (other programs use the GPU memory the vLLM engine needs' "$tmp/pro6000-busy/install.log" \
+    || fail "the busy-GPU reason must reach the install log"
+decide pro6000-one-free "export FAKE_GPU_ROWS='GPU-ffffffff-rtx6000, 12.0, 97887, 13278\nGPU-ffffffff-rtx6001, 12.0, 97887, 96900\n'"
+[[ "$(rc_of pro6000-one-free)" == 0 && "$(value pro6000-one-free BACKEND)" == vllm \
+    && "$(value pro6000-one-free VLLM_GPU_UUID)" == GPU-ffffffff-rtx6001 ]] \
+    || fail "vLLM must take the GPU whose memory is free: $(cat "$tmp/pro6000-one-free/out" "$tmp/pro6000-one-free/err")"
+decide pro6000-busy-forced "export FAKE_GPU_ROWS='$BUSY_ROWS'" 'LLM_BACKEND_REQUESTED=vllm'
+expect_refused pro6000-busy-forced 'other programs use the GPU memory the vLLM engine needs'
+pass "a fresh install gives vLLM only a GPU with its share free: busy GPUs keep llama.cpp and say why; --llm-backend vllm stops"
 
 decide rtx-forced "export FAKE_GPU_ROWS='$RTX_ROWS'" 'LLM_BACKEND_REQUESTED=vllm'
 expect_refused rtx-forced 'no vLLM catalog model fits this host'
@@ -437,6 +471,19 @@ grep -qx 'OK Model server: vLLM engine, serving GLM-5.3-Flash-NVFP4 on GPU GPU-a
 grep -qF "LOG Kept this installation's vLLM model across installer rerun: glm-5.3-flash-nvfp4 ($GLM_DIR) on GPU GPU-aaaaaaaa-gb300, selected by dashboard" \
     "$tmp/rerun-vllm/install.log" || fail "keeping the vLLM model must reach the install log"
 pass "a rerun of a vLLM install keeps its model, folder, GPU and memory share; the fresh pick stays the recommendation"
+
+# The installation's own engine holds its share of the GPU, so a rerun asks
+# for total memory only and keeps vLLM however little of the GPU is free.
+grep -q -- '--query-gpu=uuid,compute_cap,memory.total --format' "$tmp/rerun-vllm/calls" \
+    && ! grep -q 'memory.free' "$tmp/rerun-vllm/calls" \
+    || fail "a rerun must not judge its GPUs by free memory: $(cat "$tmp/rerun-vllm/calls")"
+name=rerun-vllm-busy; mkdir -p "$tmp/$name/install"; vllm_install
+decide rerun-vllm-busy "export FAKE_PRESERVE_OUT='$GLM_CONTRACT'" \
+    "export FAKE_GPU_ROWS='GPU-aaaaaaaa-gb300, 10.3, 256703, 30000\n'"
+[[ "$(rc_of rerun-vllm-busy)" == 0 && "$(value rerun-vllm-busy BACKEND)" == vllm \
+    && "$(value rerun-vllm-busy VLLM_GPU_UUID)" == GPU-aaaaaaaa-gb300 ]] \
+    || fail "a rerun whose own engine holds the GPU must keep vLLM: $(cat "$tmp/rerun-vllm-busy/out" "$tmp/rerun-vllm-busy/err")"
+pass "a rerun of a vLLM install is never judged by the GPU memory its own engine holds"
 
 # The kept model never takes the fresh pick's memory share: kept without a
 # share of its own, it stays on compose's default even where the fresh pick
