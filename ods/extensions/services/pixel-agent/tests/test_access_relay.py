@@ -10,10 +10,23 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / 'bin'))
 import pixel_access_relay as relay
+from pixel_connections import status as connection_status
 
 OWNER_KEY = 'o' * 64
 CONFIG = {'DASHBOARD_API_KEY': OWNER_KEY, 'PIXEL_OPENWEBUI_KEY': 'c' * 64}
 CHANGE = {'mode': 'full-access', 'confirmed': True, 'revision': 'a' * 64}
+
+
+def connection_reply(surface, *, managed=False):
+    """Generate the actual empty status contract without reading installed data."""
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        value = connection_status.report(surface=surface, record_path=root / 'connections.json',
+            token_path=root / 'token.json', status_path=root / 'status.json',
+            lifecycle_path=root / 'lifecycle.json', broker_state=root / 'broker')
+    if managed:
+        value['googleAuth'] = {'mode': 'managed', 'state': 'not-configured', 'advancedAvailable': True}
+    return value
 
 
 class AccessRelayTests(unittest.TestCase):
@@ -86,13 +99,14 @@ class AccessRelayTests(unittest.TestCase):
 
     def test_connections_on_windows_go_through_the_inspected_agent_container(self):
         calls = []
+        body = connection_reply('wsl-systemd')
         def run(args, **kwargs):
             calls.append((args, kwargs))
             output = (('b' * 64 + ' true pixel-edge').encode() if args[1] == 'inspect'
-                      else json.dumps({'status': 200, 'body': {'schemaVersion': 1}}).encode())
+                      else json.dumps({'status': 200, 'body': body}).encode())
             return types.SimpleNamespace(stdout=output)
         with patch.object(relay.subprocess, 'run', side_effect=run):
-            self.assertEqual(relay.request_runtime_connections(config=CONFIG), (200, {'schemaVersion': 1}))
+            self.assertEqual(relay.request_runtime_connections(config=CONFIG), (200, body))
         sent = json.loads(calls[1][1]['input'])
         self.assertEqual((sent['path'], sent['request'], sent['timeout']), ('/v1/connections', None, 22))
         self.assertNotIn(OWNER_KEY, ' '.join(calls[1][0]))
@@ -112,12 +126,40 @@ class AccessRelayTests(unittest.TestCase):
 
     def test_connections_on_a_linux_host_ask_its_own_controller(self):
         client = types.ModuleType('pixel_access_client')
-        client.request_access = lambda operation: (200, {'asked': operation})
+        body, asked = connection_reply('linux-systemd', managed=True), []
+        def request(operation):
+            asked.append(operation)
+            return 200, body
+        client.request_access = request
         with patch.object(relay.platform, 'system', return_value='Linux'), \
                 patch.dict(sys.modules, {'pixel_access_client': client}), \
                 patch.object(relay.subprocess, 'run') as run:
-            self.assertEqual(relay.request_runtime_connections(config={}), (200, {'asked': 'connection-status'}))
+            self.assertEqual(relay.request_runtime_connections(config={}), (200, body))
+            self.assertEqual(asked, ['connection-status'])
             run.assert_not_called()
+
+    def test_both_connection_transports_refuse_incomplete_or_private_status_without_retry(self):
+        valid = connection_reply('wsl-systemd', managed=True)
+        cases = [('partial', {'schemaVersion': 1}), ('marker', {'asked': 'connection-status'}),
+                 ('private-field', dict(valid, token='private-sentinel')),
+                 ('private-auth', dict(valid, googleAuth=dict(valid['googleAuth'], clientSecret='private-sentinel')))]
+        for platform in ('Windows', 'Linux'):
+            for label, body in cases:
+                with self.subTest(platform=platform, case=label):
+                    calls, asked = [], []
+                    client = types.ModuleType('pixel_access_client')
+                    def request(operation):
+                        asked.append(operation)
+                        return 200, body
+                    client.request_access = request
+                    with patch.object(relay.platform, 'system', return_value=platform), \
+                            patch.dict(sys.modules, {'pixel_access_client': client}), \
+                            patch.object(relay.subprocess, 'run', side_effect=edge_answers(200, body, calls)), \
+                            self.assertRaisesRegex(relay.AccessRelayError, 'connections-unavailable') as failure:
+                        relay.request_runtime_connections(config=CONFIG if platform == 'Windows' else {})
+                    self.assertNotIn('private-sentinel', str(failure.exception))
+                    self.assertEqual(len(calls), 2 if platform == 'Windows' else 0)
+                    self.assertEqual(asked, [] if platform == 'Windows' else ['connection-status'])
 
     def test_timeout_never_retries_or_falls_back_to_another_host(self):
         with patch.object(relay.subprocess, 'run', side_effect=[types.SimpleNamespace(stdout=('b'*64+' true pixel-edge').encode()), subprocess.TimeoutExpired('docker', 313)]) as run, self.assertRaises(relay.AccessRelayError):

@@ -117,6 +117,10 @@ def connected(world, monkeypatch, capabilities):
         "flowId": flow["flowId"], "state": harness.consent_state(world, flow["flowId"]), "code": "4/fixture-code"})
     assert reply["capabilities"] == capabilities
     world.writes = calendar.writes
+    assert world.writes == [], 'connecting/quiescing must not write a calendar change'
+    # Keep setup evidence in commands (including the action/reconcile stops).
+    # Approval execution assertions start after the connected fixture is ready.
+    world.approval_command_baseline = len(world.commands)
     return world
 
 
@@ -147,8 +151,10 @@ def approve(world, entry, sha256=None):
 
 
 def actions(world):
-    return [command for command in world.commands if command[-1].startswith(("pixel-source-action@",
-                                                                             "pixel-source-reconcile@"))]
+    """Actual action/reconcile executions in this scenario, after connection setup."""
+    return [command for command in world.commands[world.approval_command_baseline:]
+            if command[:2] == ['systemctl', 'start']
+            and command[-1].startswith(("pixel-source-action@", "pixel-source-reconcile@"))]
 
 
 def calendar_summary(world, *records):
