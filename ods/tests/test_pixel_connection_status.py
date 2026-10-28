@@ -131,6 +131,29 @@ class ConnectionStatusTests(unittest.TestCase):
         for private in ("Lunch with Sam", "extra_field", "social", "errorType", "lastAttemptAt"):
             self.assertNotIn(private, text)
 
+    def test_empty_partial_history_waits_while_published_partial_data_and_calendar_remain_usable(self):
+        for count in (0, 15):
+            with self.subTest(count=count):
+                value = self.fixture().write(record_value=record(), token=True,
+                    broker_value=broker(email=source(complete=False, recordCount=count))).report()
+                google = self.google(value)
+                self.assertEqual((google['state'], google['reason']), ('first-sync' if count == 0 else 'connected', None))
+                self.assertEqual(google['sources']['email']['recordCount'], count)
+                self.assertIs(google['sources']['email']['complete'], False)
+                self.assertIs(google['sources']['calendar']['complete'], True)
+                self.assertTrue(google['capabilities']['calendar.read'])
+
+    def test_partial_history_preserves_error_staleness_and_disabled_source_precedence(self):
+        for data, chosen, expected in (
+            (broker(email=source(complete=False), calendar=source('error', 'invalid-grant')),
+             record(), 'needs-reconnect'),
+            (broker(email=source(complete=False), generated='2026-10-25T20:00:00Z'), record(), 'behind'),
+            (broker(email=source(complete=False)), record(**{'gmail.read': False}), 'connected'),
+        ):
+            with self.subTest(expected=expected):
+                value = self.fixture().write(record_value=chosen, token=True, broker_value=data).report()
+                self.assertEqual(self.google(value)['state'], expected)
+
     def test_each_error_class_maps_to_the_fix_the_owner_needs(self):
         cases = {
             "invalid-grant": "needs-reconnect", "not-connected": "needs-reconnect",

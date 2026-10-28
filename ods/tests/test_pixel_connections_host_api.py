@@ -21,7 +21,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "bin"))
 import pixel_access_relay  # noqa: E402
-from pixel_connections import catalog, host_api, plugins, status  # noqa: E402
+from pixel_connections import catalog, google_app, host_api, plugins, status  # noqa: E402
 
 KEY = "synthetic-connections-test-key"
 FLOW = "a" * 32
@@ -80,6 +80,41 @@ class ConnectionsHostAPITests(unittest.TestCase):
         self.assertEqual(body, dict(reply, catalog=catalog.public_catalog(), pluginCatalog=plugins.public_catalog()))
         self.assertNotIn("config", json.dumps(body["pluginCatalog"]), "Settings never sees a plugin's configuration")
         relay.assert_called_once()
+
+    def test_root_managed_metadata_reaches_catalog_without_host_reading_the_deployment_client(self):
+        for state in ('configured', 'not-configured', 'unavailable'):
+            with self.subTest(state=state):
+                auth = {'mode': 'managed', 'state': state, 'advancedAvailable': True}
+                reply = dict(status.unavailable('windows'), googleAuth=auth)
+                with patch.object(pixel_access_relay, 'request_runtime_connections', return_value=(200, reply)), \
+                        patch.object(google_app, 'load', side_effect=AssertionError('Host must not read deployment client')):
+                    code, body = self.request()
+                self.assertEqual(code, 200)
+                self.assertNotIn('googleAuth', body)
+                self.assertEqual(body['catalog'][0]['auth'], {'type': 'oauth2-pkce', 'client': 'ods-managed-desktop-app',
+                    'redirects': ['loopback', 'paste'], **auth})
+
+    def test_managed_begin_relays_no_client_and_advanced_and_legacy_stay_explicit(self):
+        self.addCleanup(host_api._replace_listener, None)
+        managed = {key: value for key, value in dict(BEGIN, authMode='managed').items() if key != 'client'}
+        for body in (managed, dict(BEGIN, authMode='advanced'), BEGIN):
+            with self.subTest(body_keys=set(body)):
+                root = FakeRoot()
+                with patch.object(pixel_access_relay, 'request_runtime_connection_action', side_effect=root):
+                    code, reply = self.post('begin', body)
+                self.assertEqual(code, 200)
+                self.assertEqual(reply['redirect'], 'loopback')
+                request = root.calls[0][1]
+                self.assertEqual('client' in request, body.get('authMode') != 'managed')
+                self.assertEqual('authMode' in request, 'authMode' in body)
+
+    def test_managed_client_null_override_or_path_is_refused_before_root(self):
+        managed = {key: value for key, value in dict(BEGIN, authMode='managed').items() if key != 'client'}
+        with patch.object(pixel_access_relay, 'request_runtime_connection_action') as relay:
+            for extra in ({'client': None}, {'client': BEGIN['client']}, {'clientPath': '/private/client.json'},
+                          {'authMode': None}):
+                self.assertEqual(self.post('begin', dict(managed, **extra)), (400, {'error': 'invalid-request'}))
+        relay.assert_not_called()
 
     def test_owner_auth_comes_first(self):
         with patch.object(pixel_access_relay, "request_runtime_connections") as relay:

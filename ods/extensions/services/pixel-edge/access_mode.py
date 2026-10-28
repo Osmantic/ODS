@@ -77,12 +77,14 @@ def _connection_pending(value):
 
 
 def _connection_google(value):
-    if (type(value) is not dict or set(value) != {'state', 'reason', 'account', 'capabilities', 'cloudModels',
-                                                  'connectedAt', 'grantedScopes', 'checkedAt', 'sources', 'pending',
-                                                  'waitingChanges', 'waitingDrafts'}
+    keys = {'state', 'reason', 'account', 'capabilities', 'cloudModels', 'connectedAt', 'grantedScopes',
+            'checkedAt', 'sources', 'pending', 'waitingChanges', 'waitingDrafts'}
+    if (type(value) is not dict or not keys <= set(value) <= keys | {'authMode'}
             or value['state'] not in _CONNECTION_STATES):
         return False
     connected = value['state'] != 'not-connected'
+    if 'authMode' in value and (not connected or value['authMode'] not in ('managed', 'advanced')):
+        return False
     capabilities, scopes, sources = value['capabilities'], value['grantedScopes'], value['sources']
     return (_maybe(value['reason'], _TOKEN) and (value['account'] is None) != connected
             and _maybe(value['account'], _EMAIL) and (capabilities is None) != connected
@@ -107,9 +109,9 @@ def _connection_plugins(value):
 
 
 def public_connections(value):
+    keys = {'schemaVersion', 'available', 'surface', 'reason', 'ownerTimeZone', 'connectors', 'plugins'}
     if (type(value) is not dict
-            or set(value) != {'schemaVersion', 'available', 'surface', 'reason', 'ownerTimeZone', 'connectors',
-                              'plugins'}
+            or not keys <= set(value) <= keys | {'googleAuth'}
             or value['schemaVersion'] != 1 or type(value['available']) is not bool
             or value['surface'] not in ('linux-systemd', 'wsl-systemd', 'linux', 'darwin', 'windows')
             or not _maybe(value['reason'], _TOKEN) or not _maybe(value['ownerTimeZone'], _ZONE)
@@ -117,6 +119,12 @@ def public_connections(value):
             or not _connection_plugins(value['plugins'])
             or not _connection_google(value['connectors']['google'])):
         raise ValueError('invalid-connection-status')
+    if 'googleAuth' in value:
+        auth = value['googleAuth']
+        if (type(auth) is not dict or set(auth) != {'mode', 'state', 'advancedAvailable'}
+                or auth['mode'] != 'managed' or auth['state'] not in ('configured', 'not-configured', 'unavailable')
+                or type(auth['advancedAvailable']) is not bool):
+            raise ValueError('invalid-connection-status')
     return value
 
 
@@ -330,14 +338,19 @@ def valid_connection_action(value):
                 and _text(request['flowId'], _FLOW) and _text(request['state'], _STATE)
                 and ('code' not in request or _text(request['code'], _CODE))
                 and ('error' not in request or request['error'] in ('access-denied', 'consent-failed')))
+    mode = request.get('authMode', 'advanced')
+    if mode not in ('managed', 'advanced'):
+        return False
+    keys = {'connector', 'capabilities', 'cloudModels', 'ownerTimeZone', 'loginHint', 'redirectPort'}
+    keys |= {'authMode'} if 'authMode' in request else set()
+    keys |= {'client'} if mode == 'advanced' else set()
     client = request.get('client')
     port = request.get('redirectPort')
-    return (set(request) == {'connector', 'client', 'capabilities', 'cloudModels', 'ownerTimeZone', 'loginHint',
-                             'redirectPort'}
+    return (set(request) == keys
             and request['connector'] == 'google'
-            and type(client) is dict and set(client) == {'clientId', 'clientSecret', 'projectId'}
-            and _text(client['clientId'], _CLIENT_ID) and _text(client['clientSecret'], _CLIENT_SECRET)
-            and _text(client['projectId'], _PROJECT)
+            and (mode == 'managed' or type(client) is dict and set(client) == {'clientId', 'clientSecret', 'projectId'}
+                 and _text(client['clientId'], _CLIENT_ID) and _text(client['clientSecret'], _CLIENT_SECRET)
+                 and _text(client['projectId'], _PROJECT))
             and _capability_flags(request['capabilities']) and type(request['cloudModels']) is bool
             and (request['ownerTimeZone'] is None or _text(request['ownerTimeZone'], _TIME_ZONE))
             and (request['loginHint'] is None or _text(request['loginHint'], _ACCOUNT))

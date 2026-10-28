@@ -96,6 +96,7 @@ class Pending(Strict):
 
 class GoogleConnection(Strict):
     state: State
+    authMode: Literal['managed', 'advanced'] | None = None
     reason: str | None = Field(pattern=TOKEN)
     account: str | None = Field(pattern=EMAIL)
     capabilities: Capabilities | None
@@ -108,6 +109,12 @@ class GoogleConnection(Strict):
     waitingChanges: int | None = Field(ge=0, le=50)
     waitingDrafts: int | None = Field(ge=0, le=50)
 
+    @model_validator(mode='after')
+    def _source_mode(self):
+        if 'authMode' in self.model_fields_set and (self.authMode is None or self.state == 'not-connected'):
+            raise ValueError('invalid connection application mode')
+        return self
+
 
 class Connectors(Strict):
     google: GoogleConnection
@@ -117,6 +124,20 @@ class CatalogAuth(Strict):
     type: Literal["oauth2-pkce"]
     client: str = Field(pattern=TOKEN)
     redirects: list[Literal["loopback", "paste", "hosted-page"]]
+    mode: Literal['managed'] | None = None
+    state: Literal['configured', 'not-configured', 'unavailable'] | None = None
+    advancedAvailable: bool | None = None
+
+    @model_validator(mode='after')
+    def _managed(self):
+        added = {'mode', 'state', 'advancedAvailable'}
+        present = self.model_fields_set & added
+        if present and (present != added or self.client != 'ods-managed-desktop-app'
+                        or self.mode is None or self.state is None or self.advancedAvailable is None):
+            raise ValueError('inconsistent managed application metadata')
+        if not present and self.client == 'ods-managed-desktop-app':
+            raise ValueError('managed application metadata is missing')
+        return self
 
 
 class CatalogCapability(Strict):
@@ -185,7 +206,9 @@ def _projection(raw) -> dict:
             or set(status.plugins) != {entry.id for entry in status.pluginCatalog}
             or any(SCOPE_PATTERN.fullmatch(scope) is None for scope in google.grantedScopes or [])):
         raise HTTPException(502, "Connected apps status could not be verified", headers=NO_STORE)
-    return status.model_dump(by_alias=True)
+    # Preserve exact legacy absence of the optional managed auth fields, while
+    # retaining explicit nulls in the existing connection/status contract.
+    return status.model_dump(by_alias=True, exclude_unset=True)
 
 
 def _connected_apps_enabled() -> bool:
@@ -292,6 +315,14 @@ MESSAGES: dict[str, tuple[str, bool]] = {
                            "Desktop app, download its JSON file and upload it here.", False),
     "client-invalid": ("That isn't a Google OAuth client file. Download the JSON file of your Desktop app client "
                        "from Google Cloud and upload it here.", False),
+    'google-app-not-configured': ('Google sign-in has not been configured for this ODS release yet. '
+                                  'Please contact the ODS maintainers.', True),
+    'google-app-config-unavailable': ('Google sign-in configuration could not be verified. '
+                                      'Please contact the ODS maintainers.', True),
+    'google-app-config-invalid': ('Google sign-in configuration could not be verified. '
+                                  'Please contact the ODS maintainers.', True),
+    'google-app-config-unsafe': ('Google sign-in configuration could not be verified. '
+                                 'Please contact the ODS maintainers.', True),
     "capability-unavailable": ("That option isn't available in this version of ODS yet.", False),
     "connection-not-connected": ("Google isn't connected.", False),
     "not-available-on-this-system": ("Connected apps aren't available on this system yet.", False),
@@ -357,9 +388,10 @@ def _refusal(status_code: int, code: str) -> HTTPException:
 
 
 class ConnectRequest(Strict):
-    """What the owner chose in the wizard. ``client`` is Google's downloaded JSON, unread here."""
+    """Managed sign-in carries no client; only Advanced supplies a Desktop JSON."""
 
-    client: dict[str, Any]
+    authMode: Literal['managed', 'advanced'] | None = None
+    client: dict[str, Any] | None = None
     capabilities: Capabilities
     cloudModels: bool
     ownerTimeZone: str | None = Field(pattern=ZONE)
@@ -367,7 +399,14 @@ class ConnectRequest(Strict):
 
     @model_validator(mode="after")
     def _bounded(self):
-        if len(json.dumps(self.client, separators=(",", ":"))) > MAX_CLIENT_BYTES:
+        supplied_mode = 'authMode' in self.model_fields_set
+        supplied_client = 'client' in self.model_fields_set
+        if supplied_mode and self.authMode == 'managed':
+            if supplied_client:
+                raise ValueError('managed sign-in does not accept a client')
+        elif ((supplied_mode and self.authMode != 'advanced') or not supplied_client or self.client is None):
+            raise ValueError('Advanced sign-in requires a client')
+        if self.client is not None and len(json.dumps(self.client, separators=(",", ":"))) > MAX_CLIENT_BYTES:
             raise ValueError("client file too large")
         return self
 
@@ -589,7 +628,7 @@ async def _action(path: str, payload: dict, reply_model: type[BaseModel], timeou
 @router.post("/api/pixel/connections/google/connect", dependencies=[Depends(verify_api_key)])
 async def connect_google(request: ConnectRequest):
     """Start a Google sign-in; the reply's address opens Google's consent page."""
-    payload = request.model_dump(by_alias=True)
+    payload = request.model_dump(by_alias=True, exclude_unset=True)
     return await _action("/v1/pixel/connections/google/begin", payload, BeginReply, 90)
 
 

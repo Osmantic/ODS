@@ -321,7 +321,8 @@ def begin(bridge, request: Any) -> dict[str, Any]:
             "consent", flowId=public["flowId"], stateHash=public["stateHash"], redirectUri=public["redirectUri"],
             expiresAt=public["expiresAt"], request={"capabilities": request["capabilities"],
                                                     "cloudModels": request["cloudModels"],
-                                                    "ownerTimeZone": request["ownerTimeZone"]}))
+                                                    "ownerTimeZone": request["ownerTimeZone"],
+                                                    'authMode': request['authMode']}))
         return {"flowId": public["flowId"], "authUrl": public["authUrl"], "redirectUri": public["redirectUri"],
                 "expiresAt": public["expiresAt"]}
 
@@ -393,6 +394,7 @@ def complete(bridge, request: Any) -> dict[str, Any]:
                           "status": "connected", "account": result["account"], "calendarId": data["calendarId"],
                           "gmailWindowDays": data["gmailWindowDays"], "capabilities": granted,
                           "cloudModels": wanted["cloudModels"], "connectedAt": now,
+                          'authMode': wanted.get('authMode', 'advanced'),
                           "directPaused": _full_access(bridge)}))
         _write_record(record)
         target = gateway_target(record, custody_held=True)

@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import ConnectedApps from './ConnectedApps'
-import { pendingStep, statusFor } from './connectedAppsFixtures'
+import { GOOGLE_CATALOG, pendingStep, statusFor } from './connectedAppsFixtures'
 
 const DISCORD = 'https://discord.gg/4ntNp9MAwC'
 afterEach(() => vi.unstubAllGlobals())
@@ -140,4 +140,65 @@ it('offers to try again when status is unavailable', async () => {
   reply = [200, statusFor()]
   fireEvent.click(screen.getByRole('button', {name: 'Try again'}))
   expect(await screen.findByRole('button', {name: 'Connect Google'})).toBeVisible()
+})
+
+function managedStatus(google = {}, state = 'configured') {
+  return statusFor(google, {catalog: [{...GOOGLE_CATALOG, auth: {...GOOGLE_CATALOG.auth,
+    client: 'ods-managed-desktop-app', mode: 'managed', state, advancedAvailable: true}}]})
+}
+
+it('opens the ordinary Google journey without client-file or Cloud-project steps', async () => {
+  api({'GET /api/pixel/connections': [200, managedStatus()]})
+  render(<ConnectedApps />)
+  fireEvent.click(await screen.findByRole('button', {name: 'Connect Google'}))
+  expect(screen.getByRole('button', {name: 'Continue to Google'})).toBeEnabled()
+  expect(screen.queryByLabelText('Google client file')).toBeNull()
+  expect(screen.queryByRole('link', {name: 'Create a Google Cloud project'})).toBeNull()
+})
+
+it('shows available partial email history without calling it up to date or holding back Calendar', async () => {
+  const sources = statusFor({state: 'connected'}).connectors.google.sources
+  api({'GET /api/pixel/connections': [200, managedStatus({state: 'first-sync', sources: {
+    ...sources, email: {...sources.email, complete: false, recordCount: 23}}})]})
+  render(<ConnectedApps />)
+  expect(await screen.findByText('Partially synced · 23 email summaries available')).toBeVisible()
+  expect(within(card()).getAllByText(/^Up to date/)).toHaveLength(1)
+  expect(screen.getByText('Calendar')).toBeVisible()
+})
+
+it('does not infer active fetching or completed history from an empty incomplete snapshot', async () => {
+  const sources = statusFor({state: 'connected'}).connectors.google.sources
+  api({'GET /api/pixel/connections': [200, managedStatus({state: 'connected', sources: {
+    ...sources, email: {...sources.email, complete: false, recordCount: 0}}})]})
+  render(<ConnectedApps />)
+  expect(await screen.findByText('Waiting for the first sync')).toBeVisible()
+  expect(within(card()).getAllByText(/^Up to date/)).toHaveLength(1)
+  expect(screen.queryByText(/Syncing history/)).toBeNull()
+})
+
+it('keeps an existing account usable when standard sign-in is not configured', async () => {
+  const calls = api({'GET /api/pixel/connections': [200, managedStatus({state: 'connected'}, 'not-configured')],
+    'POST /api/pixel/connections/google/sync': [200, {outcome: 'started'}]})
+  render(<ConnectedApps />)
+  fireEvent.click(await screen.findByRole('button', {name: 'Sync now'}))
+  expect(await screen.findByText(/Sync started/)).toBeVisible()
+  expect(screen.getByRole('button', {name: 'Disconnect'})).toBeEnabled()
+  expect(calls.filter(([key]) => key.startsWith('POST'))).toEqual([['POST /api/pixel/connections/google/sync', {}]])
+})
+
+it.each(['invalid-grant', 'api-disabled'])('does not turn a managed %s failure into per-user Cloud setup', async reason => {
+  api({'GET /api/pixel/connections': [200, managedStatus({state: reason === 'invalid-grant' ? 'needs-reconnect' : 'setup-broken', reason})]})
+  render(<ConnectedApps />)
+  await screen.findByRole('article', {name: 'Google'})
+  expect(screen.queryByRole('link', {name: /Audience page|Gmail API|Google Calendar API/})).toBeNull()
+  expect(screen.queryByText(/publish your app|your Google project/)).toBeNull()
+  expect(screen.getByRole('button', {name: 'Reconnect'})).toBeEnabled()
+  expect(screen.getByRole('button', {name: 'Disconnect'})).toBeEnabled()
+})
+
+it('uses the connected account mode for Advanced repairs even when standard sign-in is available', async () => {
+  api({'GET /api/pixel/connections': [200, managedStatus({state: 'setup-broken', reason: 'api-disabled', authMode: 'advanced'})]})
+  render(<ConnectedApps />)
+  expect(await screen.findByRole('link', {name: 'Gmail API'})).toHaveAttribute('href', expect.stringContaining('apiid=gmail.googleapis.com'))
+  expect(screen.getByRole('link', {name: 'Google Calendar API'})).toHaveAttribute('href', expect.stringContaining('apiid=calendar-json.googleapis.com'))
 })

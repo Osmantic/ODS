@@ -1,11 +1,11 @@
-# Managed Google application foundation
+# Google sign-in provided by ODS
 
 The intended ordinary journey is **Connect Google → choose an account → grant
 access**. Registering a Google Cloud project and downloading a client JSON file
 belongs to the ODS maintainers' release work. It is not an ordinary user's setup
-step. Owner-provided clients remain an Advanced fallback.
+step. Owner-provided clients remain an explicit Advanced option.
 
-## Implemented internal contract
+## Implemented connection journey
 
 - Root accepts `authMode: "managed"` without any browser-supplied client or
   configuration path. It resolves `/etc/ods/portal-google-app.json` inside the
@@ -24,13 +24,25 @@ step. Owner-provided clients remain an Advanced fallback.
   and `unavailable`, with `mode: "managed"` and Advanced availability. The
   catalog can join that Root-supplied projection without reading credentials as
   the host/browser identity. Local configuration never claims Google approval.
+- The authenticated Root → Edge/host → dashboard API path carries that metadata
+  into `catalog[].auth`. The browser sends `authMode: "managed"` with the client
+  field omitted. Client documents and configuration paths in that request are
+  rejected. The exact older owner-client contract is still accepted.
+- Settings starts with permissions and **Continue to Google**. Uploading a
+  Desktop client is available only after choosing Advanced. Missing deployment
+  configuration disables standard sign-in and explains that it needs an ODS
+  update; it does not silently ask every owner to create a Google project.
+- The consent journal and connected account retain their own `authMode`, so
+  repair instructions reflect the app actually used rather than today's global
+  configuration. Older records default to Advanced. Existing Sync/Disconnect
+  actions continue to use the broker's lifecycle.
 
 Desktop applications use public-client credentials and cannot keep a distributed
 client secret confidential. PKCE and the existing fixed loopback flow remain
 required. Google's [Desktop authorization documentation](https://developers.google.com/identity/protocols/oauth2/native-app)
 describes the supported flow.
 
-## Remaining release and public integration work
+## Remaining release work
 
 The official ODS application still needs registration, API enablement, branding
 and the applicable scope verification. Gmail read/draft scopes are restricted;
@@ -46,10 +58,9 @@ foundation neither provisions nor deletes that operator-managed application
 configuration. It contains no per-user tokens. Personal sign-ins remain owned
 by the broker's separate cleanup lifecycle.
 
-Authenticated host/API/Settings wiring remains unfinished. The current public
-transport deliberately keeps its legacy catalog shape until it explicitly
-carries the new Root configuration state. The final UI must make managed login
-the normal path, put owner-client setup under Advanced, and explain an
-unconfigured release without asking ordinary users to create Google projects.
-Controlled-provider tests qualify the internal trust seam, not a real official
-Google app or the complete released one-click experience.
+Controlled-provider HTTP journeys exercise both managed and legacy sign-in,
+including callback rejection, one exchange, activation and withdrawal. They
+simulate Google and privileged service boundaries. A separate real personal
+Desktop client established a read-only connection locally; that client is not
+the official ODS registration and is not distributed. Neither result qualifies
+the complete released sign-in experience or replaces provider review.

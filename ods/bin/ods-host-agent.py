@@ -10655,7 +10655,11 @@ class AgentHandler(BaseHTTPRequestHandler):
         try:
             status, body = request_runtime_connections(config=load_env(INSTALL_DIR / '.env'))
             if status == 200:
-                body = dict(connection_status.validate_public(body), catalog=connection_catalog.public_catalog(),
+                checked = dict(connection_status.validate_public(body))
+                # This is Root-supplied metadata. Do not read the protected
+                # Google deployment client under the Windows/host identity.
+                google_auth = checked.pop('googleAuth', None)
+                body = dict(checked, catalog=connection_catalog.public_catalog(google_auth=google_auth),
                             pluginCatalog=connection_plugins.public_catalog())
         except (AccessRelayError, connection_status.StatusError, OSError, ValueError):
             json_response(self, 503, {"error": "connections-unavailable"})

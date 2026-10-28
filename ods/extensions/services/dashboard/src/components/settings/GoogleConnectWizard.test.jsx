@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import GoogleConnectWizard from './GoogleConnectWizard'
 import { GOOGLE_CATALOG, INSTALLED, READ_BOTH, pendingStep, statusFor } from './connectedAppsFixtures'
@@ -28,10 +28,13 @@ function api(routes) {
   return calls
 }
 
-function wizard({status = statusFor(), ...props} = {}) {
+function wizard({status = statusFor(), catalog = GOOGLE_CATALOG, advanced = true, ...props} = {}) {
   const handlers = {refresh: vi.fn(async () => null), onClose: vi.fn(), onConnected: vi.fn()}
-  const view = render(<GoogleConnectWizard catalog={GOOGLE_CATALOG} {...handlers} {...props} status={status} />)
-  const update = next => view.rerender(<GoogleConnectWizard catalog={GOOGLE_CATALOG} {...handlers} {...props} status={next} />)
+  const view = render(<GoogleConnectWizard catalog={catalog} {...handlers} {...props} status={status} />)
+  // The existing owner-client cases explicitly choose Advanced; it is never
+  // the initial ordinary journey, including against an older host catalog.
+  if (advanced) fireEvent.click(screen.getByRole('button', {name: 'Advanced: use your own Google app'}))
+  const update = next => view.rerender(<GoogleConnectWizard catalog={catalog} {...handlers} {...props} status={next} />)
   return {...view, ...handlers, update}
 }
 
@@ -48,7 +51,7 @@ async function begin(calls) {
   return calls.find(([key]) => key === 'POST /api/pixel/connections/google/connect')[1]
 }
 
-it('walks through creating the Google app with links to the exact console pages', () => {
+it('keeps explicit Advanced setup with links to the exact console pages', () => {
   api({})
   wizard()
   for (const [name, href] of [['Create a Google Cloud project', 'https://console.cloud.google.com/projectcreate'],
@@ -243,4 +246,115 @@ it('offers Gmail drafts only on top of reading email', async () => {
   expect(drafts).toBeChecked()
   const sent = await begin(calls)
   expect(sent.capabilities).toEqual({...READ_BOTH, 'gmail.drafts': true})
+})
+
+function managedCatalog(state = 'configured', advancedAvailable = true) {
+  return {...GOOGLE_CATALOG, auth: {...GOOGLE_CATALOG.auth, client: 'ods-managed-desktop-app',
+    mode: 'managed', state, advancedAvailable}}
+}
+
+it('starts ordinary Google sign-in directly with the selected permissions and no owner client', async () => {
+  localStorage.setItem('ods.connectedApps.googleProject', 'previous-owner-project')
+  const calls = api({'POST /api/pixel/connections/google/connect': [200, BEGUN]})
+  wizard({catalog: managedCatalog(), advanced: false})
+  expect(screen.queryByLabelText('Google client file')).toBeNull()
+  expect(screen.queryByRole('link', {name: 'Create a Google Cloud project'})).toBeNull()
+  expect(screen.queryByText(/Google will say it hasn't verified/)).toBeNull()
+  expect(screen.queryByLabelText('Google account to use (optional)')).toBeNull()
+  expect(screen.getByRole('button', {name: 'Continue to Google'})).toBeEnabled()
+  fireEvent.click(screen.getByRole('button', {name: 'Continue to Google'}))
+  expect(await screen.findByText(/Sign in to Google in the tab that opened/)).toBeVisible()
+  const sent = calls.find(([key]) => key === 'POST /api/pixel/connections/google/connect')[1]
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone
+  expect(sent).toEqual({authMode: 'managed', capabilities: READ_BOTH, cloudModels: true,
+    ownerTimeZone: /^[A-Za-z][A-Za-z0-9_+\-/]{0,63}$/.test(zone) ? zone : null, loginHint: null})
+  expect(Object.hasOwn(sent, 'client')).toBe(false)
+  expect(tab.location.replace).toHaveBeenCalledWith(BEGUN.authUrl)
+})
+
+it.each(['not-configured', 'unavailable'])('does not silently fall back when managed sign-in is %s', state => {
+  const calls = api({})
+  wizard({catalog: managedCatalog(state), advanced: false})
+  expect(screen.getByRole('button', {name: 'Continue to Google'})).toBeDisabled()
+  expect(screen.queryByLabelText('Google client file')).toBeNull()
+  expect(screen.queryByRole('link', {name: 'Create a Google Cloud project'})).toBeNull()
+  expect(screen.getByRole('status')).toHaveTextContent(state === 'not-configured'
+    ? 'Standard Google sign-in is not available' : 'ODS could not load its Google sign-in configuration')
+  expect(screen.getByRole('button', {name: 'Advanced: use your own Google app'})).toBeEnabled()
+  expect(calls).toEqual([])
+})
+
+it('does not offer Advanced setup when the catalog does not allow it', () => {
+  api({})
+  wizard({catalog: managedCatalog('not-configured', false), advanced: false})
+  expect(screen.queryByRole('button', {name: /Advanced/})).toBeNull()
+  expect(screen.getByRole('button', {name: 'Continue to Google'})).toBeDisabled()
+})
+
+it('requires explicit Advanced choice on a legacy host and keeps its exact old request contract', async () => {
+  const calls = api({'POST /api/pixel/connections/google/connect': [200, BEGUN]})
+  wizard({advanced: false})
+  expect(screen.getByText('This ODS version does not provide standard Google sign-in yet.')).toBeVisible()
+  expect(screen.queryByLabelText('Google client file')).toBeNull()
+  expect(screen.getByRole('button', {name: 'Continue to Google'})).toBeDisabled()
+  fireEvent.click(screen.getByRole('button', {name: 'Advanced: use your own Google app'}))
+  const sent = await begin(calls)
+  expect(sent.client).toEqual({installed: INSTALLED})
+  expect(Object.hasOwn(sent, 'authMode')).toBe(false)
+})
+
+it.each(['configured', 'not-configured'])('marks the explicit own-app request as Advanced when managed sign-in is %s', async state => {
+  const calls = api({'POST /api/pixel/connections/google/connect': [200, BEGUN]})
+  wizard({catalog: managedCatalog(state)})
+  const sent = await begin(calls)
+  expect(sent.authMode).toBe('advanced')
+  expect(sent.client).toEqual({installed: INSTALLED})
+})
+
+it('clears the uploaded client before switching back to ordinary Google sign-in', async () => {
+  const calls = api({'POST /api/pixel/connections/google/connect': [200, BEGUN]})
+  wizard({catalog: managedCatalog()})
+  await chooseFile({installed: INSTALLED})
+  expect(await screen.findByText('Desktop app client for the project ods-owner-calendar.')).toBeVisible()
+  fireEvent.click(screen.getByRole('button', {name: 'Use standard Google sign-in'}))
+  expect(screen.queryByLabelText('Google client file')).toBeNull()
+  fireEvent.click(screen.getByRole('button', {name: 'Continue to Google'}))
+  expect(await screen.findByText(/Sign in to Google in the tab that opened/)).toBeVisible()
+  const sent = calls.find(([key]) => key === 'POST /api/pixel/connections/google/connect')[1]
+  expect(sent.authMode).toBe('managed')
+  expect(Object.hasOwn(sent, 'client')).toBe(false)
+})
+
+it('does not retain a slow client-file read after leaving Advanced setup', async () => {
+  api({})
+  wizard({catalog: managedCatalog()})
+  let resolve
+  const file = new File(['pending'], 'client.json', {type: 'application/json'})
+  Object.defineProperty(file, 'text', {value: () => new Promise(done => { resolve = done })})
+  fireEvent.change(screen.getByLabelText('Google client file'), {target: {files: [file]}})
+  fireEvent.click(screen.getByRole('button', {name: 'Use standard Google sign-in'}))
+  await act(async () => { resolve(JSON.stringify({installed: INSTALLED})) })
+  fireEvent.click(screen.getByRole('button', {name: 'Advanced: use your own Google app'}))
+  expect(screen.queryByText('Desktop app client for the project ods-owner-calendar.')).toBeNull()
+  expect(screen.getByRole('button', {name: 'Continue to Google'})).toBeDisabled()
+})
+
+it('offers the same sign-in link when the browser blocks a popup', async () => {
+  vi.mocked(window.open).mockReturnValue(null)
+  api({'POST /api/pixel/connections/google/connect': [200, BEGUN]})
+  wizard({catalog: managedCatalog(), advanced: false})
+  fireEvent.click(screen.getByRole('button', {name: 'Continue to Google'}))
+  expect(await screen.findByText(/Open the Google sign-in below/)).toBeVisible()
+  expect(screen.getByRole('link', {name: 'Open the Google sign-in again'})).toHaveAttribute('href', BEGUN.authUrl)
+})
+
+it('keeps a managed configuration failure out of the owner Cloud-project setup path', async () => {
+  api({'POST /api/pixel/connections/google/connect': [503, {detail: {code: 'client-invalid',
+    message: 'Download your Desktop app client file again.', help: null}}]})
+  wizard({catalog: managedCatalog(), advanced: false})
+  fireEvent.click(screen.getByRole('button', {name: 'Continue to Google'}))
+  expect(await screen.findByText("Google isn't accepting ODS sign-in right now.")).toBeVisible()
+  expect(screen.queryByText('Download your Desktop app client file again.')).toBeNull()
+  expect(screen.queryByLabelText('Google client file')).toBeNull()
+  expect(screen.getByRole('button', {name: 'Continue to Google'})).toBeEnabled()
 })

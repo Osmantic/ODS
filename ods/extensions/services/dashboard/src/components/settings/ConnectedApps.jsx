@@ -5,17 +5,18 @@ import CalendarChanges from './CalendarChanges'
 import EmailDrafts from './EmailDrafts'
 import PortalPlugins from './PortalPlugins'
 import GoogleConnectWizard, { Problem } from './GoogleConnectWizard'
-import { GOOGLE_CONSOLE, capabilitySummary, consoleLink, googleCard } from './connectedAppsStatus'
+import { GOOGLE_CONSOLE, capabilitySummary, consoleLink, googleCard, googleConnectionMode } from './connectedAppsStatus'
 import { disconnectGoogle, finishGoogle, savedProject, syncGoogle, useConnectedAppsStatus, useFullAccessOn } from './useConnectedApps'
 
 const TONES = {
-  ok: 'border-emerald-400/40 text-emerald-300',
-  progress: 'border-theme-accent/40 text-theme-accent-light',
-  warn: 'border-amber-400/40 text-amber-200',
-  error: 'border-red-400/40 text-red-300',
-  neutral: 'border-white/20 text-theme-text-muted',
+  ok: 'bg-emerald-400/10 text-emerald-300',
+  progress: 'bg-theme-accent/10 text-theme-accent-light',
+  warn: 'bg-amber-400/10 text-amber-200',
+  error: 'bg-red-400/10 text-red-300',
+  neutral: 'bg-white/5 text-theme-text-muted',
 }
-const button = 'rounded-lg border border-white/20 px-3 py-2 disabled:opacity-40'
+const focus = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-theme-accent'
+const button = `rounded-lg bg-white/[0.06] px-3 py-2 hover:bg-white/[0.1] disabled:opacity-40 ${focus}`
 
 function when(value) {
   return value ? new Date(value).toLocaleString([], {dateStyle: 'medium', timeStyle: 'short'}) : null
@@ -36,7 +37,11 @@ function SourceRows({google}) {
   return <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
     {rows.map(([name, label]) => {
       const source = google.sources?.[name]
+      const count = Number.isSafeInteger(source?.recordCount) && source.recordCount >= 0 ? source.recordCount : null
       const text = !source ? 'Waiting for the first sync'
+        : source.state === 'ok' && source.complete === false
+          ? count === 0 ? 'Waiting for the first sync'
+            : `Partially synced${count !== null ? ` · ${count} ${name === 'email' ? 'email summaries' : 'events'} available` : ''}`
         : source.state === 'ok' ? `Up to date${source.lastSuccessAt ? `, ${when(source.lastSuccessAt)}` : ''}`
         : source.lastSuccessAt ? `Last synced ${when(source.lastSuccessAt)}` : 'Not synced yet'
       return [<dt key={`${name}-label`}>{label}</dt>, <dd key={`${name}-value`}>{text}</dd>]
@@ -56,6 +61,7 @@ export default function ConnectedApps() {
 
   const google = status?.available ? status.connectors.google : null
   const catalog = status?.catalog?.find(entry => entry.id === 'google')
+  const advancedConnection = googleConnectionMode(google, catalog?.auth) === 'advanced'
   const card = status ? googleCard(status) : null
   const actions = card ? [...(card.step?.actions ?? []), ...card.actions.filter(action => !(card.step && action === 'connect'))] : []
 
@@ -100,23 +106,23 @@ export default function ConnectedApps() {
       <p>Connected apps status is unavailable right now.</p>
       <button type="button" onClick={() => { void refresh() }} className="text-sm underline">Try again</button>
     </div> : null}
-    {card ? <article aria-labelledby="google-card-title" className="space-y-3 rounded-xl border border-white/10 bg-white/[0.03] p-5">
+    {card ? <article aria-labelledby="google-card-title" className="space-y-3 rounded-xl bg-white/[0.03] p-5">
       <header className="flex items-start justify-between gap-3">
         <div>
           <h3 id="google-card-title" className="font-semibold">Google</h3>
           <p className="text-sm text-theme-text-muted">Calendar and Gmail</p>
         </div>
-        <span className={`rounded-full border px-2 py-0.5 text-xs ${TONES[card.tone]}`}>{card.chip}</span>
+        <span className={`rounded-full px-2 py-0.5 text-xs ${TONES[card.tone]}`}>{card.chip}</span>
       </header>
       {google?.account ? <p>Connected as {google.account}{capabilitySummary(google.capabilities) ? ` · ${capabilitySummary(google.capabilities)}` : ''}</p> : null}
       {google?.account ? <SourceRows google={google} /> : null}
       {card.message ? <p>{card.message}</p> : null}
       {card.fix ? <p>{card.fix}</p> : null}
-      {google?.reason === 'api-disabled' ? <p className="text-sm">
+      {advancedConnection && google?.reason === 'api-disabled' ? <p className="text-sm">
         Turn on the <a className="underline" href={consoleLink(GOOGLE_CONSOLE.enableGmail, savedProject())} target="_blank" rel="noopener noreferrer">Gmail API</a> and
         the <a className="underline" href={consoleLink(GOOGLE_CONSOLE.enableCalendar, savedProject())} target="_blank" rel="noopener noreferrer">Google Calendar API</a>.
       </p> : null}
-      {google?.reason === 'invalid-grant' ? <p className="text-sm">
+      {advancedConnection && google?.reason === 'invalid-grant' ? <p className="text-sm">
         <a className="underline" href={consoleLink(GOOGLE_CONSOLE.audience, savedProject())} target="_blank" rel="noopener noreferrer">Open your app&apos;s Audience page</a>
       </p> : null}
       {card.help ? <HelpLink /> : null}
@@ -131,12 +137,12 @@ export default function ConnectedApps() {
       {!wizard && actions.length ? <div className="flex flex-wrap gap-3">
         {actions.map(action => <button key={action} type="button" disabled={busy} onClick={() => act(action)} className={button}>{actionLabel(action, google ?? {}, card.step)}</button>)}
       </div> : null}
-      {confirming ? <div role="dialog" aria-labelledby="google-disconnect-title" className="space-y-3 rounded-lg border border-white/10 p-4">
+      {confirming ? <div role="dialog" aria-labelledby="google-disconnect-title" className="space-y-3 rounded-lg bg-white/[0.03] p-4">
         <h4 id="google-disconnect-title" className="font-semibold">Disconnect Google?</h4>
         <p>ODS stops syncing, removes its access at Google, and deletes the calendar and email summaries it saved on this machine. Portal stops using your calendar and email.</p>
         <div className="flex gap-3">
           <button type="button" disabled={busy} className={button} onClick={() => { setConfirming(false); void run(disconnectGoogle, 'Google is disconnected.') }}>Disconnect</button>
-          <button type="button" disabled={busy} onClick={() => setConfirming(false)}>Keep connected</button>
+          <button type="button" disabled={busy} className={`rounded-lg px-3 py-2 ${focus}`} onClick={() => setConfirming(false)}>Keep connected</button>
         </div>
       </div> : null}
       {wizard && catalog ? <GoogleConnectWizard catalog={catalog} initial={wizard.initial} status={status} refresh={refresh}

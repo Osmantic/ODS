@@ -3,7 +3,7 @@ import { Problem } from './GoogleConnectWizard'
 import { draftActions, draftOutcomeNotice, draftRows, draftStateLine, draftTitle } from './emailDraftView'
 import { approveGmailDraft, checkGmailDraft, declineGmailDraft, listGmailDrafts } from './useConnectedApps'
 
-const button = 'rounded-lg border border-white/20 px-3 py-2 disabled:opacity-40'
+const button = 'rounded-lg bg-white/[0.06] px-3 py-2 hover:bg-white/[0.1] disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-theme-accent'
 const LABELS = {approve: 'Create draft', decline: 'Decline', check: 'Check again', dismiss: 'Dismiss'}
 const RUN = {approve: approveGmailDraft, decline: declineGmailDraft, dismiss: declineGmailDraft, check: checkGmailDraft}
 
@@ -11,13 +11,13 @@ function Draft({entry, busy, act}) {
   const id = `gmail-draft-${entry.proposalId}`
   const rows = draftRows(entry)
   const line = draftStateLine(entry)
-  return <article aria-labelledby={id} className="space-y-2 rounded-lg border border-white/10 p-4">
+  return <article aria-labelledby={id} className="space-y-2 rounded-lg bg-white/[0.025] p-4">
     <h4 id={id} className="font-medium">{draftTitle(entry)}</h4>
     {rows.length ? <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
       {rows.map(([label, value]) => [<dt key={`${label}-label`} className="text-theme-text-muted">{label}</dt>,
         <dd key={`${label}-value`} className="break-words">{value}</dd>])}
     </dl> : null}
-    {entry.draft ? <p aria-label="Message" className="max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded border border-white/10 p-3 text-sm">{entry.draft.body}</p> : null}
+    {entry.draft ? <p aria-label="Message" className="max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded bg-white/[0.025] p-3 text-sm">{entry.draft.body}</p> : null}
     {line ? <p className="text-sm">{line}</p> : null}
     <div className="flex flex-wrap gap-3">
       {draftActions(entry).map(name => <button key={name} type="button" disabled={busy} className={button}

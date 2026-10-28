@@ -164,8 +164,18 @@ def request_runtime_connections(*, config):
         return 200, unavailable('darwin' if system == 'Darwin' else system.lower())
     if not config.get('PIXEL_OPENWEBUI_KEY'):
         from pixel_access_client import request_access
-        return request_access('connection-status')
-    return _request_runtime_controller(None, config=config, path='/v1/connections', timeout=22)
+        status, body = request_access('connection-status')
+    else:
+        status, body = _request_runtime_controller(None, config=config, path='/v1/connections', timeout=22)
+    if status == 200:
+        from pixel_connections.status import validate_public
+        try:
+            body = validate_public(body)
+        except ValueError:
+            raise AccessRelayError('connections-unavailable') from None
+    elif not (set(body) == {'error'} and isinstance(body['error'], str) and _REASON.fullmatch(body['error'])):
+        body = {'error': 'connections-unavailable'}
+    return status, body
 
 
 # Each action's controller budget; the relay waits a little longer than the controller.
@@ -388,14 +398,19 @@ def valid_connection_action(value):
                 and _text(request['flowId'], _FLOW) and _text(request['state'], _STATE)
                 and ('code' not in request or _text(request['code'], _CODE))
                 and ('error' not in request or request['error'] in ('access-denied', 'consent-failed')))
+    mode = request.get('authMode', 'advanced')
+    if mode not in ('managed', 'advanced'):
+        return False
+    keys = {'connector', 'capabilities', 'cloudModels', 'ownerTimeZone', 'loginHint', 'redirectPort'}
+    keys |= {'authMode'} if 'authMode' in request else set()
+    keys |= {'client'} if mode == 'advanced' else set()
     client = request.get('client')
     port = request.get('redirectPort')
-    return (set(request) == {'connector', 'client', 'capabilities', 'cloudModels', 'ownerTimeZone', 'loginHint',
-                             'redirectPort'}
+    return (set(request) == keys
             and request['connector'] == 'google'
-            and type(client) is dict and set(client) == {'clientId', 'clientSecret', 'projectId'}
-            and _text(client['clientId'], _CLIENT_ID) and _text(client['clientSecret'], _CLIENT_SECRET)
-            and _text(client['projectId'], _PROJECT)
+            and (mode == 'managed' or type(client) is dict and set(client) == {'clientId', 'clientSecret', 'projectId'}
+                 and _text(client['clientId'], _CLIENT_ID) and _text(client['clientSecret'], _CLIENT_SECRET)
+                 and _text(client['projectId'], _PROJECT))
             and _capability_flags(request['capabilities']) and type(request['cloudModels']) is bool
             and (request['ownerTimeZone'] is None or _text(request['ownerTimeZone'], _TIME_ZONE))
             and (request['loginHint'] is None or _text(request['loginHint'], _ACCOUNT))

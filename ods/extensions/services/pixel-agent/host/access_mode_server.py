@@ -158,8 +158,11 @@ def main(*, reprove_installer_access=False):
                         status, body = 200, adapter.schedules(request['request'], source=request['source'])
                 elif request == {"operation": "connection-status"} and platform.system() == "Linux":
                     from pixel_connections.status import report as connection_report
+                    from pixel_connections.google_app import public_status as google_app_status
                     surface = "wsl-systemd" if "microsoft" in platform.release().lower() else "linux-systemd"
-                    status, body = 200, connection_report(surface=surface)
+                    # Only Root reads deployment configuration. Windows/host
+                    # relays receive this credential-free metadata, not a file.
+                    status, body = 200, dict(connection_report(surface=surface), googleAuth=google_app_status())
                 elif request["operation"].startswith("connection-") and platform.system() == "Linux":
                     status, body = 200, adapter.connection_control(request["operation"], request["request"])
                 elif set(request) == {"operation", "request"} and request["operation"] == "change":

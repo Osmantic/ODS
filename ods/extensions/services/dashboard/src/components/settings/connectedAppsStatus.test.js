@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { GOOGLE_CONSOLE, capabilitySummary, consoleLink, googleCard, readClientFile, refreshDelay, signInProblem } from './connectedAppsStatus'
-import { INSTALLED, READ_BOTH, statusFor } from './connectedAppsFixtures'
+import { GOOGLE_CONSOLE, capabilitySummary, connectionProblem, consoleLink, googleCard, googleSignInOptions, readClientFile, refreshDelay, signInProblem } from './connectedAppsStatus'
+import { GOOGLE_CATALOG, INSTALLED, READ_BOTH, statusFor } from './connectedAppsFixtures'
 
 const NOW = Date.parse('2026-10-25T20:30:00Z')
 
@@ -30,6 +30,41 @@ describe('console links', () => {
     expect(consoleLink(GOOGLE_CONSOLE.audience, 'ods-owner-calendar')).toBe('https://console.developers.google.com/auth/audience?project=ods-owner-calendar')
     expect(consoleLink(GOOGLE_CONSOLE.audience, null)).toBe(GOOGLE_CONSOLE.audience)
     expect(consoleLink(GOOGLE_CONSOLE.audience, 'x"><script>')).toBe(GOOGLE_CONSOLE.audience)
+  })
+})
+
+describe('ordinary and Advanced Google sign-in', () => {
+  const auth = (state, advancedAvailable = true) => ({...GOOGLE_CATALOG.auth,
+    client: 'ods-managed-desktop-app', mode: 'managed', state, advancedAvailable})
+
+  it('uses only the complete advertised managed status to enable ordinary sign-in', () => {
+    expect(googleSignInOptions(auth('configured'))).toMatchObject({managed: true, ready: true, advancedAvailable: true, legacy: false})
+    for (const state of ['not-configured', 'unavailable']) {
+      expect(googleSignInOptions(auth(state, false))).toMatchObject({managed: true, ready: false, advancedAvailable: false})
+    }
+    for (const value of [null, {}, {...auth('configured'), advancedAvailable: 'true'},
+      {...auth('configured'), state: 'verified'}, {...auth('configured'), mode: 'advanced'},
+      {...auth('configured'), client: 'owner-desktop-app'}]) {
+      expect(googleSignInOptions(value)).toMatchObject({managed: false, ready: false, advancedAvailable: false})
+    }
+  })
+
+  it('recognizes the exact legacy host as explicit Advanced only', () => {
+    expect(googleSignInOptions(GOOGLE_CATALOG.auth)).toMatchObject({legacy: true, ready: false, advancedAvailable: true})
+  })
+
+  it('does not send ordinary owners to create or publish a Google Cloud project for a managed failure', () => {
+    const catalog = [{...GOOGLE_CATALOG, auth: auth('configured')}]
+    const card = googleCard(statusFor({state: 'needs-reconnect', reason: 'invalid-grant'}, {catalog}), NOW)
+    expect(card.message).toBe('Google no longer accepts this connection.')
+    expect(card.fix).not.toMatch(/publish|Cloud|file|project/)
+    const pending = googleCard(statusFor({pending: {phase: 'failed', error: 'client-invalid'}}, {catalog}), NOW)
+    expect(pending.step.message).toBe("Google isn't accepting ODS sign-in right now.")
+    expect(pending.step.fix).not.toMatch(/file|project/)
+    expect(connectionProblem({code: 'client-invalid', message: 'Upload the client JSON file.'}, 'managed').message)
+      .toBe("Google isn't accepting ODS sign-in right now.")
+    expect(connectionProblem({code: 'client-invalid', message: 'Upload the client JSON file.'}, 'advanced').message)
+      .toBe('Upload the client JSON file.')
   })
 })
 

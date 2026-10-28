@@ -1,4 +1,5 @@
 """The Edge relay and the host agent accept exactly the same connected-apps status and actions."""
+import ast
 import copy
 import importlib.util
 import inspect
@@ -9,6 +10,8 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "bin"))
@@ -83,10 +86,20 @@ def samples():
                                         token_path=root / "token.json", status_path=root / "status.json",
                                         lifecycle_path=root / "connection.json", now=NOW, owners=OWNERS,
                                         broker_state=root))
+    values.extend(dict(copy.deepcopy(values[-1]), googleAuth={'mode': 'managed', 'state': state,
+                  'advancedAvailable': True}) for state in ('configured', 'not-configured', 'unavailable'))
     return values
 
 
 MUTATIONS = (
+    lambda v: v['connectors']['google'].update(authMode=None),
+    lambda v: v['connectors']['google'].update(authMode='owner-client'),
+    lambda v: v['connectors']['google'].update(authMode=True),
+    lambda v: v.update(googleAuth=None),
+    lambda v: v.update(googleAuth={'mode': 'managed', 'state': 'configured', 'advancedAvailable': 1}),
+    lambda v: v.update(googleAuth={'mode': 'managed', 'state': 'verified', 'advancedAvailable': True}),
+    lambda v: v.update(googleAuth={'mode': 'managed', 'state': 'configured', 'advancedAvailable': True,
+                                 'clientSecret': 'private-sentinel'}),
     lambda v: v.update(extra=1),
     lambda v: v.update(schemaVersion=2),
     lambda v: v.update(available="yes"),
@@ -140,6 +153,8 @@ BEGIN = {"connector": "google", "capabilities": CAPABILITIES, "cloudModels": Fal
                     "clientSecret": "test-secret-test", "projectId": "ods-owner-calendar"}}
 REQUESTS = (
     ("connection-begin", BEGIN),
+    ('connection-begin', {key: value for key, value in dict(BEGIN, authMode='managed').items() if key != 'client'}),
+    ('connection-begin', dict(BEGIN, authMode='advanced')),
     ("connection-begin", dict(BEGIN, ownerTimeZone=None, loginHint="owner@example.com", cloudModels=True)),
     ("connection-complete", {"flowId": FLOW, "state": "s" * 43, "code": "4/0AfJohX-fixture"}),
     ("connection-complete", {"flowId": FLOW, "state": "s" * 43, "error": "access-denied"}),
@@ -154,6 +169,10 @@ REQUESTS = (
     ("connection-plugin", {"plugin": "memory-wiki", "enabled": False}),
 )
 BAD_REQUESTS = (
+    ('connection-begin', dict(BEGIN, authMode='managed')),
+    ('connection-begin', dict(BEGIN, authMode='managed', client=None)),
+    ('connection-begin', dict(BEGIN, authMode=None)),
+    ('connection-begin', {key: value for key, value in dict(BEGIN, authMode='advanced').items() if key != 'client'}),
     ("connection-begin", dict(BEGIN, redirectPort=80)), ("connection-begin", dict(BEGIN, extra=1)),
     ("connection-begin", dict(BEGIN, client=dict(BEGIN["client"], clientId="not-a-google-client"))),
     ("connection-begin", dict(BEGIN, capabilities=dict(CAPABILITIES, send=True))),
@@ -411,6 +430,55 @@ class ActionWireTests(unittest.TestCase):
 
 
 class WireContractTests(unittest.TestCase):
+    def test_legacy_account_mode_absence_is_preserved_and_managed_mode_is_independent_of_catalog(self):
+        value = next(item for item in samples() if item['connectors']['google']['state'] == 'connected')
+        legacy = copy.deepcopy(value)
+        legacy['connectors']['google'].pop('authMode', None)
+        self.assertEqual(status.validate_public(legacy), legacy)
+        self.assertEqual(edge.public_connections(legacy), legacy)
+        self.assertNotIn('authMode', legacy['connectors']['google'])
+        managed = copy.deepcopy(value)
+        managed['connectors']['google']['authMode'] = 'managed'
+        self.assertEqual(status.validate_public(managed), managed)
+        self.assertEqual(edge.public_connections(managed), managed)
+
+    def test_actual_root_status_branch_resolves_only_the_safe_deployment_projection(self):
+        from pixel_connections import google_app
+        tree = ast.parse((ROOT / 'extensions/services/pixel-agent/host/access_mode_server.py').read_text())
+        branch = next(node for node in ast.walk(tree) if isinstance(node, ast.If)
+                      and any(isinstance(item, ast.ImportFrom) and item.module == 'pixel_connections.google_app'
+                              for item in node.body))
+        auth = {'mode': 'managed', 'state': 'not-configured', 'advancedAvailable': True}
+        original = status.unavailable('windows')
+        context = {'platform': SimpleNamespace(release=lambda: 'fixture-microsoft')}
+        with patch.object(status, 'report', return_value=original) as report, \
+                patch.object(google_app, 'public_status', return_value=auth) as projection:
+            exec(compile(ast.Module(body=branch.body, type_ignores=[]), '<actual Root connection status>', 'exec'), context)
+        self.assertEqual(context['body'], dict(original, googleAuth=auth))
+        self.assertNotIn('googleAuth', original)
+        report.assert_called_once_with(surface='wsl-systemd')
+        projection.assert_called_once_with()
+
+    def test_host_relays_only_root_metadata_on_linux_or_windows_without_reading_client_files(self):
+        import pixel_access_client
+        import pixel_access_relay as relay
+        from pixel_connections import google_app
+        value = dict(status.unavailable('windows'), googleAuth={
+            'mode': 'managed', 'state': 'configured', 'advancedAvailable': True})
+        with patch.object(google_app, 'load', side_effect=AssertionError('Host must not read deployment client')):
+            with patch.object(relay.platform, 'system', return_value='Linux'), \
+                    patch.object(pixel_access_client, 'request_access', return_value=(200, value)):
+                self.assertEqual(relay.request_runtime_connections(config={}), (200, value))
+            with patch.object(relay.platform, 'system', return_value='Windows'), \
+                    patch.object(relay, '_request_runtime_controller', return_value=(200, value)) as transport:
+                self.assertEqual(relay.request_runtime_connections(config={'PIXEL_OPENWEBUI_KEY': 'fixture'}), (200, value))
+                transport.assert_called_once()
+            broken = dict(value, googleAuth=dict(value['googleAuth'], clientSecret='private-sentinel'))
+            with patch.object(relay.platform, 'system', return_value='Linux'), \
+                    patch.object(pixel_access_client, 'request_access', return_value=(200, broken)):
+                with self.assertRaisesRegex(relay.AccessRelayError, '^connections-unavailable$'):
+                    relay.request_runtime_connections(config={})
+
     def test_both_relays_accept_every_status_the_controller_produces(self):
         produced = samples()
         # Every step in progress reaches Settings, and none of the flow's secrets do.

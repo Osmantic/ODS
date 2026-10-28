@@ -24,6 +24,25 @@ export function consoleLink(url, projectId) {
   return projectId && PROJECT_ID.test(projectId) ? `${url}?project=${projectId}` : url
 }
 
+// A configured deployment is not a claim of Google brand/scope approval. An
+// older catalog can still offer explicit Advanced setup without sending new
+// fields to an older host. Unknown or partial managed frames fail closed.
+export function googleSignInOptions(auth) {
+  const legacy = auth?.type === 'oauth2-pkce' && auth?.client === 'owner-desktop-app'
+    && auth.mode === undefined && auth.state === undefined && auth.advancedAvailable === undefined
+  const managed = auth?.type === 'oauth2-pkce' && auth?.client === 'ods-managed-desktop-app'
+    && auth.mode === 'managed' && ['configured', 'not-configured', 'unavailable'].includes(auth.state)
+    && typeof auth.advancedAvailable === 'boolean'
+  return {legacy, managed, ready: managed && auth.state === 'configured',
+    state: managed ? auth.state : 'unavailable', advancedAvailable: managed ? auth.advancedAvailable : legacy}
+}
+
+export function googleConnectionMode(google, auth) {
+  if (google?.authMode === 'advanced') return 'advanced'
+  if (google?.authMode === 'managed') return 'managed'
+  return googleSignInOptions(auth).legacy ? 'advanced' : 'managed'
+}
+
 // Google's downloaded client file, checked here before it leaves the browser.
 // The custodian checks it again; this only names the fix sooner.
 export function readClientFile(text) {
@@ -81,6 +100,19 @@ const SIGN_IN = {
   'sign-in-exchange-unavailable': ["Google sign-in couldn't finish on this machine.", 'Try again.', true],
 }
 const SIGN_IN_FALLBACK = ["ODS couldn't finish connecting Google.", 'Try again.', true]
+const MANAGED_SIGN_IN = {
+  'redirect-mismatch': ["Google couldn't return to ODS.", 'Try again. If this continues, ask for help with ODS Google sign-in.', true],
+  'client-invalid': ["Google isn't accepting ODS sign-in right now.", 'Try again later, or ask for help with ODS Google sign-in.', true],
+  'api-disabled': ['An API this connection needs is turned off.', 'Ask for help with the Google sign-in provided by this ODS installation.', true],
+  'invalid-grant': ["Google no longer accepts this connection.", 'Reconnect to choose your account and allow access again.', false],
+  'google-app-not-configured': ['Standard Google sign-in is not available in this ODS installation yet.',
+    'Wait for an ODS update that provides it.', false],
+  'google-app-config-unavailable': ['ODS could not load its Google sign-in configuration.',
+    'Try again, or ask for help with this ODS installation.', true],
+}
+for (const code of ['google-app-config-invalid', 'google-app-config-unsafe']) {
+  MANAGED_SIGN_IN[code] = MANAGED_SIGN_IN['google-app-config-unavailable']
+}
 
 // Why Portal's gateway update stopped. Finish runs it again.
 const UPDATE = {
@@ -125,7 +157,10 @@ function explain(table, fallback, code) {
 }
 
 export const fileProblem = code => explain(FILE_PROBLEMS, FILE_PROBLEMS['client-invalid'], code)
-export const signInProblem = code => explain(SIGN_IN, SIGN_IN_FALLBACK, code)
+export const signInProblem = (code, mode = 'advanced') => explain(mode === 'managed'
+  ? {...SIGN_IN, ...MANAGED_SIGN_IN} : SIGN_IN, SIGN_IN_FALLBACK, code)
+export const connectionProblem = (error, mode) => mode === 'managed' && MANAGED_SIGN_IN[error.code]
+  ? signInProblem(error.code, mode) : {message: error.message, fix: null, help: Boolean(error.help)}
 
 // [chip label, tone, the actions the card offers]
 const STATES = {
@@ -148,14 +183,14 @@ export function capabilitySummary(capabilities) {
   return Object.entries(capabilities ?? {}).filter(([, on]) => on).map(([id]) => CAPABILITY_WORDS[id]).filter(Boolean).join(' · ')
 }
 
-function pendingView(pending, now) {
+function pendingView(pending, now, mode) {
   if (pending.phase === 'consent') {
     // Only the wizard that opened a sign-in can cancel it; a new one replaces it.
     return Date.parse(pending.expiresAt) > now
       ? {kind: 'waiting', tone: 'progress', message: 'A Google sign-in is open. Finish it in its tab, or start again.', fix: null, help: false, actions: ['connect']}
       : {kind: 'expired', tone: 'neutral', message: 'That sign-in took too long and expired.', fix: 'Start again.', help: false, actions: ['connect']}
   }
-  if (pending.phase === 'failed') return {kind: 'failed', tone: 'error', ...signInProblem(pending.error), actions: ['connect']}
+  if (pending.phase === 'failed') return {kind: 'failed', tone: 'error', ...signInProblem(pending.error, mode), actions: ['connect']}
   const action = pending.phase === 'activating' ? "Bringing Portal's calendar and email tools up to date." : 'Removing your calendar and email from Portal.'
   if (!pending.error && !stalled(pending, now)) return {kind: 'updating', tone: 'progress', message: action, fix: null, help: false, actions: []}
   return {kind: 'update-stopped', tone: 'warn', ...explain(UPDATE, UPDATE_FALLBACK, pending.error ?? 'stalled'), actions: ['finish']}
@@ -172,14 +207,16 @@ export function googleCard(status, now = Date.now()) {
       fix: 'Disconnect Google, then connect it again.', help: true, actions: ['disconnect'], step: null}
   }
   const google = status.connectors.google
+  const mode = googleConnectionMode(google, status.catalog?.find(entry => entry.id === 'google')?.auth)
   const known = Object.hasOwn(STATES, google.state)
   const [chip, tone, actions] = STATES[known ? google.state : 'unknown-error']
   const card = {chip, tone, message: null, fix: null, help: false, actions, step: null}
   const reason = google.reason ?? (known && google.state !== 'unknown-error' ? null : 'unknown')
-  if (reason) Object.assign(card, explain(REASONS, REASON_FALLBACK, reason))
+  if (reason) Object.assign(card, mode === 'managed' && MANAGED_SIGN_IN[reason]
+    ? signInProblem(reason, mode) : explain(REASONS, REASON_FALLBACK, reason))
   if (google.state === 'first-sync') card.message = 'Portal is reading your calendar and email for the first time. A large mailbox takes a while.'
   if (google.pending) {
-    card.step = pendingView(google.pending, now)
+    card.step = pendingView(google.pending, now, mode)
   } else if (status.reason === 'journal-unusable') {
     card.step = {kind: 'update-stopped', tone: 'warn', message: 'ODS lost track of an unfinished step.',
       fix: 'Press Finish to bring Portal up to date.', help: false, actions: ['finish']}

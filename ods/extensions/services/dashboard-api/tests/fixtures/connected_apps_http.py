@@ -26,7 +26,7 @@ sys.path[:0] = [str(ROOT / 'extensions/services/pixel-agent/tests'), str(ROOT / 
                 str(ROOT / 'extensions/services/pixel-agent/host')]
 import pytest
 import test_connection_coordinator as fixture
-from pixel_connections import coordinator, host_api, status as connection_status
+from pixel_connections import coordinator, google_app, host_api, status as connection_status
 import pixel_access_client
 from pixel_access_bridge import AccessError
 
@@ -34,6 +34,19 @@ scratch = tempfile.TemporaryDirectory(prefix='ods-connection-http-')
 patches = pytest.MonkeyPatch()
 original_urlopen = urllib.request.urlopen
 world = fixture.world.__wrapped__(Path(scratch.name), patches)
+mode = os.environ.get('ODS_QA_GOOGLE_MODE', 'legacy')
+assert mode in ('legacy', 'managed')
+fixture_client = {'installed': {
+    'client_id': fixture.CLIENT['clientId'], 'client_secret': fixture.CLIENT['clientSecret'],
+    'project_id': fixture.CLIENT['projectId'], 'auth_uri': fixture.oauth.GOOGLE_AUTH_URI,
+    'token_uri': fixture.oauth.GOOGLE_TOKEN_URI, 'redirect_uris': ['http://localhost'],
+}}
+if mode == 'managed':
+    deployment = world.record.parent / 'portal-google-app.json'
+    deployment.write_text(json.dumps({'kind': google_app.KIND, 'schemaVersion': 1, 'client': fixture_client}))
+    deployment.chmod(0o600)
+    patches.setattr(google_app, 'PATH', deployment)
+    patches.setattr(google_app, 'OWNERS', (os.getuid(),))
 def provider_only(request, timeout=None):
     address = request.full_url if hasattr(request, 'full_url') else str(request)
     if address in (fixture.BROKER.GOOGLE_TOKEN_URI, fixture.BROKER.GOOGLE_REVOKE_URI):
@@ -63,6 +76,8 @@ def request_access(operation, request=None):
                     owners=coordinator.OWNERS)
                  if operation == 'connection-status'
                  else coordinator.control(world.bridge, operation, request))
+        if operation == 'connection-status' and mode == 'managed':
+            value = dict(value, googleAuth=google_app.public_status())
         return 200, value
     except AccessError as error:
         return 409, {'error': str(error)}
@@ -123,15 +138,19 @@ try:
     assert api('GET', '', authenticated=False)[0] == 401
     initial = checked('GET', '')
     assert initial['connectors']['google']['state'] == 'not-connected', initial
-    client = {'installed': {
-        'client_id': fixture.CLIENT['clientId'], 'client_secret': fixture.CLIENT['clientSecret'],
-        'project_id': fixture.CLIENT['projectId'], 'auth_uri': fixture.oauth.GOOGLE_AUTH_URI,
-        'token_uri': fixture.oauth.GOOGLE_TOKEN_URI, 'redirect_uris': ['http://localhost'],
-    }}
-    begin_body = {'client': client, 'capabilities': fixture.READ_BOTH, 'cloudModels': True,
+    begin_body = {'capabilities': fixture.READ_BOTH, 'cloudModels': True,
                   'ownerTimeZone': 'America/Chicago', 'loginHint': None}
+    if mode == 'managed':
+        assert initial['catalog'][0]['auth']['mode'] == 'managed'
+        assert initial['catalog'][0]['auth']['state'] == 'configured'
+        begin_body['authMode'] = 'managed'
+    else:
+        assert 'mode' not in initial['catalog'][0]['auth']
+        begin_body['client'] = fixture_client
     flow = checked('POST', '/google/connect', begin_body)
     query = urllib.parse.parse_qs(urllib.parse.urlsplit(flow['authUrl']).query)
+    assert query['code_challenge_method'] == ['S256']
+    assert query['prompt'] == ['select_account consent' if mode == 'managed' else 'consent']
     state = query['state'][0]
     redirect = query['redirect_uri'][0]
     waiting = checked('GET', '')
@@ -169,6 +188,7 @@ try:
         time.sleep(.1)
     assert activated['connectors']['google']['account'] == 'owner@example.com', activated
     assert activated['connectors']['google']['capabilities'] == fixture.READ_BOTH, activated
+    assert activated['connectors']['google']['authMode'] == ('managed' if mode == 'managed' else 'advanced'), activated
     connected_config = json.loads(world.bridge.config_path.read_text())
     read_tools = set(fixture.planner.GMAIL_TOOLS + fixture.planner.CALENDAR_READ_TOOLS)
     assert read_tools <= set(connected_config['tools']['sandbox']['tools']['allow'])
@@ -194,6 +214,7 @@ try:
               'singleExchange': exchanges == 1, 'disconnectDeletesToken': True, 'readGrantsWithdrawn': True,
               'simulatedBoundaries': ['Google', 'systemd/gateway processes', 'privileged transport and UID custody'],
               'installedRuntimeTouched': False, 'operations': operations}
+    report.update(managedDeploymentClient=mode == 'managed', browserClientSupplied='client' in begin_body)
     (AUDIT / 'connected-http-journey-results.json').write_text(json.dumps(report, indent=2))
     print(json.dumps(report), flush=True)
 finally:

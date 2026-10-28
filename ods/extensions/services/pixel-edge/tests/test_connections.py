@@ -95,6 +95,17 @@ class ConnectionsRelayTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.headers['Cache-Control'], 'no-store')
         self.assertEqual(self.calls, [('GET', 'Bearer ' + 'o' * 64, '')])
 
+    async def test_only_safe_optional_managed_configuration_metadata_crosses_edge(self):
+        for state in ('configured', 'not-configured', 'unavailable'):
+            self.reply = dict(CONNECTED, googleAuth={'mode': 'managed', 'state': state, 'advancedAvailable': True})
+            async with self.client.get(self.url, headers=OWNER) as response:
+                self.assertEqual(response.status, 200)
+                self.assertEqual(await response.json(), self.reply)
+        self.reply['googleAuth']['clientSecret'] = 'private-sentinel'
+        async with self.client.get(self.url, headers=OWNER) as response:
+            self.assertEqual(response.status, 503)
+            self.assertNotIn('private-sentinel', await response.text())
+
     async def test_queries_and_bodies_never_reach_the_controller(self):
         async with self.client.get(self.url + '?account=other', headers={'Authorization': 'Bearer ' + 'o' * 64}) as response:
             self.assertEqual(response.status, 400)
@@ -124,6 +135,10 @@ class ConnectionsRelayTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_each_custodian_action_reaches_the_controller_exactly(self):
         for payload, reply in (
+                ({'operation': 'connection-begin', 'request': {
+                    key: value for key, value in dict(BEGIN, authMode='managed').items() if key != 'client'}},
+                 {'flowId': FLOW, 'authUrl': 'https://accounts.google.com/o/oauth2/auth?client_id=x',
+                  'redirectUri': 'http://127.0.0.1:53682', 'expiresAt': '2026-10-25T20:45:00Z'}),
                 ({'operation': 'connection-begin', 'request': BEGIN},
                  {'flowId': FLOW, 'authUrl': 'https://accounts.google.com/o/oauth2/auth?client_id=x',
                   'redirectUri': 'http://127.0.0.1:53682', 'expiresAt': '2026-10-25T20:45:00Z'}),

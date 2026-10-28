@@ -13,12 +13,13 @@ import pytest
 
 
 @pytest.mark.skipif(sys.platform != 'linux', reason='The connection coordinator uses Linux/systemd boundaries')
-def test_google_connection_survives_wrong_callback_and_disconnects_through_http(tmp_path):
+@pytest.mark.parametrize('mode', ['legacy', 'managed'])
+def test_google_connection_survives_wrong_callback_and_disconnects_through_http(tmp_path, mode):
     # Fresh process avoids changing the parent suite's cached API configuration,
     # callback listener, monkeypatches, HTTP clients or framework lifespan.
     allowed = {'PATH', 'LANG', 'LC_ALL', 'SYSTEMROOT', 'TMPDIR'}
     env = {key: value for key, value in os.environ.items() if key in allowed}
-    env.update(HOME=str(tmp_path), ODS_QA_REPORT_DIR=str(tmp_path), PYTHONDONTWRITEBYTECODE='1')
+    env.update(HOME=str(tmp_path), ODS_QA_REPORT_DIR=str(tmp_path), ODS_QA_GOOGLE_MODE=mode, PYTHONDONTWRITEBYTECODE='1')
     child = Path(__file__).parent / 'fixtures/connected_apps_http.py'
     result = subprocess.run([sys.executable, str(child)], cwd=tmp_path, env=env,
                             capture_output=True, text=True, timeout=90)
@@ -29,6 +30,8 @@ def test_google_connection_survives_wrong_callback_and_disconnects_through_http(
     assert report['forgedCallbackPreservesFlow'] and report['singleExchange']
     assert report['disconnectDeletesToken'] and not report['installedRuntimeTouched']
     assert report['readGrantsWithdrawn']
+    assert report['managedDeploymentClient'] == (mode == 'managed')
+    assert report['browserClientSupplied'] == (mode == 'legacy')
     assert report['simulatedBoundaries'] == [
         'Google', 'systemd/gateway processes', 'privileged transport and UID custody',
     ]

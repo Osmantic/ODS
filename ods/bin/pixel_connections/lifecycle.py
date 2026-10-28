@@ -49,7 +49,9 @@ def validate(value: Any) -> dict[str, Any]:
                     or not re.fullmatch(r"http://127\.0\.0\.1:[0-9]{4,5}", value["redirectUri"])
                     or type(value["expiresAt"]) is not str or not INSTANT.fullmatch(value["expiresAt"])
                     or not isinstance(value["request"], dict)
-                    or set(value["request"]) != {"capabilities", "cloudModels", "ownerTimeZone"}):
+                    or not {'capabilities', 'cloudModels', 'ownerTimeZone'} <= set(value['request']) <= {
+                        'capabilities', 'cloudModels', 'ownerTimeZone', 'authMode'}
+                    or 'authMode' in value['request'] and value['request']['authMode'] not in ('managed', 'advanced')):
         raise LifecycleError("invalid connection journal")
     return value
 

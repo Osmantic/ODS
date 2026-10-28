@@ -36,7 +36,7 @@ OPTIONAL_TOP_KEYS = {"plugins", "nativeApps"}
 MAX_PLUGINS = 32
 GOOGLE_KEYS = {"status", "account", "calendarId", "gmailWindowDays", "capabilities", "cloudModels", "connectedAt"}
 # Written since automatic calendar changes became available; a record without it is not paused.
-OPTIONAL_GOOGLE_KEYS = {"directPaused"}
+OPTIONAL_GOOGLE_KEYS = {"directPaused", "authMode"}
 EMAIL = re.compile(r"^[^@\s<>\x00-\x1f\x7f]{1,64}@[^@\s<>\x00-\x1f\x7f]{1,253}$")
 CALENDAR_ID = re.compile(r"^[A-Za-z0-9._@+-]{1,255}$")
 TIME_ZONE = re.compile(r"^[A-Za-z][A-Za-z0-9_+\-/]{0,63}$")
@@ -73,6 +73,8 @@ def _google(value: Any) -> dict[str, Any]:
         raise StateError("Google connection has missing or unknown fields")
     if "directPaused" in value and type(value["directPaused"]) is not bool:
         raise StateError("directPaused must be true or false")
+    if 'authMode' in value and value['authMode'] not in ('managed', 'advanced'):
+        raise StateError('Google authMode must be managed or advanced')
     if value["status"] != "connected":
         raise StateError("Google connection status is unknown")
     if not isinstance(value["account"], str) or not EMAIL.fullmatch(value["account"]):

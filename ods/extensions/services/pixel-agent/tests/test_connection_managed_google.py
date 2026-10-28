@@ -17,7 +17,7 @@ import pytest
 
 import test_connection_coordinator as harness
 from pixel_access_bridge import AccessError
-from pixel_connections import coordinator as c, google_app, oauth
+from pixel_connections import coordinator as c, google_app, lifecycle, oauth, state, status
 
 world = harness.world
 SYNTHETIC_SECRET = 'synthetic-managed-application-only'
@@ -58,12 +58,67 @@ def test_managed_sign_in_uses_protected_client_pkce_and_account_selection_then_a
     assert handoff_path.stat().st_mode & 0o077 == 0
     assert SYNTHETIC_SECRET not in json.dumps(begin)
     assert SYNTHETIC_SECRET not in json.dumps(harness.journal(managed))
+    assert harness.journal(managed)['request']['authMode'] == 'managed'
     completed = c.control(managed.bridge, 'connection-complete', {
         'flowId': begin['flowId'], 'state': handoff['state'], 'code': '4/synthetic-managed-code'})
     assert completed['outcome'] == 'connected'
     assert c.control(managed.bridge, 'connection-activate', {}) == {'outcome': 'applied'}
     assert managed.google.calls[0][1]['client_secret'] == [SYNTHETIC_SECRET]
     assert harness.record(managed)['connectors']['google']['account'] == 'owner@example.com'
+    assert harness.record(managed)['connectors']['google']['authMode'] == 'managed'
+
+
+def test_bound_managed_mode_survives_callback_even_when_deployment_availability_changes(managed):
+    begin = start(managed)
+    saved = harness.journal(managed)
+    managed.managed_app_path.unlink()
+    assert google_app.public_status()['state'] == 'not-configured'
+    # A fresh callback uses the durable consent provenance, not the current
+    # global deployment availability or an in-memory browser request.
+    assert c.control(managed.bridge, 'connection-complete', {'flowId': begin['flowId'],
+        'state': harness.consent_state(managed, begin['flowId']), 'code': '4/synthetic-bound-code'})['outcome'] == 'connected'
+    assert saved['request']['authMode'] == 'managed'
+    assert harness.record(managed)['connectors']['google']['authMode'] == 'managed'
+    assert c.control(managed.bridge, 'connection-activate', {}) == {'outcome': 'applied'}
+    assert harness.record(managed)['connectors']['google']['authMode'] == 'managed'
+
+
+def test_legacy_pending_consent_defaults_to_advanced_even_when_managed_app_is_available(managed):
+    begin = harness.begin(managed)
+    journal = harness.journal(managed)
+    journal['request'].pop('authMode')
+    c._write_lifecycle(managed.bridge, journal)
+    assert google_app.public_status()['state'] == 'configured'
+    assert c.control(managed.bridge, 'connection-complete', {'flowId': begin['flowId'],
+        'state': harness.consent_state(managed, begin['flowId']), 'code': '4/synthetic-legacy-code'})['outcome'] == 'connected'
+    assert harness.record(managed)['connectors']['google']['authMode'] == 'advanced'
+
+
+@pytest.mark.parametrize('bad', [None, True, 'official', 'owner', {}])
+def test_invalid_auth_mode_in_root_record_or_consent_is_refused(managed, bad):
+    start(managed)
+    journal = harness.journal(managed)
+    journal['request']['authMode'] = bad
+    with pytest.raises(lifecycle.LifecycleError):
+        lifecycle.validate(journal)
+    record = {'schemaVersion': 1, 'kind': state.KIND, 'updatedAt': '2026-10-28T12:00:00Z',
+        'ownerTimeZone': None, 'connectors': {'google': {'status': 'connected', 'account': 'owner@example.com',
+        'calendarId': 'primary', 'gmailWindowDays': 180, 'capabilities': harness.READ_BOTH, 'cloudModels': False,
+        'connectedAt': '2026-10-28T12:00:00Z', 'authMode': bad}}}
+    with pytest.raises(state.StateError):
+        state.validate(record)
+
+
+def test_legacy_record_projection_defaults_advanced_without_rewriting_record(managed):
+    # Connect using the existing compatible path, then model an old saved record.
+    harness.connect(managed)
+    record = harness.record(managed)
+    record['connectors']['google'].pop('authMode')
+    before = json.dumps(record, sort_keys=True)
+    assert state.validate(record) is record
+    projected = status.google_view(record, custody=True, broker=None, broker_error=False, now=c._now())
+    assert projected['authMode'] == 'advanced'
+    assert json.dumps(record, sort_keys=True) == before
 
 
 @pytest.mark.parametrize('change,code', [('missing', 'google-app-not-configured'),

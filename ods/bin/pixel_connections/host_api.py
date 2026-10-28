@@ -17,7 +17,7 @@ from . import oauth
 
 DISCORD = "https://discord.gg/4ntNp9MAwC"
 Relay = Callable[..., tuple]
-BEGIN_KEYS = {"client", "capabilities", "cloudModels", "ownerTimeZone", "loginHint"}
+BEGIN_KEYS = {"capabilities", "cloudModels", "ownerTimeZone", "loginHint"}
 # Sign-in results the owner fixes by simply trying again; everything else is a real failure.
 OWNER_FIXABLE = {"access-denied", "consent-failed", "missing-scope", "flow-expired"}
 
@@ -165,16 +165,26 @@ def _redirect_page(flow_id: str, *, config: dict, relay: Relay, log: Callable[[s
 
 def begin(body: Any, *, config: dict, relay: Relay, log: Callable[[str], None] = print) -> tuple:
     """Start a sign-in and open the loopback address Google will redirect the browser to."""
-    if not isinstance(body, dict) or set(body) != BEGIN_KEYS:
+    if not isinstance(body, dict):
         return 400, {"error": "invalid-request"}
-    try:
-        client = oauth.parse_client(body["client"])
-    except oauth.OAuthError as error:
-        return 400, {"error": error.code}
+    mode = body.get('authMode', 'advanced')
+    keys = BEGIN_KEYS | ({'authMode'} if 'authMode' in body else set()) | ({'client'} if mode == 'advanced' else set())
+    if mode not in ('managed', 'advanced') or set(body) != keys:
+        return 400, {"error": "invalid-request"}
+    client = None
+    if mode == 'advanced':
+        try:
+            client = oauth.parse_client(body['client'])
+        except oauth.OAuthError as error:
+            return 400, {"error": error.code}
     listener = _Listener()
-    request = {"connector": "google", "client": client, "capabilities": body["capabilities"],
+    request = {"connector": "google", "capabilities": body["capabilities"],
                "cloudModels": body["cloudModels"], "ownerTimeZone": body["ownerTimeZone"],
                "loginHint": body["loginHint"], "redirectPort": listener.port}
+    if client is not None:
+        request['client'] = client
+    if 'authMode' in body:
+        request['authMode'] = mode
     serving = False
     try:
         status, reply = relay("connection-begin", request, config=config)

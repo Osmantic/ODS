@@ -121,6 +121,60 @@ def test_nothing_connected_is_reported(client, mock_request, tmp_path):
     assert response.json()["connectors"]["google"]["state"] == "not-connected"
 
 
+@pytest.mark.parametrize('state', ['configured', 'not-configured', 'unavailable'])
+def test_managed_catalog_metadata_reaches_settings_without_a_client_document(client, mock_request, tmp_path, state):
+    reply = host_reply(tmp_path)
+    reply['catalog'] = catalog.public_catalog(google_auth={'mode': 'managed', 'state': state,
+                                                         'advancedAvailable': True})
+    mock_request.return_value = reply
+    response = client.get('/api/pixel/connections', headers=AUTH)
+    assert response.status_code == 200, response.text
+    assert response.json() == reply
+    assert 'client_secret' not in response.text and 'googleAuth' not in response.json()
+
+
+@pytest.mark.parametrize('mode', ['advanced', 'managed', None])
+def test_account_application_mode_is_independent_of_global_catalog_and_legacy_absence_is_preserved(
+        client, mock_request, tmp_path, mode):
+    reply = host_reply(tmp_path)
+    reply['catalog'] = catalog.public_catalog(google_auth={'mode': 'managed', 'state': 'configured',
+                                                         'advancedAvailable': True})
+    google = reply['connectors']['google']
+    if mode is None:
+        google.pop('authMode', None)
+    else:
+        google['authMode'] = mode
+    mock_request.return_value = reply
+    response = client.get('/api/pixel/connections', headers=AUTH)
+    assert response.status_code == 200, response.text
+    assert response.json() == reply
+
+
+@pytest.mark.parametrize('mode', [None, 'owner', True])
+def test_bad_explicit_account_mode_is_refused(client, mock_request, tmp_path, mode):
+    reply = host_reply(tmp_path)
+    reply['connectors']['google']['authMode'] = mode
+    mock_request.return_value = reply
+    assert client.get('/api/pixel/connections', headers=AUTH).status_code == 502
+
+
+@pytest.mark.parametrize('change', [
+    lambda auth: auth.update(state='verified'), lambda auth: auth.update(state=None),
+    lambda auth: auth.update(advancedAvailable=1), lambda auth: auth.pop('mode'),
+    lambda auth: auth.update(client='owner-desktop-app'),
+    lambda auth: auth.update(clientSecret='private-sentinel'),
+])
+def test_partial_or_unsafe_managed_catalog_is_withheld(client, mock_request, tmp_path, change):
+    reply = host_reply(tmp_path)
+    reply['catalog'] = catalog.public_catalog(google_auth={'mode': 'managed', 'state': 'configured',
+                                                         'advancedAvailable': True})
+    change(reply['catalog'][0]['auth'])
+    mock_request.return_value = reply
+    response = client.get('/api/pixel/connections', headers=AUTH)
+    assert response.status_code == 502
+    assert 'private-sentinel' not in response.text
+
+
 def test_why_the_last_sign_in_did_not_connect_reaches_settings(client, mock_request, tmp_path):
     reply = host_reply(tmp_path, connected=False)
     reply["connectors"]["google"]["pending"] = {"action": "connect", "phase": "failed", "expiresAt": None,
@@ -242,6 +296,40 @@ def test_each_action_reaches_its_host_route_with_exactly_the_owners_choices(clie
     assert response.headers["cache-control"] == "no-store"
     mock_request.assert_awaited_once_with("POST", f"/v1/pixel/connections/google/{host}", payload=body,
                                           timeout=timeout)
+
+
+@pytest.mark.parametrize('mode', ['managed', 'advanced'])
+def test_managed_omits_client_and_explicit_advanced_keeps_its_client(client, mock_request, mode):
+    body = dict(CONNECT, authMode=mode)
+    if mode == 'managed':
+        body.pop('client')
+    reply = ACTIONS[0][3]
+    mock_request.return_value = reply
+    response = client.post('/api/pixel/connections/google/connect', headers=AUTH, json=body)
+    assert response.status_code == 200, response.text
+    assert response.json() == reply
+    mock_request.assert_awaited_once_with('POST', '/v1/pixel/connections/google/begin', payload=body, timeout=90)
+
+
+@pytest.mark.parametrize('extra', [{'client': None}, {'client': {'installed': {}}},
+    {'clientPath': '/private/client.json'}, {'authMode': None}, {'authMode': 'unknown'}])
+def test_managed_client_null_or_override_never_reaches_host(client, mock_request, extra):
+    body = {key: value for key, value in dict(CONNECT, authMode='managed').items() if key != 'client'}
+    body.update(extra)
+    assert client.post('/api/pixel/connections/google/connect', headers=AUTH, json=body).status_code == 422
+    mock_request.assert_not_called()
+
+
+@pytest.mark.parametrize('code', ['google-app-not-configured', 'google-app-config-unavailable',
+                                 'google-app-config-invalid', 'google-app-config-unsafe'])
+def test_managed_release_configuration_error_points_to_maintainers_without_owner_setup(client, mock_request, code):
+    body = {key: value for key, value in dict(CONNECT, authMode='managed').items() if key != 'client'}
+    mock_request.side_effect = AgentHTTPError(409, code)
+    response = client.post('/api/pixel/connections/google/connect', headers=AUTH, json=body)
+    assert response.status_code == 409
+    detail = response.json()['detail']
+    assert detail['code'] == code and 'maintainers' in detail['message']
+    assert all(word not in detail['message'] for word in ('JSON', 'Google Cloud', '/etc/', 'client_secret'))
 
 
 @pytest.mark.parametrize("failure,status_code,code,needs_help", [

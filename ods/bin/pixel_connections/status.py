@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from . import approvals, catalog, drafts, lifecycle, state
+from . import approvals, catalog, drafts, google_app, lifecycle, state
 from . import plugins as portal_plugins
 
 BROKER_STATE = Path("/var/lib/pixel-source-broker")
@@ -128,6 +128,11 @@ def google_state(google: dict[str, Any], *, custody: bool, broker: dict[str, Any
             return name, sorted(classes & fix_classes)[0]
     if now - _instant(broker["generatedAt"]) > STALE_AFTER:
         return "behind", "sync-stopped"
+    if any(view['complete'] is False and view['recordCount'] == 0 for view in views):
+        # An empty partial batch has no usable history yet. Nonempty partial
+        # snapshots remain usable; complete=False still tells each source row
+        # its coverage is limited, without asserting an active background fetch.
+        return 'first-sync', None
     return "connected", None
 
 
@@ -148,6 +153,7 @@ def google_view(record: dict[str, Any] | None, *, custody: bool, broker: dict[st
     sources = (broker or {}).get("sources", {})
     return {
         "state": name,
+        'authMode': google.get('authMode', 'advanced'),
         "reason": reason,
         "account": google["account"],
         "capabilities": dict(google["capabilities"]),
@@ -185,9 +191,12 @@ def _valid_source(value: Any) -> bool:
 
 
 def _valid_google(value: Any) -> bool:
-    if not isinstance(value, dict) or set(value) != GOOGLE_KEYS or value["state"] not in STATES:
+    if (not isinstance(value, dict) or not GOOGLE_KEYS <= set(value) <= GOOGLE_KEYS | {'authMode'}
+            or value["state"] not in STATES):
         return False
     connected = value["state"] != "not-connected"
+    if 'authMode' in value and (not connected or value['authMode'] not in ('managed', 'advanced')):
+        return False
     capabilities = value["capabilities"]
     return (_optional(value["reason"], lambda item: isinstance(item, str) and bool(TOKEN_PATTERN.fullmatch(item)))
             and (value["account"] is None) != connected
@@ -215,9 +224,9 @@ def plugin_flags(record: dict[str, Any] | None) -> dict[str, bool]:
 
 def validate_public(value: Any) -> dict[str, Any]:
     """Accept exactly the public status shape, so nothing else can reach the browser."""
+    keys = {"schemaVersion", "available", "surface", "reason", "ownerTimeZone", "connectors", "plugins"}
     if (not isinstance(value, dict)
-            or set(value) != {"schemaVersion", "available", "surface", "reason", "ownerTimeZone", "connectors",
-                              "plugins"}
+            or not keys <= set(value) <= keys | {'googleAuth'}
             or not isinstance(value["plugins"], dict) or set(value["plugins"]) != set(portal_plugins.IDS)
             or any(type(flag) is not bool for flag in value["plugins"].values())
             or value["schemaVersion"] != SCHEMA_VERSION or type(value["available"]) is not bool
@@ -228,6 +237,11 @@ def validate_public(value: Any) -> dict[str, Any]:
             or not isinstance(value["connectors"], dict) or set(value["connectors"]) != {"google"}
             or not _valid_google(value["connectors"]["google"])):
         raise StatusError("connection status has an unexpected shape")
+    if 'googleAuth' in value:
+        try:
+            google_app.validate_public(value['googleAuth'])
+        except google_app.ManagedAppError:
+            raise StatusError('connection status has an unexpected shape') from None
     return value
 
 

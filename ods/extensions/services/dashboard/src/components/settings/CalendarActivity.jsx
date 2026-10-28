@@ -3,7 +3,7 @@ import { Problem } from './GoogleConnectWizard'
 import { activityLine, undoLine, undoNotice } from './calendarChangeView'
 import { listCalendarActivity, undoCalendarChange } from './useConnectedApps'
 
-const button = 'rounded-lg border border-white/20 px-3 py-2 disabled:opacity-40'
+const button = 'rounded-lg bg-white/[0.06] px-3 py-2 hover:bg-white/[0.1] disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-theme-accent'
 // A change the calendar summary hasn't caught up with yet becomes undoable at the next sync.
 const SYNC_WAIT = 30000
 
@@ -64,7 +64,7 @@ export default function CalendarActivity({onChanged}) {
     {notice ? <p role="status">{notice}</p> : null}
     {problem ? <Problem problem={problem} /> : null}
     {changes.length ? <ul className="space-y-2">
-      {changes.map(entry => <li key={entry.proposalId} className="space-y-1 rounded-lg border border-white/10 p-3 text-sm">
+      {changes.map(entry => <li key={entry.proposalId} className="space-y-1 rounded-lg bg-white/[0.025] p-3 text-sm">
         <p>{activityLine(entry)}</p>
         {entry.appliedAt ? <p className="text-theme-text-muted">{when(entry.appliedAt)}</p> : null}
         {entry.undo === 'available'
