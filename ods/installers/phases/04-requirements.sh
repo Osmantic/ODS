@@ -239,6 +239,78 @@ _phase04_own_whisper_publishes() {
     [[ " $host_ports " == *" $port "* ]]
 }
 
+# The running Docker container that publishes host TCP PORT, read from the
+# host side of `docker ps` bindings (HOST_IP:START[-END]->...; its publish
+# filter can match the container side instead). Fails when Docker is
+# missing or unreadable without a prompt.
+_phase04_docker_port_owner() {
+    local port="$1" name ports binding start end
+    local binding_pattern=':([0-9]+)(-([0-9]+))?->[0-9]+(-[0-9]+)?/tcp$'
+    local -a bindings
+    command -v docker >/dev/null 2>&1 || return 1
+    # Read-only and best effort: the port is reported busy either way.
+    while IFS='|' read -r name ports; do
+        IFS=',' read -ra bindings <<< "$ports"
+        for binding in ${bindings[@]+"${bindings[@]}"}; do
+            [[ "$binding" =~ $binding_pattern ]] || continue
+            start="${BASH_REMATCH[1]}"
+            end="${BASH_REMATCH[3]:-$start}"
+            if (( start <= port && port <= end )); then
+                printf '%s' "$name"
+                return 0
+            fi
+        done
+    done < <(docker ps --format '{{.Names}}|{{.Ports}}' 2>/dev/null)
+    return 1
+}
+
+# Name the Docker container behind a conflict that check_port_conflict saw
+# only as docker-proxy, or could not see at all.
+_phase04_name_docker_owner() {
+    local name
+    [[ -z "${PORT_CONFLICT_PROC:-}" || "$PORT_CONFLICT_PROC" == docker-proxy ]] || return 0
+    name="$(_phase04_docker_port_owner "$1")" || return 0
+    PORT_CONFLICT_PROC="Docker container $name"
+    PORT_CONFLICT_PID=""
+}
+
+# Who holds PORT, after check_port_conflict, for a message. An unseen owner
+# comes with the command, among this host's tools, that names it.
+_phase04_port_owner() {
+    local finder
+    if [[ -n "${PORT_CONFLICT_PROC:-}" ]]; then
+        printf '%s%s' "$PORT_CONFLICT_PROC" "${PORT_CONFLICT_PID:+ (PID $PORT_CONFLICT_PID)}"
+    elif [[ -n "${PORT_CONFLICT_PID:-}" ]]; then
+        printf 'PID %s' "$PORT_CONFLICT_PID"
+    else
+        if command -v ss >/dev/null 2>&1; then
+            finder="sudo ss -ltnp 'sport = :$1'"
+        elif command -v lsof >/dev/null 2>&1; then
+            finder="sudo lsof -i :$1 -sTCP:LISTEN"
+        else
+            finder="sudo netstat -tlnp | grep :$1"
+        fi
+        printf 'a program this account cannot see (%s names it)' "$finder"
+    fi
+}
+
+# _phase04_free_port_hint DEFAULT [TAKEN...]: a port for a rerun example near
+# DEFAULT, every 10 up to DEFAULT+90, that nothing listens on and that is not
+# another ODS service's, a Dashboard port or one of TAKEN. Fails when none is.
+_phase04_free_port_hint() {
+    local default="$1" candidate taken
+    shift
+    taken=" ${SERVICE_PORTS[*]:-} ${DASHBOARD_PORT:-} ${DASHBOARD_REMOTE_PORT:-} $* "
+    for ((candidate = default + 10; candidate <= default + 90 && candidate <= 65535; candidate += 10)); do
+        [[ "$taken" != *" $candidate "* ]] || continue
+        if ! check_port_conflict "$candidate" false; then
+            printf '%s' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
 check_port_conflict() {
     local port="$1"
     local allow_owned_port="${2:-true}"
@@ -256,8 +328,10 @@ check_port_conflict() {
         port_tool_found=true
         if lsof -i ":${port}" -sTCP:LISTEN >/dev/null 2>&1; then
             PORT_CONFLICT_PID=$(lsof -t -i ":${port}" -sTCP:LISTEN 2>/dev/null | head -1)
-            PORT_CONFLICT_PROC=$(ps -p "$PORT_CONFLICT_PID" -o comm= 2>/dev/null || echo "unknown")
+            # Empty when the process has exited since: its name is then unknown.
+            PORT_CONFLICT_PROC=$(ps -p "$PORT_CONFLICT_PID" -o comm= 2>/dev/null) || PORT_CONFLICT_PROC=""
             PORT_CONFLICT=true
+            _phase04_name_docker_owner "$port"
             return 0
         fi
     fi
@@ -272,11 +346,11 @@ check_port_conflict() {
             ss_line=$(ss -tlnp 2>/dev/null | grep -E ":${port}(\s|$)" | head -1)
             if [[ "$ss_line" =~ pid=([0-9]+) ]]; then
                 PORT_CONFLICT_PID="${BASH_REMATCH[1]}"
-                PORT_CONFLICT_PROC=$(ps -p "$PORT_CONFLICT_PID" -o comm= 2>/dev/null || echo "unknown")
-            else
-                PORT_CONFLICT_PROC="unknown"
+                # Empty when the process has exited since: its name is then unknown.
+                PORT_CONFLICT_PROC=$(ps -p "$PORT_CONFLICT_PID" -o comm= 2>/dev/null) || PORT_CONFLICT_PROC=""
             fi
             PORT_CONFLICT=true
+            _phase04_name_docker_owner "$port"
             return 0
         fi
     fi
@@ -291,10 +365,9 @@ check_port_conflict() {
             if [[ "$netstat_line" =~ ([0-9]+)/([^ ]+) ]]; then
                 PORT_CONFLICT_PID="${BASH_REMATCH[1]}"
                 PORT_CONFLICT_PROC="${BASH_REMATCH[2]}"
-            else
-                PORT_CONFLICT_PROC="unknown"
             fi
             PORT_CONFLICT=true
+            _phase04_name_docker_owner "$port"
             return 0
         fi
     fi
@@ -313,8 +386,10 @@ check_port_conflict() {
     # eventual Docker bind fail.
     if declare -F ods_windows_host_port_in_use >/dev/null 2>&1 \
         && ods_windows_host_port_in_use "$port"; then
-        PORT_CONFLICT_PROC="Windows host process"
         PORT_CONFLICT=true
+        # Docker Desktop's own published ports show up here too.
+        _phase04_name_docker_owner "$port"
+        PORT_CONFLICT_PROC="${PORT_CONFLICT_PROC:-Windows host process}"
         return 0
     fi
 
@@ -346,7 +421,8 @@ _phase04_own_dashboard_publishes() {
 }
 
 _phase04_check_dashboard_ports() {
-    local key default port
+    local key default port hint keys example=""
+    local -a busy=() taken=()
     for key in DASHBOARD_PORT DASHBOARD_REMOTE_PORT; do
         default=3001
         [[ "$key" != DASHBOARD_REMOTE_PORT ]] || default=3011
@@ -362,15 +438,31 @@ _phase04_check_dashboard_ports() {
         printf -v "$key" '%s' "$port"
         export "$key"
         if ! _phase04_own_dashboard_publishes "$port" && check_port_conflict "$port" false; then
-            warn "Required Dashboard port $port is in use by ${PORT_CONFLICT_PROC:-another process}."
-            warn "Choose a free $key in the environment or installed .env, then rerun the installer."
-            return 1
+            warn "Required Dashboard port $port ($key) is in use by $(_phase04_port_owner "$port")."
+            busy+=("$key")
         fi
     done
     if [[ "$DASHBOARD_PORT" == "$DASHBOARD_REMOTE_PORT" ]]; then
         warn "DASHBOARD_PORT and DASHBOARD_REMOTE_PORT must use different host ports."
         return 1
     fi
+    (( ${#busy[@]} )) || return 0
+    # Every busy port is named above, so one rerun can fix them all.
+    for key in "${busy[@]}"; do
+        hint="$(_phase04_free_port_hint "${!key}" ${taken[@]+"${taken[@]}"})" || continue
+        taken+=("$hint")
+        example+=" $key=$hint"
+    done
+    keys="${busy[0]}"
+    (( ${#busy[@]} == 1 )) || keys="${busy[0]} and ${busy[1]}"
+    if [[ -n "$example" ]]; then
+        # The example stands on its own line, ready to copy.
+        warn "Choose a free port for $keys in the environment or installed .env, then rerun the installer, for example with:"
+        warn " $example"
+    else
+        warn "Choose a free port for $keys in the environment or installed .env, then rerun the installer."
+    fi
+    return 1
 }
 
 # Fail before .env regeneration or Compose startup, including in non-interactive mode. Do not
@@ -450,7 +542,7 @@ _phase04_check_inference_port() {
     export OLLAMA_PORT="$port"
     SERVICE_PORTS[llama-server]="$port"
     if ! _phase04_own_inference_publishes "$port" && check_port_conflict "$port" false; then
-        warn "Required local model port $port is in use by ${PORT_CONFLICT_PROC:-another process}."
+        warn "Required local model port $port is in use by $(_phase04_port_owner "$port")."
         warn "If Ollama is running on Windows, quit it from the system tray first. Otherwise stop or reconfigure the conflicting service."
         warn "Alternatively choose a free OLLAMA_PORT in the environment or installed .env and rerun. Windows PowerShell: \$env:OLLAMA_PORT='11435' (choose a free port)."
         warn "Installation stopped before configuration or service startup; this port conflict cannot be bypassed with Continue anyway."
@@ -518,11 +610,7 @@ fi
 
 for port in $PORTS_TO_CHECK; do
     if check_port_conflict "$port"; then
-        if [[ -n "$PORT_CONFLICT_PID" ]]; then
-            warn "Port $port is in use by ${PORT_CONFLICT_PROC} (PID ${PORT_CONFLICT_PID})"
-        else
-            warn "Port $port is in use by ${PORT_CONFLICT_PROC}"
-        fi
+        warn "Port $port is in use by $(_phase04_port_owner "$port")"
         REQUIREMENTS_MET=false
     fi
 done
