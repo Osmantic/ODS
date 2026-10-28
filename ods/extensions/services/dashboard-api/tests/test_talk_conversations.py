@@ -90,6 +90,14 @@ class FakeWS:
             if self.mode == "hold_afterprompt":
                 self.prompt_sent.set()
                 return
+            if self.mode == "approval_afterprompt":
+                self.prompt_sent.set()
+                await self._push({
+                    "jsonrpc": "2.0", "method": "event",
+                    "params": {"type": "approval.request", "session_id": "rt-1",
+                               "payload": {"command": "echo safe", "description": "Run code"}},
+                })
+                return
             self.prompt_sent.set()
             await self._push(
                 {
@@ -565,3 +573,142 @@ async def test_completed_turn_preserves_warm_connection(env):
     await _consume(env.bridge, env.owner, env.cid, "again")
     assert len(env.opened) == 1
     assert env.interrupted == []
+
+
+async def _wire_router(env):
+    async def get_bridge():
+        return env.bridge
+    env.monkeypatch.setattr("talk_runtime.get_bridge", get_bridge)
+    env.monkeypatch.setattr("routers.talk._KEEPALIVE_INTERVAL", 0.01)
+
+
+@pytest.mark.asyncio
+async def test_sync_router_closes_completed_bridge_iterator(env):
+    from routers.talk import _send_to_hermes
+    await _wire_router(env)
+    reply = await _send_to_hermes(env.owner, env.cid, "hi")
+    assert reply["conversation_id"] == env.cid
+    assert reply["text"] == "hi"
+    conn = env.opened[0][0]
+    assert not conn.lock.locked()
+    assert env.store.get(env.owner, env.cid)["state"] == "ready"
+    assert env.interrupted == []
+    await asyncio.wait_for(_send_to_hermes(env.owner, env.cid, "again"), 2)
+    assert _methods(env.requests).count("session.create") == 1
+    assert _methods(env.requests).count("prompt.submit") == 2
+
+
+@pytest.mark.asyncio
+async def test_nonstreaming_request_disconnect_interrupts_real_native_turn(env):
+    from fastapi import HTTPException
+    from routers.talk import _send_to_hermes, _while_connected
+    await _wire_router(env)
+    env.state["mode"] = "hold_afterprompt"
+
+    class Request:
+        async def receive(self):
+            await env.prompt_sent.wait()
+            return {"type": "http.disconnect"}
+
+    with pytest.raises(HTTPException) as exc:
+        await asyncio.wait_for(_while_connected(Request(), _send_to_hermes(env.owner, env.cid, "hi")), 2)
+    assert exc.value.status_code == 499
+    assert env.store.get(env.owner, env.cid)["state"] == "uncertain"
+    assert env.interrupted == ["rt-1"]
+    assert not env.opened[0][0].lock.locked()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["hold_afterprompt", "approval_afterprompt"])
+async def test_http_disconnect_settles_real_bridge_and_pending_approval(env, mode):
+    from routers.talk import _TalkStreamingResponse, _stream_hermes_sse
+    await _wire_router(env)
+    env.state["mode"] = mode
+    observed = []
+    ready_to_disconnect = asyncio.Event()
+
+    class ConnectedRequest:
+        async def is_disconnected(self):
+            return False
+
+    async def send(message):
+        body = message.get("body", b"")
+        observed.append(body)
+        # A keepalive after submit proves the model turn is waiting. In the
+        # approval case wait until the real parser registered the request.
+        if ((mode == "approval_afterprompt" and b'"type":"approval"' in body)
+                or (mode == "hold_afterprompt" and env.prompt_sent.is_set()
+                    and body == b": keepalive\n\n")):
+            ready_to_disconnect.set()
+
+    async def receive():
+        await ready_to_disconnect.wait()
+        return {"type": "http.disconnect"}
+
+    response = _TalkStreamingResponse(
+        _stream_hermes_sse(env.owner, env.cid, "hi", ConnectedRequest()),
+        media_type="text/event-stream",
+    )
+    await asyncio.wait_for(response(
+        {"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send,
+    ), 2)
+    assert env.store.get(env.owner, env.cid)["state"] == "uncertain"
+    assert env.interrupted == ["rt-1"]
+    assert _methods(env.requests).count("prompt.submit") == 1
+    conn, ws, http = env.opened[0]
+    assert ws.closed and http.closed and not conn.lock.locked()
+    assert b'"type":"done"' not in b"".join(observed)
+    if mode == "approval_afterprompt":
+        responses = [r for r in env.requests if r["method"] == "approval.respond"]
+        assert len(responses) == 1
+        assert responses[0]["params"] == {
+            "session_id": "rt-1", "choice": "deny", "all": False,
+        }
+
+
+@pytest.mark.asyncio
+async def test_repeated_http_cancellation_joins_durable_cleanup(env):
+    from routers.talk import _TalkStreamingResponse, _stream_hermes_sse
+    await _wire_router(env)
+    env.state["mode"] = "hold_afterprompt"
+    entered, release, blockers = _block_transition(env, "mark_uncertain")
+
+    class ConnectedRequest:
+        async def is_disconnected(self):
+            return False
+
+    async def receive():
+        await asyncio.Event().wait()
+
+    async def send(_message):
+        pass
+
+    response = _TalkStreamingResponse(
+        _stream_hermes_sse(env.owner, env.cid, "hi", ConnectedRequest()),
+        media_type="text/event-stream",
+    )
+    task = asyncio.create_task(response(
+        {"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send,
+    ))
+    try:
+        await asyncio.wait_for(env.prompt_sent.wait(), 2)
+        task.cancel()
+        await asyncio.wait_for(entered.wait(), 2)
+        for _ in range(3):
+            task.cancel()
+            await _event_loop_barrier()
+            assert not task.done()
+        release()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 2)
+    finally:
+        release()
+        if not task.done():
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 2)
+        for blocker in blockers:
+            blocker.close()
+    assert env.store.get(env.owner, env.cid)["state"] == "uncertain"
+    assert env.interrupted == ["rt-1"]
+    assert not env.opened[0][0].lock.locked()

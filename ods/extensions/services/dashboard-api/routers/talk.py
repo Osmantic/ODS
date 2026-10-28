@@ -23,6 +23,8 @@ from starlette.requests import ClientDisconnect
 
 import hermes_bridge
 import session_signer
+import talk_runtime
+from talk_conversations import ConversationError, _settle
 from config import (
     EXTENSIONS_DIR,
     GPU_BACKEND,
@@ -552,20 +554,79 @@ async def _stream_speech(text: str) -> AsyncIterator[bytes]:
         return
 
 
-async def _send_to_hermes(session_key: str, text: str) -> dict[str, Any]:
+async def _conversation(request: Request, owner: str):
+    cid = request.headers.get("X-ODS-Talk-Conversation", "")
+    if not cid:
+        raise HTTPException(status_code=422, detail={
+            "code": "conversation_required",
+            "message": "Start a conversation before sending a message. Refresh Talk if this page is out of date.",
+        })
     try:
-        reply = await hermes_bridge.submit_prompt(session_key, text)
+        bridge = await talk_runtime.get_bridge()
+        await bridge._get(owner, cid)
+    except ConversationError as exc:
+        status, detail = talk_runtime.error_detail(exc)
+        raise HTTPException(status_code=status, detail=detail) from exc
+    return cid
+
+
+async def _send_to_hermes(owner: str, cid: str, text: str) -> dict[str, Any]:
+    iterator = None
+    try:
+        bridge = await talk_runtime.get_bridge()
+        iterator = bridge.stream(owner, cid, text)
+        async for event in iterator:
+            if event.get("type") == "complete":
+                return {
+                    "conversation_id": cid,
+                    "session_id": event.get("session_id", ""),
+                    "text": event.get("text", ""),
+                    "status": event.get("status"),
+                    "warning": event.get("warning"),
+                }
+        raise ConversationError("recovery", "The response ended before its outcome could be confirmed.")
+    except ConversationError as exc:
+        status, detail = talk_runtime.error_detail(exc)
+        raise HTTPException(status_code=status, detail=detail) from exc
     except hermes_bridge.HermesUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except (hermes_bridge.HermesBridgeError, asyncio.TimeoutError) as exc:
         raise HTTPException(status_code=502, detail=str(exc) or "Hermes did not finish the response.") from exc
+    finally:
+        if iterator is not None:
+            await _settle(iterator.aclose())
 
-    return {
-        "session_id": reply.session_id,
-        "text": reply.text,
-        "status": reply.status,
-        "warning": reply.warning,
-    }
+
+async def _while_connected(request: Request, work):
+    """Cancel a non-streaming text/voice operation when its HTTP client leaves.
+
+    Call only after the endpoint has consumed its request body. ASGI does not
+    cancel a normal endpoint merely because the browser aborts its fetch.
+    """
+    async def disconnected():
+        while True:
+            event = await request.receive()
+            if event["type"] == "http.disconnect":
+                return
+
+    work_task = asyncio.create_task(work)
+    disconnect_task = asyncio.create_task(disconnected())
+    try:
+        done, _pending = await asyncio.wait(
+            {work_task, disconnect_task}, return_when=asyncio.FIRST_COMPLETED,
+        )
+        if work_task in done:
+            return await work_task
+        raise HTTPException(status_code=499, detail="The client closed this request.")
+    finally:
+        async def finish():
+            for task in (work_task, disconnect_task):
+                if not task.done():
+                    task.cancel()
+            for task in (work_task, disconnect_task):
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
+        await _settle(finish())
 
 
 def _sse_event(event_type: str, data: dict[str, Any]) -> bytes:
@@ -608,16 +669,18 @@ class _TalkStreamingResponse(StreamingResponse):
                 except OSError as exc:
                     raise ClientDisconnect from exc
         finally:
-            for task in (stream_task, disconnect_task):
-                if not task.done():
-                    task.cancel()
-            for task in (stream_task, disconnect_task):
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await task
-            close = getattr(self.body_iterator, "aclose", None)
-            if close is not None:
-                with contextlib.suppress(Exception):
-                    await close()
+            async def finish_response():
+                for task in (stream_task, disconnect_task):
+                    if not task.done():
+                        task.cancel()
+                for task in (stream_task, disconnect_task):
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await task
+                close = getattr(self.body_iterator, "aclose", None)
+                if close is not None:
+                    with contextlib.suppress(Exception):
+                        await close()
+            await _settle(finish_response())
         if self.background is not None:
             await self.background()
 
@@ -665,8 +728,8 @@ def _label_for_tool(tool_name: str) -> str:
     return f"Using `{tool_name}`…"
 
 
-async def _stream_hermes_sse(session_key: str, text: str, request: Request):
-    """SSE generator wrapping the bridge's stream_prompt.
+async def _stream_hermes_sse(session_key: str, cid: str, text: str, request: Request):
+    """SSE adapter for a durable conversation's stream.
 
     Yields one ``data:`` line per bridge event, terminated by ``\\n\\n``. A
     final ``done`` frame is emitted on normal completion or bridge errors, so
@@ -686,45 +749,24 @@ async def _stream_hermes_sse(session_key: str, text: str, request: Request):
        from the bridge so we don't keep an upstream llama-server slot busy
        for a response nobody will ever read.
     """
-    bridge_iter = hermes_bridge.stream_prompt(session_key, text).__aiter__()
+    bridge = await talk_runtime.get_bridge()
+    bridge_iter = bridge.stream(session_key, cid, text).__aiter__()
     pending: asyncio.Task | None = None
     emit_done = True
-    upstream_complete = False
-    approval_pending = False
-    approval_denied = False
+    completed = False
 
-    async def deny_before_cancel() -> None:
-        nonlocal approval_denied
-        if not approval_pending or approval_denied:
-            return
-        approval_denied = True
-        with contextlib.suppress(Exception):
-            await hermes_bridge.deny_pending_approval(session_key)
-
-    async def cancel_pending() -> None:
+    async def close_upstream() -> None:
         nonlocal pending
         if pending is not None:
             if not pending.done():
                 pending.cancel()
-            # Interrupt cleanup closes the pooled Hermes WebSocket before this
-            # task is cancelled. Consume either outcome so a raced connection-
-            # closed exception cannot become an unobserved task warning.
             with contextlib.suppress(
-                asyncio.CancelledError,
-                asyncio.TimeoutError,
-                StopAsyncIteration,
+                asyncio.CancelledError, asyncio.TimeoutError, StopAsyncIteration,
                 hermes_bridge.HermesBridgeError,
             ):
                 await pending
-        pending = None
-
-    async def interrupt_before_cancel() -> None:
-        # Hermes detaches sessions when a WebSocket disappears. Explicitly use
-        # its session-scoped abort RPC first; otherwise the abandoned agent can
-        # keep the only local llama-server slot occupied long after the phone
-        # or fleet client has gone away.
-        with contextlib.suppress(Exception):
-            await hermes_bridge.interrupt_active_prompt(session_key)
+            pending = None
+        await bridge_iter.aclose()
 
     try:
         while True:
@@ -747,11 +789,20 @@ async def _stream_hermes_sse(session_key: str, text: str, request: Request):
             try:
                 event = pending.result()
             except StopAsyncIteration:
-                upstream_complete = True
+                pending = None
+                if not completed:
+                    yield _sse_event("error", {
+                        "status_code": 409, "code": "conversation_recovery",
+                        "detail": "The response ended before its outcome could be confirmed.",
+                    })
+                break
+            except ConversationError as exc:
+                status, detail = talk_runtime.error_detail(exc)
+                yield _sse_event("error", {"status_code": status, "code": detail["code"], "detail": detail["message"]})
                 pending = None
                 break
             except hermes_bridge.HermesUnavailable as exc:
-                yield _sse_event("error", {"status_code": 503, "detail": str(exc)})
+                yield _sse_event("error", {"status_code": 503, "code": "conversation_transport", "detail": str(exc)})
                 pending = None
                 break
             except (hermes_bridge.HermesBridgeError, asyncio.TimeoutError) as exc:
@@ -762,7 +813,7 @@ async def _stream_hermes_sse(session_key: str, text: str, request: Request):
 
             et = event.get("type")
             if et == "session":
-                yield _sse_event("session", {"session_id": event.get("session_id", "")})
+                yield _sse_event("session", {"session_id": event.get("session_id", ""), "conversation_id": cid})
             elif et == "delta":
                 yield _sse_event("delta", {"text": event.get("text", "")})
             elif et == "status":
@@ -796,25 +847,21 @@ async def _stream_hermes_sse(session_key: str, text: str, request: Request):
                     "detail": None,
                 })
             elif et == "approval":
-                approval_pending = True
                 yield _sse_event("approval", {
                     "command": str(event.get("command") or "")[:500],
                     "description": str(event.get("description") or "")[:500],
                     "choices": ["once", "deny"],
                 })
             elif et == "complete":
-                # Mark the upstream turn complete before yielding.  ASGI may
-                # close the response generator as soon as this frame reaches
-                # the client, before it resumes us to emit ``done``.
-                upstream_complete = True
-                approval_pending = False
+                completed = True
                 yield _sse_event("complete", {
+                    "conversation_id": cid,
                     "session_id": event.get("session_id", ""),
                     "text": event.get("text", ""),
                     "status": event.get("status") or "ok",
                     "warning": event.get("warning"),
                 })
-    except GeneratorExit:
+    except (GeneratorExit, asyncio.CancelledError):
         # StreamingResponse may close an abandoned body iterator with
         # ``aclose()``.  Yielding the normal terminal frame while handling
         # GeneratorExit raises "async generator ignored GeneratorExit" and,
@@ -822,20 +869,10 @@ async def _stream_hermes_sse(session_key: str, text: str, request: Request):
         emit_done = False
         raise
     finally:
-        await deny_before_cancel()
-        # Starlette can close a streaming response with ``aclose()`` /
-        # GeneratorExit rather than injecting CancelledError.  The explicit
-        # disconnect branches above therefore cannot be the only place that
-        # interrupts Hermes: cancelling just the local reader detaches the
-        # Hermes session and leaves its provider request running.  Interrupt
-        # every abandoned turn before cancelling the reader task.  A normal
-        # message.complete path stays pooled and is not interrupted.
-        if not upstream_complete:
-            logger.info("ods-talk: interrupting abandoned Hermes turn for %s", session_key[:8])
-            await interrupt_before_cancel()
-        await cancel_pending()
+        await _settle(close_upstream())
         if emit_done:
             yield _sse_event("done", {})
+
 
 
 @router.get("/api/talk/status")
@@ -873,15 +910,27 @@ async def talk_status(request: Request) -> dict[str, Any]:
 
 @router.post("/api/talk/session")
 async def talk_session(request: Request) -> dict[str, Any]:
-    session_key, expires_at = _require_session(request)
-    await _require_hermes_talk_compatible()
+    """Explicitly start a logical conversation; no native prompt is sent."""
+    owner, expires_at = _require_session(request)
     try:
-        session_id = await hermes_bridge.ensure_session(session_key)
-    except hermes_bridge.HermesUnavailable as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except (hermes_bridge.HermesBridgeError, asyncio.TimeoutError) as exc:
-        raise HTTPException(status_code=502, detail=str(exc) or "Hermes session could not be started.") from exc
-    return {"session_id": session_id, "expires_at": expires_at}
+        bridge = await talk_runtime.get_bridge()
+        cid = await bridge.allocate(owner, expires_at)
+    except ConversationError as exc:
+        status, detail = talk_runtime.error_detail(exc)
+        raise HTTPException(status_code=status, detail=detail) from exc
+    return {"conversation_id": cid, "expires_at": expires_at}
+
+
+@router.get("/api/talk/session/{conversation_id}")
+async def talk_conversation(request: Request, conversation_id: str) -> dict[str, Any]:
+    owner, _expires_at = _require_session(request)
+    try:
+        bridge = await talk_runtime.get_bridge()
+        snapshot = await bridge._get(owner, conversation_id)
+    except ConversationError as exc:
+        status, detail = talk_runtime.error_detail(exc)
+        raise HTTPException(status_code=status, detail=detail) from exc
+    return {"conversation_id": conversation_id, "state": snapshot["state"], "expires_at": snapshot["expires_at"]}
 
 
 def _extract_message_text(payload: Any) -> str:
@@ -908,7 +957,8 @@ async def talk_message(payload: dict[str, Any], request: Request) -> dict[str, A
     session_key, _expires_at = _require_session(request)
     await _require_hermes_talk_compatible()
     text = _extract_message_text(payload)
-    return await _send_to_hermes(session_key, text)
+    cid = await _conversation(request, session_key)
+    return await _while_connected(request, _send_to_hermes(session_key, cid, text))
 
 
 @router.post("/api/talk/message/stream")
@@ -931,13 +981,14 @@ async def talk_message_stream(payload: dict[str, Any], request: Request) -> Stre
     session_key, _expires_at = _require_session(request)
     await _require_hermes_talk_compatible()
     text = _extract_message_text(payload)
+    cid = await _conversation(request, session_key)
     headers = {
         "Cache-Control": "no-cache",
         "X-Accel-Buffering": "no",
         "Connection": "keep-alive",
     }
     return _TalkStreamingResponse(
-        _stream_hermes_sse(session_key, text, request),
+        _stream_hermes_sse(session_key, cid, text, request),
         media_type="text/event-stream",
         headers=headers,
     )
@@ -951,7 +1002,12 @@ async def talk_approval(payload: dict[str, Any], request: Request) -> dict[str, 
         raise HTTPException(status_code=422, detail="Choice must be 'once' or 'deny'.")
 
     try:
-        accepted = await hermes_bridge.respond_approval(session_key, payload["choice"])
+        cid = await _conversation(request, session_key)
+        bridge = await talk_runtime.get_bridge()
+        accepted = await bridge.respond_approval(session_key, cid, payload["choice"])
+    except ConversationError as exc:
+        status, detail = talk_runtime.error_detail(exc)
+        raise HTTPException(status_code=status, detail=detail) from exc
     except hermes_bridge.HermesBridgeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     if not accepted:
@@ -1043,6 +1099,7 @@ async def talk_attachment(
 
     # text-like
     await _require_hermes_talk_compatible()
+    cid = await _conversation(request, session_key)
     data = await file.read(MAX_DOC_BYTES + 1)
     if len(data) > MAX_DOC_BYTES:
         raise HTTPException(status_code=413, detail=f"File is too large (max {MAX_DOC_BYTES // (1024 * 1024)} MB).")
@@ -1060,7 +1117,7 @@ async def talk_attachment(
         f"{caption or 'Take a look at this and let me know what you think.'}"
     )
     return _TalkStreamingResponse(
-        _stream_hermes_sse(session_key, prompt, request),
+        _stream_hermes_sse(session_key, cid, prompt, request),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -1074,17 +1131,20 @@ async def talk_attachment(
 async def talk_audio_message(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
     session_key, _expires_at = _require_session(request)
     await _require_hermes_talk_compatible()
+    cid = await _conversation(request, session_key)
     data = await file.read(MAX_AUDIO_BYTES + 1)
     if len(data) > MAX_AUDIO_BYTES:
         raise HTTPException(status_code=413, detail="Audio message is too large.")
-    transcript = await _transcribe_bytes(
-        data,
-        file.filename or "ods-talk-audio.webm",
-        file.content_type or "application/octet-stream",
-    )
-    reply = await _send_to_hermes(session_key, transcript)
-    reply["transcript"] = transcript
-    return reply
+    async def transcribe_and_send():
+        transcript = await _transcribe_bytes(
+            data,
+            file.filename or "ods-talk-audio.webm",
+            file.content_type or "application/octet-stream",
+        )
+        reply = await _send_to_hermes(session_key, cid, transcript)
+        reply["transcript"] = transcript
+        return reply
+    return await _while_connected(request, transcribe_and_send())
 
 
 @router.post("/api/talk/speak")

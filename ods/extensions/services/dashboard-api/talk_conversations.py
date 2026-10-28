@@ -1,7 +1,6 @@
 """Conversation bridge: TalkStore bindings over the pooled Hermes transport.
 
-Intermediate repair layer. Not wired into router/UI yet. Every public
-operation validates owner/binding/expiry before touching the pool, and
+Every public operation validates owner/binding/expiry before touching the pool, and
 every store call runs via asyncio.to_thread so SQLite never blocks the
 event loop.
 
