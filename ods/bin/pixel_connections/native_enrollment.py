@@ -397,6 +397,16 @@ class Controller:
             else:
                 if journal and journal['phase'] not in TERMINAL:
                     raise native.NativeError('native-sign-in-in-progress')
+                # A source hold can survive bind() before Root transition.json
+                # exists. Admit no new app flow across that durable reservation.
+                try:
+                    from pixel_source_upgrade import guard_fresh_admission, UpgradeError
+                except ImportError:
+                    raise native.NativeError('source-transition-unavailable') from None
+                try:
+                    guard_fresh_admission(self.bridge)
+                except UpgradeError as error:
+                    raise native.NativeError(str(error)) from None
                 record = c._record()
                 config = self._config()[0]
                 if (state.native_app_choices(record).get(self.app) is True

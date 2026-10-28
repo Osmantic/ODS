@@ -1453,6 +1453,50 @@ def begin_plan(state, install, owner, *, installer=False):
     return manager
 
 
+def reserved_begin_plan(manager, owner):
+    """Prove bind-before-Root-journal recovery under the admission lock."""
+    value = manager.journal()
+    if value['phase'] != 'held' or value['hold'] is None:
+        return False
+    current = owner_baseline(owner.pw_dir, owner.pw_uid)
+    _, marker_sha = _protected_json(Path(owner.pw_dir) / '.config/ods/pixel-managed.json', owner.pw_uid)
+    if (current != {key: value['identity'][key] for key in current}
+            or marker_sha != value['identity']['markerSha256']
+            or inventory(manager.install, owner.pw_uid) != value['before']):
+        raise UpgradeError('source-owner-state-changed')
+    return True
+
+
+def guard_fresh_admission(bridge):
+    """Refuse new app admission across a source reservation; caller holds Root.
+
+    Source bind precedes transition.json, so absence of the latter cannot prove
+    that no source transaction was admitted. This reads only fixed protected
+    paths and never creates a manager directory, journal, hold or snapshot.
+    """
+    try:
+        directory(bridge.state, os.geteuid(), private=True)
+        child = bridge.state / 'source-upgrade'
+        try:
+            child.lstat()
+        except FileNotFoundError:
+            return
+        manager = SourceUpgrade(child, bridge.install, bridge.owner.pw_uid, state_uid=os.geteuid())
+        value = manager.journal()
+        if value is None:
+            raise UpgradeError('source-transition-unavailable')
+        # An unheld staged plan may be rebased only after this new app flow
+        # finishes. Source begin/stage checks that app intent under the same lock.
+        if value['phase'] == 'staged' and value['hold'] is None:
+            return
+        if (value['phase'] == 'complete' and value['hold'] is not None
+                and value['outcome'] in ('applied', 'rolled-back')):
+            return
+    except (OSError, ValueError, KeyError, TypeError, UpgradeError):
+        raise UpgradeError('source-transition-unavailable') from None
+    raise UpgradeError('source-transition-in-progress')
+
+
 def _pending(state, transaction):
     pending, _ = _protected_json(state / "transition.json")
     if (pending.get("kind") != "model" or pending.get("transaction_id") != transaction
@@ -1619,6 +1663,42 @@ def admission_lock(state):
         os.close(fd)
 
 
+def _guard_native_stage(manager, account, state):
+    # The installer invokes this file with -I. Import only this fixed sibling
+    # package, never the cwd, candidate path or any request-selected directory.
+    sibling = str(Path(__file__).resolve().parent)
+    if sibling not in sys.path:
+        sys.path.insert(0, sibling)
+    from types import SimpleNamespace
+    try:
+        from pixel_access_bridge import AccessError, SystemdAccessBridge, guard_native_enrollment
+    except ImportError:
+        raise UpgradeError('native-app-transition-unavailable') from None
+
+    existing = manager.journal() if manager is not None else None
+    pending_path = state / 'transition.json'
+    if (existing is not None and existing['phase'] != 'staged' and existing['hold'] is not None
+            and os.path.lexists(pending_path)):
+        pending, _ = _protected_json(pending_path)
+        bridge = SimpleNamespace(state=state, pending=lambda: pending)
+        try:
+            exact = SystemdAccessBridge.model_journal(bridge, existing['hold'])
+        except AccessError as error:
+            raise UpgradeError(str(error)) from None
+        if exact['start_config_sha256'] != existing['identity']['configSha256']:
+            raise UpgradeError('source-owner-state-changed')
+        # Existing stage/publish validation still checks the retained candidate,
+        # marker and owner. This exemption cannot adopt a new admission lease.
+        return
+    if existing is not None and not os.path.lexists(pending_path) and reserved_begin_plan(manager, account):
+        return
+    try:
+        guard_native_enrollment(SimpleNamespace(state=state, install=manager.install if manager is not None else None,
+                                                owner=account))
+    except AccessError as error:
+        raise UpgradeError(str(error)) from None
+
+
 def main(argv):
     """Installer-only local entry point; deliberately no HTTP or tool surface."""
     if len(argv) < 3 or argv[0] not in ("stage", "hold", "copy", "status", "finish", "rollback", "downstream"):
@@ -1626,16 +1706,22 @@ def main(argv):
     action, install, owner, *rest = argv
     if len(rest) != (2 if action == "stage" else 0):
         raise UpgradeError("source-command-invalid")
-    manager, account, state = _manager(install, owner, create=action == 'stage')
+    manager, account, state = _manager(install, owner, create=False)
+    if action == "stage":
+        with admission_lock(state):
+            # Rebind protected installation identity under the same admission
+            # lock before either the first source directory or a plan is made.
+            manager, account, state = _manager(install, owner, create=False)
+            _guard_native_stage(manager, account, state)
+            if manager is None:
+                manager, account, state = _manager(install, owner, create=True)
+            _stage(manager, account, *rest)
+        return
     if manager is None:
         if action == 'status':
             print(json.dumps({'pending': False}))
             return
         raise UpgradeError('source-stage-required')
-    if action == "stage":
-        with admission_lock(state):
-            _stage(manager, account, *rest)
-        return
     value = manager.journal()
     if value is None:
         if action == "status":

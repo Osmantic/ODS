@@ -48,7 +48,7 @@ class SourceLockWaitTests(unittest.TestCase):
                 value = real_lstat(path, *args, **kwargs)
                 return root_stat(value) if path == state else value
 
-            with patch.object(pathlib.Path, 'lstat', lstat), patch(
+            with patch('os.geteuid', return_value=0), patch.object(pathlib.Path, 'lstat', lstat), patch(
                     'os.fstat', side_effect=lambda fd: root_stat(real_fstat(fd))):
                 yield bridge
 
@@ -169,7 +169,7 @@ class SourceLockWaitTests(unittest.TestCase):
 class FakeBridge(SystemdAccessBridge):
     def __init__(self, root):
         self.state = pathlib.Path(root)
-        self.state.mkdir(exist_ok=True)
+        self.state.mkdir(mode=0o700, exist_ok=True)
         self.calls = []
         self.edge_state = {"capability": "available", "phase": "idle",
                            "revision": HEX_B, "streams": 0}

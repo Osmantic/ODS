@@ -11,7 +11,7 @@ import os
 import re
 import uuid
 
-from pixel_access_bridge import AccessError, atomic_json, digest, runtime_config_path
+from pixel_access_bridge import AccessError, atomic_json, digest, runtime_config_path, guard_native_enrollment
 from pixel_access_protocol import HEX
 from pixel_settings import coordinator as settings
 
@@ -234,6 +234,8 @@ def change(bridge, request):
             or type(request['providerRevision']) is not int or not 0 <= request['providerRevision'] < 2**53):
         raise AccessError('invalid-provider-request')
     with bridge.locked():
+        if request['operation'] != 'recover':
+            guard_native_enrollment(bridge)
         snapshot = bridge.inspect()
         with settings._store(bridge, exclusive=True) as directory:
             runtime, environment = RuntimeCustody(bridge), ServiceEnvironment(bridge)

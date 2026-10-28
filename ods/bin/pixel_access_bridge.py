@@ -52,6 +52,31 @@ class AccessError(Exception):
         super().__init__(code)
 
 
+def guard_native_enrollment(bridge):
+    """Refuse fresh writers across native/source intent inside Root's lock."""
+    # Enrollment imports this module and the connection coordinator. Defer the
+    # dependency until initialization is complete, without acquiring any lock.
+    try:
+        from pixel_connections.native_enrollment import guard_idle
+        from pixel_connections.native_mcp import NativeError
+    except ImportError:
+        raise AccessError("native-app-transition-unavailable") from None
+    try:
+        guard_idle(bridge)
+    except NativeError as error:
+        raise AccessError(error.code) from None
+    except OSError:
+        raise AccessError("native-app-transition-unavailable") from None
+    try:
+        from pixel_source_upgrade import guard_fresh_admission, UpgradeError
+    except ImportError:
+        raise AccessError("source-transition-unavailable") from None
+    try:
+        guard_fresh_admission(bridge)
+    except UpgradeError as error:
+        raise AccessError(str(error)) from None
+
+
 PROBE_FAILURES = frozenset((
     "probe-directory-unavailable",
     "sandbox-resolution",
@@ -1208,6 +1233,27 @@ class SystemdAccessBridge:
                 if installer_source:
                     return self.resume_source_begin()
                 raise AccessError("transition-recovery-required")
+            source_plan = None
+            if installer_source and platform.system() == 'Linux' and os.path.lexists(self.state / 'source-upgrade'):
+                if os.geteuid() != 0:
+                    raise AccessError('source-installer-root-required')
+                self.discover(allow_installing=True)
+                from pixel_source_upgrade import begin_plan, UpgradeError
+                try:
+                    source_plan = begin_plan(self.state, self.install, self.owner, installer=True)
+                except UpgradeError as error:
+                    raise AccessError(str(error)) from None
+            # bind() durably reserves a source transaction before transition.json.
+            # Preserve only that already-started, exact-baseline crash recovery.
+            reserved_source = False
+            if source_plan is not None:
+                from pixel_source_upgrade import reserved_begin_plan
+                try:
+                    reserved_source = reserved_begin_plan(source_plan, self.owner)
+                except UpgradeError as error:
+                    raise AccessError(str(error)) from None
+            if not reserved_source:
+                guard_native_enrollment(self)
             try:
                 snapshot = self.inspect(allow_installing=True)
             except AccessError as error:
@@ -1219,13 +1265,13 @@ class SystemdAccessBridge:
                     raise
                 self.restart_stopped_source_edge()
                 snapshot = self.inspect(allow_installing=True)
-            source_plan = None
             if installer_source or (platform.system() == 'Linux' and os.path.lexists(self.state / 'source-upgrade')):
                 if platform.system() != 'Linux' or (installer_source and os.geteuid() != 0):
                     raise AccessError('source-installer-root-required')
                 from pixel_source_upgrade import begin_plan, UpgradeError
                 try:
-                    source_plan = begin_plan(self.state, self.install, self.owner, installer=installer_source)
+                    if source_plan is None:
+                        source_plan = begin_plan(self.state, self.install, self.owner, installer=installer_source)
                     if (source_plan is not None and snapshot['_config'].get('config_sha256')
                             != source_plan.journal()['identity']['configSha256']):
                         raise AccessError('source-owner-state-changed')
@@ -2286,6 +2332,7 @@ class SystemdAccessBridge:
                 raise AccessError("settings-recovery-required")
             if pending and request["mode"] != "sandboxed": raise AccessError("restore-required")
             if not pending:
+                guard_native_enrollment(self)
                 pending = {"kind": "access", "token": os.urandom(32).hex(), "phase": "acquiring", "edge_revision": snapshot["_edge"]["revision"]}
                 self.prepare_access_marker(pending, snapshot["_config"]["config_sha256"])
                 atomic_json(self.state / "transition.json", pending)
