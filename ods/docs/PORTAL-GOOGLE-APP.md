@@ -63,6 +63,36 @@ production client or token is created by this document. See Google's
 [brand verification requirements](https://developers.google.com/identity/protocols/oauth2/production-readiness/brand-verification)
 and [restricted-scope review](https://developers.google.com/identity/protocols/oauth2/production-readiness/restricted-scope-verification).
 
+## Capacity and operating costs
+
+The 100-user Testing/unverified-app cap is not a paid user tier. With the
+requested sensitive/restricted scopes approved, that cap no longer applies to
+those scopes. Approval does not remove API quotas, which are enforced both per
+project and per user. Separate local installations using the same distributed
+client still share the project's aggregate API allowance.
+
+The intended architecture connects each installation directly to Google and
+keeps its private grant locally; it does not require an ODS mail-hosting server.
+This reduces central infrastructure without promising unlimited provider usage.
+Google now documents usage thresholds and future overage charging for large
+Gmail/Calendar workloads. Review their current
+[Gmail](https://developers.google.com/workspace/gmail/api/reference/quota) and
+[Calendar](https://developers.google.com/workspace/calendar/api/guides/quota)
+limits before public distribution or a capacity commitment.
+
+Restricted-scope security review is separate from API consumption. Google
+does not charge a security-assessment fee itself; an independent assessor may
+charge, and eligibility for a free assessment depends on Google's assigned
+tier. Review the actual local storage and optional remote-model data paths
+before concluding which assessment applies. Local token custody alone is not
+proof of an exemption. See the
+[verification and assessment FAQ](https://support.google.com/cloud/answer/13463817?hl=en).
+
+An owner-provided client remains an Advanced deployment alternative with its
+own project setup and quotas. That extra manual work is not the standard
+ordinary-user journey. Neither mode establishes free, unlimited Google access
+at arbitrary scale.
+
 ## Implemented connection journey
 
 - Root accepts `authMode: "managed"` without any browser-supplied client or

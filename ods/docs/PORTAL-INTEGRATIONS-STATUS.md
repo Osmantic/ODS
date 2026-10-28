@@ -18,7 +18,7 @@ mark them merged or replace their review.
   alone no longer counts as a working plugin.
 - Preserved native MCP servers and tool restrictions through Pixel rendering
   and macOS configuration staging, with a reproducible Portal runtime source
-  candidate/public bundle using internal package version 4.3.38.
+  candidate/public bundle using internal package version 4.3.39.
 - Added an owner-side, version/hash-bound adapter to OpenClaw's MCP OAuth,
   retaining its discovery, registration, PKCE, token storage and refresh.
 - Added internal Root consent intent/callback claiming, an independently bound
@@ -44,6 +44,12 @@ mark them merged or replace their review.
   wiki and app records from public web search. It loads beside the owner turn;
   the reusable 8K, compact and full operating cores retain their existing size.
   This guidance is not an access grant or a source-verification receipt.
+- Added strict declared-schema validation before Source projection reads and
+  proposal creation. Unknown parameters such as `max` refuse with a correctable
+  schema instead of silently selecting an omitted `maxResults` default. Actual
+  locked TypeBox and native SDK controls qualify that refusal and corrected call;
+  valid omitted arguments keep their existing defaults. Prompt limits remain
+  distinct from enforced permissions and per-call schema validation.
 - Added an internal reviewed Notion read contract, disabled preparation and
   protected app choices shared by the live owner transaction and installer.
   Actual Pixel qualification caught and corrected broad implicit MCP access
@@ -137,6 +143,13 @@ field did not prevent execution, so the one-summary limit is not qualified;
 the persisted Gmail result was truncated. This case remains a negative
 argument/bounded-read acceptance result even though the scheduled execution
 and final counts presentation succeeded.
+
+The subsequent 4.3.39 Source change closes this argument defect in controlled
+plugin and actual pinned-dispatcher tests: the incorrect `max` refuses before
+projection access, and `maxResults: 1` reads one synthetic record. Five new
+regressions fail against the previous code. This does not yet establish that an
+installed model will make or repair the intended bounded call; the earlier
+scheduled failure remains part of the acceptance record.
 
 Local disposable WSL/Linux environments exercised the pinned ODS OpenClaw,
 real plugin loading and tools, the owner worker, Root transactions, native
