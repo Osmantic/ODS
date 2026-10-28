@@ -515,4 +515,3 @@ def test_remove_rejects_an_unverifiable_host_answer(test_client, tmp_path, monke
 
     assert response.status_code == 502
     assert (user_dir / "gotify").is_dir()
-
