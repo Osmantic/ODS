@@ -171,7 +171,7 @@ while [[ $# -gt 0 ]]; do
             case "${2:-}" in
                 llama-server) shift 2 ;;
                 vllm)
-                    echo "--llm-backend vllm needs Linux with an NVIDIA datacenter GPU; macOS runs llama.cpp. Nothing was changed." >&2
+                    echo "--llm-backend vllm needs Linux with an NVIDIA GPU; macOS runs llama.cpp. Nothing was changed." >&2
                     echo "Rerun without --llm-backend, or with --llm-backend llama-server." >&2
                     echo "Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC" >&2
                     exit 1 ;;

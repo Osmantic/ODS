@@ -266,6 +266,17 @@ def test_a_llama_install_refuses_a_vllm_catalog_model(monkeypatch, tmp_path):
     assert body["code"] == "vllm_model_installer_only"
     assert body["requestedModelId"] == "glm-5.3-flash-nvfp4-vllm"
     assert body["error"].startswith("GLM 5.3 Flash NVFP4 (vLLM) runs only on the vLLM engine")
+    # The entry's own GPU requirement, not one wording for every vLLM model.
+    assert body["hint"].startswith("It needs one GPU with compute capability 10.0 or 10.3 and at least 244736 MiB.")
+
+
+def test_the_refusal_names_each_entrys_own_gpu_requirement():
+    rtx = next(model for model in json.loads((ROOT / "config" / "model-library.json").read_text(encoding="utf-8"))["models"]
+               if model["id"] == "qwen3.6-35b-a3b-nvfp4-vllm")
+    assert agent._vllm_model_refusal(rtx)["hint"].startswith(
+        "It needs one GPU with compute capability 12.0 and at least 51200 MiB.")
+    broken = {**rtx, "min_gpu_mib": 0}
+    assert agent._vllm_model_refusal(broken)["hint"].startswith("It needs an NVIDIA GPU the vLLM engine supports.")
 
 
 def test_llama_server_is_never_named_to_compose_on_a_vllm_install(monkeypatch, tmp_path):

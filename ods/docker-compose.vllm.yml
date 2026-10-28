@@ -1,8 +1,10 @@
 # ODS - vLLM engine overlay
 #
 # Used when .env sets LLM_BACKEND=vllm: vLLM serves the model on one big
-# NVIDIA GPU (datacenter Blackwell, compute capability 10.x) instead of the
-# in-stack llama-server. As on the host-native route, llama-server is off and
+# NVIDIA GPU (datacenter Blackwell, compute capability 10.x, or the RTX PRO
+# 6000 class, 12.0) instead of the in-stack llama-server. It preallocates
+# VLLM_GPU_MEMORY_UTILIZATION of that GPU, the catalog model's own share
+# when it sets one. As on the host-native route, llama-server is off and
 # model-router stays; endpoints.json points model-router at vllm-server:8000.
 #
 # This file is intentionally not standalone. scripts/resolve-compose-stack.sh
