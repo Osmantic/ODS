@@ -23,6 +23,7 @@ class DockerFixture:
         self.live = b"owner live config: preserve exactly\n"
         self.other_identity = "b" * 64
         self.keep_stale = False
+        self.keep_stale_alias = False
         self.change_live = False
         self.read_error = False
         self.ids = None
@@ -72,6 +73,10 @@ class DockerFixture:
                 self.identity = "c" * 64
                 if not self.keep_stale:
                     self.mounted = {p: (self.root / relative).read_bytes() for p, relative in mounts.FILES.items()}
+                if not self.keep_stale_alias:
+                    for mount in self.inspected_mounts:
+                        if mount["Destination"] in mounts.FILES:
+                            mount["Source"] = str(self.root / mounts.FILES[mount["Destination"]])
                 if self.change_live:
                     self.live = b"unexpected upstream config change"
                 return ""
@@ -171,6 +176,62 @@ class HermesMountTests(unittest.TestCase):
         with self.assertRaisesRegex(mounts.Refused, "unexplained source"):
             self.docker.refresh()
         self.assertEqual(len(self.docker.mutations()), 1)
+
+    def file_proxy(self):
+        proxy_root = self.root / "desktop-proxies"
+        visible = proxy_root / "Ubuntu-24.04" / ("d" * 64)
+        visible.parent.mkdir(parents=True)
+        source = "/run/desktop/mnt/host/wsl/docker-desktop-bind-mounts/Ubuntu-24.04/" + "d" * 64
+        destination = next(iter(mounts.FILES))
+        expected = self.root / mounts.FILES[destination]
+        self.docker.inspected_mounts[0]["Source"] = source
+        return proxy_root, visible, expected
+
+    def test_current_desktop_file_alias_does_not_restart(self):
+        proxy_root, visible, expected = self.file_proxy()
+        os.link(expected, visible)
+        with patch.object(mounts, "DESKTOP_VISIBLE_ROOT", proxy_root):
+            self.assertEqual(self.docker.refresh(), "current")
+        self.assertFalse(self.docker.mutations())
+
+    def test_disappeared_desktop_alias_rebinds_even_when_running_bytes_match(self):
+        proxy_root, visible, expected = self.file_proxy()
+        os.link(expected, visible)
+        visible.unlink()
+        before = dict(self.docker.mounted)
+        with patch.object(mounts, "DESKTOP_VISIBLE_ROOT", proxy_root):
+            self.assertEqual(self.docker.refresh(), "refreshed")
+        self.assertEqual(len(self.docker.mutations()), 1)
+        self.assertEqual(self.docker.mounted, before)
+        self.assertEqual((self.root / "data/hermes/config.yaml").read_bytes(), self.docker.live)
+
+    def test_byte_identical_replacement_does_not_hide_stale_desktop_inode(self):
+        proxy_root, visible, expected = self.file_proxy()
+        os.link(expected, visible)
+        replacement = expected.with_suffix(".new")
+        replacement.write_bytes(expected.read_bytes())
+        os.replace(replacement, expected)
+        self.assertEqual(visible.read_bytes(), expected.read_bytes())
+        self.assertFalse(os.path.samefile(visible, expected))
+        with patch.object(mounts, "DESKTOP_VISIBLE_ROOT", proxy_root):
+            self.assertEqual(self.docker.refresh(), "refreshed")
+        self.assertEqual(len(self.docker.mutations()), 1)
+
+    def test_unrepaired_alias_fails_after_only_one_recreation(self):
+        proxy_root, _, _ = self.file_proxy()
+        self.docker.keep_stale_alias = True
+        with patch.object(mounts, "DESKTOP_VISIBLE_ROOT", proxy_root):
+            with self.assertRaisesRegex(mounts.Refused, "file aliases still differ"):
+                self.docker.refresh()
+        self.assertEqual(len(self.docker.mutations()), 1)
+
+    def test_foreign_owner_with_missing_alias_never_recreates(self):
+        proxy_root, _, _ = self.file_proxy()
+        self.docker.labels["com.docker.compose.project.working_dir"] = "/foreign/install"
+        with patch.object(mounts, "DESKTOP_VISIBLE_ROOT", proxy_root):
+            with self.assertRaisesRegex(mounts.Refused, "ownership"):
+                self.docker.refresh()
+        self.assertFalse(self.docker.mutations())
 
     def test_postcheck_waits_for_healthy_startup_without_another_recreation(self):
         self.docker.replace(next(iter(mounts.FILES)))
