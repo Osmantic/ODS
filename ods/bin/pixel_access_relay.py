@@ -27,7 +27,8 @@ try:
     path = value.get('path', '/v1/access-mode')
     if path not in ('/v1/access-mode', '/v1/model-control', '/v1/schedules', '/v1/connections'):
         raise ValueError()
-    if path != '/v1/schedules' and len(raw_request) > 8192: raise ValueError()
+    native = path == '/v1/connections' and isinstance(request, dict) and request.get('operation') == 'connection-app-complete'
+    if path != '/v1/schedules' and len(raw_request) > (16384 if native else 8192): raise ValueError()
     connection.request('GET' if request is None else 'POST', path,
         None if request is None else json.dumps(request).encode(),
         {'Authorization': 'Bearer ' + value['key'], 'Content-Type': 'application/json'})
@@ -184,6 +185,8 @@ CONNECTION_TIMEOUTS = {'connection-begin': 70, 'connection-complete': 160, 'conn
                        'connection-proposals': 30, 'connection-approve': 160, 'connection-decline': 30,
                        'connection-reconcile': 160, 'connection-activity': 30, 'connection-undo': 160,
                        'connection-drafts': 30, 'connection-plugin': 310}
+from pixel_connections.native_contract import TIMEOUTS as _NATIVE_APP_TIMEOUTS  # noqa: E402
+CONNECTION_TIMEOUTS.update(_NATIVE_APP_TIMEOUTS)
 
 
 def request_runtime_connection_action(operation, request, *, config):
@@ -193,6 +196,9 @@ def request_runtime_connection_action(operation, request, *, config):
         return 400, {'error': 'invalid-request'}
     system = platform.system()
     if system == 'Darwin' or not config.get('PIXEL_OPENWEBUI_KEY') and system != 'Linux':
+        if operation == 'connection-app-status':
+            from pixel_connections.native_contract import unavailable
+            return 200, unavailable(system.lower())
         return 409, {'error': 'not-available-on-this-system'}
     if not config.get('PIXEL_OPENWEBUI_KEY'):
         from pixel_access_client import request_access
@@ -373,7 +379,14 @@ def _draft_entry(value):
             and (_gmail_draft(value['draft']) if shown else value['draft'] is None))
 
 
+def _native_contract():
+    from pixel_connections import native_contract
+    return native_contract
+
+
 def valid_connection_action(value):
+    if type(value) is dict and type(value.get('operation')) is str and value['operation'].startswith('connection-app-'):
+        return _native_contract().valid_action(value)
     if (type(value) is not dict or set(value) != {'operation', 'request'}
             or value['operation'] not in _CONNECTION_OPERATIONS or type(value['request']) is not dict):
         return False
@@ -419,6 +432,8 @@ def valid_connection_action(value):
 
 def public_connection_action(operation, value):
     """The coordinator's reply, refused unless it is exactly the shape of its operation."""
+    if operation.startswith('connection-app-'):
+        return _native_contract().public_reply(operation, value)
     if type(value) is not dict:
         raise ValueError('invalid-connection-reply')
     if operation == 'connection-begin':

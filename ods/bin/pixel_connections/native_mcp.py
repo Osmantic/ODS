@@ -233,8 +233,8 @@ def bridge_binding(bridge, server_name):
                           binary=bridge.binary, search_path=environment['PATH'], server_name=server_name)
 
 
-def _verified_runtime(bridge, binding):
-    snapshot = bridge.inspect()
+def _verified_runtime(bridge, binding, *, snapshot=None):
+    snapshot = bridge.inspect() if snapshot is None else snapshot
     if (snapshot.get('runtime_verified') is not True or snapshot.get('pending')
             or snapshot.get('configured_mode') not in ('sandboxed', 'full-access')
             or snapshot.get('effective_mode') != snapshot.get('configured_mode')
@@ -254,7 +254,7 @@ def check_access(bridge, server_name):
         return _check_access_locked(bridge, server_name)
 
 
-def _check_access_locked(bridge, server_name):
+def _check_access_locked(bridge, server_name, *, on_observed=None):
     """Internal controller seam; the caller already holds Root's access lock."""
     binding = bridge_binding(bridge, server_name)
     revision = _verified_runtime(bridge, binding)
@@ -263,7 +263,10 @@ def _check_access_locked(bridge, server_name):
                                         native_oauth_request=request), 'probe')
     if bridge_binding(bridge, server_name) != binding or _verified_runtime(bridge, binding) != revision:
         raise NativeError('native-mcp-binding-changed')
-    return dict(result, configSha256=binding['configSha256'], runtimeRevision=revision)
+    proof = dict(result, configSha256=binding['configSha256'], runtimeRevision=revision)
+    if on_observed is not None:
+        on_observed(proof, binding)
+    return proof
 
 
 def forget_disabled(bridge, server_name):

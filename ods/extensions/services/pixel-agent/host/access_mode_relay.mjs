@@ -171,6 +171,10 @@ const CONNECTION_ACTIONS = {
   'connection-proposals': 25000, 'connection-approve': 155000, 'connection-decline': 25000,
   'connection-reconcile': 155000, 'connection-activity': 25000, 'connection-undo': 155000,
   'connection-drafts': 25000, 'connection-plugin': 305000,
+  'connection-app-status': 22000, 'connection-app-begin': 305000,
+  'connection-app-complete': 75000, 'connection-app-finish': 305000,
+  'connection-app-cancel': 305000, 'connection-app-disconnect': 305000,
+  'connection-app-check': 75000,
 };
 
 // Connected-apps status (GET, no body) or one custodian action (POST). The
@@ -200,7 +204,7 @@ async function handleConnectionAction(req, reply, request) {
     const chunks = []; let bytes = 0;
     for await (const chunk of req) {
       bytes += chunk.length;
-      if (bytes > 2048) return reply(413, {error:'request-too-large'});
+      if (bytes > 16384) return reply(413, {error:'request-too-large'});
       chunks.push(chunk);
     }
     let payload;
@@ -211,6 +215,7 @@ async function handleConnectionAction(req, reply, request) {
         || !payload.request || typeof payload.request !== 'object' || Array.isArray(payload.request)) {
       return reply(400, {error:'invalid-request'});
     }
+    if (payload.operation !== 'connection-app-complete' && bytes > 2048) return reply(413, {error:'request-too-large'});
     const result = await request({operation:payload.operation, request:payload.request}, {timeout:CONNECTION_ACTIONS[payload.operation]});
     if (result.status === 200) return reply(200, result.body);
     const code = typeof result.body?.error === 'string' && /^[a-z0-9][a-z0-9-]{0,63}$/.test(result.body.error) ? result.body.error : null;

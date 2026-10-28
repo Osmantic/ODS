@@ -414,6 +414,9 @@ class SystemdAccessBridge:
 
     def connection_control(self, operation, request):
         # Linux and WSL only: the Source Broker is a set of systemd units.
+        if operation.startswith('connection-app-'):
+            from pixel_connections.native_public import control
+            return control(self, operation, request)
         from pixel_connections.coordinator import control
         return control(self, operation, request)
 

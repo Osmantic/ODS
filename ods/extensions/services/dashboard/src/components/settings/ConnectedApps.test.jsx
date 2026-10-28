@@ -12,7 +12,8 @@ function api(routes) {
   vi.stubGlobal('fetch', vi.fn(async (url, options = {}) => {
     const key = `${options.method ?? 'GET'} ${url}`
     calls.push([key, options.body === undefined ? undefined : JSON.parse(options.body)])
-    const route = routes[key] ?? (key === 'GET /api/pixel/access-mode' ? [200, {configured_mode: 'sandboxed'}] : null)
+    const route = routes[key] ?? (key === 'GET /api/pixel/access-mode' ? [200, {configured_mode: 'sandboxed'}]
+      : key === 'GET /api/pixel/connections/apps' ? [404, {}] : null)
     if (!route) throw new Error(`unexpected request ${key}`)
     const [status, body] = typeof route === 'function' ? route() : route
     return {ok: status >= 200 && status < 300, status, json: async () => body}
@@ -119,6 +120,34 @@ it('exposes recovery after a pasted callback fails without a connected notice or
   expect(calls.filter(([key]) => key.startsWith('POST')).map(([key]) => key)).toEqual([
     'POST /api/pixel/connections/google/connect', 'POST /api/pixel/connections/google/complete',
     'POST /api/pixel/connections/google/finish'])
+})
+
+it('lets the final failed status win after Google authorizes but the owner update rolls back', async () => {
+  vi.spyOn(window, 'open').mockReturnValue({opener: {}, location: {replace: vi.fn()}, close: vi.fn()})
+  let status = managedStatus()
+  const calls = api({'GET /api/pixel/connections': () => [200, status],
+    'POST /api/pixel/connections/google/connect': () => {
+      status = managedStatus({pending: pendingStep('consent')})
+      return [200, {flowId: 'a'.repeat(32), authUrl: 'https://accounts.google.com/o/oauth2/auth?state=x',
+        expiresAt: new Date(Date.now() + 600000).toISOString(), redirect: 'loopback'}]
+    },
+    'POST /api/pixel/connections/google/complete': () => {
+      status = managedStatus({pending: pendingStep('failed', 'gateway-change-rolled-back')})
+      return [200, {outcome: 'connected', errorClass: null, account: 'owner@example.com',
+        capabilities: statusFor({state: 'connected'}).connectors.google.capabilities, missing: []}]
+    }})
+  render(<ConnectedApps />)
+  fireEvent.click(await screen.findByRole('button', {name: 'Connect Google'}))
+  fireEvent.click(screen.getByRole('button', {name: 'Continue to Google'}))
+  fireEvent.change(await screen.findByLabelText(/Copy its whole address and paste it here/),
+    {target: {value: 'http://127.0.0.1:53682/?state=x&code=PRIVATE-code'}})
+  fireEvent.click(screen.getByRole('button', {name: 'Finish connecting'}))
+  expect(await screen.findByRole('button', {name: 'Try again'})).toBeEnabled()
+  expect(within(card()).getByText('Not connected')).toBeVisible()
+  expect(screen.queryByText(/Google is connected/)).toBeNull()
+  expect(screen.queryByText(/Connected as/)).toBeNull()
+  expect(screen.queryByRole('heading', {name: 'Connect Google'})).toBeNull()
+  expect(calls.filter(([key]) => key.startsWith('POST'))).toHaveLength(2)
 })
 
 it('asks before disconnecting, then disconnects', async () => {

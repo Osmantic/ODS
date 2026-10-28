@@ -219,7 +219,7 @@ for name in (
 CONNECTION_MODULES = tuple(f"pixel_connections/{name}" for name in (
     "__init__.py", "state.py", "status.py", "catalog.py", "oauth.py", "custody.py", "planner.py", "coordinator.py",
     "lifecycle.py", "approvals.py", "activity.py", "drafts.py", "plugins.py", "native_mcp.py", "native_apps.py",
-    "native_enrollment.py", "google_app.py"))
+    "native_enrollment.py", "native_contract.py", "native_public.py", "native_access.py", "google_app.py"))
 # The root-owned copy of Pixel's broker that a connect installs from. It mirrors this
 # install's Pixel checkout, which later configures may rewrite, so only its exact
 # names and root custody are checked.
@@ -447,6 +447,7 @@ state_limits = {
     "provider-service-environment.json": 1024 * 1024,
     # A connected app's step in progress; uninstall removes it with everything else.
     "connection.json": 8192,
+    "native-app-access.json": 8192,
     "native-mcp-consent.json": 8192,
     "native-app-enrollment.json": 256 * 1024,
 }

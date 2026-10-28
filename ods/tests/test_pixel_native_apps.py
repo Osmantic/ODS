@@ -222,6 +222,19 @@ def test_installed_connection_package_is_self_contained_for_onboarding_and_plann
     assert result.returncode == 0, result.stderr
 
 
+def test_host_reviewed_app_callback_has_no_root_or_optional_dependency_import(tmp_path):
+    # The host can be Windows. Its listener stays in the ordinary ODS source
+    # package, just like Google's host_api; it is not a Root daemon program.
+    check = ('import sys; sys.path.insert(0, sys.argv[1]); '
+             'from pixel_connections import native_host_api; '
+             'assert callable(native_host_api.action); '
+             'assert "pixel_access_bridge" not in sys.modules; '
+             'assert "pixel_connections.native_enrollment" not in sys.modules')
+    result = subprocess.run([sys.executable, '-I', '-S', '-c', check, str(ROOT / 'bin')],
+                            cwd=tmp_path, capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stderr
+
+
 @pytest.fixture
 def uninstall_candidate(tmp_path):
     """Current installer connections versus the entire real uninstall validator.
@@ -282,9 +295,13 @@ def uninstall_candidate(tmp_path):
 def test_current_installer_connection_package_passes_real_uninstall_validator(uninstall_candidate):
     program, _install, _state, verify = uninstall_candidate
     check = ('import sys; sys.path.insert(0, sys.argv[1]); '
-             'from pixel_connections import native_enrollment; '
+             'from pixel_connections import native_enrollment, native_contract, native_public, native_access; '
              'assert native_enrollment.JOURNAL == "native-app-enrollment.json"; '
-             'assert native_enrollment.MAX_BYTES == 256 * 1024')
+             'assert native_enrollment.MAX_BYTES == 256 * 1024; '
+             'assert native_contract.APP_IDS == ("notion",); '
+             'assert callable(native_public.control); '
+             'assert native_access.NAME == "native-app-access.json"; '
+             'assert native_access.MAX_BYTES == 8192')
     imported = subprocess.run([sys.executable, '-I', '-c', check, str(program)],
                               cwd=program, capture_output=True, text=True, timeout=15)
     assert imported.returncode == 0, imported.stderr
@@ -293,7 +310,8 @@ def test_current_installer_connection_package_passes_real_uninstall_validator(un
     assert result.stdout.strip() == 'present'
 
 
-@pytest.mark.parametrize('module', ['native_apps.py', 'native_enrollment.py', 'google_app.py'])
+@pytest.mark.parametrize('module', ['native_apps.py', 'native_enrollment.py', 'native_contract.py',
+                                    'native_public.py', 'native_access.py', 'google_app.py'])
 @pytest.mark.parametrize('change', ['valid', 'writable', 'owner', 'symlink'])
 def test_root_server_checks_native_module_custody_before_import(uninstall_candidate, monkeypatch, module, change):
     program, _install, _state, _verify = uninstall_candidate
@@ -374,10 +392,11 @@ def test_legacy_native_module_absence_requires_both_source_and_installed_copy_ab
     ('valid', None), ('oversized', 'unsafe managed Pixel access file'),
     ('unknown', 'unexpected Pixel access state'), ('public', 'unsafe managed Pixel access file'),
 ])
-def test_native_enrollment_uninstall_state_has_exact_name_private_mode_and_size_bound(uninstall_candidate, change, reason):
+@pytest.mark.parametrize('name,maximum', [('native-app-enrollment.json', 256 * 1024), ('native-app-access.json', 8192)])
+def test_native_enrollment_uninstall_state_has_exact_name_private_mode_and_size_bound(uninstall_candidate, change, reason, name, maximum):
     _program, _install, state_root, verify = uninstall_candidate
-    leaf = state_root / ('native-app-enrollment-extra.json' if change == 'unknown' else 'native-app-enrollment.json')
-    leaf.write_text(json.dumps({'fixture': 'x' * (256 * 1024 if change == 'oversized' else 1)}))
+    leaf = state_root / (name.replace('.json', '-extra.json') if change == 'unknown' else name)
+    leaf.write_text(json.dumps({'fixture': 'x' * (maximum if change == 'oversized' else 1)}))
     leaf.chmod(0o644 if change == 'public' else 0o600)
     result = verify()
     if reason is None:

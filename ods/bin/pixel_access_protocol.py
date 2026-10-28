@@ -49,11 +49,13 @@ KEYS.update({"connection-owner-status": BASE | {"answers_path"},
              "connection-recover": BASE | {"transaction_id"}})
 HOOKS.update({"connection-owner-status": (), "connection-apply": ("busy", "connection-activate"),
               "connection-recover": ("busy", "connection-activate")})
+NATIVE_APP_OPERATIONS = ('connection-app-status', 'connection-app-begin', 'connection-app-complete',
+                         'connection-app-finish', 'connection-app-cancel', 'connection-app-disconnect', 'connection-app-check')
 CONNECTION_OPERATIONS = ("connection-begin", "connection-complete", "connection-activate",
                          "connection-cancel", "connection-disconnect", "connection-sync",
                          "connection-proposals", "connection-approve", "connection-decline",
                          "connection-reconcile", "connection-activity", "connection-undo", "connection-drafts",
-                         "connection-plugin")
+                         "connection-plugin", *NATIVE_APP_OPERATIONS)
 
 
 class ProtocolError(ValueError):
@@ -127,6 +129,10 @@ def control_request(value):
         raise ProtocolError("invalid-request")
     if "request" in value and type(value["request"]) is not dict:
         raise ProtocolError("invalid-request")
+    if operation in NATIVE_APP_OPERATIONS:
+        from pixel_connections.native_contract import valid_action as native_app_action
+        if not native_app_action(value):
+            raise ProtocolError('invalid-request')
     if operation == 'schedules':
         source = value['source']
         if (type(source) is not dict or set(source) != {'kind', 'identity'}

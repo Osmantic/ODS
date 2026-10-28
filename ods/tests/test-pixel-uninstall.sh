@@ -2835,6 +2835,8 @@ printf '%s\n' '{"kind":"native-mcp-consent"}' > "$ACCESS_STATE/native-mcp-consen
 chmod 0600 "$ACCESS_STATE/native-mcp-consent.json"
 printf '%s\n' '{"kind":"native-app-enrollment"}' > "$ACCESS_STATE/native-app-enrollment.json"
 chmod 0600 "$ACCESS_STATE/native-app-enrollment.json"
+printf '%s\n' '{"kind":"native-app-access-observation"}' > "$ACCESS_STATE/native-app-access.json"
+chmod 0600 "$ACCESS_STATE/native-app-access.json"
 : > "$SYSTEMCTL_LOG"
 : > "$OPS_IDENTITY_LOG"
 if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR" && ! source_broker_remains \

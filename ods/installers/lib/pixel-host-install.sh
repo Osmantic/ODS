@@ -3145,7 +3145,7 @@ if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid !
 os.chmod(connections_package, 0o755, follow_symlinks=False)
 for name in ('__init__.py', 'state.py', 'status.py', 'catalog.py', 'oauth.py', 'custody.py', 'planner.py',
              'coordinator.py', 'lifecycle.py', 'approvals.py', 'activity.py', 'drafts.py', 'plugins.py', 'native_mcp.py',
-             'native_apps.py', 'native_enrollment.py', 'google_app.py'):
+             'native_apps.py', 'native_enrollment.py', 'native_contract.py', 'native_public.py', 'native_access.py', 'google_app.py'):
     write(connections_package / name, (code_source / 'bin/pixel_connections' / name).read_bytes(), 0o644)
 config_dir = pathlib.Path('/etc/ods')
 config_dir.mkdir(mode=0o755, exist_ok=True)

@@ -4,6 +4,7 @@ import CalendarActivity from './CalendarActivity'
 import CalendarChanges from './CalendarChanges'
 import EmailDrafts from './EmailDrafts'
 import PortalPlugins from './PortalPlugins'
+import ReviewedApps from './ReviewedApps'
 import GoogleConnectWizard, { Problem } from './GoogleConnectWizard'
 import { GOOGLE_CONSOLE, capabilitySummary, consoleLink, googleAdmissionHeld, googleCard, googleConnectionMode } from './connectedAppsStatus'
 import { disconnectGoogle, finishGoogle, savedProject, syncGoogle, useConnectedAppsStatus, useFullAccessOn } from './useConnectedApps'
@@ -93,15 +94,15 @@ export default function ConnectedApps() {
   function connected(missing) {
     setWizard(null)
     setNotice(missing.length
-      ? `Google is connected, but didn't grant: ${missing.join(', ')}. Use Change access to ask again.`
-      : 'Google is connected. Portal is turning on your calendar and email.')
+      ? `Google did not grant: ${missing.join(', ')}.`
+      : '')
     void refresh()
   }
 
   return <section aria-labelledby="connected-apps-title" className="space-y-4">
     <div className="space-y-1">
       <h2 id="connected-apps-title" className="text-lg font-semibold">Connected apps</h2>
-      <p className="text-sm text-theme-text-muted">Let Portal read your calendar and email. ODS keeps the sign-in in its own account on this machine, and Portal sees summaries, not your mailbox.</p>
+      <p className="text-sm text-theme-text-muted">Let Portal use apps you connect. Review each app&apos;s access before signing in.</p>
     </div>
     {!status && !unavailable ? <p role="status">Checking connected apps…</p> : null}
     {unavailable ? <div role="alert" className="space-y-1">
@@ -156,5 +157,6 @@ export default function ConnectedApps() {
         writable={Boolean(google.capabilities?.['gmail.drafts'])} onChanged={() => { void refresh() }} /> : null}
     </article> : null}
     <PortalPlugins status={status} onChanged={() => { void refresh() }} />
+    <ReviewedApps />
   </section>
 }

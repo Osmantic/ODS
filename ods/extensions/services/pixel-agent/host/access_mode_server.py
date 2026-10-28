@@ -43,7 +43,7 @@ if platform.system() == "Linux":
     # Connected apps use the systemd Source Broker, so only Linux and WSL ship them.
     for name in ("__init__.py", "state.py", "status.py", "catalog.py", "oauth.py", "custody.py",
                  "planner.py", "coordinator.py", "lifecycle.py", "approvals.py", "activity.py", "drafts.py", "plugins.py",
-                 "native_mcp.py", "native_apps.py", "native_enrollment.py", "google_app.py"):
+                 "native_mcp.py", "native_apps.py", "native_enrollment.py", "native_contract.py", "native_public.py", "native_access.py", "google_app.py"):
         protected(PROGRAM / "pixel_connections" / name)
     protected(PROGRAM / "connection_transaction.py")
     protected(PROGRAM / "native_mcp_owner.py")
@@ -143,7 +143,7 @@ def main(*, reprove_installer_access=False):
                 raw = self.rfile.readline(16385)
                 if len(raw) > 16384 or not raw.endswith(b"\n"): raise ValueError()
                 request = control_request(decode_frame(raw.decode("utf-8"), 16384))
-                if request['operation'] != 'schedules' and len(raw) > 2048: raise ValueError()
+                if request['operation'] not in ('schedules', 'connection-app-complete') and len(raw) > 2048: raise ValueError()
                 if request["operation"] in ("model-begin", "model-route-begin", "installer-source-begin"):
                     self.connection.settimeout(1850)
                 adapter = make_adapter()

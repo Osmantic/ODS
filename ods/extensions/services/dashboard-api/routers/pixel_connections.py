@@ -20,17 +20,38 @@ import json
 import re
 import time
 from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 
 from config import read_live_env_value
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 from host_agent_client import AgentHTTPError, AgentProtocolError, AgentUnavailable
 from host_agent_client import async_request_json as request_agent_json
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from routers.auth import ODS_HELP_DISCORD_URL
 from security import verify_api_key
 
-router = APIRouter(tags=["pixel-connections"])
+class _ConnectionRoute(APIRoute):
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def guarded(request):
+            try:
+                return await handler(request)
+            except RequestValidationError:
+                # FastAPI's ordinary errors include the rejected input. A
+                # callback body contains a one-use code, even when malformed.
+                if request.url.path == '/api/pixel/connections/apps' or request.url.path.startswith('/api/pixel/connections/apps/'):
+                    return JSONResponse(status_code=422, content={'detail': {'code': 'invalid-native-app-request',
+                        'message': 'That app connection request is invalid. Check the connection and try again.',
+                        'help': None}}, headers=NO_STORE)
+                raise
+        return guarded
+
+
+router = APIRouter(tags=["pixel-connections"], route_class=_ConnectionRoute)
 NO_STORE = {"Cache-Control": "no-store"}
 TOKEN = r"^[a-z][a-z0-9-]{0,63}$"
 INSTANT = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z$"
@@ -678,6 +699,222 @@ class PluginRequest(Strict):
 async def change_plugin(request: PluginRequest):
     """Turn one reviewed plugin on or off for Portal; Portal's gateway restarts with it."""
     return await _action("/v1/pixel/connections/plugin", request.model_dump(), OutcomeReply, 330)
+
+
+# Reviewed native apps are separate from Google's frame and credentials. A
+# browser selects only this release's app ID; Root owns registry and permissions.
+NativePhase = Literal['absent', 'preparing', 'prepared', 'beginning', 'consent', 'authorized', 'claiming', 'configured',
+                      'activating', 'verifying', 'ready', 'withdrawing', 'forgetting', 'disconnected', 'cancelled', 'failed']
+NATIVE_MESSAGES = {
+    'native-flow-expired': ('That sign-in expired. Cancel it before starting again.', False),
+    'native-flow-mismatch': ('That sign-in is no longer the current attempt. Refresh Connected apps.', False),
+    'native-sign-in-in-progress': ('An app sign-in is already open. Finish or cancel that attempt first.', False),
+    'native-app-transition-in-progress': ('An app connection update is still pending. Finish that update first.', False),
+    'native-activation-settlement-required': ('This connection update needs checking. Use Finish, or Disconnect to withdraw Portal access.', False),
+    'native-callback-already-claimed': ('ODS has already handled this callback. Check the connection with Finish; do not paste its code again.', False),
+    'native-callback-redirect-mismatch': ('That address belongs to another sign-in. Paste the whole address from this app’s sign-in tab.', False),
+    'sign-in-state-mismatch': ('That address belongs to another sign-in. Paste the whole address from this app’s sign-in tab.', False),
+    'state-mismatch': ('That address belongs to another sign-in. Paste the whole address from this app’s sign-in tab.', False),
+    'invalid-callback': ('That is not a complete sign-in address. Copy the whole address from the app’s final sign-in page.', False),
+    'native-app-already-connected': ('This app already has Portal access. Check its current connection instead.', False),
+}
+
+
+class NativeStateReply(Strict):
+    app: Literal['notion']
+    phase: NativePhase
+    flowId: str | None = Field(pattern=FLOW)
+    error: str | None = Field(pattern=r'^[a-z][a-z0-9-]{0,95}$')
+    portalAccessVerified: bool
+    scope: Literal['pixel-owner-default']
+    checkedAt: str | None = Field(default=None, pattern=SECOND)
+    providerRevoked: bool | None = None
+
+    @model_validator(mode='after')
+    def _native_consistent(self):
+        if (self.phase == 'absent' and self.flowId is not None
+                or self.flowId is None and self.phase not in ('absent', 'configured', 'ready')
+                or self.portalAccessVerified != (self.phase == 'ready')
+                or ('checkedAt' in self.model_fields_set) != self.portalAccessVerified
+                or self.portalAccessVerified and self.checkedAt is None
+                or ('providerRevoked' in self.model_fields_set) != (self.phase == 'disconnected')
+                or self.phase == 'disconnected' and self.providerRevoked is not False
+                or self.phase in ('absent', 'ready', 'disconnected', 'cancelled') and self.error is not None
+                or self.phase in ('failed', 'configured') and self.error is None):
+            raise ValueError('inconsistent reviewed app state')
+        return self
+
+
+class NativeBeginReply(NativeStateReply):
+    phase: Literal['consent', 'authorized', 'failed']
+    authUrl: str | None = Field(default=None, max_length=7000)
+    expiresAt: str | None = Field(default=None, pattern=SECOND)
+
+    @model_validator(mode='after')
+    def _native_begin(self):
+        present = self.model_fields_set & {'authUrl', 'expiresAt'}
+        if self.phase not in ('consent', 'authorized'):
+            if present:
+                raise ValueError('unexpected authorization fields')
+            return self
+        if present != {'authUrl', 'expiresAt'} or self.expiresAt is None or self.error is not None:
+            raise ValueError('incomplete authorization result')
+        if self.phase == 'authorized':
+            if self.authUrl is not None:
+                raise ValueError('reused authorization has no sign-in address')
+            return self
+        try:
+            parsed = urlsplit(self.authUrl or '')
+            if (not self.authUrl or not re.fullmatch(r'[\x21-\x7e]{1,7000}', self.authUrl)
+                    or parsed.scheme not in ('https', 'http') or not parsed.hostname
+                    or parsed.scheme == 'http' and parsed.hostname != '127.0.0.1'
+                    or parsed.username is not None or parsed.password is not None or parsed.fragment
+                    or parsed.port is not None and not 1 <= parsed.port <= 65535 or not parsed.query):
+                raise ValueError('invalid authorization address')
+        except ValueError:
+            raise ValueError('invalid authorization address') from None
+        return self
+
+
+class NativeCompleteReply(NativeStateReply):
+    phase: Literal['authorized', 'failed']
+
+
+class NativeCheckReply(NativeStateReply):
+    phase: Literal['ready', 'configured']
+
+
+class NativeCancelReply(NativeStateReply):
+    phase: Literal['cancelled']
+
+
+class NativeDisconnectReply(NativeStateReply):
+    phase: Literal['withdrawing', 'disconnected']
+
+
+class NativeFinishReply(NativeStateReply):
+    @model_validator(mode='after')
+    def _settled_finish(self):
+        if self.phase in ('absent', 'authorized'):
+            raise ValueError('unfinished authorization is not a finish outcome')
+        return self
+
+
+class NativeCatalogEntry(Strict):
+    id: Literal['notion']
+    label: Literal['Notion']
+    summary: str = Field(min_length=1, max_length=512)
+    tools: list[Literal['notion-search', 'notion-fetch']] = Field(min_length=2, max_length=2)
+    details: list[Annotated[str, Field(min_length=1, max_length=1000)]] = Field(min_length=4, max_length=4)
+
+    @model_validator(mode='after')
+    def _reviewed_tools(self):
+        if self.tools != ['notion-search', 'notion-fetch']:
+            raise ValueError('unknown reviewed tools')
+        return self
+
+
+class NativeStatusReply(Strict):
+    schemaVersion: int = Field(ge=1, le=1)
+    available: bool
+    surface: Literal['linux-systemd', 'wsl-systemd', 'linux', 'darwin', 'windows']
+    reason: str | None = Field(pattern=r'^[a-z][a-z0-9-]{0,95}$')
+    apps: dict[Literal['notion'], NativeStateReply]
+    catalog: list[NativeCatalogEntry] = Field(min_length=1, max_length=1)
+
+    @model_validator(mode='after')
+    def _native_status(self):
+        if (set(self.apps) != ({'notion'} if self.available else set())
+                or (self.reason is None) != self.available
+                or any(key != item.app for key, item in self.apps.items())):
+            raise ValueError('inconsistent reviewed app status')
+        return self
+
+
+class NativeFlowRequest(Strict):
+    flowId: str = Field(pattern=FLOW)
+
+
+class NativeCompleteRequest(NativeFlowRequest):
+    address: str = Field(min_length=1, max_length=8192, pattern=r'^[\x21-\x7e]+$')
+
+    @model_validator(mode='after')
+    def _full_callback(self):
+        try:
+            parsed = urlsplit(self.address)
+            if (parsed.scheme != 'http' or parsed.hostname != '127.0.0.1' or parsed.path != '/'
+                    or parsed.username is not None or parsed.password is not None or '#' in self.address
+                    or parsed.port is None or not 1024 <= parsed.port <= 65535 or not parsed.query):
+                raise ValueError('invalid callback')
+        except ValueError:
+            raise ValueError('invalid callback') from None
+        return self
+
+
+def _native_refusal(status_code, code):
+    message, help_needed = NATIVE_MESSAGES.get(code, MESSAGES.get(code, (
+        'ODS could not confirm this app connection. Check its saved state in Connected apps before trying again.', True)))
+    safe_code = code if re.fullmatch(r'[a-z][a-z0-9-]{0,95}', code) else 'native-app-unavailable'
+    return HTTPException(status_code, {'code': safe_code, 'message': message,
+        'help': ODS_HELP_DISCORD_URL if help_needed else None}, headers=NO_STORE)
+
+
+async def _native_action(app, name, payload, model):
+    _enabled()
+    try:
+        raw = await request_agent_json('POST', f'/v1/pixel/connections/apps/{app}/{name}', payload=payload,
+                                       timeout=90 if name in ('complete', 'check') else 330)
+    except AgentHTTPError as exc:
+        code = exc.detail if isinstance(exc.detail, str) else 'native-app-unavailable'
+        raise _native_refusal(exc.status_code if exc.status_code in (400, 409, 503) else 502, code) from None
+    except (AgentUnavailable, AgentProtocolError):
+        raise _native_refusal(503, 'native-app-unavailable') from None
+    try:
+        value = model.model_validate(raw)
+    except ValidationError:
+        raise _native_refusal(502, 'native-app-result-unconfirmed') from None
+    return JSONResponse(content=value.model_dump(exclude_unset=True), headers=NO_STORE)
+
+
+@router.get('/api/pixel/connections/apps', dependencies=[Depends(verify_api_key)])
+async def native_apps_status():
+    _enabled()
+    try:
+        raw = await request_agent_json('GET', '/v1/pixel/connections/apps', timeout=30)
+        value = NativeStatusReply.model_validate(raw)
+    except (AgentHTTPError, AgentUnavailable, AgentProtocolError, ValidationError):
+        raise _native_refusal(503, 'native-app-status-unavailable') from None
+    return JSONResponse(content=value.model_dump(exclude_unset=True), headers=NO_STORE)
+
+
+@router.post('/api/pixel/connections/apps/{app}/connect', dependencies=[Depends(verify_api_key)])
+async def native_app_connect(app: Literal['notion'], request: EmptyRequest):
+    return await _native_action(app, 'connect', {}, NativeBeginReply)
+
+
+@router.post('/api/pixel/connections/apps/{app}/complete', dependencies=[Depends(verify_api_key)])
+async def native_app_complete(app: Literal['notion'], request: NativeCompleteRequest):
+    return await _native_action(app, 'complete', request.model_dump(), NativeCompleteReply)
+
+
+@router.post('/api/pixel/connections/apps/{app}/finish', dependencies=[Depends(verify_api_key)])
+async def native_app_finish(app: Literal['notion'], request: NativeFlowRequest):
+    return await _native_action(app, 'finish', request.model_dump(), NativeFinishReply)
+
+
+@router.post('/api/pixel/connections/apps/{app}/cancel', dependencies=[Depends(verify_api_key)])
+async def native_app_cancel(app: Literal['notion'], request: NativeFlowRequest):
+    return await _native_action(app, 'cancel', request.model_dump(), NativeCancelReply)
+
+
+@router.post('/api/pixel/connections/apps/{app}/disconnect', dependencies=[Depends(verify_api_key)])
+async def native_app_disconnect(app: Literal['notion'], request: EmptyRequest):
+    return await _native_action(app, 'disconnect', {}, NativeDisconnectReply)
+
+
+@router.post('/api/pixel/connections/apps/{app}/check', dependencies=[Depends(verify_api_key)])
+async def native_app_check(app: Literal['notion'], request: EmptyRequest):
+    return await _native_action(app, 'check', {}, NativeCheckReply)
 
 
 # ---------------------------------------------------------------- calendar changes Portal suggests

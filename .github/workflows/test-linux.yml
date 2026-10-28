@@ -135,11 +135,18 @@ jobs:
       - name: Reviewed native app grants, onboarding and Root connection rollback
         run: |
           python -m pytest -q tests/test_pixel_native_apps.py \
+            tests/test_native_app_contract.py \
+            tests/test_native_access_source_overlay.py \
+            tests/test_native_access_policy_source.py \
+            tests/test_pixel_connection_wire.py \
             tests/test_pixel_access_program_modes.py \
             extensions/services/pixel-agent/tests/test_connection_native_apps.py \
             extensions/services/pixel-agent/tests/test_connection_transaction_ids.py \
             extensions/services/pixel-agent/tests/test_connection_native_guard.py \
             extensions/services/pixel-agent/tests/test_native_enrollment.py \
+            extensions/services/pixel-agent/tests/test_native_public.py \
+            extensions/services/pixel-agent/tests/test_native_access.py \
+            extensions/services/pixel-agent/tests/test_native_google_admission.py \
             extensions/services/pixel-agent/tests/test_connection_custody.py \
             extensions/services/pixel-agent/tests/test_connection_first_login.py \
             tests/test_pixel_google_app.py \

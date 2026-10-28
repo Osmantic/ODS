@@ -313,7 +313,14 @@ def _draft_entry(value):
             and (_gmail_draft(value['draft']) if shown else value['draft'] is None))
 
 
+def _native_contract():
+    import native_app_contract
+    return native_app_contract
+
+
 def valid_connection_action(value):
+    if type(value) is dict and type(value.get('operation')) is str and value['operation'].startswith('connection-app-'):
+        return _native_contract().valid_action(value)
     if (type(value) is not dict or set(value) != {'operation', 'request'}
             or value['operation'] not in _CONNECTION_OPERATIONS or type(value['request']) is not dict):
         return False
@@ -359,6 +366,8 @@ def valid_connection_action(value):
 
 def public_connection_action(operation, value):
     """The coordinator's reply, refused unless it is exactly the shape of its operation."""
+    if operation.startswith('connection-app-'):
+        return _native_contract().public_reply(operation, value)
     if type(value) is not dict:
         raise ValueError('invalid-connection-reply')
     if operation == 'connection-begin':

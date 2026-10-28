@@ -147,11 +147,12 @@ def guard_idle(bridge):
 class Controller:
     """One fixed reviewed app, one Root lock, existing owner/gateway lifecycle."""
 
-    def __init__(self, bridge, *, app='notion', now=None):
+    def __init__(self, bridge, *, app='notion', now=None, on_access=None):
         self.entry = apps.app(app)
         self.bridge, self.app = bridge, app
         self.path = Path(bridge.state) / JOURNAL
         self.now = now or (lambda: datetime.now(timezone.utc))
+        self._on_access = on_access
         self.consent = native.Consent(bridge, app=app, server_name=self.entry['serverName'], now=self.now)
 
     def _read(self):
@@ -219,6 +220,10 @@ class Controller:
         # An independent Google consent/activation cannot race native enrollment.
         # Generic model/settings/source changes are also refused by bridge/owner
         # binding and the actual connection transaction's pending checks.
+        try:
+            c._guard_google_exchange(self.bridge)
+        except AccessError as error:
+            raise native.NativeError(error.code) from None
         lifecycle = c.read_lifecycle(c._lifecycle_path(self.bridge))
         if lifecycle and lifecycle['phase'] not in ('failed',):
             raise native.NativeError('connection-transition-in-progress')
@@ -508,7 +513,7 @@ class Controller:
                 return self._put(journal, phase='failed', error='native-app-activation-rolled-back')
             journal = self._put(journal, phase='verifying')
         self._require_stable(journal)
-        proof = native._check_access_locked(self.bridge, self.entry['serverName'])
+        proof = native._check_access_locked(self.bridge, self.entry['serverName'], on_observed=self._on_access)
         proof['checkedAt'] = native._iso(self.now())
         journal = self._put(journal, phase='verifying', proof=proof,
                             error=None if proof['permitted'] else 'native-app-' + proof['reason'])

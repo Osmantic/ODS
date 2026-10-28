@@ -10567,6 +10567,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_pixel_access_mode(False)
         elif path == "/v1/pixel/connections" and not parsed.query:
             self._handle_pixel_connections()
+        elif path == "/v1/pixel/connections/apps" and not parsed.query:
+            self._handle_pixel_native_apps()
         elif path == "/v1/host/port":
             self._handle_host_port_status(parse_qs(parsed.query))
         elif path == "/v1/opencode/status" and not parsed.query:
@@ -10685,6 +10687,27 @@ class AgentHandler(BaseHTTPRequestHandler):
         except (AccessRelayError, OSError, ValueError):
             # A lost reply never means the step was undone; status shows where it stands.
             json_response(self, 503, {"error": "connections-unavailable"})
+            return
+        json_response(self, status, reply)
+
+    def _handle_pixel_native_apps(self, app=None, action=None):
+        """Fixed reviewed apps; no caller-selected MCP settings or endpoints."""
+        if not check_auth(self):
+            return
+        from pixel_access_relay import AccessRelayError, request_runtime_connection_action
+        from pixel_connections import native_host_api
+        if app is not None and (app != 'notion' or action not in ('connect', 'complete', 'finish', 'cancel', 'disconnect', 'check')):
+            json_response(self, 404, {'error': 'Not found'})
+            return
+        body = None if app is None else read_json_body(self)
+        if app is not None and body is None:
+            return
+        try:
+            options = {'config': load_env(INSTALL_DIR / '.env'), 'relay': request_runtime_connection_action}
+            status, reply = (native_host_api.status(**options) if app is None else
+                             native_host_api.action(app, action, body, **options, log=logger.warning))
+        except (AccessRelayError, OSError, ValueError):
+            json_response(self, 503, {'error': 'native-app-status-unavailable'})
             return
         json_response(self, status, reply)
 
@@ -11253,6 +11276,9 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_pixel_connection_action("" if action == "plugin" else action)
         elif self.path == "/v1/pixel/connections/plugin":
             self._handle_pixel_connection_action("plugin")
+        elif self.path.startswith('/v1/pixel/connections/apps/'):
+            parts = self.path.removeprefix('/v1/pixel/connections/apps/').split('/')
+            self._handle_pixel_native_apps(*(parts if len(parts) == 2 else ('', '')))
         elif self.path == "/v1/pixel/apps/open":
             self._handle_pixel_open_app()
         elif self.path in ("/v1/opencode/start", "/v1/opencode/setup"):

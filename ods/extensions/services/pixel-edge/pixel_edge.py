@@ -1264,6 +1264,8 @@ _CONNECTION_TIMEOUTS = {'connection-begin': 70, 'connection-complete': 160, 'con
                         'connection-proposals': 30, 'connection-approve': 160, 'connection-decline': 30,
                         'connection-reconcile': 160, 'connection-activity': 30, 'connection-undo': 160,
                         'connection-drafts': 30, 'connection-plugin': 308}
+from native_app_contract import TIMEOUTS as _NATIVE_APP_TIMEOUTS
+_CONNECTION_TIMEOUTS.update({name: timeout - 2 for name, timeout in _NATIVE_APP_TIMEOUTS.items()})
 
 
 async def handle_connection_action(request: web.Request):
@@ -1271,8 +1273,11 @@ async def handle_connection_action(request: web.Request):
     if request.content_type != 'application/json':
         return web.json_response({'error': 'invalid-content-type'}, status=415)
     try:
-        data = strict_json(await _read_bounded(request.content, 2048))
+        raw_request = await _read_bounded(request.content, 16384)
+        data = strict_json(raw_request)
         if not valid_connection_action(data):
+            raise ValueError()
+        if data['operation'] != 'connection-app-complete' and len(raw_request) > 2048:
             raise ValueError()
     except (ValueError, OSError, RecursionError):
         return web.json_response({'error': 'invalid-request'}, status=400)
