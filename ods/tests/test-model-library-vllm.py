@@ -8,10 +8,11 @@ checks keep the shipped entries well formed and their numbers consistent:
 
 * the schema itself (model_vllm.entry_problems), and that it catches the
   mistakes it is meant to catch;
-* ``min_gpu_mib`` covers the weights plus 25% (the authoring rule) and so
-  also model_memory's device need, weights / 0.90;
+* ``min_gpu_mib`` covers the weights plus 25% (the authoring rule), scaled
+  by 0.90 / ``gpu_memory_utilization`` for an entry that takes a smaller
+  share of its GPU, and so also model_memory's device need, weights / share;
 * every shard a safetensors set names is in the manifest;
-* the two first entries keep the revisions and licences reviewed for them.
+* the entries keep the revisions, licences and GPUs reviewed for them.
 
 Network-free: verify a new manifest against the Hub's
 ``/api/models/<repo>/revision/<sha>?blobs=true`` before adding it.
@@ -31,7 +32,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CATALOG = ROOT / "config" / "model-library.json"
 sys.path.insert(0, str(ROOT / "extensions" / "services" / "dashboard-api"))
 
-from model_memory import estimate_model_memory  # noqa: E402
+from model_memory import VLLM_GPU_MEMORY_UTILIZATION, estimate_model_memory, vllm_memory_share  # noqa: E402
 from model_vllm import entry_problems, manifest_bytes, model_dir_name  # noqa: E402
 
 MIB = 1024 ** 2
@@ -41,13 +42,21 @@ REVIEWED = {
         "hf_repo": "nvidia/Qwen3.8-Flash-Next-NVFP4",
         "revision": "fc694b54fb0174e0913e6adf86691ef85a4ead47",
         "license": "other", "license_name": "nvidia-open-model-license",
-        "size_bytes": 132734506847, "files": 25,
+        "size_bytes": 132734506847, "files": 25, "compute_capability": ["10.0", "10.3"],
     },
     "glm-5.3-flash-nvfp4-vllm": {
         "hf_repo": "nvidia/GLM-5.3-Flash-NVFP4",
         "revision": "da920bb0b9f4a06727223a349e55468e38352348",
         "license": "mit", "license_name": None,
-        "size_bytes": 204476278199, "files": 44,
+        "size_bytes": 204476278199, "files": 44, "compute_capability": ["10.0", "10.3"],
+    },
+    # The RTX PRO 6000 class (Blackwell workstation, sm_120), measured on the
+    # DGX Station's RTX PRO 6000 (10-27). It takes half of that GPU.
+    "qwen3.6-35b-a3b-nvfp4-vllm": {
+        "hf_repo": "nvidia/Qwen3.6-35B-A3B-NVFP4",
+        "revision": "1355db6a052410cfd62085d94b58866fd0f2c3c5",
+        "license": "apache-2.0", "license_name": None,
+        "size_bytes": 23462477857, "files": 17, "compute_capability": ["12.0"],
     },
 }
 
@@ -75,7 +84,7 @@ def test_reviewed_entries_are_in_the_catalog():
         assert model.get("license_name") == expected["license_name"], model_id
         assert model["size_bytes"] == expected["size_bytes"], model_id
         assert len(model["files"]) == expected["files"], model_id
-        assert model["compute_capability"] == ["10.0", "10.3"], model_id
+        assert model["compute_capability"] == expected["compute_capability"], model_id
         assert model["reasoning"] == "medium", model_id
 
 
@@ -86,10 +95,11 @@ def test_entries_follow_the_schema(model):
 
 @pytest.mark.parametrize("model", _vllm_models(), ids=_ids(_vllm_models()))
 def test_min_gpu_memory_covers_the_weights_plus_a_quarter(model):
-    weights_mib = manifest_bytes(model) / MIB
-    assert model["min_gpu_mib"] >= weights_mib * 1.25, model["id"]
+    # At vLLM's usual 0.90 share; a smaller share needs a proportionally larger GPU.
+    needed_mib = manifest_bytes(model) / MIB * 1.25 * VLLM_GPU_MEMORY_UTILIZATION / vllm_memory_share(model)
+    assert model["min_gpu_mib"] >= needed_mib, model["id"]
     # Rounded up to a whole GiB, not padded further.
-    assert model["min_gpu_mib"] % 1024 == 0 and model["min_gpu_mib"] - weights_mib * 1.25 < 1024, model["id"]
+    assert model["min_gpu_mib"] % 1024 == 0 and model["min_gpu_mib"] - needed_mib < 1024, model["id"]
     device_gib = estimate_model_memory(model).device_gib
     assert device_gib * 1024 <= model["min_gpu_mib"], (model["id"], device_gib)
 
@@ -154,6 +164,12 @@ def _mutate(path: str, value):
     ("vllm_args", ["--model", "/x"], "vllm_args may not set --model"),
     ("vllm_args", ["--speculative-config", '{"method": "mtp"}'], "vllm_args must be a list of plain strings"),
     ("min_gpu_mib", 0, "min_gpu_mib must be a positive whole number"),
+    ("gpu_memory_utilization", 0.05, "gpu_memory_utilization must be a number from 0.1 to 0.95"),
+    ("gpu_memory_utilization", 1, "gpu_memory_utilization must be a number from 0.1 to 0.95"),
+    ("gpu_memory_utilization", True, "gpu_memory_utilization must be a number from 0.1 to 0.95"),
+    ("gpu_memory_utilization", "0.5", "gpu_memory_utilization must be a number from 0.1 to 0.95"),
+    ("vllm_args", ["--gpu-memory-utilization=0.5"], "vllm_args may not set --gpu-memory-utilization"),
+    ("vllm_args", ["--gpu_memory_utilization", "0.5"], "vllm_args may not set --gpu-memory-utilization"),
     ("compute_capability", ["10"], 'compute_capability must list distinct "major.minor" strings'),
     ("reasoning", "on", "reasoning must be one of off, low, medium, high"),
     ("selection.discrete", 50, "selection.discrete must be 0"),
@@ -186,6 +202,8 @@ def _dotted_config(args: list[str], flag: str) -> dict:
 # Measured on the DGX Station GB300 (vLLM v0.32.0, 10-27): MTP drafts lifted one-stream
 # writing from about 200 to 313 tokens/s on Qwen and from 145 to 210 on GLM, and Qwen's
 # n-gram embedding table on the GPU (not offloaded to the CPU) is part of that best setup.
+# On its RTX PRO 6000, MTP lifted Qwen 3.6's one-stream coding from 272 to 537 tokens/s
+# (llama.cpp's Qwen 3.6 Q4 there: 250) and 16 streams from 2,404 to 3,797 (llama.cpp: 462).
 MEASURED_FLAGS = {
     "qwen3.8-flash-next-nvfp4-vllm": {
         "--speculative-config": {"method": "mtp", "num_speculative_tokens": 3},
@@ -193,6 +211,10 @@ MEASURED_FLAGS = {
     },
     "glm-5.3-flash-nvfp4-vllm": {
         "--speculative-config": {"method": "mtp", "num_speculative_tokens": 5},
+        "--engram-config": {},
+    },
+    "qwen3.6-35b-a3b-nvfp4-vllm": {
+        "--speculative-config": {"method": "mtp", "num_speculative_tokens": 3},
         "--engram-config": {},
     },
 }
@@ -203,9 +225,12 @@ MEASURED_FLAGS = {
 # 156 s instead of 392 s at the same speed (1/4/16 streams: 349/965/2,276 tok/s against 349/961/2,246).
 # GLM fits only sm_103 GPUs (GB300/B300), where that was measured. Qwen3.8 also showed no loss on the
 # GB300 (226 s -> 155 s), but its main fit is B200-class sm_100, which is unmeasured, so it keeps it.
+# On the RTX PRO 6000 (sm_120) Qwen 3.6's autotune reads its cache in under a second: a restart was
+# ready in 105 s either way, and with it off one-stream coding fell from 537 to 464 tokens/s, so it stays.
 MEASURED_SWITCHES = {
     "qwen3.8-flash-next-nvfp4-vllm": set(),
     "glm-5.3-flash-nvfp4-vllm": {"--no-enable-flashinfer-autotune"},
+    "qwen3.6-35b-a3b-nvfp4-vllm": set(),
 }
 
 
@@ -226,6 +251,10 @@ def test_the_entries_keep_the_flags_measured_on_a_dgx_station(model_id):
 # false and answers HTTP 400 for any reasoning_effort but xhigh (its
 # default), medium and low. Measured (GB300, temperature 0.6): GLM max 7.5 s
 # vs high 3.4 s and low 2.8 s; Qwen xhigh 5.0 s, medium 3.7 s, low 3.4 s.
+# Qwen3.6's template reads only enable_thinking (thinking stays on unless it
+# is false) and ignores reasoning_effort, so off turns thinking off and every
+# other level keeps it on. Measured (RTX PRO 6000): off 3.0 s with no
+# reasoning, on 4.6 s, and a stray reasoning_effort high answered normally.
 THINKING = {
     "glm-5.3-flash-nvfp4-vllm": {
         "off": {"reasoning_effort": "low"}, "low": {"reasoning_effort": "low"},
@@ -235,10 +264,15 @@ THINKING = {
         "off": {"enable_thinking": False}, "low": {"reasoning_effort": "low"},
         "medium": {"reasoning_effort": "medium"}, "high": {"reasoning_effort": "xhigh"},
     },
+    "qwen3.6-35b-a3b-nvfp4-vllm": {
+        "off": {"enable_thinking": False}, "low": {"enable_thinking": True},
+        "medium": {"enable_thinking": True}, "high": {"enable_thinking": True},
+    },
 }
 TEMPLATE_EFFORTS = {
     "glm-5.3-flash-nvfp4-vllm": {"low", "high"},
     "qwen3.8-flash-next-nvfp4-vllm": {"low", "medium", "xhigh"},
+    "qwen3.6-35b-a3b-nvfp4-vllm": set(),
 }
 
 
@@ -248,7 +282,8 @@ def test_each_level_uses_the_models_own_template_arguments(model_id):
     assert model["thinking_template_kwargs"] == THINKING[model_id]
     # No level hands the template a reasoning_effort it does not accept.
     for level, kwargs in model["thinking_template_kwargs"].items():
-        assert kwargs.get("reasoning_effort", "low") in TEMPLATE_EFFORTS[model_id], (model_id, level)
+        if "reasoning_effort" in kwargs:
+            assert kwargs["reasoning_effort"] in TEMPLATE_EFFORTS[model_id], (model_id, level)
 
 
 def test_every_vllm_entry_has_a_thinking_map():
@@ -258,10 +293,11 @@ def test_every_vllm_entry_has_a_thinking_map():
 @pytest.mark.parametrize("model_id", sorted(MEASURED_FLAGS))
 def test_the_entries_declare_tools_and_vision(model_id):
     # The host agent's route proof publishes these catalog booleans as the
-    # route's capabilities (model-state, Pixel connection metadata). Both
+    # route's capabilities (model-state, Pixel connection metadata). The
     # checkpoints are image-text-to-text and run vLLM's tool parser; on the
     # DGX Station GB300 GLM made tool calls (streamed and not) and read an
-    # image through model-router. Without them the route claimed neither.
+    # image through model-router, as Qwen 3.6 did on its RTX PRO 6000.
+    # Without them the route claimed neither.
     model = {item["id"]: item for item in _vllm_models()}[model_id]
     assert model.get("tools") is True and model.get("vision") is True, model_id
     assert "--enable-auto-tool-choice" in model["vllm_args"], model_id

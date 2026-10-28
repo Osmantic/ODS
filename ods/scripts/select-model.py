@@ -22,13 +22,13 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "extensions/services/dashboard-api"))
 from model_memory import (  # noqa: E402
-    VLLM_GPU_MEMORY_UTILIZATION,
     context_fitting_model as context_fitting_model,
     estimate_model_memory,
     estimated_context_kv_gb as estimated_context_kv_gb,
     estimated_param_billions as estimated_param_billions,
     memory_metadata,
     required_model_memory_gb,
+    vllm_memory_share,
 )
 from model_selection import (  # noqa: E402
     POLICY,
@@ -470,13 +470,14 @@ def _check_fit_main(args: argparse.Namespace, catalog: list[dict[str, Any]],
 def _vllm_reason(candidate: VllmCandidate, min_context: int) -> str:
     model, gpu = candidate.model, candidate.gpu
     weights_gib = estimate_model_memory(model).weights_gib
-    room_gib = gpu.memory_mib * VLLM_GPU_MEMORY_UTILIZATION / 1024.0 - weights_gib
+    share = vllm_memory_share(model)
+    room_gib = gpu.memory_mib * share / 1024.0 - weights_gib
     reason = (
         f"Curated vLLM fit ({VLLM_POLICY}): {model['name']} is the highest-priority vLLM "
         f"catalog model for GPU {gpu.uuid} (compute capability {gpu.compute_capability}, "
         f"{gpu.memory_mib} MiB), which meets its {model['min_gpu_mib']} MiB minimum. Its "
         f"{weights_gib:.1f} GiB of weights leave about {room_gib:.1f} GiB of vLLM's "
-        f"{VLLM_GPU_MEMORY_UTILIZATION:.2f} share of that GPU for KV cache and activations at "
+        f"{share:.2f} share of that GPU for KV cache and activations at "
         f"{model['context_length'] // 1024}K context. Throughput requires a local benchmark "
         f"after first launch."
     )
@@ -535,7 +536,13 @@ def _vllm_payload(ranked: list[VllmCandidate], reason: str, min_context: int, ho
 
 
 def _vllm_env(ranked: list[VllmCandidate], reason: str) -> dict[str, Any]:
-    """The installer contract for a vLLM pick (VLLM_* are .env keys as named)."""
+    """The installer contract for a vLLM pick (VLLM_* are .env keys as named).
+
+    VLLM_GPU_MEMORY_UTILIZATION is always the pick's own share (its entry's,
+    else 0.9), so a newly picked model never inherits the share an earlier
+    model left in .env. A rerun that keeps its model keeps its .env share
+    instead (phase 02's keep path).
+    """
     model, gpu = ranked[0].model, ranked[0].gpu
     return {
         "LLM_MODEL": model["llm_model_name"],
@@ -558,6 +565,7 @@ def _vllm_env(ranked: list[VllmCandidate], reason: str) -> dict[str, Any]:
         "VLLM_SERVED_MODEL": model["served_model_name"],
         "VLLM_ARGS": vllm_args_text(model),
         "VLLM_GPU_UUID": gpu.uuid,
+        "VLLM_GPU_MEMORY_UTILIZATION": f"{vllm_memory_share(model):g}",
     }
 
 

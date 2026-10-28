@@ -809,11 +809,14 @@ def _vllm_activation_refusal(model_id: str) -> dict:
 
 def _vllm_model_refusal(model: dict) -> dict:
     """409 body for a vLLM catalog entry asked of llama-server's model lifecycle."""
+    # The entry's own GPU requirement; a malformed record names none.
+    needs = ("an NVIDIA GPU the vLLM engine supports" if _model_vllm.entry_problems(model)
+             else _model_vllm.requirement_text(model))
     return {
         "error": f"{model.get('name') or model.get('id')} runs only on the vLLM engine, "
                  "which only the ODS installer sets up.",
         "code": "vllm_model_installer_only",
-        "hint": ("It needs one NVIDIA datacenter Blackwell GPU. Run the ODS installer and "
+        "hint": (f"It needs {needs}. Run the ODS installer and "
                  f"choose the vLLM engine to use it. {_ODS_HELP}"),
         "requestedModelId": model.get("id"),
     }
@@ -21620,6 +21623,9 @@ def _llama_recreate_argv(
         visible_devices = str(env.get("LLAMA_SERVER_GPU_UUIDS") or "").strip()
         if visible_devices:
             replacement_env["NVIDIA_VISIBLE_DEVICES"] = visible_devices
+            # As in docker-compose.multigpu-nvidia.yml: only CUDA's own
+            # variable reliably limits llama-server to these GPUs.
+            replacement_env["CUDA_VISIBLE_DEVICES"] = visible_devices
     elif str(env.get("GPU_BACKEND") or "").lower() == "amd":
         for key in (
             "ROCR_VISIBLE_DEVICES",

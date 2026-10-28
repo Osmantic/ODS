@@ -35,6 +35,7 @@ SIMULATOR = ROOT / "scripts" / "simulate-model-selection.py"
 # GB300 and RTX PRO 6000 memory: the DGX Station Workstation06 (2026-10-27).
 GB300 = "GPU-test-gb300, 10.3, 256703"
 RTX_PRO_6000 = "GPU-test-rtx-pro-6000, 12.0, 97887"
+RTX_5090 = "GPU-test-rtx-5090, 12.0, 32607"
 B200 = "GPU-test-b200, 10.0, 183359"
 H200 = "GPU-test-h200, 9.0, 143771"
 # The installer's selector arguments on the DGX Station, plus the vLLM runtime.
@@ -45,7 +46,7 @@ VLLM_ENV_KEYS = {
     "LLM_MODEL", "GGUF_FILE", "GGUF_URL", "GGUF_SHA256", "MAX_CONTEXT", "LLM_MODEL_SIZE_MB",
     "MODEL_RECOMMENDATION_SOURCE", "MODEL_RECOMMENDATION_POLICY", "MODEL_RECOMMENDATION_CONFIDENCE",
     "MODEL_RECOMMENDATION_REASON", "MODEL_RECOMMENDED_ALTERNATIVES", "PIXEL_AGENT_MODEL_READY",
-    "VLLM_MODEL_DIR", "VLLM_SERVED_MODEL", "VLLM_ARGS", "VLLM_GPU_UUID",
+    "VLLM_MODEL_DIR", "VLLM_SERVED_MODEL", "VLLM_ARGS", "VLLM_GPU_UUID", "VLLM_GPU_MEMORY_UTILIZATION",
 }
 
 
@@ -89,9 +90,13 @@ def _vllm_entries() -> list[dict]:
     return [model for model in _catalog()["models"] if model.get("runtime") == "vllm"]
 
 
+def _fits(capability: str, memory_mib: int) -> list[dict]:
+    return [model for model in _vllm_entries()
+            if capability in model["compute_capability"] and model["min_gpu_mib"] <= memory_mib]
+
+
 def _best_fitting(capability: str, memory_mib: int) -> tuple[dict, list[dict]]:
-    fitting = [model for model in _vllm_entries()
-               if capability in model["compute_capability"] and model["min_gpu_mib"] <= memory_mib]
+    fitting = _fits(capability, memory_mib)
     assert fitting
     return max(fitting, key=lambda model: model["selection"]["vllm"]), fitting
 
@@ -119,16 +124,40 @@ def test_dgx_station_gets_the_top_priority_vllm_model_on_its_gb300():
     assert env["PIXEL_AGENT_MODEL_READY"] == ("true" if pixel == "verified" else "false")
     assert env["MODEL_RECOMMENDATION_POLICY"] == "vllm-gpu-fit-v1"
     assert env["MODEL_RECOMMENDATION_SOURCE"] == "catalog_vllm_pre_download"
+    # An entry without its own share still sends vLLM's 0.9, so a newly
+    # picked model never inherits an earlier model's .env share.
+    assert "gpu_memory_utilization" not in best and env["VLLM_GPU_MEMORY_UTILIZATION"] == "0.9"
     assert "GPU-test-gb300 (compute capability 10.3, 256703 MiB)" in env["MODEL_RECOMMENDATION_REASON"]
+    # The alternatives are every entry that fits either GPU (the RTX PRO 6000's own one too).
     alternatives = [item.split(":")[0] for item in env["MODEL_RECOMMENDED_ALTERNATIVES"].split(";")]
-    assert alternatives[0] == best["id"] and set(alternatives) == {model["id"] for model in fitting}
+    either = {model["id"] for model in fitting + _fits("12.0", 97887)}
+    assert alternatives[0] == best["id"] and set(alternatives) == either
 
 
-def test_both_entries_fit_the_gb300_and_neither_the_rtx_pro_6000():
+def test_the_gb300_fits_the_datacenter_entries_and_the_rtx_pro_6000_its_own():
     _, fitting = _best_fitting("10.3", 256703)
     assert {model["id"] for model in fitting} == {"qwen3.8-flash-next-nvfp4-vllm", "glm-5.3-flash-nvfp4-vllm"}
-    status, out, _ = select(*VLLM, *_gpu_args(RTX_PRO_6000), "--env")
-    assert (status, out) == (2, "")
+    assert [model["id"] for model in _fits("12.0", 97887)] == ["qwen3.6-35b-a3b-nvfp4-vllm"]
+    assert _fits("12.0", 32607) == []
+
+
+def test_a_lone_rtx_pro_6000_gets_its_class_entry_at_half_the_card():
+    # A workstation's only GPU also runs ComfyUI and voice, so this entry
+    # takes half of it; the selector hands that share to the installer.
+    status, out, err = select(*VLLM, *_gpu_args(RTX_PRO_6000), "--env")
+
+    assert status == 0, err
+    env = env_values(out)
+    best, _ = _best_fitting("12.0", 97887)
+    assert set(env) == VLLM_ENV_KEYS
+    assert env["LLM_MODEL"] == best["llm_model_name"] == "qwen3.6-35b-a3b-nvfp4"
+    assert env["VLLM_GPU_UUID"] == "GPU-test-rtx-pro-6000"
+    assert env["VLLM_GPU_MEMORY_UTILIZATION"] == "0.5" == f"{best['gpu_memory_utilization']:g}"
+    assert shlex.split(env["VLLM_ARGS"]) == best["vllm_args"]
+    assert "--gpu-memory-utilization" not in env["VLLM_ARGS"]
+    reason = env["MODEL_RECOMMENDATION_REASON"]
+    # 97887 MiB * 0.5 / 1024 - 21.85 GiB of weights.
+    assert "leave about 25.9 GiB of vLLM's 0.50 share of that GPU" in reason, reason
 
 
 def test_a_b200_gets_only_what_fits_its_memory():
@@ -143,7 +172,8 @@ def test_a_b200_gets_only_what_fits_its_memory():
 
 
 @pytest.mark.parametrize("rows,expected", [
-    ((RTX_PRO_6000,), "needs one GPU with compute capability 10.0 or 10.3 and at least"),
+    ((RTX_5090,), "needs one GPU with compute capability 10.0 or 10.3 and at least"),
+    ((RTX_5090,), "needs one GPU with compute capability 12.0 and at least 51200 MiB"),
     ((H200,), "GPU-test-h200 (compute capability 9.0, 143771 MiB)"),
     ((), "pass each one as --gpu"),
     (("GPU-test-gb10, 12.1, [N/A]",), "is not UUID,COMPUTE_CAP,MEMORY_MIB"),
@@ -158,7 +188,7 @@ def test_no_fitting_gpu_fails_instead_of_falling_back(rows, expected):
 
 def test_the_exit_status_reaches_the_installer():
     result = subprocess.run(
-        [sys.executable, str(SELECTOR), "--catalog", str(CATALOG), *VLLM, *_gpu_args(RTX_PRO_6000), "--env"],
+        [sys.executable, str(SELECTOR), "--catalog", str(CATALOG), *VLLM, *_gpu_args(RTX_5090), "--env"],
         capture_output=True, text=True, check=False,
     )
     assert (result.returncode, result.stdout) == (2, "")
@@ -269,7 +299,7 @@ def _envelope_args(envelope: dict, simulator) -> list[str]:
 
 def test_gguf_selection_is_byte_identical_with_or_without_vllm_entries(tmp_path):
     catalog = _catalog()
-    assert len(_vllm_entries()) == 2
+    assert len(_vllm_entries()) == 3
     without = _write_catalog(tmp_path, {
         **catalog, "models": [model for model in catalog["models"] if model.get("runtime") != "vllm"],
     })

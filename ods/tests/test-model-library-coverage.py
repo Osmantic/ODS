@@ -77,7 +77,7 @@ def test_low_vram_catalog_has_six_agent_viable_downloadable_models():
     low_vram = [
         model
         for model in models
-        # vLLM entries need a datacenter GPU (min_gpu_mib) and download a
+        # vLLM entries need a large NVIDIA GPU (min_gpu_mib) and download a
         # snapshot, not a GGUF; they are never low-VRAM downloads.
         if model.get("runtime") != "vllm"
         and int(model.get("vram_required_gb") or 0) <= 8
