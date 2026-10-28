@@ -176,7 +176,7 @@ function startZone() {
   }
   spawnWave();
 // realmIndex() again: past the first circuit G.zone is >= 6 and this lookup would be undefined.
-announce(ZONES[realmIndex(G.zone)].name, "Gabriel draws his bow…");
+announce(ZONES[realmIndex(G.zone)].name, "Shasan draws his bow…");
 }
 function spawnWave() {
   const z = ZONES[realmIndex(G.zone)];
@@ -470,7 +470,11 @@ function gainXp(n) {
     // scaled value made the +50% compound each level (level 6 reached +169% instead of +50%).
     // `|| XP_BASE` keeps a pathological round-to-zero from wedging leveling entirely.
     const curve = Math.round(P.xpNext / XP_REQUIREMENT_SCALE);
-    P.xpNext = Math.round(Math.round(curve * 1.45 + 12) * XP_REQUIREMENT_SCALE) || XP_BASE;
+    // Flat gate from XP_FLAT_FROM_LEVEL on: the curve stops compounding so late realms keep
+    // handing out boons instead of stalling. Below that threshold the curve is unchanged.
+    P.xpNext = (P.lvl >= XP_FLAT_FROM_LEVEL)
+      ? XP_FLAT
+      : (Math.round(Math.round(curve * 1.45 + 12) * XP_REQUIREMENT_SCALE) || XP_BASE);
   }
   if (levels > 0) {
     P.__dmgCached = undefined;

@@ -12,6 +12,21 @@ const u=content=>({role:'user',content}),a=content=>({role:'assistant',content})
 const snapshot=messages=>({schemaVersion:1,messages});
 function fixture(t) {const dir=fs.mkdtempSync(path.join(os.tmpdir(),'ods-history-'));fs.chmodSync(dir,0o700);t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));return {dir,ledger:createChatHistoryLedger(dir)}}
 
+test('pending delivery correction survives preparation failure and process restart',t=>{
+  const {dir,ledger}=fixture(t),first=ledger.prepare(user,'first',snapshot([u('Run')]),ready);
+  ledger.complete(user,first,{},null,ready);
+  const correction={requestId:'first',text:'The command failed.'};
+  const messages=[u('Run'),a(correction.text),u('Continue')];
+  const second=ledger.prepare(user,'second',snapshot(messages),ready,correction);
+  ledger.abandon(user,second);
+  const restored=createChatHistoryLedger(dir);
+  const next=restored.prepare(user,'third',snapshot(messages),ready);
+  assert.deepEqual(next.deliveryCorrection,correction);
+  restored.complete(user,next,{},null,ready);
+  assert.equal(restored.read(user).deliveryCorrection,null);
+  assert.equal(restored.prepare(user,'fourth',snapshot([...messages,a('Done'),u('Next')]),ready).deliveryCorrection,null);
+});
+
 test('image references survive restart, acknowledgement and lost-session hydration',t=>{
   const {dir,ledger}=fixture(t),reference={id:'img-'+'c'.repeat(32),sha256:'d'.repeat(64)};
   const firstMessage={role:'user',content:'',images:[reference]};
