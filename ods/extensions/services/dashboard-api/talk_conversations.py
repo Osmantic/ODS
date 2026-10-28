@@ -20,7 +20,7 @@ import json
 import secrets
 import time
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Awaitable, Callable, Optional, TypeVar
+from typing import Any, AsyncGenerator, Awaitable, Callable, Optional, TypeVar
 
 import aiohttp
 
@@ -280,7 +280,7 @@ class ConversationBridge:
 
     async def stream(
         self, owner: str, cid: str, text: str
-    ) -> AsyncIterator[dict[str, Any]]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         _require_str(owner, "owner")
         _require_str(cid, "conversation")
         _require_str(text, "text")

@@ -4,6 +4,8 @@ import sqlite3
 import threading
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Any, cast
 
 import aiohttp
 import pytest
@@ -15,13 +17,17 @@ from talk_store import TalkStore
 
 
 class FakeWS:
+    store: TalkStore
+    owner: str
+    cid: str
+
     def __init__(self, mode, resume_update, omit_identity, prompt_sent, requests):
         self.mode = mode
         self.resume_update = resume_update
         self.omit_identity = omit_identity
         self.prompt_sent = prompt_sent
         self.requests = requests
-        self.queue = asyncio.Queue()
+        self.queue: asyncio.Queue[aiohttp.WSMessage] = asyncio.Queue()
         self.closed = False
         self.hang_event = asyncio.Event()
 
@@ -152,6 +158,20 @@ class FakeHTTP:
         self.closed = True
 
 
+@dataclass
+class Environment:
+    store: TalkStore
+    bridge: cb.ConversationBridge
+    owner: str
+    cid: str
+    opened: list[tuple[hb._HermesConnection, FakeWS, FakeHTTP]]
+    requests: list[dict[str, Any]]
+    prompt_sent: asyncio.Event
+    interrupted: list[str]
+    state: dict[str, Any]
+    monkeypatch: pytest.MonkeyPatch
+
+
 @pytest_asyncio.fixture
 async def env(tmp_path, monkeypatch):
     store = TalkStore(str(tmp_path / "talk.db"))
@@ -159,7 +179,7 @@ async def env(tmp_path, monkeypatch):
     owner = "owner"
     cid = await bridge.allocate(owner, int(time.time()) + 3600)
     opened = []
-    requests = []
+    requests: list[dict[str, Any]] = []
     prompt_sent = asyncio.Event()
     interrupted = []
 
@@ -181,7 +201,12 @@ async def env(tmp_path, monkeypatch):
         )
         ws.store, ws.owner, ws.cid = store, owner, cid
         http = FakeHTTP()
-        conn = hb._HermesConnection(http_session=http, ws=ws, session_id="")
+        # These test transports implement the exercised aiohttp operations.
+        # The separate native fixtures use real ClientSession/WebSocket objects.
+        conn = hb._HermesConnection(
+            http_session=cast(aiohttp.ClientSession, http),
+            ws=cast(aiohttp.ClientWebSocketResponse, ws), session_id="",
+        )
         opened.append((conn, ws, http))
         return conn
 
@@ -191,20 +216,8 @@ async def env(tmp_path, monkeypatch):
     # its session target here while retaining real pool/interrupt cleanup.
     monkeypatch.setattr(hb, "_interrupt_session_with_ack", interrupt_with_ack)
 
-    class Env:
-        pass
-
-    e = Env()
-    e.store = store
-    e.bridge = bridge
-    e.owner = owner
-    e.cid = cid
-    e.opened = opened
-    e.requests = requests
-    e.prompt_sent = prompt_sent
-    e.interrupted = interrupted
-    e.state = state
-    e.monkeypatch = monkeypatch
+    e = Environment(store, bridge, owner, cid, opened, requests, prompt_sent,
+                    interrupted, state, monkeypatch)
     try:
         yield e
     finally:

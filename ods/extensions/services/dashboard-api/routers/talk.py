@@ -14,12 +14,13 @@ import contextlib
 import json
 import logging
 import os
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Awaitable, Protocol
 
 import httpx
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from starlette.requests import ClientDisconnect
+from starlette.types import Message
 
 import hermes_bridge
 import session_signer
@@ -597,7 +598,15 @@ async def _send_to_hermes(owner: str, cid: str, text: str) -> dict[str, Any]:
             await _settle(iterator.aclose())
 
 
-async def _while_connected(request: Request, work):
+class _DisconnectReceiver(Protocol):
+    def receive(self) -> Awaitable[Message]: ...
+
+
+class _DisconnectPoller(Protocol):
+    async def is_disconnected(self) -> bool: ...
+
+
+async def _while_connected(request: _DisconnectReceiver, work):
     """Cancel a non-streaming text/voice operation when its HTTP client leaves.
 
     Call only after the endpoint has consumed its request body. ASGI does not
@@ -728,7 +737,7 @@ def _label_for_tool(tool_name: str) -> str:
     return f"Using `{tool_name}`…"
 
 
-async def _stream_hermes_sse(session_key: str, cid: str, text: str, request: Request):
+async def _stream_hermes_sse(session_key: str, cid: str, text: str, request: _DisconnectPoller):
     """SSE adapter for a durable conversation's stream.
 
     Yields one ``data:`` line per bridge event, terminated by ``\\n\\n``. A
@@ -750,10 +759,13 @@ async def _stream_hermes_sse(session_key: str, cid: str, text: str, request: Req
        for a response nobody will ever read.
     """
     bridge = await talk_runtime.get_bridge()
-    bridge_iter = bridge.stream(session_key, cid, text).__aiter__()
+    bridge_iter = bridge.stream(session_key, cid, text)
     pending: asyncio.Task | None = None
     emit_done = True
     completed = False
+
+    async def next_event():
+        return await bridge_iter.__anext__()
 
     async def close_upstream() -> None:
         nonlocal pending
@@ -771,7 +783,7 @@ async def _stream_hermes_sse(session_key: str, cid: str, text: str, request: Req
     try:
         while True:
             if pending is None:
-                pending = asyncio.create_task(bridge_iter.__anext__())
+                pending = asyncio.create_task(next_event())
             try:
                 done_set, _ = await asyncio.wait({pending}, timeout=_KEEPALIVE_INTERVAL)
             except asyncio.CancelledError:
