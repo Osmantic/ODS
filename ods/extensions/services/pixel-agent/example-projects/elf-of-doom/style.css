@@ -12,6 +12,11 @@ html, body { height: 100%; background: #050303; overflow: hidden; font-family: "
 .hud-left { display: flex; flex-direction: column; gap: 8px; }
 .hero-badge { display: flex; gap: 10px; align-items: center; background: linear-gradient(180deg, rgba(24,12,8,.8), rgba(10,4,3,.85)); border: 1px solid rgba(200,150,70,.4); border-radius: 6px; padding: 8px 14px 8px 8px; box-shadow: 0 4px 14px rgba(0,0,0,.7), inset 0 1px 0 rgba(255,200,120,.12); }
 .hero-emoji { font-size: 34px; line-height: 1; filter: drop-shadow(0 2px 2px rgba(0,0,0,.8)); }
+/* The hero badge portrait is inline SVG, not an emoji glyph: font-size does not size it. Setting
+   both dimensions keeps it from growing to fill the flex line, and shape-rendering is also set on
+   the element itself for engines that ignore the CSS property. The viewBox is a wide crop (76x57)
+   because the badge is mostly face, so the box follows that aspect: 68x52 rather than a square. */
+.hero-emoji svg { display: block; width: 68px; height: 52px; shape-rendering: geometricPrecision; }
 .hero-info { min-width: 190px; }
 .hero-name { color: #e8c27a; font-weight: bold; font-size: 13px; letter-spacing: .5px; text-shadow: 0 1px 2px #000; margin-bottom: 4px; font-variant: small-caps; }
 .bar { position: relative; height: 14px; border-radius: 4px; background: rgba(0,0,0,.75); border: 1px solid rgba(180,140,80,.35); overflow: hidden; margin-bottom: 5px; box-shadow: inset 0 2px 6px rgba(0,0,0,.8); }
@@ -199,3 +204,47 @@ h1 {
 #arrow-label { color: #dfe9ff; font-size: 13px; letter-spacing: 1px; text-shadow: 0 1px 2px #000; margin-top: 3px; font-weight: bold; }
 #arrow-label.low-ammo { color: #ff8a5e; animation: ammoPulse 1s infinite; }
 @keyframes ammoPulse { 50% { opacity: .45; } }
+
+/* ---------- quest-victory tiers for the endless loop ----------
+   The victory panel reappears after every circuit of six realms. Its metal deepens per loop —
+   bronze (the as-shipped look, deliberately a no-op), then silver, then gold — by recolouring the
+   panel frame, title, stat chips and the Continue button together. The base .panel/.big-btn
+   styling stays the bronze default, so loop 1 is byte-identical to before. */
+#screen-win .panel.victory-silver {
+  background: linear-gradient(180deg, rgba(24,27,34,.96), rgba(8,10,14,.98));
+  border-color: rgba(206,216,232,.5);
+  box-shadow: 0 0 70px rgba(180,200,225,.24), 0 20px 60px rgba(0,0,0,.8), inset 0 1px 0 rgba(232,240,250,.16);
+}
+#screen-win .panel.victory-silver h2 {
+  color: #e6ecf6;
+  text-shadow: 0 0 22px rgba(206,220,240,.65), 0 2px 3px #000;
+}
+#screen-win .panel.victory-silver .panel-sub { color: #cfd8e6; }
+#screen-win .panel.victory-silver .over-stats .chip {
+  background: rgba(200,215,235,.12); border-color: rgba(206,216,232,.42); color: #e8eef8;
+}
+#screen-win .panel.victory-silver #btn-again.big-btn {
+  color: #f6f9ff;
+  background: linear-gradient(180deg, #6d7787, #2f3541);
+  border-color: #c3cede;
+  box-shadow: 0 6px 0 #1d222b, 0 12px 26px rgba(0,0,0,.75), inset 0 1px 0 rgba(240,246,255,.34);
+}
+#screen-win .panel.victory-gold {
+  background: linear-gradient(180deg, rgba(34,24,7,.96), rgba(13,8,2,.98));
+  border-color: rgba(255,203,88,.62);
+  box-shadow: 0 0 84px rgba(255,176,40,.3), 0 20px 60px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,226,150,.2);
+}
+#screen-win .panel.victory-gold h2 {
+  color: #ffd45f;
+  text-shadow: 0 0 26px rgba(255,196,60,.75), 0 2px 3px #000;
+}
+#screen-win .panel.victory-gold .panel-sub { color: #f3dcae; }
+#screen-win .panel.victory-gold .over-stats .chip {
+  background: rgba(255,203,88,.14); border-color: rgba(255,203,88,.5); color: #ffe9b8;
+}
+#screen-win .panel.victory-gold #btn-again.big-btn {
+  color: #2b1c02;
+  background: linear-gradient(180deg, #ffd45f, #b07a10);
+  border-color: #ffe9a6; text-shadow: 0 1px 0 rgba(255,240,190,.5);
+  box-shadow: 0 6px 0 #5c3d05, 0 12px 28px rgba(0,0,0,.75), 0 0 26px rgba(255,203,88,.45), inset 0 1px 0 rgba(255,246,205,.5);
+}
