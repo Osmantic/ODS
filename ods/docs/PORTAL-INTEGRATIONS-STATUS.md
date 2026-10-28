@@ -180,6 +180,18 @@ so this record does not prove the number of summaries returned. Background
 execution and final counts presentation passed; bounded-read behavior did not.
 This omission is separate from the invalid-argument defect fixed above.
 
+The Email guide now explicitly explains `maxResults`, the existing default
+page and minimal counts-only reads. Its ordinary same-source installed update
+from `9018a1409` completed with the original read-only grant, protected native
+programs and model configuration preserved; temporary QA delegation was absent.
+Repeating the unchanged natural-language request in chat produced an initial
+Gmail error, schema description and a successful retry. Complete saved content
+confirms one summary in the successful Inbox result and zero Calendar events
+over an aware, exactly seven-day interval. The final answer disclosed that the
+email index was partial. A scheduled follow-up with this guide remains open;
+this observed chat recovery does not qualify arbitrary requests or turn model
+guidance into an enforced per-run reading limit.
+
 Installed Connected apps also fetched the reviewed catalog through the actual
 Dashboard/host/Root path and displayed **Apps for Portal → Notion → Not
 connected**. No Notion authorization or provider acceptance is established by
