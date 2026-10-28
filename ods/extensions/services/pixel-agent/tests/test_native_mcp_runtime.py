@@ -1,8 +1,8 @@
 """Pinned native MCP filtering through Pixel and an actual embedded agent turn.
 
 The provider is a controlled loopback SSE fixture, not model inference. It
-requests an unrelated server's read and an excluded write, then the permitted
-read. Exact tool grants must not authorize every configured MCP server. No
+requests an unrelated server's read, an excluded write and the permitted read
+in separate conversations. Exact grants must not authorize every configured MCP server. No
 owner configuration, credentials, network app or Docker is used.
 """
 import http.server
@@ -61,6 +61,8 @@ class NativeMcpRuntimeTests(unittest.TestCase):
         server.chmod(0o600)
         requests, failures = [], []
         tool_ids = ('qa-unrelated__project_status', 'qa-project__project_delete', 'qa-project__project_status')
+        lanes = ('unrelated-read', 'filtered-write', 'allowed-read')
+        lane_requests = {lane: [] for lane in lanes}
 
         class Provider(http.server.BaseHTTPRequestHandler):
             protocol_version = 'HTTP/1.1'
@@ -72,11 +74,13 @@ class NativeMcpRuntimeTests(unittest.TestCase):
                     return
                 request = json.loads(handler.rfile.read(length))
                 requests.append(request)
-                step = len(requests)
+                owner_messages = json.dumps([item.get('content') for item in request['messages']
+                                              if item.get('role') == 'user'])
+                lane = next(lane for lane in lanes if 'QA lane: ' + lane in owner_messages)
+                lane_requests[lane].append(request)
+                step = len(lane_requests[lane])
                 choices = [('tool_search', {'query': 'project_status', 'limit': 5}),
-                           ('tool_call', {'id': tool_ids[0], 'args': {}}),
-                           ('tool_call', {'id': tool_ids[1], 'args': {}}),
-                           ('tool_call', {'id': tool_ids[2], 'args': {}})]
+                           ('tool_call', {'id': tool_ids[lanes.index(lane)], 'args': {}})]
                 if step <= len(choices):
                     name, args = choices[step - 1]
                     delta = {'role': 'assistant', 'tool_calls': [{'index': 0, 'id': 'call-' + str(step),
@@ -84,9 +88,9 @@ class NativeMcpRuntimeTests(unittest.TestCase):
                     finish = 'tool_calls'
                 else:
                     tool_results = [item.get('content') for item in request['messages'] if item.get('role') == 'tool']
-                    if step != 5 or fact not in json.dumps(tool_results):
+                    if step != 3 or lane == 'allowed-read' and fact not in json.dumps(tool_results):
                         failures.append('Allowed MCP read did not reach the provider in a tool result')
-                    delta, finish = {'role': 'assistant', 'content': fact}, 'stop'
+                    delta, finish = {'role': 'assistant', 'content': fact if lane == 'allowed-read' else 'Access refused.'}, 'stop'
                 chunks = [{'id': 'native-mcp-qa', 'object': 'chat.completion.chunk',
                            'choices': [{'index': 0, 'delta': delta, 'finish_reason': None}]},
                           {'id': 'native-mcp-qa', 'object': 'chat.completion.chunk',
@@ -210,27 +214,39 @@ class NativeMcpRuntimeTests(unittest.TestCase):
         self.assertEqual(probe['servers']['qa-project']['filteredTools'], 1)
         self.assertEqual(probe['diagnostics'], [])
         world.start_gateway(port, 'native-mcp')
-        request = urllib.request.Request('http://127.0.0.1:%d/v1/chat/completions' % port,
-            # Portal supplies this canonical conversation namespace. An
-            # arbitrary native user label correctly fails image custody.
-            data=json.dumps({'model': 'openclaw:pixel', 'user': 'ods-' + secrets.token_hex(32), 'stream': False,
-                             'messages': [{'role': 'user', 'content': 'Read Project Cedar using its connected tools.'}]}).encode(),
-            headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'})
-        with urllib.request.urlopen(request, timeout=90) as response:
-            result = json.load(response)
-        self.assertEqual(failures, [])
-        self.assertEqual(len(requests), 5, json.dumps(result))
-        for step, tool_id in ((2, tool_ids[0]), (3, tool_ids[1])):
-            rejected = [item['content'] for item in requests[step]['messages'] if item.get('role') == 'tool']
-            self.assertIn('Unknown tool id', json.dumps(rejected))
-            self.assertIn(tool_id, json.dumps(rejected))
-        self.assertNotIn(tool_ids[0], json.dumps(requests[0]['tools']))
-        discovered = json.dumps([item['content'] for item in requests[1]['messages'] if item.get('role') == 'tool'])
-        self.assertNotIn(tool_ids[0], discovered)
-        self.assertNotIn(tool_ids[1], discovered)
+        results = {}
+        # Two deliberate unavailable calls in one run correctly trip native
+        # loop protection in a pristine package. Keep the negative controls in
+        # independent Portal conversations; do not weaken that production guard
+        # or depend on installation-time recovery patches for the positive read.
+        for lane in lanes:
+            request = urllib.request.Request('http://127.0.0.1:%d/v1/chat/completions' % port,
+                # Portal supplies this canonical conversation namespace. An
+                # arbitrary native user label correctly fails image custody.
+                data=json.dumps({'model': 'openclaw:pixel', 'user': 'ods-' + secrets.token_hex(32), 'stream': False,
+                                 'messages': [{'role': 'user', 'content': 'Read Project Cedar using its connected tools. QA lane: ' + lane}]}).encode(),
+                headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'})
+            with urllib.request.urlopen(request, timeout=90) as response:
+                results[lane] = json.load(response)
+        diagnostics = {'requests': len(requests),
+            'toolResults': [item.get('content') for item in requests[-1].get('messages', [])
+                            if item.get('role') == 'tool'] if requests else [],
+            'mcpCalls': calls.read_text() if calls.exists() else None}
+        self.assertEqual(failures, [], json.dumps(diagnostics)[:12000])
+        for lane in lanes:
+            lane_calls = lane_requests[lane]
+            self.assertEqual(len(lane_calls), 3, json.dumps(results[lane]))
+            if lane != 'allowed-read':
+                rejected = [item['content'] for item in lane_calls[2]['messages'] if item.get('role') == 'tool']
+                self.assertIn('Unknown tool id', json.dumps(rejected))
+                self.assertIn(tool_ids[lanes.index(lane)], json.dumps(rejected))
+            self.assertNotIn(tool_ids[0], json.dumps(lane_calls[0]['tools']))
+            discovered = json.dumps([item['content'] for item in lane_calls[1]['messages'] if item.get('role') == 'tool'])
+            self.assertNotIn(tool_ids[0], discovered)
+            self.assertNotIn(tool_ids[1], discovered)
         self.assertFalse(unrelated_calls.exists(), 'An ungranted MCP server must receive no tool calls')
         self.assertEqual([json.loads(line)['name'] for line in calls.read_text().splitlines()], ['project_status'])
-        self.assertEqual(result['choices'][0]['message']['content'], fact)
+        self.assertEqual(results['allowed-read']['choices'][0]['message']['content'], fact)
 
 
 if __name__ == '__main__':
