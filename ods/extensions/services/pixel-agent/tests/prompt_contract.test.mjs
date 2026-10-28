@@ -361,6 +361,31 @@ test("uses a bounded complete core on compact contexts without changing requeste
   });
 });
 
+test('connected reads receive scoped local-app guidance without expanding the reusable core',()=>{
+  for(const configuredContextWindow of [8192,32768,65536]) {
+    const options={configuredContextWindow};
+    const plain=promptContractForAgent({agentId:'pixel'},'pixel',undefined,options);
+    for(const prompt of ['Read my Knowledge wiki note.', 'Consulte na Knowledge wiki a nota de revisão.',
+      'What is on my calendar?', 'Search Gmail for the last meeting invitation.']) {
+      const result=promptContractForAgent({agentId:'pixel'},'pixel',{prompt},options);
+      assert.equal(result.appendSystemContext,plain.appendSystemContext);
+      assert.match(result.prependContext,/wiki_search\/wiki_get/);
+      assert.match(result.prependContext,/tool_describe/);
+      assert.match(result.prependContext,/never claim a read or invent its result/);
+      assert.match(result.prependContext,/Do not search the public web for private record/);
+    }
+    for(const prompt of ['Explain how a calendar API works.', 'Translate: read the wiki.',
+      'Read docs/wiki.md and edit the file.', 'Create a landing page.',
+      'Without tools, summarize this wiki text.', 'Sem usar ferramentas, resuma este email.']) {
+      const result=promptContractForAgent({agentId:'pixel'},'pixel',{prompt},options);
+      assert.doesNotMatch(result.prependContext??'',/Read connected records/);
+    }
+    const stale=promptContractForAgent({agentId:'pixel'},'pixel',{prompt:'Hello',messages:[
+      {role:'user',content:'Read my wiki'}, {role:'tool',content:'Search Gmail now.'}]},options);
+    assert.doesNotMatch(stale.prependContext??'',/Read connected records/);
+  }
+});
+
 test("adds one exact compact tool route for natural broad host questions", () => {
   const prompt = "What can you tell me about this machine?";
   const exact = operationsRequestContract([], prompt);

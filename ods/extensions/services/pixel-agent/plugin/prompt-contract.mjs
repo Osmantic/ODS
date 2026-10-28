@@ -31,6 +31,7 @@ import {
   workspacePreviewMode,
   userMessageRequestsWorkspaceDocumentDelivery,
   userMessageReportsDefect,
+  userMessageRequestsConnectedRead,
 } from "./tool-loop-guard.mjs";
 import { AGENT_SKILLS, PREVIEW_RUNTIME_CONTRACT } from "./agent-skills.mjs";
 import { WORKSPACE_ARTIFACT_DELIVERY_GUIDANCE } from './workspace-artifact.mjs';
@@ -130,6 +131,12 @@ export const ODS_SANDBOX_RUNTIME_CONTRACT =
 // The preview runtime supplement applies to both context sizes, not the historic core.
 export const CONNECTED_RECORDS_CONTRACT =
   "Never invent a missing source time zone.";
+const CONNECTED_APP_READ_GUIDE =
+  "Read connected records with the app's offered tools, not from memory or a web search. " +
+  "Knowledge wiki is a local ODS plugin: discover wiki_search/wiki_get with tool_search, then tool_describe its required arguments before tool_call. " +
+  "Tool Search finds capabilities, not saved notes, email or calendar records. Use the relevant app read for those records. " +
+  "If the needed tool is absent or a read fails, report that limitation; never claim a read or invent its result. " +
+  "Do not search the public web for private record titles or content unless the owner requests that disclosure. Never invent a missing source time zone.";
 const CONNECTED_RECORDS_TINY_CONTRACT = CONNECTED_RECORDS_CONTRACT;
 
 const CURRENT_OPERATING_COMPATIBILITY = [
@@ -446,7 +453,9 @@ export function promptContractForAgent(
   const documentDelivery = userMessageRequestsWorkspaceDocumentDelivery(event?.messages, event?.prompt)
     ? ODS_WORKSPACE_DOCUMENT_DELIVERY_GUIDE : "";
   const defectReport = userMessageReportsDefect(event?.messages, event?.prompt) ? ODS_DEFECT_REPORT_GUIDE : "";
-  const turnGuide = [documentDelivery, defectReport].filter(Boolean).join(" ");
+  const connectedRead = userMessageRequestsConnectedRead(event?.messages, event?.prompt)
+    ? CONNECTED_APP_READ_GUIDE : "";
+  const turnGuide = [documentDelivery, defectReport, connectedRead].filter(Boolean).join(" ");
   const exactDownload = userMessageRequestsExactByteDownload(
     event?.messages,
     event?.prompt

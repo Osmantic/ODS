@@ -4975,6 +4975,19 @@ function currentOwnerIntentText(messages, prompt = undefined) {
     : currentText;
 }
 
+// A model-only explanation of connected reads, never an access grant or a
+// receipt. Match the current owner's request, not stale turns/tool content.
+export function userMessageRequestsConnectedRead(messages, prompt = undefined) {
+  const ownerText = currentOwnerIntentText(messages, prompt);
+  if (ownerForbidsTools(ownerText)) return false;
+  const text = withoutFilesystemPaths(ownerLaneText(ownerText))
+    .replace(/(?:\b[\w.-]+\/)+[\w.-]+|\b[\w-]+\.(?:md|txt|json|html|js|mjs|py)\b/g, ' ')
+    .normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase();
+  if (/\b(?:translate|traduza|explain|explique|how to|como conectar|como funciona)\b/.test(text)) return false;
+  return /\b(?:wiki|gmail|email|e-mail|calendar|calendario)\b/.test(text) &&
+    /\b(?:read|search|find|check|list|summari[sz]e|what|show|consult[ae]|busqu[ae]|leia|ler|liste|resuma|quais|qual|mostre|verifique)\b/.test(text);
+}
+
 // Ordinary owner file handoff is independent of the words download/attach.
 // Match a direct request and its object together; filenames mentioned in an
 // explanation, a list-of-files request or another person's instruction do not
