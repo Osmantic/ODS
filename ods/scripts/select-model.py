@@ -53,8 +53,11 @@ from model_vllm import (  # noqa: E402
     GPU_QUERY,
     Candidate as VllmCandidate,
     Gpu,
+    claim_mib,
+    gpu_hardware_fits,
     is_vllm_entry,
     manifest_bytes,
+    memory_share,
     model_dir_name,
     parse_gpu,
     rank_entries,
@@ -79,6 +82,9 @@ VLLM_POLICY = "vllm-gpu-fit-v1"
 VLLM_SOURCE = "catalog_vllm_pre_download"
 EXIT_NO_FIT = 2
 EXIT_CHECK_FIT_FAILED = 3
+# --llm-runtime vllm: an entry fits the GPUs, but other programs hold the
+# memory vLLM claims at start (--gpu rows with free memory).
+EXIT_GPU_BUSY = 4
 
 
 def normalize_profile(value: str | None) -> str:
@@ -497,11 +503,24 @@ def _vllm_no_fit(pool: list[dict[str, Any]], gpus: list[Gpu], args: argparse.Nam
     if not gpus:
         return f"--llm-runtime vllm needs the host's NVIDIA GPUs: pass each one as --gpu ({GPU_QUERY})"
     seen = ", ".join(
-        f"{gpu.uuid} (compute capability {gpu.compute_capability}, {gpu.memory_mib} MiB)" for gpu in gpus
+        f"{gpu.uuid} (compute capability {gpu.compute_capability}, {gpu.memory_mib} MiB"
+        f"{'' if gpu.free_mib is None else f', {gpu.free_mib} MiB free'})" for gpu in gpus
     )
     floor = f" at the {args.min_context} context floor" if args.require_min_context and args.min_context else ""
     needs = "; ".join(f"{model['id']} needs {requirement_text(model)}" for model in pool)
     return f"no vLLM catalog model fits this host{floor}. GPUs: {seen}. {needs}"
+
+
+def _vllm_busy(candidate: VllmCandidate, gpus: list[Gpu]) -> str:
+    """Why the best entry for the GPUs' hardware cannot start: their memory is in use."""
+    model = candidate.model
+    freest = max((gpu for gpu in gpus if gpu_hardware_fits(model, gpu)),
+                 key=lambda gpu: gpu.free_mib or 0)
+    return (
+        f"other programs use the GPU memory the vLLM engine needs: {model['name']} claims "
+        f"{claim_mib(model, freest)} MiB ({memory_share(model):.2f} of the GPU) when it starts, "
+        f"and the freest GPU it fits, {freest.uuid}, has {freest.free_mib} MiB free"
+    )
 
 
 def _vllm_payload(ranked: list[VllmCandidate], reason: str, min_context: int, host_arch: str) -> dict[str, Any]:
@@ -513,7 +532,7 @@ def _vllm_payload(ranked: list[VllmCandidate], reason: str, min_context: int, ho
         "confidence": "high",
         "runtime": "vllm",
         "host_arch": normalize_host_arch(host_arch),
-        "gpu": gpu._asdict(),
+        "gpu": {key: value for key, value in gpu._asdict().items() if value is not None},
         "memory_capacity_gb": round(gpu.memory_mib / 1024.0, 1),
         "memory_label": "GPU memory",
         "memory_class": "discrete",
@@ -591,6 +610,12 @@ def _vllm_main(args: argparse.Namespace) -> int:
     ranked = rank_entries(pool, gpus, min_context=min_context, require_min_context=args.require_min_context,
                           installable_only=args.installable_only)
     if not ranked:
+        by_hardware = rank_entries(pool, [gpu._replace(free_mib=None) for gpu in gpus], min_context=min_context,
+                                   require_min_context=args.require_min_context,
+                                   installable_only=args.installable_only)
+        if by_hardware:
+            print(f"error: {_vllm_busy(by_hardware[0], gpus)}", file=sys.stderr)
+            return EXIT_GPU_BUSY
         print(f"error: {_vllm_no_fit(pool, gpus, args)}", file=sys.stderr)
         return EXIT_NO_FIT
     reason = _vllm_reason(ranked[0], min_context)
@@ -645,13 +670,16 @@ def main(argv: list[str] | None = None) -> int:
         "--llm-runtime", choices=("llama-server", "vllm"), default="llama-server",
         help="The model server (.env LLM_BACKEND). llama-server (default) picks a GGUF "
              "and never a vLLM entry; vllm picks only vLLM entries, for one --gpu, and "
-             "exits 2 when none fits. With vllm the fit comes from --gpu alone: --vram-mb, "
-             "--ram-gb, --memory-type, --tier, --profile and --max-size-mb are not read.",
+             "exits 2 when none fits, or 4 when one fits the GPUs but other programs "
+             "hold the memory vLLM claims at start. With vllm the fit comes from --gpu "
+             "alone: --vram-mb, --ram-gb, --memory-type, --tier, --profile and "
+             "--max-size-mb are not read.",
     )
     parser.add_argument(
-        "--gpu", action="append", default=[], metavar="UUID,COMPUTE_CAP,MEMORY_MIB",
-        help=f"One NVIDIA GPU, a row of `{GPU_QUERY}`; repeat per GPU. "
-             "Read only with --llm-runtime vllm.",
+        "--gpu", action="append", default=[], metavar="UUID,COMPUTE_CAP,MEMORY_MIB[,FREE_MIB]",
+        help=f"One NVIDIA GPU, a row of `{GPU_QUERY}`; repeat per GPU. A fourth "
+             "field, memory.free, lets a GPU fit only while vLLM's share of its "
+             "total memory is free. Read only with --llm-runtime vllm.",
     )
     parser.add_argument("--env", action="store_true", help="print shell assignments")
     args = parser.parse_args(argv)

@@ -471,6 +471,26 @@ if [[ $GPU_COUNT -gt 1 && "$GPU_BACKEND" == "nvidia" ]]; then
     fi
 fi
 
+# A fresh install sizes its model for each GPU's whole memory. Say so when
+# other programs already hold much of it, before anything downloads. On a
+# rerun this installation's own model holds memory, so only a fresh install
+# checks.
+if [[ "$GPU_BACKEND" == "nvidia" && ! -f "$INSTALL_DIR/.env" ]] && command -v nvidia-smi >/dev/null 2>&1; then
+    # A warning only: when nvidia-smi fails here, detection above has already
+    # reported it, and there is nothing to add.
+    _gpu_memory_in_use="$(nvidia-smi --query-gpu=index,memory.total,memory.used \
+        --format=csv,noheader,nounits 2>>"$LOG_FILE" | ods_gpu_memory_in_use_report)" || _gpu_memory_in_use=""
+    if [[ -n "$_gpu_memory_in_use" ]]; then
+        ai_warn "Other programs already use GPU memory:"
+        while IFS= read -r _gpu_line; do
+            ai "  $_gpu_line"
+        done <<< "$_gpu_memory_in_use"
+        ai "  ODS sizes its model for each GPU's whole memory: stop those programs before ODS starts its model, or it may not load."
+        log "GPU memory in use before install: ${_gpu_memory_in_use//$'\n'/; }"
+    fi
+    unset _gpu_memory_in_use _gpu_line
+fi
+
 # -----------------------------------------------------------------------------
 # AMD Multi-GPU Topology Detection
 # -----------------------------------------------------------------------------
@@ -596,7 +616,7 @@ fi
 # vLLM model stays active (_phase02_keep_vllm_model).
 _phase02_choose_llm_backend() {
     local requested="${LLM_BACKEND_REQUESTED:-}" external="${EXTERNAL_LLM_URL:-}"
-    local existing=false retained="" required=false wsl=false blocker python rows status=0
+    local existing=false retained="" required=false wsl=false blocker python rows query status=0
     local env_text error_text error_file
     local -a gpu_rows=()
     VLLM_SELECTOR_ENV=""
@@ -639,7 +659,12 @@ _phase02_choose_llm_backend() {
         log "Model server: llama.cpp (Python is unavailable for the vLLM model catalog)"
         return 0
     fi
-    if ! rows="$(nvidia-smi --query-gpu=uuid,compute_cap,memory.total --format=csv,noheader,nounits 2>>"$LOG_FILE")"; then
+    # vLLM refuses to start unless its share of the GPU is free. A fresh
+    # install's GPUs hold no ODS engine yet, so their free memory is what vLLM
+    # can claim; on a rerun this installation's own engine may hold it.
+    query="uuid,compute_cap,memory.total"
+    [[ "$existing" == true ]] || query+=",memory.free"
+    if ! rows="$(nvidia-smi --query-gpu="$query" --format=csv,noheader,nounits 2>>"$LOG_FILE")"; then
         [[ "$required" != true ]] || _phase02_vllm_refused "nvidia-smi could not list this host's GPUs (details in $LOG_FILE)"
         log "Model server: llama.cpp (nvidia-smi could not list the GPUs for the vLLM engine)"
         return 0
@@ -657,6 +682,12 @@ _phase02_choose_llm_backend() {
             ;;
         2)
             [[ "$required" != true ]] || _phase02_vllm_refused "${error_text#error: }"
+            log "Model server: llama.cpp (${error_text#error: })"
+            ;;
+        4)
+            [[ "$required" != true ]] || _phase02_vllm_refused "${error_text#error: }"
+            ai_warn "ODS uses llama.cpp, not the vLLM engine: ${error_text#error: }."
+            ai "  Once that memory is free, rerun the installer with --llm-backend vllm to use the vLLM engine."
             log "Model server: llama.cpp (${error_text#error: })"
             ;;
         *)

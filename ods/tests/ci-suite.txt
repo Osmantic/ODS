@@ -64,6 +64,7 @@ tests/test-comfyui-cuda-cache-persisted.sh
 tests/test-llama-cuda-cache-persisted.sh
 tests/test-vllm-engine-service.sh
 tests/test-vllm-installer-route.sh
+tests/test-gpu-memory-in-use.sh
 tests/test-vllm-installer-phases.sh
 tests/test-cli-vllm-engine.sh
 tests/test-doctor-vllm-engine.sh

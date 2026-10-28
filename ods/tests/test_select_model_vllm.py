@@ -224,6 +224,64 @@ def test_the_largest_fitting_gpu_is_the_one_vllm_owns():
     assert env_values(out)["VLLM_GPU_UUID"] == "GPU-test-b300"
 
 
+# A fresh install adds nvidia-smi memory.free as a fourth field. vLLM refuses
+# to start unless its share of the card is free: half an RTX PRO 6000 is
+# ceil(0.5 * 97887) = 48944 MiB.
+def test_a_gpu_without_vllms_share_free_is_not_given_to_vllm():
+    # tower2 (2026-10-27): another model server held about 84 GB of each card.
+    rows = ("GPU-test-busy-0, 12.0, 97887, 13278", "GPU-test-busy-1, 12.0, 97887, 13298")
+    status, out, err = select(*VLLM, *_gpu_args(*rows), "--env")
+
+    assert (status, out) == (4, "")
+    assert err == (
+        "error: other programs use the GPU memory the vLLM engine needs: Qwen 3.6 35B A3B NVFP4 (vLLM) "
+        "claims 48944 MiB (0.50 of the GPU) when it starts, and the freest GPU it fits, "
+        "GPU-test-busy-1, has 13298 MiB free\n"
+    )
+
+
+def test_vllm_takes_a_gpu_with_its_share_free():
+    status, out, err = select(*VLLM, *_gpu_args("GPU-test-busy, 12.0, 97887, 13278",
+                                                "GPU-test-exact, 12.0, 97887, 48944"), "--env")
+    assert status == 0, err
+    assert env_values(out)["VLLM_GPU_UUID"] == "GPU-test-exact"
+
+    status, _, err = select(*VLLM, *_gpu_args("GPU-test-short, 12.0, 97887, 48943"), "--env")
+    assert status == 4 and "has 48943 MiB free" in err
+
+    status, out, err = select(*VLLM, *_gpu_args(RTX_PRO_6000 + ", 97000"))
+    assert status == 0, err
+    assert json.loads(out)["gpu"] == {"uuid": "GPU-test-rtx-pro-6000", "compute_capability": "12.0",
+                                      "memory_mib": 97887, "free_mib": 97000}
+
+
+def test_equal_gpus_go_to_the_one_with_more_memory_free():
+    rows = ("GPU-test-desktop, 12.0, 97887, 95000", "GPU-test-idle, 12.0, 97887, 97000")
+    status, out, err = select(*VLLM, *_gpu_args(*rows), "--env")
+    assert status == 0, err
+    assert env_values(out)["VLLM_GPU_UUID"] == "GPU-test-idle"
+
+
+def test_free_memory_never_lets_a_gpu_fit_that_its_hardware_does_not():
+    # A free H200 still lacks a compute capability any entry names: no fit, not busy.
+    status, out, err = select(*VLLM, *_gpu_args(H200 + ", 143000"), "--env")
+    assert (status, out) == (2, "")
+    assert "GPU-test-h200 (compute capability 9.0, 143771 MiB, 143000 MiB free)" in err
+
+
+def test_a_malformed_free_field_is_refused():
+    status, out, err = select(*VLLM, *_gpu_args(RTX_PRO_6000 + ", [N/A]"), "--env")
+    assert (status, out) == (2, "")
+    assert "is not UUID,COMPUTE_CAP,MEMORY_MIB[,FREE_MIB]" in err
+
+
+def test_vllms_default_share_is_the_memory_estimates():
+    selector = _selector()
+    assert selector.memory_share({}) == selector.vllm_memory_share({}) == 0.9
+    assert selector.memory_share({"gpu_memory_utilization": 0.5}) \
+        == selector.vllm_memory_share({"gpu_memory_utilization": 0.5}) == 0.5
+
+
 def test_json_payload_names_the_gpu_folder_and_estimate():
     status, out, err = select(*VLLM, *_gpu_args(GB300))
 
