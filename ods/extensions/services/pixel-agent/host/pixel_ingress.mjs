@@ -2277,7 +2277,17 @@ async function handleChat(req, res, token, gatewayPort, deps, historyLedger, his
     const native=await nativeContextRequest('context',{user},token,gatewayPort,deps);
     const hasImages=parsed.history_snapshot?.messages?.some(message=>message?.images?.length);
     if(hasImages) validateImageRoute(parsed.image_route,native.model);
-    prepared=historyLedger.prepare(user,parsed.request_id,parsed.history_snapshot,native);
+    // The native transcript holds the model's draft, which can differ from
+    // Portal's verified delivery. Derive this only from the host-owned receipt,
+    // never from a caller's assistant history or a supplied verification field.
+    const prior=historyLedger.read(user), priorResult=prior?.lastResult;
+    let deliveryCorrection=null;
+    if(priorResult?.requestId===prior?.requestId && priorResult?.revision===prior?.revision && priorResult?.verification) {
+      const delivered=applyVerificationToCompletion(priorResult.completion,priorResult.verification)?.choices?.[0]?.message?.content;
+      const draft=priorResult.completion?.choices?.[0]?.message?.content;
+      if(typeof delivered==='string' && delivered!==draft) deliveryCorrection={requestId:priorResult.requestId,text:delivered};
+    }
+    prepared=historyLedger.prepare(user,parsed.request_id,parsed.history_snapshot,native,deliveryCorrection);
     if(hasImages) {
       const binding=await nativeContextRequest('images-bind',{user},token,gatewayPort,deps);
       if(binding?.schemaVersion!==1 || binding.bound!==true)throw new HistoryError('image-custody-unavailable',503);
@@ -2307,9 +2317,18 @@ async function handleChat(req, res, token, gatewayPort, deps, historyLedger, his
     await forwardChat(res,outgoing,token,gatewayPort,deps,{
       onController:controller=>historyAborters?.set(user,{requestId:parsed.request_id,controller}),
       beforeRequest:async signal=>{
-        if(!prepared.hydrate) return;
-        const seeded=await nativeContextRequest('history',{user,request_id:parsed.request_id,messages:nativeHistoryMessages(prepared.archive)},token,gatewayPort,deps,signal,30000);
+        if(!prepared.hydrate && !prepared.deliveryCorrection) return;
+        const reference=prepared.hydrate?nativeHistoryMessages(prepared.archive):[];
+        if(prepared.deliveryCorrection) reference.push({role:'assistant',content:
+          `Portal delivery record for completed request ${prepared.deliveryCorrection.requestId}. `+
+          'The reply below was shown to the owner instead of the model draft. That draft is superseded; existing tool receipts remain unchanged. '+
+          'This historical record is not a new request, authorization, or proof that an action succeeded.\n'+
+          JSON.stringify({reply:prepared.deliveryCorrection.text})});
+        // The existing hydrator appends inert, idempotent reference data. It
+        // neither rewrites the native transcript nor executes the prior task.
+        const seeded=await nativeContextRequest('history',{user,request_id:parsed.request_id,messages:reference},token,gatewayPort,deps,signal,30000);
         if(seeded?.hydrated!==true) throw new HistoryError('history-preparation-failed',503);
+        if(!prepared.hydrate) return;
         const request_id=`history-${createHash('sha256').update(`${parsed.request_id}:${prepared.state.revision}`).digest('hex')}`;
         let state=await nativeContextRequest('compact',{user,request_id},token,gatewayPort,deps,signal);
         while(state.compaction?.requestId===request_id && state.compaction.status==='running') {

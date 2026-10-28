@@ -1859,7 +1859,7 @@ function questVictory() {
   if (sub) {
     sub.textContent = clearedLoops <= 1
       ? "The Hollow Crown is broken, and the elven realms begin their long twilight."
-      : `${tier.name} proof of it: ${clearedLoops} circuits of the six realms cleared. The realms reshape themselves behind Gabriel, and the shadow re-forms ahead — braver, bolder, and thicker than before.`;
+      : `${tier.name} proof of it: ${clearedLoops} circuits of the six realms cleared. The realms reshape themselves behind Shasan, and the shadow re-forms ahead — braver, bolder, and thicker than before.`;
   }
   $("win-stats").innerHTML =
     `<span class="chip">🪙 Gold: ${G.gold}</span>` +
@@ -1884,6 +1884,10 @@ function continueQuest() {
   G.enemies = []; G.projectiles = []; G.pickups = []; G.boss = null; G.escorts = [];
   G.particles.length = 0; G.texts.length = 0;
   bossWrap.classList.add("hidden");
+  // questVictory() hid the HUD when the panel came up, and this path - unlike startGame() in
+  // engine.js, which does hud.classList.remove("hidden") - never brought it back. The player spent
+  // the whole next circuit with no portrait, health bar, level, realm name or arrow count.
+  hud.classList.remove("hidden");
   startZone(); updateHud();
   showScreen(null); G.state = "play";
 }
