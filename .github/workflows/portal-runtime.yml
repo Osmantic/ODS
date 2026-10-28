@@ -94,11 +94,13 @@ jobs:
         env:
           OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
           PIXEL_SOURCE_PLUGIN_DIR: ${{ runner.temp }}/connected-source/plugin
+          PIXEL_TEST_TYPEBOX_DIR: ${{ runner.temp }}/connected-source/plugin/node_modules/typebox
         run: |
           mkdir -p "$PIXEL_SOURCE_PLUGIN_DIR"
           cp -R ods/vendor/pixel/plugin/. "$PIXEL_SOURCE_PLUGIN_DIR/"
           npm ci --prefix "$PIXEL_SOURCE_PLUGIN_DIR" --ignore-scripts --no-audit --no-fund
           python3 ods/extensions/services/pixel-agent/tests/test_connection_plugin_runtime.py
+          node --test ods/vendor/pixel/tests/source-broker-plugin.test.mjs
       - name: Verify native MCP isolates server grants and delivers an allowed read through Pixel
         if: runner.os == 'Linux'
         shell: bash

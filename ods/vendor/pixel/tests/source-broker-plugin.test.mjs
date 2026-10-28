@@ -3,6 +3,8 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { register } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { calendarWindowCovers } from "../plugin/calendar-query.js";
@@ -12,7 +14,7 @@ register("./fixtures/source-plugin/loader.mjs", import.meta.url);
 const PROPOSE_TOOLS = ["pixel_calendar_propose_create", "pixel_calendar_propose_update", "pixel_calendar_propose_delete"];
 const LIMB_KEYS = ["PIXEL_LIMB_EMAIL_ENABLED", "PIXEL_LIMB_CALENDAR_ENABLED", "PIXEL_LIMB_CALENDAR_WRITE_ENABLED",
   "PIXEL_LIMB_SOCIAL_ENABLED", "PIXEL_LIMB_WEB_ENABLED", "PIXEL_SOURCE_PROJECTION_DIR",
-  "PIXEL_LIMB_EMAIL_DRAFTS_ENABLED", "PIXEL_ACTION_PROPOSAL_DIR"];
+  "PIXEL_LIMB_EMAIL_DRAFTS_ENABLED", "PIXEL_ACTION_PROPOSAL_DIR", "PIXEL_CALENDAR_DIRECT_ENABLED"];
 let instance = 0;
 
 // The plugin reads its limb flags once at load, so each case loads a fresh module instance.
@@ -285,6 +287,142 @@ test("a missing source argument gives a repairable error before projection acces
     assert.ok(response.content[0].text.includes(`tool_describe for ${name}`));
     assert.doesNotMatch(response.content[0].text, /private-message-value|ENOENT|projection record not found/);
   }
+});
+
+function assertArgumentRefusal(response, tool) {
+  assert.equal(response.isError, true, tool.name);
+  const text = response.content[0].text;
+  assert.ok(text.includes(`tool_describe for ${tool.name}`));
+  const schema = JSON.parse(text.split("Declared JSON schema: ")[1]);
+  assert.deepEqual(schema, JSON.parse(JSON.stringify(tool.parameters)));
+  assert.equal(schema.additionalProperties, false);
+  assert.doesNotMatch(text, /QA-PRIVATE|ENOENT|projection record not found|Cannot read properties/);
+}
+
+test("unknown source arguments refuse with the exact schema before projection access", async (t) => {
+  const directory = await withProjections(t, {});
+  const tools = await loadPlugin({ PIXEL_LIMB_WEB_ENABLED: "1", PIXEL_LIMB_SOCIAL_ENABLED: "1",
+    PIXEL_SOURCE_PROJECTION_DIR: directory });
+  for (const [name, params] of [
+    ["pixel_gmail_inbox", { max: 1 }],
+    ["pixel_gmail_sent", { max: 1 }],
+    ["pixel_gmail_search", { query: "QA-PRIVATE-value", max: 1 }],
+    ["pixel_gmail_thread", { threadId: "QA-PRIVATE-value", max: 1 }],
+    ["pixel_gmail_read", { messageId: "QA-PRIVATE-value", unexpected: true }],
+    ["pixel_calendar_list", { timeMin: iso(0), timeMax: iso(7), max: 1 }],
+    ["pixel_calendar_get", { eventId: "QA-PRIVATE-value", unexpected: true }],
+    ["pixel_social_feed", { max: 1 }],
+    ["pixel_social_search", { query: "QA-PRIVATE-value", max: 1 }],
+    ["pixel_web_browse", { url: "https://example.invalid/QA-PRIVATE-value", mode: "text", unexpected: true }],
+    ["pixel_limb_status", { unexpected: "QA-PRIVATE-value" }],
+    ["pixel_gmail_inbox", JSON.parse('{"__proto__":"QA-PRIVATE-value"}')],
+    ["pixel_gmail_inbox", { constructor: "QA-PRIVATE-value" }],
+    ["pixel_gmail_inbox", { toString: "QA-PRIVATE-value" }],
+  ]) {
+    const tool = tools.get(name);
+    assertArgumentRefusal(await tool.execute("bad-source-call", params), tool);
+  }
+  assert.deepEqual(await readdir(directory), []);
+});
+
+test("source argument validation rejects wrong shapes, types and bounds without coercion", async (t) => {
+  const directory = await withProjections(t, {});
+  const tools = await loadPlugin({ PIXEL_LIMB_WEB_ENABLED: "0", PIXEL_SOURCE_PROJECTION_DIR: directory });
+  const tool = tools.get("pixel_gmail_inbox");
+  for (const params of [null, undefined, [], "QA-PRIVATE-value", { maxResults: "1" },
+    { maxResults: null }, { maxResults: 0 }, { maxResults: 101 }, { maxResults: 1.5 },
+    { offset: -1 }, { offset: 100001 }, { unreadOnly: "false" },
+    { maxResults: 1, max: 1 }, { maxResults: 1, unexpected: "QA-PRIVATE-value" }]) {
+    assertArgumentRefusal(await tool.execute("bad-source-call", params), tool);
+  }
+  assert.deepEqual(await readdir(directory), []);
+});
+
+test("correcting max to maxResults returns exactly one record while valid defaults remain unchanged", async (t) => {
+  const email = { schemaVersion: 1, generatedAt: iso(0), boundary,
+    records: Array.from({ length: 72 }, (_, i) => ({ id: `email-${i}`, mailboxes: ["inbox"], summary: "Invented fixture only." })) };
+  const directory = await withProjections(t, { email });
+  const tools = await loadPlugin({ PIXEL_LIMB_WEB_ENABLED: "0", PIXEL_SOURCE_PROJECTION_DIR: directory });
+  const inbox = tools.get("pixel_gmail_inbox");
+  assertArgumentRefusal(await inbox.execute("typo-call", { max: 1 }), inbox);
+  const corrected = await call(tools, "pixel_gmail_inbox", { maxResults: 1 });
+  assert.equal(corrected.count, 1);
+  assert.equal(corrected.limit, 1);
+  assert.deepEqual(corrected.messages.map((message) => message.id), ["email-0"]);
+  const defaults = await call(tools, "pixel_gmail_inbox", {});
+  assert.equal(defaults.count, 50);
+  assert.equal(defaults.limit, 50);
+  assert.equal(defaults.totalMatches, 72);
+});
+
+test("unknown nested recipient and attendee fields cannot create a proposal or echo input", async (t) => {
+  const directory = await withProjections(t, {});
+  const tools = await loadPlugin({ PIXEL_LIMB_WEB_ENABLED: "0", PIXEL_LIMB_EMAIL_DRAFTS_ENABLED: "1",
+    PIXEL_CALENDAR_DIRECT_ENABLED: "0", PIXEL_ACTION_PROPOSAL_DIR: directory });
+  for (const [name, params] of [
+    ["pixel_gmail_draft_propose", { to: [{ email: "qa@example.invalid", unexpected: "QA-PRIVATE-value" }], body: "Invented fixture." }],
+    ["pixel_calendar_propose_create", { summary: "Invented fixture", start: iso(1), end: iso(2),
+      attendees: [{ email: "qa@example.invalid", unexpected: "QA-PRIVATE-value" }] }],
+  ]) {
+    const tool = tools.get(name);
+    assertArgumentRefusal(await tool.execute("bad-proposal", params), tool);
+  }
+  assert.deepEqual(await readdir(directory), []);
+});
+
+test("the pinned SDK tool_call preserves unknown arguments until the source guard refuses them", {
+  skip: !process.env.OPENCLAW_PACKAGE_DIR,
+}, async (t) => {
+  const directory = await withProjections(t, { email: { schemaVersion: 1, generatedAt: iso(0), boundary,
+    records: Array.from({ length: 72 }, (_, i) => ({ id: `email-${i}`, mailboxes: ["inbox"], summary: "Invented fixture only." })) } });
+  const release = JSON.parse(await readFile(new URL("../RELEASE-MANIFEST.json", import.meta.url), "utf8"));
+  const script = `
+import assert from 'node:assert/strict';
+import {readFile,readdir} from 'node:fs/promises';
+import {register} from 'node:module';
+import {join} from 'node:path';
+import {pathToFileURL} from 'node:url';
+const [packageDir,loader,entryPath,expectedVersion]=process.argv.slice(1);
+const metadata=JSON.parse(await readFile(join(packageDir,'package.json'),'utf8'));
+assert.equal(metadata.name,'openclaw');assert.equal(metadata.version,expectedVersion);
+const candidates=(await readdir(join(packageDir,'dist'))).filter(name=>/^tool-search-[A-Za-z0-9_-]+\\.js$/.test(name));
+assert.equal(candidates.length,1);
+const sdk=await import(pathToFileURL(join(packageDir,'dist',candidates[0])).href);
+register(loader,import.meta.url);
+const {default:entry}=await import(entryPath);let inbox;
+entry.register({registerTool(factory,{names}){if(names[0]==='pixel_gmail_inbox')inbox=factory({agentId:'pixel'});}});
+assert.ok(inbox);const received=[];const execute=inbox.execute;
+inbox.execute=(id,input,...rest)=>{received.push(structuredClone(input));return execute(id,input,...rest);};
+const catalogRef=sdk.m();const config={tools:{toolSearch:{enabled:true,mode:'tools'}}};
+const context={config,catalogRef,runId:'qa-source-schema',agentId:'pixel'};
+const controls=sdk.h(context);
+const catalog=sdk.u({...context,tools:[...controls,inbox]});assert.equal(catalog.catalogRegistered,true);
+const call=controls.find(tool=>tool.name==='tool_call');
+const refused=await call.execute('qa-bad',{id:inbox.name,args:{max:1}});
+assert.deepEqual(received[0],{max:1});assert.equal(refused.details.result.isError,true);
+assert.match(refused.details.result.content[0].text,/Declared JSON schema:/);
+assert.equal(refused.details.result.details,undefined);
+const describe=await controls.find(tool=>tool.name==='tool_describe').execute('qa-describe',{id:inbox.name});
+assert.equal(describe.details.parameters.additionalProperties,false);
+assert.ok(describe.details.parameters.properties.maxResults);
+const corrected=await call.execute('qa-corrected',{id:inbox.name,args:{maxResults:1}});
+assert.deepEqual(received[1],{maxResults:1});assert.equal(corrected.details.result.details.count,1);
+assert.equal(corrected.details.result.details.limit,1);
+process.stdout.write(JSON.stringify({unknownArgumentPreserved:true,refusedBeforeRead:true,correctedCount:1,version:metadata.version}));
+`;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', script,
+    process.env.OPENCLAW_PACKAGE_DIR, new URL('./fixtures/source-plugin/loader.mjs', import.meta.url).href,
+    new URL('../plugin/index.js', import.meta.url).href, release.openclaw], {
+    cwd: directory, timeout: 30000, maxBuffer: 1024 * 1024, encoding: 'utf8',
+    env: { PATH: process.env.PATH, HOME: directory, USERPROFILE: directory,
+      OPENCLAW_STATE_DIR: join(directory, 'sdk-state'), OPENCLAW_CONFIG_PATH: join(directory, 'sdk-config.json'),
+      PIXEL_TEST_TYPEBOX_DIR: process.env.PIXEL_TEST_TYPEBOX_DIR ?? fileURLToPath(new URL('../plugin/node_modules/typebox', import.meta.url)),
+      PIXEL_SOURCE_PROJECTION_DIR: directory, PIXEL_LIMB_WEB_ENABLED: '0', PIXEL_LIMB_SOCIAL_ENABLED: '0',
+      PIXEL_LIMB_OPERATIONS_ENABLED: '0', PIXEL_LIMB_FRONTIER_ENABLED: '0', NO_COLOR: '1' },
+  });
+  assert.equal(child.status, 0, child.error?.message ?? child.stderr);
+  assert.deepEqual(JSON.parse(child.stdout), { unknownArgumentPreserved: true, refusedBeforeRead: true,
+    correctedCount: 1, version: release.openclaw });
 });
 
 test("after a malformed Gmail read, the declared messageId reads the actual record", async (t) => {

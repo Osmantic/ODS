@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Type } from "typebox";
+import { Check } from "typebox/value";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { calendarEvent, listCalendar } from "./calendar-query.js";
 import { sha256, withPortalToolAudit } from "./chat-audit.js";
@@ -86,14 +87,17 @@ const guarded = (name, context, execute) => async (id, params) => {
 };
 
 function register(api, name, description, parameters, execute) {
-  // Deferred dispatch can reach the handler without checking required fields.
-  // Explain a malformed call before reading a projection or creating a proposal;
-  // never interpret another field (for example `id`) as the required messageId.
+  // Deferred dispatch may call execute without validating its schema. Refuse
+  // unknown fields and invalid values before any source read/proposal. Never
+  // clean or coerce a typo into an omitted parameter and its broader default.
+  parameters = { ...parameters, additionalProperties: false };
   const required = parameters.required ?? [];
+  const repair = `Use tool_describe for ${name} before retrying. Declared JSON schema: ${JSON.stringify(parameters)}`;
   api.registerTool(onlyPixel((context) => ({ name, description, parameters, execute: guarded(name, context, (id, params) => {
     const missing = required.filter((key) => !params || typeof params !== "object"
       || !Object.hasOwn(params, key) || params[key] === undefined);
-    if (missing.length) throw new Error(`Missing required parameter(s): ${missing.join(", ")}. Use tool_describe for ${name} before retrying.`);
+    if (missing.length) throw new Error(`Missing required parameter(s): ${missing.join(", ")}. ${repair}`);
+    if (!Check(parameters, params)) throw new Error(`Invalid parameters for ${name}. ${repair}`);
     return execute(id, params, context);
   }) })), { names: [name] });
 }
@@ -209,8 +213,8 @@ async function writeDraftProposal(values) {
   return { ...proposal, operatorInstruction: `The owner must approve this exact draft (${proposalId}) before Gmail creates it. Pixel never sends email; the owner sends the draft from Gmail.` };
 }
 
-const recipientSchema = (minItems) => Type.Array(Type.Object({ email: Type.String({ minLength: 3, maxLength: 320 }) }), { minItems, maxItems: 50 });
-const attendeeSchema = Type.Array(Type.Object({ email: Type.String({ minLength: 3, maxLength: 320 }) }), { maxItems: 100 });
+const recipientSchema = (minItems) => Type.Array(Type.Object({ email: Type.String({ minLength: 3, maxLength: 320 }) }, { additionalProperties: false }), { minItems, maxItems: 50 });
+const attendeeSchema = Type.Array(Type.Object({ email: Type.String({ minLength: 3, maxLength: 320 }) }, { additionalProperties: false }), { maxItems: 100 });
 const calendarValues = {
   summary: Type.String({ minLength: 1, maxLength: 1000 }),
   start: Type.String({ minLength: 10, maxLength: 64 }),

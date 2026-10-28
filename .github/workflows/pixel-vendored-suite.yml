@@ -40,6 +40,13 @@ jobs:
           node-version: '22'
       - name: Install suite tools
         run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck jq age > /dev/null
+      - name: Install locked Source plugin schema validator
+        run: |
+          schema_root="$RUNNER_TEMP/source-schema-validator"
+          mkdir -p "$schema_root"
+          cp plugin/package.json plugin/package-lock.json "$schema_root/"
+          npm ci --prefix "$schema_root" --ignore-scripts --no-audit --no-fund
+          printf 'PIXEL_TEST_TYPEBOX_DIR=%s\n' "$schema_root/node_modules/typebox" >> "$GITHUB_ENV"
       - name: Generated release files match the release manifest
         run: node scripts/generate-release-files.mjs --check
       - name: Operations inventory startup readiness
