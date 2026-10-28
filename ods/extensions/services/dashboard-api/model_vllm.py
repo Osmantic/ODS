@@ -13,6 +13,11 @@ the vLLM engine (``.env`` ``LLM_BACKEND=vllm``), not llama.cpp. They carry no
 * ``min_gpu_mib`` and ``compute_capability``: the one GPU vLLM runs on needs
   at least this much memory (nvidia-smi ``memory.total``) and one of these
   compute capabilities;
+* optional ``gpu_memory_utilization``: the share of that GPU vLLM
+  preallocates (``.env`` VLLM_GPU_MEMORY_UTILIZATION, the vllm-server
+  service's ``--gpu-memory-utilization``; vLLM's 0.90 when absent). An entry
+  for a GPU that is often a workstation's only one (RTX PRO 6000 class) takes
+  less, so ComfyUI and voice still fit beside it;
 * ``reasoning`` (the thinking default), plus ``tool_call_parser`` and
   ``reasoning_parser``, which name the same parsers as ``vllm_args``;
 * ``thinking_template_kwargs``: for each ODS thinking level (off, low,
@@ -46,9 +51,14 @@ from typing import Any, Iterable, NamedTuple
 VLLM_RUNTIME = "vllm"
 REASONING_LEVELS = ("off", "low", "medium", "high")
 LLAMA_MEMORY_CLASSES = ("discrete", "unified", "cpu")
-# The vllm-server compose service passes these itself:
-# --model /model --served-model-name ${VLLM_SERVED_MODEL} ${VLLM_ARGS}.
-COMPOSE_FLAGS = frozenset({"--model", "--served-model-name", "--host", "--port"})
+# The vllm-server compose service passes these itself: --model /model
+# --served-model-name ${VLLM_SERVED_MODEL} --gpu-memory-utilization
+# ${VLLM_GPU_MEMORY_UTILIZATION} ${VLLM_ARGS}. An entry sets its share with
+# ``gpu_memory_utilization``, never in vllm_args, where it would silently
+# override the owner's .env value.
+COMPOSE_FLAGS = frozenset({"--model", "--served-model-name", "--host", "--port", "--gpu-memory-utilization"})
+# The range an entry's gpu_memory_utilization may take.
+MIN_MEMORY_SHARE, MAX_MEMORY_SHARE = 0.10, 0.95
 # A file downloads under <name><PARTIAL_SUFFIX> until it is verified.
 PARTIAL_SUFFIX = ".partial"
 GPU_QUERY = "nvidia-smi --query-gpu=uuid,compute_cap,memory.total --format=csv,noheader,nounits"
@@ -171,7 +181,8 @@ def _args_problems(model: dict[str, Any]) -> list[str]:
     ):
         return ["vllm_args must be a list of plain strings (letters, digits and _.:/=,+-)"]
     problems = []
-    owned = sorted({arg.split("=", 1)[0] for arg in args} & COMPOSE_FLAGS)
+    # vLLM's parser reads --gpu_memory_utilization as --gpu-memory-utilization.
+    owned = sorted({arg.split("=", 1)[0].replace("_", "-") for arg in args if arg.startswith("--")} & COMPOSE_FLAGS)
     if owned:
         problems.append(f"vllm_args may not set {', '.join(owned)}: the vllm-server service sets them")
     for flag, key in (("--max-model-len", "context_length"), ("--tool-call-parser", "tool_call_parser"),
@@ -221,6 +232,10 @@ def _serving_problems(model: dict[str, Any]) -> list[str]:
         problems.append("max_context_length (config.json max_position_embeddings) must be at least context_length")
     if not _whole(model.get("min_gpu_mib"), 1):
         problems.append("min_gpu_mib must be a positive whole number of MiB")
+    share = model.get("gpu_memory_utilization", MAX_MEMORY_SHARE)
+    if (not isinstance(share, (int, float)) or isinstance(share, bool)
+            or not MIN_MEMORY_SHARE <= share <= MAX_MEMORY_SHARE):
+        problems.append(f"gpu_memory_utilization must be a number from {MIN_MEMORY_SHARE} to {MAX_MEMORY_SHARE}")
     capabilities = model.get("compute_capability")
     if (not isinstance(capabilities, list) or not capabilities
             or len(set(map(str, capabilities))) != len(capabilities)

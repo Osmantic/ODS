@@ -263,6 +263,17 @@ render owner "$tmp/vllm.fixture"
     || fail "an owner's own vision server must be kept"
 pass "a rerun moves llama-server URLs to LiteLLM and model-router, turns the switchboard on and keeps owner settings"
 
+# A newly picked model writes its own memory share (the selector always sends
+# one), never the share an earlier model left in .env.
+mkdir -p "$tmp/p06-pickshare"
+printf '%s\n' 'LLM_BACKEND=vllm' 'VLLM_GPU_MEMORY_UTILIZATION=0.85' > "$tmp/p06-pickshare/.env"
+{ cat "$tmp/vllm.fixture"; printf '%s\n' 'VLLM_GPU_MEMORY_UTILIZATION=0.5'; } > "$tmp/pickshare.fixture"
+render pickshare "$tmp/pickshare.fixture"
+[[ "$(envv pickshare VLLM_GPU_MEMORY_UTILIZATION)" == 0.5 \
+    && "$(grep -c '^VLLM_GPU_MEMORY_UTILIZATION=' "$tmp/p06-pickshare/.env")" == 1 ]] \
+    || fail "the pick's own share must replace an earlier model's, once: $(grep '^VLLM_GPU' "$tmp/p06-pickshare/.env")"
+pass "a newly picked vLLM model writes its own memory share over an earlier model's"
+
 mkdir -p "$tmp/p06-noimage"
 grep -v '^VLLM_IMAGE=' "$tmp/vllm.fixture" > "$tmp/noimage.fixture"
 ! ods_phase06_render_env "$PHASE06" "$ROOT_DIR" "$tmp/p06-noimage" "$tmp/noimage.fixture" \

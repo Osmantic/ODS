@@ -23,8 +23,9 @@
 #           LLM_MODEL_SIZE_MB, AMD_GFX_TARGET, AMD_INFERENCE_BACKEND,
 #           LLM_BACKEND (llama-server or vllm; exported for vllm and when a
 #           run leaves vllm); with vllm also VLLM_IMAGE, VLLM_MODEL_DIR,
-#           VLLM_SERVED_MODEL, VLLM_ARGS, VLLM_GPU_UUID, and on a rerun that
-#           keeps a vLLM model the VLLM_GPU_MEMORY_UTILIZATION it was given
+#           VLLM_SERVED_MODEL, VLLM_ARGS, VLLM_GPU_UUID and
+#           VLLM_GPU_MEMORY_UTILIZATION (the pick's own share; on a rerun that
+#           keeps a vLLM model, the share it was given)
 #
 # Modder notes:
 #   Change tier auto-detection thresholds or add new hardware classes here.
@@ -577,8 +578,9 @@ fi
 # Model server: llama.cpp (llama-server) or the vLLM engine
 # -----------------------------------------------------------------------------
 # The vLLM engine (docker-compose.vllm.yml) serves a vLLM catalog model,
-# NVIDIA's NVFP4 builds, on one NVIDIA datacenter GPU (compute capability 10.x
-# with room for the model). Only Linux (not WSL) with an NVIDIA GPU, in local
+# NVIDIA's NVFP4 builds, on one NVIDIA GPU that entry names (datacenter
+# Blackwell, compute capability 10.x, or the RTX PRO 6000 class, 12.0, with
+# room for the model). Only Linux (not WSL) with an NVIDIA GPU, in local
 # mode and with no external, host-native or cloud model route, can run it
 # (installers/lib/llm-backend.sh).
 #
@@ -855,7 +857,8 @@ _phase02_vllm_keep_refused() {
 # served id and GPU, which scripts/preserve-active-model.py prints from .env
 # (LLM_BACKEND=vllm, the VLLM_* keys, empty GGUF_* keys). The vLLM pick above
 # stays the recommendation. The VLLM_* keys are cleared first, so a key the
-# loader dropped cannot leave the pick's value in place.
+# loader dropped cannot leave the pick's value in place, and the kept model
+# never takes the pick's memory share: only its own .env share is kept.
 _phase02_keep_vllm_model() {
     local python status=0 contract
     python="$(ods_model_selector_python)"
@@ -874,7 +877,7 @@ _phase02_keep_vllm_model() {
         --local-model \
         2>>"$LOG_FILE")" || status=$?
     [[ "$status" -eq 0 && -n "$contract" ]] || _phase02_vllm_keep_refused "$status"
-    unset VLLM_MODEL_DIR VLLM_SERVED_MODEL VLLM_ARGS VLLM_GPU_UUID
+    unset VLLM_MODEL_DIR VLLM_SERVED_MODEL VLLM_ARGS VLLM_GPU_UUID VLLM_GPU_MEMORY_UTILIZATION
     load_model_selector_env_from_output <<< "$contract"
     if [[ "$LLM_BACKEND" != "vllm" || -z "${VLLM_MODEL_DIR:-}" || -z "${VLLM_SERVED_MODEL:-}" \
         || -z "${VLLM_ARGS:-}" || -z "${VLLM_GPU_UUID:-}" ]]; then

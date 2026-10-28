@@ -5,8 +5,9 @@
 # Part of: installers/lib/
 # Purpose: The rules phase 02 uses to choose the model server. The vLLM
 #          engine (docker-compose.vllm.yml) serves a vLLM catalog model on one
-#          NVIDIA datacenter GPU; llama.cpp (llama-server) serves a GGUF
-#          everywhere else. Which vLLM model fits which GPU is
+#          NVIDIA GPU (datacenter Blackwell or the RTX PRO 6000 class);
+#          llama.cpp (llama-server) serves a GGUF everywhere else. Which vLLM
+#          model fits which GPU is
 #          scripts/select-model.py --llm-runtime vllm's decision.
 #
 # Expects: nothing (arguments only)
