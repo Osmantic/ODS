@@ -432,6 +432,12 @@ def test_host_data_removal_reservations_match_compose_policy():
     assert "extension-operations" in _mod._EXTENSION_REMOVAL_RESERVED_DATA
 
 
+@pytest.mark.parametrize("name", ["../outside", "../../outside", "nested/child", "/outside"])
+def test_removal_path_requires_a_contained_direct_child(agent, name):
+    with pytest.raises(ValueError, match="outside its owned directory"):
+        _mod._extension_removal_child(agent, name)
+
+
 def test_host_rechecks_dependents_even_for_an_already_disabled_extension(agent, removal_helper):
     users = agent / "user-extensions"
     _library_extension(users, "gotify", "compose.yaml.disabled", "services: {}")

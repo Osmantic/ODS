@@ -7087,6 +7087,15 @@ _EXTENSION_REMOVAL_RESERVED_DATA = frozenset({
 })
 
 
+def _extension_removal_child(parent: Path, name: str) -> Path:
+    """Require a normalized direct child before touching a requested path."""
+    base = os.path.normpath(os.fspath(parent))
+    full = os.path.normpath(os.path.join(base, name))
+    if not full.startswith(base + os.sep) or os.path.dirname(full) != base:
+        raise ValueError("Extension removal path is outside its owned directory")
+    return Path(full)
+
+
 def _remove_library_extension(service_id: str, *, delete_data: bool) -> dict:
     """Keep the full Remove under the native CLI's selection authority.
 
@@ -7109,14 +7118,14 @@ def _remove_library_extension(service_id: str, *, delete_data: bool) -> dict:
     selector = _load_extension_selector()
     try:
         with selector._selection_lock(root, 15.0):
-            directory = users / service_id
+            directory = _extension_removal_child(users, service_id)
             if directory.is_symlink() or not directory.is_dir():
                 raise ValueError(f"{service_id} is not an installed Library extension")
             selected = directory / "compose.yaml"
             if selected.exists() or selected.is_symlink():
                 raise ValueError(f"{service_id} is still enabled; disable it before removing it")
             selector._assert_no_dependents(root, service_id)
-            own_data = data / service_id
+            own_data = _extension_removal_child(data, service_id)
             if delete_data:
                 if service_id in _EXTENSION_REMOVAL_RESERVED_DATA:
                     raise ValueError(f"data/{service_id} belongs to ODS, not to an extension")
@@ -7141,13 +7150,13 @@ def _remove_library_extension(service_id: str, *, delete_data: bool) -> dict:
                             total += info.st_size
                 shutil.rmtree(own_data)
                 freed = round(total / (1024 ** 3), 3)
-            backup = backups / service_id
+            backup = _extension_removal_child(backups, service_id)
             if backup.is_symlink():
                 backup.unlink()
             elif backup.is_dir():
                 shutil.rmtree(backup)
             # Clear only this extension's presentation record; keep operation receipts.
-            (progress / f"{service_id}.json").unlink(missing_ok=True)
+            _extension_removal_child(progress, f"{service_id}.json").unlink(missing_ok=True)
             shutil.rmtree(directory)
             return {**removed, "definition_removed": True,
                     "data_deleted": delete_data, "data_freed_gb": freed}
