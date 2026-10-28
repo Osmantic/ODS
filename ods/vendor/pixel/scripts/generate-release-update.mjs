@@ -102,7 +102,7 @@ const expectedReactivationArchiveBridge = {
 };
 if (
   manifest.pixel !== version
-  || !["4.3.27", "4.3.28", "4.3.29", "4.3.32", "4.3.33", "4.3.34", "4.3.35", "4.3.36", "4.3.37", "4.3.38"].includes(version)
+  || !["4.3.27", "4.3.28", "4.3.29", "4.3.32", "4.3.33", "4.3.34", "4.3.35", "4.3.36", "4.3.37", "4.3.38", "4.3.39"].includes(version)
   || JSON.stringify(manifest.releaseUpdate) !== JSON.stringify(expectedUpdatePolicy)
   || JSON.stringify(manifest.releaseReactivationArchive) !== JSON.stringify(expectedReactivationArchiveBridge)
 ) {

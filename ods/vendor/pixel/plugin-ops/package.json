@@ -1,6 +1,6 @@
 {
   "name": "openclaw-pixel-operations-broker",
-  "version": "4.3.38",
+  "version": "4.3.39",
   "private": true,
   "type": "module",
   "openclaw": {
