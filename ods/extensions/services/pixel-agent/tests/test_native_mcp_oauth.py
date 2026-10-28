@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import shutil
 import subprocess
 import sys
 import threading
@@ -374,6 +375,16 @@ class NativeMcpOAuthTests(unittest.TestCase):
         from native_mcp_owner import operate
         from pixel_connections import native_mcp as native
         world = self.world
+        # Hosted tool-cache ancestors may be group/world writable. The bound
+        # owner operation correctly rejects them. Stage the same real Node
+        # bytes under this private fixture, as the installed runtime requires;
+        # do not relax the production ancestor-custody check for CI.
+        node_dir = world.home / 'private-node'
+        node_dir.mkdir(mode=0o700)
+        node = node_dir / 'node'
+        shutil.copyfile(Path(shutil.which('node', path=world.env['PATH'])).resolve(), node)
+        node.chmod(0o700)
+        world.env['PATH'] = str(node_dir) + os.pathsep + world.env['PATH']
         world.write_config({'mcp': {'servers': {'qa-notes': self.server}}})
         journal_dir = world.home / 'private-custodian'
         journal_dir.mkdir(mode=0o700)
