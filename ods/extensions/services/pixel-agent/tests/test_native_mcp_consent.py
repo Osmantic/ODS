@@ -175,7 +175,7 @@ def test_concurrent_callbacks_exchange_once(world):
 def test_cancel_does_not_call_forget_and_denial_does_not_exchange(world):
     bridge, consent = world
     begin = consent.begin(redirect_port=43123)
-    denied = f'http://127.0.0.1:43123/?' + urlencode({'state': bridge.auth_state, 'error': 'access_denied'})
+    denied = 'http://127.0.0.1:43123/?' + urlencode({'state': bridge.auth_state, 'error': 'access_denied'})
     assert consent.complete(flow_id=begin['flowId'], callback_url=denied)['error'] == 'access-denied'
     begin = consent.begin(redirect_port=43123)
     assert consent.cancel(flow_id=begin['flowId'])['phase'] == 'cancelled'

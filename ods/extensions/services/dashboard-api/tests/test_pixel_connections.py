@@ -5,6 +5,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -404,7 +405,7 @@ def test_acting_on_a_change_refreshes_the_chat_line_at_once(client, mock_request
 
 
 # Gmail drafts Portal wrote, as root lists them for the owner.
-DRAFT = {"proposalId": DRAFT_ID, "sha256": "a" * 64, "state": "waiting", "createdAt": "2026-10-26T15:00:00.000Z",
+DRAFT: dict[str, Any] = {"proposalId": DRAFT_ID, "sha256": "a" * 64, "state": "waiting", "createdAt": "2026-10-26T15:00:00.000Z",
          "tooLarge": False, "draft": {"to": ["pat@example.com"], "cc": ["sam@example.com"], "subject": "Thursday",
                                       "body": "Hi Pat,\n\nThursday works.", "replyTo": None}}
 REPLY = dict(DRAFT, proposalId="gmail-draft-1761500000001-0badc0de", sha256="b" * 64, state="unconfirmed",

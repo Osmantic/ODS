@@ -50,7 +50,7 @@ os.environ.update(ODS_INSTALL_DIR=str(install), ODS_DATA_DIR=str(install / 'data
                   DASHBOARD_API_KEY=dashboard_key, ODS_AGENT_KEY=agent_key,
                   ODS_MODE='local', ODS_AGENT_HOST='127.0.0.1', NO_COLOR='1',
                   ODS_SESSION_SECRET=secrets.token_hex(32), SERVICE_HOST='127.0.0.1')
-operations = []
+operations: list[str] = []
 
 def request_access(operation, request=None):
     # Only the privileged transport/process boundary is simulated. Production
@@ -72,12 +72,12 @@ spec = importlib.util.spec_from_file_location('connected_http_host_agent', ROOT 
 agent = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = agent
 spec.loader.exec_module(agent)
-agent.INSTALL_DIR = install
-agent.DATA_DIR = install / 'data'
-setup = agent.DATA_DIR / 'config'
+setattr(agent, 'INSTALL_DIR', install)
+setattr(agent, 'DATA_DIR', install / 'data')
+setup = install / 'data/config'
 setup.mkdir(parents=True, exist_ok=True)
 (setup / 'setup-complete.json').write_text(json.dumps({'completed': True, 'fixture': True}))
-agent.AGENT_API_KEY = agent_key
+setattr(agent, 'AGENT_API_KEY', agent_key)
 host = ThreadingHTTPServer(('127.0.0.1', 0), agent.AgentHandler)
 host_thread = threading.Thread(target=host.serve_forever, daemon=True)
 host_thread.start()
