@@ -50,7 +50,16 @@ preservation are inherited. OpenClaw, dependency/image pins and trust anchors
 are unchanged; no release signature is generated or claimed. Historical
 qualification records retain their original artifact identifiers.
 
+The export had removed one trailing ASCII space from the already-reviewed
+Codex 0.147 comparison prompt. Restoring that byte reproduces the original
+`ac8ae107a0d72fe3476b430afb161ea4e67da2e446d778aefc44828160559807`
+digest without changing its expected pin. A path-specific whitespace attribute
+preserves this exact fixture. The full upstream release contract subsequently
+stops on the historical `LIVE-AUDIT-4.0.0.md` and `LIVE-AUDIT-4.1.0.md` documents
+deliberately excluded from the public export. They were not copied, invented or
+treated as completed public qualification.
+
 Before release acceptance, verify the exact public bundle/source/digest/modes,
 ordinary installed upgrade and final Portal behavior, native macOS and relevant
-fleet lanes. The existing comparison-file checksum release gate documented for
-earlier candidates remains open; it is not waived by this change.
+fleet lanes. The upstream release contract is not a passing public-export gate;
+its missing historical audit evidence remains explicitly unverified.

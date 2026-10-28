@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`2a09cecd1f5e71e00923efc8849f125ca53de662`, and its SHA-256 is
-`2f2bea98b0a1faf59b632c30c412181adad789c5992e9d75c3fc11c22e80d1f3`.
+`6b7154c88ecbbffed61c2984a5bc986915a1859e`, and its SHA-256 is
+`38bcca79efd75ae741c0532af324f52ae79074ad8d65dc4ba97a56f0ab5ccdc0`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -30,8 +30,10 @@ source/digest/executable-mode verification and the bundle-checkout plan/apply/
 verify exercise passed. Dependency/image pins and trust anchors are unchanged.
 The synthetic 9B model check still found an incorrect freshness statement;
 correct tool metadata is not proof of final-answer consistency. Ordinary
-installed qualification of this candidate, native macOS/fleet execution and
-the preexisting comparison-file checksum release gate remain open. See
+installed qualification of this candidate and native macOS/fleet execution
+remain open. The reviewed comparison prompt's original spacing and unchanged
+checksum are restored; the upstream release contract still requires historical
+audit documents deliberately omitted from this public export. See
 `pixel/ODS-QUALIFICATION-4.3.38.md` for the scoped evidence and limits.
 
 The ODS lint maintenance adaptation retains import effects and exported names,
