@@ -117,7 +117,13 @@ cli_block="$(sed -n '/^    local fit_need_mb="" selector_python=""$/,/--enabled-
 [[ "$cli_block" == *'ods_llm_fit_need_mb "$selector_python"'* && "$cli_block" == *'"${LLM_BACKEND:-}" != "vllm"'* ]] \
     && grep -qF '${need_args[@]+"${need_args[@]}"}) || error "GPU assignment failed"' "$ROOT_DIR/ods-cli" \
     || fail "ods gpu reassign must pass the catalog's need to the assigner"
-pass "ods gpu reassign --auto passes the same catalog need"
+# Sourcing model-selector.sh fires the function's RETURN trap, which deletes
+# the temporary topology: the need must be computed before that trap is set.
+need_line=$(grep -n 'ods_llm_fit_need_mb "\$selector_python"' "$ROOT_DIR/ods-cli" | head -1 | cut -d: -f1)
+trap_line=$(awk -v n="$need_line" 'NR > n && /trap "rm -rf .\$tmpdir." RETURN/ {print NR; exit}' "$ROOT_DIR/ods-cli")
+[[ -n "$need_line" && -n "$trap_line" ]] \
+    || fail "ods gpu reassign must ask the catalog before it sets its RETURN trap (need line ${need_line:-none}, trap after it: ${trap_line:-none})"
+pass "ods gpu reassign --auto passes the same catalog need, computed before its RETURN trap"
 
 echo ""
 echo "Result: $PASS passed, 0 failed"
