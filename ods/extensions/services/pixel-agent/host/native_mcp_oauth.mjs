@@ -15,7 +15,8 @@ const VERSION = '2026.6.33';
 // until the adapter is reviewed, rather than guessing another compiled chunk.
 const MODULE = 'dist/agent-bundle-mcp-runtime-tW2Zz-uG.js';
 const SHA256 = 'ed2e1d92189326625e7c8a735b83ede3942e1597e547587d8ee6413a7fd23bf0';
-const OPERATIONS = new Set(['status', 'begin', 'complete', 'forget', 'probe']);
+const OPERATIONS = new Set(['status', 'begin', 'complete', 'forget', 'probe', 'preflight']);
+const CONFIG_OPERATIONS = new Set(['probe', 'preflight']);
 const POLICY_MODULES = {
   materialize: ['dist/agent-bundle-mcp-materialize-D7HCVGV_.js',
     '823e4c938953e5ccbed137c4e9695a038ced9fc3293a7519d48421e4669bfd38'],
@@ -45,7 +46,7 @@ async function readRequest() {
     throw new Refusal('invalid-native-oauth-request');
   }
   const expected = input?.operation === 'complete'
-    ? 'authorizationCode,operation,packageDir,server,serverName' : input?.operation === 'probe'
+    ? 'authorizationCode,operation,packageDir,server,serverName' : CONFIG_OPERATIONS.has(input?.operation)
       ? 'configPath,configSha256,operation,packageDir,server,serverName' : 'operation,packageDir,server,serverName';
   if (!input || typeof input !== 'object' || Object.keys(input).sort().join(',') !== expected
       || !OPERATIONS.has(input.operation) || typeof input.packageDir !== 'string'
@@ -53,7 +54,7 @@ async function readRequest() {
       || typeof input.serverName !== 'string' || !/^[a-z][a-z0-9-]{1,29}$/.test(input.serverName)
       || !input.server || typeof input.server !== 'object' || Array.isArray(input.server)
       || input.server.auth !== 'oauth'
-      || (input.operation === 'probe' && (typeof input.configPath !== 'string' || !path.isAbsolute(input.configPath)
+      || (CONFIG_OPERATIONS.has(input.operation) && (typeof input.configPath !== 'string' || !path.isAbsolute(input.configPath)
         || input.configPath.includes('\0') || typeof input.configSha256 !== 'string'
         || !/^[a-f0-9]{64}$/.test(input.configSha256)))
       || (input.operation === 'complete' && (typeof input.authorizationCode !== 'string'
@@ -79,7 +80,7 @@ async function loadPinnedModule(packageDir, module, expected) {
   return import(pathToFileURL(file));
 }
 
-async function probe(input, native) {
+async function boundConfig(input) {
   const raw = await readFile(input.configPath);
   if (raw.length > 2 * 1024 * 1024 || createHash('sha256').update(raw).digest('hex') !== input.configSha256) {
     throw new Refusal('native-mcp-binding-changed');
@@ -88,12 +89,10 @@ async function probe(input, native) {
   if (!isDeepStrictEqual(config?.mcp?.servers?.[input.serverName], input.server)) {
     throw new Refusal('native-mcp-binding-changed');
   }
-  const result = (reachable, permitted, reason) => ({reachable, permitted, reason, scope: 'pixel-owner-default'});
-  if (input.server.enabled === false) return result(false, false, 'disabled');
-  // Presence is a prerequisite, never readiness proof. Do not let a passive
-  // check register a fresh OAuth client or start another sign-in when absent.
-  const saved = await native.m({serverName: input.serverName, serverUrl: input.server.url});
-  if (!saved.hasTokens) return result(false, false, 'sign-in-required');
+  return config;
+}
+
+async function policyContext(input, config, native) {
   const include = input.server.toolFilter?.include;
   if (!Array.isArray(include) || !include.length || include.length > 32 || new Set(include).size !== include.length
       || include.some(name => typeof name !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(name))) {
@@ -121,7 +120,43 @@ async function probe(input, native) {
     const safe = names.r(serverName, used);
     if (serverName === input.serverName) selectedName = safe;
   }
-  if (selectedName !== input.serverName) return result(false, false, 'namespace-conflict');
+  const expected = include.map(name => `${input.serverName}__${name}`);
+  const permitted = tools => {
+    const allowed = effective.t({config, bundledTools: tools, agentId: 'pixel',
+      sessionKey: 'agent:pixel:ods-app-readiness', modelProvider: model.slice(0, slash), modelId: model.slice(slash + 1),
+      sandboxToolPolicy: sandbox.mode === 'all' ? sandbox.tools : undefined,
+      toolPolicyAuditLogLevel: 'debug', warn: () => {}});
+    return expected.every(name => allowed.some(tool => tool.name === name));
+  };
+  return {materialize, include, expected, permitted, namespaceValid: selectedName === input.serverName};
+}
+
+async function preflight(input, native) {
+  const config = await boundConfig(input);
+  const result = (eligible, reason) => ({eligible, reason, scope: 'pixel-owner-default'});
+  if (input.server.enabled !== true) return result(false, 'disabled');
+  const policy = await policyContext(input, config, native);
+  if (!policy.namespaceValid) return result(false, 'namespace-conflict');
+  // Project only the reviewed names as inventory-only native tools. This never
+  // opens a server, looks up credentials, registers a client or runs a tool.
+  // It proves eligibility of this candidate policy, not provider availability.
+  const catalog = {servers: {[input.serverName]: {serverName: input.serverName, safeServerName: input.serverName}},
+    tools: policy.include.map(toolName => ({serverName: input.serverName, safeServerName: input.serverName,
+      toolName, inputSchema: {type: 'object', properties: {}}}))};
+  const eligible = policy.permitted(policy.materialize.t({catalog, reservedToolNames: []}));
+  return result(eligible, eligible ? 'eligible' : 'policy-blocked');
+}
+
+async function probe(input, native) {
+  const config = await boundConfig(input);
+  const result = (reachable, permitted, reason) => ({reachable, permitted, reason, scope: 'pixel-owner-default'});
+  if (input.server.enabled === false) return result(false, false, 'disabled');
+  // Presence is a prerequisite, never readiness proof. Do not let a passive
+  // check register a fresh OAuth client or start another sign-in when absent.
+  const saved = await native.m({serverName: input.serverName, serverUrl: input.server.url});
+  if (!saved.hasTokens) return result(false, false, 'sign-in-required');
+  const policy = await policyContext(input, config, native);
+  if (!policy.namespaceValid) return result(false, false, 'namespace-conflict');
   // Only the selected explicit HTTP server is contacted. Do not load another
   // workspace/plugin MCP bundle or execute any tool just to check readiness.
   const runtime = native.n({sessionId: 'ods-app-readiness', sessionKey: 'agent:pixel:ods-app-readiness',
@@ -130,16 +165,11 @@ async function probe(input, native) {
   try {
     const catalog = await runtime.getCatalog();
     if (!catalog.servers[input.serverName]) return result(false, false, 'unreachable');
-    const tools = materialize.t({catalog, reservedToolNames: []});
-    const expected = include.map(name => `${input.serverName}__${name}`);
-    if (expected.some(name => !tools.some(tool => tool.name === name))) {
+    const tools = policy.materialize.t({catalog, reservedToolNames: []});
+    if (policy.expected.some(name => !tools.some(tool => tool.name === name))) {
       return result(true, false, 'tools-unavailable');
     }
-    const allowed = effective.t({config, bundledTools: tools, agentId: 'pixel',
-      sessionKey: 'agent:pixel:ods-app-readiness', modelProvider: model.slice(0, slash), modelId: model.slice(slash + 1),
-      sandboxToolPolicy: sandbox.mode === 'all' ? sandbox.tools : undefined,
-      toolPolicyAuditLogLevel: 'debug', warn: () => {}});
-    const permitted = expected.every(name => allowed.some(tool => tool.name === name));
+    const permitted = policy.permitted(tools);
     return result(true, permitted, permitted ? 'ready' : 'policy-blocked');
   } finally { await runtime.dispose(); }
 }
@@ -151,6 +181,7 @@ async function operate(input) {
     throw new Refusal('invalid-native-oauth-server');
   }
   if (input.operation === 'probe') return probe(input, native);
+  if (input.operation === 'preflight') return preflight(input, native);
   const identity = {serverName: input.serverName, serverUrl: resolved.url};
   if (input.operation === 'status') return native.m(identity);
   if (input.operation === 'forget') {

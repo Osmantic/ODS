@@ -9,6 +9,7 @@ if sys.platform == 'win32':
     raise SkipTest('POSIX owner coordination runs under Linux/WSL')
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -16,6 +17,7 @@ import test_connection_coordinator as harness
 import pixel_access_protocol as protocol
 from pixel_access_bridge import AccessError
 from pixel_connections import coordinator as c, native_apps as apps
+from pixel_connections.native_mcp import NativeError
 
 world = harness.world
 
@@ -23,6 +25,11 @@ world = harness.world
 @pytest.fixture
 def owner(world, monkeypatch):
     monkeypatch.setattr(harness.tx, '_catalog_ready', lambda openclaw, chosen: not chosen)
+    # Services and the OpenClaw launcher are simulated in this Root transaction
+    # fixture. The actual version-bound preflight runs in test_native_mcp_oauth.
+    world.native_preflights = []
+    monkeypatch.setattr(harness.tx.native_mcp_owner, 'check_staged_native_apps',
+        lambda path, *, openclaw, chosen: world.native_preflights.append((Path(path), dict(chosen))))
     return world
 
 
@@ -92,6 +99,45 @@ def test_busy_portal_cannot_change_native_grants(owner):
     with pytest.raises(AccessError, match='runtime-busy'):
         activate(owner)
     assert owner.bridge.config_path.read_bytes() == before
+
+
+@pytest.mark.parametrize('code', ['native-app-policy-blocked', 'native-app-namespace-conflict',
+                                  'native-mcp-binding-changed', 'native-oauth-attempt-unconfirmed'])
+def test_preflight_refusal_leaves_owner_files_and_completion_untouched(owner, monkeypatch, code):
+    save_choice(owner, False)
+    activate(owner)
+    paths = (owner.bridge.config_path, owner.bridge.env_path, owner.bridge.answers_path)
+    before = {path: path.read_bytes() for path in paths}
+    sd = owner.bridge.owner_state
+    saved = {path: path.read_bytes() for path in sd.iterdir() if path.is_file()}
+    restarts = owner.bridge.log.count('restart')
+    checked = []
+
+    def refuse(path, *, openclaw, chosen):
+        staged = Path(path)
+        assert staged != owner.bridge.config_path
+        assert apps.configured_choices(json.loads(staged.read_text())) == {'notion': True}
+        assert chosen == {'notion': True}
+        assert {item: item.read_bytes() for item in paths} == before
+        checked.append(staged)
+        raise NativeError(code)
+
+    monkeypatch.setattr(harness.tx.native_mcp_owner, 'check_staged_native_apps', refuse)
+    save_choice(owner, True)
+    with pytest.raises(harness.tx.ConnectionTransactionError, match=code):
+        activate(owner)
+    assert len(checked) == 1 and not checked[0].exists()
+    assert {path: path.read_bytes() for path in paths} == before
+    assert {path: path.read_bytes() for path in sd.iterdir() if path.is_file()} == saved
+    assert owner.bridge.log.count('restart') == restarts
+    # Root may have held admissions before the owner refused. Settle that exact
+    # attempt without applying the rejected candidate or creating a new receipt.
+    with owner.bridge.locked():
+        assert c._resume(owner.bridge, owner.bridge.pending()) == 'rolled-back'
+    assert owner.bridge.pending() is None
+    assert {path: path.read_bytes() for path in paths} == before
+    assert {path: path.read_bytes() for path in sd.iterdir() if path.is_file()} == saved
+    assert owner.bridge.log.count('restart') == restarts
 
 
 @pytest.mark.parametrize('enabled', [False, True])

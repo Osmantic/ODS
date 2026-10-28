@@ -448,6 +448,38 @@ class NativeMcpOAuthTests(unittest.TestCase):
         self.assertIs(frame['ok'], True)
         return frame['result']
 
+    def test_preflight_checks_native_policy_and_namespace_without_provider_or_credentials(self):
+        config = self.policy_config()
+        expected = {'eligible': True, 'reason': 'eligible', 'scope': 'pixel-owner-default'}
+        self.assertEqual(self.probe_policy(config, operation='preflight'), expected)
+        name = 'qa-notes__notes_read'
+        for scope in ('agent', 'global', 'provider', 'sandbox'):
+            with self.subTest(scope=scope):
+                candidate = copy.deepcopy(config)
+                if scope == 'agent': candidate['agents']['list'][0]['tools']['deny'] = [name]
+                elif scope == 'global': candidate['tools']['deny'] = [name]
+                elif scope == 'provider': candidate['tools']['byProvider'] = {'qa': {'deny': [name]}}
+                else:
+                    candidate['agents']['defaults']['sandbox']['mode'] = 'all'
+                    candidate['tools']['sandbox']['tools']['deny'] = [name]
+                self.assertEqual(self.probe_policy(candidate, operation='preflight'),
+                                 dict(expected, eligible=False, reason='policy-blocked'))
+        config['tools']['sandbox']['tools']['deny'] = [name]
+        self.assertEqual(self.probe_policy(config, operation='preflight'), expected,
+                         'A sandbox-only deny must not override the actual Full Access mode')
+        alias = copy.deepcopy(config)
+        alias['mcp']['servers'] = {'qa notes': copy.deepcopy(self.server),
+                                  'qa-notes': alias['mcp']['servers']['qa-notes']}
+        self.assertEqual(self.probe_policy(alias, operation='preflight'),
+                         dict(expected, eligible=False, reason='namespace-conflict'))
+        config['mcp']['servers']['qa-notes']['enabled'] = False
+        self.assertEqual(self.probe_policy(config, operation='preflight'),
+                         dict(expected, eligible=False, reason='disabled'))
+        self.assertEqual(self.provider.headers_seen, [], 'Static eligibility must make no HTTP request')
+        self.assertEqual(self.provider.clients, {})
+        self.assertEqual(self.provider.reads, 0)
+        self.assertEqual(self.call('status')['hasTokens'], False)
+
     def test_readiness_uses_effective_native_policy_without_reading_content_or_contacting_another_server(self):
         missing = self.probe_policy(self.policy_config())
         self.assertEqual(missing, {'reachable': False, 'permitted': False,
@@ -507,8 +539,10 @@ class NativeMcpOAuthTests(unittest.TestCase):
                 'server': config['mcp']['servers']['qa-notes'], 'configPath': str(path),
                 'configSha256': hashlib.sha256(path.read_bytes()).hexdigest()}
         count = len(self.provider.headers_seen)
-        changed = self.adapter(dict(base, configSha256='0' * 64))
-        self.assertEqual(json.loads(changed.stdout), {'ok': False, 'code': 'native-mcp-binding-changed'})
+        for operation in ('probe', 'preflight'):
+            with self.subTest(operation=operation, boundary='binding'):
+                changed = self.adapter(dict(base, operation=operation, configSha256='0' * 64))
+                self.assertEqual(json.loads(changed.stdout), {'ok': False, 'code': 'native-mcp-binding-changed'})
         fake = self.world.home / 'unreviewed-policy'
         (fake / 'dist').mkdir(parents=True)
         shutil.copyfile(self.world.package / 'package.json', fake / 'package.json')
@@ -520,10 +554,60 @@ class NativeMcpOAuthTests(unittest.TestCase):
             target = fake / module
             if 'materialize' in module: target.write_text('process.stdout.write(' + json.dumps(marker) + ');')
             else: target.symlink_to(self.world.package / module)
-        rejected = self.adapter(dict(base, packageDir=str(fake)))
-        self.assertEqual(json.loads(rejected.stdout), {'ok': False, 'code': 'native-oauth-runtime-unsupported'})
-        self.assertNotIn(marker, rejected.stdout + rejected.stderr)
+        for operation in ('probe', 'preflight'):
+            with self.subTest(operation=operation, boundary='reviewed-code'):
+                rejected = self.adapter(dict(base, operation=operation, packageDir=str(fake)))
+                self.assertEqual(json.loads(rejected.stdout), {'ok': False, 'code': 'native-oauth-runtime-unsupported'})
+                self.assertNotIn(marker, rejected.stdout + rejected.stderr)
         self.assertEqual(len(self.provider.headers_seen), count)
+
+    @unittest.skipIf(hasattr(os, 'geteuid') and os.geteuid() == 0, 'Staged eligibility requires an owner UID')
+    def test_staged_owner_preflight_binds_fixed_app_and_never_contacts_its_provider(self):
+        import native_mcp_owner as owner
+        from native_mcp_owner import check_staged_native_apps
+        from pixel_connections import native_apps as apps, native_mcp as native
+        config = self.policy_config()
+        config['mcp']['servers'] = {'ods-notion': apps.server('notion', True)}
+        names = apps.tool_names('notion')
+        config['tools']['alsoAllow'] = names[:]
+        config['tools']['sandbox']['tools']['allow'] = names[:]
+        config['agents']['list'][0]['tools']['allow'] = names[:]
+        path = self.world.state / '.ods-access-stage-private'
+        path.write_text(json.dumps(config))
+        path.chmod(0o600)
+        node_dir = self.world.home / 'private-node'
+        node_dir.mkdir(mode=0o700)
+        node = node_dir / 'node'
+        shutil.copyfile(Path(shutil.which('node', path=self.world.env['PATH'])).resolve(), node)
+        node.chmod(0o700)
+        self.world.env['PATH'] = str(node_dir) + os.pathsep + self.world.env['PATH']
+        before = path.read_bytes()
+        with patch.dict(os.environ, self.world.env, clear=True):
+            check_staged_native_apps(str(path), openclaw=self.world.openclaw, chosen={'notion': True})
+            self.assertEqual(path.read_bytes(), before)
+            invoke = owner._invoke
+
+            def change_candidate(binding, payload):
+                result = invoke(binding, payload)
+                path.write_bytes(path.read_bytes() + b'\n')
+                return result
+
+            with patch.object(owner, '_invoke', side_effect=change_candidate):
+                with self.assertRaisesRegex(native.NativeError, '^native-mcp-binding-changed$'):
+                    check_staged_native_apps(str(path), openclaw=self.world.openclaw, chosen={'notion': True})
+            path.write_bytes(before)
+            config['tools']['deny'] = [names[0]]
+            path.write_text(json.dumps(config))
+            with self.assertRaisesRegex(native.NativeError, '^native-app-policy-blocked$'):
+                check_staged_native_apps(str(path), openclaw=self.world.openclaw, chosen={'notion': True})
+            # Strictly fixed managed contract: even a fixture URL must not be
+            # selected by a staged internal call on behalf of the reviewed app.
+            config['mcp']['servers']['ods-notion']['url'] = self.provider.origin + '/mcp'
+            path.write_text(json.dumps(config))
+            with self.assertRaisesRegex(native.NativeError, '^native-app-contract-changed$'):
+                check_staged_native_apps(str(path), openclaw=self.world.openclaw, chosen={'notion': True})
+        self.assertEqual(self.provider.headers_seen, [])
+        self.assertEqual(self.call('status')['hasTokens'], False)
 
     @unittest.skipIf(hasattr(os, 'geteuid') and os.geteuid() == 0, 'Owner operation requires an unprivileged UID')
     def test_bound_owner_probe_rejects_drift_and_forget_requires_a_disabled_entry(self):

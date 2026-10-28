@@ -15,8 +15,10 @@ import subprocess
 import tempfile
 
 import pixel_access_mode as controller
+import native_mcp_owner
 from pixel_connections import planner, plugins as portal_plugins, state
 from pixel_connections import native_apps
+from pixel_connections.native_mcp import NativeError
 
 JOURNAL = "connection-journal.json"
 BACKUP = "connection-before.json"
@@ -330,6 +332,14 @@ def apply_connection(config_path, gateway_target, connection_answers, *, state_d
         controller._require_idle(check_no_active_run)
         staged = controller._stage_and_validate(path, after, mode, validate, "connection apply")
         try:
+            # Static eligibility uses the actual pinned native namespace/policy
+            # before any before-image, journal or owner-file mutation. It must
+            # not acquire this already-held apply lock or contact a provider.
+            try:
+                native_mcp_owner.check_staged_native_apps(staged, openclaw=openclaw,
+                    chosen=gateway_target.get('nativeApps', {}))
+            except NativeError as error:
+                raise ConnectionTransactionError(error.code) from None
             controller._require_idle(check_no_active_run, staged)
             controller._atomic_write(os.path.join(sd, BACKUP), before, 0o600, durable=True)
             for name, backup_name in SIDE_FILES:

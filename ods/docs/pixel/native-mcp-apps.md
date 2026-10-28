@@ -32,8 +32,13 @@ and [security guidance](https://developers.notion.com/guides/mcp/mcp-security-be
   new agent allowlist restricts implicit MCP access while retaining core groups,
   the reviewed ODS plugin families and existing explicit global grants. Native
   profile, provider, sandbox and deny layers still apply. A preexisting explicit
-  agent allowlist is preserved and can prevent activation; the future controller
-  must prove effective access rather than override it.
+  agent allowlist is preserved and can prevent activation. Before writing, the
+  owner transaction qualifies the staged configuration through the pinned
+  native namespace, materializer and effective policy, using the configured
+  default model and actual sandbox mode. It projects only inventory tools,
+  without contacting a provider or reading credentials. A refusal leaves all
+  three owner files and previous completion intact. Static eligibility still
+  requires a live readiness check after activation; it is not a connection claim.
 - Existing additive agent policies require review before activation. Registry
   keys that need native sanitization also require review, preventing another
   server from borrowing a managed app's qualified names. Neither is silently

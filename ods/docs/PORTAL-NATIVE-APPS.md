@@ -25,6 +25,7 @@ owner-side operations to OpenClaw:
 | `complete` | `authorized` | OpenClaw exchanged the code. The custodian must validate and claim the callback first. |
 | `forget` | `forgotten: true` | The native local credential file was removed. Provider consent and an active gateway's cached credentials are separate. |
 | `probe` | Reachability, effective permission and a fixed reason, scoped to `pixel-owner-default` | Checks the exact filtered tools with native policy and the configured default model. It executes no content tool and does not certify every conversation/provider context. |
+| `preflight` | Static policy eligibility, scoped to `pixel-owner-default` | The owner connection transaction checks a private staged candidate before writing. It opens no server and accesses no credentials; it does not prove connectivity. This is not a public worker operation. |
 
 OpenClaw performs discovery, dynamic registration, PKCE, token storage and token
 refresh. There is no public MCP OAuth SDK export at version `2026.6.33`, so this
@@ -88,9 +89,14 @@ The result distinguishes unavailable tools from policy blocks without returning
 server launch parameters, descriptions, account content or credentials.
 It projects the full native server namespace, including enabled plugin bundles,
 and refuses a selected name changed by native sanitization before contacting any
-server. The enrollment controller must qualify that namespace before granting
-tools as well as checking readiness after activation; that public wiring remains
-unfinished.
+server. The owner connection transaction now also qualifies the staged native
+namespace and effective policy before granting tools. It projects the exact
+reviewed names as native inventory-only tools, without contacting a provider,
+registering a client or reading credentials. Failure leaves configuration,
+environment, onboarding and the previous completion receipt intact. Withdrawal
+does not require a new positive eligibility check; rollback uses the original
+configuration validator. The public enrollment wiring and post-activation
+readiness journey remain unfinished.
 
 `check_access` joins that check to fresh Root runtime proof and rechecks both the
 configuration binding and runtime revision afterward. `forget_disabled` also
