@@ -148,9 +148,9 @@ and final counts presentation succeeded.
 The subsequent 4.3.39 Source change closes this argument defect in controlled
 plugin and actual pinned-dispatcher tests: the incorrect `max` refuses before
 projection access, and `maxResults: 1` reads one synthetic record. Five new
-regressions fail against the previous code. This does not yet establish that an
-installed model will make or repair the intended bounded call; the earlier
-scheduled failure remains part of the acceptance record.
+regressions fail against the previous code. Those controlled checks alone do
+not establish that an installed model will make or repair the intended bounded
+call; the earlier scheduled failure remains part of the acceptance record.
 
 The ordinary installed upgrade from `9d9658f57` then completed with 4.3.39/source
 `a06abf217a351206b236f66ba31ce3d7450aab19`, including the joined Google admission
@@ -184,13 +184,33 @@ The Email guide now explicitly explains `maxResults`, the existing default
 page and minimal counts-only reads. Its ordinary same-source installed update
 from `9018a1409` completed with the original read-only grant, protected native
 programs and model configuration preserved; temporary QA delegation was absent.
-Repeating the unchanged natural-language request in chat produced an initial
-Gmail error, schema description and a successful retry. Complete saved content
-confirms one summary in the successful Inbox result and zero Calendar events
+Repeating the unchanged natural-language request in chat produced a correct
+refusal of an undeclared argument, schema description and a successful retry.
+The declared `maxResults: 1` was valid in both calls; the retry removed the extra
+argument. Complete saved content confirms one summary in the successful Inbox
+result and zero Calendar events
 over an aware, exactly seven-day interval. The final answer disclosed that the
-email index was partial. A scheduled follow-up with this guide remains open;
-this observed chat recovery does not qualify arbitrary requests or turn model
-guidance into an enforced per-run reading limit.
+email index was partial.
+
+The same unchanged request then completed as a one-time native task created
+through the installed authenticated Root owner contract. It searched, described
+both tools and made one successful Inbox call with `maxResults: 1` and one
+Calendar call over exactly seven days, without tool errors. Complete saved
+results confirm one email summary and zero events. Normal removal archived
+only that QA task and retained its result. This follow-up qualifies the model
+and native scheduling path, not a new browser/UI run: browser control was
+unavailable. These observations do not qualify arbitrary requests or turn model
+guidance into an enforced per-run reading limit; the earlier cron omission
+remains negative evidence.
+
+Passive observation also qualifies normal refresh of the installed read-only
+Google grant. The deployed broker matches the reviewed code, which obtains an
+access token from the stored refresh grant before each ingestion invocation.
+New successful Gmail/Calendar timestamps from ordinary timer cycles were linked
+to the unchanged original grant and the same active gateway identity. No test
+reauthorization, forced expiry, service restart or credential replacement was
+needed. This proves continued reads through normal refresh, not revocation,
+grant expiry/failure recovery, disconnect/reconnect or complete Gmail coverage.
 
 Installed Connected apps also fetched the reviewed catalog through the actual
 Dashboard/host/Root path and displayed **Apps for Portal → Notion → Not
@@ -287,7 +307,8 @@ earlier checks on #8226 do not certify this branch.
   they do not certify a real Notion account or native Mac execution.
 - One complete installed UI journey for connection, chat, background result,
   permission withdrawal, update and rollback, beyond the component lanes.
-- Real-provider refresh and disconnect; real Calendar and draft actions;
+- Real-provider disconnect/reconnect and refresh failure/revocation recovery;
+  real Calendar and draft actions;
   honest distinctions between saved, signed in, reachable and usable by Portal.
   Token presence alone is insufficient. Read-only consent and the scoped reads
   above do not establish these other lifecycles.

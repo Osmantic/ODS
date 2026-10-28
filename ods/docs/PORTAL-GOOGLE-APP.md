@@ -18,6 +18,12 @@ The repository already uses `osmantic.com` for its project site and
 the proposed publication domain; buying another domain is not a prerequisite.
 Registering a Cloud project does not verify domain ownership or publish an app.
 
+The site already publishes `contact@osmantic.com` as a contact; its use as app
+support still needs maintainer confirmation. The privacy link found beside the
+contact form is Formspree's policy, not a Portal Google-data policy. A
+[maintainer notice draft](PORTAL-GOOGLE-DATA-NOTICE-DRAFT.md) records the actual
+local/cloud data paths and the publication details still requiring review.
+
 Project names, IDs and numbers identify the application; they are not user
 tokens or a grant to read mail. The project creator is its initial administrator,
 so production ownership should be shared with the responsible maintainers and
