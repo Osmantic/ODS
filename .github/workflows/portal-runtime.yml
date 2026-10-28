@@ -189,7 +189,9 @@ jobs:
         shell: bash
         env:
           OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
-        run: node --test ods/extensions/services/pixel-agent/tests/runtime_exec_completion.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_exec_guidance_history.integration.mjs
+        # Both files create cold native gateways; run them in sequence so the
+        # macOS runner's startup budget measures the runtime without contention.
+        run: node --test --test-concurrency=1 ods/extensions/services/pixel-agent/tests/runtime_exec_completion.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_exec_guidance_history.integration.mjs
       - name: Verify every Pixel chat reaches the real provider with one system prompt
         if: runner.os != 'Windows'
         shell: bash

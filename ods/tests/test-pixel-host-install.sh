@@ -3568,7 +3568,9 @@ assert "--state-dir \"$home/.openclaw/ods-runtime-patches/sandbox-mkdir-$mkdir_m
 managed.extend(["sandbox-mkdir-bridge", "sandbox-mkdir-secure"])
 known = installer[foreign_restore:own_repair].split("--known", 1)[1].split(">>", 1)[0]
 assert sorted(known.replace("\\", " ").split()) == sorted(managed)
-assert len(set(managed)) == len(managed) == 23
+assert len(set(managed)) == len(managed) == 24
+assert "direct-tool-completion" in managed
+assert "host/openclaw-direct-tool-completion.json" in installer
 assert "no-tools-ingress" in managed
 assert {"context-usage", "yield-usage", "compaction-empty", "compaction-no-work", "subagent-admission", "hook-provenance", "run-id-redaction"}.issubset(managed)
 assert "utf8-output" in managed
