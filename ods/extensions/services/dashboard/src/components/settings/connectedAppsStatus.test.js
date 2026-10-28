@@ -59,12 +59,25 @@ describe('ordinary and Advanced Google sign-in', () => {
     expect(card.message).toBe('Google no longer accepts this connection.')
     expect(card.fix).not.toMatch(/publish|Cloud|file|project/)
     const pending = googleCard(statusFor({pending: {phase: 'failed', error: 'client-invalid'}}, {catalog}), NOW)
-    expect(pending.step.message).toBe("Google isn't accepting ODS sign-in right now.")
+    expect(pending.step.message).toBe("Google couldn't finish this sign-in.")
     expect(pending.step.fix).not.toMatch(/file|project/)
     expect(connectionProblem({code: 'client-invalid', message: 'Upload the client JSON file.'}, 'managed').message)
       .toBe("Google isn't accepting ODS sign-in right now.")
     expect(connectionProblem({code: 'client-invalid', message: 'Upload the client JSON file.'}, 'advanced').message)
       .toBe('Upload the client JSON file.')
+  })
+
+  it('does not confuse the old Advanced account with a newly failed sign-in attempt', () => {
+    const catalog = [{...GOOGLE_CATALOG, auth: auth('configured')}]
+    for (const error of ['client-invalid', 'redirect-mismatch', 'api-disabled']) {
+      const card = googleCard(statusFor({state: 'connected', authMode: 'advanced',
+        pending: {phase: 'failed', error}}, {catalog}), NOW)
+      expect(card.chip).toBe('Connected')
+      expect(card.step.message).toBe("Google couldn't finish this sign-in.")
+      expect(card.step.fix).not.toMatch(/file|project|Cloud/)
+      expect(card.step.help).toBe(true)
+      expect(card.actions).toContain('sync')
+    }
   })
 })
 

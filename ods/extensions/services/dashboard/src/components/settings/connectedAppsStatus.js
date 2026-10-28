@@ -190,7 +190,15 @@ function pendingView(pending, now, mode) {
       ? {kind: 'waiting', tone: 'progress', message: 'A Google sign-in is open. Finish it in its tab, or start again.', fix: null, help: false, actions: ['connect']}
       : {kind: 'expired', tone: 'neutral', message: 'That sign-in took too long and expired.', fix: 'Start again.', help: false, actions: ['connect']}
   }
-  if (pending.phase === 'failed') return {kind: 'failed', tone: 'error', ...signInProblem(pending.error, mode), actions: ['connect']}
+  if (pending.phase === 'failed') {
+    // The current account may still use a different app from this failed
+    // attempt. With no attempt mode in public status, never prescribe a client
+    // file/project based on the account's older authorization.
+    const problem = mode === 'unknown' && ['client-invalid', 'redirect-mismatch', 'api-disabled'].includes(pending.error)
+      ? {message: "Google couldn't finish this sign-in.", fix: 'Try again, or ask for help with this connection.', help: true}
+      : signInProblem(pending.error, mode === 'unknown' ? 'advanced' : mode)
+    return {kind: 'failed', tone: 'error', ...problem, actions: ['connect']}
+  }
   const action = pending.phase === 'activating' ? "Bringing Portal's calendar and email tools up to date." : 'Removing your calendar and email from Portal.'
   if (!pending.error && !stalled(pending, now)) return {kind: 'updating', tone: 'progress', message: action, fix: null, help: false, actions: []}
   return {kind: 'update-stopped', tone: 'warn', ...explain(UPDATE, UPDATE_FALLBACK, pending.error ?? 'stalled'), actions: ['finish']}
@@ -216,7 +224,8 @@ export function googleCard(status, now = Date.now()) {
     ? signInProblem(reason, mode) : explain(REASONS, REASON_FALLBACK, reason))
   if (google.state === 'first-sync') card.message = 'Portal is reading your calendar and email for the first time. A large mailbox takes a while.'
   if (google.pending) {
-    card.step = pendingView(google.pending, now, mode)
+    const auth = status.catalog?.find(entry => entry.id === 'google')?.auth
+    card.step = pendingView(google.pending, now, googleSignInOptions(auth).legacy ? 'advanced' : 'unknown')
   } else if (status.reason === 'journal-unusable') {
     card.step = {kind: 'update-stopped', tone: 'warn', message: 'ODS lost track of an unfinished step.',
       fix: 'Press Finish to bring Portal up to date.', help: false, actions: ['finish']}
