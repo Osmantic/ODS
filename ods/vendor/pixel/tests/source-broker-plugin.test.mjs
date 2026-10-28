@@ -190,6 +190,85 @@ test("email answers carry their source's sync state and tolerate a missing statu
   assert.equal((await call(tools, "pixel_gmail_inbox", {})).sync, null);
 });
 
+function emailProjection(overrides = {}) {
+  const folder = (query) => ({ query, completeWithinQuery: true, truncated: false, resultSizeEstimate: 999999 });
+  return { schemaVersion: 1, source: "gmail", enabled: true, generatedAt: iso(0), startedAt: iso(0),
+    sanitizerRevision: 2, boundary, recordCount: 3,
+    records: [
+      { id: "in-a", threadId: "thread-a", mailboxes: ["inbox"], labelIds: ["INBOX"], summary: "Synthetic first summary.", retainedFromEarlierScan: false },
+      { id: "in-b", threadId: "thread-a", mailboxes: ["inbox"], labelIds: ["INBOX"], summary: "Synthetic second summary.", retainedFromEarlierScan: false },
+      { id: "sent-a", threadId: "thread-a", mailboxes: ["sent"], labelIds: ["SENT"], contentProjection: "metadata-only", retainedFromEarlierScan: false },
+    ], coverage: { bounded: true, folders: { inbox: folder("in:inbox newer_than:90d"), sent: folder("in:sent"),
+      unread: folder("in:inbox newer_than:90d is:unread") }, sync: { state: "complete", retainedRecords: 0 } },
+    ...overrides };
+}
+
+test("Gmail pages frontload unknown mailbox totals even after exhausting the current partial index", async (t) => {
+  const email = emailProjection();
+  email.coverage.sync = { state: "in-progress", retainedRecords: 1 };
+  email.coverage.folders.sent.completeWithinQuery = false;
+  email.records[0].retainedFromEarlierScan = true;
+  const directory = await withProjections(t, { email });
+  const before = await readFile(join(directory, "email.json"), "utf8");
+  const tools = await loadPlugin({ PIXEL_LIMB_WEB_ENABLED: "0", PIXEL_SOURCE_PROJECTION_DIR: directory });
+  for (const [name, params, matches] of [
+    ["pixel_gmail_inbox", {}, 2], ["pixel_gmail_search", { query: "in:inbox" }, 2],
+    ["pixel_gmail_sent", {}, 1], ["pixel_gmail_thread", { threadId: "thread-a" }, 3],
+  ]) {
+    const response = await tools.get(name).execute("count-fixture", { ...params, maxResults: 1 });
+    assert.equal(response.isError, undefined);
+    const result = response.details;
+    assert.equal(Object.keys(result)[0], "counting");
+    assert.equal(result.count, 1);
+    assert.equal(result.hasMore, matches > 1);
+    assert.equal(result.totalMatches, matches);
+    assert.equal(result.counting.indexedMatches, matches);
+    assert.equal(result.counting.mailboxTotal, null);
+    assert.equal(result.counting.canAnswerMailboxTotal, false);
+    assert.equal(result.counting.state, "partial-index");
+    assert.equal(result.counting.freshness, "fresh");
+    assert.ok(response.content[0].text.indexOf('"mailboxTotal"') < response.content[0].text.indexOf('"totalMatches"'));
+  }
+  const last = await call(tools, "pixel_gmail_inbox", { maxResults: 1, offset: 1 });
+  assert.equal(last.count, 1);
+  assert.equal(last.totalMatches, 2);
+  assert.equal(last.hasMore, false);
+  assert.equal(last.counting.state, "partial-index");
+  assert.equal(last.counting.mailboxTotal, null);
+  assert.equal(await readFile(join(directory, "email.json"), "utf8"), before);
+});
+
+test("fresh complete Gmail results describe only their configured query snapshot", async (t) => {
+  const directory = await withProjections(t, { email: emailProjection() });
+  const tools = await loadPlugin({ PIXEL_LIMB_WEB_ENABLED: "0", PIXEL_SOURCE_PROJECTION_DIR: directory });
+  const first = await call(tools, "pixel_gmail_inbox", { maxResults: 1 });
+  assert.equal(first.hasMore, true);
+  assert.equal(first.counting.state, "complete-within-configured-queries");
+  assert.match(first.counting.notice, /hasMore means more pages.*not incomplete synchronization/);
+  const result = await call(tools, "pixel_gmail_inbox", { maxResults: 1, offset: 100 });
+  assert.equal(result.count, 0);
+  assert.equal(result.totalMatches, 2);
+  assert.equal(result.counting.state, "complete-within-configured-queries");
+  assert.deepEqual(result.counting.configuredQueries, [{ folder: "inbox", query: "in:inbox newer_than:90d" }]);
+  assert.equal(result.counting.mailboxTotal, null);
+  assert.match(result.counting.notice, /projected fields only/);
+});
+
+test("stale or unqualified Gmail snapshots cannot certify current absence", async (t) => {
+  for (const [email, expected] of [
+    [emailProjection({ generatedAt: iso(-1) }), "stale-index"],
+    [emailProjection({ coverage: { bounded: true, folders: {} } }), "coverage-unknown"],
+  ]) {
+    const directory = await withProjections(t, { email });
+    const tools = await loadPlugin({ PIXEL_LIMB_WEB_ENABLED: "0", PIXEL_SOURCE_PROJECTION_DIR: directory });
+    const result = await call(tools, "pixel_gmail_search", { query: "subject:missing" });
+    assert.equal(result.count, 0);
+    assert.equal(result.counting.state, expected);
+    assert.equal(result.counting.mailboxTotal, null);
+    assert.match(result.counting.notice, /current absence is not established/);
+  }
+});
+
 test("a missing source argument gives a repairable error before projection access", async (t) => {
   const directory = await withProjections(t, {}); // No projection exists to read.
   const tools = await loadPlugin({ PIXEL_LIMB_WEB_ENABLED: "0", PIXEL_SOURCE_PROJECTION_DIR: directory });
