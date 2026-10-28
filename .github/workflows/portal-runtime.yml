@@ -111,6 +111,11 @@ jobs:
         env:
           OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: python3 ods/extensions/services/pixel-agent/tests/test_native_mcp_oauth.py
+      - name: Verify direct native tools complete admission across success, errors and overlapping IDs
+        if: runner.os == 'Linux'
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: python3 ods/extensions/services/pixel-agent/tests/test_native_direct_tool_completion.py
       - name: Verify concurrent workspace creation and no-follow boundaries
         if: runner.os != 'Windows'
         env:

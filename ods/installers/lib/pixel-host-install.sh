@@ -5617,6 +5617,7 @@ ods_pixel_install_default_agent() {
         && -f "$plugin_root/host/openclaw-yield-usage.json" \
         && -f "$plugin_root/host/openclaw-compaction-empty.json" \
         && -f "$plugin_root/host/openclaw-compaction-no-work.json" \
+        && -f "$plugin_root/host/openclaw-direct-tool-completion.json" \
         && -f "$plugin_root/host/openclaw-subagent-admission.json" \
         && -f "$plugin_root/host/openclaw-subagent-session.json" \
         && -f "$plugin_root/host/openclaw-hook-provenance.json" \
@@ -6087,7 +6088,7 @@ ods_pixel_install_default_agent() {
         --restore-foreign "$home/.openclaw/ods-runtime-patches" \
         --known tool-recovery completion-recovery image-envelope compaction-export \
             compaction-idle compaction-resume read-range tool-result-projection \
-            diagnostic-stream-writes command-attempt-warning utf8-output compaction-budget context-usage no-tools-ingress yield-usage compaction-empty compaction-no-work subagent-admission subagent-session hook-provenance run-id-redaction sandbox-mkdir-bridge sandbox-mkdir-secure \
+            diagnostic-stream-writes command-attempt-warning utf8-output direct-tool-completion compaction-budget context-usage no-tools-ingress yield-usage compaction-empty compaction-no-work subagent-admission subagent-session hook-provenance run-id-redaction sandbox-mkdir-bridge sandbox-mkdir-secure \
         >>"$pixel_log" 2>&1; then
         ai_bad "Pixel could not restore OpenClaw runtime patches left by another ODS build. See $pixel_log."
         return 1
@@ -6307,6 +6308,16 @@ ods_pixel_install_default_agent() {
         --state-dir "$home/.openclaw/ods-runtime-patches/compaction-no-work" \
         >>"$pixel_log" 2>&1; then
         ai_bad "Pixel's compaction-no-work repair could not verify its package bytes. See $pixel_log."
+        return 1
+    fi
+    # Direct native HTTP/RPC tool calls must complete the same lifecycle hooks
+    # as an embedded agent call, including on execution errors.
+    if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+        "$plugin_root/host/openclaw_tool_recovery.py" \
+        --openclaw-bin "$openclaw_bin" --direct-tool-completion \
+        --state-dir "$home/.openclaw/ods-runtime-patches/direct-tool-completion" \
+        >>"$pixel_log" 2>&1; then
+        ai_bad "Pixel's direct-tool completion repair could not verify its package bytes. See $pixel_log."
         return 1
     fi
     # OpenClaw persists plugin descriptors separately from its live config.

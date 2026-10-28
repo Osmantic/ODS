@@ -258,7 +258,7 @@ export function createAccessRuntime({directory = path.join(os.homedir(), '.openc
   // Other releases keep normal guard behavior, but cannot change access until
   // their hook coverage is qualified. Held state always continues to block.
   const qualified = runtimeVersion === '2026.6.33' && hooksAllowed === true;
-  const runs = new Set(), tools = new Set(), detached = new Map(), internalRuns = new Set();
+  const runs = new Set(), tools = new Map(), detached = new Map(), internalRuns = new Set();
   const transitionFailures = new WeakMap();
   const transitionError = code => {
     const failure = new Error('runtime transition refused');
@@ -457,9 +457,10 @@ export function createAccessRuntime({directory = path.join(os.homedir(), '.openc
     return processCheck;
   }
   function status() {
+    const toolCount = [...tools.values()].reduce((total, count) => total + count, 0);
     return {available: !failed && qualified, phase: failed ? 'unavailable' : state.phase,
-      revision: failed ? null : state.revision, active: runs.size + tools.size + detached.size,
-      activity: {runs: runs.size, tools: tools.size, detached: detached.size},
+      revision: failed ? null : state.revision, active: runs.size + toolCount + detached.size,
+      activity: {runs: runs.size, tools: toolCount, detached: detached.size},
       pid: process.pid, runtime_version: runtimeVersion, proof, probe_failure: probeFailure,
       initialization_failure: initializationFailure,
       qualification_failure: qualified ? null : runtimeVersion !== '2026.6.33' ? 'runtime-version' : 'conversation-hooks'};
@@ -479,12 +480,21 @@ export function createAccessRuntime({directory = path.join(os.homedir(), '.openc
     if (isInternal(context)) return;
     if (failed || ['held','interrupted'].includes(state.phase)) return {block: true, blockReason: blocked().message};
     // Missing identities cannot be paired safely; fail closed before execution.
-    if (!event?.toolCallId) return {block: true, blockReason: 'Tool identity unavailable during access coordination.'};
-    tools.add(event.toolCallId); state.phase = 'busy'; changed();
+    if (typeof event?.toolCallId !== 'string' || !event.toolCallId) return {block: true, blockReason: 'Tool identity unavailable during access coordination.'};
+    const scope = context?.runId ?? event?.runId ?? null;
+    const key = JSON.stringify([scope, event.toolCallId]);
+    // Embedded hooks may observe the same scoped call more than once. Direct
+    // RPC/HTTP calls have no run ID and may overlap with a reused native
+    // idempotency key; each completed invocation releases only its own count.
+    tools.set(key, scope === null ? (tools.get(key) ?? 0) + 1 : 1);
+    state.phase = 'busy'; changed();
   }
   function afterTool(event, context) {
     if (isInternal(context)) return;
-    tools.delete(event?.toolCallId);
+    const key = JSON.stringify([context?.runId ?? event?.runId ?? null, event?.toolCallId]);
+    const count = tools.get(key) ?? 0;
+    if (count > 1) tools.set(key, count - 1);
+    else tools.delete(key);
     const detail = event?.result?.details;
     let detachedChanged = false;
     if (event?.toolName === 'exec' && detail?.status === 'running' && detail.sessionId) {

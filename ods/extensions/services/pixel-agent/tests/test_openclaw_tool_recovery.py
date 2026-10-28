@@ -69,6 +69,55 @@ def test_unrecognized_module_cannot_expand_repair_targets(installation):
     assert not installation[1].exists()
 
 
+@pytest.fixture
+def direct_installation(installation):
+    runtime, _, manifest, module, *_ = installation
+    module.rename(module.with_name(repair_module.DIRECT_TOOL_MODULE))
+    value = json.loads(manifest.read_text())
+    value['reviewedDependencies'] = {}
+    for name in repair_module.DIRECT_TOOL_DEPENDENCIES:
+        raw = ('reviewed dependency ' + name).encode()
+        (runtime / 'dist' / name).write_bytes(raw)
+        value['reviewedDependencies'][name] = hashlib.sha256(raw).hexdigest()
+    manifest.write_text(json.dumps(value))
+    return installation
+
+
+def test_direct_completion_repairs_reapply_restore_and_recheck_dependencies(direct_installation):
+    runtime, state, _, module, original, patched = direct_installation
+    module = module.with_name(repair_module.DIRECT_TOOL_MODULE)
+    assert run(direct_installation, module_name=repair_module.DIRECT_TOOL_MODULE)['status'] == 'changed'
+    assert module.read_bytes() == patched
+    assert run(direct_installation, module_name=repair_module.DIRECT_TOOL_MODULE)['status'] == 'unchanged'
+    dependency = runtime / 'dist' / sorted(repair_module.DIRECT_TOOL_DEPENDENCIES)[0]
+    previous = dependency.read_bytes()
+    dependency.write_bytes(b'unreviewed implementation')
+    with pytest.raises(ValueError, match='dependency differs'):
+        run(direct_installation, module_name=repair_module.DIRECT_TOOL_MODULE)
+    assert module.read_bytes() == patched
+    dependency.write_bytes(previous)
+    assert run(direct_installation, module_name=repair_module.DIRECT_TOOL_MODULE, restore=True)['status'] == 'changed'
+    assert module.read_bytes() == original and (state / 'receipt.json').exists()
+
+
+@pytest.mark.parametrize('fault', ['missing', 'changed', 'extra-contract'])
+def test_direct_completion_unreviewed_dependency_never_publishes(direct_installation, fault):
+    runtime, state, manifest, module, original, _ = direct_installation
+    dependency = runtime / 'dist' / sorted(repair_module.DIRECT_TOOL_DEPENDENCIES)[0]
+    if fault == 'missing':
+        dependency.unlink()
+    elif fault == 'changed':
+        dependency.write_bytes(b'unreviewed implementation')
+    else:
+        value = json.loads(manifest.read_text())
+        value['reviewedDependencies']['other.js'] = 'a' * 64
+        manifest.write_text(json.dumps(value))
+    with pytest.raises((ValueError, FileNotFoundError)):
+        run(direct_installation, module_name=repair_module.DIRECT_TOOL_MODULE)
+    assert module.with_name(repair_module.DIRECT_TOOL_MODULE).read_bytes() == original
+    assert not (state / 'receipt.json').exists()
+
+
 def test_apply_reapply_restore_preserve_bytes_permissions_and_backup(installation):
     _, state, _, module, original, patched = installation
     assert run(installation)["status"] == "changed"
