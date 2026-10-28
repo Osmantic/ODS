@@ -9,8 +9,9 @@
 #           GPU_VRAM, GPU_NAME, GPU_COUNT, INTERACTIVE, DRY_RUN,
 #           PREFLIGHT_REPORT_FILE, CAP_PLATFORM_ID, CAP_COMPOSE_OVERLAYS,
 #           ENABLE_VOICE, ENABLE_WORKFLOWS, ENABLE_RAG, ENABLE_QDRANT,
-#           INSTALL_DIR, external_llm_env_value(),
-#           tier_rank(), chapter(), ai_ok(), ai_bad(), ai_warn(), log(), warn()
+#           INSTALL_DIR, EXTERNAL_LLM_URL, ODS_GATEWAY_ONLY, external_llm_env_value(),
+#           ods_gpu_memory_in_use_report() (installers/lib/detection.sh),
+#           tier_rank(), chapter(), ai(), ai_ok(), ai_bad(), ai_warn(), log(), warn()
 # Provides: REQUIREMENTS_MET, TIER_RANK, WHISPER_PORT (only when the
 #           generated default 9000 moves; phase 06 persists it)
 #
@@ -158,6 +159,30 @@ if [[ -z "${EXTERNAL_LLM_URL:-}" ]] && ! ods_native_llm_requested \
     else
         ai_ok "Disk: ${DISK_AVAIL}GB available (selected model needs ~${_model_needed_gb}GB)"
     fi
+fi
+
+# A fresh install sizes its model and services for each GPU's whole memory.
+# Say so when other programs already hold much of it, before anything
+# downloads. A rerun's own model holds memory, and an external, host-native
+# or cloud model runs nothing on these GPUs, so only a fresh local install
+# checks.
+if [[ "${GPU_BACKEND:-}" == "nvidia" && ! -f "$INSTALL_DIR/.env" && -z "${EXTERNAL_LLM_URL:-}" \
+      && "${ODS_GATEWAY_ONLY:-false}" != true && "${TIER:-}" != "CLOUD" ]] \
+      && ! ods_native_llm_requested && command -v nvidia-smi >/dev/null 2>&1 \
+      && declare -F ods_gpu_memory_in_use_report >/dev/null 2>&1; then
+    # A warning only: report what nvidia-smi printed even when it then fails.
+    _gpu_memory_rows="$(nvidia-smi --query-gpu=index,memory.total,memory.used \
+        --format=csv,noheader,nounits 2>>"$LOG_FILE")" || log "nvidia-smi exited $? while listing GPU memory"
+    _gpu_memory_in_use="$(printf '%s\n' "$_gpu_memory_rows" | ods_gpu_memory_in_use_report)"
+    if [[ -n "$_gpu_memory_in_use" ]]; then
+        ai_warn "Other programs already use GPU memory:"
+        while IFS= read -r _gpu_line; do
+            ai "  $_gpu_line"
+        done <<< "$_gpu_memory_in_use"
+        ai "  ODS sizes its model and services for each GPU's whole memory: stop those programs before ODS starts, or its model may not load."
+        log "GPU memory in use before install: ${_gpu_memory_in_use//$'\n'/; }"
+    fi
+    unset _gpu_memory_rows _gpu_memory_in_use _gpu_line
 fi
 
 # Port conflict detection with process details
