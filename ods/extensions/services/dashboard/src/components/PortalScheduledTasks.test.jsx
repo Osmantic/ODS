@@ -1,4 +1,4 @@
-import {act,fireEvent,render,screen,waitFor} from '@testing-library/react'
+import {act,fireEvent,render,screen,waitFor,within} from '@testing-library/react'
 import {webcrypto} from 'node:crypto'
 import PortalScheduledTasks from './PortalScheduledTasks'
 
@@ -163,7 +163,7 @@ it('clears an old result during refresh and ignores a reply after unmount',async
   expect(screen.queryByLabelText('Scheduled tasks')).not.toBeInTheDocument()
 })
 
-it('treats summaries as text and reports shortened results',async()=>{
+it('keeps HTML in summaries inert and reports shortened results',async()=>{
   jobs=[job()]
   const normal=fetch.getMockImplementation()
   fetch.mockImplementation(async(url,options)=>{
@@ -176,6 +176,55 @@ it('treats summaries as text and reports shortened results',async()=>{
   expect(await screen.findByText('<img src="https://example.invalid/private">')).toBeVisible()
   expect(document.querySelector('img')).toBeNull()
   expect(screen.getByText('This summary was shortened for display.')).toBeVisible()
+})
+
+it('renders a saved Google count summary with emphasis and lists immediately',async()=>{
+  jobs=[job()]
+  const normal=fetch.getMockImplementation()
+  const summary='**Resumo:**\n\n- **Gmail:** 12 emails indexados (índice parcial; total da caixa postal indisponível).\n- **Google Calendar (próximos 7 dias):** 0 eventos.\n\nLimitação: a contagem total não está disponível.'
+  fetch.mockImplementation(async(url,options)=>{
+    const request=JSON.parse(options.body)
+    if(request.action==='runs') {calls.push(request);const body=runs(request.id);body.items[0].summary=summary;return reply(body)}
+    return normal(url,options)
+  })
+  render(<PortalScheduledTasks/>)
+  fireEvent.click(await screen.findByRole('button',{name:/Morning agenda.*Daily/}))
+  const heading=await screen.findByText('Resumo:')
+  const result=heading.closest('article')
+  expect(heading.closest('strong')).not.toBeNull()
+  expect(within(result).getByText('Gmail:').closest('strong')).not.toBeNull()
+  expect(within(result).getAllByRole('listitem')).toHaveLength(2)
+  expect(result).toHaveTextContent('12 emails indexados')
+  expect(result).toHaveTextContent('0 eventos.')
+  expect(result).toHaveTextContent('Limitação: a contagem total não está disponível.')
+  expect(result).not.toHaveTextContent('**')
+  expect(result.querySelector('.portal-streaming-text')).toHaveAttribute('aria-busy','false')
+  expect(calls.map(item=>item.action)).toEqual(['list','runs'])
+})
+
+it('uses Portal link safety and keeps summary images and raw HTML inactive',async()=>{
+  jobs=[job()]
+  const normal=fetch.getMockImplementation()
+  const summary='[Docs](https://docs.example.invalid/guide) [Unsafe](javascript:alert%281%29) [Local](file:///private/notes)\n\n![Synthetic chart](https://example.invalid/private-image)\n\n<script>alert("untrusted")</script>\n\n```html\n<img src="https://example.invalid/code-example">\n```'
+  fetch.mockImplementation(async(url,options)=>{
+    const request=JSON.parse(options.body)
+    if(request.action==='runs') {calls.push(request);const body=runs(request.id);body.items[0].summary=summary;return reply(body)}
+    return normal(url,options)
+  })
+  render(<PortalScheduledTasks/>)
+  fireEvent.click(await screen.findByRole('button',{name:/Morning agenda.*Daily/}))
+  const link=await screen.findByRole('link',{name:/Docs/})
+  expect(link).toHaveAttribute('href','https://docs.example.invalid/guide')
+  expect(link).toHaveAttribute('target','_blank')
+  expect(link).toHaveAttribute('rel','noopener noreferrer')
+  const result=link.closest('article')
+  expect(within(result).getAllByRole('link')).toHaveLength(1)
+  expect(within(result).getByText('Unsafe')).toBeVisible()
+  expect(within(result).getByText('Local')).toBeVisible()
+  expect(within(result).getByText('Synthetic chart')).toBeVisible()
+  expect(result.querySelector('script,img,iframe')).toBeNull()
+  expect(result.querySelector('pre code')).toHaveTextContent('<img src="https://example.invalid/code-example">')
+  expect(calls.map(item=>item.action)).toEqual(['list','runs'])
 })
 
 it('does not send instructions that exceed the runtime byte limit',async()=>{

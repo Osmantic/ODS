@@ -34,8 +34,20 @@
 .portal-schedules-instructions { white-space:pre-wrap; overflow-wrap:anywhere; margin:18px 0!important; }
 .portal-schedules-result { padding:14px 0; }
 .portal-schedules-result header { font-size:11px; gap:10px; color:rgb(var(--theme-text-muted)); }
-.portal-schedules-result strong { color:rgb(var(--theme-text-secondary)); font-weight:500; }
-.portal-schedules-result p { white-space:pre-wrap; overflow-wrap:anywhere; margin-top:14px; }
+.portal-schedules-result header strong { color:rgb(var(--theme-text-secondary)); font-weight:500; }
+.portal-schedules-result .portal-streaming-text { margin-top:14px; line-height:1.6; }
+.portal-schedules-result .portal-streaming-text :is(p,ol,ul) { margin:0 0 10px; }
+.portal-schedules-result .portal-streaming-text p { white-space:pre-wrap; }
+.portal-schedules-result .portal-streaming-text > :last-child { margin-bottom:0; }
+.portal-schedules-result .portal-streaming-text ol { list-style:decimal; padding-left:20px; }
+.portal-schedules-result .portal-streaming-text ul { list-style:disc; padding-left:20px; }
+.portal-schedules-result .portal-streaming-text strong { color:rgb(var(--theme-text-secondary)); font-weight:600; }
+.portal-schedules-result .portal-streaming-text pre { max-width:100%; overflow:auto; margin:12px 0; padding:12px; border-radius:8px; background:rgb(var(--theme-text) / .04); font-size:12px; }
+.portal-schedules-result .portal-streaming-text pre code { white-space:pre; }
+.portal-schedules-result .portal-streaming-text table { display:block; max-width:100%; overflow:auto; border-collapse:collapse; }
+.portal-schedules-result .portal-streaming-text :is(th,td) { padding:4px 8px; text-align:left; }
+.portal-schedules-result .portal-streaming-text :is(h1,h2,h3,h4,h5,h6) { font-size:1.1em; font-weight:600; margin:14px 0 8px; }
+.portal-schedules-image { color:rgb(var(--theme-text-muted)); font-style:italic; }
 .portal-schedules-result small { display:block; margin-top:12px; color:rgb(var(--theme-text-muted)); }
 .portal-schedules-loading { color:rgb(var(--theme-text-muted)); font-size:12px; }
 @container portal-workbench (max-width:420px) { .portal-schedules { padding:16px; }.portal-schedules-next { max-width:100px; }.portal-schedules-result header { flex-wrap:wrap; } }
