@@ -733,20 +733,16 @@ done < <(jq -r '.links[] | [.gpu_a, .gpu_b, .rank, .link_type] | @tsv' "$TOPOLOG
 # Prints nothing when the catalog is off or does not list the model (an
 # import): the assigner then splits by the weights, as before.
 _phase03_llm_fit_need_mb() {
-    local python out status=0
+    local python
     [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" ]] || return 0
     [[ -f "$SCRIPT_DIR/scripts/select-model.py" && -f "$SCRIPT_DIR/config/model-library.json" ]] || return 0
-    if ! declare -F ods_catalog_fit_check >/dev/null 2>&1; then
+    if ! declare -F ods_llm_fit_need_mb >/dev/null 2>&1; then
         # shellcheck source=/dev/null
         . "$SCRIPT_DIR/installers/lib/model-selector.sh"
     fi
     python="$(ods_model_selector_python)"
     [[ -n "$python" ]] || return 0
-    out="$(ods_catalog_fit_check "$python" "${GGUF_FILE:-${LLM_MODEL:-}}" "${MAX_CONTEXT:-0}" \
-        "${MODEL_RUNTIME_PROFILE:-}" 2>>"${LOG_FILE:-/dev/null}")" || status=$?
-    # 0: fits this host, 3: does not; either way the JSON carries the estimate.
-    [[ "$status" == 0 || "$status" == 3 ]] || return 0
-    jq -r 'if (.required_gb // 0) > 0 then (.required_gb * 1024 | ceil | tostring) else empty end' <<< "$out"
+    ods_llm_fit_need_mb "$python" "${GGUF_FILE:-${LLM_MODEL:-}}" "${MAX_CONTEXT:-0}" "${MODEL_RUNTIME_PROFILE:-}"
 }
 
 # Automatic assignment
@@ -968,6 +964,19 @@ _load_existing_gpu_assignment_json() {
 
   decoded=$(printf '%s' "$encoded" | _decode_base64_portable 2>/dev/null) || return 1
   echo "$decoded" | jq -e '.gpu_assignment.services.llama_server.gpus | length > 0' >/dev/null || return 1
+
+  # A saved assignment can predate this run's model or context (a
+  # --reselect-model rerun, the Hermes floor raising the context): reuse it
+  # only while its LLM GPUs still hold what the model needs now.
+  local fit_need_mb
+  fit_need_mb="$(_phase03_llm_fit_need_mb)"
+  if [[ -n "$fit_need_mb" ]] && ! jq -e --argjson assignment "$decoded" --argjson need "$fit_need_mb" '
+      ($assignment.gpu_assignment.services.llama_server.gpus) as $llama
+      | ([.gpus[] | select(.uuid as $u | $llama | index($u)) | .memory_gb * 1024] | add // 0) >= $need
+    ' "$TOPOLOGY_FILE" >/dev/null; then
+    log "Saved GPU assignment gives the model less memory than its ${fit_need_mb} MiB need; assigning again"
+    return 1
+  fi
 
   # Reuse only when every saved service UUID still exists in the freshly
   # detected topology. If the user changed hardware, fall back to automatic

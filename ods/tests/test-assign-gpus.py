@@ -763,6 +763,15 @@ class TestFitNeed:
         assert set(llama(out)["gpus"]) == {self.GPU0, self.GPU1}
         assert (code, out) == run(topology, 15000)[:2]
 
+    def test_a_need_that_leaves_no_headroom_splits(self):
+        # 24 GiB cards keep max(1 GiB, 3%) free: 23552 MiB fits one card,
+        # 24000 MiB (Qwen3.6 Q4 at 128K is 24402) does not and stays split.
+        topology = fixture_path("nvidia_smi_topo_matrix_2gpus_phb_coloc.json")
+        _, fits, _ = run_need(topology, 15000, 23552)
+        assert llama(fits)["gpus"] == [self.GPU0]
+        _, tight, _ = run_need(topology, 15000, 24000)
+        assert set(llama(tight)["gpus"]) == {self.GPU0, self.GPU1}
+
     def test_without_the_need_the_ranked_split_is_unchanged(self):
         topology = fixture_path("nvidia_smi_topo_matrix_2gpus_phb_coloc.json")
         _, out, _ = run(topology, 15000)
@@ -822,8 +831,9 @@ class TestFitNeed:
         assert llama(out)["gpus"] == ["GPU-free"]
 
     def test_an_apu_hybrid_keeps_the_model_on_the_discrete_gpu(self, tmp_path):
-        # AMD APU (96 GB unified) + a 24 GB discrete card: a 20 GB need runs on
-        # the discrete card even though the APU reports more memory.
+        # A topology that lists an APU (96 GB unified) next to a 24 GB discrete
+        # card (amd-topo.sh drops such an APU today; a hand-written or future
+        # topology may not): a 20 GB need runs on the discrete card.
         topology = tmp_path / "hybrid.json"
         topology.write_text(json.dumps({
             "vendor": "amd", "gpu_count": 2,

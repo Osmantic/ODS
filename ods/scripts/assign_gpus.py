@@ -36,6 +36,9 @@ from typing import Optional
 #  Constants
 
 HIGH_BW_THRESHOLD = 80   # min rank for NVLink / XGMI
+# Memory a GPU keeps free when it holds a whole model alone (--fit-need-mb).
+SINGLE_GPU_HEADROOM_MB    = 1024
+SINGLE_GPU_HEADROOM_SHARE = 0.03
 DEFAULT_SERVICES  = ["llama_server", "whisper", "comfyui", "embeddings"]
 NON_LLAMA         = ["whisper", "comfyui", "embeddings"]
 
@@ -239,12 +242,16 @@ def single_llama_gpu(gpus: list, fit_need_mb: float) -> Optional[GPU]:
     """The largest GPU that holds the whole model (``fit_need_mb``), or None.
 
     Largest by schedulable memory (free VRAM when the topology reports it);
-    a tie goes to the lowest index. On an AMD APU + dGPU host only the
-    discrete GPUs are candidates, as for the split below.
+    a tie goes to the lowest index. The model must fit with
+    max(SINGLE_GPU_HEADROOM_MB, SINGLE_GPU_HEADROOM_SHARE of the card) to
+    spare for the CUDA/HIP context and allocator slack: an AMD topology
+    reports the rounded total, not free VRAM. On an AMD APU + dGPU host
+    only the discrete GPUs are candidates, as for the split below.
     """
     candidates = [g for g in gpus if g.memory_type == "discrete"] or gpus
     best = max(candidates, key=lambda g: (g.memory_mb, -g.index))
-    return best if fit_need_mb <= best.memory_mb else None
+    headroom = max(SINGLE_GPU_HEADROOM_MB, SINGLE_GPU_HEADROOM_SHARE * best.memory_total_mb)
+    return best if fit_need_mb <= best.memory_mb - headroom else None
 
 
 def pinned_llama_subset(gpus: list, rank_matrix: dict, uuid: str) -> Subset:

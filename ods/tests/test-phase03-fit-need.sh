@@ -62,14 +62,62 @@ topology 20
 [[ "$(llama_gpus | tr -d '\r')" == GPU-a,GPU-b ]] || fail "a model that does not fit one 20 GB card must still be split"
 pass "with that need the assigner keeps the model on one card when it fits and splits it when it does not"
 
-# 4. run_automatic passes the need to the assigner for llama.cpp only; the
-#    vLLM engine's GPU is pinned and needs none.
+# 4. run_automatic itself (extracted from phase 03, with the assigner replaced
+#    by a recorder) passes the need for llama.cpp and never for the vLLM
+#    engine, whose GPU is pinned.
 auto="$(sed -n '/^run_automatic() {$/,/^}$/p' "$PHASE03")"
-[[ "$auto" == *'[[ "${LLM_BACKEND:-}" == "vllm" ]] || fit_need_mb="$(_phase03_llm_fit_need_mb)"'* \
-    && "$auto" == *'need_args=(--fit-need-mb "$fit_need_mb")'* \
-    && "$auto" == *'${need_args[@]+"${need_args[@]}"}'* ]] \
-    || fail "run_automatic must pass --fit-need-mb from the catalog for llama.cpp only"
-pass "run_automatic passes the need for llama.cpp and never for the pinned vLLM GPU"
+[[ -n "$auto" ]] || fail "phase 03 must define run_automatic"
+echo '{"gpu_assignment":{"strategy":"colocated","services":{"llama_server":{"gpus":["GPU-a"],"parallelism":{"mode":"none","tensor_parallel_size":1,"pipeline_parallel_size":1,"gpu_memory_utilization":0.95}}}}}' > "$tmp/canned.json"
+run_auto() {  # LLM_BACKEND : prints the arguments the assigner received
+    env -i PATH="$PATH" HOME="${HOME:-/tmp}" TMP_DIR="$tmp" LLM_BACKEND="$1" bash -c '
+        set -euo pipefail
+        chapter() { :; }; success() { :; }; log() { :; }; error() { echo "ERROR $*" >&2; exit 1; }; _show_json() { :; }
+        _phase03_llm_fit_need_mb() { echo 23122; }
+        python3() { printf "%s\n" "$@" > "$TMP_DIR/assign-args"; cat "$TMP_DIR/canned.json"; }
+        ASSIGN_GPUS_SCRIPT=assign_gpus.py TOPOLOGY_FILE=topo.json LLM_MODEL_SIZE_MB=22000 MAX_CONTEXT=65536 VLLM_GPU_UUID=GPU-v
+        GRN= NC= WHT= BGRN= AMB= RED= BLD= CYN= DIM=
+        declare -a GPU_INDICES=(0); declare -A GPU_UUIDS=([0]=GPU-a)
+        '"$auto"'
+        run_automatic >/dev/null
+        cat "$TMP_DIR/assign-args"'
+}
+llama_args="$(run_auto llama-server | tr '\n' ' ')"
+[[ "$llama_args" == *"--fit-need-mb 23122"* && "$llama_args" != *"--pin-llm-gpu"* ]] \
+    || fail "run_automatic must pass the need for llama.cpp: $llama_args"
+vllm_args="$(run_auto vllm | tr '\n' ' ')"
+[[ "$vllm_args" == *"--pin-llm-gpu GPU-v"* && "$vllm_args" != *"--fit-need-mb"* ]] \
+    || fail "run_automatic must pin the vLLM GPU and pass no need: $vllm_args"
+pass "run_automatic passes the need for llama.cpp and pins the vLLM GPU without one"
+
+# 5. A saved assignment is reused only while its LLM GPUs still hold the
+#    model's current need (a --reselect-model rerun, a raised context).
+load_fn="$(sed -n '/^_decode_base64_portable() {$/,/^}$/p; /^_load_existing_gpu_assignment_json() {$/,/^}$/p' "$PHASE03")"
+cat > "$tmp/topo.json" <<'EOF'
+{"vendor": "nvidia", "gpu_count": 2,
+ "gpus": [{"index": 0, "uuid": "GPU-a", "name": "a", "memory_gb": 24},
+          {"index": 1, "uuid": "GPU-b", "name": "b", "memory_gb": 24}], "links": []}
+EOF
+mkdir -p "$tmp/install"
+saved='{"gpu_assignment":{"strategy":"colocated","services":{"llama_server":{"gpus":["GPU-a"]},"whisper":{"gpus":["GPU-b"]}}}}'
+printf 'GPU_ASSIGNMENT_JSON_B64=%s\n' "$(printf '%s' "$saved" | base64 | tr -d '\n')" > "$tmp/install/.env"
+reuse() {  # NEED_MB : exit status of _load_existing_gpu_assignment_json
+    env -i PATH="$PATH" HOME="${HOME:-/tmp}" NEED="$1" INSTALL_DIR="$tmp/install" TOPOLOGY_FILE="$tmp/topo.json" bash -c '
+        set -euo pipefail
+        log() { :; }
+        _phase03_llm_fit_need_mb() { echo "$NEED"; }
+        '"$load_fn"'
+        _load_existing_gpu_assignment_json >/dev/null'
+}
+reuse 20000 || fail "a saved one-GPU assignment that still holds the model must be reused"
+! reuse 30000 || fail "a saved one-GPU assignment below the model's need must be assigned again"
+pass "a saved assignment is reused only while its LLM GPUs hold the model's need"
+
+# 6. ods gpu reassign --auto asks the catalog the same way and passes the need.
+cli_block="$(sed -n '/^    local fit_need_mb="" selector_python=""$/,/--enabled-services "\$enabled_services" \\$/p' "$ROOT_DIR/ods-cli")"
+[[ "$cli_block" == *'ods_llm_fit_need_mb "$selector_python"'* && "$cli_block" == *'"${LLM_BACKEND:-}" != "vllm"'* ]] \
+    && grep -qF '${need_args[@]+"${need_args[@]}"}) || error "GPU assignment failed"' "$ROOT_DIR/ods-cli" \
+    || fail "ods gpu reassign must pass the catalog's need to the assigner"
+pass "ods gpu reassign --auto passes the same catalog need"
 
 echo ""
 echo "Result: $PASS passed, 0 failed"

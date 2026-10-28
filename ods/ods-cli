@@ -7135,12 +7135,33 @@ _gpu_reassign() {
         return
     fi
 
+    # As the installer does: a llama.cpp model that fits the largest GPU with
+    # its KV cache stays on that GPU (the model catalog estimates the need).
+    local fit_need_mb="" selector_python=""
+    local -a need_args=()
+    if [[ "${LLM_BACKEND:-}" != "vllm" && "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" \
+        && -f "$SCRIPT_DIR/installers/lib/model-selector.sh" && -f "$SCRIPT_DIR/scripts/select-model.py" \
+        && -f "$SCRIPT_DIR/config/model-library.json" ]]; then
+        # shellcheck source=/dev/null
+        . "$SCRIPT_DIR/installers/lib/model-selector.sh"
+        selector_python="$(ods_model_selector_python)"
+        if [[ -n "$selector_python" ]]; then
+            fit_need_mb="$(ods_llm_fit_need_mb "$selector_python" "${GGUF_FILE:-${LLM_MODEL:-}}" \
+                "${MAX_CONTEXT:-${CTX_SIZE:-0}}" "${MODEL_RUNTIME_PROFILE:-}")"
+        fi
+    fi
+    if [[ -n "$fit_need_mb" ]]; then
+        need_args=(--fit-need-mb "$fit_need_mb")
+        log "The model needs about ${fit_need_mb} MiB at ${MAX_CONTEXT:-${CTX_SIZE:-its}} context"
+    fi
+
     log "Running assignment algorithm (model: ${model_size_mb} MB)..."
     local assignment_json
     assignment_json=$(python3 "$assign_script" \
         --topology "$tmpdir/topo.json" \
         --model-size "$model_size_mb" \
-        --enabled-services "$enabled_services") || error "GPU assignment failed"
+        --enabled-services "$enabled_services" \
+        ${need_args[@]+"${need_args[@]}"}) || error "GPU assignment failed"
 
     if [[ "$dry_run" -eq 1 ]]; then
         echo ""
