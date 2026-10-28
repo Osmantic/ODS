@@ -1649,6 +1649,11 @@ def _run_gpu_planner(topology: dict, required_mb: int) -> dict:
                 str(topology_path),
                 "--model-size",
                 str(required_mb),
+                # required_mb is the whole need (weights, KV cache, headroom),
+                # so a model that fits the largest GPU moves there alone
+                # instead of being split across GPUs.
+                "--fit-need-mb",
+                str(required_mb),
             ],
             capture_output=True,
             text=True,

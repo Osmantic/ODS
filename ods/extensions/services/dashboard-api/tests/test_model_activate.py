@@ -9441,3 +9441,55 @@ class TestPixelVisionReadback:
             ("apply", "text-model.gguf", "unknown"), ("finish", "commit", "unknown"),
         ]
         assert state["contract"]["imageInput"] == "unknown" and state["pending"] is False
+
+
+def test_an_expansion_moves_a_model_that_fits_the_largest_gpu_there_alone(tmp_path, monkeypatch):
+    # Owner rule (2026-10-27): a model that fits the largest GPU runs there
+    # unsplit. A switch to a model too big for the current GPU moves it to the
+    # largest GPU when that GPU holds it, instead of splitting it across GPUs
+    # (which the planner's link ranking alone would do: a PHB pair outranks
+    # any single GPU).
+    _native_nvidia_host(monkeypatch)
+    install_dir = tmp_path / "install"
+    scripts_dir = install_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (scripts_dir / "assign_gpus.py").write_text(
+        (_agent_path.parents[1] / "scripts" / "assign_gpus.py").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+    topology = {
+        "vendor": "nvidia",
+        "gpu_count": 2,
+        "gpus": [
+            {"index": 0, "uuid": "GPU-small", "name": "24 GB card", "memory_gb": 24},
+            {"index": 1, "uuid": "GPU-big", "name": "96 GB card", "memory_gb": 96},
+        ],
+        "links": [{"gpu_a": 0, "gpu_b": 1, "link_type": "PHB", "link_label": "PHB", "rank": 30}],
+    }
+    current = {
+        "gpu_assignment": {
+            "version": "1.0",
+            "strategy": "dedicated",
+            "services": {
+                "llama_server": {
+                    "gpus": ["GPU-small"],
+                    "gpu_indices": [0],
+                    "parallelism": {"mode": "none", "tensor_parallel_size": 1,
+                                    "pipeline_parallel_size": 1, "gpu_memory_utilization": 0.95},
+                },
+                "whisper": {"gpus": ["GPU-big"], "gpu_indices": [1]},
+            },
+        }
+    }
+    target = tmp_path / "target.gguf"
+    target.write_bytes(b"model")
+
+    plan = _mod._build_model_gpu_assignment_plan(
+        current, topology, {"vram_required_gb": 40, "size_mb": 38000}, target,
+    )
+
+    assert plan["planned_gpus"] == ["GPU-big"]
+    assert plan["split_mode"] == "none"
+    assert plan["env_updates"]["LLAMA_SERVER_GPU_UUIDS"] == "GPU-big"
+    assert plan["env_updates"]["LLAMA_SERVER_GPU_INDICES"] == "1"
