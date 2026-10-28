@@ -1684,6 +1684,32 @@ def _run_nvidia_gpu_planner(topology: dict, required_mb: int) -> dict:
     return _run_gpu_planner(topology, required_mb)
 
 
+def _consolidation_plan(planner, topology: dict, required_mb: int,
+                        current_assignment: dict, current_gpus: list) -> dict | None:
+    """The planner's result when a split model now fits one of its own GPUs, else None.
+
+    Owner rule (2026-10-27): a model that fits one GPU is not split. A switch to
+    a model the current llama GPUs already hold moves a split model onto one of
+    those GPUs when the planner keeps it whole there, which frees the others.
+    A manual assignment, a single GPU, or a planner pick outside the current set
+    (which would crowd the other services' GPUs) keeps the assignment as it is,
+    as does a planner failure: the switch itself needs no new GPUs.
+    """
+    if str(current_assignment["gpu_assignment"].get("strategy") or "").lower() == "manual":
+        return None
+    if len(current_gpus) < 2:
+        return None
+    try:
+        planned = planner(topology, required_mb)
+    except RuntimeError as exc:
+        logger.warning("Keeping the split llama GPU assignment; the planner could not consolidate it: %s", exc)
+        return None
+    planned_gpus = planned["gpu_assignment"]["services"]["llama_server"]["gpus"]
+    if len(planned_gpus) != 1 or planned_gpus[0] not in current_gpus:
+        return None
+    return planned
+
+
 def _build_model_gpu_assignment_plan(
     current_assignment: dict,
     topology: dict,
@@ -1715,14 +1741,17 @@ def _build_model_gpu_assignment_plan(
     )
     current_capacity_mb = sum(capacities[uuid] for uuid in current_gpus)
     if current_capacity_mb >= required_mb:
-        return None
-    if str(current_assignment["gpu_assignment"].get("strategy") or "").lower() == "manual":
-        raise RuntimeError(
-            "The manual llama GPU assignment is too small for this model; "
-            "run 'ods gpu reassign --manual' to choose a larger set"
-        )
-
-    planned = _run_gpu_planner(topology, required_mb)
+        planned = _consolidation_plan(_run_gpu_planner, topology, required_mb,
+                                      current_assignment, current_gpus)
+        if planned is None:
+            return None
+    else:
+        if str(current_assignment["gpu_assignment"].get("strategy") or "").lower() == "manual":
+            raise RuntimeError(
+                "The manual llama GPU assignment is too small for this model; "
+                "run 'ods gpu reassign --manual' to choose a larger set"
+            )
+        planned = _run_gpu_planner(topology, required_mb)
     planned_llama = planned["gpu_assignment"]["services"]["llama_server"]
     planned_gpus = planned_llama["gpus"]
     unknown = [uuid for uuid in planned_gpus if uuid not in capacities]
@@ -1868,14 +1897,17 @@ def _plan_nvidia_model_gpu_assignment(
     )
     current_capacity_mb = sum(capacities[uuid] for uuid in current_gpus)
     if current_capacity_mb >= required_mb:
-        return None
-    if str(current_assignment["gpu_assignment"].get("strategy") or "").lower() == "manual":
-        raise RuntimeError(
-            "The manual llama GPU assignment is too small for this model; "
-            "run 'ods gpu reassign --manual' to choose a larger set"
-        )
-
-    planned = _run_nvidia_gpu_planner(topology, required_mb)
+        planned = _consolidation_plan(_run_nvidia_gpu_planner, topology, required_mb,
+                                      current_assignment, current_gpus)
+        if planned is None:
+            return None
+    else:
+        if str(current_assignment["gpu_assignment"].get("strategy") or "").lower() == "manual":
+            raise RuntimeError(
+                "The manual llama GPU assignment is too small for this model; "
+                "run 'ods gpu reassign --manual' to choose a larger set"
+            )
+        planned = _run_nvidia_gpu_planner(topology, required_mb)
     planned_llama = planned["gpu_assignment"]["services"]["llama_server"]
     planned_gpus = planned_llama["gpus"]
     unknown = [uuid for uuid in planned_gpus if uuid not in capacities]

@@ -9493,3 +9493,98 @@ def test_an_expansion_moves_a_model_that_fits_the_largest_gpu_there_alone(tmp_pa
     assert plan["split_mode"] == "none"
     assert plan["env_updates"]["LLAMA_SERVER_GPU_UUIDS"] == "GPU-big"
     assert plan["env_updates"]["LLAMA_SERVER_GPU_INDICES"] == "1"
+
+
+def _split_llama_assignment(gpus, services_gpu, strategy="colocated"):
+    return {
+        "gpu_assignment": {
+            "version": "1.0",
+            "strategy": strategy,
+            "services": {
+                "llama_server": {
+                    "gpus": list(gpus),
+                    "gpu_indices": list(range(len(gpus))),
+                    "parallelism": {"mode": "pipeline", "tensor_parallel_size": 1,
+                                    "pipeline_parallel_size": len(gpus), "gpu_memory_utilization": 0.95},
+                },
+                "whisper": {"gpus": [services_gpu], "gpu_indices": [len(gpus)]},
+            },
+        }
+    }
+
+
+def _real_planner_install(tmp_path, monkeypatch):
+    _native_nvidia_host(monkeypatch)
+    install_dir = tmp_path / "install"
+    scripts_dir = install_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (scripts_dir / "assign_gpus.py").write_text(
+        (_agent_path.parents[1] / "scripts" / "assign_gpus.py").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+    target = tmp_path / "target.gguf"
+    target.write_bytes(b"model")
+    return target
+
+
+def _phb_topology(*gpus):
+    return {
+        "vendor": "nvidia",
+        "gpu_count": len(gpus),
+        "gpus": [{"index": i, "uuid": uuid, "name": uuid, "memory_gb": gb} for i, (uuid, gb) in enumerate(gpus)],
+        "links": [{"gpu_a": a, "gpu_b": b, "link_type": "PHB", "link_label": "PHB", "rank": 30}
+                  for a in range(len(gpus)) for b in range(a + 1, len(gpus))],
+    }
+
+
+def test_a_switch_to_a_model_that_fits_one_gpu_consolidates_a_split_model(tmp_path, monkeypatch):
+    # Owner rule (2026-10-27): a model that fits one GPU is not split. Switching
+    # from a split model to one that fits a single GPU of the same set moves it
+    # there; the other GPU keeps only the services.
+    target = _real_planner_install(tmp_path, monkeypatch)
+    topology = _phb_topology(("GPU-a", 48), ("GPU-b", 48))
+    current = _split_llama_assignment(["GPU-a", "GPU-b"], "GPU-b")
+
+    plan = _mod._build_model_gpu_assignment_plan(current, topology, {"vram_required_gb": 20, "size_mb": 18000}, target)
+
+    assert plan["previous_gpus"] == ["GPU-a", "GPU-b"]
+    assert plan["planned_gpus"] == ["GPU-a"]
+    assert plan["split_mode"] == "none"
+    merged = _mod._decode_gpu_assignment(plan["env_updates"]["GPU_ASSIGNMENT_JSON_B64"])
+    assert merged["gpu_assignment"]["strategy"] == "dedicated"
+    assert merged["gpu_assignment"]["services"]["whisper"]["gpus"] == ["GPU-b"]
+
+
+def test_consolidation_keeps_manual_and_never_crowds_another_services_gpu(tmp_path, monkeypatch):
+    target = _real_planner_install(tmp_path, monkeypatch)
+    model = {"vram_required_gb": 20, "size_mb": 18000}
+    # A manual assignment is the owner's choice.
+    manual = _split_llama_assignment(["GPU-a", "GPU-b"], "GPU-b", strategy="manual")
+    assert _mod._build_model_gpu_assignment_plan(manual, _phb_topology(("GPU-a", 48), ("GPU-b", 48)), model, target) is None
+    # The largest GPU holds Whisper and is not in the split set: stay split
+    # rather than move the model next to the services.
+    current = _split_llama_assignment(["GPU-a", "GPU-b"], "GPU-c")
+    topology = _phb_topology(("GPU-a", 24), ("GPU-b", 24), ("GPU-c", 96))
+    assert _mod._build_model_gpu_assignment_plan(current, topology, model, target) is None
+
+
+def test_nvidia_consolidation_survives_a_planner_failure(tmp_path, monkeypatch):
+    # A switch that needs no new GPUs must not fail because the optional
+    # consolidation could not be planned.
+    _install_dir, target, env = _write_nvidia_gpu_plan_fixture(tmp_path, monkeypatch)
+
+    def failing_planner(*_args):
+        raise RuntimeError("planner unavailable")
+
+    monkeypatch.setattr(_mod, "_run_nvidia_gpu_planner", failing_planner)
+    assert _mod._plan_nvidia_model_gpu_assignment(env, {"vram_required_gb": 6, "size_mb": 5000}, target) is None
+
+    monkeypatch.setattr(_mod, "_run_nvidia_gpu_planner", lambda *_args: {"gpu_assignment": {
+        "version": "1.0", "strategy": "dedicated", "services": {"llama_server": {
+            "gpus": ["GPU-ti-0"], "gpu_indices": [0],
+            "parallelism": {"mode": "none", "tensor_parallel_size": 1, "pipeline_parallel_size": 1}}}}})
+    plan = _mod._plan_nvidia_model_gpu_assignment(env, {"vram_required_gb": 6, "size_mb": 5000}, target)
+    assert plan["planned_gpus"] == ["GPU-ti-0"]
+    assert plan["env_updates"]["LLAMA_SERVER_GPU_UUIDS"] == "GPU-ti-0"
+    assert plan["split_mode"] == "none"
