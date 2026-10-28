@@ -2162,6 +2162,8 @@ class TestRecreateLlamaServerFromInspect:
             "--runtime", "nvidia",
         ]
         assert "NVIDIA_VISIBLE_DEVICES=GPU-ti-0,GPU-1080,GPU-ti-2" in argv
+        # With --gpus all only CUDA's own variable limits llama.cpp to these GPUs.
+        assert "CUDA_VISIBLE_DEVICES=GPU-ti-0,GPU-1080,GPU-ti-2" in argv
         assert "LLAMA_ARG_SPLIT_MODE=layer" in argv
         assert "LLAMA_ARG_TENSOR_SPLIT=" in argv
         assert "LLAMA_ARG_TENSOR_SPLIT=0.5789,0.4211" not in argv
