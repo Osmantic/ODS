@@ -1534,6 +1534,21 @@ def _manager(install, owner, *, create=False):
     return SourceUpgrade(child, install, account.pw_uid), account, state
 
 
+def _source_pending(state, existing):
+    """Keep the recovery instruction tied to the actual Root journal kind."""
+    path = state / 'transition.json'
+    if not os.path.lexists(path):
+        return None
+    pending, _ = _protected_json(path)
+    # Missing kind is the legacy access journal; model recovery cannot settle it.
+    if pending.get('kind', 'access') == 'access':
+        raise UpgradeError('source-access-journal-pending')
+    if (existing is None or existing['hold'] is None
+            or pending.get('kind') != 'model' or pending.get('transaction_id') != existing['hold']):
+        raise UpgradeError('source-previous-hold-pending')
+    return pending
+
+
 def _stage(manager, account, source, requested_ref):
     # Caller holds the same root admission lock used by all coordinator writes.
     existing = manager.journal()
@@ -1544,15 +1559,7 @@ def _stage(manager, account, source, requested_ref):
         item, _ = read_file(Path(source), f'extensions/services/{name}/compose.yaml', account.pw_uid, candidate=True)
         if item is None:
             raise UpgradeError('source-pixel-services-required')
-    if os.path.lexists(manager.state.parent / 'transition.json'):
-        pending, _ = _protected_json(manager.state.parent / 'transition.json')
-        # Missing kind is the legacy access journal, as in the permissions
-        # coordinator; model recovery cannot settle either form.
-        if pending.get('kind', 'access') == 'access':
-            raise UpgradeError('source-access-journal-pending')
-        if (existing is None or existing['hold'] is None
-                or pending.get('kind') != 'model' or pending.get('transaction_id') != existing['hold']):
-            raise UpgradeError('source-previous-hold-pending')
+    _source_pending(manager.state.parent, existing)
     marker, marker_sha = _protected_json(Path(account.pw_dir) / ".config/ods/pixel-managed.json", account.pw_uid)
     if (marker.get("schema_version") != 2 or marker.get("manager") != "ods"
             or marker.get("install_dir") != str(manager.install) or marker.get("initial_active_state") != "absent"
@@ -1676,10 +1683,13 @@ def _guard_native_stage(manager, account, state):
         raise UpgradeError('native-app-transition-unavailable') from None
 
     existing = manager.journal() if manager is not None else None
+    # Explain an unrelated pending Root operation before inspecting a source
+    # reservation. A new admission guard must not send an access-mode recovery
+    # to the model page or hide it behind a generic source-state error.
+    pending = _source_pending(state, existing)
     pending_path = state / 'transition.json'
     if (existing is not None and existing['phase'] != 'staged' and existing['hold'] is not None
-            and os.path.lexists(pending_path)):
-        pending, _ = _protected_json(pending_path)
+            and pending is not None):
         bridge = SimpleNamespace(state=state, pending=lambda: pending)
         try:
             exact = SystemdAccessBridge.model_journal(bridge, existing['hold'])
