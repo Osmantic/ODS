@@ -136,6 +136,18 @@ describe('the Google card', () => {
     expect(googleCard(statusFor({}, {reason: 'record-unusable'}), NOW)).toMatchObject({actions: ['disconnect'], help: true})
   })
 
+  it('offers a check of a held callback without inferring a stopped exchange or another sign-in', () => {
+    const pending = {action: 'connect', phase: 'consent', expiresAt: '2026-10-25T20:29:00Z',
+      error: null, since: '2026-10-25T20:14:00Z'}
+    const frame = statusFor({state: 'connected', pending}, {reason: 'connection-admission-held'})
+    expect(googleCard(frame, NOW).step).toMatchObject({kind: 'connection-update', tone: 'progress',
+      actions: ['finish'], message: 'ODS is finishing a Google connection update.', help: false})
+    frame.connectors.google.pending.error = 'invalid-grant'
+    expect(googleCard(frame, NOW).step).toMatchObject({kind: 'connection-update', tone: 'warn',
+      actions: ['finish'], message: "Google didn't accept the sign-in. Its code works only once, for a few minutes."})
+    expect(googleCard(frame, NOW).step.fix).toBe('Press Finish to check this update before starting another sign-in.')
+  })
+
   it('says plainly where connected apps are not available yet', () => {
     const card = googleCard({...statusFor(), available: false, surface: 'darwin', reason: 'not-available-on-this-system'}, NOW)
     expect(card).toMatchObject({chip: 'Not available', actions: []})
@@ -160,6 +172,10 @@ it('polls only while a step runs or the first sync is underway', () => {
   expect(refreshDelay(statusFor({pending: {...consent, phase: 'activating', expiresAt: null, since: '2026-10-25T20:23:00Z'}}), NOW)).toBeNull()
   expect(refreshDelay(statusFor({pending: {...consent, phase: 'activating', expiresAt: null, error: 'runtime-busy'}}), NOW)).toBeNull()
   expect(refreshDelay(statusFor({pending: {...consent, phase: 'failed', expiresAt: null, error: 'access-denied'}}), NOW)).toBeNull()
+  expect(refreshDelay(statusFor({pending: {...consent, expiresAt: '2026-10-25T20:00:00Z'}},
+    {reason: 'connection-admission-held'}), NOW)).toBe(3000)
+  expect(refreshDelay(statusFor({pending: {...consent, error: 'invalid-grant'}},
+    {reason: 'connection-admission-held'}), NOW)).toBeNull()
   expect(refreshDelay(statusFor({state: 'first-sync'}), NOW)).toBe(5000)
   expect(refreshDelay(statusFor({state: 'connected'}), NOW)).toBeNull()
   expect(refreshDelay({...statusFor(), available: false}, NOW)).toBeNull()

@@ -43,6 +43,9 @@ export function googleConnectionMode(google, auth) {
   return googleSignInOptions(auth).legacy ? 'advanced' : 'managed'
 }
 
+// Custody of an in-progress callback, not a claim that it stopped running.
+export const googleAdmissionHeld = status => status?.reason === 'connection-admission-held'
+
 // Google's downloaded client file, checked here before it leaves the browser.
 // The custodian checks it again; this only names the fix sooner.
 export function readClientFile(text) {
@@ -187,7 +190,21 @@ export function capabilitySummary(capabilities) {
   return Object.entries(capabilities ?? {}).filter(([, on]) => on).map(([id]) => CAPABILITY_WORDS[id]).filter(Boolean).join(' · ')
 }
 
-function pendingView(pending, now, mode) {
+function pendingSignInProblem(pending, mode) {
+  // The connected account can use a different app from this sign-in attempt.
+  return mode === 'unknown' && ['client-invalid', 'redirect-mismatch', 'api-disabled'].includes(pending.error)
+    ? {message: "Google couldn't finish this sign-in.", fix: 'Try again, or ask for help with this connection.', help: true}
+    : signInProblem(pending.error, mode === 'unknown' ? 'advanced' : mode)
+}
+
+function pendingView(pending, now, mode, held) {
+  if (held) {
+    const problem = pending.error
+      ? Object.hasOwn(SIGN_IN, pending.error) ? pendingSignInProblem(pending, mode) : explain(UPDATE, UPDATE_FALLBACK, pending.error)
+      : {message: 'ODS is finishing a Google connection update.', help: false}
+    return {kind: 'connection-update', tone: pending.error ? 'warn' : 'progress', ...problem,
+      fix: 'Press Finish to check this update before starting another sign-in.', actions: ['finish']}
+  }
   if (pending.phase === 'consent') {
     // Only the wizard that opened a sign-in can cancel it; a new one replaces it.
     return Date.parse(pending.expiresAt) > now
@@ -198,10 +215,7 @@ function pendingView(pending, now, mode) {
     // The current account may still use a different app from this failed
     // attempt. With no attempt mode in public status, never prescribe a client
     // file/project based on the account's older authorization.
-    const problem = mode === 'unknown' && ['client-invalid', 'redirect-mismatch', 'api-disabled'].includes(pending.error)
-      ? {message: "Google couldn't finish this sign-in.", fix: 'Try again, or ask for help with this connection.', help: true}
-      : signInProblem(pending.error, mode === 'unknown' ? 'advanced' : mode)
-    return {kind: 'failed', tone: 'error', ...problem, actions: ['connect']}
+    return {kind: 'failed', tone: 'error', ...pendingSignInProblem(pending, mode), actions: ['connect']}
   }
   const action = pending.phase === 'activating' ? "Bringing Portal's calendar and email tools up to date." : 'Removing your calendar and email from Portal.'
   if (!pending.error && !stalled(pending, now)) return {kind: 'updating', tone: 'progress', message: action, fix: null, help: false, actions: []}
@@ -229,7 +243,7 @@ export function googleCard(status, now = Date.now()) {
   if (google.state === 'first-sync') card.message = 'Portal is reading your calendar and email for the first time. A large mailbox takes a while.'
   if (google.pending) {
     const auth = status.catalog?.find(entry => entry.id === 'google')?.auth
-    card.step = pendingView(google.pending, now, googleSignInOptions(auth).legacy ? 'advanced' : 'unknown')
+    card.step = pendingView(google.pending, now, googleSignInOptions(auth).legacy ? 'advanced' : 'unknown', googleAdmissionHeld(status))
   } else if (status.reason === 'journal-unusable') {
     card.step = {kind: 'update-stopped', tone: 'warn', message: 'ODS lost track of an unfinished step.',
       fix: 'Press Finish to bring Portal up to date.', help: false, actions: ['finish']}
@@ -241,6 +255,7 @@ export function googleCard(status, now = Date.now()) {
 export function refreshDelay(status, now = Date.now()) {
   const google = status?.connectors?.google
   if (!status?.available || !google) return null
+  if (googleAdmissionHeld(status)) return google.pending?.error ? null : 3000
   if (google.pending?.phase === 'consent' && Date.parse(google.pending.expiresAt) > now) return 2000
   if (google.pending && !google.pending.error && google.pending.phase !== 'failed' && !stalled(google.pending, now)) return 3000
   if (google.state === 'first-sync') return 5000

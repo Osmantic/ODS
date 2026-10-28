@@ -4,7 +4,7 @@ import ConnectedApps from './ConnectedApps'
 import { GOOGLE_CATALOG, pendingStep, statusFor } from './connectedAppsFixtures'
 
 const DISCORD = 'https://discord.gg/4ntNp9MAwC'
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
 // The dashboard API as the card reaches it: GET status and access mode, POST actions.
 function api(routes) {
@@ -77,6 +77,48 @@ it('finishes a step Portal was too busy for with one button', async () => {
   fireEvent.click(within(card()).getByRole('button', {name: 'Finish'}))
   await waitFor(() => expect(screen.queryByText('Portal is busy with a task.')).toBeNull())
   expect(calls.filter(([key]) => key.startsWith('POST'))).toEqual([['POST /api/pixel/connections/google/finish', {}]])
+})
+
+it.each(['consent', 'activating', 'deactivating'])('offers Finish instead of a new sign-in during a retained %s update', async phase => {
+  const status = statusFor({state: 'connected', pending: pendingStep(phase)}, {reason: 'connection-admission-held'})
+  api({'GET /api/pixel/connections': [200, status]})
+  render(<ConnectedApps />)
+  expect(await screen.findByRole('button', {name: 'Finish'})).toBeEnabled()
+  expect(screen.queryByRole('button', {name: /Start again|Connect Google|Change access|Reconnect/})).toBeNull()
+  expect(screen.queryByText(/interrupted|stopped/i)).toBeNull()
+})
+
+it('exposes recovery after a pasted callback fails without a connected notice or another code exchange', async () => {
+  vi.spyOn(window, 'open').mockReturnValue({opener: {}, location: {replace: vi.fn()}, close: vi.fn()})
+  let status = managedStatus()
+  const flowId = 'a'.repeat(32)
+  const calls = api({'GET /api/pixel/connections': () => [200, status],
+    'POST /api/pixel/connections/google/connect': [200, {flowId,
+      authUrl: 'https://accounts.google.com/o/oauth2/auth?client_id=x&state=y',
+      expiresAt: new Date(Date.now() + 600000).toISOString(), redirect: 'loopback'}],
+    'POST /api/pixel/connections/google/complete': () => {
+      status = {...managedStatus({pending: pendingStep('activating', 'invalid-grant')}), reason: 'connection-admission-held'}
+      return [200, {outcome: 'failed', errorClass: 'invalid-grant', account: null, capabilities: null, missing: []}]
+    },
+    'POST /api/pixel/connections/google/finish': () => {
+      status = managedStatus()
+      return [200, {outcome: 'applied'}]
+    }})
+  render(<ConnectedApps />)
+  fireEvent.click(await screen.findByRole('button', {name: 'Connect Google'}))
+  fireEvent.click(screen.getByRole('button', {name: 'Continue to Google'}))
+  const box = await screen.findByLabelText(/Copy its whole address and paste it here/)
+  fireEvent.change(box, {target: {value: `http://127.0.0.1:53682/?state=${'s'.repeat(43)}&code=4/pasted`}})
+  fireEvent.click(screen.getByRole('button', {name: 'Finish connecting'}))
+  expect(await screen.findByRole('button', {name: 'Finish'})).toBeEnabled()
+  expect(screen.queryByRole('heading', {name: 'Connect Google'})).toBeNull()
+  expect(screen.queryByText(/Google is connected/)).toBeNull()
+  expect(screen.queryByRole('button', {name: /Try again|Connect Google|Reconnect/})).toBeNull()
+  fireEvent.click(screen.getByRole('button', {name: 'Finish'}))
+  expect(await screen.findByRole('button', {name: 'Connect Google'})).toBeEnabled()
+  expect(calls.filter(([key]) => key.startsWith('POST')).map(([key]) => key)).toEqual([
+    'POST /api/pixel/connections/google/connect', 'POST /api/pixel/connections/google/complete',
+    'POST /api/pixel/connections/google/finish'])
 })
 
 it('asks before disconnecting, then disconnects', async () => {

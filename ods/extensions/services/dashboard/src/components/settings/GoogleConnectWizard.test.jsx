@@ -150,6 +150,73 @@ it('goes back to the form with the reason when the sign-in did not connect', asy
   expect(screen.queryByRole('link', {name: /Discord/})).toBeNull()
 })
 
+it.each(['consent', 'activating', 'deactivating'])('leaves a retained %s callback recovery to Finish without reporting a grant', async phase => {
+  const calls = api({'POST /api/pixel/connections/google/connect': [200, BEGUN]})
+  const {update, onClose, onConnected} = wizard()
+  await begin(calls)
+  update(statusFor({account: null, pending: pendingStep(phase, 'invalid-grant')}, {reason: 'connection-admission-held'}))
+  expect(onClose).toHaveBeenCalledOnce()
+  expect(onConnected).not.toHaveBeenCalled()
+  expect(calls.filter(([key]) => key.startsWith('POST')).map(([key]) => key))
+    .toEqual(['POST /api/pixel/connections/google/connect'])
+})
+
+it('does not mistake an old account or a normal callback hold for a new grant', async () => {
+  const calls = api({'POST /api/pixel/connections/google/connect': [200, BEGUN]})
+  const {update, onClose, onConnected} = wizard({status: statusFor({state: 'connected'})})
+  await begin(calls)
+  update(statusFor({state: 'connected', pending: pendingStep('consent')}, {reason: 'connection-admission-held'}))
+  expect(onConnected).not.toHaveBeenCalled()
+  expect(onClose).not.toHaveBeenCalled()
+  expect(screen.getByRole('button', {name: 'View connection update'})).toBeEnabled()
+  fireEvent.click(screen.getByRole('button', {name: 'View connection update'}))
+  expect(onClose).toHaveBeenCalledOnce()
+  expect(calls.some(([key]) => key.endsWith('/cancel'))).toBe(false)
+})
+
+it('does not report an older restored account as success when activation still needs recovery', async () => {
+  const calls = api({'POST /api/pixel/connections/google/connect': [200, BEGUN]})
+  const {update, onClose, onConnected} = wizard({status: statusFor({state: 'connected'})})
+  await begin(calls)
+  update(statusFor({state: 'connected', pending: pendingStep('activating', 'runtime-busy')}))
+  expect(onClose).toHaveBeenCalledOnce()
+  expect(onConnected).not.toHaveBeenCalled()
+})
+
+it('waits for an account before reporting success during activation', async () => {
+  const calls = api({'POST /api/pixel/connections/google/connect': [200, BEGUN]})
+  const {update, onConnected, onClose} = wizard()
+  await begin(calls)
+  update(statusFor({pending: pendingStep('consent')}))
+  update(statusFor({pending: pendingStep('activating')}))
+  expect(onConnected).not.toHaveBeenCalled()
+  expect(onClose).not.toHaveBeenCalled()
+  expect(screen.getByText(/Sign in to Google in the tab that opened/)).toBeVisible()
+  update(statusFor({state: 'connected', pending: pendingStep('deactivating')}))
+  expect(onConnected).not.toHaveBeenCalled()
+  update(statusFor({state: 'first-sync', pending: pendingStep('activating')}))
+  expect(onConnected).toHaveBeenCalledWith([])
+})
+
+it.each([200, 409, 503])('refreshes after a pasted callback returns %s and preserves the retained recovery', async code => {
+  const calls = api({'POST /api/pixel/connections/google/connect': [200, BEGUN],
+    'POST /api/pixel/connections/google/complete': [code, code === 200
+      ? {outcome: 'failed', errorClass: 'invalid-grant', account: null, capabilities: null, missing: []}
+      : {detail: {code: 'connections-unavailable', message: 'The connection update still needs checking.', help: null}}]})
+  const {update, refresh, onClose, onConnected} = wizard()
+  await begin(calls)
+  refresh.mockClear()
+  fireEvent.change(screen.getByLabelText(/Copy its whole address and paste it here/),
+    {target: {value: `http://127.0.0.1:53682/?state=${'s'.repeat(43)}&code=4/pasted`}})
+  fireEvent.click(screen.getByRole('button', {name: 'Finish connecting'}))
+  await waitFor(() => expect(refresh).toHaveBeenCalled())
+  update(statusFor({pending: pendingStep('activating', 'invalid-grant')}, {reason: 'connection-admission-held'}))
+  expect(onClose).toHaveBeenCalledOnce()
+  expect(onConnected).not.toHaveBeenCalled()
+  expect(calls.filter(([key]) => key.endsWith('/complete'))).toHaveLength(1)
+  expect(calls.some(([key]) => key.endsWith('/cancel'))).toBe(false)
+})
+
 it("does not let the last attempt's failure end the new sign-in", async () => {
   const calls = api({'POST /api/pixel/connections/google/connect': [200, BEGUN]})
   const earlier = statusFor({pending: pendingStep('failed', 'access-denied')})

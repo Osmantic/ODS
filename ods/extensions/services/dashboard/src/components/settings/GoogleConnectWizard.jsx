@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import HelpLink from '../HelpLink'
-import { GOOGLE_CONSOLE, connectionProblem, consoleLink, fileProblem, googleSignInOptions, readClientFile, signInProblem } from './connectedAppsStatus'
+import { GOOGLE_CONSOLE, connectionProblem, consoleLink, fileProblem, googleAdmissionHeld, googleSignInOptions, readClientFile, signInProblem } from './connectedAppsStatus'
 import { cancelGoogle, completeGoogle, connectGoogle, saveProject, savedProject } from './useConnectedApps'
 
 const ZONE = /^[A-Za-z][A-Za-z0-9_+\-/]{0,63}$/
@@ -59,7 +59,8 @@ export default function GoogleConnectWizard({catalog, initial = null, status, re
   const anything = Object.values(requested).some(Boolean)
   const labels = Object.fromEntries(catalog.capabilities.map(capability => [capability.id, capability.label]))
   const advanced = authMode === 'advanced'
-  const canStart = anything && (advanced ? signIn.advancedAvailable && Boolean(client) : signIn.ready)
+  const admissionHeld = googleAdmissionHeld(status)
+  const canStart = !admissionHeld && anything && (advanced ? signIn.advancedAvailable && Boolean(client) : signIn.ready)
 
   useEffect(() => () => { fileRead.current += 1 }, [])
   useEffect(() => {
@@ -102,15 +103,23 @@ export default function GoogleConnectWizard({catalog, initial = null, status, re
 
   // Google's redirect reaches the host agent, which finishes the sign-in; status shows how it went.
   useEffect(() => {
-    if (!flow || !status || status === waitingFrom.current) return
+    if (!status || status === waitingFrom.current) return
     const google = status.connectors?.google
     if (!google) return
+    // The callback may have consumed its code without completing the owner
+    // update. Leave that recovery to Finish; closing this view must not cancel
+    // the hold, exchange the code again, or announce a successful grant.
+    if (google.pending?.error && (googleAdmissionHeld(status)
+        || ['activating', 'deactivating'].includes(google.pending.phase))) { onClose(); return }
+    if (!flow) return
     if (google.pending?.phase === 'consent') { consentSeen.current = true; return }
     if (google.pending?.phase === 'failed') { backToForm(signInProblem(google.pending.error, flow.authMode)); return }
-    if (google.state !== 'not-connected' || google.pending?.phase === 'activating') {
+    if (google.pending?.phase === 'deactivating') return
+    if (google.account && google.state !== 'not-connected') {
       connected(Object.keys(requested).filter(id => requested[id] && !google.capabilities?.[id]))
       return
     }
+    if (google.pending?.phase === 'activating') return
     if (consentSeen.current) backToForm({message: 'The sign-in ended before Google connected.', fix: 'Start again.', help: false})
   }, [status, flow])
 
@@ -187,6 +196,7 @@ export default function GoogleConnectWizard({catalog, initial = null, status, re
       // A wrong address leaves the sign-in open; an ended sign-in starts over.
       if (['sign-in-flow-expired', 'sign-in-flow-unknown'].includes(error.code)) backToForm(connectionProblem(error, flow.authMode))
       else setProblem(connectionProblem(error, flow.authMode))
+      void refresh()
     } finally {
       setBusy(false)
     }
@@ -195,7 +205,7 @@ export default function GoogleConnectWizard({catalog, initial = null, status, re
   async function cancel() {
     if (flow) {
       setBusy(true)
-      try { await cancelGoogle(flow.flowId) } catch (error) { setProblem(connectionProblem(error, flow.authMode)); setBusy(false); return }
+      try { await cancelGoogle(flow.flowId) } catch (error) { setProblem(connectionProblem(error, flow.authMode)); setBusy(false); void refresh(); return }
       void refresh()
     }
     onClose()
@@ -217,6 +227,10 @@ export default function GoogleConnectWizard({catalog, initial = null, status, re
         <button type="submit" disabled={!address.trim() || busy} className={button}>Finish connecting</button>
       </form>
       {problem ? <Problem problem={problem} /> : null}
+      {admissionHeld ? <div className="space-y-1 text-sm">
+        <p>ODS is finishing a Google connection update. You can check it from the Google card.</p>
+        <button type="button" onClick={onClose} disabled={busy} className={link}>View connection update</button>
+      </div> : null}
       <button type="button" onClick={() => { void cancel() }} disabled={busy} className={`text-sm ${link}`}>Cancel sign-in</button>
     </div> : <form onSubmit={start} className="space-y-4">
       <fieldset className="space-y-2">

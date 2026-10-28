@@ -5,7 +5,7 @@ import CalendarChanges from './CalendarChanges'
 import EmailDrafts from './EmailDrafts'
 import PortalPlugins from './PortalPlugins'
 import GoogleConnectWizard, { Problem } from './GoogleConnectWizard'
-import { GOOGLE_CONSOLE, capabilitySummary, consoleLink, googleCard, googleConnectionMode } from './connectedAppsStatus'
+import { GOOGLE_CONSOLE, capabilitySummary, consoleLink, googleAdmissionHeld, googleCard, googleConnectionMode } from './connectedAppsStatus'
 import { disconnectGoogle, finishGoogle, savedProject, syncGoogle, useConnectedAppsStatus, useFullAccessOn } from './useConnectedApps'
 
 const TONES = {
@@ -63,7 +63,9 @@ export default function ConnectedApps() {
   const catalog = status?.catalog?.find(entry => entry.id === 'google')
   const advancedConnection = googleConnectionMode(google, catalog?.auth) === 'advanced'
   const card = status ? googleCard(status) : null
-  const actions = card ? [...(card.step?.actions ?? []), ...card.actions.filter(action => !(card.step && action === 'connect'))] : []
+  const updating = googleAdmissionHeld(status) || ['activating', 'deactivating'].includes(google?.pending?.phase)
+  const actions = card ? [...(card.step?.actions ?? []), ...card.actions.filter(action =>
+    !(card.step && action === 'connect') && !(updating && action === 'reconnect'))] : []
 
   async function run(work, done) {
     setBusy(true)
