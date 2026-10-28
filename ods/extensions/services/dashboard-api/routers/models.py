@@ -43,6 +43,7 @@ from helpers import (
     get_llama_metrics,
     get_loaded_model,
     is_plausible_single_request_tps,
+    owner_model_config,
     record_model_performance,
 )
 from host_agent_client import (
@@ -53,6 +54,7 @@ from host_agent_client import (
     request_json as request_agent_json,
 )
 from models import ModelLibraryGpu, ModelLibraryResponse
+from model_vllm import is_vllm_entry
 from pixel_runtime_state import pixel_stream_active
 from runtime_projection import active_runtime_projection
 from context_policy import HERMES_MIN_CONTEXT
@@ -228,6 +230,16 @@ def _model_activation_mode_denial(
             "model server. Change the model in that server, or rerun the "
             "installer with an ODS-managed backend to activate downloaded models."
         )
+    elif normalized_backend == "vllm":
+        # The vLLM engine serves one installer-set snapshot; activation swaps
+        # llama-server GGUFs (the host agent refuses it as well).
+        code = "vllm_runtime_installer_managed"
+        reason = "vllm_backend_selected"
+        message = (
+            "This install runs its model on the vLLM engine, and models cannot "
+            "be switched here. To use another model, run the ODS installer "
+            "again and choose it."
+        )
     elif "unknown" in {effective_mode, configured_mode}:
         code = "ods_mode_unknown"
         reason = "mode_unknown"
@@ -394,6 +406,10 @@ def _read_active_model() -> Optional[str]:
         for line in _ENV_PATH.read_text(encoding="utf-8").splitlines():
             if line.startswith("GGUF_FILE="):
                 return parse_env_value(line.split("=", 1)[1])
+    except PermissionError:
+        # The install owner's private .env (an owner other than UID 1000):
+        # its host agent reads the active file for this API.
+        return (owner_model_config() or {}).get("ggufFile")
     except OSError:
         pass
     return None
@@ -1510,6 +1526,22 @@ def _hf_requested_projector(details: dict[str, Any], body: dict[str, Any]) -> di
     if body.get("projectorId") and projector is None:
         raise HTTPException(status_code=409, detail="The selected vision projector is no longer available at this revision")
     return projector
+
+
+def _refuse_vllm_entry(model: dict[str, Any], action: str) -> None:
+    """409 for a vLLM catalog entry: the installer downloads and runs it.
+
+    Its snapshot is a model folder, not a GGUF the model lifecycle can
+    download, switch to or delete (scripts/download-hf-manifest.py and
+    LLM_BACKEND=vllm).
+    """
+    if not is_vllm_entry(model):
+        return
+    raise HTTPException(status_code=409, detail={
+        "error": f"{model.get('name') or model.get('id')} runs only on the vLLM engine. {action}",
+        "code": "vllm_model_installer_managed",
+        "requestedModelId": model.get("id"),
+    })
 
 
 def _hf_download_payload(record: dict[str, Any]) -> dict[str, Any]:
@@ -2700,7 +2732,13 @@ def loaded_model_display_name(loaded_model: str | None) -> str | None:
     """
     if not loaded_model:
         return None
-    catalog = [entry for entry in map(normalize_catalog_entry, _load_library()) if entry is not None]
+    library = _load_library()
+    if LLM_BACKEND == "vllm":
+        # vLLM serves --served-model-name; its entry has no GGUF to match.
+        entry = next((raw for raw in library if is_vllm_entry(raw)
+                      and raw.get("served_model_name") == loaded_model), None)
+        return entry.get("name") if entry else None
+    catalog = [entry for entry in map(normalize_catalog_entry, library) if entry is not None]
     entry = find_catalog_model(catalog, loaded_model, loaded_model)
     return entry["name"] if entry else None
 
@@ -2896,6 +2934,7 @@ def download_model(model_id: str, api_key: str = Depends(verify_api_key)):
     model = _find_model_in_library(model_id)
     if model is None:
         raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found in library")
+    _refuse_vllm_entry(model, "The ODS installer downloads it when it sets that engine up.")
 
     bootstrap_conflict = _bootstrap_upgrade_download_conflict()
     if bootstrap_conflict is not None:
@@ -3094,6 +3133,7 @@ def _activate_model(model_id: str, body: dict[str, Any] | None, *, chat_template
     model = _find_loadable_model(model_id)
     if model is None:
         raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found in library or local GGUF files")
+    _refuse_vllm_entry(model, "Only the ODS installer sets that engine up and runs it.")
 
     requested_context = _requested_activation_context(body)
     already_active, loaded_model = _already_active_model(model_id, model)
@@ -3287,6 +3327,7 @@ def delete_model(model_id: str, api_key: str = Depends(verify_api_key)):
     model = _find_model_in_library(model_id) or _find_local_gguf_model(model_id)
     if model is None:
         raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found in library or local GGUF files")
+    _refuse_vllm_entry(model, "The ODS installer manages its files.")
 
     payload = {
         "gguf_file": model["gguf_file"],

@@ -42,7 +42,7 @@ from config import (
     _detect_container_default_gateway, _running_inside_container,
     _read_env_from_file,
     get_env_file_read_error,
-    normalize_ods_mode, read_live_env_value,
+    normalize_ods_mode, read_live_env_value, LLM_BACKEND,
 )
 from models import (
     GPUInfo, ServiceStatus, DiskUsage, ModelInfo, BootstrapStatus,
@@ -322,12 +322,21 @@ def _build_readiness_payload(
 
     llama_healthy = _service_is_healthy(service_statuses, "llama-server")
     chat_ready = bool(llama_healthy and loaded_model and context_size)
+    # LLM_BACKEND=vllm: the row probes vllm-server (config.py). A cold start
+    # loads the model and compiles kernels for up to 15 minutes; a restart
+    # would only start that over, so none is suggested while it starts.
+    engine = "vllm-server" if LLM_BACKEND == "vllm" else "llama-server"
+    llm_row = _service_by_id(service_statuses, "llama-server")
+    engine_starting = engine == "vllm-server" and bool(llm_row and llm_row.startup_pending)
     if chat_ready:
         chat_detail = f"{loaded_model} loaded with {context_size} context"
     elif bootstrap_info.active:
         chat_detail = f"Full model is {_bootstrap_activity(bootstrap_info.phase)}; bootstrap mode may be limited"
+    elif engine_starting:
+        chat_detail = ("The vLLM engine is starting: a first start loads the model and compiles "
+                       "kernels, which can take 15 minutes")
     elif not llama_healthy:
-        chat_detail = "llama-server is not healthy"
+        chat_detail = f"{engine} is not healthy"
     elif not loaded_model:
         chat_detail = "No loaded model reported by the inference server"
     else:
@@ -339,19 +348,34 @@ def _build_readiness_payload(
         ready=chat_ready,
         status="ready" if chat_ready else "blocked",
         detail=chat_detail,
-        repair="ods restart llama-server" if not chat_ready and not bootstrap_info.active else None,
+        repair=(f"ods restart {engine}"
+                if not chat_ready and not bootstrap_info.active and not engine_starting else None),
     ))
 
-    webui_ready = _service_is_healthy(service_statuses, "open-webui")
-    checks.append(_readiness_check(
-        check_id="open-webui",
-        name="Open WebUI",
-        required=True,
-        ready=webui_ready,
-        status="ready" if webui_ready else "blocked",
-        detail="Open WebUI is reachable" if webui_ready else "Open WebUI is not healthy",
-        repair="ods restart open-webui" if not webui_ready else None,
-    ))
+    webui = _service_by_id(service_statuses, "open-webui")
+    if webui is not None and webui.status == "not_deployed":
+        # The install switched Open WebUI off (ENABLE_OPEN_WEBUI; Portal is
+        # the chat app on fresh Pixel installs): nothing waits for it, and
+        # restarting a service the install leaves out repairs nothing.
+        checks.append(_readiness_check(
+            check_id="open-webui",
+            name="Open WebUI",
+            required=False,
+            ready=False,
+            status="disabled",
+            detail="Open WebUI is switched off in this install",
+        ))
+    else:
+        webui_ready = _service_is_healthy(service_statuses, "open-webui")
+        checks.append(_readiness_check(
+            check_id="open-webui",
+            name="Open WebUI",
+            required=True,
+            ready=webui_ready,
+            status="ready" if webui_ready else "blocked",
+            detail="Open WebUI is reachable" if webui_ready else "Open WebUI is not healthy",
+            repair="ods restart open-webui" if not webui_ready else None,
+        ))
 
     checks.append(_readiness_check(
         check_id="dashboard-api",

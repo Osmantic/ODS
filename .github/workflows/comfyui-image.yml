@@ -11,7 +11,9 @@ on:
       - 'ods/extensions/services/comfyui/Dockerfile'
       - 'ods/extensions/services/comfyui/constraints.txt'
       - 'ods/extensions/services/comfyui/startup.sh'
+      - 'ods/extensions/services/comfyui/ods_attention_guard/**'
       - 'ods/tests/test_comfyui_image.py'
+      - 'ods/tests/test_comfyui_attention_guard.py'
       - '.github/workflows/comfyui-image.yml'
   push:
     branches: [main]
@@ -19,7 +21,9 @@ on:
       - 'ods/extensions/services/comfyui/Dockerfile'
       - 'ods/extensions/services/comfyui/constraints.txt'
       - 'ods/extensions/services/comfyui/startup.sh'
+      - 'ods/extensions/services/comfyui/ods_attention_guard/**'
       - 'ods/tests/test_comfyui_image.py'
+      - 'ods/tests/test_comfyui_attention_guard.py'
       - '.github/workflows/comfyui-image.yml'
   schedule:
     - cron: '41 4 * * 1'
@@ -54,6 +58,6 @@ jobs:
         env:
           ODS_TEST_COMFYUI_IMAGE: '1'
           ODS_TEST_COMFYUI_IIDFILE: ${{ runner.temp }}/comfyui-image-id
-        run: python -m pytest -q -s ods/tests/test_comfyui_image.py
+        run: python -m pytest -q -s ods/tests/test_comfyui_attention_guard.py ods/tests/test_comfyui_image.py
       - name: Report image size
         run: docker image inspect --format 'image {{.Architecture}} {{.Size}} bytes' "$(cat "$RUNNER_TEMP/comfyui-image-id")"

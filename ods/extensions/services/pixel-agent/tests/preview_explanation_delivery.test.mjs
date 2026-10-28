@@ -24,7 +24,7 @@ import {PREVIEW_INSPECTION_TOOL} from '../plugin/preview-interaction-assurance.m
 import {INSPECTION_KIND, PAINT_INSPECTION_SCOPE, PRESS_INSPECTION_SCOPE, STEP_INSPECTION_SCOPE, createWorkspacePreviewInspectTool,
   inspectionPlanHash} from '../plugin/workspace-preview-inspect.mjs';
 import {PREVIEW_CONTINUE_NOTE, PREVIEW_CONTROLS_NOTE, PREVIEW_EARLIER_NOTE, PREVIEW_MISSING_NOTE, PREVIEW_NOTES,
-  PREVIEW_RUNNING_NOTE, PREVIEW_SCRIPT_NOTE, PREVIEW_STOPPED_NOTE, PREVIEW_UNCONFIRMED_NOTE, explainedPreviewDelivery,
+  PREVIEW_RUNNING_NOTE, PREVIEW_SCRIPT_NOTE, PREVIEW_STOPPED_NOTE, PREVIEW_STORAGE_NOTE, PREVIEW_UNCONFIRMED_NOTE, explainedPreviewDelivery,
   foldedText, openFence, ownerPreviewText, previewCheckNote} from '../plugin/preview-explanation.mjs';
 import {DELIVERY_NOTES} from '../../dashboard/src/lib/portalDeliveryNotes.js';
 
@@ -249,6 +249,9 @@ for (const [name, reply] of [['empty', ''], ['whitespace', ' \n\t '], ['silent',
   ['copied stale link', 'Compare the earlier build: [Open last published preview](https://example.invalid/).'],
   ['another local URL', 'The arena draws again on the dev server at http://localhost:3000/ so it looks fixed to me.'],
   ['a stale preview link', 'Open the earlier build at http://site-0123456789abcdef01234567.localhost:9437/site-0123456789abcdef01234567/ to compare.'],
+  // Workstation06 visitor round 4 (2026-10-27): the real site id on an invented host.
+  ['a made-up link to this preview', preview => `The splitter is complete and verified.\n\n**Preview:** ` +
+    `https://portal-odsp-6682973191603e0a3ef78eca1.d.ods.workspace/preview/${preview.siteId}/${preview.sha256}`],
   ['too long', `The arena fill comes from line 748. ${'Detail. '.repeat(3000)}`]]) {
   test(`${name} final reply keeps the existing host-only delivery`, async () => {
     const plain = await elfTurn();
@@ -340,6 +343,21 @@ test('passing checks keep the appended delivery: the receipt alone, without the 
   assert.match(guard.verificationForRun(runId).text, /^Browser inspection passed for the submitted interaction checks only;/);
   assert.equal(guard.replyPayloadSending({runId, kind: 'final', payload: {text: EXPLANATION}}).payload.text,
     `${EXPLANATION}\n\n${delivery.text}\n${SCOPE}`);
+});
+
+test('a request to keep data across reloads gets Portal\'s storage line, whatever the checks or the reply say', async () => {
+  // Workstation06 (2026-10-27): the reply to "make the ticks survive a page reload" was "Everything checks out", but
+  // Portal shows previews with an opaque origin, in its card and in a new tab, so the page keeps its data only in memory.
+  const prompt = `${OWNER} Also make the best score survive a page reload.`;
+  const passed = await elfTurn({painted: true, prompt, reply: 'Everything checks out: the score now survives a reload.'});
+  assert.equal(passed.delivery.status, 'passed');
+  assert.equal(passed.delivery.text, `${PREVIEW_STORAGE_NOTE}\n\n${receiptText(passed.preview)}`);
+  const failed = await elfTurn({prompt});
+  assert.equal(failed.delivery.status, 'failed');
+  assert.equal(failed.delivery.text, `${PREVIEW_CONTROLS_NOTE}\n\n${PREVIEW_STORAGE_NOTE}\n\n${receiptText(failed.preview)}`);
+  assert.doesNotMatch(failed.delivery.text, ALARM);
+  const plain = await elfTurn({painted: true});
+  assert.equal(plain.delivery.text, receiptText(plain.preview), 'no storage line without the request');
 });
 
 test('a still-running check keeps the explanation and says the checks were still running', async () => {

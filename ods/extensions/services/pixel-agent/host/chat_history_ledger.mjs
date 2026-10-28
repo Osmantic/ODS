@@ -180,7 +180,7 @@ export function createChatHistoryLedger(directory) {
     if(state?.status==='deleted') throw new HistoryError('conversation-deleted',410);
     return {revision:state?.revision || null,acknowledgedMessages:state?.acknowledgedMessages || 0,status:state?.status || 'ready',reason:state?.reason || null};
   }
-  function prepare(user,requestId,snapshot,native) {
+  function prepare(user,requestId,snapshot,native,deliveryCorrection=null) {
     if(!REQUEST.test(requestId || '')) throw new HistoryError('invalid_request_id',400);
     const messages=validateHistorySnapshot(snapshot), revision=digest(messages), previous=read(user);
     if(previous?.status==='deleted') throw new HistoryError('conversation-deleted',410);
@@ -208,17 +208,22 @@ export function createChatHistoryLedger(directory) {
     // our last acknowledged owner input. Other new local turns remain intact.
     if(previous && !hydrate && delta[0]?.role==='assistant') delta=delta.slice(1);
     if(!delta.length) throw new HistoryError('history_has_no_new_input',409);
+    // A preparation failure may have replaced lastResult with a pending input.
+    // Retain its host-derived correction until a later turn actually completes.
+    const correction=previous?.deliveryCorrection ?? deliveryCorrection;
+    if(correction && (!REQUEST.test(correction.requestId || '') || typeof correction.text!=='string')) throw new HistoryError('history_storage_unavailable',503);
     const state={schemaVersion:1,user,messages,revision,acknowledgedMessages:acknowledged,status:'pending',reason:null,
+      deliveryCorrection:correction,
       sessionRevision:native.sessionRevision,compactionCount:nativeCompactions,requestId,
       requests:[...(previous?.requests || []).slice(-15),{id:requestId,revision,status:'pending'}]};
     write(user,state);
     inflight.add(user);
-    return {state,delta,hydrate:hydrate && messages.length>1,archive:messages.slice(0,-1)};
+    return {state,delta,hydrate:hydrate && messages.length>1,archive:messages.slice(0,-1),deliveryCorrection:correction};
   }
   function complete(user,prepared,completion,verification,native) {
     const current=read(user);
     if(current?.requestId!==prepared.state.requestId || !['pending','unknown'].includes(current.status)) return null;
-    const state={...prepared.state,status:'ready',reason:null,acknowledgedMessages:prepared.state.messages.length,
+    const state={...prepared.state,status:'ready',reason:null,deliveryCorrection:null,acknowledgedMessages:prepared.state.messages.length,
       sessionRevision:native?.sessionRevision || prepared.state.sessionRevision,compactionCount:native?.compaction?.count ?? prepared.state.compactionCount,
       requests:prepared.state.requests.map(item=>item.id===prepared.state.requestId?{...item,status:'completed'}:item),
       lastResult:{requestId:prepared.state.requestId,revision:prepared.state.revision,completion,verification}};

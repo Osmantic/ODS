@@ -2,6 +2,14 @@ services:
   llama-server:
     environment:
       NVIDIA_VISIBLE_DEVICES: "${LLAMA_SERVER_GPU_UUIDS:?LLAMA_SERVER_GPU_UUIDS must be set for the NVIDIA multi-GPU overlay}"
+      # NVIDIA_VISIBLE_DEVICES alone does not limit llama-server: the base
+      # overlay reserves `count: all`, Docker then appends its own
+      # NVIDIA_VISIBLE_DEVICES=all, and CDI ignores the variable (all four
+      # GPUs stayed visible on a 4x RTX PRO 6000 host, 2026-10-27). CUDA
+      # honors CUDA_VISIBLE_DEVICES, in the listed order, so llama.cpp sees
+      # exactly the GPUs the assignment gave it and LLAMA_ARG_TENSOR_SPLIT
+      # applies to them.
+      CUDA_VISIBLE_DEVICES: "${LLAMA_SERVER_GPU_UUIDS:?LLAMA_SERVER_GPU_UUIDS must be set for the NVIDIA multi-GPU overlay}"
       LLAMA_ARG_SPLIT_MODE: "${LLAMA_ARG_SPLIT_MODE:-none}"
       LLAMA_ARG_TENSOR_SPLIT: "${LLAMA_ARG_TENSOR_SPLIT:-}"
     deploy:

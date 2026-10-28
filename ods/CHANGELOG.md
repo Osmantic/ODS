@@ -342,6 +342,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a long line of spaces.
 
 ### Changed
+- Elf of Doom no longer ends after realm 6: the six realms loop for as long
+  as you survive, each circuit with 50% more enemies and 50% more boss
+  health, every boss on realm 6's reinforcement timer from the second circuit
+  on, and a victory panel that continues the run and turns bronze, silver,
+  then gold. The Swift Draw boon is replaced by Hunter's Blessing, which
+  doubles every arrow drop from then on (2x, 4x, 8x as it stacks), and the
+  elf is now Gabriel with a new portrait. Portal made the changes from the
+  owner's prompts, running Qwen3.8-Flash-Next on local hardware; the game
+  files are exactly the ones https://odsspark.com/game/ serves. An install
+  that already has `Playground/elf-of-doom` keeps its own copy.
 - Elf of Doom gives more arrows: slain enemies drop a 6-arrow quiver 20% of
   the time (was 18% for 3), and the timed supply drop gives 12 arrows every
   20 seconds (was 6), so boss-fight reinforcements no longer outrun the arrow

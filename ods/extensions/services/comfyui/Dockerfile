@@ -7,6 +7,7 @@
 #   3. ComfyUI from source (pinned tag)
 #   4. Custom nodes (each = own RUN for granular caching, pinned commits)
 #   5. comfy-kitchen NVFP4 acceleration
+#   5b. ODS attention guard (a GPU this PyTorch build lacks kernels for)
 #   6. Build checks: pinned torch kept, every custom node imports
 #   7. Startup script + non-root user (changes most often)
 #
@@ -95,6 +96,16 @@ RUN cd "$COMFYUI_DIR/custom_nodes" \
 # and uses comfy-kitchen's eager backend instead.
 # ---------------------------------------------------------------------------
 RUN pip3 install --no-cache-dir "comfy-kitchen[cublas]"
+
+# ---------------------------------------------------------------------------
+# Layer 5b: ODS attention guard
+#
+# This PyTorch is built for sm_80, sm_90, sm_100 and sm_120. On a GPU missing
+# from that list, such as the GB300 (sm_103), its cuDNN attention finds no
+# execution plan and every generation fails; the node turns cuDNN attention
+# off there so PyTorch uses its flash kernels. Loaded like any custom node.
+# ---------------------------------------------------------------------------
+COPY ods_attention_guard/ "$COMFYUI_DIR/custom_nodes/ods_attention_guard/"
 
 # ---------------------------------------------------------------------------
 # Layer 6: Build checks

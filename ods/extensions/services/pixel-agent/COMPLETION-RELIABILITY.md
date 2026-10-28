@@ -269,7 +269,9 @@ descendants (an `aria-hidden` icon or chevron, a hidden alternate label, a
 `display: none` badge) never turn a correct name into a missing one; a hidden
 control keeps its hidden-inclusive name. The latest receipt bound to the current
 snapshot decides, whether its steps passed or failed or it came back incomplete
-for an untested show/hide change (its `details.receipt`, below). That holds
+for an untested show/hide change (its `details.receipt`, below). Only an
+entry-page receipt counts: one of another page (`page`) lists that page's
+controls, which can neither show nor rule out the entry page's. That holds
 whatever `error` the harness attaches to the `after_tool_call` event: OpenClaw
 2026.6.33 sets one on every error result of a direct call (tower2's transport),
 and a thrown call has no receipt to bind. "Named exactly" compares

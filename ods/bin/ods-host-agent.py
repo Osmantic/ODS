@@ -148,6 +148,15 @@ if _gguf_inspector_spec is None or _gguf_inspector_spec.loader is None:
 _gguf_inspector = importlib.util.module_from_spec(_gguf_inspector_spec)
 _gguf_inspector_spec.loader.exec_module(_gguf_inspector)
 
+# vLLM catalog entries ("runtime": "vllm"): the installer sets them up with
+# LLM_BACKEND=vllm; local model switching manages GGUF models only.
+_model_vllm_spec = importlib.util.spec_from_file_location(
+    "_ods_model_vllm", _MODEL_MEMORY_PATH.with_name("model_vllm.py"))
+if _model_vllm_spec is None or _model_vllm_spec.loader is None:
+    raise ImportError("Cannot load shared vLLM catalog policy")
+_model_vllm = importlib.util.module_from_spec(_model_vllm_spec)
+_model_vllm_spec.loader.exec_module(_model_vllm)
+
 
 def _activation_architecture_refusal(target: Path, env: dict, *, windows_hosted: bool,
                                     registered_runtime: dict | None) -> dict | None:
@@ -312,7 +321,7 @@ WINDOWS_WHISPER_CUDA_MIN_DRIVER_MAJOR = 575
 # Distinct from CORE_SERVICE_IDS (which is the allowlist of known service IDs).
 ALWAYS_ON_SERVICES: frozenset = frozenset({
     "llama-server", "model-router", "remote-provider-egress", "remote-provider-ssh-tunnel",
-    "open-webui", "dashboard", "dashboard-api",
+    "open-webui", "dashboard", "dashboard-api", "vllm-server",
 })
 USER_EXTENSIONS_DIR: Path = Path()
 EXTENSIONS_DIR: Path = Path()
@@ -758,12 +767,59 @@ def _model_activation_public_failure(diagnosis: dict, healthy: bool) -> str:
 
 
 # .env keys that decide whether inference is a container or a host-native
-# llama-server. Compose resolution must read them from installed state. The
-# LEMONADE_EXTERNAL selector stays one release for un-migrated installs.
+# llama-server, and LLM_BACKEND, which selects the vLLM engine overlay
+# (LLM_BACKEND=vllm). Compose resolution must read them from installed state.
+# The LEMONADE_EXTERNAL selector stays one release for un-migrated installs.
 _HOST_LLM_COMPOSE_SELECTORS = (
     "AMD_INFERENCE_RUNTIME", "AMD_INFERENCE_RUNTIME_MODE", "AMD_INFERENCE_LOCATION",
     "AMD_INFERENCE_MANAGED", "ODS_HOST_LLM_TRANSPORT", "LEMONADE_EXTERNAL",
+    "LLM_BACKEND",
 )
+
+# LLM_BACKEND=vllm (docker-compose.vllm.yml): vllm-server serves the one model
+# in its own container on the ODS network, without a host port, and the
+# in-stack llama-server is profiled out. Naming llama-server in a Compose
+# command would enable its profile again, so nothing here may do that.
+_VLLM_CONTAINER = "ods-vllm-server"
+_VLLM_ORIGIN = "http://vllm-server:8000"
+_VLLM_ENDPOINT_ID = "vllm-default"
+
+
+def _vllm_engine(env: dict) -> bool:
+    """Whether .env selects the vLLM engine (LLM_BACKEND=vllm)."""
+    return str(env.get("LLM_BACKEND") or "").strip().casefold() == "vllm"
+
+
+_ODS_HELP = "Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC"
+_VLLM_LLAMA_SERVER_OFF = (
+    "llama-server is off on this install: the vLLM engine (vllm-server) serves the model. "
+    "Restart vllm-server instead, or run the ODS installer again to change the engine."
+)
+
+
+def _vllm_activation_refusal(model_id: str) -> dict:
+    """409 body for a model switch on an install the vLLM engine serves."""
+    return {
+        "error": "This install runs its model on the vLLM engine, and models cannot be switched here.",
+        "code": "vllm_runtime_installer_managed",
+        "hint": f"To use another model, run the ODS installer again and choose it. {_ODS_HELP}",
+        "requestedModelId": model_id,
+    }
+
+
+def _vllm_model_refusal(model: dict) -> dict:
+    """409 body for a vLLM catalog entry asked of llama-server's model lifecycle."""
+    # The entry's own GPU requirement; a malformed record names none.
+    needs = ("an NVIDIA GPU the vLLM engine supports" if _model_vllm.entry_problems(model)
+             else _model_vllm.requirement_text(model))
+    return {
+        "error": f"{model.get('name') or model.get('id')} runs only on the vLLM engine, "
+                 "which only the ODS installer sets up.",
+        "code": "vllm_model_installer_only",
+        "hint": (f"It needs {needs}. Run the ODS installer and "
+                 f"choose the vLLM engine to use it. {_ODS_HELP}"),
+        "requestedModelId": model.get("id"),
+    }
 
 
 _SWITCHBOARD_ROUTE_ENV_KEYS = (
@@ -2969,14 +3025,23 @@ def _switchboard_state_needs_current_env_verification(
 
 
 def _catalog_model_for_current_env(env: dict) -> tuple[str, dict]:
-    gguf_file = str(env.get("GGUF_FILE") or "").strip()
+    """The catalog id and entry the configured route serves.
+
+    Without a catalog entry: the configured model name and ``{}``.
+
+    A vLLM route (LLM_BACKEND=vllm) serves a vLLM entry, found by LLM_MODEL; a
+    GGUF_FILE left from an earlier llama-server install never names it. Every
+    other route serves a GGUF entry.
+    """
+    vllm = _vllm_engine(env)
+    gguf_file = "" if vllm else str(env.get("GGUF_FILE") or "").strip()
     llm_model_name = str(env.get("LLM_MODEL") or "").strip()
     try:
         library = _load_model_library_records()
     except RuntimeError:
         library = []
     for entry in library:
-        if not isinstance(entry, dict):
+        if not isinstance(entry, dict) or _model_vllm.is_vllm_entry(entry) != vllm:
             continue
         entry_id = str(entry.get("id") or "")
         entry_gguf = str(entry.get("gguf_file") or "")
@@ -2992,7 +3057,13 @@ def _catalog_model_for_current_env(env: dict) -> tuple[str, dict]:
 
 
 def _initial_switchboard_backend(env: dict) -> tuple[str, str, str | None]:
-    """Every managed runtime is upstream llama-server behind one endpoint."""
+    """The route's backend kind and router endpoint for the configured runtime.
+
+    LLM_BACKEND=vllm routes to vllm-server; every other managed runtime is
+    upstream llama-server behind the llama-server-default endpoint.
+    """
+    if _vllm_engine(env):
+        return "vllm", _VLLM_ENDPOINT_ID, None
     return "llama-server", "llama-server-default", None
 
 
@@ -6834,6 +6905,10 @@ def _precreate_compose_data_dirs(service_id: str, ext_dir: Path, compose_path: P
             except ValueError:
                 logger.warning("Skipping out-of-tree volume path in %s: %s", service_id, vol_str)
                 continue
+            # A file the extension ships (Whisper's docker-entrypoint.sh) is not
+            # a data directory; mkdir on it logged "File exists" on every start.
+            if dir_path.exists() and not dir_path.is_dir():
+                continue
             try:
                 dir_path.mkdir(parents=True, exist_ok=True)
                 # Native Windows Python has no os.getuid (or POSIX owners);
@@ -6897,6 +6972,15 @@ def _repair_rootless_data_ownership(service_id: str) -> None:
         command = [
             bash, "-c", 'source "$1"; ods_prepare_service_state_ownership "$2" "$3"',
             "ods-service-state", str(helper), str(INSTALL_DIR), service_id,
+        ]
+    elif service_id == "comfyui":
+        # Phase 11 prepares ComfyUI's UID 1000 bind sources only when it is
+        # enabled at install. A Dashboard add-back on rootful Docker under
+        # another owner UID crash-looped on mkdir /models/text_encoders
+        # (Workstation06, 2026-10-26). The backend picks the image's layout.
+        command = [
+            bash, "-c", 'source "$1"; ods_prepare_comfyui_data_ownership "$2" "$3"',
+            "ods-comfyui-data", str(helper), str(INSTALL_DIR), GPU_BACKEND,
         ]
     try:
         result = subprocess.run(
@@ -7589,6 +7673,9 @@ def docker_compose_recreate(service_ids: list[str], *, force_recreate: bool = Tr
         ok, error = validate_core_recreate_ids(service_ids)
         if not ok:
             return False, error
+    if "llama-server" in service_ids and _vllm_engine(load_env(INSTALL_DIR / ".env")):
+        # Naming the service would enable its profile and start a second engine.
+        return False, _VLLM_LLAMA_SERVER_OFF
 
     try:
         flags = _core_recreate_compose_flags(resolve_compose_flags(), service_ids)
@@ -8116,11 +8203,14 @@ def _docker_service_health_snapshot() -> dict:
                 service_id = declared_containers.get(container_name, service_id)
                 if not service_id and container_name.startswith("ods-"):
                     service_id = container_name.removeprefix("ods-")
+                restarts = item.get("RestartCount")
                 containers.append({
                     "service_id": str(service_id or ""),
                     "container_name": container_name,
                     "state": str(state.get("Status") or "unknown"),
                     "health": str(health.get("Status") or "none"),
+                    # Restart-policy restarts; tells a crash loop from a start.
+                    "restart_count": restarts if type(restarts) is int and restarts >= 0 else 0,
                 })
         payload = {
             "schema_version": "ods.host-service-health.v1",
@@ -8369,6 +8459,26 @@ def _valid_gguf_filename(value: object) -> bool:
     )
 
 
+def _configured_model_identity(env: dict) -> dict:
+    """The configured model's name, GGUF file and context from .env, each bounded.
+
+    For the Dashboard API when it cannot read the owner's private .env. A
+    value that does not validate is reported as None, never echoed.
+    """
+    context = None
+    for key in ("CTX_SIZE", "MAX_CONTEXT"):
+        value = str(env.get(key) or "")
+        if re.fullmatch(r"[1-9][0-9]{0,8}", value):
+            context = int(value)
+            break
+    llm_model, gguf_file = env.get("LLM_MODEL"), env.get("GGUF_FILE")
+    return {
+        "llmModel": llm_model if _valid_pixel_model_name(llm_model) else None,
+        "ggufFile": gguf_file if _valid_gguf_filename(gguf_file) else None,
+        "contextSize": context,
+    }
+
+
 def _local_gguf_filename_from_id(model_id: str) -> str | None:
     """Map a Dashboard/local model id to a safe GGUF filename candidate."""
     token = str(model_id or "").strip()
@@ -8419,6 +8529,22 @@ def _resolve_local_gguf_filename(model_id: str, models_dir: Path) -> str | None:
     return None
 
 
+def _clear_disabled_progress(service_id: str) -> None:
+    """Remove a just-disabled service's progress record.
+
+    A recent ``started`` record outranks a disabled selection on the Extensions
+    page. The host writes these records as the install owner, so where that
+    owner is not UID 1000 the Dashboard cannot remove them, and its disable
+    failed with HTTP 500 after the service had stopped (Workstation06,
+    2026-10-27). The selection is already committed; a leftover record is
+    logged rather than reported as a failed disable.
+    """
+    try:
+        (DATA_DIR / "extension-progress" / f"{service_id}.json").unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning("Could not clear the progress record of disabled %s: %s", service_id, exc)
+
+
 def _read_progress_status(service_id: str) -> str | None:
     """Return the ``status`` field of the progress file, or None if absent/unreadable.
 
@@ -8435,6 +8561,19 @@ def _read_progress_status(service_id: str) -> str | None:
         return None
     status = data.get("status")
     return status if isinstance(status, str) else None
+
+
+def _start_records_outcome(service_id: str) -> bool:
+    """Whether a synchronous start replaces the service's progress record.
+
+    No record, ``prepared`` (this enable's images are ready), ``started`` and
+    the Dashboard's own ``pulling`` receipt for this start are replaced. An
+    unreadable record or another operation's phase is left as it is; a
+    running install or image preparation holds the service lock.
+    """
+    if not (DATA_DIR / "extension-progress" / f"{service_id}.json").exists():
+        return True
+    return _read_progress_status(service_id) in {"prepared", "started", "pulling"}
 
 
 def _run_post_install_hook(service_id: str, ext_dir: Path) -> tuple[bool, str]:
@@ -9577,33 +9716,42 @@ def _image_prepare_context(service_ids: list[str]) -> tuple[list[str], dict[str,
 
 
 def _services_missing_images(flags: list[str], service_ids: list[str],
-                             env: dict[str, str]) -> list[str]:
+                             env: dict[str, str]) -> tuple[list[str], list[str]]:
     """The services among ``service_ids`` whose Compose image is not on this host.
 
-    Locally built images are left to their own build step. The resolved
-    configuration carries credential values, so it is parsed and never logged.
+    Returns ``(to_pull, to_build)``. A locally built service is checked under
+    the name ``up`` gives its image: its ``image``, else Compose's
+    ``<project>-<service>``. The resolved configuration carries credential
+    values, so it is parsed and never logged.
     """
     command = ["docker", "compose", *flags, "config", "--format", "json"]
     result = subprocess.run(command, cwd=str(INSTALL_DIR), env=env,
                             capture_output=True, text=True, timeout=60)
     if result.returncode:
         raise RuntimeError("Could not resolve the Compose configuration for these services")
-    services = json.loads(result.stdout).get("services")
+    config = json.loads(result.stdout)
+    services = config.get("services")
     if not isinstance(services, dict):
         raise RuntimeError("Invalid Compose configuration")
-    missing = []
+    pulls, builds = [], []
     for service_id in service_ids:
         definition = services.get(service_id)
         if not isinstance(definition, dict):
             raise RuntimeError(f"The Compose stack does not define {service_id}")
+        built = bool(definition.get("build"))
         image = definition.get("image")
-        if definition.get("build") or not isinstance(image, str) or not image:
+        if built and not image:
+            project = config.get("name")
+            if not isinstance(project, str) or not project:
+                raise RuntimeError("Invalid Compose configuration")
+            image = f"{project}-{service_id}"
+        if not isinstance(image, str) or not image:
             continue
         inspected = subprocess.run(["docker", "image", "inspect", image],
                                    capture_output=True, text=True, timeout=30)
         if inspected.returncode:
-            missing.append(service_id)
-    return missing
+            (builds if built else pulls).append(service_id)
+    return pulls, builds
 
 
 def _missing_model_files(service_ids: list[str]) -> list:
@@ -9641,6 +9789,53 @@ def _fetch_model_files(progress_id: str, files: list) -> tuple[bool, str]:
     return True, ""
 
 
+def _follow_image_command(command: list[str], progress_id: str, label: str, detail,
+                          subject: str, *, env: dict[str, str] | None = None) -> tuple[int, str, list[str]]:
+    """Run a Compose image command with live progress under ``progress_id``.
+
+    ``detail(line)`` reads each output line and returns the progress detail to
+    show after the elapsed time, or None to keep the last one. The command is
+    stopped only when it prints nothing for IMAGE_PULL_STALL_SECONDS or
+    IMAGE_PULL_MAX_SECONDS pass. Returns ``(returncode, failure, tail)``:
+    ``failure`` says why the command was stopped, ``tail`` is its last output.
+    """
+    proc = subprocess.Popen(command, cwd=str(INSTALL_DIR), env=env, text=True, errors="replace",
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    tail: collections.deque = collections.deque(maxlen=40)
+    seen = {"last": time.monotonic(), "detail": detail("") or ""}
+
+    def _read_output() -> None:
+        for line in proc.stdout:
+            tail.append(line.rstrip())
+            seen["last"] = time.monotonic()
+            seen["detail"] = detail(line) or seen["detail"]
+
+    reader = threading.Thread(target=_read_output, daemon=True)
+    reader.start()
+    started = reported = time.monotonic()
+    _write_progress(progress_id, "pulling", label)
+    failure = ""
+    while proc.poll() is None:
+        time.sleep(1)
+        now = time.monotonic()
+        if now - seen["last"] > IMAGE_PULL_STALL_SECONDS:
+            failure = f"{subject} made no progress for {IMAGE_PULL_STALL_SECONDS // 60} minutes."
+        elif now - started > IMAGE_PULL_MAX_SECONDS:
+            failure = f"{subject} did not finish within {IMAGE_PULL_MAX_SECONDS // 3600} hours."
+        if failure:
+            proc.kill()
+            break
+        if now - reported >= _IMAGE_PULL_PROGRESS_SECONDS:
+            reported = now
+            minutes, seconds = divmod(int(now - started), 60)
+            elapsed = f"{label} {minutes}:{seconds:02d} elapsed"
+            _write_progress(progress_id, "pulling",
+                            f"{elapsed}, {seen['detail']}" if seen["detail"] else elapsed)
+    proc.wait()
+    reader.join(timeout=5)
+    return proc.returncode, failure, list(tail)
+
+
 def _pull_compose_images(flags: list[str], service_ids: list[str], progress_id: str,
                          *, env: dict[str, str] | None = None) -> tuple[bool, str]:
     """Download the images of ``service_ids`` with live progress under ``progress_id``.
@@ -9650,45 +9845,54 @@ def _pull_compose_images(flags: list[str], service_ids: list[str], progress_id: 
     reports nothing for IMAGE_PULL_STALL_SECONDS or IMAGE_PULL_MAX_SECONDS pass.
     """
     command = ["docker", "compose", "--progress", "plain", *flags, "pull", *service_ids]
-    proc = subprocess.Popen(command, cwd=str(INSTALL_DIR), env=env, text=True, errors="replace",
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    tail: collections.deque = collections.deque(maxlen=40)
-    seen = {"last": time.monotonic(), "layers": 0}
+    layers = [0]
 
-    def _read_output() -> None:
-        for line in proc.stdout:
-            tail.append(line.rstrip())
-            seen["last"] = time.monotonic()
-            if "Pull complete" in line or "Already exists" in line:
-                seen["layers"] += 1
+    def detail(line: str) -> str:
+        if "Pull complete" in line or "Already exists" in line:
+            layers[0] += 1
+        return f"{layers[0]} layers done"
 
-    reader = threading.Thread(target=_read_output, daemon=True)
-    reader.start()
-    started = reported = time.monotonic()
-    _write_progress(progress_id, "pulling", "Downloading images...")
-    failure = ""
-    while proc.poll() is None:
-        time.sleep(1)
-        now = time.monotonic()
-        if now - seen["last"] > IMAGE_PULL_STALL_SECONDS:
-            failure = f"Image download made no progress for {IMAGE_PULL_STALL_SECONDS // 60} minutes."
-        elif now - started > IMAGE_PULL_MAX_SECONDS:
-            failure = f"Image download did not finish within {IMAGE_PULL_MAX_SECONDS // 3600} hours."
-        if failure:
-            proc.kill()
-            break
-        if now - reported >= _IMAGE_PULL_PROGRESS_SECONDS:
-            reported = now
-            minutes, seconds = divmod(int(now - started), 60)
-            _write_progress(progress_id, "pulling",
-                            f"Downloading images... {minutes}:{seconds:02d} elapsed, "
-                            f"{seen['layers']} layers done")
-    proc.wait()
-    reader.join(timeout=5)
+    returncode, failure, tail = _follow_image_command(
+        command, progress_id, "Downloading images...", detail, "Image download", env=env)
     if failure:
         return False, failure
-    if proc.returncode:
-        return False, "Image download failed:\n" + "\n".join(list(tail)[-12:])
+    if returncode:
+        return False, "Image download failed:\n" + "\n".join(tail[-12:])
+    return True, ""
+
+
+# Compose's plain build progress (Compose 5.2): "#14 [comfyui 10/15] RUN ..."
+# starts a Dockerfile step, "#20 [comfyui] exporting to image" saves the image.
+_BUILD_STEP_RE = re.compile(r"#\d+ \[(?:[^\]]* )?\s*(\d+)/(\d+)\]")
+_BUILD_EXPORT_RE = re.compile(r"#\d+ (?:\[[^\]]*\] )?exporting to ")
+
+
+def _build_compose_images(flags: list[str], service_ids: list[str], progress_id: str,
+                          *, env: dict[str, str] | None = None) -> tuple[bool, str]:
+    """Build the local images of ``service_ids`` with live progress under ``progress_id``.
+
+    Compose builds from the same files ``up`` uses, so ``up`` then only
+    creates the container. A first ComfyUI build for NVIDIA installs its
+    Python stack and saves a 7 GB image: ten minutes on Workstation06
+    (2026-10-26), all of the 600 s start allowance, so its first ``up`` timed
+    out. Returns ``(ok, error)``; the build is stopped only when BuildKit
+    prints nothing for IMAGE_PULL_STALL_SECONDS or IMAGE_PULL_MAX_SECONDS pass.
+    """
+    command = ["docker", "compose", "--progress", "plain", *flags, "build", *service_ids]
+
+    def detail(line: str) -> str | None:
+        if _BUILD_EXPORT_RE.match(line):
+            return "saving the image"
+        step = _BUILD_STEP_RE.match(line)
+        return f"step {step[1]} of {step[2]}" if step else None
+
+    returncode, failure, tail = _follow_image_command(
+        command, progress_id, "Building images...", detail, "Image build", env=env)
+    if failure:
+        return False, failure
+    if returncode:
+        return False, _install_build_diagnostic(
+            subprocess.CompletedProcess(command, returncode, "\n".join(tail), ""), {})
     return True, ""
 
 
@@ -12646,7 +12850,15 @@ class AgentHandler(BaseHTTPRequestHandler):
             _start_enable_retry(self, service_id, lock)
             return
 
+        # The start's outcome is recorded here, on the owner's side: the
+        # Dashboard API runs as UID 1000 and cannot write the record when the
+        # install owner is another user (Workstation06: nvuser, UID 1001).
+        records = action == "start" and _start_records_outcome(service_id)
+        # Kept when an unexpected error escapes; that error is then raised.
+        ok, err, status = False, "The start stopped unexpectedly; see the host agent log.", 500
         try:
+            if records:
+                _write_progress(service_id, "starting", "Starting container...")
             ok, err = docker_compose_action(service_id, action)
             status = 503 if "timed out" in err else 500
         except RuntimeError as exc:
@@ -12654,7 +12866,15 @@ class AgentHandler(BaseHTTPRequestHandler):
         except subprocess.CalledProcessError as exc:
             ok, err, status = False, f"Compose resolution failed: {exc.stderr[:300]}", 500
         finally:
-            lock.release()
+            try:
+                # A one-shot CLI start records its own verified outcome.
+                if records and _read_progress_status(service_id) == "starting":
+                    if ok:
+                        _write_progress(service_id, "started", "Service started")
+                    else:
+                        _write_progress(service_id, "error", "Start failed", error=err)
+            finally:
+                lock.release()
         if ok:
             json_response(self, 200, {"status": "ok", "service_id": service_id, "action": action})
             return
@@ -12722,6 +12942,8 @@ class AgentHandler(BaseHTTPRequestHandler):
         if outcome == "already_disabled":
             json_response(self, 409, {"error": f"Extension already disabled: {service_ids[0]}"})
             return
+        if outcome == "disabled":
+            _clear_disabled_progress(service_ids[0])
         json_response(self, 200, {"status": "ok", "service_ids": service_ids, "action": outcome})
 
     def _handle_extension_sync_config(self):
@@ -13039,6 +13261,11 @@ class AgentHandler(BaseHTTPRequestHandler):
         sid = body.get("service_id", "")
         if not isinstance(sid, str) or not SERVICE_ID_RE.fullmatch(sid):
             json_response(self, 400, {"error": "Invalid service_id"})
+            return
+        if sid == "llama-server" and _vllm_engine(load_env(INSTALL_DIR / ".env")):
+            # A container left by an earlier llama-server install would start
+            # beside vLLM on the same GPU.
+            json_response(self, 409, {"error": _VLLM_LLAMA_SERVER_OFF, "code": "llama_server_off"})
             return
 
         has_container, restart_error = _service_has_docker_container(sid)
@@ -13550,11 +13777,13 @@ class AgentHandler(BaseHTTPRequestHandler):
         """Download the images and models a planned enable needs before anything is selected.
 
         Takes service ids only: bundled extensions and Open WebUI, whose images
-        Compose resolves from their shipped files and pinned digests. Their
-        default model packs (model-packs.json) follow the images. Answers 200
-        when everything is already here, otherwise 202 and downloads in the
-        background, reporting progress under ``progress_id`` until it records
-        ``prepared`` or ``error``. Each service allows one operation.
+        Compose resolves from their shipped files and pinned digests. Images a
+        service builds from its shipped Dockerfile are built here too, so the
+        start that follows only creates containers. Their default model packs
+        (model-packs.json) follow the images. Answers 200 when everything is
+        already here, otherwise 202 and works in the background, reporting
+        progress under ``progress_id`` until it records ``prepared`` or
+        ``error``. Each service allows one operation.
         """
         if not check_auth(self):
             return
@@ -13589,32 +13818,40 @@ class AgentHandler(BaseHTTPRequestHandler):
 
         try:
             flags, env = _image_prepare_context(service_ids)
-            missing = _services_missing_images(flags, service_ids, env)
+            pulls, builds = _services_missing_images(flags, service_ids, env)
             model_files = _missing_model_files(service_ids)
         except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:
             _release()
             logger.warning("Image preparation could not resolve %s: %s", progress_id, type(exc).__name__)
             json_response(self, 503, {"error": str(exc)[:300]})
             return
-        if not missing and not model_files:
+        if not pulls and not builds and not model_files:
             _release()
             json_response(self, 200, {"status": "ready", "service_ids": service_ids})
             return
 
         def _download() -> None:
             try:
-                if missing:
-                    pulled, error = _pull_compose_images(flags, missing, progress_id, env=env)
+                if pulls:
+                    pulled, error = _pull_compose_images(flags, pulls, progress_id, env=env)
                     if not pulled:
                         _write_progress(progress_id, "error", "Image download failed", error=error)
+                        return
+                if builds:
+                    built, error = _build_compose_images(flags, builds, progress_id, env=env)
+                    if not built:
+                        _write_progress(progress_id, "error", "Image build failed", error=error)
                         return
                 if model_files:
                     fetched, error = _fetch_model_files(progress_id, model_files)
                     if not fetched:
                         _write_progress(progress_id, "error", "Model download failed", error=error)
                         return
-                _write_progress(progress_id, "prepared",
-                                "Images and models downloaded" if model_files else "Images downloaded")
+                if builds:
+                    label = "Images built and models downloaded" if model_files else "Images built"
+                else:
+                    label = "Images and models downloaded" if model_files else "Images downloaded"
+                _write_progress(progress_id, "prepared", label)
             except (OSError, ValueError, subprocess.SubprocessError) as exc:
                 logger.exception("Image preparation failed for %s", progress_id)
                 _write_progress(progress_id, "error", "Image download failed", error=str(exc)[:500])
@@ -13626,8 +13863,8 @@ class AgentHandler(BaseHTTPRequestHandler):
         except Exception:
             _release()
             raise
-        json_response(self, 202, {"status": "accepted", "service_ids": service_ids, "pulling": missing,
-                                  "models": [item.target.name for item in model_files]})
+        json_response(self, 202, {"status": "accepted", "service_ids": service_ids, "pulling": pulls,
+                                  "building": builds, "models": [item.target.name for item in model_files]})
 
 
     # ── Model management handlers ──
@@ -13678,6 +13915,12 @@ class AgentHandler(BaseHTTPRequestHandler):
         model = next((entry for entry in library if entry.get("id") == model_id), None)
         if model is None:
             json_response(self, 404, {"error": "Unknown model"})
+            return
+        if _model_vllm.is_vllm_entry(model) or _vllm_engine(env):
+            # The probes read llama.cpp's /props and chat-template errors.
+            json_response(self, 409, {"error": "Model checks measure llama.cpp models; "
+                                               "a model on the vLLM engine is not checked",
+                                      "code": "vllm_not_profiled"})
             return
         if str(model.get("gguf_file") or "") != str(env.get("GGUF_FILE") or ""):
             json_response(self, 409, {"error": "Only the running model can be checked; run it first", "code": "not_running"})
@@ -13742,16 +13985,22 @@ class AgentHandler(BaseHTTPRequestHandler):
             json_response(self, 500, {"error": f"Failed to list models: {exc}"})
 
     def _handle_model_config(self):
-        """Expose the two bounded mode identities, never private .env values."""
+        """Expose bounded configuration identities, never private .env values.
+
+        The Dashboard API asks here when the install owner's private .env is
+        not readable by its UID: the persisted mode, and the configured
+        model's name, GGUF file and context, each validated.
+        """
         if not check_auth(self):
             return
         try:
-            mode = _normalize_ods_mode(load_env(INSTALL_DIR / ".env").get("ODS_MODE"))
+            env = load_env(INSTALL_DIR / ".env")
         except (OSError, UnicodeError):
-            mode = "unknown"
+            env = None
         json_response(self, 200, {
-            "configuredMode": mode,
+            "configuredMode": _normalize_ods_mode(env.get("ODS_MODE")) if env is not None else "unknown",
             "effectiveMode": _normalize_ods_mode(STARTUP_ODS_MODE),
+            "configuredModel": _configured_model_identity(env) if env is not None else None,
         }, no_store=True)
 
     def _handle_model_status(self):
@@ -14221,10 +14470,14 @@ class AgentHandler(BaseHTTPRequestHandler):
                             else f"{part_file_name} (part {part_idx}/{len(download_plan)})"
                         )
                         _write_model_status(status_path, "verifying", verify_label, final_size, final_size)
+                        # An inconclusive inspection must leave downloaded bytes
+                        # available for a verified retry, just like existing files.
+                        # Definitive size/checksum failures still return False.
                         valid, reason = _verify_model_artifact(
                             final_target,
                             artifact,
                             _model_download_cancel,
+                            raise_on_error=True,
                         )
                         if _model_download_cancel.is_set():
                             _finish_cancelled_download()
@@ -14601,6 +14854,12 @@ class AgentHandler(BaseHTTPRequestHandler):
                 "requestedModelId": model_id,
             })
             return
+        if _vllm_engine(persisted_env):
+            # Activation swaps llama-server's GGUF and rolls back by restoring
+            # it; the vLLM engine serves one installed snapshot instead, and
+            # starting llama-server here would run a second engine.
+            json_response(self, 409, _vllm_activation_refusal(model_id))
+            return
 
         def local_gguf_model_from_id(raw_model_id: str) -> dict | None:
             matching = []
@@ -14663,6 +14922,9 @@ class AgentHandler(BaseHTTPRequestHandler):
             if model is None:
                 json_response(self, 404, {"error": f"Model '{model_id}' not found in library or local GGUF files"})
                 return
+        if _model_vllm.is_vllm_entry(model):
+            json_response(self, 409, _vllm_model_refusal(model))
+            return
 
         gguf_file = model.get("gguf_file", "")
         llm_model_name = model.get("llm_model_name", model_id)
@@ -15995,6 +16257,9 @@ class AgentHandler(BaseHTTPRequestHandler):
                         "verifiedAt": str(final_runtime_proof.get("verifiedAt") or _iso_now()),
                         **({'modelTransactionId':pixel_transaction.id} if pixel_transaction is not None else {}),
                     },
+                    # Non-secret completion proof read by dashboard-api, whose
+                    # container UID can differ from the installing host user.
+                    mode=0o644,
                 )
                 committed = True  # system state is committed before the response write
                 if pixel_transaction is not None:
@@ -16409,15 +16674,21 @@ def _runtime_uses_router_transport(env: dict) -> bool:
 
 
 def _runtime_endpoint(env: dict) -> tuple[str, str]:
-    """Return ``(origin, transport)`` of the configured llama-server runtime.
+    """Return ``(origin, transport)`` of the configured model server.
 
-    Every managed runtime is upstream llama-server. ``transport`` is
-    ``router`` when this agent runs in WSL and the server is the owned
-    Windows task: WSL localhost is not Windows localhost, so proofs run in
-    the owned model-router container against its ``llama-server-default``
-    origin. Every other runtime is reached ``direct``: the container by
-    Docker DNS or its published port, a host-native server on loopback.
+    ``transport`` is ``router`` when this agent runs in WSL and the server is
+    the owned Windows llama-server task: WSL localhost is not Windows
+    localhost, so proofs run in the owned model-router container against its
+    ``llama-server-default`` origin. The vLLM engine (LLM_BACKEND=vllm)
+    publishes no host port, so a host agent proves it the same way, against
+    the router's ``vllm-default`` origin. Every other runtime is reached
+    ``direct``: the container by Docker DNS or its published port, a
+    host-native server on loopback.
     """
+    if _vllm_engine(env):
+        if os.environ.get("ODS_HOST_INSTALL_DIR"):
+            return f"http://{_VLLM_CONTAINER}:8000", "direct"
+        return _VLLM_ORIGIN, "router"
     if _runtime_uses_router_transport(env):
         return _native_llm_container_origin(env), "router"
     if _is_windows_host_llama_server(env):
@@ -16428,6 +16699,14 @@ def _runtime_endpoint(env: dict) -> tuple[str, str]:
     if os.environ.get("ODS_HOST_INSTALL_DIR"):
         return "http://ods-llama-server:8080", "direct"
     return f"http://127.0.0.1:{env.get('OLLAMA_PORT') or '8080'}", "direct"
+
+
+def _runtime_router_endpoint(env: dict) -> dict:
+    """The router endpoint a router-transport proof names (keyword arguments).
+
+    The WSL route keeps the transport's default, ``llama-server-default``.
+    """
+    return {"endpoint_id": _VLLM_ENDPOINT_ID} if _vllm_engine(env) else {}
 
 
 def _runtime_api_key(env: dict) -> str:
@@ -16456,6 +16735,7 @@ def _runtime_http(
     if transport == "router":
         return _router_transport_request(
             INSTALL_DIR, origin, path, payload=payload, api_key=api_key, timeout=timeout,
+            **_runtime_router_endpoint(env),
         )
     command = ["curl", "-s", "--max-time", str(timeout)]
     if payload is not None:
@@ -16513,6 +16793,7 @@ def _runtime_exchange(
     if transport == "router":
         return _router_transport_exchange(
             INSTALL_DIR, origin, path, payload=payload, api_key=api_key, timeout=timeout,
+            **_runtime_router_endpoint(env),
         )
     headers = {"Content-Type": "application/json"}
     if api_key:
@@ -16909,8 +17190,44 @@ def _profiled_capabilities(capabilities: object, traits: dict | None, model: dic
     }
 
 
+def _container_health(container: str) -> str:
+    """Docker's health status of ``container`` (starting, healthy, unhealthy, none).
+
+    Empty when Docker cannot inspect it, for example when it does not exist.
+    """
+    result = subprocess.run(
+        ["docker", "inspect", "--type", "container", "--format",
+         "{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}", container],
+        capture_output=True, text=True, timeout=15,
+    )
+    return result.stdout.strip().casefold() if result.returncode == 0 else ""
+
+
+def _vllm_runtime_health(env: dict) -> str:
+    """Return ``ok``, ``loading`` or ``error`` for the vLLM engine.
+
+    vLLM's ``/health`` answers 200 with an empty body once the engine is
+    ready, and its server listens only from then on. A cold first start loads
+    the weights and compiles kernels for 3 to 15 minutes, during which Docker
+    reports the container ``starting`` (docker-compose.vllm.yml allows 60
+    minutes): that is ``loading``, not an error. Raises OSError when vLLM is
+    unreachable and its container is not starting.
+    """
+    try:
+        status, _body = _runtime_exchange(env, "/health", timeout=5)
+    except OSError:
+        if _container_health(_VLLM_CONTAINER) == "starting":
+            return "loading"
+        raise
+    if status == 200:
+        return "ok"
+    return "loading" if _container_health(_VLLM_CONTAINER) == "starting" else "error"
+
+
 def _runtime_health(env: dict) -> str:
-    """Return ``ok``, ``loading`` or ``error`` from llama-server ``/health``."""
+    """Return ``ok``, ``loading`` or ``error`` from the model server's ``/health``."""
+    if _vllm_engine(env):
+        return _vllm_runtime_health(env)
     body = _runtime_http(env, "/health")
     try:
         data = json.loads(body or "{}")
@@ -17073,6 +17390,24 @@ def _llama_runtime_context_length(env: dict) -> int:
     return _llama_runtime_props(env)[0]
 
 
+def _vllm_served_context_length(body: str, runtime_identity: str) -> int:
+    """Return the ``max_model_len`` vLLM's /v1/models reports for its served row.
+
+    vLLM has no /props; the row of the model it serves carries the context
+    its --max-model-len fixed.
+    """
+    try:
+        data = json.loads(body)
+    except (json.JSONDecodeError, TypeError):
+        return 0
+    rows = data.get("data") if isinstance(data, dict) else None
+    for row in rows if isinstance(rows, list) else ():
+        if isinstance(row, dict) and str(row.get("id") or "").strip() == runtime_identity:
+            value = row.get("max_model_len")
+            return value if type(value) is int and value > 0 else 0
+    return 0
+
+
 def _llama_training_context_length(body: str, runtime_identity: str) -> int:
     """Return the GGUF training context llama.cpp reports for a loaded row."""
     try:
@@ -17157,11 +17492,11 @@ def _completion_text(data: object, *, include_reasoning: bool = True) -> str:
         if text.strip():
             return text[:4096]
     if include_reasoning:
-        reasoning_content = (
-            message.get("reasoning_content")
-            if isinstance(message, dict)
-            else choice.get("reasoning_content")
-        )
+        source = message if isinstance(message, dict) else choice
+        reasoning_content = source.get("reasoning_content")
+        if not isinstance(reasoning_content, str):
+            # vLLM's reasoning parsers return the field as ``reasoning``.
+            reasoning_content = source.get("reasoning")
         if isinstance(reasoning_content, str):
             return reasoning_content[:4096]
     if isinstance(content, str):
@@ -17189,7 +17524,14 @@ _COMPLETION_PROBE_THINKING_SECONDS = 120
 
 
 def _completion_probe_payload(model_name: str, *, disable_thinking: bool,
-                              max_tokens: int = _COMPLETION_PROBE_TOKENS) -> dict:
+                              max_tokens: int = _COMPLETION_PROBE_TOKENS,
+                              thinking_off: dict | None = None) -> dict:
+    """The bounded readiness probe; ``thinking_off`` replaces enable_thinking=false.
+
+    A vLLM entry names the chat-template arguments that turn its thinking
+    down (catalog ``thinking_template_kwargs.off``); GLM's template has no
+    enable_thinking at all.
+    """
     payload = {
         "model": model_name,
         "messages": [{
@@ -17202,8 +17544,19 @@ def _completion_probe_payload(model_name: str, *, disable_thinking: bool,
         "temperature": 0,
     }
     if disable_thinking:
-        payload["chat_template_kwargs"] = {"enable_thinking": False}
+        payload["chat_template_kwargs"] = (
+            dict(thinking_off) if thinking_off is not None else {"enable_thinking": False})
     return payload
+
+
+def _vllm_probe_thinking_off(env: dict) -> dict | None:
+    """The configured vLLM entry's thinking-off template arguments, if any."""
+    if not _vllm_engine(env):
+        return None
+    _model_id, model = _catalog_model_for_current_env(env)
+    if not _model_vllm.is_vllm_entry(model):
+        return None
+    return dict(model["thinking_template_kwargs"]["off"])
 
 
 def _reasoning_cut_short(response: object) -> bool:
@@ -17252,6 +17605,7 @@ def _chat_completion_ready(
     base_url: str = "",
     disable_thinking: bool = False,
     require_visible_content: bool = False,
+    thinking_off: dict | None = None,
 ) -> bool:
     """Require a meaningful completion and, when requested, its model identity."""
     prefix = "/" + api_prefix.strip("/")
@@ -17260,7 +17614,8 @@ def _chat_completion_ready(
 
     def probe(max_tokens: int, seconds: int):
         payload = json.dumps(_completion_probe_payload(
-            model_name, disable_thinking=disable_thinking, max_tokens=max_tokens))
+            model_name, disable_thinking=disable_thinking, max_tokens=max_tokens,
+            thinking_off=thinking_off))
         command = [
             "curl", "-sf", "--max-time", str(seconds), "--max-filesize", "65536",
             "-X", "POST", url,
@@ -17312,9 +17667,11 @@ def _runtime_completion_ready(
 
     A reasoning-only answer does not prove the runtime is ready to serve
     consumers, so every runtime family must return visible content from the
-    same model it reported in /v1/models.
+    same model it reported in /v1/models. A vLLM entry turns its thinking down
+    with its own template arguments (``_vllm_probe_thinking_off``).
     """
     origin, transport = _runtime_endpoint(env)
+    thinking_off = _vllm_probe_thinking_off(env)
     expected = {
         "expected_model_id": expected_model_id,
         "expected_gguf_file": expected_gguf_file,
@@ -17324,13 +17681,14 @@ def _runtime_completion_ready(
         return _chat_completion_ready(
             "", "", model_name, "/v1", api_key=_runtime_api_key(env),
             base_url=origin, disable_thinking=True, require_visible_content=True,
-            **expected,
+            thinking_off=thinking_off, **expected,
         )
     try:
         body = _runtime_http(
             env,
             "/v1/chat/completions",
-            payload=_completion_probe_payload(model_name, disable_thinking=True),
+            payload=_completion_probe_payload(
+                model_name, disable_thinking=True, thinking_off=thinking_off),
             timeout=30,
         )
         response = json.loads(body or "{}")
@@ -17339,7 +17697,8 @@ def _runtime_completion_ready(
                 env,
                 "/v1/chat/completions",
                 payload=_completion_probe_payload(
-                    model_name, disable_thinking=True, max_tokens=_COMPLETION_PROBE_THINKING_TOKENS),
+                    model_name, disable_thinking=True, max_tokens=_COMPLETION_PROBE_THINKING_TOKENS,
+                    thinking_off=thinking_off),
                 timeout=_COMPLETION_PROBE_THINKING_SECONDS,
             )
             response = json.loads(body or "{}")
@@ -17496,7 +17855,10 @@ def _wait_for_model_readiness(
     requested model, ``/props`` serves its file with an ``n_ctx`` that meets
     the request (llama.cpp may pad a custom size up to the next 256-cell
     boundary), and one bounded completion with thinking disabled returns
-    visible content from the same model.
+    visible content from the same model. The vLLM engine (LLM_BACKEND=vllm)
+    proves the same steps without ``/props``: its ``/v1/models`` row reports
+    the served context as ``max_model_len``, and the completion names the
+    exact id that row lists (vLLM refuses any other model name).
 
     Legacy callers receive a boolean. Identity callers receive the concrete
     runtime identity. Adapters receive identity, actual context, and proof time,
@@ -17522,6 +17884,7 @@ def _wait_for_model_readiness(
         diagnosis = {}
     not_ready = {} if return_proof else "" if return_identity else False
     origin, transport = _runtime_endpoint(env)
+    vllm = _vllm_engine(env)
     completion_model = llm_model_name or gguf_file
     expected_context = _positive_int(env.get("CTX_SIZE") or env.get("MAX_CONTEXT"))
 
@@ -17585,7 +17948,10 @@ def _wait_for_model_readiness(
                 logger.info("Model readiness aborted: route env changed after probing %s", gguf_file)
                 return not_ready
             if health == "loading":
-                diagnosis["reason"] = "llama-server is still loading the model"
+                diagnosis["reason"] = (
+                    "vLLM is still starting: a first start loads the weights and compiles "
+                    "kernels, which can take 15 minutes" if vllm
+                    else "llama-server is still loading the model")
             runtime_identity = _llama_loaded_model_identity(
                 body,
                 model_id=model_id,
@@ -17593,7 +17959,11 @@ def _wait_for_model_readiness(
                 llm_model_name=llm_model_name,
             ) if body else ""
             if runtime_identity:
-                runtime_context, served_file, runtime_vision = _llama_runtime_props(env)
+                if vllm:
+                    runtime_context = _vllm_served_context_length(body, runtime_identity)
+                    served_file, runtime_vision = "", None
+                else:
+                    runtime_context, served_file, runtime_vision = _llama_runtime_props(env)
                 if served_file and not _runtime_model_identity_matches(
                     served_file, gguf_file=gguf_file,
                 ):
@@ -17624,7 +17994,7 @@ def _wait_for_model_readiness(
                     runtime_identity = ""
             if runtime_identity and _runtime_completion_ready(
                 env,
-                str(completion_model),
+                str(runtime_identity if vllm else completion_model),
                 expected_model_id=str(runtime_identity),
                 expected_gguf_file=gguf_file,
                 expected_llm_model_name=llm_model_name,
@@ -17792,6 +18162,7 @@ def _render_runtime_config(
     remote_llm_transport: str = "",
     remote_llm_base_url: str = "",
     remote_llm_model: str = "",
+    llm_backend: str = "llama-server",
 ) -> bool:
     renderer = install_dir / "scripts" / "render-runtime-configs.py"
     if not renderer.exists():
@@ -17801,6 +18172,8 @@ def _render_runtime_config(
         str(renderer),
         "--surface",
         surface,
+        "--llm-backend",
+        llm_backend,
         "--switchboard-mode",
         switchboard_mode,
         "--ods-mode",
@@ -17882,6 +18255,11 @@ def _runtime_api_key_env(env: dict) -> str:
     return "LLAMA_SERVER_API_KEY" if _runtime_api_key(env) else ""
 
 
+def _render_llm_backend(env: dict) -> str:
+    """The renderer's --llm-backend: the .env LLM_BACKEND, llama-server when unset."""
+    return str(env.get("LLM_BACKEND") or "").strip().lower() or "llama-server"
+
+
 def _litellm_render_key(env: dict) -> str:
     return str(env.get("LITELLM_KEY") or env.get("LITELLM_MASTER_KEY") or "")
 
@@ -17907,6 +18285,9 @@ def _render_model_router_runtime_configs(
         "gpu_backend": env.get("GPU_BACKEND", "nvidia"),
         "context_length": int(context_length),
         "switchboard_mode": switchboard_mode,
+        # The installed backend, never this process's environment: vllm
+        # points model-router at vllm-server with the model's thinking map.
+        "llm_backend": _render_llm_backend(env),
     }
     surfaces = ["model-router-endpoints"]
     if str(common["ods_mode"]).strip().lower() != "cloud":
@@ -20844,6 +21225,10 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
     gpu_layers = env.get("N_GPU_LAYERS", "").strip() or "auto"
     model_path = _active_model_directory(env) / gguf_file
     reasoning = env.get("LLAMA_REASONING", "off")
+    # Modes are case-insensitive, as in _pixel_model_reasoning_capable;
+    # llama-server only accepts the lowercase spelling.
+    if reasoning.strip().lower() in {"off", "on", "auto"}:
+        reasoning = reasoning.strip().lower()
     reasoning_fmt = {"off": "none", "on": "deepseek"}.get(reasoning, reasoning)
     # UI LAN access must not publish an unauthenticated inference endpoint.
     bind_addr = "127.0.0.1"
@@ -21323,6 +21708,9 @@ def _llama_recreate_argv(
         visible_devices = str(env.get("LLAMA_SERVER_GPU_UUIDS") or "").strip()
         if visible_devices:
             replacement_env["NVIDIA_VISIBLE_DEVICES"] = visible_devices
+            # As in docker-compose.multigpu-nvidia.yml: only CUDA's own
+            # variable reliably limits llama-server to these GPUs.
+            replacement_env["CUDA_VISIBLE_DEVICES"] = visible_devices
     elif str(env.get("GPU_BACKEND") or "").lower() == "amd":
         for key in (
             "ROCR_VISIBLE_DEVICES",

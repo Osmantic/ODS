@@ -47,6 +47,13 @@ function revealNewText() {
 }
 
 function StreamSpan({node,...props}) {return <span {...props}/>}
+// ReactMarkdown passes renderers the URL after its normal security filtering.
+// An invented attachment:// screenshot therefore has no usable source. Keep
+// that absence visible without loading an empty URL or changing Markdown/code.
+function PortalImage({renderer:Renderer='img',node,src,alt,...props}) {
+  if(!src) return <span className="portal-delivery-note">Image unavailable{alt ? `: ${alt}` : ''}</span>
+  return <Renderer {...props} {...(typeof Renderer==='string' ? {} : {node})} src={src} alt={alt}/>
+}
 const EMPTY_COMPONENTS={}
 
 // Inspect Markdown structure before reveal wrappers are added. Download labels
@@ -116,7 +123,8 @@ export default function PortalStreamingText({children, active=false, animate=act
     ? [rehypeHighlight,mutePortalNotes,markDocumentDownloads,[suppressDeliveredMediaLines,{source,artifacts}],revealNewText]
     : PLUGINS,[delivered,revealing,source,artifacts])
   useLayoutEffect(()=>{onReveal?.()},[source,onReveal])
-  const renderers=useMemo(()=>({...components,a:props=><PortalInlineCitation {...props} artifacts={artifacts}/>,span:StreamSpan}),[components,artifacts])
+  const renderers=useMemo(()=>({...components,a:props=><PortalInlineCitation {...props} artifacts={artifacts}/>,
+    img:props=><PortalImage {...props} renderer={components.img}/>,span:StreamSpan}),[components,artifacts])
   return <div className={`portal-streaming-text ${active || revealing?'is-streaming':''}`} aria-busy={active || revealing}>
     <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={plugins} components={renderers}>{source}</ReactMarkdown>
     {(active || revealing) && <span className="portal-stream-cursor" aria-hidden="true"/>}

@@ -2268,6 +2268,10 @@ elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
             # from consuming the entire token budget on internal reasoning)
             _reasoning=$(grep '^LLAMA_REASONING=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 || echo "")
             [[ -z "$_reasoning" ]] && _reasoning="off"
+            # Normalize mode names before deriving both launch and rollback
+            # arguments; custom reasoning-format names retain their spelling.
+            _reasoning_lower="$(printf '%s' "$_reasoning" | tr '[:upper:]' '[:lower:]')"
+            case "$_reasoning_lower" in off|on|auto) _reasoning="$_reasoning_lower" ;; esac
             case "$_reasoning" in
                 off)  _reasoning_fmt="none" ;;
                 on)   _reasoning_fmt="deepseek" ;;

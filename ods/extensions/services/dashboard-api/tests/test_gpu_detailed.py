@@ -679,3 +679,75 @@ class TestGpuDetailedLiveAssignment:
 
         assert result.split_mode == "layer"
         assert result.tensor_split is None
+
+
+def _status(service_id, status):
+    from models import ServiceStatus
+
+    return ServiceStatus(id=service_id, name=service_id, port=1, external_port=1, status=status)
+
+
+class TestGpuDetailedAssignedServices:
+    """Workstation06 (2026-10-27): the GB300 card listed Whisper, ComfyUI and
+    embeddings, none of which ran there. Whisper was off, and on the CPU image."""
+
+    def _cards(self, monkeypatch, tmp_path, statuses, env="", assignment=True, environ=None):
+        import routers.gpu as gpu_mod
+        from models import IndividualGPU
+
+        if env is None:
+            (tmp_path / ".env").mkdir()  # reading it raises, as an owner-only .env does
+        else:
+            (tmp_path / ".env").write_text(env, encoding="utf-8")
+        monkeypatch.setenv("ODS_INSTALL_DIR", str(tmp_path))
+        monkeypatch.setenv("GPU_BACKEND", "nvidia")
+        monkeypatch.delenv("WHISPER_ACCELERATION", raising=False)
+        for key, value in (environ or {}).items():
+            monkeypatch.setenv(key, value)
+        plan = {"gpu_assignment": {"strategy": "colocated", "services": {}}} if assignment else None
+        monkeypatch.setattr(gpu_mod, "decode_gpu_assignment", lambda: plan)
+        monkeypatch.setattr(gpu_mod, "get_cached_services", lambda: statuses)
+
+        def card(index, services):
+            return IndividualGPU(index=index, uuid=f"GPU-{index}", name=f"GPU {index}", memory_used_mb=1,
+                                 memory_total_mb=2, memory_percent=50.0, utilization_percent=0,
+                                 temperature_c=40, assigned_services=services)
+
+        monkeypatch.setattr(gpu_mod, "_get_raw_gpus", lambda _backend: [
+            card(0, ["llama_server"]),
+            card(1, ["whisper", "comfyui", "embeddings", "llama_server"]),
+        ])
+        gpu_mod._detailed_cache["expires"] = 0.0
+        gpu_mod._detailed_cache["value"] = None
+        try:
+            result = asyncio.run(gpu_mod.gpu_detailed())
+        finally:
+            gpu_mod._detailed_cache["expires"] = 0.0
+            gpu_mod._detailed_cache["value"] = None
+        return [gpu.assigned_services for gpu in result.gpus]
+
+    def test_services_the_stack_does_not_run_leave_the_card(self, monkeypatch, tmp_path):
+        statuses = [_status("llama-server", "healthy"), _status("open-webui", "not_deployed")]
+        assert self._cards(monkeypatch, tmp_path, statuses) == [["llama_server"], ["llama_server"]]
+
+    def test_cpu_whisper_leaves_the_card(self, monkeypatch, tmp_path):
+        statuses = [_status(s, "healthy") for s in ("llama-server", "whisper", "comfyui")]
+        cards = self._cards(monkeypatch, tmp_path, statuses, env="WHISPER_ACCELERATION=cpu\n")
+        assert cards[1] == ["comfyui", "llama_server"]
+
+    def test_cpu_whisper_is_read_from_compose_when_the_env_file_is_unreadable(self, monkeypatch, tmp_path):
+        statuses = [_status(s, "healthy") for s in ("llama-server", "whisper")]
+        cards = self._cards(monkeypatch, tmp_path, statuses, env=None, environ={"WHISPER_ACCELERATION": "cpu"})
+        assert cards[1] == ["llama_server"]
+
+    def test_a_deployed_service_that_is_down_stays(self, monkeypatch, tmp_path):
+        statuses = [_status("llama-server", "healthy"), _status("comfyui", "down")]
+        assert self._cards(monkeypatch, tmp_path, statuses)[1] == ["comfyui", "llama_server"]
+
+    def test_before_the_first_status_poll_the_assignment_shows(self, monkeypatch, tmp_path):
+        cards = self._cards(monkeypatch, tmp_path, None)
+        assert cards[1] == ["whisper", "comfyui", "embeddings", "llama_server"]
+
+    def test_services_inferred_from_gpu_processes_are_kept(self, monkeypatch, tmp_path):
+        cards = self._cards(monkeypatch, tmp_path, [], assignment=False)
+        assert cards[1] == ["whisper", "comfyui", "embeddings", "llama_server"]

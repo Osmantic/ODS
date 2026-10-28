@@ -67,6 +67,32 @@ for (const [facet,action] of [
   });
 }
 
+// Workstation06, 2026-10-27: "the GPUs in this machine" required only
+// host.memory, and plural CPUs, processors and disks required no host fact.
+for (const [prompt, actions] of [
+  ['How much free memory do the GPUs in this machine have right now?', ['host.gpu', 'host.memory']],
+  ['How many CPUs does this machine have?', ['host.cpu']],
+  ['What processors does this computer have?', ['host.cpu']],
+  ['How much space is left on the disks of this machine?', ['host.storage']],
+  ['Which video cards are in this computer?', ['host.gpu']],
+]) {
+  test('plural hardware nouns keep their host facet: ' + prompt, () => {
+    assert.deepEqual(api.userMessageOperationsRequirements([], prompt), {required: true, actions});
+  });
+}
+
+for (const prompt of ['Write a script that lists GPUs.', 'Explain what GPUs are.']) {
+  test('plural hardware nouns outside a host request need no host work: ' + prompt, () => {
+    assert.equal(api.userMessageOperationsRequirements([], prompt).required, false);
+  });
+}
+
+test('an excluded plural facet stays excluded', () => {
+  assert.deepEqual(api.userMessageOperationsRequirements([],
+    'Report the CPU and memory of this machine, but do not report the GPUs.'),
+  {required: true, actions: ['host.cpu', 'host.memory']});
+});
+
 for (const device of ['Mac', 'MacBook', 'Mac Mini', 'computer', 'laptop']) {
   test('exact commands on ' + device + ' retain immutable approval', () => {
     const prompt = 'Run ' + quote + 'hostname' + quote + ' on this ' + device + '.';

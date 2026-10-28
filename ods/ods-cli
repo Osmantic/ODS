@@ -807,10 +807,17 @@ load_env() {
 #=============================================================================
 . "$SCRIPT_DIR/lib/service-registry.sh"
 
-# Resolve a user-provided service name to a compose service ID
+# Resolve a user-provided service name to the compose service ID that serves
+# it on this install. With LLM_BACKEND=vllm the vLLM engine serves the model
+# and the in-stack llama-server is profiled out (docker-compose.vllm.yml).
+# Naming llama-server to Compose would enable its profile and start a second
+# engine on the GPU, so "llm" and "llama-server" mean vllm-server there.
 resolve_service() {
-    local resolved
+    local resolved backend="${LLM_BACKEND:-}"
     resolved=$(sr_resolve "$1")
+    if [[ "$resolved" == "llama-server" && "${backend,,}" == "vllm" ]]; then
+        resolved="vllm-server"
+    fi
     echo "$resolved"
 }
 
@@ -955,6 +962,18 @@ get_compose_flags() {
                 stale=1
             fi
             if [[ "$_ods_mode" != "cloud" ]] && [[ "$cached" == *"docker-compose.cloud.yml"* ]]; then
+                stale=1
+            fi
+            # LLM_BACKEND=vllm swaps the in-stack llama-server for the vLLM
+            # engine overlay, which (like a host-native route) leaves out the
+            # compose.local.yaml waits on llama-server. A cache from the other
+            # route starts the wrong engine.
+            local _llm_backend="${LLM_BACKEND:-}"
+            if [[ "${_llm_backend,,}" == "vllm" ]]; then
+                if [[ "$cached" != *"docker-compose.vllm.yml"* || "$cached" == *"compose.local.yaml"* ]]; then
+                    stale=1
+                fi
+            elif [[ "$cached" == *"docker-compose.vllm.yml"* ]]; then
                 stale=1
             fi
             # The retired Lemonade overlay can outlive an update that kept
@@ -1452,6 +1471,29 @@ _ods_cli_service_health() {
     fi
 }
 
+# The vLLM engine (LLM_BACKEND=vllm) publishes no host port. Its Docker
+# healthcheck asks /health, which answers only once the model is loaded, so
+# Docker's state is its status: healthy, starting (a cold start loads the
+# weights and compiles kernels for up to 15 minutes), unhealthy, or stopped.
+_ODS_VLLM_NAME="vLLM (LLM Inference)"
+_ods_cli_vllm_health() {
+    local inspect state="" health=""
+    if ! inspect=$(docker inspect --format \
+        '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+        ods-vllm-server 2>&1); then
+        printf 'stopped\n'
+        return 0
+    fi
+    read -r state health <<<"$inspect"
+    if [[ "$state" != "running" ]]; then
+        printf 'stopped\n'
+    elif [[ "$health" == "healthy" || "$health" == "starting" ]]; then
+        printf '%s\n' "$health"
+    else
+        printf 'unhealthy\n'
+    fi
+}
+
 cmd_status() {
     local json_mode="false"
     while [[ $# -gt 0 ]]; do
@@ -1568,6 +1610,13 @@ cmd_status() {
             fi
         fi
     done
+    if ods_preflight_vllm_engine; then
+        case "$(_ods_cli_vllm_health)" in
+            healthy) success "$_ODS_VLLM_NAME: healthy" ;;
+            starting) log "$_ODS_VLLM_NAME: starting. A first start loads the model and compiles kernels, which can take 15 minutes. Follow it with: ods logs llm" ;;
+            *) warn "$_ODS_VLLM_NAME: not responding. See why with: ods logs llm" ;;
+        esac
+    fi
 
     echo ""
 
@@ -1675,6 +1724,17 @@ cmd_status_json() {
             --arg containerStatus "$container_status" \
             '{id: $id, name: $name, category: $category, port: $port, status: $status, containerStatus: $containerStatus}' >> "$tmp"
     done
+    if ods_preflight_vllm_engine; then
+        local vllm_status vllm_container="unknown"
+        vllm_status="$(_ods_cli_vllm_health)"
+        if [[ "$container_state_known" == "true" ]]; then
+            vllm_container="stopped"
+            grep -Fxq -- vllm-server <<<"$running_services" && vllm_container="running"
+        fi
+        # No host port: model-router and LiteLLM reach it on the ODS network.
+        jq -n --arg name "$_ODS_VLLM_NAME" --arg status "$vllm_status" --arg containerStatus "$vllm_container" \
+            '{id: "vllm-server", name: $name, category: "core", port: "", status: $status, containerStatus: $containerStatus}' >> "$tmp"
+    fi
 
     # GPU summary (optional)
     local gpu_summary_json="null"
@@ -2275,10 +2335,11 @@ cmd_dry_run() {
             "http://127.0.0.1:${dashboard_api_port}/api/update/dry-run" 2>/dev/null || true)
     fi
 
-    local latest_ver="" changelog_url="" update_status=""
+    local latest_ver="" changelog_url="" update_status="" check_error=""
     if [[ -n "$api_json" ]] && echo "$api_json" | jq -e '.current_version' >/dev/null 2>&1; then
         latest_ver=$(echo "$api_json" | jq -r '.latest_version // empty')
         changelog_url=$(echo "$api_json" | jq -r '.changelog_url // empty')
+        check_error=$(echo "$api_json" | jq -r '.version_check_error // empty')
         local api_available
         api_available=$(echo "$api_json" | jq -r '.update_available // false')
         [[ "$api_available" == "true" ]] && update_status="update available" || update_status="up to date"
@@ -2311,7 +2372,7 @@ cmd_dry_run() {
         fi
         [[ -n "$changelog_url" ]] && echo "  Changelog : ${changelog_url}"
     else
-        echo "  Available : (could not reach GitHub)"
+        echo "  Available : (${check_error:-could not reach GitHub})"
     fi
     echo ""
 
@@ -2322,10 +2383,27 @@ cmd_dry_run() {
     local -a flags
     read -ra flags <<< "$flags_str"
 
-    # Prefer API response; fall back to parsing compose files directly.
+    # List what `ods update` pulls: its own discovery over this install's
+    # resolved stack (see _ods_cli_pull_external_images). The API can only read
+    # every compose file's image lines, unresolved and for every GPU backend,
+    # so its list is the fallback.
+    local images_shown=false image_output=""
+    local helper="$INSTALL_DIR/installers/lib/compose-images.sh"
+    if ! command -v ods_compose_external_images >/dev/null 2>&1 && [[ -f "$helper" ]]; then
+        . "$helper"
+    fi
+    if command -v ods_compose_external_images >/dev/null 2>&1 \
+        && image_output="$(ods_compose_external_images "docker compose" "${flags[@]}")"; then
+        local _img_line
+        while IFS= read -r _img_line; do
+            [[ -n "$_img_line" ]] && echo "  ${_img_line}"
+        done <<< "$image_output"
+        [[ -n "$image_output" ]] || echo "  (none: every service image is built locally)"
+        images_shown=true
+    fi
     # Use process substitution so flags like images_shown update in this shell (not a pipe subshell).
-    local images_shown=false
-    if [[ -n "$api_json" ]] && echo "$api_json" | jq -e '.images | length > 0' >/dev/null 2>&1; then
+    if [[ "$images_shown" == "false" ]] && [[ -n "$api_json" ]] \
+        && echo "$api_json" | jq -e '.images | length > 0' >/dev/null 2>&1; then
         local _img_line _any_api=false
         while IFS= read -r _img_line || [[ -n "$_img_line" ]]; do
             [[ -z "$_img_line" ]] && continue
@@ -2334,23 +2412,23 @@ cmd_dry_run() {
         done < <(echo "$api_json" | jq -r '.images[]' | sort -u)
         [[ "$_any_api" == "true" ]] && images_shown=true
     fi
-    if [[ "$images_shown" == "false" ]]; then
-        local _img_line _any_compose=false
-        while IFS= read -r _img_line || [[ -n "$_img_line" ]]; do
-            [[ -z "$_img_line" ]] && continue
-            echo "  ${_img_line}"
-            _any_compose=true
-        done < <(docker compose "${flags[@]}" config 2>/dev/null \
-            | grep -E '^\s+image:' | sed 's/.*image:\s*//' | sort -u)
-        [[ "$_any_compose" == "true" ]] && images_shown=true
-    fi
     [[ "$images_shown" == "false" ]] && echo "  (could not resolve compose config)"
 
     echo ""
     echo -e "${BLUE}━━━ Running image digests ━━━${NC}"
-    docker compose "${flags[@]}" images 2>/dev/null \
-        | awk 'NR>1 {printf "  %-30s %s\n", $1, $4}' \
-        || echo "  (services not running)"
+    # Read each running container's image ID. `docker compose images` moved
+    # that column when it added PLATFORM, so this section printed platforms.
+    # A preview that cannot list the stack reports it as not running.
+    local running_ids=""
+    running_ids=$(docker compose "${flags[@]}" ps -q 2>/dev/null || true)
+    if [[ -n "$running_ids" ]]; then
+        # shellcheck disable=SC2086  # one container ID per word
+        docker inspect --format '{{.Name}} {{.Image}}' $running_ids 2>/dev/null \
+            | awk '{sub(/^\//, "", $1); sub(/^sha256:/, "", $2); printf "  %-30s %s\n", $1, substr($2, 1, 12)}' \
+            || echo "  (could not read the running containers)"
+    else
+        echo "  (services not running)"
+    fi
     echo ""
 
     # ── model / GGUF ─────────────────────────────────────────────────────────
@@ -2990,8 +3068,9 @@ if llm_backend:
     local_warn = llm_backend.get('local_running_warning', False)
     recovery = llm_backend.get('recovery_hint', '')
 
-    is_external = llm_provider != "llama-server"
-    backend_label = f"{llm_provider} (external)" if is_external else "llama-server (local)"
+    # The vLLM engine (vllm-server) is ODS's own local model server, like llama-server.
+    is_external = llm_provider not in ("llama-server", "vLLM")
+    backend_label = f"{llm_provider} (external)" if is_external else f"{llm_provider} (local)"
 
     if llm_status == 'ok':
         print(f"  {GREEN}✓{NC} LLM Backend: {backend_label} — responding")
@@ -4137,6 +4216,8 @@ cmd_mode() {
     check_install; cd "$INSTALL_DIR"
     load_env || true
     local mode="${1:-}"
+    local configured_backend
+    configured_backend=$(grep -m1 "^LLM_BACKEND=" .env 2>/dev/null | cut -d= -f2- | tr -d '"\047\r' || true)
 
     if [[ -z "$mode" ]]; then
         # Show current mode
@@ -4145,6 +4226,8 @@ cmd_mode() {
         local api_url=$(grep "^LLM_API_URL=" .env 2>/dev/null | cut -d= -f2 || true)
         local model=$(grep "^LLM_MODEL=" .env 2>/dev/null | cut -d= -f2 || true)
         local tier=$(grep "^TIER=" .env 2>/dev/null | cut -d= -f2 || true)
+        local engine="llama-server"
+        [[ "${configured_backend,,}" != "vllm" ]] || engine="vLLM engine (vllm-server)"
         echo -e "${BLUE}━━━ ODS Mode ━━━${NC}"
         echo ""
         echo -e "Current mode: ${GREEN}${current}${NC}"
@@ -4159,11 +4242,11 @@ cmd_mode() {
                 echo "  Cost: ~\$0.003-0.06/1K tokens"
                 ;;
             local)
-                echo "  LLM:  Local llama-server"
+                echo "  LLM:  Local $engine"
                 echo "  Cost: \$0 (electricity only)"
                 ;;
             hybrid)
-                echo "  LLM:  Local llama-server → Cloud fallback on failure"
+                echo "  LLM:  Local $engine → Cloud fallback on failure"
                 echo "  Cost: \$0 when local works, cloud rates on fallback"
                 ;;
         esac
@@ -4183,12 +4266,18 @@ cmd_mode() {
         *) error "Unknown mode: $mode. Use: local, cloud, hybrid" ;;
     esac
 
-    local configured_backend
-    configured_backend=$(grep -m1 "^LLM_BACKEND=" .env 2>/dev/null | cut -d= -f2- | tr -d '"\047\r' || true)
     if [[ "${configured_backend,,}" == "external" ]]; then
         # Fleet row 4: "installer-managed" did not say what to do or where.
         echo -e "${RED}✗${NC} ODS is in API mode, which only the installer turns on and off. Nothing was changed." >&2
         echo "  Rerun the ODS installer with --no-external-llm (Windows: -NoExternalLlm), then run 'ods mode $mode' again." >&2
+        echo "  Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC" >&2
+        exit 1
+    fi
+    if [[ "${configured_backend,,}" == "vllm" && "$mode" != "local" ]]; then
+        # Cloud mode has no local model server, and the resolver refuses the
+        # vLLM engine with it; hybrid mode was never proven with vLLM.
+        echo -e "${RED}✗${NC} ODS runs this model on the vLLM engine, which works only in local mode. Nothing was changed." >&2
+        echo "  To use $mode mode, run the ODS installer again without the vLLM engine." >&2
         echo "  Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC" >&2
         exit 1
     fi
@@ -4201,9 +4290,12 @@ cmd_mode() {
         local switchboard_mode native_llm
         switchboard_mode=$(grep -m1 "^ODS_MODEL_SWITCHBOARD=" .env 2>/dev/null | cut -d= -f2- | tr -d '"\047\r' || true)
         native_llm=$(grep -m1 "^NATIVE_LLM_BASE_URL=" .env 2>/dev/null | cut -d= -f2- | tr -d '"\047\r' || true)
-        # A host-native llama-server install keeps the in-stack llama-server
-        # off; LiteLLM is what reaches the native server (06-directories.sh).
-        if [[ -n "$native_llm" ]]; then
+        # A host-native llama-server install and a vLLM install keep the
+        # in-stack llama-server off; LiteLLM is what reaches the model
+        # (06-directories.sh), through model-router for vLLM.
+        local llama_off="false"
+        [[ -n "$native_llm" || "${configured_backend,,}" == "vllm" ]] && llama_off="true"
+        if [[ "$llama_off" == "true" ]]; then
             api_url="http://litellm:4000"
         else
             api_url="http://llama-server:8080"
@@ -4212,7 +4304,7 @@ cmd_mode() {
         if [[ "${switchboard_mode,,}" == "enabled" ]]; then
             _env_set "HERMES_LLM_BASE_URL" "http://model-router:9099/v1"
             _env_set "HERMES_LLM_API_KEY" "no-key"
-        elif [[ -n "$native_llm" ]]; then
+        elif [[ "$llama_off" == "true" ]]; then
             _env_set "HERMES_LLM_BASE_URL" "http://litellm:4000/v1"
             if [[ -n "${LITELLM_KEY:-}" ]]; then
                 _env_set "HERMES_LLM_API_KEY" "$LITELLM_KEY"

@@ -50,6 +50,9 @@ registerApp(["ods-whisper", "whisper"], "Whisper", "speech-to-text API", "whispe
 registerApp(["ods-embeddings", "embeddings"], "TEI", "embeddings API", "embeddings", "/info");
 registerApp(["ods-litellm", "litellm"], "LiteLLM", "model gateway", "litellm");
 registerApp(["ods-llama-server", "llama-server"], "llama-server", "local model API", "llama");
+// LLM_BACKEND=vllm: the vLLM engine publishes no host port; model-router
+// reaches it on the ODS network, so it has no local URL.
+registerApp(["ods-vllm-server", "vllm-server"], "vLLM", "local model engine behind the model router", null);
 registerApp(["ods-privacy-shield"], "Privacy Shield", "PII protection API", "privacy_shield", "/docs");
 registerApp(["ods-token-spy"], "Token Spy", "usage monitor", "token_spy", "/dashboard");
 registerApp(["ods-ape"], "APE", "agent policy engine", "ape");
@@ -77,6 +80,8 @@ const ALLOWED_SERVICES = new Set([
   "dashboard-api",
   "ods-llama-server",
   "llama-server",
+  "ods-vllm-server",
+  "vllm-server",
   "ods-searxng",
   "searxng",
   "ods-langfuse",
@@ -305,13 +310,16 @@ function validAppPorts(value) {
 function enrichApp(app, appPorts) {
   const metadata = APP_DIRECTORY.get(app.name);
   if (!metadata) return { name: app.name, status: app.status };
-  return {
+  const enriched = {
     name: app.name,
     status: app.status,
     display_name: metadata.display_name,
     purpose: metadata.purpose,
-    url: `http://localhost:${appPorts[metadata.port_key]}${metadata.url_path}`,
   };
+  if (metadata.port_key !== null) {
+    enriched.url = `http://localhost:${appPorts[metadata.port_key]}${metadata.url_path}`;
+  }
+  return enriched;
 }
 
 // Validate a fully parsed projection object against the strict schema.

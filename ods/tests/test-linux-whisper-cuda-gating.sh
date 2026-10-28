@@ -13,6 +13,8 @@ log() { :; }
 warn() { :; }
 # shellcheck disable=SC1091
 source "$ODS_ROOT/installers/lib/detection.sh"
+# detect_host_arch's value; the driver cases below are about amd64 hosts.
+HOST_ARCH=amd64
 
 assert_eq() {
     local label="$1" expected="$2" actual="$3"
@@ -53,6 +55,25 @@ ods_configure_whisper_acceleration nvidia 600
 assert_eq "explicit CPU" "cpu" "$WHISPER_ACCELERATION"
 assert_eq "CPU image selected" "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu@sha256:2163775b6df5e451a71200e8f675fed68dbd8ab184fc604453d549e486f22fd2" "$WHISPER_IMAGE"
 assert_eq "overlay suppressed" "whisper" "$ODS_SKIP_GPU_OVERLAYS"
+
+echo ""
+echo "=== arm64 NVIDIA keeps GPU inference but runs Whisper on the CPU image ==="
+# Workstation06 (2026-10-27): the CUDA image's arm64 CTranslate2 has no CUDA,
+# so large-v3-turbo ran on 4 CPU cores at 17 s per 4 s clip; base took 1.2 s.
+for arch in arm64 aarch64; do
+    HOST_ARCH=$arch
+    WHISPER_ACCELERATION=cuda
+    WHISPER_IMAGE=ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda
+    AUDIO_STT_MODEL=deepdml/faster-whisper-large-v3-turbo-ct2
+    ODS_SKIP_GPU_OVERLAYS=""
+    ods_configure_whisper_acceleration nvidia 610
+    assert_eq "$arch acceleration" "cpu" "$WHISPER_ACCELERATION"
+    assert_eq "$arch forced fallback" "true" "$WHISPER_ACCELERATION_FORCED_CPU"
+    assert_eq "$arch CPU image" "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu@sha256:2163775b6df5e451a71200e8f675fed68dbd8ab184fc604453d549e486f22fd2" "$WHISPER_IMAGE"
+    assert_eq "$arch CPU model" "Systran/faster-whisper-base" "$AUDIO_STT_MODEL"
+    assert_eq "$arch only Whisper overlay skipped" "whisper" "$ODS_SKIP_GPU_OVERLAYS"
+done
+HOST_ARCH=amd64
 
 echo ""
 echo "=== Resolver honors persisted CPU acceleration ==="

@@ -121,6 +121,29 @@ test.each([false, true])('shows the live model API instead of the loaded local e
   expect(screen.getByRole('button', {name: 'Configure context for Qwen 3.5 9B'})).toBeDisabled()
 })
 
+test('lists the catalog picks for this hardware right after the recommended model', () => {
+  // Workstation06 (346 GB of GPU memory): every model fits, and catalog order
+  // alone put the smallest models right after the recommended one.
+  useModelsMock.mockReturnValue(baseState({
+    gpu: { vramUsed: 26, vramTotal: 346, vramFree: 320 },
+    recommendationAlternatives: [{ id: 'catalog-fit-2', name: 'Second Fit Pick' }, { id: 'catalog-fit-1', name: 'First Fit Pick' }],
+    models: [
+      model({ id: 'tiny-1', name: 'Tiny One', sizeGb: 1.3, vramRequired: 3 }),
+      model({ id: 'catalog-fit-1', name: 'First Fit Pick', sizeGb: 49, vramRequired: 52 }),
+      model({ id: 'tiny-2', name: 'Tiny Two', sizeGb: 1.9, vramRequired: 3 }),
+      model({ id: 'catalog-fit-2', name: 'Second Fit Pick', sizeGb: 62, vramRequired: 70 }),
+      model({ id: 'too-big', name: 'Too Big', sizeGb: 400, vramRequired: 420, fitsVram: false }),
+      model({ id: 'recommended', name: 'Recommended Pick', sizeGb: 22, vramRequired: 26, recommended: true }),
+    ],
+  }))
+  renderModels()
+  const order = ['Recommended Pick', 'Second Fit Pick', 'First Fit Pick', 'Tiny One', 'Tiny Two', 'Too Big']
+  const rows = order.map(name => screen.getAllByText(name)[0])
+  for (let index = 1; index < rows.length; index += 1) {
+    expect(rows[index - 1].compareDocumentPosition(rows[index]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  }
+})
+
 test('keeps the local Active state when no active remote route is verified', () => {
   useModelsMock.mockReturnValue(baseState({
     currentModel: 'qwen3.5-9b-q4',

@@ -7,6 +7,7 @@
 tests/test-installer-dry-run-jq.sh
 tests/test-phase06-gpu-env-rerun.py
 tests/test-inference-port-admission.sh
+tests/test-port-conflict-owner.sh
 tests/contracts/test-amd-llamacpp-contracts.sh
 tests/contracts/test-host-native-llm-contracts.sh
 tests/contracts/test-host-native-llm-cpu-fallback.sh
@@ -60,6 +61,14 @@ tests/test-cli-status-optional-webui.sh
 tests/test-cli-stt-env.py
 tests/test-cli-update-verification.sh
 tests/test-comfyui-user-dir-persisted.sh
+tests/test-comfyui-cuda-cache-persisted.sh
+tests/test-llama-cuda-cache-persisted.sh
+tests/test-vllm-engine-service.sh
+tests/test-vllm-installer-route.sh
+tests/test-gpu-memory-in-use.sh
+tests/test-vllm-installer-phases.sh
+tests/test-cli-vllm-engine.sh
+tests/test-doctor-vllm-engine.sh
 tests/test_comfyui_extension_contract.py
 tests/test_extension_assets.py
 tests/test-compose-failure-evidence.sh
@@ -140,6 +149,11 @@ tests/test-migrate-lemonade-install.py
 tests/test-model-integrity.sh
 tests/test-model-library-coverage.py
 tests/test-model-library-verdicts.py
+tests/test-model-library-vllm.py
+tests/test_select_model_vllm.py
+tests/test_host_agent_vllm.py
+tests/test_preserve_active_model_vllm.py
+tests/test_doctor_vllm_route.py
 tests/test-native-llm-phase02.sh
 tests/test-network-security.sh
 tests/test-network-timeouts.sh
@@ -212,6 +226,8 @@ tests/test-preview-inspection.mjs
 tests/test-resolve-compose-nondict-service.sh
 tests/test-resolve-compose-symlinked-install.sh
 tests/test-resolver-assume-enabled.py
+tests/test-resolver-arm64-overlay.py
+tests/test-resolver-host-requirements.py
 tests/test-restore-data-transaction-contract.sh
 tests/test-restore-empty-config.sh
 tests/test-restore-safety-ux.sh
@@ -265,10 +281,13 @@ tests/test_build_installation_context_port.py
 tests/test_chromadb_healthcheck.py
 tests/test_cleanup_wsl_pixel_mounts.py
 tests/test_compose_failure_report_port_check.py
+tests/test_containerd_console_policy.py
+tests/test_public_extension_manifest_permissions.py
 tests/test_extension_audit_library.py
 tests/test_generate_llama_architectures.py
 tests/test_healthcheck_redirect_policy.py
 tests/test_hf_download_helper.py
+tests/test_hf_manifest_download.py
 tests/test_macos_launchd_stop_live.py
 tests/test_macos_recover_local_model.py
 tests/test_macos_snapshot_definition.py
@@ -318,6 +337,7 @@ tests/test-backup-publication.sh
 tests/test-restore-compose-flags.sh
 tests/test-cli-purge-docker-inspection.sh
 tests/test-ods-cli-update-backup-required.sh
+tests/test-ods-cli-dry-run-images.sh
 tests/test-update-backup-publication.py
 tests/test-update-changelog-fallback.py
 tests/test-gpu-reassign-preflight.sh

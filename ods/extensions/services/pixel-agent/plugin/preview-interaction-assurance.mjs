@@ -37,6 +37,23 @@ export function requestsVisibilityInteraction(text) {
   });
 }
 
+// The owner wants the page's data to outlast a reload or a later visit. Portal
+// shows previews with an opaque origin, in its card and in a new tab alike
+// (the relay's CSP sandbox), so storage reads and writes throw and a guarded
+// page keeps its data only in memory. No check can establish it (Workstation06,
+// 2026-10-27: "make the ticks survive a page reload" ended "Everything checks out").
+const KEEPS = /\b(?:survives?|surviving|keeps?|kept|saves?|saved|stores?|stored|retains?|retained|remembers?|remembered|persists?|persisted)\b/i;
+const LATER = /\b(?:reloads?|reloading|refresh(?:es|ed|ing)?|restarts?|sessions?|visits?|re-?open(?:s|ed|ing)?|clos(?:e|es|ed|ing)|come\s+back|tomorrow|next\s+time)\b/i;
+export function requestsReloadPersistence(text) {
+  return String(text ?? '').split(/[!?;\n]+|\.(?=\s|$)/).some(clause => {
+    if (/^\s*(?:please\s+)?(?:do\s+not|don['’]t|never|avoid|skip|explain|describe|example)\b/i.test(clause) ||
+        /\b(?:do\s+not|don['’]t|never|without|no)\s+(?:use\s+)?(?:any\s+)?(?:local\s*storage|session\s*storage|indexed\s*db|persistence)\b/i.test(clause)) return false;
+    return /\b(?:local|session)\s*storage\b|\bindexed\s*db\b|\bpersist(?:ent|ence)\b/i.test(clause) ||
+      /\bremembers?\s+(?:my|our|your|their|the|them|it|everything|all)\b/i.test(clause) ||
+      (KEEPS.test(clause) && LATER.test(clause));
+  });
+}
+
 // The owner's own wording of a requested show/hide change, used only to name
 // the likely affected element and control in an inspection's corrective steps
 // (laptop round 100: the model asserted the button and a post-click class,
@@ -134,11 +151,13 @@ export function boundInspectionPageErrors(params, result, preview) {
 // capsule receipt passed): they are observed before any step runs, so a
 // failed step or a missing transition does not void them. `controls` is
 // undefined when the receipt carries none (an older capsule or a transport
-// failure). Never interaction evidence.
+// failure). Never interaction evidence. Only the entry page's names count:
+// a receipt of another page (`page`) lists that page's buttons and links,
+// which can neither show nor rule out a control of the entry page.
 export function boundInspectionControls(params, result, preview) {
   try {
-    const {receipt} = boundReceipt(params, result, preview, {incomplete: true}) ?? {};
-    return receipt ? Object.freeze({siteId: receipt.siteId, sha256: receipt.sha256,
+    const {request, receipt} = boundReceipt(params, result, preview, {incomplete: true}) ?? {};
+    return receipt && request.page === undefined ? Object.freeze({siteId: receipt.siteId, sha256: receipt.sha256,
       controls: inspectionControls(receipt)}) : undefined;
   } catch { return undefined; }
 }

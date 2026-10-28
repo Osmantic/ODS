@@ -21,6 +21,16 @@ There are two estimate paths:
   yet) keeps the historical estimate exactly: file size + KV (from metadata or
   a parameter-count heuristic), floored by ``vram_required_gb``.
 
+Entries served by vLLM (``"runtime": "vllm"``, see model_vllm.py) take
+neither path: llama.cpp's KV, recurrent-state and checkpoint maths do not
+apply to them. Their weights are the sum of the ``files`` manifest, and the
+device need is weights / the entry's share (:func:`vllm_memory_share`, its
+``gpu_memory_utilization`` or :data:`VLLM_GPU_MEMORY_UTILIZATION`), the GPU
+size at which the share vLLM preallocates just holds the weights (method ``vllm``).
+vLLM fits its KV cache and activations into whatever that share leaves, so
+this is a floor for callers that ask; the catalog's ``min_gpu_mib`` (weights
+plus about 25%) is what the installer admits a GPU on.
+
 The GPU-residency work reuses :func:`estimate_model_memory`,
 :class:`MemoryEstimate` and :func:`fit_margin_gib`; do not re-derive KV there.
 """
@@ -41,7 +51,15 @@ MEMORY_METADATA_KEYS = (
     "size_bytes", "max_context_length",
     "sliding_window", "sliding_window_layer_count", "sliding_window_head_count_kv",
     "sliding_window_key_length", "sliding_window_value_length",
+    "runtime", "files", "vllm_args", "gpu_memory_utilization",
 )
+
+# A catalog entry with this ``runtime`` is served by vLLM (model_vllm.py).
+VLLM_RUNTIME = "vllm"
+# The share of its GPU vLLM preallocates (--gpu-memory-utilization; .env
+# VLLM_GPU_MEMORY_UTILIZATION defaults to it) for weights, activations and
+# its KV cache, unless the entry sets its own gpu_memory_utilization.
+VLLM_GPU_MEMORY_UTILIZATION = 0.90
 
 MIB = 1024.0 ** 2
 GIB = 1024.0 ** 3
@@ -342,7 +360,10 @@ def estimate_model_memory(
     :func:`sliding_window_cells`). Context checkpoints, kept in host RAM,
     copy each sequence's recurrent and sliding-window state.
     ``weight_size_mb`` (the file on disk, MiB) overrides catalog sizes.
+    A vLLM entry gets :func:`vllm_memory_estimate` instead.
     """
+    if model.get("runtime") == VLLM_RUNTIME:
+        return vllm_memory_estimate(model, context_length=context_length, weight_size_mb=weight_size_mb)
     context = _context(model, context_length)
     cache_k = str(cache_type_k or "f16").strip().lower()
     cache_v = str(cache_type_v or "f16").strip().lower()
@@ -412,11 +433,78 @@ def estimate_model_memory(
     )
 
 
+def _vllm_weights_bytes(model: dict[str, Any], weight_size_mb: int | float | None) -> float:
+    explicit = _positive_number(weight_size_mb)
+    if explicit:
+        return explicit * MIB
+    files = model.get("files")
+    if not isinstance(files, list):
+        return 0.0
+    return sum(_positive_number(item.get("size")) for item in files if isinstance(item, dict))
+
+
+def _vllm_kv_cache_dtype(model: dict[str, Any]) -> str:
+    """vLLM's ``--kv-cache-dtype`` from the entry's ``vllm_args`` (default ``auto``)."""
+    args = model.get("vllm_args")
+    args = [str(arg) for arg in args] if isinstance(args, list) else []
+    for index, arg in enumerate(args):
+        if arg == "--kv-cache-dtype" and index + 1 < len(args):
+            return args[index + 1]
+        if arg.startswith("--kv-cache-dtype="):
+            return arg.split("=", 1)[1]
+    return "auto"
+
+
+def vllm_memory_share(model: dict[str, Any]) -> float:
+    """The share of its GPU a vLLM entry preallocates: its ``gpu_memory_utilization``, else 0.90."""
+    return _positive_number(model.get("gpu_memory_utilization")) or VLLM_GPU_MEMORY_UTILIZATION
+
+
+def vllm_memory_estimate(
+    model: dict[str, Any],
+    *,
+    context_length: int | None = None,
+    weight_size_mb: int | float | None = None,
+) -> MemoryEstimate:
+    """The documented estimate for a vLLM entry (see the module docstring).
+
+    Weights are the ``files`` manifest total (or ``weight_size_mb``, a measured
+    size on disk). ``device_gib`` is weights / :func:`vllm_memory_share`; KV
+    cache, recurrent state, overhead and host checkpoints are 0 because vLLM
+    keeps them inside its preallocated share. The context does not change it.
+    """
+    weights = _vllm_weights_bytes(model, weight_size_mb) / GIB
+    device = round(weights / vllm_memory_share(model), 2)
+    cache = _vllm_kv_cache_dtype(model)
+    return MemoryEstimate(
+        context_length=_context(model, context_length),
+        cache_type_k=cache,
+        cache_type_v=cache,
+        layers=None,
+        kv_layers=None,
+        kv_bytes_per_token=None,
+        weights_gib=round(weights, 3),
+        kv_gib=0.0,
+        recurrent_state_gib=0.0,
+        compute_overhead_gib=0.0,
+        host_checkpoint_gib=0.0,
+        device_gib=device,
+        total_gib=device,
+        method="vllm",
+    )
+
+
 def estimated_context_kv_gb(
     model: dict[str, Any],
     context_length: int | None = None,
 ) -> float:
-    """Estimate standard llama.cpp f16 KV pressure at the selected context."""
+    """Estimate standard llama.cpp f16 KV pressure at the selected context.
+
+    A vLLM entry adds none: its KV cache lives inside the share of the GPU
+    vLLM preallocates (see :func:`vllm_memory_estimate`).
+    """
+    if model.get("runtime") == VLLM_RUNTIME:
+        return 0.0
     context = _context(model, context_length)
     per_token = kv_bytes_per_token(model)
     if per_token is not None:

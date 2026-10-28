@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 CONTEXT = Path(__file__).resolve().parents[1] / "extensions/services/comfyui"
-NODES = ("ComfyUI-GGUF", "ComfyUI-KJNodes", "ComfyUI-LTXVideo", "ComfyUI-VideoHelperSuite")
+NODES = ("ComfyUI-GGUF", "ComfyUI-KJNodes", "ComfyUI-LTXVideo", "ComfyUI-VideoHelperSuite", "ods_attention_guard")
 
 
 @unittest.skipUnless(os.environ.get("ODS_TEST_COMFYUI_IMAGE") == "1",
@@ -46,6 +46,12 @@ class ComfyUIImageTests(unittest.TestCase):
         for node in NODES:
             self.assertIn(node, installed)
         self.assertNotIn("ComfyUI-Manager", installed)
+
+    def test_attention_guard_loads_and_is_inert_without_a_gpu(self):
+        # It turns cuDNN attention off only on a GPU the PyTorch build lacks (GB300).
+        self.assertEqual(self.python(
+            "import sys; sys.path.insert(0, '/opt/comfyui/custom_nodes'); import torch, ods_attention_guard; "
+            "print(torch.backends.cuda.cudnn_sdp_enabled())"), "True")
 
     def test_build_check_left_no_user_directory(self):
         # startup.sh migrates an image-side user/ into the owner's mount.

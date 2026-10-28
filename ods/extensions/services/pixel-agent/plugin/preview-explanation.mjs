@@ -25,8 +25,9 @@
 // The prose passes the filter every host-composed answer passes
 // (deliverableAnswer in progress-finalization.mjs). It is dropped, and the host
 // delivery stands alone, when it is empty or too short, silent (NO_REPLY),
-// tool-call text, when it links any local URL other than this outcome's own
-// preview, or when it carries Portal's own wording (its check label or receipt
+// tool-call text, when it links any local URL, or any URL naming a preview
+// site, other than this outcome's own preview (a made-up preview link on an
+// invented host), or when it carries Portal's own wording (its check label or receipt
 // lines, however markdown or HTML draws them): a copied or imitated host note
 // must not read as Portal's. Everything added here is fixed English text.
 import { NARRATION, deliverableAnswer } from './progress-finalization.mjs';
@@ -60,9 +61,14 @@ export const PREVIEW_INCOMPLETE_NOTE =
   'Portal stopped before it finished, so this page may not have everything you asked for yet. Send a message to continue.';
 // The run has ended: a step the reply announces will not start on its own.
 export const PREVIEW_CONTINUE_NOTE = "The next step above hasn't started yet. Send a message to continue.";
+// The owner asked for data that outlasts a reload (requestsReloadPersistence).
+// Portal's previews cannot keep it, whatever the page does or the reply says.
+// Downloads and file inputs still work there, so export and import do.
+export const PREVIEW_STORAGE_NOTE =
+  "Portal's previews run isolated, so anything the page saves resets when it reloads. To keep data between visits, ask Portal to add export and import.";
 export const PREVIEW_NOTES = Object.freeze([PREVIEW_CONTROLS_NOTE, PREVIEW_UNCONFIRMED_NOTE, PREVIEW_RUNNING_NOTE,
   PREVIEW_SCRIPT_NOTE, PREVIEW_MISSING_NOTE, PREVIEW_EARLIER_NOTE, PREVIEW_STOPPED_NOTE, PREVIEW_UNFINISHED_NOTE,
-  PREVIEW_INCOMPLETE_NOTE, PREVIEW_CONTINUE_NOTE]);
+  PREVIEW_INCOMPLETE_NOTE, PREVIEW_CONTINUE_NOTE, PREVIEW_STORAGE_NOTE]);
 
 // The combined reply is host verification text (ingress limit: 32 KiB). Leave
 // room for the extension and progress-lane notes that can follow it.

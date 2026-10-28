@@ -14,30 +14,113 @@
   <div id="hud" class="hidden">
     <div class="hud-left">
       <div class="hero-badge">
-        <div class="hero-emoji"><svg viewBox="0 0 40 40" width="46" height="46" aria-hidden="true">
-          <!-- Faelar: fair skin and long blond hair under a slim circlet. The previous art
-               used green skin, pig ears and a brown horned helm, which read as a brute. -->
-          <ellipse cx="20" cy="23" rx="11.5" ry="13" fill="#e8c39a" stroke="#3a2a1c" stroke-width="1.6"/>
-          <!-- long hair falling behind the shoulders -->
-          <path d="M8 20 Q5 34 11 38 L15 33 Q11 27 12 19 Z" fill="#e6cf82" stroke="#3a2a1c" stroke-width="1.5"/>
-          <path d="M32 20 Q35 34 29 38 L25 33 Q29 27 28 19 Z" fill="#e6cf82" stroke="#3a2a1c" stroke-width="1.5"/>
-          <!-- hair crown / fringe -->
-          <path d="M8.5 21 Q8 8 20 8 Q32 8 31.5 21 Q29 13 20 12.5 Q11 13 8.5 21 Z" fill="#f0dc93" stroke="#3a2a1c" stroke-width="1.5"/>
-          <!-- elven circlet with a small leaf gem -->
-          <path d="M9.5 17.5 Q20 13.5 30.5 17.5" fill="none" stroke="#d9bd63" stroke-width="1.8"/>
-          <circle cx="20" cy="14.6" r="1.7" fill="#7fd6a0" stroke="#3a2a1c" stroke-width="1"/>
-          <!-- eyes, brows, nose, mouth -->
-          <ellipse cx="15.8" cy="22.5" rx="1.7" ry="1.3" fill="#2c4a6b"/>
-          <ellipse cx="24.2" cy="22.5" rx="1.7" ry="1.3" fill="#2c4a6b"/>
-          <path d="M13.8 19.6 Q15.8 18.6 17.6 19.5" fill="none" stroke="#b99b57" stroke-width="1.2" stroke-linecap="round"/>
-          <path d="M22.4 19.5 Q24.2 18.6 26.2 19.6" fill="none" stroke="#b99b57" stroke-width="1.2" stroke-linecap="round"/>
-          <path d="M20 23.5 L19.2 26.4 Q20 27.1 20.9 26.5" fill="none" stroke="#c49a72" stroke-width="1.1" stroke-linecap="round"/>
-          <path d="M17.2 29.6 Q20 31.2 22.8 29.6" fill="none" stroke="#a9695c" stroke-width="1.5" stroke-linecap="round"/>
-          <!-- shoulder line of the elven cloak -->
-          <path d="M7 40 Q20 32 33 40" fill="#3f6b4f" stroke="#3a2a1c" stroke-width="1.5"/>
+        <div class="hero-emoji"><svg viewBox="-7 -4 78 60" width="68" height="52" shape-rendering="geometricPrecision" role="img" aria-label="Gabriel, male elven archer">
+          <!-- Gabriel, male elven archer. The previous pass went cartoon: open grin with teeth,
+               arched brows, blush and freckles made him read as a joker. He is killing waves of
+               monsters, so this pass keeps the cockiness and takes the comedy out of it: the mouth
+               is now a closed one-sided smirk, the brows are heavier and set lower with a slight
+               inward drive for determination, eyes are shallower and half-lidded with a smaller
+               brighter iris, and the ahoge, freckles and blush are gone in favour of an undercut
+               and a flipped ponytail. Still blond (#fff0b0 / #f7d96c / #e8c24a, shadow #d0a633);
+               the only brown is the leather guard and the warm ink #46300f. -->
+          <defs>
+            <linearGradient id="gabHair" x1="0" y1="0" x2=".25" y2="1">
+              <stop offset="0" stop-color="#fff0b0"/>
+              <stop offset=".5" stop-color="#f7d96c"/>
+              <stop offset="1" stop-color="#e8c24a"/>
+            </linearGradient>
+            <radialGradient id="gabFace" cx=".42" cy=".3" r=".85">
+              <stop offset="0" stop-color="#ffd9b0"/>
+              <stop offset=".62" stop-color="#eeb98a"/>
+              <stop offset="1" stop-color="#d69867"/>
+            </radialGradient>
+            <linearGradient id="gabCloak" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#4e8a66"/>
+              <stop offset="1" stop-color="#27503a"/>
+            </linearGradient>
+            <radialGradient id="gabIris" cx=".4" cy=".3" r=".82">
+              <stop offset="0" stop-color="#6fb4dd"/>
+              <stop offset=".55" stop-color="#2f72a6"/>
+              <stop offset="1" stop-color="#143c5f"/>
+            </radialGradient>
+            <linearGradient id="gabGold" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#ffe9a0"/>
+              <stop offset="1" stop-color="#cf9c33"/>
+            </linearGradient>
+            <radialGradient id="gabGem" cx=".35" cy=".3" r=".8">
+              <stop offset="0" stop-color="#a9e8bd"/>
+              <stop offset="1" stop-color="#2c8e58"/>
+            </radialGradient>
+            <clipPath id="gabFaceClip">
+              <path d="M17 30 Q17 13 32 13 Q47 13 47 30 L47 38.5 Q47 48 41 53.5 Q36.5 57 32 57 Q27.5 57 23 53.5 Q17 48 17 38.5 Z"/>
+            </clipPath>
+          </defs>
+          <!-- hair mass behind the head, swept back into an undercut with a flipped tail -->
+          <path d="M12.5 28 Q8 3 32 2 Q56 3 51.5 28 Q51.5 17 48.5 13.5 Q53.5 11 54.5 6.5 Q48.5 8 44.5 11.5 Q39 7.5 32 7.5 Q25 7.5 19.5 11.5 Q12.5 17 12.5 28 Z" fill="url(#gabHair)" stroke="#46300f" stroke-width="1.45" stroke-linejoin="round"/>
+          <!-- undercut: short-shaved sideburn on both sides, darker than the mass above it -->
+          <g clip-path="url(#gabFaceClip)">
+            <path d="M17 26 Q19.5 31 18.8 37 L17 37 Z" fill="#c99f2e" opacity=".5"/>
+            <path d="M47 26 Q44.5 31 45.2 37 L47 37 Z" fill="#c99f2e" opacity=".5"/>
+          </g>
+          <!-- ponytail: pulled back and flipped, no curl -->
+          <path d="M45 31 Q53.5 36 52.5 45 Q51.8 51 47 53.5 Q50.8 46.5 47.8 39.5 Q46.2 35.2 43 32 Z" fill="url(#gabHair)" stroke="#46300f" stroke-width="1.4" stroke-linejoin="round"/>
+          <path d="M43.8 31.4 Q47.2 33.4 49.8 36.6" fill="none" stroke="url(#gabGold)" stroke-width="2.6" stroke-linecap="round"/>
+          <!-- pointed elven ears, high and springy -->
+          <path d="M18 29.5 L0 20.5 L17 40.5 Z" fill="#e7b384" stroke="#46300f" stroke-width="1.4" stroke-linejoin="round"/>
+          <path d="M46 29.5 L64 20.5 L47 40.5 Z" fill="#e7b384" stroke="#46300f" stroke-width="1.4" stroke-linejoin="round"/>
+          <path d="M15.4 28.2 L6 23.6" fill="none" stroke="#c98a5c" stroke-width="1.2" stroke-linecap="round"/>
+          <path d="M48.6 28.2 L58 23.6" fill="none" stroke="#c98a5c" stroke-width="1.2" stroke-linecap="round"/>
+          <!-- face: strong jaw, slightly narrowed mouth corner -->
+          <path d="M17 30 Q17 13 32 13 Q47 13 47 30 L47 38.5 Q47 48 41 53.5 Q36.5 57 32 57 Q27.5 57 23 53.5 Q17 48 17 38.5 Z" fill="url(#gabFace)" stroke="#46300f" stroke-width="1.5"/>
+          <!-- shading: form shadow on both sides and a jaw shadow, no blush -->
+          <g clip-path="url(#gabFaceClip)">
+            <ellipse cx="17.2" cy="34" rx="6.6" ry="18" fill="#c98a5c" opacity=".28"/>
+            <ellipse cx="46.8" cy="34" rx="6.6" ry="18" fill="#c98a5c" opacity=".28"/>
+            <path d="M22 50 Q32 58 42 50 L42 57 L22 57 Z" fill="#c98a5c" opacity=".22"/>
+          </g>
+          <!-- fringe: swept from his left to his right in three sharp sections, tips over the brow -->
+          <path d="M16.5 26 Q15.5 12 32 11 Q48.5 12 47.5 26 L44.5 20 Q43.8 16 41 17.2 L36 23 L34 16.5 Q31 15 28 16.8 L25.5 22 L21.8 16.5 Q19.5 16.2 18.6 20.5 Z" fill="url(#gabHair)" stroke="#46300f" stroke-width="1.4" stroke-linejoin="round"/>
+          <path d="M37.5 15.5 L32.5 22.5" fill="none" stroke="#d0a633" stroke-width="1.1" stroke-linecap="round"/>
+          <path d="M27 15.8 L24.4 21" fill="none" stroke="#d0a633" stroke-width="1" stroke-linecap="round"/>
+          <!-- single restrained crown highlight -->
+          <path d="M22.5 16.5 Q32 11 41.5 16.5" fill="none" stroke="#fff6d2" stroke-width="1.4" stroke-linecap="round" opacity=".45"/>
+          <!-- determined brows: heavy, low over the eyes, driven slightly inward -->
+          <path d="M20.2 24.4 Q25 22 29.9 24.9" fill="none" stroke="#d0a633" stroke-width="2.6" stroke-linecap="round"/>
+          <path d="M34.1 24.9 Q39 22 43.8 24.4" fill="none" stroke="#d0a633" stroke-width="2.6" stroke-linecap="round"/>
+          <!-- eyes: shallower and half-lidded, a straight lower edge, gaze steady and off-centre -->
+          <path d="M21.4 30 Q25.4 27.2 29.7 29.8 Q25.8 32.8 21.4 30 Z" fill="#fffdf4" stroke="#46300f" stroke-width=".8"/>
+          <path d="M34.3 29.8 Q38.6 27.2 42.6 30 Q38.2 32.8 34.3 29.8 Z" fill="#fffdf4" stroke="#46300f" stroke-width=".8"/>
+          <circle cx="26.2" cy="30.3" r="2.35" fill="url(#gabIris)"/>
+          <circle cx="38.9" cy="30.3" r="2.35" fill="url(#gabIris)"/>
+          <circle cx="26.3" cy="30.4" r="1.05" fill="#0c1822"/>
+          <circle cx="39" cy="30.4" r="1.05" fill="#0c1822"/>
+          <circle cx="25.3" cy="29.4" r=".8" fill="#fffefa"/>
+          <circle cx="38" cy="29.4" r=".8" fill="#fffefa"/>
+          <!-- upper lid line sits on the iris: that contact is what reads as focus -->
+          <path d="M21 29.8 Q25.4 26.9 30.1 29.6" fill="none" stroke="#46300f" stroke-width="1.35" stroke-linecap="round"/>
+          <path d="M33.9 29.6 Q38.6 26.9 43 29.8" fill="none" stroke="#46300f" stroke-width="1.35" stroke-linecap="round"/>
+          <!-- under-eye line, faint: fatigue, not age -->
+          <path d="M22.6 32.6 Q25.6 33.8 28.6 33" fill="none" stroke="#c98a5c" stroke-width=".85" stroke-linecap="round" opacity=".55"/>
+          <path d="M35.4 33 Q38.4 33.8 41.4 32.6" fill="none" stroke="#c98a5c" stroke-width=".85" stroke-linecap="round" opacity=".55"/>
+          <!-- small upturned nose -->
+          <path d="M31.4 34.8 Q31 38.6 34 39.2" fill="none" stroke="#c98a5c" stroke-width="1.3" stroke-linecap="round"/>
+          <!-- the smirk: closed, asymmetric, corner pulled up on his left only -->
+          <path d="M24.2 45.4 Q29.6 46.8 34.4 45.6 Q37.6 44.7 40.2 41.4" fill="none" stroke="#46300f" stroke-width="1.6" stroke-linecap="round"/>
+          <path d="M39.4 43.6 Q41.8 43.2 42.8 41.4" fill="none" stroke="#c98a5c" stroke-width="1" stroke-linecap="round" opacity=".85"/>
+          <!-- brow scar, a short healed line on his right brow -->
+          <path d="M23 20.6 L26.4 23.4" fill="none" stroke="#c07f57" stroke-width="1.1" stroke-linecap="round" opacity=".65"/>
+          <!-- elven circlet with a leaf gem, worn over the fringe -->
+          <path d="M18.6 22.4 Q32 16.6 45.4 22.4" fill="none" stroke="url(#gabGold)" stroke-width="1.7"/>
+          <path d="M32 16 l2.5 3.9 -2.5 3.9 -2.5 -3.9 Z" fill="url(#gabGem)" stroke="#2a6144" stroke-width="1"/>
+          <path d="M31.2 17.6 l1.1 1.6" fill="none" stroke="#eafff2" stroke-width=".8" stroke-linecap="round" opacity=".8"/>
+          <!-- cloak collar along the bottom edge, gold clasp, leather strap over one shoulder -->
+          <path d="M-7 63 Q-3 53 13 53 L51 53 Q67 53 71 63 Z" fill="url(#gabCloak)" stroke="#46300f" stroke-width="1.4" stroke-linejoin="round"/>
+          <path d="M28 53 L32 59 L23 59 Z" fill="#eef3e6" stroke="#46300f" stroke-width="1.1"/>
+          <path d="M45 53.5 Q56 55.5 64 61" fill="none" stroke="#7d5730" stroke-width="2.8" stroke-linecap="round"/>
+          <circle cx="36" cy="55" r="1.8" fill="url(#gabGold)" stroke="#46300f" stroke-width=".85"/>
         </svg></div>
         <div class="hero-info">
-          <div class="hero-name">Faelar Brightarrow</div>
+          <div class="hero-name">Gabriel</div>
           <div class="bar hp-bar"><div id="hp-fill"></div><span id="hp-text">50/50</span></div>
           <div class="bar xp-bar"><div id="xp-fill"></div><span id="xp-text">Lv 1</span></div>
         </div>
@@ -72,6 +155,7 @@
       <p class="subtitle">A dungeon crawler made with ODS on the RTX Spark</p>
       <p class="lore">One elf. One bow. Endless brutes.<br>
       Run, draw, and loose arrows through great halls of the ashland — <b>grab hearts</b> to mend your wounds and <b>quivers</b> to keep your string singin', then loot, level, and outrun your way to the Cinderfall.</p>
+      <p class="lore">Break the Hollow Crown and the realms <b>fold back on themselves</b>: every circuit of six brings <b>half again as many foes</b>, <b>hardier bosses</b> and <b>realm-6 reinforcements</b> from the first hall onward. The quest never ends — it is only ever a matter of how far Gabriel gets.</p>
       <button id="btn-start" class="big-btn" type="button">🏹 Draw Your Bow</button>
       <div class="controls-hint">
         <h3>Controls</h3>
@@ -84,7 +168,7 @@
           <li>Clicking away from the game pauses it automatically</li>
         </ul>
         <div class="controls-objective">
-          Clear every brute in the arena to open the way onward — <b>6 realms</b>, each with its own boss, then <b>Mount Cinderfall</b> and the Hollow Crown.
+          Clear every brute in the arena to open the way onward — <b>6 realms</b>, each with its own boss, then <b>Mount Cinderfall</b> and the Hollow Crown. Fall the Crown and <b>Continue</b> into the next circuit: more brutes, tougher bosses, faster reinforcements — forever.
         </div>
       </div>
       <div class="title-footer">
@@ -112,13 +196,14 @@
     </div>
   </div>
 
-  <!-- Victory -->
+  <!-- Victory / circuit checkpoint. Re-shown after every six realms with a metal tier that
+       deepens each loop (bronze → silver → gold); its button continues the endless run. -->
   <div id="screen-win" class="screen hidden">
     <div class="panel">
-      <h2>🌋 The Quest is Done!</h2>
-      <p class="panel-sub">The Hollow Crown is broken, and the elven realms begin their long twilight.</p>
+      <h2 id="win-title">🌋 The Quest is Done!</h2>
+      <p class="panel-sub" id="win-sub">The Hollow Crown is broken, and the elven realms begin their long twilight.</p>
       <div id="win-stats" class="over-stats"></div>
-      <button id="btn-again" class="big-btn" type="button">↻ Play Again</button>
+      <button id="btn-again" class="big-btn" type="button">➤ Continue the Quest</button>
     </div>
   </div>
 

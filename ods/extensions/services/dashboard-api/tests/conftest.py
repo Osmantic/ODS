@@ -71,6 +71,16 @@ def _no_remembered_portal_status(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_remembered_release_check(monkeypatch):
+    """Each test starts without a release or a failed check remembered by an earlier one."""
+    from routers import updates
+
+    monkeypatch.setattr(updates, "_version_cache", {"expires_at": 0.0, "payload": None})
+    monkeypatch.setattr(updates, "_version_hold", {"until": 0.0, "rate_limited": False})
+    monkeypatch.setattr(updates, "_version_refresh_task", None)
+
+
+@pytest.fixture(autouse=True)
 def _no_remembered_model_management(monkeypatch):
     """Each test starts without a model management proof remembered by an earlier one."""
     from routers import models

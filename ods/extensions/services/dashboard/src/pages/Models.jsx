@@ -171,12 +171,18 @@ export default function Models({ compact = false }) {
     () => models.filter(model => ['downloaded', 'loaded'].includes(model.status)),
     [models]
   )
-  const odsCatalogModels = useMemo(
-    () => models
+  const odsCatalogModels = useMemo(() => {
+    // The catalog's own picks for this hardware follow the recommended model.
+    // Where every model fits (a DGX Station's 346 GB), catalog order alone put
+    // the smallest models right after it.
+    const fitRank = new Map(recommendationAlternatives.map((item, index) => [item.id, index]))
+    const rank = model => fitRank.get(model.id) ?? fitRank.size
+    return models
       .filter(model => model.metadata?.catalogSource !== 'huggingface' && model.metadata?.source !== 'runtime')
-      .sort((left, right) => Number(Boolean(right.recommended)) - Number(Boolean(left.recommended)) || Number(Boolean(right.fitsVram)) - Number(Boolean(left.fitsVram))),
-    [models]
-  )
+      .sort((left, right) => Number(Boolean(right.recommended)) - Number(Boolean(left.recommended))
+        || rank(left) - rank(right)
+        || Number(Boolean(right.fitsVram)) - Number(Boolean(left.fitsVram)))
+  }, [models, recommendationAlternatives])
   const scopedModels = libraryScope === 'installed' ? installedModels : odsCatalogModels
   const categoryOptions = useMemo(
     () => buildCategoryOptions(scopedModels, hermesMinimumContext),

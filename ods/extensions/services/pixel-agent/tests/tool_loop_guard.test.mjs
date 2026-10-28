@@ -7047,6 +7047,67 @@ test("space-bearing process names do not admit markup or control characters", ()
   }
 });
 
+// Workstation06, 2026-10-27: asked how much GPU memory was free, the agent got
+// only totals from host.gpu, tried nine sandbox commands, and could not answer.
+// Each host line also repeated its label ("- Memory: Memory: ...").
+function hostGpuMemoryReply(devices) {
+  const guard = createToolLoopGuard();
+  const jobId = "ops-1234567890123-abcdef123456";
+  guard.observeRun({agentId:"pixel",runId:"run-1",sessionId:"session-1"}, "pixel",
+    {prompt:"How much free memory do the GPUs in this machine have right now?"});
+  afterCall(guard, "pixel_ops_workflow_submit", {event:{
+    params:{steps:[{id:"gpu",target:"ods-host",action:"host.gpu"},{id:"memory",target:"ods-host",action:"host.memory"}]},
+    result:{details:{jobId,status:"submitted",kind:"workflow"}},
+  }});
+  const step = (stepId, action, stdout) => ({stepId,target:"ods-host",action,exitCode:0,stderr:"",
+    outputTruncated:{stdout:false,stderr:false},riskSignals:[],stdout});
+  afterCall(guard, "pixel_ops_job_wait", {event:{params:{jobId},result:{details:{
+    jobId,status:"succeeded",waitTimedOut:false,
+    steps:[
+      step("gpu", "host.gpu", JSON.stringify({schemaVersion:1,kind:"ods-host-gpu",available:true,backend:"nvidia",devices})),
+      step("memory", "host.memory", "total used free shared buff/cache available\nMem: 17179869184 8589934592 1073741824 0 7516192768 8589934592\nSwap: 4294967296 0 4294967296\n"),
+    ],
+  }}}});
+  return reply(guard)?.payload?.text;
+}
+
+test("NVIDIA host evidence names each GPU's free and in-use memory, once per line", () => {
+  const text = hostGpuMemoryReply([
+    {name:"NVIDIA RTX PRO 6000 Blackwell Workstation Edition",memoryMiB:97887,memoryUsedMiB:13247,memoryFreeMiB:84018,driver:"610.57.04"},
+    {name:"NVIDIA GB300",memoryMiB:256703,memoryUsedMiB:12837,memoryFreeMiB:242945,driver:"610.57.04"},
+  ]);
+  assert.match(text, new RegExp("\\n- GPU: NVIDIA RTX PRO 6000 Blackwell Workstation Edition \\(97887 MiB total, 84018 MiB free, " +
+    "13247 MiB in use; driver 610\\.57\\.04\\); NVIDIA GB300 \\(256703 MiB total, 242945 MiB free, 12837 MiB in use; " +
+    "driver 610\\.57\\.04\\)\\. Together: 326963 MiB free of 354590 MiB \\(319\\.3 GiB free of 346\\.3 GiB\\)\\. " +
+    "Free and in-use memory are as of this check\\. Device identifiers"));
+  assert.match(text, /\n- Memory: 8\.00 GiB used of 16\.0 GiB/);
+  assert.doesNotMatch(text, /GPU: GPU:|Memory: Memory:/);
+});
+
+test("NVIDIA host evidence without live use keeps the totals; impossible live figures fail closed", () => {
+  const total = {name:"NVIDIA GeForce RTX 5070 Laptop GPU",memoryMiB:8151,driver:"573.22"};
+  const text = hostGpuMemoryReply([total]);
+  assert.match(text, /\n- GPU: NVIDIA GeForce RTX 5070 Laptop GPU \(8151 MiB; driver 573\.22\)\. Device identifiers/);
+  assert.doesNotMatch(text, /as of this check|Together/);
+  // One GPU is its own total; a GPU without live figures leaves no sum to give.
+  assert.doesNotMatch(hostGpuMemoryReply([{...total, memoryUsedMiB:1203, memoryFreeMiB:6687}]), /Together/);
+  assert.doesNotMatch(hostGpuMemoryReply([{...total, memoryUsedMiB:1203, memoryFreeMiB:6687}, total]), /Together/);
+  for (const live of [{memoryUsedMiB:1203,memoryFreeMiB:9000}, {memoryUsedMiB:-1,memoryFreeMiB:6687},
+    {memoryUsedMiB:1203.5,memoryFreeMiB:6687}, {memoryUsedMiB:1203}]) {
+    assert.doesNotMatch(hostGpuMemoryReply([{...total, ...live}]) ?? "", /MiB free|8151 MiB/, JSON.stringify(live));
+  }
+});
+
+test("a unified-memory NVIDIA GPU is named as sharing system RAM", () => {
+  const text = hostGpuMemoryReply([{name:"NVIDIA GB10",unifiedMemory:true,driver:"580.95.05"}]);
+  assert.match(text, /\n- GPU: NVIDIA GB10 \(unified memory shared with system RAM; driver 580\.95\.05\)\. Device identifiers/);
+  assert.match(text, /\n- Memory: 8\.00 GiB used of 16\.0 GiB/);
+  for (const device of [{name:"NVIDIA GB10",unifiedMemory:"yes",driver:"580.95.05"},
+    {name:"NVIDIA GB10",unifiedMemory:true,memoryMiB:8151,driver:"580.95.05"}]) {
+    assert.doesNotMatch(hostGpuMemoryReply([device]) ?? "", /NVIDIA GB10/, JSON.stringify(device));
+  }
+});
+
 test("Metal host evidence describes capability without claiming measured utilization", () => {
   const guard = createToolLoopGuard();
   const jobId = "ops-1234567890123-abcdef123456";

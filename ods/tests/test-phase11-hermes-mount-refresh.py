@@ -4,9 +4,9 @@ import hashlib
 import importlib.util
 import json
 import os
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -179,6 +179,80 @@ class HermesMountTests(unittest.TestCase):
             self.assertEqual(self.docker.refresh(), "refreshed")
         self.assertEqual(sleep.call_count, 2)
         self.assertEqual(len(self.docker.mutations()), 1)
+
+    def test_desktop_directory_proxy_requires_identity_and_preserves_live_config(self):
+        proxy_root = self.root / "desktop-proxies"
+        visible = proxy_root / "Ubuntu-24.04" / ("e" * 64)
+        visible.mkdir(parents=True)
+        source = "/run/desktop/mnt/host/wsl/docker-desktop-bind-mounts/Ubuntu-24.04/" + "e" * 64
+        self.docker.inspected_mounts[-1]["Source"] = source
+        self.docker.replace(next(iter(mounts.FILES)))
+        live = self.root / "data/hermes"
+        original_config = (live / "config.yaml").read_bytes()
+        original_stat = os.stat
+        live_stat = original_stat(live)
+
+        # A foreign directory is not accepted even with the expected proxy name.
+        with patch.object(mounts, "DESKTOP_VISIBLE_ROOT", proxy_root, create=True):
+            with self.assertRaisesRegex(mounts.Refused, "unexplained source"):
+                self.docker.refresh()
+            self.assertFalse(self.docker.mutations())
+
+            # Unprivileged tests cannot create bind mounts. Model only the
+            # kernel's inode alias; path validation and the refresh stay real.
+            def bind_stat(path, *args, **kwargs):
+                if Path(path) == visible:
+                    return live_stat
+                return original_stat(path, *args, **kwargs)
+
+            with patch.object(mounts.os, "stat", side_effect=bind_stat):
+                self.assertEqual(self.docker.refresh(), "refreshed")
+        self.assertEqual(len(self.docker.mutations()), 1)
+        self.assertEqual((live / "config.yaml").read_bytes(), original_config)
+        self.assertEqual(self.docker.live, original_config)
+        self.assertEqual(self.docker.other_identity, "b" * 64)
+
+    def test_desktop_directory_proxy_rejects_missing_and_malformed_paths(self):
+        self.docker.replace(next(iter(mounts.FILES)))
+        prefix = "/run/desktop/mnt/host/wsl/docker-desktop-bind-mounts/"
+        for source in [prefix + "Ubuntu-24.04/" + "f" * 64,
+                       prefix + "../" + "f" * 64, prefix + "./" + "f" * 64,
+                       prefix + "Ubuntu-24.04/not-a-digest", "/foreign/data", None]:
+            with self.subTest(source=source):
+                self.docker.inspected_mounts[-1]["Source"] = source
+                with patch.object(mounts, "DESKTOP_VISIBLE_ROOT", self.root / "missing", create=True):
+                    with self.assertRaisesRegex(mounts.Refused, "unexplained source"):
+                        self.docker.refresh()
+        self.assertFalse(self.docker.mutations())
+
+    @unittest.skipIf(os.name == "nt", "Symlink creation needs Windows privileges")
+    def test_desktop_directory_proxy_rejects_symlink_and_symlink_ancestor(self):
+        proxy_root = self.root / "desktop-proxies"
+        visible = proxy_root / "Ubuntu-24.04" / ("e" * 64)
+        visible.parent.mkdir(parents=True)
+        live = self.root / "data/hermes"
+        visible.symlink_to(live)
+        source = "/run/desktop/mnt/host/wsl/docker-desktop-bind-mounts/Ubuntu-24.04/" + "e" * 64
+        self.docker.inspected_mounts[-1]["Source"] = source
+        self.docker.replace(next(iter(mounts.FILES)))
+        with patch.object(mounts, "DESKTOP_VISIBLE_ROOT", proxy_root, create=True):
+            with self.assertRaisesRegex(mounts.Refused, "unexplained source"):
+                self.docker.refresh()
+            visible.unlink()
+            visible.mkdir()
+            real_parent = proxy_root / "real-distro"
+            visible.parent.rename(real_parent)
+            visible.parent.symlink_to(real_parent)
+            original_stat = os.stat
+            live_stat = original_stat(live)
+
+            def bind_stat(path, *args, **kwargs):
+                return live_stat if Path(path) == visible else original_stat(path, *args, **kwargs)
+
+            with patch.object(mounts.os, "stat", side_effect=bind_stat):
+                with self.assertRaisesRegex(mounts.Refused, "unexplained source"):
+                    self.docker.refresh()
+        self.assertFalse(self.docker.mutations())
 
     def test_unhealthy_or_timed_out_startup_fails_without_retry(self):
         self.docker.replace(next(iter(mounts.FILES)))

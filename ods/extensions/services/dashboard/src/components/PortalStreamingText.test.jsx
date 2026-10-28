@@ -3,6 +3,44 @@ import PortalStreamingText from './PortalStreamingText'
 import {EMBED_ONLY_NOTE} from '../lib/embedDisplay'
 import {DELIVERY_NOTES} from '../lib/portalDeliveryNotes'
 
+it.each([false,true])('shows the captured unavailable screenshot without losing the answer (active: %s)',active=>{
+  const source='Here is your packing checklist.\n\n![Packing Checklist](attachment://site-58add21721c2f22970414329.png)\n\nUse the preview card above.'
+  const {container}=render(<PortalStreamingText active={active} instant>{source}</PortalStreamingText>)
+  expect(container).toHaveTextContent('Here is your packing checklist.')
+  expect(container).toHaveTextContent('Image unavailable: Packing Checklist')
+  expect(container).toHaveTextContent('Use the preview card above.')
+  expect(container.querySelector('img')).toBeNull()
+})
+
+it.each(['![](attachment://missing.png)','![]()','![missing][shot]\n\n[shot]: attachment://missing.png'])('does not create an empty-source image: %s',source=>{
+  const {container}=render(<PortalStreamingText instant>{source}</PortalStreamingText>)
+  expect(container).toHaveTextContent('Image unavailable')
+  expect(container.querySelector('img')).toBeNull()
+})
+
+it('keeps supported image URLs, titles and custom rendering after URL filtering',()=>{
+  const Image=vi.fn(({node,...props})=><img {...props} data-custom-image="yes"/>)
+  const {container}=render(<PortalStreamingText instant components={{img:Image}}>{'![Remote](https://example.com/chart.png "Chart")\n\n![Local](./chart.png)\n\n![Missing](attachment://missing.png)'}</PortalStreamingText>)
+  const images=container.querySelectorAll('img')
+  expect(images).toHaveLength(2)
+  expect(images[0]).toHaveAttribute('src','https://example.com/chart.png')
+  expect(images[0]).toHaveAttribute('alt','Remote')
+  expect(images[0]).toHaveAttribute('title','Chart')
+  expect(images[1]).toHaveAttribute('src','./chart.png')
+  expect(images[1]).toHaveAttribute('data-custom-image','yes')
+  expect(container).toHaveTextContent('Image unavailable: Missing')
+  expect(Image.mock.calls.every(([props])=>Boolean(props.src))).toBe(true)
+})
+
+it('leaves image syntax in code examples literal',()=>{
+  const syntax='![Packing Checklist](attachment://missing.png)'
+  const {container}=render(<PortalStreamingText instant>{'`'+syntax+'`\n\n```text\n'+syntax+'\n```'}</PortalStreamingText>)
+  expect(container.querySelector('p code')).toHaveTextContent(syntax)
+  expect(container.querySelector('pre code')).toHaveTextContent(syntax)
+  expect(container.textContent).not.toContain('Image unavailable')
+  expect(container.querySelector('img')).toBeNull()
+})
+
 const mediaReceipt=(digit='a')=>({schemaVersion:1,kind:'ods-pixel-workspace-artifact',relativePath:'report.csv',
   siteId:`site-${digit.repeat(24)}`,sha256:digit.repeat(64),file:{path:'report.csv',bytes:37,sha256:'c'.repeat(64)}})
 

@@ -151,13 +151,26 @@ OBSERVE_ELEMENT = "function(includeText, selectValue, fillValue, performFill, fo
 # say whether it hosts a closed shadow root that hides the real focus.
 FOCUSED_ELEMENT = "function() {\n" + DEEP_FOCUS + "  return focused();\n}"
 
+# Rendered [hidden] elements, and the first three by computed shape only: an
+# overlay that CSS shows covered a generated game's board (Workstation06,
+# 2026-10-27). Author text never leaves the page: a tag outside this list
+# reads "element", and no id, class or text is read.
 DIAGNOSTIC = r"""function() {
-  let count=0, untilFound=0;
+  const tags=new Set(['a','article','aside','button','canvas','dialog','div','fieldset','figure','footer','form','header','iframe','img','input','label','li','main','menu','nav','ol','p','section','select','span','table','textarea','ul','video']);
+  let count=0, untilFound=0; const shapes=[];
   for (const element of document.querySelectorAll('[hidden]')) {
     if(element.getAttribute('hidden')==='until-found') { untilFound++; continue; }
-    if(element.checkVisibility({checkOpacity:true,checkVisibilityCSS:true,contentVisibilityAuto:true}) && [...element.getClientRects()].some(r=>r.width>0 && r.height>0)) count++;
+    if(!element.checkVisibility({checkOpacity:true,checkVisibilityCSS:true,contentVisibilityAuto:true}) || ![...element.getClientRects()].some(r=>r.width>0 && r.height>0)) continue;
+    count++;
+    if(shapes.length<3) {
+      const style=getComputedStyle(element), box=element.getBoundingClientRect(), z=Number.parseInt(style.zIndex,10);
+      const width=Math.max(0,Math.min(innerWidth,box.right)-Math.max(0,box.left)), height=Math.max(0,Math.min(innerHeight,box.bottom)-Math.max(0,box.top));
+      shapes.push({tag:tags.has(element.localName)?element.localName:'element', position:style.position,
+        zIndex:Number.isSafeInteger(z)?z:null,
+        viewportPercent:innerWidth*innerHeight?Math.min(100,Math.round(100*width*height/(innerWidth*innerHeight))):0});
+    }
   }
-  return {renderedHiddenAttributeCount:count, hiddenUntilFoundCount:untilFound};
+  return {renderedHiddenAttributeCount:count, hiddenUntilFoundCount:untilFound, ...(shapes.length?{renderedHidden:shapes}:{})};
 }"""
 
 # Catch only the browser's selector-parser failure in the isolated world. Do
@@ -970,12 +983,18 @@ def capture_screenshot(cdp, page, request, started):
     return omitted_screenshot("too_large")
 
 
-def wrapper_document(prefix):
+def entry_path(prefix, request):
+    """URL path of the page an inspection starts on: the site entry, or the
+    requested page, which validate_bundle bound to a file of this snapshot."""
+    return prefix + urllib.parse.quote(request.get("page", ""))
+
+
+def wrapper_document(entry):
     # Fixed and script-free: page script exceptions therefore come only from
     # the sandboxed preview frame or a frame the preview itself created.
     return (
         f"<!doctype html><style>html,body{{margin:0;height:100%;overflow:hidden}}iframe{{border:0;width:100%;height:100%}}</style>"
-        f'<iframe name="inspection" sandbox="{SANDBOX}" src="{prefix}"></iframe>'
+        f'<iframe name="inspection" sandbox="{SANDBOX}" src="{entry}"></iframe>'
     ).encode()
 
 
@@ -1096,10 +1115,11 @@ def snapshot_file(path, prefix, files):
     return name if name in files else None
 
 
-def guard_requests(context, page, origin, prefix, blocked, download=None, download_urls=(), *, files=()):
+def guard_requests(context, page, origin, prefix, blocked, download=None, download_urls=(), *, files=(), entry):
     """Allow only GETs of the wrapper and this site's files from the loopback
-    server, and at most the wrapper and site-entry navigations. Everything
-    else, popups, downloads and websockets are recorded (bounded) and stopped."""
+    server, and at most the wrapper and entry navigations; `entry` is the URL
+    path of the page the wrapper frames (entry_path). Everything else, popups,
+    downloads and websockets are recorded (bounded) and stopped."""
     navigation_count = 0
 
     def route_handler(route):
@@ -1120,7 +1140,7 @@ def guard_requests(context, page, origin, prefix, blocked, download=None, downlo
             navigation_count += 1
             safe = (
                 safe
-                and ((navigation_count <= 2 and req.url in (origin + "/__ods_inspection__.html", origin + prefix))
+                and ((navigation_count <= 2 and req.url in (origin + "/__ods_inspection__.html", origin + entry))
                      or (download is not None and download.active and req.method == 'GET' and req.url == download.url))
             )
         if safe:
@@ -1167,8 +1187,9 @@ def guard_requests(context, page, origin, prefix, blocked, download=None, downlo
     )
 
 
-def capture_palette(browser, origin, prefix, files=()):
-    """Rendered colors of a fresh load at the fixed desktop viewport, or None.
+def capture_palette(browser, origin, prefix, files=(), *, entry):
+    """Rendered colors of a fresh load of the inspected page (`entry`) at the
+    fixed desktop viewport, or None.
 
     Its own context: the step context and its page-error listener never see
     this load, and a request blocked here voids only the palette."""
@@ -1182,14 +1203,14 @@ def capture_palette(browser, origin, prefix, files=()):
     try:
         page = context.new_page()
         page.set_default_timeout(PALETTE_TIMEOUT_MS)
-        guard_requests(context, page, origin, prefix, blocked, files=files)
+        guard_requests(context, page, origin, prefix, blocked, files=files, entry=entry)
         page.goto(
             origin + "/__ods_inspection__.html",
             wait_until="load",
             timeout=PALETTE_TIMEOUT_MS,
         )
         frame = page.frame(name="inspection")
-        if frame is None or frame.url != origin + prefix:
+        if frame is None or frame.url != origin + entry:
             return None
         page.wait_for_timeout(PALETTE_SETTLE_MS)
         image = page.screenshot(type="png", scale="device", timeout=PALETTE_TIMEOUT_MS)
@@ -1230,6 +1251,7 @@ def run_browser(bundle, playwright_factory=None):
     started = time.monotonic()
     request, files = validate_bundle(bundle)
     prefix = "/" + request["siteId"] + "/"
+    entry = entry_path(prefix, request)
     blocked = []
     page_errors = PageErrors()
 
@@ -1243,7 +1265,7 @@ def run_browser(bundle, playwright_factory=None):
             path = urllib.parse.urlsplit(self.path).path
             name = ''
             if path == "/__ods_inspection__.html":
-                body = wrapper_document(prefix)
+                body = wrapper_document(entry)
                 mime = "text/html"
             elif (name := snapshot_file(path, prefix, files)) is not None:
                 body = files[name]
@@ -1314,7 +1336,7 @@ def run_browser(bundle, playwright_factory=None):
             page.set_default_timeout(2000)
             download = SnapshotDownload(browser, context, page, blocked) if request['steps'][-1]['action'] == 'download' else None
             download_urls = {origin + prefix + name for name in files if name.lower().endswith(('.pdf', '.zip'))}
-            guard_requests(context, page, origin, prefix, blocked, download, download_urls, files=files)
+            guard_requests(context, page, origin, prefix, blocked, download, download_urls, files=files, entry=entry)
             # Registered before navigation so startup exceptions are included.
             # Page-scoped (not context-wide): blocked popups are never recorded.
             page.on("pageerror", page_errors.record)
@@ -1324,7 +1346,7 @@ def run_browser(bundle, playwright_factory=None):
             if blocked:
                 raise BlockedRequest()
             frame = page.frame(name="inspection")
-            if frame is None or frame.url != origin + prefix:
+            if frame is None or frame.url != origin + entry:
                 raise Invalid("preview frame unavailable")
             # Isolated world prevents author JS overriding querySelector,
             # getComputedStyle, checkVisibility, or receipt construction.
@@ -1749,6 +1771,9 @@ def run_browser(bundle, playwright_factory=None):
                 "siteId": request["siteId"],
                 "sha256": request["sha256"],
                 "planSha256": plan_hash(request),
+                # A page plan's receipt names its page; the entry page's never
+                # carries one, as before.
+                **({"page": request["page"]} if "page" in request else {}),
                 "viewport": request["viewport"],
                 "steps": results,
                 "diagnostics": diagnostics,
@@ -1762,7 +1787,7 @@ def run_browser(bundle, playwright_factory=None):
             palette = None
             if time.monotonic() - started < PALETTE_START_BUDGET_S:
                 try:
-                    palette = capture_palette(browser, origin, prefix, files)
+                    palette = capture_palette(browser, origin, prefix, files, entry=entry)
                 except Exception:
                     pass
             if palette:

@@ -4,13 +4,12 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import shlex
 import stat
 import subprocess
 import time
-
+from pathlib import Path
 
 FILES = {
     "/opt/hermes/cli-config.yaml.example": "extensions/services/hermes/cli-config.yaml.template",
@@ -22,6 +21,7 @@ MAX_BYTES = 1024 * 1024
 DESKTOP_FILE_SOURCE = re.compile(
     r"/run/desktop/mnt/host/wsl/docker-desktop-bind-mounts/[A-Za-z0-9_.-]{1,128}/[a-f0-9]{64}"
 )
+DESKTOP_VISIBLE_ROOT = Path("/mnt/wsl/docker-desktop-bind-mounts")
 # Hash inside the container: never return credential-bearing file contents.
 CONTAINER_DIGESTS = """import hashlib,json,os,stat,sys
 result={}
@@ -55,6 +55,26 @@ def execute(argv, cwd, timeout=30):
     except (OSError, UnicodeError, subprocess.SubprocessError) as exc:
         # Docker/config errors may contain secrets. Keep them out of installer logs.
         raise Refused("Hermes mount verification command failed") from exc
+
+
+def desktop_data_source_matches(source, expected):
+    """Prove a Desktop directory proxy aliases this installation's live data."""
+    if not isinstance(source, str) or not DESKTOP_FILE_SOURCE.fullmatch(source):
+        return False
+    distro, digest = source.rsplit("/", 2)[1:]
+    if distro in {".", ".."}:
+        return False
+    visible = DESKTOP_VISIBLE_ROOT / distro / digest
+    try:
+        # Resolution alone follows links; equality rejects links in any ancestor.
+        if visible.resolve(strict=True) != visible or expected.resolve(strict=True) != expected:
+            return False
+        actual = os.stat(visible, follow_symlinks=False)
+        wanted = os.stat(expected, follow_symlinks=False)
+        return (stat.S_ISDIR(actual.st_mode) and stat.S_ISDIR(wanted.st_mode)
+                and (actual.st_dev, actual.st_ino) == (wanted.st_dev, wanted.st_ino))
+    except (OSError, RuntimeError):
+        return False
 
 
 def host_digests(root):
@@ -121,9 +141,11 @@ def refresh(root, docker, compose, run=execute):
             relative = "data/hermes" if destination == "/opt/data" else FILES[destination]
             source = mounts[0].get("Source")
             # Desktop substitutes individual WSL file binds with a proxy inode.
-            # Directory binds must still identify this installation's live data.
+            # Desktop can proxy directories too; require filesystem identity
+            # with this installation's live data, never merely a matching prefix.
             if source != str(root / relative) and not (
-                    destination in FILES and isinstance(source, str) and DESKTOP_FILE_SOURCE.fullmatch(source)):
+                    destination in FILES and isinstance(source, str) and DESKTOP_FILE_SOURCE.fullmatch(source)) and not (
+                    destination == "/opt/data" and desktop_data_source_matches(source, root / relative)):
                 raise Refused("Hermes running mount has an unexplained source")
         return item
 

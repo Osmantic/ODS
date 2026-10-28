@@ -574,7 +574,7 @@ class SnapshotAssetGuardTests(unittest.TestCase):
         origin = 'http://127.0.0.1:4321'
         prefix = '/site-' + 'a' * 24 + '/'
         blocked = []
-        capsule.guard_requests(context, context, origin, prefix, blocked, files=files)
+        capsule.guard_requests(context, context, origin, prefix, blocked, files=files, entry=prefix)
         for path, method, nav, expected in [
             ('/_next/app/%5Bslug%5D/page.js', 'GET', False, 'continued'),
             ('/_next/app/%5Bslug%5D/page.js', 'POST', False, 'aborted'),
@@ -1522,6 +1522,19 @@ class BrowserTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed", result)
         self.assertEqual(result["steps"][-1]["errorCode"], "visibility_mismatch")
         self.assertFalse(result["steps"][-1]["before"]["visible"])
+
+    def test_hidden_overlay_is_described_by_shape_and_blocks_a_click(self):
+        # Workstation06 (2026-10-27): a generated game's win overlay carried the
+        # hidden attribute, but its CSS display showed it over the whole board.
+        html = ('<style>.overlay{position:fixed;inset:0;display:flex;z-index:10;background:#000c}</style>'
+                '<div hidden class="overlay" id="win-overlay"><p>You win</p></div><button id="go">Go</button>')
+        result = self.check(html, [step("click", "#go")])
+        self.assertEqual(result["status"], "failed", result)
+        self.assertEqual(result["steps"][0]["errorCode"], "click_failed")
+        self.assertEqual(result["diagnostics"]["renderedHiddenAttributeCount"], 1)
+        # Computed shape only: the id and class names never leave the page.
+        self.assertEqual(result["diagnostics"]["renderedHidden"],
+                         [{"tag": "div", "position": "fixed", "zIndex": 10, "viewportPercent": 100}])
 
     def test_hidden_flex(self):
         html = '<style>.card{display:flex}</style><article hidden class="card" id="item">Sold out</article>'

@@ -23,6 +23,7 @@ import {createChatHistoryLedger,HistoryError} from './chat_history_ledger.mjs';
 import {createChatImageStore,createChatImageReadHandler,ChatImageError} from './chat_image_store.mjs';
 import {currentImageNote,decodeChatImageTurn,nativeHistoryMessages,validateImageRoute} from './chat_image_transport.mjs';
 import {handleAccessMode, handleSchedules, handleConnections, handleModelControl, publicModelControl, readAccessOwnerKey, requestAccessController} from './access_mode_relay.mjs';
+import {ownerForbidsTools} from './owner_tool_policy.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -168,6 +169,8 @@ const ALLOWED_SERVICES = new Set([
   "dashboard-api",
   "ods-llama-server",
   "llama-server",
+  "ods-vllm-server",
+  "vllm-server",
   "ods-searxng",
   "searxng",
   "ods-langfuse",
@@ -636,6 +639,16 @@ function readBody(req, limit) {
 // Allowlisted request construction.
 // ---------------------------------------------------------------------------
 
+// Latest current user message raw text, restricted to type:text parts. Never
+// inspects images, system/assistant/tool messages, or older user turns.
+function userTextParts(message) {
+  const content = message?.content;
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content.filter(part => part?.type === 'text' && typeof part.text === 'string')
+    .map(part => part.text).join('\n');
+}
+
 export function buildOutgoing(parsed, sessionUser) {
   const out = { model: "openclaw/default" };
   for (const key of Object.keys(ALLOWED_FIELDS)) {
@@ -647,6 +660,16 @@ export function buildOutgoing(parsed, sessionUser) {
     out[key] = v;
   }
   if (sessionUser) out.user = sessionUser;
+  // An explicit owner no-tools directive in the latest current user message
+  // forces tool_choice:'none' and tools:[] for this attempt only. This is a
+  // restrictive hint for any authenticated gateway client; it grants no
+  // authority and is never persisted to history or config. A tool-result
+  // continuation (latest message not user) never infers from earlier turns.
+  const latest = Array.isArray(parsed.messages) ? parsed.messages[parsed.messages.length - 1] : undefined;
+  if (latest && latest.role === 'user' && ownerForbidsTools(userTextParts(latest))) {
+    out.tool_choice = 'none';
+    out.tools = [];
+  }
   return out;
 }
 
@@ -1765,6 +1788,46 @@ export async function dockerRuntime(deps = defaultDeps) {
   return { model, context_length: contextLength };
 }
 
+function commandFlag(command, flag) {
+  const index = command.indexOf(flag);
+  if (index >= 0) return command[index + 1];
+  const joined = command.find((item) => item.startsWith(`${flag}=`));
+  return joined === undefined ? undefined : joined.slice(flag.length + 1);
+}
+
+// LLM_BACKEND=vllm: ods-vllm-server serves --served-model-name with the
+// context its --max-model-len (catalog VLLM_ARGS) fixes; there is no
+// ods-llama-server, or only one an earlier install left stopped.
+export async function dockerVllmRuntime(deps = defaultDeps) {
+  const { stdout } = await execFilePromise(
+    deps.execFile,
+    "docker",
+    ["inspect", "ods-vllm-server", "--format", "{{json .Config.Cmd}}"],
+    { timeout: DOCKER_TIMEOUT_MS, maxBuffer: 64 * 1024, windowsHide: true }
+  );
+  let command;
+  try {
+    command = JSON.parse(String(stdout || ""));
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(command) || !command.every((item) => typeof item === "string")) {
+    return null;
+  }
+  const model = commandFlag(command, "--served-model-name");
+  const contextLength = Number(commandFlag(command, "--max-model-len"));
+  if (
+    typeof model !== "string" ||
+    !MODEL_NAME_RE.test(model) ||
+    !Number.isInteger(contextLength) ||
+    contextLength < 4096 ||
+    contextLength > 10_000_000
+  ) {
+    return null;
+  }
+  return { model, context_length: contextLength };
+}
+
 export async function dockerRouterRuntime(deps = defaultDeps) {
   const { stdout } = await execFilePromise(
     deps.execFile,
@@ -1863,7 +1926,9 @@ export async function writeStatus(
   // to label that provider with an unrelated local llama model.
   if (configuredRuntime === undefined && runtime === null && docker === "ok") {
     try {
-      runtime = await dockerRuntime(deps);
+      runtime = apps.some(({ name }) => name === "ods-vllm-server")
+        ? await dockerVllmRuntime(deps)
+        : await dockerRuntime(deps);
     } catch {
       runtime = null;
     }
@@ -2220,7 +2285,17 @@ async function handleChat(req, res, token, gatewayPort, deps, historyLedger, his
     const native=await nativeContextRequest('context',{user},token,gatewayPort,deps);
     const hasImages=parsed.history_snapshot?.messages?.some(message=>message?.images?.length);
     if(hasImages) validateImageRoute(parsed.image_route,native.model);
-    prepared=historyLedger.prepare(user,parsed.request_id,parsed.history_snapshot,native);
+    // The native transcript holds the model's draft, which can differ from
+    // Portal's verified delivery. Derive this only from the host-owned receipt,
+    // never from a caller's assistant history or a supplied verification field.
+    const prior=historyLedger.read(user), priorResult=prior?.lastResult;
+    let deliveryCorrection=null;
+    if(priorResult?.requestId===prior?.requestId && priorResult?.revision===prior?.revision && priorResult?.verification) {
+      const delivered=applyVerificationToCompletion(priorResult.completion,priorResult.verification)?.choices?.[0]?.message?.content;
+      const draft=priorResult.completion?.choices?.[0]?.message?.content;
+      if(typeof delivered==='string' && delivered!==draft) deliveryCorrection={requestId:priorResult.requestId,text:delivered};
+    }
+    prepared=historyLedger.prepare(user,parsed.request_id,parsed.history_snapshot,native,deliveryCorrection);
     if(hasImages) {
       const binding=await nativeContextRequest('images-bind',{user},token,gatewayPort,deps);
       if(binding?.schemaVersion!==1 || binding.bound!==true)throw new HistoryError('image-custody-unavailable',503);
@@ -2250,9 +2325,18 @@ async function handleChat(req, res, token, gatewayPort, deps, historyLedger, his
     await forwardChat(res,outgoing,token,gatewayPort,deps,{
       onController:controller=>historyAborters?.set(user,{requestId:parsed.request_id,controller}),
       beforeRequest:async signal=>{
-        if(!prepared.hydrate) return;
-        const seeded=await nativeContextRequest('history',{user,request_id:parsed.request_id,messages:nativeHistoryMessages(prepared.archive)},token,gatewayPort,deps,signal,30000);
+        if(!prepared.hydrate && !prepared.deliveryCorrection) return;
+        const reference=prepared.hydrate?nativeHistoryMessages(prepared.archive):[];
+        if(prepared.deliveryCorrection) reference.push({role:'assistant',content:
+          `Portal delivery record for completed request ${prepared.deliveryCorrection.requestId}. `+
+          'The reply below was shown to the owner instead of the model draft. That draft is superseded; existing tool receipts remain unchanged. '+
+          'This historical record is not a new request, authorization, or proof that an action succeeded.\n'+
+          JSON.stringify({reply:prepared.deliveryCorrection.text})});
+        // The existing hydrator appends inert, idempotent reference data. It
+        // neither rewrites the native transcript nor executes the prior task.
+        const seeded=await nativeContextRequest('history',{user,request_id:parsed.request_id,messages:reference},token,gatewayPort,deps,signal,30000);
         if(seeded?.hydrated!==true) throw new HistoryError('history-preparation-failed',503);
+        if(!prepared.hydrate) return;
         const request_id=`history-${createHash('sha256').update(`${parsed.request_id}:${prepared.state.revision}`).digest('hex')}`;
         let state=await nativeContextRequest('compact',{user,request_id},token,gatewayPort,deps,signal);
         while(state.compaction?.requestId===request_id && state.compaction.status==='running') {

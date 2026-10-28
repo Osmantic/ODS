@@ -38,6 +38,8 @@ OWNER_TIMEOUT = 300
 OWNER_EXIT_TIMEOUT = 5
 OWNER_TERMINATE_TIMEOUT = 10
 MODEL_DRAIN_TIMEOUT = 1800
+SOURCE_LOCK_WAIT_SECONDS = 120
+LOCK_WAIT_POLL_SECONDS = 0.25
 _DEADLINE = contextvars.ContextVar("pixel_access_operation_deadline", default=None)
 _INSTALLER_ACCESS_REPROOF = contextvars.ContextVar("pixel_installer_access_reproof", default=False)
 
@@ -914,7 +916,7 @@ class SystemdAccessBridge:
         return private_json(file, 0, 8192) if file.exists() else None
 
     @contextlib.contextmanager
-    def locked(self):
+    def locked(self, *, wait_seconds=0):
         import fcntl
         self.state.mkdir(mode=0o700, parents=False, exist_ok=True)
         info = self.state.lstat()
@@ -924,8 +926,22 @@ class SystemdAccessBridge:
             info = os.fstat(fd)
             if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_nlink != 1 or info.st_mode & 0o077:
                 raise AccessError("unsafe-host-lock")
-            try: fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError: raise AccessError("transition-busy") from None
+            deadline = time.monotonic() + remaining(wait_seconds) if wait_seconds > 0 else None
+            # Wait only before entering the protected operation. Never retry
+            # its body or resubmit a request after an ambiguous response.
+            while True:
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise AccessError("transition-busy")
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if deadline is None:
+                        raise AccessError("transition-busy") from None
+                    delay = deadline - time.monotonic()
+                    if delay <= 0:
+                        raise AccessError("transition-busy") from None
+                    time.sleep(min(LOCK_WAIT_POLL_SECONDS, delay))
             yield
         finally: os.close(fd)
 
@@ -1183,7 +1199,11 @@ class SystemdAccessBridge:
         return value
 
     def model_begin(self, *, installer_source=False):
-        with self.bounded(MODEL_DRAIN_TIMEOUT + 30), self.locked():
+        # Settings/provider status reads also hold this lock. A root installer
+        # may wait for that contention; normal model changes remain immediate.
+        source_wait = installer_source and platform.system() == "Linux"
+        with self.bounded(MODEL_DRAIN_TIMEOUT + 30), (
+                self.locked(wait_seconds=SOURCE_LOCK_WAIT_SECONDS) if source_wait else self.locked()):
             if self.pending() is not None:
                 if installer_source:
                     return self.resume_source_begin()

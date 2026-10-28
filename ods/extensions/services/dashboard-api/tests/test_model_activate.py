@@ -6,7 +6,9 @@ import importlib.util
 import http.client
 import io
 import json
+import os
 import shutil
+import stat
 import struct
 import subprocess
 import sys
@@ -2160,6 +2162,8 @@ class TestRecreateLlamaServerFromInspect:
             "--runtime", "nvidia",
         ]
         assert "NVIDIA_VISIBLE_DEVICES=GPU-ti-0,GPU-1080,GPU-ti-2" in argv
+        # With --gpus all only CUDA's own variable limits llama.cpp to these GPUs.
+        assert "CUDA_VISIBLE_DEVICES=GPU-ti-0,GPU-1080,GPU-ti-2" in argv
         assert "LLAMA_ARG_SPLIT_MODE=layer" in argv
         assert "LLAMA_ARG_TENSOR_SPLIT=" in argv
         assert "LLAMA_ARG_TENSOR_SPLIT=0.5789,0.4211" not in argv
@@ -2274,6 +2278,31 @@ class TestLaunchNativeLlamaServer:
         assert "--reasoning-format" in cmd
         assert "deepseek" in cmd
         assert _kwargs["cwd"] == str(tmp_path)
+
+    # llama-server only accepts lowercase; "OFF" used to reach it verbatim
+    # and stop it from starting. A non-mode value still passes through.
+    @pytest.mark.parametrize("value, expected", [
+        ("OFF", "none"), ("Off", "none"), ("ON", "deepseek"), ("AUTO", "auto"), ("deepseek", "deepseek"),
+    ])
+    def test_reasoning_mode_is_case_insensitive(self, monkeypatch, tmp_path, value, expected):
+        env_path = tmp_path / ".env"
+        env_path.write_text(f"GGUF_FILE=test-model.gguf\nLLAMA_REASONING={value}\n", encoding="utf-8")
+        (tmp_path / "data" / "models").mkdir(parents=True)
+        llama_bin = tmp_path / "llama-server"
+        llama_bin.write_text("", encoding="utf-8")
+        calls = []
+
+        class _FakeProc:
+            pid = 4321
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kwargs: calls.append(cmd) or _FakeProc())
+
+        _launch_native_llama_server(env_path, llama_bin, tmp_path / "llama.log", tmp_path / "llama.pid")
+
+        cmd = calls[0]
+        assert cmd[cmd.index("--reasoning-format") + 1] == expected
 
     # Windows launches through ods.ps1 native-llm-restart, which binds loopback.
     @pytest.mark.parametrize('system', ['Darwin', 'Linux'])
@@ -6927,6 +6956,80 @@ class TestModelActivateRollback:
         assert handler.response_code == 500
         assert "OpenCode config is malformed" in handler.parse_response()["error"]
         assert env_path.read_text(encoding="utf-8") == env_text
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX receipt permissions")
+    @pytest.mark.parametrize("existing_receipt", [False, True])
+    def test_activation_receipt_is_readable_across_runtime_users(
+        self, tmp_path, monkeypatch, existing_receipt,
+    ):
+        install_dir, env_path, *_ = _write_model_activation_fixture(tmp_path)
+        receipt_path = install_dir / "data" / "model-activation-receipt.json"
+        receipt_path.parent.mkdir(exist_ok=True)
+        if existing_receipt:
+            receipt_path.write_text('{"status":"old"}', encoding="utf-8")
+            receipt_path.chmod(0o600)
+        env_path.chmod(0o600)
+        private_path = install_dir / "data" / "private-test.json"
+        _mod._atomic_write_json(private_path, {"secret": "fixture-only"})
+        private_before = private_path.read_bytes()
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "_compose_restart_llama_server", lambda _env: None)
+        monkeypatch.setattr(_mod, "_wait_for_model_readiness", _mock_verified_readiness)
+        handler = _ResponseHandler()
+        previous_umask = os.umask(0o077)
+        try:
+            _mod.AgentHandler._do_model_activate(handler, "target-model")
+        finally:
+            os.umask(previous_umask)
+
+        assert handler.response_code == 200, handler.parse_response()
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        assert receipt["status"] == "complete"
+        assert receipt["contextVerified"] is True
+        assert receipt["modelId"] == "target-model"
+        assert stat.S_IMODE(receipt_path.stat().st_mode) == 0o644
+        assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(private_path.stat().st_mode) == 0o600
+        assert private_path.read_bytes() == private_before
+        assert set(receipt) <= {
+            "schema", "status", "modelId", "llmModel", "ggufFile",
+            "runtimeModelId", "contextLength", "contextVerified",
+            "gpuAssignment", "consumers", "verifiedAt", "modelTransactionId",
+        }
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX receipt permissions")
+    @pytest.mark.parametrize("previous_mode", [0o600, 0o644])
+    def test_activation_receipt_rollback_preserves_prior_custody(
+        self, tmp_path, monkeypatch, previous_mode,
+    ):
+        install_dir, _, *_ = _write_model_activation_fixture(tmp_path)
+        receipt_path = install_dir / "data" / "model-activation-receipt.json"
+        receipt_path.parent.mkdir(exist_ok=True)
+        receipt_path.write_text('{"status":"old"}', encoding="utf-8")
+        receipt_path.chmod(previous_mode)
+        previous = receipt_path.stat()
+        original_write = _mod._atomic_write_json
+
+        def fail_after_receipt_write(path, value, *args, **kwargs):
+            original_write(path, value, *args, **kwargs)
+            if path == receipt_path:
+                assert stat.S_IMODE(path.stat().st_mode) == 0o644
+                raise OSError("injected fault after receipt replacement")
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "_compose_restart_llama_server", lambda _env: None)
+        monkeypatch.setattr(_mod, "_wait_for_model_readiness", _mock_verified_readiness)
+        monkeypatch.setattr(_mod, "_atomic_write_json", fail_after_receipt_write)
+        handler = _ResponseHandler()
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+
+        assert handler.response_code == 500
+        assert handler.parse_response()["rolled_back"] is True
+        assert receipt_path.read_text(encoding="utf-8") == '{"status":"old"}'
+        after = receipt_path.stat()
+        assert (after.st_mode, after.st_uid, after.st_gid) == (
+            previous.st_mode, previous.st_uid, previous.st_gid,
+        )
 
     def test_cli_activation_metadata_persists_tier_and_bounded_context(
         self, tmp_path, monkeypatch,

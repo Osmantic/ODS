@@ -164,6 +164,19 @@ while [[ $# -gt 0 ]]; do
         --all)           ALL_FEATURES=true; shift ;;
         --cloud)         CLOUD_MODE=true; shift ;;
         --no-bootstrap)  NO_BOOTSTRAP=true; shift ;;
+        # The vLLM engine needs Linux and an NVIDIA datacenter GPU. macOS
+        # always runs llama.cpp, so llama-server is accepted and changes
+        # nothing (get-ods.sh passes the same options to every installer).
+        --llm-backend)
+            case "${2:-}" in
+                llama-server) shift 2 ;;
+                vllm)
+                    echo "--llm-backend vllm needs Linux with an NVIDIA GPU; macOS runs llama.cpp. Nothing was changed." >&2
+                    echo "Rerun without --llm-backend, or with --llm-backend llama-server." >&2
+                    echo "Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC" >&2
+                    exit 1 ;;
+                *) echo "--llm-backend requires vllm or llama-server" >&2; exit 1 ;;
+            esac ;;
         # API mode is not in this installer yet; say so and name the way
         # to connect an API after installing, not "Unknown option".
         --external-llm-url|--external-llm-provider|--external-llm-model|--external-llm-key-file|--external-llm-key-env|--no-external-llm|--reuse-external-llm)
@@ -2379,6 +2392,10 @@ else
         # from consuming the entire token budget on internal reasoning)
         _reasoning=$(grep '^LLAMA_REASONING=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 || echo "")
         [[ -z "$_reasoning" ]] && _reasoning="off"
+        # Modes are case-insensitive, as in ods-host-agent.py; llama-server
+        # only accepts the lowercase spelling.
+        _reasoning_lower="$(printf '%s' "$_reasoning" | tr '[:upper:]' '[:lower:]')"
+        case "$_reasoning_lower" in off|on|auto) _reasoning="$_reasoning_lower" ;; esac
         # Map .env values (off/on/auto) to llama-server --reasoning-format values
         case "$_reasoning" in
             off)  _reasoning_fmt="none" ;;
