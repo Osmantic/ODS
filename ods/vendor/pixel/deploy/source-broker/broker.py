@@ -1436,7 +1436,7 @@ def gmail_incremental_records(token: str, cached: dict[str, Any] | None, *, prog
         for item in items:
             message_id = item.get('id') if type(item) is dict else None
             if type(message_id) is not str or not GMAIL_SYNC_ID.fullmatch(message_id):
-                continue
+                raise SourceUnavailable('unknown', 'Gmail listing returned an invalid message identifier')
             if message_id not in ids:
                 folder['ids'].append(message_id)
                 ids.add(message_id)

@@ -232,6 +232,24 @@ class GmailIncrementalTests(unittest.TestCase):
         self.assertFalse(self.path.exists())
         self.assertFalse(self.cursor.exists())
 
+    def test_invalid_listing_id_aborts_the_batch_without_pruning_or_advancing_its_cursor(self):
+        mailbox = Mailbox(inbox=['preserved'])
+        self.finish(mailbox)
+        before_projection, before_cursor = self.path.read_bytes(), self.cursor.read_bytes()
+        original = mailbox.get
+
+        def malformed(base, path, token, params, **kwargs):
+            if path == '/messages' and params['q'] == 'in:inbox':
+                return {'messages': [{'id': 'new'}, {'id': None}]}
+            return original(base, path, token, params, **kwargs)
+
+        mailbox.get = malformed
+        with self.assertRaises(BROKER.SourceUnavailable):
+            self.batch(mailbox)
+        self.assertEqual(self.path.read_bytes(), before_projection)
+        self.assertEqual(self.cursor.read_bytes(), before_cursor)
+        self.assertEqual(json.loads(self.path.read_text())['records'][0]['id'], 'preserved')
+
 
 class IndependentRefreshTests(unittest.TestCase):
     def test_known_error_is_preserved_during_retry_until_a_source_actually_succeeds(self):
