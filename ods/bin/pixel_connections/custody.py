@@ -38,6 +38,8 @@ ERROR_CLASS = re.compile(r"^[a-z][a-z-]{1,40}$")
 # The broker key that lets queued private calendar changes run.
 DIRECT_FLAG = "PIXEL_CALENDAR_DIRECT_ENABLED"
 DRAFTS_FLAG = "PIXEL_LIMB_EMAIL_DRAFTS_ENABLED"
+PREAUTH_FLAGS = ("PIXEL_LIMB_EMAIL_ENABLED", DRAFTS_FLAG, "PIXEL_LIMB_CALENDAR_ENABLED",
+                 "PIXEL_LIMB_CALENDAR_WRITE_ENABLED", "PIXEL_LIMB_SOCIAL_ENABLED", DIRECT_FLAG)
 SCOPE = re.compile(r"^(?:https://www\.googleapis\.com/auth/[a-z0-9._-]{1,100}|https://mail\.google\.com/|openid|email|profile)$")
 EMAIL = re.compile(r"^[^@\s<>\x00-\x1f\x7f]{1,64}@[^@\s<>\x00-\x1f\x7f]{1,253}$")
 
@@ -158,6 +160,76 @@ def _install(path: Path, data: bytes, uid: int, gid: int, mode: int) -> None:
             os.unlink(temporary)
 
 
+def _existing_exchange_env(path: Path, broker_gid: int) -> bool:
+    """Preserve a protected existing connection; never follow or replace a link."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        if os.path.lexists(path):
+            raise CustodyError("source-broker-env-unsafe") from None
+        return False
+    except OSError:
+        raise CustodyError("source-broker-env-unsafe") from None
+    try:
+        info = os.fstat(descriptor)
+        mode = stat.S_IMODE(info.st_mode)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.geteuid()
+                or mode not in (0o400, 0o440, 0o600, 0o640) or info.st_size > 2 * 1024 * 1024
+                or mode & 0o040 and info.st_gid not in (0, broker_gid)):
+            raise CustodyError("source-broker-env-unsafe")
+    finally:
+        os.close(descriptor)
+    return True
+
+
+def _prepare_exchange_env(paths: Paths, template: bytes, broker_gid: int) -> None:
+    """Satisfy the exchange unit's mandatory EnvironmentFile, before consent.
+
+    No account or capability has been granted yet. Only an absent file is
+    created, from the protected kit with every source/action disabled. An
+    existing connection keeps its exact environment until exchange succeeds.
+    """
+    parent = paths.env.parent
+    info = parent.lstat()
+    if (parent.resolve() != parent or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid() or info.st_mode & 0o022):
+        raise CustodyError("source-broker-env-unsafe")
+    if _existing_exchange_env(paths.env, broker_gid):
+        return
+    try:
+        lines = parse_env(template.decode('utf-8'))
+    except UnicodeError:
+        raise CustodyError("source-broker-env-invalid") from None
+    present = {key for key, _value in lines}
+    lines.extend((key, '0') for key in PREAUTH_FLAGS if key not in present)
+    disabled = {key: '0' for key, _value in lines
+                if key in PREAUTH_FLAGS or key.startswith('PIXEL_LIMB_') and key.endswith('_ENABLED')}
+    data = env_text(lines, disabled).encode('utf-8')
+    descriptor, temporary = tempfile.mkstemp(prefix=f'.{paths.env.name}.', dir=parent)
+    try:
+        with os.fdopen(descriptor, 'wb') as handle:
+            handle.write(data)
+            handle.flush()
+            os.fchown(handle.fileno(), 0, broker_gid)
+            os.fchmod(handle.fileno(), 0o640)
+            os.fsync(handle.fileno())
+        try:
+            # Publish only when still absent. A concurrent root installer must
+            # never have its legitimate environment silently replaced.
+            os.link(temporary, paths.env, follow_symlinks=False)
+        except FileExistsError:
+            if not _existing_exchange_env(paths.env, broker_gid):
+                raise CustodyError("source-broker-env-unsafe") from None
+    finally:
+        if os.path.lexists(temporary):
+            os.unlink(temporary)
+    descriptor = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def prepare(paths: Paths, run: Run, *, reader: str) -> None:
     """Create the broker identity, its private directories and units; start nothing."""
     try:
@@ -169,6 +241,7 @@ def prepare(paths: Paths, run: Run, *, reader: str) -> None:
     if reader_uid == 0:
         raise CustodyError("source-broker-reader-unsafe")
     files = {name: _kit_bytes(paths, name) for name in KIT_FILES}
+    _prepare_exchange_env(paths, files['source-broker.env'], gid)
     _directory(paths.install, 0, 0, 0o755)
     _directory(paths.state, 0, 0, 0o755)
     _directory(paths.private, uid, gid, 0o700)

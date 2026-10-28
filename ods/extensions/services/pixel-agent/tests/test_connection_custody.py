@@ -11,6 +11,8 @@ if sys.platform == "win32":
 import json
 import os
 from pathlib import Path
+import stat
+import types
 
 import pytest
 
@@ -85,6 +87,104 @@ def test_prepare_never_lets_root_read_the_broker_projection(paths, monkeypatch):
     with pytest.raises(custody.CustodyError, match="source-broker-reader-unsafe"):
         custody.prepare(paths, lambda arguments, timeout: 0, reader="root")
     assert not paths.install.exists()
+
+
+@pytest.fixture
+def root_files(paths, monkeypatch):
+    """Simulate chown only; bytes, permissions and atomic publication are real."""
+    owned = []
+    monkeypatch.setattr(custody.os, 'chown', lambda *args, **kwargs: None)
+    monkeypatch.setattr(custody.os, 'fchown', lambda descriptor, uid, gid: owned.append((uid, gid)))
+    return paths, owned
+
+
+def test_prepare_installs_a_disabled_env_before_any_consent_or_exchange(root_files):
+    paths, owned = root_files
+    enabled = TEMPLATE.replace("='0'", "='1'") + "PIXEL_LIMB_WEB_ENABLED='1'\n"
+    (paths.kit / 'source-broker.env').write_text(enabled)
+    commands = []
+    custody.prepare(paths, lambda arguments, timeout: commands.append(arguments) or 0, reader='owner')
+    values = dict(custody.parse_env(paths.env.read_text()))
+    for key in (*custody.PREAUTH_FLAGS, 'PIXEL_LIMB_WEB_ENABLED'):
+        assert values[key] == '0'
+    assert values['PIXEL_SOURCE_LABEL'] == "Owner's calendar"
+    assert paths.env.stat().st_mode & 0o777 == 0o640
+    assert paths.env.stat().st_nlink == 1
+    assert (0, os.getgid()) in owned
+    assert commands == [['systemctl', 'daemon-reload']], 'Preparation must not start any source or action'
+    assert not paths.token.exists() and not list(paths.oauth.iterdir())
+    assert not list(paths.env.parent.glob(f'.{paths.env.name}.*'))
+
+
+@pytest.mark.parametrize('mode', [0o400, 0o440, 0o600, 0o640])
+def test_prepare_preserves_a_safe_existing_connection_environment(root_files, mode):
+    paths, _owned = root_files
+    original = TEMPLATE.replace("PIXEL_LIMB_EMAIL_ENABLED='0'", "PIXEL_LIMB_EMAIL_ENABLED='1'")
+    paths.env.write_text(original)
+    paths.env.chmod(mode)
+    before = paths.env.stat()
+    custody.prepare(paths, lambda arguments, timeout: 0, reader='owner')
+    assert paths.env.read_text() == original
+    after = paths.env.stat()
+    assert (after.st_ino, after.st_mtime_ns, stat.S_IMODE(after.st_mode)) == (
+        before.st_ino, before.st_mtime_ns, mode)
+
+
+@pytest.mark.parametrize('unsafe', ['symlink', 'dangling', 'hardlink', 'directory', 'fifo',
+                                   'writable', 'public', 'executable', 'owner', 'group'])
+def test_prepare_refuses_unsafe_env_before_installing_or_overwriting(root_files, monkeypatch, unsafe):
+    paths, _owned = root_files
+    outside = paths.state / 'preserved'
+    outside.write_text('preserved')
+    if unsafe == 'symlink': paths.env.symlink_to(outside)
+    elif unsafe == 'dangling': paths.env.symlink_to(paths.state / 'absent')
+    elif unsafe == 'hardlink': os.link(outside, paths.env)
+    elif unsafe == 'directory': paths.env.mkdir()
+    elif unsafe == 'fifo': os.mkfifo(paths.env, 0o600)
+    else:
+        paths.env.write_text(TEMPLATE)
+        paths.env.chmod({'writable': 0o660, 'public': 0o644, 'executable': 0o740}.get(unsafe, 0o640))
+        if unsafe in ('owner', 'group'):
+            fstat = custody.os.fstat
+
+            def changed(descriptor):
+                actual = fstat(descriptor)
+                return types.SimpleNamespace(st_mode=actual.st_mode, st_nlink=actual.st_nlink,
+                    st_uid=actual.st_uid + 1 if unsafe == 'owner' else actual.st_uid,
+                    st_gid=actual.st_gid + 10000 if unsafe == 'group' else actual.st_gid, st_size=actual.st_size)
+
+            monkeypatch.setattr(custody.os, 'fstat', changed)
+    commands = []
+    with pytest.raises(custody.CustodyError, match='source-broker-env-unsafe'):
+        custody.prepare(paths, lambda arguments, timeout: commands.append(arguments) or 0, reader='owner')
+    assert outside.read_text() == 'preserved'
+    assert not paths.install.exists() and not commands
+
+
+@pytest.mark.parametrize('racer', ['safe', 'symlink'])
+def test_initial_env_publication_never_replaces_a_concurrent_file(root_files, monkeypatch, racer):
+    paths, _owned = root_files
+    real_link = custody.os.link
+    outside = paths.state / 'preserved'
+    outside.write_text('preserved')
+
+    def race(source, destination, **kwargs):
+        if racer == 'safe':
+            paths.env.write_text("PIXEL_LIMB_EMAIL_ENABLED='1'\n")
+            paths.env.chmod(0o640)
+        else:
+            paths.env.symlink_to(outside)
+        return real_link(source, destination, **kwargs)
+
+    monkeypatch.setattr(custody.os, 'link', race)
+    if racer == 'safe':
+        custody.prepare(paths, lambda arguments, timeout: 0, reader='owner')
+        assert paths.env.read_text() == "PIXEL_LIMB_EMAIL_ENABLED='1'\n"
+    else:
+        with pytest.raises(custody.CustodyError, match='source-broker-env-unsafe'):
+            custody.prepare(paths, lambda arguments, timeout: 0, reader='owner')
+        assert paths.env.is_symlink() and outside.read_text() == 'preserved'
+    assert not list(paths.env.parent.glob(f'.{paths.env.name}.*'))
 
 
 def test_the_exchange_result_is_accepted_only_in_its_exact_shape(paths):
