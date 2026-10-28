@@ -50,7 +50,7 @@ os.environ.update(ODS_INSTALL_DIR=str(install), ODS_DATA_DIR=str(install / 'data
     ODS_EXTENSIONS_DIR=str(ROOT / 'extensions/services'), DASHBOARD_API_KEY=dashboard_key,
     ODS_AGENT_KEY=agent_key, ODS_MODE='local', ODS_AGENT_HOST='127.0.0.1', NO_COLOR='1',
     ODS_SESSION_SECRET=secrets.token_hex(32), SERVICE_HOST='127.0.0.1')
-operations = []
+operations: list[str] = []
 activation_done = threading.Event()
 native_worker = world.bridge.worker
 lose_exchange_once = scenario == 'lost-exchange'
@@ -139,7 +139,9 @@ spec = importlib.util.spec_from_file_location('native_http_host_agent', ROOT / '
 agent = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = agent
 spec.loader.exec_module(agent)
-agent.INSTALL_DIR, agent.DATA_DIR, agent.AGENT_API_KEY = install, install / 'data', agent_key
+setattr(agent, 'INSTALL_DIR', install)
+setattr(agent, 'DATA_DIR', install / 'data')
+setattr(agent, 'AGENT_API_KEY', agent_key)
 setup = install / 'data/config'
 setup.mkdir(parents=True, exist_ok=True)
 (setup / 'setup-complete.json').write_text(json.dumps({'completed': True, 'fixture': True}))

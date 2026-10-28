@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {randomBytes} from 'node:crypto';
 import {once} from 'node:events';
 import fs from 'node:fs/promises';
 import http from 'node:http';
@@ -24,7 +25,7 @@ test('reviewed app Node HTTP -> framed UDS preserves exact operations, long call
       });
     });
     root.listen(socketPath);await once(root,'listening');
-    const ownerKey='synthetic-private-owner-key-0123456789';
+    const ownerKey=randomBytes(32).toString('hex');
     const server=http.createServer((req,res)=>handleConnections(req,res,{ownerKey,
       request:(payload,{timeout})=>{budgets.push(timeout);return requestAccessController(payload,{socketPath,timeout});}}));
     server.listen(0,'127.0.0.1');await once(server,'listening');
