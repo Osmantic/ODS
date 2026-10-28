@@ -223,6 +223,18 @@ class Controller:
         if lifecycle and lifecycle['phase'] not in ('failed',):
             raise native.NativeError('connection-transition-in-progress')
 
+    def _fresh_source(self):
+        # Root's transition may be absent after Source has reserved its exact
+        # before-image. Fresh app mutations must respect that reservation too.
+        try:
+            from pixel_source_upgrade import guard_fresh_admission, UpgradeError
+        except ImportError:
+            raise native.NativeError('source-transition-unavailable') from None
+        try:
+            guard_fresh_admission(self.bridge)
+        except UpgradeError as error:
+            raise native.NativeError(str(error)) from None
+
     def _flow(self, flow_id):
         journal = self._read()
         if (type(flow_id) is not str or not oauth.FLOW_ID.fullmatch(flow_id)
@@ -399,14 +411,7 @@ class Controller:
                     raise native.NativeError('native-sign-in-in-progress')
                 # A source hold can survive bind() before Root transition.json
                 # exists. Admit no new app flow across that durable reservation.
-                try:
-                    from pixel_source_upgrade import guard_fresh_admission, UpgradeError
-                except ImportError:
-                    raise native.NativeError('source-transition-unavailable') from None
-                try:
-                    guard_fresh_admission(self.bridge)
-                except UpgradeError as error:
-                    raise native.NativeError(str(error)) from None
+                self._fresh_source()
                 record = c._record()
                 config = self._config()[0]
                 if (state.native_app_choices(record).get(self.app) is True
@@ -567,6 +572,23 @@ class Controller:
             self.bridge.discover()
             self._other_transitions()
             journal = self._read()
+            if journal is None or journal['intent'] != 'withdraw' or journal['phase'] not in ('withdrawing', 'forgetting'):
+                self._fresh_source()
+            if journal is not None and journal['phase'] == 'disconnected':
+                # A completed withdrawal is not a resumable plan. Other
+                # admitted writers may have changed its old before-images.
+                # Re-prove an unchanged disabled choice without reopening it;
+                # a later explicit grant instead needs a fresh withdrawal.
+                config, config_sha = self._config()
+                protected = state.native_app_choices(c._record()).get(self.app)
+                configured = apps.configured_choices(config).get(self.app)
+                if protected is False and configured is False:
+                    native._verified_runtime(self.bridge, {'configSha256': config_sha})
+                    return self._public(journal)
+                if protected is not True or configured is not True:
+                    raise native.NativeError('native-app-state-changed')
+                journal = dict(journal, intent='withdraw', phase='withdrawing',
+                    step=self._plan('withdraw'), stable=None, proof=None, error=None)
             if journal is None:
                 saved = self.consent._read()
                 if saved and saved['phase'] not in ('failed', 'cancelled', 'settled'):
