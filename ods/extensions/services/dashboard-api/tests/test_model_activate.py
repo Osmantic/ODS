@@ -4913,6 +4913,60 @@ class TestModelActivateRollback:
         assert env_path.read_text(encoding="utf-8") == original_env
         assert _mod.load_env(env_path)["GPU_ASSIGNMENT_JSON_B64"] == original_assignment
 
+    def test_a_consolidating_switch_commits_one_gpu_and_its_receipt(self, tmp_path, monkeypatch):
+        install_dir, env_path, _assignment, restart_envs = _davep_switch_to_a_small_model(
+            tmp_path, monkeypatch, _mock_verified_readiness)
+        handler = _ResponseHandler()
+
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+
+        assert handler.response_code == 200, handler.parse_response()
+        assert handler.parse_response()["gpu_assignment_changed"] is True
+        assert [env["LLAMA_SERVER_GPU_UUIDS"] for env in restart_envs] == ["GPU-ti-0"]
+        persisted = _mod.load_env(env_path)
+        assert persisted["LLAMA_SERVER_GPU_UUIDS"] == "GPU-ti-0"
+        assert persisted["LLAMA_SERVER_GPU_INDICES"] == "0"
+        assert persisted["LLAMA_ARG_SPLIT_MODE"] == "none"
+        assert persisted["LLAMA_ARG_TENSOR_SPLIT"] == ""
+        merged = _mod._decode_gpu_assignment(persisted["GPU_ASSIGNMENT_JSON_B64"])["gpu_assignment"]
+        assert merged["services"]["llama_server"]["gpus"] == ["GPU-ti-0"]
+        assert _services_gpus(merged) == {name: ["GPU-ti-2"] for name in _AUX_SERVICES}
+        receipt = json.loads((install_dir / "data" / "model-activation-receipt.json").read_text(encoding="utf-8"))
+        assert receipt["gpuAssignment"] == {
+            "changed": True,
+            "previousGpus": ["GPU-ti-0", "GPU-1080"],
+            "activeGpus": ["GPU-ti-0"],
+            "requiredMiB": 6144,
+            "assignedMiB": 11264,
+            "splitMode": "none",
+            "tensorSplit": [],
+        }
+
+    def test_a_failed_consolidating_switch_restores_the_split(self, tmp_path, monkeypatch):
+        def readiness(env, *_args, **kwargs):
+            if env.get("GGUF_FILE") == "new-model.gguf":
+                return None if (kwargs.get("return_identity") or kwargs.get("return_proof")) else False
+            return _mock_verified_readiness(*_args, **kwargs)
+
+        _install_dir, env_path, original_assignment, restart_envs = _davep_switch_to_a_small_model(
+            tmp_path, monkeypatch, readiness)
+        original_env = env_path.read_text(encoding="utf-8")
+        handler = _ResponseHandler()
+
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+
+        assert handler.response_code == 500
+        assert handler.parse_response()["rolled_back"] is True
+        assert [
+            (env["GGUF_FILE"], env["LLAMA_SERVER_GPU_UUIDS"], env["LLAMA_ARG_SPLIT_MODE"])
+            for env in restart_envs
+        ] == [
+            ("new-model.gguf", "GPU-ti-0", "none"),
+            ("old-model.gguf", "GPU-ti-0,GPU-1080", "layer"),
+        ]
+        assert env_path.read_text(encoding="utf-8") == original_env
+        assert _mod.load_env(env_path)["GPU_ASSIGNMENT_JSON_B64"] == original_assignment
+
     def test_larger_model_replans_and_commits_amd_rocm_assignment(
         self,
         tmp_path,
@@ -9443,76 +9497,6 @@ class TestPixelVisionReadback:
         assert state["contract"]["imageInput"] == "unknown" and state["pending"] is False
 
 
-def test_an_expansion_moves_a_model_that_fits_the_largest_gpu_there_alone(tmp_path, monkeypatch):
-    # Owner rule (2026-10-27): a model that fits the largest GPU runs there
-    # unsplit. A switch to a model too big for the current GPU moves it to the
-    # largest GPU when that GPU holds it, instead of splitting it across GPUs
-    # (which the planner's link ranking alone would do: a PHB pair outranks
-    # any single GPU).
-    _native_nvidia_host(monkeypatch)
-    install_dir = tmp_path / "install"
-    scripts_dir = install_dir / "scripts"
-    scripts_dir.mkdir(parents=True)
-    (scripts_dir / "assign_gpus.py").write_text(
-        (_agent_path.parents[1] / "scripts" / "assign_gpus.py").read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
-    topology = {
-        "vendor": "nvidia",
-        "gpu_count": 2,
-        "gpus": [
-            {"index": 0, "uuid": "GPU-small", "name": "24 GB card", "memory_gb": 24},
-            {"index": 1, "uuid": "GPU-big", "name": "96 GB card", "memory_gb": 96},
-        ],
-        "links": [{"gpu_a": 0, "gpu_b": 1, "link_type": "PHB", "link_label": "PHB", "rank": 30}],
-    }
-    current = {
-        "gpu_assignment": {
-            "version": "1.0",
-            "strategy": "dedicated",
-            "services": {
-                "llama_server": {
-                    "gpus": ["GPU-small"],
-                    "gpu_indices": [0],
-                    "parallelism": {"mode": "none", "tensor_parallel_size": 1,
-                                    "pipeline_parallel_size": 1, "gpu_memory_utilization": 0.95},
-                },
-                "whisper": {"gpus": ["GPU-big"], "gpu_indices": [1]},
-            },
-        }
-    }
-    target = tmp_path / "target.gguf"
-    target.write_bytes(b"model")
-
-    plan = _mod._build_model_gpu_assignment_plan(
-        current, topology, {"vram_required_gb": 40, "size_mb": 38000}, target,
-    )
-
-    assert plan["planned_gpus"] == ["GPU-big"]
-    assert plan["split_mode"] == "none"
-    assert plan["env_updates"]["LLAMA_SERVER_GPU_UUIDS"] == "GPU-big"
-    assert plan["env_updates"]["LLAMA_SERVER_GPU_INDICES"] == "1"
-
-
-def _split_llama_assignment(gpus, services_gpu, strategy="colocated"):
-    return {
-        "gpu_assignment": {
-            "version": "1.0",
-            "strategy": strategy,
-            "services": {
-                "llama_server": {
-                    "gpus": list(gpus),
-                    "gpu_indices": list(range(len(gpus))),
-                    "parallelism": {"mode": "pipeline", "tensor_parallel_size": 1,
-                                    "pipeline_parallel_size": len(gpus), "gpu_memory_utilization": 0.95},
-                },
-                "whisper": {"gpus": [services_gpu], "gpu_indices": [len(gpus)]},
-            },
-        }
-    }
-
-
 def _real_planner_install(tmp_path, monkeypatch):
     _native_nvidia_host(monkeypatch)
     install_dir = tmp_path / "install"
@@ -9528,63 +9512,314 @@ def _real_planner_install(tmp_path, monkeypatch):
     return target
 
 
-def _phb_topology(*gpus):
+def _phb_topology(*gpus, rank=30):
+    """NVIDIA GPUs (uuid, GB) in index order, every pair linked at ``rank`` (0: no links)."""
     return {
         "vendor": "nvidia",
         "gpu_count": len(gpus),
         "gpus": [{"index": i, "uuid": uuid, "name": uuid, "memory_gb": gb} for i, (uuid, gb) in enumerate(gpus)],
-        "links": [{"gpu_a": a, "gpu_b": b, "link_type": "PHB", "link_label": "PHB", "rank": 30}
-                  for a in range(len(gpus)) for b in range(a + 1, len(gpus))],
+        "links": [{"gpu_a": a, "gpu_b": b, "link_type": "PHB", "link_label": "PHB", "rank": rank}
+                  for a in range(len(gpus)) for b in range(a + 1, len(gpus)) if rank],
     }
 
 
-def test_a_switch_to_a_model_that_fits_one_gpu_consolidates_a_split_model(tmp_path, monkeypatch):
+_AUX_SERVICES = ("whisper", "comfyui", "embeddings")
+
+
+def _llama_assignment(topology, llama_gpus, services_gpu=None, strategy="colocated"):
+    """llama-server on ``llama_gpus``; Whisper, ComfyUI and embeddings on ``services_gpu``."""
+    index = {gpu["uuid"]: gpu["index"] for gpu in topology["gpus"]}
+    services = {
+        "llama_server": {
+            "gpus": list(llama_gpus),
+            "gpu_indices": [index[uuid] for uuid in llama_gpus],
+            "parallelism": {"mode": "pipeline" if len(llama_gpus) > 1 else "none", "tensor_parallel_size": 1,
+                            "pipeline_parallel_size": len(llama_gpus), "gpu_memory_utilization": 0.95},
+        },
+    }
+    if services_gpu:
+        for name in _AUX_SERVICES:
+            services[name] = {"gpus": [services_gpu], "gpu_indices": [index[services_gpu]]}
+    return {"gpu_assignment": {"version": "1.0", "strategy": strategy, "services": services}}
+
+
+def _merged(plan):
+    return _mod._decode_gpu_assignment(plan["env_updates"]["GPU_ASSIGNMENT_JSON_B64"])["gpu_assignment"]
+
+
+def _services_gpus(merged):
+    return {name: merged["services"][name]["gpus"] for name in _AUX_SERVICES}
+
+
+def test_an_expansion_moves_a_model_that_fits_a_free_gpu_there_alone(tmp_path, monkeypatch):
+    # Owner rule (2026-10-27): a model that fits one GPU runs there unsplit. A
+    # switch to a model too big for its GPU moves it to a GPU no other service
+    # uses when that GPU holds it, instead of the split the planner's link
+    # ranking alone would pick (a PHB pair outranks any single GPU).
+    target = _real_planner_install(tmp_path, monkeypatch)
+    topology = _phb_topology(("GPU-small", 24), ("GPU-big", 96), ("GPU-svc", 24))
+    current = _llama_assignment(topology, ["GPU-small"], "GPU-svc", strategy="dedicated")
+
+    plan = _mod._build_model_gpu_assignment_plan(current, topology, {"vram_required_gb": 40, "size_mb": 38000}, target)
+
+    assert plan["planned_gpus"] == ["GPU-big"]
+    assert plan["split_mode"] == "none"
+    assert plan["env_updates"]["LLAMA_SERVER_GPU_UUIDS"] == "GPU-big"
+    assert plan["env_updates"]["LLAMA_SERVER_GPU_INDICES"] == "1"
+    merged = _merged(plan)
+    assert merged["strategy"] == "dedicated"
+    assert _services_gpus(merged) == {name: ["GPU-svc"] for name in _AUX_SERVICES}
+
+
+def test_an_expansion_never_moves_a_model_alone_onto_another_services_gpu(tmp_path, monkeypatch):
+    # A switch moves only llama-server, and the capacity check counts no
+    # service's memory. When only the services' GPU holds the model alone,
+    # the ranked split decides as before, and the model keeps its own GPU.
+    target = _real_planner_install(tmp_path, monkeypatch)
+    topology = _phb_topology(("GPU-small", 24), ("GPU-big", 96))
+    current = _llama_assignment(topology, ["GPU-small"], "GPU-big", strategy="dedicated")
+
+    plan = _mod._build_model_gpu_assignment_plan(current, topology, {"vram_required_gb": 40, "size_mb": 38000}, target)
+
+    assert plan["planned_gpus"] == ["GPU-small", "GPU-big"]
+    assert plan["split_mode"] == "layer"
+    assert _merged(plan)["strategy"] == "colocated"
+
+
+@pytest.mark.parametrize(("services_gpu", "expected"), [("GPU-b", "GPU-a"), ("GPU-a", "GPU-b")])
+def test_a_switch_to_a_model_that_fits_one_gpu_consolidates_a_split_model(
+    tmp_path, monkeypatch, services_gpu, expected,
+):
     # Owner rule (2026-10-27): a model that fits one GPU is not split. Switching
     # from a split model to one that fits a single GPU of the same set moves it
-    # there; the other GPU keeps only the services.
+    # onto the GPU the services do not use; the services stay where they are.
     target = _real_planner_install(tmp_path, monkeypatch)
     topology = _phb_topology(("GPU-a", 48), ("GPU-b", 48))
-    current = _split_llama_assignment(["GPU-a", "GPU-b"], "GPU-b")
+    current = _llama_assignment(topology, ["GPU-a", "GPU-b"], services_gpu)
 
     plan = _mod._build_model_gpu_assignment_plan(current, topology, {"vram_required_gb": 20, "size_mb": 18000}, target)
 
     assert plan["previous_gpus"] == ["GPU-a", "GPU-b"]
-    assert plan["planned_gpus"] == ["GPU-a"]
+    assert plan["planned_gpus"] == [expected]
     assert plan["split_mode"] == "none"
-    merged = _mod._decode_gpu_assignment(plan["env_updates"]["GPU_ASSIGNMENT_JSON_B64"])
-    assert merged["gpu_assignment"]["strategy"] == "dedicated"
-    assert merged["gpu_assignment"]["services"]["whisper"]["gpus"] == ["GPU-b"]
+    assert plan["env_updates"]["LLAMA_ARG_TENSOR_SPLIT"] == ""
+    merged = _merged(plan)
+    assert merged["strategy"] == "dedicated"
+    assert _services_gpus(merged) == {name: [services_gpu] for name in _AUX_SERVICES}
 
 
-def test_consolidation_keeps_manual_and_never_crowds_another_services_gpu(tmp_path, monkeypatch):
+def test_consolidation_never_lands_on_another_services_gpu(tmp_path, monkeypatch):
     target = _real_planner_install(tmp_path, monkeypatch)
+    # The services share the split's bigger GPU: a model that fits the other
+    # GPU moves there; one that only the services' GPU holds stays split.
+    topology = _phb_topology(("GPU-24", 24), ("GPU-48", 48))
+    current = _llama_assignment(topology, ["GPU-24", "GPU-48"], "GPU-48")
+    plan = _mod._build_model_gpu_assignment_plan(current, topology, {"vram_required_gb": 12, "size_mb": 11000}, target)
+    assert plan["planned_gpus"] == ["GPU-24"]
+    assert _merged(plan)["strategy"] == "dedicated"
+    assert _mod._build_model_gpu_assignment_plan(
+        current, topology, {"vram_required_gb": 40, "size_mb": 36000}, target) is None
+    # The largest GPU runs the services outside the split: the model moves
+    # onto a GPU of its own set, never next to them.
+    topology = _phb_topology(("GPU-a", 24), ("GPU-b", 24), ("GPU-c", 96))
+    current = _llama_assignment(topology, ["GPU-a", "GPU-b"], "GPU-c")
+    plan = _mod._build_model_gpu_assignment_plan(current, topology, {"vram_required_gb": 20, "size_mb": 18000}, target)
+    assert plan["planned_gpus"] == ["GPU-a"]
+
+
+def test_consolidation_keeps_a_manual_or_legacy_assignment(tmp_path, monkeypatch):
+    target = _real_planner_install(tmp_path, monkeypatch)
+    topology = _phb_topology(("GPU-a", 48), ("GPU-b", 48))
     model = {"vram_required_gb": 20, "size_mb": 18000}
     # A manual assignment is the owner's choice.
-    manual = _split_llama_assignment(["GPU-a", "GPU-b"], "GPU-b", strategy="manual")
-    assert _mod._build_model_gpu_assignment_plan(manual, _phb_topology(("GPU-a", 48), ("GPU-b", 48)), model, target) is None
-    # The largest GPU holds Whisper and is not in the split set: stay split
-    # rather than move the model next to the services.
-    current = _split_llama_assignment(["GPU-a", "GPU-b"], "GPU-c")
-    topology = _phb_topology(("GPU-a", 24), ("GPU-b", 24), ("GPU-c", 96))
-    assert _mod._build_model_gpu_assignment_plan(current, topology, model, target) is None
+    manual = _llama_assignment(topology, ["GPU-a", "GPU-b"], "GPU-b", strategy="manual")
+    assert _mod._build_model_gpu_assignment_plan(manual, topology, model, target) is None
+    # An assignment recovered from a pre-JSON .env does not record every
+    # service's GPU; the same split with recorded services consolidates.
+    legacy = _llama_assignment(topology, ["GPU-a", "GPU-b"])
+    assert _mod._build_model_gpu_assignment_plan(legacy, topology, model, target, services_recorded=False) is None
+    assert _mod._build_model_gpu_assignment_plan(legacy, topology, model, target)["planned_gpus"] == ["GPU-a"]
 
 
-def test_nvidia_consolidation_survives_a_planner_failure(tmp_path, monkeypatch):
+@pytest.mark.parametrize("rank", [30, 0])
+def test_consolidation_keeps_the_planners_single_gpu_headroom(tmp_path, monkeypatch, rank):
+    # assign_gpus.py keeps max(1 GiB, 3%) free on a GPU that runs a model
+    # alone. Without links its ranked fallback takes a single GPU with no
+    # headroom at all, so the switch applies the rule itself.
+    target = _real_planner_install(tmp_path, monkeypatch)
+    topology = _phb_topology(("GPU-a", 24), ("GPU-b", 24), ("GPU-svc", 8), rank=rank)
+    current = _llama_assignment(topology, ["GPU-a", "GPU-b"], "GPU-svc")
+
+    for need_gb in (24, 23.5):
+        assert _mod._build_model_gpu_assignment_plan(
+            current, topology, {"vram_required_gb": need_gb, "size_mb": 20000}, target) is None
+    plan = _mod._build_model_gpu_assignment_plan(current, topology, {"vram_required_gb": 23, "size_mb": 20000}, target)
+    assert plan["planned_gpus"] == ["GPU-a"]
+
+
+def test_consolidation_never_moves_a_model_alone_onto_an_apu_beside_a_dgpu(tmp_path, monkeypatch):
+    # As for the installer's pick, a model runs alone only on a discrete GPU
+    # when the host has one.
+    target = _real_planner_install(tmp_path, monkeypatch)
+    topology = {
+        "vendor": "amd",
+        "gpu_count": 3,
+        "gpus": [
+            {"index": 0, "uuid": "AMD-apu", "name": "APU", "memory_gb": 64, "memory_type": "unified"},
+            {"index": 1, "uuid": "AMD-d0", "name": "dGPU", "memory_gb": 16, "memory_type": "discrete"},
+            {"index": 2, "uuid": "AMD-d1", "name": "dGPU", "memory_gb": 16, "memory_type": "discrete"},
+        ],
+        "links": [],
+    }
+    current = _llama_assignment(topology, ["AMD-apu", "AMD-d0"], "AMD-d1")
+
+    assert _mod._build_model_gpu_assignment_plan(
+        current, topology, {"vram_required_gb": 20, "size_mb": 18000}, target) is None
+    plan = _mod._build_model_gpu_assignment_plan(current, topology, {"vram_required_gb": 12, "size_mb": 11000}, target)
+    assert plan["planned_gpus"] == ["AMD-d0"]
+
+
+def test_the_switch_uses_the_planners_single_gpu_headroom():
+    spec = importlib.util.spec_from_file_location(
+        "assign_gpus_headroom", _agent_path.parents[1] / "scripts" / "assign_gpus.py")
+    planner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(planner)
+    assert (_mod._SINGLE_GPU_HEADROOM_MB, _mod._SINGLE_GPU_HEADROOM_SHARE) == (
+        planner.SINGLE_GPU_HEADROOM_MB, planner.SINGLE_GPU_HEADROOM_SHARE)
+
+
+def test_nvidia_consolidation_applies_one_gpu(tmp_path, monkeypatch):
+    _install_dir, target, env = _write_nvidia_gpu_plan_fixture(tmp_path, monkeypatch)
+
+    plan = _mod._plan_nvidia_model_gpu_assignment(env, {"vram_required_gb": 6, "size_mb": 5000}, target)
+
+    assert plan["previous_gpus"] == ["GPU-ti-0", "GPU-1080"]
+    assert plan["planned_gpus"] == ["GPU-ti-0"]
+    updates = plan["env_updates"]
+    assert updates["LLAMA_SERVER_GPU_UUIDS"] == "GPU-ti-0"
+    assert updates["LLAMA_SERVER_GPU_INDICES"] == "0"
+    assert updates["LLAMA_ARG_SPLIT_MODE"] == "none"
+    assert updates["LLAMA_ARG_TENSOR_SPLIT"] == ""
+    merged = _merged(plan)
+    assert merged["strategy"] == "dedicated"
+    assert _services_gpus(merged) == {name: ["GPU-ti-2"] for name in _AUX_SERVICES}
+
+
+@pytest.mark.parametrize("error", [
+    RuntimeError("planner unavailable"),
+    subprocess.TimeoutExpired(["assign_gpus.py"], 30),
+    OSError("no space left for the topology file"),
+])
+def test_nvidia_consolidation_survives_a_planner_failure(tmp_path, monkeypatch, error):
     # A switch that needs no new GPUs must not fail because the optional
     # consolidation could not be planned.
     _install_dir, target, env = _write_nvidia_gpu_plan_fixture(tmp_path, monkeypatch)
 
     def failing_planner(*_args):
-        raise RuntimeError("planner unavailable")
+        raise error
 
     monkeypatch.setattr(_mod, "_run_nvidia_gpu_planner", failing_planner)
     assert _mod._plan_nvidia_model_gpu_assignment(env, {"vram_required_gb": 6, "size_mb": 5000}, target) is None
 
-    monkeypatch.setattr(_mod, "_run_nvidia_gpu_planner", lambda *_args: {"gpu_assignment": {
-        "version": "1.0", "strategy": "dedicated", "services": {"llama_server": {
-            "gpus": ["GPU-ti-0"], "gpu_indices": [0],
-            "parallelism": {"mode": "none", "tensor_parallel_size": 1, "pipeline_parallel_size": 1}}}}})
-    plan = _mod._plan_nvidia_model_gpu_assignment(env, {"vram_required_gb": 6, "size_mb": 5000}, target)
-    assert plan["planned_gpus"] == ["GPU-ti-0"]
-    assert plan["env_updates"]["LLAMA_SERVER_GPU_UUIDS"] == "GPU-ti-0"
-    assert plan["split_mode"] == "none"
+
+def test_nvidia_switches_never_pile_the_model_onto_the_services_gpu(tmp_path, monkeypatch):
+    # davep's layout: llama-server on [ti-0, 1080], every service on ti-2.
+    # Small, big, small: the model consolidates onto ti-0, grows back over the
+    # free 1080 and never shares ti-2 with the services.
+    _install_dir, target, env = _write_nvidia_gpu_plan_fixture(tmp_path, monkeypatch)
+    small = {"vram_required_gb": 6, "size_mb": 5000}
+    big = {"vram_required_gb": 14, "size_mb": 12000}
+
+    steps = []
+    for model in (small, big, small):
+        plan = _mod._plan_nvidia_model_gpu_assignment(env, model, target)
+        env.update(plan["env_updates"])
+        steps.append(plan["planned_gpus"])
+
+    assert steps == [["GPU-ti-0"], ["GPU-ti-0", "GPU-1080"], ["GPU-ti-0"]]
+    assert _services_gpus(_mod._decode_gpu_assignment(env["GPU_ASSIGNMENT_JSON_B64"])["gpu_assignment"]) == {
+        name: ["GPU-ti-2"] for name in _AUX_SERVICES}
+
+
+def test_a_legacy_nvidia_assignment_keeps_the_ranked_split(tmp_path, monkeypatch):
+    # A pre-JSON .env records only llama-server's GPUs, and Compose runs
+    # Whisper and ComfyUI without a recorded GPU on GPU 0. Such an install
+    # never consolidates, and an expansion keeps the ranked split instead of
+    # moving the model alone onto GPU 0.
+    _install_dir, target, env = _write_nvidia_gpu_plan_fixture(tmp_path, monkeypatch)
+    env.pop("GPU_ASSIGNMENT_JSON_B64")
+    env["LLAMA_SERVER_GPU_UUIDS"] = "GPU-ti-0,GPU-1080"
+    assert _mod._plan_nvidia_model_gpu_assignment(env, {"vram_required_gb": 6, "size_mb": 5000}, target) is None
+
+    env["LLAMA_SERVER_GPU_UUIDS"] = "GPU-1080"
+    plan = _mod._plan_nvidia_model_gpu_assignment(env, {"vram_required_gb": 10, "size_mb": 9000}, target)
+    assert plan["planned_gpus"] == ["GPU-ti-0", "GPU-ti-2"]
+
+
+def test_amd_consolidation_updates_rocm_visibility(tmp_path, monkeypatch):
+    _install_dir, target, env = _write_amd_gpu_plan_fixture(tmp_path, monkeypatch)
+
+    plan = _mod._plan_amd_model_gpu_assignment(env, {"vram_required_gb": 6, "size_mb": 5000}, target)
+
+    assert plan["previous_gpus"] == ["AMD-card-0", "AMD-card-1"]
+    assert plan["planned_gpus"] == ["AMD-card-0"]
+    updates = plan["env_updates"]
+    assert updates["LLAMA_SERVER_GPU_INDICES"] == "0"
+    assert updates["ROCR_VISIBLE_DEVICES"] == "0"
+    assert updates["LLAMA_ARG_SPLIT_MODE"] == "none"
+    assert updates["LLAMA_ARG_TENSOR_SPLIT"] == ""
+
+    # A legacy ROCm .env records only llama-server's GPUs: no consolidation.
+    env.pop("GPU_ASSIGNMENT_JSON_B64")
+    env.pop("LLAMA_SERVER_GPU_UUIDS")
+    assert _mod._plan_amd_model_gpu_assignment(env, {"vram_required_gb": 6, "size_mb": 5000}, target) is None
+
+
+def test_amd_rocm_consolidation_keeps_the_gfx1151_override(tmp_path, monkeypatch):
+    install_dir, target, env = _write_amd_gpu_plan_fixture(tmp_path, monkeypatch)
+    topology_path = install_dir / "config" / "gpu-topology.json"
+    topology = json.loads(topology_path.read_text(encoding="utf-8"))
+    for gpu in topology["gpus"]:
+        gpu["gfx_version"] = "gfx1151"
+    topology_path.write_text(json.dumps(topology), encoding="utf-8")
+    env.update({"AMD_INFERENCE_BACKEND": "rocm", "HSA_OVERRIDE_GFX_VERSION": "11.5.1"})
+
+    plan = _mod._plan_amd_model_gpu_assignment(env, {"vram_required_gb": 6, "size_mb": 5000}, target)
+
+    assert plan["planned_gpus"] == ["AMD-card-0"]
+    assert plan["env_updates"]["HSA_OVERRIDE_GFX_VERSION"] == "11.5.1"
+    assert "HSA_OVERRIDE_GFX_VERSION" not in plan["env_removals"]
+
+
+def test_amd_consolidation_without_a_gfx_architecture_keeps_the_split(tmp_path, monkeypatch):
+    # amd-topo.sh falls back to gfx_version "unknown". A consolidation needs
+    # no new GPU, so the switch goes ahead on the split; an expansion still
+    # refuses, as before.
+    install_dir, target, env = _write_amd_gpu_plan_fixture(tmp_path, monkeypatch)
+    topology_path = install_dir / "config" / "gpu-topology.json"
+    topology = json.loads(topology_path.read_text(encoding="utf-8"))
+    for gpu in topology["gpus"]:
+        gpu["gfx_version"] = "unknown"
+    topology_path.write_text(json.dumps(topology), encoding="utf-8")
+
+    assert _mod._plan_amd_model_gpu_assignment(env, {"vram_required_gb": 6, "size_mb": 5000}, target) is None
+    with pytest.raises(RuntimeError, match="missing a gfx architecture"):
+        _mod._plan_amd_model_gpu_assignment(env, {"vram_required_gb": 40, "size_mb": 35000}, target)
+
+
+def _davep_switch_to_a_small_model(tmp_path, monkeypatch, readiness):
+    """davep's split install activating a 6 GB catalog model; llama-server restarts are recorded."""
+    _native_nvidia_host(monkeypatch)
+    install_dir, env_path, *_rest = _write_model_activation_fixture(tmp_path)
+    catalog_path = install_dir / "config" / "model-library.json"
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    catalog["models"][0].update({"size_mb": 5000, "vram_required_gb": 6})
+    catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+    original_assignment = _install_davep_gpu_contract(install_dir, env_path)
+    restart_envs = []
+    monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+    monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
+    monkeypatch.delenv("ODS_HOST_INSTALL_DIR", raising=False)
+    monkeypatch.setattr(_mod, "_compose_restart_llama_server", lambda env: restart_envs.append(dict(env)))
+    monkeypatch.setattr(_mod, "_wait_for_model_readiness", readiness)
+    return install_dir, env_path, original_assignment, restart_envs
