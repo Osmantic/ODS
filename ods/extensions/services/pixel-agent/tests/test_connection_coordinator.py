@@ -476,12 +476,196 @@ def test_google_refusing_the_code_records_nothing(world):
 
 def test_a_broker_that_cannot_run_the_exchange_is_reported(world, monkeypatch):
     flow = begin(world)
-    monkeypatch.setattr(c, "RUN", lambda arguments, timeout: 1)
+    monkeypatch.setattr(c, "RUN", lambda arguments, timeout:
+                        1 if arguments[-1].startswith("pixel-source-exchange@") else 0)
     with pytest.raises(AccessError, match="sign-in-exchange-unavailable"):
         c.control(world.bridge, "connection-complete",
                   {"flowId": flow["flowId"], "state": consent_state(world, flow["flowId"]), "code": "4/fixture-code"})
     assert failed_because(world, "sign-in-exchange-unavailable")
     assert not world.record.exists() and not list(world.paths.oauth.iterdir())
+
+
+def seed_old_google_data(world):
+    """Synthetic old account data; no installed configuration or real provider."""
+    for name in ("email.json", "calendar.json", ".gmail-sync-progress.json", ".calendar-sync-progress.json"):
+        (world.paths.projection / name).write_text(json.dumps({"oldAccount": name}))
+    (world.paths.projection / "social.json").write_text('{"social":"independent"}')
+    (world.paths.proposals / "old-calendar.pending.json").write_text('{"oldProposal":true}')
+    (world.paths.results / "old-calendar.result.json").write_text('{"oldReceipt":true}')
+
+
+def archived_actions(world):
+    archive = world.paths.private / "retired-google-actions"
+    return {path.name: path.read_text() for path in archive.rglob("*.json")} if archive.exists() else {}
+
+
+def reconnect_callback(world):
+    flow = begin(world)
+    return {"flowId": flow["flowId"], "state": consent_state(world, flow["flowId"]), "code": "4/new-account"}
+
+
+def test_reconnect_quiesces_readers_and_actions_before_the_real_token_exchange(world, monkeypatch):
+    connect(world)
+    c.control(world.bridge, "connection-activate", {})
+    seed_old_google_data(world)
+    before_token = custody.sign_in_identity(world.paths)
+    callback = reconnect_callback(world)
+    original = c.RUN
+    examined = []
+
+    def run(arguments, timeout):
+        if arguments[-1].startswith("pixel-source-exchange@"):
+            examined.append(True)
+            for unit in ("pixel-source-broker.service", "pixel-source-direct.service",
+                         "pixel-source-action@*.service", "pixel-source-reconcile@*.service"):
+                assert ["systemctl", "stop", unit] in world.commands
+            for unit in ("pixel-source-broker.timer", "pixel-source-direct.path"):
+                assert ["systemctl", "disable", "--now", unit] in world.commands
+            assert journal(world)["error"] == c.EXCHANGE_INTERRUPTED
+            assert "google" not in record(world)["connectors"]
+            assert {path.name for path in world.paths.projection.iterdir()} == {"social.json"}
+            assert not list(world.paths.proposals.iterdir()) and not list(world.paths.results.iterdir())
+            assert set(archived_actions(world)) == {"old-calendar.pending.json", "old-calendar.result.json"}
+            assert (world.paths.oauth / f"{callback['flowId']}.flow.json").exists()
+            assert (world.paths.oauth / f"{callback['flowId']}.code.json").exists()
+        return original(arguments, timeout)
+
+    world.commands.clear()
+    monkeypatch.setattr(c, "RUN", run)
+    response = c.control(world.bridge, "connection-complete", callback)
+    assert response["outcome"] == "connected" and examined == [True]
+    assert custody.sign_in_identity(world.paths) != before_token
+    assert journal(world)["phase"] == "activating" and journal(world)["error"] is None
+    exchange_index = next(i for i, command in enumerate(world.commands) if command[-1].startswith("pixel-source-exchange@"))
+    assert world.commands.index(["systemctl", "enable", "--now", "pixel-source-broker.timer"]) > exchange_index
+    private_archive = world.paths.private / "retired-google-actions"
+    assert private_archive.stat().st_mode & 0o777 == 0o700
+    assert not list(private_archive.rglob("*token*")) and not list(private_archive.rglob("*flow*"))
+
+
+def test_a_forged_reconnect_never_stops_or_retires_a_working_account(world):
+    connect(world)
+    c.control(world.bridge, "connection-activate", {})
+    seed_old_google_data(world)
+    callback = reconnect_callback(world)
+    before = (world.record.read_bytes(), world.paths.token.read_bytes(), list(world.commands))
+    with pytest.raises(AccessError, match="sign-in-state-mismatch"):
+        c.control(world.bridge, "connection-complete", dict(callback, state="x" * 43))
+    assert (world.record.read_bytes(), world.paths.token.read_bytes(), world.commands) == before
+    assert (world.paths.proposals / "old-calendar.pending.json").exists()
+    assert not archived_actions(world)
+
+
+def test_failed_reconnect_resumes_only_the_same_private_grant_without_dispatching_old_actions(world):
+    connect(world)
+    c.control(world.bridge, "connection-activate", {})
+    seed_old_google_data(world)
+    original_record, token_identity = record(world), custody.sign_in_identity(world.paths)
+    callback = reconnect_callback(world)
+    world.google.token = lambda _body: (400, {"error": "invalid_grant"})
+    response = c.control(world.bridge, "connection-complete", callback)
+    assert response["errorClass"] == "invalid-grant"
+    assert record(world) == original_record and custody.sign_in_identity(world.paths) == token_identity
+    assert failed_because(world, "invalid-grant")
+    assert set(archived_actions(world)) == {"old-calendar.pending.json", "old-calendar.result.json"}
+    assert not list(world.paths.proposals.iterdir()) and not list(world.paths.results.iterdir())
+    assert not (world.paths.projection / "email.json").exists()
+    assert (world.paths.projection / "social.json").exists()
+
+
+def test_a_lost_exchange_reply_never_reactivates_the_old_record_with_the_new_grant(world, monkeypatch):
+    connect(world)
+    c.control(world.bridge, "connection-activate", {})
+    seed_old_google_data(world)
+    callback = reconnect_callback(world)
+    original = custody.exchange
+
+    def lost(*args):
+        assert original(*args)["outcome"] == "connected"
+        raise custody.CustodyError("sign-in-exchange-unavailable")
+
+    monkeypatch.setattr(custody, "exchange", lost)
+    world.commands.clear()
+    with pytest.raises(AccessError, match="sign-in-exchange-unavailable"):
+        c.control(world.bridge, "connection-complete", callback)
+    assert "google" not in record(world)["connectors"] and not world.paths.token.exists()
+    assert ["systemctl", "enable", "--now", "pixel-source-broker.timer"] not in world.commands
+    assert archived_actions(world)
+    assert c.control(world.bridge, "connection-activate", {})["outcome"] == "applied"
+    assert not planner.gateway_limbs(world.bridge.env_path.read_text())["email"]
+
+
+@pytest.mark.parametrize("boundary", ["before-exchange", "after-token", "after-record", "after-commit"])
+def test_reconnect_crash_recovery_cannot_pair_an_old_record_or_queue_with_a_new_grant(world, monkeypatch, boundary):
+    connect(world)
+    c.control(world.bridge, "connection-activate", {})
+    seed_old_google_data(world)
+    callback = reconnect_callback(world)
+    original_exchange, original_write, original_start = custody.exchange, c._write_lifecycle, custody.start
+
+    def exchange(*args):
+        if boundary == "before-exchange":
+            raise Crash()
+        result = original_exchange(*args)
+        if boundary == "after-token":
+            raise Crash()
+        return result
+
+    def write(bridge, value):
+        if boundary == "after-record" and value["phase"] == "activating" and value["error"] is None:
+            raise Crash()
+        original_write(bridge, value)
+
+    def start(*args, **kwargs):
+        if boundary == "after-commit":
+            raise Crash()
+        original_start(*args, **kwargs)
+
+    monkeypatch.setattr(custody, "exchange", exchange)
+    monkeypatch.setattr(c, "_write_lifecycle", write)
+    monkeypatch.setattr(custody, "start", start)
+    with pytest.raises(Crash):
+        c.control(world.bridge, "connection-complete", callback)
+    assert journal(world)["phase"] == "activating"
+    assert not list(world.paths.proposals.iterdir())
+    if boundary != "after-commit":
+        assert journal(world)["error"] == c.EXCHANGE_INTERRUPTED
+        for operation, request in (("connection-sync", {}), ("connection-begin", {
+                "connector": "google", "client": CLIENT, "capabilities": READ_BOTH,
+                "cloudModels": False, "ownerTimeZone": None, "loginHint": None, "redirectPort": 53682})):
+            with pytest.raises(AccessError, match=c.EXCHANGE_INTERRUPTED):
+                c.control(world.bridge, operation, request)
+        with pytest.raises(AccessError, match=c.EXCHANGE_INTERRUPTED):
+            c._connected_google(world.bridge)
+    monkeypatch.setattr(c, "_write_lifecycle", original_write)
+    monkeypatch.setattr(custody, "start", original_start)
+    assert c.control(world.bridge, "connection-activate", {})["outcome"] in ("applied", "unchanged")
+    assert journal(world) is None and archived_actions(world)
+    assert (world.paths.projection / "social.json").exists()
+    if boundary == "after-commit":
+        assert world.paths.token.exists() and "google" in record(world)["connectors"]
+        assert ["systemctl", "enable", "--now", "pixel-source-broker.timer"] in world.commands
+    else:
+        assert not world.paths.token.exists() and "google" not in record(world)["connectors"]
+        assert not planner.gateway_limbs(world.bridge.env_path.read_text())["email"]
+
+
+def test_a_failed_stop_prevents_any_token_exchange_and_leaves_explicit_recovery(world, monkeypatch):
+    connect(world)
+    c.control(world.bridge, "connection-activate", {})
+    callback = reconnect_callback(world)
+    previous_record, token_identity = record(world), custody.sign_in_identity(world.paths)
+    original = c.RUN
+    calls = len(world.google.calls)
+    monkeypatch.setattr(c, "RUN", lambda args, timeout:
+                        1 if args == ["systemctl", "stop", "pixel-source-broker.service"] else original(args, timeout))
+    with pytest.raises(AccessError, match="host-command-failed"):
+        c.control(world.bridge, "connection-complete", callback)
+    assert record(world) == previous_record and custody.sign_in_identity(world.paths) == token_identity
+    assert len(world.google.calls) == calls and journal(world)["error"] == c.EXCHANGE_INTERRUPTED
+    monkeypatch.setattr(c, "RUN", original)
+    assert c.control(world.bridge, "connection-activate", {})["outcome"] == "applied"
+    assert "google" not in record(world)["connectors"] and not world.paths.token.exists()
 
 
 def test_a_capability_google_did_not_grant_stays_off(world):

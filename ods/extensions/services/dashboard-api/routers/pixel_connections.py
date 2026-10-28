@@ -335,6 +335,15 @@ MESSAGES: dict[str, tuple[str, bool]] = {
     "plugin-change-rolled-back": ("Portal couldn't start with that plugin change, so it's back as it was. Try "
                                   "again.", True),
     "sign-in-exchange-unavailable": ("Google sign-in couldn't finish on this machine. Try again.", True),
+    'sign-in-exchange-interrupted': ('Google sign-in was interrupted. In Connected apps, choose Finish to '
+                                     'clear the uncertain local sign-in, then reconnect. Previous pending '
+                                     'changes are kept aside and will not run automatically.', True),
+    'source-broker-archive-full': ('ODS cannot safely set aside more Google action history. Ask for help '
+                                   'before reconnecting or removing any files.', True),
+    'source-broker-data-unsafe': ('ODS could not verify its saved Google data safely. Ask for help before '
+                                  'changing any files.', True),
+    'source-broker-token-unsafe': ('ODS could not verify its saved Google sign-in safely. Ask for help before '
+                                   'changing any files.', True),
     "connections-unavailable": ("ODS couldn't reach the service that connects apps to Portal. Make sure ODS is "
                                 "running, then try again.", True),
     "connection-change-unconfirmed": ("ODS couldn't confirm this step. Connected apps shows where it stands; try "

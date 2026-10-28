@@ -89,6 +89,63 @@ def test_prepare_never_lets_root_read_the_broker_projection(paths, monkeypatch):
     assert not paths.install.exists()
 
 
+def test_failed_exchange_identity_is_metadata_only_and_rejects_token_aliases(paths, monkeypatch):
+    paths.token.write_text('{"synthetic":"private"}')
+    paths.token.chmod(0o600)
+    original = custody.sign_in_identity(paths)
+    monkeypatch.setattr(Path, "read_text", lambda *args, **kwargs: pytest.fail("Root read a credential"))
+    monkeypatch.setattr(Path, "read_bytes", lambda *args, **kwargs: pytest.fail("Root read a credential"))
+    assert custody.sign_in_identity(paths) == original
+    paths.token.chmod(0o640)
+    with pytest.raises(custody.CustodyError, match="source-broker-token-unsafe"):
+        custody.sign_in_identity(paths)
+    paths.token.chmod(0o600)
+    os.link(paths.token, paths.private / "alias")
+    with pytest.raises(custody.CustodyError, match="source-broker-token-unsafe"):
+        custody.sign_in_identity(paths)
+    (paths.private / "alias").unlink()
+    paths.token.rename(paths.private / "actual")
+    paths.token.symlink_to(paths.private / "actual")
+    with pytest.raises(custody.CustodyError, match="source-broker-token-unsafe"):
+        custody.sign_in_identity(paths)
+
+
+def test_retiring_actions_is_bounded_before_any_move_and_keeps_handoffs_private(paths, monkeypatch):
+    paths.proposals.mkdir()
+    paths.results.mkdir()
+    (paths.proposals / "old.pending.json").write_text('{"proposal":"synthetic"}')
+    (paths.results / "old.result.json").write_text('{"result":"synthetic"}')
+    (paths.oauth / f"{FLOW}.flow.json").write_text('{"flow":"synthetic"}')
+    paths.token.write_text('{"token":"synthetic"}')
+    monkeypatch.setattr(custody, "MAX_RETIRED_ACTION_BYTES", 1)
+    with pytest.raises(custody.CustodyError, match="source-broker-archive-full"):
+        custody.archive_google_actions(paths, FLOW)
+    assert (paths.proposals / "old.pending.json").exists() and (paths.results / "old.result.json").exists()
+    monkeypatch.setattr(custody, "MAX_RETIRED_ACTION_BYTES", 1024)
+    custody.archive_google_actions(paths, FLOW)
+    archive = paths.private / "retired-google-actions"
+    assert archive.stat().st_mode & 0o777 == 0o700
+    assert {path.name for path in archive.rglob("*.json")} == {"old.pending.json", "old.result.json"}
+    assert not list(paths.proposals.iterdir()) and not list(paths.results.iterdir())
+    assert paths.token.exists() and (paths.oauth / f"{FLOW}.flow.json").exists()
+    # Explicit disconnect erases the quarantined derived history as well.
+    custody.erase(paths)
+    assert not list(archive.iterdir())
+
+
+def test_an_unsafe_archive_cannot_redirect_or_overwrite_old_actions(paths):
+    paths.proposals.mkdir()
+    paths.results.mkdir()
+    original = paths.proposals / "old.pending.json"
+    original.write_text('{"proposal":"synthetic"}')
+    external = paths.state / "external"
+    external.mkdir()
+    (paths.private / "retired-google-actions").symlink_to(external, target_is_directory=True)
+    with pytest.raises(custody.CustodyError, match="source-broker-data-unsafe"):
+        custody.archive_google_actions(paths, FLOW)
+    assert original.exists() and not list(external.iterdir())
+
+
 @pytest.fixture
 def root_files(paths, monkeypatch):
     """Simulate chown only; bytes, permissions and atomic publication are real."""
@@ -136,11 +193,16 @@ def test_prepare_refuses_unsafe_env_before_installing_or_overwriting(root_files,
     paths, _owned = root_files
     outside = paths.state / 'preserved'
     outside.write_text('preserved')
-    if unsafe == 'symlink': paths.env.symlink_to(outside)
-    elif unsafe == 'dangling': paths.env.symlink_to(paths.state / 'absent')
-    elif unsafe == 'hardlink': os.link(outside, paths.env)
-    elif unsafe == 'directory': paths.env.mkdir()
-    elif unsafe == 'fifo': os.mkfifo(paths.env, 0o600)
+    if unsafe == 'symlink':
+        paths.env.symlink_to(outside)
+    elif unsafe == 'dangling':
+        paths.env.symlink_to(paths.state / 'absent')
+    elif unsafe == 'hardlink':
+        os.link(outside, paths.env)
+    elif unsafe == 'directory':
+        paths.env.mkdir()
+    elif unsafe == 'fifo':
+        os.mkfifo(paths.env, 0o600)
     else:
         paths.env.write_text(TEMPLATE)
         paths.env.chmod({'writable': 0o660, 'public': 0o644, 'executable': 0o740}.get(unsafe, 0o640))

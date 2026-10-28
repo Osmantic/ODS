@@ -37,6 +37,24 @@ step. Owner-provided clients remain an explicit Advanced option.
   configuration. Older records default to Advanced. Existing Sync/Disconnect
   actions continue to use the broker's lifecycle.
 
+## Reconnecting an existing account
+
+Before replacing a grant, Root records an interrupted-exchange barrier, stops
+the refresh/direct producers and active action/reconciliation instances, and
+withdraws the old Google record. Regenerable Google caches/cursors are cleared;
+independent social data and the live OAuth handoff remain. Old action queues and
+results are retained in a bounded private archive and never replayed automatically.
+A proven unchanged failed exchange may resume the old grant/record, but its
+pending actions remain set aside and caches refetch. Ambiguous custody requires
+Finish to discard the uncertain local sign-in and reconcile disabled access.
+
+Controlled crash tests and disposable real systemd units qualify this producer
+barrier. It does not itself pause Portal gateway admission: an already running
+conversation can still create a fresh proposal after account replacement.
+Reusing admission or binding proposals to the intended account remains a release
+blocker for claiming complete isolation of write workflows across a reconnect.
+The current real-account qualification grants read access only.
+
 Desktop applications use public-client credentials and cannot keep a distributed
 client secret confidential. PKCE and the existing fixed loopback flow remain
 required. Google's [Desktop authorization documentation](https://developers.google.com/identity/protocols/oauth2/native-app)

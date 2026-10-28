@@ -116,6 +116,10 @@ for (const code of ['google-app-config-invalid', 'google-app-config-unsafe']) {
 
 // Why Portal's gateway update stopped. Finish runs it again.
 const UPDATE = {
+  'sign-in-exchange-interrupted': ['Google sign-in was interrupted.',
+    'Press Finish to clear the uncertain local sign-in, then reconnect. Previous pending changes are kept aside and will not run automatically.', true],
+  'source-broker-archive-full': ['ODS cannot safely set aside more Google action history.',
+    'Ask for help before reconnecting or removing any files.', true],
   'runtime-busy': ['Portal is busy with a task.', 'Press Finish when it is done.', false],
   'transition-busy': ['ODS is finishing another Portal change.', 'Press Finish in a moment.', false],
   'model-lifecycle-busy': ['ODS is finishing another Portal change.', 'Press Finish in a moment.', false],

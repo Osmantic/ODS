@@ -66,14 +66,24 @@ mark them merged or replace their review.
 
 ## Qualification boundaries
 
-The ordinary Google connection must become **Connect Google → choose account →
-authorize**, without a per-user Cloud project or client JSON. Root now supports
-a protected deployment application and a credential-free configuration status;
-owner-provided clients remain an explicit Advanced compatibility path. Public
-host/API/Settings wiring, official registration/verification and reviewed release
-provisioning are still required. The personal client used for local acceptance
-is not the official ODS application and must not be distributed as one. See
+The ordinary Google connection is designed as **Connect Google → choose account
+→ authorize**, without a per-user Cloud project or client JSON. Protected Root
+configuration, authenticated host/API transport and Settings now carry that
+journey; owner-provided clients remain explicit Advanced setup. Official app
+registration/verification and reviewed release provisioning are still required.
+A personal Desktop client completed real read-only consent locally and Portal
+discovered the resulting tools; real content/scheduled/refresh/withdrawal
+acceptance remains open. That client is not the official ODS application and
+must not be distributed as one. See
 [the managed Google contract](PORTAL-GOOGLE-APP.md).
+
+The real first sync exposed Gmail history blocking Calendar and status. The
+4.3.37 candidate adds resumed, independently bounded Gmail/Calendar batches,
+explicit partial coverage and deadline/size-aware HTTP reads. Root reconnect
+quiesces prior producers and preserves old actions privately before a token can
+change. Source and crash controls are synthetic; final installed qualification
+is still required. Complete write-workflow isolation also needs admission or
+proposal/account binding for a conversation active across the account change.
 
 Local disposable WSL/Linux environments exercised the pinned ODS OpenClaw,
 real plugin loading and tools, the owner worker, Root transactions, native

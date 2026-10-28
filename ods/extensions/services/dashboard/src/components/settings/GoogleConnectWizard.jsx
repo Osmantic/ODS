@@ -203,6 +203,7 @@ export default function GoogleConnectWizard({catalog, initial = null, status, re
 
   return <section aria-labelledby="google-connect-title" className="space-y-4 rounded-lg bg-white/[0.025] p-4">
     <h4 id="google-connect-title" className="font-semibold">{reconnect ? 'Reconnect Google' : 'Connect Google'}</h4>
+    {reconnect ? <p className="text-sm text-theme-text-muted">Reconnecting pauses syncing. Pending calendar changes and drafts are kept aside and will not run automatically.</p> : null}
     {flow ? <div className="space-y-3">
       <p role="status">{flow.opened ? 'Sign in to Google in the tab that opened, and allow access. This page updates by itself.'
         : 'Open the Google sign-in below, choose your account and allow access. This page updates by itself.'}</p>

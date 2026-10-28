@@ -27,6 +27,8 @@ UNITS = ("pixel-source-broker.service", "pixel-source-broker.timer", "pixel-sour
          "pixel-source-exchange@.service", "pixel-source-revoke.service")
 KIT_FILES = ("broker.py", "source-broker.env", *UNITS)
 MAX_RESULT_BYTES = 64 * 1024
+MAX_RETIRED_ACTION_FILES = 4096
+MAX_RETIRED_ACTION_BYTES = 64 * 1024 * 1024
 ENV_LINE = re.compile(r"^([A-Z][A-Z0-9_]*)='((?:[^']|'\\'')*)'$")
 FLOW_ID = re.compile(r"^[a-f0-9]{32}$")
 FLOW_FILE = re.compile(r"^[a-f0-9]{32}\.(?:flow|code|result)\.json$")
@@ -442,6 +444,137 @@ def stop(paths: Paths, run: Run) -> None:
             _check(run, ["systemctl", "stop", unit])
 
 
+def quiesce_for_sign_in(paths: Paths, run: Run) -> None:
+    """Wait for every old-account reader and actuator before replacing its grant.
+
+    A timed-out approval may still have a running template instance after its
+    Root caller returned. systemctl expands these fixed patterns over loaded
+    units and waits for their stop; no owner-supplied unit name is involved.
+    """
+    stop(paths, run)
+    for template in ("pixel-source-action@.service", "pixel-source-reconcile@.service"):
+        if (paths.units / template).exists():
+            _check(run, ["systemctl", "stop", template.replace("@.", "@*.")])
+
+
+def sign_in_identity(paths: Paths) -> tuple | None:
+    """An unchanged private inode proves a failed exchange kept the old grant.
+
+    Root never reads or backs up the token. This proof is used only while the
+    refresh timer and all old broker processes are stopped under Root's lock.
+    """
+    try:
+        info = paths.token.lstat()
+    except FileNotFoundError:
+        return None
+    uid, _gid = broker_ids()
+    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != uid
+            or stat.S_IMODE(info.st_mode) & 0o077 or info.st_size > MAX_RESULT_BYTES):
+        raise CustodyError("source-broker-token-unsafe")
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns,
+            info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode), info.st_nlink)
+
+
+def archive_google_actions(paths: Paths, flow_id: str | None = None) -> None:
+    """Quarantine old actions privately; never replay them for another account.
+
+    Archive only derived actions/results, never OAuth/token files. Bound the
+    retained archive and incoming queues before any rename. The Root-only
+    directory also prevents the old gateway from approving an archived item.
+    """
+    if flow_id is not None and not FLOW_ID.fullmatch(flow_id):
+        raise CustodyError("invalid-flow")
+    archive = paths.private / "retired-google-actions"
+    candidates = []
+    for directory in (paths.proposals, paths.results):
+        if directory.is_symlink():
+            raise CustodyError("source-broker-data-unsafe")
+        if directory.exists():
+            for entry in os.scandir(directory):
+                if len(candidates) >= MAX_RETIRED_ACTION_FILES:
+                    raise CustodyError("source-broker-archive-full")
+                candidates.append((directory.name, Path(entry.path)))
+    if not candidates:
+        return
+    if archive.exists() or archive.is_symlink():
+        info = archive.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) != 0o700):
+            raise CustodyError("source-broker-data-unsafe")
+    count, size = 0, 0
+
+    def bounded(path: Path, depth: int = 0) -> None:
+        nonlocal count, size
+        info = path.lstat()
+        count += 1
+        if count > MAX_RETIRED_ACTION_FILES or depth > 32:
+            raise CustodyError("source-broker-archive-full")
+        if stat.S_ISDIR(info.st_mode):
+            for entry in os.scandir(path):
+                bounded(Path(entry.path), depth + 1)
+        elif stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+            size += info.st_size
+            if size > MAX_RETIRED_ACTION_BYTES:
+                raise CustodyError("source-broker-archive-full")
+        else:
+            raise CustodyError("source-broker-data-unsafe")
+
+    if archive.exists():
+        bounded(archive)
+    for _name, path in candidates:
+        bounded(path)
+    archive.mkdir(mode=0o700, exist_ok=True)
+    retired = Path(tempfile.mkdtemp(prefix=f"{flow_id or 'interrupted'}-", dir=archive))
+    for name, path in candidates:
+        destination = retired / name
+        destination.mkdir(mode=0o700, exist_ok=True)
+        os.rename(path, destination / path.name)
+    for directory in (paths.proposals, paths.results, retired / "proposals", retired / "results", retired,
+                      archive, paths.private):
+        if directory.exists():
+            descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+
+
+def clear_google_data(paths: Paths) -> None:
+    """Clear regenerable Google projections/cursors, preserving social and OAuth.
+
+    Called only after quiescence, before a token may change and again before
+    the new grant starts. OAuth handoffs must survive until exchange consumes
+    them. The social snapshot is independent of the Google account.
+    """
+    for directory in (paths.projection,):
+        if directory.is_symlink():
+            raise CustodyError("source-broker-data-unsafe")
+        if not directory.exists():
+            continue
+        for entry in os.scandir(directory):
+            if entry.name == "social.json":
+                continue
+            if entry.is_dir(follow_symlinks=False):
+                shutil.rmtree(entry.path)
+            else:
+                os.unlink(entry.path)
+        descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+
+def forget_sign_in(paths: Paths) -> None:
+    """Drop uncertain local custody without replaying or restoring any grant."""
+    paths.token.unlink(missing_ok=True)
+    descriptor = os.open(paths.private, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def holds_sign_in(paths: Paths) -> bool:
     return os.path.lexists(paths.token)
 
@@ -470,7 +603,8 @@ def revoke(paths: Paths, run: Run) -> str:
 
 def erase(paths: Paths) -> None:
     """Delete everything the broker derived from the account; the directories stay."""
-    for directory in (paths.projection, paths.proposals, paths.results, paths.oauth):
+    for directory in (paths.projection, paths.proposals, paths.results, paths.oauth,
+                      paths.private / "retired-google-actions"):
         if directory.is_symlink() or not directory.is_dir():
             continue
         for entry in os.scandir(directory):
