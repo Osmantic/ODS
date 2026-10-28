@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Search, Settings as Gear, Palette, Activity, Network, HardDrive, RefreshCw, Terminal, Cloud, ShieldCheck, Share2, UserRound, Server } from 'lucide-react'
+import { Search, Settings as Gear, Palette, Activity, Network, HardDrive, RefreshCw, Terminal, Cloud, ShieldCheck, Share2, UserRound, Server, Plug } from 'lucide-react'
 import Settings from '../pages/Settings'
 import MetalMetricIcon from './MetalMetricIcon'
 import ProfileSettings from './settings/ProfileSettings'
@@ -11,12 +11,14 @@ import '../settings-workspace.css'
 const Integrations = lazy(() => import('../pages/ServiceMap'))
 const RemoteGPU = lazy(() => import('../pages/RemoteProvider'))
 const PixelDiagnostics = lazy(() => import('./settings/PixelDiagnostics'))
+const PortalIntegrations = lazy(() => import('./settings/PortalIntegrationsSettings'))
 
 const sections = [
   ['general', 'General', Gear], ['profile', 'Profile', UserRound], ['appearance', 'Appearance', Palette],
   ['portal-mascot', 'Portal mascot', Cloud],
   ['usage', 'Usage', Activity], ['owner', 'Owner access', UserRound],
   ['connections', 'Portal connections', Cloud], ['access', 'Portal access', ShieldCheck],
+  ['portal-integrations', 'Portal integrations', Plug, 'mcp home assistant ntfy notifications obsidian notes vault approvals'],
   ['sharing', 'Model sharing', Share2],
   // Using a model API (an API key) or another computer's GPU lives here.
   ['remote', 'Remote model', Server, 'api key provider openai endpoint url cloud gpu server'],
@@ -50,11 +52,12 @@ export default function SettingsModal() {
         {!sections.some(matches(query)) && <p>No settings found.</p>}
       </nav>
     </aside>
-    <div ref={content} className="ods-settings-content" aria-label={sections.find(([id]) => id === section)[1]}><div hidden={['profile','portal-mascot','pixel-diagnostics','integrations','remote'].includes(section)}><Settings activeSection={section} /></div>
+    <div ref={content} className="ods-settings-content" aria-label={sections.find(([id]) => id === section)[1]}><div hidden={['profile','portal-mascot','pixel-diagnostics','integrations','remote','portal-integrations'].includes(section)}><Settings activeSection={section} /></div>
       {visited.has('profile') && <div hidden={section !== 'profile'} className="space-y-6"><ProfileSettings/><AssistantIdentitySettings/></div>}
       {section === 'portal-mascot' && <PortalMascotSettings/>}
       <Suspense fallback={<p>Loading settings…</p>}>
         {section === 'pixel-diagnostics' && <PixelDiagnostics />}
+        {section === 'portal-integrations' && <PortalIntegrations />}
         {visited.has('integrations') && <div hidden={section !== 'integrations'}><Integrations compact /></div>}
         {visited.has('remote') && <div hidden={section !== 'remote'}><RemoteGPU compact /></div>}
       </Suspense>
