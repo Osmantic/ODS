@@ -51,7 +51,8 @@ def held_overlay(tmp_path, monkeypatch):
 
 
 def make_held_overlay(tmp_path, monkeypatch, provider='cloud', new_inspector=False, new_project=False,
-                      local_model='Qwen3.5-9B', thinking_control=None, portal_plugins=None):
+                      local_model='Qwen3.5-9B', thinking_control=None, portal_plugins=None,
+                      gateway_fingerprint=True):
     uid, gid = os.getuid(), os.getgid()
     assert uid > 0, 'run these disposable fixtures as an ordinary user'
     home, installed, candidate = [tmp_path / name for name in ('home', 'installed', 'candidate')]
@@ -124,6 +125,10 @@ def make_held_overlay(tmp_path, monkeypatch, provider='cloud', new_inspector=Fal
                 'contextWindow': 16384, 'maxTokens': 4096, 'reasoning': False}]}}
         sandbox['agents']['list'][0]['model'] = f'ods-local/{local_model}'
         del sandbox['plugins']['entries']['pixel-ods']['config']['modelRouteFingerprint']
+    elif not gateway_fingerprint:
+        # The installed local model also uses ods-gateway. Older, valid local
+        # onboarding contracts preserve this route without a cloud fingerprint.
+        del sandbox['plugins']['entries']['pixel-ods']['config']['modelRouteFingerprint']
     if new_inspector:
         del sandbox['plugins']['entries']['pixel-ods']['config']['workspacePreviewInspectionTransport']
     if new_project:
@@ -177,7 +182,7 @@ def make_held_overlay(tmp_path, monkeypatch, provider='cloud', new_inspector=Fal
     route_model = route['models'][0]
     answers = dict(modelProvider=route_provider, modelId=route_model['id'],
                    modelName=route_model['name'], modelImageInput='unknown')
-    if provider == 'cloud':
+    if provider == 'cloud' and gateway_fingerprint:
         answers['modelRouteFingerprint'] = 'f' * 64
     if thinking_control is not None:
         answers['modelThinkingControl'] = thinking_control
@@ -415,6 +420,50 @@ def test_local_model_uses_original_local_route_without_cloud_fingerprint(tmp_pat
     assert value['agents']['list'][0]['model'] == 'ods-local/Qwen3.5-9B'
     assert value['models']['providers']['ods-local']['apiKey'] == 'local-no-auth'
     assert 'modelRouteFingerprint' not in value['plugins']['entries']['pixel-ods']['config']
+
+
+def test_legacy_gateway_route_finishes_without_inventing_fingerprint(tmp_path, monkeypatch):
+    f = make_held_overlay(tmp_path, monkeypatch, gateway_fingerprint=False)
+    snapshots = {p: p.read_bytes() for p in f.owner_state.glob('*.json')}
+    before = f.config.read_bytes()
+    assert f.bridge.model_finish(dict(transaction_id=TOKEN, outcome='applied'))['status'] == 'released'
+    assert f.config.read_bytes() == before
+    assert all(p.read_bytes() == raw for p, raw in snapshots.items())
+    assert 'fresh-overlay-proof' in f.bridge.calls
+    value = json.loads(before)
+    assert value['agents']['list'][0]['model'] == 'ods-gateway/ods/current'
+    assert 'modelRouteFingerprint' not in value['plugins']['entries']['pixel-ods']['config']
+
+
+@pytest.mark.parametrize('fault', ['fingerprint', 'endpoint', 'model', 'image-policy'])
+def test_legacy_gateway_route_does_not_authorize_unbound_changes(tmp_path, monkeypatch, fault):
+    f = make_held_overlay(tmp_path, monkeypatch, gateway_fingerprint=False)
+    value = json.loads(f.config.read_bytes())
+    plugin = value['plugins']['entries']['pixel-ods']['config']
+    route = value['models']['providers']['ods-gateway']
+    if fault == 'fingerprint':
+        plugin['modelRouteFingerprint'] = '1' * 64
+    elif fault == 'endpoint':
+        route['baseUrl'] = 'http://127.0.0.1:12345/v1'
+    elif fault == 'model':
+        route['models'][0]['id'] = 'unreviewed-model'
+    else:
+        plugin['modelImageInput'] = 'supported'
+    save(f.config, value)
+    f.bridge.config['config_sha256'] = upgrade.sha(f.config.read_bytes())
+    with pytest.raises(access.AccessError, match='source-overlay-not-derived'):
+        f.bridge.model_finish(dict(transaction_id=TOKEN, outcome='applied'))
+    assert not any(call.endswith(':release') for call in f.bridge.calls)
+
+
+@pytest.mark.parametrize('fingerprint', [None, '', 'bad', 1, 'A' * 64])
+def test_present_malformed_gateway_fingerprint_is_never_derived(held_overlay, fingerprint):
+    f = held_overlay
+    value = json.loads((f.owner_state / 'access-release-config-after.json').read_bytes())
+    value['plugins']['entries']['pixel-ods']['config']['modelRouteFingerprint'] = fingerprint
+    renderer = (ROOT / 'installers/lib/pixel-runtime-budget.py').read_bytes()
+    with pytest.raises(upgrade.UpgradeError, match='source-overlay-contract-unavailable'):
+        upgrade._render_overlay(renderer, upgrade.encoded(value), f.bridge.home, os.getuid(), os.getgid())
 
 
 def test_local_route_change_is_not_a_runtime_overlay(tmp_path, monkeypatch):

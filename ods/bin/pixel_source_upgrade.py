@@ -392,13 +392,19 @@ def _render_overlay(renderer, anchor, home, uid, gid, *, provision=None, thinkin
     if (type(port) is not int or not 1 <= port <= 65535 or transport != 'unix'
             or socket not in ('', '/var/lib/ods-pixel-project/control.sock')
             or image_policy not in ('unknown', 'supported', 'unsupported')
-            or provider == 'ods-gateway' and (type(args.get('modelRouteFingerprint')) is not str
-                or not HEX.fullmatch(args['modelRouteFingerprint']))
+            or provider == 'ods-gateway' and 'modelRouteFingerprint' in args
+                and (type(args['modelRouteFingerprint']) is not str
+                     or not HEX.fullmatch(args['modelRouteFingerprint']))
             or provider == 'ods-local' and 'modelRouteFingerprint' in args):
         raise UpgradeError('source-overlay-contract-unavailable')
     answers = dict(modelProvider=provider, modelId=model['id'], modelName=model['name'],
                    modelImageInput=image_policy)
-    if provider == 'ods-gateway':
+    # Existing local routes also use ods-gateway, and valid older onboarding
+    # contracts have no remote route fingerprint. Reconstruct that exact absence
+    # from the authenticated release; never invent one from current answers.
+    # Present fingerprints remain strict, and whole-document derivation below
+    # still refuses any changed endpoint, model, image policy or new fingerprint.
+    if provider == 'ods-gateway' and 'modelRouteFingerprint' in args:
         answers['modelRouteFingerprint'] = args['modelRouteFingerprint']
     if thinking_control is not None:
         answers['modelThinkingControl'] = thinking_control
