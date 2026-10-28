@@ -461,6 +461,8 @@ write_access_fixture() {
         "bin/pixel_connections/drafts.py"
         "bin/pixel_connections/plugins.py"
         "bin/pixel_connections/native_mcp.py"
+        "bin/pixel_connections/native_apps.py"
+        "bin/pixel_connections/native_enrollment.py"
     )
     for relative in "${access_sources[@]}"; do
         source="$ROOT_DIR/$relative"
@@ -2830,6 +2832,8 @@ printf '%s\n' '{"kind":"connection"}' > "$ACCESS_STATE/connection.json"
 chmod 0600 "$ACCESS_STATE/connection.json"
 printf '%s\n' '{"kind":"native-mcp-consent"}' > "$ACCESS_STATE/native-mcp-consent.json"
 chmod 0600 "$ACCESS_STATE/native-mcp-consent.json"
+printf '%s\n' '{"kind":"native-app-enrollment"}' > "$ACCESS_STATE/native-app-enrollment.json"
+chmod 0600 "$ACCESS_STATE/native-app-enrollment.json"
 : > "$SYSTEMCTL_LOG"
 : > "$OPS_IDENTITY_LOG"
 if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR" && ! source_broker_remains \

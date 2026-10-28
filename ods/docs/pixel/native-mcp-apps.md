@@ -62,9 +62,19 @@ exercise OAuth with a disabled server and controlled provider, plus actual
 Pixel turns attempting an ungranted server, a filtered deletion, a permitted
 read and an ordinary core read. Fixtures never use a real Notion account.
 
-Still required: connect the consent journal to managed enrollment, durable
-authorization-to-activation settlement, disconnect/credential cleanup,
-authenticated host/API routes and the Settings journey. Then qualify an
-authorized real provider and installed update/rollback, including macOS.
+The internal `native_enrollment.Controller` now joins disabled preparation,
+consent, durable authorization claims, activation, recovery and withdrawal to
+the existing gated owner transaction. Each step binds its exact Root choices,
+before/after config, environment and onboarding hashes, transaction ID and owner
+state. Recovered receipts are verified against live files and fresh runtime
+proof; cancellation/withdrawal cannot submit a previously unstarted grant.
+Known unclaimed consent expiry closes without erasing valid native credentials.
+Readiness is scoped to `pixel-owner-default` and cached for at most five minutes,
+with fresh configuration/runtime proof and no provider contact on status polls.
+Google/plugin mutations honor a pending native flow inside their existing lock.
+
+Still required: authenticated host/API routes and the Settings journey,
+coordination with model/provider/settings/source mutations, an authorized real
+provider and installed update/rollback, including macOS.
 No public Connect button is exposed by this groundwork, and this draft is not
 ready for merge or release acceptance.

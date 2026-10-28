@@ -103,17 +103,30 @@ configuration binding and runtime revision afterward. `forget_disabled` also
 requires the exact disabled configuration to have verified runtime proof; a
 file edit without a verified restart is insufficient. The owner independently
 checks the disabled entry before forgetting. Its result explicitly says
-`providerRevoked: false`. These helpers remain internal and are not a completed
-enrollment/disconnection controller.
+`providerRevoked: false`. These helpers remain internal; the managed controller
+below composes them without exposing a public enrollment operation yet.
 
 The consent journal can reserve an authorized, still-disabled entry for one
 activation ID. That consumption is durable before any future controller grants
 tools. Duplicate reservations, stale bindings and expiry are refused. A pending
 reservation cannot be cancelled or replaced by a new sign-in; it must settle
 against the same activation ID. Closing the claim is idempotent and still
-reports `portalAccessVerified: false`. The future enrollment controller must
-persist its own configuration plan before reserving and join verified activation
+reports `portalAccessVerified: false`. The internal enrollment controller now
+persists its configuration plan before reserving and joins verified activation
 or rollback to closing that claim; the journal phase alone never proves success.
+
+`native_enrollment.Controller` owns a private, bounded and directory-fsynced
+metadata journal. Its step binds Root records, before/after configuration,
+environment/onboarding hashes and an exact transaction ID. A resumed owner
+completion must match those files and fresh Root runtime proof. Withdrawal can
+settle an existing attempt, but cannot freshly submit its old enable plan.
+Only a verified disabled runtime permits local credential cleanup. Known consent
+expiry before any claim closes without activating access or erasing valid
+credentials. The default-owner readiness cache expires after five minutes and
+also checks current configuration/runtime proof without Node/provider work on
+status polls. Google/plugin mutations refuse a pending native flow inside the
+same Root lock. Coordination with model/settings/provider/source writers and
+the authenticated host/API/Settings journey remain release requirements.
 
 Native diagnostics and the owner result now use separate channels: a bounded
 anonymous private reply file carries the fixed result while SDK stdout/stderr

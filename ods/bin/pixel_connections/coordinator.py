@@ -21,7 +21,7 @@ import tempfile
 import time
 from typing import Any
 
-from pixel_access_bridge import AccessError, atomic_json, remaining, runtime_config_path
+from pixel_access_bridge import AccessError, atomic_json, digest, remaining, runtime_config_path
 from pixel_model_coordinator import _managed_marker, _marker_digest
 from pixel_settings.coordinator import _identity, _read, _valid_identity
 
@@ -61,6 +61,19 @@ def _iso(moment: datetime) -> str:
 
 def _instant(value: str) -> datetime:
     return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+
+
+def _guard_native_enrollment(bridge) -> None:
+    """Join the caller's existing Root lock; never acquire a second one."""
+    # Native enrollment reuses this coordinator's private transaction helpers.
+    # Import only when invoked, after both modules have finished initialization.
+    from .native_enrollment import guard_idle
+    from .native_mcp import NativeError
+
+    try:
+        guard_idle(bridge)
+    except NativeError as error:
+        raise AccessError(error.code) from None
 
 
 # ---------------------------------------------------------------- lifecycle
@@ -272,6 +285,7 @@ def begin(bridge, request: Any) -> dict[str, Any]:
     request = _begin_request(request)
     with bridge.bounded(60), bridge.locked():
         bridge.discover()
+        _guard_native_enrollment(bridge)
         # Only one sign-in is ever open, so every earlier handoff goes, journaled or not.
         custody.discard_flows(PATHS)
         _clear_lifecycle(bridge)
@@ -319,6 +333,7 @@ def complete(bridge, request: Any) -> dict[str, Any]:
     request = _complete_request(request)
     with bridge.bounded(150), bridge.locked():
         bridge.discover()
+        _guard_native_enrollment(bridge)
         journal = read_lifecycle(_lifecycle_path(bridge))
         if not journal or journal["phase"] != "consent" or journal["flowId"] != request["flowId"]:
             raise AccessError("sign-in-flow-unknown")
@@ -389,6 +404,7 @@ def disconnect(bridge, request: Any) -> dict[str, Any]:
         raise AccessError("invalid-connection-request")
     with bridge.bounded(150), bridge.locked():
         bridge.discover()
+        _guard_native_enrollment(bridge)
         journal = read_lifecycle(_lifecycle_path(bridge))
         if journal and journal["phase"] == "consent":
             custody.discard_flow(PATHS, journal["flowId"])
@@ -568,7 +584,7 @@ def decline(bridge, request: Any) -> dict[str, Any]:
 def _journal(value: Any) -> dict[str, Any]:
     required = {"kind", "phase", "token", "transactionId", "edge_revision", "beforeSha", "boundary", "mode",
                 "beforeIdentity", "target", "markerBeforeSha"}
-    optional = {"error", "outcome", "restartIdentity", "noOwnerWrite"}
+    optional = {"error", "outcome", "restartIdentity", "noOwnerWrite", "afterSha", "answersSha"}
     if (not isinstance(value, dict) or not required <= set(value) or set(value) - required - optional
             or value["kind"] != "connection"
             or value["phase"] not in ("acquiring", "invoking", "restarting", "releasing")
@@ -579,6 +595,12 @@ def _journal(value: Any) -> dict[str, Any]:
             or type(value["boundary"]) is not str or not 1 <= len(value["boundary"]) <= 4096
             or not _valid_identity(value["beforeIdentity"])
             or "restartIdentity" in value and not _valid_identity(value["restartIdentity"])):
+        raise AccessError("invalid-connection-transition")
+    # Only trusted exact-step callers add this pair. Older transitions remain
+    # readable; a partial or malformed step binding cannot be resumed as one.
+    if (('afterSha' in value) != ('answersSha' in value)
+            or any(type(value[key]) is not str or not HEX.fullmatch(value[key])
+                   for key in ('afterSha', 'answersSha') if key in value)):
         raise AccessError("invalid-connection-transition")
     planner.target(value["target"])
     return value
@@ -750,7 +772,10 @@ def _owner_outcome(bridge, journal: dict[str, Any], result: dict[str, Any]) -> s
     outcome = {"runtime-verified": "applied", "rolled-back": "rolled-back"}.get(result.get("status"))
     if (outcome is None or owner["pending"] or owner["configSha256"] != config_hash
             or result.get("configSha256") != config_hash
-            or outcome == "rolled-back" and config_hash != journal["beforeSha"]):
+            or outcome == "rolled-back" and config_hash != journal["beforeSha"]
+            or outcome == "applied" and 'afterSha' in journal and (
+                config_hash != journal['afterSha'] or not _live_matches(owner, journal['target'])
+                or digest(owner['answers']) != journal['answersSha'])):
         raise AccessError("connection-completion-mismatch")
     if not journal.get("noOwnerWrite") and owner["completion"] != {
             "transactionId": journal["transactionId"], "outcome": outcome, "configSha256": config_hash}:
@@ -778,14 +803,93 @@ def _resume(bridge, journal: dict[str, Any]) -> str:
     return _finish(bridge, journal, _owner_outcome(bridge, journal, result))
 
 
-def _change_gateway(bridge, target: dict[str, Any], answers: dict[str, Any]) -> str:
+def _live_matches(owner: dict[str, Any], target: dict[str, Any]) -> bool:
+    live = dict(owner['live'])
+    if 'nativeApps' not in target:
+        live.pop('nativeApps', None)  # An older record does not take over a custom native registry.
+    return live == target
+
+
+def _confirmed_step(bridge, target: dict[str, Any], answers: dict[str, Any], *, transaction_id: str,
+                    before_sha: str, after_sha: str, outcome: str | None = None,
+                    no_owner_write: bool = False) -> str:
+    """Join an exact step's receipt to live files AND fresh Root runtime proof.
+
+    This is read-only: a lost reply must not replay an owner write or restart.
+    A known no-write rollback comes only from _resume under this same Root lock.
+    """
+    owner = bridge.worker('connection-owner-status')
+    receipt = owner.get('completion')
+    if outcome is None:
+        if (type(receipt) is not dict or receipt.get('transactionId') != transaction_id
+                or receipt.get('outcome') not in ('applied', 'rolled-back')):
+            raise AccessError('connection-completion-mismatch')
+        outcome = receipt['outcome']
+    config, config_hash = _read(runtime_config_path(bridge), bridge.owner.pw_uid)
+    expected_hash = after_sha if outcome == 'applied' else before_sha
+    if (outcome not in ('applied', 'rolled-back', 'unchanged') or owner['pending']
+            or config_hash != expected_hash or owner['configSha256'] != config_hash
+            or outcome in ('applied', 'unchanged') and (
+                not _live_matches(owner, target) or owner['answers'] != answers)
+            or outcome == 'unchanged' and before_sha != after_sha
+            or outcome != 'unchanged' and not no_owner_write and receipt != {
+                'transactionId': transaction_id, 'outcome': outcome, 'configSha256': config_hash}
+            or no_owner_write and outcome != 'rolled-back'):
+        raise AccessError('connection-completion-mismatch')
+    _path, marker = _managed_marker(bridge)
+    if marker and marker['configuration_sha256'] != _marker_digest(config):
+        raise AccessError('connection-marker-drifted')
+    identity, boundary = _identity(bridge), bridge.unit_boundary()
+
+    def proof():
+        snapshot = bridge.inspect()
+        if (snapshot.get('runtime_verified') is not True or snapshot.get('pending') or snapshot.get('busy')
+                or snapshot.get('configured_mode') not in ('sandboxed', 'full-access')
+                or snapshot.get('effective_mode') != snapshot['configured_mode']
+                or snapshot.get('_config', {}).get('config_sha256') != config_hash
+                or type(snapshot.get('revision')) is not str or not HEX.fullmatch(snapshot['revision'])):
+            raise AccessError('connection-runtime-proof-failed')
+        return snapshot['revision']
+
+    revision = proof()
+    if (bridge.worker('connection-owner-status') != owner
+            or _read(runtime_config_path(bridge), bridge.owner.pw_uid)[1] != config_hash
+            or _managed_marker(bridge)[1] != marker or _identity(bridge) != identity
+            or bridge.unit_boundary() != boundary or proof() != revision):
+        raise AccessError('connection-completion-mismatch')
+    return outcome
+
+
+def _change_gateway(bridge, target: dict[str, Any], answers: dict[str, Any], *, transaction_id: str | None = None,
+                    before_config_sha256: str | None = None, after_config_sha256: str | None = None) -> str:
     """One gated gateway transaction toward ``target``: applied, rolled-back or unchanged.
 
     ``answers`` keeps ODS's onboarding contract in step, so a later model change
-    renders the same connection that is live.
+    renders the same connection that is live. A trusted enrollment caller may
+    supply its durably saved exact-step ID and BOTH before/after config hashes.
+    That opt-in path settles the same step without applying it a second time.
+    This function runs under its caller's existing non-reentrant Root lock.
     """
+    exact = transaction_id is not None
+    if (exact and (any(type(value) is not str or not HEX.fullmatch(value)
+                      for value in (transaction_id, before_config_sha256, after_config_sha256))
+                   or not state.valid_connection_answers(answers))
+            or not exact and (before_config_sha256 is not None or after_config_sha256 is not None)):
+        raise AccessError('invalid-connection-transaction')
+    if exact:
+        planner.target(target)
     pending = bridge.pending()
     if pending and pending.get("kind") == "connection":
+        if exact:
+            _journal(pending)
+            if (pending['transactionId'] != transaction_id or pending['target'] != target
+                    or pending['beforeSha'] != before_config_sha256 or pending.get('afterSha') != after_config_sha256
+                    or pending.get('answersSha') != digest(answers)):
+                raise AccessError('connection-transaction-conflict')
+            outcome = _resume(bridge, pending)
+            return _confirmed_step(bridge, target, answers, transaction_id=transaction_id,
+                before_sha=before_config_sha256, after_sha=after_config_sha256, outcome=outcome,
+                no_owner_write=pending.get('noOwnerWrite') is True)
         _resume(bridge, pending)
         pending = None
     if pending:
@@ -799,17 +903,26 @@ def _change_gateway(bridge, target: dict[str, Any], answers: dict[str, Any]) -> 
     _config, config_hash = _read(runtime_config_path(bridge), bridge.owner.pw_uid)
     if owner["pending"] or owner["configSha256"] != config_hash:
         raise AccessError("connection-owner-state-changed")
-    live = dict(owner['live'])
-    if 'nativeApps' not in target:
-        live.pop('nativeApps', None)  # An older record does not take over a custom native registry.
-    if live == target and owner["answers"] == answers:
-        return "unchanged"
+    if exact and owner.get('completion') and owner['completion'].get('transactionId') == transaction_id:
+        return _confirmed_step(bridge, target, answers, transaction_id=transaction_id,
+            before_sha=before_config_sha256, after_sha=after_config_sha256)
+    if exact and config_hash != before_config_sha256:
+        raise AccessError('connection-config-changed')
+    if _live_matches(owner, target) and owner["answers"] == answers:
+        if not exact:
+            return "unchanged"
+        if before_config_sha256 == after_config_sha256:
+            return _confirmed_step(bridge, target, answers, transaction_id=transaction_id,
+                before_sha=before_config_sha256, after_sha=after_config_sha256, outcome='unchanged')
     _path, marker = _managed_marker(bridge)
     journal = {"kind": "connection", "phase": "acquiring", "token": os.urandom(32).hex(),
-               "transactionId": os.urandom(32).hex(), "edge_revision": snapshot["_edge"]["revision"],
+               "transactionId": transaction_id if exact else os.urandom(32).hex(),
+               "edge_revision": snapshot["_edge"]["revision"],
                "beforeSha": config_hash, "boundary": bridge.unit_boundary(), "mode": snapshot["configured_mode"],
                "beforeIdentity": _identity(bridge), "target": target,
                "markerBeforeSha": marker["configuration_sha256"] if marker else None}
+    if exact:
+        journal.update(afterSha=after_config_sha256, answersSha=digest(answers))
     _write(bridge, journal)
     try:
         _acquire(bridge, journal)
@@ -837,6 +950,7 @@ def activate(bridge, request: Any) -> dict[str, Any]:
         raise AccessError("invalid-connection-request")
     with bridge.bounded(300), bridge.locked():
         bridge.discover()
+        _guard_native_enrollment(bridge)
         lifecycle = read_lifecycle(_lifecycle_path(bridge))
         if lifecycle and lifecycle["phase"] == "consent":
             raise AccessError("sign-in-in-progress")
@@ -883,6 +997,7 @@ def plugin_change(bridge, request: Any) -> dict[str, Any]:
     request = _plugin_request(request)
     with bridge.bounded(300), bridge.locked():
         bridge.discover()
+        _guard_native_enrollment(bridge)
         before = _record()
         base = before or {"schemaVersion": state.SCHEMA_VERSION, "kind": state.KIND, "updatedAt": None,
                           "ownerTimeZone": None, "connectors": {}}

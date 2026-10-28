@@ -57,7 +57,12 @@ mark them merged or replace their review.
   requires fresh runtime/configuration proof; local credential cleanup requires
   a verified disabled runtime and reports no provider revocation. A durable
   authorization reservation prevents two activations from consuming one flow.
-  Joining these helpers into the complete enrollment controller/UI remains open.
+  The internal enrollment controller now joins preparation, bound consent,
+  durable activation, recovery and verified withdrawal. Exact step IDs and
+  before/after file hashes prevent a lost reply from replaying a grant. Other
+  Google/plugin mutations respect its pending state under the existing lock.
+  Public host/API/Settings wiring remains open, as does coordination with
+  model/provider/settings/source writers before release.
 
 ## Qualification boundaries
 

@@ -251,14 +251,19 @@ def check_access(bridge, server_name):
     A journal/token alone cannot supply this proof. Nothing enrolls an app here.
     """
     with bridge.bounded(70), bridge.locked():
-        binding = bridge_binding(bridge, server_name)
-        revision = _verified_runtime(bridge, binding)
-        request = worker_request({'action': 'probe', 'binding': binding, 'serverName': server_name})
-        result = worker_result(bridge.worker('native-mcp-oauth', config_hash=binding['configSha256'],
-                                            native_oauth_request=request), 'probe')
-        if bridge_binding(bridge, server_name) != binding or _verified_runtime(bridge, binding) != revision:
-            raise NativeError('native-mcp-binding-changed')
-        return dict(result, configSha256=binding['configSha256'], runtimeRevision=revision)
+        return _check_access_locked(bridge, server_name)
+
+
+def _check_access_locked(bridge, server_name):
+    """Internal controller seam; the caller already holds Root's access lock."""
+    binding = bridge_binding(bridge, server_name)
+    revision = _verified_runtime(bridge, binding)
+    request = worker_request({'action': 'probe', 'binding': binding, 'serverName': server_name})
+    result = worker_result(bridge.worker('native-mcp-oauth', config_hash=binding['configSha256'],
+                                        native_oauth_request=request), 'probe')
+    if bridge_binding(bridge, server_name) != binding or _verified_runtime(bridge, binding) != revision:
+        raise NativeError('native-mcp-binding-changed')
+    return dict(result, configSha256=binding['configSha256'], runtimeRevision=revision)
 
 
 def forget_disabled(bridge, server_name):
@@ -270,19 +275,24 @@ def forget_disabled(bridge, server_name):
     Provider-side authorization is not revoked by this operation.
     """
     with bridge.bounded(70), bridge.locked():
-        binding = bridge_binding(bridge, server_name)
-        revision = _verified_runtime(bridge, binding)
-        raw = _read(Path(binding['configPath']), owners=(binding['ownerUid'],), private=True)
-        if hashlib.sha256(raw).hexdigest() != binding['configSha256']:
-            raise NativeError('native-mcp-binding-changed')
-        if selected_server(decode(raw), server_name).get('enabled') is not False:
-            raise NativeError('native-app-withdrawal-required')
-        request = worker_request({'action': 'forget', 'binding': binding, 'serverName': server_name})
-        result = worker_result(bridge.worker('native-mcp-oauth', config_hash=binding['configSha256'],
-                                            native_oauth_request=request), 'forget')
-        if bridge_binding(bridge, server_name) != binding or _verified_runtime(bridge, binding) != revision:
-            raise NativeError('native-mcp-binding-changed')
-        return dict(result, providerRevoked=False)
+        return _forget_disabled_locked(bridge, server_name)
+
+
+def _forget_disabled_locked(bridge, server_name):
+    """Internal controller seam; withdrawal and Root's lock are already held."""
+    binding = bridge_binding(bridge, server_name)
+    revision = _verified_runtime(bridge, binding)
+    raw = _read(Path(binding['configPath']), owners=(binding['ownerUid'],), private=True)
+    if hashlib.sha256(raw).hexdigest() != binding['configSha256']:
+        raise NativeError('native-mcp-binding-changed')
+    if selected_server(decode(raw), server_name).get('enabled') is not False:
+        raise NativeError('native-app-withdrawal-required')
+    request = worker_request({'action': 'forget', 'binding': binding, 'serverName': server_name})
+    result = worker_result(bridge.worker('native-mcp-oauth', config_hash=binding['configSha256'],
+                                        native_oauth_request=request), 'forget')
+    if bridge_binding(bridge, server_name) != binding or _verified_runtime(bridge, binding) != revision:
+        raise NativeError('native-mcp-binding-changed')
+    return dict(result, providerRevoked=False)
 
 
 def _instant(value):
@@ -388,71 +398,81 @@ class Consent:
                                                 native_oauth_request=request), action)
 
     def begin(self, *, redirect_port):
+        with self.bridge.bounded(70), self.bridge.locked():
+            return self._begin_locked(redirect_port=redirect_port)
+
+    def _begin_locked(self, *, redirect_port, flow_id=None):
+        if flow_id is None:
+            flow_id = secrets.token_hex(16)
+        if type(flow_id) is not str or not oauth.FLOW_ID.fullmatch(flow_id):
+            raise NativeError('native-flow-mismatch')
         if type(redirect_port) is not int or not 1024 <= redirect_port <= 65535:
             raise NativeError('invalid-native-oauth-redirect')
-        with self.bridge.bounded(70), self.bridge.locked():
-            old = self._read()
-            if old and old['phase'] not in ('failed', 'cancelled', 'settled'):
-                raise NativeError('native-sign-in-in-progress')
-            binding = self._binding()
-            now = self.now()
-            journal = dict(kind='native-mcp-consent', schemaVersion=1, app=self.app, serverName=self.server_name,
-                           bindingSha256=digest(binding), flowId=secrets.token_hex(16), phase='beginning',
-                           redirectUri=f'http://127.0.0.1:{redirect_port}/', stateHash=None,
-                           createdAt=_iso(now), expiresAt=_iso(now + timedelta(seconds=oauth.FLOW_SECONDS)), error=None)
-            self._write(journal)  # Durable before the first native side effect.
-            result = self._run('begin', binding, journal['redirectUri'])
-            if digest(self._binding()) != journal['bindingSha256']:
-                raise NativeError('native-mcp-binding-changed')
-            if result['outcome'] == 'redirect':
-                try:
-                    url = urlsplit(result['authUrl'])
-                    fields = parse_qsl(url.query, keep_blank_values=True, strict_parsing=True, max_num_fields=32)
-                    values = dict(fields)
-                    if (len(values) != len(fields) or url.username or url.password or url.fragment
-                            or url.scheme not in ('https', 'http') or not url.hostname
-                            or url.scheme == 'http' and url.hostname != '127.0.0.1'
-                            or values.get('redirect_uri') != journal['redirectUri']
-                            or not oauth.STATE.fullmatch(values.get('state', ''))
-                            or values.get('response_type') != 'code' or values.get('code_challenge_method') != 'S256'):
-                        raise ValueError()
-                except ValueError:
-                    raise NativeError('invalid-native-oauth-result') from None
-                journal.update(phase='consent', stateHash=oauth.state_hash(values['state']))
-            else:
-                journal['phase'] = 'authorized'
-            self._write(journal)
-            return {'flowId': journal['flowId'], 'phase': journal['phase'], 'authUrl': result['authUrl'],
-                    'expiresAt': journal['expiresAt'], 'portalAccessVerified': False}
+        old = self._read()
+        if old and old['phase'] not in ('failed', 'cancelled', 'settled'):
+            raise NativeError('native-sign-in-in-progress')
+        binding = self._binding()
+        now = self.now()
+        journal = dict(kind='native-mcp-consent', schemaVersion=1, app=self.app, serverName=self.server_name,
+                       bindingSha256=digest(binding), flowId=flow_id, phase='beginning',
+                       redirectUri=f'http://127.0.0.1:{redirect_port}/', stateHash=None,
+                       createdAt=_iso(now), expiresAt=_iso(now + timedelta(seconds=oauth.FLOW_SECONDS)), error=None)
+        self._write(journal)  # Durable before the first native side effect.
+        result = self._run('begin', binding, journal['redirectUri'])
+        if digest(self._binding()) != journal['bindingSha256']:
+            raise NativeError('native-mcp-binding-changed')
+        if result['outcome'] == 'redirect':
+            try:
+                url = urlsplit(result['authUrl'])
+                fields = parse_qsl(url.query, keep_blank_values=True, strict_parsing=True, max_num_fields=32)
+                values = dict(fields)
+                if (len(values) != len(fields) or url.username or url.password or url.fragment
+                        or url.scheme not in ('https', 'http') or not url.hostname
+                        or url.scheme == 'http' and url.hostname != '127.0.0.1'
+                        or values.get('redirect_uri') != journal['redirectUri']
+                        or not oauth.STATE.fullmatch(values.get('state', ''))
+                        or values.get('response_type') != 'code' or values.get('code_challenge_method') != 'S256'):
+                    raise ValueError()
+            except ValueError:
+                raise NativeError('invalid-native-oauth-result') from None
+            journal.update(phase='consent', stateHash=oauth.state_hash(values['state']))
+        else:
+            journal['phase'] = 'authorized'
+        self._write(journal)
+        return {'flowId': journal['flowId'], 'phase': journal['phase'], 'authUrl': result['authUrl'],
+                'expiresAt': journal['expiresAt'], 'portalAccessVerified': False}
 
     def complete(self, *, flow_id, callback_url):
         with self.bridge.bounded(70), self.bridge.locked():
-            journal = self._flow(flow_id)
-            if journal['phase'] != 'consent':
-                raise NativeError('native-callback-already-claimed')
-            if self.now() >= _instant(journal['expiresAt']):
-                raise NativeError('native-flow-expired')
-            if (type(callback_url) is not str or len(callback_url) > 8192
-                    or not callback_url.startswith(journal['redirectUri'] + '?')
-                    or urlsplit(callback_url).fragment):
-                raise NativeError('native-callback-redirect-mismatch')
-            try:
-                fields = oauth.parse_callback(callback_url.partition('?')[2], expected_state_hash=journal['stateHash'])
-            except oauth.OAuthError as error:
-                raise NativeError(error.code) from None
-            if 'error' in fields:
-                self._write(dict(journal, phase='failed', error=fields['error']))
-                return {'phase': 'failed', 'error': fields['error'], 'portalAccessVerified': False}
-            binding = self._binding()
-            if not hmac.compare_digest(digest(binding), journal['bindingSha256']):
-                raise NativeError('native-mcp-binding-changed')
-            journal['phase'] = 'exchanging'
-            self._write(journal)  # Claim before exchanging, even if the process dies next.
-            result = self._run('complete', binding, journal['redirectUri'], authorizationCode=fields['code'])
-            if result['outcome'] != 'authorized' or digest(self._binding()) != journal['bindingSha256']:
-                raise NativeError('native-oauth-exchange-unconfirmed')
-            self._write(dict(journal, phase='authorized'))
-            return {'phase': 'authorized', 'error': None, 'portalAccessVerified': False}
+            return self._complete_locked(flow_id=flow_id, callback_url=callback_url)
+
+    def _complete_locked(self, *, flow_id, callback_url):
+        journal = self._flow(flow_id)
+        if journal['phase'] != 'consent':
+            raise NativeError('native-callback-already-claimed')
+        if self.now() >= _instant(journal['expiresAt']):
+            raise NativeError('native-flow-expired')
+        if (type(callback_url) is not str or len(callback_url) > 8192
+                or not callback_url.startswith(journal['redirectUri'] + '?')
+                or urlsplit(callback_url).fragment):
+            raise NativeError('native-callback-redirect-mismatch')
+        try:
+            fields = oauth.parse_callback(callback_url.partition('?')[2], expected_state_hash=journal['stateHash'])
+        except oauth.OAuthError as error:
+            raise NativeError(error.code) from None
+        if 'error' in fields:
+            self._write(dict(journal, phase='failed', error=fields['error']))
+            return {'phase': 'failed', 'error': fields['error'], 'portalAccessVerified': False}
+        binding = self._binding()
+        if not hmac.compare_digest(digest(binding), journal['bindingSha256']):
+            raise NativeError('native-mcp-binding-changed')
+        journal['phase'] = 'exchanging'
+        self._write(journal)  # Claim before exchanging, even if the process dies next.
+        result = self._run('complete', binding, journal['redirectUri'], authorizationCode=fields['code'])
+        if result['outcome'] != 'authorized' or digest(self._binding()) != journal['bindingSha256']:
+            raise NativeError('native-oauth-exchange-unconfirmed')
+        self._write(dict(journal, phase='authorized'))
+        return {'phase': 'authorized', 'error': None, 'portalAccessVerified': False}
 
     def _flow(self, flow_id):
         journal = self._read()
@@ -507,26 +527,32 @@ class Consent:
             return self._finish_authorization_locked(flow_id=flow_id, activation_id=activation_id)
 
     def recover(self, *, flow_id):
-        """Record an unknown attempt as failed; never infer success from token presence."""
         with self.bridge.bounded(20), self.bridge.locked():
-            journal = self._flow(flow_id)
-            if journal['phase'] in ('beginning', 'exchanging'):
-                journal = dict(journal, phase='failed', error='native-oauth-attempt-unconfirmed')
-                self._write(journal)
-            elif journal['phase'] in ('consent', 'authorized') and self.now() >= _instant(journal['expiresAt']):
-                journal = dict(journal, phase='failed', error='native-flow-expired')
-                self._write(journal)
-            return self._public(journal)
+            return self._recover_locked(flow_id=flow_id)
+
+    def _recover_locked(self, *, flow_id):
+        """Record an unknown attempt as failed; never infer success from token presence."""
+        journal = self._flow(flow_id)
+        if journal['phase'] in ('beginning', 'exchanging'):
+            journal = dict(journal, phase='failed', error='native-oauth-attempt-unconfirmed')
+            self._write(journal)
+        elif journal['phase'] in ('consent', 'authorized') and self.now() >= _instant(journal['expiresAt']):
+            journal = dict(journal, phase='failed', error='native-flow-expired')
+            self._write(journal)
+        return self._public(journal)
 
     def cancel(self, *, flow_id):
         with self.bridge.bounded(20), self.bridge.locked():
-            journal = self._flow(flow_id)
-            if journal['phase'] in ('activating', 'settled'):
-                raise NativeError('native-activation-settlement-required')
-            self._write(dict(journal, phase='cancelled', error=None))
-            # Existing valid native tokens survive cancellation. No active
-            # gateway permissions are withdrawn or credentials forgotten here.
-            return {'phase': 'cancelled', 'portalAccessVerified': False}
+            return self._cancel_locked(flow_id=flow_id)
+
+    def _cancel_locked(self, *, flow_id):
+        journal = self._flow(flow_id)
+        if journal['phase'] in ('activating', 'settled'):
+            raise NativeError('native-activation-settlement-required')
+        self._write(dict(journal, phase='cancelled', error=None))
+        # Existing valid native tokens survive cancellation. No active
+        # gateway permissions are withdrawn or credentials forgotten here.
+        return {'phase': 'cancelled', 'portalAccessVerified': False}
 
     @staticmethod
     def _public(journal):
