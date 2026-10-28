@@ -239,18 +239,27 @@ _phase04_own_whisper_publishes() {
     [[ " $host_ports " == *" $port "* ]]
 }
 
-# The running Docker container that publishes host PORT, read from the host
-# side of `docker ps` bindings (its publish filter can match the container
-# side instead). Fails when Docker is missing or unreadable without a prompt.
+# The running Docker container that publishes host TCP PORT, read from the
+# host side of `docker ps` bindings (HOST_IP:START[-END]->...; its publish
+# filter can match the container side instead). Fails when Docker is
+# missing or unreadable without a prompt.
 _phase04_docker_port_owner() {
-    local port="$1" name ports
+    local port="$1" name ports binding start end
+    local binding_pattern=':([0-9]+)(-([0-9]+))?->[0-9]+(-[0-9]+)?/tcp$'
+    local -a bindings
     command -v docker >/dev/null 2>&1 || return 1
     # Read-only and best effort: the port is reported busy either way.
     while IFS='|' read -r name ports; do
-        if [[ ",$ports" == *":${port}->"* ]]; then
-            printf '%s' "$name"
-            return 0
-        fi
+        IFS=',' read -ra bindings <<< "$ports"
+        for binding in ${bindings[@]+"${bindings[@]}"}; do
+            [[ "$binding" =~ $binding_pattern ]] || continue
+            start="${BASH_REMATCH[1]}"
+            end="${BASH_REMATCH[3]:-$start}"
+            if (( start <= port && port <= end )); then
+                printf '%s' "$name"
+                return 0
+            fi
+        done
     done < <(docker ps --format '{{.Names}}|{{.Ports}}' 2>/dev/null)
     return 1
 }
@@ -265,14 +274,23 @@ _phase04_name_docker_owner() {
     PORT_CONFLICT_PID=""
 }
 
-# Who holds PORT, after check_port_conflict, for a message.
+# Who holds PORT, after check_port_conflict, for a message. An unseen owner
+# comes with the command, among this host's tools, that names it.
 _phase04_port_owner() {
+    local finder
     if [[ -n "${PORT_CONFLICT_PROC:-}" ]]; then
         printf '%s%s' "$PORT_CONFLICT_PROC" "${PORT_CONFLICT_PID:+ (PID $PORT_CONFLICT_PID)}"
     elif [[ -n "${PORT_CONFLICT_PID:-}" ]]; then
         printf 'PID %s' "$PORT_CONFLICT_PID"
     else
-        printf "a program this account cannot see (sudo ss -ltnp 'sport = :%s' names it)" "$1"
+        if command -v ss >/dev/null 2>&1; then
+            finder="sudo ss -ltnp 'sport = :$1'"
+        elif command -v lsof >/dev/null 2>&1; then
+            finder="sudo lsof -i :$1 -sTCP:LISTEN"
+        else
+            finder="sudo netstat -tlnp | grep :$1"
+        fi
+        printf 'a program this account cannot see (%s names it)' "$finder"
     fi
 }
 
@@ -368,8 +386,10 @@ check_port_conflict() {
     # eventual Docker bind fail.
     if declare -F ods_windows_host_port_in_use >/dev/null 2>&1 \
         && ods_windows_host_port_in_use "$port"; then
-        PORT_CONFLICT_PROC="Windows host process"
         PORT_CONFLICT=true
+        # Docker Desktop's own published ports show up here too.
+        _phase04_name_docker_owner "$port"
+        PORT_CONFLICT_PROC="${PORT_CONFLICT_PROC:-Windows host process}"
         return 0
     fi
 
@@ -401,7 +421,7 @@ _phase04_own_dashboard_publishes() {
 }
 
 _phase04_check_dashboard_ports() {
-    local key default port hint example=""
+    local key default port hint keys example=""
     local -a busy=() taken=()
     for key in DASHBOARD_PORT DASHBOARD_REMOTE_PORT; do
         default=3001
@@ -433,7 +453,15 @@ _phase04_check_dashboard_ports() {
         taken+=("$hint")
         example+=" $key=$hint"
     done
-    warn "Choose a free port for ${busy[*]} in the environment or installed .env, then rerun the installer${example:+, for example:$example}."
+    keys="${busy[0]}"
+    (( ${#busy[@]} == 1 )) || keys="${busy[0]} and ${busy[1]}"
+    if [[ -n "$example" ]]; then
+        # The example stands on its own line, ready to copy.
+        warn "Choose a free port for $keys in the environment or installed .env, then rerun the installer, for example with:"
+        warn " $example"
+    else
+        warn "Choose a free port for $keys in the environment or installed .env, then rerun the installer."
+    fi
     return 1
 }
 
