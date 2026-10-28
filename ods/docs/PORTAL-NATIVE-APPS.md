@@ -2,8 +2,10 @@
 
 ODS uses the MCP registry, OAuth implementation and private credential store in
 its pinned OpenClaw package. It does not implement another MCP client, credential
-vault or scheduler. The local implementation is still in preparation; there is
-no new public native-app enrollment endpoint or catalog item yet.
+vault or scheduler. The development branch now includes authenticated reviewed
+app enrollment in Connected apps, starting with Notion search and read tools.
+Real Notion account consent, native Mac and update/rollback acceptance remain
+release gates; controlled fixtures do not replace those checks.
 
 The combined branch's implemented work, remaining gates and coordination with
 Coffee are recorded in [Portal integrations status](PORTAL-INTEGRATIONS-STATUS.md).
@@ -64,7 +66,8 @@ exit if its owner worker dies, preventing it from continuing an abandoned flow.
 This internal seam currently selects an existing native registry entry. Its
 `portalAccessVerified: false` result means this consent step has not proved
 Portal access; it does not claim to withdraw permissions a server already had.
-No public socket/API enrollment operation or reviewed app item is added yet.
+That direct SDK operation stays private. The reviewed-app facade below owns the
+public selection and complete enrollment journey.
 
 The internal [reviewed app groundwork](pixel/native-mcp-apps.md) now carries a
 fixed Notion read contract into the existing owner transaction and installer
@@ -95,16 +98,16 @@ reviewed names as native inventory-only tools, without contacting a provider,
 registering a client or reading credentials. Failure leaves configuration,
 environment, onboarding and the previous completion receipt intact. Withdrawal
 does not require a new positive eligibility check; rollback uses the original
-configuration validator. The public enrollment wiring and post-activation
-readiness journey remain unfinished.
+configuration validator. The reviewed-app controller and facade below compose
+the public journey with a post-activation readiness check.
 
 `check_access` joins that check to fresh Root runtime proof and rechecks both the
 configuration binding and runtime revision afterward. `forget_disabled` also
 requires the exact disabled configuration to have verified runtime proof; a
 file edit without a verified restart is insufficient. The owner independently
 checks the disabled entry before forgetting. Its result explicitly says
-`providerRevoked: false`. These helpers remain internal; the managed controller
-below composes them without exposing a public enrollment operation yet.
+`providerRevoked: false`. These helpers remain private; the managed controller
+and reviewed-app facade compose them without exposing raw SDK operations.
 
 The consent journal can reserve an authorized, still-disabled entry for one
 activation ID. That consumption is durable before any future controller grants
@@ -125,8 +128,9 @@ expiry before any claim closes without activating access or erasing valid
 credentials. The default-owner readiness cache expires after five minutes and
 also checks current configuration/runtime proof without Node/provider work on
 status polls. Google/plugin mutations refuse a pending native flow inside the
-same Root lock. Coordination with model/settings/provider/source writers and
-the authenticated host/API/Settings journey remain release requirements.
+same Root lock. Model/settings/provider/source writers also refuse fresh
+mutations across an enrollment intent. The host/API/Settings journey below is
+implemented; installed update/rollback and real-provider acceptance remain open.
 
 Native diagnostics and the owner result now use separate channels: a bounded
 anonymous private reply file carries the fixed result while SDK stdout/stderr
@@ -185,35 +189,106 @@ handlers; it cannot connect an account or restore a denied tool. Other tools,
 including source writes, remain discoverable through the native catalog. The
 smaller-context and larger-context surfaces keep their existing behavior.
 
-## Wiring required before offering Connect
+## Authenticated reviewed-app journey
 
-- Join the bound custodian/owner consent seam to a reviewed app selection and
-  managed registry entry. Browser/model requests must not select package paths,
-  launch commands or arbitrary server configuration. Qualify its intent/claim
-  journal through the complete authenticated public/host route, beyond the
-  real owner/native operation and callback tests.
-- Reuse the host agent's loopback listener and owner-authenticated relay. On
-  WSL the listener is on Windows while authorization runs under the bound Linux
-  runtime. For a remote browser, validate the full pasted callback against its
-  exact saved redirect and state. Never forward callback codes in argv or logs.
-- Apply enrollment and tool permissions under the existing connection/access
-  transaction and admission hold. Use native catalog names, explicit reviewed
-  tool filters and the effective Pixel policy; adding a registry entry or seeing
-  tokens must not grant every MCP server. Verify a real permitted read and a
-  refused write through Pixel after activation.
-- Removing an app must withdraw its tool grants and dispose the active gateway
-  credentials under that same lifecycle. Local forgetting and provider-side
-  revocation need honest separate outcomes. Preserve unrelated connections.
-- Settings must distinguish saved, signed in, reachable and usable by Portal,
-  and expose one clear next action/result in the existing ODS design. Do not
-  forward raw native probe output: it includes launch parameters.
-- Qualify update/rollback, interrupted consent/activation, native Mac and actual
-  account consent/refresh/disconnect before claiming end-to-end readiness.
+Connected apps now includes **Apps for Portal**, independently of Google's
+status frame and sign-in. The first release-reviewed item is Notion, with only
+`notion-search` and `notion-fetch` in its Portal contract. Its provider consent
+can be broader: the screen discloses access to other Notion-connected sources
+and sharing read content with the conversation's selected model provider.
+It does not offer Coffee's custom MCP configuration, Home Assistant, ntfy or
+Obsidian setup.
+
+`native_public.py` accepts only the reviewed app ID and composes the existing
+controller under one bounded operation deadline. It neither selects registry
+paths nor creates another OAuth client/store. `finish` recovers the same flow
+and explicitly activates it if authorization is confirmed; it never restarts
+OAuth or replays a code. The controller's existing locks, exact plans, claims,
+owner transactions, admission gates and rollback remain the authority.
+
+| Dashboard route | Body | Root action |
+| --- | --- | --- |
+| `GET /api/pixel/connections/apps` | None | Cached scoped status; no Node/provider work |
+| `POST .../apps/notion/connect` | `{}` | Disabled preparation, then native sign-in |
+| `POST .../apps/notion/complete` | `flowId`, full `address` | Bound callback; authorization is not readiness |
+| `POST .../apps/notion/finish` | `flowId` | Recover/activate/check the same saved attempt |
+| `POST .../apps/notion/check` | `{}` | Check an existing grant without starting consent or changing access |
+| `POST .../apps/notion/cancel` | `flowId` | Cancel only an unclaimed flow; otherwise require settlement/withdrawal |
+| `POST .../apps/notion/disconnect` | `{}` | Withdraw, prove disabled runtime, then forget locally |
+
+The API, host, Edge and Root reject additional fields. Browser input cannot
+select a URL, server, executable, owner, tool set or transaction ID. The host
+reuses the existing one-shot listener class with separate app/flow ownership;
+its callback URI comes from its own bound loopback port, never a Host header.
+Root compares the complete URI and state to its saved intent. Codes cross
+bounded private request frames, not argv, logs, browser storage or journals.
+Native validation failures, including malformed JSON and Pydantic rejections,
+return fixed messages instead of echoing a rejected callback.
+
+The Windows path also crosses the existing authenticated Node HTTP relay and
+Root Unix socket. Only the native full-callback action gets the larger bounded
+16 KiB frame; ordinary connection actions keep their 2 KiB limit. Root's long
+actions share one 300-second deadline, including recovery followed by activation;
+the Node, Edge, host and API budgets include bounded transport overhead. The
+separate access check uses a 70-second Root deadline and bounded transport
+overhead up to 90 seconds at the API.
+
+A reused native sign-in returns no authorization URL and does not claim a newly
+selected account. Settings reports Connected only from a verified
+`pixel-owner-default` readiness result. Saved tokens, an OAuth reply or a journal
+phase cannot produce that result. Status polls never initiate sign-in, activation
+or a provider check. Expired readiness offers an explicit access check. Failed
+or uncertain operations keep Finish/withdrawal available instead of claiming
+ready/disconnected. Local removal explicitly reports `providerRevoked: false`.
+
+An existing reviewed grant with no enrollment journal offers **Check access**
+and Disconnect without inventing a consent flow or account-selection claim.
+Check invalidates the old derived result durably before contacting the native
+SDK. A failed, timed-out or lost check cannot reuse an older positive result.
+Only an exact current policy/runtime proof can repopulate the private,
+Root-owned cache for at most five minutes. Its binding includes owner, source,
+gateway process, configuration, model, provider and the protected SDK policy
+bytes. The canonical protected adapter supplies the policy-module inventory.
+
+Ordinary chat, direct tools and cron change admission epochs without changing
+that persistent identity. Status remains usable while those gates are idle or
+busy, with no provider work during a poll. Held, interrupted, closing, stopped,
+blocked or malformed runtime states refuse cached readiness. This distinction
+keeps normal turns from expiring a verified connection while refusing a
+connection whose current runtime cannot safely use its grant.
+
+Controlled journeys exercise the full Dashboard and host HTTP services, the real
+owner-authenticated Node relay, real framed Unix transport and isolated Root/owner
+transactions. They cover wrong state, a callback exceeding 2 KiB, a lost native
+exchange reply, explicit reuse without account-selection claims, activation,
+content-free status and verified withdrawal. Separate actual Edge HTTP/Unix tests
+refuse extra configuration and false readiness. OAuth/provider responses, gateway
+processes and privileged UID custody are simulated in those journeys; the pinned
+native SDK lane separately qualifies native consent, refresh, store and policy.
+No real Notion account or installed owner state is used.
+
+## Remaining release acceptance
+
+The following acceptance checks still apply to the public journey:
+
+- With explicit account authorization, qualify actual Notion consent, workspace
+  administration, refresh and withdrawal. Verify a permitted read and refusal of
+  a write/unrelated server through Portal with the real provider's inventory.
+- Qualify the installed Windows/WSL path, including Windows callback listener,
+  actual Docker Edge/ingress, interrupted attempts and existing Google/plugin
+  preservation. The controlled lanes qualify those contracts separately from
+  production service custody and a real account.
+- Exercise installed update/rollback with pending and ready app state. Source
+  binding drift must remain recoverable and never overwrite newer Root choices.
+- Qualify native Mac before adding an available Mac catalog. The current public
+  host transport honestly returns unavailable on Darwin.
+- Review the installed Settings journey visually, including remote-browser
+  callbacks, uncertain outcomes and keyboard focus, before release acceptance.
 
 ## Candidate external app
 
-Notion is a candidate for a first remote read workflow, not an enabled catalog
-item. Its [official connection documentation](https://developers.notion.com/guides/mcp/get-started-with-mcp)
+Notion is the first fixed catalog item in this development branch; real account
+acceptance is still pending. Its [official connection documentation](https://developers.notion.com/guides/mcp/get-started-with-mcp)
 specifies `https://mcp.notion.com/mcp` and OAuth. Its
 [tool documentation](https://developers.notion.com/guides/mcp/mcp-supported-tools)
 documents `notion-search` and `notion-fetch`. A narrow ODS read tool filter is

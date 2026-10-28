@@ -17,14 +17,13 @@ mark them merged or replace their review.
 - Qualified runtime plugin imports before activation; manifest visibility
   alone no longer counts as a working plugin.
 - Preserved native MCP servers and tool restrictions through Pixel rendering
-  and macOS configuration staging, with a reproducible Pixel 4.3.37 source
-  candidate and public bundle.
+  and macOS configuration staging, with a reproducible Portal runtime source
+  candidate/public bundle using internal package version 4.3.38.
 - Added an owner-side, version/hash-bound adapter to OpenClaw's MCP OAuth,
   retaining its discovery, registration, PKCE, token storage and refresh.
 - Added internal Root consent intent/callback claiming, an independently bound
   owner operation and safe recovery of an exchange whose reply was lost. It
-  preserves native credentials and does not claim Portal access or expose a
-  public enrollment operation yet.
+  preserves native credentials and does not infer Portal access from them.
 - Improved source argument feedback, explicit calendar timestamps and source
   labels; kept permitted email/calendar read schemas available in the 8K
   Portal profile and bounded native tool-discovery/compaction metadata.
@@ -50,8 +49,8 @@ mark them merged or replace their review.
   Actual Pixel qualification caught and corrected broad implicit MCP access
   from the coding profile. Google disconnection preserves independent native
   choices; source-overlay proof derives those choices from Root's record.
-  Public enrollment, effective-access readiness and the Settings journey remain
-  unfinished; [the groundwork review](pixel/native-mcp-apps.md) records the limits.
+  [The groundwork review](pixel/native-mcp-apps.md) records the permission limits;
+  the public journey below composes it with effective-access readiness.
 - Added a bound native readiness check for the configured default Portal model,
   with real native policy evaluation and no account-content tool call. Root
   requires fresh runtime/configuration proof; local credential cleanup requires
@@ -61,8 +60,20 @@ mark them merged or replace their review.
   durable activation, recovery and verified withdrawal. Exact step IDs and
   before/after file hashes prevent a lost reply from replaying a grant. Other
   Google/plugin mutations respect its pending state under the existing lock.
-  Public host/API/Settings wiring remains open, as does coordination with
-  model/provider/settings/source writers before release.
+  Model/provider/settings/source writers now also respect pending enrollment.
+- Added the complete authenticated reviewed-app host/API/Settings journey,
+  starting with Notion search and read. The public catalog is fixed; the screen
+  discloses broader provider consent, connected-source reach and sharing with
+  the selected model provider. Signed-in is separate from verified Portal access;
+  uncertain outcomes retain Finish/withdrawal and local forgetting never claims
+  provider revocation. Existing grants can use Check access without inventing
+  another consent flow. Readiness survives ordinary chat/cron gate epochs, but
+  refuses unsafe gates or changed policy/runtime bindings; interrupted checks
+  cannot reuse an old positive result. Controlled full API/host/Node/Unix journeys
+  exercise the existing Root/owner transaction. Native Mac, real Notion and installed
+  update/rollback acceptance remain open. Coffee's custom MCP/app work stays
+  separate; [the public contract](PORTAL-NATIVE-APPS.md#authenticated-reviewed-app-journey)
+  records the boundaries.
 
 ## Qualification boundaries
 
@@ -75,9 +86,12 @@ A personal Desktop client completed real read-only consent locally. The installe
 Portal discovered the tools, read one sanitized email projection and queried a
 covered seven-day Calendar interval with zero events. The inbox lookup's persisted
 preview is truncated, so this does not prove that only one email summary reached
-the model. Real scheduled Google work, refresh and withdrawal acceptance remain
-open. That client is not the official ODS application and must not be distributed
-as one. See
+the model. A subsequent one-time task created in the installed UI performed
+bounded Gmail/Calendar reads through native cron and retained its result in
+Past tasks after schedule removal. It disclosed the partial email index but
+confused pagination with synchronization coverage. This scoped scheduled read
+does not qualify arbitrary model answers, real refresh or withdrawal. That
+client is not the official ODS application and must not be distributed as one. See
 [the managed Google contract](PORTAL-GOOGLE-APP.md).
 
 The real first sync exposed Gmail history blocking Calendar and status. The
@@ -89,8 +103,40 @@ grant was unchanged, the owner/source upgrade reached ready/complete, the runtim
 was verified and the four core containers were healthy. Gmail continued growing
 its explicitly partial index while Calendar reported complete coverage of its
 configured window. Source-change and reconnect crash controls still use fixtures.
-Complete write-workflow isolation also needs admission or
-proposal/account binding for a conversation active across the account change.
+The development branch now holds both Edge and native admission throughout a
+Google exchange and verified owner apply. Finish covers interrupted exchange,
+gateway restart and interrupted release without replaying OAuth or the committed
+owner write. Controlled crash lanes qualify these changes; the complete
+installed account-change/write-workflow journey remains open.
+
+The ordinary installed upgrade at `2486daa6a` subsequently applied internal
+package 4.3.38/source `6b7154c88ecbbffed61c2984a5bc986915a1859e`. Runtime and
+source state returned verified/complete, the four core containers were healthy,
+the original read-only Google grant and model configuration were preserved, and
+temporary QA delegation was removed. Gmail results now distinguish indexed
+matches from unknown whole-mailbox totals with explicit coverage metadata.
+One installed 9B UI request discovered/described Inbox and Calendar, requested
+one email summary and exactly seven days, and completed both calls without an
+execution error or fallback. The answer identified the partial index and
+explicitly disclaimed a whole-account total. Gmail's persisted result details
+were truncated, so this trace does not independently prove the number of
+returned summaries or every coverage field. Calendar returned zero events with
+fresh, complete coverage of the requested interval. This is one observed
+model request, not a general answer-quality guarantee. The later Google
+admission and public Native-app blocks are not included in this installed
+checkpoint.
+
+A second one-time Google-count task ran in native cron after the Scheduled
+tasks panel had been closed. It completed Gmail and an exact seven-day Calendar
+query, reported the partial local email index rather than a mailbox total, and
+kept its result in Past tasks after normal removal. No sender, subject or email
+address appeared in the final answer. The browser itself remained open. The
+trace also exposed a failed instruction: the model used `max` instead of the
+schema's `maxResults` and skipped schema description. That unknown optional
+field did not prevent execution, so the one-summary limit is not qualified;
+the persisted Gmail result was truncated. This case remains a negative
+argument/bounded-read acceptance result even though the scheduled execution
+and final counts presentation succeeded.
 
 Local disposable WSL/Linux environments exercised the pinned ODS OpenClaw,
 real plugin loading and tools, the owner worker, Root transactions, native
@@ -176,29 +222,45 @@ earlier checks on #8226 do not certify this branch.
 
 ## Still required
 
-- Expose the internal native app enrollment controller through authenticated
-  Settings/host routes and coordinate pending enrollment with the remaining
-  model/provider/settings/source writers.
+- Qualify the installed reviewed-app journey with an explicitly authorized real
+  provider, including Windows callbacks, existing connections and update/rollback.
+  The authenticated public wiring and controlled HTTP/Root lanes are implemented;
+  they do not certify a real Notion account or native Mac execution.
 - One complete installed UI journey for connection, chat, background result,
   permission withdrawal, update and rollback, beyond the component lanes.
 - Real-provider refresh and disconnect; real Calendar and draft actions;
   honest distinctions between saved, signed in, reachable and usable by Portal.
   Token presence alone is insufficient. Read-only consent and the scoped reads
   above do not establish these other lifecycles.
-- Native macOS execution and the applicable release/fleet lanes. A preexisting
-  Codex comparison-file checksum still blocks claiming the Pixel release gate
-  passes; it also reproduces with the previous untouched bundle.
+- Native macOS execution and the applicable release/fleet lanes. The exact
+  reviewed Codex comparison spacing/checksum is restored without changing its
+  expected pin. The full upstream release contract still requires historical
+  audit documents deliberately excluded from the public export; it is not a
+  passing public-release qualification.
 - Natural-language scheduled-task reliability on limited models, and broader
   model/hardware validation beyond the scoped local 5090 results above.
 
 ## Coordination with Coffee
 
-Coffee owns the custom MCP server setup screen, Home Assistant, ntfy
-notifications and Obsidian integration. Those are his stated work items, not
-features claimed complete here. This branch supplies shared native connection,
-permission and lifecycle foundations; it does not add a competing custom-MCP
-setup UI. The Knowledge wiki's local Markdown storage is distinct from
-Coffee's requested Obsidian connector.
+Coffee owns custom MCP server setup by URL/local command, tool inspection and
+Off/Ask first/Allowed permissions, Home Assistant, ntfy notifications, Obsidian,
+their exact-action approvals and their separate integration service/Settings
+section. His reported scope also includes owner/agent transport separation,
+installer/uninstaller handling and controlled end-to-end tests. These are
+reported work items awaiting his PR, not code or security results validated by
+this branch.
+
+This branch supplies Google/email/Calendar, reviewed fixed-app connection,
+native runtime lifecycle and native cron foundations. It does not add a
+competing custom-MCP editor, notification service, vault connector or approval
+service. The Knowledge wiki's local Markdown storage is distinct from Obsidian.
+
+When Coffee's PR is available, review the shared Settings navigation, native
+registry/server IDs, preserved grants, pending Root/source transitions and
+current-model scope. Scheduled tasks should invoke his notification tool through
+the existing native cron/permission path. Agreement on those seams requires the
+actual code; this document does not claim the two implementations already
+compose successfully.
 
 Further native MCP design and exact remaining wiring are documented in
 [Portal native apps](PORTAL-NATIVE-APPS.md). Keep this consolidation in draft

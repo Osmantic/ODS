@@ -71,10 +71,24 @@ proof; cancellation/withdrawal cannot submit a previously unstarted grant.
 Known unclaimed consent expiry closes without erasing valid native credentials.
 Readiness is scoped to `pixel-owner-default` and cached for at most five minutes,
 with fresh configuration/runtime proof and no provider contact on status polls.
+An explicit Check access supports an existing reviewed grant with no consent
+journal. It first invalidates the old private Root cache, then requires the
+current SDK policy, owner/source/process/configuration and model/provider
+bindings before recording a positive result. Ordinary chat, direct-tool and
+cron admission epochs do not invalidate that stable identity; held, interrupted,
+stopped, closing, blocked and unknown gates refuse readiness. Check does not
+start OAuth or mutate consent, enrollment, permissions or native configuration.
 Google/plugin mutations honor a pending native flow inside their existing lock.
 
-Still required: authenticated host/API routes and the Settings journey,
-coordination with model/provider/settings/source mutations, an authorized real
-provider and installed update/rollback, including macOS.
-No public Connect button is exposed by this groundwork, and this draft is not
-ready for merge or release acceptance.
+The branch now composes this controller through authenticated host/API routes
+and **Apps for Portal** in Connected apps. The reviewed public catalog is fixed;
+no custom MCP server settings cross those routes. Google and other gateway
+writers respect pending enrollment. Full HTTP/Node/Unix journeys use isolated
+Root/owner state and a controlled native provider; readiness and local-only
+withdrawal remain distinct from OAuth authorization and provider revocation.
+See [the public journey](../PORTAL-NATIVE-APPS.md#authenticated-reviewed-app-journey).
+
+Still required for release acceptance: an explicitly authorized real provider,
+installed update/rollback and native macOS qualification. No real Notion account
+was connected by these fixtures; this development checkpoint is not release
+acceptance.
