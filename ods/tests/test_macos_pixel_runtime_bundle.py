@@ -165,6 +165,11 @@ def shared_repairs(artifacts, monkeypatch):
             dependency = 'embedded-agent-subscribe.handlers.compaction.runtime-BcFOW95l.js'
             (dist / dependency).write_bytes(b'reviewed dependency')
             manifest['reviewedDependencies'] = {dependency: hashlib.sha256(b'reviewed dependency').hexdigest()}
+        elif name == 'openclaw-image-envelope.json':
+            dependency = 'src-M7TBQdDX.js'
+            raw = b'reviewed native validation fixture'
+            (dist / dependency).write_bytes(raw)
+            manifest['reviewedDependencies'] = {dependency: hashlib.sha256(raw).hexdigest()}
         elif name == 'openclaw-direct-tool-completion.json':
             manifest['reviewedDependencies'] = {}
             for dependency in ('hook-helpers-CZ2oRHhZ.js', 'hook-runner-global-mWFYlTIy.js',

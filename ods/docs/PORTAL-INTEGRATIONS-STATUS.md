@@ -33,6 +33,14 @@ mark them merged or replace their review.
   source reads while preserving conversation delivery and completed results.
 - Retained ODS's existing workspace design and removed idle gray outlines
   from the requested surfaces; keyboard focus remains visible.
+- Completed native direct-tool admission after execution, including errors.
+  The exact pinned SDK repair uses its existing after-tool hook. Concurrent
+  direct calls sharing an identity remain busy until both finish; an embedded
+  run cannot complete another run's tool admission.
+- Validated Pixel's deferred tool arguments with OpenClaw's own schema
+  validator before dispatch. Missing wiki arguments now identify the required
+  field instead of reaching the plugin as an undefined value; native coercion,
+  permission filtering and other agents' dispatch behavior are retained.
 
 ## Qualification boundaries
 
@@ -55,7 +63,33 @@ A temporary CPU model answered fresh synthetic email/calendar questions
 through the actual 8K rendered profile and Edge. This is scoped evidence;
 small-model reliability, including natural-language scheduled briefings, is
 still open. The temporary engine is stopped. No permanent hardware preference
-or installed model configuration was changed.
+was set by that CPU qualification.
+
+The owner's installed RTX 5090 is now visible in Windows, WSL and Docker. The
+existing Qwen3.5-9B Q4_K_M runs at 64K with all model layers on the GPU. Actual
+Portal chat returned the correct synthetic task total, and a one-time task
+created in the owner UI completed in native cron while another screen was
+open. Its result remained in Past tasks after removal. Actual chat also created
+and read a fictitious Knowledge wiki note through its native tools; disabling
+the plugin retained every Markdown page. These local results do not qualify a
+real Google account, all models or other hardware.
+
+An additional direct HTTP wiki read exposed a pinned SDK omission: execution
+finished without the after-tool hook and left a phantom active tool. The
+reviewed repair is covered against the actual pinned package for success,
+execution failure, admission refusal and overlapping calls with the same ID.
+Installation uses the existing byte-bound repair/restore mechanism, including
+macOS staging; that staging evidence does not claim native Mac execution.
+
+An installed post-update wiki check also exposed a model-quality failure: a
+chat fell back to a file read after malformed wiki arguments, and one scheduled
+answer invented facts without making a read. Neither counts as successful
+connected-read acceptance. A private real-5090/native-cron reproduction then
+isolated the deferred argument-validation defect; the corrected private runtime
+read the randomly marked fixture note correctly. Repeating that result through
+the installed UI remains required, along with reliable truthful completion when
+the model does not call a source at all. Scheduler execution success alone does
+not verify the content of its answer.
 
 Representative repository checks (use the pinned package/dependency staging
 from `portal-runtime.yml` for the native tests):
@@ -85,7 +119,7 @@ earlier checks on #8226 do not certify this branch.
   Codex comparison-file checksum still blocks claiming the Pixel release gate
   passes; it also reproduces with the previous untouched bundle.
 - Natural-language scheduled-task reliability on limited models, and broader
-  model/hardware validation. No GPU result is claimed.
+  model/hardware validation beyond the scoped local 5090 results above.
 
 ## Coordination with Coffee
 

@@ -20,6 +20,7 @@ MANIFEST = Path(__file__).with_name("openclaw-tool-recovery.json")
 MODULE = "tool-loop-detection-C0oQKkXZ.js"
 COMPLETION_MODULE = "agent-command-DeS125kF.js"
 IMAGE_MODULE = "tool-search-BInRpkE3.js"
+IMAGE_DEPENDENCIES = frozenset({"src-M7TBQdDX.js"})
 COMPACTION_MODULE = "embedded-agent-subscribe.handlers.compaction.runtime.js"
 COMPACTION_CHUNK = "embedded-agent-subscribe.handlers.compaction.runtime-BcFOW95l.js"
 COMPACTION_IDLE_MODULE = "sessions-KE_Xmzwf.js"
@@ -86,7 +87,8 @@ def verify_dependencies(runtime_root, manifest, module_name):
     """A facade repair is valid only with its reviewed implementation chunk."""
     expected = manifest.get("reviewedDependencies", {})
     allowed = ({COMPACTION_CHUNK} if module_name == COMPACTION_MODULE else
-               DIRECT_TOOL_DEPENDENCIES if module_name == DIRECT_TOOL_MODULE else set())
+               DIRECT_TOOL_DEPENDENCIES if module_name == DIRECT_TOOL_MODULE else
+               IMAGE_DEPENDENCIES if module_name == IMAGE_MODULE else set())
     if not isinstance(expected, dict) or set(expected) != allowed:
         raise ValueError("runtime repair dependency contract mismatch")
     for name, sha256 in expected.items():
