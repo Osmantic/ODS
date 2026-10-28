@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`6b7154c88ecbbffed61c2984a5bc986915a1859e`, and its SHA-256 is
-`38bcca79efd75ae741c0532af324f52ae79074ad8d65dc4ba97a56f0ab5ccdc0`.
+`a06abf217a351206b236f66ba31ce3d7450aab19`, and its SHA-256 is
+`6b92e5b6d7875f94d46b2e47814304787f9dc947b66cd2c436564b6ee564fa7a`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -22,16 +22,32 @@ The repository owner authorized this source publication and the ODS-only
 Pixel grant. Third-party packages are not included in the Git bundle and
 retain their own notices and licenses.
 
-The current Portal runtime candidate uses internal package version 4.3.38.
-Its functional checkpoint is `1e40a5add3d5725372ef27ec987bd8e650e9bd5f`.
+The current Portal runtime candidate uses internal package version 4.3.39.
+Its functional checkpoint is `069b43b62b3fb589673c4d31f0b4dface6a514a4`;
+the versioned source checkpoint is `326a16832cb4ac28507dfddb53a3a763ad283745`.
+The Source handler validates its declared schema with the existing locked
+TypeBox before reading projections or creating proposals. Unknown arguments
+cannot become omitted parameters with a broader default. Five regressions fail
+on the previous index and pass on this code; the actual pinned SDK preserves
+the unknown argument until this refusal and accepts a corrected one-record call.
+Two independent public single-root builds match. Exact source/digest/Git-mode
+verification and the exact-bundle clean-room plan/apply/verify/rollback fixture
+passed. Installed upgrade, real-model behavior and complete public
+release qualification remain separate acceptance work. The preparation record
+is `pixel/ODS-QUALIFICATION-4.3.39.md`.
+
+## Prior email-count candidate 4.3.38
+
+The preceding functional checkpoint is `1e40a5add3d5725372ef27ec987bd8e650e9bd5f`.
 Gmail page results now distinguish the local index, configured-query coverage
 and unknown mailbox totals. Two independent single-root builds matched; exact
 source/digest/executable-mode verification and the bundle-checkout plan/apply/
 verify exercise passed. Dependency/image pins and trust anchors are unchanged.
 The synthetic 9B model check still found an incorrect freshness statement;
-correct tool metadata is not proof of final-answer consistency. Ordinary
-installed qualification of this candidate and native macOS/fleet execution
-remain open. The reviewed comparison prompt's original spacing and unchanged
+correct tool metadata is not proof of final-answer consistency. The ordinary
+installed upgrade through `2486daa6a` completed, with scoped real read evidence
+recorded in the Portal integration status; native macOS/fleet acceptance remains
+open. The reviewed comparison prompt's original spacing and unchanged
 checksum are restored; the upstream release contract still requires historical
 audit documents deliberately omitted from this public export. See
 `pixel/ODS-QUALIFICATION-4.3.38.md` for the scoped evidence and limits.
