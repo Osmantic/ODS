@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`ce11c0236dee8f2a22588d1ddfcb5185776fb9eb`, and its SHA-256 is
-`c0cfc968cf82b5b3b1f8ef68e5124ec4b43c8a3dff5b0f136b8d2d7bd60854eb`.
+`f3ce6159e5608e582467c4a3e87b7052b62f7b5e`, and its SHA-256 is
+`a0dcd0e6923960d4f4fbed2cca8dc4737af6e37d8e4a5eb3ac6b471ea9feb723`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -406,3 +406,29 @@ suite in 79.32 seconds. Independent builds matched byte for byte, and the
 source/commit/digest/executable-mode verifier passed. These checks retain the
 controlled Docker/systemd, real-account, native Mac and model-reliability limits
 documented above; no fleet or release acceptance is implied.
+
+## ODS-maintained 4.3.37 incremental Google sync candidate
+
+Functional source checkpoint `da05e4ddbb9bdefdecc154614c4d7ec33b2d9a3a`
+adds resumed Gmail/Calendar batches and status publication before historical
+scanning finishes. It retains explicit partial coverage, private cursors,
+credential/query/sanitizer bindings and Sent body restrictions. The ordinary
+held source upgrade requires increasing the candidate version from 4.3.36.
+Dependency/image pins, OpenClaw and signing trust anchors are unchanged.
+See [the candidate record](pixel/ODS-QUALIFICATION-4.3.37.md) for exact scope.
+
+The source tree is `3c1d7fdbda78ef7c7f7962d81d81762f448c0734`. Two independent
+single-root builds produced commit `f3ce6159e5608e582467c4a3e87b7052b62f7b5e`
+and SHA-256 `a0dcd0e6923960d4f4fbed2cca8dc4737af6e37d8e4a5eb3ac6b471ea9feb723`,
+matching byte for byte. The exact source/digest/Git-mode verifier passed. The
+final exact Git bundle checkout passed the existing Linux clean-room
+plan/apply/verify suite in 86.30 seconds with controlled Docker/systemd.
+
+The functional broker cohort passed 114 cases, including real loopback
+slow-response controls; source-upgrade/provider/Mac-bootstrap checks passed
+465 cases with two old-version expectations subsequently corrected and all
+90 bootstrap cases passing. Those bootstrap cases run on Linux and do not
+qualify native Mac execution. Root reconnect tests separately exercise the
+quiesced producer transition, not complete isolation of an active conversation's
+write intent across an account switch. Installed, provider, Mac, fleet and the
+preexisting comparison-fixture release gate remain separate acceptance work.

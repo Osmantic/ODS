@@ -3,6 +3,21 @@
   "schemaVersion": 1,
   "combinations": [
     {
+      "pixel": "4.3.37",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "candidate",
+      "qualifiedAt": "2026-10-28",
+      "evidence": {
+        "sourceCommit": "da05e4ddbb9bdefdecc154614c4d7ec33b2d9a3a",
+        "liveAudit": "ODS-QUALIFICATION-4.3.37.md"
+      }
+    },
+    {
       "pixel": "4.3.36",
       "openclaw": "2026.6.33",
       "plugins": {
