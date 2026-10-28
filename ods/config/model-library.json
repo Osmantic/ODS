@@ -2989,6 +2989,65 @@
         {"path": "tokenizer.json", "size": 20217442, "sha256": "19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d"},
         {"path": "tokenizer_config.json", "size": 761, "git_blob_sha1": "e375fa0a4e16660ce0e2026e39374d35dad4c079"}
       ]
+    },
+    {
+      "id": "qwen3.6-35b-a3b-nvfp4-vllm",
+      "name": "Qwen 3.6 35B A3B NVFP4 (vLLM)",
+      "family": "qwen",
+      "runtime": "vllm",
+      "tools": true,
+      "vision": true,
+      "hf_repo": "nvidia/Qwen3.6-35B-A3B-NVFP4",
+      "revision": "1355db6a052410cfd62085d94b58866fd0f2c3c5",
+      "source_url": "https://huggingface.co/nvidia/Qwen3.6-35B-A3B-NVFP4",
+      "license": "apache-2.0",
+      "size_bytes": 23462477857,
+      "size_mb": 23462,
+      "served_model_name": "Qwen3.6-35B-A3B-NVFP4",
+      "llm_model_name": "qwen3.6-35b-a3b-nvfp4",
+      "context_length": 131072,
+      "max_context_length": 262144,
+      "min_gpu_mib": 51200,
+      "gpu_memory_utilization": 0.5,
+      "compute_capability": ["12.0"],
+      "reasoning": "medium",
+      "thinking_template_kwargs": {
+        "off": {"enable_thinking": false},
+        "low": {"enable_thinking": true},
+        "medium": {"enable_thinking": true},
+        "high": {"enable_thinking": true}
+      },
+      "tool_call_parser": "qwen3_coder",
+      "reasoning_parser": "qwen3",
+      "vllm_args": ["--max-model-len", "131072", "--max-num-seqs", "32", "--max-num-batched-tokens", "8192", "--enable-prefix-caching", "--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder", "--reasoning-parser", "qwen3", "--trust-remote-code", "--speculative-config.method=mtp", "--speculative-config.num_speculative_tokens=3"],
+      "selection": {
+        "discrete": 0,
+        "unified": 0,
+        "cpu": 0,
+        "vllm": 80
+      },
+      "quantization": "NVFP4",
+      "specialty": "Speed",
+      "description": "NVIDIA's NVFP4 build of Qwen 3.6 35B A3B for the vLLM engine (not llama.cpp): a mixture-of-experts model with 35B parameters, 3B active, plus an MTP head. It reads text, images and video. It needs one RTX PRO 6000-class GPU (Blackwell, compute capability 12.0) with at least 50 GiB of memory, and 24 GB of disk. vLLM takes half of that GPU, so image generation and voice still fit beside it on a workstation's only GPU. Served at 128K context with thinking on and MTP speculative decoding. On a DGX Station's RTX PRO 6000 it wrote about 540 tokens/s on one coding stream (llama.cpp's Qwen 3.6 Q4: 250) and read prompts at about 36,000 tokens/s (10,300).",
+      "files": [
+        {"path": ".gitattributes", "size": 1635, "git_blob_sha1": "aa7aacd0134a92c3c1943fdecc75cd8b7420cce6"},
+        {"path": ".quant_summary.txt", "size": 4752286, "git_blob_sha1": "b97d531c8e2bd7cbd1c42cbcb49f029090010251"},
+        {"path": "README.md", "size": 9936, "git_blob_sha1": "0ecb54c1554791cedb4615b7ced45826b9817d19"},
+        {"path": "chat_template.jinja", "size": 7764, "git_blob_sha1": "a8755d827c0a7b614c246c4060dfd58ab352a8ff"},
+        {"path": "config.json", "size": 58110, "git_blob_sha1": "ec1f82c006fd5db6d0b5fa1a59e16fbda9a5c1dd"},
+        {"path": "configuration.json", "size": 58, "git_blob_sha1": "d24dba949ee1fe70cc810e4c4709a0bddf4e06ba"},
+        {"path": "generation_config.json", "size": 202, "git_blob_sha1": "023756cfadf88e5bf69eefeee3e172f38c448d64"},
+        {"path": "hf_quant_config.json", "size": 35085, "git_blob_sha1": "8deefe44cc69cfab994141ea6b9493b03c864061"},
+        {"path": "model-00001-of-00003.safetensors", "size": 10006877608, "sha256": "07141c2db92e47bc08777132cd1a0323faf300eab3a7d7c111bc2bf075fda050"},
+        {"path": "model-00002-of-00003.safetensors", "size": 10003595752, "sha256": "6dea9c759a0f941cf9e1cc1501216b0e107966a66c90425050e212efbd053f02"},
+        {"path": "model-00003-of-00003.safetensors", "size": 3413864960, "sha256": "9758875fc55e49561165f4a44342b654c123c3e25c6811b34abb83553fb1a164"},
+        {"path": "model.safetensors.index.json", "size": 13726227, "sha256": "d67403a4e9793c0ba8a136baf14b3b76ec7b32c822267978084895e07ebd8a3e"},
+        {"path": "preprocessor_config.json", "size": 390, "git_blob_sha1": "2ea84a437d448ff71b08df68fdd949d5cc4ebb64"},
+        {"path": "tokenizer.json", "size": 12807982, "sha256": "5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42"},
+        {"path": "tokenizer_config.json", "size": 16718, "git_blob_sha1": "28d96ff303d1d20350185caf4bf037045916ed35"},
+        {"path": "video_preprocessor_config.json", "size": 385, "git_blob_sha1": "3ba673a5ad7d4d13f54155ecd38b2a94a6dac8fe"},
+        {"path": "vocab.json", "size": 6722759, "git_blob_sha1": "0aa0ce0658d60ac4a5d609f4eadb0e8e43514176"}
+      ]
     }
   ]
 }

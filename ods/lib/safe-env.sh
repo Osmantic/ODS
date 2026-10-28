@@ -153,7 +153,8 @@ load_env_from_output_allowlist() {
 # LLAMA_ARG_CHAT_TEMPLATE_FILE; model activation owns them). Only a vLLM pick
 # (select-model.py --llm-runtime vllm) and a vLLM installation's preserved
 # contract carry the VLLM_* keys; only that contract carries LLM_BACKEND
-# (always vllm) and VLLM_GPU_MEMORY_UTILIZATION.
+# (always vllm). VLLM_GPU_MEMORY_UTILIZATION is the pick's own share, or on
+# a rerun that keeps its model, the share that installation was given.
 load_model_selector_env_from_output() {
     load_env_from_output_allowlist \
         LLM_MODEL \

@@ -70,7 +70,7 @@ macos_parse() ( eval "$macos_parser"; printf 'parsed\n' )
 [[ "$(macos_parse --llm-backend llama-server)" == parsed ]] || fail "macOS must accept --llm-backend llama-server"
 rc=0
 macos_parse --llm-backend vllm >"$tmp/out" 2>"$tmp/err" || rc=$?
-[[ "$rc" -ne 0 ]] && grep -q 'needs Linux with an NVIDIA datacenter GPU' "$tmp/err" && grep -q 'discord.gg' "$tmp/err" \
+[[ "$rc" -ne 0 ]] && grep -q 'needs Linux with an NVIDIA GPU;' "$tmp/err" && grep -q 'discord.gg' "$tmp/err" \
     || fail "macOS must refuse --llm-backend vllm with the reason and the Discord link"
 pass "the macOS installer accepts llama-server and refuses vllm with a reason"
 
@@ -323,9 +323,31 @@ grep -q 'LOG Model server: llama.cpp (no vLLM catalog model fits this host' "$tm
 [[ ! -s "$tmp/rtx-auto/err" ]] || fail "a host without a vLLM fit must not print anything: $(cat "$tmp/rtx-auto/err")"
 decide spark-auto "export FAKE_GPU_ROWS='GPU-eeeeeeee-gb10, 12.1, [N/A]\n'"
 expect_llama spark-auto
+decide rtx5090-auto "export FAKE_GPU_ROWS='GPU-gggggggg-5090, 12.0, 32607\n'"
+expect_llama rtx5090-auto
+pass "without a vLLM fit (RTX 4090, DGX Spark, RTX 5090) the llama.cpp path is unchanged and quiet"
+
+# A workstation whose only GPU is an RTX PRO 6000 gets the catalog's RTX PRO
+# 6000-class vLLM model and that entry's own memory share, which leaves room
+# for ComfyUI and voice on the same GPU.
 decide pro6000-auto "export FAKE_GPU_ROWS='GPU-ffffffff-rtx6000, 12.0, 97887\n'"
-expect_llama pro6000-auto
-pass "without a vLLM fit (RTX 4090, DGX Spark, RTX PRO 6000) the llama.cpp path is unchanged and quiet"
+read -r p6k_model p6k_share < <("$real_python" - "$ROOT_DIR" <<'PY'
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+sys.path.insert(0, str(root / "extensions/services/dashboard-api"))
+from model_vllm import Gpu, rank_entries
+models = json.loads((root / "config/model-library.json").read_text(encoding="utf-8"))["models"]
+best = rank_entries(models, [Gpu("GPU-ffffffff-rtx6000", "12.0", 97887)])[0].model
+print(best["llm_model_name"], f"{best['gpu_memory_utilization']:g}")
+PY
+)
+p6k_share="${p6k_share%$'\r'}"   # a Windows Python ends the line with CRLF
+[[ "$(rc_of pro6000-auto)" == 0 && "$(value pro6000-auto BACKEND)" == vllm \
+    && "$(value pro6000-auto MODEL)" == "$p6k_model" && "$(value pro6000-auto VLLM_GPU_UUID)" == GPU-ffffffff-rtx6000 \
+    && "$(value pro6000-auto VLLM_SHARE)" == "$p6k_share" && "$p6k_share" == 0.5 ]] \
+    || fail "one RTX PRO 6000 must choose vLLM with its entry's memory share: $(cat "$tmp/pro6000-auto/out" "$tmp/pro6000-auto/err")"
+pass "a lone RTX PRO 6000 chooses vLLM ($p6k_model) at its entry's $p6k_share memory share"
 
 decide rtx-forced "export FAKE_GPU_ROWS='$RTX_ROWS'" 'LLM_BACKEND_REQUESTED=vllm'
 expect_refused rtx-forced 'no vLLM catalog model fits this host'
@@ -415,6 +437,23 @@ grep -qx 'OK Model server: vLLM engine, serving GLM-5.3-Flash-NVFP4 on GPU GPU-a
 grep -qF "LOG Kept this installation's vLLM model across installer rerun: glm-5.3-flash-nvfp4 ($GLM_DIR) on GPU GPU-aaaaaaaa-gb300, selected by dashboard" \
     "$tmp/rerun-vllm/install.log" || fail "keeping the vLLM model must reach the install log"
 pass "a rerun of a vLLM install keeps its model, folder, GPU and memory share; the fresh pick stays the recommendation"
+
+# The kept model never takes the fresh pick's memory share: kept without a
+# share of its own, it stays on compose's default even where the fresh pick
+# (the RTX PRO 6000 entry here) sets one.
+share_line='VLLM_GPU_MEMORY_UTILIZATION="0.85"\n'
+GLM_CONTRACT_NO_SHARE="${GLM_CONTRACT%"$share_line"}"
+[[ "$GLM_CONTRACT_NO_SHARE" != "$GLM_CONTRACT" ]] || fail "the contract fixture must end with the share line"
+name=rerun-vllm-own-share; mkdir -p "$tmp/$name/install"
+retained 'LLM_BACKEND=vllm' 'LLM_MODEL=glm-5.3-flash-nvfp4' "VLLM_MODEL_DIR=$GLM_DIR" \
+    'VLLM_SERVED_MODEL=GLM-5.3-Flash-NVFP4' 'VLLM_GPU_UUID=GPU-aaaaaaaa-gb300'
+decide rerun-vllm-own-share "export FAKE_GPU_ROWS='GPU-ffffffff-rtx6000, 12.0, 97887\n'" \
+    "export FAKE_PRESERVE_OUT='$GLM_CONTRACT_NO_SHARE'"
+[[ "$(rc_of rerun-vllm-own-share)" == 0 && "$(value rerun-vllm-own-share MODEL)" == glm-5.3-flash-nvfp4 \
+    && -z "$(value rerun-vllm-own-share VLLM_SHARE)" \
+    && "$(value rerun-vllm-own-share RECOMMENDED)" == "$p6k_model" ]] \
+    || fail "a kept vLLM model must not take the fresh pick's memory share: $(cat "$tmp/rerun-vllm-own-share/out" "$tmp/rerun-vllm-own-share/err")"
+pass "a kept vLLM model keeps only its own memory share, never the fresh pick's"
 
 name=rerun-vllm-incomplete; mkdir -p "$tmp/$name/install"; vllm_install
 decide rerun-vllm-incomplete 'export FAKE_PRESERVE_STATUS=2' \

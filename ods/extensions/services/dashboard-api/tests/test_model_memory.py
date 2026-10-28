@@ -594,6 +594,13 @@ class TestVllmEstimate:
     def test_measured_weights_override_the_manifest(self):
         assert estimate_model_memory(VLLM_ENTRY, weight_size_mb=92160).device_gib == 100.0
 
+    def test_an_entry_share_sets_the_device_need(self):
+        # The RTX PRO 6000-class entry takes half its GPU, so it needs a GPU twice its weights.
+        entry = {**VLLM_ENTRY, "gpu_memory_utilization": 0.5}
+        weights = 90 + 30 / 1024
+        assert estimate_model_memory(entry).device_gib == round(weights / 0.5, 2) == 180.06
+        assert estimate_model_memory(VLLM_ENTRY).device_gib == round(weights / 0.90, 2)
+
     def test_kv_cache_dtype_defaults_to_auto(self):
         entry = {**VLLM_ENTRY, "vllm_args": ["--max-model-len", "131072"]}
         assert estimate_model_memory(entry).cache_type_k == "auto"
@@ -601,21 +608,21 @@ class TestVllmEstimate:
         assert estimate_model_memory(entry).cache_type_v == "fp8_e4m3"
 
     def test_normalized_records_keep_what_the_estimate_reads(self):
-        kept = memory_metadata(VLLM_ENTRY)
-        assert {key: kept[key] for key in ("runtime", "files", "vllm_args")} == {
-            key: VLLM_ENTRY[key] for key in ("runtime", "files", "vllm_args")
-        }
-        assert estimate_model_memory(kept).device_gib == estimate_model_memory(VLLM_ENTRY).device_gib
+        entry = {**VLLM_ENTRY, "gpu_memory_utilization": 0.5}
+        kept = memory_metadata(entry)
+        keys = ("runtime", "files", "vllm_args", "gpu_memory_utilization")
+        assert {key: kept[key] for key in keys} == {key: entry[key] for key in keys}
+        assert estimate_model_memory(kept).device_gib == estimate_model_memory(entry).device_gib == 180.06
 
     def test_catalog_vllm_entries_get_a_sane_number_below_their_gpu_minimum(self):
         entries = [raw for raw in _catalog_entries() if raw.get("runtime") == "vllm"]
-        assert len(entries) == 2
+        assert len(entries) == 3
         select_model = _load_select_model()
         for raw in entries:
             weights = sum(item["size"] for item in raw["files"]) / 1024 ** 3
             estimate = estimate_model_memory(raw)
             assert estimate.method == "vllm"
             assert estimate.weights_gib == round(weights, 3)
-            assert estimate.device_gib == round(weights / 0.90, 2)
+            assert estimate.device_gib == round(weights / raw.get("gpu_memory_utilization", 0.90), 2)
             assert estimate.device_gib * 1024 < raw["min_gpu_mib"]
             assert select_model.selector_required_memory_gb(raw) == estimate.device_gib

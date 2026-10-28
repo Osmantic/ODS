@@ -319,7 +319,7 @@ Options:
     --reselect-model  Replace a valid active local model with the current installer recommendation
     --llm-backend vllm|llama-server
                       Model server. Without it, a new Linux install runs the vLLM engine
-                      when a vLLM catalog model fits one NVIDIA datacenter GPU, and
+                      when a vLLM catalog model fits one NVIDIA GPU, and
                       llama.cpp (llama-server) otherwise; a rerun keeps its engine.
                       vllm stops when no vLLM model fits; llama-server never uses vLLM
     --voice           Enable voice services (Whisper + Kokoro)
