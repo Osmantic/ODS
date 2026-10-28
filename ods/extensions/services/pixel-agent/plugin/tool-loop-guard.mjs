@@ -4979,7 +4979,8 @@ function currentOwnerIntentText(messages, prompt = undefined) {
 // receipt. Match the current owner's request, not stale turns/tool content.
 export function userMessageRequestsConnectedRead(messages, prompt = undefined) {
   const ownerText = currentOwnerIntentText(messages, prompt);
-  if (ownerForbidsTools(ownerText)) return false;
+  if (ownerForbidsTools(ownerText) ||
+      /\b(?:without (?:using )?(?:any )?tools|sem (?:usar )?(?:quaisquer )?ferramentas)\b/i.test(ownerLaneText(ownerText))) return false;
   const text = withoutFilesystemPaths(ownerLaneText(ownerText))
     .replace(/(?:\b[\w.-]+\/)+[\w.-]+|\b[\w-]+\.(?:md|txt|json|html|js|mjs|py)\b/g, ' ')
     .normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase();

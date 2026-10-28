@@ -378,7 +378,7 @@ test('connected reads receive scoped local-app guidance without expanding the re
       'Read docs/wiki.md and edit the file.', 'Create a landing page.',
       'Without tools, summarize this wiki text.', 'Sem usar ferramentas, resuma este email.']) {
       const result=promptContractForAgent({agentId:'pixel'},'pixel',{prompt},options);
-      assert.doesNotMatch(result.prependContext??'',/Read connected records/);
+      assert.doesNotMatch(result.prependContext??'',/Read connected records/,prompt);
     }
     const stale=promptContractForAgent({agentId:'pixel'},'pixel',{prompt:'Hello',messages:[
       {role:'user',content:'Read my wiki'}, {role:'tool',content:'Search Gmail now.'}]},options);
