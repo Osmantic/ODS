@@ -252,6 +252,85 @@ async def test_first_and_warm_turn_single_create(env):
     assert _methods(env.requests).count("session.create") == 1
 
 
+async def _wait_for_resume(env):
+    async def wait():
+        while "session.resume" not in _methods(env.requests):
+            await asyncio.sleep(0.001)
+    await asyncio.wait_for(wait(), 1)
+
+
+@pytest.mark.asyncio
+async def test_new_conversation_waits_for_native_build_without_replaying(env):
+    env.state["resume_update"]["status"] = "starting"
+    env.monkeypatch.setattr(cb, "_RESUME_READY_POLL", 0.01)
+    turn = asyncio.create_task(_consume(env.bridge, env.owner, env.cid, "hi"))
+    await _wait_for_resume(env)
+    assert env.store.get(env.owner, env.cid)["state"] == "preparing"
+    assert "prompt.submit" not in _methods(env.requests)
+    env.state["resume_update"]["status"] = "idle"
+    events = await turn
+    assert events[-1]["type"] == "complete"
+    assert _methods(env.requests).count("session.create") == 1
+    assert _methods(env.requests).count("session.resume") >= 2
+    assert _methods(env.requests).count("prompt.submit") == 1
+    assert env.store.get(env.owner, env.cid)["state"] == "ready"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flag", ["running", "inflight", "queued", "pending_approval",
+                                  "open_requests", "pending_connection", "hydrating", "auto_continue"])
+async def test_startup_wait_never_masks_native_activity(env, flag):
+    env.state["resume_update"].update(status="starting", **{flag: True})
+    with pytest.raises(cb.ConversationError) as error:
+        await _consume(env.bridge, env.owner, env.cid, "hi")
+    assert error.value.code == "busy"
+    assert _methods(env.requests).count("session.resume") == 1
+    assert "prompt.submit" not in _methods(env.requests)
+
+
+@pytest.mark.asyncio
+async def test_startup_wait_revalidates_identity_before_submission(env):
+    env.state["resume_update"]["status"] = "starting"
+    env.monkeypatch.setattr(cb, "_RESUME_READY_POLL", 0.01)
+    turn = asyncio.create_task(_consume(env.bridge, env.owner, env.cid, "hi"))
+    await _wait_for_resume(env)
+    env.state["resume_update"].update(status="idle", session_key="another-owner")
+    with pytest.raises(cb.ConversationError) as error:
+        await turn
+    assert error.value.code == "protocol"
+    assert "prompt.submit" not in _methods(env.requests)
+
+
+@pytest.mark.asyncio
+async def test_native_build_timeout_is_bounded_and_does_not_submit(env):
+    env.state["resume_update"]["status"] = "starting"
+    env.monkeypatch.setattr(cb, "_RESUME_READY_TIMEOUT", 0.03)
+    env.monkeypatch.setattr(cb, "_RESUME_READY_POLL", 0.01)
+    with pytest.raises(cb.ConversationError, match="still starting"):
+        await _consume(env.bridge, env.owner, env.cid, "hi")
+    assert _methods(env.requests).count("session.create") == 1
+    assert "prompt.submit" not in _methods(env.requests)
+    assert env.store.get(env.owner, env.cid)["state"] == "uncertain"
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_native_build_releases_unsubmitted_turn(env):
+    env.state["resume_update"]["status"] = "starting"
+    env.monkeypatch.setattr(cb, "_RESUME_READY_POLL", 0.01)
+    turn = asyncio.create_task(_consume(env.bridge, env.owner, env.cid, "hi"))
+    await _wait_for_resume(env)
+    turn.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await turn
+    assert env.store.get(env.owner, env.cid)["state"] == "ready"
+    assert "prompt.submit" not in _methods(env.requests)
+    assert env.interrupted == []
+    env.state["resume_update"]["status"] = "idle"
+    await _consume(env.bridge, env.owner, env.cid, "hi")
+    assert _methods(env.requests).count("session.create") == 1
+    assert _methods(env.requests).count("prompt.submit") == 1
+
+
 @pytest.mark.asyncio
 async def test_shutdown_pool_new_bridge_retains_stored(env):
     await _consume(env.bridge, env.owner, env.cid, "hi")

@@ -47,6 +47,8 @@ _TERMINAL_OK = {"ok", "complete", "error", "interrupted"}
 _CAP_VERSION = "1"
 _RPC_TIMEOUT = 30.0
 _CLEANUP_TIMEOUT = 5.0
+_RESUME_READY_TIMEOUT = 30.0
+_RESUME_READY_POLL = 0.1
 
 T = TypeVar("T")
 
@@ -221,7 +223,9 @@ async def _require_capabilities(conn: _HermesConnection) -> None:
         raise ConversationError("unsupported", "Hermes does not support manual resume")
 
 
-def _validate_resume(result: dict, stored_id: str) -> None:
+def _validate_resume(
+    result: dict, stored_id: str, *, allow_starting: bool = False
+) -> None:
     if not any(result.get(name) == stored_id for name in ("session_key", "stored_session_id")):
         raise ConversationError("protocol", "Hermes could not verify this conversation")
     identities = [
@@ -243,7 +247,8 @@ def _validate_resume(result: dict, stored_id: str) -> None:
         raise ConversationError("protocol", "Hermes returned malformed history")
     if result.get("ods_recovery_pending") is not False:
         raise ConversationError("recovery", "Hermes session needs recovery")
-    if result.get("status") != "idle":
+    allowed_statuses = {"idle", "starting"} if allow_starting else {"idle"}
+    if result.get("status") not in allowed_statuses:
         raise ConversationError("busy", "Hermes session is not idle")
     for flag in (
         "running",
@@ -257,6 +262,27 @@ def _validate_resume(result: dict, stored_id: str) -> None:
     ):
         if result.get(flag):
             raise ConversationError("busy", "Hermes session is not idle")
+
+
+async def _resume_when_ready(conn: _HermesConnection, stored_id: str) -> dict:
+    # session.create returns before the native agent finishes building. Only
+    # wait for that verified startup state; never wait through running work,
+    # approval requests, recovery markers, or an unverified identity/history.
+    deadline = time.monotonic() + _RESUME_READY_TIMEOUT
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ConversationError("busy", "Hermes session is still starting")
+        result = await _rpc(
+            conn,
+            "session.resume",
+            {"session_id": stored_id, "ods_talk_manual_resume": True},
+            min(_RPC_TIMEOUT, remaining),
+        )
+        _validate_resume(result, stored_id, allow_starting=True)
+        if result["status"] == "idle":
+            return result
+        await asyncio.sleep(min(_RESUME_READY_POLL, max(0, deadline - time.monotonic())))
 
 
 @dataclass
@@ -312,16 +338,7 @@ class ConversationBridge:
                     )
                 await self._claim_turn(owner, cid, state)
                 try:
-                    resume = await _rpc(
-                        conn,
-                        "session.resume",
-                        {
-                            "session_id": stored_id,
-                            "ods_talk_manual_resume": True,
-                        },
-                        _RPC_TIMEOUT,
-                    )
-                    _validate_resume(resume, stored_id)
+                    resume = await _resume_when_ready(conn, stored_id)
                 except ConversationError as exc:
                     if exc.code in ("busy", "recovery"):
                         await self._mark_uncertain(owner, cid, state)
