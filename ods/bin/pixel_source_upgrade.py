@@ -359,20 +359,22 @@ def _prove_provision(bridge, manager, plan, kind):
     return dict(files=evidence, unit=status, socket=[info.st_dev, info.st_ino], images=images)
 
 
-def _owner_plugins():
-    """The reviewed plugins root's connection record turns on, exactly as the installer's overlay loads them.
+def _owner_app_answers():
+    """Reviewed plugin/native choices from Root, as the installer loads them.
 
     They come from root's own record, never the owner's answers file.
     """
-    from pixel_connections import plugins, state
+    from pixel_connections import native_apps, plugins, state
     try:
         record = state.read(state.PATH, owners=(SYSTEM_UID,))
     except state.StateError:
-        return None  # The installer loads none from an unusable record either.
-    return plugins.answers(state.enabled_plugins(record))
+        record = None  # The installer loads none from an unusable record either.
+    return {'portalPlugins': plugins.answers(state.enabled_plugins(record)),
+            'nativeMcpApps': native_apps.answers(state.native_app_choices(record))}
 
 
-def _render_overlay(renderer, anchor, home, uid, gid, *, provision=None, thinking_control=None, portal_plugins=None):
+def _render_overlay(renderer, anchor, home, uid, gid, *, provision=None, thinking_control=None,
+                    portal_plugins=None, native_mcp_apps=None):
     config = _overlay_json(anchor)
     args = config['plugins']['entries']['pixel-ods']['config']
     port = args['perplexicaPort']
@@ -410,6 +412,8 @@ def _render_overlay(renderer, anchor, home, uid, gid, *, provision=None, thinkin
         answers['modelThinkingControl'] = thinking_control
     if portal_plugins:
         answers['portalPlugins'] = portal_plugins
+    if native_mcp_apps:
+        answers['nativeMcpApps'] = native_mcp_apps
     payload = dict(renderer=renderer.decode('utf-8'), config=anchor.decode('utf-8'),
                    port=port, transport=transport, socket=socket, home=str(home / '.openclaw'),
                    answers=answers)
@@ -519,8 +523,9 @@ def prove_runtime_overlay(bridge, transaction, config_sha, outcome):
     # answers file (a plugin-config key would break rollback), so the release
     # cannot name it. It selects one of the renderer's fixed thinking policies:
     # accept any of them, with every other input still derived from the release.
-    chosen = _owner_plugins()
-    derived = (_render_overlay(renderer, anchor, home, uid, gid, **render_args, portal_plugins=chosen,
+    chosen = _owner_app_answers()
+    derived = (_render_overlay(renderer, anchor, home, uid, gid, **render_args,
+                               portal_plugins=chosen['portalPlugins'], native_mcp_apps=chosen['nativeMcpApps'],
                                **({'thinking_control': control} if control else {}))
                for control in (None, 'enable_thinking', 'always', 'none'))
     if len(renderer) > 256 * 1024 or config_sha not in derived:
@@ -531,6 +536,7 @@ def prove_runtime_overlay(bridge, transaction, config_sha, outcome):
     # or process restart during that interval invalidates the entire evidence.
     release_guard(bridge.state, bridge.install, uid, transaction, outcome)
     if (manager.journal() != plan or manager._blob(renderer_item['sha256']) != renderer
+            or _owner_app_answers() != chosen
             or bridge.model_journal(transaction) != pending
             or os.path.lexists(owner_root / 'access-release-journal.json')
             or _overlay_private(home, '.openclaw/openclaw.json', uid) != current

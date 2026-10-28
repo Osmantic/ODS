@@ -370,6 +370,38 @@ class NativeMcpOAuthTests(unittest.TestCase):
         self.assertEqual(self.provider.exchanges, 1)
         self.assertEqual(self.provider.failures, [])
 
+    def test_disabled_server_can_authorize_without_exposing_tools_before_activation(self):
+        from pixel_connections import native_mcp
+        self.server['enabled'] = False
+        config = {'mcp': {'servers': {'qa-notes': self.server}}}
+        self.assertEqual(native_mcp.selected_server(config, 'qa-notes'), self.server)
+        self.assertIs(self.call('probe')['connected'], False)
+        begin = self.call('begin')
+        fields = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(begin['authUrl']).query))
+        expected = self.oauth.state_hash(fields['state'])
+
+        def callback(query):
+            parsed = self.oauth.parse_callback(query, expected_state_hash=expected)
+            self.assertEqual(self.call('complete', code=parsed['code'])['outcome'], 'authorized')
+            return 'Authorized', 'Return to ODS.', None, True
+
+        self.listener.serve(secrets.token_hex(16), callback)
+        with urllib.request.urlopen(begin['authUrl'], timeout=35) as response:
+            self.assertIn(b'Authorized', response.read())
+        self.assertIs(self.call('status')['hasTokens'], True)
+        disabled = self.call('probe')
+        self.assertIs(disabled['connected'], False)
+        self.assertEqual(disabled['tools'], [])
+        self.assertEqual(self.provider.reads, 0)
+        self.server['enabled'] = True
+        self.assertIn(self.provider.fact, json.dumps(self.call('read')['read']))
+        self.server['enabled'] = False
+        self.assertIs(self.call('probe')['connected'], False)
+        self.assertEqual(self.provider.reads, 1)
+        self.assertEqual(self.call('forget'), {'forgotten': True})
+        self.assertIs(self.call('status')['hasTokens'], False)
+        self.assertEqual(self.provider.failures, [])
+
     @unittest.skipIf(hasattr(os, 'geteuid') and os.geteuid() == 0, 'Owner-side operation must run as an unprivileged UID')
     def test_durable_claim_recovers_a_lost_real_exchange_without_replaying_it(self):
         from native_mcp_owner import operate

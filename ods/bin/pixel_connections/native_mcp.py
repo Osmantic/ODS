@@ -115,8 +115,11 @@ def selected_server(config, server_name):
     mcp = config.get('mcp') if type(config) is dict else None
     registry = mcp.get('servers') if type(mcp) is dict else None
     server = registry.get(server_name) if type(registry) is dict else None
-    if (type(server) is not dict or server.get('enabled') is False or server.get('auth') != 'oauth'
+    # Consent may prepare a disabled entry. This helper grants no tool access;
+    # keeping it disabled prevents a broad preexisting MCP policy exposing it.
+    if (type(server) is not dict or server.get('auth') != 'oauth'
             or server.get('transport') != 'streamable-http' or type(server.get('url')) is not str
+            or 'enabled' in server and type(server['enabled']) is not bool
             or server.get('sslVerify') is False or server.get('oauth') is not None and type(server['oauth']) is not dict):
         raise NativeError('invalid-native-mcp-server')
     return copy.deepcopy(server)

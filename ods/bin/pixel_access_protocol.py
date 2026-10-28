@@ -436,7 +436,7 @@ def connection_result(operation, value):
         completed = value.get("completion")
         answers = value.get("answers")
         valid = (set(value) == {"configSha256", "envSha256", "pending", "live", "answers", "completion"}
-                 and type(answers) is dict and set(answers) == set(ANSWER_KEYS)
+                 and type(answers) is dict and set(answers) in (set(ANSWER_KEYS), set(ANSWER_KEYS) - {'nativeMcpApps'})
                  and checksum(value["configSha256"]) and checksum(value["envSha256"])
                  and type(value["pending"]) is bool
                  and (completed is None or not value["pending"] and type(completed) is dict
@@ -446,6 +446,8 @@ def connection_result(operation, value):
         if valid:
             try: connection_target(value["live"])
             except PlanError: valid = False
+        if valid and 'nativeMcpApps' not in answers:
+            value = dict(value, answers=dict(answers, nativeMcpApps=None))
     else:
         valid = (set(value) == {"status", "configSha256"} and checksum(value["configSha256"])
                  and (value["status"] == "rolled-back"

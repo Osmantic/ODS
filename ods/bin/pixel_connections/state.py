@@ -22,6 +22,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import plugins as portal_plugins
+from . import native_apps
 
 PATH = Path("/etc/ods/portal-connections.json")
 KIND = "ods-portal-connections"
@@ -31,7 +32,7 @@ GOOGLE_CAPABILITIES = ("calendar.read", "calendar.write", "calendar.direct", "gm
 TOP_KEYS = {"schemaVersion", "kind", "updatedAt", "ownerTimeZone", "connectors"}
 # Written since the plugin catalog; a record without it turns no plugin on. An ID
 # this release does not know (say, after going back to an older ODS) is kept and ignored.
-OPTIONAL_TOP_KEYS = {"plugins"}
+OPTIONAL_TOP_KEYS = {"plugins", "nativeApps"}
 MAX_PLUGINS = 32
 GOOGLE_KEYS = {"status", "account", "calendarId", "gmailWindowDays", "capabilities", "cloudModels", "connectedAt"}
 # Written since automatic calendar changes became available; a record without it is not paused.
@@ -102,6 +103,11 @@ def validate(value: Any) -> dict[str, Any]:
         raise StateError("connection record has an invalid plugin choice")
     if value["schemaVersion"] != SCHEMA_VERSION or value["kind"] != KIND:
         raise StateError("connection record has an unknown version or kind")
+    native = value.get('nativeApps', {})
+    if (type(native) is not dict or len(native) > MAX_PLUGINS
+            or any(type(key) is not str or not portal_plugins.PLUGIN_ID.fullmatch(key)
+                   or type(flag) is not bool for key, flag in native.items())):
+        raise StateError('connection record has an invalid native app choice')
     _timestamp(value["updatedAt"], "updatedAt")
     if value["ownerTimeZone"] is not None and not valid_time_zone(value["ownerTimeZone"]):
         raise StateError("owner time zone is not an IANA time zone")
@@ -169,7 +175,7 @@ def read(path: Path = PATH, *, owners: tuple[int, ...] = (0,)) -> dict[str, Any]
 # the optional ones are left out entirely.
 DISCONNECTED_ANSWERS = {"timeZone": "UTC", "googleAccount": "ods@localhost.local", "calendarId": "primary",
                         "emailLimbEnabled": False, "calendarLimbEnabled": False, "calendarDirectEnabled": False}
-OPTIONAL_ANSWERS = ("userTimezone", "calendarWriteEnabled", "gmailWindowDays", "emailDraftsEnabled", "portalPlugins")
+OPTIONAL_ANSWERS = ("userTimezone", "calendarWriteEnabled", "gmailWindowDays", "emailDraftsEnabled", "portalPlugins", "nativeMcpApps")
 ANSWER_KEYS = (*DISCONNECTED_ANSWERS, *OPTIONAL_ANSWERS)
 
 
@@ -182,7 +188,7 @@ def connection_answers(record: dict[str, Any] | None, *, google_custody: bool) -
 
 def valid_connection_answers(value: Any) -> bool:
     """The exact shape connection_answers produces, as it crosses the owner-worker pipe."""
-    if not isinstance(value, dict) or set(value) != set(ANSWER_KEYS):
+    if not isinstance(value, dict) or set(value) not in (set(ANSWER_KEYS), set(ANSWER_KEYS) - {'nativeMcpApps'}):
         return False
     window, write, zone = value["gmailWindowDays"], value["calendarWriteEnabled"], value["userTimezone"]
     drafts = value["emailDraftsEnabled"]
@@ -194,7 +200,13 @@ def valid_connection_answers(value: Any) -> bool:
                                                          "calendarDirectEnabled"))
             and (write is None or type(write) is bool) and (drafts is None or type(drafts) is bool)
             and (window is None or type(window) is int and 1 <= window <= 3650)
-            and portal_plugins.valid_answers(value["portalPlugins"]))
+            and portal_plugins.valid_answers(value["portalPlugins"])
+            and native_apps.valid_answers(value.get('nativeMcpApps')))
+
+
+def native_app_choices(record: dict[str, Any] | None) -> dict[str, bool]:
+    chosen = (record or {}).get('nativeApps', {})
+    return {app_id: chosen[app_id] for app_id in native_apps.IDS if app_id in chosen}
 
 
 def enabled_plugins(record: dict[str, Any] | None) -> list[str]:
@@ -221,6 +233,9 @@ def onboarding_overrides(record: dict[str, Any] | None, *, google_custody: bool)
     if record is None:
         return {}
     overrides: dict[str, Any] = {}
+    native = native_apps.answers(native_app_choices(record))
+    if native:
+        overrides['nativeMcpApps'] = native
     zone = record["ownerTimeZone"]
     if zone:
         overrides.update(timeZone=zone, userTimezone=zone)

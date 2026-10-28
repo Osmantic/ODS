@@ -34,6 +34,90 @@ def load_portal_plugins(config, chosen):
     agent["tools"]["deny"] = [name for name in agent["tools"]["deny"] if name not in names]
 
 
+NATIVE_MCP_CONTRACTS = {'notion': {'serverName': 'ods-notion', 'url': 'https://mcp.notion.com/mcp',
+                                    'tools': ['notion-search', 'notion-fetch']}}
+NATIVE_MCP_BASE_ALLOW = ('group:fs', 'group:runtime', 'group:openclaw', 'pixel-ods',
+                       'pixel-source-broker', 'pixel-operations-broker', 'pixel-frontier-broker', 'memory-wiki')
+
+def valid_native_app_answers(value):
+    """Exact public registry contracts; also used by the standalone overlay."""
+    if value is None:
+        return True
+    if type(value) is not list or not value or len(value) > len(NATIVE_MCP_CONTRACTS):
+        return False
+    seen = []
+    for item in value:
+        if type(item) is not dict or set(item) != {'id', 'serverName', 'server', 'tools'}:
+            return False
+        app_id = item['id']
+        if type(app_id) is not str or app_id not in NATIVE_MCP_CONTRACTS or app_id in seen:
+            return False
+        entry = NATIVE_MCP_CONTRACTS[app_id]
+        spec = item['server']
+        if type(spec) is not dict or type(spec.get('enabled')) is not bool:
+            return False
+        expected = {'id': app_id, 'serverName': entry['serverName'],
+                    'server': {'enabled': spec['enabled'], 'transport': 'streamable-http', 'auth': 'oauth',
+                               'url': entry['url'], 'toolFilter': {'include': list(entry['tools'])}},
+                    'tools': [entry['serverName'] + '__' + name for name in entry['tools']]}
+        if item != expected:
+            return False
+        seen.append(app_id)
+    return seen == [app_id for app_id in NATIVE_MCP_CONTRACTS if app_id in seen]
+
+def load_native_apps(config, chosen):
+    """Apply exact reviewed answer entries, preserving unrelated native servers.
+
+    The standalone runtime overlay carries this same transformation; its caller
+    validates the answer frame before invoking it. No broad MCP group is granted.
+    """
+    if not chosen:
+        return
+    mcp = config.setdefault('mcp', {})
+    if type(mcp) is not dict:
+        raise ValueError('native MCP registry is not an object')
+    registry = mcp.setdefault('servers', {})
+    if type(registry) is not dict:
+        raise ValueError('native MCP servers are not an object')
+    # Exact model-facing grants require server keys that the pinned native
+    # sanitizer leaves unchanged. Refuse an ambiguous registry; never rename a
+    # custom server or guess which sanitized alias owns the reviewed tool name.
+    # Withdrawal remains possible if an unrelated name changed in the meantime.
+    if any(entry['server']['enabled'] for entry in chosen) and any(
+            type(name) is not str or not 1 <= len(name) <= 30 or name[0] not in 'abcdefghijklmnopqrstuvwxyz'
+            or any(char not in 'abcdefghijklmnopqrstuvwxyz0123456789_-' for char in name) for name in registry):
+        raise ValueError('native MCP server names require review before granting access')
+    tools = config['tools']
+    agent = next(item for item in config['agents']['list'] if item.get('id') == 'pixel')
+    if 'alsoAllow' in agent['tools'] and any(entry['server']['enabled'] for entry in chosen):
+        raise ValueError('native MCP agent additive policy requires review')
+    reviewed_names = {entry['serverName'] + '__' + name
+                      for entry in NATIVE_MCP_CONTRACTS.values() for name in entry['tools']}
+    if 'alsoAllow' not in agent['tools'] and any(entry['server']['enabled'] for entry in chosen):
+        agent['tools'].setdefault('allow', sorted(set(NATIVE_MCP_BASE_ALLOW) | set(tools['alsoAllow']) | reviewed_names))
+    if 'allow' in agent['tools'] and (type(agent['tools']['allow']) is not list
+                                    or any(type(name) is not str for name in agent['tools']['allow'])):
+        raise ValueError('native MCP agent policy is not a list of names')
+    for entry in chosen:
+        name, wanted, names = entry['serverName'], entry['server'], entry['tools']
+        current = registry.get(name)
+        if name in registry and (type(current) is not dict or type(current.get('enabled')) is not bool):
+            raise ValueError('managed native MCP server name is already in use')
+        if name in registry and current != wanted:
+            previous = copy.deepcopy(wanted)
+            previous['enabled'] = not wanted['enabled']
+            if current != previous:
+                raise ValueError('managed native MCP server name is already in use')
+        registry[name] = copy.deepcopy(wanted)
+        enabled = wanted['enabled']
+        for allowed in (tools['alsoAllow'], tools['sandbox']['tools']['allow']):
+            allowed[:] = sorted((set(allowed) - set(names)) | (set(names) if enabled else set()))
+        denied = agent['tools']['deny']
+        denied[:] = [name for name in denied if name not in names]
+        if not enabled:
+            denied.extend(name for name in names if name not in denied)
+
+
 path = pathlib.Path(sys.argv[1])
 if not sys.argv[2].isdigit() or not 1 <= int(sys.argv[2]) <= 65535:
     raise SystemExit("invalid Perplexica service port")
@@ -224,6 +308,7 @@ updated_pixel_config["leanPrompt"] = lean_prompt
 updated_pixel_config["perplexicaPort"] = research_port
 thinking_control = None
 portal_plugins = []
+native_mcp_apps = []
 if sys.argv[3]:
     answers_path = pathlib.Path(sys.argv[3])
     answers_info = answers_path.lstat()
@@ -257,6 +342,9 @@ if sys.argv[3]:
         updated_pixel_config.pop("modelRouteFingerprint", None)
     else:
         updated_pixel_config["modelRouteFingerprint"] = route_fingerprint
+    native_mcp_apps = answers.get("nativeMcpApps")
+    if not valid_native_app_answers(native_mcp_apps):
+        raise SystemExit("invalid ODS native MCP app contract")
     portal_plugins = answers.get("portalPlugins") or []
     if (not isinstance(portal_plugins, list) or len(portal_plugins) > 32
             or len({item.get("id") if isinstance(item, dict) else None for item in portal_plugins}) != len(portal_plugins)
@@ -473,6 +561,10 @@ if project_enabled:
 if any(name in updated_agent_tools["deny"] for item in portal_plugins for name in item["tools"]):
     raise SystemExit("ODS Portal plugin tools collide with a tool Portal is denied")
 load_portal_plugins(updated, portal_plugins)
+try:
+    load_native_apps(updated, native_mcp_apps)
+except ValueError:
+    raise SystemExit("ODS native MCP app registry collision") from None
 if updated == value:
     print("unchanged")
     raise SystemExit(0)

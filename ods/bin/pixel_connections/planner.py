@@ -15,6 +15,7 @@ import re
 from typing import Any
 
 from . import plugins as portal_plugins
+from . import native_apps
 
 PLUGIN_ID = "pixel-source-broker"
 # render-config.mjs allSourceTools, in its order: newly inactive tools are appended
@@ -71,10 +72,15 @@ def target(value: Any) -> dict[str, Any]:
     from before the plugin catalog with no plugin.
     """
     keys = {*LIMB_KEYS, "userTimezone", "plugins"}
-    if not isinstance(value, dict) or set(value) not in (keys, keys - SINCE_PLUGINS,
+    if not isinstance(value, dict) or set(value) - {'nativeApps'} not in (keys, keys - SINCE_PLUGINS,
                                                          keys - SINCE_PLUGINS - SINCE_DRAFTS):
         raise PlanError("invalid connection target")
     value = {"emailDrafts": False, "plugins": [], **value}
+    if 'nativeApps' in value:
+        try:
+            value['nativeApps'] = native_apps.choices(value['nativeApps'])
+        except native_apps.NativeAppError:
+            raise PlanError('invalid native app target') from None
     if any(type(value[key]) is not bool for key in LIMB_KEYS):
         raise PlanError("invalid connection target")
     chosen = value["plugins"]
@@ -187,6 +193,11 @@ def plan_config(config: Any, gateway: dict[str, Any], *, install_dir: str) -> di
         defaults.pop("userTimezone", None)
     portal_plugins.clear(planned)
     portal_plugins.load_portal_plugins(planned, portal_plugins.answers(gateway["plugins"]) or [])
+    if 'nativeApps' in gateway:
+        try:
+            native_apps.load_native_apps(planned, native_apps.answers(gateway['nativeApps']))
+        except ValueError:
+            raise PlanError('native app registry collision or invalid shape') from None
     return planned
 
 

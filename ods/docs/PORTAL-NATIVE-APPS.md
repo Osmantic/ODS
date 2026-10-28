@@ -64,6 +64,18 @@ This internal seam currently selects an existing native registry entry. Its
 Portal access; it does not claim to withdraw permissions a server already had.
 No public socket/API enrollment operation or reviewed app item is added yet.
 
+The internal [reviewed app groundwork](pixel/native-mcp-apps.md) now carries a
+fixed Notion read contract into the existing owner transaction and installer
+overlay. It stages a disabled entry, preserves native choices when Google is
+disconnected and supports restoring those choices from Root's protected record.
+The pinned coding profile includes broad MCP access; adding `alsoAllow` alone
+did not isolate the managed app in an actual Pixel turn. The new scoped agent
+allowlist retains ordinary core/ODS tools and explicit owner grants without
+adding `bundle-mcp` or `group:plugins`. Existing restrictive agent policies
+remain effective. Ambiguous server-name aliases are refused before activation.
+This internal contract is not a public Connect operation or effective-access
+readiness proof.
+
 ## Actual runtime qualification
 
 `test_native_mcp_oauth.py`, wired into `portal-runtime.yml`, uses the installed
@@ -91,6 +103,12 @@ them anyway. Only the granted read reaches either server. The fixture does not
 grant the broad `bundle-mcp` group: an app's consent must not implicitly enable
 other configured servers. This proves native permission isolation, not managed
 app enrollment or a real provider login.
+
+The managed-contract variant repeats these attempted calls using the actual
+`ods-notion__notion-search` name and the production grant transformation,
+through configure/render and the overlay. It also proves an ordinary deferred
+core read still works. A separate native OAuth test completes consent while
+the server remains disabled: saved tokens do not expose tools until activation.
 
 For the 8192-token primary Portal profile, native Tool Search keeps the schemas
 of `pixel_gmail_search`, `pixel_gmail_read`, `pixel_calendar_list` and
@@ -136,6 +154,8 @@ documents `notion-search` and `notion-fetch`. A narrow ODS read tool filter is
 distinct from the provider's broader account authorization. The
 [provider's security guidance](https://developers.notion.com/guides/mcp/mcp-security-best-practices)
 requires treating returned content as untrusted and reviewing data sharing.
+Notion can return content from other sources connected to the account, so the
+reviewed app disclosure includes that reach and selected-model-provider sharing.
 No real account was connected or client registered against Notion during this
 qualification. Runtime tool availability and workspace administration still need
 checking against the owner's actual account.

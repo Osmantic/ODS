@@ -399,6 +399,8 @@ def test_an_unusable_record_never_fails_an_install(contract, tmp_path, content, 
 @pytest.mark.parametrize("record,custody", [
     (None, "absent"), (CONNECTED_GOOGLE, "present"), (CONNECTED_GOOGLE, "absent"),
     ({**CONNECTED_GOOGLE, "connectors": {}}, "absent"), ({**CONNECTED_GOOGLE, "ownerTimeZone": None}, "present"),
+    ({**CONNECTED_GOOGLE, "connectors": {}, "nativeApps": {"notion": False}}, "absent"),
+    ({**CONNECTED_GOOGLE, "connectors": {}, "nativeApps": {"notion": True}}, "absent"),
 ])
 def test_the_custodian_writes_the_connection_answers_a_render_would(contract, tmp_path, record, custody):
     # Root's coordinator updates these keys in place when the owner connects or

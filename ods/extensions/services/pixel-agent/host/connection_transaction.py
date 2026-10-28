@@ -16,6 +16,7 @@ import tempfile
 
 import pixel_access_mode as controller
 from pixel_connections import planner, plugins as portal_plugins, state
+from pixel_connections import native_apps
 
 JOURNAL = "connection-journal.json"
 BACKUP = "connection-before.json"
@@ -298,6 +299,7 @@ def apply_connection(config_path, gateway_target, connection_answers, *, state_d
     gateway_target = _target(gateway_target)
     if not state.valid_connection_answers(connection_answers):
         raise ConnectionTransactionError("invalid-connection-answers")
+    connection_answers = {'nativeMcpApps': None, **connection_answers}
     sd = controller._prepare_state_dir(state_dir)
     validate = controller._normalize_validate(validate_config)
     with controller._Lock(sd):
@@ -384,6 +386,9 @@ def connection_status(config_path, *, state_dir, env_path, answers_path):
             live = dict(planner.gateway_limbs(env.decode("utf-8")),
                         userTimezone=config.get("agents", {}).get("defaults", {}).get("userTimezone"),
                         plugins=portal_plugins.enabled_in(config))
+            native = native_apps.configured_choices(config)
+            if native:
+                live['nativeApps'] = native
             planner.target(live)
         except (planner.PlanError, UnicodeError, AttributeError):
             raise ConnectionTransactionError("connection-config-unrecognized") from None

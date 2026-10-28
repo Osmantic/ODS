@@ -45,6 +45,13 @@ mark them merged or replace their review.
   wiki and app records from public web search. It loads beside the owner turn;
   the reusable 8K, compact and full operating cores retain their existing size.
   This guidance is not an access grant or a source-verification receipt.
+- Added an internal reviewed Notion read contract, disabled preparation and
+  protected app choices shared by the live owner transaction and installer.
+  Actual Pixel qualification caught and corrected broad implicit MCP access
+  from the coding profile. Google disconnection preserves independent native
+  choices; source-overlay proof derives those choices from Root's record.
+  Public enrollment, effective-access readiness and the Settings journey remain
+  unfinished; [the groundwork review](pixel/native-mcp-apps.md) records the limits.
 
 ## Qualification boundaries
 
@@ -62,6 +69,10 @@ grant: the permitted read succeeds while the filtered write and the unrelated
 server's read remain undiscoverable and uncallable. OAuth uses a controlled
 provider and the actual native store, callback listener, PKCE exchange and
 refresh. No real external account was connected by this qualification.
+The reviewed managed-contract variant also exercises its real grant transform
+and ordinary core reads. Disabled-server OAuth retains no discoverable tools
+before activation. These are controlled-provider/private-runtime lanes, not
+installed Notion account acceptance.
 
 A temporary CPU model answered fresh synthetic email/calendar questions
 through the actual 8K rendered profile and Edge. This is scoped evidence;

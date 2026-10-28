@@ -130,8 +130,12 @@ def gateway_target(record: dict[str, Any] | None, *, custody_held: bool) -> dict
     """What Portal's gateway should run for the record, as the installer would render it."""
     google = (record or {}).get("connectors", {}).get("google")
     capabilities = state.effective_capabilities(google) if google and custody_held else None
-    return dict(planner.limbs(capabilities), userTimezone=(record or {}).get("ownerTimeZone"),
-                plugins=state.enabled_plugins(record))
+    target = dict(planner.limbs(capabilities), userTimezone=(record or {}).get("ownerTimeZone"),
+                  plugins=state.enabled_plugins(record))
+    native = state.native_app_choices(record)
+    if native:
+        target['nativeApps'] = native
+    return target
 
 
 # ---------------------------------------------------------------- Full Access (Decision 4)
@@ -400,7 +404,7 @@ def disconnect(bridge, request: Any) -> dict[str, Any]:
             record = None
         if record is not None:
             connectors = {name: value for name, value in record["connectors"].items() if name != "google"}
-            keep = connectors or record["ownerTimeZone"] or state.enabled_plugins(record)
+            keep = connectors or record["ownerTimeZone"] or state.enabled_plugins(record) or record.get('nativeApps')
             _write_record(dict(record, updatedAt=_iso(_now()), connectors=connectors) if keep else None)
         _write_lifecycle(bridge, _lifecycle("deactivating"))
         return {"outcome": "disconnected", "revoked": revoked == "revoked"}
@@ -795,7 +799,10 @@ def _change_gateway(bridge, target: dict[str, Any], answers: dict[str, Any]) -> 
     _config, config_hash = _read(runtime_config_path(bridge), bridge.owner.pw_uid)
     if owner["pending"] or owner["configSha256"] != config_hash:
         raise AccessError("connection-owner-state-changed")
-    if owner["live"] == target and owner["answers"] == answers:
+    live = dict(owner['live'])
+    if 'nativeApps' not in target:
+        live.pop('nativeApps', None)  # An older record does not take over a custom native registry.
+    if live == target and owner["answers"] == answers:
         return "unchanged"
     _path, marker = _managed_marker(bridge)
     journal = {"kind": "connection", "phase": "acquiring", "token": os.urandom(32).hex(),
