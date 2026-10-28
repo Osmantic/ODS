@@ -438,10 +438,11 @@ test('document delivery is discoverable and callable through actual pinned ToolS
  const described=await byName.tool_describe.execute('describe',{id:ARTIFACT_TOOL});assert.deepEqual(described.details.parameters,{type:'object',additionalProperties:false,required:['relativePath'],properties:{relativePath:{type:'string',minLength:1,maxLength:512},sourcePath:{type:'string',minLength:1,maxLength:512}}});
  const args={relativePath:'project/report.md'};
  // Live cloud regression: the model searched the tool but guessed `path`.
- // The actual dispatcher must return schema guidance before any broker work.
+ // Native argument validation must name the required field before any
+ // executor or broker work, just as it does for a directly offered tool.
  admission.before({toolName:'tool_call',params:{id:ARTIFACT_TOOL,args:{path:args.relativePath}}},owner);
- const malformed=await byName.tool_call.execute('deliver',{id:ARTIFACT_TOOL,args:{path:args.relativePath}});
- assert.match(JSON.stringify(malformed),/invalid-arguments/);assert.match(JSON.stringify(malformed),/relativePath, not path/);assert.equal(requests,0);
+ await assert.rejects(byName.tool_call.execute('deliver',{id:ARTIFACT_TOOL,args:{path:args.relativePath}}),/Validation failed[\s\S]*relativePath/);
+ assert.equal(requests,0);
  const toolContext={...owner,trigger:undefined,toolName:'tool_call'};
  const admittedEvent={toolName:'tool_call',toolCallId:owner.toolCallId,params:{id:ARTIFACT_TOOL,args}};
  const decision=guard.beforeToolCall(admittedEvent,toolContext);
