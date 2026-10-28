@@ -124,9 +124,10 @@ matches from unknown whole-mailbox totals with explicit coverage metadata.
 One installed 9B UI request discovered/described Inbox and Calendar, requested
 one email summary and exactly seven days, and completed both calls without an
 execution error or fallback. The answer identified the partial index and
-explicitly disclaimed a whole-account total. Gmail's persisted result details
-were truncated, so this trace does not independently prove the number of
-returned summaries or every coverage field. Calendar returned zero events with
+explicitly disclaimed a whole-account total. Gmail's persisted `details` channel
+was truncated. A later bounded audit independently parsed complete saved JSON
+from the separate `content` channel and confirmed exactly one returned summary
+with count/limit one; it did not reconstruct truncated prefixes. Calendar returned zero events with
 fresh, complete coverage of the requested interval. This is one observed
 model request, not a general answer-quality guarantee. The later Google
 admission and public Native-app blocks are not included in this installed
@@ -150,6 +151,39 @@ projection access, and `maxResults: 1` reads one synthetic record. Five new
 regressions fail against the previous code. This does not yet establish that an
 installed model will make or repair the intended bounded call; the earlier
 scheduled failure remains part of the acceptance record.
+
+The ordinary installed upgrade from `9d9658f57` then completed with 4.3.39/source
+`a06abf217a351206b236f66ba31ce3d7450aab19`, including the joined Google admission
+and public reviewed-app modules. Owner/source state returned ready/complete,
+runtime verified with no pending transition, and four core containers were
+healthy. The original read-only Google grant and model configuration were
+unchanged; temporary QA policy/delegation was removed. Protected native module
+bytes and the active Source guard match the reviewed candidate. Root's
+reviewed-app catalog is available and honestly reports Notion absent, without
+claiming a connected account or contacting Notion.
+
+One post-update natural UI request initially made an invalid Gmail call. It
+received the refusal, described the schema and successfully retried with
+`maxResults: 1`. Complete saved content independently confirms one returned
+summary; Calendar confirms zero events over an aware, exactly seven-day
+requested interval. The final answer gave counts and disclosed the partial
+local index. This is one observed model recovery, not a guarantee that every
+request will choose, limit or describe its sources correctly.
+
+A one-time post-update task then completed while its Portal tab was closed;
+Chrome had no other ODS tab at the pre-run and post-run observations. The
+result was available after reopening, and normal schedule removal retained it
+in Past tasks. Its Calendar call covered exactly seven days. The model omitted
+the Gmail limit entirely, however: an empty argument object remains valid and
+uses the existing default page. Its saved Inbox content was incomplete JSON,
+so this record does not prove the number of summaries returned. Background
+execution and final counts presentation passed; bounded-read behavior did not.
+This omission is separate from the invalid-argument defect fixed above.
+
+Installed Connected apps also fetched the reviewed catalog through the actual
+Dashboard/host/Root path and displayed **Apps for Portal → Notion → Not
+connected**. No Notion authorization or provider acceptance is established by
+that view. The account consent/read/refresh/withdrawal checks remain open.
 
 Local disposable WSL/Linux environments exercised the pinned ODS OpenClaw,
 real plugin loading and tools, the owner worker, Root transactions, native

@@ -32,8 +32,12 @@ on the previous index and pass on this code; the actual pinned SDK preserves
 the unknown argument until this refusal and accepts a corrected one-record call.
 Two independent public single-root builds match. Exact source/digest/Git-mode
 verification and the exact-bundle clean-room plan/apply/verify/rollback fixture
-passed. Installed upgrade, real-model behavior and complete public
-release qualification remain separate acceptance work. The preparation record
+passed. The ordinary installed upgrade from `9d9658f57` subsequently completed
+with the original read-only Google grant and model preserved, verified runtime
+and healthy core containers. One actual model request recovered from an invalid
+Gmail call through schema description and returned exactly one summary with a
+covered seven-day Calendar read. This scoped Windows/WSL result does not certify
+general model reliability, native macOS or full public release acceptance. The preparation record
 is `pixel/ODS-QUALIFICATION-4.3.39.md`.
 
 ## Prior email-count candidate 4.3.38
