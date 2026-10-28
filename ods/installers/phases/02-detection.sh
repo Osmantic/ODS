@@ -589,14 +589,17 @@ fi
 # path below unchanged, without querying the GPUs for vLLM. --llm-backend vllm
 # and a rerun of a vLLM installation (_phase02_vllm_kept) stop when vLLM
 # cannot run or no vLLM model fits; --llm-backend llama-server never considers
-# vLLM. On the vLLM path every selector failure other than "nothing fits"
-# (exit 2) stops the install: there is no tier-map fallback. The pick
+# vLLM. A fresh install also reads each GPU's free memory: when other programs
+# hold what vLLM needs at start (exit 4), it keeps llama.cpp and says why, and
+# --llm-backend vllm stops. On the vLLM path every other selector failure
+# than "nothing fits" (exit 2) stops the install: there is no tier-map
+# fallback. The pick
 # (VLLM_SELECTOR_ENV) is loaded after the tier map, which it replaces; on a
 # rerun of a vLLM installation it is the recommendation, and the installed
 # vLLM model stays active (_phase02_keep_vllm_model).
 _phase02_choose_llm_backend() {
     local requested="${LLM_BACKEND_REQUESTED:-}" external="${EXTERNAL_LLM_URL:-}"
-    local existing=false retained="" required=false wsl=false blocker python rows status=0
+    local existing=false retained="" required=false wsl=false blocker python rows query status=0
     local env_text error_text error_file
     local -a gpu_rows=()
     VLLM_SELECTOR_ENV=""
@@ -639,7 +642,12 @@ _phase02_choose_llm_backend() {
         log "Model server: llama.cpp (Python is unavailable for the vLLM model catalog)"
         return 0
     fi
-    if ! rows="$(nvidia-smi --query-gpu=uuid,compute_cap,memory.total --format=csv,noheader,nounits 2>>"$LOG_FILE")"; then
+    # vLLM refuses to start unless its share of the GPU is free. A fresh
+    # install's GPUs hold no ODS engine yet, so their free memory is what vLLM
+    # can claim; on a rerun this installation's own engine may hold it.
+    query="uuid,compute_cap,memory.total"
+    [[ "$existing" == true ]] || query+=",memory.free"
+    if ! rows="$(nvidia-smi --query-gpu="$query" --format=csv,noheader,nounits 2>>"$LOG_FILE")"; then
         [[ "$required" != true ]] || _phase02_vllm_refused "nvidia-smi could not list this host's GPUs (details in $LOG_FILE)"
         log "Model server: llama.cpp (nvidia-smi could not list the GPUs for the vLLM engine)"
         return 0
@@ -657,6 +665,12 @@ _phase02_choose_llm_backend() {
             ;;
         2)
             [[ "$required" != true ]] || _phase02_vllm_refused "${error_text#error: }"
+            log "Model server: llama.cpp (${error_text#error: })"
+            ;;
+        4)
+            [[ "$required" != true ]] || _phase02_vllm_refused "${error_text#error: }"
+            ai_warn "ODS uses llama.cpp, not the vLLM engine: ${error_text#error: }."
+            ai "  Once that memory is free, rerun the installer with --llm-backend vllm to use the vLLM engine."
             log "Model server: llama.cpp (${error_text#error: })"
             ;;
         *)

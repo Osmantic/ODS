@@ -242,9 +242,11 @@ if [[ ! -d "$INSTALL_DIR" ]] && ! _ods_truthy "${ODS_ALLOW_LEGACY_PARALLEL:-}"; 
 fi
 
 # Existing installation — update in place (secrets and data are preserved).
+# Its .env holds those secrets, as install-core's ODS_EXISTING_INSTALL reads
+# it: an empty folder or an unpacked source tree is not an installation.
 # A --preflight-only run is checking a host whose installation is about to be
 # replaced, not updated.
-if [[ -d "$INSTALL_DIR" && "${PREFLIGHT_ONLY:-false}" != "true" ]]; then
+if [[ -f "$INSTALL_DIR/.env" && "${PREFLIGHT_ONLY:-false}" != "true" ]]; then
     log "Existing installation found at $INSTALL_DIR — updating in place"
     signal "Existing install detected. Secrets and data will be preserved."
 fi

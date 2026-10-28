@@ -80,7 +80,9 @@ function drawProp(g, kind, x, y, time) {
   // path seeded a deterministic RNG from x/y. That offset double image is why the firelight never
   // lined up with the fire pits. Only the live-animated kinds (web, torch) are drawn dynamically.
   if (kind === "brazier") return;
-  const z = ZONES[(typeof G !== "undefined" && G) ? G.zone : 0] || ZONES[0];
+  // G.zone counts up through the endless loop (realm 7 is index 6), so it has to be wrapped back
+  // into ZONES or this lookup returns undefined past the first circuit.
+  const z = ZONES[(typeof G !== "undefined" && G) ? realmIndex(G.zone) : 0] || ZONES[0];
   g.save(); g.translate(x, y);
   // Seeded from the prop's own position, so the same pile draws identically every frame. This was
   // Math.random(), which re-rolled every fragment and skull 60 times a second - the rock piles
