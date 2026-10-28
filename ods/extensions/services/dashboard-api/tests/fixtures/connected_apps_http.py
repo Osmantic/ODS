@@ -24,11 +24,11 @@ if Path('/qa-site').is_dir():
     sys.path.append('/qa-site')  # Pure-Python pytest fixtures, after API dependencies.
 sys.path[:0] = [str(ROOT / 'extensions/services/pixel-agent/tests'), str(ROOT / 'bin'),
                 str(ROOT / 'extensions/services/pixel-agent/host')]
-import pytest
-import test_connection_coordinator as fixture
-from pixel_connections import coordinator, google_app, host_api, status as connection_status
-import pixel_access_client
-from pixel_access_bridge import AccessError
+import pytest  # noqa: E402
+import test_connection_coordinator as fixture  # noqa: E402
+from pixel_connections import coordinator, google_app, host_api, status as connection_status  # noqa: E402
+import pixel_access_client  # noqa: E402
+from pixel_access_bridge import AccessError  # noqa: E402
 
 scratch = tempfile.TemporaryDirectory(prefix='ods-connection-http-')
 patches = pytest.MonkeyPatch()
@@ -36,6 +36,8 @@ original_urlopen = urllib.request.urlopen
 world = fixture.world.__wrapped__(Path(scratch.name), patches)
 mode = os.environ.get('ODS_QA_GOOGLE_MODE', 'legacy')
 assert mode in ('legacy', 'managed')
+scenario = os.environ.get('ODS_QA_GOOGLE_SCENARIO', 'normal')
+assert scenario in ('normal', 'failed-callback')
 fixture_client = {'installed': {
     'client_id': fixture.CLIENT['clientId'], 'client_secret': fixture.CLIENT['clientSecret'],
     'project_id': fixture.CLIENT['projectId'], 'auth_uri': fixture.oauth.GOOGLE_AUTH_URI,
@@ -100,8 +102,8 @@ os.environ['ODS_AGENT_PORT'] = str(host.server_port)
 
 api_directory = ROOT / 'extensions/services/dashboard-api'
 sys.path.insert(0, str(api_directory))
-import main
-import uvicorn
+import main  # noqa: E402
+import uvicorn  # noqa: E402
 server = uvicorn.Server(uvicorn.Config(main.app, host='127.0.0.1', port=0, log_level='warning', access_log=False))
 thread = threading.Thread(target=server.run, daemon=True)
 thread.start()
@@ -177,6 +179,28 @@ try:
     assert 'Start again' not in forged_reply['detail']['message'], forged_reply
     assert checked('GET', '')['connectors']['google']['pending']['phase'] == 'consent'
     callback = redirect.rstrip('/') + '/?' + urllib.parse.urlencode({'state': state, 'code': '4/fixture-code'})
+    if scenario == 'failed-callback':
+        world.google.token = lambda body: (400, {'error': 'invalid_grant'})
+        failed = checked('POST', '/google/complete', {'flowId': flow['flowId'], 'address': callback})
+        assert failed['outcome'] == 'failed' and failed['errorClass'] == 'invalid-grant', failed
+        retained = checked('GET', '')
+        assert retained['reason'] == 'connection-admission-held', retained
+        assert retained['connectors']['google']['pending']['error'] == 'invalid-grant', retained
+        assert retained['connectors']['google']['account'] is None, retained
+        assert world.bridge.native_phase == world.bridge.edge_phase == 'held'
+        assert api('POST', '/google/connect', begin_body)[0] == 409
+        assert checked('POST', '/google/finish', {})['outcome'] == 'applied'
+        recovered = checked('GET', '')
+        assert recovered['reason'] is None and recovered['connectors']['google']['account'] is None, recovered
+        assert recovered['connectors']['google']['pending']['phase'] == 'failed', recovered
+        assert recovered['connectors']['google']['capabilities'] is None, recovered
+        assert world.bridge.pending() is None and world.bridge.native_phase == world.bridge.edge_phase == 'idle'
+        assert not world.paths.token.exists() and world.bridge.proof['executed'] is True
+        world.google.token = fixture.granted(fixture.GMAIL, fixture.CALENDAR)
+        flow = checked('POST', '/google/connect', begin_body)
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(flow['authUrl']).query)
+        callback = query['redirect_uri'][0].rstrip('/') + '/?' + urllib.parse.urlencode({
+            'state': query['state'][0], 'code': '4/second-fixture-code'})
     connected = checked('POST', '/google/complete', {'flowId': flow['flowId'], 'address': callback})
     assert connected['outcome'] == 'connected', connected
     deadline = time.monotonic() + 5
@@ -211,7 +235,8 @@ try:
     assert read_tools <= set(disconnected_config['agents']['list'][0]['tools']['deny'])
     report = {'fullDashboardApi': True, 'realAuthenticatedHostHttp': True,
               'actualCoordinatorBrokerTransaction': True, 'forgedCallbackPreservesFlow': True,
-              'singleExchange': exchanges == 1, 'disconnectDeletesToken': True, 'readGrantsWithdrawn': True,
+              'singleExchange': exchanges == (2 if scenario == 'failed-callback' else 1),
+              'failedCallbackRecovered': scenario == 'failed-callback', 'disconnectDeletesToken': True, 'readGrantsWithdrawn': True,
               'simulatedBoundaries': ['Google', 'systemd/gateway processes', 'privileged transport and UID custody'],
               'installedRuntimeTouched': False, 'operations': operations}
     report.update(managedDeploymentClient=mode == 'managed', browserClientSupplied='client' in begin_body)

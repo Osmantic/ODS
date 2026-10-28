@@ -143,6 +143,7 @@ def test_preflight_refusal_leaves_owner_files_and_completion_untouched(owner, mo
 @pytest.mark.parametrize('enabled', [False, True])
 def test_disconnecting_google_keeps_native_choice_even_without_timezone_or_plugins(owner, enabled):
     harness.connect(owner)
+    activate(owner)
     saved = harness.record(owner)
     c._write_record(dict(saved, ownerTimeZone=None, nativeApps={'notion': enabled}))
     activate(owner)

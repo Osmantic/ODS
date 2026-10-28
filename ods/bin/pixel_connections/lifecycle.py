@@ -25,6 +25,7 @@ CONSENT_KEYS = ("flowId", "stateHash", "redirectUri", "expiresAt", "request")
 CODE = re.compile(r"^[a-z][a-z0-9-]{0,95}$")
 INSTANT = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 MAX_BYTES = 8192
+_MISSING = object()
 
 
 class LifecycleError(ValueError):
@@ -32,12 +33,14 @@ class LifecycleError(ValueError):
 
 
 def validate(value: Any) -> dict[str, Any]:
-    if (not isinstance(value, dict) or set(value) != KEYS or value["kind"] != "connection"
+    if (not isinstance(value, dict) or not KEYS <= set(value) <= KEYS | {"admissionComplete"} or value["kind"] != "connection"
             or value["connector"] != "google" or value["phase"] not in PHASES
             or value["error"] is not None and (type(value["error"]) is not str or not CODE.fullmatch(value["error"]))
             or value["updatedAt"] is not None and (type(value["updatedAt"]) is not str
                                                    or not INSTANT.fullmatch(value["updatedAt"]))
             or value["phase"] == "failed" and value["error"] is None):
+        raise LifecycleError("invalid connection journal")
+    if "admissionComplete" in value and (value["admissionComplete"] is not True or value["phase"] != "failed"):
         raise LifecycleError("invalid connection journal")
     consent = value["phase"] == "consent"
     if consent != all(value[key] is not None for key in CONSENT_KEYS) or not consent and any(
@@ -56,12 +59,11 @@ def validate(value: Any) -> dict[str, Any]:
     return value
 
 
-def read(path: Path = PATH, *, owners: tuple = (0,)) -> dict[str, Any] | None:
-    """The journal, None when nothing is in progress; it must be root's private file."""
+def _private_value(path: Path, owners: tuple) -> Any:
     try:
         descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     except FileNotFoundError:
-        return None
+        return _MISSING
     except OSError as error:
         # A link planted in its place, or a journal this account may not read.
         raise LifecycleError("connection journal cannot be opened safely") from error
@@ -73,9 +75,25 @@ def read(path: Path = PATH, *, owners: tuple = (0,)) -> dict[str, Any] | None:
             raise LifecycleError("unsafe connection journal")
         raw = handle.read(MAX_BYTES + 1)
     try:
-        return validate(json.loads(raw.decode("utf-8")))
+        return json.loads(raw.decode("utf-8"))
     except (UnicodeError, ValueError) as error:
         raise LifecycleError("invalid connection journal") from error
+
+
+def read(path: Path = PATH, *, owners: tuple = (0,)) -> dict[str, Any] | None:
+    """The journal, None when nothing is in progress; it must be root's private file."""
+    value = _private_value(path, owners)
+    return None if value is _MISSING else validate(value)
+
+
+def read_operation(path: Path, *, owners: tuple = (0,)) -> dict[str, Any] | None:
+    """Bounded Root admission metadata; the caller must validate its operation."""
+    value = _private_value(path, owners)
+    if value is _MISSING:
+        return None
+    if type(value) is not dict:
+        raise LifecycleError("invalid connection operation")
+    return value
 
 
 def write(path: Path, value: dict[str, Any]) -> None:

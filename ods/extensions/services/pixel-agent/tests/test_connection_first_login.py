@@ -40,6 +40,10 @@ def test_first_login_supplies_mandatory_disabled_env_before_google_exchange(worl
     assert result['outcome'] == 'connected'
     assert exchanges == [True] and len(world.google.calls) == 1
     values = dict(custody.parse_env(world.paths.env.read_text()))
+    assert values['PIXEL_LIMB_EMAIL_ENABLED'] == values['PIXEL_LIMB_CALENDAR_ENABLED'] == '0'
+    assert world.bridge.native_phase == world.bridge.edge_phase == 'held'
+    assert c.control(world.bridge, 'connection-activate', {})['outcome'] == 'applied'
+    values = dict(custody.parse_env(world.paths.env.read_text()))
     assert values['PIXEL_LIMB_EMAIL_ENABLED'] == values['PIXEL_LIMB_CALENDAR_ENABLED'] == '1'
     assert values['PIXEL_CALENDAR_DIRECT_ENABLED'] == '0'
     assert world.paths.token.is_file()

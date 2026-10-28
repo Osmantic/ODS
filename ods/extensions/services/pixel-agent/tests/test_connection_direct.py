@@ -32,7 +32,6 @@ DIRECT_STATUS = "pending-bounded-direct"
 def owner(world, monkeypatch):
     """Google connected with private changes on, and Portal's gateway rendered for it."""
     calendar_harness.connected(world, monkeypatch, DIRECT)
-    assert c.control(world.bridge, "connection-activate", {})["outcome"] == "applied"
     world.monkeypatch = monkeypatch
     return world
 
@@ -155,7 +154,7 @@ def test_connecting_while_portal_has_full_access_starts_paused(world, monkeypatc
     calendar_harness.connected(world, monkeypatch, DIRECT)
     assert record(world)["connectors"]["google"]["directPaused"] is True
     assert ["systemctl", "disable", "--now", "pixel-source-direct.path"] in world.commands
-    assert c.control(world.bridge, "connection-activate", {})["outcome"] == "applied"
+    assert c.control(world.bridge, "connection-activate", {})["outcome"] == "unchanged"
     assert flags(world) == (False, False)
     # The owner's choice is kept: Sandbox brings it back.
     assert record(world)["connectors"]["google"]["capabilities"]["calendar.direct"] is True

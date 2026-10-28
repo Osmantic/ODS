@@ -67,6 +67,8 @@ def operation(owner, name):
                    'code': '4/fixture-code'}
         return lambda: c.control(owner.bridge, 'connection-complete', request)
     harness.connect(owner)
+    if name != 'activate':
+        c.control(owner.bridge, 'connection-activate', {})
     if name == 'begin':
         harness.begin(owner)  # A pending flow must survive the refused replacement too.
         return lambda: harness.begin(owner)
@@ -122,6 +124,7 @@ def test_unreadable_native_intent_is_not_silently_ignored_by_a_mutator(owner, na
 
 def test_read_and_approval_surfaces_keep_their_ordinary_behavior_during_enrollment(owner):
     harness.connect(owner)
+    c.control(owner.bridge, 'connection-activate', {})
     journal(owner, 'prepared')
     guards = owner.guard_observed['guards']
     for operation in ('connection-proposals', 'connection-drafts', 'connection-activity'):
@@ -133,11 +136,12 @@ def test_read_and_approval_surfaces_keep_their_ordinary_behavior_during_enrollme
 
 def test_native_controller_private_gateway_path_does_not_reenter_the_public_mutator_guard(owner):
     harness.connect(owner)
+    c.control(owner.bridge, 'connection-activate', {})
     journal(owner, 'prepared')
     guards = owner.guard_observed['guards']
     record = harness.record(owner)
     with owner.bridge.locked():
         owner.bridge.discover()
         assert c._change_gateway(owner.bridge, c.gateway_target(record, custody_held=True),
-            state.connection_answers(record, google_custody=True)) == 'applied'
+            state.connection_answers(record, google_custody=True)) == 'unchanged'
     assert owner.guard_observed['guards'] == guards

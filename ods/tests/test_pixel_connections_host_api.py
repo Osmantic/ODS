@@ -244,7 +244,7 @@ def closed(port):
     while time.monotonic() < deadline:
         try:
             socket.create_connection(("127.0.0.1", port), timeout=3).close()
-        except ConnectionRefusedError:
+        except (ConnectionRefusedError, ConnectionResetError):
             return True
         time.sleep(0.05)
     return False
@@ -271,7 +271,9 @@ class SignInAddressTests(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()) as stderr:
             code, headers, page = visit(port, f"state={STATE}&code=4/secret-code&scope=openid")
         self.assertEqual(code, 200)
-        self.assertIn("Google is connected", page)
+        self.assertIn("Google authorization received", page)
+        self.assertIn("Return to Portal to check the connection", page)
+        self.assertNotIn("Google is connected", page)
         self.assertEqual((headers["cache-control"], headers["referrer-policy"]), ("no-store", "no-referrer"))
         self.assertNotIn("secret-code", stderr.getvalue())
         self.assertEqual(root.calls[1], ("connection-complete", {"flowId": FLOW, "state": STATE,
@@ -285,7 +287,7 @@ class SignInAddressTests(unittest.TestCase):
         self.begin(root)
         port = root.calls[0][1]["redirectPort"]
         self.assertIn("out of date", visit(port, f"state={'t' * 43}&code=4/stale")[2])
-        self.assertIn("Google is connected", visit(port, f"state={STATE}&code=4/fresh")[2])
+        self.assertIn("Google authorization received", visit(port, f"state={STATE}&code=4/fresh")[2])
         self.assertTrue(closed(port))
 
     def test_a_page_that_is_not_googles_redirect_changes_nothing(self):

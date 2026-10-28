@@ -259,6 +259,42 @@ def _pending(path: Path, owners: tuple) -> tuple[dict[str, Any] | None, bool]:
         return None, True
 
 
+def _admission_pending(path: Path, owners: tuple, pending: dict[str, Any] | None, now: datetime):
+    """Project durable custody, never whether a callback process is alive.
+
+    The same valid hold can be observed during a running callback or after its
+    death. Both expose Finish. Observation neither acquires a lease nor writes
+    recovery metadata, and an old account during consent is not a new grant.
+    """
+    try:
+        operation = lifecycle.read_operation(path.parent / "transition.json", owners=owners)
+        if not operation or operation.get("kind") != "connection" or "google" not in operation:
+            return pending, False, False
+        from .coordinator import _journal
+        from pixel_access_bridge import AccessError
+        try:
+            hold = _journal(operation)["google"]
+        except (AccessError, ValueError, KeyError, TypeError):
+            raise lifecycle.LifecycleError("invalid Google admission hold") from None
+        if hold["failure"] is not None:
+            pending = {"action": "disconnect" if pending and pending["phase"] == "deactivating" else "connect",
+                       "phase": "deactivating" if pending and pending["phase"] == "deactivating" else "activating",
+                       "expiresAt": None, "error": hold["failure"],
+                       "since": (pending or {}).get("since") or hold["createdAt"]}
+        elif pending is None or pending["phase"] == "failed" or (
+                pending["phase"] == "consent" and hold["stage"] not in ("draining", "exchanging")):
+            pending = {"action": "connect", "phase": "activating", "expiresAt": None,
+                       "error": hold["failure"] or (pending or {}).get("error"), "since": hold["createdAt"]}
+        return pending, True, False
+    except (lifecycle.LifecycleError, OSError, ImportError):
+        # Never interpret a malformed private hold as permission for a new
+        # sign-in or expose any of its token/flow/config fields to the owner.
+        pending = {"action": "connect", "phase": "activating", "expiresAt": None,
+                   "error": "connection-transition-unavailable",
+                   "since": (pending or {}).get("since") or now.strftime("%Y-%m-%dT%H:%M:%SZ")}
+        return pending, False, True
+
+
 def report(*, surface: str, record_path: Path = state.PATH, token_path: Path = TOKEN,
            status_path: Path = BROKER_STATUS, lifecycle_path: Path = lifecycle.PATH, now: datetime | None = None,
            owners: tuple[int, ...] = (0,), broker_state: Path = BROKER_STATE) -> dict[str, Any]:
@@ -267,12 +303,14 @@ def report(*, surface: str, record_path: Path = state.PATH, token_path: Path = T
         return unavailable(surface)
     now = now or datetime.now(timezone.utc)
     pending, journal_unusable = _pending(lifecycle_path, owners)
+    pending, admission_held, admission_unusable = _admission_pending(lifecycle_path, owners, pending, now)
+    journal_unusable = journal_unusable or admission_unusable
     try:
         record = state.read(record_path, owners=owners)
     except state.StateError:
         # Settings offers to reconnect; the install already kept everything off.
         return {"schemaVersion": SCHEMA_VERSION, "available": True, "surface": surface,
-                "reason": "record-unusable", "ownerTimeZone": None,
+                "reason": "journal-unusable" if journal_unusable else "connection-admission-held" if admission_held else "record-unusable", "ownerTimeZone": None,
                 "connectors": {"google": not_connected(pending)}, "plugins": plugin_flags(None)}
     custody = token_path.is_file()
     broker, broker_error, waiting, waiting_drafts = None, False, 0, 0
@@ -289,7 +327,7 @@ def report(*, surface: str, record_path: Path = state.PATH, token_path: Path = T
         "schemaVersion": SCHEMA_VERSION,
         "available": True,
         "surface": surface,
-        "reason": "journal-unusable" if journal_unusable else None,
+        "reason": "journal-unusable" if journal_unusable else "connection-admission-held" if admission_held else None,
         "ownerTimeZone": record["ownerTimeZone"] if record else None,
         "connectors": {"google": google_view(record, custody=custody, broker=broker, broker_error=broker_error,
                                              now=now, pending=pending, waiting_changes=waiting,

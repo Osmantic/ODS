@@ -116,6 +116,7 @@ def connected(world, monkeypatch, capabilities):
     reply = c.control(world.bridge, "connection-complete", {
         "flowId": flow["flowId"], "state": harness.consent_state(world, flow["flowId"]), "code": "4/fixture-code"})
     assert reply["capabilities"] == capabilities
+    assert c.control(world.bridge, "connection-activate", {})["outcome"] == "applied"
     world.writes = calendar.writes
     assert world.writes == [], 'connecting/quiescing must not write a calendar change'
     # Keep setup evidence in commands (including the action/reconcile stops).
@@ -208,6 +209,7 @@ def test_an_approval_for_anything_but_the_snapshot_changes_nothing(owner):
 
 def test_approving_needs_calendar_changes_on_and_the_sign_in(world, monkeypatch):
     harness.connect(world)  # Read-only: calendar changes stay off.
+    c.control(world.bridge, "connection-activate", {})
     propose(world, "create", DENTIST)
     shown = only(world)
     with pytest.raises(AccessError, match="calendar-changes-off"):

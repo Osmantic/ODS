@@ -76,6 +76,7 @@ class FakeGmail(harness.FakeGoogle):
 def connected(world, monkeypatch, capabilities):
     """Connect Google on a Pixel that knows Gmail drafts, with the broker's action units."""
     (world.paths.kit / "source-broker.env").write_text(harness.KIT_ENV + f"{custody.DRAFTS_FLAG}='0'\n")
+    world.bridge.env_path.write_text(world.bridge.env_path.read_text() + f"{custody.DRAFTS_FLAG}='0'\n")
     gmail = FakeGmail()
     monkeypatch.setattr(BROKER.urllib.request, "urlopen", gmail)
     world.google = gmail
@@ -100,6 +101,7 @@ def connected(world, monkeypatch, capabilities):
     reply = c.control(world.bridge, "connection-complete", {
         "flowId": flow["flowId"], "state": harness.consent_state(world, flow["flowId"]), "code": "4/fixture-code"})
     assert reply["capabilities"] == capabilities
+    assert c.control(world.bridge, "connection-activate", {})["outcome"] == "applied"
     return world
 
 

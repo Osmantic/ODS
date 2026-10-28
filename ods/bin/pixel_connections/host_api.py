@@ -145,21 +145,21 @@ def _redirect_page(flow_id: str, *, config: dict, relay: Relay, log: Callable[[s
         try:
             fields = oauth.callback_fields(query)
         except oauth.OAuthError:
-            return ("This isn't the page Google sends you to", "Go back to ODS and start again.", None, False)
+            return ("This isn't the page Google sends you to", "Return to Portal to check the sign-in page.", None, False)
         try:
             status, reply = _complete(flow_id, fields, config=config, relay=relay, log=log)
         except (OSError, ValueError, RuntimeError):
-            return ("ODS couldn't finish connecting", "Go back to ODS and try again.", DISCORD, True)
+            return ("Portal couldn't finish connecting", "Return to Portal to check the next step.", DISCORD, True)
         if status == 200 and reply["outcome"] == "connected":
-            return ("Google is connected", "You can close this tab and go back to ODS.", None, True)
+            return ("Google authorization received", "Return to Portal to check the connection. You can close this tab.", None, True)
         if status == 200:
             needs_help = reply["errorClass"] not in OWNER_FIXABLE
-            return ("Google didn't connect", "Go back to ODS. Settings shows what happened and what to do next.",
+            return ("Google didn't connect", "Return to Portal. Settings shows what happened and what to do next.",
                     DISCORD if needs_help else None, True)
         if reply.get("error") == "sign-in-state-mismatch":
             # Another tab's address; the owner's own sign-in stays open.
-            return ("This sign-in page is out of date", "Go back to ODS and start again.", None, False)
-        return ("This sign-in has ended", "Go back to ODS and start again.", None, True)
+            return ("This sign-in page is out of date", "Return to Portal to check the sign-in page.", None, False)
+        return ("This sign-in has ended", "Return to Portal to check the next step.", None, True)
     return handle
 
 
