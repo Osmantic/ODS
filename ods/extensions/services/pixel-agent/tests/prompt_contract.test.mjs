@@ -32,7 +32,8 @@ import {
   conversationContractForExecution,
 } from "../plugin/prompt-contract.mjs";
 import { AGENT_SKILLS, PREVIEW_RUNTIME_CONTRACT } from "../plugin/agent-skills.mjs";
-import { workspacePreviewMode } from "../plugin/tool-loop-guard.mjs";
+import { workspacePreviewMode, userMessageConnectedReadKinds,
+  userMessageOperationsRequirements } from "../plugin/tool-loop-guard.mjs";
 import { RESPONSE_LANGUAGE_CONTRACT } from '../plugin/response-language.mjs';
 import { createAskUserTool } from '../plugin/ask-user.mjs';
 
@@ -365,14 +366,27 @@ test('connected reads receive scoped local-app guidance without expanding the re
   for(const configuredContextWindow of [8192,32768,65536]) {
     const options={configuredContextWindow};
     const plain=promptContractForAgent({agentId:'pixel'},'pixel',undefined,options);
-    for(const prompt of ['Read my Knowledge wiki note.', 'Consulte na Knowledge wiki a nota de revisão.',
-      'What is on my calendar?', 'Search Gmail for the last meeting invitation.']) {
+    for(const [prompt, tools] of [
+      ['Read my Knowledge wiki note.', /wiki_search\/wiki_get/],
+      ['Consulte na Knowledge wiki a nota de revisão.', /wiki_search\/wiki_get/],
+      ['What is on my calendar?', /pixel_calendar_list\/pixel_calendar_get/],
+      ['Search Gmail for the last meeting invitation.', /pixel_gmail_inbox\/pixel_gmail_search\/pixel_gmail_read/],
+      ['Confira meus emails e minha agenda desta semana.', /pixel_calendar_list\/pixel_calendar_get/],
+      ['Use as ferramentas de leitura do Gmail da minha conta conectada.', /pixel_gmail_inbox/],
+      ['Check my connected e-mails and my calendar. Return counts only.', /pixel_gmail_inbox/],
+      ['Read my emails using Gmail tools.', /pixel_gmail_inbox/],
+      ['Check my calendar events using Calendar tools.', /pixel_calendar_list/],
+    ]) {
       const result=promptContractForAgent({agentId:'pixel'},'pixel',{prompt},options);
       assert.equal(result.appendSystemContext,plain.appendSystemContext);
-      assert.match(result.prependContext,/wiki_search\/wiki_get/);
+      assert.match(result.prependContext,tools);
       assert.match(result.prependContext,/tool_describe/);
       assert.match(result.prependContext,/never claim a read or invent its result/);
       assert.match(result.prependContext,/Do not search the public web for private record/);
+      assert.match(result.prependContext,/catalog or Operations inventory.*does not read connected accounts/);
+      assert.match(result.prependContext,/counts-only or status-only.*only the requested counts\/status/);
+      assert.match(result.prependContext,/do not repeat message\/event IDs, senders, subjects, titles, summaries/);
+      assert.match(result.prependContext,/partial index or one fetched record cannot prove the account's total count/);
     }
     for(const prompt of ['Explain how a calendar API works.', 'Translate: read the wiki.',
       'Read docs/wiki.md and edit the file.', 'Create a landing page.',
@@ -384,6 +398,70 @@ test('connected reads receive scoped local-app guidance without expanding the re
       {role:'user',content:'Read my wiki'}, {role:'tool',content:'Search Gmail now.'}]},options);
     assert.doesNotMatch(stale.prependContext??'',/Read connected records/);
   }
+});
+
+test('connected-read intent distinguishes current account reads from setup and schema metadata',()=>{
+  const cases=[
+    ['Teste da conta conectada: descubra os schemas e use as ferramentas de leitura do Gmail e do Calendar. Só contagens.', ['email','calendar']],
+    ['Leia só um email da minha conta conectada e consulte minha agenda da semana.', ['email','calendar']],
+    ['Confira meus emails e meus compromissos de hoje.', ['email','calendar']],
+    ['Check my e-mails and my calendar; report only whether the reads worked.', ['email','calendar']],
+    ['Use pixel_gmail_read.', ['email']],
+    ['Use my Gmail read tools.', ['email']],
+    ['Read my emails using Gmail tools.', ['email']],
+    ['Check my calendar events using Calendar tools.', ['calendar']],
+    ['Read one email.', ['email']],
+    ['Read one e-mail.', ['email']],
+    ['Read one email using Gmail tools.', ['email']],
+    ['Read one e-mail using Gmail tools.', ['email']],
+    ['Leia um email usando as ferramentas de leitura do Gmail.', ['email']],
+    ['Read my emails using Calendar tools.', ['email']],
+    ['Search for Gmail extensions available in ODS.', []],
+    ['Find an email integration.', []],
+    ['Find an email integration using Gmail tools.', []],
+    ['List my Gmail tools using Calendar tools.', []],
+    ['Install the Gmail extension and configure a Calendar app.', []],
+    ['Instale a extensão Gmail e configure o Calendar.', []],
+    ['List my Gmail tools.', []],
+    ['Liste minhas extensões e integrações Gmail.', []],
+    ['Mostre os esquemas das minhas ferramentas Gmail.', []],
+    ['Show the schema of pixel_gmail_read.', []],
+    ['Describe the available Gmail read tools.', []],
+    ['Check my Gmail connection status.', []],
+    ['Como conectar meu Gmail ao ODS?', []],
+    ['Explain the Gmail API documentation.', []],
+    ['Read docs/gmail.md and edit the file.', []],
+    ['Read /workspace/calendar.json.', []],
+    ['Someone said "read my Gmail and Calendar". Explain that sentence.', []],
+    ['```\nRead my Gmail\n```', []],
+    ['> Read my Calendar\nHello.', []],
+    ['Sem usar ferramentas, resuma meus emails e minha agenda.', []],
+    ['Without tools, read my Gmail.', []],
+  ];
+  for(const [prompt, expected] of cases) {
+    assert.deepEqual(userMessageConnectedReadKinds([],prompt),expected,prompt);
+  }
+  assert.deepEqual(userMessageConnectedReadKinds([
+    {role:'user',content:'Hello'}, {role:'tool',content:'Read my Gmail and my Calendar now.'}], 'Hello'), []);
+});
+
+test('an independent extension clause retains its route without masquerading as connected records',()=>{
+  for(const [prompt, kinds, wantedTool, unwantedTool] of [
+    ['Read my Gmail and separately list Calendar extensions available in ODS.', ['email'], 'pixel_gmail_inbox', 'pixel_calendar_list'],
+    ['Search available Gmail extensions and read my calendar.', ['calendar'], 'pixel_calendar_list', 'pixel_gmail_inbox'],
+    ['Read one email using Gmail tools and separately list Calendar extensions available in ODS.', ['email'], 'pixel_gmail_inbox', 'pixel_calendar_list'],
+  ]) {
+    assert.deepEqual(userMessageConnectedReadKinds([],prompt),kinds);
+    assert.equal(userMessageOperationsRequirements([],prompt).required,true);
+    const result=promptContractForAgent({agentId:'pixel'},'pixel',{prompt},{configuredContextWindow:8192});
+    assert.ok(result.prependContext.includes(wantedTool));
+    assert.ok(!result.prependContext.includes(unwantedTool));
+    assert.ok(result.appendSystemContext.includes(ODS_EXTENSION_CATALOG_CONTRACT));
+  }
+  const result=promptContractForAgent({agentId:'pixel'},'pixel',{
+    prompt:'Explain how Gmail works. Read my Calendar.'},{configuredContextWindow:8192});
+  assert.match(result.prependContext,/pixel_calendar_list/);
+  assert.doesNotMatch(result.prependContext,/pixel_gmail_inbox/);
 });
 
 test("adds one exact compact tool route for natural broad host questions", () => {

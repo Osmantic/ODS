@@ -17,7 +17,7 @@ mark them merged or replace their review.
 - Qualified runtime plugin imports before activation; manifest visibility
   alone no longer counts as a working plugin.
 - Preserved native MCP servers and tool restrictions through Pixel rendering
-  and macOS configuration staging, with a reproducible Pixel 4.3.36 source
+  and macOS configuration staging, with a reproducible Pixel 4.3.37 source
   candidate and public bundle.
 - Added an owner-side, version/hash-bound adapter to OpenClaw's MCP OAuth,
   retaining its discovery, registration, PKCE, token storage and refresh.
@@ -71,18 +71,25 @@ The ordinary Google connection is designed as **Connect Google → choose accoun
 configuration, authenticated host/API transport and Settings now carry that
 journey; owner-provided clients remain explicit Advanced setup. Official app
 registration/verification and reviewed release provisioning are still required.
-A personal Desktop client completed real read-only consent locally and Portal
-discovered the resulting tools; real content/scheduled/refresh/withdrawal
-acceptance remains open. That client is not the official ODS application and
-must not be distributed as one. See
+A personal Desktop client completed real read-only consent locally. The installed
+Portal discovered the tools, read one sanitized email projection and queried a
+covered seven-day Calendar interval with zero events. The inbox lookup's persisted
+preview is truncated, so this does not prove that only one email summary reached
+the model. Real scheduled Google work, refresh and withdrawal acceptance remain
+open. That client is not the official ODS application and must not be distributed
+as one. See
 [the managed Google contract](PORTAL-GOOGLE-APP.md).
 
 The real first sync exposed Gmail history blocking Calendar and status. The
 4.3.37 candidate adds resumed, independently bounded Gmail/Calendar batches,
 explicit partial coverage and deadline/size-aware HTTP reads. Root reconnect
 quiesces prior producers and preserves old actions privately before a token can
-change. Source and crash controls are synthetic; final installed qualification
-is still required. Complete write-workflow isolation also needs admission or
+change. The ordinary installed upgrade to this candidate completed: the Google
+grant was unchanged, the owner/source upgrade reached ready/complete, the runtime
+was verified and the four core containers were healthy. Gmail continued growing
+its explicitly partial index while Calendar reported complete coverage of its
+configured window. Source-change and reconnect crash controls still use fixtures.
+Complete write-workflow isolation also needs admission or
 proposal/account binding for a conversation active across the account change.
 
 Local disposable WSL/Linux environments exercised the pinned ODS OpenClaw,
@@ -144,6 +151,15 @@ erase the earlier failures or qualify arbitrary model requests. Reliable
 truthful completion when the model does not call a source at all remains open.
 Scheduler execution success alone does not verify the content of its answer.
 
+Real Google chat exposed two further limits. A technical Portuguese request
+selected the extension catalog and Operations inventory instead of account reads;
+that does not count as a connected read. A natural request did use Gmail and
+Calendar, recovering a wrong `id` argument with the required `messageId`, but
+repeated email details despite a counts-only instruction. No mail or event was
+changed. App-specific current-turn guidance and presentation instructions are
+being qualified; model instructions are not privacy enforcement or proof that
+arbitrary requests will choose the right source.
+
 Representative repository checks (use the pinned package/dependency staging
 from `portal-runtime.yml` for the native tests):
 
@@ -160,14 +176,15 @@ earlier checks on #8226 do not certify this branch.
 
 ## Still required
 
-- Root-managed native app enrollment: exact owner/config/runtime/state binding,
-  a durable callback claim and crash recovery, activation and withdrawal under
-  the existing owner transaction, and authenticated Settings/host routes.
+- Expose the internal native app enrollment controller through authenticated
+  Settings/host routes and coordinate pending enrollment with the remaining
+  model/provider/settings/source writers.
 - One complete installed UI journey for connection, chat, background result,
   permission withdrawal, update and rollback, beyond the component lanes.
-- Authorized real-provider consent, refresh and disconnect; real Calendar and
-  draft actions; honest distinctions between saved, signed in, reachable and
-  usable by Portal. Token presence alone is insufficient.
+- Real-provider refresh and disconnect; real Calendar and draft actions;
+  honest distinctions between saved, signed in, reachable and usable by Portal.
+  Token presence alone is insufficient. Read-only consent and the scoped reads
+  above do not establish these other lifecycles.
 - Native macOS execution and the applicable release/fleet lanes. A preexisting
   Codex comparison-file checksum still blocks claiming the Pixel release gate
   passes; it also reproduces with the previous untouched bundle.

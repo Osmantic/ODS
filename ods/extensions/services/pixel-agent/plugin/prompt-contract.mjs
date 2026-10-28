@@ -31,7 +31,7 @@ import {
   workspacePreviewMode,
   userMessageRequestsWorkspaceDocumentDelivery,
   userMessageReportsDefect,
-  userMessageRequestsConnectedRead,
+  userMessageConnectedReadKinds,
 } from "./tool-loop-guard.mjs";
 import { AGENT_SKILLS, PREVIEW_RUNTIME_CONTRACT } from "./agent-skills.mjs";
 import { WORKSPACE_ARTIFACT_DELIVERY_GUIDANCE } from './workspace-artifact.mjs';
@@ -133,10 +133,18 @@ export const CONNECTED_RECORDS_CONTRACT =
   "Never invent a missing source time zone.";
 const CONNECTED_APP_READ_GUIDE =
   "Read connected records with the app's offered tools, not from memory or a web search. " +
-  "Knowledge wiki is a local ODS plugin: discover wiki_search/wiki_get with tool_search, then tool_describe its required arguments before tool_call. " +
   "Tool Search finds capabilities, not saved notes, email or calendar records. Use the relevant app read for those records. " +
+  "An ODS extension catalog or Operations inventory describes integrations or host actions; it does not read connected accounts or prove that their records are absent. " +
+  "Do not install or configure an integration merely to answer a connected-record read; setup needs its own owner request. " +
   "If the needed tool is absent or a read fails, report that limitation; never claim a read or invent its result. " +
-  "Do not search the public web for private record titles or content unless the owner requests that disclosure. Never invent a missing source time zone.";
+  "Do not search the public web for private record titles or content unless the owner requests that disclosure. Never invent a missing source time zone. " +
+  "Respect the owner's requested presentation: for counts-only or status-only results, return only the requested counts/status and necessary coverage limits; do not repeat message/event IDs, senders, subjects, titles, summaries or other record details. " +
+  "Read only what is necessary for the request. A partial index or one fetched record cannot prove the account's total count.";
+const CONNECTED_READ_TOOLS = {
+  email: "For Gmail, discover the offered pixel_gmail_inbox/pixel_gmail_search/pixel_gmail_read tools with tool_search, then tool_describe the returned exact ID and call its actual schema through tool_call.",
+  calendar: "For Calendar, discover the offered pixel_calendar_list/pixel_calendar_get tools with tool_search, then tool_describe the returned exact ID and call its actual schema through tool_call.",
+  wiki: "Knowledge wiki is a local ODS plugin: discover wiki_search/wiki_get with tool_search, then tool_describe its required arguments before tool_call.",
+};
 const CONNECTED_RECORDS_TINY_CONTRACT = CONNECTED_RECORDS_CONTRACT;
 
 const CURRENT_OPERATING_COMPATIBILITY = [
@@ -453,8 +461,9 @@ export function promptContractForAgent(
   const documentDelivery = userMessageRequestsWorkspaceDocumentDelivery(event?.messages, event?.prompt)
     ? ODS_WORKSPACE_DOCUMENT_DELIVERY_GUIDE : "";
   const defectReport = userMessageReportsDefect(event?.messages, event?.prompt) ? ODS_DEFECT_REPORT_GUIDE : "";
-  const connectedRead = userMessageRequestsConnectedRead(event?.messages, event?.prompt)
-    ? CONNECTED_APP_READ_GUIDE : "";
+  const connectedKinds = userMessageConnectedReadKinds(event?.messages, event?.prompt);
+  const connectedRead = connectedKinds.length
+    ? [CONNECTED_APP_READ_GUIDE, ...connectedKinds.map(kind => CONNECTED_READ_TOOLS[kind])].join(" ") : "";
   const turnGuide = [documentDelivery, defectReport, connectedRead].filter(Boolean).join(" ");
   const exactDownload = userMessageRequestsExactByteDownload(
     event?.messages,

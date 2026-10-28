@@ -4977,16 +4977,50 @@ function currentOwnerIntentText(messages, prompt = undefined) {
 
 // A model-only explanation of connected reads, never an access grant or a
 // receipt. Match the current owner's request, not stale turns/tool content.
-export function userMessageRequestsConnectedRead(messages, prompt = undefined) {
+export function userMessageConnectedReadKinds(messages, prompt = undefined) {
   const ownerText = currentOwnerIntentText(messages, prompt);
   if (ownerForbidsTools(ownerText) ||
-      /\b(?:without (?:using )?(?:any )?tools|sem (?:usar )?(?:quaisquer )?ferramentas)\b/i.test(ownerLaneText(ownerText))) return false;
+      /\b(?:without (?:using )?(?:any )?tools|sem (?:usar )?(?:quaisquer )?ferramentas)\b/i.test(ownerLaneText(ownerText))) return [];
   const text = withoutFilesystemPaths(ownerLaneText(ownerText))
     .replace(/(?:\b[\w.-]+\/)+[\w.-]+|\b[\w-]+\.(?:md|txt|json|html|js|mjs|py)\b/g, ' ')
     .normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase();
-  if (/\b(?:translate|traduza|explain|explique|how to|como conectar|como funciona)\b/.test(text)) return false;
-  return /\b(?:wiki|gmail|email|e-mail|calendar|calendario)\b/.test(text) &&
-    /\b(?:read|search|find|check|list|summari[sz]e|what|show|consult[ae]|busqu[ae]|leia|ler|liste|resuma|quais|qual|mostre|verifique)\b/.test(text);
+  const verbs = 'read|search|find|check|list|summari[sz]e|what|show|consult[ae]|busqu[ae]|leia|ler|liste|resuma|quais|qual|mostre|verifique|confira|veja|cheque|procure|encontre|pesquise';
+  // Bind guidance to the requested object. An independent extension/setup
+  // clause must neither turn its catalog into account data nor suppress a
+  // real read elsewhere in the same owner request.
+  const clauses = text.split(new RegExp(`[.!?;\\n]+|,\\s*(?=(?:and|then|but|e|depois|mas)\\b)|` +
+    `\\b(?:and|then|e|depois)\\s+(?=(?:(?:separately|also|please|separadamente|tambem)\\s+)?` +
+    `(?:${verbs}|use|using|invoke|call|install|configure|enable|connect|instale|configure|conecte)\\b)`));
+  const selected = new Set();
+  for (const clause of clauses) {
+    if (/\b(?:translate|traduza|explain|explique|how to|como conectar|como funciona|documentation|documentacao|tutorial)\b/.test(clause) ||
+        /^\s*(?:please\s+)?(?:do not|don['’]t|never|nao)\b/.test(clause)) continue;
+    const namedRead = /\bpixel_(?:gmail_(?:inbox|sent|search|read|thread)|calendar_(?:list|get))\b/.test(clause);
+    const invokeNamedRead = namedRead && /\b(?:use|using|invoke|call|run|execute|utilize|usar|chame)\b/.test(clause);
+    const useReadTools = /\b(?:use|using|invoke|call|utilize|usar|chame)\b[^.!?;\n]{0,120}\b(?:read(?:ing)?|leitura)\b/.test(clause);
+    if (!new RegExp(`\\b(?:${verbs})\\b`).test(clause) && !useReadTools && !invokeNamedRead) continue;
+    // A named tool can be the means of reading, rather than the requested
+    // metadata object. Remove only that adjunct after a read request; keep
+    // "list my Gmail tools" and extension/integration objects intact.
+    const objectClause = clause.replace(/\b(?:using|with|via|through|usando|utilizando)\s+(?:(?:the|offered|available|as|os)\s+)*(?:(?:gmail|calendar|calendario|wiki)\s+)?(?:(?:read|reading|de leitura)\s+)?(?:tools?|ferramentas?)(?:\s+de leitura)?(?:\s+(?:do|da|de)\s+(?:gmail|calendar|calendario|wiki))?\b/g,
+      (means, offset) => new RegExp(`\\b(?:${verbs})\\b`).test(clause.slice(0, offset)) ? ' ' : means);
+    const metadata = /\b(?:extensions?|plugins?|integrations?|integracoes|extensoes|providers?|apps?|applications?|aplicacoes|tools?|ferramentas?|schemas?|esquemas?|apis?|oauth|configuration|configuracao)\b/.test(objectClause);
+    const metadataObject = /\b(?:gmail|calendar|calendario|wiki)\s+(?:(?:read|reading|de leitura)\s+)?(?:tools?|ferramentas?|schemas?|esquemas?|extensions?|extensoes|integracoes|plugins?|apps?|aplicacoes)\b|\b(?:tools?|ferramentas?|schemas?|esquemas?|extensions?|extensoes|integracoes|plugins?|apps?|aplicacoes)[^.!?;\n]{0,64}\b(?:gmail|calendar|calendario|wiki)\b/.test(objectClause);
+    const setup = /^\s*(?:(?:please|also|separately|separadamente|por favor)\s+)*(?:install|configure|enable|connect|instale|configure|conecte)\b|\b(?:connection status|status da conexao|configuration|configuracao)\b/.test(objectClause);
+    const records = /\b(?:messages?|emails|e-mails|events?|records?|notes?|mensagens?|eventos?|registros?|notas?|compromissos)\b/.test(objectClause);
+    const owned = /\b(?:my|our|minha|minhas|meu|meus|nossa|nossas|nosso|nossos)\b/.test(objectClause);
+    if ((setup || metadataObject || metadata && !records && !owned) && !useReadTools && !invokeNamedRead) continue;
+    if (/\b(?:gmail|emails?|e-mails?|pixel_gmail_(?:inbox|sent|search|read|thread))\b/.test(objectClause) ||
+        /\b(?:my|our|minha|nossa)\s+(?:inbox|caixa de entrada)\b/.test(objectClause)) selected.add('email');
+    if (/\b(?:calendar|calendario|pixel_calendar_(?:list|get))\b/.test(objectClause) ||
+        /\b(?:my|our|minha|nossa)\s+agenda\b|\b(?:meus|nossos)\s+compromissos\b/.test(objectClause)) selected.add('calendar');
+    if (/\bwiki\b/.test(objectClause)) selected.add('wiki');
+  }
+  return [...selected];
+}
+
+export function userMessageRequestsConnectedRead(messages, prompt = undefined) {
+  return userMessageConnectedReadKinds(messages, prompt).length > 0;
 }
 
 // Ordinary owner file handoff is independent of the words download/attach.
