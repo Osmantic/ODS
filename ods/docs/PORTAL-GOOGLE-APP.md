@@ -5,6 +5,64 @@ access**. Registering a Google Cloud project and downloading a client JSON file
 belongs to the ODS maintainers' release work. It is not an ordinary user's setup
 step. Owner-provided clients remain an explicit Advanced option.
 
+## Maintainer publication setup
+
+Use a separate production Google Cloud project named **ODS Portal**, with
+maintainer ownership and support contacts that can be kept current. A local QA
+project and its personal Desktop client are not the distributed ODS application.
+The display name can be chosen; home-page and privacy-policy addresses must be
+real, publicly accessible and on a domain the maintainers can verify.
+
+The repository already uses `osmantic.com` for its project site and
+`install.osmantic.com` for installation. Subject to control of that domain, it is
+the proposed publication domain; buying another domain is not a prerequisite.
+Registering a Cloud project does not verify domain ownership or publish an app.
+
+Project names, IDs and numbers identify the application; they are not user
+tokens or a grant to read mail. The project creator is its initial administrator,
+so production ownership should be shared with the responsible maintainers and
+use maintained project support contacts. Each installation retains its own
+private sign-in. A user's connection does not make that user's email content
+available in the maintainer's Google account.
+
+The shared application is subject to Google's OAuth audience limits and API
+quotas. A Testing audience is limited to 100 listed test users, and its offline
+grants normally expire after seven days when requesting Gmail/Calendar access.
+Production scope approval and API capacity are separate requirements; neither
+is established by creating the project. Review the actual quota/billing
+configuration before distribution, and do not attach a personal billing account
+as an implicit setup step. See Google's
+[audience limits](https://support.google.com/cloud/answer/15549945?hl=en) and
+[Gmail API quotas](https://developers.google.com/workspace/gmail/api/reference/quota).
+
+Prepare this once for the distributed client:
+
+1. Establish maintainers' access to the production project and verify the
+   publication domain in Search Console with an account attached to the project.
+2. Publish a Portal page describing Google integration, linked to a privacy
+   policy on the same domain. Describe actual local storage, deletion,
+   permissions, background sync and optional sharing with a selected cloud
+   model. Proposed pages are not evidence that this work is published.
+3. Configure the **ODS Portal** branding and maintained support/developer
+   contacts. Enable the APIs needed by the release and register its Desktop
+   client for the existing loopback/PKCE flow.
+4. Request only permissions implemented and being released. Gmail read access
+   is already restricted; read-only does not eliminate scope verification.
+   Review any cloud-model/server data path for the applicable security
+   assessment requirements before claiming public readiness.
+5. Submit the actual consent and feature demonstration for Google's review.
+   Approval of a project name, brand or domain does not itself approve Gmail
+   scopes. Keep development and production consent separate.
+6. Provision the reviewed production client through the release path described
+   below and verify a clean installation's normal **Connect Google** journey.
+   No per-user project, API enablement or JSON download belongs in that journey.
+
+The maintainers' current project ID, verification records and deployment client
+belong to the release configuration, not hard-coded browser requests. No
+production client or token is created by this document. See Google's
+[brand verification requirements](https://developers.google.com/identity/protocols/oauth2/production-readiness/brand-verification)
+and [restricted-scope review](https://developers.google.com/identity/protocols/oauth2/production-readiness/restricted-scope-verification).
+
 ## Implemented connection journey
 
 - Root accepts `authMode: "managed"` without any browser-supplied client or
@@ -48,11 +106,17 @@ A proven unchanged failed exchange may resume the old grant/record, but its
 pending actions remain set aside and caches refetch. Ambiguous custody requires
 Finish to discard the uncertain local sign-in and reconcile disabled access.
 
-Controlled crash tests and disposable real systemd units qualify this producer
-barrier. It does not itself pause Portal gateway admission: an already running
-conversation can still create a fresh proposal after account replacement.
-Reusing admission or binding proposals to the intended account remains a release
-blocker for claiming complete isolation of write workflows across a reconnect.
+Root now reserves its connection transaction before draining Portal's Edge and
+native admission. Both gates remain held across token exchange, record changes,
+owner apply and a newly proved runtime process. Finish recovers interrupted
+exchange without replaying an authorization code, and revalidates a committed
+runtime after a restart before completing release. A completed failed attempt
+keeps its explanation while permitting a new sign-in; uncertain legacy attempts
+remain blocked until recovery.
+
+Controlled crash tests, real disposable admission gates/native activity and
+systemd producer-stop controls qualify these components. This does not certify
+the complete installed account-change journey or real Calendar/draft writes.
 The current real-account qualification grants read access only.
 
 Desktop applications use public-client credentials and cannot keep a distributed
