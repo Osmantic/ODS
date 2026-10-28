@@ -312,6 +312,7 @@ grep -F 'ProtectHome=tmpfs' .generated/openclaw-gateway.service >/dev/null
 grep -F 'ProtectSystem=strict' .generated/openclaw-gateway.service >/dev/null
 grep -F 'CapabilityBoundingSet=' .generated/openclaw-gateway.service >/dev/null
 grep -F 'User=pixel-source-broker' .generated/pixel-source-broker.service >/dev/null
+grep -Fx 'TimeoutStartSec=300' .generated/pixel-source-broker.service >/dev/null
 grep -F 'ProtectHome=true' .generated/pixel-source-broker.service >/dev/null
 grep -F 'ExecStart="/opt/pixel-source-broker/broker.py" --reconcile %i' .generated/pixel-source-reconcile@.service >/dev/null
 grep -F 'ReadWritePaths=/var/lib/pixel-source-broker/results' .generated/pixel-source-reconcile@.service >/dev/null

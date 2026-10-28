@@ -856,6 +856,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+TimeoutStartSec=300
 User=${values.PIXEL_SOURCE_BROKER_USER}
 Group=${values.PIXEL_SOURCE_BROKER_USER}
 ExecStart=${systemdQuote(join(sourceBrokerInstallDir, "broker.py"))}

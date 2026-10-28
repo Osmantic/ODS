@@ -1695,6 +1695,8 @@ CALENDAR_READ = "https://www.googleapis.com/auth/calendar.events.readonly"
 class FakeResponse:
     def __init__(self, raw):
         self.raw = raw
+        self.stream = io.BytesIO(raw)
+        self.headers = {'Content-Length': str(len(raw))}
 
     def __enter__(self):
         return self
@@ -1702,8 +1704,11 @@ class FakeResponse:
     def __exit__(self, *_args):
         return False
 
-    def read(self):
-        return self.raw
+    def read(self, size=-1):
+        return self.stream.read(size)
+
+    def read1(self, size=-1):
+        return self.stream.read1(size)
 
 
 class FakeGoogle:
@@ -1833,7 +1838,9 @@ class SourceBrokerReadinessTests(unittest.TestCase):
             root = Path(directory)
             write_token(root / "private" / "google-token.json")
             previous = BROKER.projection("gmail", [BROKER.email_projection(message("An older inbound update."))],
-                                         "2026-08-04T20:00:00Z", True, {"bounded": True, "folders": {}})
+                                         "2026-08-04T20:00:00Z", True, {"bounded": True, "folders": {},
+                                             "sync": {"binding": BROKER.gmail_sync_binding(BROKER.credential_generation(
+                                                 BROKER.read_credentials(root / "private" / "google-token.json")))}})
             BROKER.atomic_json(root / "projection" / "email.json", previous)
             email_before = (root / "projection" / "email.json").read_bytes()
             self.run_refresh(self.google(gmail=google_api_error(403, "PERMISSION_DENIED", "accessNotConfigured")))

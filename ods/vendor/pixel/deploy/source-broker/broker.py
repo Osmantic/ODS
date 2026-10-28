@@ -9,10 +9,12 @@ import hashlib
 import hmac
 import http.client
 import json
+import math
 import os
 import re
 import stat
 import tempfile
+import time
 import unicodedata
 import urllib.error
 import urllib.parse
@@ -983,16 +985,51 @@ def error_reasons(raw: bytes) -> frozenset[str]:
     return frozenset(item for item in found if isinstance(item, str) and ERROR_REASON.fullmatch(item))
 
 
-def request_json(url: str, *, method: str = "GET", headers: dict[str, str] | None = None, body: bytes | None = None) -> dict[str, Any]:
+MAX_JSON_RESPONSE_BYTES = 64 * 1024 * 1024
+HTTP_READ_CHUNK_BYTES = 64 * 1024
+
+
+def _bounded_response(response, *, deadline: float, maximum: int) -> bytes:
+    """Check elapsed time between socket reads, not just each socket's timeout.
+
+    read1 returns available bytes without waiting to fill a large chunk. One
+    already-started socket read can still run to its own finite timeout; the
+    service watchdog is the final backstop, not an assertion of exact timing.
+    64MiB is a resource ceiling within the 512MiB service, not a completeness
+    promise for arbitrarily large provider messages.
+    """
+    declared = (getattr(response, 'headers', None) or {}).get('Content-Length')
+    expected = int(declared) if isinstance(declared, str) and declared.isdigit() else None
+    if expected is not None and expected > maximum:
+        raise SourceUnavailable('unknown', 'Google response exceeds the broker resource bound')
+    raw = bytearray()
+    reader = response.read1
+    while True:
+        if time.monotonic() >= deadline:
+            raise TimeoutError('Google response exceeded its read budget')
+        chunk = reader(min(HTTP_READ_CHUNK_BYTES, maximum + 1 - len(raw)))
+        if not chunk:
+            if expected is not None and len(raw) != expected:
+                raise http.client.IncompleteRead(bytes(raw), expected - len(raw))
+            return bytes(raw)
+        raw.extend(chunk)
+        if len(raw) > maximum:
+            raise SourceUnavailable('unknown', 'Google response exceeds the broker resource bound')
+
+
+def request_json(url: str, *, method: str = "GET", headers: dict[str, str] | None = None,
+                 body: bytes | None = None, timeout: float = 25,
+                 maximum: int = MAX_JSON_RESPONSE_BYTES) -> dict[str, Any]:
     request = urllib.request.Request(url, method=method, headers=headers or {}, data=body)
+    deadline = time.monotonic() + timeout
     try:
-        with urllib.request.urlopen(request, timeout=25) as response:
-            raw = response.read()
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = _bounded_response(response, deadline=deadline, maximum=maximum)
             return json.loads(raw.decode("utf-8")) if raw else {}
     except urllib.error.HTTPError as error:
         try:
-            raw = error.read(OAUTH_FILE_MAX_BYTES)
-        except (OSError, http.client.HTTPException):
+            raw = _bounded_response(error, deadline=deadline, maximum=OAUTH_FILE_MAX_BYTES)
+        except (OSError, http.client.HTTPException, SourceUnavailable):
             raw = b""
         raise UpstreamHTTPError(error.code, error_reasons(raw or b"")) from error
 
@@ -1081,10 +1118,10 @@ def failure_record(error: BaseException) -> dict[str, Any]:
     }
 
 
-def google_get(base: str, path: str, token: str, params: dict[str, Any]) -> dict[str, Any]:
+def google_get(base: str, path: str, token: str, params: dict[str, Any], *, timeout: float = 25) -> dict[str, Any]:
     filtered = {key: value for key, value in params.items() if value not in (None, "")}
     url = f"{base}{path}?{urllib.parse.urlencode(filtered, doseq=True)}"
-    return request_json(url, headers={"authorization": f"Bearer {token}"})
+    return request_json(url, headers={"authorization": f"Bearer {token}"}, timeout=timeout)
 
 
 def google_call(base: str, path: str, token: str, *, method: str, params: dict[str, Any], value: dict[str, Any] | None = None, extra_headers: dict[str, str] | None = None) -> dict[str, Any]:
@@ -1243,6 +1280,283 @@ def gmail_records(token: str, cached_records: list[dict[str, Any]] | None = None
     }
 
 
+GMAIL_SYNC_KIND = "pixel-gmail-sync-progress"
+GMAIL_SYNC_MAX_BYTES = 64 * 1024 * 1024
+GMAIL_SYNC_ID = re.compile(r"^[A-Za-z0-9_-]{1,256}$")
+
+
+class GmailBatchPaused(Exception):
+    """A bounded read batch ended; its durable cursor continues next refresh."""
+
+
+class CredentialGenerationChanged(Exception):
+    """An old refresh must not publish into a newly authorized connection."""
+
+
+def credential_generation(credentials: dict[str, Any]) -> str:
+    # Only this digest crosses into private progress/public coverage. Never
+    # serialize credentials, the account address or an access token there.
+    selected = {key: credentials.get(key) for key in ('client_id', 'refresh_token', 'grantedScope')}
+    return hashlib.sha256(json.dumps(selected, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def gmail_sync_options() -> dict[str, dict[str, Any]]:
+    inbox = os.environ.get('PIXEL_SOURCE_GMAIL_QUERY', 'in:inbox')
+    sent = os.environ.get('PIXEL_SOURCE_GMAIL_SENT_QUERY', 'in:sent')
+    result = {}
+    for name, query, prefix in (('sent', sent, 'SENT_'), ('inbox', inbox, ''), ('unread', f'{inbox} is:unread', '')):
+        page_size = min(max(int(os.environ.get(f'PIXEL_SOURCE_GMAIL_{prefix}PAGE_SIZE',
+            os.environ.get(f'PIXEL_SOURCE_GMAIL_{prefix}MAX', '100'))), 1), 100)
+        pages = min(max(int(os.environ.get(f'PIXEL_SOURCE_GMAIL_{prefix}MAX_PAGES', '1000')), 1), 10000)
+        result[name] = {'query': query, 'pageSize': page_size, 'maxPages': pages}
+    return result
+
+
+def gmail_sync_binding(generation: str, options: dict[str, Any] | None = None) -> str:
+    return hashlib.sha256(json.dumps({'generation': generation, 'options': options or gmail_sync_options(),
+        'sanitizerRevision': SANITIZER_REVISION}, sort_keys=True).encode()).hexdigest()
+
+
+def _gmail_new_progress(binding: str, options: dict[str, Any], last_complete: str | None = None) -> dict[str, Any]:
+    return {'schemaVersion': 1, 'kind': GMAIL_SYNC_KIND, 'binding': binding,
+        'sanitizerRevision': SANITIZER_REVISION, 'cycleId': os.urandom(16).hex(),
+        'startedAt': iso(utc_now()), 'lastCompleteAt': last_complete, 'cycleDone': False, 'turn': 0,
+        'processed': [], 'gone': [], 'folders': {name: {
+            **spec, 'ids': [], 'cursor': 0, 'pageToken': '', 'seenPageTokens': [], 'pagesFetched': 0,
+            'resultSizeEstimate': 0, 'listingDone': False, 'truncated': False, 'truncationReason': ''}
+            for name, spec in options.items()}}
+
+
+def _gmail_progress(path: Path, binding: str, options: dict[str, Any]) -> dict[str, Any]:
+    """Read only broker-private bounded metadata; never follow a checkpoint link."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return _gmail_new_progress(binding, options)
+    try:
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1
+                or info.st_mode & 0o077 or info.st_size > GMAIL_SYNC_MAX_BYTES):
+            raise SourceUnavailable('unknown', 'Gmail progress is not private broker state')
+        with os.fdopen(descriptor, 'rb', closefd=False) as handle:
+            raw = handle.read(GMAIL_SYNC_MAX_BYTES + 1)
+        value = json.loads(raw)
+        if (type(value) is not dict or value.get('schemaVersion') != 1 or value.get('kind') != GMAIL_SYNC_KIND
+                or value.get('sanitizerRevision') != SANITIZER_REVISION or value.get('binding') != binding):
+            return _gmail_new_progress(binding, options)
+        if (set(value) != {'schemaVersion', 'kind', 'binding', 'sanitizerRevision', 'cycleId', 'startedAt',
+                          'lastCompleteAt', 'cycleDone', 'turn', 'processed', 'gone', 'folders'}
+                or not re.fullmatch(r'[a-f0-9]{32}', value['cycleId']) or not valid_iso_timestamp(value['startedAt'])
+                or value['lastCompleteAt'] is not None and not valid_iso_timestamp(value['lastCompleteAt'])
+                or type(value['cycleDone']) is not bool or type(value['turn']) is not int or not 0 <= value['turn'] < 3
+                or type(value['folders']) is not dict or set(value['folders']) != set(options)):
+            raise ValueError()
+        maximum = sum(spec['pageSize'] * spec['maxPages'] for spec in options.values())
+        for key in ('processed', 'gone'):
+            items = value[key]
+            if (type(items) is not list or len(items) > maximum or len(items) != len(set(items))
+                    or any(type(item) is not str or not GMAIL_SYNC_ID.fullmatch(item) for item in items)):
+                raise ValueError()
+        for name, spec in options.items():
+            folder = value['folders'][name]
+            if (type(folder) is not dict or set(folder) != {
+                    *spec, 'ids', 'cursor', 'pageToken', 'seenPageTokens', 'pagesFetched',
+                    'resultSizeEstimate', 'listingDone', 'truncated', 'truncationReason'}
+                    or any(folder[key] != item for key, item in spec.items())
+                    or type(folder['ids']) is not list or len(folder['ids']) > spec['pageSize'] * spec['maxPages']
+                    or len(folder['ids']) != len(set(folder['ids']))
+                    or any(type(item) is not str or not GMAIL_SYNC_ID.fullmatch(item) for item in folder['ids'])
+                    or type(folder['cursor']) is not int or not 0 <= folder['cursor'] <= len(folder['ids'])
+                    or type(folder['pagesFetched']) is not int or not 0 <= folder['pagesFetched'] <= spec['maxPages']
+                    or type(folder['resultSizeEstimate']) is not int or folder['resultSizeEstimate'] < 0
+                    or type(folder['listingDone']) is not bool or type(folder['truncated']) is not bool
+                    or folder['truncationReason'] not in ('', 'safety-page-limit', 'repeated-page-token')
+                    or type(folder['seenPageTokens']) is not list or len(folder['seenPageTokens']) > spec['maxPages']
+                    or any(type(item) is not str or len(item) > 4096 for item in [folder['pageToken'], *folder['seenPageTokens']])):
+                raise ValueError()
+        if value['cycleDone']:
+            return _gmail_new_progress(binding, options, value['lastCompleteAt'])
+        return value
+    except (ValueError, TypeError, KeyError, UnicodeError):
+        raise SourceUnavailable('unknown', 'Gmail progress is invalid') from None
+    finally:
+        os.close(descriptor)
+
+
+def gmail_incremental_records(token: str, cached: dict[str, Any] | None, *, progress_path: Path,
+                              generation: str) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+    """One fair, bounded batch. The caller publishes projection BEFORE cursor.
+
+    A crash may repeat a read, but cannot skip unpublished messages. Listing and
+    hydration interleave across folders so Sent history cannot starve Inbox.
+    """
+    options = gmail_sync_options()
+    binding = gmail_sync_binding(generation, options)
+    progress = _gmail_progress(progress_path, binding, options)
+    cached_sync = ((cached or {}).get('coverage') or {}).get('sync') or {}
+    records = {str(item['id']): dict(item) for item in (cached or {}).get('records', [])
+        if cached_sync.get('binding') == binding and type(item) is dict and item.get('id')}
+    if any(item not in records and item not in progress['gone'] for item in progress['processed']):
+        # A deleted/mismatched projection cannot satisfy an advanced cursor.
+        progress = _gmail_new_progress(binding, options)
+    processed, gone = set(progress['processed']), set(progress['gone'])
+    observed = set(processed)
+    folder_ids = {name: set(item['ids']) for name, item in progress['folders'].items()}
+    page_tokens = {name: set(item['seenPageTokens']) for name, item in progress['folders'].items()}
+    requests = 0
+    detail_requests = 0
+    reused = 0
+    request_limit = min(max(int(os.environ.get('PIXEL_SOURCE_GMAIL_REQUEST_BUDGET', '64')), 4), 256)
+    seconds = float(os.environ.get('PIXEL_SOURCE_GMAIL_TIME_BUDGET_SECONDS', '90'))
+    if not math.isfinite(seconds):
+        raise SourceUnavailable('unknown', 'Gmail time budget must be finite')
+    seconds = min(max(seconds, 1), 120)
+    deadline = time.monotonic() + seconds
+    paused = ''
+
+    def get(path, params):
+        nonlocal requests, detail_requests
+        remaining = deadline - time.monotonic()
+        if requests >= request_limit or remaining <= 0:
+            raise GmailBatchPaused()
+        requests += 1
+        if path != '/messages':
+            detail_requests += 1
+        return google_get(GMAIL_API, path, token, params, timeout=min(25, remaining))
+
+    def listing(name, folder):
+        params = {'q': folder['query'], 'maxResults': folder['pageSize']}
+        if folder['pageToken']:
+            params['pageToken'] = folder['pageToken']
+        value = get('/messages', params)
+        ids = folder_ids[name]
+        items = value.get('messages') or []
+        if type(items) is not list or len(items) > folder['pageSize']:
+            raise SourceUnavailable('unknown', 'Gmail listing exceeded its requested page bound')
+        for item in items:
+            message_id = item.get('id') if type(item) is dict else None
+            if type(message_id) is not str or not GMAIL_SYNC_ID.fullmatch(message_id):
+                continue
+            if message_id not in ids:
+                folder['ids'].append(message_id)
+                ids.add(message_id)
+        folder['pagesFetched'] += 1
+        try:
+            folder['resultSizeEstimate'] = max(folder['resultSizeEstimate'], max(0, int(value.get('resultSizeEstimate') or 0)))
+        except (ValueError, TypeError):
+            pass
+        following = value.get('nextPageToken') or ''
+        if type(following) is not str or len(following) > 4096:
+            raise SourceUnavailable('unknown', 'Gmail cursor is invalid')
+        if not following:
+            folder['listingDone'] = True
+        elif following in page_tokens[name]:
+            folder.update(listingDone=True, truncated=True, truncationReason='repeated-page-token')
+        elif folder['pagesFetched'] >= folder['maxPages']:
+            folder.update(listingDone=True, truncated=True, truncationReason='safety-page-limit')
+        else:
+            folder['seenPageTokens'].append(following)
+            page_tokens[name].add(following)
+            folder['pageToken'] = following
+        if name == 'unread':
+            folder['cursor'] = len(folder['ids'])
+
+    def hydrate(name, folder):
+        nonlocal reused
+        message_id = folder['ids'][folder['cursor']]
+        previous = records.get(message_id)
+        if message_id in gone:
+            folder['cursor'] += 1
+            return
+        if message_id in observed and previous and (name != 'sent' or previous.get('contentProjection') == 'metadata-only'):
+            reused += 1
+        else:
+            path = '/messages/' + urllib.parse.quote(message_id, safe='')
+            try:
+                message = get(path, {'format': 'metadata', 'metadataHeaders': ['From', 'To', 'Cc', 'Subject', 'Date']})
+                if message.get('id') != message_id:
+                    raise SourceUnavailable('unknown', 'Gmail detail does not match its listed identifier')
+                record = email_projection(message, requested_mailbox=name, include_content=False)
+                if name != 'sent' and 'sent' not in record['mailboxes']:
+                    if previous and previous.get('contentProjection') == 'sanitized-summary':
+                        record.update(summary=previous.get('summary', ''), attachments=previous.get('attachments', []),
+                            contentProjection='sanitized-summary', bodyFetchedByBroker=True,
+                            sourceHash=previous.get('sourceHash', record['sourceHash']))
+                        signals = sorted(set(record['risk']['signals'] + previous.get('risk', {}).get('signals', [])))
+                        record['risk'] = {'quarantined': bool(signals), 'signals': signals}
+                        reused += 1
+                    else:
+                        full = get(path, {'format': 'full'})
+                        if full.get('id') != message_id:
+                            raise SourceUnavailable('unknown', 'Gmail content does not match its listed identifier')
+                        record = email_projection(full, requested_mailbox=name, include_content='SENT' not in (full.get('labelIds') or []))
+                record.update(observedAt=iso(utc_now()), retainedFromEarlierScan=False)
+                records[message_id] = record
+                observed.add(message_id)
+            except UpstreamHTTPError as error:
+                if error.code != 404:
+                    raise
+                gone.add(message_id)
+                records.pop(message_id, None)
+        folder['cursor'] += 1
+
+    names = ('sent', 'inbox', 'unread')
+    try:
+        while True:
+            if time.monotonic() >= deadline:
+                raise GmailBatchPaused()
+            worked = False
+            for _ in names:
+                name = names[progress['turn']]
+                progress['turn'] = (progress['turn'] + 1) % len(names)
+                folder = progress['folders'][name]
+                if folder['cursor'] < len(folder['ids']):
+                    hydrate(name, folder)
+                    worked = True
+                elif not folder['listingDone']:
+                    listing(name, folder)
+                    worked = True
+            if not worked:
+                break
+    except GmailBatchPaused:
+        paused = 'run-budget'
+    # Other errors retain the previous projection/cursor. At most one bounded
+    # batch is repeated, never the whole mailbox or a provider-side action.
+    progress['processed'] = sorted(observed)
+    progress['gone'] = sorted(gone)
+    folders = progress['folders']
+    progress['cycleDone'] = all(item['listingDone'] and item['cursor'] == len(item['ids']) for item in folders.values())
+    complete = progress['cycleDone'] and not any(item['truncated'] for item in folders.values())
+    if complete:
+        keep = folder_ids['sent'] | folder_ids['inbox']
+        records = {key: item for key, item in records.items() if key in keep and key not in gone}
+        progress['lastCompleteAt'] = iso(utc_now())
+    retained = 0
+    for key, record in records.items():
+        record['retainedFromEarlierScan'] = key not in observed
+        if record['retainedFromEarlierScan']:
+            retained += 1
+            record.setdefault('observedAt', (cached or {}).get('generatedAt'))
+        if complete:
+            labels = [label for label in record.get('labelIds', []) if label not in ('INBOX', 'SENT', 'UNREAD')]
+            mailboxes = [name for name in ('inbox', 'sent') if key in folder_ids[name]]
+            record['mailboxes'] = mailboxes
+            record['labelIds'] = labels + (['INBOX'] if 'inbox' in mailboxes else []) + (['SENT'] if 'sent' in mailboxes else []) + (['UNREAD'] if key in folder_ids['unread'] else [])
+            record['direction'] = 'outbound' if 'sent' in mailboxes else 'inbound'
+    coverage = {'bounded': True, 'folders': {name: {
+        **options[name], 'pagesFetched': item['pagesFetched'], 'fetched': len(item['ids']),
+        'indexed': item['cursor'], 'resultSizeEstimate': item['resultSizeEstimate'],
+        'truncated': item['truncated'], 'truncationReason': item['truncationReason'],
+        'completeWithinQuery': item['listingDone'] and item['cursor'] == len(item['ids']) and not item['truncated']}
+        for name, item in folders.items()},
+        'cache': {'sanitizerRevision': SANITIZER_REVISION, 'reused': reused, 'detailRequests': detail_requests},
+        'sync': {'state': 'complete' if complete else 'limited' if progress['cycleDone'] else 'in-progress',
+            'binding': binding, 'cycleId': progress['cycleId'], 'startedAt': progress['startedAt'],
+            'lastCompleteAt': progress['lastCompleteAt'], 'requestsThisRun': requests, 'requestBudget': request_limit,
+            'timeBudgetSeconds': seconds, 'retainedRecords': retained, 'pauseReason': paused}}
+    return sorted(records.values(), key=lambda item: item.get('messageAt', ''), reverse=True), coverage, progress
+
+
 def calendar_records(token: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     now = utc_now()
     past_days = min(max(int(os.environ.get("PIXEL_SOURCE_CALENDAR_PAST_DAYS", "7")), 0), 365)
@@ -1305,6 +1619,171 @@ def calendar_records(token: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         "truncationReason": truncation_reason,
         "completeWithinWindow": not truncated,
     }
+
+
+CALENDAR_SYNC_KIND = 'pixel-calendar-sync-progress'
+
+
+def calendar_sync_options() -> dict[str, Any]:
+    return {'calendarId': os.environ.get('PIXEL_SOURCE_CALENDAR_ID', 'primary'),
+        'pastDays': min(max(int(os.environ.get('PIXEL_SOURCE_CALENDAR_PAST_DAYS', '7')), 0), 365),
+        'futureDays': min(max(int(os.environ.get('PIXEL_SOURCE_CALENDAR_FUTURE_DAYS', '90')), 1), 730),
+        'maxPages': min(max(int(os.environ.get('PIXEL_SOURCE_CALENDAR_MAX_PAGES', '20')), 1), 400),
+        'pageSize': CALENDAR_PAGE_SIZE}
+
+
+def calendar_sync_binding(generation: str, options: dict[str, Any] | None = None) -> str:
+    return hashlib.sha256(json.dumps({'generation': generation, 'options': options or calendar_sync_options(),
+        'sanitizerRevision': SANITIZER_REVISION}, sort_keys=True).encode()).hexdigest()
+
+
+def _calendar_new_progress(binding: str, options: dict[str, Any], last_complete: str | None = None) -> dict[str, Any]:
+    now = utc_now()
+    return {'schemaVersion': 1, 'kind': CALENDAR_SYNC_KIND, 'binding': binding,
+        'sanitizerRevision': SANITIZER_REVISION, 'options': options, 'cycleId': os.urandom(16).hex(),
+        'startedAt': iso(now), 'lastCompleteAt': last_complete, 'cycleDone': False,
+        'windowStart': iso(now - timedelta(days=options['pastDays'])),
+        'windowEnd': iso(now + timedelta(days=options['futureDays'])),
+        'ids': [], 'pageToken': '', 'seenPageTokens': [], 'pagesFetched': 0,
+        'truncated': False, 'truncationReason': ''}
+
+
+def _calendar_progress(path: Path, binding: str, options: dict[str, Any]) -> dict[str, Any]:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return _calendar_new_progress(binding, options)
+    try:
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1
+                or info.st_mode & 0o077 or info.st_size > GMAIL_SYNC_MAX_BYTES):
+            raise SourceUnavailable('unknown', 'Calendar progress is not private broker state')
+        with os.fdopen(descriptor, 'rb', closefd=False) as handle:
+            value = json.loads(handle.read(GMAIL_SYNC_MAX_BYTES + 1))
+        if (type(value) is not dict or value.get('schemaVersion') != 1 or value.get('kind') != CALENDAR_SYNC_KIND
+                or value.get('sanitizerRevision') != SANITIZER_REVISION or value.get('binding') != binding):
+            return _calendar_new_progress(binding, options)
+        if (set(value) != {'schemaVersion', 'kind', 'binding', 'sanitizerRevision', 'options', 'cycleId',
+                'startedAt', 'lastCompleteAt', 'cycleDone', 'windowStart', 'windowEnd', 'ids', 'pageToken',
+                'seenPageTokens', 'pagesFetched', 'truncated', 'truncationReason'} or value['options'] != options
+                or type(value['cycleId']) is not str or not re.fullmatch(r'[a-f0-9]{32}', value['cycleId'])
+                or not valid_iso_timestamp(value['startedAt']) or not valid_iso_timestamp(value['windowStart'])
+                or not valid_iso_timestamp(value['windowEnd'])
+                or value['lastCompleteAt'] is not None and not valid_iso_timestamp(value['lastCompleteAt'])
+                or type(value['cycleDone']) is not bool or type(value['truncated']) is not bool
+                or value['truncationReason'] not in ('', 'safety-page-limit', 'repeated-page-token')
+                or type(value['pagesFetched']) is not int or not 0 <= value['pagesFetched'] <= options['maxPages']
+                or type(value['ids']) is not list or len(value['ids']) > options['maxPages'] * options['pageSize']
+                or len(value['ids']) != len(set(value['ids']))
+                or any(type(item) is not str or not 1 <= len(item) <= 1024 for item in value['ids'])
+                or type(value['seenPageTokens']) is not list or len(value['seenPageTokens']) > options['maxPages']
+                or any(type(item) is not str or len(item) > 4096 for item in [value['pageToken'], *value['seenPageTokens']])):
+            raise ValueError()
+        started = datetime.fromisoformat(value['startedAt'].replace('Z', '+00:00'))
+        if (value['windowStart'] != iso(started - timedelta(days=options['pastDays']))
+                or value['windowEnd'] != iso(started + timedelta(days=options['futureDays']))):
+            raise ValueError()
+        if value['cycleDone']:
+            return _calendar_new_progress(binding, options, value['lastCompleteAt'])
+        return value
+    except (ValueError, TypeError, KeyError, UnicodeError):
+        raise SourceUnavailable('unknown', 'Calendar progress is invalid') from None
+    finally:
+        os.close(descriptor)
+
+
+def calendar_incremental_records(token: str, cached: dict[str, Any] | None, *, progress_path: Path,
+                                 generation: str) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+    """A bounded page batch, with a frozen query window until its cycle ends."""
+    options = calendar_sync_options()
+    binding = calendar_sync_binding(generation, options)
+    progress = _calendar_progress(progress_path, binding, options)
+    cached_sync = ((cached or {}).get('coverage') or {}).get('sync') or {}
+    records = {str(item['id']): dict(item) for item in (cached or {}).get('records', [])
+        if cached_sync.get('binding') == binding and type(item) is dict and item.get('id')}
+    seen = set(progress['ids'])
+    if any(item not in records for item in seen):
+        progress = _calendar_new_progress(binding, options)
+        seen = set()
+    current = set(seen)
+    page_tokens = set(progress['seenPageTokens'])
+    request_limit = min(max(int(os.environ.get('PIXEL_SOURCE_CALENDAR_REQUEST_BUDGET', '8')), 1), 32)
+    seconds = float(os.environ.get('PIXEL_SOURCE_CALENDAR_TIME_BUDGET_SECONDS', '45'))
+    if not math.isfinite(seconds):
+        raise SourceUnavailable('unknown', 'Calendar time budget must be finite')
+    seconds = min(max(seconds, 1), 60)
+    deadline = time.monotonic() + seconds
+    requests = 0
+    pages_before = progress['pagesFetched']
+    failure = None
+    while not progress['cycleDone'] and requests < request_limit and time.monotonic() < deadline:
+        params = {'timeMin': progress['windowStart'], 'timeMax': progress['windowEnd'],
+            'singleEvents': 'true', 'orderBy': 'startTime', 'maxResults': options['pageSize']}
+        if progress['pageToken']:
+            params['pageToken'] = progress['pageToken']
+        try:
+            requests += 1
+            value = google_get(CALENDAR_API, '/calendars/' + urllib.parse.quote(options['calendarId'], safe='') + '/events',
+                token, params, timeout=min(25, max(.001, deadline - time.monotonic())))
+            items = value.get('items') or []
+            if type(items) is not list or len(items) > options['pageSize']:
+                raise SourceUnavailable('unknown', 'Calendar page exceeded its requested bound')
+            projected = {}
+            for item in items:
+                if type(item) is not dict or type(item.get('id')) is not str or not 1 <= len(item['id']) <= 1024:
+                    raise SourceUnavailable('unknown', 'Calendar returned an invalid event identifier')
+                record = calendar_projection(item)
+                if record['id'] != item['id']:
+                    raise SourceUnavailable('unknown', 'Calendar event identifier changed during projection')
+                record.update(observedAt=iso(utc_now()), retainedFromEarlierScan=False)
+                projected[record['id']] = record
+            following = value.get('nextPageToken') or ''
+            if type(following) is not str or len(following) > 4096:
+                raise SourceUnavailable('unknown', 'Calendar cursor is invalid')
+            records.update(projected)
+            current.update(projected)
+            progress['pagesFetched'] += 1
+            if not following:
+                progress['cycleDone'] = True
+            elif following in page_tokens:
+                progress.update(cycleDone=True, truncated=True, truncationReason='repeated-page-token')
+            elif progress['pagesFetched'] >= options['maxPages']:
+                progress.update(cycleDone=True, truncated=True, truncationReason='safety-page-limit')
+            else:
+                progress['seenPageTokens'].append(following)
+                page_tokens.add(following)
+                progress['pageToken'] = following
+        except Exception as error:
+            if progress['pagesFetched'] == pages_before:
+                raise  # No new page to checkpoint: retain the prior snapshot unchanged.
+            # Preserve successful pages in THIS bounded batch and let Gmail
+            # continue. The failed page's cursor is not advanced or replayed as
+            # if it succeeded; the next timer can retry that read.
+            failure = failure_record(error)
+            break
+    progress['ids'] = sorted(current)
+    complete = progress['cycleDone'] and not progress['truncated'] and failure is None
+    if complete:
+        records = {key: item for key, item in records.items() if key in current}
+        progress['lastCompleteAt'] = iso(utc_now())
+    retained = 0
+    for key, record in records.items():
+        record['retainedFromEarlierScan'] = key not in current
+        if record['retainedFromEarlierScan']:
+            retained += 1
+            record.setdefault('observedAt', (cached or {}).get('generatedAt'))
+    coverage = {'bounded': True, 'windowStart': progress['windowStart'], 'windowEnd': progress['windowEnd'],
+        'pastDays': options['pastDays'], 'futureDays': options['futureDays'], 'pageSize': options['pageSize'],
+        'maxPages': options['maxPages'], 'pagesFetched': progress['pagesFetched'], 'fetched': len(current),
+        'truncated': progress['truncated'], 'truncationReason': progress['truncationReason'],
+        'completeWithinWindow': complete,
+        'sync': {'state': 'complete' if complete else 'limited' if progress['cycleDone'] else 'in-progress',
+            'binding': binding, 'cycleId': progress['cycleId'], 'startedAt': progress['startedAt'],
+            'lastCompleteAt': progress['lastCompleteAt'], 'requestsThisRun': requests, 'requestBudget': request_limit,
+            'timeBudgetSeconds': seconds, 'retainedRecords': retained,
+            'pagesThisRun': progress['pagesFetched'] - pages_before, 'failure': failure}}
+    return sorted(records.values(), key=lambda item: str((item.get('start') or {}).get('dateTime') or
+        (item.get('start') or {}).get('date') or '')), coverage, progress
 
 
 def social_records(path: Path | None) -> list[dict[str, Any]]:
@@ -1801,64 +2280,168 @@ def refresh() -> int:
     started_at = iso(utc_now())
     prior = previous_status(output_dir / "status.json")
     granted: frozenset[str] | None = None
+    generation: str | None = None
+    credentials: dict[str, Any] | None = None
     token = ""
     token_failure: BaseException | None = None
     if enabled["email"] or enabled["calendar"]:
         try:
             credentials = read_credentials(token_path)
             granted = granted_scopes(credentials)
-            token = refresh_access_token(credentials)
+            generation = credential_generation(credentials)
         except Exception as error:  # Recorded for each Google source below; social still refreshes.
             token_failure = error
     fetchers = {
-        "email": ("gmail", EMAIL_READ_SCOPES, lambda: gmail_records(token, cached_email_records(output_dir / "email.json"))),
-        "calendar": ("google-calendar", CALENDAR_READ_SCOPES, lambda: calendar_records(token)),
+        "calendar": ("google-calendar", CALENDAR_READ_SCOPES, None),
+        "email": ("gmail", EMAIL_READ_SCOPES, None),
         "social": ("social", None, lambda: (social_records(Path(social_path_value) if social_path_value else None), None)),
     }
-    sources: dict[str, dict[str, Any]] = {}
+    def current_cache(name, label):
+        value = retained_projection(output_dir / f'{name}.json', label)
+        if name == 'social':
+            return value
+        if generation is None or value is None:
+            return None
+        if name == 'email':
+            try:
+                binding = ((value.get('coverage') or {}).get('sync') or {}).get('binding')
+                return value if binding == gmail_sync_binding(generation) else None
+            except (ValueError, TypeError, AttributeError):
+                return None  # A bad Gmail option/cache must not block Calendar.
+        try:
+            binding = ((value.get('coverage') or {}).get('sync') or {}).get('binding')
+            return value if binding == calendar_sync_binding(generation) else None
+        except (ValueError, TypeError, AttributeError):
+            return None
+
+    for name, label in (('email', 'gmail'), ('calendar', 'google-calendar')):
+        if enabled[name] and current_cache(name, label) is None:
+            prior.pop(name, None)
+    # Publish content-free progress before network work and after EACH source.
+    # Calendar is independent of Gmail's much larger historical scan.
+    def starting_source(name):
+        previous = prior.get(name, {})
+        if not enabled[name]:
+            return source_status(previous, enabled=False, attempted_at=started_at)
+        count = previous.get('recordCount', 0)
+        count = count if type(count) is int and count >= 0 else 0
+        failure = None
+        if previous.get('state') == 'error':
+            code, status, error_type = (previous.get(key) for key in ('errorClass', 'httpStatus', 'errorType'))
+            failure = {'errorClass': code if code in SOURCE_ERROR_CLASSES else 'unknown',
+                'httpStatus': status if type(status) is int and 100 <= status <= 599 else None,
+                'errorType': error_type if isinstance(error_type, str) and ERROR_TYPE.fullmatch(error_type) else 'Error'}
+        value = source_status(previous, enabled=True, attempted_at=started_at, failure=failure,
+                              record_count=count, complete=False)
+        value['lastSuccessAt'] = previous.get('lastSuccessAt') if valid_iso_timestamp(previous.get('lastSuccessAt')) else None
+        return value
+
+    sources = {name: starting_source(name) for name in enabled}
+
+    def assert_generation():
+        if not (enabled['email'] or enabled['calendar']):
+            return
+        try:
+            current = credential_generation(read_credentials(token_path))
+        except Exception:
+            if generation is not None:
+                raise CredentialGenerationChanged() from None
+            return
+        if generation is None or current != generation:
+            raise CredentialGenerationChanged()
+
+    def publish(path, value, *, mode=0o640):
+        assert_generation()
+        atomic_json(path, value, mode=mode)
+
+    def checkpoint_status():
+        publish(output_dir / 'status.json', {
+            'schemaVersion': SCHEMA_VERSION, 'kind': STATUS_KIND, 'startedAt': started_at,
+            'generatedAt': iso(utc_now()), 'grantedScopes': sorted(granted) if granted is not None else None,
+            'sources': sources, 'boundary': STATUS_BOUNDARY})
+
+    try:
+        checkpoint_status()
+    except CredentialGenerationChanged:
+        return 1
+    if credentials is not None:
+        try:
+            token = refresh_access_token(credentials)
+        except Exception as error:
+            token_failure = error
     for name, (label, required_scopes, fetch) in fetchers.items():
         path = output_dir / f"{name}.json"
         attempted_at = iso(utc_now())
         if not enabled[name]:
             coverage = {"bounded": True, "folders": {}} if name == "email" else None
-            atomic_json(path, projection(label, [], attempted_at, False, coverage, started_at=started_at))
+            try:
+                publish(path, projection(label, [], attempted_at, False, coverage, started_at=started_at))
+            except CredentialGenerationChanged:
+                return 1
             sources[name] = source_status(prior.get(name, {}), enabled=False, attempted_at=attempted_at)
+            try:
+                checkpoint_status()
+            except CredentialGenerationChanged:
+                return 1
             continue
         try:
             if required_scopes is not None and token_failure is not None:
                 raise token_failure
             if required_scopes is not None and granted is not None and not granted & required_scopes:
                 raise SourceUnavailable("missing-scope", f"Google did not grant {name} read access")
-            records, coverage = fetch()
+            progress = None
+            if name == 'email':
+                records, coverage, progress = gmail_incremental_records(token,
+                    current_cache(name, label), progress_path=output_dir / '.gmail-sync-progress.json',
+                    generation=generation)
+            elif name == 'calendar':
+                records, coverage, progress = calendar_incremental_records(token,
+                    current_cache(name, label), progress_path=output_dir / '.calendar-sync-progress.json',
+                    generation=generation)
+            else:
+                records, coverage = fetch()
         except Exception as error:  # One source failing must not stale or block the others.
             failure = failure_record(error)
             # A removed sign-in means the owner disconnected: never keep serving that data.
-            kept = None if failure["errorClass"] == "not-connected" else retained_projection(path, label)
+            kept = None if failure["errorClass"] == "not-connected" else current_cache(name, label)
             if kept is None:
                 unavailable = {"bounded": True, "available": False, "reason": failure["errorClass"]}
-                atomic_json(path, projection(label, [], None, True, unavailable, started_at=started_at))
+                try:
+                    publish(path, projection(label, [], None, True, unavailable, started_at=started_at))
+                except CredentialGenerationChanged:
+                    return 1
             sources[name] = source_status(
                 prior.get(name, {}), enabled=True, attempted_at=attempted_at, failure=failure,
                 record_count=len(kept["records"]) if kept else 0, complete=False,
                 kept_generated_at=kept["generatedAt"] if kept else None,
             )
+            try:
+                checkpoint_status()
+            except CredentialGenerationChanged:
+                return 1
             continue
         generated_at = iso(utc_now())
-        atomic_json(path, projection(label, records, generated_at, True, coverage, started_at=started_at))
+        try:
+            value = projection(label, records, generated_at, True, coverage, started_at=started_at)
+            if name in ('email', 'calendar'):
+                value['credentialGeneration'] = generation
+            publish(path, value)
+            if progress is not None:
+                # Projection first: interruption can repeat a read, never skip
+                # rows by advancing a cursor before publishing their projection.
+                publish(output_dir / f'.{"gmail" if name == "email" else "calendar"}-sync-progress.json', progress, mode=0o600)
+        except CredentialGenerationChanged:
+            return 1
         sources[name] = source_status(
             prior.get(name, {}), enabled=True, attempted_at=generated_at,
             record_count=len(records), complete=coverage_complete(name, coverage or {}),
+            failure=((coverage or {}).get('sync') or {}).get('failure'),
         )
+        try:
+            checkpoint_status()
+        except CredentialGenerationChanged:
+            return 1
     generated_at = iso(utc_now())
-    atomic_json(output_dir / "status.json", {
-        "schemaVersion": SCHEMA_VERSION,
-        "kind": STATUS_KIND,
-        "startedAt": started_at,
-        "generatedAt": generated_at,
-        "grantedScopes": sorted(granted) if granted is not None else None,
-        "sources": sources,
-        "boundary": STATUS_BOUNDARY,
-    })
     print(json.dumps({
         "startedAt": started_at,
         "generatedAt": generated_at,
