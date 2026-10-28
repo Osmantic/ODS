@@ -7,6 +7,7 @@ This qualifies the native seam; the managed app enrollment/UI is still separate.
 """
 import base64
 import contextlib
+import copy
 import hashlib
 import http.server
 import json
@@ -62,6 +63,9 @@ class OAuthProvider:
         self.exchanges = 0
         self.refreshes = 0
         self.reads = 0
+        self.catalogs = 0
+        self.catalog_gate = None
+        self.catalog_entered = threading.Event()
         self.token_failure = None
         self.token_entered = threading.Event()
         self.token_gate = None
@@ -180,6 +184,10 @@ class OAuthProvider:
                         result = {"protocolVersion": body["params"]["protocolVersion"], "capabilities": {"tools": {}},
                                   "serverInfo": {"name": "ods-oauth-fixture", "version": "1"}}
                     elif method == "tools/list":
+                        provider.catalogs += 1
+                        provider.catalog_entered.set()
+                        if provider.catalog_gate is not None:
+                            provider.catalog_gate.wait(20)
                         result = {"tools": [{"name": name, "description": name,
                             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}
                             for name in ("notes_read", "notes_delete")]}
@@ -401,6 +409,206 @@ class NativeMcpOAuthTests(unittest.TestCase):
         self.assertEqual(self.call('forget'), {'forgotten': True})
         self.assertIs(self.call('status')['hasTokens'], False)
         self.assertEqual(self.provider.failures, [])
+
+    def authorize_fixture(self):
+        begin = self.call('begin')
+        fields = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(begin['authUrl']).query))
+        expected = self.oauth.state_hash(fields['state'])
+
+        def callback(query):
+            parsed = self.oauth.parse_callback(query, expected_state_hash=expected)
+            self.assertEqual(self.call('complete', code=parsed['code'])['outcome'], 'authorized')
+            return 'Authorized', 'Return to ODS.', None, True
+
+        self.listener.serve(secrets.token_hex(16), callback)
+        with urllib.request.urlopen(begin['authUrl'], timeout=35) as response:
+            self.assertIn(b'Authorized', response.read())
+
+    def policy_config(self):
+        name = 'qa-notes__notes_read'
+        return {'mcp': {'servers': {'qa-notes': copy.deepcopy(self.server)}},
+                'plugins': {'allow': [], 'entries': {}},
+                'tools': {'profile': 'coding', 'alsoAllow': [name],
+                          'sandbox': {'tools': {'allow': [name]}}},
+                'agents': {'defaults': {'sandbox': {'mode': 'off'}},
+                           'list': [{'id': 'pixel', 'model': 'qa/default', 'tools': {'allow': [name]}}]}}
+
+    def probe_policy(self, config, **overrides):
+        self.world.write_config(config)
+        path = self.world.state / 'openclaw.json'
+        request = {'operation': 'probe', 'packageDir': str(self.world.package), 'serverName': 'qa-notes',
+                   'server': config['mcp']['servers']['qa-notes'], 'configPath': str(path),
+                   'configSha256': hashlib.sha256(path.read_bytes()).hexdigest(), **overrides}
+        result = self.adapter(request)
+        self.assertEqual(result.returncode, 0, 'Bound native policy probe failed; fixture diagnostics stay private')
+        self.assertNotIn(self.provider.fact, result.stdout)
+        if self.provider.access:
+            self.assertNotIn(self.provider.access, result.stdout)
+        frame = json.loads(result.stdout)
+        self.assertIs(frame['ok'], True)
+        return frame['result']
+
+    def test_readiness_uses_effective_native_policy_without_reading_content_or_contacting_another_server(self):
+        missing = self.probe_policy(self.policy_config())
+        self.assertEqual(missing, {'reachable': False, 'permitted': False,
+                                  'reason': 'sign-in-required', 'scope': 'pixel-owner-default'})
+        self.assertEqual(self.provider.clients, {}, 'Checking an unsigned app must not register an OAuth client')
+        self.assertEqual(self.provider.headers_seen, [])
+        self.authorize_fixture()
+        unrelated = OAuthProvider()
+        self.addCleanup(unrelated.close)
+        config = self.policy_config()
+        config['mcp']['servers']['qa-other'] = dict(self.server, url=unrelated.origin + '/mcp')
+        expected = {'reachable': True, 'permitted': True, 'reason': 'ready', 'scope': 'pixel-owner-default'}
+        self.assertEqual(self.probe_policy(config), expected)
+        alias = copy.deepcopy(config)
+        alias['mcp']['servers'] = {'qa notes': dict(self.server, url=unrelated.origin + '/mcp'),
+                                  'qa-notes': alias['mcp']['servers']['qa-notes']}
+        contacted = len(self.provider.headers_seen)
+        self.assertEqual(self.probe_policy(alias), dict(expected, reachable=False, permitted=False, reason='namespace-conflict'))
+        self.assertEqual(len(self.provider.headers_seen), contacted)
+        name = 'qa-notes__notes_read'
+        cases = []
+        for scope in ('agent', 'global', 'provider', 'sandbox'):
+            candidate = copy.deepcopy(config)
+            if scope == 'agent': candidate['agents']['list'][0]['tools']['deny'] = [name]
+            elif scope == 'global': candidate['tools']['deny'] = [name]
+            elif scope == 'provider': candidate['tools']['byProvider'] = {'qa': {'deny': [name]}}
+            else:
+                candidate['agents']['defaults']['sandbox']['mode'] = 'all'
+                candidate['tools']['sandbox']['tools']['deny'] = [name]
+            cases.append((scope, candidate))
+        for scope, candidate in cases:
+            with self.subTest(scope=scope):
+                self.assertEqual(self.probe_policy(candidate), dict(expected, permitted=False, reason='policy-blocked'))
+        # A sandbox-only deny does not apply to Full Access's actual off mode.
+        config['tools']['sandbox']['tools']['deny'] = [name]
+        self.assertEqual(self.probe_policy(config), expected)
+        self.provider.access = secrets.token_urlsafe(24)
+        self.assertEqual(self.probe_policy(config), expected)
+        self.assertEqual(self.provider.refreshes, 1, 'Readiness must use native refresh, not another authorization')
+        config['mcp']['servers']['qa-notes']['toolFilter']['include'].append('notes_missing')
+        self.assertEqual(self.probe_policy(config), dict(expected, permitted=False, reason='tools-unavailable'))
+        catalogs = self.provider.catalogs
+        config['mcp']['servers']['qa-notes']['enabled'] = False
+        self.assertEqual(self.probe_policy(config), dict(expected, reachable=False, permitted=False, reason='disabled'))
+        self.assertEqual(self.provider.catalogs, catalogs)
+        self.assertEqual(self.provider.reads, 0, 'Readiness must not execute a provider content tool')
+        self.assertEqual(unrelated.headers_seen, [], 'Only the selected server may be contacted')
+        self.assertEqual(self.provider.exchanges, 1)
+        self.assertEqual(self.provider.failures, [])
+
+    def test_probe_refuses_changed_config_and_unreviewed_policy_code_before_network(self):
+        self.authorize_fixture()
+        config = self.policy_config()
+        self.world.write_config(config)
+        path = self.world.state / 'openclaw.json'
+        base = {'operation': 'probe', 'packageDir': str(self.world.package), 'serverName': 'qa-notes',
+                'server': config['mcp']['servers']['qa-notes'], 'configPath': str(path),
+                'configSha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+        count = len(self.provider.headers_seen)
+        changed = self.adapter(dict(base, configSha256='0' * 64))
+        self.assertEqual(json.loads(changed.stdout), {'ok': False, 'code': 'native-mcp-binding-changed'})
+        fake = self.world.home / 'unreviewed-policy'
+        (fake / 'dist').mkdir(parents=True)
+        shutil.copyfile(self.world.package / 'package.json', fake / 'package.json')
+        modules = [NATIVE_MODULE, 'dist/agent-bundle-mcp-materialize-D7HCVGV_.js',
+                   'dist/effective-tool-policy-9Qtc69lV.js', 'dist/config-BelhrjIc.js',
+                   'dist/agent-bundle-mcp-names-B9PLR-i_.js']
+        marker = 'UNREVIEWED-POLICY-' + secrets.token_hex(20)
+        for module in modules:
+            target = fake / module
+            if 'materialize' in module: target.write_text('process.stdout.write(' + json.dumps(marker) + ');')
+            else: target.symlink_to(self.world.package / module)
+        rejected = self.adapter(dict(base, packageDir=str(fake)))
+        self.assertEqual(json.loads(rejected.stdout), {'ok': False, 'code': 'native-oauth-runtime-unsupported'})
+        self.assertNotIn(marker, rejected.stdout + rejected.stderr)
+        self.assertEqual(len(self.provider.headers_seen), count)
+
+    @unittest.skipIf(hasattr(os, 'geteuid') and os.geteuid() == 0, 'Owner operation requires an unprivileged UID')
+    def test_bound_owner_probe_rejects_drift_and_forget_requires_a_disabled_entry(self):
+        from native_mcp_owner import operate
+        from pixel_connections import native_mcp as native
+        import pixel_access_protocol as protocol
+        self.authorize_fixture()
+        config = self.policy_config()
+        self.world.write_config(config)
+        node_dir = self.world.home / 'private-node'
+        node_dir.mkdir(mode=0o700)
+        node = node_dir / 'node'
+        shutil.copyfile(Path(shutil.which('node', path=self.world.env['PATH'])).resolve(), node)
+        node.chmod(0o700)
+        self.world.env['PATH'] = str(node_dir) + os.pathsep + self.world.env['PATH']
+        path = self.world.state / 'openclaw.json'
+
+        def request(action):
+            binding = native.derive_binding(config_path=path, uid=os.geteuid(), home=self.world.home,
+                state_dir=self.world.state, binary=self.world.openclaw, search_path=self.world.env['PATH'],
+                server_name='qa-notes')
+            return {'action': action, 'binding': binding, 'serverName': 'qa-notes'}
+
+        def run(value):
+            return operate(str(path), str(self.world.state / '.ods-access-mode'), openclaw=self.world.openclaw,
+                           request=value, expected_config_sha256=value['binding']['configSha256'])
+
+        with patch.dict(os.environ, self.world.env, clear=True):
+            ready = run(request('probe'))
+            self.assertEqual(protocol.result('native-mcp-oauth', ready), ready)
+            self.assertIs(ready['permitted'], True)
+            with self.assertRaisesRegex(native.NativeError, 'native-app-withdrawal-required'):
+                run(request('forget'))
+            self.assertIs(self.call('status')['hasTokens'], True)
+            pending = request('probe')
+            self.provider.catalog_entered.clear()
+            self.provider.catalog_gate = threading.Event()
+            outcomes = []
+
+            def probe():
+                try: outcomes.append(run(pending))
+                except native.NativeError as error: outcomes.append(error.code)
+
+            thread = threading.Thread(target=probe, daemon=True)
+            thread.start()
+            entered = self.provider.catalog_entered.wait(15)
+            try:
+                self.assertTrue(entered, 'The bound probe must reach the controlled tools/list')
+                path.write_bytes(path.read_bytes() + b'\n')
+            finally:
+                self.provider.catalog_gate.set()
+                thread.join(20)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(outcomes, ['native-mcp-binding-changed'])
+            config['mcp']['servers']['qa-notes']['enabled'] = False
+            self.world.write_config(config)
+
+            class BoundConsentBridge:
+                state = self.world.home / 'root-intent'
+                home, binary = self.world.home, self.world.openclaw
+                owner = SimpleNamespace(pw_uid=os.geteuid())
+                lock = threading.Lock()
+
+                def bounded(selected, seconds): return contextlib.nullcontext()
+                def locked(selected): return selected.lock
+                def discover(selected): pass
+                def pending(selected): return None
+                def worker_environment(selected): return self.world.env
+                def worker(selected, operation, *, config_hash, native_oauth_request):
+                    self.assertEqual(operation, 'native-mcp-oauth')
+                    self.assertEqual(config_hash, native_oauth_request['binding']['configSha256'])
+                    return run(native_oauth_request)
+
+            BoundConsentBridge.state.mkdir(mode=0o700)
+            consent = native.Consent(BoundConsentBridge(), app='notes', server_name='qa-notes')
+            resumed = consent.begin(redirect_port=self.listener.port)
+            self.assertEqual(resumed['phase'], 'authorized')
+            claimed = consent.claim_authorization(flow_id=resumed['flowId'], activation_id='d' * 64)
+            self.assertEqual(claimed['phase'], 'activating')
+            self.assertEqual(consent.finish_authorization(flow_id=resumed['flowId'], activation_id='d' * 64),
+                             {'phase': 'settled', 'portalAccessVerified': False})
+            forgotten = run(request('forget'))
+            self.assertEqual(protocol.result('native-mcp-oauth', forgotten), {'forgotten': True})
+            self.assertIs(self.call('status')['hasTokens'], False)
+        self.assertEqual(self.provider.reads, 0)
 
     @unittest.skipIf(hasattr(os, 'geteuid') and os.geteuid() == 0, 'Owner-side operation must run as an unprivileged UID')
     def test_durable_claim_recovers_a_lost_real_exchange_without_replaying_it(self):

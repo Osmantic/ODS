@@ -332,7 +332,8 @@ def result(operation, value):
         raise ProtocolError("owner-protocol-failed")
     if operation == 'native-mcp-oauth':
         from pixel_connections.native_mcp import NativeError, worker_result
-        try: return worker_result(value)
+        action = 'probe' if 'scope' in value else 'forget' if 'forgotten' in value else None
+        try: return worker_result(value, action)
         except NativeError: raise ProtocolError('owner-protocol-failed') from None
     if operation == 'schedules':
         try: return schedule_response(value)

@@ -1,6 +1,7 @@
 """Durable Root intent/claim contracts, with real private journal writes."""
 import contextlib
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -226,3 +227,202 @@ def test_writable_ancestor_is_not_a_bound_runtime_or_state_directory(tmp_path):
     directory.chmod(0o777)
     with pytest.raises(native.NativeError, match='unsafe-native-mcp-state'):
         native._parents(directory / 'node', os.geteuid())
+
+
+@pytest.fixture
+def access_world(world, monkeypatch):
+    bridge, _consent = world
+    path = bridge.state / 'owner-config.json'
+    server = {'enabled': False, 'auth': 'oauth', 'transport': 'streamable-http', 'url': 'https://example.test/mcp'}
+    raw = native.encoded({'mcp': {'servers': {'qa-notes': server}}})
+    path.write_bytes(raw)
+    path.chmod(0o600)
+    bridge.binding.update(ownerUid=os.geteuid(), configPath=str(path), configSha256=hashlib.sha256(raw).hexdigest())
+    snapshot = {'runtime_verified': True, 'pending': False, 'configured_mode': 'full-access',
+                'effective_mode': 'full-access', 'revision': 'c' * 64,
+                '_config': {'config_sha256': bridge.binding['configSha256']}}
+    monkeypatch.setattr(native, 'bridge_binding', lambda selected, name: dict(selected.binding))
+    monkeypatch.setattr(bridge, 'inspect', lambda: snapshot, raising=False)
+    results = {'probe': {'reachable': True, 'permitted': True, 'reason': 'ready', 'scope': 'pixel-owner-default'},
+               'forget': {'forgotten': True}}
+
+    def worker(operation, *, config_hash, native_oauth_request):
+        assert operation == 'native-mcp-oauth'
+        request = native.worker_request(native_oauth_request)
+        assert config_hash == bridge.binding['configSha256']
+        bridge.calls.append(request['action'])
+        return results[request['action']]
+
+    monkeypatch.setattr(bridge, 'worker', worker)
+    return bridge, snapshot, results, server
+
+
+def test_access_check_joins_bound_native_policy_to_fresh_runtime_proof(access_world):
+    bridge, snapshot, _results, _server = access_world
+    result = native.check_access(bridge, 'qa-notes')
+    assert result == {'reachable': True, 'permitted': True, 'reason': 'ready', 'scope': 'pixel-owner-default',
+                      'configSha256': bridge.binding['configSha256'], 'runtimeRevision': snapshot['revision']}
+    assert bridge.calls == ['probe']
+
+
+@pytest.mark.parametrize('change', [
+    {'runtime_verified': False}, {'pending': True}, {'effective_mode': 'unknown'}, {'revision': 'not-a-proof'},
+    {'_config': {'config_sha256': 'b' * 64}},
+])
+def test_unverified_or_old_runtime_cannot_probe_or_forget(access_world, change):
+    bridge, snapshot, _results, _server = access_world
+    snapshot.update(change)
+    for operation in (native.check_access, native.forget_disabled):
+        with pytest.raises(native.NativeError, match='native-app-runtime-unverified'):
+            operation(bridge, 'qa-notes')
+    assert bridge.calls == []
+
+
+def test_forget_requires_disabled_exact_config_and_reports_no_provider_revocation(access_world):
+    bridge, snapshot, _results, server = access_world
+    assert native.forget_disabled(bridge, 'qa-notes') == {'forgotten': True, 'providerRevoked': False}
+    path = Path(bridge.binding['configPath'])
+    server['enabled'] = True
+    raw = native.encoded({'mcp': {'servers': {'qa-notes': server}}})
+    path.write_bytes(raw)
+    bridge.binding['configSha256'] = snapshot['_config']['config_sha256'] = hashlib.sha256(raw).hexdigest()
+    with pytest.raises(native.NativeError, match='native-app-withdrawal-required'):
+        native.forget_disabled(bridge, 'qa-notes')
+    assert bridge.calls == ['forget']
+
+
+def test_runtime_or_binding_changed_during_check_is_not_ready(access_world, monkeypatch):
+    bridge, snapshot, _results, _server = access_world
+    original = bridge.worker
+
+    def changed(*args, **kwargs):
+        result = original(*args, **kwargs)
+        snapshot['revision'] = 'd' * 64
+        return result
+
+    monkeypatch.setattr(bridge, 'worker', changed)
+    with pytest.raises(native.NativeError, match='native-mcp-binding-changed'):
+        native.check_access(bridge, 'qa-notes')
+
+
+@pytest.mark.parametrize('value', [
+    {'reachable': True, 'permitted': True, 'reason': 'policy-blocked', 'scope': 'pixel-owner-default'},
+    {'reachable': 1, 'permitted': True, 'reason': 'ready', 'scope': 'pixel-owner-default'},
+    {'reachable': True, 'permitted': True, 'reason': 'ready', 'scope': 'another-agent'},
+    {'reachable': True, 'permitted': True, 'reason': 'ready', 'scope': 'pixel-owner-default', 'token': 'PRIVATE'},
+])
+def test_native_probe_protocol_cannot_return_ambiguous_or_sensitive_results(value):
+    with pytest.raises(protocol.ProtocolError, match='owner-protocol-failed'):
+        protocol.result('native-mcp-oauth', value)
+
+
+@pytest.fixture
+def authorized_world(world):
+    if os.geteuid() == 0:
+        pytest.skip('Activation fixture binds an ordinary owner UID')
+    bridge, consent = world
+    path = bridge.state / 'prepared-config.json'
+    raw = native.encoded({'mcp': {'servers': {'qa-notes': {
+        'enabled': False, 'auth': 'oauth', 'transport': 'streamable-http', 'url': 'https://provider.example/mcp'}}}})
+    path.write_bytes(raw)
+    path.chmod(0o600)
+    bridge.binding.update(ownerUid=os.geteuid(), configPath=str(path), configSha256=hashlib.sha256(raw).hexdigest())
+    begin = consent.begin(redirect_port=43123)
+    consent.complete(flow_id=begin['flowId'], callback_url=callback(bridge))
+    return bridge, consent, begin['flowId']
+
+
+def test_authorization_is_durably_reserved_once_without_certifying_portal_access(authorized_world):
+    bridge, consent, flow = authorized_world
+    # The production lock is not reentrant. Internal enrollment calls the
+    # locked helper while owning it; public entry points take it exactly once.
+    bridge.lock = threading.Lock()
+    with bridge.locked():
+        claim = consent._claim_authorization_locked(flow_id=flow, activation_id='d' * 64)
+    assert claim == {'flowId': flow, 'activationId': 'd' * 64, 'phase': 'activating',
+                     'bindingSha256': native.digest(bridge.binding)}
+    assert consent.status()['portalAccessVerified'] is False
+    assert consent.recover(flow_id=flow)['phase'] == 'activating'
+    with pytest.raises(native.NativeError, match='native-authorization-already-claimed'):
+        consent.claim_authorization(flow_id=flow, activation_id='e' * 64)
+    with pytest.raises(native.NativeError, match='native-activation-settlement-required'):
+        consent.cancel(flow_id=flow)
+    with pytest.raises(native.NativeError, match='native-sign-in-in-progress'):
+        consent.begin(redirect_port=43123)
+    with pytest.raises(native.NativeError, match='native-callback-already-claimed'):
+        consent.complete(flow_id=flow, callback_url=callback(bridge))
+    assert bridge.calls == ['begin', 'complete']
+    with pytest.raises(native.NativeError, match='native-activation-claim-mismatch'):
+        consent.finish_authorization(flow_id=flow, activation_id='e' * 64)
+    expected = {'phase': 'settled', 'portalAccessVerified': False}
+    assert consent.finish_authorization(flow_id=flow, activation_id='d' * 64) == expected
+    assert consent.finish_authorization(flow_id=flow, activation_id='d' * 64) == expected
+    new = consent.begin(redirect_port=43123)
+    assert new['flowId'] != flow
+    assert 'activationId' not in json.loads(consent.path.read_bytes())
+
+
+def test_concurrent_authorization_claims_cannot_reserve_two_activations(authorized_world):
+    _bridge, consent, flow = authorized_world
+    outcomes = []
+
+    def claim(identity):
+        try: outcomes.append(consent.claim_authorization(flow_id=flow, activation_id=identity)['phase'])
+        except native.NativeError as error: outcomes.append(error.code)
+
+    threads = [threading.Thread(target=claim, args=(char * 64,)) for char in ('d', 'e')]
+    for thread in threads: thread.start()
+    for thread in threads:
+        thread.join(5)
+        assert not thread.is_alive()
+    assert sorted(outcomes) == ['activating', 'native-authorization-already-claimed']
+
+
+def test_claim_fsync_failure_does_not_consume_or_grant_authorization(authorized_world):
+    bridge, consent, flow = authorized_world
+    before = consent.path.read_bytes()
+    with patch.object(native.os, 'fsync', side_effect=OSError('failed private claim fsync')):
+        with pytest.raises(OSError):
+            consent.claim_authorization(flow_id=flow, activation_id='d' * 64)
+    assert consent.path.read_bytes() == before
+    assert consent.status()['phase'] == 'authorized'
+    assert bridge.calls == ['begin', 'complete']
+
+
+@pytest.mark.parametrize('claimed', [False, True])
+def test_expiry_recovers_an_unclaimed_authorization_but_preserves_a_pending_root_reservation(authorized_world, claimed):
+    _bridge, consent, flow = authorized_world
+    if claimed:
+        consent.claim_authorization(flow_id=flow, activation_id='d' * 64)
+    now = consent.now
+    consent.now = lambda: now() + timedelta(seconds=oauth.FLOW_SECONDS)
+    recovered = consent.recover(flow_id=flow)
+    assert recovered['phase'] == ('activating' if claimed else 'failed')
+    assert recovered['error'] == (None if claimed else 'native-flow-expired')
+    assert recovered['portalAccessVerified'] is False
+
+
+def test_activation_rejects_binding_drift_expiry_and_an_already_enabled_server(authorized_world):
+    bridge, consent, flow = authorized_world
+    original = dict(bridge.binding)
+    bridge.binding['nodeSha256'] = 'b' * 64
+    with pytest.raises(native.NativeError, match='native-mcp-binding-changed'):
+        consent.claim_authorization(flow_id=flow, activation_id='d' * 64)
+    bridge.binding = original
+    now = consent.now
+    consent.now = lambda: now() + timedelta(seconds=oauth.FLOW_SECONDS)
+    with pytest.raises(native.NativeError, match='native-flow-expired'):
+        consent.claim_authorization(flow_id=flow, activation_id='d' * 64)
+    consent.now = now
+    path = Path(bridge.binding['configPath'])
+    value = json.loads(path.read_bytes())
+    value['mcp']['servers']['qa-notes']['enabled'] = True
+    path.write_bytes(native.encoded(value))
+    with pytest.raises(native.NativeError, match='native-mcp-binding-changed'):
+        consent.claim_authorization(flow_id=flow, activation_id='d' * 64)
+    # Even a fresh authenticated binding to an enabled entry is not preparation.
+    bridge.binding['configSha256'] = hashlib.sha256(path.read_bytes()).hexdigest()
+    consent._write(dict(consent._read(), bindingSha256=native.digest(bridge.binding)))
+    with pytest.raises(native.NativeError, match='native-app-preparation-required'):
+        consent.claim_authorization(flow_id=flow, activation_id='d' * 64)
+    assert consent.status()['phase'] == 'authorized'

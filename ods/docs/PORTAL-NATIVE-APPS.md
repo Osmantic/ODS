@@ -24,6 +24,7 @@ owner-side operations to OpenClaw:
 | `begin` | `redirect` with authorization URL, or `authorized` | OpenClaw either starts consent or refreshes an existing sign-in. An existing sign-in is not a new account selection. |
 | `complete` | `authorized` | OpenClaw exchanged the code. The custodian must validate and claim the callback first. |
 | `forget` | `forgotten: true` | The native local credential file was removed. Provider consent and an active gateway's cached credentials are separate. |
+| `probe` | Reachability, effective permission and a fixed reason, scoped to `pixel-owner-default` | Checks the exact filtered tools with native policy and the configured default model. It executes no content tool and does not certify every conversation/provider context. |
 
 OpenClaw performs discovery, dynamic registration, PKCE, token storage and token
 refresh. There is no public MCP OAuth SDK export at version `2026.6.33`, so this
@@ -76,6 +77,43 @@ remain effective. Ambiguous server-name aliases are refused before activation.
 This internal contract is not a public Connect operation or effective-access
 readiness proof.
 
+The internal readiness operation now reads the exact bound configuration and
+uses OpenClaw's native MCP materializer, effective policy pipeline and sandbox
+resolver. These additional private SDK entry points are version/hash bound.
+It contacts only the selected explicit HTTP server, without loading another
+workspace/plugin MCP bundle. Missing saved tokens return `sign-in-required`
+before any network request or client registration; token presence alone still
+cannot produce a ready result. Available tokens may refresh through native OAuth.
+The result distinguishes unavailable tools from policy blocks without returning
+server launch parameters, descriptions, account content or credentials.
+It projects the full native server namespace, including enabled plugin bundles,
+and refuses a selected name changed by native sanitization before contacting any
+server. The enrollment controller must qualify that namespace before granting
+tools as well as checking readiness after activation; that public wiring remains
+unfinished.
+
+`check_access` joins that check to fresh Root runtime proof and rechecks both the
+configuration binding and runtime revision afterward. `forget_disabled` also
+requires the exact disabled configuration to have verified runtime proof; a
+file edit without a verified restart is insufficient. The owner independently
+checks the disabled entry before forgetting. Its result explicitly says
+`providerRevoked: false`. These helpers remain internal and are not a completed
+enrollment/disconnection controller.
+
+The consent journal can reserve an authorized, still-disabled entry for one
+activation ID. That consumption is durable before any future controller grants
+tools. Duplicate reservations, stale bindings and expiry are refused. A pending
+reservation cannot be cancelled or replaced by a new sign-in; it must settle
+against the same activation ID. Closing the claim is idempotent and still
+reports `portalAccessVerified: false`. The future enrollment controller must
+persist its own configuration plan before reserving and join verified activation
+or rollback to closing that claim; the journal phase alone never proves success.
+
+Native diagnostics and the owner result now use separate channels: a bounded
+anonymous private reply file carries the fixed result while SDK stdout/stderr
+cannot corrupt the protocol or become public diagnostics. The private guardian
+still stops the child if its owner worker dies.
+
 ## Actual runtime qualification
 
 `test_native_mcp_oauth.py`, wired into `portal-runtime.yml`, uses the installed
@@ -109,6 +147,15 @@ The managed-contract variant repeats these attempted calls using the actual
 through configure/render and the overlay. It also proves an ordinary deferred
 core read still works. A separate native OAuth test completes consent while
 the server remains disabled: saved tokens do not expose tools until activation.
+
+Readiness tests additionally exercise native agent/global/provider/sandbox
+denials, default-model scope, missing tools, resource-side token rejection and
+native refresh, no registration when unsigned, unreviewed policy entry points,
+no content reads and no requests to another configured server. Bound owner tests
+reject configuration drift while `tools/list` is outstanding and require
+disabled state before forgetting. Separate Root fixtures require fresh runtime
+proof and reject a runtime revision change during the check. Reservation tests
+cover concurrent claims, failed fsync, replay, expiry and same-ID settlement.
 
 For the 8192-token primary Portal profile, native Tool Search keeps the schemas
 of `pixel_gmail_search`, `pixel_gmail_read`, `pixel_calendar_list` and

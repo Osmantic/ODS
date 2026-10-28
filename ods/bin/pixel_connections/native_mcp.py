@@ -28,7 +28,7 @@ MODULE = 'dist/agent-bundle-mcp-runtime-tW2Zz-uG.js'
 MODULE_SHA = 'ed2e1d92189326625e7c8a735b83ede3942e1597e547587d8ee6413a7fd23bf0'
 SERVER_NAME = re.compile(r'[a-z][a-z0-9-]{1,29}\Z')
 HEX = re.compile(r'[a-f0-9]{64}\Z')
-PHASES = ('beginning', 'consent', 'exchanging', 'authorized', 'failed', 'cancelled')
+PHASES = ('beginning', 'consent', 'exchanging', 'authorized', 'activating', 'settled', 'failed', 'cancelled')
 BINDING_KEYS = {'ownerUid', 'home', 'configPath', 'stateDir', 'packageDir', 'nodePath', 'serverName',
                 'binaryPath', 'configSha256', 'serverSha256', 'binarySha256', 'nodeSha256', 'nativeSha256', 'packageJsonSha256'}
 JOURNAL_KEYS = {'kind', 'schemaVersion', 'app', 'serverName', 'bindingSha256', 'flowId',
@@ -180,12 +180,14 @@ def valid_redirect(value):
 def worker_request(value):
     if type(value) is not dict:
         raise NativeError('invalid-native-oauth-request')
-    expected = {'action', 'binding', 'serverName', 'redirectUri'}
+    expected = {'action', 'binding', 'serverName'}
+    if value.get('action') in ('begin', 'complete'):
+        expected.add('redirectUri')
     if value.get('action') == 'complete':
         expected.add('authorizationCode')
-    if (set(value) != expected or value['action'] not in ('begin', 'complete')
+    if (set(value) != expected or value['action'] not in ('begin', 'complete', 'probe', 'forget')
             or type(value['serverName']) is not str or not SERVER_NAME.fullmatch(value['serverName'])
-            or not valid_redirect(value['redirectUri'])
+            or value['action'] in ('begin', 'complete') and not valid_redirect(value['redirectUri'])
             or value['action'] == 'complete' and (type(value['authorizationCode']) is not str
                                                 or not oauth.CODE.fullmatch(value['authorizationCode']))):
         raise NativeError('invalid-native-oauth-request')
@@ -195,7 +197,21 @@ def worker_request(value):
     return value
 
 
-def worker_result(value):
+def worker_result(value, action=None):
+    if action == 'probe':
+        if (type(value) is not dict or set(value) != {'reachable', 'permitted', 'reason', 'scope'}
+                or type(value['reachable']) is not bool or type(value['permitted']) is not bool
+                or value['scope'] != 'pixel-owner-default'
+                or value['reason'] not in ('ready', 'disabled', 'sign-in-required', 'namespace-conflict',
+                                           'unreachable', 'tools-unavailable', 'policy-blocked')
+                or value['permitted'] != (value['reason'] == 'ready')
+                or value['reachable'] != (value['reason'] in ('ready', 'tools-unavailable', 'policy-blocked'))):
+            raise NativeError('invalid-native-oauth-result')
+        return value
+    if action == 'forget':
+        if type(value) is not dict or value != {'forgotten': True} or type(value['forgotten']) is not bool:
+            raise NativeError('invalid-native-oauth-result')
+        return value
     if (type(value) is not dict or set(value) != {'outcome', 'authUrl'}
             or value['outcome'] not in ('redirect', 'authorized')
             or value['outcome'] == 'authorized' and value['authUrl'] is not None
@@ -203,6 +219,70 @@ def worker_result(value):
                                                   or not 1 <= len(value['authUrl'].encode()) <= 7000)):
         raise NativeError('invalid-native-oauth-result')
     return value
+
+
+def bridge_binding(bridge, server_name):
+    """Derive the installed owner/runtime identity under the caller's Root lock."""
+    from pixel_access_bridge import runtime_config_path
+    bridge.discover()
+    if bridge.pending():
+        raise NativeError('transition-recovery-required')
+    environment = bridge.worker_environment()
+    return derive_binding(config_path=runtime_config_path(bridge), uid=bridge.owner.pw_uid,
+                          home=bridge.home, state_dir=environment.get('OPENCLAW_STATE_DIR', bridge.home / '.openclaw'),
+                          binary=bridge.binary, search_path=environment['PATH'], server_name=server_name)
+
+
+def _verified_runtime(bridge, binding):
+    snapshot = bridge.inspect()
+    if (snapshot.get('runtime_verified') is not True or snapshot.get('pending')
+            or snapshot.get('configured_mode') not in ('sandboxed', 'full-access')
+            or snapshot.get('effective_mode') != snapshot.get('configured_mode')
+            or snapshot.get('_config', {}).get('config_sha256') != binding['configSha256']
+            or type(snapshot.get('revision')) is not str or not HEX.fullmatch(snapshot['revision'])):
+        raise NativeError('native-app-runtime-unverified')
+    return snapshot['revision']
+
+
+def check_access(bridge, server_name):
+    """Check the selected native tools in the verified default Portal context.
+
+    The worker uses native effective policy, without executing a content tool.
+    A journal/token alone cannot supply this proof. Nothing enrolls an app here.
+    """
+    with bridge.bounded(70), bridge.locked():
+        binding = bridge_binding(bridge, server_name)
+        revision = _verified_runtime(bridge, binding)
+        request = worker_request({'action': 'probe', 'binding': binding, 'serverName': server_name})
+        result = worker_result(bridge.worker('native-mcp-oauth', config_hash=binding['configSha256'],
+                                            native_oauth_request=request), 'probe')
+        if bridge_binding(bridge, server_name) != binding or _verified_runtime(bridge, binding) != revision:
+            raise NativeError('native-mcp-binding-changed')
+        return dict(result, configSha256=binding['configSha256'], runtimeRevision=revision)
+
+
+def forget_disabled(bridge, server_name):
+    """Forget locally only after the disabled config has verified runtime proof.
+
+    The owner independently checks the disabled entry and its apply lock. The
+    Root proof also prevents an edit without a verified gateway restart from
+    being mistaken for withdrawal of credentials cached by the active gateway.
+    Provider-side authorization is not revoked by this operation.
+    """
+    with bridge.bounded(70), bridge.locked():
+        binding = bridge_binding(bridge, server_name)
+        revision = _verified_runtime(bridge, binding)
+        raw = _read(Path(binding['configPath']), owners=(binding['ownerUid'],), private=True)
+        if hashlib.sha256(raw).hexdigest() != binding['configSha256']:
+            raise NativeError('native-mcp-binding-changed')
+        if selected_server(decode(raw), server_name).get('enabled') is not False:
+            raise NativeError('native-app-withdrawal-required')
+        request = worker_request({'action': 'forget', 'binding': binding, 'serverName': server_name})
+        result = worker_result(bridge.worker('native-mcp-oauth', config_hash=binding['configSha256'],
+                                            native_oauth_request=request), 'forget')
+        if bridge_binding(bridge, server_name) != binding or _verified_runtime(bridge, binding) != revision:
+            raise NativeError('native-mcp-binding-changed')
+        return dict(result, providerRevoked=False)
 
 
 def _instant(value):
@@ -217,7 +297,8 @@ def _iso(value):
 
 def validate_journal(value):
     try:
-        if (type(value) is not dict or set(value) != JOURNAL_KEYS or value['kind'] != 'native-mcp-consent'
+        if (type(value) is not dict or not JOURNAL_KEYS <= set(value) or set(value) - JOURNAL_KEYS - {'activationId'}
+                or value['kind'] != 'native-mcp-consent'
                 or type(value['schemaVersion']) is not int or value['schemaVersion'] != 1
                 or any(type(value[k]) is not str or not SERVER_NAME.fullmatch(value[k]) for k in ('app', 'serverName'))
                 or type(value['bindingSha256']) is not str or not HEX.fullmatch(value['bindingSha256'])
@@ -228,6 +309,11 @@ def validate_journal(value):
                 or value['error'] is not None and (type(value['error']) is not str
                                                   or not re.fullmatch(r'[a-z][a-z0-9-]{0,95}', value['error']))
                 or value['phase'] == 'failed' and value['error'] is None):
+            raise ValueError()
+        if value['phase'] in ('activating', 'settled'):
+            if type(value.get('activationId')) is not str or not HEX.fullmatch(value['activationId']):
+                raise ValueError()
+        elif 'activationId' in value:
             raise ValueError()
         duration = (_instant(value['expiresAt']) - _instant(value['createdAt'])).total_seconds()
         if duration != oauth.FLOW_SECONDS:
@@ -293,28 +379,20 @@ class Consent:
                 os.unlink(temporary)
 
     def _binding(self):
-        from pixel_access_bridge import runtime_config_path
-        bridge = self.bridge
-        bridge.discover()
-        if bridge.pending():
-            raise NativeError('transition-recovery-required')
-        environment = bridge.worker_environment()
-        return derive_binding(config_path=runtime_config_path(bridge), uid=bridge.owner.pw_uid,
-                              home=bridge.home, state_dir=environment.get('OPENCLAW_STATE_DIR', bridge.home / '.openclaw'),
-                              binary=bridge.binary, search_path=environment['PATH'], server_name=self.server_name)
+        return bridge_binding(self.bridge, self.server_name)
 
     def _run(self, action, binding, redirect, **values):
         request = worker_request(dict(action=action, binding=binding, serverName=self.server_name,
                                       redirectUri=redirect, **values))
         return worker_result(self.bridge.worker('native-mcp-oauth', config_hash=binding['configSha256'],
-                                                native_oauth_request=request))
+                                                native_oauth_request=request), action)
 
     def begin(self, *, redirect_port):
         if type(redirect_port) is not int or not 1024 <= redirect_port <= 65535:
             raise NativeError('invalid-native-oauth-redirect')
         with self.bridge.bounded(70), self.bridge.locked():
             old = self._read()
-            if old and old['phase'] not in ('failed', 'cancelled'):
+            if old and old['phase'] not in ('failed', 'cancelled', 'settled'):
                 raise NativeError('native-sign-in-in-progress')
             binding = self._binding()
             now = self.now()
@@ -383,6 +461,51 @@ class Consent:
             raise NativeError('native-flow-mismatch')
         return journal
 
+    def _claim_authorization_locked(self, *, flow_id, activation_id):
+        """Reserve a verified authorization for one Root plan, under its lock.
+
+        The enrollment controller must persist that plan before calling this,
+        and settle the configuration transaction before finishing the claim.
+        This method changes no configuration and certifies no Portal access.
+        """
+        if type(activation_id) is not str or not HEX.fullmatch(activation_id):
+            raise NativeError('invalid-native-activation-id')
+        journal = self._flow(flow_id)
+        if journal['phase'] != 'authorized':
+            raise NativeError('native-authorization-already-claimed')
+        if self.now() >= _instant(journal['expiresAt']):
+            raise NativeError('native-flow-expired')
+        binding = self._binding()
+        if not hmac.compare_digest(digest(binding), journal['bindingSha256']):
+            raise NativeError('native-mcp-binding-changed')
+        raw = _read(Path(binding['configPath']), owners=(binding['ownerUid'],), private=True)
+        if hashlib.sha256(raw).hexdigest() != binding['configSha256']:
+            raise NativeError('native-mcp-binding-changed')
+        if selected_server(decode(raw), self.server_name).get('enabled') is not False:
+            raise NativeError('native-app-preparation-required')
+        journal = dict(journal, phase='activating', activationId=activation_id)
+        self._write(journal)  # Durable consumption before the caller can grant tools.
+        return {key: journal[key] for key in ('flowId', 'activationId', 'bindingSha256', 'phase')}
+
+    def claim_authorization(self, *, flow_id, activation_id):
+        with self.bridge.bounded(30), self.bridge.locked():
+            return self._claim_authorization_locked(flow_id=flow_id, activation_id=activation_id)
+
+    def _finish_authorization_locked(self, *, flow_id, activation_id):
+        """Close the same Root reservation; this alone never means app-ready."""
+        journal = self._flow(flow_id)
+        if (type(activation_id) is not str or not HEX.fullmatch(activation_id)
+                or journal['phase'] not in ('activating', 'settled')
+                or not hmac.compare_digest(activation_id, journal['activationId'])):
+            raise NativeError('native-activation-claim-mismatch')
+        if journal['phase'] == 'activating':
+            self._write(dict(journal, phase='settled'))
+        return {'phase': 'settled', 'portalAccessVerified': False}
+
+    def finish_authorization(self, *, flow_id, activation_id):
+        with self.bridge.bounded(20), self.bridge.locked():
+            return self._finish_authorization_locked(flow_id=flow_id, activation_id=activation_id)
+
     def recover(self, *, flow_id):
         """Record an unknown attempt as failed; never infer success from token presence."""
         with self.bridge.bounded(20), self.bridge.locked():
@@ -390,7 +513,7 @@ class Consent:
             if journal['phase'] in ('beginning', 'exchanging'):
                 journal = dict(journal, phase='failed', error='native-oauth-attempt-unconfirmed')
                 self._write(journal)
-            elif journal['phase'] == 'consent' and self.now() >= _instant(journal['expiresAt']):
+            elif journal['phase'] in ('consent', 'authorized') and self.now() >= _instant(journal['expiresAt']):
                 journal = dict(journal, phase='failed', error='native-flow-expired')
                 self._write(journal)
             return self._public(journal)
@@ -398,6 +521,8 @@ class Consent:
     def cancel(self, *, flow_id):
         with self.bridge.bounded(20), self.bridge.locked():
             journal = self._flow(flow_id)
+            if journal['phase'] in ('activating', 'settled'):
+                raise NativeError('native-activation-settlement-required')
             self._write(dict(journal, phase='cancelled', error=None))
             # Existing valid native tokens survive cancellation. No active
             # gateway permissions are withdrawn or credentials forgotten here.

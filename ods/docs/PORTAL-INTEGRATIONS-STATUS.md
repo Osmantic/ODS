@@ -52,6 +52,12 @@ mark them merged or replace their review.
   choices; source-overlay proof derives those choices from Root's record.
   Public enrollment, effective-access readiness and the Settings journey remain
   unfinished; [the groundwork review](pixel/native-mcp-apps.md) records the limits.
+- Added a bound native readiness check for the configured default Portal model,
+  with real native policy evaluation and no account-content tool call. Root
+  requires fresh runtime/configuration proof; local credential cleanup requires
+  a verified disabled runtime and reports no provider revocation. A durable
+  authorization reservation prevents two activations from consuming one flow.
+  Joining these helpers into the complete enrollment controller/UI remains open.
 
 ## Qualification boundaries
 
