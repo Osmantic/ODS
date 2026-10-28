@@ -41,6 +41,10 @@ mark them merged or replace their review.
   validator before dispatch. Missing wiki arguments now identify the required
   field instead of reaching the plugin as an undefined value; native coercion,
   permission filtering and other agents' dispatch behavior are retained.
+- Added a current-request-only guide for connected reads, distinguishing local
+  wiki and app records from public web search. It loads beside the owner turn;
+  the reusable 8K, compact and full operating cores retain their existing size.
+  This guidance is not an access grant or a source-verification receipt.
 
 ## Qualification boundaries
 
@@ -86,10 +90,18 @@ chat fell back to a file read after malformed wiki arguments, and one scheduled
 answer invented facts without making a read. Neither counts as successful
 connected-read acceptance. A private real-5090/native-cron reproduction then
 isolated the deferred argument-validation defect; the corrected private runtime
-read the randomly marked fixture note correctly. Repeating that result through
-the installed UI remains required, along with reliable truthful completion when
-the model does not call a source at all. Scheduler execution success alone does
-not verify the content of its answer.
+read the randomly marked fixture note correctly. A full-toolset installed UI
+follow-up still chose public web search instead of the local wiki. After the
+scoped connected-read guide was installed at `508cac985`, the same UI query
+used native wiki discovery, schema description and a successful `wiki_get`,
+returned the actual marker/time and used no web, shell or file-read fallback.
+A one-time task then created through the installed owner UI ran in native cron
+while Settings was open. It discovered/described the wiki, successfully called
+`wiki_get`, returned the actual marker/time and preserved every Markdown page,
+with no web, shell or file-read fallback. These scoped positive checks do not
+erase the earlier failures or qualify arbitrary model requests. Reliable
+truthful completion when the model does not call a source at all remains open.
+Scheduler execution success alone does not verify the content of its answer.
 
 Representative repository checks (use the pinned package/dependency staging
 from `portal-runtime.yml` for the native tests):
