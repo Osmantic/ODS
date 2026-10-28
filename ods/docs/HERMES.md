@@ -290,6 +290,14 @@ start over. A different or expired owner session cannot adopt the old binding.
 Clearing browser storage removes the browser's saved transcript; it does not
 delete Hermes's native session data.
 
+Full and user-data backups include `data/talk` alongside `data/hermes`. Stop
+the dashboard API and Hermes before taking this filesystem snapshot, and
+restore both directories with the matching configuration and session-signing
+secret. The backup utility does not make a coordinated live database snapshot.
+Restoring a conversation with an unresolved turn keeps it blocked; restoring a
+backup must never be used to retry that turn. The existing native Pixel
+user-data backup restriction still applies to native Pixel installations.
+
 Text, transcribed voice, text attachments and tool approvals carry
 `X-ODS-Talk-Conversation`. API clients allocate an ID with `POST /api/talk/session`
 and inspect it with `GET /api/talk/session/{id}`. Old clients missing the header

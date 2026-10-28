@@ -39,6 +39,7 @@ ODS_USER_DATA_PATHS=(
     "data/config"                    # setup wizard / persona configuration
     "data/pixel-images"              # generated image library
     "data/pixel-agent-teams"         # Pixel agent team history (0700)
+    "data/talk"                      # owner bindings and durable turn outcomes (0700)
     "data/dashboard-password.json"   # dashboard login (0600); unconfigured without it
     "data/model-imports.json"        # user-imported model library entries
     "data/model-stores.json"         # registered external model stores
