@@ -23,8 +23,9 @@
 #           LLM_MODEL_SIZE_MB, AMD_GFX_TARGET, AMD_INFERENCE_BACKEND,
 #           LLM_BACKEND (llama-server or vllm; exported for vllm and when a
 #           run leaves vllm); with vllm also VLLM_IMAGE, VLLM_MODEL_DIR,
-#           VLLM_SERVED_MODEL, VLLM_ARGS, VLLM_GPU_UUID, and on a rerun that
-#           keeps a vLLM model the VLLM_GPU_MEMORY_UTILIZATION it was given
+#           VLLM_SERVED_MODEL, VLLM_ARGS, VLLM_GPU_UUID and
+#           VLLM_GPU_MEMORY_UTILIZATION (the pick's own share; on a rerun that
+#           keeps a vLLM model, the share it was given)
 #
 # Modder notes:
 #   Change tier auto-detection thresholds or add new hardware classes here.

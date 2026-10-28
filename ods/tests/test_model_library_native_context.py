@@ -87,6 +87,7 @@ NATIVE_CONTEXT = {
     # vLLM entries: config.json text_config.max_position_embeddings (2026-10-27).
     "qwen3.8-flash-next-nvfp4-vllm": 262144,
     "glm-5.3-flash-nvfp4-vllm": 1048576,
+    "qwen3.6-35b-a3b-nvfp4-vllm": 262144,
 }
 
 

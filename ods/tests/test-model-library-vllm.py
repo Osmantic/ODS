@@ -169,6 +169,7 @@ def _mutate(path: str, value):
     ("gpu_memory_utilization", True, "gpu_memory_utilization must be a number from 0.1 to 0.95"),
     ("gpu_memory_utilization", "0.5", "gpu_memory_utilization must be a number from 0.1 to 0.95"),
     ("vllm_args", ["--gpu-memory-utilization=0.5"], "vllm_args may not set --gpu-memory-utilization"),
+    ("vllm_args", ["--gpu_memory_utilization", "0.5"], "vllm_args may not set --gpu-memory-utilization"),
     ("compute_capability", ["10"], 'compute_capability must list distinct "major.minor" strings'),
     ("reasoning", "on", "reasoning must be one of off, low, medium, high"),
     ("selection.discrete", 50, "selection.discrete must be 0"),

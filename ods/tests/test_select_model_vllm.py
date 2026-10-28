@@ -46,7 +46,7 @@ VLLM_ENV_KEYS = {
     "LLM_MODEL", "GGUF_FILE", "GGUF_URL", "GGUF_SHA256", "MAX_CONTEXT", "LLM_MODEL_SIZE_MB",
     "MODEL_RECOMMENDATION_SOURCE", "MODEL_RECOMMENDATION_POLICY", "MODEL_RECOMMENDATION_CONFIDENCE",
     "MODEL_RECOMMENDATION_REASON", "MODEL_RECOMMENDED_ALTERNATIVES", "PIXEL_AGENT_MODEL_READY",
-    "VLLM_MODEL_DIR", "VLLM_SERVED_MODEL", "VLLM_ARGS", "VLLM_GPU_UUID",
+    "VLLM_MODEL_DIR", "VLLM_SERVED_MODEL", "VLLM_ARGS", "VLLM_GPU_UUID", "VLLM_GPU_MEMORY_UTILIZATION",
 }
 
 
@@ -124,6 +124,9 @@ def test_dgx_station_gets_the_top_priority_vllm_model_on_its_gb300():
     assert env["PIXEL_AGENT_MODEL_READY"] == ("true" if pixel == "verified" else "false")
     assert env["MODEL_RECOMMENDATION_POLICY"] == "vllm-gpu-fit-v1"
     assert env["MODEL_RECOMMENDATION_SOURCE"] == "catalog_vllm_pre_download"
+    # An entry without its own share still sends vLLM's 0.9, so a newly
+    # picked model never inherits an earlier model's .env share.
+    assert "gpu_memory_utilization" not in best and env["VLLM_GPU_MEMORY_UTILIZATION"] == "0.9"
     assert "GPU-test-gb300 (compute capability 10.3, 256703 MiB)" in env["MODEL_RECOMMENDATION_REASON"]
     # The alternatives are every entry that fits either GPU (the RTX PRO 6000's own one too).
     alternatives = [item.split(":")[0] for item in env["MODEL_RECOMMENDED_ALTERNATIVES"].split(";")]
@@ -146,7 +149,7 @@ def test_a_lone_rtx_pro_6000_gets_its_class_entry_at_half_the_card():
     assert status == 0, err
     env = env_values(out)
     best, _ = _best_fitting("12.0", 97887)
-    assert set(env) == VLLM_ENV_KEYS | {"VLLM_GPU_MEMORY_UTILIZATION"}
+    assert set(env) == VLLM_ENV_KEYS
     assert env["LLM_MODEL"] == best["llm_model_name"] == "qwen3.6-35b-a3b-nvfp4"
     assert env["VLLM_GPU_UUID"] == "GPU-test-rtx-pro-6000"
     assert env["VLLM_GPU_MEMORY_UTILIZATION"] == "0.5" == f"{best['gpu_memory_utilization']:g}"

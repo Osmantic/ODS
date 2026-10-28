@@ -538,12 +538,12 @@ def _vllm_payload(ranked: list[VllmCandidate], reason: str, min_context: int, ho
 def _vllm_env(ranked: list[VllmCandidate], reason: str) -> dict[str, Any]:
     """The installer contract for a vLLM pick (VLLM_* are .env keys as named).
 
-    VLLM_GPU_MEMORY_UTILIZATION only for an entry that sets its own share;
-    otherwise phase 06 keeps the owner's .env value or compose's 0.90.
+    VLLM_GPU_MEMORY_UTILIZATION is always the pick's own share (its entry's,
+    else 0.9), so a newly picked model never inherits the share an earlier
+    model left in .env. A rerun that keeps its model keeps its .env share
+    instead (phase 02's keep path).
     """
     model, gpu = ranked[0].model, ranked[0].gpu
-    share = {"VLLM_GPU_MEMORY_UTILIZATION": f"{model['gpu_memory_utilization']:g}"} \
-        if "gpu_memory_utilization" in model else {}
     return {
         "LLM_MODEL": model["llm_model_name"],
         # A vLLM pick has no GGUF: clear the tier map's so nothing downloads one.
@@ -565,7 +565,7 @@ def _vllm_env(ranked: list[VllmCandidate], reason: str) -> dict[str, Any]:
         "VLLM_SERVED_MODEL": model["served_model_name"],
         "VLLM_ARGS": vllm_args_text(model),
         "VLLM_GPU_UUID": gpu.uuid,
-        **share,
+        "VLLM_GPU_MEMORY_UTILIZATION": f"{vllm_memory_share(model):g}",
     }
 
 

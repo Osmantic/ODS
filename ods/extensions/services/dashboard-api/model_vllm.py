@@ -181,7 +181,8 @@ def _args_problems(model: dict[str, Any]) -> list[str]:
     ):
         return ["vllm_args must be a list of plain strings (letters, digits and _.:/=,+-)"]
     problems = []
-    owned = sorted({arg.split("=", 1)[0] for arg in args} & COMPOSE_FLAGS)
+    # vLLM's parser reads --gpu_memory_utilization as --gpu-memory-utilization.
+    owned = sorted({arg.split("=", 1)[0].replace("_", "-") for arg in args if arg.startswith("--")} & COMPOSE_FLAGS)
     if owned:
         problems.append(f"vllm_args may not set {', '.join(owned)}: the vllm-server service sets them")
     for flag, key in (("--max-model-len", "context_length"), ("--tool-call-parser", "tool_call_parser"),
