@@ -189,7 +189,7 @@ class PrepareExtensionManifestsTests(unittest.TestCase):
                     self._run(root)
                 self.assertEqual(_snapshot_modes(paths), before)
 
-    def test_dashboard_private_protected_leaf_refused_before_mutation(self) -> None:
+    def test_dashboard_catalogs_outside_pixel_inventory_are_repaired_during_upgrade(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             paths = _make_tree(root, 0o077)
@@ -198,10 +198,11 @@ class PrepareExtensionManifestsTests(unittest.TestCase):
                 if key.startswith("manifest_") or key.startswith("public_"):
                     path.chmod(0o644)
             (root / "templates/voice-assistant.yaml").chmod(0o600)
-            before = _snapshot_modes(paths)
-            with self.assertRaisesRegex(_mod.ManifestPermissionError, "protected source"):
-                _mod.prepare(root, preserve_file_modes=True)
-            self.assertEqual(_snapshot_modes(paths), before)
+            _mod.prepare(root, preserve_file_modes=True)
+            self.assertEqual(_mode(root / "templates/voice-assistant.yaml"), 0o644)
+            for key, path in paths.items():
+                if key.startswith("private_") or key == "env":
+                    self.assertEqual(_mode(path), 0o600)
 
     def test_dashboard_template_allowlist_matches_bundled_templates(self) -> None:
         templates = _HERE.parent.parent / "templates"
@@ -219,11 +220,12 @@ class PrepareExtensionManifestsTests(unittest.TestCase):
             root.mkdir(mode=0o700)
             paths = _make_tree(root, 0o077)
             paths.update(_make_dashboard_files(root))
-            for key, path in paths.items():
-                if key.startswith("public_"):
-                    path.chmod(0o644)
             for name in upgrade.ROOTS:
                 (root / name).mkdir(exist_ok=True)
+            # This repair is intentionally outside the exact source inventory.
+            # Fail if its ownership expands; never silently normalize a newly
+            # protected public catalog in place.
+            self.assertTrue(set(_mod.PUBLIC_DASHBOARD_FILES).isdisjoint(upgrade.ROOTS))
             for key, mode in (("manifest_ape", 0o644), ("manifest_beta", 0o755),
                               ("manifest_gamma", 0o444)):
                 paths[key].chmod(mode)
@@ -231,6 +233,9 @@ class PrepareExtensionManifestsTests(unittest.TestCase):
             _mod.prepare(root, preserve_file_modes=True)
             self.assertEqual(upgrade.inventory(root, os.getuid()), before)
             self.assertEqual(_mode(paths["services"]), 0o755)
+            for key, path in paths.items():
+                if key.startswith("public_"):
+                    self.assertEqual(_mode(path), 0o644)
 
     def test_private_manifest_in_protected_source_refused_before_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as td:
