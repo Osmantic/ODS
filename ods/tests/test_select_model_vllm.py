@@ -225,9 +225,10 @@ def test_the_largest_fitting_gpu_is_the_one_vllm_owns():
 
 
 # A fresh install adds nvidia-smi memory.free as a fourth field. vLLM refuses
-# to start unless its share of the card is free: half an RTX PRO 6000 is
-# ceil(0.5 * 97887) = 48944 MiB.
-def test_a_gpu_without_vllms_share_free_is_not_given_to_vllm():
+# to start unless its share of the card is free once its CUDA context exists:
+# half an RTX PRO 6000 is ceil(0.5 * 97887) = 48944 MiB, plus START_MARGIN_MIB
+# (1024) makes 49968 MiB free.
+def test_a_gpu_without_room_for_vllm_is_not_given_to_vllm():
     # tower2 (2026-10-27): another model server held about 84 GB of each card.
     rows = ("GPU-test-busy-0, 12.0, 97887, 13278", "GPU-test-busy-1, 12.0, 97887, 13298")
     status, out, err = select(*VLLM, *_gpu_args(*rows), "--env")
@@ -235,19 +236,43 @@ def test_a_gpu_without_vllms_share_free_is_not_given_to_vllm():
     assert (status, out) == (4, "")
     assert err == (
         "error: other programs use the GPU memory the vLLM engine needs: Qwen 3.6 35B A3B NVFP4 (vLLM) "
-        "claims 48944 MiB (0.50 of the GPU) when it starts, and the freest GPU it fits, "
-        "GPU-test-busy-1, has 13298 MiB free\n"
+        "needs 49968 MiB free when it starts (0.50 of the GPU plus 1024 MiB for its CUDA context), "
+        "and the freest GPU it fits, GPU-test-busy-1, has 13298 MiB free\n"
     )
 
 
-def test_vllm_takes_a_gpu_with_its_share_free():
+def test_vllm_takes_a_gpu_with_room_to_start_and_says_why():
     status, out, err = select(*VLLM, *_gpu_args("GPU-test-busy, 12.0, 97887, 13278",
-                                                "GPU-test-exact, 12.0, 97887, 48944"), "--env")
+                                                "GPU-test-exact, 12.0, 97887, 49968"), "--env")
     assert status == 0, err
-    assert env_values(out)["VLLM_GPU_UUID"] == "GPU-test-exact"
+    env = env_values(out)
+    assert env["VLLM_GPU_UUID"] == "GPU-test-exact"
+    assert env["MODEL_RECOMMENDATION_REASON"].endswith(
+        " Qwen 3.6 35B A3B NVFP4 (vLLM) would run on GPU GPU-test-busy, but other programs use the memory "
+        "it needs there.")
 
-    status, _, err = select(*VLLM, *_gpu_args("GPU-test-short, 12.0, 97887, 48943"), "--env")
-    assert status == 4 and "has 48943 MiB free" in err
+    status, _, err = select(*VLLM, *_gpu_args("GPU-test-short, 12.0, 97887, 49967"), "--env")
+    assert status == 4 and "has 49967 MiB free" in err
+
+
+def test_a_busy_gb300_gives_vllm_the_idle_rtx_pro_6000_and_says_why():
+    # A DGX Station whose GB300 runs another model server: the RTX PRO 6000's
+    # own entry runs instead of the GB300's top pick, and the reason says so.
+    best_gb300, _ = _best_fitting("10.3", 256703)
+    status, out, err = select(*VLLM, *_gpu_args(RTX_PRO_6000 + ", 97000", GB300 + ", 30000"), "--env")
+
+    assert status == 0, err
+    env = env_values(out)
+    assert (env["VLLM_GPU_UUID"], env["LLM_MODEL"]) == ("GPU-test-rtx-pro-6000", "qwen3.6-35b-a3b-nvfp4")
+    assert (f" {best_gb300['name']} would run on GPU GPU-test-gb300, but other programs use the memory it "
+            f"needs there.") in env["MODEL_RECOMMENDATION_REASON"]
+
+    # Idle, the GB300 keeps its top pick and the reason no note.
+    status, out, err = select(*VLLM, *_gpu_args(RTX_PRO_6000 + ", 97000", GB300 + ", 255000"), "--env")
+    assert status == 0, err
+    env = env_values(out)
+    assert (env["VLLM_GPU_UUID"], env["LLM_MODEL"]) == ("GPU-test-gb300", best_gb300["llm_model_name"])
+    assert "other programs" not in env["MODEL_RECOMMENDATION_REASON"]
 
     status, out, err = select(*VLLM, *_gpu_args(RTX_PRO_6000 + ", 97000"))
     assert status == 0, err
@@ -269,8 +294,18 @@ def test_free_memory_never_lets_a_gpu_fit_that_its_hardware_does_not():
     assert "GPU-test-h200 (compute capability 9.0, 143771 MiB, 143000 MiB free)" in err
 
 
-def test_a_malformed_free_field_is_refused():
+def test_an_unreadable_free_field_leaves_that_gpu_unknown():
+    # [N/A] on one GPU must not take vLLM from the whole host.
+    status, out, err = select(*VLLM, *_gpu_args(RTX_PRO_6000 + ", [N/A]", GB300 + ", 250000"), "--env")
+    assert status == 0, err
+    assert env_values(out)["VLLM_GPU_UUID"] == "GPU-test-gb300"
+
     status, out, err = select(*VLLM, *_gpu_args(RTX_PRO_6000 + ", [N/A]"), "--env")
+    assert status == 0, err
+    assert env_values(out)["VLLM_GPU_UUID"] == "GPU-test-rtx-pro-6000"
+
+    # The other fields stay required.
+    status, out, err = select(*VLLM, *_gpu_args("GPU-test-x, 12.0, [N/A], 1000"), "--env")
     assert (status, out) == (2, "")
     assert "is not UUID,COMPUTE_CAP,MEMORY_MIB[,FREE_MIB]" in err
 

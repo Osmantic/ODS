@@ -359,8 +359,9 @@ pass "a lone RTX PRO 6000 chooses vLLM ($p6k_model) at its entry's $p6k_share me
 
 # tower2 (2026-10-27): RTX PRO 6000s while another model server holds about
 # 84 GB of each. vLLM refuses to start unless its share (half the card,
-# 48944 MiB) is free, so a fresh install asks for free memory too and keeps
-# llama.cpp, saying why, instead of downloading a vLLM model that cannot start.
+# 48944 MiB) is free beside its CUDA context (1 GiB), so a fresh install asks
+# for free memory too and keeps llama.cpp, saying why, instead of downloading
+# a vLLM model that cannot start.
 BUSY_ROWS='GPU-ffffffff-rtx6000, 12.0, 97887, 13278\nGPU-ffffffff-rtx6001, 12.0, 97887, 13298\n'
 decide pro6000-busy "export FAKE_GPU_ROWS='$BUSY_ROWS'"
 expect_llama pro6000-busy
@@ -368,7 +369,7 @@ grep -q -- '--query-gpu=uuid,compute_cap,memory.total,memory.free ' "$tmp/pro600
     || fail "a fresh install must ask nvidia-smi for free memory: $(cat "$tmp/pro6000-busy/calls")"
 grep -qF 'WARN ODS uses llama.cpp, not the vLLM engine: other programs use the GPU memory the vLLM engine needs: ' \
         "$tmp/pro6000-busy/out" \
-    && grep -qF 'claims 48944 MiB (0.50 of the GPU) when it starts, and the freest GPU it fits, GPU-ffffffff-rtx6001, has 13298 MiB free.' \
+    && grep -qF 'needs 49968 MiB free when it starts (0.50 of the GPU plus 1024 MiB for its CUDA context), and the freest GPU it fits, GPU-ffffffff-rtx6001, has 13298 MiB free.' \
         "$tmp/pro6000-busy/out" \
     && grep -qF 'AI   Once that memory is free, rerun the installer with --llm-backend vllm' "$tmp/pro6000-busy/out" \
     || fail "a busy GPU must be shown as the reason, with how to get vLLM later: $(cat "$tmp/pro6000-busy/out")"

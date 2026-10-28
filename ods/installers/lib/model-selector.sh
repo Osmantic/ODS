@@ -61,10 +61,13 @@ ods_run_catalog_selector() {
 
 # ods_run_vllm_selector PYTHON [GPU_ROW...]
 # The vLLM engine's pick: one GPU_ROW per line of `nvidia-smi
-# --query-gpu=uuid,compute_cap,memory.total --format=csv,noheader,nounits`.
-# Chooses among the catalog's vLLM entries only, never a GGUF, and prints
-# shell assignments with the VLLM_* keys. Exit 2: no vLLM model fits. The fit
-# comes from the GPU rows alone, so the llama.cpp memory inputs are not passed.
+# --query-gpu=uuid,compute_cap,memory.total[,memory.free]
+# --format=csv,noheader,nounits`. Chooses among the catalog's vLLM entries
+# only, never a GGUF, and prints shell assignments with the VLLM_* keys. Exit
+# 2: no vLLM model fits; exit 4: one fits the hardware, but other programs
+# hold the free memory vLLM needs at start (rows with memory.free only). The
+# fit comes from the GPU rows alone, so the llama.cpp memory inputs are not
+# passed.
 ods_run_vllm_selector() {
     local python="$1" row
     shift

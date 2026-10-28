@@ -14,7 +14,8 @@ the vLLM engine (``.env`` ``LLM_BACKEND=vllm``), not llama.cpp. They carry no
   at least this much memory (nvidia-smi ``memory.total``) and one of these
   compute capabilities. When a GPU's free memory is known (a fresh install
   passes nvidia-smi ``memory.free``), it fits only if vLLM's share of its
-  total memory is free: vLLM refuses to start with less;
+  total memory is free, plus START_MARGIN_MIB for the CUDA context vLLM
+  creates before it checks: vLLM refuses to start with less;
 * optional ``gpu_memory_utilization``: the share of that GPU vLLM
   preallocates (``.env`` VLLM_GPU_MEMORY_UTILIZATION, the vllm-server
   service's ``--gpu-memory-utilization``; vLLM's 0.90 when absent). An entry
@@ -64,9 +65,14 @@ COMPOSE_FLAGS = frozenset({"--model", "--served-model-name", "--host", "--port",
 MIN_MEMORY_SHARE, MAX_MEMORY_SHARE = 0.10, 0.95
 # vLLM's own --gpu-memory-utilization default, for an entry that sets none.
 DEFAULT_MEMORY_SHARE = 0.90
+# vLLM checks free memory after creating its CUDA context, which nvidia-smi
+# has not seen yet: a GPU needs this much free beyond vLLM's share.
+START_MARGIN_MIB = 1024
 # A file downloads under <name><PARTIAL_SUFFIX> until it is verified.
 PARTIAL_SUFFIX = ".partial"
 GPU_QUERY = "nvidia-smi --query-gpu=uuid,compute_cap,memory.total --format=csv,noheader,nounits"
+# The installer's fresh-install query: GPU_QUERY plus each GPU's free memory.
+GPU_FREE_QUERY = "nvidia-smi --query-gpu=uuid,compute_cap,memory.total,memory.free --format=csv,noheader,nounits"
 
 _HF_REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*")
 _HEX40 = re.compile(r"[0-9a-f]{40}")
@@ -313,16 +319,19 @@ def require_valid(model: dict[str, Any]) -> dict[str, Any]:
 
 
 def parse_gpu(text: str) -> Gpu:
-    """One row of :data:`GPU_QUERY` output, ``UUID, COMPUTE_CAP, MEMORY_MIB``, optionally ``, FREE_MIB``."""
+    """One row of :data:`GPU_QUERY` output, or of :data:`GPU_FREE_QUERY` (``, FREE_MIB``).
+
+    A free field that is not a number ([N/A]) leaves that GPU's free memory
+    unknown, as a three-field row does.
+    """
     parts = [part.strip() for part in str(text).split(",")]
     if len(parts) in (3, 4):
         uuid, capability, memory = parts[:3]
         size = _GPU_MEMORY.fullmatch(memory)
         free = _GPU_MEMORY.fullmatch(parts[3]) if len(parts) == 4 else None
-        if (_GPU_UUID.fullmatch(uuid) and _COMPUTE_CAPABILITY.fullmatch(capability) and size
-                and (len(parts) == 3 or free)):
+        if _GPU_UUID.fullmatch(uuid) and _COMPUTE_CAPABILITY.fullmatch(capability) and size:
             return Gpu(uuid, capability, int(size.group(1)), int(free.group(1)) if free else None)
-    raise ValueError(f"{text!r} is not UUID,COMPUTE_CAP,MEMORY_MIB[,FREE_MIB] ({GPU_QUERY})")
+    raise ValueError(f"{text!r} is not UUID,COMPUTE_CAP,MEMORY_MIB[,FREE_MIB] ({GPU_FREE_QUERY})")
 
 
 def memory_share(model: dict[str, Any]) -> float:
@@ -335,13 +344,18 @@ def claim_mib(model: dict[str, Any], gpu: Gpu) -> int:
     return math.ceil(memory_share(model) * gpu.memory_mib)
 
 
+def free_needed_mib(model: dict[str, Any], gpu: Gpu) -> int:
+    """The free memory ``gpu`` needs for vLLM to start: its claim plus its CUDA context."""
+    return claim_mib(model, gpu) + START_MARGIN_MIB
+
+
 def gpu_hardware_fits(model: dict[str, Any], gpu: Gpu) -> bool:
     return gpu.compute_capability in model["compute_capability"] and gpu.memory_mib >= model["min_gpu_mib"]
 
 
 def gpu_fits(model: dict[str, Any], gpu: Gpu) -> bool:
-    """The GPU suits ``model`` and, when its free memory is known, has vLLM's claim free."""
-    return gpu_hardware_fits(model, gpu) and (gpu.free_mib is None or gpu.free_mib >= claim_mib(model, gpu))
+    """The GPU suits ``model`` and, when its free memory is known, has what vLLM needs to start free."""
+    return gpu_hardware_fits(model, gpu) and (gpu.free_mib is None or gpu.free_mib >= free_needed_mib(model, gpu))
 
 
 def best_gpu(model: dict[str, Any], gpus: Iterable[Gpu]) -> Gpu | None:

@@ -471,26 +471,6 @@ if [[ $GPU_COUNT -gt 1 && "$GPU_BACKEND" == "nvidia" ]]; then
     fi
 fi
 
-# A fresh install sizes its model for each GPU's whole memory. Say so when
-# other programs already hold much of it, before anything downloads. On a
-# rerun this installation's own model holds memory, so only a fresh install
-# checks.
-if [[ "$GPU_BACKEND" == "nvidia" && ! -f "$INSTALL_DIR/.env" ]] && command -v nvidia-smi >/dev/null 2>&1; then
-    # A warning only: when nvidia-smi fails here, detection above has already
-    # reported it, and there is nothing to add.
-    _gpu_memory_in_use="$(nvidia-smi --query-gpu=index,memory.total,memory.used \
-        --format=csv,noheader,nounits 2>>"$LOG_FILE" | ods_gpu_memory_in_use_report)" || _gpu_memory_in_use=""
-    if [[ -n "$_gpu_memory_in_use" ]]; then
-        ai_warn "Other programs already use GPU memory:"
-        while IFS= read -r _gpu_line; do
-            ai "  $_gpu_line"
-        done <<< "$_gpu_memory_in_use"
-        ai "  ODS sizes its model for each GPU's whole memory: stop those programs before ODS starts its model, or it may not load."
-        log "GPU memory in use before install: ${_gpu_memory_in_use//$'\n'/; }"
-    fi
-    unset _gpu_memory_in_use _gpu_line
-fi
-
 # -----------------------------------------------------------------------------
 # AMD Multi-GPU Topology Detection
 # -----------------------------------------------------------------------------
@@ -609,8 +589,11 @@ fi
 # path below unchanged, without querying the GPUs for vLLM. --llm-backend vllm
 # and a rerun of a vLLM installation (_phase02_vllm_kept) stop when vLLM
 # cannot run or no vLLM model fits; --llm-backend llama-server never considers
-# vLLM. On the vLLM path every selector failure other than "nothing fits"
-# (exit 2) stops the install: there is no tier-map fallback. The pick
+# vLLM. A fresh install also reads each GPU's free memory: when other programs
+# hold what vLLM needs at start (exit 4), it keeps llama.cpp and says why, and
+# --llm-backend vllm stops. On the vLLM path every other selector failure
+# than "nothing fits" (exit 2) stops the install: there is no tier-map
+# fallback. The pick
 # (VLLM_SELECTOR_ENV) is loaded after the tier map, which it replaces; on a
 # rerun of a vLLM installation it is the recommendation, and the installed
 # vLLM model stays active (_phase02_keep_vllm_model).

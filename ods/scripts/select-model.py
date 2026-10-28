@@ -50,10 +50,13 @@ from model_selection import (  # noqa: E402
 from model_selection import pixel_agent_ready as _pixel_agent_ready  # noqa: E402
 from model_selection import usable_memory_gb as _usable_memory_gb  # noqa: E402
 from model_vllm import (  # noqa: E402
+    GPU_FREE_QUERY,
     GPU_QUERY,
+    START_MARGIN_MIB,
     Candidate as VllmCandidate,
     Gpu,
-    claim_mib,
+    free_needed_mib,
+    gpu_fits,
     gpu_hardware_fits,
     is_vllm_entry,
     manifest_bytes,
@@ -517,10 +520,20 @@ def _vllm_busy(candidate: VllmCandidate, gpus: list[Gpu]) -> str:
     freest = max((gpu for gpu in gpus if gpu_hardware_fits(model, gpu)),
                  key=lambda gpu: gpu.free_mib or 0)
     return (
-        f"other programs use the GPU memory the vLLM engine needs: {model['name']} claims "
-        f"{claim_mib(model, freest)} MiB ({memory_share(model):.2f} of the GPU) when it starts, "
-        f"and the freest GPU it fits, {freest.uuid}, has {freest.free_mib} MiB free"
+        f"other programs use the GPU memory the vLLM engine needs: {model['name']} needs "
+        f"{free_needed_mib(model, freest)} MiB free when it starts ({memory_share(model):.2f} of the GPU "
+        f"plus {START_MARGIN_MIB} MiB for its CUDA context), and the freest GPU it fits, "
+        f"{freest.uuid}, has {freest.free_mib} MiB free"
     )
+
+
+def _vllm_busy_note(hardware_pick: VllmCandidate, gpus: list[Gpu]) -> str:
+    """Names the entry the GPUs' hardware alone would get when its GPU's memory is in use."""
+    gpu = next(gpu for gpu in gpus if gpu.uuid == hardware_pick.gpu.uuid)
+    if gpu_fits(hardware_pick.model, gpu):
+        return ""
+    return (f" {hardware_pick.model['name']} would run on GPU {gpu.uuid}, but other programs use "
+            f"the memory it needs there.")
 
 
 def _vllm_payload(ranked: list[VllmCandidate], reason: str, min_context: int, host_arch: str) -> dict[str, Any]:
@@ -609,16 +622,17 @@ def _vllm_main(args: argparse.Namespace) -> int:
     min_context = max(int(args.min_context or 0), 0)
     ranked = rank_entries(pool, gpus, min_context=min_context, require_min_context=args.require_min_context,
                           installable_only=args.installable_only)
+    # The same ranking with free memory unknown: what the GPUs' hardware alone gets.
+    by_hardware = rank_entries(pool, [gpu._replace(free_mib=None) for gpu in gpus], min_context=min_context,
+                               require_min_context=args.require_min_context,
+                               installable_only=args.installable_only)
     if not ranked:
-        by_hardware = rank_entries(pool, [gpu._replace(free_mib=None) for gpu in gpus], min_context=min_context,
-                                   require_min_context=args.require_min_context,
-                                   installable_only=args.installable_only)
         if by_hardware:
             print(f"error: {_vllm_busy(by_hardware[0], gpus)}", file=sys.stderr)
             return EXIT_GPU_BUSY
         print(f"error: {_vllm_no_fit(pool, gpus, args)}", file=sys.stderr)
         return EXIT_NO_FIT
-    reason = _vllm_reason(ranked[0], min_context)
+    reason = _vllm_reason(ranked[0], min_context) + _vllm_busy_note(by_hardware[0], gpus)
     if not args.env:
         print(json.dumps(_vllm_payload(ranked, reason, min_context, args.host_arch), indent=2))
         return 0
@@ -677,9 +691,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--gpu", action="append", default=[], metavar="UUID,COMPUTE_CAP,MEMORY_MIB[,FREE_MIB]",
-        help=f"One NVIDIA GPU, a row of `{GPU_QUERY}`; repeat per GPU. A fourth "
-             "field, memory.free, lets a GPU fit only while vLLM's share of its "
-             "total memory is free. Read only with --llm-runtime vllm.",
+        help=f"One NVIDIA GPU, a row of `{GPU_QUERY}` or of `{GPU_FREE_QUERY}`; repeat "
+             "per GPU. With the free memory, a GPU fits only while vLLM can start there: "
+             f"its share of the GPU's total memory plus {START_MARGIN_MIB} MiB free. "
+             "Read only with --llm-runtime vllm.",
     )
     parser.add_argument("--env", action="store_true", help="print shell assignments")
     args = parser.parse_args(argv)
