@@ -15,7 +15,7 @@ import pytest
 from routers import extensions as ext_mod
 from test_extensions import (
     _make_catalog_ext, _make_service_status, _patch_extensions_config,
-    _patch_mutation_config, _setup_user_ext,
+    _patch_mutation_config, _setup_user_ext, _test_host_remove,
 )
 
 # Records an hour old age out by design, so these are recent.
@@ -24,7 +24,7 @@ BEFORE = (AGENT_NOW - timedelta(minutes=5)).isoformat()
 AFTER = (AGENT_NOW + timedelta(seconds=1)).isoformat()
 # The router's own host calls, taken before any fixture stands in for them.
 REAL_FETCH_JOBS = ext_mod._fetch_extension_jobs
-REAL_REMOVE_CONTAINERS = ext_mod._call_agent_remove_containers
+REAL_REMOVE_EXTENSION = ext_mod._call_agent_remove_extension
 
 
 def _jobs(monkeypatch, live=(), instance="agent-now", now=AGENT_NOW):
@@ -351,13 +351,13 @@ def test_paths_built_from_ids_stay_in_their_folder(tmp_path, name):
 def _remove_spy(monkeypatch, result=None, error=None):
     calls: list[tuple[str, bool]] = []
 
-    def remove(service_id, *, delete_volumes):
-        calls.append((service_id, delete_volumes))
+    def remove(service_id, *, delete_data):
+        calls.append((service_id, delete_data))
         if error is not None:
             raise error
-        return result
+        return _test_host_remove(service_id, delete_data=delete_data, result=result)
 
-    monkeypatch.setattr(ext_mod, "_call_agent_remove_containers", remove)
+    monkeypatch.setattr(ext_mod, "_call_agent_remove_extension", remove)
     return calls
 
 
@@ -419,12 +419,12 @@ def test_remove_of_a_failed_install_stops_it_then_deletes_its_container(test_cli
         order.append(f"agent:{action}")
         return True
 
-    def remove_containers(sid, *, delete_volumes):
+    def remove_containers(sid, *, delete_data):
         order.append("remove-containers")
-        return {"containers": ["ods-gotify"], "volumes_removed": [], "volumes_kept": []}
+        return _test_host_remove(sid, delete_data=delete_data)
 
     monkeypatch.setattr(ext_mod, "_call_agent", agent)
-    monkeypatch.setattr(ext_mod, "_call_agent_remove_containers", remove_containers)
+    monkeypatch.setattr(ext_mod, "_call_agent_remove_extension", remove_containers)
     _jobs(monkeypatch)
     _write(tmp_path, "gotify", "pulling", agent_instance="agent-before", operation_id="c" * 32)
 
@@ -453,14 +453,14 @@ def test_remove_keeps_the_extension_when_its_container_cannot_be_deleted(
 
     monkeypatch.setattr(ext_mod, "request_agent_json", refuse)
     # _patch_mutation_config stubs the call; this test needs the real one.
-    monkeypatch.setattr(ext_mod, "_call_agent_remove_containers", REAL_REMOVE_CONTAINERS)
+    monkeypatch.setattr(ext_mod, "_call_agent_remove_extension", REAL_REMOVE_EXTENSION)
 
     response = test_client.delete("/api/extensions/gotify", headers=test_client.auth_headers)
 
     assert response.status_code == (409 if status == 409 else 502)
     message = response.json()["detail"]
     assert detail in message
-    assert "was not removed" in message and "Retry Remove" in message
+    assert "did not complete" in message and "Refresh" in message
     assert (user_dir / "gotify" / "compose.yaml.disabled").exists()
 
 
@@ -474,7 +474,7 @@ def test_remove_with_an_unreachable_host_keeps_the_extension(test_client, tmp_pa
         raise AgentUnavailable("connection refused")
 
     monkeypatch.setattr(ext_mod, "request_agent_json", unreachable)
-    monkeypatch.setattr(ext_mod, "_call_agent_remove_containers", REAL_REMOVE_CONTAINERS)
+    monkeypatch.setattr(ext_mod, "_call_agent_remove_extension", REAL_REMOVE_EXTENSION)
 
     response = test_client.delete("/api/extensions/gotify", headers=test_client.auth_headers)
 
@@ -483,7 +483,7 @@ def test_remove_with_an_unreachable_host_keeps_the_extension(test_client, tmp_pa
     assert (user_dir / "gotify").is_dir()
 
 
-def test_remove_with_an_older_host_agent_still_removes_and_says_the_container_stayed(
+def test_remove_with_an_older_host_agent_refuses_before_local_deletion(
         test_client, tmp_path, monkeypatch):
     from host_agent_client import AgentHTTPError
 
@@ -494,22 +494,20 @@ def test_remove_with_an_older_host_agent_still_removes_and_says_the_container_st
         raise AgentHTTPError(404, "Not found")
 
     monkeypatch.setattr(ext_mod, "request_agent_json", not_found)
-    monkeypatch.setattr(ext_mod, "_call_agent_remove_containers", REAL_REMOVE_CONTAINERS)
+    monkeypatch.setattr(ext_mod, "_call_agent_remove_extension", REAL_REMOVE_EXTENSION)
 
     response = test_client.delete("/api/extensions/gotify", headers=test_client.auth_headers)
 
-    assert response.status_code == 200
-    body = response.json()
-    assert body["containers_removed"] is None
-    assert "Its stopped container was kept" in body["message"]
-    assert not (user_dir / "gotify").exists()
+    assert response.status_code == 409
+    assert "Finish updating ODS" in response.json()["detail"]
+    assert (user_dir / "gotify" / "compose.yaml.disabled").exists()
 
 
 def test_remove_rejects_an_unverifiable_host_answer(test_client, tmp_path, monkeypatch):
     user_dir = _setup_user_ext(tmp_path, "gotify", enabled=False)
     _patch_mutation_config(monkeypatch, tmp_path, user_dir=user_dir)
     monkeypatch.setattr(ext_mod, "request_agent_json", lambda *args, **kwargs: {"containers": "all"})
-    monkeypatch.setattr(ext_mod, "_call_agent_remove_containers", REAL_REMOVE_CONTAINERS)
+    monkeypatch.setattr(ext_mod, "_call_agent_remove_extension", REAL_REMOVE_EXTENSION)
 
     response = test_client.delete("/api/extensions/gotify", headers=test_client.auth_headers)
 

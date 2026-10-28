@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
@@ -735,9 +736,7 @@ def _patch_mutation_config(monkeypatch, tmp_path, lib_dir=None, user_dir=None):
                         lambda sid, hook: True)
     monkeypatch.setattr("routers.extensions._call_agent_invalidate_compose_cache",
                         lambda: None)
-    monkeypatch.setattr("routers.extensions._call_agent_remove_containers",
-                        lambda sid, *, delete_volumes: {"containers": [f"ods-{sid}"],
-                                                        "volumes_removed": [], "volumes_kept": []})
+    monkeypatch.setattr("routers.extensions._call_agent_remove_extension", _test_host_remove)
     # Endpoint tests own a local stand-in for the host's selection RPC. The
     # real graph lock, stop and marker ordering are exercised in the host
     # selector tests; this stub keeps the Dashboard response contract local.
@@ -776,6 +775,35 @@ def _patch_mutation_config(monkeypatch, tmp_path, lib_dir=None, user_dir=None):
     # to reach the machine's real host agent instead of a test stub.
     monkeypatch.setattr("routers.extensions.request_agent_json",
                         lambda *args, **kwargs: pytest.fail("unexpected live host-agent request"))
+
+
+def _test_host_remove(sid, *, delete_data, result=None):
+    """Response-contract stand-in; real native locking/deletion has host tests.
+
+    Use a separate lock domain, as on macOS. The API may not rely on its own
+    graph lock to make this host operation safe.
+    """
+    from routers import extensions as ext
+    directory = ext.USER_EXTENSIONS_DIR / sid
+    with ext._exclusive_file_lock(Path(ext.DATA_DIR) / ".test-native-host-lock"):
+        if (directory / "compose.yaml").exists():
+            raise HTTPException(status_code=409, detail="Selection changed on the host")
+        ext._call_agent_invalidate_compose_cache()
+        freed = None
+        own_data = Path(ext.DATA_DIR) / sid
+        if delete_data and own_data.is_dir():
+            shutil.rmtree(own_data)
+        try:
+            shutil.rmtree(directory)
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail="Host removal incomplete") from exc
+        backup = ext._extension_backup_dir(sid)
+        if backup.is_dir():
+            shutil.rmtree(backup)
+        ext._clear_progress(sid)
+        return {**(result or {"containers": [f"ods-{sid}"],
+                              "volumes_removed": [], "volumes_kept": []}),
+                "data_freed_gb": freed}
 
 
 # --- Install endpoint ---
@@ -2146,99 +2174,50 @@ class TestUninstallExtension:
     def test_uninstall_refuses_reenabled_definition_before_removal(
         self, test_client, monkeypatch, tmp_path, enabled, delete_data,
     ):
-        """A rejected Remove must retain containers, volumes and data too."""
-        from routers import extensions as ext_module
-
+        """The host, not the API lock domain, rejects a selection race."""
+        from routers import extensions as ext
         user_dir = _setup_user_ext(tmp_path, "my-ext", enabled=enabled)
         _patch_mutation_config(monkeypatch, tmp_path, user_dir=user_dir)
-        directory = user_dir / "my-ext"
-        removal_calls = []
-        data_deletions = []
-
-        def remove_containers(sid, *, delete_volumes):
-            removal_calls.append((sid, delete_volumes))
-            return {"containers": [], "volumes_removed": [], "volumes_kept": []}
-
-        def delete_extension_data(sid):
-            data_deletions.append(sid)
-            return 0.0
-
-        monkeypatch.setattr(ext_module, "_call_agent_remove_containers", remove_containers)
-        monkeypatch.setattr(ext_module, "_delete_extension_data", delete_extension_data)
         if enabled:
             self._write_progress(tmp_path, "my-ext", "error", error="boom")
-            host_selection = ext_module._select_extensions_on_host
-
-            def select_then_reenable(action, service_ids, expected_sha256=None):
-                outcome = host_selection(action, service_ids, expected_sha256)
-                (directory / "compose.yaml.disabled").rename(directory / "compose.yaml")
-                return outcome
-
-            monkeypatch.setattr(ext_module, "_select_extensions_on_host", select_then_reenable)
-        else:
-            # Simulate a host CLI enable just before Dashboard obtains its
-            # canonical graph lock for removal.
-            original_lock = ext_module._extensions_lock
-
-            @contextlib.contextmanager
-            def reenable_before_lock():
-                (directory / "compose.yaml.disabled").rename(directory / "compose.yaml")
-                with original_lock():
-                    yield
-
-            monkeypatch.setattr(ext_module, "_extensions_lock", reenable_before_lock)
-
+        directory = user_dir / "my-ext"
+        data = tmp_path / "my-ext"
+        data.mkdir()
+        (data / "owner.txt").write_text("retain")
+        def reenable_then_remove(sid, *, delete_data):
+            (directory / "compose.yaml.disabled").rename(directory / "compose.yaml")
+            return _test_host_remove(sid, delete_data=delete_data)
+        monkeypatch.setattr(ext, "_call_agent_remove_extension", reenable_then_remove)
         response = test_client.delete(
             f"/api/extensions/my-ext?delete_data={str(delete_data).lower()}",
             headers=test_client.auth_headers,
         )
         assert response.status_code == 409
-        assert removal_calls == []
-        assert data_deletions == []
-        assert directory.is_dir()
         assert (directory / "compose.yaml").exists()
+        assert (data / "owner.txt").read_text() == "retain"
 
     @pytest.mark.parametrize("delete_data", [False, True])
-    def test_uninstall_excludes_cli_selection_during_removal(
+    def test_uninstall_releases_api_graph_lock_before_host_removal(
         self, test_client, monkeypatch, tmp_path, delete_data,
     ):
-        """A second process cannot select the extension during its removal."""
+        """An RPC must not wait on its Linux caller's graph lock."""
         import subprocess
         import sys
-
-        from routers import extensions as ext_module
-
-        if ext_module.fcntl is None:
-            pytest.skip("The host CLI flock probe requires POSIX file locks")
+        from routers import extensions as ext
+        if ext.fcntl is None:
+            pytest.skip("POSIX lock probe")
         user_dir = _setup_user_ext(tmp_path, "my-ext", enabled=False)
         _patch_mutation_config(monkeypatch, tmp_path, user_dir=user_dir)
-        lock_path = ext_module._extensions_lock_path()
-        probe = """
-import fcntl
-import sys
-with open(sys.argv[1], "a+b") as stream:
-    try:
-        fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        sys.exit(17)
-"""
-
-        def probe_lock():
-            return subprocess.run(
-                [sys.executable, "-c", probe, str(lock_path)],
-                capture_output=True, text=True, timeout=10,
-            )
-
+        lock_path = ext._extensions_lock_path()
+        probe = "import fcntl,sys; f=open(sys.argv[1],'a+b'); fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)"
         calls = []
-
-        def remove_containers(sid, *, delete_volumes):
-            result = probe_lock()
-            assert result.returncode == 17, result.stderr
-            assert (user_dir / sid / "compose.yaml.disabled").exists()
-            calls.append((sid, delete_volumes))
-            return {"containers": [f"ods-{sid}"], "volumes_removed": [], "volumes_kept": []}
-
-        monkeypatch.setattr(ext_module, "_call_agent_remove_containers", remove_containers)
+        def remove_on_host(sid, *, delete_data):
+            result = subprocess.run([sys.executable, "-c", probe, str(lock_path)],
+                                    capture_output=True, text=True, timeout=10)
+            assert result.returncode == 0, result.stderr
+            calls.append((sid, delete_data))
+            return _test_host_remove(sid, delete_data=delete_data)
+        monkeypatch.setattr(ext, "_call_agent_remove_extension", remove_on_host)
         response = test_client.delete(
             f"/api/extensions/my-ext?delete_data={str(delete_data).lower()}",
             headers=test_client.auth_headers,
@@ -2246,9 +2225,6 @@ with open(sys.argv[1], "a+b") as stream:
         assert response.status_code == 200
         assert calls == [("my-ext", delete_data)]
         assert not (user_dir / "my-ext").exists()
-        # Positive control: the child can acquire this same lock after Remove.
-        result = probe_lock()
-        assert result.returncode == 0, result.stderr
 
     @pytest.mark.parametrize("progress_status", [None, "error"])
     def test_uninstall_disabled_extension_does_not_stop(

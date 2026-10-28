@@ -336,31 +336,35 @@ The extension operations this agent process is running now: installs, enable ret
 
 When the agent starts, before it serves requests, it marks every progress record still in an active phase (`pulling`, `starting`, `setup_hook`) as an interrupted failure: `status` `error`, `interrupted: true`, `interrupted_phase`, and an error that says ODS stopped before the operation finished. No operation of the new process can be running yet. A record the Dashboard wrote less than two minutes earlier, for a request still on its way, is left alone.
 
-### `POST /v1/extension/remove-containers`
+### `POST /v1/extension/remove`
 
-Delete a disabled Library extension's stopped containers, as part of its Remove. Without this, the stopped containers stayed behind once the definition was gone. Ownership comes from the containers' Compose labels, as for recovery stops: the extension's own service and the `<id>-*` companions its disabled fragment declares, never another installation's containers. A running container is refused, never stopped.
+Remove a disabled Library extension under the native host's selection lock. The host rechecks selection and dependents, deletes owned stopped containers and optional data, then removes the definition, backup and progress record. The lock excludes native CLI selection through the entire operation. A Dashboard container lock is insufficient across macOS and its Docker VM; callers must release their graph lock before the RPC to avoid Linux lock inversion.
+
+Container ownership comes from Compose labels: the extension's own service and the `<id>-*` companions its disabled fragment declares, never another installation's containers. Running containers are refused, never stopped. A deletion failure may have partial effects; container/data failures retain the disabled definition for inspection or retry. The API must not report rollback after a timeout or partial failure.
 
 **Authentication:** Required
 
 **Request body:**
 ```json
-{"service_id": "excalidraw", "delete_volumes": false}
+{"service_id": "excalidraw", "delete_data": false}
 ```
 
-`delete_volumes` (default `false`) also deletes the containers' anonymous volumes and each named volume Compose created for them that no other container uses. Without it, every volume stays.
+`delete_data` (default `false`) also deletes the extension's own `data/<id>` directory, its anonymous volumes, and each named volume Compose created for it that no other container uses. Without it, all service data stays. Reserved ODS directories and redirected deletion paths are refused.
 
 **Response (200):**
 ```json
-{"status": "ok", "service_id": "excalidraw", "containers": ["ods-excalidraw"], "volumes_removed": [], "volumes_kept": []}
+{"status": "ok", "service_id": "excalidraw", "containers": ["ods-excalidraw"], "volumes_removed": [], "volumes_kept": [], "definition_removed": true, "data_deleted": false, "data_freed_gb": null}
 ```
 
 **Error responses:**
 | Code | Condition |
 |------|-----------|
-| 400 | Invalid `service_id` or `delete_volumes` |
+| 400 | Invalid `service_id` or `delete_data` |
 | 404 | Extension not found |
 | 409 | The extension is still enabled, is not a Library extension, has a running container, another operation holds it, or a Docker command failed |
 | 502 | The removal helper could not run |
+
+The legacy `POST /v1/extension/remove-containers` returns 410 without deletion. New Dashboards also refuse removal on older hosts that lack the complete operation; finish updating ODS instead of falling back to API-side file deletion.
 
 ### `POST /v1/extension/logs`
 

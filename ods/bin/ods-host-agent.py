@@ -7077,6 +7077,84 @@ def _remove_extension_containers(service_id: str, *, delete_volumes: bool) -> di
     return {"containers": containers, "volumes_removed": removed, "volumes_kept": kept}
 
 
+_EXTENSION_REMOVAL_RESERVED_DATA = frozenset({
+    "auth", "backends", "backups", "config", "config-backups", "data",
+    "extension-operations", "extension-progress", "extensions-library", "hermes-auth",
+    "installer-backups", "models", "openclaw", "paperless", "persona",
+    "piper", "pixel", "pixel-chat-results", "pixel-native",
+    "pixel-providers", "remote-provider", "state", "system-tuning",
+    "user-extensions",
+})
+
+
+def _remove_library_extension(service_id: str, *, delete_data: bool) -> dict:
+    """Keep the full Remove under the native CLI's selection authority.
+
+    macOS and its Docker VM do not share flock state even for the same bind
+    mount. The caller must not hold its graph lock while making this RPC:
+    on Linux that would wait on itself, while on Mac it offers no exclusion.
+    Failed deletion can have partial effects; the definition is removed last
+    so container/data failures leave a disabled extension to inspect or retry.
+    """
+    if (not SERVICE_ID_RE.fullmatch(service_id) or service_id in CORE_SERVICE_IDS
+            or service_id in ALWAYS_ON_SERVICES or type(delete_data) is not bool):
+        raise ValueError("Invalid Library extension removal")
+    root = INSTALL_DIR.resolve()
+    data = root / "data"
+    users = data / "user-extensions"
+    if (DATA_DIR != data or USER_EXTENSIONS_DIR != users
+            or data.is_symlink() or users.is_symlink()
+            or not data.is_dir() or not users.is_dir()):
+        raise ValueError("Extension data location requires inspection")
+    selector = _load_extension_selector()
+    try:
+        with selector._selection_lock(root, 15.0):
+            directory = users / service_id
+            if directory.is_symlink() or not directory.is_dir():
+                raise ValueError(f"{service_id} is not an installed Library extension")
+            selected = directory / "compose.yaml"
+            if selected.exists() or selected.is_symlink():
+                raise ValueError(f"{service_id} is still enabled; disable it before removing it")
+            selector._assert_no_dependents(root, service_id)
+            own_data = data / service_id
+            if delete_data:
+                if service_id in _EXTENSION_REMOVAL_RESERVED_DATA:
+                    raise ValueError(f"data/{service_id} belongs to ODS, not to an extension")
+                if own_data.is_symlink() or own_data.resolve() != own_data:
+                    raise ValueError(f"data/{service_id} redirects to another location; keep its data")
+                if own_data.exists() and not own_data.is_dir():
+                    raise ValueError(f"data/{service_id} is not an extension data directory")
+            backups = users / ".backups"
+            progress = data / "extension-progress"
+            if backups.is_symlink() or progress.is_symlink():
+                raise ValueError("Extension backup or progress location requires inspection")
+            # Fail before deletion if the Compose cache cannot be invalidated.
+            invalidate_compose_cache()
+            removed = _remove_extension_containers(service_id, delete_volumes=delete_data)
+            freed = None
+            if delete_data and own_data.is_dir():
+                total = 0
+                for parent, _, files in os.walk(own_data, followlinks=False):
+                    for name in files:
+                        info = os.stat(Path(parent) / name, follow_symlinks=False)
+                        if stat_mod.S_ISREG(info.st_mode):
+                            total += info.st_size
+                shutil.rmtree(own_data)
+                freed = round(total / (1024 ** 3), 3)
+            backup = backups / service_id
+            if backup.is_symlink():
+                backup.unlink()
+            elif backup.is_dir():
+                shutil.rmtree(backup)
+            # Clear only this extension's presentation record; keep operation receipts.
+            (progress / f"{service_id}.json").unlink(missing_ok=True)
+            shutil.rmtree(directory)
+            return {**removed, "definition_removed": True,
+                    "data_deleted": delete_data, "data_freed_gb": freed}
+    except selector.SelectionError as exc:
+        raise ValueError(str(exc)) from exc
+
+
 def _load_extension_selector():
     """Load the installed CLI selector, the owner of the shared graph lock."""
     helper_path = INSTALL_DIR / "scripts" / "extension-selection.py"
@@ -11329,6 +11407,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_extension_selection()
         elif self.path == "/v1/extension/remove-containers":
             self._handle_extension_remove_containers()
+        elif self.path == "/v1/extension/remove":
+            self._handle_extension_remove()
         elif self.path == "/v1/extension/sync_config":
             self._handle_extension_sync_config()
         elif self.path == "/v1/service/logs":
@@ -13002,7 +13082,15 @@ class AgentHandler(BaseHTTPRequestHandler):
         json_response(self, 200, {"status": "ok", "service_ids": service_ids, "action": outcome})
 
     def _handle_extension_remove_containers(self):
-        """Delete a disabled Library extension's stopped containers (its Remove)."""
+        """Old clients cannot finish a removal under native host authority."""
+        if not check_auth(self):
+            return
+        json_response(self, 410, {
+            "error": "Finish updating ODS before removing this extension."
+        })
+
+    def _handle_extension_remove(self):
+        """Remove a disabled Library extension under the native graph lock."""
         if not check_auth(self):
             return
         body = read_json_body(self)
@@ -13011,18 +13099,18 @@ class AgentHandler(BaseHTTPRequestHandler):
         service_id = validate_service_id(self, body)
         if service_id is None:
             return
-        delete_volumes = body.get("delete_volumes", False)
-        if type(delete_volumes) is not bool:
-            json_response(self, 400, {"error": "delete_volumes must be boolean"})
+        delete_data = body.get("delete_data", False)
+        if type(delete_data) is not bool:
+            json_response(self, 400, {"error": "delete_data must be boolean"})
             return
         lock = _service_locks[service_id]
         if not lock.acquire(blocking=False):
             json_response(self, 409, {"error": f"Operation in progress for {service_id}"})
             return
         try:
-            result = _remove_extension_containers(service_id, delete_volumes=delete_volumes)
+            result = _remove_library_extension(service_id, delete_data=delete_data)
         except ValueError as exc:
-            # Refused before anything was deleted, or a Docker command failed.
+            # A helper can fail after partial work; do not claim rollback.
             json_response(self, 409, {"error": _redact_credential_text(str(exc))[:500]})
             return
         except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
@@ -13031,7 +13119,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             return
         finally:
             lock.release()
-        logger.info("Removed containers of %s: %s", service_id, ", ".join(result["containers"]) or "none")
+        logger.info("Removed Library extension %s (containers: %s)",
+                    service_id, ", ".join(result["containers"]) or "none")
         json_response(self, 200, {"status": "ok", "service_id": service_id, **result})
 
     def _handle_extension_sync_config(self):

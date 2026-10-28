@@ -5,6 +5,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import math
 import mmap
 import os
 import platform
@@ -5593,70 +5594,46 @@ def disable_extension(service_id: str, include_data_info: bool = Query(True), ap
     }
 
 
-def _call_agent_remove_containers(service_id: str, *, delete_volumes: bool) -> dict | None:
-    """Delete a disabled extension's stopped containers on the host.
-
-    Returns what was deleted and kept, or None from a host agent that cannot
-    delete containers yet (the containers then stay, as before). A refusal or
-    failure raises: the extension is not removed.
-    """
+def _call_agent_remove_extension(service_id: str, *, delete_data: bool) -> dict:
+    """The host owns selection exclusion through the complete removal."""
     try:
         result = request_agent_json(
-            "POST", "/v1/extension/remove-containers",
-            payload={"service_id": service_id, "delete_volumes": delete_volumes},
+            "POST", "/v1/extension/remove",
+            payload={"service_id": service_id, "delete_data": delete_data},
             timeout=_AGENT_TIMEOUT,
         )
     except AgentHTTPError as exc:
-        if exc.status_code == 404:
-            return None
+        if exc.status_code in (404, 410):
+            raise HTTPException(status_code=409, detail=(
+                "Finish updating ODS before removing this extension. "
+                "The host service cannot perform the complete removal yet."
+            )) from exc
         raise HTTPException(
             status_code=409 if exc.status_code in (400, 403, 409) else 502,
-            detail=(f"ODS could not delete the {service_id} container, so {service_id} was not "
-                    f"removed: {exc.detail}. Retry Remove; if it keeps failing, restart ODS."),
+            detail=(f"Removal of {service_id} did not complete: {exc.detail}. "
+                    "Some resources may already have been deleted. Refresh the extension's "
+                    "state before retrying Remove."),
         ) from exc
     except AgentClientError as exc:
         raise HTTPException(
             status_code=503,
-            detail=(f"The ODS host service is not responding, so {service_id} was not removed. "
-                    "Restart ODS, then retry Remove."),
+            detail=(f"The ODS host service is not responding; removal of {service_id} "
+                    "could not be verified. Refresh its state before retrying Remove."),
         ) from exc
     lists = {key: result.get(key) for key in ("containers", "volumes_removed", "volumes_kept")}
-    if not all(isinstance(value, list) and all(isinstance(item, str) for item in value)
-               for value in lists.values()):
+    freed = result.get("data_freed_gb")
+    if (not all(isinstance(value, list) and all(isinstance(item, str) for item in value)
+                for value in lists.values())
+            or result.get("status") != "ok" or result.get("service_id") != service_id
+            or result.get("definition_removed") is not True
+            or result.get("data_deleted") is not delete_data
+            or (freed is not None and (type(freed) not in (int, float)
+                                      or not math.isfinite(freed) or freed < 0))):
         raise HTTPException(
             status_code=502,
-            detail=f"The container removal for {service_id} could not be verified; {service_id} was not removed. Retry Remove.",
+            detail=f"Removal of {service_id} could not be verified. Refresh its state before retrying Remove.",
         )
-    return lists
-
-
-def _delete_extension_data(service_id: str) -> float | None:
-    """Delete data/<id> for a Remove that deletes data; the GB freed, None without one.
-
-    The same path rules as the purge request: only the extension's own folder.
-    """
-    if service_id in _COMPOSE_POLICY_RESERVED_NAMES or service_id in CORE_SERVICE_IDS:
-        raise HTTPException(status_code=403, detail=f"data/{service_id} belongs to ODS, not to an extension")
-    data_path = _contained_path(Path(DATA_DIR).resolve(), service_id)
-    if data_path.resolve() != data_path:
-        raise HTTPException(
-            status_code=400,
-            detail=(f"data/{service_id} redirects to another location, so neither it nor "
-                    f"{service_id} was removed. Remove it again and keep its data."),
-        )
-    if not data_path.is_dir():
-        return None
-    from helpers import dir_size_gb, invalidate_dir_size_cache  # noqa: PLC0415
-    size_gb = dir_size_gb(data_path)
-    shutil.rmtree(data_path, ignore_errors=True)
-    invalidate_dir_size_cache(data_path)
-    if data_path.exists():
-        raise HTTPException(
-            status_code=500,
-            detail=(f"Could not fully delete data/{service_id}; some files may be owned by root, "
-                    f"so {service_id} was not removed. Run 'ods purge {service_id}', then retry Remove."),
-        )
-    return size_gb
+    return {**lists, "data_freed_gb": freed}
 
 
 def _extension_display_name(service_id: str) -> str:
@@ -5671,29 +5648,22 @@ def _extension_display_name(service_id: str) -> str:
     return name.strip() if isinstance(name, str) and name.strip() else service_id
 
 
-def _removal_message(name: str, *, stopped: bool, removed: dict | None, delete_data: bool,
+def _removal_message(name: str, *, stopped: bool, removed: dict, delete_data: bool,
                      data_info: dict | None, data_freed_gb: float | None) -> str:
     """Say what Remove deleted, and which data it kept."""
     first = f"{name} was stopped and removed" if stopped else f"{name} was removed"
     if delete_data:
         freed = f" ({data_freed_gb} GB freed)" if data_freed_gb is not None else ""
-        if removed is None:
-            return (f"{first}: its installed definition and data folder were deleted{freed}. Its stopped "
-                    "container and Docker volumes were kept, because this ODS host service cannot "
-                    "delete them yet.")
         shared = removed["volumes_kept"]
         shared_note = (f" Docker volumes another service still uses were kept: {', '.join(shared)}."
                        if shared else "")
         return (f"{first} with its data: its container, installed definition and data were "
                 f"deleted{freed}.{shared_note}")
-    what = "its container and installed definition" if removed is not None else "its installed definition"
-    message = f"{first}: {what} were deleted."
-    if removed is None:
-        message += " Its stopped container was kept, because this ODS host service cannot delete it yet."
+    message = f"{first}: its container and installed definition were deleted."
     kept = []
     if data_info:
         kept.append(f"{data_info['path']}, {data_info['size_gb']} GB")
-    if removed and removed["volumes_kept"]:
+    if removed["volumes_kept"]:
         kept.append("its Docker volumes")
     if kept:
         message += f" Its data was kept ({'; '.join(kept)}), so reinstalling it picks it up again."
@@ -5772,65 +5742,27 @@ def uninstall_extension(service_id: str, include_data_info: bool = Query(True),
 
     name = _extension_display_name(service_id)
     data_info = _get_service_data_info(service_id) if include_data_info and not delete_data else None
-    data_freed_gb = None
-
-    with _extensions_lock():
-        # Reject symlinks (checked under lock to prevent TOCTOU)
-        st = os.lstat(ext_dir)
-        if stat.S_ISLNK(st.st_mode):
-            raise HTTPException(
-                status_code=400, detail="Extension directory is a symlink",
-            )
-
-        # Selection can change after the host RPC and before this lock. The
-        # host CLI uses the same lock, so this check protects the whole delete.
-        if enabled_compose.exists() or enabled_compose.is_symlink():
-            raise HTTPException(
-                status_code=409,
-                detail=f"Extension selection changed: {service_id}; disable it and retry removal",
-            )
-
-        # Keep CLI selection excluded from this recheck through container,
-        # volume and definition deletion. The removal RPC does not acquire
-        # the graph lock; the earlier disable RPC does and must stay outside.
-        removed = _call_agent_remove_containers(service_id, delete_volumes=delete_data)
-
-        if delete_data:
-            # Before the definition goes: a failure leaves a Remove to retry.
-            data_freed_gb = _delete_extension_data(service_id)
-
-        try:
-            shutil.rmtree(ext_dir)
-        except OSError as e:
-            if stopped_before_removal:
-                _call_agent_invalidate_compose_cache()
-            logger.error("Failed to remove extension %s: %s", service_id, e)
-            raise HTTPException(status_code=500, detail=f"Failed to remove extension files: {e}")
-        _call_agent_invalidate_compose_cache()
-
-        backup = _extension_backup_dir(service_id)
-        if backup.parent.is_symlink():
-            logger.warning("Refusing to clean extension backup through symlink: %s", backup.parent)
-        elif backup.is_symlink():
-            backup.unlink(missing_ok=True)
-        elif backup.is_dir():
-            shutil.rmtree(backup)
-        _invalidate_extension_digest_cache(ext_dir, backup)
-
-        _clear_progress(service_id)
-
+    # Do not hold the API graph lock across this RPC. It deadlocks the host on
+    # Linux and does not exclude the native CLI across a Mac Docker VM boundary.
+    # The host rechecks selection and deletes all owned resources under its lock.
+    removed = _call_agent_remove_extension(service_id, delete_data=delete_data)
+    data_freed_gb = removed["data_freed_gb"]
+    _invalidate_extension_digest_cache(ext_dir, _extension_backup_dir(service_id))
+    if delete_data:
+        from helpers import invalidate_dir_size_cache  # noqa: PLC0415
+        invalidate_dir_size_cache(Path(DATA_DIR) / service_id)
 
     logger.info("Uninstalled extension: %s (stopped first: %s, containers: %s, data deleted: %s)",
                 service_id, stopped_before_removal,
-                ", ".join(removed["containers"]) if removed else "kept", delete_data)
+                ", ".join(removed["containers"]), delete_data)
     return {
         "id": service_id,
         "action": "uninstalled",
         "stopped_before_removal": stopped_before_removal,
-        "containers_removed": removed["containers"] if removed is not None else None,
+        "containers_removed": removed["containers"],
         "data_deleted": delete_data,
-        "volumes_removed": removed["volumes_removed"] if removed is not None else [],
-        "volumes_kept": removed["volumes_kept"] if removed is not None else [],
+        "volumes_removed": removed["volumes_removed"],
+        "volumes_kept": removed["volumes_kept"],
         "data_info": data_info,
         "message": _removal_message(name, stopped=stopped_before_removal, removed=removed,
                                     delete_data=delete_data, data_info=data_info,
