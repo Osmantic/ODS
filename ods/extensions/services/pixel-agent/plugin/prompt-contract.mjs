@@ -141,7 +141,9 @@ const CONNECTED_APP_READ_GUIDE =
   "Respect the owner's requested presentation: for counts-only or status-only results, return only the requested counts/status and necessary coverage limits; do not repeat message/event IDs, senders, subjects, titles, summaries or other record details. " +
   "Read only what is necessary for the request. A partial index or one fetched record cannot prove the account's total count.";
 const CONNECTED_READ_TOOLS = {
-  email: "For Gmail, discover the offered pixel_gmail_inbox/pixel_gmail_search/pixel_gmail_read tools with tool_search, then tool_describe the returned exact ID and call its actual schema through tool_call.",
+  email: "For Gmail, discover the offered pixel_gmail_inbox/pixel_gmail_search/pixel_gmail_read tools with tool_search, then tool_describe the returned exact ID and call its actual schema through tool_call. " +
+    "Gmail list/search/thread tools use maxResults (1-100): set it explicitly to honor the owner's limit. Omitting it returns a default page of 50, not a counts-only result. " +
+    "For count/status-only questions, use maxResults: 1 and counting/coverage/totalMatches; do not paginate or call pixel_gmail_read. Fetch more records or details only when the owner needs them. An indexed count is not the account total.",
   calendar: "For Calendar, discover the offered pixel_calendar_list/pixel_calendar_get tools with tool_search, then tool_describe the returned exact ID and call its actual schema through tool_call.",
   wiki: "Knowledge wiki is a local ODS plugin: discover wiki_search/wiki_get with tool_search, then tool_describe its required arguments before tool_call.",
 };

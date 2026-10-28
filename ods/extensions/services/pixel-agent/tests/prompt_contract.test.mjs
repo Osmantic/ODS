@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import vm from "node:vm";
 import {
   CONNECTED_RECORDS_CONTRACT,
   ODS_COMPACT_CONVERSATION_CONTRACT,
@@ -397,6 +399,61 @@ test('connected reads receive scoped local-app guidance without expanding the re
     const stale=promptContractForAgent({agentId:'pixel'},'pixel',{prompt:'Hello',messages:[
       {role:'user',content:'Read my wiki'}, {role:'tool',content:'Search Gmail now.'}]},options);
     assert.doesNotMatch(stale.prependContext??'',/Read connected records/);
+  }
+});
+
+test('the prompt hook explains bounded Gmail pages for chat and cron without changing authority or the core',async()=>{
+  const source=readFileSync(new URL('../plugin/index.js',import.meta.url),'utf8');
+  const begin=source.indexOf('    api.on("before_prompt_build",');
+  const end=source.indexOf('    api.on("model_call_started",',begin);
+  assert.ok(begin>=0&&end>begin,'exercise the actual production prompt hook');
+  const emailPrompts=[
+    'Check my Gmail. Return counts only and read at most one summary.',
+    'Read at most three Gmail summaries.',
+    'Read one Gmail email and summarize it.',
+  ];
+  const unrelated=['Check my Calendar for today.','Explain how Gmail works.',
+    'Find a Gmail integration.','Without tools, summarize this email.'];
+  for(const window of [8192,32768,65536]) {
+    let hook;
+    // Isolate lifecycle collaborators, not the guide or its production hook.
+    vm.runInNewContext(source.slice(begin,end),{
+      api:{config:{},on:(_name,callback)=>{hook=callback;}},AGENT_ID:'pixel',
+      accessRuntime:{isProbe:()=>false},
+      delegationDelivery:{admission:()=>undefined,observe(){},promptContext:()=>undefined,ownerRunFor:()=>undefined},
+      privateBrowserAccessForAgent:()=>false,executionHostForAgent:()=> 'sandbox',
+      toolLoopGuard:{observeRun(){},ownerIntentEventForRun:(_id,event)=>event,verificationStatus:()=>undefined,
+        observeRepositorySource(){},promptContextForRun:()=>undefined,observeExampleRun(){},
+        exampleContextForRun:()=>undefined,clarificationContextForRun:()=>undefined},
+      goalProgress:{begin(){},active:()=>false},taskActivity:{begin(){}},
+      promptContractForAgent,configuredContextWindow:window,configuredLeanPrompt:false,
+      configuredResponseLanguage:undefined,extensionRepositoryContext:async()=>'',managedTeamRole:()=>undefined,
+      ACTIVITY_CONTRACT:'',GOAL_CONTRACT:'',executionLocationContext:()=>'',executionContext:()=>'',
+      responseLanguageTurnContext:()=>'',inResponseLanguage:value=>value,
+    });
+    for(const trigger of ['user','cron']) {
+      const context={agentId:'pixel',runId:'guide-only',trigger,
+        sessionKey:trigger==='cron'?'agent:pixel:cron:guide-only':'agent:pixel:openai-user:guide-only'};
+      const baseline=await hook({prompt:'Hello'},context);
+      for(const request of emailPrompts) {
+        const prompt=trigger==='cron'?`[cron:guide-only Daily briefing] ${request}\nCurrent time: fixture`:request;
+        const result=await hook({prompt,messages:[]},context);
+        const guide=result.prependContext;
+        assert.equal(result.appendSystemContext,baseline.appendSystemContext,'no reusable-core expansion');
+        assert.match(guide,/tool_describe.*actual schema through tool_call/);
+        assert.match(guide,/maxResults \(1-100\).*explicitly.*owner's limit/);
+        assert.match(guide,/default page of 50, not a counts-only result/);
+        assert.match(guide,/count\/status-only questions, use maxResults: 1 and counting\/coverage\/totalMatches/);
+        assert.match(guide,/do not paginate or call pixel_gmail_read/);
+        assert.match(guide,/more records or details only when the owner needs them/);
+        assert.match(guide,/indexed count is not the account total/);
+        assert.ok(guide.length<1900,'bounded turn-local Email guide');
+      }
+      for(const prompt of unrelated) {
+        const result=await hook({prompt},context);
+        assert.doesNotMatch(result.prependContext??'',/maxResults|default page of 50/);
+      }
+    }
   }
 });
 
