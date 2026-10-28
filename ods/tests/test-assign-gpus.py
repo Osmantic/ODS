@@ -723,3 +723,123 @@ class TestPinnedLlmGpu:
         code, out, err = run_pinned(self.dgx_station(tmp_path), 132735, "GPU-not-here")
         assert code == 1 and out is None
         assert "--pin-llm-gpu GPU-not-here names 0 GPUs in the topology" in err
+
+
+# ── --fit-need-mb: a model that fits the largest GPU is not split ─────────────
+# Owner rule (2026-10-27): when a model and its KV cache fit the largest GPU,
+# it runs on that GPU alone. Splitting buys no decode speed and takes the other
+# GPUs from extensions or a second model; split only what does not fit.
+
+def run_need(topology_path, model_size_mb, fit_need_mb, enabled_services=None):
+    cmd = [sys.executable, SCRIPT, "--topology", str(topology_path),
+           "--model-size", str(model_size_mb), "--fit-need-mb", str(fit_need_mb)]
+    if enabled_services is not None:
+        cmd += ["--enabled-services", enabled_services]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+    output = json.loads(result.stdout)["gpu_assignment"] if result.returncode == 0 else None
+    return result.returncode, output, result.stderr
+
+
+class TestFitNeed:
+    GPU0 = "GPU-00000000-0000-0000-0000-000000000000"
+    GPU1 = "GPU-11111111-1111-1111-1111-111111111111"
+
+    def test_a_model_that_fits_one_of_two_gpus_runs_there_alone(self):
+        # 2x 24 GB on PHB: without the need the pair wins (rank first); with a
+        # 20 GB need the model stays on GPU 0 and the services take GPU 1.
+        code, out, err = run_need(fixture_path("nvidia_smi_topo_matrix_2gpus_phb_coloc.json"), 15000, 20000)
+        assert code == 0, err
+        assert llama(out)["gpus"] == [self.GPU0]
+        assert parallelism(out)["mode"] == "none"
+        for name in ("whisper", "comfyui", "embeddings"):
+            assert out["services"][name]["gpus"] == [self.GPU1]
+        assert out["strategy"] == "colocated"
+
+    def test_a_need_above_the_largest_gpu_splits_as_before(self):
+        # The weights fit one 24 GB card, the KV cache at its context does not.
+        topology = fixture_path("nvidia_smi_topo_matrix_2gpus_phb_coloc.json")
+        code, out, err = run_need(topology, 15000, 30000)
+        assert code == 0, err
+        assert set(llama(out)["gpus"]) == {self.GPU0, self.GPU1}
+        assert (code, out) == run(topology, 15000)[:2]
+
+    def test_without_the_need_the_ranked_split_is_unchanged(self):
+        topology = fixture_path("nvidia_smi_topo_matrix_2gpus_phb_coloc.json")
+        _, out, _ = run(topology, 15000)
+        assert set(llama(out)["gpus"]) == {self.GPU0, self.GPU1}
+
+    def test_the_largest_of_mismatched_gpus_takes_the_model(self, tmp_path):
+        # DGX Station: GB300 (250 GB) beside an RTX PRO 6000 (96 GB). A 30 GB
+        # need fits both; the largest GPU takes it, never a split across both.
+        topology = tmp_path / "dgx.json"
+        topology.write_text(json.dumps({
+            "vendor": "nvidia", "gpu_count": 2,
+            "gpus": [
+                {"index": 0, "uuid": "GPU-rtx", "name": "NVIDIA RTX PRO 6000", "memory_gb": 95.6},
+                {"index": 1, "uuid": "GPU-gb300", "name": "NVIDIA GB300", "memory_gb": 250.7},
+            ],
+            "links": [{"gpu_a": 0, "gpu_b": 1, "link_type": "SYS", "link_label": "SYS", "rank": 10}],
+        }))
+        code, out, err = run_need(topology, 22000, 30000)
+        assert code == 0, err
+        assert llama(out)["gpus"] == ["GPU-gb300"]
+        assert out["services"]["comfyui"]["gpus"] == ["GPU-rtx"]
+
+    def test_four_gpus_keep_spares_free_instead_of_growing_the_model(self):
+        # 4x 80 GB, NVLink pair 0-1: the model stays on one GPU, three services
+        # get one each, and the fourth GPU is not handed back to the model.
+        code, out, err = run_need(fixture_path("nvidia_smi_topo_matrix_4gpus_sys_separated_nv_pairs.json"), 30000, 40000)
+        assert code == 0, err
+        assert len(llama(out)["gpus"]) == 1
+        assert parallelism(out)["mode"] == "none"
+        assert out["strategy"] == "dedicated"
+        used = [g for name in ("whisper", "comfyui", "embeddings") for g in out["services"][name]["gpus"]]
+        assert len(set(used)) == 3 and llama(out)["gpus"][0] not in used
+
+    def test_five_gpus_leave_the_spare_free(self):
+        # 5x 80 GB: the model on one GPU, a service on each of three more, and
+        # the fifth stays free; without the need it would join the model.
+        topology = fixture_path("nvidia_smi_topo_matrix_5gpus_nv12_with_mlx5.json")
+        code, out, err = run_need(topology, 30000, 40000)
+        assert code == 0, err
+        assert len(llama(out)["gpus"]) == 1
+        assert len(all_assigned_uuids(out)) == 4
+        _, before, _ = run(topology, 30000)
+        assert len(llama(before)["gpus"]) > 1
+
+    def test_the_gpu_with_the_most_free_memory_wins(self, tmp_path):
+        topology = tmp_path / "busy.json"
+        topology.write_text(json.dumps({
+            "vendor": "nvidia", "gpu_count": 2,
+            "gpus": [
+                {"index": 0, "uuid": "GPU-busy", "name": "busy", "memory_gb": 48, "memory_free_gb": 10},
+                {"index": 1, "uuid": "GPU-free", "name": "free", "memory_gb": 48, "memory_free_gb": 47},
+            ],
+            "links": [{"gpu_a": 0, "gpu_b": 1, "link_type": "PHB", "link_label": "PHB", "rank": 30}],
+        }))
+        code, out, err = run_need(topology, 20000, 30000)
+        assert code == 0, err
+        assert llama(out)["gpus"] == ["GPU-free"]
+
+    def test_an_apu_hybrid_keeps_the_model_on_the_discrete_gpu(self, tmp_path):
+        # AMD APU (96 GB unified) + a 24 GB discrete card: a 20 GB need runs on
+        # the discrete card even though the APU reports more memory.
+        topology = tmp_path / "hybrid.json"
+        topology.write_text(json.dumps({
+            "vendor": "amd", "gpu_count": 2,
+            "gpus": [
+                {"index": 0, "uuid": "GPU-apu", "name": "APU", "memory_gb": 96, "memory_type": "unified"},
+                {"index": 1, "uuid": "GPU-dgpu", "name": "dGPU", "memory_gb": 24, "memory_type": "discrete"},
+            ],
+            "links": [{"gpu_a": 0, "gpu_b": 1, "link_type": "PCIE", "link_label": "PCIE", "rank": 20}],
+        }))
+        code, out, err = run_need(topology, 15000, 20000)
+        assert code == 0, err
+        assert llama(out)["gpus"] == ["GPU-dgpu"]
+
+    def test_the_need_must_be_finite_and_positive(self):
+        topology = fixture_path("nvidia_smi_topo_matrix_2gpus_phb_coloc.json")
+        for need in ("0", "-1", "nan", "inf"):
+            code, out, err = run_need(topology, 15000, need)
+            assert code == 1 and out is None, need
+            assert "--fit-need-mb must be a finite positive number" in err

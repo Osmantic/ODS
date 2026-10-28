@@ -727,6 +727,28 @@ while IFS=$'\t' read -r a b rank ltype; do
   LINK_TYPE["$b,$a"]=$ltype
 done < <(jq -r '.links[] | [.gpu_a, .gpu_b, .rank, .link_type] | @tsv' "$TOPOLOGY_FILE")
 
+# The llama.cpp model's whole need at its context (weights, KV cache and
+# buffers) in MiB, from the model catalog's estimate for the final model, so
+# assign_gpus.py keeps a model that fits the largest GPU on that GPU alone.
+# Prints nothing when the catalog is off or does not list the model (an
+# import): the assigner then splits by the weights, as before.
+_phase03_llm_fit_need_mb() {
+    local python out status=0
+    [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" ]] || return 0
+    [[ -f "$SCRIPT_DIR/scripts/select-model.py" && -f "$SCRIPT_DIR/config/model-library.json" ]] || return 0
+    if ! declare -F ods_catalog_fit_check >/dev/null 2>&1; then
+        # shellcheck source=/dev/null
+        . "$SCRIPT_DIR/installers/lib/model-selector.sh"
+    fi
+    python="$(ods_model_selector_python)"
+    [[ -n "$python" ]] || return 0
+    out="$(ods_catalog_fit_check "$python" "${GGUF_FILE:-${LLM_MODEL:-}}" "${MAX_CONTEXT:-0}" \
+        "${MODEL_RUNTIME_PROFILE:-}" 2>>"${LOG_FILE:-/dev/null}")" || status=$?
+    # 0: fits this host, 3: does not; either way the JSON carries the estimate.
+    [[ "$status" == 0 || "$status" == 3 ]] || return 0
+    jq -r 'if (.required_gb // 0) > 0 then (.required_gb * 1024 | ceil | tostring) else empty end' <<< "$out"
+}
+
 # Automatic assignment
 run_automatic() {
   echo ""
@@ -740,8 +762,18 @@ run_automatic() {
   # and the other services take the remaining GPUs.
   local -a pin_args=()
   [[ "${LLM_BACKEND:-}" != "vllm" ]] || pin_args=(--pin-llm-gpu "$VLLM_GPU_UUID")
+  # A llama.cpp model that fits the largest GPU with its KV cache is not
+  # split across GPUs (the catalog estimate decides; see above).
+  local fit_need_mb=""
+  local -a need_args=()
+  [[ "${LLM_BACKEND:-}" == "vllm" ]] || fit_need_mb="$(_phase03_llm_fit_need_mb)"
+  if [[ -n "$fit_need_mb" ]]; then
+    need_args=(--fit-need-mb "$fit_need_mb")
+    log "GPU assignment: the model needs about ${fit_need_mb} MiB at ${MAX_CONTEXT:-?} context"
+  fi
   result=$(python3 "$ASSIGN_GPUS_SCRIPT" \
-    --topology "$TOPOLOGY_FILE" --model-size "$LLM_MODEL_SIZE_MB" ${pin_args[@]+"${pin_args[@]}"} 2>&1) || {
+    --topology "$TOPOLOGY_FILE" --model-size "$LLM_MODEL_SIZE_MB" ${pin_args[@]+"${pin_args[@]}"} \
+    ${need_args[@]+"${need_args[@]}"} 2>&1) || {
     echo -e "  ${RED}Assignment failed:${NC}\n  $result"
     error "GPU assignment failed: $result"
   }
