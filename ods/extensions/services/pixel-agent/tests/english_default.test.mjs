@@ -140,7 +140,8 @@ const CLASSIFIER_LITERALS = {
     'n[ãa]o|nunca|sem|evite', 'por\\\\s+exemplo', 'p[áa]gina|documento|aba|navegador', 'heading|t[íi]tulo', 'acess[íi]vel',
     'três', 'bot[ãa]o|bot[õo]es', 'cards?|events?|items?|products?', 'cart[õo]es|cart[ãa]o', 'opcional(?:mente)?|talvez',
     ...'áÁàÀâÂãÃçÇéÉêÊíÍóÓôÔõÕúÚ'],
-  'pixel-agent/plugin/tool-loop-guard.mjs': ['nao\\s+(?:precisa|precisamos', '(?:publicar|republicar|mostrar'],
+  'pixel-agent/plugin/tool-loop-guard.mjs': ['nao\\s+(?:precisa|precisamos', '(?:publicar|republicar|mostrar',
+    'read|search|find|check|list|summari[sz]e|what|show|consult[ae]|busqu[ae]|leia|ler|liste|resuma|quais|qual|mostre|verifique|confira|veja|cheque|procure|encontre|pesquise'],
   'dashboard-api/pixel_agent_teams.py': ['revis[aã]o independente'],
 };
 const classifierEntry = (file, text) => (CLASSIFIER_LITERALS[file] ?? [])
