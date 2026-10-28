@@ -1,8 +1,8 @@
 """Google sign-in for a connected app, built by the custodian in the access coordinator.
 
-Each owner brings their own Google project, as Pixel's Source Broker expects: a
-"Desktop app" OAuth client whose JSON file they download from Google Cloud. The
-custodian builds the consent address with PKCE (S256) and a single-use state, and
+The custodian selects a protected deployment Desktop application for ordinary
+sign-in, or an owner-provided Desktop client through the Advanced fallback. It
+builds the consent address with PKCE (S256) and a single-use state, and
 writes the PKCE verifier only into the broker's private sign-in handoff, so the
 code Google returns is useless to anyone else. Google's endpoints are fixed.
 Nothing here touches the network or the file system.
@@ -88,7 +88,7 @@ def state_hash(state: str) -> str:
 
 
 def new_flow(*, google_client: dict[str, str], scopes: list[str], redirect_port: int, now: datetime,
-             login_hint: str | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
+             login_hint: str | None = None, select_account: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
     """A fresh consent flow: the broker's private handoff and what the owner's browser may see.
 
     The handoff holds the PKCE verifier and client secret and goes only to the broker.
@@ -98,6 +98,8 @@ def new_flow(*, google_client: dict[str, str], scopes: list[str], redirect_port:
         raise OAuthError("invalid-redirect")
     if login_hint is not None and (not isinstance(login_hint, str) or not EMAIL.fullmatch(login_hint)):
         raise OAuthError("invalid-account-hint")
+    if type(select_account) is not bool:
+        raise OAuthError('invalid-account-selection')
     if not scopes or len(set(scopes)) != len(scopes):
         raise OAuthError("invalid-scopes")
     flow_id = secrets.token_hex(16)
@@ -115,7 +117,8 @@ def new_flow(*, google_client: dict[str, str], scopes: list[str], redirect_port:
     query = {
         "client_id": google_client["clientId"], "redirect_uri": redirect_uri, "response_type": "code",
         "scope": " ".join(scopes), "state": state, "code_challenge": _challenge(verifier),
-        "code_challenge_method": "S256", "access_type": "offline", "prompt": "consent",
+        "code_challenge_method": "S256", "access_type": "offline",
+        "prompt": "select_account consent" if select_account else "consent",
         "include_granted_scopes": "true",
     }
     if login_hint:

@@ -293,7 +293,7 @@ def test_current_installer_connection_package_passes_real_uninstall_validator(un
     assert result.stdout.strip() == 'present'
 
 
-@pytest.mark.parametrize('module', ['native_apps.py', 'native_enrollment.py'])
+@pytest.mark.parametrize('module', ['native_apps.py', 'native_enrollment.py', 'google_app.py'])
 @pytest.mark.parametrize('change', ['valid', 'writable', 'owner', 'symlink'])
 def test_root_server_checks_native_module_custody_before_import(uninstall_candidate, monkeypatch, module, change):
     program, _install, _state, _verify = uninstall_candidate

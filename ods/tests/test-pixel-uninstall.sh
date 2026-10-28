@@ -463,6 +463,7 @@ write_access_fixture() {
         "bin/pixel_connections/native_mcp.py"
         "bin/pixel_connections/native_apps.py"
         "bin/pixel_connections/native_enrollment.py"
+        "bin/pixel_connections/google_app.py"
     )
     for relative in "${access_sources[@]}"; do
         source="$ROOT_DIR/$relative"

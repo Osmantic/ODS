@@ -141,7 +141,9 @@ jobs:
             extensions/services/pixel-agent/tests/test_connection_native_guard.py \
             extensions/services/pixel-agent/tests/test_native_enrollment.py \
             extensions/services/pixel-agent/tests/test_connection_custody.py \
-            extensions/services/pixel-agent/tests/test_connection_first_login.py
+            extensions/services/pixel-agent/tests/test_connection_first_login.py \
+            tests/test_pixel_google_app.py \
+            extensions/services/pixel-agent/tests/test_connection_managed_google.py
 
       - name: Test preview publication directory failures
         run: |

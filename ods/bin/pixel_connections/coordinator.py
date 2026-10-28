@@ -25,7 +25,7 @@ from pixel_access_bridge import AccessError, atomic_json, digest, remaining, run
 from pixel_model_coordinator import _managed_marker, _marker_digest
 from pixel_settings.coordinator import _identity, _read, _valid_identity
 
-from . import activity, approvals, catalog, custody, drafts, lifecycle, oauth, planner, plugins, state
+from . import activity, approvals, catalog, custody, drafts, google_app, lifecycle, oauth, planner, plugins, state
 
 LIFECYCLE = lifecycle.PATH.name
 PATHS = custody.Paths()
@@ -246,20 +246,30 @@ def _capabilities(value: Any) -> dict[str, bool]:
 
 
 def _begin_request(request: Any) -> dict[str, Any]:
-    keys = {"connector", "client", "capabilities", "cloudModels", "ownerTimeZone", "loginHint", "redirectPort"}
-    if not isinstance(request, dict) or set(request) != keys or request["connector"] != "google":
+    keys = {"connector", "capabilities", "cloudModels", "ownerTimeZone", "loginHint", "redirectPort"}
+    if not isinstance(request, dict):
         raise AccessError("invalid-connection-request")
-    try:
-        google_client = oauth.client(request["client"])
-    except oauth.OAuthError as error:
-        raise AccessError(error.code) from None
+    # Older clients submit their own Desktop client without a mode. Preserve
+    # that exact Advanced contract during the UI migration, never infer it as
+    # the ODS-managed application or use it as a managed-flow fallback.
+    mode = request.get('authMode', 'advanced')
+    expected = keys | ({'authMode'} if 'authMode' in request else set()) | ({'client'} if mode == 'advanced' else set())
+    if (mode not in ('managed', 'advanced') or set(request) != expected or request['connector'] != 'google'
+            or mode == 'managed' and 'authMode' not in request):
+        raise AccessError("invalid-connection-request")
+    parsed = dict(request, authMode=mode)
+    if mode == 'advanced':
+        try:
+            parsed['client'] = oauth.client(request['client'])
+        except oauth.OAuthError as error:
+            raise AccessError(error.code) from None
     zone, hint, port = request["ownerTimeZone"], request["loginHint"], request["redirectPort"]
     if (type(request["cloudModels"]) is not bool
             or zone is not None and not state.valid_time_zone(zone)
             or hint is not None and (type(hint) is not str or not oauth.EMAIL.fullmatch(hint))
             or type(port) is not int or not 1024 <= port <= 65535):
         raise AccessError("invalid-connection-request")
-    return dict(request, client=google_client, capabilities=_capabilities(request["capabilities"]))
+    return dict(parsed, capabilities=_capabilities(request["capabilities"]))
 
 
 def _granted(requested: dict[str, bool], scopes: list[str]) -> dict[str, bool]:
@@ -286,6 +296,15 @@ def begin(bridge, request: Any) -> dict[str, Any]:
     with bridge.bounded(60), bridge.locked():
         bridge.discover()
         _guard_native_enrollment(bridge)
+        if request['authMode'] == 'managed':
+            # Resolve under Root's lock BEFORE discarding old consent or
+            # provisioning services. The browser cannot select this file or
+            # supply the application's credentials. Unconfigured is a release
+            # setup issue, never a reason to adopt someone's personal client.
+            try:
+                request = dict(request, client=google_app.load())
+            except google_app.ManagedAppError as error:
+                raise AccessError(error.code) from None
         # Only one sign-in is ever open, so every earlier handoff goes, journaled or not.
         custody.discard_flows(PATHS)
         _clear_lifecycle(bridge)
@@ -293,7 +312,8 @@ def begin(bridge, request: Any) -> dict[str, Any]:
         scopes = [*oauth.IDENTITY_SCOPES, *catalog.scopes_for("google", request["capabilities"])]
         try:
             handoff, public = oauth.new_flow(google_client=request["client"], scopes=scopes, now=_now(),
-                                             redirect_port=request["redirectPort"], login_hint=request["loginHint"])
+                                             redirect_port=request["redirectPort"], login_hint=request["loginHint"],
+                                             select_account=request['authMode'] == 'managed')
         except oauth.OAuthError as error:
             raise AccessError(error.code) from None
         custody.write_handoff(PATHS, f"{public['flowId']}.flow.json", handoff)

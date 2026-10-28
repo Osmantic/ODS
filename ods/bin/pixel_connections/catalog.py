@@ -9,6 +9,8 @@ from __future__ import annotations
 import copy
 from typing import Any
 
+from . import google_app
+
 CALENDAR_READ_SCOPE = "https://www.googleapis.com/auth/calendar.events.readonly"
 CALENDAR_WRITE_SCOPE = "https://www.googleapis.com/auth/calendar.events"
 GMAIL_READ_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
@@ -65,9 +67,19 @@ def connector(connector_id: str) -> dict[str, Any]:
     raise KeyError(connector_id)
 
 
-def public_catalog() -> list[dict[str, Any]]:
-    """A copy for Settings; callers can never change the shipped catalog."""
-    return copy.deepcopy(list(CONNECTORS))
+def public_catalog(*, google_auth=None) -> list[dict[str, Any]]:
+    """A credential-free copy, optionally joined to Root's managed app status.
+
+    The current public transport keeps its legacy shape until it explicitly
+    carries Root's new status. The complete ordinary-user journey must supply
+    that status, so it can offer managed sign-in without asking for client JSON.
+    This projection never reads a client file under the browser/host identity.
+    """
+    result = copy.deepcopy(list(CONNECTORS))
+    if google_auth is not None:
+        auth = google_app.validate_public(google_auth)
+        result[0]['auth'].update(auth, client='ods-managed-desktop-app')
+    return result
 
 
 def scopes_for(connector_id: str, capabilities: dict[str, bool]) -> list[str]:

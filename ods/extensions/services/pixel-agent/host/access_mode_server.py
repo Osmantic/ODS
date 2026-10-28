@@ -43,7 +43,7 @@ if platform.system() == "Linux":
     # Connected apps use the systemd Source Broker, so only Linux and WSL ship them.
     for name in ("__init__.py", "state.py", "status.py", "catalog.py", "oauth.py", "custody.py",
                  "planner.py", "coordinator.py", "lifecycle.py", "approvals.py", "activity.py", "drafts.py", "plugins.py",
-                 "native_mcp.py", "native_apps.py", "native_enrollment.py"):
+                 "native_mcp.py", "native_apps.py", "native_enrollment.py", "google_app.py"):
         protected(PROGRAM / "pixel_connections" / name)
     protected(PROGRAM / "connection_transaction.py")
     protected(PROGRAM / "native_mcp_owner.py")

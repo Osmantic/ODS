@@ -66,6 +66,15 @@ mark them merged or replace their review.
 
 ## Qualification boundaries
 
+The ordinary Google connection must become **Connect Google → choose account →
+authorize**, without a per-user Cloud project or client JSON. Root now supports
+a protected deployment application and a credential-free configuration status;
+owner-provided clients remain an explicit Advanced compatibility path. Public
+host/API/Settings wiring, official registration/verification and reviewed release
+provisioning are still required. The personal client used for local acceptance
+is not the official ODS application and must not be distributed as one. See
+[the managed Google contract](PORTAL-GOOGLE-APP.md).
+
 Local disposable WSL/Linux environments exercised the pinned ODS OpenClaw,
 real plugin loading and tools, the owner worker, Root transactions, native
 cron, Docker Edge, WSL Unix sockets, ingress and saved conversation delivery.
