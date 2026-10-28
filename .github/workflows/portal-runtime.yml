@@ -148,7 +148,7 @@ jobs:
         shell: bash
         env:
           OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
-        run: node --test ods/extensions/services/pixel-agent/tests/runtime_exec_completion.integration.mjs
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_exec_completion.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_exec_guidance_history.integration.mjs
       - name: Verify every Pixel chat reaches the real provider with one system prompt
         if: runner.os != 'Windows'
         shell: bash

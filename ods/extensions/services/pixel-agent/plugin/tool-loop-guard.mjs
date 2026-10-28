@@ -40,6 +40,7 @@ import { STOP_SYNTHESIS_LIMITS, STOP_SYNTHESIS_NOTE, synthesisAnswer, synthesisR
 import { createRunDeadline, runDeadlineReached, runDeadlineStopText, takeRunDeadlineNotice } from "./run-deadline.mjs";
 import { outputLimitContext, outputLimitCut, outputLimitNotice, outputLimitStopText } from "./output-limit.mjs";
 import { OWNER_VISIBLE_REPLY_INSTRUCTION, OWNER_VISIBLE_REPLY_REASON, ownerInteractiveTurn, silentReplyText } from "./owner-visible-reply.mjs";
+import { leakedExecGuidance, execGuidanceRevisionInstruction, EXEC_GUIDANCE_LEAK_REASON, EXEC_GUIDANCE_LEAK_DELIVERY } from "./exec-guidance-provenance.mjs";
 import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir, sandboxHostWorkspaceFailure, malformedRelativeWorkspacePath } from "./workspace-path-contract.mjs";
 import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
 import { createExampleGuard, EXAMPLE_NOTES, exampleNotice, mentionsExample, namesExample } from "./example-guard.mjs";
@@ -8710,6 +8711,7 @@ export function createToolLoopGuard({
       blockReason: "Pixel could not recover the owner's request for this subagent continuation. Start a fresh owner message; child results cannot authorize tools.",
     };
     if (state?.ownerNoTools) return {block:true, blockReason:OWNER_NO_TOOLS_REASON};
+    if (state?.execGuidanceLeakRetried) return {block:true, blockReason:"Correct the answer from existing output without calling tools or repeating completed work."};
     // After compaction the pixels may have left the context; re-reading is then legitimate.
     if (state?.attachedPictureIds && !state.compactionSeen && namesAttachedPicture(event?.params, state.attachedPictureIds)) {
       return {block:true, blockReason:ATTACHED_PICTURE_IN_CONTEXT_REASON};
@@ -10812,6 +10814,9 @@ export function createToolLoopGuard({
         // A broker response reserved by the ended attempt must not attach to
         // its successor. Each admitted call has its own private scope object.
         state.artifactReservations = new WeakSet();
+        state.execGuidanceLeakRetried = false;
+        state.execGuidanceLeakPending = false;
+        state.execGuidanceReceipts = new Map();
       }
       // Page receipts cross turns only within this trusted owner chat. The
       // assurance object freezes the first owner intent and receipt selection.
@@ -13408,8 +13413,14 @@ export function createToolLoopGuard({
       }
     }
     if (executionGuidance && !pending.pythonSyntaxGuidance && !content.some(block =>
-        block?.type === 'text' && /\[ODS Pixel execution\]/.test(block.text)))
+        block?.type === 'text' && /\[ODS Pixel execution\]/.test(block.text))) {
+      if (pending.transport === 'exec') {
+        state.execGuidanceReceipts ??= new Map();
+        state.execGuidanceReceipts.set(toolCallId,{toolCallId,note:executionGuidance,
+          output:messageContentText(syntaxReceipt.content)});
+      }
       content.push({type:'text',text:executionGuidance});
+    }
     if (redirectOrderNote && !content.some(block => block?.type === 'text' && block.text === redirectOrderNote))
       content.push({type:'text',text:redirectOrderNote});
     if (unittestRecoveryInstruction && !content.some(block => block?.type === 'text' && block.text === unittestRecoveryInstruction))
@@ -13885,6 +13896,29 @@ export function createToolLoopGuard({
       state.silentOwnerReplyRetried = true;
       return {action: 'revise', reason: OWNER_VISIBLE_REPLY_REASON, retry: {
         instruction: OWNER_VISIBLE_REPLY_INSTRUCTION, idempotencyKey: 'ods-owner-visible-reply', maxAttempts: 1}};
+    }
+    // Rehydrated exec history preserves the host-added text block, but loses
+    // result details. Bind the correction to the same owner/run and the exact
+    // paired native result. Arm delivery failure before requesting revision:
+    // the runtime can refuse revision after side effects or ignore it.
+    if (state?.ownerIntentObserved && !state.managedTeamWorker &&
+        !state.artifactIdentityConflict && !state.artifactNoninteractiveObserved &&
+        ownerInteractiveTurn(context, agentId) && !state.odsAborted &&
+        !state.runDeadlineReached && typeof state.finalReplyText === 'string' &&
+        [context, event].every(value =>
+          (!value?.runId || value.runId === runId) &&
+          (!value?.sessionId || value.sessionId === state.currentSessionId) &&
+          (!value?.sessionKey || value.sessionKey === state.currentSessionKey))) {
+      const leak = leakedExecGuidance(state.finalReplyText, event?.messages, state.ownerRequestText ?? '',
+        [...(state.execGuidanceReceipts?.values() ?? [])]);
+      state.execGuidanceLeakPending = Boolean(leak);
+      if (leak && !state.execGuidanceLeakRetried) {
+        state.execGuidanceLeakRetried = true;
+        return {action:'revise', reason:EXEC_GUIDANCE_LEAK_REASON, retry:{
+          instruction:execGuidanceRevisionInstruction(leak),
+          idempotencyKey:'pixel-ods-exec-guidance-leak', maxAttempts:1}};
+      }
+      if (leak) return {action:'finalize', reason:EXEC_GUIDANCE_LEAK_REASON};
     }
     const extensionStopped = state?.progressBudget.laneExhausted('extension');
     const workspaceStopped = state?.progressBudget.laneExhausted('workspace');
@@ -14485,6 +14519,9 @@ export function createToolLoopGuard({
       return {status:'failed', text:'ODS did not observe a verified managed installation receipt for this GitHub extension request.'};
     }
     if (state?.ownerQuestions && !state.clientCancelled) return {status:'pending',text:questionsText(state.ownerQuestions),questions:state.ownerQuestions};
+    if (state?.execGuidanceLeakPending && !state.clientCancelled && !state.runDeadlineReached && !state.progressBudget.exhausted) {
+      return {status:'failed', text:EXEC_GUIDANCE_LEAK_DELIVERY};
+    }
     // Replaces the runtime's advice to raise agents.defaults.timeoutSeconds,
     // which ODS resets. Failure facts, such as a failed test, follow.
     if (state?.runDeadlineReached && !state.clientCancelled) {
