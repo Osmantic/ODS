@@ -4,6 +4,13 @@ Intermediate repair layer. Not wired into router/UI yet. Every public
 operation validates owner/binding/expiry before touching the pool, and
 every store call runs via asyncio.to_thread so SQLite never blocks the
 event loop.
+
+Cancellation model: every awaitable that must not be abandoned is wrapped
+by _settle(), which shields a tracked task and re-raises the saved
+cancellation only after the inner task has actually completed. Store
+mutations run through _store_change(), which executes the committed()
+callback inside the inner task before any cancellation can propagate, so
+durable outcomes are recorded even when the outer waiter is cancelled.
 """
 
 from __future__ import annotations
@@ -13,7 +20,8 @@ import contextlib
 import json
 import secrets
 import time
-from typing import Any, AsyncIterator
+from dataclasses import dataclass
+from typing import Any, AsyncIterator, Awaitable, Callable, Optional, TypeVar
 
 import aiohttp
 
@@ -39,6 +47,9 @@ from talk_store import StoreError, TalkStore
 _TERMINAL_OK = {"ok", "complete", "error", "interrupted"}
 _CAP_VERSION = "1"
 _RPC_TIMEOUT = 30.0
+_CLEANUP_TIMEOUT = 5.0
+
+T = TypeVar("T")
 
 
 class ConversationError(HermesBridgeError):
@@ -62,6 +73,57 @@ def _require_str(value: Any, name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ConversationError("invalid", "invalid " + name)
     return value
+
+
+async def _settle(awaitable: Awaitable[T]) -> T:
+    """Retain ownership until bounded work settles, then propagate cancellation.
+
+    SQLite has its own busy timeout. Network cleanup has explicit deadlines.
+    An outer timeout must not abandon a thread that can still commit later.
+    """
+    task = asyncio.ensure_future(awaitable)
+    cancelled = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            cancelled = exc
+        except BaseException:
+            break
+    try:
+        result = task.result()
+    except BaseException:
+        if cancelled is not None:
+            raise cancelled
+        raise
+    if cancelled is not None:
+        raise cancelled
+    return result
+
+
+async def _store_change(
+    fn: Callable[..., Any],
+    *args: Any,
+    committed: Optional[Callable[[Any], None]] = None,
+) -> Any:
+    """Run a blocking store call in a thread, recording its outcome.
+
+    The committed() callback runs inside the inner coroutine immediately
+    after the store call returns, before _settle can re-raise a saved
+    cancellation. This guarantees the caller observes the actual durable
+    outcome even if the outer waiter is cancelled.
+    """
+
+    async def inner() -> Any:
+        try:
+            result = await asyncio.to_thread(fn, *args)
+        except StoreError as exc:
+            raise _store_error(exc) from exc
+        if committed is not None:
+            committed(result)
+        return result
+
+    return await _settle(inner())
 
 
 async def _rpc(
@@ -198,22 +260,24 @@ def _validate_resume(result: dict, stored_id: str) -> None:
             raise ConversationError("busy", "Hermes session is not idle")
 
 
+@dataclass
+class _TurnState:
+    token: Optional[str] = None
+    submitted: bool = False
+    finished: bool = False
+    uncertain: bool = False
+
+
 class ConversationBridge:
     def __init__(self, store: TalkStore):
         self.store = store
 
     async def _get(self, owner: str, cid: str) -> dict:
-        try:
-            return await asyncio.to_thread(self.store.get, owner, cid)
-        except StoreError as exc:
-            raise _store_error(exc) from exc
+        return await _store_change(self.store.get, owner, cid)
 
     async def allocate(self, owner: str, expires_at: int) -> str:
         _require_str(owner, "owner")
-        try:
-            return await asyncio.to_thread(self.store.allocate, owner, expires_at)
-        except StoreError as exc:
-            raise _store_error(exc) from exc
+        return await _store_change(self.store.allocate, owner, expires_at)
 
     async def stream(
         self, owner: str, cid: str, text: str
@@ -232,8 +296,7 @@ class ConversationBridge:
             )
         conn = await _acquire_connection(key)
         async with conn.lock:
-            token = None
-            submitted = finished = uncertain = False
+            state = _TurnState()
             try:
                 await _require_capabilities(conn)
                 snapshot = await self._get(owner, cid)
@@ -248,7 +311,7 @@ class ConversationBridge:
                         "recovery",
                         "The previous operation has an unresolved outcome. It will not be repeated.",
                     )
-                token = await self._claim_turn(owner, cid)
+                await self._claim_turn(owner, cid, state)
                 try:
                     resume = await _rpc(
                         conn,
@@ -262,8 +325,7 @@ class ConversationBridge:
                     _validate_resume(resume, stored_id)
                 except ConversationError as exc:
                     if exc.code in ("busy", "recovery"):
-                        await self._mark_uncertain(owner, cid, token)
-                        uncertain = True
+                        await self._mark_uncertain(owner, cid, state)
                     raise
                 conn.session_id = resume["session_id"]
                 yield {
@@ -272,8 +334,7 @@ class ConversationBridge:
                     "conversation_id": cid,
                 }
 
-                await self._submit(owner, cid, token)
-                submitted = True
+                await self._submit(owner, cid, state)
                 async for event in _submit_on_connection(
                     conn, text, hermes_bridge._request_timeout()
                 ):
@@ -283,8 +344,7 @@ class ConversationBridge:
                                 "recovery",
                                 "The response ended with an unknown outcome.",
                             )
-                        await self._finish(owner, cid, token)
-                        finished = True
+                        await self._finish(owner, cid, state)
                         yield event
                         return
                     yield event
@@ -293,31 +353,59 @@ class ConversationBridge:
                     "The response ended before its outcome could be confirmed.",
                 )
             finally:
-                if token is not None and not finished and not uncertain:
-                    if submitted:
-                        await self._mark_uncertain(owner, cid, token)
-                    else:
-                        await self._release(owner, cid, token)
-                if not finished:
-                    if submitted:
-                        # Preserve the current Talk disconnect behavior: closing
-                        # a WS alone leaves Hermes work running. Stop only this
-                        # claimed turn, retaining its uncertain durable outcome.
-                        # Cleanup uses the already-authenticated pool binding;
-                        # cookie expiry during a turn must not strand its work.
-                        with contextlib.suppress(Exception):
-                            await deny_pending_approval(key)
-                        with contextlib.suppress(Exception):
-                            await interrupt_active_prompt(key)
-                    with contextlib.suppress(Exception):
-                        await _drop_connection(key, conn)
+                await self._cleanup(key, conn, owner, cid, state)
+
+    async def _cleanup(
+        self,
+        key: str,
+        conn: _HermesConnection,
+        owner: str,
+        cid: str,
+        state: _TurnState,
+    ) -> None:
+        """Settle durable state and best-effort remote cleanup.
+
+        Runs under _settle so repeated outer cancellations cannot abandon
+        the commit. Each network cleanup is bounded by _CLEANUP_TIMEOUT.
+        """
+
+        async def inner() -> None:
+            token = state.token
+            if token is not None and not state.finished and not state.uncertain:
+                if state.submitted:
+                    await self._mark_uncertain(owner, cid, state)
+                else:
+                    await self._release(owner, cid, token)
+            if not state.finished and state.submitted:
+                # Known-completed turns are never interrupted.
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(
+                        deny_pending_approval(key), _CLEANUP_TIMEOUT
+                    )
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(
+                        # This turn owns the durable claim and conn.lock. The
+                        # prompt transport may already be closed, but Hermes
+                        # can keep running after EOF. Use its separate control
+                        # channel to stop this runtime even in that case.
+                        hermes_bridge._interrupt_session_with_ack(conn.session_id),
+                        _CLEANUP_TIMEOUT,
+                    )
+            if not state.finished:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(
+                        _drop_connection(key, conn), _CLEANUP_TIMEOUT
+                    )
+
+        await _settle(inner())
 
     async def _create_session(
         self, conn: _HermesConnection, owner: str, cid: str
     ) -> str:
         # Caller holds conn.lock and has already verified manual-resume support.
-        token = await self._claim_create(owner, cid)
+        state = _TurnState()
         try:
+            await self._claim_create(owner, cid, state)
             result = await _rpc(conn, "session.create", {}, _RPC_TIMEOUT)
             runtime_id = _require_str(result.get("session_id"), "runtime session")
             stored = _require_str(result.get("stored_session_id"), "stored session")
@@ -325,52 +413,96 @@ class ConversationBridge:
                 raise ConversationError(
                     "protocol", "Hermes returned an invalid session"
                 )
-            try:
-                await asyncio.to_thread(
-                    self.store.finish_create, owner, cid, token, stored
-                )
-            except StoreError as exc:
-                raise _store_error(exc) from exc
+            await self._finish_create(owner, cid, state, stored)
             conn.session_id = runtime_id
             return stored
         except BaseException:
-            await self._mark_uncertain(owner, cid, token)
+            if state.token is not None and not state.finished:
+                await self._mark_uncertain(owner, cid, state)
             raise
 
-    async def _claim_create(self, owner: str, cid: str) -> str:
-        try:
-            return await asyncio.to_thread(self.store.claim_create, owner, cid)
-        except StoreError as exc:
-            raise _store_error(exc) from exc
+    async def _claim_create(self, owner: str, cid: str, state: _TurnState) -> None:
+        def committed(token: str) -> None:
+            state.token = token
 
-    async def _claim_turn(self, owner: str, cid: str) -> str:
-        try:
-            return await asyncio.to_thread(self.store.claim_turn, owner, cid)
-        except StoreError as exc:
-            raise _store_error(exc) from exc
+        await _store_change(
+            self.store.claim_create, owner, cid, committed=committed
+        )
 
-    async def _submit(self, owner: str, cid: str, token: str) -> None:
-        try:
-            await asyncio.to_thread(self.store.submit_turn, owner, cid, token)
-        except StoreError as exc:
-            raise _store_error(exc) from exc
+    async def _claim_turn(self, owner: str, cid: str, state: _TurnState) -> None:
+        def committed(token: str) -> None:
+            state.token = token
 
-    async def _finish(self, owner: str, cid: str, token: str) -> None:
-        try:
-            await asyncio.to_thread(self.store.finish_turn, owner, cid, token)
-        except StoreError as exc:
-            raise _store_error(exc) from exc
+        await _store_change(
+            self.store.claim_turn, owner, cid, committed=committed
+        )
+
+    async def _submit(self, owner: str, cid: str, state: _TurnState) -> None:
+        def committed(_result: Any) -> None:
+            state.submitted = True
+
+        await _store_change(
+            self.store.submit_turn,
+            owner,
+            cid,
+            state.token,
+            committed=committed,
+        )
+
+    async def _finish(self, owner: str, cid: str, state: _TurnState) -> None:
+        def committed(_result: Any) -> None:
+            state.finished = True
+
+        await _store_change(
+            self.store.finish_turn,
+            owner,
+            cid,
+            state.token,
+            committed=committed,
+        )
+
+    async def _finish_create(
+        self, owner: str, cid: str, state: _TurnState, stored: str
+    ) -> None:
+        def committed(_result: Any) -> None:
+            state.finished = True
+
+        await _store_change(
+            self.store.finish_create,
+            owner,
+            cid,
+            state.token,
+            stored,
+            committed=committed,
+        )
 
     async def _release(self, owner: str, cid: str, token: str) -> None:
         try:
-            await asyncio.to_thread(self.store.release_prepared_turn, owner, cid, token)
-        except StoreError:
+            await _store_change(
+                self.store.release_prepared_turn, owner, cid, token
+            )
+        except ConversationError:
             pass
 
-    async def _mark_uncertain(self, owner: str, cid: str, token: str) -> None:
+    async def _mark_uncertain(
+        self, owner: str, cid: str, state: _TurnState
+    ) -> None:
+        token = state.token
+        if token is None:
+            return
+
+        def committed(_result: Any) -> None:
+            state.uncertain = True
+
         try:
-            await asyncio.to_thread(self.store.mark_uncertain, owner, cid, token)
-        except StoreError:
+            await _store_change(
+                self.store.mark_uncertain,
+                owner,
+                cid,
+                token,
+                committed=committed,
+            )
+        except ConversationError:
             pass
 
     async def respond_approval(self, owner: str, cid: str, choice: str) -> bool:

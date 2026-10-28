@@ -1,6 +1,9 @@
 import asyncio
 import json
+import sqlite3
+import threading
 import time
+from contextlib import contextmanager
 
 import aiohttp
 import pytest
@@ -79,6 +82,7 @@ class FakeWS:
                 raise ConnectionResetError("boom")
             if self.mode == "eof_afterprompt":
                 self.prompt_sent.set()
+                self.closed = True
                 self.queue.put_nowait(
                     aiohttp.WSMessage(aiohttp.WSMsgType.CLOSE, None, None)
                 )
@@ -406,3 +410,158 @@ async def test_hang_caps_timeout(env):
     assert "session.create" not in _methods(env.requests)
     snap = env.store.get(env.owner, env.cid)
     assert snap["state"] == "new"
+
+
+def _block_transition(env, method):
+    """Hold a second SQLite writer only when the target transition begins.
+
+    The trace callback signals the real transaction's BEGIN IMMEDIATE while
+    another connection holds its lock. Earlier reads and claims run normally.
+    """
+    loop = asyncio.get_running_loop()
+    entered = asyncio.Event()
+    local = threading.local()
+    blockers = []
+    original = getattr(env.store, method)
+    original_txn = env.store._txn
+
+    @contextmanager
+    def transaction(conn):
+        if getattr(local, "target", False):
+            def trace(sql):
+                if sql == "BEGIN IMMEDIATE":
+                    loop.call_soon_threadsafe(entered.set)
+            conn.set_trace_callback(trace)
+        with original_txn(conn):
+            yield
+
+    def wrapped(*args):
+        blocker = sqlite3.connect(
+            str(env.store.path), isolation_level=None, check_same_thread=False
+        )
+        blocker.execute("BEGIN IMMEDIATE")
+        blockers.append(blocker)
+        local.target = True
+        try:
+            return original(*args)
+        finally:
+            local.target = False
+
+    def release():
+        for blocker in blockers:
+            blocker.rollback()
+
+    env.monkeypatch.setattr(env.store, "_txn", transaction)
+    env.monkeypatch.setattr(env.store, method, wrapped)
+    return entered, release, blockers
+
+
+async def _turn_without_nested_task(env):
+    return [event async for event in env.bridge.stream(env.owner, env.cid, "hi")]
+
+
+async def _event_loop_barrier():
+    event = asyncio.Event()
+    asyncio.get_running_loop().call_soon(event.set)
+    await event.wait()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "method,state,prompts,interrupts",
+    [
+        ("claim_create", "uncertain", 0, []),
+        ("finish_create", "ready", 0, []),
+        ("claim_turn", "ready", 0, []),
+        ("submit_turn", "uncertain", 0, ["rt-1"]),
+        ("finish_turn", "ready", 1, []),
+    ],
+)
+async def test_cancel_during_real_sqlite_transition(env, method, state, prompts, interrupts):
+    entered, release, blockers = _block_transition(env, method)
+    task = asyncio.create_task(_turn_without_nested_task(env))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        task.cancel()
+        await _event_loop_barrier()
+        # Cancellation cannot abandon a transaction that can still commit.
+        assert not task.done()
+        release()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 2)
+    finally:
+        release()
+        if not task.done():
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 2)
+        for blocker in blockers:
+            blocker.close()
+    assert env.store.get(env.owner, env.cid)["state"] == state
+    assert _methods(env.requests).count("prompt.submit") == prompts
+    assert env.interrupted == interrupts
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancel_does_not_abandon_cleanup(env):
+    env.state["mode"] = "hold_afterprompt"
+    entered, release, blockers = _block_transition(env, "mark_uncertain")
+    task = asyncio.create_task(_turn_without_nested_task(env))
+    try:
+        await asyncio.wait_for(env.prompt_sent.wait(), 2)
+        task.cancel()
+        await asyncio.wait_for(entered.wait(), 2)
+        for _ in range(3):
+            task.cancel()
+            await _event_loop_barrier()
+            assert not task.done()
+        release()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 2)
+    finally:
+        release()
+        if not task.done():
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 2)
+        for blocker in blockers:
+            blocker.close()
+    assert env.store.get(env.owner, env.cid)["state"] == "uncertain"
+    assert env.interrupted == ["rt-1"]
+    assert _methods(env.requests).count("prompt.submit") == 1
+
+
+@pytest.mark.asyncio
+async def test_settle_preserves_cancel_after_inner_failure():
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def inner():
+        entered.set()
+        await release.wait()
+        raise ValueError("inner failure")
+
+    task = asyncio.create_task(cb._settle(inner()))
+    await entered.wait()
+    task.cancel()
+    await _event_loop_barrier()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_closed_prompt_socket_still_interrupts_owned_native_turn(env):
+    env.state["mode"] = "eof_afterprompt"
+    with pytest.raises(hb.HermesBridgeError):
+        await _consume(env.bridge, env.owner, env.cid, "hi")
+    assert env.store.get(env.owner, env.cid)["state"] == "uncertain"
+    assert env.interrupted == ["rt-1"]
+    assert _methods(env.requests).count("prompt.submit") == 1
+
+
+@pytest.mark.asyncio
+async def test_completed_turn_preserves_warm_connection(env):
+    await _consume(env.bridge, env.owner, env.cid, "hi")
+    await _consume(env.bridge, env.owner, env.cid, "again")
+    assert len(env.opened) == 1
+    assert env.interrupted == []
