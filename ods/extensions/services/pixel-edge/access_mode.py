@@ -206,7 +206,6 @@ _PROPOSAL = re.compile(r'calendar-[0-9]{13}-[a-f0-9]{8}')
 _DRAFT = re.compile(r'gmail-draft-[0-9]{13}-[a-f0-9]{8}')
 _PLUGIN = re.compile(r'[a-z][a-z0-9-]{1,62}')
 _HEX = re.compile(r'[a-f0-9]{64}')
-_ATTENDEE = re.compile(r'[^\s@<>\x00-\x1f\x7f]+@[^\s@<>\x00-\x1f\x7f]+')
 _CONTROL = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
 _CHANGE_OUTCOMES = {'connection-approve': ('applied', 'rejected', 'not-applied', 'unconfirmed'),
                     'connection-reconcile': ('applied', 'rejected', 'not-applied', 'unconfirmed', 'waiting'),
@@ -214,10 +213,27 @@ _CHANGE_OUTCOMES = {'connection-approve': ('applied', 'rejected', 'not-applied',
                     'connection-undo': ('applied', 'rejected', 'not-applied', 'unconfirmed')}
 # Approving, checking and declining also take a Gmail draft; Undo takes only a calendar change.
 _DRAFT_OPERATIONS = ('connection-approve', 'connection-reconcile', 'connection-decline')
+_ACTION_TEXT_LIMIT = len('https://accounts.google.com/o/oauth2/auth?') + 4000
 
 
 def _text(value, pattern):
-    return type(value) is str and pattern.fullmatch(value) is not None
+    # The authorization URL is the largest scalar in this wire contract. Bound
+    # every regex input independently of callers; all patterns have finite
+    # repetitions, and the address grammar below does not use backtracking.
+    return (type(value) is str and len(value) <= _ACTION_TEXT_LIMIT
+            and pattern.fullmatch(value) is not None)
+
+
+def _attendee(value):
+    # Same mailbox grammar as before: one @, nonempty sides, no whitespace,
+    # angle brackets or controls. Split/check once rather than repeating a
+    # broad character class on each side of a separator.
+    if type(value) is not str or not 3 <= len(value) <= 320:
+        return False
+    local, separator, domain = value.partition('@')
+    return (bool(local and separator and domain) and '@' not in domain
+            and all(not character.isspace() and character not in '<>'
+                    and ord(character) > 31 and ord(character) != 127 for character in value))
 
 
 def _capability_flags(value):
@@ -238,7 +254,7 @@ def _calendar_change(value):
             and (value['allDay'] is None or type(value['allDay']) is bool) and _words(value['timeZone'], 100)
             and _words(value['location'], 1000) and _words(value['description'], 20000)
             and (attendees is None or type(attendees) is list and len(attendees) <= 100
-                 and all(_words(item, 320) and _text(item, _ATTENDEE) for item in attendees))
+                 and all(_attendee(item) for item in attendees))
             and value['sendUpdates'] in ('none', 'all'))
 
 
@@ -291,7 +307,7 @@ def _gmail_draft(value):
     reply = value.get('replyTo') if type(value) is dict else None
     return (type(value) is dict and set(value) == {'to', 'cc', 'subject', 'body', 'replyTo'}
             and type(to) is list and type(cc) is list and 1 <= len(to) and len(to) + len(cc) <= 50
-            and all(_words(item, 320) and _text(item, _ATTENDEE) for item in to + cc)
+            and all(_attendee(item) for item in to + cc)
             and type(value['subject']) is str and _words(value['subject'], 998)
             and '\n' not in value['subject'] and '\r' not in value['subject']
             and type(value['body']) is str and value['body'].strip() != '' and _words(value['body'], 100000)

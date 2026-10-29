@@ -240,8 +240,7 @@ _RESERVED_ASSISTANT_REPLIES = frozenset({
     "No response from OpenClaw.",
 })
 _SHORT_TEST_MESSAGE = re.compile(
-    r"^\s*(?:(?:just\s+)?test(?:ing)?(?:\s+[\w.-]+){0,4}|ping|hello|hi|hey)"
-    r"\s*[.!?]*\s*$",
+    r"(?:(?:just\s+)?test(?:ing)?(?:\s+[\w.-]+){0,4}|ping|hello|hi|hey)",
     re.IGNORECASE,
 )
 _SHORT_TEST_REPLY = (
@@ -448,9 +447,19 @@ def _latest_user_text(data: dict) -> str:
     return ""
 
 
+def _is_short_test_message(text: str) -> bool:
+    if len(text) > 160:
+        return False
+    # Consume the one contiguous punctuation suffix outside the grammar.
+    # Keeping it in the regex overlaps with dots inside a test word; spaces
+    # between punctuation blocks must still fail (for example "hi! !").
+    body = text.strip().rstrip(".!?").rstrip()
+    return _SHORT_TEST_MESSAGE.fullmatch(body) is not None
+
+
 def _empty_reply_fallback(data: dict) -> str:
     text = _latest_user_text(data)
-    if len(text) <= 160 and _SHORT_TEST_MESSAGE.fullmatch(text):
+    if len(text) <= 160 and _is_short_test_message(text):
         return _SHORT_TEST_REPLY
     return _EMPTY_REPLY
 
@@ -493,9 +502,10 @@ def _workspace_mutation_positions(text: str) -> set[int]:
     # A backslash escapes any character, a line break included, and an open
     # quote may end in one. Every quote can then match to the end of the
     # text, which keeps the scan linear (a failed match per quote made it
-    # quadratic in the length of the owner text).
+    # quadratic in the length of the owner text). Quote-line indentation
+    # excludes newlines so blank lines cannot rescan each later blank line.
     instructions = re.sub(
-        r"```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)|(?m:^\s*>[^\n]*)|"
+        r"```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)|(?m:^[^\S\n]*>[^\n]*)|"
         r"`[^`\n]*`|\"(?:\\[\s\S]|[^\"\\])*(?:\"|\\?\Z)|"
         r"(?<!\w)'(?:\\[\s\S]|[^'\\])*(?:'|\\?\Z)|"
         r"\u201c[^\u201d]*(?:\u201d|$)|(?<!\w)\u2018[^\u2019]*(?:\u2019|$)",
@@ -512,17 +522,28 @@ def _workspace_mutation_positions(text: str) -> set[int]:
         r"(?P<verb>" + _WORKSPACE_MUTATION_INTENT.pattern + r")", re.IGNORECASE,
     )
     positions = set()
-    for clause in re.finditer(
-        r"(?:^|[.!?;\n]|\b(?:but|however|instead|then)\b)\s*"
-        r"(?P<clause>.*?)(?=$|[.!?;\n]|\b(?:but|however|instead|then)\b)",
+    # Scan non-overlapping delimiters, then trim each disjoint span once.
+    # This avoids asking overlapping whitespace and clause quantifiers to
+    # divide the same owner-controlled run of tabs.
+    start = 0
+    for boundary in re.finditer(
+        r"[.!?;\n]|\b(?:but|however|instead|then)\b|$",
         instructions, re.IGNORECASE,
     ):
-        value = clause.group("clause")
+        # The previous leading-^ alternative treated a non-whitespace
+        # delimiter at offset zero as part of the first clause. Keep that
+        # classification and its verb offsets rather than broaden coaching.
+        if boundary.start() == 0 and boundary.end() > 0 and not instructions[0].isspace():
+            continue
+        raw = instructions[start:boundary.start()]
+        value = raw.lstrip()
+        clause_start = start + len(raw) - len(value)
         # A file mentioned in an earlier read-only clause does not turn a
         # later "write the answer" directive into a workspace mutation.
         if _WORKSPACE_MUTATION_SCOPE.search(value) and not negated.search(value):
-            positions.update(clause.start("clause") + match.start("verb")
+            positions.update(clause_start + match.start("verb")
                              for match in directive.finditer(value))
+        start = boundary.end()
     return positions
 
 

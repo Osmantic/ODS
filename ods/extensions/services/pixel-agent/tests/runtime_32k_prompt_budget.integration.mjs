@@ -83,7 +83,10 @@ test('32K owner follow-up continues once after compaction without replay or redu
   const plugin=path.join(root,'plugin');fs.mkdirSync(plugin);
   fs.writeFileSync(path.join(plugin,'package.json'),JSON.stringify({name:'ods-budget-fixture',version:'1.0.0',type:'module',openclaw:{extensions:['./index.mjs']}}));
   fs.writeFileSync(path.join(plugin,'openclaw.plugin.json'),JSON.stringify({id:'ods-budget-fixture',activation:{onStartup:true},configSchema:{type:'object',properties:{}}}));
-  fs.writeFileSync(path.join(plugin,'index.mjs'),`export default {id:'ods-budget-fixture',register(api){api.on('before_prompt_build',()=>(${JSON.stringify({systemPrompt:fixed,...contract})}));}};`);
+  // Keep prompt data separate from executable plugin source.
+  fs.writeFileSync(path.join(plugin,'prompt.json'),JSON.stringify({systemPrompt:fixed,...contract}));
+  fs.writeFileSync(path.join(plugin,'index.mjs'),`import {readFileSync} from 'node:fs';
+export default {id:'ods-budget-fixture',register(api){api.on('before_prompt_build',()=>JSON.parse(readFileSync(new URL('./prompt.json',import.meta.url),'utf8')));}};`);
   const config={agents:{defaults:{workspace,skipBootstrap:true,model:'fixture/model',contextTokens:32768,
     compaction:{reserveTokens:13108,reserveTokensFloor:0,keepRecentTokens:2048},heartbeat:{every:'0m'}},
     list:[{id:'pixel',default:true,workspace,agentDir}]},tools:{deny:['*']},
@@ -146,9 +149,9 @@ test('post-turn compaction cannot replace a real final reply with an orphaned To
   const plugin=path.join(directory,'plugin');fs.mkdirSync(plugin);
   fs.writeFileSync(path.join(plugin,'package.json'),JSON.stringify({name:'ods-projection-fixture',version:'1.0.0',type:'module',openclaw:{extensions:['./index.mjs']}}));
   fs.writeFileSync(path.join(plugin,'openclaw.plugin.json'),JSON.stringify({id:'ods-projection-fixture',activation:{onStartup:true},contracts:{tools:['fixture_read']},configSchema:{type:'object',properties:{}}}));
-  fs.writeFileSync(path.join(plugin,'index.mjs'),`import {appendFileSync} from 'node:fs';
+  fs.writeFileSync(path.join(plugin,'index.mjs'),String.raw`import {appendFileSync} from 'node:fs';
 export default {id:'ods-projection-fixture',register(api){api.registerTool({name:'fixture_read',description:'Read the controlled Cedar note.',parameters:{type:'object',properties:{key:{type:'string'}}},
-execute:async(_id,args)=>{appendFileSync(${JSON.stringify(effects)},JSON.stringify(args)+'\\n');return args.key==='cedar'?{content:[{type:'text',text:'Cedar fixture fact'}]}:{isError:true,content:[{type:'text',text:'Missing key. Describe the tool before retrying.'}]};}});}};`);
+execute:async(_id,args)=>{appendFileSync(new URL('../reads.jsonl',import.meta.url),JSON.stringify(args)+'\n');return args.key==='cedar'?{content:[{type:'text',text:'Cedar fixture fact'}]}:{isError:true,content:[{type:'text',text:'Missing key. Describe the tool before retrying.'}]};}});}};`);
   const config={agents:{defaults:{workspace,skipBootstrap:true,model:'fixture/model',contextTokens:32768,
     compaction:{reserveTokens:13108,reserveTokensFloor:0,keepRecentTokens:64},heartbeat:{every:'0m'}},
     list:[{id:'pixel',default:true,workspace,agentDir}]},

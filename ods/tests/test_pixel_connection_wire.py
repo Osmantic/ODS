@@ -306,12 +306,12 @@ BAD_REPLIES = (
     ("connection-drafts", {"drafts": [], "more": -1}),
     ("connection-plugin", {"outcome": "started"}), ("connection-plugin", {"outcome": "applied", "plugin": "x"}),
 )
-VALIDATORS = ("valid_connection_action", "public_connection_action", "_text", "_capability_flags", "_words",
+VALIDATORS = ("valid_connection_action", "public_connection_action", "_text", "_attendee", "_capability_flags", "_words",
               "_calendar_change", "_calendar_event", "_calendar_entry", "_calendar_moment", "_calendar_activity",
               "_suggestion", "_gmail_draft", "_draft_entry")
 CONSTANTS = ("_CONNECTION_OPERATIONS", "_CAPABILITY_IDS", "_FLOW", "_STATE", "_CODE", "_CLIENT_ID", "_CLIENT_SECRET",
              "_PROJECT", "_ACCOUNT", "_TIME_ZONE", "_SECOND", "_REASON", "_AUTH_URL", "_PROPOSAL", "_DRAFT", "_HEX",
-             "_ATTENDEE", "_CONTROL", "_CHANGE_OUTCOMES", "_DRAFT_OPERATIONS", "_PLUGIN")
+             "_ACTION_TEXT_LIMIT", "_CONTROL", "_CHANGE_OUTCOMES", "_DRAFT_OPERATIONS", "_PLUGIN")
 
 
 class ActionWireTests(unittest.TestCase):

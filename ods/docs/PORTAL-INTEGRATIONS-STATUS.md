@@ -59,6 +59,14 @@ Google/domain and integration decisions that remain with the maintainers.
   locked TypeBox and native SDK controls qualify that refusal and corrected call;
   valid omitted arguments keep their existing defaults. Prompt limits remain
   distinct from enforced permissions and per-call schema validation.
+- Hardened the shared Edge/relay wire validators with an explicit scalar bound
+  and structural address checks while preserving their accepted grammar and
+  exact source parity. Workspace intent classification scans disjoint clauses
+  and quote indentation without repeated whitespace rescans; short-message
+  classification retains its 160-character limit with separate punctuation
+  handling. The native budget fixture now loads JSON as data instead of
+  interpolating it into executable source. These changes retain permissions,
+  model budgets and existing dependency/source pins.
 - Added an internal reviewed Notion read contract, disabled preparation and
   protected app choices shared by the live owner transaction and installer.
   Actual Pixel qualification caught and corrected broad implicit MCP access
@@ -127,6 +135,12 @@ and retained the identical complete result. A UID-1000 Dashboard HTTP check
 also reported verified Full Access with readable owner-mode-0600 environment
 and no busy/pending transition. This is one installed model/cron observation,
 not a new browser/UI run, account-write approval or general answer guarantee.
+
+Security acceptance also checks GitHub Advanced Security's separate CodeQL
+result. Successful Actions workflows alone do not establish that result. The
+later Edge/relay hardening leaves the managed 4.3.41 Source bundle unchanged;
+current-head scan and installed follow-up evidence are recorded in
+[the consolidation PR](https://github.com/Osmantic/ODS/pull/8293).
 
 The ordinary Google connection is designed as **Connect Google → choose account
 → authorize**, without a per-user Cloud project or client JSON. Protected Root
