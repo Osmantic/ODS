@@ -2,9 +2,13 @@
 // ODS-Setup.exe -- Phase-Wise Native Windows Installer Wizard for ODS
 // ============================================================================
 // Compiles with built-in Windows .NET Framework csc.exe (zero external SDKs).
-// Drives installers/windows-desktop.ps1 across all 6 installation phases,
-// parsing "[ODS-PHASE] {json}" progress lines to render a modern dark-mode
-// Windows installer experience, and supports --dry-run-check for CI proof.
+// Drives installers/windows-desktop.ps1 across all 6 installation phases:
+//   Phase 1: Hardware & Tier Classification (GPU, RAM, Disk, Profile selection)
+//   Phase 2: Pinned Embeddable Python 3.12 Runtime
+//   Phase 3: Native llama.cpp GPU/CPU Qualification
+//   Phase 4: Resumable SHA-256 Verified GGUF Model Download from Hugging Face
+//   Phase 5: Owner-Preserving .env & Installed Apps Registration
+//   Phase 6: Native Service Startup & Desktop Shortcuts
 // ============================================================================
 
 using System;
@@ -12,6 +16,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Management;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -31,6 +36,7 @@ namespace OdsNativeSetup
                 "ods"
             );
             string gpuMode = "high_performance";
+            string installProfile = "recommended";
             bool dryRunCheck = false;
 
             for (int i = 0; i < args.Length; i++)
@@ -53,6 +59,10 @@ namespace OdsNativeSetup
                 {
                     gpuMode = a.Substring("--gpu-mode=".Length).Trim();
                 }
+                else if (a.StartsWith("--profile=", StringComparison.OrdinalIgnoreCase))
+                {
+                    installProfile = a.Substring("--profile=".Length).Trim();
+                }
             }
 
             if (dryRunCheck)
@@ -70,19 +80,26 @@ namespace OdsNativeSetup
 
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new SetupWizardForm(installDir, gpuMode));
+            Application.Run(new SetupWizardForm(installDir, gpuMode, installProfile));
             return 0;
         }
 
         internal static string ResolveInstallerScriptPath()
         {
             string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            string localApp = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             string[] candidates = new string[]
             {
                 Path.Combine(baseDir, "windows-desktop.ps1"),
-                Path.Combine(baseDir, "..", "windows-desktop.ps1"),
                 Path.Combine(baseDir, "..", "..", "installers", "windows-desktop.ps1"),
-                Path.Combine(baseDir, "..", "..", "..", "installers", "windows-desktop.ps1")
+                Path.Combine(baseDir, "..", "installers", "windows-desktop.ps1"),
+                Path.Combine(baseDir, "..", "windows-desktop.ps1"),
+                Path.Combine(baseDir, "..", "..", "..", "installers", "windows-desktop.ps1"),
+                Path.Combine(localApp, @"ODS\app\current\windows-desktop.ps1"),
+                @"D:\ODS\ods\dist\windows-desktop\windows-desktop.ps1",
+                @"D:\ODS\ods\installers\windows-desktop.ps1",
+                @"D:\ODS\dist\windows-desktop\windows-desktop.ps1",
+                @"D:\ODS\installers\windows-desktop.ps1"
             };
             foreach (string c in candidates)
             {
@@ -113,6 +130,19 @@ namespace OdsNativeSetup
         [DllImport("dwmapi.dll")]
         private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
 
+        private static readonly string[] PhaseNames = new string[]
+        {
+            "Phase 1: Hardware & Tier Classification",
+            "Phase 2: Pinned Embeddable Python 3.12 Runtime",
+            "Phase 3: Native llama.cpp GPU/CPU Qualification",
+            "Phase 4: Resumable Verified AI Model Download",
+            "Phase 5: Owner-Preserving .env & Installed Apps Registration",
+            "Phase 6: Native Service Startup & Desktop Shortcuts"
+        };
+
+        private readonly Label _hwSummaryLabel;
+        private readonly Label _hwTierLabel;
+        private readonly ComboBox _profileCombo;
         private readonly TextBox _installDirBox;
         private readonly ComboBox _gpuModeCombo;
         private readonly ProgressBar _progressBar;
@@ -124,20 +154,20 @@ namespace OdsNativeSetup
         private string _installDir;
         private bool _isInstalling;
 
-        public SetupWizardForm(string defaultInstallDir, string defaultGpuMode)
+        public SetupWizardForm(string defaultInstallDir, string defaultGpuMode, string defaultProfile)
         {
             _installDir = defaultInstallDir;
 
             Text = "ODS Windows Native Setup";
-            Size = new Size(680, 520);
-            MinimumSize = new Size(680, 520);
-            MaximumSize = new Size(680, 520);
+            Size = new Size(720, 620);
+            MinimumSize = new Size(720, 620);
+            MaximumSize = new Size(720, 620);
             StartPosition = FormStartPosition.CenterScreen;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             BackColor = Color.FromArgb(11, 15, 25);
             ForeColor = Color.FromArgb(241, 245, 249);
-            Font = new Font("Segoe UI", 9.5f, FontStyle.Regular);
+            Font = new Font("Segoe UI", 9.25f, FontStyle.Regular);
 
             try
             {
@@ -152,25 +182,80 @@ namespace OdsNativeSetup
                 Text = "Open Dev Society — Windows Native Desktop",
                 Font = new Font("Segoe UI Semibold", 15f, FontStyle.Bold),
                 ForeColor = Color.FromArgb(56, 189, 248),
-                Location = new Point(28, 22),
+                Location = new Point(28, 16),
                 AutoSize = true
             };
             Controls.Add(headerLabel);
 
             Label subHeaderLabel = new Label
             {
-                Text = "Zero Docker • Zero WSL • Direct GPU Acceleration (CUDA / Vulkan) • Full ODS Portal",
-                Font = new Font("Segoe UI", 9.25f, FontStyle.Regular),
+                Text = "Zero Docker • Zero WSL • Direct GPU Acceleration (CUDA / Vulkan) • Live Hugging Face Downloads",
+                Font = new Font("Segoe UI", 9f, FontStyle.Regular),
                 ForeColor = Color.FromArgb(148, 163, 184),
-                Location = new Point(30, 54),
+                Location = new Point(30, 46),
                 AutoSize = true
             };
             Controls.Add(subHeaderLabel);
 
+            // Hardware Telemetry & Tier Card
+            Panel hwCard = new Panel
+            {
+                Location = new Point(28, 74),
+                Size = new Size(650, 64),
+                BackColor = Color.FromArgb(19, 26, 42),
+                BorderStyle = BorderStyle.FixedSingle
+            };
+            Controls.Add(hwCard);
+
+            _hwSummaryLabel = new Label
+            {
+                Text = "Detecting system hardware telemetry...",
+                Location = new Point(14, 10),
+                AutoSize = true,
+                Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
+                ForeColor = Color.FromArgb(241, 245, 249)
+            };
+            hwCard.Controls.Add(_hwSummaryLabel);
+
+            _hwTierLabel = new Label
+            {
+                Text = "Analyzing hardware classification...",
+                Location = new Point(14, 34),
+                AutoSize = true,
+                Font = new Font("Segoe UI", 9f, FontStyle.Regular),
+                ForeColor = Color.FromArgb(52, 211, 153)
+            };
+            hwCard.Controls.Add(_hwTierLabel);
+
+            // Installation Profile / Tier selection
+            Label profileLabel = new Label
+            {
+                Text = "Installation Profile & Local AI Model:",
+                Location = new Point(28, 148),
+                AutoSize = true,
+                ForeColor = Color.FromArgb(203, 213, 225)
+            };
+            Controls.Add(profileLabel);
+
+            _profileCombo = new ComboBox
+            {
+                Location = new Point(28, 170),
+                Width = 650,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = Color.FromArgb(30, 41, 59),
+                ForeColor = Color.White
+            };
+            _profileCombo.Items.Add("Recommended (Core Stack) — Qwen 3.5 2B (Optimized for your hardware, ~1.3 GB download)");
+            _profileCombo.Items.Add("Full Stack (High Capability) — Qwen 3.5 9B (Higher Accuracy & Reasoning, ~5.5 GB download)");
+            _profileCombo.Items.Add("Minimal (Power Saving) — Qwen 3.5 2B (Ultra-lightweight CPU fallback, ~1.3 GB download)");
+            _profileCombo.SelectedIndex = (defaultProfile == "full") ? 1 : ((defaultProfile == "minimal") ? 2 : 0);
+            Controls.Add(_profileCombo);
+
+            // Installation Directory
             Label dirLabel = new Label
             {
                 Text = "Installation Directory:",
-                Location = new Point(30, 96),
+                Location = new Point(28, 206),
                 AutoSize = true,
                 ForeColor = Color.FromArgb(203, 213, 225)
             };
@@ -179,18 +264,19 @@ namespace OdsNativeSetup
             _installDirBox = new TextBox
             {
                 Text = _installDir,
-                Location = new Point(30, 120),
-                Width = 600,
+                Location = new Point(28, 228),
+                Width = 650,
                 BackColor = Color.FromArgb(30, 41, 59),
                 ForeColor = Color.White,
                 BorderStyle = BorderStyle.FixedSingle
             };
             Controls.Add(_installDirBox);
 
+            // Windows Graphics Preference
             Label gpuLabel = new Label
             {
-                Text = "Windows Graphics Preference (HKCU DirectX UserGpuPreferences):",
-                Location = new Point(30, 158),
+                Text = "Windows Graphics Preference (DirectX UserGpuPreferences):",
+                Location = new Point(28, 262),
                 AutoSize = true,
                 ForeColor = Color.FromArgb(203, 213, 225)
             };
@@ -198,34 +284,26 @@ namespace OdsNativeSetup
 
             _gpuModeCombo = new ComboBox
             {
-                Location = new Point(30, 182),
-                Width = 600,
+                Location = new Point(28, 284),
+                Width = 650,
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 BackColor = Color.FromArgb(30, 41, 59),
                 ForeColor = Color.White
             };
-            _gpuModeCombo.Items.Add("High Performance — Prefer Discrete GPU First (GpuPreference=2)");
+            _gpuModeCombo.Items.Add("High Performance — Prefer Dedicated GPU First (GpuPreference=2)");
             _gpuModeCombo.Items.Add("Power Saving — Prefer Integrated GPU / CPU (GpuPreference=1)");
             _gpuModeCombo.Items.Add("Let Windows Decide (GpuPreference=0)");
             _gpuModeCombo.SelectedIndex = defaultGpuMode == "power_saving" ? 1 : (defaultGpuMode == "let_windows_decide" ? 2 : 0);
             Controls.Add(_gpuModeCombo);
 
-            string[] phaseNames = new string[]
-            {
-                "Phase 1: Hardware & DirectX GPU Preference Discovery",
-                "Phase 2: Pinned Embeddable Python 3.12 Runtime",
-                "Phase 3: Native llama.cpp GPU/CPU Qualification",
-                "Phase 4: Resumable SHA-256 Verified GGUF Model",
-                "Phase 5: Owner-Preserving .env & Installed Apps Registration",
-                "Phase 6: Native Service Startup & Desktop Shortcuts"
-            };
-            _phaseChecks = new Label[phaseNames.Length];
-            for (int i = 0; i < phaseNames.Length; i++)
+            // Phase Checklist
+            _phaseChecks = new Label[PhaseNames.Length];
+            for (int i = 0; i < PhaseNames.Length; i++)
             {
                 _phaseChecks[i] = new Label
                 {
-                    Text = "○  " + phaseNames[i],
-                    Location = new Point(32, 225 + (i * 25)),
+                    Text = "○  " + PhaseNames[i],
+                    Location = new Point(32, 322 + (i * 24)),
                     AutoSize = true,
                     ForeColor = Color.FromArgb(148, 163, 184)
                 };
@@ -235,7 +313,7 @@ namespace OdsNativeSetup
             _phaseTitleLabel = new Label
             {
                 Text = "Ready to install ODS Windows Native Desktop.",
-                Location = new Point(30, 384),
+                Location = new Point(28, 476),
                 AutoSize = true,
                 Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
                 ForeColor = Color.FromArgb(226, 232, 240)
@@ -244,9 +322,9 @@ namespace OdsNativeSetup
 
             _phaseDetailLabel = new Label
             {
-                Text = "Click 'Install ODS Desktop' to begin phase-wise setup.",
-                Location = new Point(30, 406),
-                Width = 600,
+                Text = "Click 'Install ODS Desktop' to begin setup.",
+                Location = new Point(28, 498),
+                Width = 650,
                 Height = 20,
                 ForeColor = Color.FromArgb(148, 163, 184)
             };
@@ -254,9 +332,9 @@ namespace OdsNativeSetup
 
             _progressBar = new ProgressBar
             {
-                Location = new Point(30, 430),
-                Width = 420,
-                Height = 28,
+                Location = new Point(28, 524),
+                Width = 470,
+                Height = 32,
                 Minimum = 0,
                 Maximum = 100,
                 Value = 0
@@ -266,11 +344,12 @@ namespace OdsNativeSetup
             _installButton = new Button
             {
                 Text = "Install ODS Desktop",
-                Location = new Point(465, 428),
-                Size = new Size(165, 32),
+                Location = new Point(512, 523),
+                Size = new Size(166, 34),
                 BackColor = Color.FromArgb(14, 165, 233),
                 ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold)
             };
             _installButton.FlatAppearance.BorderSize = 0;
             _installButton.Click += OnInstallClick;
@@ -279,16 +358,98 @@ namespace OdsNativeSetup
             _launchButton = new Button
             {
                 Text = "Launch ODS",
-                Location = new Point(465, 428),
-                Size = new Size(165, 32),
+                Location = new Point(512, 523),
+                Size = new Size(166, 34),
                 BackColor = Color.FromArgb(16, 185, 129),
                 ForeColor = Color.White,
                 FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
                 Visible = false
             };
             _launchButton.FlatAppearance.BorderSize = 0;
             _launchButton.Click += OnLaunchClick;
             Controls.Add(_launchButton);
+
+            // Background hardware scan on launch
+            Thread hwThread = new Thread(DetectHardwareTelemetry)
+            {
+                IsBackground = true
+            };
+            hwThread.Start();
+        }
+
+        private void DetectHardwareTelemetry()
+        {
+            string gpuName = "CPU Only";
+            int vramMb = 0;
+            int ramGb = 16;
+            long diskFreeGb = 50;
+
+            try
+            {
+                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT Name, AdapterRAM FROM Win32_VideoController"))
+                {
+                    foreach (ManagementObject obj in searcher.Get())
+                    {
+                        string name = obj["Name"] != null ? obj["Name"].ToString() : "";
+                        long rawVram = 0;
+                        if (obj["AdapterRAM"] != null && long.TryParse(obj["AdapterRAM"].ToString(), out rawVram))
+                        {
+                            int mb = (int)Math.Round(rawVram / (1024.0 * 1024.0));
+                            if (name.IndexOf("nvidia", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                name.IndexOf("radeon", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                mb > vramMb)
+                            {
+                                gpuName = name;
+                                vramMb = mb;
+                            }
+                        }
+                    }
+                }
+
+                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT TotalPhysicalMemory FROM Win32_ComputerSystem"))
+                {
+                    foreach (ManagementObject obj in searcher.Get())
+                    {
+                        long rawRam = 0;
+                        if (obj["TotalPhysicalMemory"] != null && long.TryParse(obj["TotalPhysicalMemory"].ToString(), out rawRam))
+                        {
+                            ramGb = (int)Math.Round(rawRam / (1024.0 * 1024.0 * 1024.0));
+                        }
+                    }
+                }
+
+                string driveLetter = Path.GetPathRoot(_installDir);
+                if (string.IsNullOrEmpty(driveLetter)) driveLetter = "C:\\";
+                DriveInfo dInfo = new DriveInfo(driveLetter);
+                if (dInfo.IsReady)
+                {
+                    diskFreeGb = dInfo.AvailableFreeSpace / (1024L * 1024L * 1024L);
+                }
+            }
+            catch
+            {
+            }
+
+            string tierDesc;
+            if (vramMb >= 12000 || ramGb >= 48)
+            {
+                tierDesc = "Tier 2 / Pro (Qualified for Full Stack 9B model)";
+            }
+            else if (vramMb >= 4000)
+            {
+                tierDesc = "Tier 1 / Entry (Optimized for Recommended Core 2B model)";
+            }
+            else
+            {
+                tierDesc = "Tier 0 / Minimal (Optimized for Power-Saving 2B model)";
+            }
+
+            BeginInvoke((Action)(() =>
+            {
+                _hwSummaryLabel.Text = string.Format("Hardware: {0} ({1} MB VRAM) • {2} GB RAM • {3} GB Free", gpuName, vramMb, ramGb, diskFreeGb);
+                _hwTierLabel.Text = string.Format("Classification: {0}", tierDesc);
+            }));
         }
 
         protected override void OnHandleCreated(EventArgs e)
@@ -309,31 +470,50 @@ namespace OdsNativeSetup
             if (_isInstalling) return;
             _isInstalling = true;
             _installButton.Enabled = false;
+            _installButton.Text = "Installing...";
             _installDirBox.Enabled = false;
             _gpuModeCombo.Enabled = false;
+            _profileCombo.Enabled = false;
+
+            _phaseTitleLabel.Text = "Starting ODS Installation Engine...";
+            _phaseDetailLabel.Text = "Initializing hardware, Python runtime, and model provisioning...";
 
             _installDir = _installDirBox.Text.Trim();
             string mode = _gpuModeCombo.SelectedIndex == 1
                 ? "power_saving"
                 : (_gpuModeCombo.SelectedIndex == 2 ? "let_windows_decide" : "high_performance");
 
-            Thread worker = new Thread(() => RunInstallerProcess(_installDir, mode))
+            string profile = _profileCombo.SelectedIndex == 1
+                ? "full"
+                : (_profileCombo.SelectedIndex == 2 ? "minimal" : "recommended");
+
+            Thread worker = new Thread(() => RunInstallerProcess(_installDir, mode, profile))
             {
                 IsBackground = true
             };
             worker.Start();
         }
 
-        private void RunInstallerProcess(string installDir, string gpuMode)
+        private void RunInstallerProcess(string installDir, string gpuMode, string installProfile)
         {
             string scriptPath = Program.ResolveInstallerScriptPath();
             if (string.IsNullOrEmpty(scriptPath) || !File.Exists(scriptPath))
             {
                 BeginInvoke((Action)(() =>
                 {
+                    MessageBox.Show(
+                        "Could not locate windows-desktop.ps1.\n\nPlease ensure windows-desktop.ps1 is kept in the same folder as ODS-Setup.exe.",
+                        "ODS Setup Error",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Error
+                    );
                     _phaseTitleLabel.Text = "Installer script not found.";
-                    _phaseDetailLabel.Text = "Ensure installers\\windows-desktop.ps1 is present.";
+                    _phaseDetailLabel.Text = "windows-desktop.ps1 must be in the same folder as ODS-Setup.exe.";
+                    _installButton.Text = "Install ODS Desktop";
                     _installButton.Enabled = true;
+                    _installDirBox.Enabled = true;
+                    _gpuModeCombo.Enabled = true;
+                    _profileCombo.Enabled = true;
                     _isInstalling = false;
                 }));
                 return;
@@ -343,10 +523,11 @@ namespace OdsNativeSetup
             {
                 FileName = "powershell.exe",
                 Arguments = string.Format(
-                    "-NoProfile -ExecutionPolicy Bypass -File \"{0}\" -InstallDir \"{1}\" -DefaultGpuPreference {2}",
+                    "-NoProfile -ExecutionPolicy Bypass -File \"{0}\" -InstallDir \"{1}\" -DefaultGpuPreference {2} -InstallProfile {3}",
                     scriptPath,
                     installDir,
-                    gpuMode
+                    gpuMode,
+                    installProfile
                 ),
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
@@ -357,8 +538,20 @@ namespace OdsNativeSetup
 
             try
             {
-                using (Process proc = Process.Start(psi))
+                using (Process proc = new Process { StartInfo = psi })
                 {
+                    StringBuilder stderrSb = new StringBuilder();
+                    proc.ErrorDataReceived += (s, ev) =>
+                    {
+                        if (!string.IsNullOrEmpty(ev.Data))
+                        {
+                            stderrSb.AppendLine(ev.Data);
+                        }
+                    };
+
+                    proc.Start();
+                    proc.BeginErrorReadLine();
+
                     string line;
                     while ((line = proc.StandardOutput.ReadLine()) != null)
                     {
@@ -367,7 +560,19 @@ namespace OdsNativeSetup
                             string json = line.Substring("[ODS-PHASE]".Length).Trim();
                             HandlePhaseJson(json);
                         }
+                        else if (!string.IsNullOrWhiteSpace(line))
+                        {
+                            string clean = line.Trim();
+                            if (clean.Length > 0 && !clean.StartsWith("{", StringComparison.Ordinal))
+                            {
+                                BeginInvoke((Action)(() =>
+                                {
+                                    _phaseDetailLabel.Text = clean.Length > 85 ? clean.Substring(0, 82) + "..." : clean;
+                                }));
+                            }
+                        }
                     }
+
                     proc.WaitForExit();
                     int code = proc.ExitCode;
                     BeginInvoke((Action)(() =>
@@ -382,8 +587,15 @@ namespace OdsNativeSetup
                         }
                         else
                         {
+                            string err = stderrSb.ToString().Trim();
+                            if (string.IsNullOrEmpty(err)) err = "Exit code " + code;
                             _phaseTitleLabel.Text = "Installation encountered an error (exit " + code + ").";
+                            _phaseDetailLabel.Text = err.Length > 95 ? err.Substring(0, 92) + "..." : err;
+                            _installButton.Text = "Retry Install";
                             _installButton.Enabled = true;
+                            _installDirBox.Enabled = true;
+                            _gpuModeCombo.Enabled = true;
+                            _profileCombo.Enabled = true;
                             _isInstalling = false;
                         }
                     }));
@@ -394,7 +606,12 @@ namespace OdsNativeSetup
                 BeginInvoke((Action)(() =>
                 {
                     _phaseTitleLabel.Text = "Installation error: " + ex.Message;
+                    _phaseDetailLabel.Text = ex.ToString();
+                    _installButton.Text = "Retry Install";
                     _installButton.Enabled = true;
+                    _installDirBox.Enabled = true;
+                    _gpuModeCombo.Enabled = true;
+                    _profileCombo.Enabled = true;
                     _isInstalling = false;
                 }));
             }
@@ -423,9 +640,9 @@ namespace OdsNativeSetup
                     _phaseDetailLabel.Text = detail;
                 }
                 int idx = phase - 1;
-                if (idx >= 0 && idx < _phaseChecks.Length)
+                if (idx >= 0 && idx < PhaseNames.Length && idx < _phaseChecks.Length)
                 {
-                    string baseText = _phaseChecks[idx].Text.Substring(3);
+                    string baseText = PhaseNames[idx];
                     if (status == "completed")
                     {
                         _phaseChecks[idx].Text = "✔  " + baseText;
@@ -453,33 +670,37 @@ namespace OdsNativeSetup
 
         private static string ExtractString(string json, string key)
         {
-            Match m = Regex.Match(json, "\"" + key + "\"\\s*:\\s*\"((?:\\\\.|[^\"])*)\"");
+            Match m = Regex.Match(json, "\"" + key + "\"\\s*:\\s*\"([^\"]*)\"");
             if (m.Success)
             {
-                return m.Groups[1].Value.Replace("\\\"", "\"").Replace("\\\\", "\\");
+                return m.Groups[1].Value.Replace("\\\\", "\\").Replace("\\\"", "\"");
             }
             return "";
         }
 
         private void OnLaunchClick(object sender, EventArgs e)
         {
-            string odsExe = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "ODS", "app", "current", "ODS.exe"
-            );
-            if (!File.Exists(odsExe))
-            {
-                odsExe = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ODS.exe");
-            }
-            if (File.Exists(odsExe))
+            string appData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string exe = Path.Combine(appData, "ODS", "app", "current", "ODS.exe");
+            if (File.Exists(exe))
             {
                 Process.Start(new ProcessStartInfo
                 {
-                    FileName = odsExe,
+                    FileName = exe,
+                    WorkingDirectory = Path.GetDirectoryName(exe),
                     UseShellExecute = true
                 });
+                Close();
             }
-            Close();
+            else
+            {
+                MessageBox.Show(
+                    "Could not locate ODS.exe at:\n" + exe,
+                    "ODS Launch",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning
+                );
+            }
         }
     }
 }
