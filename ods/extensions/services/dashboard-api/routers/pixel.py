@@ -279,6 +279,56 @@ class ChatResultRequest(ChatCancelRequest):
 async def _chat_context_request(body: ChatCancelRequest, *, compact: bool = False):
     config = _pixel_config()
     if config is None:
+        if WINDOWS_DESKTOP_PROFILE:
+            from datetime import datetime, timezone
+            from native_llm import get_native_llm_status
+
+            status = await get_native_llm_status()
+            available = bool(status.get("available"))
+            ctx_len = max(1, int(status.get("contextLength") or 8192))
+            model_id = str(status.get("model") or "local-gguf")
+            now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            req_id = getattr(body, "request_id", None) if compact else None
+            return public_context(
+                {
+                    "schemaVersion": 1,
+                    "status": "ready" if available else "unavailable",
+                    "sessionRevision": f"win-native-{body.chat_id[:32]}",
+                    "context": (
+                        {
+                            "used": 0,
+                            "window": ctx_len,
+                            "measuredAt": now_iso,
+                        }
+                        if available
+                        else None
+                    ),
+                    "model": (
+                        {
+                            "id": model_id,
+                            "provider": "llama-server",
+                            "contextWindow": ctx_len,
+                            "imageInput": (
+                                "supported"
+                                if status.get("visionSupported")
+                                else "unsupported"
+                            ),
+                        }
+                        if available
+                        else None
+                    ),
+                    "compaction": {
+                        "status": "skipped" if compact else "idle",
+                        "count": 0,
+                        **({"requestId": req_id} if req_id else {}),
+                    },
+                    "history": {
+                        "status": "ready",
+                        "revision": None,
+                        "acknowledgedMessages": 0,
+                    },
+                }
+            )
         raise HTTPException(503, "Portal is not enabled")
     edge_url, key = config
     payload = {"user": body.chat_id}
@@ -444,6 +494,21 @@ async def pixel_access_status():
     try:
         return _access_projection(await request_agent_json("GET", "/v1/pixel/access-mode", timeout=30.0))
     except AgentClientError:
+        if WINDOWS_DESKTOP_PROFILE:
+            return _access_projection(
+                {
+                    "available": True,
+                    "surface": "windows",
+                    "configured_mode": "sandboxed",
+                    "effective_mode": "sandboxed",
+                    "runtime_verified": True,
+                    "revision": "0" * 64,
+                    "busy": False,
+                    "pending": False,
+                    "reason": None,
+                    "scope": "owner-host",
+                }
+            )
         raise HTTPException(status_code=503, detail="Portal access service is unavailable") from None
 
 
@@ -1008,6 +1073,8 @@ async def pixel_chat_cancel(body: ChatCancelRequest, owner: str = Depends(verify
     """
     config = _pixel_config()
     if config is None:
+        if WINDOWS_DESKTOP_PROFILE:
+            return {"aborted": True}
         raise HTTPException(status_code=503, detail="Portal is not enabled")
     edge_url, key = config
     if body.request_id is not None:
@@ -1133,6 +1200,8 @@ async def pixel_chat_activity(body: ChatCancelRequest, owner: str = Depends(veri
     """
     config = _pixel_config()
     if config is None:
+        if WINDOWS_DESKTOP_PROFILE:
+            return {"state": "terminal"}
         return {"state": "unknown"}
     edge_url, key = config
     conversation = (owner_namespace(owner), body.chat_id) if isinstance(owner, str) else None

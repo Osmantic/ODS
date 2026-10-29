@@ -210,8 +210,12 @@ def _annotate_model_lifecycle(payload: dict[str, Any], lifecycle: Optional[dict[
 
 def _configured_ods_mode() -> str:
     """Return the current persisted mode without treating process env as config."""
+    from config import WINDOWS_DESKTOP_PROFILE
     try:
-        return normalize_ods_mode(read_env_file_value("ODS_MODE", INSTALL_DIR, raise_on_error=True))
+        mode = normalize_ods_mode(read_env_file_value("ODS_MODE", INSTALL_DIR, raise_on_error=True))
+        if mode == "unknown" and WINDOWS_DESKTOP_PROFILE:
+            return "local"
+        return mode
     except PermissionError:
         # The private .env can belong to a different host UID than this API.
         # Ask its owner-side agent for only the persisted mode, never secrets
@@ -219,11 +223,11 @@ def _configured_ods_mode() -> str:
         try:
             snapshot = request_agent_json("GET", "/v1/model/config", timeout=5)
         except AgentClientError:
-            return "unknown"
+            return "local" if WINDOWS_DESKTOP_PROFILE else "unknown"
         mode = snapshot.get("configuredMode") if isinstance(snapshot, dict) else None
-        return mode if isinstance(mode, str) and mode in {"local", "cloud", "hybrid"} else "unknown"
+        return mode if isinstance(mode, str) and mode in {"local", "cloud", "hybrid"} else ("local" if WINDOWS_DESKTOP_PROFILE else "unknown")
     except (OSError, UnicodeError):
-        return "unknown"
+        return "local" if WINDOWS_DESKTOP_PROFILE else "unknown"
 
 
 def _model_activation_mode_denial(
@@ -341,9 +345,26 @@ def _read_model_records(
     return [record for record in records if isinstance(record, dict)]
 
 
+def _resolve_library_path() -> Path:
+    if _LIBRARY_PATH.is_file():
+        return _LIBRARY_PATH
+    candidates: list[Path] = []
+    config_dir = os.environ.get("ODS_CONFIG_DIR", "").strip()
+    if config_dir:
+        candidates.append(Path(config_dir) / "model-library.json")
+    repo_root = os.environ.get("ODS_REPO_ROOT", "").strip()
+    if repo_root:
+        candidates.append(Path(repo_root) / "config" / "model-library.json")
+    candidates.append(Path(__file__).resolve().parents[4] / "config" / "model-library.json")
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return _LIBRARY_PATH
+
+
 def _load_library() -> list[dict]:
     """Load the curated catalog plus separately persisted Hub imports."""
-    curated = _read_model_records(_LIBRARY_PATH, required=True)
+    curated = _read_model_records(_resolve_library_path(), required=True)
     imported = _read_model_records(_imported_library_path(), required=False)
     seen_ids = {str(model.get("id") or "") for model in curated}
     seen_files = {str(model.get("gguf_file") or "").lower() for model in curated}
@@ -2194,15 +2215,25 @@ async def list_models(api_key: str = Depends(verify_api_key)):
     if host_runtime:
         payload["modelManagement"] = await _catalog_model_management(
             management_prefetch, agent_status, loaded_model)
+    from config import WINDOWS_DESKTOP_PROFILE
     # A held transition does not establish which route currently serves chat.
     payload["activeRuntime"] = (
         None if payload.get("modelRecoveryPending") or (payload.get("modelLifecycle") or {}).get("active")
         else active_runtime_projection(agent_status)
     )
+    if WINDOWS_DESKTOP_PROFILE and payload.get("activeRuntime") is None and loaded_model:
+        payload["activeRuntime"] = {
+            "source": "windows-desktop",
+            "model": loaded_model,
+            "contextLength": int(context_size or 8192),
+        }
     payload["activationReadyModel"] = (
         payload.get("currentModel")
         if loaded_entry
-        and _activation_receipt_matches(payload.get("currentModel"), loaded_entry, loaded_model)
+        and (
+            WINDOWS_DESKTOP_PROFILE
+            or _activation_receipt_matches(payload.get("currentModel"), loaded_entry, loaded_model)
+        )
         else None
     )
     return payload

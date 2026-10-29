@@ -86,10 +86,17 @@ TEXT_EXTENSIONS = frozenset(
 
 def resolve_native_llm_endpoint() -> str:
     """Return the validated loopback URL for the native llama-server process."""
+    llama_port = (
+        os.environ.get("LLAMA_PORT", "").strip()
+        or config.read_live_env_value("LLAMA_PORT").strip()
+    )
+    default_url = f"http://127.0.0.1:{llama_port}" if llama_port.isdigit() else "http://127.0.0.1:8080"
     raw = (
         os.environ.get("ODS_NATIVE_LLM_URL", "").strip()
         or config.read_live_env_value("ODS_NATIVE_LLM_URL").strip()
-        or "http://127.0.0.1:8080"
+        or os.environ.get("ODS_LLAMA_ENDPOINT", "").strip()
+        or config.read_live_env_value("ODS_LLAMA_ENDPOINT").strip()
+        or default_url
     )
     parsed = urlparse(raw)
     if parsed.scheme != "http":
@@ -157,6 +164,9 @@ def get_native_models_directories() -> list[Path]:
         _add(Path(env_models_dir))
     if config.DATA_DIR:
         _add(Path(config.DATA_DIR) / "models")
+    if config.INSTALL_DIR:
+        _add(Path(config.INSTALL_DIR) / "models")
+        _add(Path(config.INSTALL_DIR) / "data" / "models")
     local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
     if local_app_data:
         _add(Path(local_app_data) / "ODS" / "models")
