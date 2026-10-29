@@ -200,6 +200,8 @@ function Invoke-ODSResumableModelDownload {
 
     New-Item -ItemType Directory -Force -Path $ModelsDir | Out-Null
     $target = Join-Path $ModelsDir $GgufFile
+    $activeCurlRunner = $CurlRunner
+    $activeProgressCallback = $ProgressCallback
 
     $check = Test-ODSVerifiedModelFile -ModelPath $target -ExpectedSha256 $ExpectedSha256 -ExpectedSize $ExpectedSize
     if ($check.Verified) {
@@ -235,10 +237,10 @@ function Invoke-ODSResumableModelDownload {
             $curlArgs += @('--continue-at', '-')
         }
         $curlArgs += @('--output', $OutFile, $DownloadUrl)
-        if ($null -ne $CurlRunner) {
+        if ($null -ne $activeCurlRunner) {
             return (& $CurlRunner $curlArgs $OutFile $DownloadUrl)
         }
-        if ($null -ne $ProgressCallback) {
+        if ($null -ne $activeProgressCallback) {
             $psi = [Diagnostics.ProcessStartInfo]::new('curl.exe', ($curlArgs -join ' '))
             $psi.UseShellExecute = $false
             $psi.CreateNoWindow = $true
@@ -247,7 +249,7 @@ function Invoke-ODSResumableModelDownload {
                 if (Test-Path -LiteralPath $OutFile -PathType Leaf) {
                     try {
                         $curBytes = (Get-Item -LiteralPath $OutFile).Length
-                        & $ProgressCallback $curBytes $ExpectedSize
+                        & $activeProgressCallback $curBytes $ExpectedSize
                     } catch {}
                 }
                 Start-Sleep -Milliseconds 600
