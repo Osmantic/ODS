@@ -20,8 +20,12 @@ FIELDS = {
     'save': {'expectedRevision', 'settings', 'secrets'},
     'test-notification': set(),
     'discover': {'serverId'},
+    'test': {'serverId'},
+    'restart': {'serverId'},
     'decide': {'approvalId', 'decision'},
+    'clear-activity': set(),
 }
+SLOW = {'discover', 'test'}  # A local server may download itself on its first start.
 
 
 async def _body(request, action):
@@ -41,7 +45,7 @@ async def _relay(action=None, payload=None):
     path = PREFIX + ('/' + action if action else '')
     try:
         result = await request_agent_json('POST' if action else 'GET', path, payload=payload,
-                                          timeout=140 if action == 'discover' else 30)
+                                          timeout=140 if action in SLOW else 30)
     except AgentHTTPError as error:
         try:
             refusal = json.loads(error.response_text)

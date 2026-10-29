@@ -67,3 +67,23 @@ def test_an_absent_service_is_unavailable(client, agent):
     assert client.get('/api/pixel/integrations', headers=AUTH).status_code == 503
     agent.side_effect = AgentUnavailable('down')
     assert client.get('/api/pixel/integrations', headers=AUTH).status_code == 503
+
+
+def test_server_tests_restarts_and_clearing_activity_relay(client, agent):
+    agent.return_value = {'settings': {'revision': 3}, 'approvals': [], 'activity': [], 'notice': 'Echo answered with 1 tools.'}
+    assert client.post('/api/pixel/integrations/test', headers=AUTH, json={'serverId': 'echo'}).json()['notice'] == 'Echo answered with 1 tools.'
+    agent.assert_awaited_with('POST', '/v1/pixel/integrations/test', payload={'serverId': 'echo'}, timeout=140)
+    client.post('/api/pixel/integrations/restart', headers=AUTH, json={'serverId': 'echo'})
+    agent.assert_awaited_with('POST', '/v1/pixel/integrations/restart', payload={'serverId': 'echo'}, timeout=30)
+    client.post('/api/pixel/integrations/clear-activity', headers=AUTH, json={})
+    agent.assert_awaited_with('POST', '/v1/pixel/integrations/clear-activity', payload={}, timeout=30)
+    assert client.post('/api/pixel/integrations/restart', headers=AUTH, json={}).status_code == 400
+    assert client.post('/api/pixel/integrations/clear-activity', headers=AUTH, json={'all': True}).status_code == 400
+
+
+def test_macos_says_integrations_are_not_available_yet(client, agent):
+    refusal = json.dumps({'error': 'unsupported', 'message': "Portal integrations aren't available on macOS yet."})
+    agent.side_effect = AgentHTTPError(400, 'unsupported', refusal)
+    response = client.get('/api/pixel/integrations', headers=AUTH)
+    assert response.status_code == 400
+    assert response.json()['detail'] == "Portal integrations aren't available on macOS yet."

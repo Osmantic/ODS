@@ -8,11 +8,11 @@ import net from 'node:net';
 const SOCKET = '/run/ods-pixel-integrations/control.sock';
 const MAX_REPLY = 512 * 1024;
 const TIMEOUT_MS = 130000;
-const APPROVAL_TEXT = 'Waiting for the owner. Tell the owner this needs their approval in Settings → Portal integrations (they may also get a notification). After they approve, call this tool again with exactly the same arguments; do not change them.';
+const APPROVAL_TEXT = 'Waiting for the owner. Tell the owner this needs their approval in Settings → Portal integrations (they may also get a notification). After they approve, call this tool again with exactly the same arguments; do not change them. In a scheduled task, do not wait: say it needs approval and finish; once approved, the next run within 24 hours with the same arguments goes ahead.';
 
 export function submitIntegration(payload, {connect = net.createConnection, platform = process.platform, signal} = {}) {
   return new Promise((resolve, reject) => {
-    if (platform !== 'linux') return reject(new Error('Integrations are not available on this system yet.'));
+    if (platform !== 'linux') return reject(new Error(platform === 'darwin' ? "Portal integrations aren't available on macOS yet." : 'Portal integrations are not available on this system yet.'));
     const socket = connect({path: SOCKET});
     let buffer = Buffer.alloc(0), finished = false;
     const finish = (error, value) => {

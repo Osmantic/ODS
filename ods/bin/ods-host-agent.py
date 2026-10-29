@@ -8784,7 +8784,7 @@ def _start_enable_retry(handler, service_id: str, lock: threading.Lock) -> None:
 
 # The owner socket sits in the owner's state folder, which the gateway sandbox cannot see.
 PIXEL_INTEGRATIONS_SOCKET = str(Path.home() / ".config/ods/pixel-integrations/owner.sock")
-PIXEL_INTEGRATIONS_ACTIONS = ("save", "test-notification", "discover", "decide")
+PIXEL_INTEGRATIONS_ACTIONS = ("save", "test-notification", "discover", "test", "restart", "decide", "clear-activity")
 
 
 def _pixel_integrations_request(payload: dict) -> dict:
@@ -11301,6 +11301,9 @@ class AgentHandler(BaseHTTPRequestHandler):
         request and returns its answer, or its refusal with the sentence to show.
         """
         if not check_auth(self):
+            return
+        if sys.platform == "darwin":
+            json_response(self, 400, {"error": "unsupported", "message": "Portal integrations aren't available on macOS yet."}, no_store=True)
             return
         payload = {"action": action or "get"}
         if action is not None:

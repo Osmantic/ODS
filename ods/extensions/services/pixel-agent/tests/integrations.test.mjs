@@ -51,6 +51,7 @@ test('an action waiting for approval tells the model to stop and repeat the same
   const result = await tool(tools, 'pixel_ods_mcp').execute('1', {action: 'call', server: 'home', tool: 'unlock', arguments: {entity: 'lock.front'}});
   assert.equal(result.details.status, 'approval-required');
   assert.match(result.content[0].text, /approval in Settings → Portal integrations/);
+  assert.match(result.content[0].text, /scheduled task, do not wait/);
   assert.match(result.content[0].text, /exactly the same arguments/);
 });
 
@@ -89,7 +90,7 @@ test('the socket client sends one JSON line and reads one reply', async () => {
       platform: 'linux', connect: () => net.createConnection({path})});
     assert.deepEqual(reply, {ok: true, sent: true});
     assert.deepEqual(received, {schemaVersion: 1, action: 'notify', message: 'hi'});
-    await assert.rejects(submitIntegration({action: 'mcp-tools'}, {platform: 'darwin'}), /not available on this system/);
+    await assert.rejects(submitIntegration({action: 'mcp-tools'}, {platform: 'darwin'}), /aren't available on macOS yet/);
   } finally {
     server.close();
     rmSync(directory, {recursive: true, force: true});

@@ -35,8 +35,8 @@ owner requests from agent requests. A uid check could not do that.
   agent actions: search and read notes, write notes, notify, and list and call MCP
   tools.
 - **Owner socket:** `~/.config/ods/pixel-integrations/owner.sock`. It accepts
-  only owner actions: read settings, save, test notification, check tools, and
-  approve or decline. The gateway's `ProtectHome=tmpfs` hides this folder, so the
+  only owner actions: read settings, save, test notification, check tools, test a
+  server, restart a local server, approve or decline, and clear the activity list. The gateway's `ProtectHome=tmpfs` hides this folder, so the
   owner socket is out of its reach. The installer refuses to start the service if
   any gateway bind covers it.
 
@@ -55,8 +55,12 @@ annotations:
 - "Only adds things" (the server says `destructiveHint: false`);
 - "Can change or delete things" (the default for a tool that is not read-only, as in the MCP specification).
 
-Read-only tools start as Allowed. Every other tool starts as Ask first. If the
-server's address or command changes, its tools must be checked again.
+On the first check, read-only tools start as Allowed and every other tool starts as
+Ask first. A tool that appears on a later check starts as **Off** and is marked
+*New*, so a server cannot add an allowed tool behind the owner's back. **Test
+connection** connects without changing anything and says whether tools were added
+or removed since the last check. If the server's address or command changes, its
+tools must be checked again.
 
 An "ask first" action creates an approval in Settings, and an ntfy ping if that is
 turned on:
@@ -64,7 +68,39 @@ turned on:
 - The approval is bound to the exact server, tool and arguments, or the exact
   note, text and mode.
 - It can be used once and expires after 24 hours.
-- After the owner approves, Portal repeats the same call.
+- After the owner approves, Portal repeats the same call. A scheduled task does
+  not wait: it reports that the action needs approval, and its next run within 24
+  hours with the same arguments goes ahead.
+- The ping can carry an **Open approvals** button. It only opens the Settings
+  page, where the owner still signs in; the link grants nothing. Use an address
+  the phone can reach.
+
+## Local servers
+
+A server started as a local command runs as the owner, with the owner's files.
+Only the owner can add one. Settings says so next to the command.
+
+- It starts on first use and keeps running between calls, so a slow start (`npx`,
+  `uvx`) is paid once and a server that remembers things (a browser, a database)
+  works. It stops after 10 minutes without calls, when it is turned off or
+  removed, or with **Restart**; it then starts again on its next use.
+- It runs in its own process group. Stopping it stops everything it started.
+- A request that gets no answer within 30 seconds (90 for the first start) stops
+  the server; the next use starts it again. The service itself never waits longer.
+- The service has a minimal `PATH`. It also looks in `~/.local/bin`, `~/bin`,
+  `~/.npm-global/bin`, `~/.cargo/bin`, `/usr/local/bin`, `/snap/bin`, Homebrew and
+  the newest nvm Node. Otherwise give the full path, as `which npx` shows it.
+- Secret environment variables (such as `GITHUB_TOKEN`) are stored with the other
+  secrets and never shown back. The server gets only those, plus `HOME`, `USER`,
+  `LANG` and the `PATH` above, not the service's own environment.
+- An optional working folder; the default is the owner's home.
+- Its error output is kept. The owner sees the last lines in Settings when it
+  fails; the model only gets a short sentence.
+- Questions a server asks the client are answered so it never waits: `ping`,
+  `roots/list` (no roots), and "not supported" for anything else.
+- The service allows up to 2 GB of memory and 512 tasks for itself and its local
+  servers. Its sandbox blocks new namespaces, so a server that sandboxes a browser
+  itself may not start.
 
 Notes:
 
@@ -97,8 +133,13 @@ can read any folder the owner can.
 
 ## Limits
 
-- Linux only for now. macOS and native Windows return "not available on this
-  system yet".
+- Linux, including Windows through WSL2, which runs the same installer code. Not
+  yet tried on a real Windows machine.
+- Not on macOS yet: Settings and the tools say "Portal integrations aren't
+  available on macOS yet". Porting needs a launchd job for the service and a
+  matching rule that keeps its state folder out of the native gateway's sandbox.
+- Sign-in with OAuth is not supported; servers take a token.
+- The activity list keeps the latest 500 entries and can be cleared.
 - Notifications are plain text, up to 4,000 characters.
 - MCP results passed to the model are clipped to 8,000 characters.
 - Up to 20 MCP servers, and up to 200 tools per server.

@@ -35,8 +35,9 @@ RestrictSUIDSGID=true
 LockPersonality=true
 CapabilityBoundingSet=
 AmbientCapabilities=
-MemoryMax=1G
-TasksMax=128
+# Room for the owner's local MCP servers, which run as children of this service.
+MemoryMax=2G
+TasksMax=512
 
 [Install]
 WantedBy=multi-user.target

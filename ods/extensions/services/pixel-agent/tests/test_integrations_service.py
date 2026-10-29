@@ -28,6 +28,7 @@ TOOLS = [
 class FakeMcp(http.server.BaseHTTPRequestHandler):
     """A Streamable HTTP MCP server that answers with server-sent events."""
     calls = []
+    mode = "ok"
 
     def do_POST(self):
         message = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -45,8 +46,17 @@ class FakeMcp(http.server.BaseHTTPRequestHandler):
             result = {"tools": TOOLS}
         else:
             FakeMcp.calls.append(message["params"])
-            result = {"content": [{"type": "text", "text": f"done {message['params']['name']}"}]}
-        body = f"event: message\ndata: {json.dumps({'jsonrpc': '2.0', 'id': message['id'], 'result': result})}\n\n".encode()
+            if FakeMcp.mode in ("500", "404"):
+                self.send_response(int(FakeMcp.mode))
+                self.end_headers()
+                return
+            text = "x" * (300 * 1024) if FakeMcp.mode == "huge" else "y" * 20000 if FakeMcp.mode == "long" else f"done {message['params']['name']}"
+            content = [{"type": "text", "text": text}] + ([{"type": "image", "data": "AAAA"}] if FakeMcp.mode == "long" else [])
+            result = {"content": content}
+        reply = json.dumps({'jsonrpc': '2.0', 'id': message['id'], 'result': result})
+        # A progress notification and a keep-alive come first, as real servers send them.
+        body = (": keep-alive\n\nevent: message\ndata: {\"jsonrpc\": \"2.0\", \"method\": \"notifications/progress\"}\n\n"
+                f"event: message\ndata: {reply}\n\n").encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Mcp-Session-Id", "session-1")
@@ -59,6 +69,7 @@ class FakeMcp(http.server.BaseHTTPRequestHandler):
 
 class FakeNtfy(http.server.BaseHTTPRequestHandler):
     sent = []
+    headers = []
 
     def do_POST(self):
         body = self.rfile.read(int(self.headers["Content-Length"])).decode()
@@ -68,6 +79,7 @@ class FakeNtfy(http.server.BaseHTTPRequestHandler):
             return
         FakeNtfy.sent.append({"topic": self.path.strip("/"), "title": self.headers["Title"], "message": body,
                               "priority": self.headers["Priority"]})
+        FakeNtfy.headers.append({"click": self.headers.get("Click"), "actions": self.headers.get("Actions")})
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"{}")
@@ -112,12 +124,17 @@ class IntegrationsTests(unittest.TestCase):
         (self.vault / "Groceries.md").write_text("milk\neggs\n")
         self.store = Store(root / "state")
         self.service = service.Integrations(self.store)
+        self.addCleanup(lambda: [self.service.local.stop(server_id) for server_id in list(self.service.local.running)])
         self.mcp = serve_http(FakeMcp)
         self.ntfy = serve_http(FakeNtfy)
+        self.addCleanup(self.mcp.server_close)
         self.addCleanup(self.mcp.shutdown)
+        self.addCleanup(self.ntfy.server_close)
         self.addCleanup(self.ntfy.shutdown)
         FakeMcp.calls.clear()
+        FakeMcp.mode = "ok"
         FakeNtfy.sent.clear()
+        FakeNtfy.headers.clear()
         self.script = root / "server.py"
         self.script.write_text(STDIO_SERVER)
 
@@ -127,9 +144,9 @@ class IntegrationsTests(unittest.TestCase):
     def agent(self, action, **fields):
         return self.service.handle("agent", {"schemaVersion": 1, "action": action, **fields})
 
-    def settings(self, *, notes=True, write="ask", servers=(), notify=True):
+    def settings(self, *, notes=True, write="ask", servers=(), notify=True, link=""):
         return {"notifications": {"enabled": notify, "url": f"http://127.0.0.1:{self.ntfy.server_address[1]}",
-                                  "topic": "portal-test", "username": "portal", "notifyApprovals": True},
+                                  "topic": "portal-test", "username": "portal", "notifyApprovals": True, "approvalLink": link},
                 "notes": {"enabled": notes, "vaultPath": str(self.vault), "write": write},
                 "mcp": {"servers": list(servers)}}
 
@@ -254,6 +271,133 @@ class IntegrationsTests(unittest.TestCase):
         off = service.client(root / "agent.sock", {"action": "notify", "message": "hi"})
         self.assertEqual(off["error"], "notifications-off")
         self.assertEqual(service.client(owner_socket, {"action": "notify", "message": "hi"})["error"], "invalid-request")
+
+    def test_approval_pings_carry_an_open_approvals_button_and_how_approval_works(self):
+        link = "http://192.168.1.5:3001/settings?section=portal-integrations"
+        self.save(self.settings(link=link), secrets={"ntfyPassword": "pw"})
+        self.agent("notes-write", path="Groceries.md", text="bread", mode="append")
+        self.assertEqual(FakeNtfy.headers[-1], {"click": link, "actions": f"view, Open approvals, {link}"})
+        self.assertIn("once, within 24 hours; a scheduled task goes ahead on its next run", FakeNtfy.sent[-1]["message"])
+        # The link opens Settings and grants nothing: the approval id is not in it.
+        self.assertNotIn(self.owner("get")["approvals"][0]["id"], FakeNtfy.headers[-1]["actions"])
+        self.agent("notify", message="plain")
+        self.assertEqual(FakeNtfy.headers[-1], {"click": None, "actions": None})
+        with self.assertRaisesRegex(service.IntegrationError, "approvals link"):
+            self.save(self.settings(link="javascript:alert(1)"))
+
+    def test_the_same_request_twice_waits_once_and_an_expired_approval_is_gone(self):
+        self.save(self.settings())
+        first = self.agent("notes-write", path="Groceries.md", text="bread", mode="append")
+        second = self.agent("notes-write", path="Groceries.md", text="bread", mode="append")
+        self.assertEqual(first["approvalId"], second["approvalId"])
+        self.assertEqual(len(self.owner("get")["approvals"]), 1)
+        self.owner("decide", approvalId=first["approvalId"], decision="approve")
+        approvals = json.loads((self.store.root / "approvals.json").read_text())
+        approvals[0]["expiresAt"] = 1
+        (self.store.root / "approvals.json").write_text(json.dumps(approvals))
+        self.assertEqual(self.agent("notes-write", path="Groceries.md", text="bread", mode="append")["status"], "approval-required")
+        self.assertNotIn("bread", (self.vault / "Groceries.md").read_text())
+
+    def test_a_declined_approval_cannot_be_used(self):
+        self.save(self.settings())
+        waiting = self.agent("notes-write", path="Groceries.md", text="bread", mode="append")
+        self.owner("decide", approvalId=waiting["approvalId"], decision="decline")
+        with self.assertRaisesRegex(service.IntegrationError, "no longer waiting"):
+            self.owner("decide", approvalId=waiting["approvalId"], decision="approve")
+        self.assertEqual(self.agent("notes-write", path="Groceries.md", text="bread", mode="append")["status"], "approval-required")
+
+    def test_two_windows_saving_at_once_do_not_overwrite_each_other(self):
+        revision = self.owner("get")["settings"]["revision"]
+        self.owner("save", expectedRevision=revision, settings=self.settings(write="allow"), secrets={})
+        with self.assertRaisesRegex(service.IntegrationError, "another window"):
+            self.owner("save", expectedRevision=revision, settings=self.settings(write="off"), secrets={})
+        self.assertEqual(self.owner("get")["settings"]["notes"]["write"], "allow")
+
+    def test_settings_from_the_first_version_still_load(self):
+        old = {"schemaVersion": 1, "revision": 4,
+               "notifications": {"enabled": True, "url": "http://127.0.0.1:8097", "topic": "portal", "username": "", "notifyApprovals": True},
+               "notes": {"enabled": False, "vaultPath": "", "write": "ask"},
+               "mcp": {"servers": [{**self.home_server(), "command": "", "discoveredAt": 1,
+                                    "tools": [{"name": "turn_on", "title": "", "description": "", "readOnly": False, "destructive": True,
+                                               "inputSchema": {}, "policy": "ask"}]}]}}
+        (self.store.root / "config.json").write_text(json.dumps(old))
+        (self.store.root / "secrets.json").write_text(json.dumps({"ntfyPassword": "pw", "mcp": {"home": "secret-token"}}))
+        view = self.owner("get")["settings"]
+        self.assertEqual(view["notifications"]["approvalLink"], "")
+        self.assertEqual((view["mcp"]["servers"][0]["envNames"], view["mcp"]["servers"][0]["tools"][0]["new"]), ([], False))
+        self.assertTrue(view["mcp"]["servers"][0]["hasToken"])
+
+    def test_damaged_state_files_are_explained(self):
+        self.save(self.settings())
+        self.store.log("notify", "x", "sent")
+        with (self.store.root / "activity.jsonl").open("a") as stream:
+            stream.write('{"at": 1, "act')
+        self.assertEqual(self.owner("get")["activity"][0]["target"], "x")
+        (self.store.root / "config.json").write_text("{not json")
+        with self.assertRaisesRegex(service.IntegrationError, "config.json is damaged"):
+            self.owner("get")
+        reply = service.handle_line(self.service, "agent", json.dumps({"schemaVersion": 1, "action": "notes-search", "query": "x"}))
+        self.assertEqual(reply["error"], "state-damaged")
+
+    def test_activity_is_capped_and_can_be_cleared(self):
+        for number in range(520):
+            self.store.log("notify", str(number), "sent")
+        self.assertEqual(len((self.store.root / "activity.jsonl").read_text().splitlines()), 500)
+        self.assertEqual(len(self.owner("get")["activity"]), 50)
+        self.assertEqual(self.owner("clear-activity")["activity"], [])
+
+    def test_vault_links_out_of_the_vault_are_refused_and_unicode_names_work(self):
+        outside = pathlib.Path(self.temporary.name) / "outside.md"
+        outside.write_text("deposit secret")
+        (self.vault / "Link.md").symlink_to(outside)
+        (self.vault / "Linked").symlink_to(pathlib.Path(self.temporary.name))
+        (self.vault / "Café notes.md").write_text("Grüße: the deposit is paid\n")
+        self.save(self.settings(write="allow"))
+        self.assertEqual({hit["path"] for hit in self.agent("notes-search", query="deposit")["results"]}, {"Home/Lease.md", "Café notes.md"})
+        self.assertIn("Grüße", self.agent("notes-read", path="Café notes")["text"])
+        for path in ("Link.md", "Linked/outside.md"):
+            with self.assertRaisesRegex(service.IntegrationError, "outside the vault"):
+                self.agent("notes-read", path=path)
+            with self.assertRaises(service.IntegrationError):
+                self.agent("notes-write", path=path, text="x", mode="append")
+        self.assertEqual(outside.read_text(), "deposit secret")
+
+    def test_two_writes_to_one_note_at_once_both_land_whole(self):
+        self.save(self.settings(write="allow"))
+        lines = [f"item {number} " + "z" * 2000 for number in range(12)]
+        threads = [threading.Thread(target=self.agent, args=("notes-write",), kwargs={"path": "Groceries.md", "text": line, "mode": "append"})
+                   for line in lines]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        written = (self.vault / "Groceries.md").read_text().split("\n")
+        for line in lines:
+            self.assertIn(line, written)
+
+    def test_web_server_errors_and_large_results(self):
+        self.save(self.settings(servers=[self.home_server()]), secrets={"mcp": {"home": "secret-token"}})
+        self.owner("discover", serverId="home")
+        self.save(self.settings(servers=[self.home_server(enabled=True, policies={"turn_on": "allow"})]))
+        for mode, sentence in (("500", "answered 500"), ("404", "answered 404"), ("huge", "too much data")):
+            FakeMcp.mode = mode
+            with self.assertRaisesRegex(service.IntegrationError, sentence):
+                self.agent("mcp-call", server="home", tool="turn_on", arguments={})
+        FakeMcp.mode = "long"
+        text = self.agent("mcp-call", server="home", tool="turn_on", arguments={})["text"]
+        self.assertTrue(text.endswith("[truncated]"))
+        self.assertLess(len(text), 8100)
+
+    def test_a_web_server_can_be_tested_and_restart_is_only_for_known_servers(self):
+        self.save(self.settings(servers=[self.home_server()]), secrets={"mcp": {"home": "secret-token"}})
+        self.assertEqual(self.owner("test", serverId="home")["notice"], "Home Assistant answered with 3 tools.")
+        self.owner("discover", serverId="home")
+        self.assertEqual(self.owner("test", serverId="home")["notice"], "Home Assistant answered with 3 tools.")
+        with self.assertRaisesRegex(service.IntegrationError, "not turned on"):
+            self.owner("restart", serverId="nope")
+        for action in ("test", "restart", "clear-activity"):
+            with self.assertRaisesRegex(service.IntegrationError, "Only the owner"):
+                self.agent(action, serverId="home")
 
 
 if __name__ == "__main__":

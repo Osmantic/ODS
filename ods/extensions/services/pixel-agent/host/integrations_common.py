@@ -41,10 +41,21 @@ def default_config():
         "schemaVersion": SCHEMA_VERSION,
         "revision": 0,
         "notifications": {"enabled": False, "url": "http://127.0.0.1:8097", "topic": "portal",
-                          "username": "", "notifyApprovals": True},
+                          "username": "", "notifyApprovals": True, "approvalLink": ""},
         "notes": {"enabled": False, "vaultPath": "", "write": "ask"},
         "mcp": {"servers": []},
     }
+
+
+def upgrade_config(config):
+    """Settings saved by an earlier version, with the fields added since."""
+    config["notifications"].setdefault("approvalLink", "")
+    for server in config["mcp"]["servers"]:
+        server.setdefault("workingFolder", "")
+        server.setdefault("envNames", [])
+        for tool in server["tools"]:
+            tool.setdefault("new", False)
+    return config
 
 
 class Store:
@@ -61,6 +72,9 @@ class Store:
             return json.loads((self.root / name).read_text())
         except FileNotFoundError:
             return default
+        except ValueError:
+            raise IntegrationError("state-damaged", f"The integrations file {self.root / name} is damaged. "
+                                   "Restore it from a backup, or remove it to start that part over.") from None
 
     def _write(self, name, value):
         path = self.root / name
@@ -74,13 +88,13 @@ class Store:
 
     def config(self):
         value = self._read("config.json", None)
-        return value if value is not None else default_config()
+        return upgrade_config(value) if value is not None else default_config()
 
     def save_config(self, value):
         self._write("config.json", value)
 
     def secrets(self):
-        return self._read("secrets.json", {"ntfyPassword": "", "mcp": {}})
+        return {"ntfyPassword": "", "mcp": {}, "mcpEnv": {}, **self._read("secrets.json", {})}
 
     def save_secrets(self, value):
         self._write("secrets.json", value)
@@ -100,8 +114,18 @@ class Store:
         with os.fdopen(fd, "w") as stream:
             stream.write("\n".join((lines + [entry])[-ACTIVITY_LINES:]) + "\n")
 
+    def clear_activity(self):
+        fd = os.open(self.root / "activity.jsonl", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.close(fd)
+
     def activity(self, limit=50):
         path = self.root / "activity.jsonl"
         if not path.exists():
             return []
-        return [json.loads(line) for line in path.read_text().splitlines()[-limit:]][::-1]
+        entries = []
+        for line in path.read_text().splitlines()[-limit:]:
+            try:
+                entries.append(json.loads(line))
+            except ValueError:
+                continue  # A line cut short by a crash; the rest of the log is still useful.
+        return entries[::-1]

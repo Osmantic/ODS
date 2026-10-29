@@ -2,7 +2,7 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { createElement } from 'react'
 import { render } from '../../test/test-utils'
 import PortalIntegrationsSettings from './PortalIntegrationsSettings'
-import { newServerId, savedTools, secretsFrom } from './portalIntegrationsForm'
+import { newServerId, savedTools, secretsFrom, typedForDraft } from './portalIntegrationsForm'
 
 const TOOLS = [
   { name: 'GetLiveContext', title: '', description: 'Read device states', readOnly: true, destructive: false, inputSchema: {}, policy: 'allow' },
@@ -29,11 +29,16 @@ function fakeService(initial = view()) {
     if (action === 'save') {
       if (body.expectedRevision !== current.settings.revision) return response({ detail: 'These settings changed in another window.', code: 'stale-revision' }, 409)
       const servers = body.settings.mcp.servers.map(server => ({ ...server, hasToken: Boolean(body.secrets.mcp?.[server.id]),
+        hasEnv: Object.fromEntries(server.envNames.map(name => [name, Boolean(body.secrets.mcpEnv?.[server.id]?.[name])])),
         tools: current.settings.mcp.servers.find(item => item.id === server.id)?.tools || [], discoveredAt: current.settings.mcp.servers.find(item => item.id === server.id)?.discoveredAt || null }))
       current = { ...current, settings: { ...settings(body.expectedRevision + 1, servers), notifications: { ...body.settings.notifications, hasPassword: Boolean(body.secrets.ntfyPassword) }, notes: body.settings.notes } }
     } else if (action === 'discover') {
       const servers = current.settings.mcp.servers.map(server => server.id === body.serverId ? { ...server, tools: TOOLS, discoveredAt: 1 } : server)
       current = { ...current, settings: { ...current.settings, revision: current.settings.revision + 1, mcp: { servers } } }
+    } else if (action === 'test') {
+      return response({ ...current, notice: 'Echo answered with 1 tools.' })
+    } else if (action === 'clear-activity') {
+      current = { ...current, activity: [] }
     } else if (action === 'decide') {
       current = { ...current, approvals: [] }
     }
@@ -56,7 +61,8 @@ it('saves only what changed and never sends an empty password', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
   await screen.findByText('Saved.')
   expect(posts).toEqual([['save', { expectedRevision: 0, secrets: { ntfyPassword: 'pw' }, settings: {
-    notifications: { enabled: true, url: 'http://127.0.0.1:8097', topic: 'portal', username: 'portal', notifyApprovals: true },
+    notifications: { enabled: true, url: 'http://127.0.0.1:8097', topic: 'portal', username: 'portal', notifyApprovals: true,
+      approvalLink: `${window.location.origin}/settings?section=portal-integrations` },
     notes: { enabled: false, vaultPath: '', write: 'ask' }, mcp: { servers: [] } } }]])
   expect(screen.getByLabelText('Password or access token')).toHaveValue('')
   expect(screen.getByLabelText('Password or access token')).toHaveAttribute('placeholder', 'Saved. Type to replace.')
@@ -109,4 +115,92 @@ it('keeps saved tools only while the address is unchanged and makes unique ids',
   expect(newServerId('Home Assistant', [{ id: 'home-assistant' }])).toBe('home-assistant-2')
   expect(newServerId('!!', [])).toBe('server')
   expect(secretsFrom({ ntfyPassword: '', mcp: { a: '', b: 't' } })).toEqual({ mcp: { b: 't' } })
+})
+
+it('keeps Save and Discard in reach while changes are unsaved, and warns before leaving', async () => {
+  const { posts } = fakeService()
+  await screen.findByText('Notes (Obsidian vault)')
+  expect(screen.queryByRole('region', { name: 'Unsaved changes' })).toBeNull()
+  const leaving = vi.spyOn(window, 'addEventListener')
+  fireEvent.change(screen.getByLabelText('Adding to notes'), { target: { value: 'allow' } })
+  const bar = screen.getByRole('region', { name: 'Unsaved changes' })
+  expect(leaving).toHaveBeenCalledWith('beforeunload', expect.any(Function))
+  fireEvent.click(within(bar).getByRole('button', { name: 'Discard' }))
+  expect(screen.getByLabelText('Adding to notes')).toHaveValue('ask')
+  expect(screen.queryByRole('region', { name: 'Unsaved changes' })).toBeNull()
+  expect(posts).toEqual([])
+  fireEvent.change(screen.getByLabelText('Adding to notes'), { target: { value: 'allow' } })
+  fireEvent.click(within(screen.getByRole('region', { name: 'Unsaved changes' })).getByRole('button', { name: 'Save' }))
+  await screen.findByText('Saved.')
+  expect(posts[0][1].settings.notes.write).toBe('allow')
+  expect(screen.queryByRole('region', { name: 'Unsaved changes' })).toBeNull()
+})
+
+it('sets up a local server with secret variables, shows its status and restarts or tests it', async () => {
+  const saved = { id: 'echo', name: 'Echo', kind: 'stdio', preset: '', enabled: false, url: '', command: 'echo-server', workingFolder: '',
+    envNames: ['API_KEY'], hasEnv: { API_KEY: true }, hasToken: false, discoveredAt: 1,
+    tools: [{ ...TOOLS[0], name: 'echo', new: false }, { ...TOOLS[1], name: 'shout', policy: 'off', new: true }] }
+  const processes = { echo: { running: false, lastError: 'Error: API_KEY is not valid' } }
+  const { posts } = fakeService(view({ settings: settings(2, [saved]), processes }))
+  const card = await screen.findByRole('listitem', { name: 'MCP server Echo' })
+  expect(within(card).getByRole('note')).toHaveTextContent('runs on this computer with your permissions')
+  expect(within(card).getByLabelText('Last error output')).toHaveTextContent('API_KEY is not valid')
+  expect(within(card).getByRole('button', { name: 'Restart' })).toBeDisabled()
+  expect(within(card).getByRole('status')).toHaveTextContent('1 new tool since the last check. New tools start Off')
+  expect(within(card).getByText('New')).toBeInTheDocument()
+  expect(within(card).getByLabelText('API_KEY')).toHaveAttribute('placeholder', 'Saved. Type to replace.')
+  fireEvent.change(within(card).getByLabelText('API_KEY'), { target: { value: 'new-key' } })
+  expect(within(card).getByRole('button', { name: 'Add variable' })).toBeDisabled()
+  fireEvent.change(within(card).getByLabelText('New variable name'), { target: { value: 'PATH' } })
+  expect(within(card).getByRole('button', { name: 'Add variable' })).toBeDisabled()
+  fireEvent.change(within(card).getByLabelText('New variable name'), { target: { value: 'REGION' } })
+  fireEvent.click(within(card).getByRole('button', { name: 'Add variable' }))
+  fireEvent.change(within(card).getByLabelText('REGION'), { target: { value: 'eu' } })
+  fireEvent.change(within(card).getByLabelText('Working folder (optional, full path)'), { target: { value: '/srv/echo' } })
+  fireEvent.click(within(card).getByRole('button', { name: 'Test connection' }))
+  await screen.findByText('Echo answered with 1 tools.')
+  expect(posts.map(([action]) => action)).toEqual(['save', 'test'])
+  expect(posts[0][1].secrets).toEqual({ mcpEnv: { echo: { API_KEY: 'new-key', REGION: 'eu' } } })
+  expect(posts[0][1].settings.mcp.servers[0]).toMatchObject({ envNames: ['API_KEY', 'REGION'], workingFolder: '/srv/echo', command: 'echo-server' })
+  expect(posts[1][1]).toEqual({ serverId: 'echo' })
+})
+
+it('restarts a running local server and clears the activity list', async () => {
+  const saved = { id: 'echo', name: 'Echo', kind: 'stdio', preset: '', enabled: true, url: '', command: 'echo-server', workingFolder: '',
+    envNames: [], hasEnv: {}, hasToken: false, discoveredAt: 1, tools: [] }
+  const activity = [{ at: 1, action: 'mcp-restart', target: 'Echo', outcome: 'stopped; starts on next use' }]
+  const { posts } = fakeService(view({ settings: settings(2, [saved]), processes: { echo: { running: true, lastError: '' } }, activity }))
+  expect(await screen.findByText(/Restarted an MCP server: Echo/)).toBeInTheDocument()
+  expect(screen.getByText(/Running\. It stops after 10 minutes/)).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Restart' }))
+  await screen.findByText('Echo was stopped. It starts again when it is next used.')
+  fireEvent.click(screen.getByRole('button', { name: 'Clear activity' }))
+  await screen.findByText('No activity yet.')
+  expect(posts).toEqual([['restart', { serverId: 'echo' }], ['clear-activity', {}]])
+})
+
+it('drops typed values of removed variables and servers', () => {
+  const draft = { servers: [{ id: 'a', envNames: ['KEEP'] }] }
+  const typed = { ntfyPassword: '', mcp: { a: 't', gone: 'x' }, mcpEnv: { a: { KEEP: '1', DROPPED: '2' }, gone: { X: '3' } } }
+  expect(secretsFrom(typedForDraft(typed, draft))).toEqual({ mcp: { a: 't' }, mcpEnv: { a: { KEEP: '1' } } })
+})
+
+it('gives a new server the id of its name, with its secrets, and keeps saved ids', async () => {
+  const saved = { id: 'home', name: 'Home', kind: 'http', preset: '', enabled: false, url: 'http://a/api/mcp', command: '', workingFolder: '',
+    envNames: [], hasEnv: {}, hasToken: true, discoveredAt: null, tools: [] }
+  const { posts } = fakeService(view({ settings: settings(1, [saved]) }))
+  fireEvent.click(await screen.findByRole('button', { name: 'Add MCP server' }))
+  fireEvent.change(screen.getByRole('listitem', { name: 'MCP server MCP server' }).querySelector('input'), { target: { value: 'Files' } })
+  const card = screen.getByRole('listitem', { name: 'MCP server Files' })
+  fireEvent.change(within(card).getByLabelText('Connection'), { target: { value: 'stdio' } })
+  fireEvent.change(within(card).getByLabelText('Command', { exact: true }), { target: { value: 'npx files' } })
+  fireEvent.change(within(card).getByLabelText('New variable name'), { target: { value: 'KEY' } })
+  fireEvent.click(within(card).getByRole('button', { name: 'Add variable' }))
+  fireEvent.change(within(card).getByLabelText('KEY'), { target: { value: 'v' } })
+  fireEvent.change(screen.getByRole('listitem', { name: 'MCP server Home' }).querySelector('input'), { target: { value: 'Renamed' } })
+  fireEvent.click(within(card).getByRole('button', { name: 'Check tools' }))
+  await screen.findByText(/Checked the tools of Files/)
+  expect(posts[0][1].settings.mcp.servers.map(server => server.id)).toEqual(['home', 'files'])
+  expect(posts[0][1].secrets).toEqual({ mcpEnv: { files: { KEY: 'v' } } })
+  expect(posts[1]).toEqual(['discover', { serverId: 'files' }])
 })

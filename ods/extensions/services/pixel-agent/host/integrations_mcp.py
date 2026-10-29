@@ -1,57 +1,66 @@
-"""A small MCP client for Portal integrations: one short session per listing or call.
+"""A small MCP client for Portal integrations.
 
 Speaks JSON-RPC 2.0 to a server reached over Streamable HTTP (one POST per message, the
 reply as JSON or as server-sent events) or started as a local command (one JSON message
-per line on stdin and stdout). The owner chose the server; nothing here picks one.
+per line on stdin and stdout). A web server gets a short session per listing or call. A
+local server keeps running between calls, so a slow start (npx, uvx) is paid once and a
+server that remembers things between calls (a browser, a database) works; it stops after
+IDLE_SECONDS without calls and starts again on the next one. The owner chose the server;
+nothing here picks one.
 """
+import collections
+import glob
 import json
+import os
+import pathlib
 import re
 import shlex
+import shutil
+import signal
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
 
-from integrations_common import IntegrationError, MAX_RESPONSE_BYTES, NETWORK_TIMEOUT, clip
+from integrations_common import IntegrationError, MAX_RESPONSE_BYTES, NETWORK_TIMEOUT, clip, digest
 
 MCP_PROTOCOL = "2025-03-26"
 MAX_TOOLS = 200
 TOOL_NAME = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+START_TIMEOUT = 90  # npx and uvx may download the server on its first start.
+CALL_TIMEOUT = 30
+IDLE_SECONDS = 600
+STOP_SECONDS = 3
+ERROR_LINES = 20
+# The service runs with a minimal PATH; these are where owners usually install npx, uvx and friends.
+SEARCH_PATH = ("~/.local/bin", "~/bin", "~/.npm-global/bin", "~/.cargo/bin", "/usr/local/bin", "/usr/bin", "/bin",
+               "/snap/bin", "/home/linuxbrew/.linuxbrew/bin")
+PASSED_ENV = ("HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TZ")
 
 
-class McpSession:
-    """Initialize, then list or call tools, then close."""
+def _result(name, reply):
+    if "error" in reply:
+        error = reply["error"] if isinstance(reply["error"], dict) else {}
+        raise IntegrationError("mcp-error", f"{name}: {str(error.get('message', 'request failed'))[:300]}")
+    return reply.get("result")
+
+
+class HttpSession:
+    """One Streamable HTTP session: initialize, then requests, each a POST."""
 
     def __init__(self, server, token):
-        self.server, self.token = server, token
-        self.name = server["name"]
+        self.server, self.token, self.name = server, token, server["name"]
         self.counter = 0
         self.session_id = None
-        self.process = None
 
-    def __enter__(self):
-        if self.server["kind"] == "stdio":
-            try:
-                self.process = subprocess.Popen(shlex.split(self.server["command"]), stdin=subprocess.PIPE,
-                                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-                                                bufsize=1, start_new_session=True)
-            except OSError:
-                raise IntegrationError("mcp-unavailable", f"{self.name} could not be started.") from None
+    def open(self):
         result = self.request("initialize", {"protocolVersion": MCP_PROTOCOL, "capabilities": {},
                                              "clientInfo": {"name": "ods-portal", "version": "1"}})
         if not isinstance(result, dict):
             raise IntegrationError("mcp-protocol", f"{self.name} did not answer as an MCP server.")
-        self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        self._post({"jsonrpc": "2.0", "method": "notifications/initialized"})
         return self
-
-    def __exit__(self, *_):
-        if self.process:
-            self.process.stdin.close()
-            try:
-                self.process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-        return False
 
     def _headers(self):
         headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream",
@@ -77,41 +86,9 @@ class McpSession:
         except (urllib.error.URLError, OSError):
             raise IntegrationError("mcp-unavailable", f"{self.name} could not be reached at {self.server['url']}.") from None
 
-    def _send(self, message):
-        if not self.process:
-            self._post(message)
-            return
-        try:
-            self.process.stdin.write(json.dumps(message) + "\n")
-            self.process.stdin.flush()
-        except OSError:
-            raise IntegrationError("mcp-unavailable", f"{self.name} stopped.") from None
-
     def request(self, method, params):
         self.counter += 1
         message = {"jsonrpc": "2.0", "id": self.counter, "method": method, "params": params}
-        reply = self._stdio_reply(message) if self.process else self._http_reply(message)
-        if "error" in reply:
-            error = reply["error"] if isinstance(reply["error"], dict) else {}
-            raise IntegrationError("mcp-error", f"{self.name}: {str(error.get('message', 'request failed'))[:300]}")
-        return reply.get("result")
-
-    def _stdio_reply(self, message):
-        self._send(message)
-        deadline = time.time() + NETWORK_TIMEOUT
-        while time.time() < deadline:
-            line = self.process.stdout.readline()
-            if not line:
-                raise IntegrationError("mcp-unavailable", f"{self.name} stopped.")
-            try:
-                reply = json.loads(line)
-            except ValueError:
-                continue  # Servers may print other lines; only JSON-RPC replies count.
-            if isinstance(reply, dict) and reply.get("id") == message["id"]:
-                return reply
-        raise IntegrationError("mcp-timeout", f"{self.name} did not answer in time.")
-
-    def _http_reply(self, message):
         body, kind = self._post(message)
         if len(body) > MAX_RESPONSE_BYTES:
             raise IntegrationError("mcp-protocol", f"{self.name} sent too much data.")
@@ -125,8 +102,265 @@ class McpSession:
                 continue  # Event-stream keep-alives and comments are not replies.
             for item in reply if isinstance(reply, list) else [reply]:
                 if isinstance(item, dict) and item.get("id") == message["id"]:
-                    return item
+                    return _result(self.name, item)
         raise IntegrationError("mcp-protocol", f"{self.name} did not answer as an MCP server.")
+
+
+def command_env(server, values):
+    """The environment a local server starts with: a usable PATH, the owner's basics and its own variables."""
+    argv = shlex.split(server["command"])
+    folders = [str(pathlib.Path(argv[0]).parent)] if os.path.isabs(argv[0]) else []
+    folders += [os.path.expanduser(folder) for folder in SEARCH_PATH]
+    folders += sorted(glob.glob(os.path.expanduser("~/.nvm/versions/node/*/bin")), reverse=True)[:1]
+    env = {key: os.environ[key] for key in PASSED_ENV if key in os.environ}
+    env["PATH"] = os.pathsep.join(dict.fromkeys(folders))
+    env.update({name: values[name] for name in server.get("envNames", []) if name in values})
+    return argv, env
+
+
+class LocalServer:
+    """One running local-command server, answering one request at a time."""
+
+    def __init__(self, server, values):
+        self.name, self.id = server["name"], server["id"]
+        self.argv, self.env = command_env(server, values)
+        self.folder = server.get("workingFolder") or self.env.get("HOME") or "/"
+        self.fingerprint = digest(server["command"], self.folder, self.env)
+        self.lock = threading.Lock()
+        self.write_lock = threading.Lock()
+        self.replies = {}
+        self.counter = 0
+        self.errors = collections.deque(maxlen=ERROR_LINES)
+        self.process = None
+        self.stopped_because = None
+        self.last_used = time.monotonic()
+
+    def start(self):
+        program = shutil.which(self.argv[0], path=self.env["PATH"])
+        if program is None:
+            raise IntegrationError("mcp-unavailable", f"{self.name} could not be started: {self.argv[0]} was not found. "
+                                   f"Give its full path, as `which {self.argv[0]}` shows it in a terminal.")
+        if not os.path.isdir(self.folder):
+            raise IntegrationError("mcp-unavailable", f"{self.name} could not be started: its folder {self.folder} does not exist.")
+        try:
+            # Its own process group, so stopping it also stops what it started (npx starts node).
+            self.process = subprocess.Popen([program, *self.argv[1:]], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                            stderr=subprocess.PIPE, cwd=self.folder, env=self.env, start_new_session=True)
+        except OSError as error:
+            raise IntegrationError("mcp-unavailable", f"{self.name} could not be started: {error.strerror}.") from None
+        threading.Thread(target=self._read_replies, daemon=True).start()
+        threading.Thread(target=self._read_errors, daemon=True).start()
+        result = self.request("initialize", {"protocolVersion": MCP_PROTOCOL, "capabilities": {},
+                                             "clientInfo": {"name": "ods-portal", "version": "1"}}, timeout=START_TIMEOUT)
+        if not isinstance(result, dict):
+            self.stop("it did not answer as an MCP server")
+            raise IntegrationError("mcp-protocol", f"{self.name} did not answer as an MCP server.")
+        self._write({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        return self
+
+    def alive(self):
+        return self.process is not None and self.process.poll() is None
+
+    def detail(self):
+        """The program's last error output, for the owner only: it may name local paths."""
+        return "\n".join(self.errors)[-1500:]
+
+    def _read_errors(self):
+        for line in iter(self.process.stderr.readline, b""):
+            self.errors.append(line.decode("utf-8", "replace").rstrip()[:300])
+        self.process.stderr.close()
+
+    def _read_replies(self):
+        stream = self.process.stdout
+        while True:
+            line = stream.readline(MAX_RESPONSE_BYTES + 1)
+            if not line:
+                break
+            if len(line) > MAX_RESPONSE_BYTES:
+                self.stop("it sent too much data")
+                break
+            try:
+                message = json.loads(line)
+            except ValueError:
+                continue  # Servers may print other lines; only JSON-RPC messages count.
+            if not isinstance(message, dict):
+                continue
+            if "method" in message and "id" in message:
+                self._answer_server(message)
+            elif message.get("id") in self.replies:
+                waiting = self.replies[message["id"]]
+                waiting[1] = message
+                waiting[0].set()
+        self.stopped_because = self.stopped_because or "it stopped"
+        for waiting in list(self.replies.values()):
+            waiting[0].set()
+        stream.close()
+
+    def _answer_server(self, message):
+        """Portal offers servers no extra client features; answer their questions so they never wait."""
+        if message["method"] == "ping":
+            reply = {"result": {}}
+        elif message["method"] == "roots/list":
+            reply = {"result": {"roots": []}}
+        else:
+            reply = {"error": {"code": -32601, "message": "Portal does not support this request."}}
+        try:
+            self._write({"jsonrpc": "2.0", "id": message["id"], **reply})
+        except IntegrationError:
+            pass  # The server stopped; the waiting request reports that.
+
+    def _write(self, message):
+        try:
+            with self.write_lock:
+                self.process.stdin.write((json.dumps(message) + "\n").encode())
+                self.process.stdin.flush()
+        except (OSError, ValueError):
+            raise IntegrationError("mcp-unavailable", f"{self.name} stopped.") from None
+
+    def request(self, method, params, timeout=None):
+        timeout = timeout or CALL_TIMEOUT
+        if not self.lock.acquire(timeout=timeout):
+            raise IntegrationError("mcp-busy", f"{self.name} is still busy with another request. Try again shortly.")
+        try:
+            self.last_used = time.monotonic()
+            if not self.alive():
+                raise IntegrationError("mcp-unavailable", f"{self.name} stopped: {self.stopped_because or 'it is not running'}.")
+            self.counter += 1
+            waiting = self.replies[self.counter] = [threading.Event(), None]
+            try:
+                self._write({"jsonrpc": "2.0", "id": self.counter, "method": method, "params": params})
+                if not waiting[0].wait(timeout):
+                    self.stop(f"it did not answer within {timeout} seconds")
+                    raise IntegrationError("mcp-timeout", f"{self.name} did not answer in time, so it was stopped. "
+                                           "It starts again on the next use.")
+            finally:
+                del self.replies[self.counter]
+            if waiting[1] is None:
+                raise IntegrationError("mcp-unavailable", f"{self.name} stopped: {self.stopped_because}.")
+            return _result(self.name, waiting[1])
+        finally:
+            self.last_used = time.monotonic()
+            self.lock.release()
+
+    def stop(self, reason="it was stopped"):
+        if self.process is None:
+            return
+        self.stopped_because = self.stopped_because or reason
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(self.process.pid, sig)
+            except ProcessLookupError:
+                break
+            try:
+                self.process.wait(timeout=STOP_SECONDS)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+        try:
+            os.killpg(self.process.pid, signal.SIGKILL)  # Anything it started that outlived it.
+        except ProcessLookupError:
+            pass
+        with self.write_lock:
+            try:
+                self.process.stdin.close()
+            except OSError:
+                pass  # Its end of the pipe is already gone.
+
+
+class LocalServers:
+    """The running local servers, by server id: started on first use, stopped when idle."""
+
+    def __init__(self, idle_seconds=IDLE_SECONDS):
+        self.idle_seconds = idle_seconds
+        self.lock = threading.Lock()
+        self.running = {}
+        self.failures = {}
+        self.starting = collections.defaultdict(threading.Lock)
+        self.reaper = None
+
+    def get(self, server, values):
+        candidate = LocalServer(server, values)
+        with self.lock:
+            starting = self.starting[server["id"]]
+        with starting:  # Two calls at once start the server once.
+            with self.lock:
+                current = self.running.get(server["id"])
+                if current and current.alive() and current.fingerprint == candidate.fingerprint:
+                    return current
+                self.running.pop(server["id"], None)
+            if current:
+                current.stop("its settings changed")
+            try:
+                candidate.start()
+            except IntegrationError:
+                self.failures[server["id"]] = candidate.detail() or candidate.stopped_because or ""
+                candidate.stop("it failed to start")
+                raise
+            with self.lock:
+                self.running[server["id"]] = candidate
+                self.failures.pop(server["id"], None)
+                if self.reaper is None:
+                    self.reaper = threading.Thread(target=self._reap, daemon=True)
+                    self.reaper.start()
+            return candidate
+
+    def detail(self, server_id):
+        with self.lock:
+            current = self.running.get(server_id)
+        return current.detail() if current else self.failures.get(server_id, "")
+
+    def status(self, server_id):
+        with self.lock:
+            current = self.running.get(server_id)
+        if current and current.alive():
+            return {"running": True, "lastError": ""}
+        return {"running": False, "lastError": (current.detail() if current else self.failures.get(server_id, ""))[-600:]}
+
+    def stop(self, server_id, reason="it was stopped"):
+        with self.lock:
+            current = self.running.pop(server_id, None)
+        if current:
+            current.stop(reason)
+
+    def keep_only(self, server_ids):
+        with self.lock:
+            gone = [server_id for server_id in self.running if server_id not in server_ids]
+        for server_id in gone:
+            self.stop(server_id, "it was turned off")
+
+    def stop_idle(self):
+        cutoff = time.monotonic() - self.idle_seconds
+        with self.lock:
+            idle = [server_id for server_id, current in self.running.items()
+                    if current.last_used < cutoff and not current.lock.locked()]
+        for server_id in idle:
+            self.stop(server_id, "it was not used for a while")
+
+    def _reap(self):
+        while True:
+            time.sleep(min(30, self.idle_seconds))
+            self.stop_idle()
+
+
+class McpSession:
+    """List or call tools on one server: a fresh web session, or the running local server."""
+
+    def __init__(self, server, token, env_values, local_servers):
+        self.server, self.name = server, server["name"]
+        self.token, self.env_values, self.local_servers = token, env_values, local_servers
+
+    def __enter__(self):
+        if self.server["kind"] == "stdio":
+            self.channel = self.local_servers.get(self.server, self.env_values)
+        else:
+            self.channel = HttpSession(self.server, self.token).open()
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def request(self, method, params):
+        return self.channel.request(method, params)
 
     def tools(self):
         found, cursor = [], None
@@ -146,16 +380,19 @@ class McpSession:
         return clip("\n".join(parts) or "(no output)"), bool(result.get("isError"))
 
 
-def describe_tool(tool, previous_policy=None):
-    """What the owner sees before turning a tool on; read-only tools start allowed, others ask first.
+def describe_tool(tool, previous_policy=None, *, new=False):
+    """What the owner sees before turning a tool on.
 
-    As in the MCP specification, a tool that is not read-only may change or delete things
-    unless it says destructiveHint false (it only adds things).
+    On a server's first check, read-only tools start allowed and others ask first. A tool
+    that appears on a later check starts off, so a server cannot add an allowed tool behind
+    the owner's back. As in the MCP specification, a tool that is not read-only may change
+    or delete things unless it says destructiveHint false (it only adds things).
     """
     annotations = tool.get("annotations") if isinstance(tool.get("annotations"), dict) else {}
     read_only = annotations.get("readOnlyHint") is True
     schema = tool.get("inputSchema") if isinstance(tool.get("inputSchema"), dict) else {"type": "object"}
+    policy = previous_policy or ("off" if new else "allow" if read_only else "ask")
     return {"name": tool["name"], "title": str(annotations.get("title") or tool.get("title") or "")[:120],
             "description": str(tool.get("description", ""))[:500], "readOnly": read_only,
             "destructive": not read_only and annotations.get("destructiveHint") is not False, "inputSchema": schema,
-            "policy": previous_policy or ("allow" if read_only else "ask")}
+            "policy": policy, "new": new}

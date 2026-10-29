@@ -32,15 +32,19 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import integrations_notes as notes  # noqa: E402
 from integrations_common import (IntegrationError, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES,  # noqa: E402
                                  NETWORK_TIMEOUT, SCHEMA_VERSION, Store, digest, now)
-from integrations_mcp import McpSession, describe_tool  # noqa: E402
+from integrations_mcp import LocalServers, McpSession, describe_tool  # noqa: E402
 
 MAX_SERVERS = 20
+MAX_ENV = 20
 APPROVAL_SECONDS = 24 * 3600
 POLICIES = ("off", "ask", "allow")
 SERVER_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 TOPIC = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-OWNER_ACTIONS = {"get", "save", "test-notification", "discover", "decide"}
+ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+OWNER_ACTIONS = {"get", "save", "test-notification", "discover", "test", "restart", "decide", "clear-activity"}
 OWNER_SOCKET = "owner.sock"
+APPROVAL_HELP = ("Approve or decline it in Settings → Portal integrations. An approval is for this exact action, "
+                 "once, within 24 hours; a scheduled task goes ahead on its next run.")
 
 
 # ---------------------------------------------------------------- settings
@@ -61,13 +65,15 @@ def _http_url(value, field):
 
 
 def _notifications(value):
-    if not isinstance(value, dict) or set(value) != {"enabled", "url", "topic", "username", "notifyApprovals"}:
+    if not isinstance(value, dict) or set(value) != {"enabled", "url", "topic", "username", "notifyApprovals", "approvalLink"}:
         raise IntegrationError("invalid-settings", "Check the notification settings.")
     topic = _text(value["topic"], "the topic", 64, empty=False)
     if not TOPIC.match(topic):
         raise IntegrationError("invalid-settings", "The topic may use letters, numbers, - and _.")
+    link = _text(value["approvalLink"], "the approvals link", 500)
     return {"enabled": value["enabled"] is True, "url": _http_url(value["url"], "The ntfy address"), "topic": topic,
-            "username": _text(value["username"], "the ntfy user", 64), "notifyApprovals": value["notifyApprovals"] is True}
+            "username": _text(value["username"], "the ntfy user", 64), "notifyApprovals": value["notifyApprovals"] is True,
+            "approvalLink": _http_url(link, "The approvals link") if link else ""}
 
 
 def _notes(value):
@@ -85,20 +91,31 @@ def _server(value, previous):
         raise IntegrationError("invalid-settings", "Check the MCP servers.")
     entry = {"id": value["id"], "name": _text(value.get("name", ""), "the server name", 80, empty=False),
              "kind": value["kind"], "enabled": value.get("enabled") is True, "preset": value.get("preset", ""),
-             "url": "", "command": ""}
+             "url": "", "command": "", "workingFolder": "", "envNames": []}
     if entry["kind"] == "http":
         entry["url"] = _http_url(value.get("url", ""), "The MCP server address")
     else:
         entry["command"] = _text(value.get("command", ""), "the command", 1000, empty=False)
         try:
-            shlex.split(entry["command"])
+            if not shlex.split(entry["command"]):
+                raise ValueError
         except ValueError:
             raise IntegrationError("invalid-settings", "The command is not valid.") from None
+        entry["workingFolder"] = _text(value.get("workingFolder", ""), "the working folder", 1024)
+        if entry["workingFolder"] and not (pathlib.Path(entry["workingFolder"]).is_absolute() and pathlib.Path(entry["workingFolder"]).is_dir()):
+            raise IntegrationError("invalid-settings", f"The working folder of {entry['name']} must be an existing folder, given as a full path.")
+        names = value.get("envNames", [])
+        if (not isinstance(names, list) or len(names) > MAX_ENV or len(set(names)) != len(names)
+                or any(not isinstance(name, str) or not ENV_NAME.match(name) or name == "PATH" for name in names)):
+            raise IntegrationError("invalid-settings", "Environment variable names use letters, numbers and _, such as GITHUB_TOKEN.")
+        entry["envNames"] = names
     same = previous is not None and all(previous[key] == entry[key] for key in ("kind", "url", "command"))
     policies = value.get("policies", {})
     if not isinstance(policies, dict) or any(policy not in POLICIES for policy in policies.values()):
         raise IntegrationError("invalid-settings", "Each tool is off, ask first or allowed.")
-    entry["tools"] = [{**tool, "policy": policies.get(tool["name"], tool["policy"])} for tool in (previous["tools"] if same else [])]
+    # Saving means the owner has seen the tools, so none is new any more.
+    entry["tools"] = [{**tool, "policy": policies.get(tool["name"], tool["policy"]), "new": False}
+                      for tool in (previous["tools"] if same else [])]
     entry["discoveredAt"] = previous["discoveredAt"] if same else None
     if entry["enabled"] and entry["discoveredAt"] is None:
         raise IntegrationError("invalid-settings", f"Check the tools of {entry['name']} before turning it on.")
@@ -126,13 +143,15 @@ def public_config(config, secrets):
     value = json.loads(json.dumps(config))
     value["notifications"]["hasPassword"] = bool(secrets.get("ntfyPassword"))
     for server in value["mcp"]["servers"]:
-        server["hasToken"] = bool(secrets.get("mcp", {}).get(server["id"]))
+        server["hasToken"] = bool(secrets["mcp"].get(server["id"]))
+        saved = secrets["mcpEnv"].get(server["id"], {})
+        server["hasEnv"] = {name: bool(saved.get(name)) for name in server["envNames"]}
     return value
 
 
 # ---------------------------------------------------------------- notifications (ntfy)
 
-def send_notification(config, secrets, title, message, priority="default"):
+def send_notification(config, secrets, title, message, priority="default", link=""):
     settings = config["notifications"]
     if not settings["enabled"]:
         raise IntegrationError("notifications-off", "Notifications are not set up. The owner can connect ntfy in Settings → Portal integrations.")
@@ -144,6 +163,10 @@ def send_notification(config, secrets, title, message, priority="default"):
     request.add_header("Title", title.encode("ascii", "replace").decode())
     request.add_header("Priority", priority if priority in ("min", "low", "default", "high", "urgent") else "default")
     request.add_header("Tags", "portal")
+    if link:
+        # Only opens the owner's Settings page, where they still sign in; the link grants nothing.
+        request.add_header("Click", link)
+        request.add_header("Actions", f"view, Open approvals, {link}")
     password = secrets.get("ntfyPassword")
     if password and settings["username"]:
         request.add_header("Authorization", "Basic " + base64.b64encode(f"{settings['username']}:{password}".encode()).decode())
@@ -163,8 +186,9 @@ def send_notification(config, secrets, title, message, priority="default"):
 # ---------------------------------------------------------------- the service
 
 class Integrations:
-    def __init__(self, store):
+    def __init__(self, store, local_servers=None):
         self.store = store
+        self.local = local_servers or LocalServers()
 
     def handle(self, role, request):
         """role is "owner" or "agent", set by the socket the request came in on."""
@@ -191,8 +215,17 @@ class Integrations:
             self.store.log("notify", "test", "sent")
         elif action == "discover":
             self.discover(request.get("serverId"))
+        elif action == "test":
+            return {**self.view(), "notice": self.test(request.get("serverId"))}
+        elif action == "restart":
+            server = self._server(self.store.config(), request.get("serverId"), enabled=False)
+            self.local.stop(server["id"], "the owner restarted it")
+            self.store.log("mcp-restart", server["name"], "stopped; starts on next use")
         elif action == "decide":
             self.decide(request.get("approvalId"), request.get("decision"))
+        elif action == "clear-activity":
+            with self.store.lock:
+                self.store.clear_activity()
         return self.view()
 
     def view(self):
@@ -200,7 +233,10 @@ class Integrations:
             config, secrets, approvals = self.store.config(), self.store.secrets(), self.store.approvals()
         waiting = [{key: item[key] for key in ("id", "kind", "summary", "createdAt", "expiresAt")}
                    for item in approvals if item["state"] == "pending"]
-        return {"settings": public_config(config, secrets), "approvals": waiting, "activity": self.store.activity()}
+        processes = {server["id"]: self.local.status(server["id"])
+                     for server in config["mcp"]["servers"] if server["kind"] == "stdio"}
+        return {"settings": public_config(config, secrets), "approvals": waiting, "activity": self.store.activity(),
+                "processes": processes}
 
     def save(self, expected_revision, settings, changes):
         with self.store.lock:
@@ -212,30 +248,77 @@ class Integrations:
                 raise IntegrationError("invalid-settings", "Check the passwords and tokens.")
             if "ntfyPassword" in changes:
                 secrets["ntfyPassword"] = _text(changes["ntfyPassword"], "the ntfy password", 256)
-            ids = {server["id"] for server in updated["mcp"]["servers"]}
+            servers = {server["id"]: server for server in updated["mcp"]["servers"]}
             for server_id, token in changes.get("mcp", {}).items():
-                if server_id not in ids:
+                if server_id not in servers:
                     raise IntegrationError("invalid-settings", "A token names an unknown MCP server.")
-                secrets.setdefault("mcp", {})[server_id] = _text(token, "the access token", 4096)
-            secrets["mcp"] = {key: value for key, value in secrets.get("mcp", {}).items() if key in ids and value}
+                secrets["mcp"][server_id] = _text(token, "the access token", 4096)
+            env_changes = changes.get("mcpEnv", {})
+            if not isinstance(env_changes, dict):
+                raise IntegrationError("invalid-settings", "Check the environment variables.")
+            for server_id, values in env_changes.items():
+                if server_id not in servers or not isinstance(values, dict) or set(values) - set(servers[server_id]["envNames"]):
+                    raise IntegrationError("invalid-settings", "A value names an unknown environment variable.")
+                for name, value in values.items():
+                    secrets["mcpEnv"].setdefault(server_id, {})[name] = _text(value, f"the value of {name}", 4096)
+            secrets["mcp"] = {key: value for key, value in secrets["mcp"].items() if key in servers and value}
+            kept = {key: {name: value for name, value in values.items() if name in servers[key]["envNames"] and value}
+                    for key, values in secrets["mcpEnv"].items() if key in servers}
+            secrets["mcpEnv"] = {key: values for key, values in kept.items() if values}
             self.store.save_secrets(secrets)
             self.store.save_config(updated)
             self.store.log("settings", "integrations", "saved")
+        # A server that was removed or turned off stops now; a changed one restarts on its next use.
+        self.local.keep_only({server["id"] for server in updated["mcp"]["servers"] if server["enabled"]})
+
+    def _session(self, server):
+        secrets = self.store.secrets()
+        return McpSession(server, secrets["mcp"].get(server["id"], ""), secrets["mcpEnv"].get(server["id"], {}), self.local)
+
+    def _owner_tools(self, server):
+        """The server's tools; a local program's failure also shows the owner its last error output."""
+        try:
+            with self._session(server) as session:
+                return session.tools()
+        except IntegrationError as error:
+            output = self.local.detail(server["id"]) if server["kind"] == "stdio" else ""
+            if output:
+                raise IntegrationError(error.code, f"{error.message} Its last output:\n{output}") from None
+            raise
 
     def discover(self, server_id):
-        """Connect once and record the server's tools, keeping the owner's earlier choices."""
-        server = self._server(self.store.config(), server_id, enabled=False)
-        with McpSession(server, self.store.secrets().get("mcp", {}).get(server_id, "")) as session:
-            tools = session.tools()
+        """Connect and record the server's tools, keeping the owner's earlier choices.
+
+        A tool that was not there at the last check starts off and is marked new.
+        """
+        tools = self._owner_tools(self._server(self.store.config(), server_id, enabled=False))
         with self.store.lock:
             config = self.store.config()
             server = self._server(config, server_id, enabled=False)
             previous = {tool["name"]: tool["policy"] for tool in server["tools"]}
-            server["tools"] = [describe_tool(tool, previous.get(tool["name"])) for tool in tools]
+            checked_before = server["discoveredAt"] is not None
+            server["tools"] = [describe_tool(tool, previous.get(tool["name"]), new=checked_before and tool["name"] not in previous)
+                               for tool in tools]
             server["discoveredAt"] = now()
             config["revision"] += 1
             self.store.save_config(config)
-            self.store.log("mcp-discover", server["name"], f"{len(tools)} tools")
+            added = sum(tool["new"] for tool in server["tools"])
+            self.store.log("mcp-discover", server["name"], f"{len(tools)} tools" + (f", {added} new" if added else ""))
+
+    def test(self, server_id):
+        """Connect and list the tools without changing anything; a sentence for the owner."""
+        server = self._server(self.store.config(), server_id, enabled=False)
+        names = {tool["name"] for tool in self._owner_tools(server)}
+        known = {tool["name"] for tool in server["tools"]}
+        added, gone = len(names - known), len(known - names)
+        self.store.log("mcp-test", server["name"], f"{len(names)} tools")
+        changes = []
+        if added and server["discoveredAt"]:
+            changes.append(f"{added} new")
+        if gone:
+            changes.append(f"{gone} gone")
+        return (f"{server['name']} answered with {len(names)} tools."
+                + (f" Since the last check: {', '.join(changes)}. Check tools to review them." if changes else ""))
 
     def decide(self, approval_id, decision):
         if decision not in ("approve", "decline"):
@@ -286,7 +369,8 @@ class Integrations:
             waiting = self._approval("note", summary, digest("note", relative, mode, request.get("text")))
             if waiting:
                 return waiting
-        written = notes.write(config, relative, request.get("text"), mode)
+        with self.store.lock:  # Two writes to one note never interleave.
+            written = notes.write(config, relative, request.get("text"), mode)
         self.store.log("notes-write", written, mode)
         return {"written": written, "mode": mode}
 
@@ -310,7 +394,7 @@ class Integrations:
             waiting = self._approval("mcp", summary, digest("mcp", server["id"], name, arguments))
             if waiting:
                 return waiting
-        with McpSession(server, self.store.secrets().get("mcp", {}).get(server["id"], "")) as session:
+        with self._session(server) as session:
             text, failed = session.call(name, arguments)
         self.store.log("mcp-call", f"{server['name']}: {name}", "error" if failed else "done")
         return {"server": server["id"], "tool": name, "text": text, "isError": failed}
@@ -337,10 +421,12 @@ class Integrations:
 
     def _notify_approval(self, summary):
         config = self.store.config()
-        if not (config["notifications"]["enabled"] and config["notifications"]["notifyApprovals"]):
+        settings = config["notifications"]
+        if not (settings["enabled"] and settings["notifyApprovals"]):
             return
         try:
-            send_notification(config, self.store.secrets(), "Portal needs your approval", summary, "high")
+            send_notification(config, self.store.secrets(), "Portal needs your approval", f"{summary}\n\n{APPROVAL_HELP}",
+                              "high", settings["approvalLink"])
         except IntegrationError as error:
             # The approval is still waiting in Settings; only the ping failed.
             self.store.log("notify", "approval", error.message)

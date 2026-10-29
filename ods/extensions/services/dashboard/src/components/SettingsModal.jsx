@@ -57,7 +57,7 @@ export default function SettingsModal() {
       {section === 'portal-mascot' && <PortalMascotSettings/>}
       <Suspense fallback={<p>Loading settings…</p>}>
         {section === 'pixel-diagnostics' && <PixelDiagnostics />}
-        {section === 'portal-integrations' && <PortalIntegrations />}
+        {visited.has('portal-integrations') && <div hidden={section !== 'portal-integrations'}><PortalIntegrations /></div>}
         {visited.has('integrations') && <div hidden={section !== 'integrations'}><Integrations compact /></div>}
         {visited.has('remote') && <div hidden={section !== 'remote'}><RemoteGPU compact /></div>}
       </Suspense>
