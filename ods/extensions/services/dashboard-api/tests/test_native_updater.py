@@ -5,13 +5,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import io
-import json
 import sys
 import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-import httpx
 import pytest
 from fastapi.testclient import TestClient
 
