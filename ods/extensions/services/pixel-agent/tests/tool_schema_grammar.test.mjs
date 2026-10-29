@@ -51,8 +51,18 @@ for (const tool of registered) {
 test('all registered Pixel schemas compile together, including deferred specialists', nativeOnly,
   () => compileSchema(combinedToolSchema(registered)));
 
+test('connection status grammar accepts no arguments and rejects extra fields or arrays',nativeOnly,()=>{
+  const tool=registered.find(tool=>tool.name==='pixel_ods_connections_status');
+  for(const [args,expected] of [[{},0],[{operation:'connect'},2],[[],2]]) {
+    const result=spawnSync(nativeGrammar,[],{
+      input:JSON.stringify({schema:tool.parameters,arguments:args}),encoding:'utf8',timeout:30000,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status,expected,result.stderr);
+  }
+});
+
 for (const [tool, samples] of [
-  [registered.find(tool => tool.name === 'pixel_ods_connections_status'), [{}]],
   [registered.find(tool => tool.name === 'pixel_ods_workspace_artifact'),
     [{relativePath:'report.pdf'}, {relativePath:'project.zip',sourcePath:'Playground/project'},
       {relativePath:'single.zip',sourcePath:'Playground/main.py'}]],
