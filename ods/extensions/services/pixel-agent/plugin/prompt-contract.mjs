@@ -144,7 +144,9 @@ const CONNECTED_READ_TOOLS = {
   email: "For Gmail, discover the offered pixel_gmail_inbox/pixel_gmail_search/pixel_gmail_read tools with tool_search, then tool_describe the returned exact ID and call its actual schema through tool_call. " +
     "Gmail list/search/thread tools use maxResults (1-100): set it explicitly to honor the owner's limit. Omitting it returns a default page of 50, not a counts-only result. " +
     "For count/status-only questions, use maxResults: 1 and counting/coverage/totalMatches; do not paginate or call pixel_gmail_read. Fetch more records or details only when the owner needs them. An indexed count is not the account total.",
-  calendar: "For Calendar, discover the offered pixel_calendar_list/pixel_calendar_get tools with tool_search, then tool_describe the returned exact ID and call its actual schema through tool_call.",
+  calendar: "For Calendar, discover the offered pixel_calendar_list/pixel_calendar_get tools with tool_search, then tool_describe the returned exact ID and call its actual schema through tool_call. " +
+    "For count/status-only questions, use the requested timeMin/timeMax window and maxResults: 1; totalMatches counts indexed events in that window, not all Calendar events. " +
+    "Check stale, requestCoveredByWindow and coverage.completeWithinWindow before claiming a complete count or no events. Never invent a missing source time zone.",
   wiki: "Knowledge wiki is a local ODS plugin: discover wiki_search/wiki_get with tool_search, then tool_describe its required arguments before tool_call.",
 };
 const CONNECTED_RECORDS_TINY_CONTRACT = CONNECTED_RECORDS_CONTRACT;

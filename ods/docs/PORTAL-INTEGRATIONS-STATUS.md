@@ -86,8 +86,9 @@ mark them merged or replace their review.
 The ordinary Google connection is designed as **Connect Google → choose account
 → authorize**, without a per-user Cloud project or client JSON. Protected Root
 configuration, authenticated host/API transport and Settings now carry that
-journey; owner-provided clients remain explicit Advanced setup. Official app
-registration/verification and reviewed release provisioning are still required.
+journey; owner-provided clients remain explicit Advanced setup. The separate
+maintainer project has initial Testing branding; official client provisioning,
+domain/scope verification and reviewed release provisioning are still required.
 A personal Desktop client completed real read-only consent locally. The installed
 Portal discovered the tools, read one sanitized email projection and queried a
 covered seven-day Calendar interval with zero events. The inbox lookup's persisted
@@ -239,6 +240,30 @@ answer explicitly says the mailbox total is unavailable. Normal QA task removal
 retained its result. This is scoped service-path acceptance, not a new browser/UI
 or real-attachment payload test. The repair does not erase old chats, task history,
 backups or provider copies, or claim Gmail never transports inline bytes.
+
+After the Chrome connection recovered, a read-only installed UI check confirmed
+Google connected with Calendar read and Email summaries, independent sync status,
+the reviewed Notion catalog, and the scheduled-task form. Its idle fields have
+no border/outline and the focused name field retains its visible indicator.
+Opening and cancelling that form created no task and changed no connection.
+This does not qualify a new sign-in, provider read, withdrawal or rollback.
+
+A separate private Qwen 3.5 2B/8K CPU trial failed: chat requested five Gmail
+summaries despite the one-summary instruction, used almost eighteen Calendar
+days and presented the resulting three events as a seven-day count. The first
+overread preceded compaction with the original request and Gmail guide present.
+The independent scheduled leg has saved tool evidence, but an audit-analysis
+exception prevented complete native receipts from being retained. It does not
+qualify restart or result retention. All disposable resources were subsequently
+removed by verified identities; the installed grant, gateway and 9B model stayed
+unchanged. Neither that cleanup nor passing unit tests erases the failed trial.
+
+The trial also exposed missing Calendar guidance on ordinary bilingual count
+questions. The branch now selects the requested app guides for those questions
+and separates read clauses from writes, metadata and explicit negations, in chat
+and native-cron task text. Calendar guidance explains the requested window,
+indexed totals, freshness and coverage. This is model guidance, not a per-turn
+read limit, and does not establish that the 2B model now follows the request.
 
 Installed Connected apps also fetched the reviewed catalog through the actual
 Dashboard/host/Root path and displayed **Apps for Portal → Notion → Not

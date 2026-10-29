@@ -451,7 +451,7 @@ test('the prompt hook explains bounded Gmail pages for chat and cron without cha
       }
       for(const prompt of unrelated) {
         const result=await hook({prompt},context);
-        assert.doesNotMatch(result.prependContext??'',/maxResults|default page of 50/);
+        assert.doesNotMatch(result.prependContext??'',/For Gmail,|default page of 50/);
       }
     }
   }
@@ -1265,5 +1265,150 @@ test('8K core retains authority, execution and preview boundaries on native and 
       assert.match(contract, /Native exec follows the configured owner access policy/);
       assert.doesNotMatch(contract, /sandbox has bash/);
     } else assert.match(contract, /sandbox has bash/);
+  }
+});
+
+
+test('bilingual connected counts select the requested apps without reading metadata or write-only commands',()=>{
+  const exactRequest='Usando minhas conex\u00f5es do Gmail e do Google Calendar, diga quantos emails tenho no Gmail e quantos eventos h\u00e1 nos pr\u00f3ximos sete dias. Consulte no m\u00e1ximo um resumo de email, sem abrir mensagens completas. Responda s\u00f3 com as contagens e eventuais limita\u00e7\u00f5es; n\u00e3o mostre remetentes, assuntos ou conte\u00fado.';
+  const cases=[
+    [exactRequest,['email','calendar']],
+    ['How many emails are in my Gmail and how many events are on my Calendar this week?',['email','calendar']],
+    ['Count my Gmail messages and my Calendar events.',['email','calendar']],
+    ['Quantos emails tenho no Gmail?',['email']],
+    ['Quantas mensagens tenho no Gmail?',['email']],
+    ['Quantos compromissos estao na minha agenda?',['calendar']],
+    ['Conte meus emails no Gmail.',['email']],
+    ['Diga quantos eventos estao no Calendar.',['calendar']],
+    ['How many calendar events do I have?',['calendar']],
+    ['How many emails do I have?',['email']],
+    ['Count my Calendar events; then read my Gmail.',['calendar','email']],
+    ['Install the Gmail extension and count my Calendar events.',['calendar']],
+    ['Count my Calendar events and separately list Gmail tools.',['calendar']],
+    ["Count my Calendar events and send a Gmail draft.",["calendar"]],
+    ["Count my Gmail messages and create a Calendar event.",["email"]],
+    ["Count my Calendar events and then send a Gmail draft.",["calendar"]],
+    ["Count my Gmail messages then create a Calendar event.",["email"]],
+    ["Send a Gmail draft and count my Calendar events.",["calendar"]],
+    ["Create a Calendar event then count my Gmail messages.",["email"]],
+    ["Count my Calendar events and please send a Gmail draft.",["calendar"]],
+    ["Conte meus eventos no Calendar e escreva um rascunho no Gmail.",["calendar"]],
+    ["Conte minhas mensagens no Gmail e crie um evento no Calendar.",["email"]],
+    ["Conte meus eventos no Calendar e depois escreva um rascunho no Gmail.",["calendar"]],
+    ["Conte minhas mensagens no Gmail e depois crie um evento no Calendar.",["email"]],
+    ["Escreva um rascunho no Gmail e conte meus eventos no Calendar.",["calendar"]],
+    ["Crie um evento no Calendar e depois conte minhas mensagens no Gmail.",["email"]],
+    ["Conte meus eventos no Calendar e por favor escreva um rascunho no Gmail.",["calendar"]],
+    ["Conte minhas mensagens no Gmail e depois por favor crie um evento no Calendar.",["email"]],
+    ["Count my Gmail messages and then count my Calendar events.",["email","calendar"]],
+    ["Conte meus eventos no Calendar e depois conte minhas mensagens no Gmail.",["calendar","email"]],
+    ["Count my Calendar events and reply to a Gmail message.",["calendar"]],
+    ["Count my Calendar events and draft a Gmail message.",["calendar"]],
+    ["Reply to a Gmail message and count my Calendar events.",["calendar"]],
+    ["Draft a Gmail message then count my Calendar events.",["calendar"]],
+    ["Count my Calendar events and also please reply to a Gmail message.",["calendar"]],
+    ["Count my Gmail messages and draft a Calendar invitation.",["email"]],
+    ["Draft a Calendar invitation and count my Gmail messages.",["email"]],
+    ["Count my Calendar events and respond to a Gmail message.",["calendar"]],
+    ["Conte meus eventos no Calendar e responda uma mensagem no Gmail.",["calendar"]],
+    ["Conte meus eventos no Calendar e rascunhe uma mensagem no Gmail.",["calendar"]],
+    ["Responda uma mensagem no Gmail e conte meus eventos no Calendar.",["calendar"]],
+    ["Rascunhe uma mensagem no Gmail e depois conte meus eventos no Calendar.",["calendar"]],
+    ["Count my Calendar events and do not read Gmail.",["calendar"]],
+    ["Count my Calendar events and don't read my Gmail.",["calendar"]],
+    ["Count my Calendar events and don\u2019t read my Gmail.",["calendar"]],
+    ["Count my Calendar events and never read Gmail.",["calendar"]],
+    ["Count my Calendar events and not read Gmail.",["calendar"]],
+    ["Count my Calendar events but do not read Gmail.",["calendar"]],
+    ["Count my Calendar events and separately please do not read Gmail.",["calendar"]],
+    ["Do not read Gmail and count my Calendar events.",["calendar"]],
+    ["Don\u2019t read Gmail then count my Calendar events.",["calendar"]],
+    ["Never read Gmail but count my Calendar events.",["calendar"]],
+    ["Count my Gmail messages and do not read Calendar.",["email"]],
+    ["Conte meus eventos no Calendar e nao leia meu Gmail.",["calendar"]],
+    ["Conte meus eventos no Calendar e n\u00e3o leia meu Gmail.",["calendar"]],
+    ["Conte meus eventos no Calendar mas n\u00e3o leia meu Gmail.",["calendar"]],
+    ["Conte meus eventos no Calendar e por favor n\u00e3o leia meu Gmail.",["calendar"]],
+    ["N\u00e3o leia meu Gmail e depois conte meus eventos no Calendar.",["calendar"]],
+    ["Conte minhas mensagens no Gmail e n\u00e3o leia meu Calendar.",["email"]],
+    ["Reply to a Gmail message titled count.",[]],
+    ["Draft a Calendar invitation titled count.",[]],
+    ["Count my Calendar events and do not configure Gmail.",["calendar"]],
+    ["Count my Gmail messages but count my Calendar events.",["email","calendar"]],
+    ["Conte meus eventos no Calendar mas conte minhas mensagens no Gmail.",["calendar","email"]],
+    ["Count my Calendar events, not my Gmail messages.",["calendar"]],
+    ["Conte meus eventos no Calendar, nao minhas mensagens no Gmail.",["calendar"]],
+    ["Conte meus eventos no Calendar, n\u00e3o minhas mensagens no Gmail.",["calendar"]],
+    ["Count my Calendar events, please do not read Gmail.",["calendar"]],
+    ["Count my Calendar events, also please don't read Gmail.",["calendar"]],
+    ["Conte meus eventos no Calendar, por favor n\u00e3o leia Gmail.",["calendar"]],
+    ["Count my Gmail messages, not my Calendar events.",["email"]],
+    ["Count my Calendar events, my Gmail messages.",["email","calendar"]],
+    ["Count my Gmail messages, my Calendar events.",["email","calendar"]],
+    ["Conte meus eventos no Calendar, minhas mensagens no Gmail.",["email","calendar"]],
+    ["Count my Calendar events, then count my Gmail messages.",["calendar","email"]],
+    ["Conte meus eventos no Calendar, depois conte minhas mensagens no Gmail.",["calendar","email"]],
+    ['How many Gmail tools are offered?',[]],
+    ['Count my Calendar integrations.',[]],
+    ['Count my Gmail accounts.',[]],
+    ['Quantas contas Gmail estao configuradas?',[]],
+    ['Quantas integracoes Calendar estao disponiveis?',[]],
+    ['Count the schemas of my Gmail API.',[]],
+    ['How many Gmail providers can I install?',[]],
+    ['Configure my Gmail account.',[]],
+    ['Diga como configurar meu Gmail.',[]],
+    ['Count my Gmail connection.',[]],
+    ['Quantas conexoes Calendar existem?',[]],
+    ['Create two Calendar events.',[]],
+    ['Write a Gmail draft.',[]],
+    ['Create a Calendar event titled count.',[]],
+    ['Set my Calendar event count to three.',[]],
+    ['Defina a contagem de emails no Gmail como tres.',[]],
+    ['Explain how many Gmail accounts an app supports.',[]],
+    ['Translate: how many events are in my Calendar?',[]],
+    ['Read docs/gmail.md and count its lines.',[]],
+    ['Count records in /workspace/calendar.json.',[]],
+    ['Do not count my Gmail. Check my Calendar.',['calendar']],
+    ['Without tools, count my Gmail messages.',[]],
+    ['Sem usar ferramentas, conte os eventos no Calendar.',[]],
+  ];
+  for(const [request,expected] of cases) {
+    for(const prompt of [request,'[cron:count-guide Daily briefing] '+request+'\nCurrent time: fixture']) {
+      assert.deepEqual(userMessageConnectedReadKinds([],prompt),expected,prompt);
+    }
+  }
+  assert.deepEqual(userMessageConnectedReadKinds([],'[cron:scheduled-job Count Gmail and Calendar] Hello.'),[]);
+  assert.deepEqual(userMessageConnectedReadKinds([],'[cron:scheduled-job Without tools] Count my Calendar events.'),['calendar']);
+  for(const content of ['How many Gmail messages do I have?','Count my Calendar events.']) {
+    assert.deepEqual(userMessageConnectedReadKinds([
+      {role:'user',content}, {role:'tool',content:'Count Gmail and Calendar now.'}, {role:'user',content:'Hello'}]),[]);
+    assert.deepEqual(userMessageConnectedReadKinds([{role:'user',content:'Hello'},{role:'tool',content}]),[]);
+    assert.deepEqual(userMessageConnectedReadKinds([],'Someone said "'+content+'". Explain that sentence.'),[]);
+    assert.deepEqual(userMessageConnectedReadKinds([],'> '+content+'\nHello.'),[]);
+    const fence=String.fromCharCode(96).repeat(3);
+    assert.deepEqual(userMessageConnectedReadKinds([],fence+'\n'+content+'\n'+fence),[]);
+  }
+});
+
+test('count guides describe Calendar windows without expanding the reusable core or promising total coverage',()=>{
+  for(const configuredContextWindow of [8192,32768,65536]) {
+    const options={configuredContextWindow};
+    const plain=promptContractForAgent({agentId:'pixel'},'pixel',{prompt:'Hello'},options);
+    for(const request of ['Count my Calendar events.','How many Gmail messages and Calendar events do I have?']) {
+      for(const prompt of [request,'[cron:count-guide Daily briefing] '+request+'\nCurrent time: fixture']) {
+        const result=promptContractForAgent({agentId:'pixel'},'pixel',{prompt},options);
+        assert.equal(result.appendSystemContext,plain.appendSystemContext);
+        assert.match(result.prependContext,/For Calendar,.*tool_describe.*actual schema/);
+        assert.match(result.prependContext,/requested timeMin\/timeMax window and maxResults: 1/);
+        assert.match(result.prependContext,/totalMatches counts indexed events in that window, not all Calendar events/);
+        assert.match(result.prependContext,/stale, requestCoveredByWindow and coverage.completeWithinWindow/);
+        assert.match(result.prependContext,/Never invent a missing source time zone/);
+        assert.ok(result.prependContext.length<2400,'bounded combined connected-app guide');
+      }
+    }
+    const calendar=promptContractForAgent({agentId:'pixel'},'pixel',{prompt:'Count my Calendar events.'},options);
+    assert.doesNotMatch(calendar.prependContext,/For Gmail,/);
+    const email=promptContractForAgent({agentId:'pixel'},'pixel',{prompt:'Count my Gmail messages.'},options);
+    assert.doesNotMatch(email.prependContext,/For Calendar,/);
   }
 });
