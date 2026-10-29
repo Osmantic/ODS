@@ -40,14 +40,14 @@ function Register-ODSWindowsDesktopUninstall {
     $quietUninstallCmd = "$uninstallCmd -KeepData -Quiet"
 
     $entries = [ordered]@{
-        DisplayName          = 'ODS (Open Dev Society)'
+        DisplayName          = 'ODS (Osmantic Deployment System)'
         DisplayVersion       = $Version.TrimStart('v')
-        Publisher            = 'Open Dev Society'
+        Publisher            = 'Osmantic Deployment System'
         InstallLocation      = $resolvedInstall
         DisplayIcon          = $DisplayIcon
         UninstallString      = $uninstallCmd
         QuietUninstallString = $quietUninstallCmd
-        URLInfoAbout         = 'https://open-dev-society.org'
+        URLInfoAbout         = 'https://osmantic.com'
         NoModify             = 1
         NoRepair             = 1
         InstallDate          = (Get-Date).ToString('yyyyMMdd')

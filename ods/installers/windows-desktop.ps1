@@ -677,7 +677,7 @@ if (-not $SkipShortcuts) {
                     $link = $shell.CreateShortcut($lnkPath)
                     $link.TargetPath = $odsExePath
                     $link.WorkingDirectory = $binDir
-                    $link.Description = 'ODS — Open Dev Society Windows Native Desktop'
+                    $link.Description = 'ODS — Osmantic Deployment System Windows Native Desktop'
                     if (Test-Path -LiteralPath $iconCandidate -PathType Leaf) {
                         $link.IconLocation = "$iconCandidate,0"
                     } else {
