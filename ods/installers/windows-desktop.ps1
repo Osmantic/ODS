@@ -654,7 +654,7 @@ if (-not $SkipServiceStart) {
         $env:ODS_LLAMA_ENDPOINT = "http://127.0.0.1:$LlamaPort"
         try {
             Start-Process -FilePath $resolvedPythonExe `
-                -ArgumentList "-m uvicorn main:app --host 127.0.0.1 --port $DashboardPort" `
+                -ArgumentList "-m uvicorn --app-dir `"$dashApiDir`" main:app --host 127.0.0.1 --port $DashboardPort" `
                 -WorkingDirectory $dashApiDir `
                 -WindowStyle Hidden
         } catch {
