@@ -62,9 +62,30 @@ bounded-list guidance for runtimes that do not offer them. Managed workspace
 migrations preserve recognized historical templates and owner edits.
 
 Controlled Source, planner, bootstrap, dispatcher and release-copy checks cover
-these components. They do not certify actual small-model behavior, real Google
-consent/recovery or native macOS execution. The earlier failed 2B/8K run remains
-negative evidence until a new, separately recorded journey is evaluated.
+these components. They do not certify real Google consent/recovery or native
+macOS execution.
+
+A separate October 29 run on the exact count-tools source used a private 2B/8K
+CPU engine and fictitious projections. Both model legs failed. Chat used an
+incorrect Calendar interval, attempted detail reads blocked by the test guard,
+and exposed synthetic identifiers/titles in its answer. Gmail count itself
+returned metadata only and kept the account total unknown. Native cron exhausted
+its discovery guard without completing a Source read. Post-restart scheduling
+and retention of that error result have separate receipts; they do not qualify
+the model's answer. The run completed naturally, raw evidence was retained and
+its disposable resources were removed. The installed account, gateway identity
+and model configuration were unchanged. Both this run and the earlier failed
+2B/8K run remain negative evidence; count tools do not make that model accepted.
+
+After the ordinary installed 4.3.41 update, one native task with the installed
+9B/64K model used both count tools successfully and returned no records. Complete
+saved replies qualify the fresh partial Gmail index, unknown mailbox total and
+a fresh, covered Calendar count. Calendar resolved seven civil dates including
+today in the owner's timezone; this is not a rolling 168-hour-from-now claim.
+The answer disclosed the partial index and unknown mailbox total. Normal task
+removal retained the same complete result. The existing read-only Google grant
+was preserved; no email or event was changed. This is one observed installed
+request, not arbitrary-model acceptance or a new browser/UI qualification.
 
 The [October 28 checkpoint](drafts/PORTAL-COUNT-TOOLS-HANDOFF.md) preserves the
 earlier design and unapplied partial patch; it is historical material, not the

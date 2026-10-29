@@ -7,8 +7,10 @@ integration work. The original PRs remain separate; this document does not
 mark them merged or replace their review.
 
 Work resumed on October 29. [Count tools](PORTAL-COUNT-TOOLS.md) now have a Source,
-permission and guide implementation; installed/model qualification remains
-separate. The [earlier handoff](drafts/PORTAL-COUNT-TOOLS-HANDOFF.md) preserves
+permission and guide implementation. The ordinary installed 4.3.41 update
+completed on Windows/WSL with the original read-only Google grant and 9B/64K
+NVIDIA configuration preserved. Model qualification remains separately scoped.
+The [earlier handoff](drafts/PORTAL-COUNT-TOOLS-HANDOFF.md) preserves
 the paused prototype and its negative small-model evidence. See the
 [maintainer release handoff](PORTAL-MAINTAINER-RELEASE-HANDOFF.md) for the
 Google/domain and integration decisions that remain with the maintainers.
@@ -25,7 +27,7 @@ Google/domain and integration decisions that remain with the maintainers.
   alone no longer counts as a working plugin.
 - Preserved native MCP servers and tool restrictions through Pixel rendering
   and macOS configuration staging, with a reproducible Portal runtime source
-  candidate/public bundle using internal package version 4.3.40.
+  candidate/public bundle using internal package version 4.3.41.
 - Added an owner-side, version/hash-bound adapter to OpenClaw's MCP OAuth,
   retaining its discovery, registration, PKCE, token storage and refresh.
 - Added internal Root consent intent/callback claiming, an independently bound
@@ -89,6 +91,42 @@ Google/domain and integration decisions that remain with the maintainers.
   records the boundaries.
 
 ## Qualification boundaries
+
+The October 29 ordinary 4.3.41/source
+`fb48263c80ed86ddbfafad14cd688bec97f21704` update completed from the frozen
+`cf3d6260636b8cdd80832969830b65a0ca8f91a5` code checkpoint. Owner/source state
+returned ready/complete and the runtime was verified with no pending transition.
+The original read-only Google grant, Qwen3.5-9B/64K and NVIDIA configuration were
+preserved. Selected active configuration, plugin/SDK bytes, units, environments,
+processes and ten ODS containers were inspected without retained QA references;
+temporary policy/delegation was removed. This is a scoped inspection, not a
+whole-host or transitive module-resolution attestation. The first qualification
+runner omitted the WSL NVIDIA binary directory and incorrectly selected CPU;
+that failed attempt is retained separately. The corrected runner verified the
+real 5090 before starting the successful ordinary installer.
+
+The separate count-tools 2B/8K journey completed naturally but both model legs
+failed. Chat used an incorrect Calendar window, attempted test-blocked detail
+reads and exposed synthetic identifiers/titles. Cron exhausted discovery without
+completing a Source read; post-restart scheduling and retention of the error
+result have their own receipts. Gmail count itself returned metadata only and
+kept the account total unknown. Disposable resources were removed and the
+installed grant, source, gateway identity and model were unchanged. Both the
+earlier and this new small-model failure remain negative evidence. They do not
+establish arbitrary-model reliability for the count tools.
+
+One post-update task then completed through the installed authenticated Root
+owner contract and native cron in 9.54 seconds using the 9B/64K model. It called
+both metadata-only count tools and returned zero email/event records, with no
+other execution tool calls. Complete saved replies establish a fresh partial
+Gmail index, unknown mailbox total and a fresh, complete Calendar count over
+seven civil dates including today in the owner's timezone. The final answer
+reported that scope and disclosed the Gmail limitation. This does not qualify
+a rolling 168-hour interval from now. Normal removal archived only the QA task
+and retained the identical complete result. A UID-1000 Dashboard HTTP check
+also reported verified Full Access with readable owner-mode-0600 environment
+and no busy/pending transition. This is one installed model/cron observation,
+not a new browser/UI run, account-write approval or general answer guarantee.
 
 The ordinary Google connection is designed as **Connect Google → choose account
 → authorize**, without a per-user Cloud project or client JSON. Protected Root
