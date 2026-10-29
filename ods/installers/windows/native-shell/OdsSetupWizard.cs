@@ -179,7 +179,7 @@ namespace OdsNativeSetup
 
             Label headerLabel = new Label
             {
-                Text = "Open Dev Society — Windows Native Desktop",
+                Text = "Osmantic Deployment System — Windows Native Desktop",
                 Font = new Font("Segoe UI Semibold", 15f, FontStyle.Bold),
                 ForeColor = Color.FromArgb(56, 189, 248),
                 Location = new Point(28, 16),

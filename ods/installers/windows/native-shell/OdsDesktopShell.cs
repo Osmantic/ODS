@@ -269,7 +269,7 @@ namespace OdsNativeDesktop
             _installDir = installDir;
             _appDataDir = appDataDir;
 
-            Text = "ODS — Open Dev Society";
+            Text = "ODS — Osmantic Deployment System";
             Size = new Size(1360, 860);
             MinimumSize = new Size(960, 640);
             StartPosition = FormStartPosition.CenterScreen;
