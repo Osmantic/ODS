@@ -184,7 +184,7 @@ test("a source that has never synced reads as stale with its recorded cause", as
 
 test("email answers carry their source's sync state and tolerate a missing status file", async (t) => {
   const email = { schemaVersion: 1, source: "gmail", enabled: true, generatedAt: iso(0), startedAt: iso(0), recordCount: 0,
-    records: [], sanitizerRevision: 2, boundary, coverage: { bounded: true, folders: {} } };
+    records: [], sanitizerRevision: 3, boundary, coverage: { bounded: true, folders: {} } };
   const directory = await withProjections(t, { email, status });
   const tools = await loadPlugin({ PIXEL_LIMB_WEB_ENABLED: "0", PIXEL_SOURCE_PROJECTION_DIR: directory });
   assert.equal((await call(tools, "pixel_gmail_inbox", {})).sync.errorClass, "api-disabled");
@@ -195,7 +195,7 @@ test("email answers carry their source's sync state and tolerate a missing statu
 function emailProjection(overrides = {}) {
   const folder = (query) => ({ query, completeWithinQuery: true, truncated: false, resultSizeEstimate: 999999 });
   return { schemaVersion: 1, source: "gmail", enabled: true, generatedAt: iso(0), startedAt: iso(0),
-    sanitizerRevision: 2, boundary, recordCount: 3,
+    sanitizerRevision: 3, boundary, recordCount: 3,
     records: [
       { id: "in-a", threadId: "thread-a", mailboxes: ["inbox"], labelIds: ["INBOX"], summary: "Synthetic first summary.", retainedFromEarlierScan: false },
       { id: "in-b", threadId: "thread-a", mailboxes: ["inbox"], labelIds: ["INBOX"], summary: "Synthetic second summary.", retainedFromEarlierScan: false },
@@ -204,6 +204,34 @@ function emailProjection(overrides = {}) {
       unread: folder("in:inbox newer_than:90d is:unread") }, sync: { state: "complete", retainedRecords: 0 } },
     ...overrides };
 }
+
+test("every Gmail reader refuses old or unknown sanitizers before exposing saved summaries", async (t) => {
+  for (const revision of [undefined, null, 2, 4, "3", true]) {
+    const email = emailProjection({ sanitizerRevision: revision });
+    email.records[0].summary = "Legacy attachment content must never be returned.";
+    const directory = await withProjections(t, { email });
+    const before = await readFile(join(directory, "email.json"), "utf8");
+    const tools = await loadPlugin({ PIXEL_LIMB_WEB_ENABLED: "0", PIXEL_SOURCE_PROJECTION_DIR: directory });
+    for (const [name, args] of [
+      ["pixel_gmail_inbox", {}], ["pixel_gmail_sent", {}], ["pixel_gmail_search", { query: "in:inbox" }],
+      ["pixel_gmail_read", { messageId: "in-a" }], ["pixel_gmail_thread", { threadId: "thread-a" }],
+    ]) {
+      const response = await tools.get(name).execute("old-sanitizer", args);
+      assert.equal(response.isError, true, `${name} must reject an unqualified sanitizer`);
+      assert.match(response.content[0].text, /Email projection needs a refresh before it can be read/);
+      assert.doesNotMatch(JSON.stringify(response), /Legacy attachment content|in-a|thread-a/);
+    }
+    assert.equal(await readFile(join(directory, "email.json"), "utf8"), before);
+  }
+  const directory = await withProjections(t, { email: emailProjection(), calendar: calendarProjection(),
+    social: { schemaVersion: 1, sanitizerRevision: 2, generatedAt: iso(0), boundary,
+      records: [{ summary: "Synthetic social record." }] } });
+  const tools = await loadPlugin({ PIXEL_LIMB_WEB_ENABLED: "0", PIXEL_LIMB_SOCIAL_ENABLED: "1",
+    PIXEL_SOURCE_PROJECTION_DIR: directory });
+  assert.equal((await call(tools, "pixel_gmail_read", { messageId: "in-a" })).summary, "Synthetic first summary.");
+  assert.equal((await call(tools, "pixel_calendar_list", { timeMin: iso(1), timeMax: iso(3) })).count, 1);
+  assert.equal((await call(tools, "pixel_social_feed", {})).records.length, 1);
+});
 
 test("Gmail pages frontload unknown mailbox totals even after exhausting the current partial index", async (t) => {
   const email = emailProjection();
@@ -339,7 +367,7 @@ test("source argument validation rejects wrong shapes, types and bounds without 
 });
 
 test("correcting max to maxResults returns exactly one record while valid defaults remain unchanged", async (t) => {
-  const email = { schemaVersion: 1, generatedAt: iso(0), boundary,
+  const email = { schemaVersion: 1, sanitizerRevision: 3, generatedAt: iso(0), boundary,
     records: Array.from({ length: 72 }, (_, i) => ({ id: `email-${i}`, mailboxes: ["inbox"], summary: "Invented fixture only." })) };
   const directory = await withProjections(t, { email });
   const tools = await loadPlugin({ PIXEL_LIMB_WEB_ENABLED: "0", PIXEL_SOURCE_PROJECTION_DIR: directory });
@@ -373,7 +401,7 @@ test("unknown nested recipient and attendee fields cannot create a proposal or e
 test("the pinned SDK tool_call preserves unknown arguments until the source guard refuses them", {
   skip: !process.env.OPENCLAW_PACKAGE_DIR,
 }, async (t) => {
-  const directory = await withProjections(t, { email: { schemaVersion: 1, generatedAt: iso(0), boundary,
+  const directory = await withProjections(t, { email: { schemaVersion: 1, sanitizerRevision: 3, generatedAt: iso(0), boundary,
     records: Array.from({ length: 72 }, (_, i) => ({ id: `email-${i}`, mailboxes: ["inbox"], summary: "Invented fixture only." })) } });
   const release = JSON.parse(await readFile(new URL("../RELEASE-MANIFEST.json", import.meta.url), "utf8"));
   const script = `
@@ -426,7 +454,7 @@ process.stdout.write(JSON.stringify({unknownArgumentPreserved:true,refusedBefore
 });
 
 test("after a malformed Gmail read, the declared messageId reads the actual record", async (t) => {
-  const email = { schemaVersion: 1, generatedAt: iso(0), boundary,
+  const email = { schemaVersion: 1, sanitizerRevision: 3, generatedAt: iso(0), boundary,
     records: [{ id: "email-1", summary: "Kickoff Thursday at 14:20. Confirmation JADE-TEST." }] };
   const directory = await withProjections(t, { email });
   const tools = await loadPlugin({ PIXEL_LIMB_WEB_ENABLED: "0", PIXEL_SOURCE_PROJECTION_DIR: directory });

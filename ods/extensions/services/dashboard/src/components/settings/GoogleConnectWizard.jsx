@@ -241,7 +241,7 @@ export default function GoogleConnectWizard({catalog, initial = null, status, re
           <span>{capability.label}{capability.available ? '' : ' (coming in a later update)'}
             {capability.available && NOTES[capability.id] ? <span className="block text-sm text-theme-text-muted">{NOTES[capability.id]}</span> : null}</span>
         </label>)}
-        <p className="text-sm text-theme-text-muted">Portal reads summaries of your mail and the details of your events, never attachments. When Portal runs on a cloud model, that model&apos;s provider sees what Portal reads.</p>
+        <p className="text-sm text-theme-text-muted">Portal reads summaries of your mail and the details of your events. Mail summaries exclude the contents of attached files; attachment names, types and sizes may appear. When Portal runs on a cloud model, its provider sees the information Portal passes to it.</p>
       </fieldset>
       {!advanced && signIn.ready ? <p className="text-sm text-theme-text-muted">Choose what Portal may use, then sign in and select your account at Google.</p> : null}
       {!advanced && !signIn.ready ? <div role="status" className="space-y-1 text-sm">

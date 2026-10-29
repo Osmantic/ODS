@@ -155,6 +155,29 @@ class GmailIncrementalTests(unittest.TestCase):
                 self.assertNotEqual(coverage['sync']['binding'], old)
                 self.assertNotIn('old', {item['id'] for item in records})
 
+    def test_attachment_policy_upgrade_discards_old_summary_cursor_and_binding(self):
+        mailbox = Mailbox(inbox=['kept-message'])
+        with patch.object(BROKER, 'SANITIZER_REVISION', 2):
+            self.finish(mailbox)
+            old = json.loads(self.path.read_text())
+            old['records'][0]['summary'] = 'Legacy attachment text that must not be reused.'
+            BROKER.atomic_json(self.path, old)
+        old_binding = old['coverage']['sync']['binding']
+        self.assertIsNone(BROKER.retained_projection(self.path, 'gmail'))
+        self.assertNotEqual(BROKER.gmail_sync_binding(self.generation), old_binding)
+        before = len(mailbox.calls)
+        records, coverage, progress = self.finish(mailbox)
+        self.assertEqual([item['id'] for item in records], ['kept-message'])
+        self.assertNotIn('Legacy attachment text', records[0]['summary'])
+        self.assertEqual(coverage['cache']['reused'], 0)
+        self.assertNotEqual(progress['binding'], old_binding)
+        self.assertTrue(any(params.get('format') == 'full' for _path, params, _timeout in mailbox.calls[before:]))
+        # A current-policy summary can still be reused on the next complete scan.
+        before = len(mailbox.calls)
+        again, _coverage, _progress = self.finish(mailbox)
+        self.assertEqual(again[0]['summary'], records[0]['summary'])
+        self.assertFalse(any(params.get('format') == 'full' for _path, params, _timeout in mailbox.calls[before:]))
+
     def test_inbox_sent_label_is_checked_before_any_full_fetch_even_during_partial_listing(self):
         mailbox = Mailbox(inbox=['dual'], sent=[f's{n}' for n in range(100)] + ['dual'])
         records, coverage, _progress = self.batch(mailbox)
@@ -252,6 +275,36 @@ class GmailIncrementalTests(unittest.TestCase):
 
 
 class IndependentRefreshTests(unittest.TestCase):
+    def test_attachment_policy_upgrade_never_retains_old_rows_after_token_or_api_failure(self):
+        for failure in ('token', 'api'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                root.joinpath('private').mkdir()
+                token = root / 'private/google-token.json'
+                fixtures.write_token(token)
+                output = root / 'projection'
+                mailbox = Mailbox(inbox=['legacy-message'])
+                environment = {'PIXEL_SOURCE_TOKEN_PATH': str(token), 'PIXEL_SOURCE_PROJECTION_DIR': str(output),
+                    'PIXEL_LIMB_EMAIL_ENABLED': '1', 'PIXEL_LIMB_CALENDAR_ENABLED': '0', 'PIXEL_LIMB_SOCIAL_ENABLED': '0'}
+                with patch.dict(os.environ, environment), contextlib.redirect_stdout(io.StringIO()):
+                    with patch.object(BROKER, 'SANITIZER_REVISION', 2), \
+                            patch.object(BROKER, 'refresh_access_token', return_value='synthetic'), \
+                            patch.object(BROKER, 'google_get', mailbox.get):
+                        self.assertEqual(BROKER.refresh(), 0)
+                        old = json.loads((output / 'email.json').read_text())
+                        self.assertEqual(old['recordCount'], 1)
+                        old['records'][0]['summary'] = 'Legacy attachment content must disappear.'
+                        BROKER.atomic_json(output / 'email.json', old)
+                    token_error = BROKER.SourceUnavailable('invalid-grant', 'Synthetic token refusal')
+                    with patch.object(BROKER, 'refresh_access_token',
+                            side_effect=token_error if failure == 'token' else None, return_value='synthetic'), \
+                            patch.object(BROKER, 'google_get', side_effect=BROKER.UpstreamHTTPError(403)):
+                        self.assertEqual(BROKER.refresh(), 0)
+                published = json.loads((output / 'email.json').read_text())
+                self.assertEqual(published['records'], [])
+                self.assertIsNone(published['generatedAt'])
+                self.assertNotIn('Legacy attachment content', json.dumps(published))
+
     def test_known_error_is_preserved_during_retry_until_a_source_actually_succeeds(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

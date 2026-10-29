@@ -108,6 +108,9 @@ async function loadProjection(source) {
   if (value.schemaVersion !== 1 || !Array.isArray(value.records) || value.boundary?.projectionOnly !== true) {
     throw new Error(`${source} projection failed schema or boundary validation`);
   }
+  if (source === "email" && value.sanitizerRevision !== 3) {
+    throw new Error("Email projection needs a refresh before it can be read.");
+  }
   const generated = Date.parse(value.generatedAt);
   const stale = !Number.isFinite(generated) || Date.now() - generated > STALE_AFTER_MS;
   const ageSeconds = Number.isFinite(generated) ? Math.max(0, Math.round((Date.now() - generated) / 1000)) : null;

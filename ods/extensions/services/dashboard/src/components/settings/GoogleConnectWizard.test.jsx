@@ -97,7 +97,7 @@ it("sends exactly the owner's choices, opens Google, and keeps no secret afterwa
   expect(refresh).toHaveBeenCalled()
 })
 
-it('defaults to the capabilities ODS can deliver, and says a cloud model sees what Portal reads', async () => {
+it('defaults to the capabilities ODS can deliver, and discloses data passed to cloud models', async () => {
   const calls = api({'POST /api/pixel/connections/google/connect': [200, BEGUN]})
   wizard()
   expect(screen.getByRole('checkbox', {name: /your own private events/})).toBeDisabled()
@@ -107,7 +107,7 @@ it('defaults to the capabilities ODS can deliver, and says a cloud model sees wh
     expect(screen.getByRole('checkbox', {name})).not.toBeChecked()
   }
   expect(screen.getByText(/Portal never sends email: you send the draft from Gmail/)).toBeVisible()
-  expect(screen.getByText(/When Portal runs on a cloud model, that model's provider sees what Portal reads/)).toBeVisible()
+  expect(screen.getByText(/When Portal runs on a cloud model, its provider sees the information Portal passes to it/)).toBeVisible()
   // Cloud models may use connected data, as decided; no switch offers what nothing enforces yet.
   expect(screen.queryByRole('checkbox', {name: /cloud model/})).toBeNull()
   const sent = await begin(calls)

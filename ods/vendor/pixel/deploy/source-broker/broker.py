@@ -515,7 +515,7 @@ except ImportError:  # pragma: no cover - Windows unit-test compatibility
 
 
 SCHEMA_VERSION = 1
-SANITIZER_REVISION = 2
+SANITIZER_REVISION = 3
 GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me"
 CALENDAR_API = "https://www.googleapis.com/calendar/v3"
 SAFE_TEXT_LIMIT = 800
@@ -754,7 +754,24 @@ def base64url_decode(value: str) -> str:
         return ""
 
 
-def collect_message_parts(part: dict[str, Any], output: dict[str, list[Any]]) -> None:
+def _attachment_disposition(part: dict[str, Any]) -> bool:
+    headers = part.get("headers") or []
+    if not isinstance(headers, list):
+        return False
+    # Any attachment declaration wins, including duplicate or folded headers.
+    for header in headers:
+        if not isinstance(header, dict) or str(header.get("name") or "").strip().lower() != "content-disposition":
+            continue
+        try:
+            disposition = SMTP.header_factory("Content-Disposition", str(header.get("value") or ""))
+            if disposition.content_disposition == "attachment":
+                return True
+        except (TypeError, ValueError, IndexError):
+            return True  # An unparseable disposition cannot qualify body text.
+    return False
+
+
+def collect_message_parts(part: dict[str, Any], output: dict[str, list[Any]], *, include_content: bool = True) -> None:
     if not isinstance(part, dict):
         return
     mime_type = str(part.get("mimeType") or "")
@@ -772,14 +789,17 @@ def collect_message_parts(part: dict[str, Any], output: dict[str, list[Any]]) ->
             "mimeType": bounded_text(mime_type, 100),
             "size": size,
         })
-    data = body.get("data")
+    body_allowed = include_content and not filename and not _attachment_disposition(part)
+    data = body.get("data") if body_allowed else None
     if data and mime_type in {"text/plain", "text/html"}:
         output["plain" if mime_type == "text/plain" else "html"].append(base64url_decode(str(data)))
     children = part.get("parts") or []
     if isinstance(children, list):
         for child in children:
             if isinstance(child, dict):
-                collect_message_parts(child, output)
+                # Keep existing filename/type/size metadata, but never let an
+                # attachment's descendants become body text or content hashes.
+                collect_message_parts(child, output, include_content=body_allowed)
 
 
 def email_projection(message: dict[str, Any], *, requested_mailbox: str = "inbox", include_content: bool = True) -> dict[str, Any]:
