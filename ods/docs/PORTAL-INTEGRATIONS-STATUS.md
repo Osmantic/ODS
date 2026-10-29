@@ -6,6 +6,10 @@ combined branch includes the existing connected-apps stack (#8196 through
 integration work. The original PRs remain separate; this document does not
 mark them merged or replace their review.
 
+Work is paused at the owner's request. The [count-tools handoff](drafts/PORTAL-COUNT-TOOLS-HANDOFF.md)
+preserves the unfinished design and partial patch separately from active code,
+with the remaining acceptance work and negative small-model evidence.
+
 ## Implemented
 
 - Integrated the existing Google connection wizard, email/calendar reads,
