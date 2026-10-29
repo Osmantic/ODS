@@ -77,8 +77,8 @@ try {
     Assert-True ($envContent -match 'DISABLE_UPDATE_CHECK=true') ".env carries over owner DISABLE_UPDATE_CHECK"
 
     # 3. Verify Windows Installed Apps registration
-    Assert-True ($mockUninstallReg['DisplayName'] -eq 'ODS (Open Dev Society)') "Phase 5 registers DisplayName in Windows Uninstall registry"
-    Assert-True ($mockUninstallReg['Publisher'] -eq 'Open Dev Society') "Phase 5 registers Publisher in Windows Uninstall registry"
+    Assert-True ($mockUninstallReg['DisplayName'] -eq 'ODS (Osmantic Deployment System)') "Phase 5 registers DisplayName in Windows Uninstall registry"
+    Assert-True ($mockUninstallReg['Publisher'] -eq 'Osmantic Deployment System') "Phase 5 registers Publisher in Windows Uninstall registry"
 
     # 4. Simulate user switching llama-server.exe to Power Saving (GpuPreference=1) in Windows Graphics Settings
     $llamaExeKey = [IO.Path]::GetFullPath((Join-Path $appDataDir 'runtimes\llama\llama-server.exe'))
