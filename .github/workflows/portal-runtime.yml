@@ -152,6 +152,11 @@ jobs:
         env:
           OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: python3 ods/extensions/services/pixel-agent/tests/test_scheduled_tasks_runtime.py
+      - name: Verify connection tools use the resolved native model window
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_connections_context.integration.mjs
       - name: Verify protected native schedule owner transport
         if: runner.os == 'Linux'
         shell: bash

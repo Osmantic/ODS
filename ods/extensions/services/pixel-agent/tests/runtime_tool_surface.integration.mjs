@@ -80,6 +80,27 @@ test('status visibility does not bypass policy or select duplicate implementatio
   assert.deepEqual(run([original]).tools,controls,'unknown context does not assume a qualified32K profile');
 });
 
+test('resolved native model context fills absent config and never widens an explicit cap', () => {
+  for (const [modelWindow,explicit,visible] of [
+    [65536,undefined,true],[8192,undefined,false],
+    [65536,8192,false],[8192,65536,false],[65536,32768,true],
+  ]) {
+    const status=connectionStatusTool([]);
+    const config={agents:{defaults:{model:{primary:'fixture/model'}},list:[{id:'pixel'}]},
+      models:{providers:{fixture:{models:[{id:'model',contextWindow:modelWindow}]}}},
+      tools:{toolSearch:{enabled:true,mode:'tools'}}};
+    if(explicit!==undefined)config.agents.list[0].contextTokens=explicit;
+    assert.equal(run([status],{config,modelContextWindowTokens:modelWindow}).tools.includes(status),visible);
+  }
+});
+
+test('the new runtime model-window fallback does not change other agents', () => {
+  const config={agents:{defaults:{},list:[{id:'another-agent'}]},
+    tools:{toolSearch:{enabled:true,mode:'tools'}}};
+  const originals=[tool('pixel_gmail_read'),connectionStatusTool([])];
+  assert.deepEqual(run(originals,{config,agentId:'another-agent',modelContextWindowTokens:8192}).tools,controls);
+});
+
 test('working tools are direct while specialist tools remain in the real catalog', () => {
   const read = tool('read'), status = tool('pixel_ods_extension_request_status');
   const advance = tool('pixel_ods_extension_request_advance');

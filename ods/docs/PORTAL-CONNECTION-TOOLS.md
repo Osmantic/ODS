@@ -28,7 +28,10 @@ Google connection state.
   owner constraints and result validation independently of model reasoning.
 - Native Tool Search retains every permitted tool. The small status schema is
   directly visible for qualified contexts of at least 32K; smaller contexts
-  discover and describe it normally. Policy-denied tools are never synthesized.
+  discover and describe it normally. Context comes from the model already
+  resolved by the native gateway, with explicit configuration allowed only to
+  reduce that window. A provider-only model configuration does not need a
+  duplicate `contextTokens` field. Policy-denied tools are never synthesized.
   Counts use app count tools; record requests use app read tools. The extension
   catalog's description leads with its different purpose.
 

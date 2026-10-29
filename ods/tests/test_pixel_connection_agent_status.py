@@ -159,7 +159,8 @@ class AgentClientTests(unittest.TestCase):
 
     def test_fixed_read_authenticates_root_and_bounds_frames(self):
         connection = self.Connection(b'{"status":200,"body":{}}\n')
-        with patch.object(client.socket, 'socket', return_value=connection), patch.object(client.sys, 'platform', 'linux'):
+        with patch.object(client.socket, 'socket', return_value=connection), \
+                patch.object(client.socket, 'SO_PEERCRED', 17, create=True), patch.object(client.sys, 'platform', 'linux'):
             self.assertEqual(client.request_access('connection-agent-status'), (200, {}))
         self.assertEqual(connection.sent, b'{"operation": "connection-agent-status"}\n')
         self.assertEqual(connection.timeout, 20)
@@ -167,10 +168,25 @@ class AgentClientTests(unittest.TestCase):
                          (b'{"status":200,"body":{}}', 0)):
             with self.subTest(uid=uid, size=len(raw)):
                 connection = self.Connection(raw, uid)
-                with patch.object(client.socket, 'socket', return_value=connection), self.assertRaises(ValueError):
+                with patch.object(client.socket, 'socket', return_value=connection), \
+                        patch.object(client.socket, 'SO_PEERCRED', 17, create=True), \
+                        patch.object(client.sys, 'platform', 'linux'), self.assertRaises(ValueError):
                     client.request_access('connection-agent-status')
                 if uid != 0:
                     self.assertIsNone(connection.sent)
+
+    def test_unsupported_platform_or_missing_linux_peer_feature_sends_no_request(self):
+        for platform, feature in (('darwin', True), ('linux', False)):
+            with self.subTest(platform=platform, peerFeature=feature):
+                connection = self.Connection(b'{"status":200,"body":{}}\n')
+                socket_api = SimpleNamespace(AF_UNIX=client.socket.AF_UNIX, SOCK_STREAM=client.socket.SOCK_STREAM,
+                    SOL_SOCKET=client.socket.SOL_SOCKET, socket=lambda *_args: connection)
+                if feature:
+                    socket_api.SO_PEERCRED = 17
+                with patch.object(client, 'socket', socket_api), patch.object(client.sys, 'platform', platform), \
+                        self.assertRaises(ValueError):
+                    client.request_access('connection-agent-status')
+                self.assertIsNone(connection.sent)
 
     def test_protocol_and_client_refuse_arguments(self):
         self.assertEqual(control_request({'operation': 'connection-agent-status'}), {'operation': 'connection-agent-status'})
