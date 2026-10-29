@@ -42,6 +42,51 @@ def disconnected_config():
 
 
 class PlannerTests(unittest.TestCase):
+    def test_count_tools_extend_only_their_read_groups_and_keep_legacy_order(self):
+        legacy = {
+            "GMAIL_TOOLS": ("pixel_gmail_inbox", "pixel_gmail_sent", "pixel_gmail_search",
+                            "pixel_gmail_read", "pixel_gmail_thread"),
+            "GMAIL_DRAFT_TOOLS": ("pixel_gmail_draft_propose",),
+            "CALENDAR_READ_TOOLS": ("pixel_calendar_list", "pixel_calendar_get"),
+            "CALENDAR_WRITE_TOOLS": ("pixel_calendar_propose_create", "pixel_calendar_propose_update",
+                                     "pixel_calendar_propose_delete"),
+            "SOCIAL_TOOLS": ("pixel_social_feed", "pixel_social_search"),
+            "WEB_TOOLS": ("pixel_web_browse",),
+        }
+        added = {"pixel_gmail_count", "pixel_calendar_count"}
+        for name, expected in legacy.items():
+            actual = getattr(planner, name)
+            self.assertEqual(tuple(tool for tool in actual if tool not in added), expected, name)
+        self.assertEqual(set(planner.GMAIL_TOOLS) & added, {"pixel_gmail_count"})
+        self.assertEqual(set(planner.CALENDAR_READ_TOOLS) & added, {"pixel_calendar_count"})
+        self.assertEqual(tuple(tool for tool in planner.SOURCE_TOOLS if tool not in added),
+                         ("pixel_limb_status", *(tool for group in legacy.values() for tool in group)))
+        self.assertEqual(len(planner.SOURCE_TOOLS), len(set(planner.SOURCE_TOOLS)))
+
+    def test_email_and_calendar_count_grants_remain_independent_of_other_limbs(self):
+        for email in (False, True):
+            for calendar in (False, True):
+                for social in (False, True):
+                    for web in (False, True):
+                        with self.subTest(email=email, calendar=calendar, social=social, web=web):
+                            config = disconnected_config()
+                            retained = ((planner.SOCIAL_TOOLS if social else ()) +
+                                        (planner.WEB_TOOLS if web else ()))
+                            config["tools"]["alsoAllow"] += retained
+                            target = gateway({"gmail.read": email, "calendar.read": calendar})
+                            after = planner.plan_config(config, target, install_dir=INSTALL)
+                            for names in (after["tools"]["alsoAllow"],
+                                          after["tools"]["sandbox"]["tools"]["allow"]):
+                                self.assertEqual("pixel_gmail_count" in names, email)
+                                self.assertEqual("pixel_calendar_count" in names, calendar)
+                                self.assertTrue(set(retained) <= set(names))
+                                self.assertFalse(set(planner.GMAIL_DRAFT_TOOLS +
+                                                     planner.CALENDAR_WRITE_TOOLS) & set(names))
+                            deny = after["agents"]["list"][0]["tools"]["deny"]
+                            self.assertEqual("pixel_gmail_count" in deny, not email)
+                            self.assertEqual("pixel_calendar_count" in deny, not calendar)
+                            self.assertEqual(after["tools"]["profile"], config["tools"]["profile"])
+
     def test_capabilities_map_to_the_five_limb_flags(self):
         off = dict(email=False, emailDrafts=False, calendar=False, calendarWrite=False, calendarDirect=False)
         self.assertEqual(planner.limbs(None), off)
@@ -260,6 +305,49 @@ class ConvergeTests(unittest.TestCase):
         self.assertEqual(self.config.read_bytes(), before)
 
 
+@unittest.skipUnless(shutil.which("node"), "executes the actual legacy Source config migration")
+class SourceConfigMigrationTests(unittest.TestCase):
+    def test_count_ids_extend_the_legacy_source_surface_without_changing_other_policy(self):
+        source = ("pixel_limb_status", *planner.GMAIL_TOOLS, *planner.CALENDAR_READ_TOOLS,
+                  *planner.CALENDAR_WRITE_TOOLS, *planner.SOCIAL_TOOLS)
+        original = {
+            "plugins": {"allow": ["owner-plugin", "pixel-google-workspace"],
+                        "entries": {"owner-plugin": {"enabled": False, "config": {"keep": "owner-value"}},
+                                    "pixel-google-workspace": {"enabled": True}},
+                        "load": {"paths": ["/owner/custom-plugin", "/legacy/source"]}},
+            "tools": {"alsoAllow": ["read", "owner_custom"],
+                      "sandbox": {"tools": {"allow": ["read", "pixel_calendar_create"],
+                                            "deny": ["owner_sandbox_deny"]}}},
+            "agents": {"defaults": {"userTimezone": "Europe/Berlin"},
+                       "list": [{"id": "pixel", "tools": {"deny": ["owner_pixel_deny"]}},
+                                {"id": "another-agent", "tools": {"deny": ["owner_other_deny"]}}]},
+            "mcp": {"servers": {"owner": {"enabled": False, "command": "/usr/bin/true"}}},
+        }
+        with tempfile.TemporaryDirectory(prefix="ods-count-source-migration-") as directory:
+            path = Path(directory) / "openclaw.json"
+            path.write_text(json.dumps(original))
+            arguments = ["node", str(ROOT / "vendor/pixel/scripts/migrate-source-broker-config.mjs"),
+                         str(path), "/current/source", "/legacy/source"]
+            for _ in range(2):
+                result = subprocess.run(arguments, capture_output=True, text=True, check=True)
+                self.assertEqual(result.stderr, "")
+                actual = json.loads(path.read_text())
+                self.assertEqual(actual["tools"]["alsoAllow"], original["tools"]["alsoAllow"])
+                self.assertEqual(actual["tools"]["sandbox"]["tools"],
+                                 {"allow": ["read", *source], "deny": ["owner_sandbox_deny"]})
+                self.assertEqual(actual["agents"]["list"][0], original["agents"]["list"][0])
+                self.assertEqual(actual["agents"]["list"][1]["tools"]["deny"],
+                                 ["owner_other_deny", *source])
+                self.assertEqual(actual["agents"]["defaults"], original["agents"]["defaults"])
+                self.assertEqual(actual["mcp"], original["mcp"])
+                self.assertEqual(actual["plugins"]["entries"]["owner-plugin"],
+                                 original["plugins"]["entries"]["owner-plugin"])
+                self.assertFalse(set(planner.GMAIL_DRAFT_TOOLS + planner.WEB_TOOLS) &
+                                 set(actual["tools"]["sandbox"]["tools"]["allow"]))
+            if os.name == "posix":
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+
 def _env_file(path: Path) -> dict[str, str]:
     values = {}
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -363,11 +451,13 @@ class RenderCrossCheckTests(unittest.TestCase):
         writes = dict(READ_ONLY, **{"calendar.write": True})
         drafts = dict(writes, **{"gmail.drafts": True})
         calendar_only = dict(READ_ONLY, **{"gmail.read": False})
+        gmail_only = dict(READ_ONLY, **{"calendar.read": False})
         wiki = ["memory-wiki"]
         disconnected = self.render(None)
         steps = [(READ_ONLY, "America/Chicago", ()), (writes, "America/Chicago", ()),
                  (drafts, "America/Chicago", ()), (drafts, "America/Chicago", wiki), (writes, "America/Chicago", wiki),
-                 (None, "America/Chicago", wiki), (calendar_only, "Europe/Berlin", ()), (None, "Europe/Berlin", ())]
+                 (None, "America/Chicago", wiki), (calendar_only, "Europe/Berlin", ()),
+                 (gmail_only, "Europe/Berlin", ()), (None, "Europe/Berlin", ())]
         previous = disconnected
         for capabilities, zone, chosen in steps:
             with self.subTest(capabilities=capabilities, zone=zone, chosen=chosen):
@@ -377,6 +467,11 @@ class RenderCrossCheckTests(unittest.TestCase):
                 self.assertEqual(planner.gateway_limbs(current[1]), planner.limbs(capabilities))
                 self.assertEqual(current[0]["agents"]["defaults"]["userTimezone"], zone)
                 self.assertEqual(plugins.enabled_in(current[0]), list(chosen))
+                for tool, cap in (("pixel_gmail_count", "gmail.read"), ("pixel_calendar_count", "calendar.read")):
+                    expected = bool(capabilities and capabilities.get(cap))
+                    self.assertEqual(tool in current[0]["tools"]["alsoAllow"], expected)
+                    self.assertEqual(tool in current[0]["tools"]["sandbox"]["tools"]["allow"], expected)
+                    self.assertEqual(tool in current[0]["agents"]["list"][0]["tools"]["deny"], not expected)
                 self.assert_planned(previous, current, capabilities, zone, chosen)
                 previous = current
 

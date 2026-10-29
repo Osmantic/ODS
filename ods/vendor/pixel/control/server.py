@@ -852,7 +852,7 @@ def _chat_tool_class(name: str) -> tuple[str, str, str, bool, bool]:
         return "source-write", "authorized-provider", "external-write-capable", True, False
     if (
         name.startswith("pixel_gmail_") or name.startswith("pixel_social_")
-        or name in {"pixel_limb_status", "pixel_calendar_list", "pixel_calendar_get"}
+        or name in {"pixel_limb_status", "pixel_calendar_list", "pixel_calendar_get", "pixel_calendar_count"}
     ):
         return "source-read", "owner-local-projection", "read-only", False, True
     if name in {"pixel_ops_inventory", "pixel_ops_job_get", "pixel_ops_job_wait", "pixel_ops_job_events"}:

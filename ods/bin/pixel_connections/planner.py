@@ -20,20 +20,21 @@ from . import native_apps
 PLUGIN_ID = "pixel-source-broker"
 # render-config.mjs allSourceTools, in its order: newly inactive tools are appended
 # to the agent's deny list in this order.
-SOURCE_TOOLS = (
-    "pixel_limb_status",
+GMAIL_TOOLS = (
     "pixel_gmail_inbox", "pixel_gmail_sent", "pixel_gmail_search", "pixel_gmail_read", "pixel_gmail_thread",
-    "pixel_gmail_draft_propose",
-    "pixel_calendar_list", "pixel_calendar_get", "pixel_calendar_propose_create",
-    "pixel_calendar_propose_update", "pixel_calendar_propose_delete",
-    "pixel_social_feed", "pixel_social_search", "pixel_web_browse",
+    "pixel_gmail_count",
 )
-GMAIL_TOOLS = SOURCE_TOOLS[1:6]
-GMAIL_DRAFT_TOOLS = SOURCE_TOOLS[6:7]
-CALENDAR_READ_TOOLS = SOURCE_TOOLS[7:9]
-CALENDAR_WRITE_TOOLS = SOURCE_TOOLS[9:12]
-SOCIAL_TOOLS = SOURCE_TOOLS[12:14]
-WEB_TOOLS = SOURCE_TOOLS[14:]
+GMAIL_DRAFT_TOOLS = ("pixel_gmail_draft_propose",)
+CALENDAR_READ_TOOLS = ("pixel_calendar_list", "pixel_calendar_get", "pixel_calendar_count")
+CALENDAR_WRITE_TOOLS = (
+    "pixel_calendar_propose_create", "pixel_calendar_propose_update", "pixel_calendar_propose_delete",
+)
+SOCIAL_TOOLS = ("pixel_social_feed", "pixel_social_search")
+WEB_TOOLS = ("pixel_web_browse",)
+SOURCE_TOOLS = (
+    "pixel_limb_status", *GMAIL_TOOLS, *GMAIL_DRAFT_TOOLS, *CALENDAR_READ_TOOLS, *CALENDAR_WRITE_TOOLS,
+    *SOCIAL_TOOLS, *WEB_TOOLS,
+)
 LIMB_KEYS = {
     "email": "PIXEL_LIMB_EMAIL_ENABLED",
     "emailDrafts": "PIXEL_LIMB_EMAIL_DRAFTS_ENABLED",

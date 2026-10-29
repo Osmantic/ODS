@@ -48,6 +48,7 @@ pixel_build_release_stage() {
   cp "$root/plugin/package.json" "$root/plugin/package-lock.json" "$root/plugin/openclaw.plugin.json" \
      "$root/plugin/index.js" "$root/plugin/chat-audit.js" "$root/plugin/email-query.js" \
      "$root/plugin/email-query.test.mjs" "$root/plugin/calendar-query.js" "$root/plugin/source-status.js" \
+     "$root/plugin/count-metadata.js" \
      "$root/plugin/authorize.mjs" \
      "$root/plugin/oauth-security.mjs" "$root/plugin/web-courier.js" "$root/plugin/web-tool.js" "$target/plugin/"
   cp "$root/plugin-ops/package.json" "$root/plugin-ops/package-lock.json" "$root/plugin-ops/openclaw.plugin.json" \

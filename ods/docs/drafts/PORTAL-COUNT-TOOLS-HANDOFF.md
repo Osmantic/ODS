@@ -1,5 +1,10 @@
 # Portal count tools: paused implementation checkpoint
 
+**Historical checkpoint from October 28.** Work resumed on October 29. See
+[the current count tools](../PORTAL-COUNT-TOOLS.md) for the implementation and
+its qualification limits. The artifacts and pending-work statements below
+describe the earlier paused state and are retained for provenance.
+
 This checkpoint belongs to draft PR #8293. It preserves unfinished work for
 resumption; the count tools below are **not implemented or available**. Do not
 apply the attached patch to an installed runtime or treat it as release evidence.

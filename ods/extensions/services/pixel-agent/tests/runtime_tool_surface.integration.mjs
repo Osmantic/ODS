@@ -154,6 +154,50 @@ test('8K connected reads expose their original schemas without exposing source w
   }
 });
 
+test('permitted count tools stay deferred, searchable and policy-filtered across context profiles', async () => {
+  const counts = [
+    {...tool('pixel_gmail_count'), parameters: {type:'object',additionalProperties:false,
+      properties:{query:{type:'string',maxLength:1000}}}},
+    {...tool('pixel_calendar_count'), parameters: {type:'object',additionalProperties:false,required:['window'],
+      properties:{window:{type:'object',additionalProperties:false,required:['kind','days'],
+        properties:{kind:{const:'rolling'},days:{type:'integer',minimum:1,maximum:730}}}}}},
+  ];
+  // Synthetic implementations isolate catalog/dispatcher behavior; Source
+  // contract and returned-data privacy are qualified by Source plugin tests.
+  const existing = [tool('pixel_gmail_read'),tool('pixel_calendar_list'),tool('pixel_calendar_propose_create')];
+  for (const contextTokens of [8192,32768,65536]) {
+    const config={agents:{list:[{id:'pixel',contextTokens}]},tools:{toolSearch:{enabled:true,mode:'tools'}}};
+    const originals=[...counts,...existing], result=run(originals,{config});
+    assert.equal(result.catalogToolCount,originals.length,'retain every permitted count and existing tool');
+    assert.ok(counts.every(count=>!result.tools.includes(count)),'counts add no direct-schema surface');
+    const dispatched=[];
+    const ctx={agentId:'pixel',catalogRef:result.catalogRef,config,executeTool:async request=>{
+      dispatched.push(request);return {content:[{type:'text',text:'synthetic-count-receipt'}]};
+    }};
+    const api=Object.fromEntries(createControls(ctx).map(value=>[value.name,value]));
+    for(const [index,original] of counts.entries()) {
+      const found=await api.tool_search.execute('find',{query:original.name,limit:10});
+      const hit=found.details.find(value=>value.name===original.name);
+      assert.ok(hit);
+      const described=await api.tool_describe.execute('describe',{id:hit.id});
+      assert.deepEqual(described.details.parameters,original.parameters);
+      const args=index===0?{}:{window:{kind:'rolling',days:7}};
+      await api.tool_call.execute('count',{id:hit.id,args});
+      assert.equal(dispatched.at(-1).tool,original);
+      assert.deepEqual(dispatched.at(-1).input,args);
+    }
+    const permitted=filterByPolicy(originals,{deny:['pixel_calendar_count']});
+    const restricted=run(permitted,{config}), restrictedCtx={...ctx,catalogRef:restricted.catalogRef};
+    assert.equal(restricted.catalogToolCount,originals.length-1);
+    assert.equal(resolveExact(restrictedCtx,'pixel_calendar_count'),undefined);
+    const deniedApi=Object.fromEntries(createControls(restrictedCtx).map(value=>[value.name,value]));
+    await assert.rejects(deniedApi.tool_call.execute('denied',{id:'pixel_calendar_count',
+      args:{window:{kind:'rolling',days:7}}}));
+    assert.equal(dispatched.length,counts.length,'denied count never reaches the dispatcher');
+    assert.ok(existing.every(value=>resolveExact(restrictedCtx,value.name)===value));
+  }
+});
+
 test('8K read visibility never restores a denied tool or selects an ambiguous implementation', () => {
   const names=['pixel_gmail_search','pixel_gmail_read','pixel_calendar_list','pixel_calendar_get'];
   const originals=names.map(tool);

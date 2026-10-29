@@ -441,12 +441,12 @@ test('the prompt hook explains bounded Gmail pages for chat and cron without cha
         const guide=result.prependContext;
         assert.equal(result.appendSystemContext,baseline.appendSystemContext,'no reusable-core expansion');
         assert.match(guide,/tool_describe.*actual schema through tool_call/);
-        assert.match(guide,/maxResults \(1-100\).*explicitly.*owner's limit/);
-        assert.match(guide,/default page of 50, not a counts-only result/);
-        assert.match(guide,/count\/status-only questions, use maxResults: 1 and counting\/coverage\/totalMatches/);
+        assert.match(guide,/maxResults \(1-100\).*honor explicit limits/);
+        assert.match(guide,/default page of 50/);
+        assert.match(guide,/prefer pixel_gmail_count when offered.*no records.*never a mailbox total/);
         assert.match(guide,/do not paginate or call pixel_gmail_read/);
-        assert.match(guide,/more records or details only when the owner needs them/);
-        assert.match(guide,/indexed count is not the account total/);
+        assert.match(guide,/Otherwise use maxResults: 1 and counting\/coverage\/totalMatches/);
+        assert.match(guide,/Fetch details only when needed/);
         assert.ok(guide.length<1900,'bounded turn-local Email guide');
       }
       for(const prompt of unrelated) {
@@ -464,6 +464,11 @@ test('connected-read intent distinguishes current account reads from setup and s
     ['Confira meus emails e meus compromissos de hoje.', ['email','calendar']],
     ['Check my e-mails and my calendar; report only whether the reads worked.', ['email','calendar']],
     ['Use pixel_gmail_read.', ['email']],
+    ['Use pixel_gmail_count.', ['email']],
+    ['Run pixel_calendar_count.', ['calendar']],
+    ['Use pixel_gmail_count and pixel_calendar_count.', ['email','calendar']],
+    ['Show the schema of pixel_gmail_count.', []],
+    ['Show the schema of pixel_calendar_count.', []],
     ['Use my Gmail read tools.', ['email']],
     ['Read my emails using Gmail tools.', ['email']],
     ['Check my calendar events using Calendar tools.', ['calendar']],
@@ -1399,8 +1404,11 @@ test('count guides describe Calendar windows without expanding the reusable core
         const result=promptContractForAgent({agentId:'pixel'},'pixel',{prompt},options);
         assert.equal(result.appendSystemContext,plain.appendSystemContext);
         assert.match(result.prependContext,/For Calendar,.*tool_describe.*actual schema/);
-        assert.match(result.prependContext,/requested timeMin\/timeMax window and maxResults: 1/);
-        assert.match(result.prependContext,/totalMatches counts indexed events in that window, not all Calendar events/);
+        assert.match(result.prependContext,/prefer pixel_calendar_count when offered/);
+        assert.match(result.prependContext,/absolute\/rolling\/civil-days window/);
+        assert.match(result.prependContext,/Only completeMatchCount proves a covered count; report limitations/);
+        assert.match(result.prependContext,/requested timeMin\/timeMax window with maxResults: 1/);
+        assert.match(result.prependContext,/totalMatches is indexed events only/);
         assert.match(result.prependContext,/stale, requestCoveredByWindow and coverage.completeWithinWindow/);
         assert.match(result.prependContext,/Never invent a missing source time zone/);
         assert.ok(result.prependContext.length<2400,'bounded combined connected-app guide');

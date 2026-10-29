@@ -27,6 +27,7 @@ from email.utils import parseaddr
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 # <<<PIXEL-BUNDLED-JOURNAL-VENDOR-SECRETS-BEGIN>>>
 # Bundled from deploy/action_journal/__init__.py and deploy/vendor_secrets.py by
@@ -1577,6 +1578,28 @@ def gmail_incremental_records(token: str, cached: dict[str, Any] | None, *, prog
     return sorted(records.values(), key=lambda item: item.get('messageAt', ''), reverse=True), coverage, progress
 
 
+def calendar_time_zone(value: Any) -> str | None:
+    """Validate provider metadata; never infer it from the host or event fields."""
+    if type(value) is not str or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_+\-/]{0,127}', value):
+        return None
+    try:
+        return ZoneInfo(value).key
+    except (ZoneInfoNotFoundError, ValueError):
+        return None
+
+
+def calendar_page_time_zone(progress: dict[str, Any], page: dict[str, Any]) -> None:
+    zone = calendar_time_zone(page.get('timeZone'))
+    if progress['pagesFetched'] == 0:
+        progress['calendarTimeZone'] = zone
+        progress['calendarTimeZoneState'] = 'consistent' if zone else 'unknown'
+    elif progress.get('calendarTimeZoneState') == 'consistent' and zone != progress.get('calendarTimeZone'):
+        progress['calendarTimeZone'] = None
+        progress['calendarTimeZoneState'] = 'inconsistent'
+    # Unknown legacy/first-page metadata or drift is latched for this cycle.
+    # A later page cannot certify metadata for earlier pages it did not observe.
+
+
 def calendar_records(token: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     now = utc_now()
     past_days = min(max(int(os.environ.get("PIXEL_SOURCE_CALENDAR_PAST_DAYS", "7")), 0), 365)
@@ -1592,6 +1615,7 @@ def calendar_records(token: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     pages_fetched = 0
     truncated = False
     truncation_reason = ""
+    zone_progress = {'pagesFetched': 0, 'calendarTimeZone': None, 'calendarTimeZoneState': 'unknown'}
     while pages_fetched < max_pages:
         params: dict[str, Any] = {
             "timeMin": window_start,
@@ -1603,7 +1627,9 @@ def calendar_records(token: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         if page_token:
             params["pageToken"] = page_token
         result = google_get(CALENDAR_API, f"/calendars/{calendar_id}/events", token, params)
+        calendar_page_time_zone(zone_progress, result)
         pages_fetched += 1
+        zone_progress['pagesFetched'] = pages_fetched
         for item in result.get("items") or []:
             if not isinstance(item, dict):
                 continue
@@ -1638,6 +1664,8 @@ def calendar_records(token: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         "truncated": truncated,
         "truncationReason": truncation_reason,
         "completeWithinWindow": not truncated,
+        "calendarTimeZone": zone_progress['calendarTimeZone'],
+        "calendarTimeZoneState": zone_progress['calendarTimeZoneState'],
     }
 
 
@@ -1665,7 +1693,8 @@ def _calendar_new_progress(binding: str, options: dict[str, Any], last_complete:
         'windowStart': iso(now - timedelta(days=options['pastDays'])),
         'windowEnd': iso(now + timedelta(days=options['futureDays'])),
         'ids': [], 'pageToken': '', 'seenPageTokens': [], 'pagesFetched': 0,
-        'truncated': False, 'truncationReason': ''}
+        'truncated': False, 'truncationReason': '',
+        'calendarTimeZone': None, 'calendarTimeZoneState': 'unknown'}
 
 
 def _calendar_progress(path: Path, binding: str, options: dict[str, Any]) -> dict[str, Any]:
@@ -1683,9 +1712,11 @@ def _calendar_progress(path: Path, binding: str, options: dict[str, Any]) -> dic
         if (type(value) is not dict or value.get('schemaVersion') != 1 or value.get('kind') != CALENDAR_SYNC_KIND
                 or value.get('sanitizerRevision') != SANITIZER_REVISION or value.get('binding') != binding):
             return _calendar_new_progress(binding, options)
-        if (set(value) != {'schemaVersion', 'kind', 'binding', 'sanitizerRevision', 'options', 'cycleId',
+        legacy_keys = {'schemaVersion', 'kind', 'binding', 'sanitizerRevision', 'options', 'cycleId',
                 'startedAt', 'lastCompleteAt', 'cycleDone', 'windowStart', 'windowEnd', 'ids', 'pageToken',
-                'seenPageTokens', 'pagesFetched', 'truncated', 'truncationReason'} or value['options'] != options
+                'seenPageTokens', 'pagesFetched', 'truncated', 'truncationReason'}
+        zone_keys = {'calendarTimeZone', 'calendarTimeZoneState'}
+        if (set(value) not in (legacy_keys, legacy_keys | zone_keys) or value['options'] != options
                 or type(value['cycleId']) is not str or not re.fullmatch(r'[a-f0-9]{32}', value['cycleId'])
                 or not valid_iso_timestamp(value['startedAt']) or not valid_iso_timestamp(value['windowStart'])
                 or not valid_iso_timestamp(value['windowEnd'])
@@ -1698,6 +1729,13 @@ def _calendar_progress(path: Path, binding: str, options: dict[str, Any]) -> dic
                 or any(type(item) is not str or not 1 <= len(item) <= 1024 for item in value['ids'])
                 or type(value['seenPageTokens']) is not list or len(value['seenPageTokens']) > options['maxPages']
                 or any(type(item) is not str or len(item) > 4096 for item in [value['pageToken'], *value['seenPageTokens']])):
+            raise ValueError()
+        if not zone_keys <= value.keys():
+            value.update(calendarTimeZone=None, calendarTimeZoneState='unknown')
+        if (value['calendarTimeZoneState'] not in ('consistent', 'unknown', 'inconsistent')
+                or value['calendarTimeZoneState'] == 'consistent'
+                    and (calendar_time_zone(value['calendarTimeZone']) is None or value['pagesFetched'] == 0)
+                or value['calendarTimeZoneState'] != 'consistent' and value['calendarTimeZone'] is not None):
             raise ValueError()
         started = datetime.fromisoformat(value['startedAt'].replace('Z', '+00:00'))
         if (value['windowStart'] != iso(started - timedelta(days=options['pastDays']))
@@ -1748,6 +1786,7 @@ def calendar_incremental_records(token: str, cached: dict[str, Any] | None, *, p
             items = value.get('items') or []
             if type(items) is not list or len(items) > options['pageSize']:
                 raise SourceUnavailable('unknown', 'Calendar page exceeded its requested bound')
+            calendar_page_time_zone(progress, value)
             projected = {}
             for item in items:
                 if type(item) is not dict or type(item.get('id')) is not str or not 1 <= len(item['id']) <= 1024:
@@ -1797,6 +1836,7 @@ def calendar_incremental_records(token: str, cached: dict[str, Any] | None, *, p
         'maxPages': options['maxPages'], 'pagesFetched': progress['pagesFetched'], 'fetched': len(current),
         'truncated': progress['truncated'], 'truncationReason': progress['truncationReason'],
         'completeWithinWindow': complete,
+        'calendarTimeZone': progress['calendarTimeZone'], 'calendarTimeZoneState': progress['calendarTimeZoneState'],
         'sync': {'state': 'complete' if complete else 'limited' if progress['cycleDone'] else 'in-progress',
             'binding': binding, 'cycleId': progress['cycleId'], 'startedAt': progress['startedAt'],
             'lastCompleteAt': progress['lastCompleteAt'], 'requestsThisRun': requests, 'requestBudget': request_limit,

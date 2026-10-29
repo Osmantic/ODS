@@ -26,7 +26,7 @@ GOOGLE: dict[str, Any] = {
     "capabilities": [
         {
             "id": "calendar.read", "label": "Read your calendar", "effect": "read",
-            "scopes": [CALENDAR_READ_SCOPE], "tools": ["pixel_calendar_list", "pixel_calendar_get"],
+            "scopes": [CALENDAR_READ_SCOPE], "tools": ["pixel_calendar_list", "pixel_calendar_get", "pixel_calendar_count"],
             "default": True, "available": True, "requires": [],
         },
         {
@@ -44,7 +44,7 @@ GOOGLE: dict[str, Any] = {
             "id": "gmail.read", "label": "Read email summaries", "effect": "read",
             "scopes": [GMAIL_READ_SCOPE],
             "tools": ["pixel_gmail_inbox", "pixel_gmail_sent", "pixel_gmail_search", "pixel_gmail_read",
-                      "pixel_gmail_thread"],
+                      "pixel_gmail_thread", "pixel_gmail_count"],
             "default": True, "available": True, "requires": [],
         },
         {

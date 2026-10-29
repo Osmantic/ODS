@@ -329,6 +329,14 @@ class ControlServerTests(unittest.TestCase):
                 self.assertTrue(classification[3])
                 self.assertFalse(classification[4])
 
+    def test_count_tools_are_projection_reads_without_classifying_unknown_calendar_tools(self):
+        for name in ("pixel_gmail_count", "pixel_calendar_count"):
+            with self.subTest(name=name):
+                self.assertEqual(control_module._chat_tool_class(name),
+                                 ("source-read", "owner-local-projection", "read-only", False, True))
+        self.assertFalse(control_module._chat_tool_class("pixel_calendar_count_unknown")[4])
+        self.assertNotEqual(control_module._chat_tool_class("pixel_calendar_count_unknown")[0], "source-read")
+
     def test_private_chat_proves_bounded_broker_effects_without_false_approval(self):
         read_evidence = {
             "brokerKind": "local-projection", "status": "observed", "correlationIdSha256": None,

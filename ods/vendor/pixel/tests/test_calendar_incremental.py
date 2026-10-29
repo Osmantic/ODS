@@ -24,6 +24,8 @@ class Calendar:
         self.clock = 0.0
         self.cost = 0.01
         self.failure_page = None
+        self.time_zone = 'UTC'
+        self.page_zones = {}
 
     def get(self, base, path, _token, params, *, timeout=25):
         self.calls.append((base, path, dict(params), timeout))
@@ -32,6 +34,9 @@ class Calendar:
         if page == self.failure_page:
             raise BROKER.UpstreamHTTPError(503)
         result = {'items': [fixtures.calendar_event(f'{self.prefix}-{page}')]}
+        zone = self.page_zones.get(page, self.time_zone)
+        if zone is not None:
+            result['timeZone'] = zone
         if page + 1 < self.pages:
             result['nextPageToken'] = f'page-{page + 1}'
         return result
@@ -185,6 +190,70 @@ class CalendarIncrementalTests(unittest.TestCase):
         with self.assertRaises(BROKER.SourceUnavailable):
             self.batch(calendar)
         self.assertEqual(len(calendar.calls), calls)
+
+    def test_global_timezone_is_preserved_across_page_batches_without_an_extra_endpoint(self):
+        calendar = Calendar(5)
+        calendar.time_zone = 'America/New_York'
+        records, coverage, progress = self.finish(calendar)
+        self.assertEqual(coverage['calendarTimeZone'], 'America/New_York')
+        self.assertEqual(coverage['calendarTimeZoneState'], 'consistent')
+        self.assertEqual(progress['calendarTimeZone'], 'America/New_York')
+        self.assertEqual(len(calendar.calls), 5)
+        self.assertTrue(all(base == BROKER.CALENDAR_API and path == '/calendars/primary/events'
+                            for base, path, _params, _timeout in calendar.calls))
+
+    def test_omitted_invalid_or_changed_timezone_never_recovers_inside_a_cycle(self):
+        for zones, expected in [({0: None}, 'unknown'), ({0: 'PRIVATE-NOT-A-ZONE'}, 'unknown'),
+                                ({1: None}, 'inconsistent'), ({1: 'Asia/Tokyo'}, 'inconsistent')]:
+            with self.subTest(zones=zones):
+                self.path.unlink(missing_ok=True)
+                self.cursor.unlink(missing_ok=True)
+                calendar = Calendar(5)
+                calendar.page_zones = zones
+                _records, coverage, progress = self.finish(calendar)
+                self.assertEqual(coverage['calendarTimeZoneState'], expected)
+                self.assertIsNone(coverage['calendarTimeZone'])
+                self.assertIsNone(progress['calendarTimeZone'])
+                self.assertNotIn('PRIVATE-NOT-A-ZONE', self.cursor.read_text())
+
+    def test_legacy_partial_cursor_cannot_adopt_timezone_from_later_pages(self):
+        calendar = Calendar(5)
+        self.batch(calendar)
+        value = json.loads(self.cursor.read_text())
+        value.pop('calendarTimeZone')
+        value.pop('calendarTimeZoneState')
+        BROKER.atomic_json(self.cursor, value, mode=0o600)
+        _records, coverage, progress = self.finish(calendar)
+        self.assertEqual(coverage['calendarTimeZoneState'], 'unknown')
+        self.assertIsNone(coverage['calendarTimeZone'])
+        self.assertEqual(progress['calendarTimeZoneState'], 'unknown')
+        self.assertEqual([p.get('pageToken') for _b, _s, p, _t in calendar.calls],
+                         [None, 'page-1', 'page-2', 'page-3', 'page-4'])
+
+    def test_new_cycle_can_establish_timezone_after_an_unqualified_old_cycle(self):
+        calendar = Calendar(3)
+        calendar.page_zones = {0: None}
+        self.finish(calendar)
+        calendar.page_zones = {}
+        calendar.time_zone = 'Asia/Tokyo'
+        _records, coverage, _progress = self.finish(calendar)
+        self.assertEqual(coverage['calendarTimeZone'], 'Asia/Tokyo')
+        self.assertEqual(coverage['calendarTimeZoneState'], 'consistent')
+
+    def test_malformed_timezone_progress_is_refused_before_network(self):
+        for zone, state in [('PRIVATE-ZONE', 'consistent'), ('UTC', 'unknown'), (None, 'PRIVATE-STATE')]:
+            with self.subTest(zone=zone, state=state):
+                self.path.unlink(missing_ok=True)
+                self.cursor.unlink(missing_ok=True)
+                calendar = Calendar(5)
+                self.batch(calendar)
+                value = json.loads(self.cursor.read_text())
+                value.update(calendarTimeZone=zone, calendarTimeZoneState=state)
+                BROKER.atomic_json(self.cursor, value, mode=0o600)
+                calls = len(calendar.calls)
+                with self.assertRaises(BROKER.SourceUnavailable):
+                    self.batch(calendar)
+                self.assertEqual(len(calendar.calls), calls)
 
 
 class IndependentCalendarFailureTests(unittest.TestCase):

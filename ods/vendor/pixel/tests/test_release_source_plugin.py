@@ -55,23 +55,40 @@ class ReleaseSourcePluginTests(unittest.TestCase):
         lines = (target / "install-manifest.sha256").read_text(encoding="utf-8").splitlines()
         return {line.partition("  ")[2].removeprefix("./") for line in lines}
 
+    def assert_count_runtime_closure(self, target: Path) -> None:
+        helper = "plugin/count-metadata.js"
+        self.assertEqual((target / helper).read_bytes(), (self.root / helper).read_bytes())
+        self.assertIn(helper, self.manifest(target))
+        result = subprocess.run(
+            ["node", "--input-type=module", "--eval",
+             "const [email, calendar] = await Promise.all(["
+             "import('./plugin/email-query.js'), import('./plugin/calendar-query.js')]);"
+             "if (typeof email.countEmail !== 'function' || "
+             "typeof calendar.countCalendar !== 'function') throw new Error('count runtime missing');"],
+            cwd=target, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_a_release_with_the_broker_off_still_carries_the_plugin_dependency(self):
         with tempfile.TemporaryDirectory() as temporary:
             target = self.build(Path(temporary), PIXEL_SOURCE_BROKER_ENABLED="0")
             self.assertTrue((target / self.DEPENDENCY).is_file())
             self.assertIn(self.DEPENDENCY, self.manifest(target))
+            self.assert_count_runtime_closure(target)
 
     def test_an_offline_test_build_of_a_disabled_broker_skips_npm(self):
         with tempfile.TemporaryDirectory() as temporary:
             target = self.build(Path(temporary), PIXEL_SOURCE_BROKER_ENABLED="0", PIXEL_SKIP_NPM_CI="1")
             self.assertFalse((target / "plugin" / "node_modules").exists())
             self.assertNotIn(self.DEPENDENCY, self.manifest(target))
+            self.assert_count_runtime_closure(target)
 
     def test_an_enabled_broker_installs_the_dependency_as_before(self):
         with tempfile.TemporaryDirectory() as temporary:
             target = self.build(Path(temporary), PIXEL_SOURCE_BROKER_ENABLED="1", PIXEL_SKIP_NPM_CI="1")
             self.assertTrue((target / self.DEPENDENCY).is_file())
             self.assertIn(self.DEPENDENCY, self.manifest(target))
+            self.assert_count_runtime_closure(target)
 
 
 if __name__ == "__main__":

@@ -278,6 +278,17 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(catalog.scopes_for("google", {"calendar.read": True}), [CALENDAR_READ])
         self.assertEqual(catalog.scopes_for("google", {}), [])
 
+    def test_metadata_only_counts_use_only_the_existing_read_capabilities(self):
+        capabilities = {item["id"]: item for item in catalog.GOOGLE["capabilities"]}
+        self.assertIn("pixel_gmail_count", capabilities["gmail.read"]["tools"])
+        self.assertIn("pixel_calendar_count", capabilities["calendar.read"]["tools"])
+        for capability in capabilities.values():
+            for tool, expected in (("pixel_gmail_count", "gmail.read"), ("pixel_calendar_count", "calendar.read")):
+                self.assertEqual(tool in capability["tools"], capability["id"] == expected)
+        self.assertEqual(catalog.scopes_for("google", {"gmail.read": True}), [GMAIL_READ])
+        self.assertEqual(catalog.scopes_for("google", {"calendar.read": True}), [CALENDAR_READ])
+        self.assertEqual(catalog.scopes_for("google", {"gmail.read": False, "calendar.read": False}), [])
+
     def test_the_public_catalog_is_a_copy(self):
         copied = catalog.public_catalog()
         copied[0]["capabilities"].clear()

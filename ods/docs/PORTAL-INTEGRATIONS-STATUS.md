@@ -6,9 +6,12 @@ combined branch includes the existing connected-apps stack (#8196 through
 integration work. The original PRs remain separate; this document does not
 mark them merged or replace their review.
 
-Work is paused at the owner's request. The [count-tools handoff](drafts/PORTAL-COUNT-TOOLS-HANDOFF.md)
-preserves the unfinished design and partial patch separately from active code,
-with the remaining acceptance work and negative small-model evidence.
+Work resumed on October 29. [Count tools](PORTAL-COUNT-TOOLS.md) now have a Source,
+permission and guide implementation; installed/model qualification remains
+separate. The [earlier handoff](drafts/PORTAL-COUNT-TOOLS-HANDOFF.md) preserves
+the paused prototype and its negative small-model evidence. See the
+[maintainer release handoff](PORTAL-MAINTAINER-RELEASE-HANDOFF.md) for the
+Google/domain and integration decisions that remain with the maintainers.
 
 ## Implemented
 

@@ -5005,7 +5005,7 @@ export function userMessageConnectedReadKinds(messages, prompt = undefined) {
     // A quantity in a write command is not a request to read connected records.
     if (countRequest && !new RegExp(`\\b(?:${readVerbs})\\b`).test(clause) &&
         new RegExp(`^(?:(?:${clausePrefixes})\\s+)*(?:${writeVerbs})\\b`).test(clause.trim())) continue;
-    const namedRead = /\bpixel_(?:gmail_(?:inbox|sent|search|read|thread)|calendar_(?:list|get))\b/.test(clause);
+    const namedRead = /\bpixel_(?:gmail_(?:inbox|sent|search|read|thread|count)|calendar_(?:list|get|count))\b/.test(clause);
     const invokeNamedRead = namedRead && /\b(?:use|using|invoke|call|run|execute|utilize|usar|chame)\b/.test(clause);
     const useReadTools = /\b(?:use|using|invoke|call|utilize|usar|chame)\b[^.!?;\n]{0,120}\b(?:read(?:ing)?|leitura)\b/.test(clause);
     if (!new RegExp(`\\b(?:${verbs})\\b`).test(clause) && !useReadTools && !invokeNamedRead) continue;
@@ -5021,9 +5021,9 @@ export function userMessageConnectedReadKinds(messages, prompt = undefined) {
     const records = /\b(?:messages?|emails|e-mails|events?|records?|notes?|mensagens?|eventos?|registros?|notas?|compromissos)\b/.test(objectClause);
     const owned = /\b(?:my|our|minha|minhas|meu|meus|nossa|nossas|nosso|nossos)\b/.test(objectClause);
     if ((setup || metadataObject || metadata && !records && (!owned || countRequest)) && !useReadTools && !invokeNamedRead) continue;
-    if (/\b(?:gmail|emails?|e-mails?|pixel_gmail_(?:inbox|sent|search|read|thread))\b/.test(objectClause) ||
+    if (/\b(?:gmail|emails?|e-mails?|pixel_gmail_(?:inbox|sent|search|read|thread|count))\b/.test(objectClause) ||
         /\b(?:my|our|minha|nossa)\s+(?:inbox|caixa de entrada)\b/.test(objectClause)) selected.add('email');
-    if (/\b(?:calendar|calendario|pixel_calendar_(?:list|get))\b/.test(objectClause) ||
+    if (/\b(?:calendar|calendario|pixel_calendar_(?:list|get|count))\b/.test(objectClause) ||
         /\b(?:my|our|minha|nossa)\s+agenda\b|\b(?:meus|nossos)\s+compromissos\b/.test(objectClause)) selected.add('calendar');
     if (/\bwiki\b/.test(objectClause)) selected.add('wiki');
   }

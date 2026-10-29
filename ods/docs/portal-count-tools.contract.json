@@ -1,0 +1,504 @@
+{
+  "kind": "portal-source-count-contract",
+  "tools": {
+    "pixel_gmail_count": {
+      "capability": "gmail.read",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "query": {
+            "type": "string",
+            "maxLength": 1000
+          }
+        },
+        "required": []
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "schemaVersion": {
+            "const": 1
+          },
+          "recordsReturned": {
+            "const": 0
+          },
+          "generatedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ageSeconds": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "freshness": {
+            "enum": [
+              "fresh",
+              "stale",
+              "unknown"
+            ]
+          },
+          "syncState": {
+            "enum": [
+              "ok",
+              "error",
+              "disabled",
+              "unknown"
+            ]
+          },
+          "queryApplied": {
+            "type": "boolean"
+          },
+          "limitations": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "source-stale",
+                "source-clock-invalid",
+                "sync-unverified",
+                "source-partial",
+                "coverage-unknown",
+                "owner-time-zone-unavailable",
+                "calendar-time-zone-unavailable",
+                "calendar-time-zone-inconsistent",
+                "invalid-window",
+                "unresolved-event-time",
+                "window-outside-coverage",
+                "source-unavailable",
+                "invalid-parameters",
+                "freshness-unverified"
+              ]
+            }
+          },
+          "source": {
+            "const": "gmail"
+          },
+          "scope": {
+            "const": "current-local-email-index"
+          },
+          "filterSemantics": {
+            "const": "sanitized-projected-fields"
+          },
+          "indexedMatchCount": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mailboxTotal": {
+            "type": "null"
+          },
+          "canAnswerMailboxTotal": {
+            "const": false
+          },
+          "coverageState": {
+            "enum": [
+              "complete-within-configured-queries",
+              "partial-index",
+              "stale-index",
+              "coverage-unknown"
+            ]
+          },
+          "completeWithinConfiguredQueries": {
+            "type": "boolean"
+          },
+          "absenceWithinCoveredProjection": {
+            "type": "boolean"
+          },
+          "readState": {
+            "enum": [
+              "ok",
+              "unavailable"
+            ]
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "recordsReturned",
+          "generatedAt",
+          "ageSeconds",
+          "freshness",
+          "syncState",
+          "queryApplied",
+          "limitations",
+          "source",
+          "scope",
+          "filterSemantics",
+          "indexedMatchCount",
+          "mailboxTotal",
+          "canAnswerMailboxTotal",
+          "coverageState",
+          "completeWithinConfiguredQueries",
+          "absenceWithinCoveredProjection",
+          "readState"
+        ]
+      }
+    },
+    "pixel_calendar_count": {
+      "capability": "calendar.read",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "window": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "absolute"
+                  },
+                  "timeMin": {
+                    "type": "string",
+                    "maxLength": 64
+                  },
+                  "timeMax": {
+                    "type": "string",
+                    "maxLength": 64
+                  }
+                },
+                "required": [
+                  "kind",
+                  "timeMin",
+                  "timeMax"
+                ]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "rolling"
+                  },
+                  "days": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 730
+                  }
+                },
+                "required": [
+                  "kind",
+                  "days"
+                ]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "civil-days"
+                  },
+                  "days": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 730
+                  },
+                  "start": {
+                    "enum": [
+                      "today",
+                      "tomorrow"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "days",
+                  "start"
+                ]
+              }
+            ]
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "window"
+        ]
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "schemaVersion": {
+            "const": 1
+          },
+          "recordsReturned": {
+            "const": 0
+          },
+          "generatedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ageSeconds": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "freshness": {
+            "enum": [
+              "fresh",
+              "stale",
+              "unknown"
+            ]
+          },
+          "syncState": {
+            "enum": [
+              "ok",
+              "error",
+              "disabled",
+              "unknown"
+            ]
+          },
+          "queryApplied": {
+            "type": "boolean"
+          },
+          "limitations": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "source-stale",
+                "source-clock-invalid",
+                "sync-unverified",
+                "source-partial",
+                "coverage-unknown",
+                "owner-time-zone-unavailable",
+                "calendar-time-zone-unavailable",
+                "calendar-time-zone-inconsistent",
+                "invalid-window",
+                "unresolved-event-time",
+                "window-outside-coverage",
+                "source-unavailable",
+                "invalid-parameters",
+                "freshness-unverified"
+              ]
+            }
+          },
+          "source": {
+            "const": "calendar"
+          },
+          "scope": {
+            "const": "configured-calendar-projection"
+          },
+          "filterSemantics": {
+            "const": "sanitized-projected-fields"
+          },
+          "observedMatchCount": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "completeMatchCount": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "requestCoveredByWindow": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "completeWithinWindow": {
+            "type": "boolean"
+          },
+          "unresolvedEventCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "windowKind": {
+            "enum": [
+              "absolute",
+              "rolling",
+              "civil-days",
+              null
+            ]
+          },
+          "windowState": {
+            "enum": [
+              "resolved",
+              "unavailable"
+            ]
+          },
+          "windowStart": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "windowEnd": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "windowDays": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ownerTimeZone": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "calendarTimeZone": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "readState": {
+            "enum": [
+              "ok",
+              "unavailable"
+            ]
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "recordsReturned",
+          "generatedAt",
+          "ageSeconds",
+          "freshness",
+          "syncState",
+          "queryApplied",
+          "limitations",
+          "source",
+          "scope",
+          "filterSemantics",
+          "observedMatchCount",
+          "completeMatchCount",
+          "requestCoveredByWindow",
+          "completeWithinWindow",
+          "unresolvedEventCount",
+          "windowKind",
+          "windowState",
+          "windowStart",
+          "windowEnd",
+          "windowDays",
+          "ownerTimeZone",
+          "calendarTimeZone",
+          "readState"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "windowKind": {
+                  "type": "null"
+                }
+              },
+              "required": [
+                "windowKind"
+              ]
+            },
+            "then": {
+              "properties": {
+                "windowState": {
+                  "const": "unavailable"
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "semantics": {
+    "clock": "One Date.now captured once per tool invocation and passed to freshness/window functions. No caller clock.",
+    "ownerTimeZone": "Only current api runtime config agents.defaults.userTimezone, validated IANA; no plugin duplicate or host/environment fallback.",
+    "calendarTimeZone": "Validated global timeZone of current existing events.list response. Must remain stable across pages/cycle; otherwise producer marks unavailable/inconsistent. Never substitute owner/event/host timezone.",
+    "absolute": "Existing strict explicit-offset timestamps; end exclusive; no clipping to projection coverage.",
+    "rolling": "[serverNow, serverNow + days*86400000); timezone-independent duration, returned as UTC instants.",
+    "civilDays": "[start of today/tomorrow in ownerTimeZone, start plus N civil dates); DST-aware, not N*86400000. Missing owner timezone => unavailable, no exact count.",
+    "allDay": "Interpret start.date/end.date in global calendarTimeZone, end exclusive. Missing/invalid/global timezone drift => unresolved, never UTC implicit.",
+    "completeCalendar": "Fresh + source sync ok + coverage bounded/complete/no retained records + requested window covered + validated global Calendar TZ + zero unresolved bounds. Otherwise completeMatchCount null; observed counts remain scoped snapshot evidence only.",
+    "gmail": "Use same local projected-fields filter and emailCountScope. mailboxTotal always null; no arbitrary coverage/query echo. Complete local query is not entire Gmail.",
+    "noRecords": "Closed whitelist output only; no message/event arrays, IDs, names, subjects, summaries, query echo or arbitrary provider/source fields.",
+    "scope": "Existing OAuth/read capabilities only; invalid tool schema is refused before Source reads. This contract does not certify release, provider or model acceptance.",
+    "errorHandling": "Count errors never include Error.message/path/JSON fragments/source fields. Closed unavailable output with null counts and fixed limitation codes; invalid schema refuses before any source read.",
+    "timestampHandling": "Canonical ISO timestamps only. Missing/invalid/future generatedAt => freshness unknown, ageSeconds null, no complete/absence claim.",
+    "legacyCalendarCursor": "pagesFetched>0 without a validated global timezone cannot adopt a later page timezone to certify that cycle. Omission/mismatch latches inconsistent/unknown until the next fresh cycle.",
+    "civilMidnight": "Missing/nonexistent/ambiguous local midnight or skipped civil date => window/event unresolved; no normalization, host fallback or silent UTC."
+  },
+  "contractVersion": 3
+}

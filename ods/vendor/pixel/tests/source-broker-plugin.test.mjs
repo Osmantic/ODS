@@ -398,15 +398,14 @@ test("unknown nested recipient and attendee fields cannot create a proposal or e
   assert.deepEqual(await readdir(directory), []);
 });
 
-test("the pinned SDK tool_call preserves unknown arguments until the source guard refuses them", {
+test("the pinned SDK or Source schema refuses unknown arguments before a real corrected read", {
   skip: !process.env.OPENCLAW_PACKAGE_DIR,
 }, async (t) => {
-  const directory = await withProjections(t, { email: { schemaVersion: 1, sanitizerRevision: 3, generatedAt: iso(0), boundary,
-    records: Array.from({ length: 72 }, (_, i) => ({ id: `email-${i}`, mailboxes: ["inbox"], summary: "Invented fixture only." })) } });
+  const directory = await withProjections(t, {});
   const release = JSON.parse(await readFile(new URL("../RELEASE-MANIFEST.json", import.meta.url), "utf8"));
   const script = `
 import assert from 'node:assert/strict';
-import {readFile,readdir} from 'node:fs/promises';
+import {readFile,readdir,writeFile} from 'node:fs/promises';
 import {register} from 'node:module';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -426,17 +425,27 @@ const context={config,catalogRef,runId:'qa-source-schema',agentId:'pixel'};
 const controls=sdk.h(context);
 const catalog=sdk.u({...context,tools:[...controls,inbox]});assert.equal(catalog.catalogRegistered,true);
 const call=controls.find(tool=>tool.name==='tool_call');
-const refused=await call.execute('qa-bad',{id:inbox.name,args:{max:1}});
-assert.deepEqual(received[0],{max:1});assert.equal(refused.details.result.isError,true);
+let refused,refusalBoundary;
+try {refused=await call.execute('qa-bad',{id:inbox.name,args:{max:1}});}
+catch(error){
+assert.match(String(error.message),/Validation failed for tool "pixel_gmail_inbox"/);
+assert.match(String(error.message),/must not have additional properties/);
+assert.equal(received.length,0);refusalBoundary='sdk-schema';}
+if(!refusalBoundary){
+assert.deepEqual(received,[{max:1}]);assert.equal(refused.details.result.isError,true);
 assert.match(refused.details.result.content[0].text,/Declared JSON schema:/);
-assert.equal(refused.details.result.details,undefined);
+assert.equal(refused.details.result.details,undefined);refusalBoundary='source-schema';}
+assert.deepEqual(await readdir(process.env.PIXEL_SOURCE_PROJECTION_DIR),[]);
 const describe=await controls.find(tool=>tool.name==='tool_describe').execute('qa-describe',{id:inbox.name});
 assert.equal(describe.details.parameters.additionalProperties,false);
 assert.ok(describe.details.parameters.properties.maxResults);
+await writeFile(join(process.env.PIXEL_SOURCE_PROJECTION_DIR,'email.json'),JSON.stringify({schemaVersion:1,sanitizerRevision:3,
+generatedAt:new Date().toISOString(),boundary:{projectionOnly:true},records:Array.from({length:72},(_,i)=>({id:'email-'+i,mailboxes:['inbox'],summary:'Invented fixture only.'}))}));
 const corrected=await call.execute('qa-corrected',{id:inbox.name,args:{maxResults:1}});
-assert.deepEqual(received[1],{maxResults:1});assert.equal(corrected.details.result.details.count,1);
+assert.equal(received.length,refusalBoundary==='sdk-schema'?1:2);
+assert.deepEqual(received.at(-1),{maxResults:1});assert.equal(corrected.details.result.details.count,1);
 assert.equal(corrected.details.result.details.limit,1);
-process.stdout.write(JSON.stringify({unknownArgumentPreserved:true,refusedBeforeRead:true,correctedCount:1,version:metadata.version}));
+process.stdout.write(JSON.stringify({refusalBoundary,refusedBeforeRead:true,correctedCount:1,version:metadata.version}));
 `;
   const child = spawnSync(process.execPath, ['--input-type=module', '-e', script,
     process.env.OPENCLAW_PACKAGE_DIR, new URL('./fixtures/source-plugin/loader.mjs', import.meta.url).href,
@@ -449,8 +458,11 @@ process.stdout.write(JSON.stringify({unknownArgumentPreserved:true,refusedBefore
       PIXEL_LIMB_OPERATIONS_ENABLED: '0', PIXEL_LIMB_FRONTIER_ENABLED: '0', NO_COLOR: '1' },
   });
   assert.equal(child.status, 0, child.error?.message ?? child.stderr);
-  assert.deepEqual(JSON.parse(child.stdout), { unknownArgumentPreserved: true, refusedBeforeRead: true,
+  const evidence = JSON.parse(child.stdout);
+  assert.ok(["sdk-schema", "source-schema"].includes(evidence.refusalBoundary));
+  assert.deepEqual(evidence, { refusalBoundary: evidence.refusalBoundary, refusedBeforeRead: true,
     correctedCount: 1, version: release.openclaw });
+  t.diagnostic(`Pinned SDK refusal boundary: ${evidence.refusalBoundary}`);
 });
 
 test("after a malformed Gmail read, the declared messageId reads the actual record", async (t) => {

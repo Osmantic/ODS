@@ -1,3 +1,5 @@
+import { countMetadata, unavailableCount } from "./count-metadata.js";
+
 export function queryTerms(query) {
   const fields = {};
   let remaining = String(query ?? "");
@@ -83,4 +85,34 @@ export function emailCountScope(data, query, indexedMatches) {
     configuredQueries: required.map((folder, index) => ({ folder,
       query: typeof folders[index]?.query === "string" ? folders[index].query : null })),
   };
+}
+
+export function countEmail(data, query, sync, now, staleAfterMs) {
+  if (data?.enabled !== true || data.coverage?.available === false || !Array.isArray(data.records)
+      || data.recordCount !== undefined && (!Number.isSafeInteger(data.recordCount) || data.recordCount !== data.records.length)) {
+    return unavailableCount("gmail");
+  }
+  const ids = new Set();
+  for (const record of data.records) {
+    if (!record || typeof record !== "object" || Array.isArray(record)
+        || typeof record.id !== "string" || !record.id || record.id.length > 256 || ids.has(record.id)
+        || !["threadId", "subject", "from", "to", "cc", "summary"].every(key => typeof record[key] === "string")
+        || !Array.isArray(record.mailboxes) || !record.mailboxes.length
+        || record.mailboxes.some(value => !["inbox", "sent"].includes(value))
+        || !Array.isArray(record.labelIds) || record.labelIds.some(value => typeof value !== "string")) {
+      return unavailableCount("gmail");
+    }
+    ids.add(record.id);
+  }
+  const metadata = countMetadata(data, sync, now, staleAfterMs);
+  const indexedMatchCount = searchEmail(data.records, query).length;
+  const scoped = emailCountScope({ ...data, stale: metadata.freshness === "unknown" ? undefined : metadata.freshness === "stale" }, query, indexedMatchCount);
+  const complete = scoped.state === "complete-within-configured-queries" && metadata.syncState === "ok";
+  if (scoped.state === "partial-index") metadata.limitations.push("source-partial");
+  if (scoped.state === "coverage-unknown") metadata.limitations.push("coverage-unknown");
+  return { ...metadata, source: "gmail", scope: "current-local-email-index", filterSemantics: "sanitized-projected-fields",
+    queryApplied: typeof query === "string" && Boolean(query.trim()), indexedMatchCount,
+    mailboxTotal: null, canAnswerMailboxTotal: false, coverageState: scoped.state,
+    completeWithinConfiguredQueries: complete,
+    absenceWithinCoveredProjection: complete && indexedMatchCount === 0 };
 }
