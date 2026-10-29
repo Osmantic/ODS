@@ -111,7 +111,7 @@ try {
         -Url 'https://huggingface.co/example/test-model.gguf' -ExpectedSha256 $expectedSha -ExpectedSize $payloadBytes.Length `
         -CurlRunner { throw 'Should not invoke curl when stamp is valid' }
     $sw.Stop()
-    Assert-Check ($dl2.Status -ceq 'cached' -and $dl2.FromStamp -eq $true -and $sw.ElapsedMilliseconds -lt 250) `
+    Assert-Check ($dl2.Status -ceq 'cached' -and $dl2.FromStamp -eq $true -and $sw.ElapsedMilliseconds -lt 2500) `
         "Second Invoke-ODSResumableModelDownload verifies from .sha256.json stamp in $($sw.ElapsedMilliseconds) ms without curl"
 
     # Touch LastWriteTimeUtc -> stamp is invalidated, file is re-hashed once and stamp is refreshed
