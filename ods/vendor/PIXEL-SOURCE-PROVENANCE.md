@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`5154ac8e97a38cf77f2768c9f6021bd02d9ab574`, and its SHA-256 is
-`7403132329bef463cc864855136e99223d0ff9c52279329c7ab710f9837614c5`.
+`c4ca642c3df6aa8fc274d672b89cc7b0287dfce6`, and its SHA-256 is
+`d4a0d6459c33acbf4827eca10527863f55a04f390962b224a1d87885d0f20b93`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -22,7 +22,22 @@ The repository owner authorized this source publication and the ODS-only
 Pixel grant. Third-party packages are not included in the Git bundle and
 retain their own notices and licenses.
 
-The current Portal runtime candidate uses internal package version 4.3.40.
+The current Portal runtime candidate uses internal package version 4.3.41.
+Its functional checkpoint is `cc49a94b991b99e254e0b5555e6b21740a62dc09`;
+the versioned source checkpoint is `30cc4fff0da9cd66c374ba7893b732d109d59854`.
+It adds metadata-only Gmail/Calendar counts, explicit rolling/civil windows,
+conservative coverage/timezone handling and the corresponding existing read
+permission, guide and release-copy wiring. The preparation record is
+`pixel/ODS-QUALIFICATION-4.3.41.md`. Controlled component and independent review
+checks passed. Two independent public single-root builds match, and exact
+source/digest/Git-mode verification and the exact-bundle clean-room
+plan/apply/verify/rollback fixture passed. Installed upgrade, real-model
+count behavior and the remaining provider/platform release lanes still need
+separate qualification. The preceding failed 2B/8K run remains negative evidence.
+
+## Prior attachment-summary candidate 4.3.40
+
+The preceding Portal runtime candidate uses internal package version 4.3.40.
 Its functional checkpoint is `ad8733c2ca757256c7b98ae6aec936a41d6aff74`;
 the versioned source checkpoint is `2902c181e0974ecbdbdd7fb65cbdf24c3bd70b18`.
 Email summaries exclude attachment parts and their subtrees while retaining

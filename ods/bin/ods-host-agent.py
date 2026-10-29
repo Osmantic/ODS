@@ -3947,7 +3947,7 @@ def _reconcile_ods_managed_pixel_model(
     owner, home = identity
     env_values = load_env(INSTALL_DIR / ".env")
     configured_ref = str(env_values.get("PIXEL_SOURCE_REF") or "")
-    bundled_ref = "5154ac8e97a38cf77f2768c9f6021bd02d9ab574"
+    bundled_ref = "c4ca642c3df6aa8fc274d672b89cc7b0287dfce6"
     source_url = str(env_values.get("PIXEL_SOURCE_URL") or "bundled")
     if any(character in source_url for character in "\r\n\x00"):
         raise RuntimeError("The configured Pixel source URL is invalid")
