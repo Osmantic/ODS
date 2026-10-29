@@ -141,7 +141,9 @@ const CLASSIFIER_LITERALS = {
     'três', 'bot[ãa]o|bot[õo]es', 'cards?|events?|items?|products?', 'cart[õo]es|cart[ãa]o', 'opcional(?:mente)?|talvez',
     ...'áÁàÀâÂãÃçÇéÉêÊíÍóÓôÔõÕúÚ'],
   'pixel-agent/plugin/tool-loop-guard.mjs': ['nao\\s+(?:precisa|precisamos', '(?:publicar|republicar|mostrar',
-    'read|search|find|check|list|summari[sz]e|what|show|consult[ae]|busqu[ae]|leia|ler|liste|resuma|quais|qual|mostre|verifique|confira|veja|cheque|procure|encontre|pesquise'],
+    'read|search|find|check|list|summari[sz]e|what|show|consult[ae]|busqu[ae]|leia|ler|liste|resuma|quais|qual|mostre|verifique|confira|veja|cheque|procure|encontre|pesquise',
+    'create|write|send|reply|respond|draft|delete|remove|update|edit|add|set|schedule|crie|escreva|envie|responda|rascunhe|apague|exclua|remova|atualize|edite|adicione|defina|agende',
+    '|never|not|nao'],
   'dashboard-api/pixel_agent_teams.py': ['revis[aã]o independente'],
 };
 const classifierEntry = (file, text) => (CLASSIFIER_LITERALS[file] ?? [])
