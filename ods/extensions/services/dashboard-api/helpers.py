@@ -13,9 +13,12 @@ import socket
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
-import aiohttp
+try:
+    import aiohttp
+except ImportError:
+    aiohttp = None  # type: ignore[assignment]
 import httpx
 
 from config import (
@@ -78,13 +81,15 @@ logger = logging.getLogger(__name__)
 # Re-using sessions avoids creating/destroying TCP connections every
 # poll cycle and prevents file-descriptor exhaustion.
 
-_aio_session: Optional[aiohttp.ClientSession] = None
+_aio_session: Optional[Any] = None
 _aio_session_lock: Optional[asyncio.Lock] = None
 _health_resolver: Optional[ServiceHealthResolver] = None
-_HEALTH_TIMEOUT = aiohttp.ClientTimeout(total=30)
+_ClientError = (aiohttp.ClientError, OSError, ValueError) if aiohttp is not None else (OSError, ValueError)
+_ClientConnectorError = aiohttp.ClientConnectorError if aiohttp is not None else OSError
+_HEALTH_TIMEOUT = aiohttp.ClientTimeout(total=30) if aiohttp is not None else None
 # Short timeout for the catalog fan-out: one slow probe must not stall the
 # whole Extensions page (frontend aborts after 8 s).
-_CATALOG_HEALTH_TIMEOUT = aiohttp.ClientTimeout(total=5)
+_CATALOG_HEALTH_TIMEOUT = aiohttp.ClientTimeout(total=5) if aiohttp is not None else None
 
 
 def _get_aio_session_lock() -> asyncio.Lock:
@@ -94,9 +99,11 @@ def _get_aio_session_lock() -> asyncio.Lock:
     return _aio_session_lock
 
 
-async def _get_aio_session() -> aiohttp.ClientSession:
+async def _get_aio_session() -> Optional[Any]:
     """Return (and lazily create) a module-level aiohttp session."""
     global _aio_session, _health_resolver
+    if aiohttp is None:
+        return None
     if _aio_session is not None and not _aio_session.closed:
         return _aio_session
     async with _get_aio_session_lock():
@@ -1110,6 +1117,8 @@ async def check_service_health(
 
     try:
         session = await _get_aio_session()
+        if session is None:
+            return _service_status_from_config(service_id, config, "not_deployed" if WINDOWS_DESKTOP_PROFILE else "down")
         start = asyncio.get_event_loop().time()
         # Send Host header so reverse-proxy services (e.g. Caddy in Baserow)
         # route the request correctly instead of returning 404. Some API
@@ -1142,12 +1151,12 @@ async def check_service_health(
         # Service is reachable but slow — report degraded rather than down
         # to avoid false "offline" flashes during startup or heavy load.
         status = "degraded"
-    except aiohttp.ClientConnectorError as e:
+    except _ClientConnectorError as e:
         if "Name or service not known" in str(e) or "nodename nor servname" in str(e):
             status = "not_deployed"
         else:
             status = "down"
-    except (aiohttp.ClientError, OSError, ValueError) as e:
+    except _ClientError as e:
         if config.get("health_auth_env") is None:
             logger.debug(f"Health check failed for {service_id} at {url}: {e}")
         else:
