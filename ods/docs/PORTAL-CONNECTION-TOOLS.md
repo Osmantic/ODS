@@ -43,6 +43,34 @@ This covers the reviewed Google connector on Linux/WSL. Unsupported systems
 return unavailable/unknown. It does not add Coffee's custom MCP integrations or
 establish the state of arbitrary external apps.
 
+## Failed evidence at delivery
+
+Real local 9B trials selected the status tool correctly with available state,
+but also produced false absence claims after unavailable or unknown results.
+A native tool error alone did not prevent those claims. The failed runs remain
+negative model evidence.
+
+The existing run guard now tracks attempted Google lookups and their typed,
+call-bound results. A validated known Root status can resolve a pending account
+check; a strict same-source receipt can resolve a source lookup. A cached read
+does not resolve an unknown Root account status. Catalog entries, unrelated MCP
+tools, discovery and older parallel replies cannot substitute for these facts.
+The tracker stores identities and obligations, not account records.
+
+Independent work can continue. If an obligation remains unresolved at delivery,
+the existing host verification path replaces unverified free prose with
+`Could not verify the requested Google lookup.` It preserves independently
+verified artifacts and previews. Retained JSON/SSE results use the corrected
+reply, and the existing host delivery record carries it into the next turn.
+This uses observed tool results, not phrases in the question or answer.
+
+This is a failed-evidence guard, not a universal claim checker. It cannot infer
+a missing connection capability without an attempted observation. Arbitrary
+mixed prose cannot be retained sentence by sentence without a claim parser;
+the bounded fallback replaces that prose while verified outputs remain. The
+host fallback currently uses English, matching the existing verification path.
+The model's raw reasoning remains separately qualified from the delivered reply.
+
 ## Validation required
 
 Schema and transport tests verify redaction, fixed execution, cancellation,

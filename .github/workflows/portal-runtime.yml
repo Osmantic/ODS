@@ -103,6 +103,8 @@ jobs:
           node --test ods/vendor/pixel/tests/source-broker-plugin.test.mjs \
             ods/vendor/pixel/tests/source-count-plugin.test.mjs \
             ods/vendor/pixel/tests/source-count-query.test.mjs
+          node --test ods/extensions/services/pixel-agent/tests/connection_evidence.test.mjs \
+            ods/extensions/services/pixel-agent/tests/connection_evidence_delivery.test.mjs
       - name: Verify native MCP isolates server grants and delivers an allowed read through Pixel
         if: runner.os == 'Linux'
         shell: bash
