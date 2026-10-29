@@ -198,7 +198,7 @@ class PluginRuntimeTests(unittest.TestCase):
         shutil.copytree(source, install / "current/plugin")
         projection = self.home / "projection"
         projection.mkdir()
-        (projection / "email.json").write_text(json.dumps({"schemaVersion": 1, "records": [
+        (projection / "email.json").write_text(json.dumps({"schemaVersion": 1, "sanitizerRevision": 3, "records": [
             {"id": "fixture-message", "subject": "Project Cedar", "summary": "Synthetic meeting on Tuesday"}],
             "boundary": {"projectionOnly": True}, "generatedAt": datetime.now(timezone.utc).isoformat()}))
         self.env.update(PIXEL_SOURCE_PROJECTION_DIR=str(projection), PIXEL_LIMB_EMAIL_ENABLED="1",

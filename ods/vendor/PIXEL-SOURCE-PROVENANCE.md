@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`a06abf217a351206b236f66ba31ce3d7450aab19`, and its SHA-256 is
-`6b92e5b6d7875f94d46b2e47814304787f9dc947b66cd2c436564b6ee564fa7a`.
+`5154ac8e97a38cf77f2768c9f6021bd02d9ab574`, and its SHA-256 is
+`7403132329bef463cc864855136e99223d0ff9c52279329c7ab710f9837614c5`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -22,7 +22,24 @@ The repository owner authorized this source publication and the ODS-only
 Pixel grant. Third-party packages are not included in the Git bundle and
 retain their own notices and licenses.
 
-The current Portal runtime candidate uses internal package version 4.3.39.
+The current Portal runtime candidate uses internal package version 4.3.40.
+Its functional checkpoint is `ad8733c2ca757256c7b98ae6aec936a41d6aff74`;
+the versioned source checkpoint is `2902c181e0974ecbdbdd7fb65cbdf24c3bd70b18`.
+Email summaries exclude attachment parts and their subtrees while retaining
+declared attachment metadata. Revision 3 invalidates older summary caches and
+cursors, and every Gmail reader requires that exact projection revision before
+exposing records. Controlled MIME/cache/reader tests and independent focused
+review passed. The disclosure distinguishes summary content from metadata and
+selected cloud-model sharing; Gmail can still transport inline bytes before
+filtering, and old histories/backups are not rewritten.
+Two independent public single-root builds match. Exact source/digest/Git-mode
+verification and the exact-bundle plan/apply/verify/rollback fixture passed.
+Ordinary installed/model acceptance for this revision remains pending. The preparation record is
+`pixel/ODS-QUALIFICATION-4.3.40.md`.
+
+## Prior Source-argument candidate 4.3.39
+
+The preceding Portal runtime candidate uses internal package version 4.3.39.
 Its functional checkpoint is `069b43b62b3fb589673c4d31f0b4dface6a514a4`;
 the versioned source checkpoint is `326a16832cb4ac28507dfddb53a3a763ad283745`.
 The Source handler validates its declared schema with the existing locked

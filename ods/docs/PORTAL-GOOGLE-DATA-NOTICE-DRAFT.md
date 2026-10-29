@@ -17,7 +17,9 @@ Your ODS installation connects to Google and keeps authorization credentials
 locally for background synchronization. It also stores your account identifier,
 selected permissions, email summaries and metadata, and Calendar data. The local
 broker may read Inbox message-body content to create bounded summaries; Sent
-mail is handled as metadata in this release. Synchronization follows the
+mail is handled as metadata in this release. File-attachment content is excluded
+from these summaries; attachment names, types and sizes may be included.
+Synchronization follows the
 installation's configured queries and windows and may be incomplete.
 
 Portal can use a local model or a cloud model you select. With a local model,

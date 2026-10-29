@@ -119,13 +119,13 @@
       "reason": "Links reference intentionally omitted private source-audit files. Repair requires a coordinated verified Pixel bundle refresh; deferred while release runtime testing uses this source identity."
     },
     "ods/vendor/pixel/docs/status.md": {
-      "normalized_sha256": "8910676e9bf5933edf656977848e8883c4f0031b00249a97cc7e156112cad20a",
+      "normalized_sha256": "63cef666688fefacaf41ca1c60455941d146a22d7832bb11d824e3463e22b6c5",
       "targets": [
         "../LIVE-AUDIT-4.3.26.md"
       ],
-      "reviewed_source": "9d9658f574ff37e4a6923585681589f493ed2176",
+      "reviewed_source": "2902c181e0974ecbdbdd7fb65cbdf24c3bd70b18",
       "reviewed_at": "2026-10-28",
-      "reason": "Reviewed regenerated status: the current 4.3.39 candidate now links its existing public ODS qualification; the historical Supported 4.3.26 row and its intentionally omitted audit target are unchanged. This narrows the previously reviewed missing targets from two to one; it does not approve release evidence. Export-aware public wording remains pending for a coordinated source/bundle refresh."
+      "reason": "Reviewed regenerated 4.3.40 status against the committed metadata source: the current candidate links its public qualification; the Supported 4.3.26 row and intentionally omitted audit target remain byte-identical. The sole missing target is unchanged; this renews only this document hash and approves no release evidence. Export-aware public wording remains pending for a coordinated source/bundle refresh."
     }
   }
 }

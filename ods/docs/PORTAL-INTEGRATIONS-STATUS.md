@@ -18,7 +18,7 @@ mark them merged or replace their review.
   alone no longer counts as a working plugin.
 - Preserved native MCP servers and tool restrictions through Pixel rendering
   and macOS configuration staging, with a reproducible Portal runtime source
-  candidate/public bundle using internal package version 4.3.39.
+  candidate/public bundle using internal package version 4.3.40.
 - Added an owner-side, version/hash-bound adapter to OpenClaw's MCP OAuth,
   retaining its discovery, registration, PKCE, token storage and refresh.
 - Added internal Root consent intent/callback claiming, an independently bound
@@ -211,6 +211,20 @@ to the unchanged original grant and the same active gateway identity. No test
 reauthorization, forced expiry, service restart or credential replacement was
 needed. This proves continued reads through normal refresh, not revocation,
 grant expiry/failure recovery, disconnect/reconnect or complete Gmail coverage.
+
+A later privacy review reproduced a consent-copy mismatch with synthetic MIME:
+inline text-file attachments could enter message summaries despite the screen's
+“never attachments” wording. The collector now excludes attachment parts and
+their entire subtrees, retaining declared attachment metadata. Revision 3
+invalidates older summary caches and cursors. All Gmail readers also require
+that exact projection revision before exposing records, closing the interval
+before the first refreshed projection is published. The copy distinguishes
+summary content, attachment metadata and selected cloud-model sharing.
+Independent focused review and controlled broker/plugin/UI cases passed. Two
+independent 4.3.40 bundle builds match; exact source/digest/Git-mode verification
+and the bundle-checkout plan/apply/verify/rollback fixture passed. The ordinary
+installed upgrade and model follow-up remain pending; these controls do not erase old chats, task history,
+backups or provider copies, or claim Gmail never transports inline bytes.
 
 Installed Connected apps also fetched the reviewed catalog through the actual
 Dashboard/host/Root path and displayed **Apps for Portal → Notion → Not
