@@ -700,7 +700,7 @@ namespace OdsNativeDesktop
                         ProcessStartInfo apsi = new ProcessStartInfo
                         {
                             FileName = pyExe,
-                            Arguments = "-m uvicorn main:app --host 127.0.0.1 --port 3101",
+                            Arguments = string.Format("-m uvicorn --app-dir \"{0}\" main:app --host 127.0.0.1 --port 3101", apiDir),
                             WorkingDirectory = apiDir,
                             UseShellExecute = false,
                             CreateNoWindow = true
@@ -763,7 +763,12 @@ namespace OdsNativeDesktop
                 ThreadPool.QueueUserWorkItem(_ => EnsureNativeServicesStarted());
             }
 
-            if (apiUp && llamaUp)
+            if (!apiUp && _managedApiProcess != null && _managedApiProcess.HasExited && !_portalLoaded)
+            {
+                _serviceBadgeLabel.Text = "● Portal API Stopped (Check Logs)";
+                _serviceBadgeLabel.ForeColor = Color.FromArgb(248, 113, 113);
+            }
+            else if (apiUp && llamaUp)
             {
                 _serviceBadgeLabel.Text = "● Portal API Online • llama.cpp GPU Engine Online";
                 _serviceBadgeLabel.ForeColor = Color.FromArgb(52, 211, 153);
