@@ -15,6 +15,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from pixel_connection_agent_status import (
+    AGENT_ERRORS, AGENT_PERMISSIONS, AGENT_READS, AGENT_REASONS,
+    valid_agent_timestamp as _agent_timestamp, validate_agent_public,
+)
 from . import approvals, catalog, drafts, google_app, lifecycle, state
 from . import plugins as portal_plugins
 
@@ -334,3 +338,88 @@ def report(*, surface: str, record_path: Path = state.PATH, token_path: Path = T
                                              waiting_drafts=waiting_drafts)},
         "plugins": plugin_flags(record),
     }
+
+
+def _agent_now(now):
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise StatusError("agent status needs an aware clock")
+    return now.astimezone(timezone.utc)
+
+
+def _agent_empty(now, *, available=False, reason="connection-status-unavailable"):
+    return {"schemaVersion": 1, "kind": "ods-connection-agent-status", "scope": "reviewed-google",
+            "observedAt": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "available": available, "reason": reason,
+            "recordConfigured": None, "localSavedSignIn": None, "connectionState": "unknown",
+            "ownerEnabled": {name: None for name in AGENT_PERMISSIONS},
+            "providerPermissionObserved": {name: None for name in AGENT_PERMISSIONS},
+            "sourceCheckedAt": None,
+            "reads": {name: {"lastObservedState": "unknown", "recent": None, "lastSuccessAt": None,
+                             "complete": None, "error": None} for name in AGENT_READS},
+            "providerCheckedNow": False}
+
+
+def agent_projection(value, *, now=None):
+    """Redact a validated owner view in Root, before crossing into the agent."""
+    now = _agent_now(now)
+    validate_public(value)
+    if type(value["schemaVersion"]) is not int:
+        raise StatusError("invalid owner status version")
+    answer = _agent_empty(now)
+    if not value["available"] or value["surface"] not in SUPPORTED_SURFACES:
+        answer["reason"] = "not-available-on-this-system"
+        return validate_agent_public(answer)
+    answer["available"] = True
+    if value["reason"] is not None:
+        answer["reason"] = value["reason"] if value["reason"] in AGENT_REASONS else "unknown"
+        if value["reason"] == "connection-admission-held":
+            answer["connectionState"] = "transitioning"
+        return validate_agent_public(answer)
+    google = value["connectors"]["google"]
+    answer["reason"] = google["reason"] if google["reason"] in AGENT_REASONS else "unknown" if google["reason"] else None
+    answer["connectionState"] = "transitioning" if google["pending"] else google["state"]
+    configured = google["capabilities"] is not None
+    answer["recordConfigured"] = configured
+    answer["localSavedSignIn"] = configured and google["reason"] != "sign-in-missing"
+    if not configured:
+        return validate_agent_public(answer)
+    for name, capability, scope in (("gmailRead", "gmail.read", catalog.GMAIL_READ_SCOPE),
+                                     ("calendarRead", "calendar.read", catalog.CALENDAR_READ_SCOPE)):
+        answer["ownerEnabled"][name] = google["capabilities"][capability]
+        scopes = google["grantedScopes"]
+        answer["providerPermissionObserved"][name] = scope in scopes if scopes is not None else None
+    checked = google["checkedAt"]
+    if checked is not None and (not _agent_timestamp(checked) or _instant(checked) > now):
+        raise StatusError("invalid source observation clock")
+    connected_at = google["connectedAt"]
+    if not _agent_timestamp(connected_at) or _instant(connected_at) > now:
+        raise StatusError("invalid saved connection clock")
+    if checked is not None and _instant(checked) < _instant(connected_at):
+        # A previous account's status is not evidence for this saved sign-in.
+        answer["providerPermissionObserved"] = {name: None for name in AGENT_PERMISSIONS}
+        answer["connectionState"] = "transitioning" if google["pending"] else "first-sync"
+        answer["reason"] = None
+        return validate_agent_public(answer)
+    answer["sourceCheckedAt"] = checked
+    for name, source in google["sources"].items():
+        if source is None:
+            continue
+        last = source["lastSuccessAt"]
+        if last is not None and (not _agent_timestamp(last) or _instant(last) > now):
+            raise StatusError("invalid source success clock")
+        answer["reads"][name] = {
+            "lastObservedState": source["state"],
+            "recent": (now - _instant(checked) <= STALE_AFTER) if checked is not None else None,
+            "lastSuccessAt": last, "complete": source["complete"],
+            "error": source["errorClass"] if source["errorClass"] in AGENT_ERRORS else "unknown" if source["errorClass"] else None,
+        }
+    return validate_agent_public(answer)
+
+
+def agent_report(*, surface, now=None, **paths):
+    """No provider call, mutation, credential read or owner identifiers in output."""
+    now = _agent_now(now)
+    try:
+        return agent_projection(report(surface=surface, now=now, **paths), now=now)
+    except (StatusError, ValueError, OSError):
+        return validate_agent_public(_agent_empty(now))

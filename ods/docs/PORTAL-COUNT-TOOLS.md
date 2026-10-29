@@ -57,9 +57,11 @@ timestamps do not become fresh evidence.
 
 The [machine-readable contract](portal-count-tools.contract.json) describes
 these boundaries. Existing list/get tools and read/write permission groups are
-retained. Guides prefer the count tools when available and retain the earlier
-bounded-list guidance for runtimes that do not offer them. Managed workspace
-migrations preserve recognized historical templates and owner edits.
+retained. The subsequent [connection-tool work](PORTAL-CONNECTION-TOOLS.md)
+replaces phrase-selected read plans with stable capability guidance and native
+tool descriptions. A missing count capability is a limitation, not evidence
+that the account is empty. Managed workspace migrations preserve recognized
+historical templates and owner edits.
 
 Controlled Source, planner, bootstrap, dispatcher and release-copy checks cover
 these components. They do not certify real Google consent/recovery or native

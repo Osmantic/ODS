@@ -15,6 +15,13 @@ the paused prototype and its negative small-model evidence. See the
 [maintainer release handoff](PORTAL-MAINTAINER-RELEASE-HANDOFF.md) for the
 Google/domain and integration decisions that remain with the maintainers.
 
+The subsequent [connection-tool work](PORTAL-CONNECTION-TOOLS.md) addresses a
+different failure: the model confused the extension catalog with the state of
+an already connected account. It replaces connected-read phrase routing with
+stable capability context and a narrow native status tool. Earlier installed
+count qualification does not qualify this later change; real-model and
+installed connection-status evidence must be evaluated separately.
+
 ## Implemented
 
 - Integrated the existing Google connection wizard, email/calendar reads,

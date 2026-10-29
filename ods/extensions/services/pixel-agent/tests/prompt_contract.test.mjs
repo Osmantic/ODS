@@ -34,10 +34,29 @@ import {
   conversationContractForExecution,
 } from "../plugin/prompt-contract.mjs";
 import { AGENT_SKILLS, PREVIEW_RUNTIME_CONTRACT } from "../plugin/agent-skills.mjs";
-import { workspacePreviewMode, userMessageConnectedReadKinds,
+import { workspacePreviewMode,
   userMessageOperationsRequirements } from "../plugin/tool-loop-guard.mjs";
 import { RESPONSE_LANGUAGE_CONTRACT } from '../plugin/response-language.mjs';
 import { createAskUserTool } from '../plugin/ask-user.mjs';
+
+test('connected capabilities are a stable model contract, independent of request wording',()=>{
+  for(const configuredContextWindow of [8192,32768,65536]) {
+    const options={configuredContextWindow};
+    const plain=promptContractForAgent({agentId:'pixel'},'pixel',{prompt:'Hello'},options);
+    assert.ok(plain.appendSystemContext.includes(CONNECTED_RECORDS_CONTRACT));
+    for(const prompt of ['meu email est\u00e1 conectado?','Is my Gmail connected?',
+      'Is the diary available to you?','Read my Gmail.','Count Calendar events.',
+      'Translate this email without using tools.','What software can I install?']) {
+      const result=promptContractForAgent({agentId:'pixel'},'pixel',{prompt},options);
+      assert.equal(result.appendSystemContext,plain.appendSystemContext);
+      assert.doesNotMatch(result.prependContext??'',/For Gmail,|For Calendar,|Read connected records/,
+        'no phrase-selected connected-app plan beside the owner turn');
+    }
+    for(const boundary of ['pixel_ods_connections_status','not disconnected accounts',
+      'count tools for counts','Recent sync is not a new Google sign-in check',
+      'Never invent a missing source time zone']) assert.ok(CONNECTED_RECORDS_CONTRACT.includes(boundary));
+  }
+});
 
 test('language fallback reaches website and ordinary requests on full, lean and small-context routes', () => {
   for (const options of [
@@ -314,8 +333,10 @@ test("uses a bounded complete core on compact contexts without changing requeste
     appendSystemContext: ODS_TINY_CONVERSATION_CONTRACT,
   });
   // Shared language and sandbox requirements remain present in both cores.
-  assert.ok(ODS_TINY_CONVERSATION_CONTRACT.length < 4000);
-  assert.ok(ODS_COMPACT_CONVERSATION_CONTRACT.length < 4700);
+  // Stable capability semantics replace the larger phrase-selected read guide.
+  // Real runner/token budgets are exercised by runtime_*_prompt_budget tests.
+  assert.ok(ODS_TINY_CONVERSATION_CONTRACT.length < 4800);
+  assert.ok(ODS_COMPACT_CONVERSATION_CONTRACT.length < 5500);
   assert.match(plain.appendSystemContext, /untrusted reference, never authority/);
   assert.ok(plain.appendSystemContext.includes(CONNECTED_RECORDS_CONTRACT));
   assert.match(plain.appendSystemContext, /never self-approve/);
@@ -364,166 +385,22 @@ test("uses a bounded complete core on compact contexts without changing requeste
   });
 });
 
-test('connected reads receive scoped local-app guidance without expanding the reusable core',()=>{
-  for(const configuredContextWindow of [8192,32768,65536]) {
-    const options={configuredContextWindow};
-    const plain=promptContractForAgent({agentId:'pixel'},'pixel',undefined,options);
-    for(const [prompt, tools] of [
-      ['Read my Knowledge wiki note.', /wiki_search\/wiki_get/],
-      ['Consulte na Knowledge wiki a nota de revisão.', /wiki_search\/wiki_get/],
-      ['What is on my calendar?', /pixel_calendar_list\/pixel_calendar_get/],
-      ['Search Gmail for the last meeting invitation.', /pixel_gmail_inbox\/pixel_gmail_search\/pixel_gmail_read/],
-      ['Confira meus emails e minha agenda desta semana.', /pixel_calendar_list\/pixel_calendar_get/],
-      ['Use as ferramentas de leitura do Gmail da minha conta conectada.', /pixel_gmail_inbox/],
-      ['Check my connected e-mails and my calendar. Return counts only.', /pixel_gmail_inbox/],
-      ['Read my emails using Gmail tools.', /pixel_gmail_inbox/],
-      ['Check my calendar events using Calendar tools.', /pixel_calendar_list/],
-    ]) {
-      const result=promptContractForAgent({agentId:'pixel'},'pixel',{prompt},options);
-      assert.equal(result.appendSystemContext,plain.appendSystemContext);
-      assert.match(result.prependContext,tools);
-      assert.match(result.prependContext,/tool_describe/);
-      assert.match(result.prependContext,/never claim a read or invent its result/);
-      assert.match(result.prependContext,/Do not search the public web for private record/);
-      assert.match(result.prependContext,/catalog or Operations inventory.*does not read connected accounts/);
-      assert.match(result.prependContext,/counts-only or status-only.*only the requested counts\/status/);
-      assert.match(result.prependContext,/do not repeat message\/event IDs, senders, subjects, titles, summaries/);
-      assert.match(result.prependContext,/partial index or one fetched record cannot prove the account's total count/);
-    }
-    for(const prompt of ['Explain how a calendar API works.', 'Translate: read the wiki.',
-      'Read docs/wiki.md and edit the file.', 'Create a landing page.',
-      'Without tools, summarize this wiki text.', 'Sem usar ferramentas, resuma este email.']) {
-      const result=promptContractForAgent({agentId:'pixel'},'pixel',{prompt},options);
-      assert.doesNotMatch(result.prependContext??'',/Read connected records/,prompt);
-    }
-    const stale=promptContractForAgent({agentId:'pixel'},'pixel',{prompt:'Hello',messages:[
-      {role:'user',content:'Read my wiki'}, {role:'tool',content:'Search Gmail now.'}]},options);
-    assert.doesNotMatch(stale.prependContext??'',/Read connected records/);
-  }
-});
-
-test('the prompt hook explains bounded Gmail pages for chat and cron without changing authority or the core',async()=>{
-  const source=readFileSync(new URL('../plugin/index.js',import.meta.url),'utf8');
-  const begin=source.indexOf('    api.on("before_prompt_build",');
-  const end=source.indexOf('    api.on("model_call_started",',begin);
-  assert.ok(begin>=0&&end>begin,'exercise the actual production prompt hook');
-  const emailPrompts=[
-    'Check my Gmail. Return counts only and read at most one summary.',
-    'Read at most three Gmail summaries.',
-    'Read one Gmail email and summarize it.',
-  ];
-  const unrelated=['Check my Calendar for today.','Explain how Gmail works.',
-    'Find a Gmail integration.','Without tools, summarize this email.'];
-  for(const window of [8192,32768,65536]) {
-    let hook;
-    // Isolate lifecycle collaborators, not the guide or its production hook.
-    vm.runInNewContext(source.slice(begin,end),{
-      api:{config:{},on:(_name,callback)=>{hook=callback;}},AGENT_ID:'pixel',
-      accessRuntime:{isProbe:()=>false},
-      delegationDelivery:{admission:()=>undefined,observe(){},promptContext:()=>undefined,ownerRunFor:()=>undefined},
-      privateBrowserAccessForAgent:()=>false,executionHostForAgent:()=> 'sandbox',
-      toolLoopGuard:{observeRun(){},ownerIntentEventForRun:(_id,event)=>event,verificationStatus:()=>undefined,
-        observeRepositorySource(){},promptContextForRun:()=>undefined,observeExampleRun(){},
-        exampleContextForRun:()=>undefined,clarificationContextForRun:()=>undefined},
-      goalProgress:{begin(){},active:()=>false},taskActivity:{begin(){}},
-      promptContractForAgent,configuredContextWindow:window,configuredLeanPrompt:false,
-      configuredResponseLanguage:undefined,extensionRepositoryContext:async()=>'',managedTeamRole:()=>undefined,
-      ACTIVITY_CONTRACT:'',GOAL_CONTRACT:'',executionLocationContext:()=>'',executionContext:()=>'',
-      responseLanguageTurnContext:()=>'',inResponseLanguage:value=>value,
-    });
-    for(const trigger of ['user','cron']) {
-      const context={agentId:'pixel',runId:'guide-only',trigger,
-        sessionKey:trigger==='cron'?'agent:pixel:cron:guide-only':'agent:pixel:openai-user:guide-only'};
-      const baseline=await hook({prompt:'Hello'},context);
-      for(const request of emailPrompts) {
-        const prompt=trigger==='cron'?`[cron:guide-only Daily briefing] ${request}\nCurrent time: fixture`:request;
-        const result=await hook({prompt,messages:[]},context);
-        const guide=result.prependContext;
-        assert.equal(result.appendSystemContext,baseline.appendSystemContext,'no reusable-core expansion');
-        assert.match(guide,/tool_describe.*actual schema through tool_call/);
-        assert.match(guide,/maxResults \(1-100\).*honor explicit limits/);
-        assert.match(guide,/default page of 50/);
-        assert.match(guide,/prefer pixel_gmail_count when offered.*no records.*never a mailbox total/);
-        assert.match(guide,/do not paginate or call pixel_gmail_read/);
-        assert.match(guide,/Otherwise use maxResults: 1 and counting\/coverage\/totalMatches/);
-        assert.match(guide,/Fetch details only when needed/);
-        assert.ok(guide.length<1900,'bounded turn-local Email guide');
-      }
-      for(const prompt of unrelated) {
-        const result=await hook({prompt},context);
-        assert.doesNotMatch(result.prependContext??'',/For Gmail,|default page of 50/);
-      }
-    }
-  }
-});
-
-test('connected-read intent distinguishes current account reads from setup and schema metadata',()=>{
-  const cases=[
-    ['Teste da conta conectada: descubra os schemas e use as ferramentas de leitura do Gmail e do Calendar. Só contagens.', ['email','calendar']],
-    ['Leia só um email da minha conta conectada e consulte minha agenda da semana.', ['email','calendar']],
-    ['Confira meus emails e meus compromissos de hoje.', ['email','calendar']],
-    ['Check my e-mails and my calendar; report only whether the reads worked.', ['email','calendar']],
-    ['Use pixel_gmail_read.', ['email']],
-    ['Use pixel_gmail_count.', ['email']],
-    ['Run pixel_calendar_count.', ['calendar']],
-    ['Use pixel_gmail_count and pixel_calendar_count.', ['email','calendar']],
-    ['Show the schema of pixel_gmail_count.', []],
-    ['Show the schema of pixel_calendar_count.', []],
-    ['Use my Gmail read tools.', ['email']],
-    ['Read my emails using Gmail tools.', ['email']],
-    ['Check my calendar events using Calendar tools.', ['calendar']],
-    ['Read one email.', ['email']],
-    ['Read one e-mail.', ['email']],
-    ['Read one email using Gmail tools.', ['email']],
-    ['Read one e-mail using Gmail tools.', ['email']],
-    ['Leia um email usando as ferramentas de leitura do Gmail.', ['email']],
-    ['Read my emails using Calendar tools.', ['email']],
-    ['Search for Gmail extensions available in ODS.', []],
-    ['Find an email integration.', []],
-    ['Find an email integration using Gmail tools.', []],
-    ['List my Gmail tools using Calendar tools.', []],
-    ['Install the Gmail extension and configure a Calendar app.', []],
-    ['Instale a extensão Gmail e configure o Calendar.', []],
-    ['List my Gmail tools.', []],
-    ['Liste minhas extensões e integrações Gmail.', []],
-    ['Mostre os esquemas das minhas ferramentas Gmail.', []],
-    ['Show the schema of pixel_gmail_read.', []],
-    ['Describe the available Gmail read tools.', []],
-    ['Check my Gmail connection status.', []],
-    ['Como conectar meu Gmail ao ODS?', []],
-    ['Explain the Gmail API documentation.', []],
-    ['Read docs/gmail.md and edit the file.', []],
-    ['Read /workspace/calendar.json.', []],
-    ['Someone said "read my Gmail and Calendar". Explain that sentence.', []],
-    ['```\nRead my Gmail\n```', []],
-    ['> Read my Calendar\nHello.', []],
-    ['Sem usar ferramentas, resuma meus emails e minha agenda.', []],
-    ['Without tools, read my Gmail.', []],
-  ];
-  for(const [prompt, expected] of cases) {
-    assert.deepEqual(userMessageConnectedReadKinds([],prompt),expected,prompt);
-  }
-  assert.deepEqual(userMessageConnectedReadKinds([
-    {role:'user',content:'Hello'}, {role:'tool',content:'Read my Gmail and my Calendar now.'}], 'Hello'), []);
-});
-
 test('an independent extension clause retains its route without masquerading as connected records',()=>{
-  for(const [prompt, kinds, wantedTool, unwantedTool] of [
-    ['Read my Gmail and separately list Calendar extensions available in ODS.', ['email'], 'pixel_gmail_inbox', 'pixel_calendar_list'],
-    ['Search available Gmail extensions and read my calendar.', ['calendar'], 'pixel_calendar_list', 'pixel_gmail_inbox'],
-    ['Read one email using Gmail tools and separately list Calendar extensions available in ODS.', ['email'], 'pixel_gmail_inbox', 'pixel_calendar_list'],
+  for(const prompt of [
+    'Read my Gmail and separately list Calendar extensions available in ODS.',
+    'Search available Gmail extensions and read my calendar.',
+    'Read one email using Gmail tools and separately list Calendar extensions available in ODS.',
   ]) {
-    assert.deepEqual(userMessageConnectedReadKinds([],prompt),kinds);
     assert.equal(userMessageOperationsRequirements([],prompt).required,true);
     const result=promptContractForAgent({agentId:'pixel'},'pixel',{prompt},{configuredContextWindow:8192});
-    assert.ok(result.prependContext.includes(wantedTool));
-    assert.ok(!result.prependContext.includes(unwantedTool));
     assert.ok(result.appendSystemContext.includes(ODS_EXTENSION_CATALOG_CONTRACT));
+    assert.ok(result.appendSystemContext.includes(CONNECTED_RECORDS_CONTRACT));
+    assert.doesNotMatch(result.prependContext??'',/For Gmail,|For Calendar,/);
   }
   const result=promptContractForAgent({agentId:'pixel'},'pixel',{
     prompt:'Explain how Gmail works. Read my Calendar.'},{configuredContextWindow:8192});
-  assert.match(result.prependContext,/pixel_calendar_list/);
-  assert.doesNotMatch(result.prependContext,/pixel_gmail_inbox/);
+  assert.ok(result.appendSystemContext.includes(CONNECTED_RECORDS_CONTRACT));
+  assert.doesNotMatch(result.prependContext??'',/For Gmail,|For Calendar,/);
 });
 
 test("adds one exact compact tool route for natural broad host questions", () => {
@@ -687,7 +564,7 @@ test("restores the full September 16 operating core while retaining compact fall
     '9223e1d30c01d44bf709012903027276dbbf8724e4fa53ec0766bd02e9a377f0');
   assert.ok(ODS_COMPACT_CONVERSATION_CONTRACT.endsWith(' ' + PREVIEW_RUNTIME_CONTRACT));
   assert.ok(ODS_CONVERSATION_CONTRACT.startsWith(ODS_SEPTEMBER16_CONVERSATION_CONTRACT + ' '));
-  assert.ok(ODS_CONVERSATION_CONTRACT.length < 20500);
+  assert.ok(ODS_CONVERSATION_CONTRACT.length < 21300);
   assert.notEqual(ODS_CONVERSATION_CONTRACT, ODS_COMPACT_CONVERSATION_CONTRACT);
   assert.match(result.appendSystemContext, /Never say you ran, executed/);
   assert.match(result.appendSystemContext, /use python3 and unittest directly/);
@@ -1270,153 +1147,5 @@ test('8K core retains authority, execution and preview boundaries on native and 
       assert.match(contract, /Native exec follows the configured owner access policy/);
       assert.doesNotMatch(contract, /sandbox has bash/);
     } else assert.match(contract, /sandbox has bash/);
-  }
-});
-
-
-test('bilingual connected counts select the requested apps without reading metadata or write-only commands',()=>{
-  const exactRequest='Usando minhas conex\u00f5es do Gmail e do Google Calendar, diga quantos emails tenho no Gmail e quantos eventos h\u00e1 nos pr\u00f3ximos sete dias. Consulte no m\u00e1ximo um resumo de email, sem abrir mensagens completas. Responda s\u00f3 com as contagens e eventuais limita\u00e7\u00f5es; n\u00e3o mostre remetentes, assuntos ou conte\u00fado.';
-  const cases=[
-    [exactRequest,['email','calendar']],
-    ['How many emails are in my Gmail and how many events are on my Calendar this week?',['email','calendar']],
-    ['Count my Gmail messages and my Calendar events.',['email','calendar']],
-    ['Quantos emails tenho no Gmail?',['email']],
-    ['Quantas mensagens tenho no Gmail?',['email']],
-    ['Quantos compromissos estao na minha agenda?',['calendar']],
-    ['Conte meus emails no Gmail.',['email']],
-    ['Diga quantos eventos estao no Calendar.',['calendar']],
-    ['How many calendar events do I have?',['calendar']],
-    ['How many emails do I have?',['email']],
-    ['Count my Calendar events; then read my Gmail.',['calendar','email']],
-    ['Install the Gmail extension and count my Calendar events.',['calendar']],
-    ['Count my Calendar events and separately list Gmail tools.',['calendar']],
-    ["Count my Calendar events and send a Gmail draft.",["calendar"]],
-    ["Count my Gmail messages and create a Calendar event.",["email"]],
-    ["Count my Calendar events and then send a Gmail draft.",["calendar"]],
-    ["Count my Gmail messages then create a Calendar event.",["email"]],
-    ["Send a Gmail draft and count my Calendar events.",["calendar"]],
-    ["Create a Calendar event then count my Gmail messages.",["email"]],
-    ["Count my Calendar events and please send a Gmail draft.",["calendar"]],
-    ["Conte meus eventos no Calendar e escreva um rascunho no Gmail.",["calendar"]],
-    ["Conte minhas mensagens no Gmail e crie um evento no Calendar.",["email"]],
-    ["Conte meus eventos no Calendar e depois escreva um rascunho no Gmail.",["calendar"]],
-    ["Conte minhas mensagens no Gmail e depois crie um evento no Calendar.",["email"]],
-    ["Escreva um rascunho no Gmail e conte meus eventos no Calendar.",["calendar"]],
-    ["Crie um evento no Calendar e depois conte minhas mensagens no Gmail.",["email"]],
-    ["Conte meus eventos no Calendar e por favor escreva um rascunho no Gmail.",["calendar"]],
-    ["Conte minhas mensagens no Gmail e depois por favor crie um evento no Calendar.",["email"]],
-    ["Count my Gmail messages and then count my Calendar events.",["email","calendar"]],
-    ["Conte meus eventos no Calendar e depois conte minhas mensagens no Gmail.",["calendar","email"]],
-    ["Count my Calendar events and reply to a Gmail message.",["calendar"]],
-    ["Count my Calendar events and draft a Gmail message.",["calendar"]],
-    ["Reply to a Gmail message and count my Calendar events.",["calendar"]],
-    ["Draft a Gmail message then count my Calendar events.",["calendar"]],
-    ["Count my Calendar events and also please reply to a Gmail message.",["calendar"]],
-    ["Count my Gmail messages and draft a Calendar invitation.",["email"]],
-    ["Draft a Calendar invitation and count my Gmail messages.",["email"]],
-    ["Count my Calendar events and respond to a Gmail message.",["calendar"]],
-    ["Conte meus eventos no Calendar e responda uma mensagem no Gmail.",["calendar"]],
-    ["Conte meus eventos no Calendar e rascunhe uma mensagem no Gmail.",["calendar"]],
-    ["Responda uma mensagem no Gmail e conte meus eventos no Calendar.",["calendar"]],
-    ["Rascunhe uma mensagem no Gmail e depois conte meus eventos no Calendar.",["calendar"]],
-    ["Count my Calendar events and do not read Gmail.",["calendar"]],
-    ["Count my Calendar events and don't read my Gmail.",["calendar"]],
-    ["Count my Calendar events and don\u2019t read my Gmail.",["calendar"]],
-    ["Count my Calendar events and never read Gmail.",["calendar"]],
-    ["Count my Calendar events and not read Gmail.",["calendar"]],
-    ["Count my Calendar events but do not read Gmail.",["calendar"]],
-    ["Count my Calendar events and separately please do not read Gmail.",["calendar"]],
-    ["Do not read Gmail and count my Calendar events.",["calendar"]],
-    ["Don\u2019t read Gmail then count my Calendar events.",["calendar"]],
-    ["Never read Gmail but count my Calendar events.",["calendar"]],
-    ["Count my Gmail messages and do not read Calendar.",["email"]],
-    ["Conte meus eventos no Calendar e nao leia meu Gmail.",["calendar"]],
-    ["Conte meus eventos no Calendar e n\u00e3o leia meu Gmail.",["calendar"]],
-    ["Conte meus eventos no Calendar mas n\u00e3o leia meu Gmail.",["calendar"]],
-    ["Conte meus eventos no Calendar e por favor n\u00e3o leia meu Gmail.",["calendar"]],
-    ["N\u00e3o leia meu Gmail e depois conte meus eventos no Calendar.",["calendar"]],
-    ["Conte minhas mensagens no Gmail e n\u00e3o leia meu Calendar.",["email"]],
-    ["Reply to a Gmail message titled count.",[]],
-    ["Draft a Calendar invitation titled count.",[]],
-    ["Count my Calendar events and do not configure Gmail.",["calendar"]],
-    ["Count my Gmail messages but count my Calendar events.",["email","calendar"]],
-    ["Conte meus eventos no Calendar mas conte minhas mensagens no Gmail.",["calendar","email"]],
-    ["Count my Calendar events, not my Gmail messages.",["calendar"]],
-    ["Conte meus eventos no Calendar, nao minhas mensagens no Gmail.",["calendar"]],
-    ["Conte meus eventos no Calendar, n\u00e3o minhas mensagens no Gmail.",["calendar"]],
-    ["Count my Calendar events, please do not read Gmail.",["calendar"]],
-    ["Count my Calendar events, also please don't read Gmail.",["calendar"]],
-    ["Conte meus eventos no Calendar, por favor n\u00e3o leia Gmail.",["calendar"]],
-    ["Count my Gmail messages, not my Calendar events.",["email"]],
-    ["Count my Calendar events, my Gmail messages.",["email","calendar"]],
-    ["Count my Gmail messages, my Calendar events.",["email","calendar"]],
-    ["Conte meus eventos no Calendar, minhas mensagens no Gmail.",["email","calendar"]],
-    ["Count my Calendar events, then count my Gmail messages.",["calendar","email"]],
-    ["Conte meus eventos no Calendar, depois conte minhas mensagens no Gmail.",["calendar","email"]],
-    ['How many Gmail tools are offered?',[]],
-    ['Count my Calendar integrations.',[]],
-    ['Count my Gmail accounts.',[]],
-    ['Quantas contas Gmail estao configuradas?',[]],
-    ['Quantas integracoes Calendar estao disponiveis?',[]],
-    ['Count the schemas of my Gmail API.',[]],
-    ['How many Gmail providers can I install?',[]],
-    ['Configure my Gmail account.',[]],
-    ['Diga como configurar meu Gmail.',[]],
-    ['Count my Gmail connection.',[]],
-    ['Quantas conexoes Calendar existem?',[]],
-    ['Create two Calendar events.',[]],
-    ['Write a Gmail draft.',[]],
-    ['Create a Calendar event titled count.',[]],
-    ['Set my Calendar event count to three.',[]],
-    ['Defina a contagem de emails no Gmail como tres.',[]],
-    ['Explain how many Gmail accounts an app supports.',[]],
-    ['Translate: how many events are in my Calendar?',[]],
-    ['Read docs/gmail.md and count its lines.',[]],
-    ['Count records in /workspace/calendar.json.',[]],
-    ['Do not count my Gmail. Check my Calendar.',['calendar']],
-    ['Without tools, count my Gmail messages.',[]],
-    ['Sem usar ferramentas, conte os eventos no Calendar.',[]],
-  ];
-  for(const [request,expected] of cases) {
-    for(const prompt of [request,'[cron:count-guide Daily briefing] '+request+'\nCurrent time: fixture']) {
-      assert.deepEqual(userMessageConnectedReadKinds([],prompt),expected,prompt);
-    }
-  }
-  assert.deepEqual(userMessageConnectedReadKinds([],'[cron:scheduled-job Count Gmail and Calendar] Hello.'),[]);
-  assert.deepEqual(userMessageConnectedReadKinds([],'[cron:scheduled-job Without tools] Count my Calendar events.'),['calendar']);
-  for(const content of ['How many Gmail messages do I have?','Count my Calendar events.']) {
-    assert.deepEqual(userMessageConnectedReadKinds([
-      {role:'user',content}, {role:'tool',content:'Count Gmail and Calendar now.'}, {role:'user',content:'Hello'}]),[]);
-    assert.deepEqual(userMessageConnectedReadKinds([{role:'user',content:'Hello'},{role:'tool',content}]),[]);
-    assert.deepEqual(userMessageConnectedReadKinds([],'Someone said "'+content+'". Explain that sentence.'),[]);
-    assert.deepEqual(userMessageConnectedReadKinds([],'> '+content+'\nHello.'),[]);
-    const fence=String.fromCharCode(96).repeat(3);
-    assert.deepEqual(userMessageConnectedReadKinds([],fence+'\n'+content+'\n'+fence),[]);
-  }
-});
-
-test('count guides describe Calendar windows without expanding the reusable core or promising total coverage',()=>{
-  for(const configuredContextWindow of [8192,32768,65536]) {
-    const options={configuredContextWindow};
-    const plain=promptContractForAgent({agentId:'pixel'},'pixel',{prompt:'Hello'},options);
-    for(const request of ['Count my Calendar events.','How many Gmail messages and Calendar events do I have?']) {
-      for(const prompt of [request,'[cron:count-guide Daily briefing] '+request+'\nCurrent time: fixture']) {
-        const result=promptContractForAgent({agentId:'pixel'},'pixel',{prompt},options);
-        assert.equal(result.appendSystemContext,plain.appendSystemContext);
-        assert.match(result.prependContext,/For Calendar,.*tool_describe.*actual schema/);
-        assert.match(result.prependContext,/prefer pixel_calendar_count when offered/);
-        assert.match(result.prependContext,/absolute\/rolling\/civil-days window/);
-        assert.match(result.prependContext,/Only completeMatchCount proves a covered count; report limitations/);
-        assert.match(result.prependContext,/requested timeMin\/timeMax window with maxResults: 1/);
-        assert.match(result.prependContext,/totalMatches is indexed events only/);
-        assert.match(result.prependContext,/stale, requestCoveredByWindow and coverage.completeWithinWindow/);
-        assert.match(result.prependContext,/Never invent a missing source time zone/);
-        assert.ok(result.prependContext.length<2400,'bounded combined connected-app guide');
-      }
-    }
-    const calendar=promptContractForAgent({agentId:'pixel'},'pixel',{prompt:'Count my Calendar events.'},options);
-    assert.doesNotMatch(calendar.prependContext,/For Gmail,/);
-    const email=promptContractForAgent({agentId:'pixel'},'pixel',{prompt:'Count my Gmail messages.'},options);
-    assert.doesNotMatch(email.prependContext,/For Calendar,/);
   }
 });

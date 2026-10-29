@@ -25,6 +25,7 @@ import {createAskUserTool} from '../plugin/ask-user.mjs';
 import {createExtensionRequestStatusTool} from '../plugin/extension-proposal.mjs';
 import {createWorkspacePreviewTool} from '../plugin/workspace-preview.mjs';
 import {createWorkspacePreviewInspectTool} from '../plugin/workspace-preview-inspect.mjs';
+import {createConnectionsStatusTool} from '../plugin/connections-status.mjs';
 import {ACTIVITY_CONTRACT} from '../plugin/activity-display.mjs';
 import {executionContext} from '../plugin/completion-assurance.mjs';
 import {executionLocationContext} from '../plugin/execution-location.mjs';
@@ -156,8 +157,9 @@ test('8K compact-profile fresh chat reaches provider with compact contract and f
   const fixtureContext={agentId:'pixel',sessionKey:'agent:pixel:openai-user:ods-'+ 'a'.repeat(64)};
   const noExternalCall=()=>{throw new Error('No external operations in prompt-budget fixture');};
   const odsTools=[createExtensionReadTool(),createPublicWebExtractTool({guardedFetch:noExternalCall,readResponseText:noExternalCall,extractBasicHtmlContent:noExternalCall}),createAgentSkillTool(),createAskUserTool(),
-    createExtensionRequestStatusTool(fixtureContext),createWorkspacePreviewTool(),createWorkspacePreviewInspectTool()];
-  assert.ok(odsTools.every(Boolean),'all seven real ODS direct-tool definitions must be present');
+    createExtensionRequestStatusTool(fixtureContext),createWorkspacePreviewTool(),createWorkspacePreviewInspectTool(),
+    createConnectionsStatusTool({read:noExternalCall})];
+  assert.ok(odsTools.every(Boolean),'all eight real ODS working-tool definitions must be catalogued');
   const definitions=odsTools.map(({name,description,parameters})=>({name,description,parameters}));
   fs.writeFileSync(path.join(plugin,'openclaw.plugin.json'),JSON.stringify({id:'pixel-ods',activation:{onStartup:true},contracts:{tools:definitions.map(t=>t.name)},configSchema:{type:'object',properties:{}}}));
   fs.writeFileSync(path.join(plugin,'fixture-data.json'),JSON.stringify({compactContract,definitions}));

@@ -91,6 +91,7 @@ import {createWorkspaceBundleExecution} from './workspace-bundle-execution.mjs';
 import { createTaskActivity } from "./task-activity.mjs";
 import { createWorkspaceProjects } from "./workspace-projects.mjs";
 import { createAccessRuntime, executionHostForAgent } from "./access-runtime.mjs";
+import { createConnectionsStatusTool } from './connections-status.mjs';
 import { createManagedRuntimeRegistry } from "./managed-runtime-lifecycle.mjs";
 import {createContextCompaction, readContextRequest, prepareStableContextModel} from './context-compaction.mjs';
 import {registerHistoryIntegration} from './history-context.mjs';
@@ -827,6 +828,8 @@ export default definePluginEntry({
       },
       { names: ["pixel_ods_status"] }
     );
+
+    registerTool(api, createConnectionsStatusTool(), {names:['pixel_ods_connections_status']});
 
     registerTool(api, createHostObserveTool({
       readOdsStatus: async () => statusPayload(await readProjection(statusFile)),

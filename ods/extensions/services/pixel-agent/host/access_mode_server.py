@@ -39,6 +39,7 @@ for name in ("pixel_model_contract.py", "pixel_model_coordinator.py", "model_tra
 for name in ('pixel_schedules.py', 'scheduled_tasks_owner.py', 'scheduled_tasks_gateway.mjs'):
     protected(PROGRAM / name)
 if platform.system() == "Linux":
+    protected(PROGRAM / "pixel_connection_agent_status.py")
     protected(PROGRAM / "pixel_source_upgrade.py")
     # Connected apps use the systemd Source Broker, so only Linux and WSL ship them.
     for name in ("__init__.py", "state.py", "status.py", "catalog.py", "oauth.py", "custody.py",
@@ -156,6 +157,13 @@ def main(*, reprove_installer_access=False):
                         status, body = 503, {'error': 'scheduler-platform-unavailable'}
                     else:
                         status, body = 200, adapter.schedules(request['request'], source=request['source'])
+                elif request == {"operation": "connection-agent-status"}:
+                    if platform.system() != "Linux":
+                        status, body = 503, {"error": "connection-status-unavailable"}
+                    else:
+                        from pixel_connections.status import agent_report
+                        surface = "wsl-systemd" if "microsoft" in platform.release().lower() else "linux-systemd"
+                        status, body = 200, agent_report(surface=surface)
                 elif request == {"operation": "connection-status"} and platform.system() == "Linux":
                     from pixel_connections.status import report as connection_report
                     from pixel_connections.google_app import public_status as google_app_status

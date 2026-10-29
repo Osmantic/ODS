@@ -139,6 +139,7 @@ jobs:
             tests/test_native_access_source_overlay.py \
             tests/test_native_access_policy_source.py \
             tests/test_pixel_connection_wire.py \
+            tests/test_pixel_connection_agent_status.py \
             tests/test_pixel_access_program_modes.py \
             extensions/services/pixel-agent/tests/test_connection_native_apps.py \
             extensions/services/pixel-agent/tests/test_connection_transaction_ids.py \

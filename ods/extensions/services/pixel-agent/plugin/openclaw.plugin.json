@@ -19,6 +19,7 @@
       "pixel_ods_extension_request_prepare",
       "pixel_ods_ask_user",
       "pixel_ods_status",
+      "pixel_ods_connections_status",
       "pixel_ods_apps_list",
       "pixel_ods_extensions",
       "pixel_ods_host_observe",
@@ -65,6 +66,9 @@
       "replaySafe": true
     },
     "pixel_ods_status": {
+      "replaySafe": true
+    },
+    "pixel_ods_connections_status": {
       "replaySafe": true
     },
     "pixel_ods_apps_list": {

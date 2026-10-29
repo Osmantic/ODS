@@ -58,6 +58,7 @@ def test_shared_contract_and_private_output(contract):
     assert "pixel_ods_workspace_bundle" in value["gatewayExtensions"][0]["tools"]
     assert "pixel_ods_workspace_artifact" in value["gatewayExtensions"][0]["tools"]
     assert "pixel_ods_image_read" in value["gatewayExtensions"][0]["tools"]
+    assert "pixel_ods_connections_status" in value["gatewayExtensions"][0]["tools"]
     assert {'pixel_ods_python_library_proposal', 'pixel_ods_extension_request_status',
             'pixel_ods_extension_request_prepare', 'pixel_ods_extension_request_advance'}.issubset(value['gatewayExtensions'][0]['tools'])
     assert value["operationsLimbEnabled"] is True
@@ -297,7 +298,9 @@ _ods_pixel_write_onboarding fixture "$2" "$3" /opt/pixel/bin/openclaw /opt/pixel
         cwd="/", env={**os.environ, "MAX_CONTEXT": "16384", "LLAMA_REASONING": "off",
                       "PIXEL_MODEL_RELAY_KEY": "test-only-relay-key",
                       "PIXEL_MODEL_RELAY_PORT": "4006", "PIXEL_GATEWAY_PORT": "18789",
-                      "SEARXNG_PORT": "8888"}, capture_output=True, text=True)
+                      "SEARXNG_PORT": "8888",
+                      "ODS_PORTAL_CONNECTIONS_FILE": str(answers.parent / "absent-connections.json")},
+        capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert answers.read_bytes() == expected
     assert not list(answers.parent.glob(".pixel-gateway-key.*"))

@@ -121,6 +121,7 @@ def control_request(value):
             "schedules": {"operation", "source", "request"},
             # Read-only and content-free: the owner's connected apps and their sync state.
             "connection-status": {"operation"},
+            "connection-agent-status": {"operation"},
             # The custodian's actions; pixel_connections.coordinator validates each request.
             **{name: {"operation", "request"} for name in CONNECTION_OPERATIONS}}
     if operation not in keys or set(value) != keys[operation]:

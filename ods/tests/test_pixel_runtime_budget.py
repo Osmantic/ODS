@@ -34,6 +34,24 @@ def invoke(path, home, explicit_home=None):
                           capture_output=True, text=True, timeout=10)
 
 
+@pytest.mark.parametrize('mode', ['all', 'off'])
+def test_connection_status_read_is_permitted_without_changing_sandbox_mode(tmp_path, mode):
+    tmp_path.chmod(0o700)
+    value = configuration()
+    value['agents']['defaults']['sandbox'] = {'mode': mode}
+    path = tmp_path / 'openclaw.json'
+    path.write_text(json.dumps(value))
+    path.chmod(0o600)
+    result = invoke(path, tmp_path)
+    assert result.returncode == 0, result.stderr
+    updated = json.loads(Path(result.stdout.strip()).read_text())
+    name = 'pixel_ods_connections_status'
+    assert name in updated['tools']['alsoAllow']
+    assert name in updated['tools']['sandbox']['tools']['allow']
+    assert name not in updated['agents']['list'][0]['tools']['deny']
+    assert updated['agents']['defaults']['sandbox']['mode'] == mode
+
+
 @pytest.mark.parametrize('policy,expected', [('supported', ['text', 'image']),
     ('unknown', ['text', 'image']), ('unsupported', ['text'])])
 def test_image_policy_overlay_binds_selected_route_and_replaces_previous_policy(tmp_path, policy, expected):

@@ -31,7 +31,6 @@ import {
   workspacePreviewMode,
   userMessageRequestsWorkspaceDocumentDelivery,
   userMessageReportsDefect,
-  userMessageConnectedReadKinds,
 } from "./tool-loop-guard.mjs";
 import { AGENT_SKILLS, PREVIEW_RUNTIME_CONTRACT } from "./agent-skills.mjs";
 import { WORKSPACE_ARTIFACT_DELIVERY_GUIDANCE } from './workspace-artifact.mjs';
@@ -130,25 +129,11 @@ export const ODS_SANDBOX_RUNTIME_CONTRACT =
 // guidance already present in the compact contract.
 // The preview runtime supplement applies to both context sizes, not the historic core.
 export const CONNECTED_RECORDS_CONTRACT =
-  "Never invent a missing source time zone.";
-const CONNECTED_APP_READ_GUIDE =
-  "Read connected records with the app's offered tools, not from memory or a web search. " +
-  "Tool Search finds capabilities, not saved notes, email or calendar records. Use the relevant app read for those records. " +
-  "An ODS extension catalog or Operations inventory describes integrations or host actions; it does not read connected accounts or prove that their records are absent. " +
-  "Do not install or configure an integration merely to answer a connected-record read; setup needs its own owner request. " +
-  "If the needed tool is absent or a read fails, report that limitation; never claim a read or invent its result. " +
-  "Do not search the public web for private record titles or content unless the owner requests that disclosure. Never invent a missing source time zone. " +
-  "Respect the owner's requested presentation: for counts-only or status-only results, return only the requested counts/status and necessary coverage limits; do not repeat message/event IDs, senders, subjects, titles, summaries or other record details. " +
-  "Read only what is necessary for the request. A partial index or one fetched record cannot prove the account's total count.";
-const CONNECTED_READ_TOOLS = {
-  email: "For Gmail, discover the offered pixel_gmail_inbox/pixel_gmail_search/pixel_gmail_read tools with tool_search, then tool_describe the returned exact ID and call its actual schema through tool_call. " +
-    "Gmail list/search/thread tools use maxResults (1-100): honor explicit limits; omitting it returns a default page of 50. " +
-    "For count/status-only questions, prefer pixel_gmail_count when offered: no records, indexedMatchCount/coverageState/limitations only, never a mailbox total. Otherwise use maxResults: 1 and counting/coverage/totalMatches; do not paginate or call pixel_gmail_read. Fetch details only when needed.",
-  calendar: "For Calendar, discover the offered pixel_calendar_list/pixel_calendar_get tools with tool_search, then tool_describe the returned exact ID and call its actual schema through tool_call. " +
-    "For count/status-only questions, prefer pixel_calendar_count when offered: describe its absolute/rolling/civil-days window; it resolves clock/time zone and returns no events. Only completeMatchCount proves a covered count; report limitations. " +
-    "Otherwise list the requested timeMin/timeMax window with maxResults: 1; totalMatches is indexed events only. Check stale, requestCoveredByWindow and coverage.completeWithinWindow. Never invent a missing source time zone.",
-  wiki: "Knowledge wiki is a local ODS plugin: discover wiki_search/wiki_get with tool_search, then tool_describe its required arguments before tool_call.",
-};
+  "Connected apps: pixel_ods_connections_status reports saved Google connection, read permissions and recent sync health, without records. " +
+  "Gmail, Calendar and wiki records use their app tools; discover by capability with tool_search, then describe and call the returned ID. " +
+  "Extension catalogs describe installable software, never account connection or record presence. Missing tools mean unavailable capability, not disconnected accounts. " +
+  "Choose the least data needed: status for connection, count tools for counts, record tools for contents. Respect requested limits and report partial coverage. " +
+  "Recent sync is not a new Google sign-in check. Do not install, reconnect or expose private data to public search without the owner's request. Never invent a missing source time zone.";
 const CONNECTED_RECORDS_TINY_CONTRACT = CONNECTED_RECORDS_CONTRACT;
 
 const CURRENT_OPERATING_COMPATIBILITY = [
@@ -465,10 +450,7 @@ export function promptContractForAgent(
   const documentDelivery = userMessageRequestsWorkspaceDocumentDelivery(event?.messages, event?.prompt)
     ? ODS_WORKSPACE_DOCUMENT_DELIVERY_GUIDE : "";
   const defectReport = userMessageReportsDefect(event?.messages, event?.prompt) ? ODS_DEFECT_REPORT_GUIDE : "";
-  const connectedKinds = userMessageConnectedReadKinds(event?.messages, event?.prompt);
-  const connectedRead = connectedKinds.length
-    ? [CONNECTED_APP_READ_GUIDE, ...connectedKinds.map(kind => CONNECTED_READ_TOOLS[kind])].join(" ") : "";
-  const turnGuide = [documentDelivery, defectReport, connectedRead].filter(Boolean).join(" ");
+  const turnGuide = [documentDelivery, defectReport].filter(Boolean).join(" ");
   const exactDownload = userMessageRequestsExactByteDownload(
     event?.messages,
     event?.prompt

@@ -4975,65 +4975,6 @@ function currentOwnerIntentText(messages, prompt = undefined) {
     : currentText;
 }
 
-// A model-only explanation of connected reads, never an access grant or a
-// receipt. Match the current owner's request, not stale turns/tool content.
-export function userMessageConnectedReadKinds(messages, prompt = undefined) {
-  // The scheduler's job label is metadata, not the owner's task text.
-  const ownerText = currentOwnerIntentText(messages, prompt).replace(/^\[cron:[^\]\r\n]*\]\s*/, '');
-  if (ownerForbidsTools(ownerText) ||
-      /\b(?:without (?:using )?(?:any )?tools|sem (?:usar )?(?:quaisquer )?ferramentas)\b/i.test(ownerLaneText(ownerText))) return [];
-  const text = withoutFilesystemPaths(ownerLaneText(ownerText))
-    .replace(/(?:\b[\w.-]+\/)+[\w.-]+|\b[\w-]+\.(?:md|txt|json|html|js|mjs|py)\b/g, ' ')
-    .normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase();
-  const readVerbs = 'read|search|find|check|list|summari[sz]e|what|show|consult[ae]|busqu[ae]|leia|ler|liste|resuma|quais|qual|mostre|verifique|confira|veja|cheque|procure|encontre|pesquise';
-  const countVerbs = 'count|how\\s+many|quant[oa]s?|conte';
-  const writeVerbs = 'create|write|send|reply|respond|draft|delete|remove|update|edit|add|set|schedule|crie|escreva|envie|responda|rascunhe|apague|exclua|remova|atualize|edite|adicione|defina|agende';
-  const clausePrefixes = 'separately|also|please|separadamente|tambem|por\\s+favor';
-  const negatedPrefixes = "do\\s+not|don['\u2019]t|never|not|nao";
-  const verbs = `${readVerbs}|${countVerbs}`;
-  // Bind guidance to the requested object. An independent extension/setup
-  // clause must neither turn its catalog into account data nor suppress a
-  // real read elsewhere in the same owner request.
-  const clauses = text.split(new RegExp(`[.!?;\\n]+|,\\s*(?=(?:(?:${clausePrefixes})\\s+)*(?:and|then|but|e|depois|mas|${negatedPrefixes})\\b)|` +
-    `\\b(?:and|then|but|e|depois|mas)\\s+(?=(?:(?:${clausePrefixes})\\s+)*` +
-    `(?:${verbs}|${writeVerbs}|${negatedPrefixes}|use|using|invoke|call|install|configure|enable|connect|instale|configure|conecte)\\b)`));
-  const selected = new Set();
-  for (const clause of clauses) {
-    if (/\b(?:translate|traduza|explain|explique|how to|como conectar|como funciona|documentation|documentacao|tutorial)\b/.test(clause) ||
-        new RegExp(`^\\s*(?:(?:${clausePrefixes})\\s+)*(?:${negatedPrefixes})\\b`).test(clause)) continue;
-    const countRequest = new RegExp(`\\b(?:${countVerbs})\\b`).test(clause);
-    // A quantity in a write command is not a request to read connected records.
-    if (countRequest && !new RegExp(`\\b(?:${readVerbs})\\b`).test(clause) &&
-        new RegExp(`^(?:(?:${clausePrefixes})\\s+)*(?:${writeVerbs})\\b`).test(clause.trim())) continue;
-    const namedRead = /\bpixel_(?:gmail_(?:inbox|sent|search|read|thread|count)|calendar_(?:list|get|count))\b/.test(clause);
-    const invokeNamedRead = namedRead && /\b(?:use|using|invoke|call|run|execute|utilize|usar|chame)\b/.test(clause);
-    const useReadTools = /\b(?:use|using|invoke|call|utilize|usar|chame)\b[^.!?;\n]{0,120}\b(?:read(?:ing)?|leitura)\b/.test(clause);
-    if (!new RegExp(`\\b(?:${verbs})\\b`).test(clause) && !useReadTools && !invokeNamedRead) continue;
-    // A named tool can be the means of reading, rather than the requested
-    // metadata object. Remove only that adjunct after a read request; keep
-    // "list my Gmail tools" and extension/integration objects intact.
-    const objectClause = clause.replace(/\b(?:using|with|via|through|usando|utilizando)\s+(?:(?:the|offered|available|as|os)\s+)*(?:(?:gmail|calendar|calendario|wiki)\s+)?(?:(?:read|reading|de leitura)\s+)?(?:tools?|ferramentas?)(?:\s+de leitura)?(?:\s+(?:do|da|de)\s+(?:gmail|calendar|calendario|wiki))?\b/g,
-      (means, offset) => new RegExp(`\\b(?:${verbs})\\b`).test(clause.slice(0, offset)) ? ' ' : means);
-    const metadata = /\b(?:extensions?|plugins?|integrations?|integracoes|extensoes|providers?|apps?|applications?|aplicacoes|tools?|ferramentas?|schemas?|esquemas?|apis?|oauth|configuration|configuracao)\b/.test(objectClause)
-      || countRequest && /\b(?:accounts?|connections?|contas?|conex(?:ao|oes))\b/.test(objectClause);
-    const metadataObject = /\b(?:gmail|calendar|calendario|wiki)\s+(?:(?:read|reading|de leitura)\s+)?(?:tools?|ferramentas?|schemas?|esquemas?|extensions?|extensoes|integracoes|plugins?|apps?|aplicacoes)\b|\b(?:tools?|ferramentas?|schemas?|esquemas?|extensions?|extensoes|integracoes|plugins?|apps?|aplicacoes)[^.!?;\n]{0,64}\b(?:gmail|calendar|calendario|wiki)\b/.test(objectClause);
-    const setup = /^\s*(?:(?:please|also|separately|separadamente|por favor)\s+)*(?:install|configure|enable|connect|instale|configure|conecte)\b|\b(?:connection status|status da conexao|configuration|configuracao)\b/.test(objectClause);
-    const records = /\b(?:messages?|emails|e-mails|events?|records?|notes?|mensagens?|eventos?|registros?|notas?|compromissos)\b/.test(objectClause);
-    const owned = /\b(?:my|our|minha|minhas|meu|meus|nossa|nossas|nosso|nossos)\b/.test(objectClause);
-    if ((setup || metadataObject || metadata && !records && (!owned || countRequest)) && !useReadTools && !invokeNamedRead) continue;
-    if (/\b(?:gmail|emails?|e-mails?|pixel_gmail_(?:inbox|sent|search|read|thread|count))\b/.test(objectClause) ||
-        /\b(?:my|our|minha|nossa)\s+(?:inbox|caixa de entrada)\b/.test(objectClause)) selected.add('email');
-    if (/\b(?:calendar|calendario|pixel_calendar_(?:list|get|count))\b/.test(objectClause) ||
-        /\b(?:my|our|minha|nossa)\s+agenda\b|\b(?:meus|nossos)\s+compromissos\b/.test(objectClause)) selected.add('calendar');
-    if (/\bwiki\b/.test(objectClause)) selected.add('wiki');
-  }
-  return [...selected];
-}
-
-export function userMessageRequestsConnectedRead(messages, prompt = undefined) {
-  return userMessageConnectedReadKinds(messages, prompt).length > 0;
-}
-
 // Ordinary owner file handoff is independent of the words download/attach.
 // Match a direct request and its object together; filenames mentioned in an
 // explanation, a list-of-files request or another person's instruction do not

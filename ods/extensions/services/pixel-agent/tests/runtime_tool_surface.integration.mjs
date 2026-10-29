@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { createPublicWebExtractTool } from '../plugin/web-extract.mjs';
 import { createWorkspacePreviewInspectTool, INSPECTION_KIND, INSPECTION_SCOPE, inspectionPlanHash } from '../plugin/workspace-preview-inspect.mjs';
+import { createConnectionsStatusTool } from '../plugin/connections-status.mjs';
 
 const file = process.env.OPENCLAW_TOOL_SEARCH_MODULE;
 const manifest = JSON.parse(readFileSync(new URL('../host/openclaw-image-envelope.json', import.meta.url)));
@@ -15,6 +16,19 @@ const { u: apply, m: createRef, h: createControls, v: resolveExact } = await imp
 const { t: filterByPolicy } = await import(pathToFileURL(join(dirname(file), 'agent-tools.policy-Dyn4VuLn.js')));
 const tool = name => ({ name, label: name, description: name, parameters: { type: 'object', properties: {} }, execute: async () => ({ content: [] }) });
 const controls = ['tool_search', 'tool_describe', 'tool_call'].map(tool);
+
+function connectionStatusTool(reads) {
+  const unknownSource=()=>({lastObservedState:'unknown',recent:null,lastSuccessAt:null,complete:null,error:null});
+  return createConnectionsStatusTool({read:async()=>{
+    reads.push('fixed-status-read');
+    return {schemaVersion:1,kind:'ods-connection-agent-status',scope:'reviewed-google',
+      observedAt:'2026-10-29T00:00:00Z',available:false,reason:'not-connected',
+      recordConfigured:false,localSavedSignIn:false,connectionState:'not-connected',
+      ownerEnabled:{gmailRead:false,calendarRead:false},
+      providerPermissionObserved:{gmailRead:null,calendarRead:null},sourceCheckedAt:null,
+      reads:{email:unknownSource(),calendar:unknownSource()},providerCheckedNow:false};
+  }});
+}
 function run(tools, extra = {}) {
   const catalogRef = createRef();
   const result = apply({ tools: [...controls, ...tools], agentId: 'pixel',
@@ -22,6 +36,49 @@ function run(tools, extra = {}) {
     config: { tools: { toolSearch: { enabled: true, mode: 'tools' } } }, ...extra });
   return { ...result, catalogRef };
 }
+
+test('connection status has a stable direct32K surface and native discovery at smaller contexts', async () => {
+  const name='pixel_ods_connections_status';
+  for(const contextTokens of [4096,8192,16384,32767,32768,65536]) {
+    const reads=[], original=connectionStatusTool(reads), existing=tool('pixel_gmail_read');
+    const config={agents:{defaults:{contextTokens:65536},list:[{id:'pixel',contextTokens}]},
+      tools:{toolSearch:{enabled:true,mode:'tools'}}};
+    const result=run([original,existing],{config});
+    assert.equal(result.tools.includes(original),contextTokens>=32768);
+    assert.equal(result.catalogToolCount,2,'keep both permitted implementations in the catalog');
+    const ctx={agentId:'pixel',catalogRef:result.catalogRef,config};
+    const api=Object.fromEntries(createControls(ctx).map(value=>[value.name,value]));
+    const found=await api.tool_search.execute('find',{query:name,limit:10});
+    const hit=found.details.find(value=>value.name===name);
+    assert.ok(hit);
+    assert.deepEqual((await api.tool_describe.execute('describe',{id:hit.id})).details.parameters,
+      {type:'object',additionalProperties:false,properties:{}});
+    assert.equal(resolveExact(ctx,original.name),original);
+    await api.tool_call.execute('status',{id:hit.id,args:{}});
+    assert.deepEqual(reads,['fixed-status-read']);
+    await assert.rejects(api.tool_call.execute('override',{id:hit.id,args:{url:'https://invalid.test'}}));
+    assert.deepEqual(reads,['fixed-status-read'],'invalid arguments never enter the status reader');
+  }
+});
+
+test('status visibility does not bypass policy or select duplicate implementations', async () => {
+  const reads=[], original=connectionStatusTool(reads), existing=tool('read');
+  const config={agents:{list:[{id:'pixel',contextTokens:32768}]},tools:{toolSearch:{enabled:true,mode:'tools'}}};
+  const denied=run(filterByPolicy([original,existing],{deny:[original.name]}),{config});
+  assert.ok(!denied.tools.includes(original));
+  const ctx={agentId:'pixel',catalogRef:denied.catalogRef,config};
+  assert.equal(resolveExact(ctx,original.name),undefined);
+  const api=Object.fromEntries(createControls(ctx).map(value=>[value.name,value]));
+  assert.ok(!(await api.tool_search.execute('find',{query:original.name})).details.some(value=>value.name===original.name));
+  await assert.rejects(api.tool_describe.execute('denied',{id:original.name}));
+  await assert.rejects(api.tool_call.execute('denied',{id:original.name,args:{}}));
+  assert.deepEqual(reads,[]);
+  const duplicate=run([original,connectionStatusTool(reads),existing],{config});
+  assert.equal(duplicate.catalogToolCount,3);
+  assert.ok(duplicate.tools.every(value=>value.name!==original.name),'ambiguous names remain deferred');
+  assert.deepEqual(run([original],{config,agentId:'another-agent'}).tools,controls);
+  assert.deepEqual(run([original]).tools,controls,'unknown context does not assume a qualified32K profile');
+});
 
 test('working tools are direct while specialist tools remain in the real catalog', () => {
   const read = tool('read'), status = tool('pixel_ods_extension_request_status');

@@ -428,6 +428,7 @@ write_access_fixture() {
         "bin/pixel_access_bridge.py"
         "bin/pixel_gateway_service.py"
         "bin/pixel_access_client.py"
+        "bin/pixel_connection_agent_status.py"
         "bin/pixel_access_reconcile.py"
         "bin/pixel_model_transition.py"
         "bin/pixel_access_protocol.py"
