@@ -253,6 +253,7 @@ function Install-ODSWindowsDesktopPython {
         [switch]$SkipAuthenticodeCheck
     )
 
+    $activeDownloader = $Downloader
     $target = Get-ODSWindowsDesktopPythonInstallDir -PythonContract $PythonContract -Root $Root
     if (Test-Path -LiteralPath $target -PathType Container) {
         try {
@@ -274,8 +275,8 @@ function Install-ODSWindowsDesktopPython {
         if ($Url -notmatch '^https://') {
             throw "Refusing non-HTTPS Python runtime download: $Url"
         }
-        if ($null -ne $Downloader) {
-            & $Downloader $Url $OutFile
+        if ($null -ne $activeDownloader) {
+            & $activeDownloader $Url $OutFile
             return
         }
         & curl.exe --fail --location --proto '=https' --proto-redir '=https' --retry 3 --silent --show-error --output $OutFile $Url
