@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import io
-import json
 import sys
 import zlib
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import httpx
 import pytest
