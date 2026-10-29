@@ -62,7 +62,10 @@ EXTENSIONS_DIR = Path(
     )
 )
 
-DEFAULT_SERVICE_HOST = os.environ.get("SERVICE_HOST", "host.docker.internal")
+DEFAULT_SERVICE_HOST = os.environ.get(
+    "SERVICE_HOST",
+    "127.0.0.1" if WINDOWS_DESKTOP_PROFILE else "host.docker.internal",
+)
 GPU_BACKEND = os.environ.get("GPU_BACKEND", "nvidia")
 ODS_MODES = frozenset({"local", "cloud", "hybrid"})
 LOCAL_MODEL_MODES = frozenset({"local", "hybrid"})
@@ -135,7 +138,9 @@ def normalize_llm_contract(value: Any) -> dict[str, Any] | None:
 
 # This is the mode of the running dashboard-api container. Unlike the mounted
 # .env file, the process environment is fixed until the service is recreated.
-ODS_MODE_EFFECTIVE = normalize_ods_mode(os.environ.get("ODS_MODE"))
+ODS_MODE_EFFECTIVE = normalize_ods_mode(
+    os.environ.get("ODS_MODE") or ("local" if WINDOWS_DESKTOP_PROFILE else "")
+)
 
 
 _ENV_FILE_PERMISSION_ERROR: str | None = None
@@ -729,15 +734,22 @@ def _apply_windows_desktop_services_filter(
 ) -> None:
     """Keep only loopback-reachable services and route llama-server to loopback in windows-desktop mode."""
     env = environment if environment is not None else os.environ
+    llama_port = str(env.get("LLAMA_PORT") or read_live_env_value("LLAMA_PORT") or "8080").strip()
+    default_llm_url = f"http://127.0.0.1:{llama_port}" if llama_port.isdigit() else "http://127.0.0.1:8080"
     native_llm_url = (
         env.get("ODS_NATIVE_LLM_URL")
+        or env.get("ODS_LLAMA_ENDPOINT")
+        or read_live_env_value("ODS_NATIVE_LLM_URL")
+        or read_live_env_value("ODS_LLAMA_ENDPOINT")
         or env.get("LLM_API_URL")
         or env.get("OLLAMA_URL")
-        or "http://127.0.0.1:8080"
+        or default_llm_url
     ).strip()
     parsed = urlparse(native_llm_url)
     llm_host = (parsed.hostname or "127.0.0.1").strip().lower()
-    llm_port = parsed.port or 8080
+    if llm_host == "localhost":
+        llm_host = "127.0.0.1"
+    llm_port = parsed.port or (int(llama_port) if llama_port.isdigit() else 8080)
 
     llama_cfg = services.get("llama-server")
     if isinstance(llama_cfg, dict) and llm_host in _LOOPBACK_SERVICE_HOSTS:
@@ -766,7 +778,9 @@ if WINDOWS_DESKTOP_PROFILE:
 if not SERVICES:
     logger.error("No services loaded from manifests in %s — dashboard will have no services", EXTENSIONS_DIR)
 
-LLM_BACKEND = normalize_llm_backend(os.environ.get("LLM_BACKEND", ""))
+LLM_BACKEND = normalize_llm_backend(
+    os.environ.get("LLM_BACKEND") or ("llama-server" if WINDOWS_DESKTOP_PROFILE else "")
+)
 if not WINDOWS_DESKTOP_PROFILE:
     _apply_host_native_llm_service_override(SERVICES, GPU_BACKEND)
 _apply_external_llm_service_override(SERVICES)
