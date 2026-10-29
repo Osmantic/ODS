@@ -85,3 +85,33 @@ that need no tool. Synthetic state validates model behavior with controlled
 conditions; it does not verify a real Google account. An installed end-to-end
 check must be reported separately. A model failure remains a failure even when
 the wrapper or infrastructure exits successfully.
+
+## Installed October 29 checkpoint
+
+The ordinary Windows/WSL installer completed with the functional runtime from
+`7a9091debf8a308998a33a588340441da540a19d`, retaining the reviewed 4.3.41 Source
+artifact and original read-only Google grant. Selected installed plugin, Root
+helper and native SDK bytes matched the reviewed candidate. No protected source
+pin or receipt was changed manually to qualify the installation.
+
+With the real local 9B/64K model, the unchanged original owner question called
+the status tool once and returned a correct saved-connection answer without
+reading emails/events or adding the unrelated extension-catalog footer. An
+ordinary one-time native scheduled task then completed both metadata counts.
+The model repaired two native schema refusals through description and valid
+same-source retries; the evidence guard accepted those successes. The reply
+disclosed the partial Gmail index and unknown mailbox total, and distinguished
+the covered seven civil Calendar dates from a rolling 168-hour window.
+
+Only that test task was archived; its complete result remains retained. The
+runtime returned verified and idle. A fresh scoped inspection of nine fixed
+ODS units and ten selected Compose containers found no retained QA references
+or temporary policy/delegation. This is not a whole-host attestation.
+
+Controlled real-model trials separately preserved the raw unknown-state failure
+and the host fallback that contained it. Known-connected and known-disconnected
+holdouts retained their natural answers. The deliberately missing status-tool
+case removes its registration and explicitly denies it; normal smaller-context
+discovery retains the permitted tool. That denied-capability model case remains
+unqualified. Neither the successful installed question nor count task establishes
+arbitrary-model reliability or a universal claim checker.

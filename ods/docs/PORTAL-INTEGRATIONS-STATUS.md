@@ -56,9 +56,9 @@ installed connection-status evidence must be evaluated separately.
   validator before dispatch. Missing wiki arguments now identify the required
   field instead of reaching the plugin as an undefined value; native coercion,
   permission filtering and other agents' dispatch behavior are retained.
-- Added a current-request-only guide for connected reads, distinguishing local
-  wiki and app records from public web search. It loads beside the owner turn;
-  the reusable 8K, compact and full operating cores retain their existing size.
+- Replaced the conditional connected-read guide and phrase classifier with
+  stable capability context. The model selects status, count or record tools;
+  native policy, schemas and typed results enforce the request independently.
   This guidance is not an access grant or a source-verification receipt.
 - Added strict declared-schema validation before Source projection reads and
   proposal creation. Unknown parameters such as `max` refuse with a correctable
