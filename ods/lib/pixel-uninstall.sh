@@ -199,6 +199,7 @@ sources = {
     "pixel_source_upgrade.py": install / "bin/pixel_source_upgrade.py",
     "pixel_gateway_service.py": install / "bin/pixel_gateway_service.py",
     "pixel_access_client.py": install / "bin/pixel_access_client.py",
+    "pixel_connection_agent_status.py": install / "bin/pixel_connection_agent_status.py",
     "pixel_access_reconcile.py": install / "bin/pixel_access_reconcile.py",
     "pixel_model_transition.py": install / "bin/pixel_model_transition.py",
     "pixel_access_protocol.py": install / "bin/pixel_access_protocol.py",
@@ -239,6 +240,7 @@ for name in CONNECTION_MODULES:
 expected_sources = set(sources)
 for later_module in ("pixel_gateway_service.py", "access_release_transaction.py", "pixel_source_upgrade.py",
                      "pixel_schedules.py", "scheduled_tasks_owner.py", "scheduled_tasks_gateway.mjs",
+                     "pixel_connection_agent_status.py",
                      "connection_transaction.py", "native_mcp_owner.py", "native_mcp_oauth.mjs", *CONNECTION_MODULES):
     if (not present(sources[later_module])
             and not present(program / later_module)):

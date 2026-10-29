@@ -2436,6 +2436,39 @@ else
         || fail "current partial access-bundle refusal caused mutation"
 fi
 
+# The connection-status reader joined the exact Root bundle later. Only
+# absence from BOTH the source and installed bundle identifies an old release;
+# a current half-copy or changed reader must still refuse before service stop.
+write_access_fixture
+rm -f -- "$INSTALL_DIR/bin/pixel_connection_agent_status.py" \
+    "$LIBEXEC_DIR/ods-pixel-access/pixel_connection_agent_status.py"
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR" \
+    && [[ ! -e "$LIBEXEC_DIR/ods-pixel-access" && ! -e "$ACCESS_STATE" \
+        && ! -e "$HOME_DIR/.config/ods/pixel-managed.json" ]]; then
+    pass "legacy access bundle without the later connection-status reader remains removable"
+else
+    fail "legacy access bundle was stranded by the connection-status reader"
+fi
+
+for status_reader_fault in missing-copy missing-source changed-copy; do
+    write_access_fixture
+    case "$status_reader_fault" in
+        missing-copy) rm -f -- "$LIBEXEC_DIR/ods-pixel-access/pixel_connection_agent_status.py" ;;
+        missing-source) rm -f -- "$INSTALL_DIR/bin/pixel_connection_agent_status.py" ;;
+        changed-copy) printf '\n# operator changes\n' >> "$LIBEXEC_DIR/ods-pixel-access/pixel_connection_agent_status.py" ;;
+    esac
+    if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
+        fail "unsafe connection-status reader accepted: $status_reader_fault"
+    else
+        [[ -e "$LIBEXEC_DIR/ods-pixel-access/access_mode_server.py" \
+            && -e "$ETC_DIR/pixel-access.json" && -e "$ACCESS_STATE/service-baseline.json" \
+            && -e "$HOME_DIR/.config/ods/pixel-managed.json" && ! -s "$SYSTEMCTL_LOG" ]] \
+            && pass "connection-status reader refuses before mutation: $status_reader_fault" \
+            || fail "connection-status reader refusal mutated artifacts: $status_reader_fault"
+    fi
+done
+unset status_reader_fault
+
 write_access_fixture
 printf '%s\n' '# legacy access server without unix peer dependency' \
     > "$INSTALL_DIR/extensions/services/pixel-agent/host/access_mode_server.py"
