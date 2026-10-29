@@ -13,7 +13,7 @@ last_verified_at: generated
 
 # Pixel documentation inventory
 
-This inventory makes **156 existing Markdown files** discoverable without moving path-sensitive release evidence, root contracts, component guides, or installed template content. Classification is a reading boundary, not a claim that every older document is current. Start with the [job-oriented documentation hub](../README.md) and [generated status](../status.md); use this catalog when tracing specialist or historical source material.
+This inventory makes **157 existing Markdown files** discoverable without moving path-sensitive release evidence, root contracts, component guides, or installed template content. Classification is a reading boundary, not a claim that every older document is current. Start with the [job-oriented documentation hub](../README.md) and [generated status](../status.md); use this catalog when tracing specialist or historical source material.
 
 ## Path-stable root contract or entry point
 
@@ -48,6 +48,7 @@ This inventory makes **156 existing Markdown files** discoverable without moving
 | [`ODS-QUALIFICATION-4.3.37.md`](../../ODS-QUALIFICATION-4.3.37.md) | Canonical or specialist source; pair with generated status and job-oriented docs. |
 | [`ODS-QUALIFICATION-4.3.38.md`](../../ODS-QUALIFICATION-4.3.38.md) | Canonical or specialist source; pair with generated status and job-oriented docs. |
 | [`ODS-QUALIFICATION-4.3.39.md`](../../ODS-QUALIFICATION-4.3.39.md) | Canonical or specialist source; pair with generated status and job-oriented docs. |
+| [`ODS-QUALIFICATION-4.3.40.md`](../../ODS-QUALIFICATION-4.3.40.md) | Canonical or specialist source; pair with generated status and job-oriented docs. |
 | [`OPENCLAW-COMPATIBILITY.md`](../../OPENCLAW-COMPATIBILITY.md) | Canonical or specialist source; pair with generated status and job-oriented docs. |
 | [`OPERATIONS-AUTONOMY.md`](../../OPERATIONS-AUTONOMY.md) | Canonical or specialist source; pair with generated status and job-oriented docs. |
 | [`OPERATIONS-LIMB.md`](../../OPERATIONS-LIMB.md) | Canonical or specialist source; pair with generated status and job-oriented docs. |
