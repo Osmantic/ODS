@@ -126,7 +126,7 @@ it('preserves a lost callback outcome for Finish instead of starting another exc
     {target: {value: 'http://127.0.0.1:43123/?state=x&code=PRIVATE-code'}})
   fireEvent.click(screen.getByRole('button', {name: 'Finish sign-in'}))
   expect(await screen.findByText('Update needs checking')).toBeVisible()
-  expect(screen.getByRole('button', {name: 'Finish'})).toBeEnabled()
+  expect(await screen.findByRole('button', {name: 'Finish'})).toBeEnabled()
   expect(screen.queryByRole('button', {name: 'Connect Notion'})).toBeNull()
   expect(calls.filter(([key]) => key.startsWith('POST'))).toHaveLength(1)
 })
