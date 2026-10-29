@@ -1,18 +1,18 @@
 // ============================================================================
-// ODS.exe -- Native Windows Desktop Application Shell for ODS
+// ODS.exe -- Native Windows Desktop Application (Embedded WebView2 + Tray)
 // ============================================================================
-// Compiles with built-in Windows .NET Framework csc.exe (zero external SDKs).
+// Compiles with built-in Windows .NET Framework csc.exe + WebView2 assemblies.
 // Features:
-//   1. Single-instance Mutex ("Local\ODSWindowsNativeDesktopShell").
-//   2. DirectX UserGpuPreferences reader/writer in
-//      HKCU:\Software\Microsoft\DirectX\UserGpuPreferences (GPU-First default,
-//      live sync with Windows Graphics Settings, tray menu toggle).
-//   3. Background supervisor for native llama-server.exe (127.0.0.1:8085) and
-//      dashboard-api (127.0.0.1:3101) with ODS_RUNTIME_PROFILE=windows-desktop.
-//   4. System Tray (NotifyIcon) + dark-mode native desktop control bar &
-//      chromeless Edge App window launcher for the full ODS Portal.
-//   5. CLI diagnostics (--version, --status-json, --set-gpu-preference=...)
-//      for automated contract verification.
+//   1. True standalone Desktop Application window (1360x860 resizable) with
+//      Microsoft.Web.WebView2.WinForms.WebView2 embedded directly inside
+//      ODS.exe (no external browser windows).
+//   2. Built-in dark boot splash inside WebView2 while background native
+//      llama-server.exe (127.0.0.1:8085) and dashboard-api (127.0.0.1:3101)
+//      initialize, automatically navigating to http://localhost:3101/pixel
+//      once 127.0.0.1:3101 responds Ready (zero ERR_CONNECTION_REFUSED).
+//   3. Native top bar + System Tray (NotifyIcon) with live DirectX
+//      UserGpuPreferences toggle (GPU-First vs Power Saving), Windows
+//      Graphics Settings launcher, and Figma-style in-app update check.
 // ============================================================================
 
 using System;
@@ -26,6 +26,8 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
+using Microsoft.Web.WebView2.Core;
+using Microsoft.Web.WebView2.WinForms;
 using Microsoft.Win32;
 
 namespace OdsNativeDesktop
@@ -33,6 +35,12 @@ namespace OdsNativeDesktop
     internal static class Program
     {
         internal static string DirectXRegSubKey = @"Software\Microsoft\DirectX\UserGpuPreferences";
+
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
         [STAThread]
         private static int Main(string[] args)
@@ -113,8 +121,23 @@ namespace OdsNativeDesktop
             {
                 if (!createdNew)
                 {
-                    // Another instance is already running; open the Portal window and exit.
-                    OpenPortalWindow("http://localhost:3101/pixel");
+                    // Focus existing ODS.exe window if already running
+                    try
+                    {
+                        Process current = Process.GetCurrentProcess();
+                        foreach (Process p in Process.GetProcessesByName(current.ProcessName))
+                        {
+                            if (p.Id != current.Id && p.MainWindowHandle != IntPtr.Zero)
+                            {
+                                ShowWindow(p.MainWindowHandle, 9); // SW_RESTORE
+                                SetForegroundWindow(p.MainWindowHandle);
+                                break;
+                            }
+                        }
+                    }
+                    catch
+                    {
+                    }
                     return 0;
                 }
 
@@ -214,48 +237,6 @@ namespace OdsNativeDesktop
                 return false;
             }
         }
-
-        internal static void OpenPortalWindow(string url)
-        {
-            string[] edgeRoots = new string[]
-            {
-                Environment.GetEnvironmentVariable("ProgramFiles(x86)"),
-                Environment.GetEnvironmentVariable("ProgramFiles")
-            };
-            foreach (string root in edgeRoots)
-            {
-                if (string.IsNullOrEmpty(root)) continue;
-                string edgeExe = Path.Combine(root, @"Microsoft\Edge\Application\msedge.exe");
-                if (File.Exists(edgeExe))
-                {
-                    try
-                    {
-                        Process.Start(new ProcessStartInfo
-                        {
-                            FileName = edgeExe,
-                            Arguments = "--app=" + url,
-                            UseShellExecute = false
-                        });
-                        return;
-                    }
-                    catch
-                    {
-                    }
-                }
-            }
-
-            try
-            {
-                Process.Start(new ProcessStartInfo
-                {
-                    FileName = url,
-                    UseShellExecute = true
-                });
-            }
-            catch
-            {
-            }
-        }
     }
 
     internal sealed class DesktopShellForm : Form
@@ -263,31 +244,39 @@ namespace OdsNativeDesktop
         [DllImport("dwmapi.dll")]
         private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
 
+        private const string PortalTargetUrl = "http://localhost:3101/pixel";
+
         private readonly string _installDir;
         private readonly string _appDataDir;
         private readonly NotifyIcon _trayIcon;
         private readonly ToolStripMenuItem _gpuHighPerfMenu;
         private readonly ToolStripMenuItem _gpuPowerSaveMenu;
-        private readonly Label _gpuStatusLabel;
-        private readonly Label _apiStatusLabel;
-        private readonly Label _updateStatusLabel;
+        private readonly Panel _topBarPanel;
+        private readonly Label _serviceBadgeLabel;
+        private readonly ComboBox _gpuSelectorCombo;
+        private readonly Button _updateBtn;
+        private readonly WebView2 _webView;
         private readonly System.Windows.Forms.Timer _statusTimer;
+        private Process _managedApiProcess;
+        private Process _managedLlamaProcess;
+        private bool _webViewReady;
+        private bool _portalLoaded;
+        private bool _suppressComboEvent;
+        private DateTime _lastStartAttemptUtc = DateTime.MinValue;
 
         public DesktopShellForm(string installDir, string appDataDir)
         {
             _installDir = installDir;
             _appDataDir = appDataDir;
 
-            Text = "ODS Desktop — Native Control Center";
-            Size = new Size(560, 360);
-            MinimumSize = new Size(560, 360);
-            MaximumSize = new Size(560, 360);
+            Text = "ODS — Open Dev Society";
+            Size = new Size(1360, 860);
+            MinimumSize = new Size(960, 640);
             StartPosition = FormStartPosition.CenterScreen;
-            FormBorderStyle = FormBorderStyle.FixedSingle;
-            MaximizeBox = false;
+            FormBorderStyle = FormBorderStyle.Sizable;
             BackColor = Color.FromArgb(11, 15, 25);
             ForeColor = Color.FromArgb(241, 245, 249);
-            Font = new Font("Segoe UI", 9.5f, FontStyle.Regular);
+            Font = new Font("Segoe UI", 9f, FontStyle.Regular);
 
             Icon appIcon = SystemIcons.Application;
             try
@@ -299,10 +288,10 @@ namespace OdsNativeDesktop
             {
             }
 
-            // Build System Tray Context Menu
+            // 1. System Tray Icon & Context Menu
             ContextMenuStrip trayMenu = new ContextMenuStrip();
-            trayMenu.Items.Add("Open ODS Portal", null, (s, e) => Program.OpenPortalWindow("http://localhost:3101/pixel"));
-            trayMenu.Items.Add("Show Control Center", null, (s, e) => { Show(); WindowState = FormWindowState.Normal; Activate(); });
+            trayMenu.Items.Add("Show ODS Window", null, (s, e) => RestoreMainWindow());
+            trayMenu.Items.Add("Reload Portal UI", null, (s, e) => ReloadPortal());
             trayMenu.Items.Add(new ToolStripSeparator());
 
             _gpuHighPerfMenu = new ToolStripMenuItem("GPU Mode: High Performance (Discrete GPU)", null, (s, e) => ApplyGpuMode(2));
@@ -322,115 +311,120 @@ namespace OdsNativeDesktop
                 ContextMenuStrip = trayMenu,
                 Visible = true
             };
-            _trayIcon.DoubleClick += (s, e) => Program.OpenPortalWindow("http://localhost:3101/pixel");
+            _trayIcon.DoubleClick += (s, e) => RestoreMainWindow();
 
-            Label title = new Label
+            // 2. Compact Native Top Desktop Bar (40px height)
+            _topBarPanel = new Panel
             {
-                Text = "ODS Windows Native Desktop",
-                Font = new Font("Segoe UI Semibold", 15f, FontStyle.Bold),
+                Dock = DockStyle.Top,
+                Height = 40,
+                BackColor = Color.FromArgb(15, 23, 42)
+            };
+
+            Label brandLabel = new Label
+            {
+                Text = "ODS Desktop",
+                Font = new Font("Segoe UI Semibold", 10f, FontStyle.Bold),
                 ForeColor = Color.FromArgb(56, 189, 248),
-                Location = new Point(26, 22),
+                Location = new Point(14, 10),
                 AutoSize = true
             };
-            Controls.Add(title);
+            _topBarPanel.Controls.Add(brandLabel);
 
-            _gpuStatusLabel = new Label
+            _serviceBadgeLabel = new Label
             {
-                Text = "GPU Preference: Checking...",
-                Location = new Point(28, 66),
+                Text = "● Starting Native Services...",
+                Font = new Font("Segoe UI", 8.75f, FontStyle.Regular),
+                ForeColor = Color.FromArgb(251, 191, 36),
+                Location = new Point(116, 11),
+                AutoSize = true
+            };
+            _topBarPanel.Controls.Add(_serviceBadgeLabel);
+
+            FlowLayoutPanel rightControls = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Right,
                 AutoSize = true,
-                ForeColor = Color.FromArgb(52, 211, 153)
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                Padding = new Padding(0, 6, 10, 0),
+                BackColor = Color.Transparent
             };
-            Controls.Add(_gpuStatusLabel);
 
-            _apiStatusLabel = new Label
+            _gpuSelectorCombo = new ComboBox
             {
-                Text = "Native Services: Checking 127.0.0.1:3101...",
-                Location = new Point(28, 94),
-                AutoSize = true,
-                ForeColor = Color.FromArgb(203, 213, 225)
+                Width = 230,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = Color.FromArgb(30, 41, 59),
+                ForeColor = Color.FromArgb(226, 232, 240),
+                Font = new Font("Segoe UI", 8.5f, FontStyle.Regular)
             };
-            Controls.Add(_apiStatusLabel);
-
-            _updateStatusLabel = new Label
-            {
-                Text = "Software Updates: v3.0.0 (Up to date)",
-                Location = new Point(28, 122),
-                AutoSize = true,
-                ForeColor = Color.FromArgb(148, 163, 184)
-            };
-            Controls.Add(_updateStatusLabel);
-
-            Button openPortalBtn = new Button
-            {
-                Text = "Open ODS Portal",
-                Location = new Point(28, 168),
-                Size = new Size(235, 38),
-                BackColor = Color.FromArgb(14, 165, 233),
-                ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat
-            };
-            openPortalBtn.FlatAppearance.BorderSize = 0;
-            openPortalBtn.Click += (s, e) => Program.OpenPortalWindow("http://localhost:3101/pixel");
-            Controls.Add(openPortalBtn);
+            _gpuSelectorCombo.Items.Add("GPU: High Performance (Discrete)");
+            _gpuSelectorCombo.Items.Add("GPU: Power Saving (iGPU / CPU)");
+            _gpuSelectorCombo.SelectedIndexChanged += OnGpuComboChanged;
+            rightControls.Controls.Add(_gpuSelectorCombo);
 
             Button winGpuBtn = new Button
             {
-                Text = "Windows Graphics Settings",
-                Location = new Point(280, 168),
-                Size = new Size(235, 38),
+                Text = "OS GPU Settings",
+                Size = new Size(112, 26),
                 BackColor = Color.FromArgb(30, 41, 59),
-                ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat
+                ForeColor = Color.FromArgb(203, 213, 225),
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8.25f, FontStyle.Regular)
             };
             winGpuBtn.FlatAppearance.BorderSize = 0;
             winGpuBtn.Click += (s, e) => OpenWindowsGraphicsSettings();
-            Controls.Add(winGpuBtn);
+            rightControls.Controls.Add(winGpuBtn);
 
-            Button highPerfBtn = new Button
+            _updateBtn = new Button
             {
-                Text = "Prefer Discrete GPU (High Perf)",
-                Location = new Point(28, 218),
-                Size = new Size(235, 34),
+                Text = "v3.0.0 • Check Updates",
+                Size = new Size(142, 26),
                 BackColor = Color.FromArgb(30, 41, 59),
-                ForeColor = Color.FromArgb(52, 211, 153),
-                FlatStyle = FlatStyle.Flat
+                ForeColor = Color.FromArgb(148, 163, 184),
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8.25f, FontStyle.Regular)
             };
-            highPerfBtn.FlatAppearance.BorderSize = 0;
-            highPerfBtn.Click += (s, e) => ApplyGpuMode(2);
-            Controls.Add(highPerfBtn);
+            _updateBtn.FlatAppearance.BorderSize = 0;
+            _updateBtn.Click += (s, e) => TriggerUpdateCheck();
+            rightControls.Controls.Add(_updateBtn);
 
-            Button powerSaveBtn = new Button
+            Button reloadBtn = new Button
             {
-                Text = "Power Saving (iGPU / CPU)",
-                Location = new Point(280, 218),
-                Size = new Size(235, 34),
-                BackColor = Color.FromArgb(30, 41, 59),
-                ForeColor = Color.FromArgb(251, 191, 36),
-                FlatStyle = FlatStyle.Flat
-            };
-            powerSaveBtn.FlatAppearance.BorderSize = 0;
-            powerSaveBtn.Click += (s, e) => ApplyGpuMode(1);
-            Controls.Add(powerSaveBtn);
-
-            Button checkUpdateBtn = new Button
-            {
-                Text = "Check for Updates",
-                Location = new Point(28, 264),
-                Size = new Size(487, 34),
-                BackColor = Color.FromArgb(30, 41, 59),
+                Text = "↻ Reload",
+                Size = new Size(76, 26),
+                BackColor = Color.FromArgb(14, 165, 233),
                 ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8.25f, FontStyle.Bold)
             };
-            checkUpdateBtn.FlatAppearance.BorderSize = 0;
-            checkUpdateBtn.Click += (s, e) => TriggerUpdateCheck();
-            Controls.Add(checkUpdateBtn);
+            reloadBtn.FlatAppearance.BorderSize = 0;
+            reloadBtn.Click += (s, e) => ReloadPortal();
+            rightControls.Controls.Add(reloadBtn);
 
-            _statusTimer = new System.Windows.Forms.Timer { Interval = 4000 };
-            _statusTimer.Tick += (s, e) => RefreshStatusIndicators();
+            _topBarPanel.Controls.Add(rightControls);
+
+            // 3. Embedded Chromium WebView2 Canvas (fills the rest of the window)
+            _webView = new WebView2
+            {
+                Dock = DockStyle.Fill,
+                DefaultBackgroundColor = Color.FromArgb(11, 15, 25)
+            };
+
+            // Add _webView first, then _topBarPanel so DockStyle.Fill respects DockStyle.Top
+            Controls.Add(_webView);
+            Controls.Add(_topBarPanel);
+
+            Load += OnFormLoad;
+
+            ThreadPool.QueueUserWorkItem(_ => EnsureNativeServicesStarted());
+
+            _statusTimer = new System.Windows.Forms.Timer { Interval = 1500 };
+            _statusTimer.Tick += (s, e) => RefreshStatusAndNavigateIfReady();
             _statusTimer.Start();
 
-            RefreshStatusIndicators();
+            RefreshStatusAndNavigateIfReady();
         }
 
         protected override void OnHandleCreated(EventArgs e)
@@ -446,6 +440,100 @@ namespace OdsNativeDesktop
             }
         }
 
+        private async void OnFormLoad(object sender, EventArgs e)
+        {
+            try
+            {
+                string userDataFolder = Path.Combine(_appDataDir, "webview2-profile");
+                Directory.CreateDirectory(userDataFolder);
+                CoreWebView2Environment env = await CoreWebView2Environment.CreateAsync(null, userDataFolder, null);
+                await _webView.EnsureCoreWebView2Async(env);
+                _webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
+                _webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
+                _webViewReady = true;
+
+                if (Program.IsTcpPortOpen("127.0.0.1", 3101, 200))
+                {
+                    _portalLoaded = true;
+                    _webView.CoreWebView2.Navigate(PortalTargetUrl);
+                }
+                else
+                {
+                    _webView.CoreWebView2.NavigateToString(BuildBootSplashHtml());
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    "WebView2 initialization error: " + ex.Message,
+                    "ODS Desktop",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning
+                );
+            }
+        }
+
+        private static string BuildBootSplashHtml()
+        {
+            return @"<!doctype html>
+<html>
+<head>
+<meta charset='utf-8'>
+<style>
+  body {
+    margin: 0; height: 100vh; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    background: #0b0f19; color: #f1f5f9;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+  }
+  .card {
+    background: #111827; border: 1px solid #1e293b; border-radius: 16px;
+    padding: 40px 52px; text-align: center; box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+  }
+  .spinner {
+    width: 44px; height: 44px; margin: 0 auto 20px;
+    border: 3px solid #1e293b; border-top-color: #38bdf8;
+    border-radius: 50%; animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  h2 { margin: 0 0 8px; font-size: 20px; color: #38bdf8; }
+  p { margin: 0; font-size: 13.5px; color: #94a3b8; }
+</style>
+</head>
+<body>
+  <div class='card'>
+    <div class='spinner'></div>
+    <h2>Starting ODS Native Desktop...</h2>
+    <p>Initializing local Portal API (127.0.0.1:3101) and GPU inference engine (127.0.0.1:8085)</p>
+  </div>
+</body>
+</html>";
+        }
+
+        private void RestoreMainWindow()
+        {
+            Show();
+            if (WindowState == FormWindowState.Minimized)
+            {
+                WindowState = FormWindowState.Normal;
+            }
+            Activate();
+        }
+
+        private void ReloadPortal()
+        {
+            if (!_webViewReady || _webView.CoreWebView2 == null) return;
+            if (Program.IsTcpPortOpen("127.0.0.1", 3101, 200))
+            {
+                _portalLoaded = true;
+                _webView.CoreWebView2.Navigate(PortalTargetUrl);
+            }
+            else
+            {
+                EnsureNativeServicesStarted();
+            }
+        }
+
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             if (e.CloseReason == CloseReason.UserClosing)
@@ -457,33 +545,245 @@ namespace OdsNativeDesktop
             base.OnFormClosing(e);
         }
 
+        private void OnGpuComboChanged(object sender, EventArgs e)
+        {
+            if (_suppressComboEvent) return;
+            int code = _gpuSelectorCombo.SelectedIndex == 1 ? 1 : 2;
+            ApplyGpuMode(code);
+        }
+
+        private Dictionary<string, string> ReadDotEnv()
+        {
+            Dictionary<string, string> env = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            string envFile = Path.Combine(_installDir, ".env");
+            if (!File.Exists(envFile)) return env;
+            try
+            {
+                foreach (string line in File.ReadAllLines(envFile, Encoding.UTF8))
+                {
+                    string s = (line ?? "").Trim();
+                    if (string.IsNullOrEmpty(s) || s.StartsWith("#")) continue;
+                    int eq = s.IndexOf('=');
+                    if (eq <= 0) continue;
+                    string k = s.Substring(0, eq).Trim();
+                    string v = s.Substring(eq + 1).Trim().Trim('\'', '"');
+                    env[k] = v;
+                }
+            }
+            catch
+            {
+            }
+            return env;
+        }
+
+        private void EnsureNativeServicesStarted()
+        {
+            Dictionary<string, string> env = ReadDotEnv();
+            string llamaExe = Path.Combine(_appDataDir, @"runtimes\llama\llama-server.exe");
+            int gpuPref = Program.GetUserGpuPreferenceCode(llamaExe, Application.ExecutablePath);
+
+            // 1. Start llama-server.exe if present and port 8085 is not yet open
+            if (!Program.IsTcpPortOpen("127.0.0.1", 8085, 200) && File.Exists(llamaExe))
+            {
+                string ggufName = env.ContainsKey("GGUF_FILE") ? env["GGUF_FILE"] : "";
+                string modelPath = !string.IsNullOrEmpty(ggufName)
+                    ? Path.Combine(_installDir, "models", ggufName)
+                    : "";
+                if (string.IsNullOrEmpty(modelPath) || !File.Exists(modelPath))
+                {
+                    string modelsDir = Path.Combine(_installDir, "models");
+                    if (Directory.Exists(modelsDir))
+                    {
+                        string[] ggufs = Directory.GetFiles(modelsDir, "*.gguf");
+                        if (ggufs.Length > 0) modelPath = ggufs[0];
+                    }
+                }
+                if (!string.IsNullOrEmpty(modelPath) && File.Exists(modelPath))
+                {
+                    string ngl = (gpuPref == 1) ? "0 --device none" : "99";
+                    try
+                    {
+                        ProcessStartInfo lpsi = new ProcessStartInfo
+                        {
+                            FileName = llamaExe,
+                            Arguments = string.Format("-m \"{0}\" --host 127.0.0.1 --port 8085 -c 4096 -ngl {1}", modelPath, ngl),
+                            WorkingDirectory = Path.GetDirectoryName(llamaExe),
+                            UseShellExecute = false,
+                            CreateNoWindow = true
+                        };
+                        _managedLlamaProcess = Process.Start(lpsi);
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+
+            // 2. Start dashboard-api on 127.0.0.1:3101 if not yet open
+            if (!Program.IsTcpPortOpen("127.0.0.1", 3101, 200))
+            {
+                string pyExe = env.ContainsKey("ODS_PYTHON_EXE") ? env["ODS_PYTHON_EXE"] : "";
+                if (string.IsNullOrEmpty(pyExe) || !File.Exists(pyExe))
+                {
+                    string candidate = Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                        @"Python\pythoncore-3.14-64\python.exe"
+                    );
+                    if (File.Exists(candidate)) pyExe = candidate;
+                }
+
+                string apiDir = "";
+                if (env.ContainsKey("ODS_DASHBOARD_API_DIR") && Directory.Exists(env["ODS_DASHBOARD_API_DIR"]))
+                {
+                    apiDir = env["ODS_DASHBOARD_API_DIR"];
+                }
+                else if (Directory.Exists(Path.Combine(_installDir, "dashboard-api")))
+                {
+                    apiDir = Path.Combine(_installDir, "dashboard-api");
+                }
+                else if (Directory.Exists(Path.Combine(_appDataDir, @"app\current\dashboard-api")))
+                {
+                    apiDir = Path.Combine(_appDataDir, @"app\current\dashboard-api");
+                }
+                else
+                {
+                    string repoRoot = env.ContainsKey("ODS_REPO_ROOT") ? env["ODS_REPO_ROOT"] : "";
+                    string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                    string[] candidates = new string[]
+                    {
+                        repoRoot,
+                        Path.Combine(baseDir, "..", ".."),
+                        Path.Combine(baseDir, ".."),
+                        @"D:\ODS\ods"
+                    };
+                    foreach (string c in candidates)
+                    {
+                        if (string.IsNullOrEmpty(c)) continue;
+                        try
+                        {
+                            string full = Path.GetFullPath(c);
+                            string checkDir = Path.Combine(full, @"extensions\services\dashboard-api");
+                            if (Directory.Exists(checkDir))
+                            {
+                                apiDir = checkDir;
+                                break;
+                            }
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }
+
+                if (!string.IsNullOrEmpty(pyExe) && File.Exists(pyExe) && !string.IsNullOrEmpty(apiDir) && Directory.Exists(apiDir))
+                {
+                    try
+                    {
+                        string staticDir = env.ContainsKey("ODS_DASHBOARD_DIST")
+                            ? env["ODS_DASHBOARD_DIST"]
+                            : (env.ContainsKey("STATIC_DIR") ? env["STATIC_DIR"] : Path.Combine(_installDir, "dashboard-dist"));
+                        if (!Directory.Exists(staticDir))
+                        {
+                            string[] staticCandidates = new string[]
+                            {
+                                Path.Combine(_installDir, "dashboard-dist"),
+                                Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "dashboard-dist"),
+                                Path.Combine(apiDir, @"..\dashboard\dist")
+                            };
+                            foreach (string sc in staticCandidates)
+                            {
+                                if (Directory.Exists(sc)) { staticDir = Path.GetFullPath(sc); break; }
+                            }
+                        }
+                        string extDir = Path.GetFullPath(Path.Combine(apiDir, ".."));
+
+                        ProcessStartInfo apsi = new ProcessStartInfo
+                        {
+                            FileName = pyExe,
+                            Arguments = "-m uvicorn main:app --host 127.0.0.1 --port 3101",
+                            WorkingDirectory = apiDir,
+                            UseShellExecute = false,
+                            CreateNoWindow = true
+                        };
+                        apsi.EnvironmentVariables["ODS_RUNTIME_PROFILE"] = "windows-desktop";
+                        apsi.EnvironmentVariables["ODS_MODE"] = "local";
+                        apsi.EnvironmentVariables["LLM_BACKEND"] = "llama-server";
+                        apsi.EnvironmentVariables["AGENT_URL"] = "";
+                        apsi.EnvironmentVariables["ODS_DATA_DIR"] = _installDir;
+                        apsi.EnvironmentVariables["DATA_DIR"] = _installDir;
+                        apsi.EnvironmentVariables["ODS_INSTALL_DIR"] = _installDir;
+                        apsi.EnvironmentVariables["INSTALL_DIR"] = _installDir;
+                        apsi.EnvironmentVariables["ODS_DASHBOARD_DIST"] = staticDir;
+                        apsi.EnvironmentVariables["STATIC_DIR"] = staticDir;
+                        apsi.EnvironmentVariables["ODS_EXTENSIONS_DIR"] = extDir;
+                        apsi.EnvironmentVariables["LLAMA_PORT"] = "8085";
+                        apsi.EnvironmentVariables["ODS_NATIVE_LLM_URL"] = "http://127.0.0.1:8085";
+                        apsi.EnvironmentVariables["ODS_LLAMA_ENDPOINT"] = "http://127.0.0.1:8085";
+                        apsi.EnvironmentVariables["DASHBOARD_API_KEY"] = env.ContainsKey("DASHBOARD_API_KEY") && !string.IsNullOrEmpty(env["DASHBOARD_API_KEY"])
+                            ? env["DASHBOARD_API_KEY"]
+                            : "ods-windows-desktop-local-key";
+                        if (env.ContainsKey("DASHBOARD_PASSWORD"))
+                        {
+                            apsi.EnvironmentVariables["DASHBOARD_PASSWORD"] = env["DASHBOARD_PASSWORD"];
+                        }
+                        _managedApiProcess = Process.Start(apsi);
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+        }
+
         private void ApplyGpuMode(int code)
         {
             string llamaExe = Path.Combine(_appDataDir, @"runtimes\llama\llama-server.exe");
             Program.SetUserGpuPreference(llamaExe, code);
             Program.SetUserGpuPreference(Application.ExecutablePath, code);
-            RefreshStatusIndicators();
+            RefreshStatusAndNavigateIfReady();
         }
 
-        private void RefreshStatusIndicators()
+        private void RefreshStatusAndNavigateIfReady()
         {
             string llamaExe = Path.Combine(_appDataDir, @"runtimes\llama\llama-server.exe");
             int code = Program.GetUserGpuPreferenceCode(llamaExe, Application.ExecutablePath);
             _gpuHighPerfMenu.Checked = (code == 2);
             _gpuPowerSaveMenu.Checked = (code == 1);
 
-            string modeLabel = code == 1
-                ? "Power Saving (GpuPreference=1 -> Integrated GPU / CPU)"
-                : (code == 0 ? "Let Windows Decide (GpuPreference=0)" : "High Performance GPU-First (GpuPreference=2)");
-            _gpuStatusLabel.Text = "GPU Preference: " + modeLabel;
+            _suppressComboEvent = true;
+            _gpuSelectorCombo.SelectedIndex = (code == 1) ? 1 : 0;
+            _suppressComboEvent = false;
 
             bool apiUp = Program.IsTcpPortOpen("127.0.0.1", 3101, 150);
             bool llamaUp = Program.IsTcpPortOpen("127.0.0.1", 8085, 150);
-            _apiStatusLabel.Text = string.Format(
-                "Native Services: Portal API {0} (127.0.0.1:3101) • llama.cpp {1} (127.0.0.1:8085)",
-                apiUp ? "Online" : "Standby",
-                llamaUp ? "Online" : "Standby"
-            );
+
+            if ((!apiUp || !llamaUp) && (DateTime.UtcNow - _lastStartAttemptUtc).TotalSeconds >= 6.0)
+            {
+                _lastStartAttemptUtc = DateTime.UtcNow;
+                ThreadPool.QueueUserWorkItem(_ => EnsureNativeServicesStarted());
+            }
+
+            if (apiUp && llamaUp)
+            {
+                _serviceBadgeLabel.Text = "● Portal API Online • llama.cpp GPU Engine Online";
+                _serviceBadgeLabel.ForeColor = Color.FromArgb(52, 211, 153);
+            }
+            else if (apiUp)
+            {
+                _serviceBadgeLabel.Text = "● Portal API Online • llama.cpp Standby";
+                _serviceBadgeLabel.ForeColor = Color.FromArgb(56, 189, 248);
+            }
+            else
+            {
+                _serviceBadgeLabel.Text = "● Starting Native Services (127.0.0.1:3101)...";
+                _serviceBadgeLabel.ForeColor = Color.FromArgb(251, 191, 36);
+            }
+
+            if (apiUp && _webViewReady && !_portalLoaded && _webView.CoreWebView2 != null)
+            {
+                _portalLoaded = true;
+                _webView.CoreWebView2.Navigate(PortalTargetUrl);
+            }
         }
 
         private void OpenWindowsGraphicsSettings()
@@ -503,10 +803,10 @@ namespace OdsNativeDesktop
 
         private void TriggerUpdateCheck()
         {
-            _updateStatusLabel.Text = "Software Updates: Checking GitHub releases via /api/version...";
+            _updateBtn.Text = "Checking GitHub...";
             ThreadPool.QueueUserWorkItem(_ =>
             {
-                string msg = "Software Updates: Up to date (v3.0.0)";
+                string btnText = "v3.0.0 (Up to date)";
                 try
                 {
                     HttpWebRequest req = (HttpWebRequest)WebRequest.Create("http://127.0.0.1:3101/api/version?force=true");
@@ -517,15 +817,15 @@ namespace OdsNativeDesktop
                         string body = reader.ReadToEnd();
                         if (body.Contains("\"update_available\":true"))
                         {
-                            msg = "Software Updates: New update available! Open Portal Settings to apply.";
+                            btnText = "Update Available!";
                         }
                     }
                 }
                 catch
                 {
-                    msg = "Software Updates: Local runtime v3.0.0 active.";
+                    btnText = "v3.0.0 Ready";
                 }
-                BeginInvoke((Action)(() => { _updateStatusLabel.Text = msg; }));
+                BeginInvoke((Action)(() => { _updateBtn.Text = btnText; }));
             });
         }
 
@@ -534,6 +834,26 @@ namespace OdsNativeDesktop
             _statusTimer.Stop();
             _trayIcon.Visible = false;
             _trayIcon.Dispose();
+            try
+            {
+                if (_managedApiProcess != null && !_managedApiProcess.HasExited)
+                {
+                    _managedApiProcess.Kill();
+                }
+            }
+            catch
+            {
+            }
+            try
+            {
+                if (_managedLlamaProcess != null && !_managedLlamaProcess.HasExited)
+                {
+                    _managedLlamaProcess.Kill();
+                }
+            }
+            catch
+            {
+            }
             Application.Exit();
         }
     }
