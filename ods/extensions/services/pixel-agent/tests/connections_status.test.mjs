@@ -42,6 +42,29 @@ test('connection, owner permission, provider observation and sync coverage stay 
   Object.assign(unknown,{available:true,reason:'record-unusable',recordConfigured:null,
     localSavedSignIn:null,connectionState:'unknown'});
   assert.equal(validateConnectionStatus(unknown).recordConfigured,null);
+  const unreadable=await createConnectionsStatusTool({read:async()=>unknown}).execute('status',{});
+  assert.equal(unreadable.isError,true);
+  const failure=JSON.parse(unreadable.content[0].text);
+  assert.equal(failure.connectionState,'unknown');
+  assert.equal(failure.reason,'record-unusable');
+  assert.equal(Object.hasOwn(failure,'recordConfigured'),false,'unknown is a failed read, not empty-account evidence');
+  assert.equal(Object.hasOwn(failure,'localSavedSignIn'),false);
+  assert.match(failure.message,/could not be verified.*is unknown/);
+  const disconnected=fixture();
+  Object.assign(disconnected,{recordConfigured:false,localSavedSignIn:false,connectionState:'not-connected'});
+  const absent=await createConnectionsStatusTool({read:async()=>disconnected}).execute('status',{});
+  assert.equal(absent.isError,undefined,'known absence stays distinct from an unreadable account');
+  assert.equal(JSON.parse(absent.content[0].text).connectionState,'not-connected');
+  const changing=fixture();
+  Object.assign(changing,{connectionState:'transitioning',reason:'connection-admission-held'});
+  const pending=await createConnectionsStatusTool({read:async()=>changing}).execute('status',{});
+  assert.equal(pending.isError,true,'a transition cannot prove current access');
+  assert.equal(JSON.parse(pending.content[0].text).reason,'connection-admission-held');
+  const behind=fixture();
+  behind.connectionState='behind';behind.reason='sync-stopped';behind.reads.email.recent=false;
+  const stale=await createConnectionsStatusTool({read:async()=>behind}).execute('status',{});
+  assert.equal(stale.isError,undefined,'known configuration and stale source health remain distinguishable');
+  assert.equal(JSON.parse(stale.content[0].text).providerCheckedNow,false);
 });
 
 test('reject owner payloads, extra content and malformed status without reflecting them',async()=>{
@@ -67,7 +90,7 @@ test('reject owner payloads, extra content and malformed status without reflecti
     assert.throws(()=>validateConnectionStatus(value));
     const result=await createConnectionsStatusTool({read:async()=>value}).execute('status',{});
     assert.equal(result.isError,true);
-    assert.match(result.content[0].text,/unknown.*does not prove.*disconnected/);
+    assert.match(result.content[0].text,/could not be verified.*is unknown/);
     assert.doesNotMatch(result.content[0].text,/private-/);
   }
 });

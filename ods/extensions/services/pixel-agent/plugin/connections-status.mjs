@@ -76,13 +76,25 @@ export function createConnectionsStatusTool({read = readConnectionStatus} = {}) 
       try {
         if (signal?.aborted || args !== undefined && !exact(args,[])) throw Error();
         const status = validateConnectionStatus(await read({signal}));
+        if (!status.available || status.recordConfigured === null
+            || ['unknown','transitioning'].includes(status.connectionState)) {
+          // A successful IPC exchange is not a successful connection read.
+          // Nullable presence flags made a real model confuse unreadable state
+          // with an absent account. Keep this on the normal tool-error path;
+          // do not supply an apparently successful empty account observation.
+          return unavailableStatus(status.reason ?? 'connection-status-unavailable');
+        }
         return {content:[{type:'text',text:JSON.stringify(status)}]};
       } catch {
-        return {isError:true,content:[{type:'text',text:JSON.stringify({
-          kind:'ods-connection-agent-status-unavailable',
-          message:'Could not read connection status. The connection is unknown; this does not prove the account is disconnected. No account, permission or setting was changed.',
-        })}]};
+        return unavailableStatus('connection-status-unavailable');
       }
     },
   };
+}
+
+function unavailableStatus(reason) {
+  return {isError:true,content:[{type:'text',text:JSON.stringify({
+    kind:'ods-connection-agent-status-unavailable',reason,connectionState:'unknown',
+    message:'Connection status could not be verified. Whether a Google account is configured, signed in or permitted is unknown. No account, permission or setting was changed.',
+  })}]};
 }

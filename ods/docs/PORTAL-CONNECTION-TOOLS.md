@@ -22,6 +22,10 @@ Google connection state.
   `providerCheckedNow: false` means this was not a fresh authorization check
   against Google. Stale, unreadable, transitioning or unavailable state cannot
   establish that the account is disconnected.
+- An unreadable configuration or an active transition follows the native
+  tool-error path, with an explicit unverified result. A successful IPC reply
+  alone is not successful evidence about an account. Nullable presence flags
+  from a failed read are not presented as an empty-account observation.
 - The model receives stable capability descriptions and chooses the tool.
   The connected-record phrase classifier and conditional per-turn read plans
   have been removed. The runtime still enforces tool policy, argument schemas,
