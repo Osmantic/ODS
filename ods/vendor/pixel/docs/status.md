@@ -20,7 +20,7 @@ This page reports repository and release-contract facts. It does **not** report 
 | Repository version | `4.3.41` | `VERSION` and `RELEASE-MANIFEST.json` agree |
 | Repository compatibility row | **candidate** | [ODS-QUALIFICATION-4.3.41.md](../ODS-QUALIFICATION-4.3.41.md) binds source `cc49a94b991b99e254e0b5555e6b21740a62dc09` |
 | OpenClaw compatibility | Canonical release pin is maintained in [OPENCLAW-COMPATIBILITY.json](../OPENCLAW-COMPATIBILITY.json) | This page does not duplicate an authored release pin |
-| Latest Supported compatibility row | Pixel `4.3.26` | [LIVE-AUDIT-4.3.26.md](../LIVE-AUDIT-4.3.26.md) |
+| Latest Supported compatibility row | Pixel `4.3.26` | `LIVE-AUDIT-4.3.26.md` (not included in this source export) |
 | Deep Work runtime | **development-disabled** | `deepWorkCapability.runtimeEnabled` is `false`; source presence and admission do not imply runtime authority |
 | Documented host scope | Ubuntu 24.04 LTS; Debian 12 | Manifest and qualification matrix agree; this is not a fresh clean-host qualification |
 
