@@ -4,10 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import httpx
 import pytest
 from fastapi import Depends, FastAPI, Request
-from fastapi.responses import JSONResponse
 
 import dashboard_password
 import native_front
