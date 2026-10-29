@@ -34,7 +34,14 @@ selected cloud-model sharing; Gmail can still transport inline bytes before
 filtering, and old histories/backups are not rewritten.
 Two independent public single-root builds match. Exact source/digest/Git-mode
 verification and the exact-bundle plan/apply/verify/rollback fixture passed.
-Ordinary installed/model acceptance for this revision remains pending. The preparation record is
+The ordinary installed upgrade from `947387494` completed with the original
+read-only Google grant and 9B/64K model preserved, ready/verified runtime and
+healthy core containers. Installed broker/reader bytes match revision 3. The
+same natural count request then returned one Inbox summary and an exactly
+covered seven-day Calendar read through native cron; its answer distinguished
+indexed mail from unavailable mailbox totals. The scoped owner HTTP and service
+checks do not certify browser/UI, real-attachment payloads, native macOS or
+general model reliability. The preparation record is
 `pixel/ODS-QUALIFICATION-4.3.40.md`.
 
 ## Prior Source-argument candidate 4.3.39

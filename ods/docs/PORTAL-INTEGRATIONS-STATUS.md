@@ -223,7 +223,21 @@ summary content, attachment metadata and selected cloud-model sharing.
 Independent focused review and controlled broker/plugin/UI cases passed. Two
 independent 4.3.40 bundle builds match; exact source/digest/Git-mode verification
 and the bundle-checkout plan/apply/verify/rollback fixture passed. The ordinary
-installed upgrade and model follow-up remain pending; these controls do not erase old chats, task history,
+installed upgrade from `947387494` then applied source
+`5154ac8e97a38cf77f2768c9f6021bd02d9ab574`. Owner/source returned ready/complete,
+runtime verified, four core containers healthy, and the original read-only grant
+and 9B/64K model were preserved. Installed broker/reader bytes match the reviewed
+revision 3 code; the temporary QA privilege helper and policy were removed.
+An owner-UID1000 HTTP request through the actual dashboard proxy confirmed the
+verified runtime and readable mode0600 environment owned by UID1000.
+
+The unchanged count request also completed in native cron on this installed
+revision. It described both schemas, returned one Inbox summary and queried an
+aware exactly seven-day Calendar interval without tool errors. Complete saved
+results and the final answer agree on the partial index and zero events; the
+answer explicitly says the mailbox total is unavailable. Normal QA task removal
+retained its result. This is scoped service-path acceptance, not a new browser/UI
+or real-attachment payload test. The repair does not erase old chats, task history,
 backups or provider copies, or claim Gmail never transports inline bytes.
 
 Installed Connected apps also fetched the reviewed catalog through the actual
