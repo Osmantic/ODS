@@ -103,7 +103,12 @@ function Test-ODSVerifiedModelFile {
             Reason    = 'empty'
         }
     }
-    if ($ExpectedSize -gt 0 -and $size -ne $ExpectedSize) {
+    $expectedNorm = $ExpectedSha256.Trim().ToLowerInvariant()
+    if ($expectedNorm -and $expectedNorm -cnotmatch '^[0-9a-f]{64}$') {
+        throw "ExpectedSha256 must be a 64-character hex string, not '$ExpectedSha256'."
+    }
+
+    if (-not $expectedNorm -and $ExpectedSize -gt 0 -and $size -ne $ExpectedSize) {
         return [pscustomobject]@{
             Verified  = $false
             Sha256    = ''
@@ -111,11 +116,6 @@ function Test-ODSVerifiedModelFile {
             FromStamp = $false
             Reason    = "size_mismatch (got $size, expected $ExpectedSize)"
         }
-    }
-
-    $expectedNorm = $ExpectedSha256.Trim().ToLowerInvariant()
-    if ($expectedNorm -and $expectedNorm -cnotmatch '^[0-9a-f]{64}$') {
-        throw "ExpectedSha256 must be a 64-character hex string, not '$ExpectedSha256'."
     }
 
     $stamp = Read-ODSModelSha256Stamp -ModelPath $ModelPath
@@ -184,7 +184,8 @@ function Invoke-ODSResumableModelDownload {
         [Parameter(Mandatory = $true)][string]$Url,
         [string]$ExpectedSha256 = '',
         [long]$ExpectedSize = 0,
-        [AllowNull()][scriptblock]$CurlRunner = $null
+        [AllowNull()][scriptblock]$CurlRunner = $null,
+        [AllowNull()][scriptblock]$ProgressCallback = $null
     )
 
     if ($GgufFile -cnotmatch '^[\x20-\x7e]{1,240}$' -or
@@ -237,6 +238,22 @@ function Invoke-ODSResumableModelDownload {
         if ($null -ne $CurlRunner) {
             return (& $CurlRunner $curlArgs $OutFile $DownloadUrl)
         }
+        if ($null -ne $ProgressCallback) {
+            $psi = [Diagnostics.ProcessStartInfo]::new('curl.exe', ($curlArgs -join ' '))
+            $psi.UseShellExecute = $false
+            $psi.CreateNoWindow = $true
+            $proc = [Diagnostics.Process]::Start($psi)
+            while (-not $proc.HasExited) {
+                if (Test-Path -LiteralPath $OutFile -PathType Leaf) {
+                    try {
+                        $curBytes = (Get-Item -LiteralPath $OutFile).Length
+                        & $ProgressCallback $curBytes $ExpectedSize
+                    } catch {}
+                }
+                Start-Sleep -Milliseconds 600
+            }
+            return $proc.ExitCode
+        }
         & curl.exe @curlArgs
         return $LASTEXITCODE
     }
@@ -257,16 +274,15 @@ function Invoke-ODSResumableModelDownload {
     }
 
     $partialItem = Get-Item -LiteralPath $partial -ErrorAction Stop
-    if ($ExpectedSize -gt 0 -and [long]$partialItem.Length -ne $ExpectedSize) {
-        Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
-        throw "Downloaded model $GgufFile has size $($partialItem.Length) bytes, expected $ExpectedSize bytes."
-    }
-
     $actualSha = (Get-FileHash -LiteralPath $partial -Algorithm SHA256).Hash.ToLowerInvariant()
     $expectedNorm = $ExpectedSha256.Trim().ToLowerInvariant()
     if ($expectedNorm -and $actualSha -cne $expectedNorm) {
         Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
         throw "Downloaded model $GgufFile failed SHA-256 verification (got $actualSha, expected $expectedNorm)."
+    }
+    if (-not $expectedNorm -and $ExpectedSize -gt 0 -and [long]$partialItem.Length -ne $ExpectedSize) {
+        Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
+        throw "Downloaded model $GgufFile has size $($partialItem.Length) bytes, expected $ExpectedSize bytes."
     }
 
     Move-Item -LiteralPath $partial -Destination $target -Force
