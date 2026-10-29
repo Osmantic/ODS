@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`c4ca642c3df6aa8fc274d672b89cc7b0287dfce6`, and its SHA-256 is
-`d4a0d6459c33acbf4827eca10527863f55a04f390962b224a1d87885d0f20b93`.
+`fb48263c80ed86ddbfafad14cd688bec97f21704`, and its SHA-256 is
+`d261803e5da0fb8f59712a735c80fa9656ae8160305a1b46a0db31838b62797a`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -24,7 +24,7 @@ retain their own notices and licenses.
 
 The current Portal runtime candidate uses internal package version 4.3.41.
 Its functional checkpoint is `cc49a94b991b99e254e0b5555e6b21740a62dc09`;
-the versioned source checkpoint is `30cc4fff0da9cd66c374ba7893b732d109d59854`.
+the versioned source checkpoint is `133f5f387cc45b68cd16fdd1c34981700b430b5f`.
 It adds metadata-only Gmail/Calendar counts, explicit rolling/civil windows,
 conservative coverage/timezone handling and the corresponding existing read
 permission, guide and release-copy wiring. The preparation record is
