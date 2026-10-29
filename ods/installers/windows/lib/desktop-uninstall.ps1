@@ -89,7 +89,7 @@ function Uninstall-ODSWindowsDesktop {
         [hashtable]$MockRegistry = $null
     )
 
-    $preserveUserData = if ($RemoveAllData) { $false } else { $true }
+    $preserveUserData = if ($RemoveAllData) { $false } elseif ($KeepData) { $true } else { $true }
     $removedPaths = New-Object 'System.Collections.Generic.List[string]'
     $preservedPaths = New-Object 'System.Collections.Generic.List[string]'
 
