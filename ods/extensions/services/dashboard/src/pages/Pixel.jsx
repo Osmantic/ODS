@@ -1113,7 +1113,7 @@ export default function Pixel({ systemStatus = null }) {
           && typeof runtime.reasoning === 'boolean'
           && runtime.contextLength >= 4096
         const validLocalRuntime = runtimeKeys === ['contextLength', 'model', 'source'].join('\n')
-          && runtime.source === 'local-switchboard'
+          && ['local-switchboard', 'windows-desktop'].includes(runtime.source)
         const validExternalRuntime = [
           ['model', 'source'].join('\n'),
           ['contextLength', 'model', 'source'].join('\n'),
