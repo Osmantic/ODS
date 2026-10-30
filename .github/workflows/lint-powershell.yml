@@ -261,6 +261,16 @@ jobs:
         shell: powershell
         run: ./tests/contracts/test-windows-desktop-gpu-runtime.ps1
 
+      - name: Windows Desktop Installer Phases Contracts (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/contracts/test-windows-desktop-installer-phases.ps1
+
+      - name: Windows Desktop Installer Phases Contracts (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-desktop-installer-phases.ps1
+
       - name: Windows Native llama-server (non-Portal) and Lemonade Retirement Contracts (PowerShell 7)
         if: runner.os == 'Windows'
         shell: pwsh

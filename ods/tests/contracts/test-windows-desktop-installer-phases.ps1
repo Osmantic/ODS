@@ -38,7 +38,7 @@ try {
     $envPath = Join-Path $installDir '.env'
     Set-Content -LiteralPath $envPath -Value @(
         'DASHBOARD_PASSWORD=my-custom-owner-password'
-        'DASHBOARD_API_KEY=fixed-owner-api-key-12345'
+        'DASHBOARD_API_KEY=mock-owner-key'
         'HF_TOKEN=hf_secret_owner_token'
         'DISABLE_UPDATE_CHECK=true'
     ) -Encoding UTF8
@@ -72,7 +72,7 @@ try {
     $envContent = Get-Content -LiteralPath $envPath -Raw -Encoding UTF8
     Assert-True ($envContent -match 'ODS_RUNTIME_PROFILE=windows-desktop') ".env writes ODS_RUNTIME_PROFILE=windows-desktop"
     Assert-True ($envContent -match 'DASHBOARD_PASSWORD=my-custom-owner-password') ".env preserves owner DASHBOARD_PASSWORD across install"
-    Assert-True ($envContent -match 'DASHBOARD_API_KEY=fixed-owner-api-key-12345') ".env preserves owner DASHBOARD_API_KEY across install"
+    Assert-True ($envContent -match 'DASHBOARD_API_KEY=mock-owner-key') ".env preserves owner DASHBOARD_API_KEY across install"
     Assert-True ($envContent -match 'HF_TOKEN=hf_secret_owner_token') ".env carries over owner HF_TOKEN"
     Assert-True ($envContent -match 'DISABLE_UPDATE_CHECK=true') ".env carries over owner DISABLE_UPDATE_CHECK"
 
