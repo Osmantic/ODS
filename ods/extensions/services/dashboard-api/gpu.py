@@ -7,6 +7,7 @@ import os
 import platform
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Optional
 
@@ -533,15 +534,15 @@ def read_windows_user_gpu_preference(
     entries: dict[str, str] = {}
     if registry_entries is not None:
         entries = dict(registry_entries)
-    elif platform.system() == "Windows":
+    elif sys.platform == "win32":
         try:
-            import winreg
+            import winreg  # type: ignore[import-not-found,unused-ignore]
 
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _DIRECTX_GPU_PREF_KEY) as key:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _DIRECTX_GPU_PREF_KEY) as key:  # type: ignore[attr-defined]
                 idx = 0
                 while True:
                     try:
-                        value_name, value_data, _ = winreg.EnumValue(key, idx)
+                        value_name, value_data, _ = winreg.EnumValue(key, idx)  # type: ignore[attr-defined]
                         idx += 1
                         if isinstance(value_name, str) and isinstance(value_data, str):
                             entries[value_name] = value_data
@@ -766,30 +767,30 @@ _win_reg_gpu_cache: dict[str, Any] = {"expires": 0.0, "value": None}
 
 def get_gpu_info_windows_registry_detailed() -> Optional[list[ tuple[str, IndividualGPU] ]]:
     """Query Windows video adapters in-process via winreg (zero child processes)."""
-    if platform.system() != "Windows":
+    if sys.platform != "win32":
         return None
     import time as _time
     now = _time.monotonic()
     if now < float(_win_reg_gpu_cache.get("expires", 0.0)):
         return _win_reg_gpu_cache.get("value")
     try:
-        import winreg
+        import winreg  # type: ignore[import-not-found,unused-ignore]
 
         adapters: list[tuple[str, IndividualGPU]] = []
-        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _VIDEO_CONTROLLER_CLASS_KEY) as root:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _VIDEO_CONTROLLER_CLASS_KEY) as root:  # type: ignore[attr-defined]
             sub_idx = 0
             gpu_idx = 0
             while True:
                 try:
-                    sub_name = winreg.EnumKey(root, sub_idx)
+                    sub_name = winreg.EnumKey(root, sub_idx)  # type: ignore[attr-defined]
                     sub_idx += 1
                 except OSError:
                     break
                 if not (len(sub_name) == 4 and sub_name.isdigit()):
                     continue
                 try:
-                    with winreg.OpenKey(root, sub_name) as sub_key:
-                        desc, _ = winreg.QueryValueEx(sub_key, "DriverDesc")
+                    with winreg.OpenKey(root, sub_name) as sub_key:  # type: ignore[attr-defined]
+                        desc, _ = winreg.QueryValueEx(sub_key, "DriverDesc")  # type: ignore[attr-defined]
                         if not isinstance(desc, str) or not desc.strip():
                             continue
                         gpu_name = desc.strip()
@@ -801,7 +802,7 @@ def get_gpu_info_windows_registry_detailed() -> Optional[list[ tuple[str, Indivi
                             "HardwareInformation.MemorySize",
                         ):
                             try:
-                                raw_mem, _ = winreg.QueryValueEx(sub_key, mkey)
+                                raw_mem, _ = winreg.QueryValueEx(sub_key, mkey)  # type: ignore[attr-defined]
                                 if isinstance(raw_mem, bytes) and len(raw_mem) >= 4:
                                     mem_bytes = int.from_bytes(raw_mem[:8], "little")
                                 elif isinstance(raw_mem, int) and raw_mem > 0:

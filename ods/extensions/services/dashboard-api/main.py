@@ -1685,9 +1685,10 @@ async def _build_api_status() -> dict:
                 app.state.cloud_telemetry_client)
         context_size = remote_runtime["contextLength"] if remote_runtime else None
     else:
-        llama_down_in_desktop = (
+        llama_down_in_desktop = bool(
             WINDOWS_DESKTOP_PROFILE
-            and any(s.id == "llama-server" and s.status == "down" for s in service_statuses)
+            and isinstance(service_statuses, (list, tuple))
+            and any(getattr(s, "id", "") == "llama-server" and getattr(s, "status", "") == "down" for s in service_statuses)
         )
         if llama_down_in_desktop:
             loaded_model, llama_metrics_data, context_size = None, {}, None
@@ -2088,7 +2089,7 @@ if WINDOWS_DESKTOP_PROFILE:
     _dashboard_dist_dir = resolve_dashboard_dist()
     if _dashboard_dist_dir is not None:
         app.add_middleware(DashboardGate)
-        app.mount("/", DashboardFiles(_dashboard_dist_dir), name="dashboard-static")
+        app.mount("/", DashboardFiles(_dashboard_dist_dir), name="dashboard-static")  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":

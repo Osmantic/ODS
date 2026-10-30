@@ -1622,7 +1622,9 @@ def get_uptime() -> int:
                     return int(_time.time()) - int(match.group(1))
         elif _system == "Windows":
             import ctypes
-            return ctypes.windll.kernel32.GetTickCount64() // 1000
+            windll = getattr(ctypes, "windll", None)
+            if windll is not None:
+                return windll.kernel32.GetTickCount64() // 1000
     except (OSError, subprocess.SubprocessError, ValueError, IndexError, AttributeError) as e:
         logger.debug("get_uptime failed on %s: %s", _system, e)
     return 0
@@ -1697,7 +1699,7 @@ def _get_cpu_metrics_darwin() -> dict:
 
 def _get_cpu_metrics_windows() -> dict:
     """Get CPU usage on Windows via kernel32 GetSystemTimes (zero child processes)."""
-    result = {"percent": None, "temp_c": None}
+    result: dict[str, float | None] = {"percent": None, "temp_c": None}
     try:
         import ctypes
 
@@ -1707,7 +1709,10 @@ def _get_cpu_metrics_windows() -> dict:
             def to_int(self) -> int:
                 return (int(self.dwHighDateTime) << 32) | int(self.dwLowDateTime)
 
-        kernel32 = ctypes.windll.kernel32
+        windll = getattr(ctypes, "windll", None)
+        if windll is None:
+            return result
+        kernel32 = windll.kernel32
 
         def _sample_times() -> tuple[int, int] | None:
             idle_ft, kernel_ft, user_ft = _FILETIME(), _FILETIME(), _FILETIME()
@@ -1730,7 +1735,7 @@ def _get_cpu_metrics_windows() -> dict:
             if second is not None:
                 prev = (idle, total)
                 idle, total = second
-        get_cpu_metrics._win_prev = (idle, total)
+        setattr(get_cpu_metrics, "_win_prev", (idle, total))
         if prev is not None:
             d_idle = idle - prev[0]
             d_total = total - prev[1]
@@ -1761,7 +1766,7 @@ def get_cpu_metrics() -> dict:
 
 def _get_ram_metrics_linux() -> dict:
     """Get RAM usage from /proc/meminfo (Linux only)."""
-    result = {"used_gb": None, "total_gb": None, "percent": None}
+    result: dict[str, float | None] = {"used_gb": None, "total_gb": None, "percent": None}
     try:
         meminfo = {}
         with open("/proc/meminfo") as f:
@@ -1785,7 +1790,7 @@ def _get_ram_metrics_linux() -> dict:
 
 def _get_ram_metrics_sysctl() -> dict:
     """Get RAM usage on macOS via sysctl."""
-    result = {"used_gb": None, "total_gb": None, "percent": None}
+    result: dict[str, float | None] = {"used_gb": None, "total_gb": None, "percent": None}
     try:
         import subprocess
         out = subprocess.run(
@@ -1829,7 +1834,7 @@ def _get_ram_metrics_sysctl() -> dict:
 
 def _get_ram_metrics_windows() -> dict:
     """Get RAM usage on Windows via kernel32 GlobalMemoryStatusEx (zero child processes)."""
-    result = {"used_gb": None, "total_gb": None, "percent": None}
+    result: dict[str, float | None] = {"used_gb": None, "total_gb": None, "percent": None}
     try:
         import ctypes
 
@@ -1848,7 +1853,10 @@ def _get_ram_metrics_windows() -> dict:
 
         mem = _MEMORYSTATUSEX()
         mem.dwLength = ctypes.sizeof(_MEMORYSTATUSEX)
-        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(mem)):
+        windll = getattr(ctypes, "windll", None)
+        if windll is None:
+            return result
+        if not windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(mem)):
             return result
         total_bytes = int(mem.ullTotalPhys)
         avail_bytes = int(mem.ullAvailPhys)

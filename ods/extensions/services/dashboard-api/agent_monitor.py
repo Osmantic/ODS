@@ -8,7 +8,7 @@ import json
 import logging
 import math
 from datetime import datetime, timedelta, timezone
-from typing import List
+from typing import Any, List
 import os
 
 import aiohttp
@@ -232,6 +232,7 @@ async def collect_metrics():
     """Poll independent sources together on a five-second cadence."""
     while True:
         started = asyncio.get_running_loop().time()
+        tasks: tuple[Any, ...]
         if WINDOWS_DESKTOP_PROFILE:
             tasks = (_fetch_runtime_metrics(),)
         else:
