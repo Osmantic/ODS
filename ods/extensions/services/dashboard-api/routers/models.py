@@ -167,7 +167,7 @@ _ACTIVE_BOOTSTRAP_STATUSES = {"starting", "downloading", "verifying", "swapping"
 _agent_model_status_cache_lock = threading.Lock()
 _agent_model_status_cache_at = 0.0
 _agent_model_status_cache_value: Optional[dict] = None
-_GPU_VRAM_EXCEPTIONS = (
+_GPU_VRAM_EXCEPTIONS: tuple[type[Exception], ...] = (
     ImportError,
     FileNotFoundError,
     OSError,

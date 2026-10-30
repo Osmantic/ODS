@@ -6,7 +6,7 @@ import asyncio
 try:
     from asyncio import timeout as async_timeout
 except ImportError:  # Python 3.10; installed by this runtime's requirements.
-    from async_timeout import timeout as async_timeout
+    from async_timeout import timeout as async_timeout  # type: ignore[no-redef]
 import hashlib
 from model_activation_status import model_activation_status
 import json

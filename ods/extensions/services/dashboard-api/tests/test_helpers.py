@@ -3,6 +3,7 @@
 import asyncio
 import json
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
@@ -2277,7 +2278,7 @@ class TestStringExtractDomainNamesSafe:
 
     def test_invalid_types_and_none(self):
         assert string_extract_domain_names_safe(None) == []
-        assert string_extract_domain_names_safe(12345) == []
+        assert string_extract_domain_names_safe(12345) == []  # type: ignore[arg-type]
         assert string_extract_domain_names_safe("") == []
 
 
@@ -2321,7 +2322,7 @@ class TestStringSnakeToPascalCaseSafe:
 
     def test_invalid_types_and_empty(self):
         assert string_snake_to_pascal_case_safe(None) == ""
-        assert string_snake_to_pascal_case_safe(123) == ""
+        assert string_snake_to_pascal_case_safe(123) == ""  # type: ignore[arg-type]
         assert string_snake_to_pascal_case_safe("__double___underscores__") == "DoubleUnderscores"
 
 
@@ -2381,13 +2382,13 @@ def test_deduplication_preserves_missing_and_different_value_types():
 
 
 def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
-    cycle = {}
+    cycle: dict[str, Any] = {}
     cycle["self"] = cycle
     result = dict_flatten_nested_safe(cycle, max_depth=100000)
     assert list(result) == ["self"]
     assert result["self"] is cycle
     assert dict_flatten_nested_safe({"empty": {}}) == {"empty": {}}
-    nested = {"leaf": 1}
+    nested: dict[str, Any] = {"leaf": 1}
     for _ in range(1500):
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)

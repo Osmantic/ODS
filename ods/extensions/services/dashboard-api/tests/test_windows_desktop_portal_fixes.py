@@ -145,7 +145,9 @@ async def test_pixel_example_projects_on_windows_desktop(monkeypatch, tmp_path):
     with patch("native_llm.get_workspace_root", return_value=tmp_path):
         result = await pixel.pixel_example_projects()
         assert result.get("schemaVersion") == 1
-        assert "elf-of-doom" in result.get("projects", [])
+        projects = result.get("projects")
+        assert isinstance(projects, list)
+        assert "elf-of-doom" in projects
 
 
 @pytest.mark.asyncio
