@@ -63,17 +63,49 @@ def get_status_path() -> Path:
 def get_download_status() -> dict[str, Any]:
     """Read the current model download and storage status."""
     status_file = get_status_path()
+    raw_data: dict[str, Any] | None = None
     if status_file.exists():
         try:
-            return json.loads(status_file.read_text(encoding="utf-8"))
+            raw_data = json.loads(status_file.read_text(encoding="utf-8"))
         except Exception:
             pass
-    fallback = Path(DATA_DIR) / "model-download-status.json" if DATA_DIR else None
-    if fallback and fallback.exists() and fallback != status_file:
-        try:
-            return json.loads(fallback.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+    if raw_data is None:
+        fallback = Path(DATA_DIR) / "model-download-status.json" if DATA_DIR else None
+        if fallback and fallback.exists() and fallback != status_file:
+            try:
+                raw_data = json.loads(fallback.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+    if raw_data is not None:
+        st = raw_data.get("status", "")
+        if st == "completed":
+            raw_data["status"] = "complete"
+            st = "complete"
+
+        if st in {"complete", "failed", "cancelled"}:
+            updated_str = raw_data.get("updatedAt", "")
+            is_stale = False
+            if updated_str:
+                try:
+                    dt = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
+                    if (datetime.now(timezone.utc) - dt).total_seconds() > 10:
+                        is_stale = True
+                except Exception:
+                    pass
+            if is_stale:
+                return {
+                    "status": "idle",
+                    "active": False,
+                    "isDownloading": False,
+                    "lifecycleActive": False,
+                    "activeOperation": None,
+                    "activeTarget": None,
+                    "modelTransactionPending": False,
+                    "lastTerminalStatus": raw_data,
+                }
+        return raw_data
+
     return {
         "status": "idle",
         "active": False,
@@ -335,7 +367,7 @@ def _worker_download_plan(
             logger.info("Native model download cancelled: %s", model_label)
         else:
             write_model_download_status(
-                "completed",
+                "complete",
                 model_label,
                 downloaded=total_plan_bytes,
                 total=total_plan_bytes,

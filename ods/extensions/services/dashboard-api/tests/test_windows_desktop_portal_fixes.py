@@ -120,15 +120,110 @@ def test_models_activate_on_windows_desktop(monkeypatch, tmp_path):
     fake_installed = [
         {"filename": "Qwen3.5-2B-Q4_K_M.gguf", "path": str(tmp_path / "Qwen3.5-2B-Q4_K_M.gguf")}
     ]
-    with patch("native_llm.list_local_gguf_models", return_value=fake_installed):
+    with patch("native_llm.list_local_gguf_models", return_value=fake_installed), \
+         patch("native_llm.restart_native_llama_server", return_value=True) as mock_restart:
         result = models.load_model("qwen3.5-2b-q4", None, api_key="test-key")
         assert result.get("status") == "reloaded"
         assert result.get("model") == "Qwen3.5-2B-Q4_K_M.gguf"
+        mock_restart.assert_called_once()
 
         selection_file = tmp_path / "selected-model.json"
         assert selection_file.exists()
         saved = json.loads(selection_file.read_text(encoding="utf-8"))
         assert saved["ggufFile"] == "Qwen3.5-2B-Q4_K_M.gguf"
+        receipt_file = tmp_path / "model-activation-receipt.json"
+        assert receipt_file.exists()
+        receipt = json.loads(receipt_file.read_text(encoding="utf-8"))
+        assert receipt["requestedModelId"] == "qwen3.5-2b-q4"
+
+
+def test_native_downloader_status_normalization_and_stale_idle(monkeypatch, tmp_path):
+    """Verify get_download_status normalizes 'completed' to 'complete' and turns stale terminal statuses into idle."""
+    from datetime import datetime, timedelta, timezone
+    import native_downloader
+
+    monkeypatch.setattr(native_downloader, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(native_downloader, "INSTALL_DIR", str(tmp_path))
+
+    status_file = tmp_path / "model-download-status.json"
+
+    # 1. Fresh completed should normalize to complete
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    status_file.write_text(json.dumps({
+        "status": "completed",
+        "model": "granite-4.0-h-1b-Q4_K_M.gguf",
+        "percent": 100.0,
+        "updatedAt": now_iso,
+    }), encoding="utf-8")
+
+    st = native_downloader.get_download_status()
+    assert st["status"] == "complete"
+    assert st["model"] == "granite-4.0-h-1b-Q4_K_M.gguf"
+
+    # 2. Stale complete (>10s) returns idle with lastTerminalStatus
+    stale_iso = (datetime.now(timezone.utc) - timedelta(seconds=20)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    status_file.write_text(json.dumps({
+        "status": "complete",
+        "model": "granite-4.0-h-1b-Q4_K_M.gguf",
+        "percent": 100.0,
+        "updatedAt": stale_iso,
+    }), encoding="utf-8")
+
+    st_stale = native_downloader.get_download_status()
+    assert st_stale["status"] == "idle"
+    assert st_stale["active"] is False
+    assert "lastTerminalStatus" in st_stale
+    assert st_stale["lastTerminalStatus"]["status"] == "complete"
+
+
+def test_restart_native_llama_server_logic(monkeypatch, tmp_path):
+    """Verify restart_native_llama_server finds binary, invokes taskkill, and starts process."""
+    fake_bin = tmp_path / "llama-server.exe"
+    fake_bin.write_text("binary", encoding="utf-8")
+    fake_model = tmp_path / "model.gguf"
+    fake_model.write_text("weights", encoding="utf-8")
+
+    monkeypatch.setattr(native_llm, "find_llama_server_binary", lambda: fake_bin)
+    monkeypatch.setattr(native_llm, "read_windows_user_gpu_preference", lambda: "discrete")
+
+    killed = []
+    spawned = []
+
+    def fake_run(args, **kwargs):
+        killed.append(args)
+        return MagicMock(returncode=0)
+
+    def fake_popen(cmd, **kwargs):
+        spawned.append(cmd)
+        return MagicMock()
+
+    class FakeHealthClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def get(self, url, **kwargs):
+            return MagicMock(status_code=200)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    monkeypatch.setattr("httpx.Client", FakeHealthClient)
+
+    ok = native_llm.restart_native_llama_server(fake_model, context_length=8192, alias="test-alias", timeout_seconds=1.0)
+    assert ok is True
+    assert len(spawned) == 1
+    cmd = spawned[0]
+    assert str(fake_bin) in cmd
+    assert "-m" in cmd
+    assert str(fake_model) in cmd
+    assert "-c" in cmd
+    assert "8192" in cmd
+    assert "--alias" in cmd
+    assert "test-alias" in cmd
+    assert "-ngl" in cmd
+    assert "99" in cmd
 
 
 @pytest.mark.asyncio
