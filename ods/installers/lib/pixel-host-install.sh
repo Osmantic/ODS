@@ -5408,13 +5408,29 @@ _ods_pixel_install_integrations() {
     local unit=/etc/systemd/system/pixel-integrations.service
     [[ "$owner" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || return 1
     [[ "$home" == /* && "$home" != / && ! "$home" =~ [[:space:]\"\\%] ]] || return 1
-    # The owner socket is safe only while the gateway sandbox cannot see the
-    # state folder: refuse a gateway bind that covers it.
-    local state="$home/.config/ods/pixel-integrations" bound
+    # The caller verifies the actual native access mode before this step.
+    # Tool-socket roles do not isolate state from owner commands in Full Access.
+    # Never infer a grant from this filesystem diagnostic or certify isolation
+    # merely because the gateway has no explicit state bind.
+    local state="$home/.config/ods/pixel-integrations" bound home_boundary state_node bound_source
+    home_boundary="$(systemctl show openclaw-gateway.service -p ProtectHome --value)" || return 1
+    case "$home_boundary" in
+        tmpfs) ;;
+        no) ai "Portal integrations enforce tool permissions; Full Access commands can also reach owner settings and secrets." ;;
+        *) ai_bad "Could not verify the Portal integrations filesystem boundary."; return 1 ;;
+    esac
+    state_node="$state"
+    while [[ -n "$state_node" && "$state_node" != / ]]; do
+        [[ ! -L "$state_node" ]] || { ai_bad "Portal integrations state must not use a symbolic-link parent."; return 1; }
+        state_node="${state_node%/*}"
+    done
     bound="$(systemctl show openclaw-gateway.service -p BindPaths -p BindReadOnlyPaths --value)" || return 1
+    # Unsupported systemd escaping must not silently bypass the path check.
+    [[ "$bound" != *\\* && "$bound" != *\"* ]] || return 1
     for name in $bound; do
         name="${name#-}"; name="${name%%:*}"
-        if [[ "$state/" == "${name%/}/"* ]]; then
+        bound_source="$(readlink -m -- "$name")" || return 1
+        if [[ "$state/" == "${bound_source%/}/"* ]]; then
             ai_bad "The Portal gateway can see $name, which holds the integrations owner socket."
             return 1
         fi

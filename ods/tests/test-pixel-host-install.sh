@@ -3922,8 +3922,10 @@ integrations_root="$TEST_ROOT/integrations"
 mkdir -p "$integrations_root"
 original_run_as_owner="$(declare -f ods_pixel_run_as_owner)"
 gateway_binds="/home/u/.openclaw:/home/u/.openclaw:rbind"
+integrations_home_boundary=tmpfs
 systemctl() {
     case "$*" in
+        'show openclaw-gateway.service -p ProtectHome --value') printf '%s\n' "$integrations_home_boundary" ;;
         'show openclaw-gateway.service -p BindPaths -p BindReadOnlyPaths --value') printf '%s\n' "$gateway_binds" ;;
         *) return 1 ;;
     esac
@@ -3944,8 +3946,37 @@ for covering in "/home/u/.config:/home/u/.config:rbind" "-/home/u:/home/u:rbind"
         pass "integrations refused when the gateway binds $covering"
     fi
 done
+ln -s /home/u/.config "$integrations_root/state-alias"
+: > "$integrations_root/sudo"
+gateway_binds="$integrations_root/state-alias:/visible-state:rbind"
+if _ods_pixel_install_integrations "$owner" /home/u "$ROOT/extensions/services/pixel-agent/host" >/dev/null 2>&1 \
+    || [[ -s "$integrations_root/sudo" ]]; then
+    fail "integrations canonical state alias refused before service effects"
+else
+    pass "integrations canonical state alias refused before service effects"
+fi
 gateway_binds="/home/u/.config-other:/home/u/.config-other:rbind"
 check _ods_pixel_install_integrations "$owner" /home/u "$ROOT/extensions/services/pixel-agent/host"
+integrations_home_boundary=no
+check _ods_pixel_install_integrations "$owner" /home/u "$ROOT/extensions/services/pixel-agent/host"
+integrations_home_boundary=unknown
+: > "$integrations_root/sudo"
+if _ods_pixel_install_integrations "$owner" /home/u "$ROOT/extensions/services/pixel-agent/host" >/dev/null 2>&1 \
+    || [[ -s "$integrations_root/sudo" ]]; then
+    fail "unknown integrations boundary refused before service effects"
+else
+    pass "unknown integrations boundary refused before service effects"
+fi
+integrations_home_boundary=tmpfs
+mkdir -p "$integrations_root/linked-home" "$integrations_root/elsewhere"
+ln -s "$integrations_root/elsewhere" "$integrations_root/linked-home/.config"
+: > "$integrations_root/sudo"
+if _ods_pixel_install_integrations "$owner" "$integrations_root/linked-home" "$ROOT/extensions/services/pixel-agent/host" >/dev/null 2>&1 \
+    || [[ -s "$integrations_root/sudo" ]]; then
+    fail "symlinked integrations state parent refused before service effects"
+else
+    pass "symlinked integrations state parent refused before service effects"
+fi
 if _ods_pixel_install_integrations 'bad owner' /home/u "$ROOT/extensions/services/pixel-agent/host" >/dev/null 2>&1; then
     fail "unsafe integrations owner rejected"
 else

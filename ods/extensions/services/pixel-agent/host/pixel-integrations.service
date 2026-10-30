@@ -7,8 +7,9 @@ Wants=network-online.target
 Type=simple
 # Runs as the owner: it reads and writes the owner's vault and starts the owner's
 # stdio MCP servers. Settings, secrets and the owner socket live in the state
-# folder under the owner's home, which the gateway's ProtectHome=tmpfs hides;
-# the gateway reaches only the agent socket under /run.
+# folder under the owner's home. In Sandbox the gateway's home mount hides its
+# ordinary path; Full Access commands can reach the owner's files. The agent
+# tool endpoint under /run enforces integration permissions in both modes.
 User=__PIXEL_SERVICE_USER__
 ExecStart=/usr/bin/python3 -I /usr/local/libexec/ods-pixel-integrations/integrations_service.py serve /run/ods-pixel-integrations/control.sock "__PIXEL_HOME__/.config/ods/pixel-integrations"
 Restart=on-failure
