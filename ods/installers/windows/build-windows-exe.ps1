@@ -62,10 +62,14 @@ foreach ($dll in @($wvCoreDll, $wvWinFormsDll, $wvLoaderDll)) {
     }
 }
 
-# Copy installer script and windows\lib into OutputDir
+# Copy installer script, uninstaller, and windows\lib into OutputDir
 $installerPs1 = Join-Path $PSScriptRoot '..\windows-desktop.ps1'
 if (Test-Path -LiteralPath $installerPs1) {
     Copy-Item -LiteralPath $installerPs1 -Destination (Join-Path $resolvedOutDir 'windows-desktop.ps1') -Force
+}
+$uninstallerPs1 = Join-Path $PSScriptRoot 'uninstall-ods.ps1'
+if (Test-Path -LiteralPath $uninstallerPs1) {
+    Copy-Item -LiteralPath $uninstallerPs1 -Destination (Join-Path $resolvedOutDir 'uninstall-ods.ps1') -Force
 }
 $libSrc = Join-Path $PSScriptRoot 'lib'
 if (Test-Path -LiteralPath $libSrc) {
