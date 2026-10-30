@@ -4,6 +4,7 @@ if sys.platform == "win32":
     raise SkipTest("Requires process groups; run under Linux/WSL")
 
 import json
+import fcntl
 import os
 import pathlib
 import tempfile
@@ -49,6 +50,13 @@ SERVER = textwrap.dedent('''
             calls += 1
             if mode == "hang":
                 time.sleep(3600)
+            if mode == "stderr-secret":
+                print("x" * 290 + os.environ["API_KEY"], file=sys.stderr, flush=True)
+                sys.exit(3)
+            if mode == "error-secret":
+                send({"jsonrpc": "2.0", "id": message["id"], "error": {
+                    "code": -32000, "message": "x" * 100 + os.environ["API_KEY"]}})
+                continue
             if mode == "exit-mid-call":
                 print("Fatal: lost the database", file=sys.stderr, flush=True)
                 sys.exit(3)
@@ -133,9 +141,9 @@ class LocalServerTests(unittest.TestCase):
                     "notes": {"enabled": False, "vaultPath": "", "write": "ask"}, "mcp": {"servers": list(servers)}}
         return self.owner("save", expectedRevision=revision, settings=settings, secrets=secrets or {})
 
-    def ready(self, mode="plain", policies=None, **fields):
+    def ready(self, mode="plain", policies=None, secrets=None, **fields):
         """A checked, turned-on local server whose tools are all allowed."""
-        self.save(self.server(mode, **fields))
+        self.save(self.server(mode, **fields), secrets=secrets)
         self.owner("discover", serverId="local")
         allowed = {name: "allow" for name in ("count", "env", "where", "pid", "added")}
         self.save(self.server(mode, enabled=True, policies={**allowed, **(policies or {})}, **fields))
@@ -215,22 +223,89 @@ class LocalServerTests(unittest.TestCase):
         self.assertIn("too much data", self.local.running["local"].stopped_because)
 
     def test_secret_variables_reach_only_the_server_and_never_the_screens(self):
-        self.ready(envNames=["API_KEY"])
-        self.save(self.server(enabled=True, envNames=["API_KEY"], policies={"env": "allow"}), secrets={"mcpEnv": {"local": {"API_KEY": "k-123"}}})
+        self.ready(envNames=["API_KEY"], policies={"env": "allow"}, secrets={"mcpEnv": {"local": {"API_KEY": "k-123"}}})
+        first_pid = self.call("pid")["text"]
         os.environ["PORTAL_SECRET"] = "service environment"
         self.addCleanup(os.environ.pop, "PORTAL_SECRET", None)
-        self.assertEqual(self.call("env")["text"], "k-123|False")
+        self.assertEqual(self.call("env")["text"], "[redacted]|False")
         view = self.owner("get")
         self.assertEqual(view["settings"]["mcp"]["servers"][0]["hasEnv"], {"API_KEY": True})
         self.assertNotIn("k-123", json.dumps(view))
         self.assertNotIn("k-123", json.dumps(self.agent("mcp-tools")))
         # A changed value restarts the server with it.
-        self.save(self.server(enabled=True, envNames=["API_KEY"], policies={"env": "allow"}), secrets={"mcpEnv": {"local": {"API_KEY": "k-456"}}})
-        self.assertEqual(self.call("env")["text"], "k-456|False")
+        self.save(self.server(enabled=False, envNames=["API_KEY"]), secrets={"mcpEnv": {"local": {"API_KEY": "k-456"}}})
+        self.owner("discover", serverId="local")
+        self.save(self.server(enabled=True, envNames=["API_KEY"], policies={"env": "allow", "pid": "allow"}))
+        self.assertEqual(self.call("env")["text"], "[redacted]|False")
+        self.assertNotEqual(self.call("pid")["text"], first_pid)
         # A removed variable loses its value.
+        self.save(self.server(enabled=False))
+        self.owner("discover", serverId="local")
         self.save(self.server(enabled=True, policies={"env": "allow"}))
         self.assertEqual(self.call("env")["text"], "None|False")
         self.assertEqual(Store(self.root / "state").secrets()["mcpEnv"], {})
+
+    def test_stderr_and_mcp_errors_redact_known_secrets_before_clipping(self):
+        secret = "invented-sensitive-prefix-" + "q" * 240
+        self.ready("stderr-secret", envNames=["API_KEY"], policies={"count": "allow"},
+                   secrets={"mcpEnv": {"local": {"API_KEY": secret}}})
+        with self.assertRaises(service.IntegrationError):
+            self.call()
+        self.assertTrue(wait_until(lambda: "[redacted]" in self.local.detail("local")))
+        self.assertNotIn(secret[:20], self.local.detail("local"))
+        self.assertNotIn(secret[:20], json.dumps(self.owner("get")))
+        self.ready("error-secret", envNames=["API_KEY"], policies={"count": "allow"},
+                   secrets={"mcpEnv": {"local": {"API_KEY": secret}}})
+        with self.assertRaises(service.IntegrationError) as refused:
+            self.call()
+        self.assertNotIn(secret[:20], refused.exception.message)
+        self.assertIn("[redacted]", refused.exception.message)
+
+    def test_a_valid_maximum_agent_frame_cannot_block_stdin_past_its_deadline(self):
+        # Initialize normally, then deliberately never read another byte. This
+        # is a VALID service request, not an oversized-input rejection test.
+        script = self.root / "does-not-read.py"
+        ready = self.root / "pipe-ready"
+        script.write_text("import json,sys,time\n"
+                          "message=json.loads(sys.stdin.readline())\n"
+                          "print(json.dumps({'jsonrpc':'2.0','id':message['id'],'result':{}}),flush=True)\n"
+                          "open(sys.argv[1],'w').close()\n"
+                          "time.sleep(30)\n")
+        definition = self.server(command=f"{sys.executable} {script} {ready}")
+        child = mcp.LocalServer(definition, {}).start()
+        self.addCleanup(child.stop)
+        self.assertTrue(wait_until(ready.exists))
+        frame = {"schemaVersion": 1, "action": "mcp-call", "server": "local", "tool": "count", "arguments": {"value": ""}}
+        frame["arguments"]["value"] = "x" * (service.MAX_REQUEST_BYTES - 1 - len(json.dumps(frame, separators=(",", ":")).encode()))
+        self.assertEqual(len(json.dumps(frame, separators=(",", ":")).encode()) + 1, service.MAX_REQUEST_BYTES)
+        wire = (json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+            "name": "count", "arguments": frame["arguments"]}}) + "\n").encode()
+        capacity = fcntl.fcntl(child.process.stdin.fileno(), fcntl.F_GETPIPE_SZ)
+        # A larger host pipe could absorb this fixture; reduce only this owned
+        # pipe when needed, without changing the valid64KiB request.
+        if capacity >= len(wire):
+            fcntl.fcntl(child.process.stdin.fileno(), fcntl.F_SETPIPE_SZ, 4096)
+            capacity = fcntl.fcntl(child.process.stdin.fileno(), fcntl.F_GETPIPE_SZ)
+        self.assertGreater(len(wire), capacity)
+        errors = []
+        def invoke():
+            try:
+                child.request("tools/call", {"name": "count", "arguments": frame["arguments"]}, timeout=0.2)
+            except service.IntegrationError as error:
+                errors.append(error.code)
+        thread = threading.Thread(target=invoke, daemon=True)
+        started = time.monotonic()
+        thread.start()
+        thread.join(timeout=0.8)
+        try:
+            self.assertFalse(thread.is_alive(), "valid request remained blocked past four request budgets")
+            self.assertLess(time.monotonic() - started, 0.8)
+            self.assertEqual(errors, ["mcp-timeout"])
+            self.assertIsNotNone(child.process.poll())
+        finally:
+            child.stop("owned test cleanup")
+            thread.join(timeout=2)
+        self.assertFalse(thread.is_alive())
 
     def test_bad_variable_names_and_values_are_refused(self):
         for names in (["PATH"], ["1BAD"], ["A", "A"], ["X-Y"]):
@@ -261,6 +336,20 @@ class LocalServerTests(unittest.TestCase):
         # npx runs node through env; the folder of the given program comes first.
         self.assertEqual(env["PATH"].split(os.pathsep)[0], "/opt/node/bin")
 
+    def test_startup_queue_wait_is_inside_the_session_budget(self):
+        definition = self.server()
+        starting = self.local.starting["local"]
+        starting.acquire()
+        started = time.monotonic()
+        try:
+            with self.assertRaises(service.IntegrationError) as refused:
+                self.local.get(definition, {}, deadline=started + 0.2)
+            self.assertEqual(refused.exception.code, "mcp-busy")
+            self.assertLess(time.monotonic() - started, 0.8)
+            self.assertEqual(self.local.running, {})
+        finally:
+            starting.release()
+
     def test_two_calls_at_once_share_one_server(self):
         self.ready()
         results = []
@@ -283,9 +372,8 @@ class LocalServerTests(unittest.TestCase):
 
     def test_new_tools_start_off_and_test_reports_changes(self):
         marker = self.root / "extra"
-        self.ready(envNames=["EXTRA_TOOL"])
-        self.save(self.server(enabled=True, envNames=["EXTRA_TOOL"], policies={"count": "allow"}),
-                  secrets={"mcpEnv": {"local": {"EXTRA_TOOL": str(marker)}}})
+        self.ready(envNames=["EXTRA_TOOL"], policies={"count": "allow"},
+                   secrets={"mcpEnv": {"local": {"EXTRA_TOOL": str(marker)}}})
         marker.write_text("1")
         self.owner("restart", serverId="local")
         notice = self.owner("test", serverId="local")["notice"]

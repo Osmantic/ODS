@@ -17,13 +17,15 @@ import re
 import shlex
 import shutil
 import signal
+import selectors
 import subprocess
 import threading
 import time
 import urllib.error
 import urllib.request
 
-from integrations_common import IntegrationError, MAX_RESPONSE_BYTES, NETWORK_TIMEOUT, clip, digest
+from integrations_common import (IntegrationError, MAX_RESPONSE_BYTES, NETWORK_TIMEOUT, clip, digest,
+                                 redact_secrets, safe_urlopen)
 
 MCP_PROTOCOL = "2025-03-26"
 MAX_TOOLS = 200
@@ -32,6 +34,7 @@ START_TIMEOUT = 90  # npx and uvx may download the server on its first start.
 CALL_TIMEOUT = 30
 IDLE_SECONDS = 600
 STOP_SECONDS = 3
+SESSION_TIMEOUT = 120  # Whole initialize/list/call journey; cleanup fits the130s client.
 ERROR_LINES = 20
 # The service runs with a minimal PATH; these are where owners usually install npx, uvx and friends.
 SEARCH_PATH = ("~/.local/bin", "~/bin", "~/.npm-global/bin", "~/.cargo/bin", "/usr/local/bin", "/usr/bin", "/bin",
@@ -39,20 +42,23 @@ SEARCH_PATH = ("~/.local/bin", "~/bin", "~/.npm-global/bin", "~/.cargo/bin", "/u
 PASSED_ENV = ("HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TZ")
 
 
-def _result(name, reply):
+def _result(name, reply, secrets=()):
     if "error" in reply:
         error = reply["error"] if isinstance(reply["error"], dict) else {}
-        raise IntegrationError("mcp-error", f"{name}: {str(error.get('message', 'request failed'))[:300]}")
+        detail = redact_secrets(f"{name}: {str(error.get('message', 'request failed'))}", secrets)
+        raise IntegrationError("mcp-error", detail[:300])
     return reply.get("result")
 
 
 class HttpSession:
     """One Streamable HTTP session: initialize, then requests, each a POST."""
 
-    def __init__(self, server, token):
+    def __init__(self, server, token, *, deadline=None):
         self.server, self.token, self.name = server, token, server["name"]
         self.counter = 0
         self.session_id = None
+        self.secret_values = (token,)
+        self.deadline = deadline
 
     def open(self):
         result = self.request("initialize", {"protocolVersion": MCP_PROTOCOL, "capabilities": {},
@@ -76,7 +82,8 @@ class HttpSession:
         request = urllib.request.Request(self.server["url"], data=json.dumps(message).encode(),
                                          headers=self._headers(), method="POST")
         try:
-            with urllib.request.urlopen(request, timeout=NETWORK_TIMEOUT) as response:
+            remaining = NETWORK_TIMEOUT if self.deadline is None else min(NETWORK_TIMEOUT, self.deadline - time.monotonic())
+            with safe_urlopen(request, timeout=remaining) as response:
                 self.session_id = response.headers.get("Mcp-Session-Id") or self.session_id
                 return response.read(MAX_RESPONSE_BYTES + 1), response.headers.get("Content-Type", "")
         except urllib.error.HTTPError as error:
@@ -102,7 +109,7 @@ class HttpSession:
                 continue  # Event-stream keep-alives and comments are not replies.
             for item in reply if isinstance(reply, list) else [reply]:
                 if isinstance(item, dict) and item.get("id") == message["id"]:
-                    return _result(self.name, item)
+                    return _result(self.name, item, self.secret_values)
         raise IntegrationError("mcp-protocol", f"{self.name} did not answer as an MCP server.")
 
 
@@ -124,6 +131,7 @@ class LocalServer:
     def __init__(self, server, values):
         self.name, self.id = server["name"], server["id"]
         self.argv, self.env = command_env(server, values)
+        self.secret_values = dict(values)
         self.folder = server.get("workingFolder") or self.env.get("HOME") or "/"
         self.fingerprint = digest(server["command"], self.folder, self.env)
         self.lock = threading.Lock()
@@ -135,7 +143,10 @@ class LocalServer:
         self.stopped_because = None
         self.last_used = time.monotonic()
 
-    def start(self):
+    def start(self, *, deadline=None):
+        deadline = min(time.monotonic() + START_TIMEOUT, deadline) if deadline is not None else time.monotonic() + START_TIMEOUT
+        if deadline <= time.monotonic():
+            raise self._timeout()
         program = shutil.which(self.argv[0], path=self.env["PATH"])
         if program is None:
             raise IntegrationError("mcp-unavailable", f"{self.name} could not be started: {self.argv[0]} was not found. "
@@ -148,14 +159,19 @@ class LocalServer:
                                             stderr=subprocess.PIPE, cwd=self.folder, env=self.env, start_new_session=True)
         except OSError as error:
             raise IntegrationError("mcp-unavailable", f"{self.name} could not be started: {error.strerror}.") from None
+        os.set_blocking(self.process.stdin.fileno(), False)
         threading.Thread(target=self._read_replies, daemon=True).start()
         threading.Thread(target=self._read_errors, daemon=True).start()
         result = self.request("initialize", {"protocolVersion": MCP_PROTOCOL, "capabilities": {},
-                                             "clientInfo": {"name": "ods-portal", "version": "1"}}, timeout=START_TIMEOUT)
+                                             "clientInfo": {"name": "ods-portal", "version": "1"}}, timeout=max(0, deadline - time.monotonic()))
         if not isinstance(result, dict):
             self.stop("it did not answer as an MCP server")
             raise IntegrationError("mcp-protocol", f"{self.name} did not answer as an MCP server.")
-        self._write({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        try:
+            self._write({"jsonrpc": "2.0", "method": "notifications/initialized"}, deadline=deadline)
+        except IntegrationError:
+            self.stop("initialization did not finish")
+            raise
         return self
 
     def alive(self):
@@ -166,8 +182,20 @@ class LocalServer:
         return "\n".join(self.errors)[-1500:]
 
     def _read_errors(self):
-        for line in iter(self.process.stderr.readline, b""):
-            self.errors.append(line.decode("utf-8", "replace").rstrip()[:300])
+        oversized = False
+        while True:
+            line = self.process.stderr.readline(MAX_RESPONSE_BYTES + 1)
+            if not line:
+                break
+            if oversized or len(line) > MAX_RESPONSE_BYTES:
+                if not oversized:
+                    self.errors.append("[oversized stderr line omitted]")
+                oversized = not line.endswith(b"\n")
+                continue
+            # Redact before truncation: a token crossing the displayed boundary
+            # must not be emitted as a raw prefix. Oversized lines are dropped.
+            text = redact_secrets(line.decode("utf-8", "replace").rstrip(), self.secret_values)
+            self.errors.append(text[:300])
         self.process.stderr.close()
 
     def _read_replies(self):
@@ -209,17 +237,43 @@ class LocalServer:
         except IntegrationError:
             pass  # The server stopped; the waiting request reports that.
 
-    def _write(self, message):
+    def _timeout(self):
+        return IntegrationError("mcp-timeout", f"{self.name} did not answer in time, so it was stopped. "
+                                "It starts again on the next use.")
+
+    def _write(self, message, *, deadline=None):
+        deadline = time.monotonic() + CALL_TIMEOUT if deadline is None else deadline
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not self.write_lock.acquire(timeout=remaining):
+            raise self._timeout()
         try:
-            with self.write_lock:
-                self.process.stdin.write((json.dumps(message) + "\n").encode())
-                self.process.stdin.flush()
+            descriptor = self.process.stdin.fileno()
+            data = memoryview((json.dumps(message) + "\n").encode())
+            with selectors.DefaultSelector() as poller:
+                poller.register(descriptor, selectors.EVENT_WRITE)
+                while data:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise self._timeout()
+                    try:
+                        written = os.write(descriptor, data)
+                        if written <= 0:
+                            raise OSError("pipe closed")
+                        data = data[written:]
+                    except BlockingIOError:
+                        if not poller.select(remaining):
+                            raise self._timeout()
+                    except InterruptedError:
+                        continue
         except (OSError, ValueError):
             raise IntegrationError("mcp-unavailable", f"{self.name} stopped.") from None
+        finally:
+            self.write_lock.release()
 
     def request(self, method, params, timeout=None):
-        timeout = timeout or CALL_TIMEOUT
-        if not self.lock.acquire(timeout=timeout):
+        timeout = CALL_TIMEOUT if timeout is None else timeout
+        deadline = time.monotonic() + timeout
+        if not self.lock.acquire(timeout=max(0, deadline - time.monotonic())):
             raise IntegrationError("mcp-busy", f"{self.name} is still busy with another request. Try again shortly.")
         try:
             self.last_used = time.monotonic()
@@ -228,16 +282,18 @@ class LocalServer:
             self.counter += 1
             waiting = self.replies[self.counter] = [threading.Event(), None]
             try:
-                self._write({"jsonrpc": "2.0", "id": self.counter, "method": method, "params": params})
-                if not waiting[0].wait(timeout):
-                    self.stop(f"it did not answer within {timeout} seconds")
-                    raise IntegrationError("mcp-timeout", f"{self.name} did not answer in time, so it was stopped. "
-                                           "It starts again on the next use.")
+                self._write({"jsonrpc": "2.0", "id": self.counter, "method": method, "params": params}, deadline=deadline)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not waiting[0].wait(remaining):
+                    raise self._timeout()
+            except IntegrationError:
+                self.stop(f"request did not complete within {timeout} seconds")
+                raise
             finally:
                 del self.replies[self.counter]
             if waiting[1] is None:
                 raise IntegrationError("mcp-unavailable", f"{self.name} stopped: {self.stopped_because}.")
-            return _result(self.name, waiting[1])
+            return _result(self.name, waiting[1], self.secret_values)
         finally:
             self.last_used = time.monotonic()
             self.lock.release()
@@ -278,11 +334,14 @@ class LocalServers:
         self.starting = collections.defaultdict(threading.Lock)
         self.reaper = None
 
-    def get(self, server, values):
+    def get(self, server, values, *, deadline=None):
+        deadline = time.monotonic() + SESSION_TIMEOUT if deadline is None else deadline
         candidate = LocalServer(server, values)
         with self.lock:
             starting = self.starting[server["id"]]
-        with starting:  # Two calls at once start the server once.
+        if not starting.acquire(timeout=max(0, deadline - time.monotonic())):
+            raise IntegrationError("mcp-busy", f"{candidate.name} is still starting. Try again shortly.")
+        try:
             with self.lock:
                 current = self.running.get(server["id"])
                 if current and current.alive() and current.fingerprint == candidate.fingerprint:
@@ -291,7 +350,7 @@ class LocalServers:
             if current:
                 current.stop("its settings changed")
             try:
-                candidate.start()
+                candidate.start(deadline=deadline)
             except IntegrationError:
                 self.failures[server["id"]] = candidate.detail() or candidate.stopped_because or ""
                 candidate.stop("it failed to start")
@@ -303,6 +362,8 @@ class LocalServers:
                     self.reaper = threading.Thread(target=self._reap, daemon=True)
                     self.reaper.start()
             return candidate
+        finally:
+            starting.release()
 
     def detail(self, server_id):
         with self.lock:
@@ -345,39 +406,72 @@ class LocalServers:
 class McpSession:
     """List or call tools on one server: a fresh web session, or the running local server."""
 
-    def __init__(self, server, token, env_values, local_servers):
+    def __init__(self, server, token, env_values, local_servers, *, timeout=SESSION_TIMEOUT):
         self.server, self.name = server, server["name"]
         self.token, self.env_values, self.local_servers = token, env_values, local_servers
+        self.timeout, self.deadline = timeout, None
 
     def __enter__(self):
+        self.deadline = time.monotonic() + min(self.timeout, SESSION_TIMEOUT)
         if self.server["kind"] == "stdio":
-            self.channel = self.local_servers.get(self.server, self.env_values)
+            self.channel = self.local_servers.get(self.server, self.env_values, deadline=self.deadline)
         else:
-            self.channel = HttpSession(self.server, self.token).open()
+            self.channel = HttpSession(self.server, self.token, deadline=self.deadline).open()
         return self
 
     def __exit__(self, *_):
         return False
 
     def request(self, method, params):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise IntegrationError("mcp-timeout", f"{self.name} did not finish within the session deadline.")
+        if self.server["kind"] == "stdio":
+            return self.channel.request(method, params, timeout=min(CALL_TIMEOUT, remaining))
         return self.channel.request(method, params)
 
     def tools(self):
-        found, cursor = [], None
+        found, cursor, cursors, names = [], None, set(), set()
         for _ in range(10):
-            result = self.request("tools/list", {"cursor": cursor} if cursor else {}) or {}
-            found += [tool for tool in result.get("tools", [])
-                      if isinstance(tool, dict) and isinstance(tool.get("name"), str) and TOOL_NAME.match(tool["name"])]
+            result = self.request("tools/list", {"cursor": cursor} if cursor else {})
+            if not isinstance(result, dict) or not isinstance(result.get("tools"), list):
+                raise IntegrationError("mcp-protocol", f"{self.name} returned an invalid tool list.")
+            for tool in result["tools"]:
+                if (not isinstance(tool, dict) or not isinstance(tool.get("name"), str)
+                        or not TOOL_NAME.fullmatch(tool["name"]) or tool["name"] in names):
+                    raise IntegrationError("mcp-protocol", f"{self.name} returned an invalid tool list.")
+                names.add(tool["name"])
+                # Tool routing names and schema constraints are protocol, not
+                # presentation: do not rewrite a valid identifier/type/enum
+                # merely because it coincides with a configured secret.
+                found.append(self._tool_presentation(tool))
             cursor = result.get("nextCursor")
-            if not cursor or len(found) >= MAX_TOOLS:
-                break
-        return found[:MAX_TOOLS]
+            if len(found) > MAX_TOOLS or cursor is not None and len(found) >= MAX_TOOLS:
+                raise IntegrationError("mcp-tool-limit", f"{self.name} has more tools than Portal can check in one catalog.")
+            if cursor is None:
+                return found
+            if not isinstance(cursor, str) or not cursor or len(cursor) > 4096 or cursor in cursors:
+                raise IntegrationError("mcp-protocol", f"{self.name} returned an invalid tool cursor.")
+            cursors.add(cursor)
+        raise IntegrationError("mcp-tool-limit", f"{self.name} did not finish its tool list within the page limit.")
+
+    def _tool_presentation(self, tool):
+        secrets = (self.token, self.env_values)
+        def display(value):
+            if isinstance(value, dict):
+                return {key: redact_secrets(child, secrets) if key in ("description", "title") and isinstance(child, str)
+                        else display(child) for key, child in value.items()}
+            if isinstance(value, list):
+                return [display(child) for child in value]
+            return value
+        return display(tool)
 
     def call(self, name, arguments):
         result = self.request("tools/call", {"name": name, "arguments": arguments}) or {}
         parts = [str(item.get("text", "")) if item.get("type") == "text" else f"[{item.get('type', 'content')} not shown]"
                  for item in result.get("content", []) if isinstance(item, dict)]
-        return clip("\n".join(parts) or "(no output)"), bool(result.get("isError"))
+        text = redact_secrets("\n".join(parts) or "(no output)", (self.token, self.env_values))
+        return clip(text), bool(result.get("isError"))
 
 
 def describe_tool(tool, previous_policy=None, *, new=False):
