@@ -1361,6 +1361,13 @@ _MODEL_STORAGE_TIMEOUT_SECONDS = 20
 
 async def _model_storage_status() -> dict[str, Any] | None:
     """Free space where downloads land, from the host agent; None when unknown."""
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        try:
+            from native_downloader import get_native_storage_status
+            return get_native_storage_status()
+        except Exception:
+            return None
     try:
         value = await asyncio.to_thread(
             request_agent_json, "GET", "/v1/model/storage", timeout=_MODEL_STORAGE_TIMEOUT_SECONDS,
@@ -1921,15 +1928,29 @@ async def import_huggingface_model(
         ) from exc
 
     payload = _hf_download_payload(record)
-    try:
-        result = await asyncio.to_thread(_request_agent_download, payload)
-    except HTTPException as exc:
-        busy = exc.status_code == 409 and isinstance(exc.detail, dict) \
-            and exc.detail.get("code") == "model_lifecycle_busy"
-        if exc.status_code == 507 or busy:
-            # The host refused before starting: a definitive, retryable refusal.
-            exc.headers = {**(exc.headers or {}), "X-ODS-Import-Started": "false"}
-        raise
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        try:
+            from native_downloader import start_native_model_download
+            result = start_native_model_download(
+                gguf_file=payload.get("gguf_file", ""),
+                gguf_url=payload.get("gguf_url", ""),
+                gguf_parts=payload.get("gguf_parts"),
+                expected_sha256=payload.get("gguf_sha256", ""),
+                mmproj=payload.get("mmproj"),
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to start download: {exc}") from exc
+    else:
+        try:
+            result = await asyncio.to_thread(_request_agent_download, payload)
+        except HTTPException as exc:
+            busy = exc.status_code == 409 and isinstance(exc.detail, dict) \
+                and exc.detail.get("code") == "model_lifecycle_busy"
+            if exc.status_code == 507 or busy:
+                # The host refused before starting: a definitive, retryable refusal.
+                exc.headers = {**(exc.headers or {}), "X-ODS-Import-Started": "false"}
+            raise
     return {
         **result,
         "modelId": record["id"],
@@ -1957,6 +1978,25 @@ _START_REFUSALS = ("memory_refused", "gpu_busy")
 
 def _model_management_proof() -> dict:
     """The host agent's management proof, with whether its launcher loads a vision projector."""
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        is_running = False
+        try:
+            from native_llm import resolve_native_llm_endpoint, _native_llm_headers
+            endpoint = resolve_native_llm_endpoint()
+            headers = _native_llm_headers()
+            with httpx.Client(timeout=httpx.Timeout(0.5, connect=0.5)) as client:
+                resp = client.get(f"{endpoint}/health", headers=headers)
+                is_running = resp.status_code == 200
+        except Exception:
+            is_running = False
+        return {
+            "managed": True,
+            "canActivate": True,
+            "canUnload": False,
+            "running": is_running,
+            "vision": False,
+        }
     if not _windows_hosted_runtime():
         return {"managed": False, "canActivate": False, "canUnload": False, "running": False, "vision": False}
     try:
@@ -2116,6 +2156,15 @@ def _projector_unavailable_reason() -> str | None:
 
 async def _discover_loaded_model() -> str | None:
     """Try both identity sources within the catalog's one discovery budget."""
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        try:
+            from native_llm import get_native_llm_status
+            st = await get_native_llm_status()
+            if st.get("available") and st.get("model"):
+                return str(st["model"])
+        except Exception:
+            pass
     loaded_model = await get_loaded_model()
     if loaded_model:
         return loaded_model
@@ -2242,6 +2291,11 @@ async def list_models(api_key: str = Depends(verify_api_key)):
 @router.get("/api/models/download-status")
 def model_download_status(api_key: str = Depends(verify_api_key)):
     """Get current model download progress (if any)."""
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        from native_downloader import get_download_status
+        return get_download_status()
+
     agent_status = _get_agent_model_status()
     lifecycle = _model_lifecycle_from_agent_status(agent_status)
     if agent_status and agent_status.get("status") != "idle":
@@ -2442,6 +2496,10 @@ def _bootstrap_upgrade_download_conflict() -> dict[str, Any] | None:
 
 def _get_agent_model_status(timeout: int = 5) -> Optional[dict]:
     """Return host-agent-normalized model download status when reachable."""
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        from native_downloader import get_download_status
+        return get_download_status()
     global _agent_model_status_cache_at, _agent_model_status_cache_value
 
     now = time.monotonic()
@@ -2988,7 +3046,21 @@ def download_model(model_id: str, api_key: str = Depends(verify_api_key)):
         )
 
     # Split-file models provide gguf_parts; imports may carry a vision projector.
-    return _request_agent_download(_hf_download_payload(model))
+    payload = _hf_download_payload(model)
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        try:
+            from native_downloader import start_native_model_download
+            return start_native_model_download(
+                gguf_file=payload.get("gguf_file", ""),
+                gguf_url=payload.get("gguf_url", ""),
+                gguf_parts=payload.get("gguf_parts"),
+                expected_sha256=payload.get("gguf_sha256", ""),
+                mmproj=payload.get("mmproj"),
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to start download: {exc}") from exc
+    return _request_agent_download(payload)
 
 
 @router.post("/api/models/download/cancel")
@@ -3034,6 +3106,13 @@ def cancel_download(api_key: str = Depends(verify_api_key)):
                 raise HTTPException(status_code=409, detail="The download finished or changed before it could be cancelled. Check its current progress.")
             time.sleep(0.2)
         raise HTTPException(status_code=409, detail="The download has not acknowledged cancellation yet. Check progress before retrying.")
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        try:
+            from native_downloader import cancel_native_model_download
+            return cancel_native_model_download()
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to cancel download: {exc}") from exc
     result = _call_agent_model("/v1/model/download/cancel", {})
     return result
 
@@ -3064,6 +3143,9 @@ _RECOVERY_REQUESTS: tuple[dict[str, bool], ...] = ({}, {'releaseUnverified': Tru
 
 
 def _model_recovery_request(method, body=None):
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        return {"status": "none", "recoverable": False}
     try:
         value = request_agent_json(method, '/v1/model/recovery' if method == 'GET' else '/v1/model/recover',
                                    payload=None if method == 'GET' else body, timeout=5 if method == 'GET' else 400)
@@ -3179,6 +3261,39 @@ def _activate_model(model_id: str, body: dict[str, Any] | None, *, chat_template
         raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found in library or local GGUF files")
     _refuse_vllm_entry(model, "Only the ODS installer sets that engine up and runs it.")
 
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        from native_llm import list_local_gguf_models
+        installed = list_local_gguf_models()
+        matched = None
+        for m in installed:
+            fn = m["filename"].lower()
+            if fn == model_id.lower() or model_id.lower() in fn or fn.startswith(model_id.lower()):
+                matched = m
+                break
+        if matched is None and model.get("gguf"):
+            gguf_target = str(model["gguf"]).lower()
+            matched = next((m for m in installed if m["filename"].lower() == gguf_target), None)
+        if matched is None and installed:
+            matched = installed[0]
+        if matched is None:
+            raise HTTPException(status_code=404, detail=f"Model '{model_id}' is not installed in the local model store")
+
+        selection_path = Path(DATA_DIR) / "selected-model.json"
+        selection_record = {
+            "schemaVersion": 1,
+            "ggufFile": matched["filename"],
+            "modelPath": matched["path"],
+            "selectedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "status": "active",
+        }
+        selection_path.write_text(json.dumps(selection_record, indent=2), encoding="utf-8")
+        return {
+            "status": "reloaded",
+            "model": matched["filename"],
+            "schemaVersion": 1,
+        }
+
     requested_context = _requested_activation_context(body)
     already_active, loaded_model = _already_active_model(model_id, model)
     served_context = _verified_activation_context(loaded_model) if already_active else None
@@ -3283,6 +3398,9 @@ def _activate_model(model_id: str, body: dict[str, Any] | None, *, chat_template
 @router.get("/api/models/{model_id}/profile")
 async def model_profile(model_id: str, api_key: str = Depends(verify_api_key)):
     """What a model was measured to do on this machine (PLAN WP3); advisory."""
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        return {"mode": "off", "modelId": model_id, "profile": None}
     try:
         return await asyncio.to_thread(
             request_agent_json, "GET", "/v1/model/profile", params={"model": model_id}, timeout=10,
@@ -3300,6 +3418,9 @@ _MODEL_PROFILE_RECHECK_TIMEOUT_SECONDS = 180
 @router.post("/api/models/{model_id}/profile/recheck")
 def recheck_model_profile(model_id: str, api_key: str = Depends(verify_api_key)):
     """Measure the running model again, ignoring its stored profile."""
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        return {"status": "skipped", "modelId": model_id}
     return _call_agent_model(
         "/v1/model/profile/recheck", {"model": model_id}, timeout=_MODEL_PROFILE_RECHECK_TIMEOUT_SECONDS,
     )
@@ -3378,6 +3499,15 @@ def delete_model(model_id: str, api_key: str = Depends(verify_api_key)):
     }
     if model.get("gguf_parts"):
         payload["gguf_parts"] = model["gguf_parts"]
+
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        try:
+            from native_downloader import delete_native_model_file
+            return delete_native_model_file(model["gguf_file"], model.get("gguf_parts"))
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to delete model file: {exc}") from exc
+
     # 20 s leaves the delete itself inside the Models page's 35 s deadline.
     return _request_agent_waiting_short_holds("/v1/model/delete", payload, "this model cannot be deleted yet",
                                               grace_seconds=20.0)

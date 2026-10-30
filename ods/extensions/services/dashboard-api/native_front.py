@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import re
 from http.cookies import SimpleCookie
 from pathlib import Path
 from typing import Any, Callable
@@ -222,6 +223,99 @@ async def _send_json_response(
     await send({"type": "http.response.body", "body": body})
 
 
+_SITE_ID_RE = re.compile(r"^site-[a-f0-9]{24}$")
+
+
+async def _handle_pixel_preview(scope: dict[str, Any], send: Callable, path: str) -> bool:
+    """Serve sandboxed workspace preview files and manifests on Windows Desktop.
+
+    Returns True if the request was handled, False if it was not a /pixel-preview path.
+    """
+    if path != "/pixel-preview" and not path.startswith("/pixel-preview/"):
+        return False
+
+    parts = [p for p in path.split("/") if p]
+    if len(parts) < 2 or not _SITE_ID_RE.fullmatch(parts[1]):
+        await _send_json_response(
+            send, 404, {"detail": "Not Found"}, extra_headers=[(b"cache-control", b"no-store")]
+        )
+        return True
+
+    _site_id = parts[1]
+    rel = "/".join(parts[2:])
+
+    from native_llm import get_workspace_root
+    workspace_root = get_workspace_root()
+
+    # 1. Workspace Manifest for PortalWorkspace
+    if rel == "__ods_manifest__.json":
+        manifest_file = workspace_root.parent / "workspace_manifest.json"
+        if manifest_file.is_file():
+            try:
+                data = manifest_file.read_bytes()
+                headers = [
+                    (b"content-type", b"application/json; charset=utf-8"),
+                    (b"content-length", str(len(data)).encode("ascii")),
+                    (b"cache-control", b"no-store"),
+                    *SECURITY_HEADERS,
+                ]
+                await send({"type": "http.response.start", "status": 200, "headers": headers})
+                await send({"type": "http.response.body", "body": data})
+                return True
+            except Exception:
+                pass
+        await _send_json_response(
+            send, 404, {"detail": "Snapshot unavailable"}, extra_headers=[(b"cache-control", b"no-store")]
+        )
+        return True
+
+    # 2. Workspace static files
+    target_rel = "index.html" if rel in ("", "index.html", "__ods_view__.html") else rel
+    target_file = (workspace_root / target_rel).resolve()
+    try:
+        target_file.relative_to(workspace_root.resolve())
+    except (ValueError, RuntimeError):
+        await _send_json_response(
+            send, 404, {"detail": "Not Found"}, extra_headers=[(b"cache-control", b"no-store")]
+        )
+        return True
+
+    if not target_file.is_file():
+        await _send_json_response(
+            send, 404, {"detail": "Not Found"}, extra_headers=[(b"cache-control", b"no-store")]
+        )
+        return True
+
+    content = target_file.read_bytes()
+    mime_type, _ = mimetypes.guess_type(str(target_file))
+    if not mime_type:
+        mime_type = "text/html" if target_rel.endswith(".html") else "application/octet-stream"
+    if mime_type.startswith("text/") or mime_type in ("application/javascript", "application/json"):
+        content_type = f"{mime_type}; charset=utf-8".encode("ascii")
+    else:
+        content_type = mime_type.encode("ascii")
+
+    preview_csp = (
+        b"default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; "
+        b"style-src 'self' 'unsafe-inline'; "
+        b"img-src 'self' data: blob:; "
+        b"font-src 'self' data:; "
+        b"connect-src 'self' ws: wss:; "
+        b"media-src 'self' blob:; "
+        b"frame-ancestors 'self'"
+    )
+    headers = [
+        (b"content-type", content_type),
+        (b"content-length", str(len(content)).encode("ascii")),
+        (b"cache-control", b"no-cache"),
+        (b"content-security-policy", preview_csp),
+        (b"x-content-type-options", b"nosniff"),
+    ]
+    await send({"type": "http.response.start", "status": 200, "headers": headers})
+    await send({"type": "http.response.body", "body": content})
+    return True
+
+
 class DashboardGate:
     """ASGI middleware implementing the nginx dashboard security gate natively."""
 
@@ -253,14 +347,8 @@ class DashboardGate:
                 message = {**message, "headers": existing}
             await send(message)
 
-        # 3. Block /pixel-preview in Windows Desktop profile
-        if path == "/pixel-preview" or path.startswith("/pixel-preview/"):
-            await _send_json_response(
-                send,
-                404,
-                {"detail": "Not Found"},
-                extra_headers=[(b"cache-control", b"no-store")],
-            )
+        # 3. Serve sandboxed workspace /pixel-preview in Windows Desktop profile
+        if await _handle_pixel_preview(scope, send, path):
             return
 
         # 4. Enforce gate and inject server-side Bearer key on protected API routes
