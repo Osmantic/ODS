@@ -81,11 +81,12 @@ const searchText = reply => reply.results.length
     + '\n\nRead a note (pixel_ods_notes action read) before quoting it.'
   : 'No note holds those words. Try other words.';
 
-const toolsText = reply => reply.servers.length
+const MCP_CATALOG_SCOPE = 'This catalog covers only custom MCP servers. Obsidian notes use pixel_ods_notes; ntfy notifications use pixel_ods_notify. Their connection state is not reported here.';
+const toolsText = reply => MCP_CATALOG_SCOPE + '\n\n' + (reply.servers.length
   ? reply.servers.map(server => `Server "${server.id}" (${server.name}):\n` + (server.tools.length
     ? server.tools.map(tool => `- ${tool.name}${tool.needsApproval ? ' [needs owner approval]' : ''}: ${tool.description || 'no description'}\n  arguments: ${JSON.stringify(tool.inputSchema ?? {type: 'object'})}`).join('\n')
     : '- no tools are allowed')).join('\n\n')
-  : 'No MCP servers are turned on. The owner can add one in Settings → Portal integrations.';
+  : 'No MCP servers are turned on. The owner can add one in Settings → Portal integrations.');
 
 const str = value => (typeof value === 'string' ? value : '');
 
@@ -121,7 +122,7 @@ export function createIntegrationTools({submit = submitIntegration} = {}) {
     },
     {
       name: 'pixel_ods_notify',
-      description: "Send a notification to the owner's phone or computer through their ntfy notifications. Use when the owner asks to be notified, or at the end of a scheduled task that should tell them its result.",
+      description: "Send a notification to the owner's phone or computer through ntfy configured in Settings → Portal integrations. This is a native notification connection, separate from custom MCP servers; it does not require an ntfy MCP server. Use when the owner asks to be notified, or at the end of a scheduled task that should tell them its result. The result confirms delivery to the configured ntfy server, not receipt on a physical device.",
       parameters: {type: 'object', additionalProperties: false, required: ['message'],
         properties: {title: {type: 'string'}, message: {type: 'string'},
           priority: {type: 'string', enum: ['low', 'default', 'high']}}},
@@ -130,7 +131,7 @@ export function createIntegrationTools({submit = submitIntegration} = {}) {
     },
     {
       name: 'pixel_ods_mcp',
-      description: "The owner's connected MCP servers, such as Home Assistant. action list: show each server id and the tools Portal may use, with their arguments; always list before the first call. action call: run one tool with server, tool and arguments. Some tools need the owner's approval first.",
+      description: "Only the owner's custom MCP servers, such as Home Assistant; not the native Obsidian, ntfy or Google connections. action list: show each server id and the tools Portal may use, with their arguments; always list before the first call. action call: run one tool with server, tool and arguments. Some tools need the owner's approval first. Use pixel_ods_notes for notes and pixel_ods_notify for notifications.",
       parameters: {type: 'object', additionalProperties: false, required: ['action'],
         properties: {action: {type: 'string', enum: ['list', 'call']},
           server: {type: 'string', description: 'For call: the server id from list, such as home.'},

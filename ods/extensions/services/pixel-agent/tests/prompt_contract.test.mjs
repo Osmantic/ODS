@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import {
   CONNECTED_RECORDS_CONTRACT,
+  PORTAL_INTEGRATIONS_CONTRACT,
   ODS_COMPACT_CONVERSATION_CONTRACT,
   ODS_TINY_CONVERSATION_CONTRACT,
   ODS_CONVERSATION_CONTRACT,
@@ -558,6 +559,7 @@ test("restores the full September 16 operating core while retaining compact fall
   // record supplements; do not reroll its digest to accept another core.
   const oldCompact = ODS_COMPACT_CONVERSATION_CONTRACT.replace(` ${ODS_SANDBOX_RUNTIME_CONTRACT}`, '')
     .replace(` ${CONNECTED_RECORDS_CONTRACT}`, '')
+    .replace(` ${PORTAL_INTEGRATIONS_CONTRACT}`, '')
     .slice(0, -(RESPONSE_LANGUAGE_CONTRACT.length + PREVIEW_RUNTIME_CONTRACT.length + 2));
   assert.equal(oldCompact.length, 3087);
   assert.equal(createHash('sha256').update(oldCompact).digest('hex'),

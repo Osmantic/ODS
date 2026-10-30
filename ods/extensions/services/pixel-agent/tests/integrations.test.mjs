@@ -7,6 +7,7 @@ import {join} from 'node:path';
 import {createIntegrationTools, submitIntegration, INTEGRATION_TOOL_NAMES} from '../plugin/integrations.mjs';
 import {withPiToolErrorContract} from '../plugin/pi-tool-result.mjs';
 import {failedToolOutcome} from '../plugin/run-progress-budget.mjs';
+import {PORTAL_INTEGRATIONS_CONTRACT, promptContractForAgent} from '../plugin/prompt-contract.mjs';
 
 const tool = (tools, name) => tools.find(item => item.name === name);
 
@@ -133,6 +134,29 @@ test('mcp list shows servers, tools, arguments and which need approval', async (
   assert.deepEqual(JSON.parse(schemaLine.slice(schemaLine.indexOf('arguments:') + 'arguments:'.length)),
     {type: 'object', properties: {name: {type: 'string'}}, required: ['name'], additionalProperties: false});
   assert.match(text, /HassUnlock \[needs owner approval\]/);
+});
+
+test('MCP catalogs never imply absence of the separate native notification connection', async () => {
+  for (const servers of [[], [{id:'fixture', name:'Fixture', tools:[]}]]) {
+    const {tools} = recording([{ok:true, servers}]);
+    const reply = await tool(tools, 'pixel_ods_mcp').execute('catalog', {action:'list'});
+    assert.match(reply.content[0].text, /only custom MCP servers/);
+    assert.match(reply.content[0].text, /ntfy notifications use pixel_ods_notify/);
+    assert.match(reply.content[0].text, /connection state is not reported here/);
+    assert.notEqual(reply.isError, true);
+  }
+});
+
+test('integration capability guidance is stable across requests and model context profiles', () => {
+  for (const contextTokenBudget of [8192, 16384, 65536]) {
+    for (const prompt of ['Send a test notification.', 'What can the connected house do?', 'Olá!']) {
+      const rendered = promptContractForAgent({agentId:'pixel', contextTokenBudget}, 'pixel', {prompt}).appendSystemContext;
+      assert.equal(rendered.split(PORTAL_INTEGRATIONS_CONTRACT).length, 2);
+      assert.match(rendered, /Notes: pixel_ods_notes; ntfy: pixel_ods_notify; MCP is separate/);
+    }
+  }
+  const other = promptContractForAgent({agentId:'unrelated'}, 'pixel', {prompt:'Send a notification.'});
+  assert.ok(!other?.appendSystemContext?.includes(PORTAL_INTEGRATIONS_CONTRACT));
 });
 
 test('unsupported native systems refuse before connecting', async () => {
