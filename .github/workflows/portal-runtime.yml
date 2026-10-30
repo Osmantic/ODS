@@ -122,6 +122,11 @@ jobs:
         env:
           OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: python3 ods/extensions/services/pixel-agent/tests/test_native_direct_tool_completion.py
+      - name: Verify cancelled native integration calls finish admission after the service settles
+        if: runner.os == 'Linux'
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: python3 ods/extensions/services/pixel-agent/tests/test_native_integrations_completion.py
       - name: Verify concurrent workspace creation and no-follow boundaries
         if: runner.os != 'Windows'
         env:

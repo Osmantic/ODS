@@ -170,6 +170,11 @@ def shared_repairs(artifacts, monkeypatch):
             raw = b'reviewed native validation fixture'
             (dist / dependency).write_bytes(raw)
             manifest['reviewedDependencies'] = {dependency: hashlib.sha256(raw).hexdigest()}
+            for dependency in ('hook-helpers-CZ2oRHhZ.js', 'hook-runner-global-mWFYlTIy.js',
+                               'agent-tools.before-tool-call-bDDdy3YD.js'):
+                raw = ('reviewed fixture dependency ' + dependency).encode()
+                (dist / dependency).write_bytes(raw)
+                manifest['reviewedDependencies'][dependency] = hashlib.sha256(raw).hexdigest()
         elif name == 'openclaw-direct-tool-completion.json':
             manifest['reviewedDependencies'] = {}
             for dependency in ('hook-helpers-CZ2oRHhZ.js', 'hook-runner-global-mWFYlTIy.js',

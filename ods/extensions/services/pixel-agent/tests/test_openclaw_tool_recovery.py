@@ -57,9 +57,11 @@ def test_additional_module_has_separate_exact_byte_custody(installation, module_
     module.rename(completion)
     if module_name == repair_module.IMAGE_MODULE:
         value = json.loads(manifest.read_text())
-        dependency = runtime / 'dist' / next(iter(repair_module.IMAGE_DEPENDENCIES))
-        dependency.write_bytes(b'reviewed native validation')
-        value['reviewedDependencies'] = {dependency.name: hashlib.sha256(dependency.read_bytes()).hexdigest()}
+        value['reviewedDependencies'] = {}
+        for name in repair_module.IMAGE_DEPENDENCIES:
+            dependency = runtime / 'dist' / name
+            dependency.write_bytes(('reviewed native dependency ' + name).encode())
+            value['reviewedDependencies'][name] = hashlib.sha256(dependency.read_bytes()).hexdigest()
         manifest.write_text(json.dumps(value))
     outcome = run(installation, module_name=module_name)
     assert outcome["module"] == module_name
@@ -75,14 +77,19 @@ def test_unrecognized_module_cannot_expand_repair_targets(installation):
     assert not installation[1].exists()
 
 
-def test_deferred_validation_helper_is_bound_before_repair_and_rechecked(installation):
+@pytest.mark.parametrize('dependency_name', sorted(repair_module.IMAGE_DEPENDENCIES))
+def test_deferred_validation_helper_is_bound_before_repair_and_rechecked(installation, dependency_name):
     runtime, state, manifest, module, original, patched = installation
     module = module.rename(module.with_name(repair_module.IMAGE_MODULE))
-    dependency = runtime / 'dist' / next(iter(repair_module.IMAGE_DEPENDENCIES))
+    dependency = runtime / 'dist' / dependency_name
     reviewed = b'reviewed native validation'
     dependency.write_bytes(reviewed)
     value = json.loads(manifest.read_text())
-    value['reviewedDependencies'] = {dependency.name: hashlib.sha256(reviewed).hexdigest()}
+    value['reviewedDependencies'] = {}
+    for name in repair_module.IMAGE_DEPENDENCIES:
+        raw = reviewed if name == dependency.name else ('reviewed native dependency ' + name).encode()
+        (runtime / 'dist' / name).write_bytes(raw)
+        value['reviewedDependencies'][name] = hashlib.sha256(raw).hexdigest()
     manifest.write_text(json.dumps(value))
     dependency.write_bytes(b'changed validation')
     with pytest.raises(ValueError, match='dependency differs'):

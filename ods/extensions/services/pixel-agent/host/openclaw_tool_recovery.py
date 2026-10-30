@@ -20,7 +20,8 @@ MANIFEST = Path(__file__).with_name("openclaw-tool-recovery.json")
 MODULE = "tool-loop-detection-C0oQKkXZ.js"
 COMPLETION_MODULE = "agent-command-DeS125kF.js"
 IMAGE_MODULE = "tool-search-BInRpkE3.js"
-IMAGE_DEPENDENCIES = frozenset({"src-M7TBQdDX.js"})
+IMAGE_DEPENDENCIES = frozenset({"src-M7TBQdDX.js", "hook-helpers-CZ2oRHhZ.js",
+                                "hook-runner-global-mWFYlTIy.js", "agent-tools.before-tool-call-bDDdy3YD.js"})
 COMPACTION_MODULE = "embedded-agent-subscribe.handlers.compaction.runtime.js"
 COMPACTION_CHUNK = "embedded-agent-subscribe.handlers.compaction.runtime-BcFOW95l.js"
 COMPACTION_IDLE_MODULE = "sessions-KE_Xmzwf.js"

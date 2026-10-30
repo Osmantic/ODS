@@ -8,6 +8,9 @@ import { dirname, join } from 'node:path';
 import { createPublicWebExtractTool } from '../plugin/web-extract.mjs';
 import { createWorkspacePreviewInspectTool, INSPECTION_KIND, INSPECTION_SCOPE, inspectionPlanHash } from '../plugin/workspace-preview-inspect.mjs';
 import { createConnectionsStatusTool } from '../plugin/connections-status.mjs';
+import {createIntegrationTools} from '../plugin/integrations.mjs';
+import {withPiToolErrorContract} from '../plugin/pi-tool-result.mjs';
+import {failedToolOutcome} from '../plugin/run-progress-budget.mjs';
 
 const file = process.env.OPENCLAW_TOOL_SEARCH_MODULE;
 const manifest = JSON.parse(readFileSync(new URL('../host/openclaw-image-envelope.json', import.meta.url)));
@@ -36,6 +39,37 @@ function run(tools, extra = {}) {
     config: { tools: { toolSearch: { enabled: true, mode: 'tools' } } }, ...extra });
   return { ...result, catalogRef };
 }
+
+test('actual native discovery and deferred MCP dispatch preserve child error and success semantics', async () => {
+  const submissions=[];
+  let failed=false;
+  const original=withPiToolErrorContract(createIntegrationTools({submit:async request=>{
+    submissions.push(request);
+    return {ok:true,text:'Invented MCP response',isError:failed};
+  }}).find(tool=>tool.name==='pixel_ods_mcp'));
+  const result=run([original]);
+  assert.ok(!result.tools.includes(original),'MCP remains permission-filtered native discovery, not a new direct tool');
+  const config={tools:{toolSearch:{enabled:true,mode:'tools'}}};
+  const ctx={agentId:'pixel',catalogRef:result.catalogRef,config};
+  const controls=Object.fromEntries(createControls(ctx).map(tool=>[tool.name,tool]));
+  const found=await controls.tool_search.execute('find-mcp',{query:original.name,limit:10});
+  const entry=found.details.find(tool=>tool.name===original.name);
+  assert.ok(entry);
+  assert.deepEqual((await controls.tool_describe.execute('describe-mcp',{id:entry.id})).details.parameters,original.parameters);
+  for (const expected of [false,true]) {
+    failed=expected;
+    const receipt=await controls.tool_call.execute('mcp-'+expected,{id:entry.id,args:{
+      action:'call',server:'invented',tool:'fixture',arguments:{limit:1},
+    }});
+    assert.equal(receipt.isError===true,expected);
+    assert.equal(receipt.details.ok===false,expected);
+    assert.equal(receipt.details.result.isError===true,expected);
+    assert.equal(failedToolOutcome({result:receipt}),expected);
+    assert.equal(receipt.details.tool.name,original.name);
+    assert.match(receipt.details.result.content[0].text,/Invented MCP response/);
+  }
+  assert.deepEqual(submissions,[false,true].map(()=>({action:'mcp-call',server:'invented',tool:'fixture',arguments:{limit:1}})));
+});
 
 test('connection status has a stable direct32K surface and native discovery at smaller contexts', async () => {
   const name='pixel_ods_connections_status';

@@ -4,6 +4,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import {createIntegrationTools} from '../plugin/integrations.mjs';
+import {withPiToolErrorContract} from '../plugin/pi-tool-result.mjs';
 
 const manifest = JSON.parse(readFileSync(new URL("../host/openclaw-image-envelope.json", import.meta.url)));
 const source = readFileSync(process.env.OPENCLAW_TOOL_SEARCH_MODULE, "utf8");
@@ -12,7 +14,7 @@ const start = "function toolCallResultEnvelope(payload) {";
 const end = "async function runCodeMode(params) {";
 assert.equal(source.split(start).length, 2);
 assert.equal(source.split(end).length, 2);
-assert.equal(source.split("return toolCallResultEnvelope(await runtime.call(call.id, call.input, {").length, 2);
+assert.equal(source.split("toolCallResultEnvelope(await runtime.call(call.id, call.input, {").length, 2);
 const block = source.slice(source.indexOf(start), source.indexOf(end));
 const jsonResult = payload => ({content: [{type: "text", text: JSON.stringify(payload, null, 2)}], details: payload});
 const execute = new Function("isRecord", "jsonResult", block + "\nreturn toolCallResultEnvelope;")(
@@ -41,7 +43,9 @@ test("text, image order, annotations, errors and result metadata survive without
   assert.equal(result.isError, true);
   assert.equal(result.structuredContent, payload.result.structuredContent);
   payload.result.content.forEach((part, i) => assert.equal(result.content[i + 1], part));
-  assert.equal(result.details, payload);
+  assert.equal(result.details.ok, false);
+  assert.equal(result.details.tool, payload.tool);
+  assert.equal(result.details.result, payload.result);
   assert.equal(JSON.stringify(payload), original);
 });
 
@@ -133,7 +137,49 @@ test("JSON error evidence remains complete in the projected text and original fr
   assert.equal(visible.isError, true);
   assert.equal(visible.result.isError, true);
   assert.deepEqual(JSON.parse(visible.result.content[0].text), details);
-  assert.equal(result.details, payload);
+  assert.equal(result.isError, true);
+  assert.equal(result.details.ok, false);
+  assert.equal(result.details.tool, payload.tool);
+  assert.equal(result.details.result, payload.result);
+});
+
+test('text, projected JSON and unfamiliar error receipts retain native Pi failure and exact provenance', () => {
+  const details = {ok:false, status:'failed', error:'Invented failure'};
+  for (const child of [
+    {content:[{type:'text',text:'Invented failure'}],isError:true},
+    {content:[{type:'text',text:JSON.stringify(details,null,2)}],details},
+    {content:[{type:'resource',resource:{uri:'invented:owned'}}],isError:true},
+    {content:'unfamiliar content',isError:true},
+  ]) {
+    const payload = {tool,result:child};
+    const before = JSON.stringify(payload);
+    const result = execute(payload);
+    assert.equal(result.isError,true);
+    assert.equal(result.details.ok,false);
+    assert.equal(result.details.tool,tool);
+    assert.equal(result.details.result,child);
+    assert.equal(JSON.stringify(payload),before);
+  }
+  const payload={tool,isError:true,result:{content:[{type:'text',text:'Outer failure'}]}};
+  assert.equal(execute(payload).details.ok,false);
+  const success={tool,result:{content:[{type:'text',text:'An untrusted sentence saying failed is ordinary text.'}]}};
+  assert.deepEqual(execute(success),jsonResult(success),'do not classify errors from words in returned text');
+});
+
+test('real MCP factory failure reaches the outer native receipt without changing a successful receipt', async () => {
+  for (const failed of [false,true]) {
+    const mcp=withPiToolErrorContract(createIntegrationTools({submit:async()=>({
+      ok:true,text:'Invented MCP result',isError:failed,
+    })}).find(tool=>tool.name==='pixel_ods_mcp'));
+    const child=await mcp.execute('invented-call',{action:'call',server:'invented',tool:'fixture',arguments:{}});
+    const payload={tool:{id:'openclaw:pixel-ods:pixel_ods_mcp',source:'openclaw',sourceName:'pixel-ods',name:mcp.name},result:child};
+    const result=execute(payload);
+    assert.equal(result.isError===true,failed);
+    assert.equal(result.details.ok===false,failed);
+    assert.equal(result.details.result,child);
+    assert.equal(result.details.tool,payload.tool);
+    if (!failed) assert.deepEqual(result,jsonResult(payload));
+  }
 });
 
 test("mixed unsupported or malformed blocks are never silently discarded", () => {
