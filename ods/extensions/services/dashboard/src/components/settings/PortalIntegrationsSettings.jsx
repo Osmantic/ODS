@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import McpServerCard from './McpServerCard'
+import UnsavedIntegrationsNavigation from './UnsavedIntegrationsNavigation'
 import { HOME_ASSISTANT, NO_SECRETS, POLICY_LABELS, acknowledgeSecrets, approvalLinkFor, draftFrom, idsForSave, newServerId, rebaseDraft, renameServers, sameDraft, secretsFrom, settingsFrom, typedForDraft } from './portalIntegrationsForm'
 
 const inputStyle = 'w-full rounded border border-theme-border bg-theme-bg px-3 py-2 text-theme-text focus:outline-none focus:ring-2 focus:ring-theme-accent'
@@ -191,10 +193,11 @@ export default function PortalIntegrationsSettings() {
     ? { enabled, approvalLink: approvalLinkFor(window.location.origin) } : { enabled })
 
   return <div className="space-y-4">
+    <UnsavedIntegrationsNavigation dirty={dirty} />
     <section className={cardStyle} aria-labelledby="portal-integrations-title">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0"><h2 id="portal-integrations-title" className="text-lg font-semibold">Portal integrations</h2>
-          <p className="text-sm text-theme-text-muted">Let Portal read your notes, send you notifications and use MCP servers such as Home Assistant. Passwords and tokens stay on this computer.</p></div>
+          <p className="text-sm text-theme-text-muted">Let Portal read your notes, send you notifications and use MCP servers such as Home Assistant. Credentials are stored by the local integration service and used for the services you configure.</p></div>
         <div className="flex gap-2">
           <button className={buttonStyle} disabled={busy} onClick={() => run([[null]])}>Reload</button>
           <button className={buttonStyle} disabled={busy || !dirty} onClick={save}>Save changes</button>
@@ -202,6 +205,7 @@ export default function PortalIntegrationsSettings() {
       </div>
       {error && <p role="alert" className="text-sm text-red-400 whitespace-pre-wrap break-words">{error}</p>}
       {notice && <p role="status" className="text-sm text-theme-text-muted">{notice}</p>}
+      <p role="note" className="text-xs text-theme-text-muted">Off, Ask first and Allowed apply to these integration tools. Full Access also lets Portal use your account’s files and commands, which can reach locally stored settings and secrets. Review <Link to="/settings?section=access" className="underline">Portal access</Link> before adding credentials.</p>
     </section>
 
     {/* First: an approval ping from ntfy brings the owner here. */}

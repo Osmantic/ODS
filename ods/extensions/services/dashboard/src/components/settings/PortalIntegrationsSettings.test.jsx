@@ -1,6 +1,7 @@
-import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render as renderBase, screen, waitFor, within } from '@testing-library/react'
 import { createElement } from 'react'
-import { render } from '../../test/test-utils'
+import { createMemoryRouter, RouterProvider } from 'react-router-dom'
+import { ThemeProvider } from '../../contexts/ThemeContext'
 import PortalIntegrationsSettings from './PortalIntegrationsSettings'
 import { acknowledgeSecrets, draftFrom, newServerId, rebaseDraft, savedTools, secretsFrom, typedForDraft } from './portalIntegrationsForm'
 
@@ -16,6 +17,13 @@ const settings = (revision = 0, servers = []) => ({
 })
 const view = (overrides = {}) => ({ settings: settings(), approvals: [], activity: [], ...overrides })
 const response = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body })
+const routers = []
+function render(ui) {
+  const router = createMemoryRouter([{ path: '*', element: createElement(ThemeProvider, null, ui) }],
+    { initialEntries: ['/settings?section=portal-integrations'] })
+  routers.push(router)
+  return renderBase(createElement(RouterProvider, { router }))
+}
 
 // A fake service: save stores the settings, discover adds the tools.
 function fakeService(initial = view()) {
@@ -51,7 +59,7 @@ function fakeService(initial = view()) {
   return { posts, fetchMock, unmount: rendered.unmount, failNext: (action, message) => failures.set(action, message) }
 }
 
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
+afterEach(() => { for (const router of routers.splice(0)) router.dispose(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 it('saves only what changed and never sends an empty password', async () => {
   const { posts } = fakeService()
