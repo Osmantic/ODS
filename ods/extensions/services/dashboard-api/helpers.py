@@ -883,6 +883,14 @@ async def get_llama_context_size(model_hint: Optional[str] = None) -> Optional[i
     Accepts an optional *model_hint* to skip the redundant
     ``get_loaded_model()`` call when the caller already has it.
     """
+    if WINDOWS_DESKTOP_PROFILE:
+        try:
+            from native_llm import get_native_llm_status
+            st = await get_native_llm_status()
+            if st.get("available") and isinstance(st.get("contextLength"), int):
+                return st["contextLength"]
+        except Exception:
+            pass
     if _host_native_llm():
         try:
             context = (await _host_llm_status())["health"].get("context_length")

@@ -8,6 +8,10 @@ import json
 import logging
 import os
 import re
+import shutil
+import socket
+import subprocess
+import sys
 import time
 import zlib
 from pathlib import Path
@@ -314,6 +318,152 @@ async def get_native_llm_status() -> dict[str, Any]:
         "gpu": gpu_summary,
         "localModels": list_local_gguf_models(),
     }
+
+
+def find_llama_server_binary() -> Path | None:
+    """Locate the native llama-server executable on Windows."""
+    env_bin = (
+        os.environ.get("LLAMA_SERVER_BIN", "").strip()
+        or os.environ.get("ODS_LLAMA_SERVER_PATH", "").strip()
+        or config.read_live_env_value("LLAMA_SERVER_BIN").strip()
+    )
+    if env_bin:
+        p = Path(env_bin)
+        if p.is_file():
+            return p
+
+    which_bin = shutil.which("llama-server.exe") or shutil.which("llama-server")
+    if which_bin:
+        p = Path(which_bin)
+        if p.is_file():
+            return p
+
+    candidates: list[Path] = []
+    local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+    if local_app_data:
+        candidates.append(Path(local_app_data) / "ODS" / "runtimes" / "llama" / "llama-server.exe")
+    if config.INSTALL_DIR:
+        candidates.extend([
+            Path(config.INSTALL_DIR) / "runtimes" / "llama" / "llama-server.exe",
+            Path(config.INSTALL_DIR) / "llama-server" / "llama-server.exe",
+            Path(config.INSTALL_DIR) / "llama-server.exe",
+        ])
+    if config.DATA_DIR:
+        candidates.append(Path(config.DATA_DIR).parent / "runtimes" / "llama" / "llama-server.exe")
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+
+    return None
+
+
+def restart_native_llama_server(
+    model_path: str | Path,
+    context_length: int = 4096,
+    alias: str = "",
+    timeout_seconds: float = 30.0,
+) -> bool:
+    """Terminate any existing llama-server process and launch it with the specified model."""
+    bin_path = find_llama_server_binary()
+    if bin_path is None:
+        logger.error("Cannot restart native llama-server: binary not found")
+        return False
+
+    target_model = Path(model_path).resolve()
+    if not target_model.is_file():
+        logger.error("Cannot restart native llama-server: model file not found: %s", target_model)
+        return False
+
+    llama_port = (
+        os.environ.get("LLAMA_PORT", "").strip()
+        or config.read_live_env_value("LLAMA_PORT").strip()
+        or "8085"
+    )
+    port_num = int(llama_port) if llama_port.isdigit() else 8085
+    host = "127.0.0.1"
+
+    if sys.platform == "win32":
+        try:
+            subprocess.run(
+                ["taskkill.exe", "/F", "/IM", "llama-server.exe"],
+                capture_output=True,
+                timeout=10,
+            )
+        except Exception as exc:
+            logger.warning("taskkill llama-server.exe returned: %s", exc)
+
+    for _ in range(25):
+        try:
+            with socket.create_connection((host, port_num), timeout=0.2):
+                time.sleep(0.2)
+        except (OSError, ConnectionRefusedError):
+            break
+
+    gpu_pref = read_windows_user_gpu_preference()
+    if gpu_pref == "power_saving":
+        gpu_args = ["-ngl", "0", "--device", "none"]
+    else:
+        gpu_args = ["-ngl", "99"]
+
+    ctx = int(context_length) if context_length and int(context_length) > 0 else 4096
+
+    cmd = [
+        str(bin_path),
+        "-m",
+        str(target_model),
+        "--host",
+        host,
+        "--port",
+        str(port_num),
+        "-c",
+        str(ctx),
+    ] + gpu_args
+
+    if alias:
+        cmd.extend(["--alias", str(alias)])
+
+    parent = target_model.parent
+    mmproj_candidates = [
+        parent / f"{target_model.stem}.mmproj.gguf",
+        parent / f"{target_model.stem}-mmproj.gguf",
+    ] + list(parent.glob("*mmproj*.gguf"))
+    for mm in mmproj_candidates:
+        if mm.is_file():
+            cmd.extend(["--mmproj", str(mm)])
+            break
+
+    creationflags = 0x08000000 if sys.platform == "win32" else 0
+    logger.info("Starting native llama-server: %s", " ".join(cmd))
+    try:
+        subprocess.Popen(
+            cmd,
+            creationflags=creationflags,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+    except Exception as exc:
+        logger.exception("Failed to spawn native llama-server: %s", exc)
+        return False
+
+    deadline = time.monotonic() + timeout_seconds
+    health_url = f"http://{host}:{port_num}/health"
+    headers = _native_llm_headers()
+
+    while time.monotonic() < deadline:
+        try:
+            with httpx.Client(timeout=1.0) as client:
+                res = client.get(health_url, headers=headers)
+                if res.status_code == 200:
+                    logger.info("Native llama-server successfully started and healthy with %s", target_model.name)
+                    return True
+        except Exception:
+            pass
+        time.sleep(0.5)
+
+    logger.error("Timed out waiting for native llama-server to become healthy on port %d", port_num)
+    return False
 
 
 # ============================================================================

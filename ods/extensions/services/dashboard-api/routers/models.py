@@ -3229,6 +3229,38 @@ def load_model(
     return _activate_model(model_id, body)
 
 
+def _apply_env_updates(env_path: Path, updates: dict[str, str]) -> None:
+    """Safely and atomically update key-value pairs in a .env file."""
+    lines: list[str] = []
+    seen = set()
+    if env_path.is_file():
+        try:
+            content = env_path.read_text(encoding="utf-8")
+            for line in content.splitlines():
+                stripped = line.strip()
+                if stripped and not stripped.startswith("#") and "=" in line:
+                    key = line.split("=", 1)[0].strip()
+                    if key in updates:
+                        lines.append(f"{key}={updates[key]}")
+                        seen.add(key)
+                        continue
+                lines.append(line)
+        except OSError:
+            pass
+    for k, v in updates.items():
+        if k not in seen:
+            lines.append(f"{k}={v}")
+    tmp = env_path.with_name(f"{env_path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        os.replace(str(tmp), str(env_path))
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _activate_model(model_id: str, body: dict[str, Any] | None, *, chat_template_override: str | None = None):
     """Run ``model_id`` through the host agent's activation transaction.
 
@@ -3263,7 +3295,7 @@ def _activate_model(model_id: str, body: dict[str, Any] | None, *, chat_template
 
     from config import WINDOWS_DESKTOP_PROFILE
     if WINDOWS_DESKTOP_PROFILE:
-        from native_llm import list_local_gguf_models
+        from native_llm import list_local_gguf_models, restart_native_llama_server
         installed = list_local_gguf_models()
         matched = None
         for m in installed:
@@ -3279,7 +3311,33 @@ def _activate_model(model_id: str, body: dict[str, Any] | None, *, chat_template
         if matched is None:
             raise HTTPException(status_code=404, detail=f"Model '{model_id}' is not installed in the local model store")
 
-        selection_path = Path(DATA_DIR) / "selected-model.json"
+        requested_context = _requested_activation_context(body)
+        target_context = requested_context or _recommended_model_context(model) or 4096
+        alias_str = model_id
+
+        restart_ok = restart_native_llama_server(
+            model_path=matched["path"],
+            context_length=target_context,
+            alias=alias_str,
+        )
+        if not restart_ok:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to start native llama-server with model '{matched['filename']}'",
+            )
+
+        env_updates = {
+            "GGUF_FILE": matched["filename"],
+            "LLM_MODEL": alias_str,
+            "CTX_SIZE": str(target_context),
+        }
+        for base_dir in (INSTALL_DIR, DATA_DIR):
+            if base_dir:
+                env_file = Path(base_dir) / ".env"
+                if env_file.exists():
+                    _apply_env_updates(env_file, env_updates)
+
+        selection_path = Path(DATA_DIR) / "selected-model.json" if DATA_DIR else (Path(INSTALL_DIR) / "data" / "selected-model.json")
         selection_record = {
             "schemaVersion": 1,
             "ggufFile": matched["filename"],
@@ -3287,7 +3345,24 @@ def _activate_model(model_id: str, body: dict[str, Any] | None, *, chat_template
             "selectedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "status": "active",
         }
-        selection_path.write_text(json.dumps(selection_record, indent=2), encoding="utf-8")
+        try:
+            selection_path.parent.mkdir(parents=True, exist_ok=True)
+            selection_path.write_text(json.dumps(selection_record, indent=2), encoding="utf-8")
+            receipt_path = selection_path.with_name("model-activation-receipt.json")
+            receipt_record = {
+                "schemaVersion": 1,
+                "requestedModelId": model_id,
+                "ggufFile": matched["filename"],
+                "activatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "contextLength": target_context,
+                "status": "success",
+            }
+            receipt_path.write_text(json.dumps(receipt_record, indent=2), encoding="utf-8")
+        except OSError as exc:
+            logger.warning("Failed to write model selection records: %s", exc)
+
+        _invalidate_agent_model_status_cache()
+
         return {
             "status": "reloaded",
             "model": matched["filename"],
