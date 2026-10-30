@@ -409,6 +409,26 @@ else
             error "source-upgrade-sudo-required: Updating the existing Pixel installation requires sudo. Preserve the installation and any pending upgrade state."
             return 1
         fi
+
+        # If the marker exists but the recorded installation directory is missing its
+        # .env, the prior deployment directory was wiped or moved without uninstalling.
+        # Clean up the orphaned host state so the installer can bootstrap cleanly rather
+        # than failing an impossible in-place upgrade.
+        if [[ ! -f "$INSTALL_DIR/.env" ]]; then
+            ai_warn "Recorded Pixel installation marker exists, but $INSTALL_DIR has no active installation."
+            ai "Resetting orphaned Pixel host state for a clean re-installation..."
+            if ! declare -F ods_pixel_uninstall_managed >/dev/null 2>&1; then
+                # shellcheck source=../../lib/pixel-uninstall.sh
+                source "$SCRIPT_DIR/lib/pixel-uninstall.sh"
+            fi
+            if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME" "source-transition"; then
+                log "Orphaned Pixel host state cleaned. Proceeding with clean installation."
+            else
+                warn "Could not clean all orphaned Pixel state; removing stale marker."
+                rm -f "$_phase06_pixel_marker"
+            fi
+            _phase06_pixel_source_transition=1
+        else
         _phase06_pixel_owner="$(ods_pixel_install_owner)" || {
             error "Could not identify the ODS owner for a Pixel source transition."
             return 1
@@ -514,6 +534,7 @@ else
         esac
         unset -f _phase06_source_failed
         unset _phase06_pixel_owner _phase06_pixel_home
+        fi
     elif [[ "${ENABLE_PIXEL_RUNTIME:-false}" != "true" \
         && ( -e "$_phase06_pixel_marker" || -L "$_phase06_pixel_marker" ) ]]; then
         if ! declare -F ods_pixel_uninstall_managed >/dev/null 2>&1; then
