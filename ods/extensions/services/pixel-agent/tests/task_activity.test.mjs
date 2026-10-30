@@ -6,6 +6,63 @@ const runId = 'chatcmpl_11111111-2222-4333-8444-555555555555';
 const ctx = {agentId:'pixel',runId};
 const now = () => '2026-09-08T20:00:00.000Z';
 
+test('integration action kinds preserve pending approval, failures and blocked tool outcomes without argument metadata',()=>{
+ const cases=[
+  ['pixel_ods_notes',{action:'search'},'read'],['pixel_ods_notes',{action:'read'},'read'],
+  ['pixel_ods_notes',{action:'write',mode:'append'},'edit'],['pixel_ods_notes',{action:'write',mode:'create'},'edit'],
+  ['pixel_ods_notify',{message:'private-message'},'action'],
+  ['pixel_ods_mcp',{action:'list'},'read'],['pixel_ods_mcp',{action:'call'},'action'],
+  ['pixel_ods_skill',{},'read'],['pixel_ods_notes',{action:'delete'},'unknown'],
+  ['pixel_ods_mcp',{action:'discover'},'unknown'],['pixel_ods_notes',{action:'constructor'},'unknown'],
+  ['pixel_ods_mcp',{action:'toString'},'unknown'],
+ ];
+ for(const [name,args,kind] of cases) for(const wrapped of [false,true]) for(const outcome of ['approval','failure','blocked']) {
+  const recorder=createTaskActivity({now});recorder.begin({},ctx);
+  const context={...ctx,toolName:wrapped?'tool_call':name,toolCallId:'integration'};
+  const params={...args,path:'/private/vault',arguments:{token:'private-token'}};
+  recorder.before({params:wrapped?{id:`openclaw:pixel-ods:${name}`,args:params}:params},context,outcome==='blocked');
+  const result=outcome==='failure'?{isError:true,details:{ok:false,summary:'private-error'}}
+    :{details:{status:'approval-required',approvalId:'private-approval',summary:'private-summary'}};
+  recorder.after({result},context);
+  const value=recorder.projection(runId);
+  assert.equal(value.calls,1);
+  assert.equal(value.events[0].kind,kind);
+  assert.equal(value.events[0].state,outcome==='blocked'?'blocked':outcome==='failure'?'failed':'completed');
+  assert.equal(value.state,'running'); // A tool receipt does not settle the agent or execute an approval.
+  assert.equal(value.events[0].display?.detail??null,null);
+  assert.doesNotMatch(JSON.stringify(value),/private-|approval-required|token|arguments/);
+  assert.equal(parseTaskActivity(value,runId),value);
+ }
+});
+
+test('action-specific integration activity merges actual child hooks even when completion omits params',()=>{
+ for(const [name,args,kind] of [
+  ['pixel_ods_notes',{action:'search'},'read'],['pixel_ods_notes',{action:'read'},'read'],
+  ['pixel_ods_notes',{action:'write',mode:'create'},'edit'],
+  ['pixel_ods_mcp',{action:'list'},'read'],['pixel_ods_mcp',{action:'call'},'action'],
+ ]) {
+  const recorder=createTaskActivity({now});recorder.begin({},ctx);
+  const outer={...ctx,toolCallId:'parent',toolName:'tool_call'};
+  const inner={...ctx,toolCallId:`tool_search_code:parent:${name}:1`,toolName:name};
+  recorder.before({params:{id:`openclaw:pixel-ods:${name}`,args}},outer);
+  recorder.before({params:args},inner);
+  const label=recorder.projection(runId).events[0].display.label;
+  recorder.after({result:{details:{status:'done'}}},inner);
+  recorder.after({result:{details:{status:'done'}}},outer);
+  const value=recorder.projection(runId);
+  assert.equal(value.calls,1,name);
+  assert.equal(value.events[0].kind,kind);
+  assert.equal(value.events[0].display.label,label);
+  assert.equal(value.events[0].state,'completed');
+  assert.equal(parseTaskActivity(value,runId),value);
+ }
+ const recorder=createTaskActivity({now});recorder.begin({},ctx);
+ recorder.before({params:{id:'openclaw:pixel-ods:pixel_ods_notes',args:{action:'read'}}},
+                 {...ctx,toolCallId:'parent',toolName:'tool_call'});
+ recorder.after({result:{}},{...ctx,toolCallId:'tool_search_code:parent:pixel_ods_mcp:1',toolName:'pixel_ods_mcp'});
+ assert.equal(recorder.projection(runId).calls,2,'A different tool cannot borrow an action kind from a parent');
+});
+
 test('connection-status reads have content-free read activity both direct and deferred', () => {
   for (const deferred of [false, true]) {
     const recorder=createTaskActivity({now});recorder.begin({},ctx);
