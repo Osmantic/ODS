@@ -13,6 +13,7 @@ const APPROVAL_TEXT = 'Waiting for the owner. Tell the owner this needs their ap
 export function submitIntegration(payload, {connect = net.createConnection, platform = process.platform, signal} = {}) {
   return new Promise((resolve, reject) => {
     if (platform !== 'linux') return reject(new Error(platform === 'darwin' ? "Portal integrations aren't available on macOS yet." : 'Portal integrations are not available on this system yet.'));
+    if (signal?.aborted) return reject(new Error('Cancelled.'));
     const socket = connect({path: SOCKET});
     let buffer = Buffer.alloc(0), finished = false;
     const finish = (error, value) => {
@@ -49,14 +50,15 @@ async function run(submit, payload, signal, render) {
   let reply;
   try {
     reply = await submit(payload, {signal});
-  } catch (error) {
-    return text(error.message, {status: 'unavailable'}, true);
+  } catch {
+    return text('The integrations service is unavailable.', {status: 'unavailable'}, true);
   }
   if (!reply?.ok) return text(reply?.message || 'The integration request failed.', {status: 'refused', code: reply?.error}, true);
   if (reply.status === 'approval-required') {
     return text(`${reply.summary}\n\n${APPROVAL_TEXT}`, {status: 'approval-required', approvalId: reply.approvalId});
   }
-  return text(render(reply), {status: 'done'});
+  const failed = reply.isError === true;
+  return text(render(reply), {status: failed ? 'failed' : 'done'}, failed);
 }
 
 const searchText = reply => reply.results.length
@@ -66,7 +68,7 @@ const searchText = reply => reply.results.length
 
 const toolsText = reply => reply.servers.length
   ? reply.servers.map(server => `Server "${server.id}" (${server.name}):\n` + (server.tools.length
-    ? server.tools.map(tool => `- ${tool.name}${tool.needsApproval ? ' [needs owner approval]' : ''}: ${tool.description || 'no description'}\n  arguments: ${JSON.stringify(tool.inputSchema?.properties ?? {})}`).join('\n')
+    ? server.tools.map(tool => `- ${tool.name}${tool.needsApproval ? ' [needs owner approval]' : ''}: ${tool.description || 'no description'}\n  arguments: ${JSON.stringify(tool.inputSchema ?? {type: 'object'})}`).join('\n')
     : '- no tools are allowed')).join('\n\n')
   : 'No MCP servers are turned on. The owner can add one in Settings → Portal integrations.';
 
