@@ -80,6 +80,57 @@ the model endpoint in that regression is deterministic fixture SSE. The real
 llama.cpp grammar bridge compiles the combined 32-tool inventory and the native
 catalog surface. Neither test establishes live local-model acceptance.
 
+## Installed Windows/WSL qualification
+
+Two ordinary updates, first at `8d71df83d` and then `674d4bd40`, completed on
+the owner's Windows/WSL/Docker installation with the actual RTX 5090 and local
+Qwen3.5 9B. Independent selected-file inspection matched the installed plugin,
+integration service and pinned SDK to the reviewed source. Full Access, the
+existing read-only Google choices and opaque credential bytes were preserved.
+The post-update inspection found no temporary QA authority references in the
+ten selected ODS units and ten independently selected product containers.
+This is scoped installed evidence, not a whole-host or isolation attestation.
+
+All new accounts, devices, notes and notification destinations in these tests
+were invented QA resources:
+
+- Natural chat searched and read an Obsidian note. An append waited for owner
+  approval, executed once after approval, and required a new approval on replay.
+  Declining that second request left the note unchanged.
+- Real Home Assistant MCP returned the test temperature. A pending lamp action
+  survived the second normal update with the integration configuration and
+  secrets unchanged; the approved retry then turned on that invented entity.
+- The official filesystem MCP started on demand, read a permitted file, and
+  refused an outside-root file. Its failure remained a native tool error and
+  the model reported the refusal. Restart stopped its exact process group;
+  the next check started a new group. Passive observation confirmed natural
+  idle retirement without a test signal or timeout change.
+- The actual ntfy server received the UI test notification. Invalid ntfy and
+  Home Assistant credentials produced explicit errors; the original QA settings
+  were restored. This does not qualify delivery to a physical phone.
+- Real browser save/discard, dirty navigation, partial-save failure and saved
+  secret fields were exercised. Desktop and 390px phone views were inspected;
+  the phone draft was discarded without changing saved settings.
+- A later Google status-only chat used the retained connection without reading
+  message or event records.
+
+Two actual model failures remain negative evidence: a notification request
+looked only at the custom MCP list and incorrectly inferred that ntfy was
+unconfigured; a native cron request wrote the requested note into the ordinary
+workspace instead of the configured Obsidian vault. Neither attempted the
+corresponding native integration tool. The cron result is retained and its
+one-time schedule was archived. It does not prove an approved vault write.
+
+The subsequent stable capability map and explicit MCP catalog scope address
+those distinctions without classifying the owner's wording. The existing
+native catalog also offers the three integration schemas directly at qualified
+32K or larger contexts, retaining policy filtering, ambiguous-name deferral,
+canonical discovery IDs and the smaller-context limits. These are the same
+implementations and dispatcher, not a second execution path. The unchanged
+natural requests still need repeating on the updated installed runtime. Do not
+count the failed requests as successful chat notification or cron approval
+qualification.
+
 ## Protocol and platform limits
 
 MCP tool annotations are supplied by the server and are not proof of a tool's

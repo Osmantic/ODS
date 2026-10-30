@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import {registerHooks} from 'node:module';
 import { createHash, randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -17,6 +18,7 @@ const manifest = JSON.parse(readFileSync(new URL('../host/openclaw-image-envelop
 assert.equal(createHash('sha256').update(readFileSync(file)).digest('hex'), manifest.patchedSha256);
 const { u: apply, m: createRef, h: createControls, v: resolveExact } = await import(pathToFileURL(file));
 const { t: filterByPolicy } = await import(pathToFileURL(join(dirname(file), 'agent-tools.policy-Dyn4VuLn.js')));
+const {o:setPluginToolMeta} = await import(pathToFileURL(join(dirname(file),'tools-D5HS8Q_I.js')));
 const tool = name => ({ name, label: name, description: name, parameters: { type: 'object', properties: {} }, execute: async () => ({ content: [] }) });
 const controls = ['tool_search', 'tool_describe', 'tool_call'].map(tool);
 
@@ -39,6 +41,131 @@ function run(tools, extra = {}) {
     config: { tools: { toolSearch: { enabled: true, mode: 'tools' } } }, ...extra });
   return { ...result, catalogRef };
 }
+
+let previousRuntime;
+async function runC14(tools,extra={}) {
+  if(!previousRuntime) {
+    const digest=value=>createHash('sha256').update(value).digest('hex');
+    const predecessor='c14f943442d87dd4e3a9005636b182e4de1527cf2ce29490799ce9b774e903b3';
+    let source=readFileSync(file,'utf8');
+    for(const [old,replacement] of [...manifest.replacements].reverse()) {
+      assert.equal(source.split(replacement).length,2);source=source.replace(replacement,old);
+    }
+    assert.equal(digest(source),manifest.sourceSha256);
+    for(const [old,replacement] of manifest.previousReplacements[predecessor]) {
+      assert.equal(source.split(old).length,2);source=source.replace(old,replacement);
+    }
+    assert.equal(digest(source),predecessor);
+    // Load the exact verified predecessor under a distinct module URL. Its
+    // relative imports use the same reviewed SDK; no files or SDK mutate.
+    const previousUrl=pathToFileURL(file).href+'?ods-reviewed-c14-surface';
+    const loader=registerHooks({load(url,context,next){return url===previousUrl
+      ? {format:'module',source,shortCircuit:true}:next(url,context);}});
+    try {previousRuntime=await import(previousUrl);} finally {loader.deregister();}
+  }
+  const catalogRef=previousRuntime.m();
+  const result=previousRuntime.u({tools:[...controls,...tools],agentId:'pixel',runId:randomUUID(),catalogRef,
+    config:{tools:{toolSearch:{enabled:true,mode:'tools'}}},...extra});
+  return {...result,catalogRef};
+}
+
+function integrationTools(submissions=[]) {
+  return createIntegrationTools({submit:async request=>{
+    submissions.push(request);
+    if(request.action==='notes-read')return {ok:true,path:'Example.md',text:'Invented note.'};
+    if(request.action==='notify')return {ok:true,sent:true};
+    return {ok:true,servers:[]};
+  }}).map(tool=>{
+    const wrapped=withPiToolErrorContract(tool);
+    setPluginToolMeta(wrapped,{pluginId:'pixel-ods'});
+    return wrapped;
+  });
+}
+
+test('Coffee schemas are statically direct at qualified32K including provider-only64K, never above an8K cap',async()=>{
+  const cases=[
+    {window:65536,explicit:undefined,visible:true},
+    {window:32768,explicit:undefined,visible:true},
+    {window:65536,explicit:8192,visible:false},
+    {window:8192,explicit:65536,visible:false},
+    {window:8192,explicit:undefined,visible:false},
+    {window:65536,explicit:32767,visible:false},
+    {window:undefined,explicit:32768,visible:true},
+    {window:undefined,explicit:undefined,visible:false},
+    {window:65536,explicit:65536,agentId:'other-agent',visible:false},
+  ];
+  for(const candidate of cases) {
+    const submissions=[], originals=integrationTools(submissions);
+    const config={agents:{defaults:{model:{primary:'fixture/model'}},list:[{id:'pixel'}]},
+      tools:{toolSearch:{enabled:true,mode:'tools'}}};
+    if(candidate.explicit!==undefined)config.agents.list[0].contextTokens=candidate.explicit;
+    const agentId=candidate.agentId??'pixel';
+    const result=run(originals,{config,agentId,modelContextWindowTokens:candidate.window});
+    assert.equal(result.catalogToolCount,originals.length,'keep every permitted implementation in discovery');
+    for(const original of originals) {
+      assert.equal(result.tools.includes(original),candidate.visible,JSON.stringify(candidate)+' '+original.name);
+      if(candidate.visible)assert.equal(result.tools.find(tool=>tool.name===original.name),original);
+    }
+    if(!candidate.visible) {
+      const baseline=await runC14(originals,{config,agentId,modelContextWindowTokens:candidate.window});
+      assert.deepEqual(result.tools,baseline.tools,'smaller/unknown contexts and other agents preserve c14 surface');
+      assert.equal(result.catalogToolCount,baseline.catalogToolCount);
+    }
+    const api=Object.fromEntries(createControls({agentId,catalogRef:result.catalogRef,config}).map(tool=>[tool.name,tool]));
+    const ids=[];
+    for(const original of originals) {
+      const found=await api.tool_search.execute('find',{query:original.name,limit:10});
+      const hit=found.details.find(tool=>tool.name===original.name);
+      assert.ok(hit,'direct and deferred schemas remain discoverable');
+      assert.equal(hit.id,`openclaw:pixel-ods:${original.name}`);
+      ids.push(hit.id);
+      assert.deepEqual((await api.tool_describe.execute('describe',{id:hit.id})).details.parameters,original.parameters);
+    }
+    assert.equal(new Set(ids).size,3,'retain the three distinct canonical IDs');
+    const inputs=[{action:'read',path:'Example.md'},{message:'Invented notification.'},{action:'list'}];
+    for(const [index,id] of ids.entries()) {
+      await api.tool_call.execute('call',{id,args:inputs[index]});
+      if(agentId==='pixel') {
+        const previousCalls=submissions.length;
+        let rejected=false, invalid;
+        try {invalid=await api.tool_call.execute('invalid',{id,args:{unexpected:'invalid'}});} catch {rejected=true;}
+        assert.ok(rejected || invalid?.isError===true || invalid?.details?.ok===false,'actual native/Pi error contract');
+        assert.equal(submissions.length,previousCalls,'invalid schema never reaches the backend');
+      }
+    }
+    assert.equal(submissions.length,3,'invalid schemas never reach the unchanged backend');
+  }
+});
+
+test('Coffee direct offer preserves policy denial, ambiguous-name deferral and nonPortal modes',async()=>{
+  const config={agents:{list:[{id:'pixel',contextTokens:65536}]},tools:{toolSearch:{enabled:true,mode:'tools'}}};
+  for(const deniedName of ['pixel_ods_notes','pixel_ods_notify','pixel_ods_mcp']) {
+    const submissions=[], originals=integrationTools(submissions);
+    const permitted=filterByPolicy(originals,{deny:[deniedName]});
+    const result=run(permitted,{config});
+    assert.equal(result.catalogToolCount,2);
+    assert.ok(result.tools.every(tool=>tool.name!==deniedName));
+    const context={agentId:'pixel',catalogRef:result.catalogRef,config};
+    assert.equal(resolveExact(context,deniedName),undefined);
+    const api=Object.fromEntries(createControls(context).map(tool=>[tool.name,tool]));
+    await assert.rejects(api.tool_call.execute('denied',{id:`openclaw:pixel-ods:${deniedName}`,args:{}}));
+    assert.deepEqual(submissions,[]);
+    const duplicate=run([...originals,...integrationTools().filter(tool=>tool.name===deniedName)],{config});
+    assert.equal(duplicate.catalogToolCount,4);
+    assert.ok(duplicate.tools.every(tool=>tool.name!==deniedName),'never select one ambiguous implementation');
+    assert.ok(originals.filter(tool=>tool.name!==deniedName).every(tool=>duplicate.tools.includes(tool)));
+  }
+  for(const mode of ['code','directory']) {
+    const originals=integrationTools(), candidate={...config,tools:{toolSearch:{enabled:true,mode}}};
+    const result=run(originals,{config:candidate});
+    const baseline=await runC14(originals,{config:candidate});
+    if(mode==='code' && !process.allowedNodeEnvironmentFlags.has('--permission')) {
+      const toolsConfig={...config,tools:{toolSearch:{enabled:true,mode:'tools'}}};
+      assert.deepEqual(baseline.tools,(await runC14(originals,{config:toolsConfig})).tools,'c14 falls back to tools mode');
+      assert.deepEqual(result.tools,run(originals,{config:toolsConfig}).tools,'preserve the exact upstream tools fallback');
+    } else assert.deepEqual(result.tools,baseline.tools,'preserve actual c14 code/directory behavior');
+  }
+});
 
 test('actual native discovery and deferred MCP dispatch preserve child error and success semantics', async () => {
   const submissions=[];
