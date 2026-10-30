@@ -50,7 +50,8 @@ function ProcessStatus({ process }) {
 }
 
 export default function McpServerCard({ server, saved, process, token, envValues, busy, onChange, onToken, onEnvValue, onCheck, onTest, onRestart, onRemove }) {
-  const tools = savedTools(saved, server)
+  const changedSecrets = Boolean(token || Object.values(envValues || {}).some(Boolean))
+  const tools = changedSecrets ? null : savedTools(saved, server)
   const isHttp = server.kind === 'http'
   const newTools = tools ? tools.filter(tool => tool.new).length : 0
   const setPolicy = (name, policy) => onChange({ policies: { ...server.policies, [name]: policy } })
@@ -83,7 +84,7 @@ export default function McpServerCard({ server, saved, process, token, envValues
       <button className={buttonStyle} disabled={busy} onClick={onTest}>Test connection</button>
       {!isHttp && <button className={buttonStyle} disabled={busy || !process?.running} onClick={onRestart}>Restart</button>}
       <label className="flex items-center gap-2 text-sm">
-        <input type="checkbox" checked={server.enabled} disabled={busy || !tools} onChange={event => onChange({ enabled: event.target.checked })} />
+        <input type="checkbox" checked={server.enabled} disabled={busy || !tools && !server.enabled} onChange={event => onChange({ enabled: event.target.checked })} />
         Let Portal use this server
       </label>
       <button className={buttonStyle} disabled={busy} onClick={onRemove}>Remove {server.name}</button>
@@ -91,6 +92,7 @@ export default function McpServerCard({ server, saved, process, token, envValues
     {tools
       ? <div className="space-y-2">
           <p className="text-sm text-theme-text-muted">{tools.length} tools. Choose what Portal may do: “Ask first” waits for your approval each time.</p>
+          <p className="text-xs text-theme-text-muted">Behavior labels are supplied by this server, not enforced by Portal. Only connect servers you trust.</p>
           {newTools > 0 && <p role="status" className="text-sm">{newTools === 1 ? '1 new tool' : `${newTools} new tools`} since the last check. New tools start Off; save to confirm your choices.</p>}
           <ul className="divide-y divide-theme-border" aria-label={`Tools of ${server.name}`}>
             {tools.map(tool => <ToolRow key={tool.name} tool={tool} policy={server.policies[tool.name] || tool.policy} disabled={busy} onPolicy={policy => setPolicy(tool.name, policy)} />)}

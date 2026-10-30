@@ -1,8 +1,8 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { createElement } from 'react'
 import { render } from '../../test/test-utils'
 import PortalIntegrationsSettings from './PortalIntegrationsSettings'
-import { newServerId, savedTools, secretsFrom, typedForDraft } from './portalIntegrationsForm'
+import { acknowledgeSecrets, draftFrom, newServerId, rebaseDraft, savedTools, secretsFrom, typedForDraft } from './portalIntegrationsForm'
 
 const TOOLS = [
   { name: 'GetLiveContext', title: '', description: 'Read device states', readOnly: true, destructive: false, inputSchema: {}, policy: 'allow' },
@@ -21,17 +21,19 @@ const response = (body, status = 200) => ({ ok: status >= 200 && status < 300, s
 function fakeService(initial = view()) {
   let current = initial
   const posts = []
+  const failures = new Map()
   const fetchMock = vi.fn(async (url, options) => {
     if (options.method !== 'POST') return response(current)
     const action = url.split('/').pop()
     const body = JSON.parse(options.body)
     posts.push([action, body])
+    if (failures.has(action)) { const message = failures.get(action); failures.delete(action); return response({ detail: message }, 400) }
     if (action === 'save') {
       if (body.expectedRevision !== current.settings.revision) return response({ detail: 'These settings changed in another window.', code: 'stale-revision' }, 409)
-      const servers = body.settings.mcp.servers.map(server => ({ ...server, hasToken: Boolean(body.secrets.mcp?.[server.id]),
-        hasEnv: Object.fromEntries(server.envNames.map(name => [name, Boolean(body.secrets.mcpEnv?.[server.id]?.[name])])),
+      const servers = body.settings.mcp.servers.map(server => ({ ...server, hasToken: Boolean(body.secrets.mcp?.[server.id]) || current.settings.mcp.servers.some(old => old.id === server.id && old.hasToken),
+        hasEnv: Object.fromEntries(server.envNames.map(name => [name, Boolean(body.secrets.mcpEnv?.[server.id]?.[name]) || current.settings.mcp.servers.some(old => old.id === server.id && old.hasEnv?.[name])])),
         tools: current.settings.mcp.servers.find(item => item.id === server.id)?.tools || [], discoveredAt: current.settings.mcp.servers.find(item => item.id === server.id)?.discoveredAt || null }))
-      current = { ...current, settings: { ...settings(body.expectedRevision + 1, servers), notifications: { ...body.settings.notifications, hasPassword: Boolean(body.secrets.ntfyPassword) }, notes: body.settings.notes } }
+      current = { ...current, settings: { ...settings(body.expectedRevision + 1, servers), notifications: { ...body.settings.notifications, hasPassword: Boolean(body.secrets.ntfyPassword) || current.settings.notifications.hasPassword }, notes: body.settings.notes } }
     } else if (action === 'discover') {
       const servers = current.settings.mcp.servers.map(server => server.id === body.serverId ? { ...server, tools: TOOLS, discoveredAt: 1 } : server)
       current = { ...current, settings: { ...current.settings, revision: current.settings.revision + 1, mcp: { servers } } }
@@ -45,8 +47,8 @@ function fakeService(initial = view()) {
     return response(current)
   })
   vi.stubGlobal('fetch', fetchMock)
-  render(createElement(PortalIntegrationsSettings))
-  return { posts, fetchMock }
+  const rendered = render(createElement(PortalIntegrationsSettings))
+  return { posts, fetchMock, unmount: rendered.unmount, failNext: (action, message) => failures.set(action, message) }
 }
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
@@ -80,7 +82,8 @@ it('shows a server’s tools and their effect before it can be turned on', async
   expect(posts[0][1].secrets).toEqual({ mcp: { 'home-assistant': 'token' } })
   expect(posts[1][1]).toEqual({ serverId: 'home-assistant' })
   const tools = screen.getByRole('list', { name: 'Tools of Home Assistant' })
-  expect(within(tools).getByText(/Only reads/)).toBeInTheDocument()
+  expect(within(tools).getByText(/Server reports: read-only/)).toBeInTheDocument()
+  expect(screen.getByText(/Behavior labels are supplied by this server, not enforced by Portal/)).toBeInTheDocument()
   expect(within(tools).getByLabelText('Permission for HassTurnOn')).toHaveValue('ask')
   fireEvent.change(within(tools).getByLabelText('Permission for HassTurnOn'), { target: { value: 'allow' } })
   fireEvent.click(screen.getByLabelText('Let Portal use this server'))
@@ -203,4 +206,160 @@ it('gives a new server the id of its name, with its secrets, and keeps saved ids
   expect(posts[0][1].settings.mcp.servers.map(server => server.id)).toEqual(['home', 'files'])
   expect(posts[0][1].secrets).toEqual({ mcpEnv: { files: { KEY: 'v' } } })
   expect(posts[1]).toEqual(['discover', { serverId: 'files' }])
+})
+
+it('acknowledges a committed save when discovery fails and does not resend the saved token', async () => {
+  const { posts, failNext } = fakeService()
+  fireEvent.click(await screen.findByRole('button', { name: 'Add Home Assistant' }))
+  fireEvent.change(screen.getByLabelText('Long-lived access token'), { target: { value: 'invented-token' } })
+  failNext('discover', 'The invented MCP server is unavailable.')
+  fireEvent.click(screen.getByRole('button', { name: 'Check tools' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('The invented MCP server is unavailable.')
+  expect(screen.getByLabelText('Long-lived access token')).toHaveValue('')
+  expect(screen.getByLabelText('Long-lived access token')).toHaveAttribute('placeholder', 'Saved. Type to replace.')
+  expect(screen.queryByRole('region', { name: 'Unsaved changes' })).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Check tools' }))
+  await screen.findByText(/Checked the tools of Home Assistant/)
+  expect(posts.map(([action]) => action)).toEqual(['save', 'discover', 'discover'])
+  fireEvent.change(screen.getByLabelText('Adding to notes'), { target: { value: 'off' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+  await screen.findByText('Saved.')
+  expect(posts.at(-1)[1].expectedRevision).toBe(2)
+  expect(posts.at(-1)[1].secrets).toEqual({})
+})
+
+it('acknowledges a committed save before a notification test fails', async () => {
+  const { posts, failNext } = fakeService()
+  fireEvent.click(await screen.findByLabelText('Send notifications through ntfy'))
+  fireEvent.change(screen.getByLabelText('Password or access token'), { target: { value: 'invented-password' } })
+  failNext('test-notification', 'The notification destination did not answer.')
+  fireEvent.click(screen.getByRole('button', { name: 'Send test notification' }))
+  await screen.findByRole('alert')
+  expect(screen.getByLabelText('Password or access token')).toHaveValue('')
+  expect(screen.queryByRole('region', { name: 'Unsaved changes' })).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Send test notification' }))
+  await screen.findByText('Test notification sent.')
+  expect(posts.map(([action]) => action)).toEqual(['save', 'test-notification', 'test-notification'])
+})
+
+const deferred = () => {
+  let resolve
+  const promise = new Promise(done => { resolve = done })
+  return { promise, resolve }
+}
+
+it('ignores a poll that finishes after Save and allows only one poll in flight', async () => {
+  const intervals = vi.spyOn(globalThis, 'setInterval')
+  const { posts, fetchMock } = fakeService()
+  await screen.findByText('Notes (Obsidian vault)')
+  const poll = intervals.mock.calls.find(([, delay]) => delay === 15000)[0]
+  const read = deferred(), original = fetchMock.getMockImplementation()
+  let reads = 0
+  fetchMock.mockImplementation((url, options) => options.method === 'GET' ? (reads++, read.promise) : original(url, options))
+  let pending
+  act(() => { pending = poll() })
+  await act(async () => { await poll() })
+  expect(reads).toBe(1)
+  fireEvent.change(screen.getByLabelText('Adding to notes'), { target: { value: 'allow' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+  await screen.findByText('Saved.')
+  await act(async () => { read.resolve(response(view())); await pending })
+  expect(screen.getByLabelText('Adding to notes')).toHaveValue('allow')
+  expect(screen.queryByRole('region', { name: 'Unsaved changes' })).toBeNull()
+  fireEvent.change(screen.getByLabelText('Adding to notes'), { target: { value: 'off' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+  await waitFor(() => expect(posts).toHaveLength(2))
+  expect(posts[1][1].expectedRevision).toBe(1)
+})
+
+it('preserves edits and newly typed secrets while a background read returns newer settings', async () => {
+  const intervals = vi.spyOn(globalThis, 'setInterval')
+  const { fetchMock } = fakeService()
+  await screen.findByText('Notes (Obsidian vault)')
+  const poll = intervals.mock.calls.find(([, delay]) => delay === 15000)[0]
+  const read = deferred()
+  fetchMock.mockImplementation(() => read.promise)
+  let pending
+  act(() => { pending = poll() })
+  fireEvent.change(screen.getByLabelText('Adding to notes'), { target: { value: 'allow' } })
+  fireEvent.change(screen.getByLabelText('Password or access token'), { target: { value: 'new-unsaved-password' } })
+  const received = settings(3); received.notifications.username = 'Changed in another window'
+  await act(async () => { read.resolve(response(view({ settings: received }))); await pending })
+  expect(screen.getByLabelText('Adding to notes')).toHaveValue('allow')
+  expect(screen.getByLabelText('Password or access token')).toHaveValue('new-unsaved-password')
+  expect(screen.getByLabelText('User (optional)')).toHaveValue('Changed in another window')
+  expect(screen.getByRole('region', { name: 'Unsaved changes' })).toBeInTheDocument()
+})
+
+it('does not adopt an older revision from a later read and aborts reads when unmounted', async () => {
+  const { posts, fetchMock, unmount } = fakeService(view({ settings: settings(4) }))
+  await screen.findByText('Notes (Obsidian vault)')
+  const original = fetchMock.getMockImplementation()
+  fetchMock.mockImplementation((url, options) => options.method === 'GET' ? response(view()) : original(url, options))
+  fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Reload' })).toBeEnabled())
+  fireEvent.change(screen.getByLabelText('Adding to notes'), { target: { value: 'off' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+  await screen.findByText('Saved.')
+  expect(posts[0][1].expectedRevision).toBe(4)
+  const read = deferred()
+  fetchMock.mockImplementation(() => read.promise)
+  fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
+  const signal = fetchMock.mock.calls.at(-1)[1].signal
+  unmount()
+  expect(signal.aborted).toBe(true)
+  await act(async () => { read.resolve(response(view())) })
+})
+
+it('invalidates shown tools when launch identity changes without treating environment ordering as a new launch', () => {
+  const saved = { kind: 'stdio', url: '', command: 'fixture', workingFolder: '/old', envNames: ['A', 'B'], discoveredAt: 1, tools: TOOLS }
+  expect(savedTools(saved, { ...saved, workingFolder: '/new' })).toBeNull()
+  expect(savedTools(saved, { ...saved, envNames: ['A', 'C'] })).toBeNull()
+  expect(savedTools(saved, { ...saved, envNames: ['B', 'A'] })).toBe(TOOLS)
+})
+
+it('turns a changed launch off in the draft so it can be saved and checked before re-enabling', async () => {
+  const server = { id: 'echo', name: 'Echo', kind: 'stdio', preset: '', enabled: true, url: '', command: 'fixture',
+    workingFolder: '/old', envNames: [], tools: TOOLS, discoveredAt: 1, hasEnv: {}, hasToken: false }
+  const { posts } = fakeService(view({ settings: settings(2, [server]) }))
+  const card = await screen.findByRole('listitem', { name: 'MCP server Echo' })
+  fireEvent.change(within(card).getByLabelText('Working folder (optional, full path)'), { target: { value: '/new' } })
+  expect(within(card).getByLabelText('Let Portal use this server')).not.toBeChecked()
+  expect(within(card).getByLabelText('Let Portal use this server')).toBeDisabled()
+  expect(within(card).queryByRole('list', { name: 'Tools of Echo' })).toBeNull()
+  fireEvent.click(within(card).getByRole('button', { name: 'Check tools' }))
+  await screen.findByText(/Checked the tools of Echo/)
+  expect(posts[0][1].settings.mcp.servers[0]).toMatchObject({ workingFolder: '/new', enabled: false })
+  expect(within(card).getByLabelText('Let Portal use this server')).not.toBeChecked()
+  expect(within(card).getByLabelText('Let Portal use this server')).toBeEnabled()
+})
+
+for (const kind of ['http', 'stdio']) it(`turns a server off before saving a replacement ${kind === 'http' ? 'token' : 'secret environment value'}`, async () => {
+  const server = { id: 'fixture', name: 'Fixture', kind, preset: '', enabled: true,
+    url: kind === 'http' ? 'http://fixture.invalid/mcp' : '', command: kind === 'stdio' ? 'fixture' : '',
+    workingFolder: '', envNames: kind === 'stdio' ? ['KEY'] : [], hasEnv: { KEY: true }, hasToken: true, tools: TOOLS, discoveredAt: 1 }
+  const { posts } = fakeService(view({ settings: settings(3, [server]) }))
+  const card = await screen.findByRole('listitem', { name: 'MCP server Fixture' })
+  fireEvent.change(within(card).getByLabelText(kind === 'http' ? 'Access token (optional)' : 'KEY'), { target: { value: 'replacement-secret' } })
+  expect(within(card).getByLabelText('Let Portal use this server')).not.toBeChecked()
+  expect(within(card).queryByRole('list', { name: 'Tools of Fixture' })).toBeNull()
+  fireEvent.click(within(card).getByRole('button', { name: 'Check tools' }))
+  await screen.findByText(/Checked the tools of Fixture/)
+  expect(posts[0][1].settings.mcp.servers[0].enabled).toBe(false)
+  expect(posts[0][1].secrets).toEqual(kind === 'http'
+    ? { mcp: { fixture: 'replacement-secret' } } : { mcpEnv: { fixture: { KEY: 'replacement-secret' } } })
+  expect(within(card).getByLabelText('Let Portal use this server')).not.toBeChecked()
+  expect(within(card).getByLabelText('Let Portal use this server')).toBeEnabled()
+})
+
+it('rebases newer edits and clears only the exact acknowledged secrets across a first-save server rename', () => {
+  const initial = draftFrom(settings(0)), base = { ...initial, servers: [{ id: 'temporary', name: 'Files', policies: {}, envNames: ['KEY'] }] }
+  const current = { ...base, notes: { ...base.notes, write: 'allow' }, servers: [{ ...base.servers[0], name: 'New name' }] }
+  const saved = { ...base, servers: [{ ...base.servers[0], id: 'files', policies: { read: 'off' } }] }
+  const rebased = rebaseDraft(base, current, saved, { temporary: 'files' })
+  expect(rebased.notes.write).toBe('allow')
+  expect(rebased.servers[0]).toMatchObject({ id: 'files', name: 'New name', policies: { read: 'off' } })
+  const typed = { ntfyPassword: 'new', mcp: { temporary: 'sent' }, mcpEnv: { temporary: { KEY: 'new-key' } } }
+  expect(acknowledgeSecrets(typed, { ntfyPassword: 'old', mcp: { files: 'sent' }, mcpEnv: { files: { KEY: 'old-key' } } }, { temporary: 'files' }))
+    .toEqual({ ntfyPassword: 'new', mcp: {}, mcpEnv: { files: { KEY: 'new-key' } } })
 })

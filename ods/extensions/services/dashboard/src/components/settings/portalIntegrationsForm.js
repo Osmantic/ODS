@@ -89,15 +89,58 @@ export function renameServers(settings, secrets, ids) {
   }
 }
 
-// The saved server's tools still describe the draft only while its address or command is unchanged.
+// The saved discovery describes one effective launch, not just a command name.
 export function savedTools(saved, server) {
-  if (!saved || saved.kind !== server.kind || saved.url !== server.url || saved.command !== server.command) return null
+  if (!saved || saved.kind !== server.kind || saved.url !== server.url || saved.command !== server.command
+      || (saved.workingFolder || '') !== (server.workingFolder || '')
+      || !sameDraft([...(saved.envNames || [])].sort(), [...(server.envNames || [])].sort())) return null
   return saved.discoveredAt ? saved.tools : null
 }
 
 export function toolEffect(tool) {
-  if (tool.readOnly) return 'Only reads'
-  return tool.destructive ? 'Can change or delete things' : 'Only adds things'
+  if (tool.readOnly) return 'Server reports: read-only'
+  return tool.destructive ? 'Server reports: may change or delete things' : 'Server reports: only adds things'
 }
 
-export const sameDraft = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+const stableDraft = value => JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item)
+  ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item)
+export const sameDraft = (a, b) => stableDraft(a) === stableDraft(b)
+
+const fields = (base, current, saved) => Object.fromEntries([...new Set([...Object.keys(current), ...Object.keys(saved)])]
+  .flatMap(key => {
+    const source = sameDraft(base?.[key], current[key]) ? saved : current
+    return Object.hasOwn(source, key) ? [[key, source[key]]] : []
+  }))
+const remap = (values, ids) => Object.fromEntries(Object.entries(values).map(([id, value]) => [ids[id] || id, value]))
+
+// Rebase only edits made after the submitted/read snapshot. A returned revision
+// may acknowledge a save even when its following discovery or test fails.
+export function rebaseDraft(base, current, saved, ids = {}) {
+  if (!base || !current) return saved
+  const renamed = draft => ({ ...draft, servers: draft.servers.map(server => ({ ...server, id: ids[server.id] || server.id })) })
+  base = renamed(base); current = renamed(current)
+  const previous = new Map(base.servers.map(server => [server.id, server]))
+  const received = new Map(saved.servers.map(server => [server.id, server]))
+  const present = new Set(current.servers.map(server => server.id))
+  return {
+    notifications: fields(base.notifications, current.notifications, saved.notifications),
+    notes: fields(base.notes, current.notes, saved.notes),
+    servers: [...current.servers.map(server => {
+      const old = previous.get(server.id), next = received.get(server.id)
+      if (!old || !next) return server
+      return { ...fields(old, server, next), policies: fields(old.policies, server.policies, next.policies) }
+    }), ...saved.servers.filter(server => !present.has(server.id) && !previous.has(server.id))],
+  }
+}
+
+// Acknowledge only the exact values sent. New typing during a request remains
+// unsaved; confirmed secrets are not retransmitted after a later step fails.
+export function acknowledgeSecrets(typed, sent, ids = {}) {
+  const mcp = remap(typed.mcp, ids), mcpEnv = remap(typed.mcpEnv || {}, ids)
+  return {
+    ntfyPassword: typed.ntfyPassword === sent.ntfyPassword ? '' : typed.ntfyPassword,
+    mcp: Object.fromEntries(Object.entries(mcp).filter(([id, value]) => value !== sent.mcp?.[id])),
+    mcpEnv: Object.fromEntries(Object.entries(mcpEnv).map(([id, values]) => [id,
+      Object.fromEntries(Object.entries(values).filter(([name, value]) => value !== sent.mcpEnv?.[id]?.[name]))])),
+  }
+}
