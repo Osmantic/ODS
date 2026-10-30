@@ -89,6 +89,13 @@ const XP_REQUIREMENT_SCALE = 1.5;
 // exactly once, at the point of assignment, so this value must stay unscaled: pre-scaling it
 // would apply the +50% twice at level 1.
 const XP_BASE = 26;
+// Flat late-game gate. Once the hero reaches XP_FLAT_FROM_LEVEL, every gate is exactly
+// XP_FLAT instead of following the ×1.45 curve, which by level ~11 demanded 30k+ XP per level
+// and stalled leveling in the deeper realms. Fixed cost keeps picks coming at a steady pace
+// forever. Curve value at level 11 was 3233 (×1.5 = gate shown in HUD), so 2500 is slightly
+// below that — a deliberate easing, not a nerf of an already-climbable hill.
+const XP_FLAT = 2500;
+const XP_FLAT_FROM_LEVEL = 11; // the gate FOR level 11 and every level after
 // Spider web slow. A web bolt that lands on the hero cuts movement speed to WEB_SLOW of normal
 // for WEB_SLOW_T seconds. Kept as dials here because both the projectile hit (ui.js) and the
 // movement step (ui.js) read them.

@@ -14,15 +14,15 @@
   <div id="hud" class="hidden">
     <div class="hud-left">
       <div class="hero-badge">
-        <div class="hero-emoji"><svg viewBox="-7 -4 78 60" width="68" height="52" shape-rendering="geometricPrecision" role="img" aria-label="Gabriel, male elven archer">
-          <!-- Gabriel, male elven archer. The previous pass went cartoon: open grin with teeth,
-               arched brows, blush and freckles made him read as a joker. He is killing waves of
-               monsters, so this pass keeps the cockiness and takes the comedy out of it: the mouth
-               is now a closed one-sided smirk, the brows are heavier and set lower with a slight
-               inward drive for determination, eyes are shallower and half-lidded with a smaller
-               brighter iris, and the ahoge, freckles and blush are gone in favour of an undercut
-               and a flipped ponytail. Still blond (#fff0b0 / #f7d96c / #e8c24a, shadow #d0a633);
-               the only brown is the leather guard and the warm ink #46300f. -->
+        <div class="hero-emoji"><svg viewBox="-7 -4 78 60" width="68" height="52" shape-rendering="geometricPrecision" role="img" aria-label="Shasan, male elven archer">
+          <!-- Shasan, male elven archer — face only. The tiara/green-gem circlet and the cloak
+               collar, clasp and shoulder strap are gone: this badge is just his head. The styling
+               reads rougher and more masculine than the earlier elegant pass: the swept, sectioned
+               fringe is replaced with a messy asymmetric bedhead (strands falling unevenly over
+               the brow, a few loose flyaways),
+               the ponytail is gone in favour of a shaggy nape, and there is light stubble across
+               the lower face. Still blond (#fff0b0 / #f7d96c / #e8c24a, shadow #d0a633); the only
+               brown is the warm ink #46300f. -->
           <defs>
             <linearGradient id="gabHair" x1="0" y1="0" x2=".25" y2="1">
               <stop offset="0" stop-color="#fff0b0"/>
@@ -34,10 +34,6 @@
               <stop offset=".62" stop-color="#eeb98a"/>
               <stop offset="1" stop-color="#d69867"/>
             </radialGradient>
-            <linearGradient id="gabCloak" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0" stop-color="#4e8a66"/>
-              <stop offset="1" stop-color="#27503a"/>
-            </linearGradient>
             <radialGradient id="gabIris" cx=".4" cy=".3" r=".82">
               <stop offset="0" stop-color="#6fb4dd"/>
               <stop offset=".55" stop-color="#2f72a6"/>
@@ -47,43 +43,46 @@
               <stop offset="0" stop-color="#ffe9a0"/>
               <stop offset="1" stop-color="#cf9c33"/>
             </linearGradient>
-            <radialGradient id="gabGem" cx=".35" cy=".3" r=".8">
-              <stop offset="0" stop-color="#a9e8bd"/>
-              <stop offset="1" stop-color="#2c8e58"/>
-            </radialGradient>
             <clipPath id="gabFaceClip">
               <path d="M17 30 Q17 13 32 13 Q47 13 47 30 L47 38.5 Q47 48 41 53.5 Q36.5 57 32 57 Q27.5 57 23 53.5 Q17 48 17 38.5 Z"/>
             </clipPath>
           </defs>
-          <!-- hair mass behind the head, swept back into an undercut with a flipped tail -->
-          <path d="M12.5 28 Q8 3 32 2 Q56 3 51.5 28 Q51.5 17 48.5 13.5 Q53.5 11 54.5 6.5 Q48.5 8 44.5 11.5 Q39 7.5 32 7.5 Q25 7.5 19.5 11.5 Q12.5 17 12.5 28 Z" fill="url(#gabHair)" stroke="#46300f" stroke-width="1.45" stroke-linejoin="round"/>
+          <!-- hair mass behind the head: messy all-over volume with a shaggy nape, no tail -->
+          <path d="M12.5 28 Q7.5 20 10.5 14.5 L14 16.5 Q12.5 8 20 4.5 L22 8 Q26 0.5 33.5 1.5 L34.5 5.5 Q42 1 46.5 6.5 L44.8 9.5 Q53 10 54 17.5 L50.8 18.5 Q55 22.5 51.5 28 Q51.5 17 48.5 13.5 Q40 8.5 32 8.5 Q24 8.5 15.5 13.5 Q12.5 17 12.5 28 Z" fill="url(#gabHair)" stroke="#46300f" stroke-width="1.45" stroke-linejoin="round"/>
           <!-- undercut: short-shaved sideburn on both sides, darker than the mass above it -->
           <g clip-path="url(#gabFaceClip)">
             <path d="M17 26 Q19.5 31 18.8 37 L17 37 Z" fill="#c99f2e" opacity=".5"/>
             <path d="M47 26 Q44.5 31 45.2 37 L47 37 Z" fill="#c99f2e" opacity=".5"/>
           </g>
-          <!-- ponytail: pulled back and flipped, no curl -->
-          <path d="M45 31 Q53.5 36 52.5 45 Q51.8 51 47 53.5 Q50.8 46.5 47.8 39.5 Q46.2 35.2 43 32 Z" fill="url(#gabHair)" stroke="#46300f" stroke-width="1.4" stroke-linejoin="round"/>
-          <path d="M43.8 31.4 Q47.2 33.4 49.8 36.6" fill="none" stroke="url(#gabGold)" stroke-width="2.6" stroke-linecap="round"/>
+          <!-- shaggy nape strands behind the right ear, loose instead of a tied tail -->
+          <path d="M45.5 32 Q51 36.5 49.5 44 L47.4 41 L48 48.5 L45.4 44.5 Q44.6 38 43 33 Z" fill="url(#gabHair)" stroke="#46300f" stroke-width="1.3" stroke-linejoin="round"/>
           <!-- pointed elven ears, high and springy -->
           <path d="M18 29.5 L0 20.5 L17 40.5 Z" fill="#e7b384" stroke="#46300f" stroke-width="1.4" stroke-linejoin="round"/>
           <path d="M46 29.5 L64 20.5 L47 40.5 Z" fill="#e7b384" stroke="#46300f" stroke-width="1.4" stroke-linejoin="round"/>
           <path d="M15.4 28.2 L6 23.6" fill="none" stroke="#c98a5c" stroke-width="1.2" stroke-linecap="round"/>
           <path d="M48.6 28.2 L58 23.6" fill="none" stroke="#c98a5c" stroke-width="1.2" stroke-linecap="round"/>
-          <!-- face: strong jaw, slightly narrowed mouth corner -->
-          <path d="M17 30 Q17 13 32 13 Q47 13 47 30 L47 38.5 Q47 48 41 53.5 Q36.5 57 32 57 Q27.5 57 23 53.5 Q17 48 17 38.5 Z" fill="url(#gabFace)" stroke="#46300f" stroke-width="1.5"/>
+          <!-- face: squareer, heavier jaw than the elegant pass, slightly narrowed mouth corner -->
+          <path d="M17 30 Q17 13 32 13 Q47 13 47 30 L47 39 Q47 48.5 42 53.5 Q37.5 57.5 32 57.5 Q26.5 57.5 22 53.5 Q17 48.5 17 39 Z" fill="url(#gabFace)" stroke="#46300f" stroke-width="1.5"/>
           <!-- shading: form shadow on both sides and a jaw shadow, no blush -->
           <g clip-path="url(#gabFaceClip)">
             <ellipse cx="17.2" cy="34" rx="6.6" ry="18" fill="#c98a5c" opacity=".28"/>
             <ellipse cx="46.8" cy="34" rx="6.6" ry="18" fill="#c98a5c" opacity=".28"/>
-            <path d="M22 50 Q32 58 42 50 L42 57 L22 57 Z" fill="#c98a5c" opacity=".22"/>
+            <path d="M21.5 50 Q32 58.5 42.5 50 L42.5 57.5 L21.5 57.5 Z" fill="#c98a5c" opacity=".22"/>
           </g>
-          <!-- fringe: swept from his left to his right in three sharp sections, tips over the brow -->
-          <path d="M16.5 26 Q15.5 12 32 11 Q48.5 12 47.5 26 L44.5 20 Q43.8 16 41 17.2 L36 23 L34 16.5 Q31 15 28 16.8 L25.5 22 L21.8 16.5 Q19.5 16.2 18.6 20.5 Z" fill="url(#gabHair)" stroke="#46300f" stroke-width="1.4" stroke-linejoin="round"/>
-          <path d="M37.5 15.5 L32.5 22.5" fill="none" stroke="#d0a633" stroke-width="1.1" stroke-linecap="round"/>
-          <path d="M27 15.8 L24.4 21" fill="none" stroke="#d0a633" stroke-width="1" stroke-linecap="round"/>
-          <!-- single restrained crown highlight -->
-          <path d="M22.5 16.5 Q32 11 41.5 16.5" fill="none" stroke="#fff6d2" stroke-width="1.4" stroke-linecap="round" opacity=".45"/>
+          <!-- fringe: messy and uneven, falling in several directions across the brow -->
+          <path d="M16.5 26 Q15.5 12 32 11 Q48.5 12 47.5 26 L45.3 19.6 Q44.8 15.4 42.2 17.6 L39.6 25.2 L36.4 15.8 Q33.6 13.8 31.4 16.6 L29.8 24.4 L26.6 15.4 Q23.6 14.6 22.6 18.4 L21.6 23.4 L19.2 17.2 Q17.4 17.4 17.6 20.8 Z" fill="url(#gabHair)" stroke="#46300f" stroke-width="1.4" stroke-linejoin="round"/>
+          <path d="M36.8 15.6 L33.4 23.2" fill="none" stroke="#d0a633" stroke-width="1.1" stroke-linecap="round"/>
+          <path d="M27.4 15.4 L25.6 22" fill="none" stroke="#d0a633" stroke-width="1" stroke-linecap="round"/>
+          <path d="M43.6 17.2 L41.4 23.4" fill="none" stroke="#d0a633" stroke-width="1" stroke-linecap="round"/>
+          <path d="M21.4 18 L20.6 22.8" fill="none" stroke="#d0a633" stroke-width=".9" stroke-linecap="round"/>
+          <!-- loose flyaway strands: the messy, just-riding-through-the-woods look -->
+          <path d="M25.5 5.8 Q23.2 1.4 25.8 -1.2" fill="none" stroke="url(#gabHair)" stroke-width="1.4" stroke-linecap="round"/>
+          <path d="M38.5 3.4 Q41 0.4 39.6 -2.2" fill="none" stroke="url(#gabHair)" stroke-width="1.3" stroke-linecap="round"/>
+          <path d="M14.6 14 Q11.4 11.4 12 8" fill="none" stroke="url(#gabHair)" stroke-width="1.3" stroke-linecap="round"/>
+          <path d="M50.4 14.6 Q53.6 12.2 53.2 8.8" fill="none" stroke="url(#gabHair)" stroke-width="1.3" stroke-linecap="round"/>
+          <!-- restrained crown highlight, broken so it does not read as a sleek shine -->
+          <path d="M23 16 Q27.5 12.8 32 13.2" fill="none" stroke="#fff6d2" stroke-width="1.4" stroke-linecap="round" opacity=".4"/>
+          <path d="M36 13.4 Q40 13.8 42.5 16" fill="none" stroke="#fff6d2" stroke-width="1.4" stroke-linecap="round" opacity=".35"/>
           <!-- determined brows: heavy, low over the eyes, driven slightly inward -->
           <path d="M20.2 24.4 Q25 22 29.9 24.9" fill="none" stroke="#d0a633" stroke-width="2.6" stroke-linecap="round"/>
           <path d="M34.1 24.9 Q39 22 43.8 24.4" fill="none" stroke="#d0a633" stroke-width="2.6" stroke-linecap="round"/>
@@ -104,23 +103,22 @@
           <path d="M35.4 33 Q38.4 33.8 41.4 32.6" fill="none" stroke="#c98a5c" stroke-width=".85" stroke-linecap="round" opacity=".55"/>
           <!-- small upturned nose -->
           <path d="M31.4 34.8 Q31 38.6 34 39.2" fill="none" stroke="#c98a5c" stroke-width="1.3" stroke-linecap="round"/>
-          <!-- the smirk: closed, asymmetric, corner pulled up on his left only -->
-          <path d="M24.2 45.4 Q29.6 46.8 34.4 45.6 Q37.6 44.7 40.2 41.4" fill="none" stroke="#46300f" stroke-width="1.6" stroke-linecap="round"/>
-          <path d="M39.4 43.6 Q41.8 43.2 42.8 41.4" fill="none" stroke="#c98a5c" stroke-width="1" stroke-linecap="round" opacity=".85"/>
+          <!-- the smirk: closed, asymmetric, corner pulled up on his left only.
+               Shortened and scaled down from the earlier M24.2 45.4 … L40.2 41.4 sweep, which read
+               as too wide a grin for the face: the mouth is now about two-thirds as wide and half
+               as tall, centred under the nose, with the same one-sided lift. -->
+          <path d="M26.9 45.2 Q30.6 46.2 33.9 45.4 Q36 44.8 37.4 43.1" fill="none" stroke="#46300f" stroke-width="1.6" stroke-linecap="round"/>
+          <path d="M36.9 44.0 Q38.4 43.7 39.1 42.6" fill="none" stroke="#c98a5c" stroke-width="1" stroke-linecap="round" opacity=".85"/>
           <!-- brow scar, a short healed line on his right brow -->
           <path d="M23 20.6 L26.4 23.4" fill="none" stroke="#c07f57" stroke-width="1.1" stroke-linecap="round" opacity=".65"/>
-          <!-- elven circlet with a leaf gem, worn over the fringe -->
-          <path d="M18.6 22.4 Q32 16.6 45.4 22.4" fill="none" stroke="url(#gabGold)" stroke-width="1.7"/>
-          <path d="M32 16 l2.5 3.9 -2.5 3.9 -2.5 -3.9 Z" fill="url(#gabGem)" stroke="#2a6144" stroke-width="1"/>
-          <path d="M31.2 17.6 l1.1 1.6" fill="none" stroke="#eafff2" stroke-width=".8" stroke-linecap="round" opacity=".8"/>
-          <!-- cloak collar along the bottom edge, gold clasp, leather strap over one shoulder -->
-          <path d="M-7 63 Q-3 53 13 53 L51 53 Q67 53 71 63 Z" fill="url(#gabCloak)" stroke="#46300f" stroke-width="1.4" stroke-linejoin="round"/>
-          <path d="M28 53 L32 59 L23 59 Z" fill="#eef3e6" stroke="#46300f" stroke-width="1.1"/>
-          <path d="M45 53.5 Q56 55.5 64 61" fill="none" stroke="#7d5730" stroke-width="2.8" stroke-linecap="round"/>
-          <circle cx="36" cy="55" r="1.8" fill="url(#gabGold)" stroke="#46300f" stroke-width=".85"/>
+          <!-- light stubble across the jaw and chin: rough days on the road, no elegance -->
+          <g clip-path="url(#gabFaceClip)" opacity=".32">
+            <path d="M20.5 44 Q21.5 53 32 57 Q42.5 53 43.5 44 L43.5 58 L20.5 58 Z" fill="#8a6f4d"/>
+            <path d="M27.6 50 Q32 51.6 36.4 50 L36.4 54 Q32 55.4 27.6 54 Z" fill="#8a6f4d" opacity=".6"/>
+          </g>
         </svg></div>
         <div class="hero-info">
-          <div class="hero-name">Gabriel</div>
+          <div class="hero-name">Shasan</div>
           <div class="bar hp-bar"><div id="hp-fill"></div><span id="hp-text">50/50</span></div>
           <div class="bar xp-bar"><div id="xp-fill"></div><span id="xp-text">Lv 1</span></div>
         </div>
@@ -155,7 +153,7 @@
       <p class="subtitle">A dungeon crawler made with ODS on the RTX Spark</p>
       <p class="lore">One elf. One bow. Endless brutes.<br>
       Run, draw, and loose arrows through great halls of the ashland — <b>grab hearts</b> to mend your wounds and <b>quivers</b> to keep your string singin', then loot, level, and outrun your way to the Cinderfall.</p>
-      <p class="lore">Break the Hollow Crown and the realms <b>fold back on themselves</b>: every circuit of six brings <b>half again as many foes</b>, <b>hardier bosses</b> and <b>realm-6 reinforcements</b> from the first hall onward. The quest never ends — it is only ever a matter of how far Gabriel gets.</p>
+      <p class="lore">Break the Hollow Crown and the realms <b>fold back on themselves</b>: every circuit of six brings <b>half again as many foes</b>, <b>hardier bosses</b> and <b>realm-6 reinforcements</b> from the first hall onward. The quest never ends — it is only ever a matter of how far Shasan gets.</p>
       <button id="btn-start" class="big-btn" type="button">🏹 Draw Your Bow</button>
       <div class="controls-hint">
         <h3>Controls</h3>
