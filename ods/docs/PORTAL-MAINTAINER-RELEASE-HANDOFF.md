@@ -40,9 +40,10 @@ and [restricted-scope review](https://developers.google.com/identity/protocols/o
 
 ## Integration and release coordination
 
-- Obtain Coffee's actual custom-MCP/Home Assistant/ntfy/Obsidian PR and review
-  shared Settings navigation, native server IDs, grants and pending transitions.
-  His reported features are not automatically qualified by this consolidation.
+- Review Coffee's actual [#8324](https://github.com/Osmantic/ODS/pull/8324) with
+  the [composition acceptance record](PORTAL-COFFEE-INTEGRATION.md), including
+  shared Settings navigation, native tool IDs, grants and pending transitions.
+  The local composition is not automatically merge or release acceptance.
 - Agree how to land this consolidation with the earlier connected-app PRs,
   retaining their authorship. A passing checkpoint CI is not approval to merge
   overlapping stacks in arbitrary order.

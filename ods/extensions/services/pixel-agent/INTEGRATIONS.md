@@ -25,8 +25,10 @@ Portal gateway (pixel-ods plugin) ──────────► control.sock
 
 `pixel-integrations.service` runs as the owner and does every integration action.
 It holds the settings and secrets in `~/.config/ods/pixel-integrations/`, with
-files mode 0600 and the folder mode 0700. The gateway never sees a password, a
-token or the vault path.
+files mode 0600 and the folder mode 0700. Normal integration-tool replies do not
+include configuration credentials or the vault root. Configured servers receive
+their credentials and must be trusted; literal redaction cannot stop a malicious
+server from encoding or transmitting a secret.
 
 The gateway runs as the same user, so the service uses separate sockets to tell
 owner requests from agent requests. A uid check could not do that.
@@ -36,11 +38,19 @@ owner requests from agent requests. A uid check could not do that.
   tools.
 - **Owner socket:** `~/.config/ods/pixel-integrations/owner.sock`. It accepts
   only owner actions: read settings, save, test notification, check tools, test a
-  server, restart a local server, approve or decline, and clear the activity list. The gateway's `ProtectHome=tmpfs` hides this folder, so the
-  owner socket is out of its reach. The installer refuses to start the service if
-  any gateway bind covers it.
+  server, restart a local server, approve or decline, and clear the activity list.
+  In Sandbox, the gateway's home mount hides this folder from ordinary paths;
+  the installer refuses a bind that exposes it, including a canonical alias.
+  This is not a different-user security boundary.
 
 Both sockets refuse any process that is not the owner's user.
+
+**Full Access:** the gateway can use the owner's files and commands. It can
+therefore reach the owner's integration state and secrets outside the agent
+endpoint. Off/Ask first/Allowed are enforced by that endpoint, not an absolute
+restriction on separately authorized Full Access commands. Different socket
+paths with the same UID do not prevent such access. The installer and Settings
+do not certify Sandbox isolation for Full Access.
 
 ## Permissions
 
@@ -55,6 +65,9 @@ annotations:
 - "Only adds things" (the server says `destructiveHint: false`);
 - "Can change or delete things" (the default for a tool that is not read-only, as in the MCP specification).
 
+These labels are server reports, not independently verified effects. See the
+[MCP tool specification](https://modelcontextprotocol.io/specification/2025-06-18/server/tools).
+
 On the first check, read-only tools start as Allowed and every other tool starts as
 Ask first. A tool that appears on a later check starts as **Off** and is marked
 *New*, so a server cannot add an allowed tool behind the owner's back. **Test
@@ -66,7 +79,10 @@ An "ask first" action creates an approval in Settings, and an ntfy ping if that 
 turned on:
 
 - The approval is bound to the exact server, tool and arguments, or the exact
-  note, text and mode.
+  note, text and mode, and the destination/configuration that was reviewed.
+  Replacing a vault, changing a server's endpoint, credential or schema, or
+  disabling and re-enabling it invalidates the old approval. Returning to an
+  earlier setting does not revive it.
 - It can be used once and expires after 24 hours.
 - After the owner approves, Portal repeats the same call. A scheduled task does
   not wait: it reports that the action needs approval, and its next run within 24
@@ -86,7 +102,10 @@ Only the owner can add one. Settings says so next to the command.
   removed, or with **Restart**; it then starts again on its next use.
 - It runs in its own process group. Stopping it stops everything it started.
 - A request that gets no answer within 30 seconds (90 for the first start) stops
-  the server; the next use starts it again. The service itself never waits longer.
+  the server; the next use starts it again. Initialization, queueing, catalog
+  pages and execution also share a 120-second session budget. HTTP requests
+  have a 20-second absolute deadline, including headers and body. Cleanup
+  finishes before the service reports a terminal result.
 - The service has a minimal `PATH`. It also looks in `~/.local/bin`, `~/bin`,
   `~/.npm-global/bin`, `~/.cargo/bin`, `/usr/local/bin`, `/snap/bin`, Homebrew and
   the newest nvm Node. Otherwise give the full path, as `which npx` shows it.
@@ -94,8 +113,10 @@ Only the owner can add one. Settings says so next to the command.
   secrets and never shown back. The server gets only those, plus `HOME`, `USER`,
   `LANG` and the `PATH` above, not the service's own environment.
 - An optional working folder; the default is the owner's home.
-- Its error output is kept. The owner sees the last lines in Settings when it
-  fails; the model only gets a short sentence.
+- Its error output is kept with configured plaintext secret values masked. The
+  owner sees the last lines in Settings when it fails; the model only gets a
+  short sentence. This does not prevent an untrusted program from encoding or
+  independently transmitting a credential.
 - Questions a server asks the client are answered so it never waits: `ping`,
   `roots/list` (no roots), and "not supported" for anything else.
 - The service allows up to 2 GB of memory and 512 tasks for itself and its local
@@ -142,5 +163,9 @@ can read any folder the owner can.
 - The activity list keeps the latest 500 entries and can be cleared.
 - Notifications are plain text, up to 4,000 characters.
 - MCP results passed to the model are clipped to 8,000 characters.
+- A cancelled request is not submitted if cancellation arrives before sending.
+  After submission, cancellation keeps native admission until the service
+  settles. If the connection loses the response, Portal reports an unknown
+  outcome and must not automatically repeat an action that may have happened.
 - Up to 20 MCP servers, and up to 200 tools per server.
 - Scheduled tasks can end by calling `pixel_ods_notify` to report their result.
