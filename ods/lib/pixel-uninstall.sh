@@ -2452,6 +2452,18 @@ PY
     if "$project_present"; then
         timeout 350s sudo systemctl disable --now ods-pixel-project.service || return 1
     fi
+    # Portal integrations: the unit, its programs, and the owner's integration
+    # settings and secrets (the owner's vault is theirs and stays).
+    local integrations_unit="$systemd_dir/pixel-integrations.service"
+    local integrations_programs="$libexec_dir/ods-pixel-integrations"
+    if [[ -e "$integrations_unit" || -L "$integrations_unit" ]]; then
+        timeout 30s sudo systemctl disable --now pixel-integrations.service || return 1
+        sudo rm -f -- "$integrations_unit" || return 1
+    fi
+    if [[ -e "$integrations_programs" || -L "$integrations_programs" ]]; then
+        sudo rm -rf -- "$integrations_programs" || return 1
+    fi
+    rm -rf -- "$owner_home/.config/ods/pixel-integrations" || return 1
     if [[ -e "$gateway_unit" || -L "$gateway_unit" \
         || -e "$ingress_unit" || -L "$ingress_unit" \
         || -e "$ingress_env" || -L "$ingress_env" \

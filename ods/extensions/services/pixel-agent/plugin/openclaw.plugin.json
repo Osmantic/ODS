@@ -36,7 +36,10 @@
       "pixel_ods_research",
       "pixel_ods_extension_request_advance",
       "pixel_ods_extension_request_retry",
-      "pixel_ods_skill"
+      "pixel_ods_skill",
+      "pixel_ods_notes",
+      "pixel_ods_notify",
+      "pixel_ods_mcp"
     ]
   },
   "toolMetadata": {
@@ -82,7 +85,10 @@
     },
     "pixel_ods_skill": {
       "replaySafe": true
-    }
+    },
+    "pixel_ods_notes": {"replaySafe": false},
+    "pixel_ods_notify": {"replaySafe": false},
+    "pixel_ods_mcp": {"replaySafe": false}
   },
   "activation": {
     "onStartup": true

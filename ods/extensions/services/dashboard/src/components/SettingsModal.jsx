@@ -13,9 +13,10 @@ const Integrations = lazy(() => import('../pages/ServiceMap'))
 const RemoteGPU = lazy(() => import('../pages/RemoteProvider'))
 const PixelDiagnostics = lazy(() => import('./settings/PixelDiagnostics'))
 const ConnectedApps = lazy(() => import('./settings/ConnectedApps'))
+const PortalIntegrations = lazy(() => import('./settings/PortalIntegrationsSettings'))
 
 // Sections drawn by their own component rather than the Settings page.
-const OWN_COMPONENT = ['profile', 'portal-mascot', 'pixel-diagnostics', 'integrations', 'remote', 'apps']
+const OWN_COMPONENT = ['profile', 'portal-mascot', 'pixel-diagnostics', 'integrations', 'remote', 'apps', 'portal-integrations']
 const sections = [
   ['general', 'General', Gear], ['profile', 'Profile', UserRound], ['appearance', 'Appearance', Palette],
   ['portal-mascot', 'Portal mascot', Cloud],
@@ -25,6 +26,7 @@ const sections = [
   // Shown only while ODS has connected apps switched on.
   ['apps', 'Connected apps', Plug, 'google gmail calendar email accounts'],
   ['access', 'Portal access', ShieldCheck],
+  ['portal-integrations', 'Portal integrations', Plug, 'mcp home assistant ntfy notifications obsidian notes vault approvals'],
   ['sharing', 'Model sharing', Share2],
   // Using a model API (an API key) or another computer's GPU lives here.
   ['remote', 'Remote model', Server, 'api key provider openai endpoint url cloud gpu server'],
@@ -73,6 +75,7 @@ export default function SettingsModal() {
             <button type="button" onClick={() => { void refreshApps() }} className="rounded-lg border border-white/20 px-3 py-2">Retry</button>
           </section> : <p>Loading settings…</p>)}
         {section === 'pixel-diagnostics' && <PixelDiagnostics />}
+        {visited.has('portal-integrations') && <div hidden={section !== 'portal-integrations'}><PortalIntegrations /></div>}
         {visited.has('integrations') && <div hidden={section !== 'integrations'}><Integrations compact /></div>}
         {visited.has('remote') && <div hidden={section !== 'remote'}><RemoteGPU compact /></div>}
       </Suspense>
