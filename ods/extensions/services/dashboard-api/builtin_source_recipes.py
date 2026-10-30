@@ -34,7 +34,7 @@ _RECIPES = {
 _CONTEXT_BUILDS = {
     "ape": ("ape", None, "Dockerfile", "211ce10c0086f2837abaea9a33d03d146a108e1dfefb0601d8ed7e1ca2dc7806"),
     "brave-search": ("brave-search", "ods-brave-search:local", "Dockerfile", "f1be25450cae210788c29d02dc497ff64f3fe7f9184cc73332c08a734e709e95"),
-    "privacy-shield": ("privacy-shield", None, "Dockerfile", "ad58afe44dd1054b8d55e832c1bd01725b79c79d05d1f5a63e6d4eb140d69aef"),
+    "privacy-shield": ("privacy-shield", None, "Dockerfile", "8f296ee27215df4a7b29796834d9627e14940336412aa94ed32b46b99dbcdec8"),
     "token-spy": ("token-spy", None, "Dockerfile", "98e93c93cdff9ff63bed7569a8dec9e45171c59e60516878e097a43274277eff"),
 }
 _MAX_CONTEXT_FILE_BYTES = 8 * 1024 * 1024
