@@ -410,12 +410,21 @@ else
             return 1
         fi
 
-        # If the marker exists but the recorded installation directory is missing its
-        # .env, the prior deployment directory was wiped or moved without uninstalling.
+        # If the marker exists and records this install dir as ODS-managed, but the
+        # recorded installation directory has no active installation (.env or config),
+        # the prior deployment directory was wiped or moved without uninstalling.
         # Clean up the orphaned host state so the installer can bootstrap cleanly rather
         # than failing an impossible in-place upgrade.
-        if [[ ! -f "$INSTALL_DIR/.env" ]]; then
-            ai_warn "Recorded Pixel installation marker exists, but $INSTALL_DIR has no active installation."
+        if [[ ! -f "$INSTALL_DIR/.env" && ! -d "$INSTALL_DIR/config" ]] && "${ODS_PYTHON_CMD:-python3}" -c '
+import json, pathlib, sys
+marker = pathlib.Path(sys.argv[1])
+try:
+    data = json.loads(marker.read_text(encoding="utf-8"))
+    sys.exit(0 if data.get("manager") == "ods" and data.get("install_dir") == sys.argv[2] else 1)
+except Exception:
+    sys.exit(1)
+' "$_phase06_pixel_marker" "$INSTALL_DIR" 2>/dev/null; then
+            log "Recorded Pixel installation marker exists, but $INSTALL_DIR has no active installation."
             ai "Resetting orphaned Pixel host state for a clean re-installation..."
             if ! declare -F ods_pixel_uninstall_managed >/dev/null 2>&1; then
                 # shellcheck source=../../lib/pixel-uninstall.sh
@@ -424,7 +433,7 @@ else
             if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME" "source-transition"; then
                 log "Orphaned Pixel host state cleaned. Proceeding with clean installation."
             else
-                warn "Could not clean all orphaned Pixel state; removing stale marker."
+                log "Could not clean all orphaned Pixel state; removing stale marker."
                 rm -f "$_phase06_pixel_marker"
             fi
             _phase06_pixel_source_transition=1
