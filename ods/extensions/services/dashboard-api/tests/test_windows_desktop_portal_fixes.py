@@ -413,3 +413,46 @@ async def test_windows_desktop_list_models_and_download_status(monkeypatch):
     assert catalog.get("odsMode") == "local"
 
 
+@pytest.mark.asyncio
+async def test_windows_desktop_model_benchmark(monkeypatch):
+    """Verify benchmark endpoint works on Windows Desktop by calling native llama-server endpoint."""
+    monkeypatch.setattr(config, "WINDOWS_DESKTOP_PROFILE", True)
+    fake_payload = {
+        "models": [{"id": "qwen3.5-2b-q4", "status": "loaded", "contextLength": 4096}],
+    }
+    monkeypatch.setattr(models, "build_models_payload", lambda *args, **kwargs: fake_payload)
+    monkeypatch.setattr(models, "_discover_loaded_model", AsyncMock(return_value="qwen3.5-2b-q4"))
+    monkeypatch.setattr(models, "get_gpu_info", lambda: None)
+    monkeypatch.setattr(models, "get_llama_context_size", AsyncMock(return_value=4096))
+    monkeypatch.setattr(models, "_installed_model_paths", lambda: {})
+
+    fake_response_data = {
+        "usage": {
+            "completion_tokens": 30,
+        },
+        "timings": {
+            "predicted_n": 30,
+            "predicted_ms": 1000.0,
+        },
+    }
+
+    class FakeBenchmarkClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def post(self, url, json=None, headers=None):
+            mock = MagicMock(status_code=200)
+            mock.raise_for_status = MagicMock()
+            mock.json = MagicMock(return_value=fake_response_data)
+            return mock
+
+    with patch("httpx.AsyncClient", FakeBenchmarkClient):
+        res = await models._run_current_model_benchmark("qwen3.5-2b-q4", 64)
+        assert res["model"] == "qwen3.5-2b-q4"
+        assert res["tokensPerSecond"] > 0
+        assert res["source"] == "local_benchmark"
+
+

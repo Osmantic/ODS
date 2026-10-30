@@ -2917,17 +2917,31 @@ def _benchmark_measurement(data: Any, wall_seconds: float) -> tuple[int, float, 
 
 
 async def _run_current_model_benchmark(model_id: str, max_tokens: int) -> dict:
-    service = SERVICES.get("llama-server")
-    if not service:
-        raise HTTPException(status_code=503, detail="llama-server service is not configured")
-    host = service.get("host", "llama-server")
-    port = int(service.get("port", 8080))
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        from native_llm import resolve_native_llm_endpoint, _native_llm_headers
+        endpoint = resolve_native_llm_endpoint()
+        url = f"{endpoint}/v1/chat/completions"
+        headers = _native_llm_headers()
+        loaded_model = await _discover_loaded_model()
+    else:
+        service = SERVICES.get("llama-server")
+        if not service:
+            raise HTTPException(status_code=503, detail="llama-server service is not configured")
+        host = service.get("host", "llama-server")
+        port = int(service.get("port", 8080))
 
-    loaded_model = await get_loaded_model()
-    if not loaded_model:
-        loaded_model = await _fetch_llama_loaded_model(host, port)
-    if not loaded_model:
-        loaded_model = _read_active_model() or read_env_value("LLM_MODEL", INSTALL_DIR)
+        loaded_model = await get_loaded_model()
+        if not loaded_model:
+            loaded_model = await _fetch_llama_loaded_model(host, port)
+        if not loaded_model:
+            loaded_model = _read_active_model() or read_env_value("LLM_MODEL", INSTALL_DIR)
+        url, headers = f"http://{host}:{port}/v1/chat/completions", None
+        if read_env_value("AMD_INFERENCE_LOCATION", INSTALL_DIR).strip().lower() == "host":
+            gateway_key = read_env_value("LITELLM_KEY", INSTALL_DIR) or read_env_value("LITELLM_MASTER_KEY", INSTALL_DIR)
+            url = "http://litellm:4000/v1/chat/completions"
+            headers = {"Authorization": f"Bearer {gateway_key}"} if gateway_key else None
+
     if not loaded_model:
         raise HTTPException(status_code=503, detail="llama-server is not reporting a loaded model")
 
@@ -2962,13 +2976,6 @@ async def _run_current_model_benchmark(model_id: str, max_tokens: int) -> dict:
         "context length, and GPU memory bandwidth. Continue until the token budget ends."
     )
 
-    # A Windows-hosted llama-server requires its key, which only LiteLLM
-    # holds; every other runtime is measured directly.
-    url, headers = f"http://{host}:{port}/v1/chat/completions", None
-    if read_env_value("AMD_INFERENCE_LOCATION", INSTALL_DIR).strip().lower() == "host":
-        gateway_key = read_env_value("LITELLM_KEY", INSTALL_DIR) or read_env_value("LITELLM_MASTER_KEY", INSTALL_DIR)
-        url = "http://litellm:4000/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {gateway_key}"} if gateway_key else None
     started = time.perf_counter()
     async with httpx.AsyncClient(timeout=max(60.0, max_tokens * 3.0)) as client:
         resp = await client.post(

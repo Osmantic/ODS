@@ -805,8 +805,18 @@ async def stream_native_chat_completion(
     headers["Accept"] = "text/event-stream"
 
     effective_window = context_window or DEFAULT_CONTEXT_WINDOW
+    sanitized_messages: list[dict[str, Any]] = []
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, str):
+            cleaned = re.sub(r'<ods_write_file\s+path="[^"\r\n]*"\s*>', "", content)
+            cleaned = cleaned.replace("</ods_write_file>", "")
+            sanitized_messages.append({**msg, "content": cleaned})
+        else:
+            sanitized_messages.append(msg)
+
     budget: BudgetedContext = plan_context_budget(
-        messages,
+        sanitized_messages,
         system_prompt=system_prompt,
         context_window=effective_window,
         context_start=context_start,
@@ -863,6 +873,10 @@ async def stream_native_chat_completion(
                             piece = delta.get("content")
                             if isinstance(piece, str) and piece:
                                 accumulated_text.append(piece)
+                                cleaned_piece = re.sub(r'<ods_write_file\s+path="[^"\r\n]*"\s*>', "", piece).replace("</ods_write_file>", "")
+                                if cleaned_piece != piece:
+                                    delta["content"] = cleaned_piece
+                                    data_str = json.dumps(parsed)
                             if choices[0].get("finish_reason") == "length":
                                 hit_token_limit = True
                     except (ValueError, TypeError):
@@ -887,7 +901,12 @@ async def stream_native_chat_completion(
     full_reply = "".join(accumulated_text)
     delivered_files = execute_workspace_file_blocks(full_reply)
 
-    if delivered_files:
+    has_html_entry = any(
+        f.get("path") in {"index.html", "index.htm"} or str(f.get("path")).lower().endswith(".html")
+        for f in delivered_files
+    )
+
+    if delivered_files and has_html_entry:
         try:
             workspace_preview, manifest_record = create_workspace_preview_record(delivered_files)
             if manifest_record:
