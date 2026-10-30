@@ -1,15 +1,15 @@
 """Owner integrations for Portal: an Obsidian vault, ntfy notifications and MCP servers.
 
-One local service holds the owner's integration settings and secrets and performs every
-integration action, so the sandboxed gateway never holds a token or a vault path. Requests
-are one JSON line over a Unix socket. The gateway runs as the owner's user, so the socket,
-not the caller's uid, sets what a request may do: the agent socket under /run is the only
-one the gateway sandbox can see, and the owner socket sits in the state folder, which its
-ProtectHome=tmpfs hides. The owner (through the host agent) changes settings and decides
-approvals. The gateway may only use what the owner turned on: search and read notes, write
-notes as the owner allowed, send notifications, and call the MCP tools the owner allowed. A
-tool or note change set to "ask first" waits for the owner's approval, bound to the exact
-call and usable once.
+One local service holds integration settings and secrets. Requests are one JSON line over
+separate owner and agent Unix endpoints; the listener determines the role, not request
+fields. The owner endpoint changes settings and decides approvals. The agent endpoint
+enforces enabled resources and exact, single-use approvals for "ask first" actions.
+
+These endpoints share the owner's Unix identity. Their permissions exclude other users,
+but do not isolate arbitrary owner-account code. In particular Full Access can read owner
+files and reach the owner endpoint outside this tool path. Mount hiding alone is not an
+absolute same-UID security boundary. Off/ask/allow are policies of the integration tools,
+not a claim that broader owner-account access cannot bypass them.
 """
 import base64
 import json
@@ -31,7 +31,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import integrations_notes as notes  # noqa: E402
 from integrations_common import (IntegrationError, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES,  # noqa: E402
-                                 NETWORK_TIMEOUT, SCHEMA_VERSION, Store, digest, now)
+                                 NETWORK_TIMEOUT, SCHEMA_VERSION, Store, digest, now, safe_urlopen, redact_secrets)
 from integrations_mcp import LocalServers, McpSession, describe_tool  # noqa: E402
 
 MAX_SERVERS = 20
@@ -80,9 +80,12 @@ def _notes(value):
     if not isinstance(value, dict) or set(value) != {"enabled", "vaultPath", "write"} or value["write"] not in POLICIES:
         raise IntegrationError("invalid-settings", "Check the notes settings.")
     vault = _text(value["vaultPath"], "the vault folder", 1024)
-    if value["enabled"] is True and not (pathlib.Path(vault).is_absolute() and pathlib.Path(vault).is_dir()):
+    if value["enabled"] is True and not (pathlib.Path(vault).is_absolute() and pathlib.Path(vault).is_dir()
+                                         and not pathlib.Path(vault).is_symlink()):
         raise IntegrationError("invalid-settings", "The vault folder must be an existing folder, given as a full path.")
-    return {"enabled": value["enabled"] is True, "vaultPath": vault, "write": value["write"]}
+    return {"enabled": value["enabled"] is True,
+            "vaultPath": str(pathlib.Path(vault).resolve()) if value['enabled'] is True else vault,
+            "write": value["write"]}
 
 
 def _server(value, previous):
@@ -108,8 +111,10 @@ def _server(value, previous):
         if (not isinstance(names, list) or len(names) > MAX_ENV or len(set(names)) != len(names)
                 or any(not isinstance(name, str) or not ENV_NAME.match(name) or name == "PATH" for name in names)):
             raise IntegrationError("invalid-settings", "Environment variable names use letters, numbers and _, such as GITHUB_TOKEN.")
-        entry["envNames"] = names
-    same = previous is not None and all(previous[key] == entry[key] for key in ("kind", "url", "command"))
+        entry["envNames"] = sorted(names)
+    same = previous is not None and all(previous.get(key) == entry[key]
+                                        for key in ("kind", "url", "command", "workingFolder"))
+    same = same and sorted(previous.get('envNames', [])) == entry['envNames']
     policies = value.get("policies", {})
     if not isinstance(policies, dict) or any(policy not in POLICIES for policy in policies.values()):
         raise IntegrationError("invalid-settings", "Each tool is off, ask first or allowed.")
@@ -117,6 +122,7 @@ def _server(value, previous):
     entry["tools"] = [{**tool, "policy": policies.get(tool["name"], tool["policy"]), "new": False}
                       for tool in (previous["tools"] if same else [])]
     entry["discoveredAt"] = previous["discoveredAt"] if same else None
+    entry["checkedBinding"] = previous.get("checkedBinding") if same else None
     if entry["enabled"] and entry["discoveredAt"] is None:
         raise IntegrationError("invalid-settings", f"Check the tools of {entry['name']} before turning it on.")
     return entry
@@ -141,12 +147,23 @@ def validate_settings(current, incoming):
 def public_config(config, secrets):
     """Settings for the owner's screen: whether each secret is set, never its value."""
     value = json.loads(json.dumps(config))
+    value.pop('approvalBindings', None)
     value["notifications"]["hasPassword"] = bool(secrets.get("ntfyPassword"))
     for server in value["mcp"]["servers"]:
+        server.pop('checkedBinding', None)
         server["hasToken"] = bool(secrets["mcp"].get(server["id"]))
         saved = secrets["mcpEnv"].get(server["id"], {})
         server["hasEnv"] = {name: bool(saved.get(name)) for name in server["envNames"]}
     return value
+
+
+def server_context(server, secrets):
+    """Private identity, never a public credential projection."""
+    return {**{key: server.get(key) for key in ('id', 'kind', 'url', 'command', 'workingFolder')},
+            'envNames': sorted(server.get('envNames', [])),
+            'token': secrets['mcp'].get(server['id'], ''),
+            'env': {name: secrets['mcpEnv'].get(server['id'], {}).get(name, '')
+                    for name in server.get('envNames', [])}}
 
 
 # ---------------------------------------------------------------- notifications (ntfy)
@@ -173,7 +190,7 @@ def send_notification(config, secrets, title, message, priority="default", link=
     elif password:
         request.add_header("Authorization", "Bearer " + password)
     try:
-        with urllib.request.urlopen(request, timeout=NETWORK_TIMEOUT):
+        with safe_urlopen(request, timeout=NETWORK_TIMEOUT):
             pass
     except urllib.error.HTTPError as error:
         reason = "the user or password was refused" if error.code in (401, 403) else f"ntfy answered {error.code}"
@@ -195,13 +212,17 @@ class Integrations:
         if not isinstance(request, dict) or request.get("schemaVersion") != SCHEMA_VERSION:
             raise IntegrationError("invalid-request", "Unsupported request.")
         action = request.get("action")
-        if role == "owner":
-            if action not in OWNER_ACTIONS:
-                raise IntegrationError("invalid-request", "Unknown owner action.")
-            return self._owner(action, request)
-        if action in OWNER_ACTIONS:
-            raise IntegrationError("forbidden", "Only the owner can change integrations.")
-        return self._agent(action, request)
+        try:
+            if role == "owner":
+                if action not in OWNER_ACTIONS:
+                    raise IntegrationError("invalid-request", "Unknown owner action.")
+                return self._owner(action, request)
+            if action in OWNER_ACTIONS:
+                raise IntegrationError("forbidden", "Only the owner can change integrations.")
+            return self._agent(action, request)
+        except IntegrationError as error:
+            # A child/server may echo a configured credential in its diagnosis.
+            raise IntegrationError(error.code, redact_secrets(error.message, self.store.secrets())) from None
 
     # Owner (host agent) actions.
     def _owner(self, action, request):
@@ -235,12 +256,21 @@ class Integrations:
                    for item in approvals if item["state"] == "pending"]
         processes = {server["id"]: self.local.status(server["id"])
                      for server in config["mcp"]["servers"] if server["kind"] == "stdio"}
-        return {"settings": public_config(config, secrets), "approvals": waiting, "activity": self.store.activity(),
-                "processes": processes}
+        # Public settings omit secret fields by construction. Do not rewrite
+        # routing IDs/paths if a short credential happens to equal that value.
+        for item in waiting:
+            item['summary'] = redact_secrets(item['summary'], secrets)
+        activity = self.store.activity()
+        for item in activity:
+            for field in ('target', 'outcome'):
+                item[field] = redact_secrets(item[field], secrets)
+        return {"settings": public_config(config, secrets), "approvals": waiting,
+                "activity": activity, "processes": redact_secrets(processes, secrets)}
 
     def save(self, expected_revision, settings, changes):
         with self.store.lock:
             config, secrets = self.store.config(), self.store.secrets()
+            original_secrets = json.loads(json.dumps(secrets))
             if expected_revision != config["revision"]:
                 raise IntegrationError("stale-revision", "These settings changed in another window. Reload them and try again.")
             updated = validate_settings(config, settings)
@@ -265,20 +295,35 @@ class Integrations:
             kept = {key: {name: value for name, value in values.items() if name in servers[key]["envNames"] and value}
                     for key, values in secrets["mcpEnv"].items() if key in servers}
             secrets["mcpEnv"] = {key: values for key, values in kept.items() if values}
+            bindings = config.get('approvalBindings', {})
+            updated['approvalBindings'] = {'notes': bindings.get('notes'), 'mcp': {}}
+            if updated['notes'] != config['notes'] or not updated['approvalBindings']['notes']:
+                updated['approvalBindings']['notes'] = uuid.uuid4().hex
+            previous = {server['id']: server for server in config['mcp']['servers']}
+            for server in updated['mcp']['servers']:
+                old = previous.get(server['id'])
+                changed = old is None or server_context(old, original_secrets) != server_context(server, secrets)
+                if changed:
+                    if server['enabled']:
+                        raise IntegrationError('mcp-check-required', f"Turn {server['name']} off and check its tools after changing its context or credentials.")
+                    server['tools'], server['discoveredAt'], server['checkedBinding'] = [], None, None
+                old_binding = bindings.get('mcp', {}).get(server['id'])
+                changed = changed or old.get('enabled') != server['enabled'] or old.get('tools') != server['tools']
+                updated['approvalBindings']['mcp'][server['id']] = uuid.uuid4().hex if changed or not old_binding else old_binding
             self.store.save_secrets(secrets)
             self.store.save_config(updated)
             self.store.log("settings", "integrations", "saved")
         # A server that was removed or turned off stops now; a changed one restarts on its next use.
         self.local.keep_only({server["id"] for server in updated["mcp"]["servers"] if server["enabled"]})
 
-    def _session(self, server):
-        secrets = self.store.secrets()
+    def _session(self, server, secrets=None):
+        secrets = self.store.secrets() if secrets is None else secrets
         return McpSession(server, secrets["mcp"].get(server["id"], ""), secrets["mcpEnv"].get(server["id"], {}), self.local)
 
-    def _owner_tools(self, server):
+    def _owner_tools(self, server, secrets=None):
         """The server's tools; a local program's failure also shows the owner its last error output."""
         try:
-            with self._session(server) as session:
+            with self._session(server, secrets) as session:
                 return session.tools()
         except IntegrationError as error:
             output = self.local.detail(server["id"]) if server["kind"] == "stdio" else ""
@@ -291,15 +336,30 @@ class Integrations:
 
         A tool that was not there at the last check starts off and is marked new.
         """
-        tools = self._owner_tools(self._server(self.store.config(), server_id, enabled=False))
+        with self.store.lock:
+            server = self._server(self.store.config(), server_id, enabled=False)
+            secrets = self.store.secrets()
+            context = digest(server_context(server, secrets))
+        tools = self._owner_tools(server, secrets)
         with self.store.lock:
             config = self.store.config()
             server = self._server(config, server_id, enabled=False)
-            previous = {tool["name"]: tool["policy"] for tool in server["tools"]}
+            if context != digest(server_context(server, self.store.secrets())):
+                raise IntegrationError('mcp-context-changed', 'The server changed while checking tools. Check it again.')
+            previous = {tool['name']: tool for tool in server['tools']}
             checked_before = server["discoveredAt"] is not None
-            server["tools"] = [describe_tool(tool, previous.get(tool["name"]), new=checked_before and tool["name"] not in previous)
-                               for tool in tools]
+            refreshed = []
+            for tool in tools:
+                described = describe_tool(tool)
+                old = previous.get(tool['name'])
+                same = old is not None and server.get('checkedBinding') == context and all(
+                    old.get(key) == described[key] for key in ('name', 'title', 'description', 'readOnly', 'destructive', 'inputSchema'))
+                refreshed.append(describe_tool(tool, old['policy'] if same else None, new=checked_before and not same))
+            if server['tools'] != refreshed or server.get('checkedBinding') != context:
+                self._binding(config, 'mcp', server_id, rotate=True)
+            server['tools'] = refreshed
             server["discoveredAt"] = now()
+            server['checkedBinding'] = context
             config["revision"] += 1
             self.store.save_config(config)
             added = sum(tool["new"] for tool in server["tools"])
@@ -353,51 +413,71 @@ class Integrations:
             self.store.log("notify", title, "sent")
             return {"sent": True}
         if action == "mcp-tools":
-            return {"servers": self._agent_servers(config)}
+            return {"servers": self._agent_servers(config, self.store.secrets())}
         if action == "mcp-call":
             return self._mcp_call(config, request)
         raise IntegrationError("invalid-request", "Unknown integration action.")
 
     def _notes_write(self, config, request):
         mode, relative = request.get("mode", "append"), str(request.get("path", ""))
-        policy = config["notes"]["write"]
-        if policy == "off":
-            raise IntegrationError("notes-write-off", "The owner has not allowed Portal to change notes.")
-        _path, relative = notes.note_path(notes.vault(config), relative, must_exist=False)
-        if policy == "ask":
-            summary = f"{'Add to' if mode == 'append' else 'Create'} note {relative}"
-            waiting = self._approval("note", summary, digest("note", relative, mode, request.get("text")))
-            if waiting:
-                return waiting
-        with self.store.lock:  # Two writes to one note never interleave.
-            written = notes.write(config, relative, request.get("text"), mode)
+        notes.validate_write(request.get('text'), mode)
+        with self.store.lock:
+            config = self.store.config()
+            policy = config['notes']['write']
+            if policy == 'off':
+                raise IntegrationError('notes-write-off', 'The owner has not allowed Portal to change notes.')
+            relative, target = notes.write_binding(config, relative, mode)
+            epoch = self._binding(config, 'notes')
+            if policy == 'ask':
+                summary = f"{'Add to' if mode == 'append' else 'Create'} note {relative}"
+                waiting = self._approval('note', summary, digest('note-v2', epoch, target, relative, mode, request.get('text')))
+                if waiting:
+                    return waiting
+            written = notes.write(config, relative, request.get('text'), mode, expected_binding=target)
         self.store.log("notes-write", written, mode)
         return {"written": written, "mode": mode}
 
     @staticmethod
-    def _agent_servers(config):
+    def _agent_servers(config, secrets):
         return [{"id": server["id"], "name": server["name"],
                  "tools": [{"name": tool["name"], "description": tool["description"], "inputSchema": tool["inputSchema"],
-                            "needsApproval": tool["policy"] == "ask"} for tool in server["tools"] if tool["policy"] != "off"]}
+                            "needsApproval": tool["policy"] == "ask"} for tool in server["tools"]
+                           if tool['policy'] != 'off' and server.get('checkedBinding') == digest(server_context(server, secrets))]}
                 for server in config["mcp"]["servers"] if server["enabled"]]
 
     def _mcp_call(self, config, request):
-        server = self._server(config, request.get("server"), enabled=True)
         name, arguments = request.get("tool"), request.get("arguments", {})
         if not isinstance(arguments, dict):
             raise IntegrationError("invalid-request", "Tool arguments must be an object.")
-        tool = next((item for item in server["tools"] if item["name"] == name), None)
-        if tool is None or tool["policy"] == "off":
-            raise IntegrationError("tool-not-allowed", f"{server['name']} has no allowed tool named {name}. List its tools first.")
-        if tool["policy"] == "ask":
-            summary = f"{server['name']}: {name} {json.dumps(arguments, sort_keys=True)[:300]}"
-            waiting = self._approval("mcp", summary, digest("mcp", server["id"], name, arguments))
-            if waiting:
-                return waiting
-        with self._session(server) as session:
+        with self.store.lock:
+            config, secrets = self.store.config(), self.store.secrets()
+            server = self._server(config, request.get('server'), enabled=True)
+            context = digest(server_context(server, secrets))
+            if server.get('checkedBinding') != context:
+                raise IntegrationError('mcp-check-required', 'The server context changed. Check its tools again before using it.')
+            tool = next((item for item in server['tools'] if item['name'] == name), None)
+            if tool is None or tool['policy'] == 'off':
+                raise IntegrationError('tool-not-allowed', f"{server['name']} has no allowed tool named {name}. List its tools first.")
+            epoch = self._binding(config, 'mcp', server['id'])
+            if tool['policy'] == 'ask':
+                argument_summary = redact_secrets(json.dumps(arguments, sort_keys=True), secrets)[:300]
+                summary = redact_secrets(f"{server['name']}: {name} {argument_summary}", secrets)
+                waiting = self._approval('mcp', summary, digest('mcp-v2', epoch, context, tool, name, arguments))
+                if waiting:
+                    return waiting
+        with self._session(server, secrets) as session:
             text, failed = session.call(name, arguments)
         self.store.log("mcp-call", f"{server['name']}: {name}", "error" if failed else "done")
-        return {"server": server["id"], "tool": name, "text": text, "isError": failed}
+        return {"server": server["id"], "tool": name, "text": redact_secrets(text, secrets), "isError": failed}
+
+    def _binding(self, config, kind, server_id=None, *, rotate=False):
+        bindings = config.setdefault('approvalBindings', {'notes': None, 'mcp': {}})
+        values = bindings if kind == 'notes' else bindings['mcp']
+        key = 'notes' if kind == 'notes' else server_id
+        if rotate or not values.get(key):
+            values[key] = uuid.uuid4().hex
+            self.store.save_config(config)
+        return values[key]
 
     def _approval(self, kind, summary, request_digest):
         """None when this exact request was approved (the approval is used up), else the waiting reply."""

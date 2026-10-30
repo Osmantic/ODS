@@ -12,6 +12,7 @@ import tempfile
 import textwrap
 import threading
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "host"))
 import integrations_service as service  # noqa: E402
@@ -398,6 +399,312 @@ class IntegrationsTests(unittest.TestCase):
         for action in ("test", "restart", "clear-activity"):
             with self.assertRaisesRegex(service.IntegrationError, "Only the owner"):
                 self.agent(action, serverId="home")
+
+    def test_note_approval_is_bound_to_vault_identity_and_does_not_revive_after_restore(self):
+        self.save(self.settings(notify=False))
+        request = dict(path='Groceries.md', text='approved-only-once', mode='append')
+        old = self.agent('notes-write', **request)
+        self.owner('decide', approvalId=old['approvalId'], decision='approve')
+        other = pathlib.Path(self.temporary.name) / 'other-vault'
+        other.mkdir()
+        (other / 'Groceries.md').write_text('other original\n')
+        changed = self.settings(notify=False)
+        changed['notes']['vaultPath'] = str(other)
+        self.save(changed)
+        new = self.agent('notes-write', **request)
+        self.assertEqual(new['status'], 'approval-required')
+        self.assertNotEqual(old['approvalId'], new['approvalId'])
+        self.assertEqual((other / 'Groceries.md').read_text(), 'other original\n')
+        self.save(self.settings(notify=False))
+        back = self.agent('notes-write', **request)
+        self.assertEqual(back['status'], 'approval-required')
+        self.assertNotEqual(old['approvalId'], back['approvalId'])
+        self.assertNotIn(request['text'], (self.vault / 'Groceries.md').read_text())
+
+    def test_unrelated_notification_save_preserves_exact_note_approval(self):
+        self.save(self.settings(notify=False))
+        request = dict(path='Groceries.md', text='unrelated-setting-control', mode='append')
+        pending = self.agent('notes-write', **request)
+        self.owner('decide', approvalId=pending['approvalId'], decision='approve')
+        self.save(self.settings(notify=True), secrets={'ntfyPassword': 'pw'})
+        self.assertEqual(self.agent('notes-write', **request)['written'], 'Groceries.md')
+
+    def test_hidden_and_hardlinked_notes_are_never_read_or_written(self):
+        self.save(self.settings(write='allow', notify=False))
+        (self.vault / 'Hidden-alias.md').symlink_to(self.vault / '.obsidian' / 'secret.md')
+        outside = pathlib.Path(self.temporary.name) / 'outside-hard.md'
+        outside.write_text('invented outside secret\n')
+        os.link(outside, self.vault / 'Hard.md')
+        for path in ('Hidden-alias.md', 'Hard.md'):
+            with self.assertRaises(service.IntegrationError):
+                self.agent('notes-read', path=path)
+            with self.assertRaises(service.IntegrationError):
+                self.agent('notes-write', path=path, text='forbidden append', mode='append')
+        self.assertEqual(outside.read_text(), 'invented outside secret\n')
+        self.assertNotIn('forbidden append', (self.vault / '.obsidian' / 'secret.md').read_text())
+        self.assertEqual([item['path'] for item in self.agent('notes-search', query='outside secret')['results']], [])
+
+    def test_leaf_symlink_swap_before_open_cannot_escape_vault(self):
+        self.save(self.settings(write='allow', notify=False))
+        outside = pathlib.Path(self.temporary.name) / 'outside-race.md'
+        outside.write_text('invented outside original\n')
+        actual_open = os.open
+        swapped = []
+
+        def race(path, flags, *args, **kwargs):
+            if path == 'Groceries.md' and flags & os.O_RDWR and not swapped:
+                swapped.append(True)
+                (self.vault / 'Groceries.md').unlink()
+                (self.vault / 'Groceries.md').symlink_to(outside)
+            return actual_open(path, flags, *args, **kwargs)
+
+        with mock.patch.object(service.notes.os, 'open', side_effect=race):
+            with self.assertRaises(service.IntegrationError):
+                self.agent('notes-write', path='Groceries.md', text='forbidden append', mode='append')
+        self.assertTrue(swapped)
+        self.assertEqual(outside.read_text(), 'invented outside original\n')
+
+    def test_parent_swap_after_binding_cannot_escape_vault(self):
+        self.save(self.settings(write='allow', notify=False))
+        outside = pathlib.Path(self.temporary.name) / 'outside-directory'
+        outside.mkdir()
+        (outside / 'Lease.md').write_text('outside original\n')
+        original = service.notes._snapshot
+        swapped = []
+
+        def race(fd, parts):
+            result = original(fd, parts)
+            if not swapped:
+                swapped.append(True)
+                (self.vault / 'Home').rename(self.vault / 'Moved')
+                (self.vault / 'Home').symlink_to(outside)
+            return result
+
+        with mock.patch.object(service.notes, '_snapshot', side_effect=race):
+            with self.assertRaises(service.IntegrationError):
+                service.notes.write(self.store.config(), 'Home/Lease.md', 'forbidden append', 'append')
+        self.assertEqual((outside / 'Lease.md').read_text(), 'outside original\n')
+
+    def test_approved_note_does_not_follow_replaced_regular_file(self):
+        self.save(self.settings(notify=False))
+        request = dict(path='Groceries.md', text='inode-bound', mode='append')
+        waiting = self.agent('notes-write', **request)
+        self.owner('decide', approvalId=waiting['approvalId'], decision='approve')
+        replacement = self.vault / 'Replacement.md'
+        replacement.write_text('new file\n')
+        replacement.replace(self.vault / 'Groceries.md')
+        self.assertEqual(self.agent('notes-write', **request)['status'], 'approval-required')
+        self.assertEqual((self.vault / 'Groceries.md').read_text(), 'new file\n')
+
+    def test_approved_mcp_call_does_not_follow_retargeted_server(self):
+        self.save(self.settings(servers=[self.home_server()], notify=False), secrets={'mcp': {'home': 'secret-token'}})
+        self.owner('discover', serverId='home')
+        self.save(self.settings(servers=[self.home_server(enabled=True)], notify=False))
+        request = dict(server='home', tool='unlock', arguments={'entity': 'invented-lock'})
+        pending = self.agent('mcp-call', **request)
+        self.owner('decide', approvalId=pending['approvalId'], decision='approve')
+        other = serve_http(FakeMcp)
+        self.addCleanup(other.server_close)
+        self.addCleanup(other.shutdown)
+        destination = {**self.home_server(), 'url': f'http://127.0.0.1:{other.server_port}/api/mcp'}
+        self.save(self.settings(servers=[destination], notify=False))
+        self.owner('discover', serverId='home')
+        self.save(self.settings(servers=[{**destination, 'enabled': True}], notify=False))
+        replay = self.agent('mcp-call', **request)
+        self.assertEqual(replay['status'], 'approval-required')
+        self.assertNotEqual(replay['approvalId'], pending['approvalId'])
+        self.assertEqual(FakeMcp.calls, [])
+        self.assertNotIn('approvalBindings', self.owner('get')['settings'])
+        self.assertNotIn('checkedBinding', self.owner('get')['settings']['mcp']['servers'][0])
+
+    def test_mcp_context_change_requires_rechecking_and_cannot_reuse_policies(self):
+        server = {'id': 'echo', 'name': 'Echo', 'kind': 'stdio', 'enabled': False,
+                  'command': f'{sys.executable} {self.script}', 'workingFolder': str(self.vault)}
+        self.save(self.settings(servers=[server], notify=False))
+        self.owner('discover', serverId='echo')
+        self.save(self.settings(servers=[{**server, 'enabled': True, 'policies': {'echo': 'ask'}}], notify=False))
+        request = dict(server='echo', tool='echo', arguments={'text': 'invented'})
+        old = self.agent('mcp-call', **request)
+        self.owner('decide', approvalId=old['approvalId'], decision='approve')
+        changed = {**server, 'workingFolder': str(self.vault / 'Home'), 'envNames': ['INVENTED_KEY']}
+        self.save(self.settings(servers=[changed], notify=False), secrets={'mcpEnv': {'echo': {'INVENTED_KEY': 'invented-value'}}})
+        saved = self.owner('get')['settings']['mcp']['servers'][0]
+        self.assertEqual(saved['tools'], [])
+        self.assertIsNone(saved['discoveredAt'])
+        self.owner('discover', serverId='echo')
+        self.save(self.settings(servers=[{**changed, 'enabled': True, 'policies': {'echo': 'ask'}}], notify=False))
+        new = self.agent('mcp-call', **request)
+        self.assertEqual(new['status'], 'approval-required')
+        self.assertNotEqual(new['approvalId'], old['approvalId'])
+
+    def test_credential_config_crash_prefix_refuses_stale_discovered_tools(self):
+        self.save(self.settings(servers=[self.home_server()], notify=False), secrets={'mcp': {'home': 'secret-token'}})
+        self.owner('discover', serverId='home')
+        self.save(self.settings(servers=[self.home_server(enabled=True)], notify=False))
+        secrets = self.store.secrets()
+        secrets['mcp']['home'] = 'invented-new-credential'
+        self.store.save_secrets(secrets)  # Failure prefix: secret write landed, config write did not.
+        with self.assertRaisesRegex(service.IntegrationError, 'Check its tools'):
+            self.agent('mcp-call', server='home', tool='get_state', arguments={})
+        self.assertEqual(self.agent('mcp-tools')['servers'][0]['tools'], [])
+        self.assertEqual(FakeMcp.calls, [])
+
+    def test_discovery_does_not_attach_old_tools_to_a_new_destination(self):
+        self.save(self.settings(servers=[self.home_server()], notify=False), secrets={'mcp': {'home': 'secret-token'}})
+
+        def changed_while_checking(*_args):
+            changed = {**self.home_server(), 'url': 'http://127.0.0.1:9/different'}
+            self.save(self.settings(servers=[changed], notify=False))
+            return TOOLS
+
+        with mock.patch.object(self.service, '_owner_tools', side_effect=changed_while_checking):
+            with self.assertRaisesRegex(service.IntegrationError, 'changed while checking'):
+                self.owner('discover', serverId='home')
+        current = self.owner('get')['settings']['mcp']['servers'][0]
+        self.assertIsNone(current['discoveredAt'])
+        self.assertEqual(current['tools'], [])
+
+    def test_two_concurrent_retries_consume_exact_approval_only_once(self):
+        self.save(self.settings(notify=False))
+        request = dict(path='Groceries.md', mode='append', text='single concurrent effect')
+        waiting = self.agent('notes-write', **request)
+        self.owner('decide', approvalId=waiting['approvalId'], decision='approve')
+        barrier, replies = threading.Barrier(2), []
+
+        def retry():
+            barrier.wait(timeout=2)
+            replies.append(self.agent('notes-write', **request))
+
+        threads = [threading.Thread(target=retry) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=2)
+        self.assertEqual(sum('written' in item for item in replies), 1)
+        self.assertEqual(sum(item.get('status') == 'approval-required' for item in replies), 1)
+        self.assertEqual((self.vault / 'Groceries.md').read_text().count(request['text']), 1)
+
+    def test_known_credentials_are_redacted_from_owner_diagnostics_and_errors(self):
+        self.save(self.settings(servers=[self.home_server()], notify=False), secrets={'mcp': {'home': 'invented-secret'}})
+        with mock.patch.object(self.service, '_owner_tools', side_effect=service.IntegrationError('mcp-error', 'failed invented-secret')):
+            with self.assertRaises(service.IntegrationError) as caught:
+                self.owner('discover', serverId='home')
+        self.assertNotIn('invented-secret', caught.exception.message)
+        self.assertIn('[redacted]', caught.exception.message)
+
+    def test_short_secret_does_not_rewrite_routing_identity_or_public_paths(self):
+        self.save(self.settings(servers=[self.home_server()], notify=False),
+                  secrets={'ntfyPassword': 'home', 'mcp': {'home': 'secret-token'}})
+        view = self.owner('get')['settings']
+        self.assertEqual(view['mcp']['servers'][0]['id'], 'home')
+        self.owner('discover', serverId=view['mcp']['servers'][0]['id'])
+        self.save(self.settings(servers=[self.home_server()], notify=False), secrets={'ntfyPassword': 'vault'})
+        self.assertEqual(self.owner('get')['settings']['notes']['vaultPath'], str(self.vault))
+
+    def test_schema_change_revokes_old_tool_policy_and_exact_approval(self):
+        self.save(self.settings(servers=[self.home_server()], notify=False), secrets={'mcp': {'home': 'secret-token'}})
+        self.owner('discover', serverId='home')
+        self.save(self.settings(servers=[self.home_server(enabled=True)], notify=False))
+        request = dict(server='home', tool='unlock', arguments={'entity': 'invented-lock'})
+        old = self.agent('mcp-call', **request)
+        self.owner('decide', approvalId=old['approvalId'], decision='approve')
+        with mock.patch.dict(TOOLS[2], {'inputSchema': {'type': 'object', 'properties': {'entity': {'type': 'string'}}}}):
+            self.owner('discover', serverId='home')
+            current = self.owner('get')['settings']['mcp']['servers'][0]
+            changed = next(tool for tool in current['tools'] if tool['name'] == 'unlock')
+            self.assertEqual(changed['policy'], 'off')
+            self.assertTrue(changed['new'])
+            self.save(self.settings(servers=[self.home_server(enabled=True, policies={'unlock': 'ask'})], notify=False))
+            waiting = self.agent('mcp-call', **request)
+        self.assertEqual(waiting['status'], 'approval-required')
+        self.assertNotEqual(waiting['approvalId'], old['approvalId'])
+        self.assertEqual(FakeMcp.calls, [])
+
+    def test_unrelated_ntfy_secret_change_preserves_mcp_approval(self):
+        self.save(self.settings(servers=[self.home_server()], notify=False), secrets={'mcp': {'home': 'secret-token'}})
+        self.owner('discover', serverId='home')
+        current = self.settings(servers=[self.home_server(enabled=True)], notify=False)
+        self.save(current)
+        request = dict(server='home', tool='unlock', arguments={'entity': 'invented-lock'})
+        old = self.agent('mcp-call', **request)
+        self.owner('decide', approvalId=old['approvalId'], decision='approve')
+        self.save(current, secrets={'ntfyPassword': 'unrelated-invented-password'})
+        self.assertEqual(self.agent('mcp-call', **request)['text'], 'done unlock')
+
+    def test_a_fifo_note_is_refused_without_waiting_for_a_writer(self):
+        self.save(self.settings(write='allow', notify=False))
+        fifo = self.vault / 'Fifo.md'
+        os.mkfifo(fifo)
+        failures = []
+
+        def read_fifo():
+            try:
+                self.agent('notes-read', path='Fifo.md')
+            except service.IntegrationError:
+                failures.append(True)
+
+        thread = threading.Thread(target=read_fifo, daemon=True)
+        thread.start()
+        thread.join(timeout=.5)
+        blocked = thread.is_alive()
+        if blocked:
+            fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+            os.close(fd)
+            thread.join(timeout=2)
+        self.assertFalse(blocked, 'No regular-file check may wait for a FIFO peer first')
+        self.assertEqual(failures, [True])
+
+    def test_configured_vault_parent_cannot_be_replaced_by_a_symlink(self):
+        nested = self.vault / 'Nested'
+        nested.mkdir()
+        (nested / 'Keep.md').write_text('inside original\n')
+        settings = self.settings(write='allow', notify=False)
+        settings['notes']['vaultPath'] = str(nested)
+        self.save(settings)
+        outside = pathlib.Path(self.temporary.name) / 'outside-root'
+        (outside / 'Nested').mkdir(parents=True)
+        (outside / 'Nested' / 'Keep.md').write_text('outside original\n')
+        self.vault.rename(self.vault.with_name('MovedVault'))
+        self.vault.symlink_to(outside)
+        with self.assertRaises(service.IntegrationError):
+            self.agent('notes-read', path='Keep.md')
+        with self.assertRaises(service.IntegrationError):
+            self.agent('notes-write', path='Keep.md', text='forbidden append', mode='append')
+        self.assertEqual((outside / 'Nested' / 'Keep.md').read_text(), 'outside original\n')
+
+    def test_create_rechecks_the_actual_opened_parent_after_approval_snapshot(self):
+        self.save(self.settings(notify=False))
+        request = dict(path='Home/New.md', mode='create', text='only in approved parent')
+        pending = self.agent('notes-write', **request)
+        self.owner('decide', approvalId=pending['approvalId'], decision='approve')
+        original = service.notes._parent
+        replaced = []
+
+        def race(*args, **kwargs):
+            if not replaced:
+                replaced.append(True)
+                (self.vault / 'Home').rename(self.vault / 'OldHome')
+                (self.vault / 'Home').mkdir()
+            return original(*args, **kwargs)
+
+        with mock.patch.object(service.notes, '_parent', side_effect=race):
+            with self.assertRaisesRegex(service.IntegrationError, 'destination changed'):
+                self.agent('notes-write', **request)
+        self.assertFalse((self.vault / 'Home' / 'New.md').exists())
+        self.assertFalse((self.vault / 'OldHome' / 'New.md').exists())
+
+    def test_create_does_not_reuse_a_newly_appearing_unapproved_parent(self):
+        self.save(self.settings(write='allow', notify=False))
+        original = service.notes._parent
+
+        def race(*args, **kwargs):
+            (self.vault / 'NewFolder').mkdir()
+            return original(*args, **kwargs)
+
+        with mock.patch.object(service.notes, '_parent', side_effect=race):
+            with self.assertRaisesRegex(service.IntegrationError, 'destination changed'):
+                self.agent('notes-write', path='NewFolder/Plan.md', mode='create', text='invented')
+        self.assertFalse((self.vault / 'NewFolder' / 'Plan.md').exists())
 
 
 if __name__ == "__main__":
