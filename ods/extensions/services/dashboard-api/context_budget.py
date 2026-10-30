@@ -19,7 +19,7 @@ from typing import Any
 
 DEFAULT_CONTEXT_WINDOW = 8192
 MIN_CONTEXT_WINDOW = 2048
-DEFAULT_RESERVE_OUTPUT_TOKENS = 1024
+DEFAULT_RESERVE_OUTPUT_TOKENS = 4096
 MIN_RESERVE_OUTPUT_TOKENS = 256
 MESSAGE_FRAMING_TOKENS = 6
 
@@ -136,10 +136,10 @@ def plan_context_budget(
         Tokens reserved for the assistant's completion.
     """
     effective_window = max(MIN_CONTEXT_WINDOW, int(context_window or DEFAULT_CONTEXT_WINDOW))
-    # Never reserve more than 35% of the context window for output
+    # Allow up to 50% of the context window for completions when context window is large enough
     effective_reserve = min(
         max(MIN_RESERVE_OUTPUT_TOKENS, int(reserve_output_tokens or DEFAULT_RESERVE_OUTPUT_TOKENS)),
-        int(effective_window * 0.35),
+        max(MIN_RESERVE_OUTPUT_TOKENS, int(effective_window * 0.50)),
     )
 
     system_msg: list[dict[str, Any]] = []

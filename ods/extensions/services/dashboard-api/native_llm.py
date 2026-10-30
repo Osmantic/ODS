@@ -27,10 +27,10 @@ from gpu import get_gpu_info, read_windows_user_gpu_preference
 logger = logging.getLogger(__name__)
 
 DEFAULT_NATIVE_SYSTEM_PROMPT = (
-    "You are ODS, a helpful, accurate local AI assistant running natively on the user's "
-    "Windows computer. Answer clearly and concisely. When the user explicitly asks you "
-    "to create or save a file in their workspace, wrap the file contents in "
-    '<ods_write_file path="filename.ext">...contents...</ods_write_file>.'
+    "You are ODS, a helpful, accurate, and responsive local AI assistant running natively on Windows. "
+    "Provide clear, well-structured answers using standard Markdown formatting. "
+    "When asked to write code or create games, web apps, tools, or scripts, output clean, complete, runnable code "
+    "in standard Markdown fenced code blocks with clear filenames."
 )
 
 MAX_CONVERSATIONS = 200
@@ -42,6 +42,10 @@ MAX_DOCUMENT_CHARS = 80_000
 _SAFE_RELATIVE_PATH = re.compile(r"^[A-Za-z0-9_.\-/]{1,180}$")
 _WRITE_FILE_BLOCK_RE = re.compile(
     r'<ods_write_file\s+path="([^"\r\n]{1,180})"\s*>\r?\n?(.*?)</ods_write_file>',
+    re.DOTALL,
+)
+_MARKDOWN_CODE_FILE_RE = re.compile(
+    r'```(?:[a-zA-Z0-9_-]+)?(?:\s+(?:filename=)?["\']?([A-Za-z0-9_.\-/]{1,180}\.[a-zA-Z0-9]{1,10})["\']?)\r?\n(.*?)```',
     re.DOTALL,
 )
 
@@ -89,8 +93,9 @@ def resolve_native_llm_endpoint() -> str:
     llama_port = (
         os.environ.get("LLAMA_PORT", "").strip()
         or config.read_live_env_value("LLAMA_PORT").strip()
+        or "8085"
     )
-    default_url = f"http://127.0.0.1:{llama_port}" if llama_port.isdigit() else "http://127.0.0.1:8080"
+    default_url = f"http://127.0.0.1:{llama_port}" if llama_port.isdigit() else "http://127.0.0.1:8085"
     raw = (
         os.environ.get("ODS_NATIVE_LLM_URL", "").strip()
         or config.read_live_env_value("ODS_NATIVE_LLM_URL").strip()
@@ -417,7 +422,8 @@ def extract_document_text(filename: str, raw_bytes: bytes, content_type: str = "
 
 def get_workspace_root() -> Path:
     """Return the sandboxed workspace directory for files created by local chat."""
-    base = Path(config.DATA_DIR) if config.DATA_DIR else (Path.home() / "ods" / "data")
+    data_dir = getattr(config, "DATA_DIR", None) or os.environ.get("ODS_DATA_DIR")
+    base = Path(data_dir) if data_dir else (Path.home() / "ods" / "data")
     root = base / "workspace"
     root.mkdir(parents=True, exist_ok=True)
     return root.resolve()
@@ -460,18 +466,123 @@ def write_workspace_file(relative_path: str, content: str) -> dict[str, Any]:
 
 
 def execute_workspace_file_blocks(reply_text: str) -> list[dict[str, Any]]:
-    """Parse and execute any <ods_write_file path="...">...</ods_write_file> blocks in reply_text."""
+    """Parse and execute any <ods_write_file path="..."> or markdown annotated file blocks in reply_text."""
     delivered: list[dict[str, Any]] = []
-    if not reply_text or "<ods_write_file" not in reply_text:
+    if not reply_text:
         return delivered
-    for match in _WRITE_FILE_BLOCK_RE.finditer(reply_text):
-        rel_path, body = match.group(1), match.group(2)
+
+    written_paths: set[str] = set()
+
+    # 1. Structured <ods_write_file path="..."> tags
+    if "<ods_write_file" in reply_text:
+        for match in _WRITE_FILE_BLOCK_RE.finditer(reply_text):
+            rel_path, body = match.group(1).strip(), match.group(2)
+            try:
+                record = write_workspace_file(rel_path, body)
+                delivered.append(record)
+                written_paths.add(record["path"])
+            except ValueError as exc:
+                logger.warning("Refused workspace file write %r: %s", rel_path, exc)
+
+    # 2. Markdown annotated code blocks (```lang filename.ext)
+    for match in _MARKDOWN_CODE_FILE_RE.finditer(reply_text):
+        rel_path, body = match.group(1).strip(), match.group(2)
+        if rel_path in written_paths:
+            continue
         try:
             record = write_workspace_file(rel_path, body)
             delivered.append(record)
+            written_paths.add(record["path"])
         except ValueError as exc:
-            logger.warning("Refused workspace file write %r: %s", rel_path, exc)
+            logger.warning("Refused workspace markdown file write %r: %s", rel_path, exc)
+
+    # 3. Code block preceded by filename header (e.g. ### index.html or `index.html`:)
+    header_re = re.compile(
+        r'(?:^|\n)(?:###?\s*|\*\*)?([A-Za-z0-9_.\-/]{1,180}\.[a-zA-Z0-9]{1,10})(?:\*\*)?\s*:\s*\r?\n```(?:[a-zA-Z0-9_-]+)?\r?\n(.*?)```',
+        re.DOTALL,
+    )
+    for match in header_re.finditer(reply_text):
+        rel_path, body = match.group(1).strip(), match.group(2)
+        if rel_path in written_paths:
+            continue
+        try:
+            record = write_workspace_file(rel_path, body)
+            delivered.append(record)
+            written_paths.add(record["path"])
+        except ValueError as exc:
+            logger.warning("Refused workspace header file write %r: %s", rel_path, exc)
+
+    # 4. Standard HTML block containing <!DOCTYPE html> or <html
+    if "index.html" not in written_paths:
+        generic_html_re = re.compile(
+            r'```(?:html)?\r?\n(<!DOCTYPE\s+html.*?)```',
+            re.DOTALL | re.IGNORECASE,
+        )
+        for match in generic_html_re.finditer(reply_text):
+            body = match.group(1)
+            try:
+                record = write_workspace_file("index.html", body)
+                delivered.append(record)
+                written_paths.add("index.html")
+                break
+            except ValueError as exc:
+                logger.warning("Refused workspace html file write: %s", exc)
+
     return delivered
+
+
+def create_workspace_preview_record(
+    delivered_files: list[dict[str, Any]],
+    listener_port: int = 3101,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Build compliant pixel preview marker and manifest for Portal workspace integration."""
+    manifest_files: list[dict[str, Any]] = []
+    total_bytes = 0
+    seen_paths: set[str] = set()
+
+    for item in delivered_files:
+        path = str(item.get("path") or "").replace("\\", "/").strip()
+        if not path or path in seen_paths:
+            continue
+        seen_paths.add(path)
+        size = int(item.get("sizeBytes") or 0)
+        sha = str(item.get("sha256") or "")
+        manifest_files.append({"path": path, "bytes": size, "sha256": sha})
+        total_bytes += size
+
+    if not manifest_files:
+        raise ValueError("No valid manifest files provided")
+
+    entry = next((f for f in manifest_files if f["path"] == "index.html"), manifest_files[0])
+    entry_sha256 = entry["sha256"]
+    files_count = len(manifest_files)
+    overall_sha256 = hashlib.sha256(
+        f"{entry_sha256}:{total_bytes}:{files_count}".encode("utf-8")
+    ).hexdigest()
+    site_id = f"site-{overall_sha256[:24]}"
+    url = f"http://{site_id}.localhost:{listener_port}/{site_id}/"
+
+    preview_marker = {
+        "bytes": total_bytes,
+        "entrySha256": entry_sha256,
+        "files": files_count,
+        "kind": "ods-pixel-workspace-preview",
+        "port": listener_port,
+        "relativeDirectory": "workspace",
+        "schemaVersion": 1,
+        "sha256": overall_sha256,
+        "siteId": site_id,
+        "url": url,
+    }
+
+    manifest_record = {
+        "schemaVersion": 1,
+        "siteId": site_id,
+        "sha256": overall_sha256,
+        "bytes": total_bytes,
+        "files": manifest_files,
+    }
+    return preview_marker, manifest_record
 
 
 # ============================================================================
@@ -480,7 +591,8 @@ def execute_workspace_file_blocks(reply_text: str) -> list[dict[str, Any]]:
 
 
 def _conversations_file_path() -> Path:
-    base = Path(config.DATA_DIR) if config.DATA_DIR else (Path.home() / "ods" / "data")
+    data_dir = getattr(config, "DATA_DIR", None) or os.environ.get("ODS_DATA_DIR")
+    base = Path(data_dir) if data_dir else (Path.home() / "ods" / "data")
     conv_dir = base / "conversations"
     conv_dir.mkdir(parents=True, exist_ok=True)
     return conv_dir / "conversations.json"
@@ -557,6 +669,7 @@ async def stream_native_chat_completion(
         "cache_prompt": True,
         "temperature": temperature,
         "max_tokens": max_tokens or budget.max_completion_tokens,
+        "chat_template_kwargs": {"enable_thinking": False},
     }
     if model_name:
         request_body["model"] = model_name
@@ -584,6 +697,7 @@ async def stream_native_chat_completion(
                 yield b"data: [DONE]\n\n"
                 return
 
+            hit_token_limit = False
             async for line in response.aiter_lines():
                 if not line:
                     continue
@@ -599,12 +713,46 @@ async def stream_native_chat_completion(
                             piece = delta.get("content")
                             if isinstance(piece, str) and piece:
                                 accumulated_text.append(piece)
+                            if choices[0].get("finish_reason") == "length":
+                                hit_token_limit = True
                     except (ValueError, TypeError):
                         pass
                     yield f"data: {data_str}\n\n".encode("utf-8")
 
+            if hit_token_limit:
+                continuation_notice = (
+                    "\n\n*[Response reached token limit. Type \"continue\" to resume output]*"
+                )
+                accumulated_text.append(continuation_notice)
+                notice_frame = {
+                    "choices": [
+                        {
+                            "delta": {"content": continuation_notice},
+                            "finish_reason": "length",
+                        }
+                    ]
+                }
+                yield f"data: {json.dumps(notice_frame)}\n\n".encode("utf-8")
+
     full_reply = "".join(accumulated_text)
     delivered_files = execute_workspace_file_blocks(full_reply)
+
+    if delivered_files:
+        try:
+            workspace_preview, manifest_record = create_workspace_preview_record(delivered_files)
+            if manifest_record:
+                manifest_path = get_workspace_root().parent / "workspace_manifest.json"
+                manifest_path.write_text(json.dumps(manifest_record, indent=2), encoding="utf-8")
+            preview_frame = {
+                "choices": [{"delta": {}, "finish_reason": "stop"}],
+                "pixel": {
+                    "preview": workspace_preview,
+                    "schemaVersion": 1,
+                },
+            }
+            yield f"data: {json.dumps(preview_frame)}\n\n".encode("utf-8")
+        except Exception as exc:
+            logger.warning("Failed to emit workspace preview: %s", exc)
 
     meta_frame = {
         "odsMeta": {

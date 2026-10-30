@@ -364,6 +364,8 @@ async def _chat_context_request(body: ChatCancelRequest, *, compact: bool = Fals
 async def _delete_native_conversation_images(chat_id):
     config = _pixel_config()
     if config is None:
+        if WINDOWS_DESKTOP_PROFILE:
+            return
         raise HTTPException(503, "Portal is unavailable. Retry deletion when it is running.")
     edge_url, key = config
     try:
@@ -1306,6 +1308,18 @@ async def pixel_example_projects() -> dict[str, object]:
     """
     config = _pixel_config()
     if config is None:
+        if WINDOWS_DESKTOP_PROFILE:
+            try:
+                from native_llm import get_workspace_root
+                ws_root = get_workspace_root()
+                projects = []
+                if ws_root.is_dir():
+                    for item in sorted(ws_root.iterdir()):
+                        if item.is_dir() and _EXAMPLE_PROJECT_NAME.fullmatch(item.name):
+                            projects.append(item.name)
+                return {"schemaVersion": 1, "projects": projects[:8]}
+            except Exception:
+                return {"schemaVersion": 1, "projects": []}
         return {"schemaVersion": 1, "projects": []}
     edge_url, key = config
     try:
@@ -1758,11 +1772,15 @@ async def _iter_upstream_chunks(
 @router.post("/chat/stream")
 async def pixel_chat_stream(request: Request, body: ChatStreamRequest, owner: str = Depends(verify_api_key)) -> StreamingResponse:
     """Forward one bounded chat over authenticated, unbuffered SSE."""
-    if isinstance(owner, str):
+    if isinstance(owner, str) and not WINDOWS_DESKTOP_PROFILE:
         await conversation_storage("assert_available", owner, body.chat_id)
     config = _pixel_config()
     if config is None and WINDOWS_DESKTOP_PROFILE:
-        from native_llm import get_native_llm_status, stream_native_chat_completion
+        from native_llm import (
+            DEFAULT_NATIVE_SYSTEM_PROMPT,
+            get_native_llm_status,
+            stream_native_chat_completion,
+        )
 
         status = await get_native_llm_status()
         if not status.get("available"):
@@ -1774,6 +1792,7 @@ async def pixel_chat_stream(request: Request, body: ChatStreamRequest, owner: st
         ctx_len = int(status.get("contextLength") or 8192)
         gen = stream_native_chat_completion(
             prepared,
+            system_prompt=DEFAULT_NATIVE_SYSTEM_PROMPT,
             context_window=ctx_len,
             model_name=str(status.get("model") or ""),
         )
