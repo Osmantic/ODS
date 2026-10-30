@@ -37,7 +37,7 @@ function Register-ODSWindowsDesktopUninstall {
 
     $pwshExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $uninstallCmd = "`"$pwshExe`" -NoProfile -ExecutionPolicy Bypass -File `"$uninstallScript`" -InstallDir `"$resolvedInstall`""
-    $quietUninstallCmd = "$uninstallCmd -KeepData -Quiet"
+    $quietUninstallCmd = "$uninstallCmd -Quiet"
 
     $entries = [ordered]@{
         DisplayName          = 'ODS (Osmantic Deployment System)'

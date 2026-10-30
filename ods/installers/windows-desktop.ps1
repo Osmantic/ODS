@@ -497,7 +497,7 @@ if ($sourceConfig) {
 
 # Copy compiled ODS.exe and WebView2 runtime DLLs into %LOCALAPPDATA%\ODS\app\current\ if available
 $distDesktopDir = Join-Path $repoRoot 'dist\windows-desktop'
-foreach ($runtimeFile in @('ODS.exe', 'Microsoft.Web.WebView2.Core.dll', 'Microsoft.Web.WebView2.WinForms.dll', 'WebView2Loader.dll', 'ods-app.ico')) {
+foreach ($runtimeFile in @('ODS.exe', 'uninstall-ods.ps1', 'Microsoft.Web.WebView2.Core.dll', 'Microsoft.Web.WebView2.WinForms.dll', 'WebView2Loader.dll', 'ods-app.ico')) {
     $srcFile = Join-Path $distDesktopDir $runtimeFile
     if (-not (Test-Path -LiteralPath $srcFile -PathType Leaf)) {
         $srcFile = Join-Path $PSScriptRoot $runtimeFile
@@ -511,6 +511,26 @@ foreach ($runtimeFile in @('ODS.exe', 'Microsoft.Web.WebView2.Core.dll', 'Micros
         }
     }
 }
+# Ensure uninstaller and icon exist directly under $resolvedAppDataDir for Windows Settings integration
+$uninstSrc = @(
+    (Join-Path $distDesktopDir 'uninstall-ods.ps1'),
+    (Join-Path $PSScriptRoot 'windows\uninstall-ods.ps1'),
+    (Join-Path $PSScriptRoot 'uninstall-ods.ps1')
+) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+
+if ($uninstSrc) {
+    Copy-Item -LiteralPath $uninstSrc -Destination (Join-Path $resolvedAppDataDir 'uninstall-ods.ps1') -Force -ErrorAction SilentlyContinue
+}
+
+$icoSrc = @(
+    (Join-Path $distDesktopDir 'ods-app.ico'),
+    (Join-Path $repoRoot 'extensions\services\dashboard\public\ods.ico')
+) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+
+if ($icoSrc) {
+    Copy-Item -LiteralPath $icoSrc -Destination (Join-Path $resolvedAppDataDir 'ods-app.ico') -Force -ErrorAction SilentlyContinue
+}
+
 
 $envPath = Join-Path $resolvedInstallDir '.env'
 $previousLines = if (Test-Path -LiteralPath $envPath) {
@@ -686,6 +706,23 @@ if (-not $SkipShortcuts) {
                     $link.Save()
                     $shortcutsCreated += $lnkPath
                 } catch { }
+            }
+            $progFolder = [Environment]::GetFolderPath('Programs')
+            if ($progFolder -and (Test-Path -LiteralPath $progFolder -PathType Container)) {
+                $uninstLnkPath = Join-Path $progFolder 'Uninstall ODS.lnk'
+                $uninstScript = Join-Path $resolvedAppDataDir 'uninstall-ods.ps1'
+                if (Test-Path -LiteralPath $uninstScript -PathType Leaf) {
+                    try {
+                        $pwsh = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+                        $uLink = $shell.CreateShortcut($uninstLnkPath)
+                        $uLink.TargetPath = $pwsh
+                        $uLink.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$uninstScript`" -InstallDir `"$resolvedInstallDir`""
+                        $uLink.WorkingDirectory = $resolvedAppDataDir
+                        $uLink.Description = 'Uninstall ODS (Osmantic Deployment System)'
+                        $uLink.Save()
+                        $shortcutsCreated += $uninstLnkPath
+                    } catch { }
+                }
             }
         } finally {
             $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($shell)
