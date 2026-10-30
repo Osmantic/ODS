@@ -129,18 +129,17 @@ export const ODS_SANDBOX_RUNTIME_CONTRACT =
 // guidance already present in the compact contract.
 // The preview runtime supplement applies to both context sizes, not the historic core.
 export const CONNECTED_RECORDS_CONTRACT =
-  "Connected apps: pixel_ods_connections_status reports saved Google connection, read permissions and recent sync health, without records. " +
-  "Gmail, Calendar and wiki records use their app tools; discover by capability with tool_search, then describe and call the returned ID. " +
-  "Extension catalogs describe installable software, never account connection or record presence. Missing tools mean unavailable capability, not disconnected accounts. " +
-  "Choose the least data needed: status for connection, count tools for counts, record tools for contents. Respect requested limits and report partial coverage. " +
-  "Recent sync is not a new Google sign-in check. Do not install, reconnect or expose private data to public search without the owner's request. Never invent a missing source time zone.";
+  "Google: pixel_ods_connections_status reports saved sign-in, read permissions and recent sync health; no records. " +
+  "Gmail/Calendar/wiki: discover app tools with tool_search, describe/call returned IDs. Extension catalogs describe software, never account/record presence. " +
+  "Missing tools mean unavailable capability, not disconnected accounts. Choose status for connections, count tools for counts, record tools for contents; respect limits and report partial coverage. " +
+  "Recent sync is not a new Google sign-in check. Never install, reconnect or expose private data to public search without owner request. Never invent a missing source time zone.";
 const CONNECTED_RECORDS_TINY_CONTRACT = CONNECTED_RECORDS_CONTRACT;
 
 // A capability map, not a prompt classifier. In a real turn the model treated
 // an MCP-only catalog as proof that saved ntfy notifications did not exist.
 // Keep this trusted guidance identical for every request and context profile.
 export const PORTAL_INTEGRATIONS_CONTRACT =
-  "Notes: pixel_ods_notes; ntfy: pixel_ods_notify; MCP is separate.";
+  "Obsidian: pixel_ods_notes; ntfy: pixel_ods_notify; custom MCP: pixel_ods_mcp. MCP lists only custom servers. Use connection tools for connected data; workspace file writes do not prove a vault update.";
 
 const CURRENT_OPERATING_COMPATIBILITY = [
   ODS_SANDBOX_RUNTIME_CONTRACT,

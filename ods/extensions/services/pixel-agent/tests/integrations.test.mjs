@@ -152,7 +152,8 @@ test('integration capability guidance is stable across requests and model contex
     for (const prompt of ['Send a test notification.', 'What can the connected house do?', 'Olá!']) {
       const rendered = promptContractForAgent({agentId:'pixel', contextTokenBudget}, 'pixel', {prompt}).appendSystemContext;
       assert.equal(rendered.split(PORTAL_INTEGRATIONS_CONTRACT).length, 2);
-      assert.match(rendered, /Notes: pixel_ods_notes; ntfy: pixel_ods_notify; MCP is separate/);
+      assert.match(rendered, /Obsidian: pixel_ods_notes; ntfy: pixel_ods_notify; custom MCP: pixel_ods_mcp/);
+      assert.match(rendered, /workspace file writes do not prove a vault update/);
     }
   }
   const other = promptContractForAgent({agentId:'unrelated'}, 'pixel', {prompt:'Send a notification.'});
