@@ -145,6 +145,75 @@ test('unsupported native systems refuse before connecting', async () => {
   }
 });
 
+test('a submitted integration remains admitted until the service settles after cancellation',
+  {skip: process.platform === 'win32' ? 'The production Unix socket transport runs inside WSL/Linux.' : false}, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'integrations-drain-'));
+  const path = join(directory, 'control.sock');
+  const sockets = new Set();
+  let admitted;
+  const received = new Promise(resolve => { admitted = resolve; });
+  let complete;
+  const serviceDone = new Promise(resolve => { complete = resolve; });
+  const controller = new AbortController();
+  const server = net.createServer(socket => {
+    sockets.add(socket);
+    socket.on('error', () => {});
+    socket.on('data', async () => {
+      controller.abort();
+      admitted();
+      await serviceDone;
+      socket.end(JSON.stringify({ok: true, sent: true}) + '\n');
+    });
+  });
+  t.after(async () => {
+    complete();
+    for (const socket of sockets) socket.destroy();
+    await new Promise(resolve => server.close(resolve));
+    rmSync(directory, {recursive: true, force: true});
+  });
+  await new Promise(resolve => server.listen(path, resolve));
+  let settled = false, result, error;
+  const request = submitIntegration({action: 'notify', message: 'invented QA result'}, {
+    platform: 'linux', signal: controller.signal, connect: () => net.createConnection({path}),
+  }).then(value => { settled = true; result = value; }, failure => { settled = true; error = failure; });
+  await received;
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(settled, false, 'aborting the UI must not release admission while the service action still runs');
+  complete();
+  await request;
+  assert.equal(error, undefined);
+  assert.deepEqual(result, {ok: true, sent: true});
+});
+
+test('losing the reply after submission preserves an unknown outcome without replaying the action',
+  {skip: process.platform === 'win32' ? 'The production Unix socket transport runs inside WSL/Linux.' : false}, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'integrations-lost-reply-'));
+  const path = join(directory, 'control.sock');
+  let requests = 0;
+  const server = net.createServer(socket => {
+    socket.on('error', () => {});
+    socket.once('data', () => { requests++; socket.destroy(); });
+  });
+  await new Promise(resolve => server.listen(path, resolve));
+  t.after(async () => {
+    await new Promise(resolve => server.close(resolve));
+    rmSync(directory, {recursive: true, force: true});
+  });
+  const submit = (payload, options) => submitIntegration(payload, {
+    ...options, platform: 'linux', connect: () => net.createConnection({path}),
+  });
+  const notify = withPiToolErrorContract(tool(createIntegrationTools({submit}), 'pixel_ods_notify'));
+  const result = await notify.execute('lost-reply', {message: 'invented QA notification'});
+  assert.equal(requests, 1);
+  assert.equal(result.details.status, 'outcome-unknown');
+  assert.equal(result.details.ok, false);
+  assert.equal(result.isError, true);
+  assert.equal(failedToolOutcome({result}), true);
+  assert.match(result.content[0].text, /was submitted.*could not be verified/);
+  assert.match(result.content[0].text, /do not repeat the action automatically/);
+  assert.doesNotMatch(result.content[0].text, /Notification sent|unavailable/);
+});
+
 test('the Unix socket client sends one JSON line and reads one reply',
   {skip: process.platform === 'win32' ? 'The production Unix socket transport runs inside WSL/Linux.' : false}, async () => {
   const directory = mkdtempSync(join(tmpdir(), 'integrations-'));

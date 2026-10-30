@@ -1,8 +1,8 @@
 import net from 'node:net';
 
 // Portal tools for the owner's integrations: an Obsidian vault, ntfy notifications and MCP
-// servers. The gateway holds no token or vault path: every call goes to the host
-// integrations service, which checks what the owner turned on and keeps "ask first"
+// servers. Their tool payloads contain no configuration token or vault root: calls
+// go to the host integrations service, which checks the owner's settings and keeps "ask first"
 // actions waiting for the owner's approval. Results are the owner's own data or a server's
 // answer and are passed on as untrusted text.
 const SOCKET = '/run/ods-pixel-integrations/control.sock';
@@ -15,20 +15,31 @@ export function submitIntegration(payload, {connect = net.createConnection, plat
     if (platform !== 'linux') return reject(new Error(platform === 'darwin' ? "Portal integrations aren't available on macOS yet." : 'Portal integrations are not available on this system yet.'));
     if (signal?.aborted) return reject(new Error('Cancelled.'));
     const socket = connect({path: SOCKET});
-    let buffer = Buffer.alloc(0), finished = false;
+    let buffer = Buffer.alloc(0), finished = false, dispatched = false;
     const finish = (error, value) => {
       if (finished) return;
       finished = true;
       clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);
       socket.destroy();
-      if (error) reject(error); else resolve(value);
+      if (error) {
+        if (dispatched) error.code = 'integration-outcome-unknown';
+        reject(error);
+      } else resolve(value);
     };
     const unavailable = () => finish(new Error('The integrations service is not running.'));
     const timer = setTimeout(() => finish(new Error('The integration did not answer in time.')), TIMEOUT_MS);
-    const onAbort = () => finish(new Error('Cancelled.'));
+    // Before submission cancellation means no action. Once submitted, retain
+    // native admission until the service settles: closing a client socket does
+    // not cancel an already accepted MCP/notes/notification operation.
+    const onAbort = () => { if (!dispatched) finish(new Error('Cancelled.')); };
     signal?.addEventListener('abort', onAbort, {once: true});
-    socket.on('connect', () => socket.write(JSON.stringify({schemaVersion: 1, ...payload}) + '\n'));
+    socket.on('connect', () => {
+      if (finished) return;
+      if (signal?.aborted) return finish(new Error('Cancelled.'));
+      dispatched = true;
+      socket.write(JSON.stringify({schemaVersion: 1, ...payload}) + '\n');
+    });
     socket.on('error', unavailable);
     socket.on('end', () => finish(new Error('The integrations service closed the connection.')));
     socket.on('data', chunk => {
@@ -50,7 +61,11 @@ async function run(submit, payload, signal, render) {
   let reply;
   try {
     reply = await submit(payload, {signal});
-  } catch {
+  } catch (error) {
+    if (error?.code === 'integration-outcome-unknown') {
+      return text('The integration was submitted, but its result could not be verified. Check the service or destination before trying again; do not repeat the action automatically.',
+        {status: 'outcome-unknown'}, true);
+    }
     return text('The integrations service is unavailable.', {status: 'unavailable'}, true);
   }
   if (!reply?.ok) return text(reply?.message || 'The integration request failed.', {status: 'refused', code: reply?.error}, true);
