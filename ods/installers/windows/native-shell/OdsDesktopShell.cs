@@ -709,10 +709,23 @@ namespace OdsNativeDesktop
                         apsi.EnvironmentVariables["ODS_MODE"] = "local";
                         apsi.EnvironmentVariables["LLM_BACKEND"] = "llama-server";
                         apsi.EnvironmentVariables["AGENT_URL"] = "";
-                        apsi.EnvironmentVariables["ODS_DATA_DIR"] = _installDir;
-                        apsi.EnvironmentVariables["DATA_DIR"] = _installDir;
+                        string dataDir = env.ContainsKey("ODS_DATA_DIR") && !string.IsNullOrEmpty(env["ODS_DATA_DIR"])
+                            ? env["ODS_DATA_DIR"]
+                            : (env.ContainsKey("DATA_DIR") && !string.IsNullOrEmpty(env["DATA_DIR"])
+                                ? env["DATA_DIR"]
+                                : Path.Combine(_installDir, "data"));
+                        apsi.EnvironmentVariables["ODS_DATA_DIR"] = dataDir;
+                        apsi.EnvironmentVariables["DATA_DIR"] = dataDir;
                         apsi.EnvironmentVariables["ODS_INSTALL_DIR"] = _installDir;
                         apsi.EnvironmentVariables["INSTALL_DIR"] = _installDir;
+                        if (env.ContainsKey("ODS_MODELS_DIR") && !string.IsNullOrEmpty(env["ODS_MODELS_DIR"]))
+                        {
+                            apsi.EnvironmentVariables["ODS_MODELS_DIR"] = env["ODS_MODELS_DIR"];
+                        }
+                        if (env.ContainsKey("ODS_CONFIG_DIR") && !string.IsNullOrEmpty(env["ODS_CONFIG_DIR"]))
+                        {
+                            apsi.EnvironmentVariables["ODS_CONFIG_DIR"] = env["ODS_CONFIG_DIR"];
+                        }
                         apsi.EnvironmentVariables["ODS_DASHBOARD_DIST"] = staticDir;
                         apsi.EnvironmentVariables["STATIC_DIR"] = staticDir;
                         apsi.EnvironmentVariables["ODS_EXTENSIONS_DIR"] = extDir;
