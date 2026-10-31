@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {createChangedFileChecks, debugGlobalWrites, FILE_CHECK_INSTRUCTION, FILE_CHECK_LIMITS, fileCheckFacts,
-  fileCheckInstruction, parseCheck, scratchEntry, topLevelDefinitions, touchedProjects} from '../plugin/changed-file-checks.mjs';
+import {createChangedFileChecks, debugGlobalWrites, FILE_CHECK_INSTRUCTION, FILE_CHECK_LIMITS, FILE_CHECK_REMOVAL, fileCheckFacts,
+  fileCheckInstruction, nodeModuleCheck, parseCheck, scratchEntry, topLevelDefinitions, touchedProjects} from '../plugin/changed-file-checks.mjs';
 
 // Portal's checks of the files a response changed (changed-file-checks.mjs).
 // On 2026-10-30/31 a one-off Python patch run through exec rewrote the game's
@@ -22,6 +22,8 @@ const CHARS = `${PREFIX}  frames: 4,\n${SUFFIX}`;
 const DOUBLED = `${PREFIX}${PREFIX}  frames: 8,\n${SUFFIX}${SUFFIX}`;
 // The second copy of the prefix starts inside the object literal.
 const DOUBLED_LINE = PREFIX.split('\n').length;
+const LINK = process.platform === 'win32' ? 'junction' : 'dir';
+const parsed = result => result && {ok: result.ok, ...(result.line ? {line: result.line} : {})};
 
 function workspace(t, files = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ods-file-checks-')));
@@ -32,12 +34,19 @@ function workspace(t, files = {}) {
   return {root, at, write};
 }
 
-test('top-level definitions are counted at column 0, as the doubled file repeated them', () => {
+test('top-level definitions are counted at column 0, outside comments and template strings', () => {
   const source = 'function a() {}\nasync function b() {}\nfunction* c() {}\nfunction *d() {}\nconst e = 1;\nlet f, g;\n' +
-    'var h = 2;\nclass I {}\nexport function j() {}\nexport const k = 1;\nexport default function l() {}\n' +
-    '  function nested() {}\nfunctional = 1;\nconstant = 2;\n// function commented() {}\nfunction a() {}\n';
+    'class I {}\nexport function j() {}\nexport const k = 1;\nexport default function l() {}\n' +
+    '  function nested() {}\nfunctional = 1;\nconstant = 2;\n// function commented() {}\nfunction a() {}\n' +
+    // A var may be declared twice; a commented-out or quoted copy is no definition.
+    'var canvas = null;\nvar canvas = document.querySelector("canvas");\n' +
+    '/*\nfunction a() { return 0; }\n*/\nconst src = `\nfunction b() {}\n${1}\nclass I {}\n`;\n' +
+    "const re = /'/;\nfunction m() {}\nconst s = 'x\\\n';\nfunction n() {}\n" +
+    // A regular expression holding /*, and a template nested in a ${} across lines.
+    'const re2 = /x\\/*/;\nfunction m2() {}\n' +
+    "const page = `<ul>${items.map(item => `\n<li>${item}</li>`).join('')}</ul>`;\nfunction render() {}\n";
   assert.deepEqual(Object.fromEntries(topLevelDefinitions(source)),
-    {a: 2, b: 1, c: 1, d: 1, e: 1, f: 1, h: 1, I: 1, j: 1, k: 1, l: 1});
+    {a: 2, b: 1, c: 1, d: 1, e: 1, f: 1, I: 1, j: 1, k: 1, l: 1, src: 1, re: 1, m: 1, s: 1, n: 1, re2: 1, m2: 1, page: 1, render: 1});
   assert.deepEqual(Object.fromEntries(topLevelDefinitions(DOUBLED)),
     {SPRITE_pose: 2, SPRITE_blit: 2, SPRITE_CACHE: 2, drawEnemy: 2});
 });
@@ -49,54 +58,66 @@ test('debug globals are writes to globalThis, window or self properties named __
     // Reads, comparisons and other names are not writes of a debug global.
     'if (globalThis.__SF) draw();', 'ok = globalThis.__SF === x;', 'ok = window.__E1 == 2;', 'ok = window.__E1 >= 2;',
     'game.window.__x = 1;', 'window.__proto__ = null;', 'globalThis.game = game;', 'window._single = 1;',
-    '// globalThis.__OFF = 1;', '  * window.__DOC = 1', '/* self.__BLOCK = 1 */',
+    '// globalThis.__OFF = 1;', '  * window.__DOC = 1', '/* self.__BLOCK = 1 */', '/*', 'window.__IN_BLOCK = 1;', '*/',
   ].join('\n');
   assert.deepEqual(Object.fromEntries(debugGlobalWrites(source)), {
     'globalThis.__SF': 2, 'window.__SPRITEFOR': 1, 'self.__WARM': 1, 'globalThis.__ENTRY': 1, 'window.__E1': 1,
     'globalThis.__REPLAY': 1});
 });
 
-test('a new dotfile or scratch-looking name in the project folder is reported', () => {
-  for (const name of ['.crop-return.txt', '.crop_actual.js', '.env', '.cache', 'chars.js.bak', 'chars.js.orig',
-    'out.tmp', 'tmp-build', 'chars-tmp.js', 'build-tmp2', 'NOTES.BAK']) assert.equal(scratchEntry(name), true, name);
-  for (const name of ['chars.js', 'index.html', 'README.md', 'tmp', 'template.js', 'attempt.js', 'chart-tmpl.js',
-    'backup.js', 'orig.js', undefined]) assert.equal(scratchEntry(name), false, String(name));
+test('a new entry is reported when it looks like scratch; conventional dotfiles are not', () => {
+  for (const name of ['.crop-return.txt', '.crop_actual.js', '.crop', '.tmp-out', '.scratch', '.debug.log', '.notes.json',
+    '.frame.png', 'chars.js.bak', 'chars.js.orig', 'out.tmp', 'tmp-build', 'tmp-crops', 'chars-tmp.js', 'build-tmp2', 'NOTES.BAK'])
+    assert.equal(scratchEntry(name), true, name);
+  for (const name of ['.gitignore', '.gitattributes', '.git', '.github', '.editorconfig', '.prettierrc', '.prettierrc.json',
+    '.eslintrc.cjs', '.env', '.env.local', '.npmrc', '.nvmrc', '.babelrc', '.vscode', '.idea', '.well-known', '.htaccess',
+    '.nojekyll', '.DS_Store', '.next', '.parcel-cache', '.svelte-kit', '.astro', '.nuxt', '.output', '.pytest_cache', '.venv',
+    '.cache', '.dockerignore', '.husky', '.foo', 'chars.js', 'index.html', 'README.md', 'tmp', 'template.js', 'attempt.js',
+    'chart-tmpl.js', 'backup.js', 'orig.js', undefined]) assert.equal(scratchEntry(name), false, String(name));
 });
 
-test('the parse check finds the doubled file and passes scripts, CommonJS and ES modules', () => {
-  assert.deepEqual(parseCheck(CHARS, 'chars.js'), {ok: true});
-  assert.deepEqual(parseCheck(DOUBLED, 'chars.js'), {ok: false, line: DOUBLED_LINE});
+test('the parse check finds the doubled file and passes scripts, CommonJS and ES modules', async () => {
+  assert.deepEqual(parsed(await parseCheck(CHARS, 'chars.js')), {ok: true});
+  assert.deepEqual(parsed(await parseCheck(DOUBLED, 'chars.js')), {ok: false, line: DOUBLED_LINE});
   // The shipped game's own chars.js, doubled the same way around a patch inside
   // the array wolfHitShapes returns: "use strict" lands inside the array.
   const shipped = fs.readFileSync(new URL('../example-projects/elf-of-doom/chars.js', import.meta.url), 'utf8');
   const old = '    hitCircle(33, -31, 3.5),     // nose (2.6x2.2), leading edge\n';
   const prefix = shipped.slice(0, shipped.indexOf(old)), suffix = shipped.slice(shipped.indexOf(old) + old.length);
-  assert.deepEqual(parseCheck(shipped, 'chars.js'), {ok: true});
-  assert.deepEqual(parseCheck(`${prefix}${prefix}    hitCircle(34, -31, 3.5),\n${suffix}${suffix}`, 'chars.js'),
+  assert.deepEqual(parsed(await parseCheck(shipped, 'chars.js')), {ok: true});
+  assert.deepEqual(parsed(await parseCheck(`${prefix}${prefix}    hitCircle(34, -31, 3.5),\n${suffix}${suffix}`, 'chars.js')),
     {ok: false, line: prefix.split('\n').length + 1});
   // A classic script with a hashbang; CommonJS with a top-level return.
-  assert.deepEqual(parseCheck('#!/usr/bin/env node\nconst x = 1;\n', 'tool.js'), {ok: true});
-  assert.deepEqual(parseCheck('const a = 1;\nif (a) return;\nmodule.exports = a;\n', 'server.js'), {ok: true});
-  assert.deepEqual(parseCheck('const a = 1;\nif (a) return;\nmodule.exports = a;\n', 'server.cjs'), {ok: true});
-  assert.deepEqual(parseCheck('const a = 1;\n\nlet = ;\n', 'server.cjs'), {ok: false, line: 3});
-  // ES modules, through `node --check` (a .js file whose script parse stops at module syntax).
-  assert.deepEqual(parseCheck('import {x} from "./x.js";\nexport const y = x + 1;\nawait Promise.resolve();\n', 'main.js'), {ok: true});
-  assert.deepEqual(parseCheck('import {x} from "./x.js";\n\nexport function (\n', 'main.js'), {ok: false, line: 3});
-  assert.deepEqual(parseCheck('export const a = 1;\n', 'lib.mjs'), {ok: true});
-  assert.deepEqual(parseCheck('const ok = 1;\nexport const = 1;\n', 'lib.mjs'), {ok: false, line: 2});
+  assert.deepEqual(await parseCheck('#!/usr/bin/env node\nconst x = 1;\n', 'tool.js'), {ok: true});
+  assert.deepEqual(await parseCheck('const a = 1;\nif (a) return;\nmodule.exports = a;\n', 'server.js'), {ok: true});
+  assert.deepEqual(await parseCheck('const a = 1;\nif (a) return;\nmodule.exports = a;\n', 'server.cjs'), {ok: true});
+  assert.deepEqual(parsed(await parseCheck('const a = 1;\n\nlet = ;\n', 'server.cjs')), {ok: false, line: 3});
+  // ES modules, through `node --check`: by name, or by module syntax in a .js file.
+  for (const source of ['import {x} from "./x.js";\nexport const y = x + 1;\nawait Promise.resolve();\n',
+    'const r = await fetch("x");\n', 'for await (const x of [1]) {}\n', 'for await (const x of [1]) {}\nexport const a = 1;\n',
+    'function f() {}\nimport {x} from "./x.js";\n']) assert.deepEqual(await parseCheck(source, 'main.js'), {ok: true}, source);
+  assert.deepEqual(parsed(await parseCheck('import {x} from "./x.js";\n\nexport function (\n', 'main.js')), {ok: false, line: 3});
+  assert.deepEqual(await parseCheck('export const a = 1;\n', 'lib.mjs'), {ok: true});
+  assert.deepEqual(parsed(await parseCheck('const ok = 1;\nexport const = 1;\n', 'lib.mjs')), {ok: false, line: 2});
   // A syntax error ahead of any module syntax is the script's own.
-  assert.deepEqual(parseCheck('const a = ;\nimport x from "y";\n', 'main.js'), {ok: false, line: 1});
+  assert.deepEqual(parsed(await parseCheck('const a = ;\nconst b = 2;\n', 'main.js')), {ok: false, line: 1});
   // Nothing is claimed when the check cannot finish.
-  assert.equal(parseCheck('export const a = 1;\n', 'main.js', () => undefined), undefined);
-  assert.equal(parseCheck('export const a = 1;\n', 'lib.mjs', null), undefined);
-  assert.equal(parseCheck('['.repeat(200000), 'deep.js'), undefined);
+  assert.equal(await parseCheck('export const a = 1;\n', 'main.js', async () => undefined), undefined);
+  assert.equal(await parseCheck('['.repeat(200000), 'deep.js'), undefined);
+  assert.equal(await nodeModuleCheck('export const a = 1;\n', 1), undefined, 'past its timeout');
 });
 
-test('the module check never runs the module', t => {
-  const marker = workspace(t).at('ran.txt');
+test('the module check never runs the module, nor anything the gateway\'s environment preloads', async t => {
+  const {at, write} = workspace(t);
+  const marker = at('ran.txt'), preloaded = at('preloaded.txt');
+  write('preload.cjs', `require('node:fs').writeFileSync(${JSON.stringify(preloaded)}, 'preloaded');\n`);
+  const saved = process.env.NODE_OPTIONS;
+  process.env.NODE_OPTIONS = `--require ${JSON.stringify(at('preload.cjs'))}`;
+  t.after(() => { if (saved === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = saved; });
   const source = `import fs from 'node:fs';\nfs.writeFileSync(${JSON.stringify(marker)}, 'ran');\nexport const a = 1;\n`;
-  assert.deepEqual(parseCheck(source, 'main.mjs'), {ok: true});
+  assert.deepEqual(await parseCheck(source, 'main.mjs'), {ok: true});
   assert.equal(fs.existsSync(marker), false);
+  assert.equal(fs.existsSync(preloaded), false);
 });
 
 test('a call touches the Playground projects it may change, as written or routed', () => {
@@ -113,22 +134,31 @@ test('a call touches the Playground projects it may change, as written or routed
     '*** Add File: Playground/new-game/index.html\n+<p>hi</p>\n*** End Patch'}, root), ['Playground/elf-of-doom', 'Playground/new-game']);
   assert.deepEqual(touchedProjects('tool_call', {id: 'openclaw:core:exec', args: {command: 'ls', workdir: 'Playground/elf-of-doom/src'}}, root),
     ['Playground/elf-of-doom']);
+  // A path joined in a script, cd from the Playground folder, a native
+  // Windows separator, and a Windows root in another letter case.
+  assert.deepEqual(touchedProjects('exec', {command: "python3 -c \"import os; open(os.path.join('Playground', 'elf-of-doom', 'chars.js'), 'a')\"",
+    workdir: '/workspace'}, root), ['Playground/elf-of-doom']);
+  assert.deepEqual(touchedProjects('exec', {command: "python3 - <<'EOF'\nfrom pathlib import Path\np = Path('Playground') / 'snake' / 'x.js'\nEOF"}, root),
+    ['Playground/snake']);
+  assert.deepEqual(touchedProjects('exec', {command: 'cd snake && python3 patch.py', workdir: '/workspace/Playground'}, root), ['Playground/snake']);
+  assert.deepEqual(touchedProjects('exec', {command: 'cd Playground\\elf-of-doom && python patch.py'}, root), ['Playground/elf-of-doom']);
+  assert.deepEqual(touchedProjects('exec', {command: 'python patch.py', workdir: 'c:\\users\\ods\\workspace\\Playground\\snake'},
+    'C:\\Users\\ods\\workspace'), ['Playground/snake']);
   // Reads change nothing; other folders, other spellings and bare names are not projects.
   for (const [tool, params] of [['read', {path: 'Playground/elf-of-doom/chars.js'}], ['write', {path: 'notes/todo.md'}],
     ['write', {path: 'playground/snake/main.js'}], ['exec', {command: 'ls Playground/', workdir: '/workspace'}],
     ['exec', {command: 'cat MyPlayground/snake/x.js'}], ['exec', {command: 'ls', workdir: '/workspace/Playground'}],
-    ['write', {path: 'Playground/con/x.js'}], ['tool_call', {id: 'openclaw:core:read', args: {path: 'Playground/a/b.js'}}],
+    ['exec', {command: 'cd snake', workdir: '/workspace'}], ['write', {path: 'Playground/con/x.js'}],
+    ['tool_call', {id: 'openclaw:core:read', args: {path: 'Playground/a/b.js'}}],
     ['web_fetch', {url: 'https://example.com/Playground/x'}]]) assert.deepEqual(touchedProjects(tool, params, root), [], JSON.stringify(params));
   // At most FILE_CHECK_LIMITS.projects per call.
   const many = Array.from({length: 9}, (_, i) => `Playground/game-${i}/x.js`).join(' ');
   assert.equal(touchedProjects('exec', {command: `cat ${many}`}, root).length, FILE_CHECK_LIMITS.projects);
 });
 
-test('only what changed since first touch is reported, and each finding is told once', t => {
+test('only what changed since first touch is reported, and a finding is told once, again only after it was gone', t => {
   const {root, write} = workspace(t, {
-    'Playground/sprite-game/chars.js': `${CHARS}var legacy = 1;\nvar legacy = 2;\nglobalThis.__OLD = legacy;\n`,
-    'Playground/sprite-game/broken.js': 'const a = ;\n',
-    'Playground/sprite-game/.prettierrc': '{}\n',
+    'Playground/sprite-game/chars.js': `${CHARS}function legacy() {}\nfunction legacy() {}\nglobalThis.__OLD = legacy;\n`,
     'Playground/sprite-game/old.bak': 'x',
     'Playground/other/chars.js': CHARS,
   });
@@ -138,9 +168,10 @@ test('only what changed since first touch is reported, and each finding is told 
   assert.deepEqual(checks.findings(), []);
   // The exec that rewrote chars.js, a debug global, a scratch file and a
   // change to a project this response never touched.
-  write('Playground/sprite-game/chars.js', `${DOUBLED}var legacy = 1;\nvar legacy = 2;\nglobalThis.__OLD = legacy;\nglobalThis.__SF = SPRITE_CACHE;\n`);
+  const doubled = `${DOUBLED}function legacy() {}\nfunction legacy() {}\nglobalThis.__OLD = legacy;\nglobalThis.__SF = SPRITE_CACHE;\n`;
+  write('Playground/sprite-game/chars.js', doubled);
   write('Playground/sprite-game/.crop-return.txt', '{"x": 1}');
-  write('Playground/sprite-game/assets/.hidden', 'x');
+  write('Playground/sprite-game/assets/.hidden.json', 'x');
   write('Playground/sprite-game/notes.txt', 'plain notes');
   write('Playground/other/chars.js', DOUBLED);
   const expected = [
@@ -154,52 +185,102 @@ test('only what changed since first touch is reported, and each finding is told 
   assert.deepEqual(checks.take(), expected);
   assert.deepEqual(checks.take(), [], 'told once');
   // A third definition is a new finding; the ones already told stay told.
-  write('Playground/sprite-game/chars.js', `${DOUBLED}var legacy = 1;\nvar legacy = 2;\nvar legacy = 3;\nglobalThis.__OLD = legacy;\nglobalThis.__SF = SPRITE_CACHE;\n`);
+  write('Playground/sprite-game/chars.js', `${doubled}function legacy() {}\n`);
   assert.deepEqual(checks.take(), [{kind: 'definition', project: 'Playground/sprite-game', file: 'chars.js', name: 'legacy', count: 3}]);
-  // Fixed: nothing is left to report, though the model was told.
+  // Fixed: nothing is left to report.
   write('Playground/sprite-game/chars.js', `${CHARS}\n`);
   fs.rmSync(path.join(root, 'Playground', 'sprite-game', '.crop-return.txt'));
+  assert.deepEqual(checks.take(), []);
   assert.deepEqual(checks.findings(), []);
-  // A broken file the response changes is reported, broken before or not.
-  write('Playground/sprite-game/broken.js', 'const a = ;\nconst b = 2;\n');
-  assert.deepEqual(checks.findings(), [{kind: 'parse', project: 'Playground/sprite-game', file: 'broken.js', line: 1}]);
+  // Broken again: told again.
+  write('Playground/sprite-game/chars.js', `${CHARS}const = 1;\n`);
+  assert.deepEqual(checks.take(), [{kind: 'parse', project: 'Playground/sprite-game', file: 'chars.js', line: CHARS.split('\n').length}]);
 });
 
-test('a project the first touch creates reports everything in its new files', t => {
-  const {root, write} = workspace(t);
+test('a file broken at first touch is not reported when it changes; a new file, or one that parsed then, is', t => {
+  const {root, write, at} = workspace(t, {'Playground/wip/main.js': 'const a = 1;\n', 'Playground/wip/experiment.js': 'function half( {\n'});
   const checks = createChangedFileChecks();
-  checks.touch(root, ['Playground/new-game']);
-  write('Playground/new-game/index.html', '<script src="game.js"></script>');
-  write('Playground/new-game/game.js', 'function tick() {}\nfunction tick() {}\nwindow.__DEBUG = true;\n');
-  write('Playground/new-game/.scratch.js', 'x');
-  write('Playground/new-game/tmp-out/a.txt', 'x');
+  checks.touch(root, ['Playground/wip']);
+  // The owner's unfinished experiment, touched by a formatter: still broken, not this response's.
+  const later = new Date(Date.now() + 5000);
+  fs.utimesSync(at('Playground/wip/experiment.js'), later, later);
+  write('Playground/wip/experiment.js', 'function half( {\n  return 1;\n');
+  assert.deepEqual(checks.findings(), []);
+  write('Playground/wip/main.js', 'const a = ;\n');
+  write('Playground/wip/added.js', 'const b = ;\n');
   assert.deepEqual(checks.findings(), [
-    {kind: 'definition', project: 'Playground/new-game', file: 'game.js', name: 'tick', count: 2},
-    {kind: 'global', project: 'Playground/new-game', file: 'game.js', name: 'window.__DEBUG'},
-    {kind: 'entry', project: 'Playground/new-game', name: '.scratch.js', folder: false},
-    {kind: 'entry', project: 'Playground/new-game', name: 'tmp-out', folder: true},
+    {kind: 'parse', project: 'Playground/wip', file: 'added.js', line: 1},
+    {kind: 'parse', project: 'Playground/wip', file: 'main.js', line: 1},
   ]);
 });
 
-test('node_modules, dot folders and links are never entered or followed', t => {
+test('JSX, and a file the project\'s HTML loads as text/babel, are not reported for their <', async t => {
+  const {root, write} = workspace(t, {
+    'Playground/cra/src/App.js': "import React from 'react';\nfunction App() { return null; }\nexport default App;\n",
+    'Playground/babel/index.html': '<script src="https://unpkg.com/@babel/standalone"></script>\n<script type="text/babel" src="./app.js"></script>\n',
+    'Playground/babel/app.js': 'const root = 1;\n',
+  });
+  const checks = createChangedFileChecks();
+  checks.touch(root, ['Playground/cra', 'Playground/babel']);
+  write('Playground/cra/src/App.js', "import React from 'react';\nfunction App() {\n  return (<div className=\"App\"><h1>Hello</h1></div>);\n}\nexport default App;\n");
+  write('Playground/cra/src/Card.js', 'export const Card = props => <section>{props.children}</section>;\n');
+  // In-browser Babel: no tag on the failing line's own terms, loaded as text/babel.
+  write('Playground/babel/app.js', 'const root = 1;\nconst element = < Game / >;\n');
+  await checks.settle();
+  assert.deepEqual(checks.findings(), []);
+  // Not JSX: a stray < is a failure.
+  write('Playground/cra/src/util.js', 'export const less = (a, b) => a < ;\n');
+  await checks.settle();
+  checks.findings();
+  await checks.settle();
+  assert.deepEqual(checks.findings({final: true}), [{kind: 'parse', project: 'Playground/cra', file: 'src/util.js', line: 1}]);
+});
+
+test('vendored, minified and generated files get the parse check only, and dist, build and venv are not entered', t => {
+  const {root, write} = workspace(t, {'Playground/three/main.js': 'const a = 1;\n'});
+  const checks = createChangedFileChecks();
+  checks.touch(root, ['Playground/three']);
+  const three = "const REVISION = '160';\nif ( window.__THREE__ ) {\n} else {\n\twindow.__DEBUG_HOOK = REVISION;\n}\nfunction a() {}\nfunction a() {}\n";
+  write('Playground/three/vendor/three.module.js', three);
+  write('Playground/three/lib/engine.js', three);
+  write('Playground/three/js/three.min.js', three);
+  write('Playground/three/js/bundle.js', `${three}${'x'.repeat(FILE_CHECK_LIMITS.minifiedLine + 1)}\n`);
+  for (const folder of ['dist', 'build', 'venv', 'node_modules', '.next']) write(`Playground/three/${folder}/chunk.js`, 'const = ;\n');
+  write('Playground/three/vendor/broken.js', 'const = ;\n');
+  assert.deepEqual(checks.findings(), [{kind: 'parse', project: 'Playground/three', file: 'vendor/broken.js', line: 1}]);
+});
+
+test('library and devtools hooks, and names the owner\'s request uses, are not debug globals', t => {
+  const {root, write} = workspace(t, {'Playground/pixi/main.js': 'const app = {};\n'});
+  const checks = createChangedFileChecks({requested: 'In Playground/pixi, expose the game as window.__GAME for the console.'});
+  checks.touch(root, ['Playground/pixi']);
+  write('Playground/pixi/main.js', ['const app = {};', 'window.__GAME = app;', 'globalThis.__PIXI_APP__ = app;', 'window.__THREE__ = "160";',
+    'window.__REACT_DEVTOOLS_GLOBAL_HOOK__ = hook;', 'window.__VUE_DEVTOOLS_HOOK_REPLAY__ = [];', 'window.__REDUX_DEVTOOLS_EXTENSION__ = x;',
+    'window.__GAMEPLAY = 1;', 'globalThis.__SF = 1;'].join('\n'));
+  assert.deepEqual(checks.findings().map(finding => finding.name), ['window.__GAMEPLAY', 'globalThis.__SF']);
+});
+
+test('node_modules, dot folders and links are never entered or followed, and hard-linked files are never read', t => {
   const {root, write, at} = workspace(t, {
     'Playground/game/main.js': 'const a = 1;\n',
     'Playground/game/node_modules/lib/index.js': 'ok = 1;\n',
     'Playground/game/.cache/x.js': 'ok = 1;\n',
     'outside/target/broken.js': 'ok = 1;\n',
+    'outside/secret.js': 'ok = 1;\n',
   });
-  fs.symlinkSync(at('outside/target'), at('Playground/game/linked'), process.platform === 'win32' ? 'junction' : 'dir');
+  fs.symlinkSync(at('outside/target'), at('Playground/game/linked'), LINK);
+  fs.linkSync(at('outside/secret.js'), at('Playground/game/hard.js'));
   const checks = createChangedFileChecks();
   checks.touch(root, ['Playground/game']);
-  for (const file of ['Playground/game/node_modules/lib/index.js', 'Playground/game/.cache/x.js', 'outside/target/broken.js'])
-    write(file, 'const = ;\n');
+  for (const file of ['Playground/game/node_modules/lib/index.js', 'Playground/game/.cache/x.js', 'outside/target/broken.js', 'outside/secret.js'])
+    write(file, 'const = ;\nfunction x() {}\nfunction x() {}\n');
   write('outside/target/new.js', 'function x() {}\nfunction x() {}\n');
   assert.deepEqual(checks.findings(), []);
 });
 
 test('a linked Playground is the owner\'s layout: its projects are not checked', t => {
   const {root, write, at} = workspace(t, {'elsewhere/game/main.js': 'const a = 1;\n'});
-  fs.symlinkSync(at('elsewhere'), at('Playground'), process.platform === 'win32' ? 'junction' : 'dir');
+  fs.symlinkSync(at('elsewhere'), at('Playground'), LINK);
   const checks = createChangedFileChecks();
   checks.touch(root, ['Playground/game']);
   write('elsewhere/game/main.js', 'const a = ;\n');
@@ -207,34 +288,146 @@ test('a linked Playground is the owner\'s layout: its projects are not checked',
   assert.deepEqual(checks.findings(), []);
 });
 
-test('the walk is bounded: a larger project, or files below the depth limit, are not checked', t => {
+test('the walk is bounded: a larger project is said to be not checked, files below the depth limit are left out', t => {
   const {root, write} = workspace(t);
   for (let i = 0; i <= FILE_CHECK_LIMITS.entries; i++) write(`Playground/big/assets/tile-${i}.txt`, '');
+  // Generated folders do not count toward the bound.
+  for (let i = 0; i <= FILE_CHECK_LIMITS.entries; i++) write(`Playground/app/node_modules/pkg/f-${i}.js`, '');
   const deep = `Playground/deep/${Array.from({length: FILE_CHECK_LIMITS.depth}, (_, i) => `d${i}`).join('/')}/x.js`;
   write(deep, 'const a = 1;\n');
   write('Playground/deep/d0/y.js', 'const b = 1;\n');
   const checks = createChangedFileChecks();
-  checks.touch(root, ['Playground/big', 'Playground/deep']);
+  checks.touch(root, ['Playground/big', 'Playground/deep', 'Playground/app']);
   write('Playground/big/main.js', 'const = ;\n');
   write(deep, 'const = ;\n');
   write('Playground/deep/d0/y.js', 'const = ;\n');
-  assert.deepEqual(checks.findings(), [{kind: 'parse', project: 'Playground/deep', file: 'd0/y.js', line: 1}]);
+  write('Playground/app/main.js', 'const = ;\n');
+  assert.deepEqual(checks.findings(), [
+    {kind: 'unchecked', project: 'Playground/big'},
+    {kind: 'parse', project: 'Playground/deep', file: 'd0/y.js', line: 1},
+    {kind: 'parse', project: 'Playground/app', file: 'main.js', line: 1},
+  ]);
+  assert.equal(fileCheckInstruction(checks.findings()).includes('Playground/big'), false, 'the model is not told');
 });
 
-test('module parses are bounded per check, and the same bytes are checked once', t => {
+test('at most four projects per response are fingerprinted', t => {
   const {root, write} = workspace(t);
+  const names = Array.from({length: FILE_CHECK_LIMITS.projects + 2}, (_, i) => `Playground/game-${i}`);
+  for (const name of names) write(`${name}/main.js`, 'const a = 1;\n');
+  const checks = createChangedFileChecks();
+  checks.touch(root, names.slice(0, 3));
+  checks.touch(root, names.slice(3));
+  for (const name of names) write(`${name}/main.js`, 'const a = ;\n');
+  assert.deepEqual(checks.findings().map(finding => finding.project), names.slice(0, FILE_CHECK_LIMITS.projects));
+});
+
+test('counts are compared only with a first touch that read the file', t => {
+  // The first touch reads a.js (29 bytes) and has 11 of its 40 bytes left: b.js (16) is not read.
+  const {root, write} = workspace(t, {'Playground/game/a.js': `const a = ${'1'.repeat(17)};\n`, 'Playground/game/b.js': 'const b = 1;\n//\n'});
+  const checks = createChangedFileChecks({limits: {readBytes: 40}});
+  checks.touch(root, ['Playground/game']);
+  write('Playground/game/b.js', 'class y{}\nclass y{}\n');
+  write('Playground/game/c.js', 'class z{}\nclass z{}\n');
+  // b.js's definitions at first touch are unknown, so its own count is not compared; c.js is new.
+  assert.deepEqual(checks.findings().filter(finding => finding.kind === 'definition').map(finding => finding.file), ['c.js']);
+});
+
+test('a file rewritten with the same size and mtime is read again', t => {
+  const {root, write, at} = workspace(t, {'Playground/game/a.js': 'const a = 1;\n'});
+  const checks = createChangedFileChecks();
+  checks.touch(root, ['Playground/game']);
+  // Both versions carry the same whole-second mtime, so only ctime and the inode tell them apart.
+  const second = new Date('2026-10-30T12:00:00Z');
+  write('Playground/game/a.js', 'function x() {}\nfunction x() {}\n');
+  fs.utimesSync(at('Playground/game/a.js'), second, second);
+  assert.equal(checks.findings().length, 1);
+  write('Playground/game/a.js', 'function x() {}\nfunction y() {}\n');
+  fs.utimesSync(at('Playground/game/a.js'), second, second);
+  assert.equal(fs.statSync(at('Playground/game/a.js')).mtimeMs, second.getTime());
+  assert.deepEqual(checks.findings(), []);
+});
+
+test('the same finding in two projects is told for each, and names the texts cannot print are left out', t => {
+  const {root, write} = workspace(t, {'Playground/a/x.js': 'const a = 1;\n', 'Playground/b/x.js': 'const a = 1;\n'});
+  const checks = createChangedFileChecks();
+  checks.touch(root, ['Playground/a', 'Playground/b']);
+  write('Playground/a/x.js', 'const = ;\n');
+  assert.equal(checks.take().length, 1);
+  write('Playground/b/x.js', 'const = ;\n');
+  write('Playground/b/bad`name.js', 'const = ;\n');
+  assert.deepEqual(checks.take(), [{kind: 'parse', project: 'Playground/b', file: 'x.js', line: 1}]);
+});
+
+test('module parses run in the background, bounded per response, each version once; what could not be checked is said', async t => {
+  const {root, write} = workspace(t, {'Playground/mods/base.mjs': 'export const base = ;\n'});
   const sources = [];
-  const checks = createChangedFileChecks({checkModule: source => { sources.push(source); return {ok: false, line: 2}; }});
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const checks = createChangedFileChecks({limits: {moduleChecks: 4, moduleBaseline: 1, moduleConcurrency: 1},
+    checkModule: async source => { sources.push(source); await gate; return /= ;/.test(source) ? {ok: false, line: 1} : {ok: true}; }});
   checks.touch(root, ['Playground/mods']);
-  for (let i = 0; i < FILE_CHECK_LIMITS.moduleChecks + 2; i++) write(`Playground/mods/m${i}.mjs`, `export const a = ${i};\n`);
-  write('Playground/mods/copy.mjs', 'export const a = 0;\n');
-  const first = checks.findings().map(finding => finding.file);
-  assert.equal(sources.length, FILE_CHECK_LIMITS.moduleChecks);
-  assert.deepEqual(first, ['copy.mjs', 'm0.mjs', 'm1.mjs', 'm2.mjs'], 'copy.mjs and m0.mjs share one check');
-  assert.deepEqual(checks.findings().map(finding => finding.file), ['copy.mjs', 'm0.mjs', 'm1.mjs', 'm2.mjs', 'm3.mjs', 'm4.mjs']);
-  assert.equal(sources.length, FILE_CHECK_LIMITS.moduleChecks + 2);
+  assert.equal(sources.length, 1, 'the first touch queues its module file');
+  for (let i = 0; i < 4; i++) write(`Playground/mods/m${i}.mjs`, `export const a${i} = ;\n`);
+  write('Playground/mods/copy.mjs', 'export const a0 = ;\n');
+  // Not yet known: no finding, nothing told; one check runs at a time.
+  assert.deepEqual(checks.take(), []);
+  assert.equal(sources.length, 1, 'one at a time');
+  release();
+  await checks.settle();
+  // Results come on a later result, even one that walks nothing.
+  assert.deepEqual(checks.take({walk: false}).map(finding => finding.file), ['copy.mjs', 'm0.mjs', 'm1.mjs', 'm2.mjs']);
+  assert.deepEqual(checks.take({walk: false}), []);
+  // m3 was past the response's checks: the owner reads that it could not be checked.
+  assert.deepEqual(checks.findings({final: true}).filter(finding => finding.kind === 'unparsed'),
+    [{kind: 'unparsed', project: 'Playground/mods', file: 'm3.mjs'}]);
+  assert.equal(sources.length, 4, 'base, m0 (and copy), m1, m2');
+  assert.deepEqual(checks.findings().length, 5, 'nothing is checked twice');
+  assert.equal(sources.length, 4);
+});
+
+test('a told parse failure stays told while the next version of its file is still being checked', async t => {
+  const {root, write} = workspace(t);
+  let release;
+  const checks = createChangedFileChecks({checkModule: async source => {
+    if (source.includes('again')) await new Promise(resolve => { release = resolve; });
+    return {ok: false, line: 1};
+  }});
+  checks.touch(root, ['Playground/mods']);
+  write('Playground/mods/m.mjs', 'export const = ;\n');
+  checks.take();
+  await checks.settle();
+  assert.equal(checks.take({walk: false}).length, 1);
+  // Still broken, in a version whose check has not finished: not forgotten,
+  // so not told again when that check finds the same.
+  write('Playground/mods/m.mjs', 'export const = ; // again\n');
+  assert.deepEqual(checks.take(), []);
+  release();
+  await checks.settle();
+  assert.deepEqual(checks.take({walk: false}), []);
+});
+
+test('a failing module whose first-touch check has not finished waits for it, and could not be checked at the end', async t => {
+  const {root, write} = workspace(t, {'Playground/mods/m.mjs': 'export const a = 1; // first touch\n'});
+  const checks = createChangedFileChecks({checkModule: source => source.includes('first touch') ? new Promise(() => {}) : {ok: false, line: 1}});
+  checks.touch(root, ['Playground/mods']);
+  write('Playground/mods/m.mjs', 'export const = ;\n');
   checks.findings();
-  assert.equal(sources.length, FILE_CHECK_LIMITS.moduleChecks + 2, 'nothing is parsed twice');
+  await checks.settle(50);
+  // It may have been broken already: not reported as broken, and not dropped either.
+  assert.deepEqual(checks.findings(), []);
+  assert.deepEqual(checks.findings({final: true}), [{kind: 'unparsed', project: 'Playground/mods', file: 'm.mjs'}]);
+});
+
+test('a module check that never ends is not waited for past the settle time, and could not be checked', async t => {
+  const {root, write} = workspace(t);
+  const checks = createChangedFileChecks({checkModule: () => new Promise(() => {})});
+  checks.touch(root, ['Playground/mods']);
+  write('Playground/mods/m.mjs', 'export const a = 1;\n');
+  assert.deepEqual(checks.findings(), []);
+  const started = Date.now();
+  await checks.settle(50);
+  assert.ok(Date.now() - started < 2000);
+  assert.deepEqual(checks.findings({final: true}), [{kind: 'unparsed', project: 'Playground/mods', file: 'm.mjs'}]);
 });
 
 const project = 'Playground/elf-of-doom';
@@ -253,7 +446,7 @@ test('the owner reads the findings as one bounded line of fixed text and names',
   assert.equal(fileCheckInstruction(findings), '[ODS Pixel check] Portal checked the files this response changed in ' +
     '`Playground/elf-of-doom`: `chars.js` does not parse (line 3255); `SPRITE_pose` is defined twice in `chars.js`; ' +
     'new debug global `globalThis.__ENTRY` in `chars.js`; new file `.crop-return.txt` in the project folder. ' +
-    FILE_CHECK_INSTRUCTION);
+    `${FILE_CHECK_INSTRUCTION} ${FILE_CHECK_REMOVAL}`);
   assert.equal(fileCheckFacts([]), '');
   assert.equal(fileCheckInstruction(undefined), '');
   // Several names and kinds: grouped per file, the first three named.
@@ -265,27 +458,48 @@ test('the owner reads the findings as one bounded line of fixed text and names',
     finding('global', {file: 'ui.js', name: 'globalThis.__E1'}), finding('global', {file: 'ui.js', name: 'window.__REPLAY'}),
     finding('entry', {name: '.crop-return.txt', folder: false}), finding('entry', {name: '.crop_actual.js', folder: false}),
     finding('entry', {name: 'tmp-out', folder: true}), finding('parse', {file: 'ui.js'}),
-  ]), "Portal's checks of the changed files in `Playground/elf-of-doom`: `ui.js` does not parse; " +
-    '`SPRITE_pose`, `SPRITE_blit`, `SPRITE_CACHE` and 2 more names are each defined twice in `chars.js`; ' +
+    finding('unparsed', {file: 'mod.mjs'}),
+  ]), "Portal's checks of the changed files in `Playground/elf-of-doom`: could not check whether `mod.mjs` parses; " +
+    '`ui.js` does not parse; `SPRITE_pose`, `SPRITE_blit`, `SPRITE_CACHE` and 2 more names are each defined twice in `chars.js`; ' +
     '`draw` is defined 3 times in `ui.js`; `step` and `tick` are defined more than once in `engine.js`; ' +
     'new debug globals `globalThis.__E1` and `window.__REPLAY` in `ui.js`; ' +
     'new files `.crop-return.txt` and `.crop_actual.js` in the project folder; new folder `tmp-out` in the project folder.');
-  // Two projects, each named once.
-  assert.equal(fileCheckFacts([finding('parse', {file: 'a.js', line: 1}), {kind: 'parse', project: 'Playground/snake', file: 'b.js', line: 2}]),
-    "Portal's checks of the changed files in `Playground/elf-of-doom`: `a.js` does not parse (line 1). " +
-    'In `Playground/snake`: `b.js` does not parse (line 2).');
+  // Two projects, each named once; a larger project not checked; what an
+  // earlier response could not show, after this one's.
+  assert.equal(fileCheckFacts([finding('parse', {file: 'a.js', line: 1}), {kind: 'unchecked', project: 'Playground/big'}], 900,
+    [{kind: 'parse', project: 'Playground/snake', file: 'b.js', line: 2}]),
+  "Portal's checks of the changed files in `Playground/elf-of-doom`: `a.js` does not parse (line 1). " +
+    'In `Playground/big`: not checked, the folder has more than 2,000 files and folders. ' +
+    'Still found from earlier changes in `Playground/snake`: `b.js` does not parse (line 2).');
 });
 
-test('a line past its room keeps the first items whole and counts the rest', () => {
+test('the model is never told of a new folder or of what could not be checked', () => {
+  // A folder goes with rm -rf, which Portal refuses for the rest of the response.
+  for (const owner of [finding('entry', {name: 'tmp-crops', folder: true}), finding('unparsed', {file: 'm.mjs'}),
+    {kind: 'unchecked', project}]) {
+    assert.equal(fileCheckInstruction([owner]), '');
+    assert.ok(fileCheckFacts([owner]).startsWith("Portal's checks of the changed files in"));
+  }
+  assert.equal(fileCheckInstruction([finding('entry', {name: 'tmp-crops', folder: true}), finding('parse', {file: 'a.js', line: 2})]),
+    `[ODS Pixel check] Portal checked the files this response changed in \`${project}\`: \`a.js\` does not parse (line 2). ${FILE_CHECK_INSTRUCTION}`);
+});
+
+test('a line past its room keeps the first items whole and counts the rest, in one pass', () => {
   const findings = Array.from({length: 40}, (_, i) => finding('parse', {file: `src/part-${i}.js`, line: i + 1}));
   const line = fileCheckFacts(findings);
-  assert.ok(line.length <= FILE_CHECK_LIMITS.lineChars, `${line.length}`);
+  assert.ok(line.length <= FILE_CHECK_LIMITS.ownerChars, `${line.length}`);
   assert.match(line, /^Portal's checks of the changed files in `Playground\/elf-of-doom`: `src\/part-0\.js` does not parse \(line 1\); /);
   const shown = line.match(/does not parse/g).length;
   assert.ok(line.endsWith(`; and ${40 - shown} more.`), line);
   assert.equal(fileCheckFacts(findings, 120), "Portal's checks of the changed files in `Playground/elf-of-doom`: " +
     '`src/part-0.js` does not parse (line 1); and 39 more.');
   assert.equal(fileCheckFacts(findings, 60), '');
-  assert.ok(fileCheckInstruction(findings).length <= 1600);
+  assert.ok(fileCheckInstruction(findings).length <= FILE_CHECK_LIMITS.modelChars);
   assert.ok(fileCheckInstruction(findings).endsWith(` more. ${FILE_CHECK_INSTRUCTION}`));
+  // Thousands of findings compose in a few milliseconds, not quadratic time.
+  const many = Array.from({length: 6000}, (_, i) => finding('parse', {file: `parts/p-${i}.js`, line: 1}));
+  const started = performance.now();
+  fileCheckFacts(many);
+  fileCheckInstruction(many);
+  assert.ok(performance.now() - started < 500, `${performance.now() - started} ms`);
 });
