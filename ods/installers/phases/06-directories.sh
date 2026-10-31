@@ -409,6 +409,51 @@ else
             error "source-upgrade-sudo-required: Updating the existing Pixel installation requires sudo. Preserve the installation and any pending upgrade state."
             return 1
         fi
+
+        # If the marker exists and records this install dir as ODS-managed, but the
+        # recorded installation directory has no active installation (.env or config),
+        # the prior deployment directory was wiped or moved without uninstalling.
+        # Clean up the orphaned host state so the installer can bootstrap cleanly rather
+        # than failing an impossible in-place upgrade.
+        if [[ ! -f "$INSTALL_DIR/.env" && ! -d "$INSTALL_DIR/config" ]] && "${ODS_PYTHON_CMD:-python3}" -c '
+import json, pathlib, sys
+marker = pathlib.Path(sys.argv[1])
+try:
+    data = json.loads(marker.read_text(encoding="utf-8"))
+    sys.exit(0 if data.get("manager") == "ods" and data.get("install_dir") == sys.argv[2] else 1)
+except Exception:
+    sys.exit(1)
+' "$_phase06_pixel_marker" "$INSTALL_DIR" 2>/dev/null; then
+            log "Recorded Pixel installation marker exists, but $INSTALL_DIR has no active installation."
+            ai "Resetting orphaned Pixel host state for a clean re-installation..."
+            if ! declare -F ods_pixel_uninstall_managed >/dev/null 2>&1; then
+                # shellcheck source=../../lib/pixel-uninstall.sh
+                source "$SCRIPT_DIR/lib/pixel-uninstall.sh"
+            fi
+            if [[ "$SCRIPT_DIR" != "$INSTALL_DIR" ]]; then
+                if ! declare -F ods_copy_install_source >/dev/null 2>&1; then
+                    # shellcheck source=../lib/source-copy.sh
+                    source "$SCRIPT_DIR/installers/lib/source-copy.sh"
+                fi
+                if [[ -d "$INSTALL_DIR" && ! -w "$INSTALL_DIR" ]] && ods_sudo_available; then
+                    ods_sudo chown -R "$(id -u):$(id -g)" "$INSTALL_DIR" 2>/dev/null || true
+                fi
+                mkdir -p "$INSTALL_DIR"
+                if ! ods_copy_install_source "$SCRIPT_DIR" "$INSTALL_DIR" "$LOG_FILE"; then
+                    error "Could not restore verified source to $INSTALL_DIR for orphaned Pixel cleanup."
+                    return 1
+                fi
+            else
+                mkdir -p "$INSTALL_DIR"
+            fi
+            if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME" "source-transition"; then
+                log "Orphaned Pixel host state cleaned. Proceeding with clean installation."
+                _phase06_pixel_source_transition=1
+            else
+                error "Could not clean orphaned Pixel host state; the management marker was preserved to protect retained runtime state. Inspect host services or complete uninstallation before retrying."
+                return 1
+            fi
+        else
         _phase06_pixel_owner="$(ods_pixel_install_owner)" || {
             error "Could not identify the ODS owner for a Pixel source transition."
             return 1
@@ -514,6 +559,7 @@ else
         esac
         unset -f _phase06_source_failed
         unset _phase06_pixel_owner _phase06_pixel_home
+        fi
     elif [[ "${ENABLE_PIXEL_RUNTIME:-false}" != "true" \
         && ( -e "$_phase06_pixel_marker" || -L "$_phase06_pixel_marker" ) ]]; then
         if ! declare -F ods_pixel_uninstall_managed >/dev/null 2>&1; then
@@ -564,6 +610,9 @@ else
     # Create directories
     _phase06_step "create-directories"
     ods_progress 38 "directories" "Creating directory structure"
+    if [[ -d "$INSTALL_DIR" && ! -w "$INSTALL_DIR" ]] && ods_sudo_available; then
+        ods_sudo chown -R "$(id -u):$(id -g)" "$INSTALL_DIR" 2>/dev/null || true
+    fi
     mkdir -p "$INSTALL_DIR"/{config,data,models}
     mkdir -p "$INSTALL_DIR"/data/{open-webui,whisper,tts,n8n,qdrant,models,privacy-shield,ape,token-spy,hermes,persona}
     # llama-server's CUDA kernel cache (docker-compose.nvidia.yml).
