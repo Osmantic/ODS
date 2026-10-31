@@ -3997,6 +3997,13 @@ class TestRemoteProviderLifecycle:
     @pytest.fixture(autouse=True)
     def _auth(self, monkeypatch):
         monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+        # These gateway/Pixel fixtures do not install the optional Hermes
+        # service. Its real file and container boundary has a separate suite.
+        monkeypatch.setattr(_mod, "_capture_remote_provider_hermes", lambda: {
+            "template": {"exists": False}, "live": {"exists": False},
+            "container": {"exists": False, "running": False},
+        })
+        monkeypatch.setattr(_mod, "_capture_container_state", lambda _: {"exists": False, "running": False})
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX secret modes")
     def test_repairs_legacy_provider_secret_modes_without_widening_peer_token(
@@ -5511,7 +5518,7 @@ class TestRemoteProviderLifecycle:
         cloud_path.parent.mkdir(parents=True)
         data_dir.mkdir(parents=True)
         env_path = install_dir / ".env"
-        original_env = "ODS_MODE=local\nLLM_API_URL=http://llama-server:8080\n"
+        original_env = "ODS_MODE=local\nLLM_API_URL=http://llama-server:8080\nLITELLM_KEY=fixture-gateway\n"
         original_cloud = "known-good-cloud\n"
         env_path.write_text(original_env, encoding="utf-8")
         cloud_path.write_text(original_cloud, encoding="utf-8")
@@ -5565,7 +5572,12 @@ class TestRemoteProviderLifecycle:
         cloud_path.parent.mkdir(parents=True)
         data_dir.mkdir(parents=True)
         env_path = install_dir / ".env"
-        env_path.write_text("ODS_MODE=local\nLLM_API_URL=http://llama-server:8080\n", encoding="utf-8")
+        env_path.write_text(
+            "ODS_MODE=local\nLLM_API_URL=http://llama-server:8080\n"
+            "HERMES_LLM_BASE_URL=http://model-router:9099/v1\nHERMES_LLM_API_KEY=no-key\n"
+            "LITELLM_KEY=sk-test-key\n",
+            encoding="utf-8",
+        )
         cloud_path.write_text("previous-cloud\n", encoding="utf-8")
         env_path.chmod(0o600)
         monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
@@ -5611,6 +5623,8 @@ class TestRemoteProviderLifecycle:
 
         _mod._activate_remote_provider_route(route)
 
+        assert _mod.load_env(env_path)["HERMES_LLM_BASE_URL"] == "http://litellm:4000/v1"
+        assert _mod.load_env(env_path)["HERMES_LLM_API_KEY"] == "sk-test-key"
         assert events == [
             ("recreate", "ods-litellm", "cloud"),
             ("recreate", "ods-pixel-model-relay", "cloud"),
@@ -5620,6 +5634,8 @@ class TestRemoteProviderLifecycle:
 
         _mod._deactivate_remote_provider_route()
 
+        assert _mod.load_env(env_path)["HERMES_LLM_BASE_URL"] == "http://model-router:9099/v1"
+        assert _mod.load_env(env_path)["HERMES_LLM_API_KEY"] == "no-key"
         assert events == [
             ("recreate", "ods-litellm", "local"),
             ("recreate", "ods-pixel-model-relay", "local"),
@@ -5639,6 +5655,8 @@ class TestRemoteProviderLifecycle:
             _mod._activate_remote_provider_route(route)
 
         assert mode() == "local"
+        assert _mod.load_env(env_path)["HERMES_LLM_BASE_URL"] == "http://model-router:9099/v1"
+        assert _mod.load_env(env_path)["HERMES_LLM_API_KEY"] == "no-key"
         assert events == [
             ("recreate", "ods-litellm", "cloud"),
             ("recreate", "ods-pixel-model-relay", "cloud"),
@@ -5661,6 +5679,206 @@ class TestRemoteProviderLifecycle:
         monkeypatch.setattr(_mod, "_restart_existing_container", relay_fault)
         assert _mod._deactivate_remote_provider_route()["restored"] is True
         assert mode() == "local"
+
+    def test_remote_provider_lifecycle_cleanses_hermes_keys_when_originally_absent(self, tmp_path, monkeypatch):
+        install_dir = tmp_path / "ods"
+        data_dir = install_dir / "data"
+        cloud_path = install_dir / "config" / "litellm" / "cloud.yaml"
+        cloud_path.parent.mkdir(parents=True)
+        data_dir.mkdir(parents=True)
+        env_path = install_dir / ".env"
+        env_path.write_text("ODS_MODE=local\nLLM_API_URL=http://llama-server:8080\nLITELLM_KEY=sk-test-key\n", encoding="utf-8")
+        cloud_path.write_text("previous-cloud\n", encoding="utf-8")
+        env_path.chmod(0o600)
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "DATA_DIR", data_dir)
+        monkeypatch.setattr(_mod, "_capture_container_state", lambda _name: {"exists": True, "running": True})
+        monkeypatch.setattr(_mod, "_restart_existing_container", lambda c, s, recreate=False: True)
+        monkeypatch.setattr(_mod, "_restore_container_state", lambda c, p, recreate=False: True)
+        monkeypatch.setattr(_mod, "_wait_for_container_health", lambda _name: None)
+        monkeypatch.setattr(_mod, "_verify_litellm_route", lambda env, *, model="default": None)
+        monkeypatch.setattr(_mod, "_render_remote_provider_cloud_config", lambda route, env: None)
+        local_pixel = {"model": "qwen-local", "contextLength": 65536, "maxTokens": 4096, "reasoning": False}
+        monkeypatch.setattr(_mod, "_managed_pixel_runtime_contract", lambda: local_pixel)
+        monkeypatch.setattr(_mod, "_managed_pixel_thinking_control", lambda: None)
+        monkeypatch.setattr(_mod, "_reconcile_managed_pixel_contract", lambda c, **kw: "reconciled")
+        route = _mod._plan_remote_provider_lifecycle_operation(self._configure_payload())["route"]
+
+        _mod._activate_remote_provider_route(route)
+        assert _mod.load_env(env_path)["HERMES_LLM_BASE_URL"] == "http://litellm:4000/v1"
+
+        _mod._deactivate_remote_provider_route()
+        restored_env = _mod.load_env(env_path)
+        assert "HERMES_LLM_BASE_URL" not in restored_env
+        assert "HERMES_LLM_API_KEY" not in restored_env
+        assert restored_env["ODS_MODE"] == "local"
+
+    def test_remote_provider_upgrade_from_state_file_without_hermes_keys(self, tmp_path, monkeypatch):
+        """Upgrade path: state file written without hermes keys is backfilled on re-activate and restored on deactivate."""
+        install_dir = tmp_path / "ods"
+        data_dir = install_dir / "data"
+        cloud_path = install_dir / "config" / "litellm" / "cloud.yaml"
+        state_dir = data_dir / "remote-provider"
+        cloud_path.parent.mkdir(parents=True)
+        state_dir.mkdir(parents=True)
+        env_path = install_dir / ".env"
+        env_path.write_text(
+            "ODS_MODE=local\nLLM_API_URL=http://llama-server:8080\n"
+            "HERMES_LLM_BASE_URL=http://model-router:9099/v1\nHERMES_LLM_API_KEY=no-key\n"
+            "LITELLM_KEY=sk-test-key\n",
+            encoding="utf-8",
+        )
+        env_path.chmod(0o600)
+        cloud_path.write_text("previous-cloud\n", encoding="utf-8")
+        old_state = {
+            "schema": _mod._REMOTE_PROVIDER_ACTIVATION_STATE_SCHEMA,
+            "phase": "active",
+            "previous": {
+                "odsMode": "local",
+                "llmApiUrl": "http://llama-server:8080",
+                "cloudConfig": _mod._serializable_text_snapshot(_mod._snapshot_text_file(cloud_path)),
+                "pixel": {"model": "qwen-local", "contextLength": 65536, "maxTokens": 4096, "reasoning": False},
+                "pixelThinkingControl": None,
+            },
+            "remote": {"model": "qwen/remote:latest", "contextLength": 65536, "maxTokens": 4096, "reasoning": False},
+            "routeFingerprint": "0" * 64,
+            "updatedAt": "2026-10-18T10:00:00Z",
+        }
+        (state_dir / "activation-state.json").write_text(json.dumps(old_state), encoding="utf-8")
+        (state_dir / "activation-state.json").chmod(0o600)
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "DATA_DIR", data_dir)
+        monkeypatch.setattr(_mod, "_capture_container_state", lambda _name: {"exists": True, "running": True})
+        monkeypatch.setattr(_mod, "_restart_existing_container", lambda c, s, recreate=False: True)
+        monkeypatch.setattr(_mod, "_restore_container_state", lambda c, p, recreate=False: True)
+        monkeypatch.setattr(_mod, "_wait_for_container_health", lambda _name: None)
+        monkeypatch.setattr(_mod, "_verify_litellm_route", lambda env, *, model="default": None)
+        monkeypatch.setattr(_mod, "_render_remote_provider_cloud_config", lambda route, env: None)
+        monkeypatch.setattr(_mod, "_managed_pixel_runtime_contract", lambda: old_state["previous"]["pixel"])
+        monkeypatch.setattr(_mod, "_managed_pixel_thinking_control", lambda: None)
+        monkeypatch.setattr(_mod, "_reconcile_managed_pixel_contract", lambda c, **kw: "reconciled")
+        route = _mod._plan_remote_provider_lifecycle_operation(self._configure_payload())["route"]
+
+        _mod._activate_remote_provider_route(route)
+        assert _mod.load_env(env_path)["HERMES_LLM_BASE_URL"] == "http://litellm:4000/v1"
+        assert _mod.load_env(env_path)["HERMES_LLM_API_KEY"] == "sk-test-key"
+
+        _mod._deactivate_remote_provider_route()
+        restored = _mod.load_env(env_path)
+        assert restored["HERMES_LLM_BASE_URL"] == "http://model-router:9099/v1"
+        assert restored["HERMES_LLM_API_KEY"] == "no-key"
+        assert restored["ODS_MODE"] == "local"
+
+    def test_remote_provider_activation_when_litellm_key_is_missing(self, tmp_path, monkeypatch):
+        """A stale Hermes key cannot stand in for the gateway credential."""
+        install_dir = tmp_path / "ods"
+        data_dir = install_dir / "data"
+        cloud_path = install_dir / "config" / "litellm" / "cloud.yaml"
+        cloud_path.parent.mkdir(parents=True)
+        data_dir.mkdir(parents=True)
+        env_path = install_dir / ".env"
+        env_path.write_text(
+            "ODS_MODE=local\nLLM_API_URL=http://llama-server:8080\n"
+            "HERMES_LLM_BASE_URL=http://model-router:9099/v1\nHERMES_LLM_API_KEY=no-key\n",
+            encoding="utf-8",
+        )
+        env_path.chmod(0o600)
+        cloud_path.write_text("previous-cloud\n", encoding="utf-8")
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "DATA_DIR", data_dir)
+        monkeypatch.setattr(_mod, "_capture_container_state", lambda _name: {"exists": True, "running": True})
+        monkeypatch.setattr(_mod, "_restart_existing_container", lambda c, s, recreate=False: True)
+        monkeypatch.setattr(_mod, "_restore_container_state", lambda c, p, recreate=False: True)
+        monkeypatch.setattr(_mod, "_wait_for_container_health", lambda _name: None)
+        monkeypatch.setattr(_mod, "_verify_litellm_route", lambda env, *, model="default": None)
+        monkeypatch.setattr(_mod, "_render_remote_provider_cloud_config", lambda route, env: None)
+        local_pixel = {"model": "qwen-local", "contextLength": 65536, "maxTokens": 4096, "reasoning": False}
+        monkeypatch.setattr(_mod, "_managed_pixel_runtime_contract", lambda: local_pixel)
+        monkeypatch.setattr(_mod, "_managed_pixel_thinking_control", lambda: None)
+        monkeypatch.setattr(_mod, "_reconcile_managed_pixel_contract", lambda c, **kw: "reconciled")
+        route = _mod._plan_remote_provider_lifecycle_operation(self._configure_payload())["route"]
+
+        before = env_path.read_bytes()
+        with pytest.raises(RuntimeError, match="LiteLLM gateway key"):
+            _mod._activate_remote_provider_route(route)
+        assert env_path.read_bytes() == before
+        assert not _mod._remote_provider_activation_state_path().exists()
+
+    def test_env_text_with_changes_vs_upsert_differences(self):
+        """Assert exact normalization and update differences between _upsert_env_text and _env_text_with_changes."""
+        sample_env = (
+            'export ODS_MODE="local"\r\n'
+            'LLM_API_URL=\'http://old:8080\'\r\n'
+            'DUP_KEY=first\r\n'
+            'DUP_KEY=second\r\n'
+            'HERMES_LLM_BASE_URL="http://old-hermes:9099/v1"\r\n'
+            'HERMES_LLM_API_KEY=old-key'
+        )
+        updates = {
+            'ODS_MODE': 'cloud',
+            'LLM_API_URL': 'http://litellm:4000',
+            'HERMES_LLM_BASE_URL': 'http://litellm:4000/v1',
+            'HERMES_LLM_API_KEY': 'new-key',
+        }
+        upsert_res = sample_env
+        for k, v in updates.items():
+            upsert_res = _mod._upsert_env_text(upsert_res, k, v)
+        changes_res = _mod._env_text_with_changes(sample_env.splitlines(), updates, set())
+        assert upsert_res == changes_res
+        assert "ODS_MODE=cloud\n" in changes_res
+        assert "HERMES_LLM_BASE_URL=http://litellm:4000/v1\n" in changes_res
+        assert "\r" not in changes_res
+        assert changes_res.endswith("\n")
+
+        dropped = _mod._env_text_with_changes(
+            changes_res.splitlines(),
+            {'ODS_MODE': 'local', 'LLM_API_URL': 'http://llama-server:8080'},
+            {'HERMES_LLM_BASE_URL', 'HERMES_LLM_API_KEY'},
+        )
+        assert "HERMES_LLM_BASE_URL" not in dropped
+        assert "HERMES_LLM_API_KEY" not in dropped
+
+    def test_remote_provider_activation_failure_rollback_restores_all_files(self, tmp_path, monkeypatch):
+        """Failure after first write restores .env, cloud.yaml, and activation states completely."""
+        install_dir = tmp_path / "ods"
+        data_dir = install_dir / "data"
+        cloud_path = install_dir / "config" / "litellm" / "cloud.yaml"
+        state_dir = data_dir / "remote-provider"
+        cloud_path.parent.mkdir(parents=True)
+        state_dir.mkdir(parents=True)
+        env_path = install_dir / ".env"
+        original_env = (
+            "ODS_MODE=local\nLLM_API_URL=http://llama-server:8080\n"
+            "HERMES_LLM_BASE_URL=http://model-router:9099/v1\nHERMES_LLM_API_KEY=no-key\n"
+            "LITELLM_KEY=sk-test-key\n"
+        )
+        env_path.write_text(original_env, encoding="utf-8")
+        env_path.chmod(0o600)
+        original_cloud = "previous-cloud-yaml\n"
+        cloud_path.write_text(original_cloud, encoding="utf-8")
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "DATA_DIR", data_dir)
+        monkeypatch.setattr(_mod, "_capture_container_state", lambda _name: {"exists": True, "running": True})
+        monkeypatch.setattr(_mod, "_restart_existing_container", lambda c, s, recreate=False: True)
+        monkeypatch.setattr(_mod, "_restore_container_state", lambda c, p, recreate=False: True)
+        monkeypatch.setattr(_mod, "_wait_for_container_health", lambda _name: None)
+        local_pixel = {"model": "qwen-local", "contextLength": 65536, "maxTokens": 4096, "reasoning": False}
+        monkeypatch.setattr(_mod, "_managed_pixel_runtime_contract", lambda: local_pixel)
+        monkeypatch.setattr(_mod, "_managed_pixel_thinking_control", lambda: None)
+        def fail_render(route, env):
+            raise RuntimeError("simulated render failure after first writes")
+        monkeypatch.setattr(_mod, "_render_remote_provider_cloud_config", fail_render)
+        route = _mod._plan_remote_provider_lifecycle_operation(self._configure_payload())["route"]
+
+        with pytest.raises(RuntimeError, match="simulated render failure after first writes"):
+            _mod._activate_remote_provider_route(route)
+
+        restored_env = _mod.load_env(env_path)
+        assert restored_env["HERMES_LLM_BASE_URL"] == "http://model-router:9099/v1"
+        assert restored_env["HERMES_LLM_API_KEY"] == "no-key"
+        assert restored_env["ODS_MODE"] == "local"
+        assert cloud_path.read_text(encoding="utf-8") == original_cloud
+        assert not (state_dir / "activation-state.json").exists()
 
 
 def test_compose_recreation_reads_the_route_from_env_not_the_agents_environment(tmp_path, monkeypatch):
@@ -8767,6 +8985,11 @@ class TestInstallStatePollBehavior:
             f"services:\n  {sid}:\n    image: example:latest\n", encoding="utf-8",
         )
         monkeypatch.setattr(_mod, "_precreate_data_dirs", lambda _sid: None)
+
+        # Image preparation now streams pull output through Popen, outside
+        # this fixture's subprocess.run controls. These tests begin with
+        # prepared images and exercise the real running-state poll below.
+        monkeypatch.setattr(_mod, "_prepare_install_images", lambda *_args: (True, ""))
 
         monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
         monkeypatch.setattr(_mod, "DATA_DIR", data_dir)

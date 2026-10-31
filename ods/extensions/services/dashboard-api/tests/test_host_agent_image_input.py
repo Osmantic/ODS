@@ -255,7 +255,8 @@ def test_a_remote_route_never_reads_the_local_vision_report(tmp_path, monkeypatc
 
     monkeypatch.setattr(agent, "_managed_pixel_runtime_contract", lambda: dict(local))
     monkeypatch.setattr(agent, "_begin_pixel_model_transaction", lambda _env: Transaction())
-    monkeypatch.setattr(agent, "_capture_container_state", lambda _name: {"exists": True, "running": True})
+    monkeypatch.setattr(agent, "_capture_container_state", lambda name:
+                        {"exists": name != "ods-hermes", "running": name != "ods-hermes"})
     monkeypatch.setattr(agent, "_restart_existing_container", lambda *_a, **_k: True)
     monkeypatch.setattr(agent, "_wait_for_container_health", lambda _name: None)
     monkeypatch.setattr(agent, "_verify_litellm_route", lambda *_a, **_k: None)
