@@ -1670,6 +1670,170 @@ async function handleExampleProjects(req, res, token, gatewayPort, deps) {
   } finally { deps.clearTimeout(timer); }
 }
 
+// Portal's "Put back files": the gateway restores one Playground project to the
+// copy it kept before a turn touched it (plugin/project-snapshots.mjs). This
+// relay holds the chat's history lock, so no turn of this chat runs or starts
+// meanwhile, refuses while the last turn's outcome is unsettled or the native
+// session is busy, and returns only a validated receipt or a fixed refusal
+// code, never upstream text. The options relay asks which turns offer it.
+const RESTORE_PROJECT = /^Playground\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const RESTORE_UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const RESTORE_RUN = new RegExp(`^chatcmpl_${RESTORE_UUID}$`, 'i');
+const RESTORE_SNAPSHOT = new RegExp(`^(?:chatcmpl|restore)_${RESTORE_UUID}$`, 'i');
+const RESTORE_UNDO = new RegExp(`^restore_${RESTORE_UUID}$`);
+const RESTORE_TOKEN = /^[a-f0-9]{64}$/;
+const RESTORE_KEYS = ['schemaVersion', 'status', 'project', 'snapshot', 'written', 'removed', 'left', 'leftCount', 'failed',
+  'failedCount', 'failure', 'late', 'undo', 'confirm'];
+const RESTORE_CONFIRM_KEYS = ['token', 'overwrite', 'overwriteCount', 'remove', 'removeCount'];
+// The gateway's refusals this relay passes on, by status. Any other answer,
+// an unexpected code too, is an unknown outcome.
+const RESTORE_REFUSALS = {
+  404: ['project-snapshot-unavailable', 'project-snapshot-pruned'],
+  409: ['project-restore-busy'],
+  422: ['project-snapshot-damaged', 'project-folder-unusable'],
+  503: ['project-restore-unavailable', 'project-copies-unusable', 'project-restore-unsupported'],
+};
+const PROJECT_RESTORE_BODY = 512;
+const PROJECT_RESTORE_OPTIONS_BODY = 4096;
+const PROJECT_RESTORE_RESPONSE = 16384;
+// The gateway copies at most 32 MiB each way and runs no model.
+const PROJECT_RESTORE_TIMEOUT_MS = 30000;
+
+const sameKeys = (value, keys) => !!value && typeof value === 'object' && !Array.isArray(value)
+  && Object.keys(value).sort().join() === [...keys].sort().join();
+const restoreCount = item => Number.isSafeInteger(item) && item >= 0 && item <= 65536;
+// No C0, DEL or C1 control character in a file name, as dashboard-api refuses them.
+const restoreListed = (items, total) => Array.isArray(items) && items.length <= 8 && items.length <= total
+  && items.every(item => typeof item === 'string' && item.length >= 1 && item.length <= 512 && !/[\x00-\x1f\x7f-\x9f]/.test(item));
+
+export function projectRestoreReceipt(value, request) {
+  const confirm = value?.confirm;
+  if (!sameKeys(value, RESTORE_KEYS) || value.schemaVersion !== 2 || !['restored', 'unchanged', 'confirm'].includes(value.status)
+      || value.project !== request.project || value.snapshot !== request.snapshot
+      || ![value.written, value.removed, value.leftCount, value.failedCount].every(restoreCount)
+      || !restoreListed(value.left, value.leftCount) || !restoreListed(value.failed, value.failedCount)
+      || ![null, 'permission', 'in-use', 'changed', 'other'].includes(value.failure) || typeof value.late !== 'boolean'
+      || !(value.status === 'restored' ? typeof value.undo === 'string' && RESTORE_UNDO.test(value.undo) : value.undo === null)
+      || !(value.status === 'confirm' ? sameKeys(confirm, RESTORE_CONFIRM_KEYS) && typeof confirm.token === 'string'
+        && RESTORE_TOKEN.test(confirm.token) && restoreCount(confirm.overwriteCount) && restoreCount(confirm.removeCount)
+        && restoreListed(confirm.overwrite, confirm.overwriteCount) && restoreListed(confirm.remove, confirm.removeCount)
+        : confirm === null)) {
+    throw new Error('invalid project restore receipt');
+  }
+  return {...Object.fromEntries(RESTORE_KEYS.map(key => [key, value[key]])), left: [...value.left], failed: [...value.failed],
+    confirm: confirm && {...Object.fromEntries(RESTORE_CONFIRM_KEYS.map(key => [key, confirm[key]])),
+      overwrite: [...confirm.overwrite], remove: [...confirm.remove]}};
+}
+
+export function projectRestoreOptions(value, runs) {
+  const entries = value?.projects;
+  if (!sameKeys(value, ['schemaVersion', 'projects']) || value.schemaVersion !== 1 || !Array.isArray(entries) || entries.length > 32
+      || !entries.every(entry => sameKeys(entry, ['project', 'snapshot', 'late', 'restore']) && typeof entry.project === 'string'
+        && RESTORE_PROJECT.test(entry.project) && runs.includes(entry.snapshot) && typeof entry.late === 'boolean'
+        && (entry.restore === null || sameKeys(entry.restore, ['undo', 'side']) && typeof entry.restore.undo === 'string'
+          && RESTORE_UNDO.test(entry.restore.undo) && ['before', 'after'].includes(entry.restore.side)))) {
+    throw new Error('invalid project restore options');
+  }
+  return {schemaVersion: 1, projects: entries.map(entry => ({project: entry.project, snapshot: entry.snapshot, late: entry.late,
+    restore: entry.restore && {undo: entry.restore.undo, side: entry.restore.side}}))};
+}
+
+// The request body when valid(body) accepts it; otherwise the refusal is sent and null returned.
+async function restoreRequestBody(req, res, limit, valid) {
+  if (req.method !== 'POST') { sendError(res, 405, 'method not allowed'); return null; }
+  if (String(req.headers['content-type'] || '').split(';', 1)[0].trim().toLowerCase() !== 'application/json') {
+    sendError(res, 415, 'content type must be application/json');
+    return null;
+  }
+  try {
+    const body = JSON.parse((await readBody(req, limit)).toString('utf8'));
+    if (!body || typeof body !== 'object' || Array.isArray(body) || !valid(body)) throw new Error('invalid');
+    return body;
+  } catch { sendError(res, 400, 'invalid project restore request'); return null; }
+}
+
+// The gateway's refusal when it is one of the fixed codes for its status, or null.
+async function restoreRefusal(response) {
+  const codes = RESTORE_REFUSALS[response.status];
+  if (!codes) return null;
+  let code;
+  try {
+    code = String(response.headers.get('content-type') || '').startsWith('application/json')
+      ? JSON.parse((await readBounded(response.body, 1024)).toString('utf8'))?.error : undefined;
+  } catch { code = undefined; }
+  await drain(response.body);
+  return codes.includes(code) ? code : null;
+}
+
+async function handleProjectRestore(req, res, token, gatewayPort, deps, ledger) {
+  if (req.url !== '/v1/project-restore') { sendError(res, 400, 'invalid request'); return; }
+  const request = await restoreRequestBody(req, res, PROJECT_RESTORE_BODY, body => {
+    const keys = Object.keys(body).sort().join();
+    return (keys === 'project,snapshot,user' || keys === 'confirm,project,snapshot,user'
+        && typeof body.confirm === 'string' && RESTORE_TOKEN.test(body.confirm))
+      && typeof body.user === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(body.user)
+      && typeof body.project === 'string' && RESTORE_PROJECT.test(body.project)
+      && typeof body.snapshot === 'string' && RESTORE_SNAPSHOT.test(body.snapshot);
+  });
+  if (!request) return;
+  if (!ledger) { sendJson(res, 503, {error: 'project-restore-unavailable'}); return; }
+  const user = computeSessionUser({user: request.user});
+  const busy = () => sendJson(res, 409, {error: 'project-restore-busy'});
+  const controller = new AbortController();
+  const timer = deps.setTimeout(() => controller.abort(), PROJECT_RESTORE_TIMEOUT_MS);
+  let release;
+  try {
+    try { release = ledger.lock(user); }
+    catch (error) { if (error instanceof HistoryError && error.status === 409) { busy(); return; } throw error; }
+    // A turn still pending, or cut off with its outcome unknown, counts as running.
+    if (['pending', 'unknown'].includes(ledger.read(user)?.status)) { busy(); return; }
+    const native = await nativeContextRequest('context', {user}, token, gatewayPort, deps, controller.signal);
+    if (native.status === 'busy') { busy(); return; }
+    const response = await deps.fetch(`http://127.0.0.1:${gatewayPort}/pixel-ods/project-restore`, {
+      method: 'POST', headers: upstreamHeaders(false, token), redirect: 'error', signal: controller.signal,
+      body: JSON.stringify({user, project: request.project, snapshot: request.snapshot,
+        ...(request.confirm ? {confirm: request.confirm} : {})}),
+    });
+    const refusal = await restoreRefusal(response);
+    if (refusal) { sendJson(res, response.status, {error: refusal}); return; }
+    if (response.status !== 200 || !String(response.headers.get('content-type') || '').startsWith('application/json')) {
+      await drain(response.body);
+      throw new Error('unavailable');
+    }
+    const value = JSON.parse((await readBounded(response.body, PROJECT_RESTORE_RESPONSE)).toString('utf8'));
+    sendJson(res, 200, projectRestoreReceipt(value, request));
+  } catch {
+    sendJson(res, 503, {error: 'project-restore-unavailable'});
+  } finally {
+    deps.clearTimeout(timer);
+    try { release?.(); } catch { /* The next lock() reclaims a lock it could not remove, once removal works. */ }
+  }
+}
+
+async function handleProjectRestoreOptions(req, res, token, gatewayPort, deps) {
+  if (req.url !== '/v1/project-restore-options') { sendError(res, 400, 'invalid request'); return; }
+  const request = await restoreRequestBody(req, res, PROJECT_RESTORE_OPTIONS_BODY, body =>
+    Object.keys(body).join() === 'runs' && Array.isArray(body.runs) && body.runs.length <= 64
+      && body.runs.every(run => typeof run === 'string' && RESTORE_RUN.test(run)));
+  if (!request) return;
+  const controller = new AbortController();
+  const timer = deps.setTimeout(() => controller.abort(), PROJECT_RESTORE_TIMEOUT_MS);
+  try {
+    const response = await deps.fetch(`http://127.0.0.1:${gatewayPort}/pixel-ods/project-restore-options`, {
+      method: 'POST', headers: upstreamHeaders(false, token), redirect: 'error', signal: controller.signal,
+      body: JSON.stringify({runs: request.runs}),
+    });
+    if (response.status !== 200 || !String(response.headers.get('content-type') || '').startsWith('application/json')) {
+      await drain(response.body);
+      throw new Error('unavailable');
+    }
+    const value = JSON.parse((await readBounded(response.body, PROJECT_RESTORE_RESPONSE)).toString('utf8'));
+    sendJson(res, 200, projectRestoreOptions(value, request.runs));
+  } catch {
+    sendJson(res, 503, {error: 'project-restore-unavailable'});
+  } finally { deps.clearTimeout(timer); }
+}
+
 async function handleRuntimeIdentity(res, token, gatewayPort, deps) {
   const controller = new AbortController();
   const timer = deps.setTimeout(() => controller.abort(), GATEWAY_PROBE_TIMEOUT_MS);
@@ -2016,6 +2180,16 @@ export function createIngressServer({ token, gatewayPort, deps = defaultDeps, hi
 
     if (pathname === '/v1/example-projects') {
       void handleExampleProjects(req, res, token, gatewayPort, deps);
+      return;
+    }
+
+    if (pathname === '/v1/project-restore') {
+      void handleProjectRestore(req, res, token, gatewayPort, deps, historyLedger);
+      return;
+    }
+
+    if (pathname === '/v1/project-restore-options') {
+      void handleProjectRestoreOptions(req, res, token, gatewayPort, deps);
       return;
     }
 
