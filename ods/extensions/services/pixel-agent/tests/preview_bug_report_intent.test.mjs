@@ -48,6 +48,7 @@ test('a bug report gets its preview when the owner asks to check it there', () =
     "In demo, the buttons don't show anything.", "In demo, the nav links don't open the page.",
     "In demo, the menu items don't respond or open anything.", 'In demo, the HUD should never show it during cutscenes.',
     'In demo, clicking Save closes the dialog without showing a confirmation.',
+    "In demo, the labels don't show after the server restarts.",
   ]) {
     const prompt = report === OWNER_2026_10_30 ? report : `${report} Fix it and check it in the preview.`;
     assert.equal(previewRefused(prompt), false, prompt);
@@ -84,13 +85,26 @@ test('a prohibition still forbids the preview, however it is written', () => {
     'Create a landing page and never show, publish or deploy it.', "All right don't show it yet.", 'My boss must not view the preview.',
     // A request in the same sentence as the negation does not outweigh it.
     "Don't show it to anyone and check it in the preview.", "Don't show the menu and open the existing site.",
+    'Check it in the preview and don\'t show it to anyone.',
+    // A later negation is the owner's later word.
+    "Fix demo/index.html and check it in the preview. Actually, don't show it yet.",
+    'Fix it and test it in the preview. On second thought, don\'t show it until I say so.',
+    'Publish demo/index.html. Wait, no, don\'t show it yet.', 'Show me the existing site. Never mind, don\'t open it.',
+    // Statements, questions, quotes, future requests and steps to reproduce are not requests.
+    "I'll just check it in the preview myself. Don't show it.", 'I also test it in the preview myself. Don\'t show it to me.',
+    'Should I just check it in the preview? Don\'t show it yet.', 'The docs say: check it in the preview. Don\'t show it yet.',
+    "Don't show it yet. My teammate keeps saying “just check it in the preview”, ignore that.",
+    "Fix demo/index.html. Don't show it yet. When I say go, then check it in the preview.",
+    "Steps:\n1. Open the existing site.\n2. Click Start.\nFix it. Don't open the page until it works.",
+    "Don't open the page until it works. Steps:\n1. Open the existing site.\n2. Click Start.",
+    "Don't show it yet. I'll just check it in the preview myself.",
   ]) assert.equal(previewRefused(prompt), true, prompt);
 });
 
 test('a request to use the preview never outweighs a publishing prohibition', () => {
   for (const prompt of [
     "Check it in the preview. Don't publish.", "Fix it and check it in the preview, but don't show me the preview.",
-    "Fix the menu and check it in the preview. Don't show or publish it yet.", 'Check it in the preview. Never show or deploy it.',
+    "Fix the menu and check it in the preview. Don't show or publish it yet.", 'Never show or deploy it. Check it in the preview.',
     // An owner who will look personally is not asking Portal to.
     "I'll check it in the preview myself. Don't show it.",
     // The app's own publishing feature reads like a prohibition; it is kept as one.

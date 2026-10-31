@@ -6540,25 +6540,39 @@ const PREVIEW_NEGATION = /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not
 // A negation that reaches a publishing word in its sentence: "don't show or
 // publish it", "never show me the preview", "do not open a live preview".
 const PUBLISHING_NEGATION =
-  /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:publish|republish|preview|serv(?:e|ing)|deploy)/i;
-// The owner asks Portal itself to look at the page in the preview: "check it
-// in the preview", "and test the menu in the preview", "can you verify it in
-// the preview?". "I'll check it in the preview myself" is not a request.
-const OWNER_CHECKS_IN_PREVIEW = /(?:^|:|\b(?:and(?:\s+then)?|then|now|also|so|just)\s+)\s*(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|I\s+(?:want|need)\s+you\s+to\s+)?(?:check|test|verify|inspect|try|look\s+at|see)\b[^.!?;\n]{0,48}\b(?:in|on|with|via|through|using)\s+(?:the|a|your)\s+(?:ODS\s+|workspace\s+|live\s+)?preview\b/i;
+  /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:publish|republish|preview|serv(?:e|es|ed|ing)\b|deploy)/i;
+const SHOW_NEGATION =
+  /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:show|view|open|display)/i;
+// The owner asks Portal itself to look at the page in the preview, at the start
+// of a sentence or after the repair it asks for: "check it in the preview",
+// "please fix those and check it in the preview", "can you verify it in the
+// preview?". "I'll just check it in the preview myself", a question to the
+// owner and a quoted instruction are not requests.
+const OWNER_CHECKS_IN_PREVIEW = /^\s*(?:(?:ok(?:ay)?|now|then|also|so|and|just|please)[,\s]+)*(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|I\s+(?:want|need)\s+you\s+to\s+)?(?:(?:fix|repair|correct|update|change|edit|patch|adjust|tweak|improve|finish|redo|rewrite|make|build|create|add|remove)\b[^.!?;\n]{0,120}?(?:\s(?:and(?:\s+then)?|then)|,\s*then|,\s*and)\s+(?:please\s+)?(?:also\s+)?)?(?:check|test|verify|inspect|try|look\s+at|see)\b[^.!?;\n]{0,48}\b(?:in|on|with|via|through|using)\s+(?:the|a|your)\s+(?:ODS\s+|workspace\s+|live\s+)?preview\b/i;
+// A publication command; open, show and view also name steps to reproduce a bug.
+const PUBLICATION_DIRECTIVE = /(?:^|\b(?:and(?:\s+then)?|then|now|instead)\s+)\s*(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|I\s+(?:want|need)\s+you\s+to\s+)?(?:try\s+to\s+)?(?:publish|republish|preview|serve)\b/i;
 
 // An explicit request to use the preview outweighs a negated show, open, view
-// or display elsewhere in the message, which is most often a bug report: "...so
-// attacks never show. Please fix those and check it in the preview this time"
-// was refused three times on the laptop (2026-10-30). The request must stand in
-// a sentence with no negation, and nothing outweighs a negation that reaches a
-// publishing word, so "don't publish" and "don't show me the preview" always
-// forbid. Without such a request every negation forbids as before. Naming the
-// session's verified project ("Publish log-viewer-lab.") is such a request.
+// or display before it, which is most often a bug report: "...so attacks never
+// show. Please fix those and check it in the preview this time" was refused
+// three times on the laptop (2026-10-30). The request must stand in a sentence
+// with no negation. A negation after the last request is the owner's later
+// word ("... Actually, don't show it yet."), and nothing outweighs a negation
+// that reaches a publishing word, so "don't publish" and "don't show me the
+// preview" always forbid. Without such a request every negation forbids as
+// before. Naming the session's verified project ("Publish log-viewer-lab.") is
+// such a request.
 function ownerRequestOutweighsShowNegation(text, sessionPreview = undefined) {
   if (PUBLISHING_NEGATION.test(text)) return false;
-  return text.split(/[!?;\n]+|\.(?=\s|$)/).some((sentence) =>
-    !PREVIEW_NEGATION.test(sentence) && (OWNER_CHECKS_IN_PREVIEW.test(sentence) || hasExplicitWorkspacePreviewDirective(sentence) ||
-      requestsNamedSessionPreview(sentence, sessionPreview)));
+  let start = 0, requestEnd = -1;
+  for (const boundary of [...text.matchAll(/[!?;\n]+|\.(?=\s|$)/g), {index: text.length, 0: ''}]) {
+    const sentence = text.slice(start, boundary.index);
+    if (!PREVIEW_NEGATION.test(sentence) && (OWNER_CHECKS_IN_PREVIEW.test(sentence) ||
+      (PUBLICATION_DIRECTIVE.test(sentence) && hasExplicitWorkspacePreviewDirective(sentence)) ||
+      requestsNamedSessionPreview(sentence, sessionPreview))) requestEnd = boundary.index;
+    start = boundary.index + boundary[0].length;
+  }
+  return requestEnd >= 0 && !SHOW_NEGATION.test(text.slice(requestEnd));
 }
 
 function ownerForbidsWorkspacePreview(messages, prompt, sessionPreview = undefined) {
@@ -6746,10 +6760,10 @@ function requestsNamedSessionPreview(text, preview) {
   const namesTarget = (value) => [...commands(value)].some((match) => target.test(match[1]) || bareTarget.test(match[1]));
   if (!namesTarget(ownerText)) return false;
   if (!/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:publish(?:ing)?|republish(?:ing)?|preview(?:ing)?|display(?:ing)?|show(?:ing)?|open(?:ing)?|view(?:ing)?)\b/i.test(ownerText)) return true;
-  // A negated show elsewhere ("the error rows never show") does not veto the
-  // command in a sentence of its own; a publishing prohibition always does.
-  return !PUBLISHING_NEGATION.test(ownerText) && ownerText.split(/[!?;\n]+|\.(?=\s|$)/)
-    .some((sentence) => !PREVIEW_NEGATION.test(sentence) && namesTarget(sentence));
+  // A negated show before it ("the error rows never show") does not veto the
+  // command in a sentence of its own; a later one or a publishing prohibition
+  // always does.
+  return ownerRequestOutweighsShowNegation(ownerText, preview);
 }
 
 function workspacePreviewRestrictions(text) {

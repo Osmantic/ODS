@@ -654,6 +654,13 @@ test("a bug description does not weaken a named publication request", () => {
       context, event: { runId: context.runId, params },
     })?.block, true, prompt);
   }
+  // A later negation is the owner's later word, even for a named project.
+  const guard = createToolLoopGuard();
+  const { params } = seedNamedPreview(guard);
+  const context = { agentId: "pixel", runId: "run-named-retracted", sessionId: "session-1" };
+  guard.observeRun(context, "pixel", { prompt: "Publish log-viewer-lab. Actually, don't show it yet." });
+  assert.equal(guard.verificationForRun(context.runId).status, "none");
+  assert.equal(call(guard, "pixel_ods_workspace_preview", { context, event: { runId: context.runId, params } })?.block, true);
 });
 
 for (const [prompt, sessionId] of [
