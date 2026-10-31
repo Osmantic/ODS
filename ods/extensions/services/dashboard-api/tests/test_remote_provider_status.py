@@ -1790,6 +1790,89 @@ def test_remote_provider_apply_preserves_host_agent_validation_errors(
     assert resp.json()["detail"] == "Remote provider apply failed: disk full"
 
 
+_NOT_SERVING = (
+    "Remote provider apply failed: LiteLLM did not serve a completion "
+    "through the active ods/current route"
+)
+
+
+def _failing_configure(test_client, monkeypatch, egress):
+    from routers import remote_provider_status as rps
+
+    fetches = []
+
+    async def fake_request(*_args, **_kwargs):
+        raise rps.AgentHTTPError(500, _NOT_SERVING)
+
+    async def fake_fetch():
+        fetches.append(True)
+        return egress
+
+    monkeypatch.setattr(rps, "async_request_agent_json", fake_request)
+    monkeypatch.setattr(rps, "_fetch_egress_health", fake_fetch)
+    payload = _lifecycle_payload()
+    payload["action"] = "configure"
+    resp = test_client.post(
+        "/api/remote-provider/apply",
+        json=payload,
+        headers=test_client.auth_headers,
+    )
+    assert resp.status_code == 500
+    return resp.json()["detail"], fetches
+
+
+def test_failed_configure_names_the_egress_reason(test_client, monkeypatch):
+    # #7608: LiteLLM's error gave the owner no clue; the egress could not
+    # read its state folder.
+    detail, _fetches = _failing_configure(test_client, monkeypatch, {
+        "reachable": True, "valid": True, "ready": False,
+        "status": "degraded", "reason": "invalid_route_state",
+    })
+
+    assert detail.startswith(_NOT_SERVING + ". The remote-provider egress reports invalid_route_state: ")
+    assert "chmod g+rx data/remote-provider data/remote-provider/secrets" in detail
+
+
+@pytest.mark.parametrize("egress", [
+    {"reachable": True, "valid": True, "ready": True, "status": "ok", "reason": "ready"},
+    {"reachable": True, "valid": True, "ready": False, "status": "disabled",
+     "reason": "remote_route_disabled"},
+    {"reachable": False, "valid": False, "ready": False, "status": "unreachable",
+     "reason": "egress_unreachable"},
+])
+def test_failed_configure_keeps_the_agent_error_without_an_egress_reason(
+    test_client,
+    monkeypatch,
+    egress,
+):
+    detail, fetches = _failing_configure(test_client, monkeypatch, egress)
+
+    assert detail == _NOT_SERVING
+    assert fetches == [True]
+
+
+def test_failed_lifecycle_test_does_not_ask_the_egress(test_client, monkeypatch):
+    from routers import remote_provider_status as rps
+
+    async def fake_request(*_args, **_kwargs):
+        raise rps.AgentHTTPError(500, "Remote provider apply failed: disk full")
+
+    async def unexpected_fetch():
+        raise AssertionError("only an activation failure asks the egress")
+
+    monkeypatch.setattr(rps, "async_request_agent_json", fake_request)
+    monkeypatch.setattr(rps, "_fetch_egress_health", unexpected_fetch)
+
+    resp = test_client.post(
+        "/api/remote-provider/apply",
+        json=_lifecycle_payload(),
+        headers=test_client.auth_headers,
+    )
+
+    assert resp.status_code == 500
+    assert resp.json()["detail"] == "Remote provider apply failed: disk full"
+
+
 def test_remote_provider_enable_completes_staged_ssh_proof(
     test_client,
     monkeypatch,
