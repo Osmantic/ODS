@@ -6,9 +6,10 @@
 // helpers that the failed chars.js edit never defined).
 //
 // The guard records when each owner response and each of its attempts began,
-// warns the model through persisted tool results as the deadline nears, and
-// replaces the runtime's advice with what happened. Pure functions; the
-// caller supplies the clock.
+// warns the model through persisted tool results as the deadline nears,
+// stops a response that its attempt's own timer would let outlive the
+// deadline (responseDeadlineDelay), and replaces the runtime's advice with
+// what happened. Pure functions; the caller supplies the clock.
 import { assistantMessageText } from './progress-finalization.mjs';
 
 // before_prompt_build records the start just after the runtime arms its timer,
@@ -31,8 +32,9 @@ function noticeThresholds(timeoutMs) {
 // pins. Anything else (unset, fractional, 0) gets no deadline handling.
 // Each attempt of a response (a retry, a compaction retry, a revision) gets a
 // fresh runtime timer, but Portal's ingress stops the whole response 1920 s
-// after it began. So the notices keep the response's start and delivered
-// stages from the previous attempt; only the classification uses this one's.
+// after it began. So the notices and the guard's own stop keep the response's
+// start and delivered stages from the previous attempt; only the runtime
+// timer's classification uses this one's.
 export function createRunDeadline(timeoutSeconds, attemptStartedAt, previous = undefined) {
   if (!Number.isSafeInteger(timeoutSeconds) || timeoutSeconds <= 0) return undefined;
   return {startedAt: previous?.startedAt ?? attemptStartedAt, attemptStartedAt, timeoutMs: timeoutSeconds * 1000,
@@ -67,13 +69,27 @@ export function takeRunDeadlineNotice(deadline, now) {
   return noticeText(stage, deadline.timeoutMs);
 }
 
+// When, in ms from `now`, the guard stops an attempt that is still running,
+// since Portal's ingress cuts the whole response off without a reply soon
+// after the response's deadline: at that deadline for a later attempt, whose
+// own timer fires later, and RUN_DEADLINE_GRACE_MS after it for the first,
+// whose own timer fires first unless a compaction in flight extended it
+// (OpenClaw's compaction grace, up to compaction.timeoutSeconds more).
+export function responseDeadlineDelay(deadline, now) {
+  if (!deadline) return undefined;
+  const grace = deadline.attemptStartedAt === deadline.startedAt ? RUN_DEADLINE_GRACE_MS : 0;
+  return Math.max(0, deadline.startedAt + deadline.timeoutMs + grace - now);
+}
+
 // agent_end of an attempt the deadline ended. No plugin hook sees the
 // runtime's timeout kind, so this is inferred: the attempt failed, ran its
 // full time, and did not end with a completed answer (OpenClaw delivers such
 // an answer itself, like its recoveredFinalAssistantTextAfterPromptTimeout).
-export function runDeadlineReached(deadline, event, now) {
+// After the guard's own stop at the response's deadline (`responseStopped`),
+// the attempt's own time does not matter.
+export function runDeadlineReached(deadline, event, now, responseStopped = false) {
   if (!deadline || event?.success !== false) return false;
-  if (now - deadline.attemptStartedAt < deadline.timeoutMs - RUN_DEADLINE_GRACE_MS) return false;
+  if (!responseStopped && now - deadline.attemptStartedAt < deadline.timeoutMs - RUN_DEADLINE_GRACE_MS) return false;
   const last = Array.isArray(event.messages) ? event.messages.findLast(message => message?.role === 'assistant') : undefined;
   return !(COMPLETED_STOP_REASONS.has(String(last?.stopReason ?? '').trim().toLowerCase()) &&
     assistantMessageText(last));

@@ -37,7 +37,7 @@ import { assistantMessageText, composeProgressFinalization, composeReadPages, cr
   PREVIEW_CHECK_FINALIZATION_INSTRUCTION, PROGRESS_FINALIZATION_INSTRUCTION, progressFinalizationHead,
   unverifiedLinksNote } from "./progress-finalization.mjs";
 import { STOP_SYNTHESIS_LIMITS, STOP_SYNTHESIS_NOTE, synthesisAnswer, synthesisRequest } from "./stop-synthesis.mjs";
-import { createRunDeadline, runDeadlineReached, runDeadlineStopText, takeRunDeadlineNotice } from "./run-deadline.mjs";
+import { createRunDeadline, responseDeadlineDelay, runDeadlineReached, runDeadlineStopText, takeRunDeadlineNotice } from "./run-deadline.mjs";
 import { outputLimitContext, outputLimitCut, outputLimitNotice, outputLimitStopText } from "./output-limit.mjs";
 import { OWNER_VISIBLE_REPLY_INSTRUCTION, OWNER_VISIBLE_REPLY_REASON, ownerInteractiveTurn, silentReplyText } from "./owner-visible-reply.mjs";
 import { leakedExecGuidance, execGuidanceRevisionInstruction, EXEC_GUIDANCE_LEAK_REASON, EXEC_GUIDANCE_LEAK_DELIVERY } from "./exec-guidance-provenance.mjs";
@@ -7837,6 +7837,9 @@ export function createToolLoopGuard({
   warn = () => {},
   info = () => {},
   now = Date.now,
+  // For the guard's own stop at a response's run deadline (run-deadline.mjs).
+  setTimer = setTimeout,
+  clearTimer = clearTimeout,
   // The owner run a delegated child or announced continuation reports to
   // (subagent-delivery.mjs ownerRunOf), for the shipped example's guard.
   exampleOwnerRun = () => undefined,
@@ -10860,13 +10863,14 @@ export function createToolLoopGuard({
         state.privateBrowserAccess = capabilities.privateBrowserAccess === true &&
           userMessageRequestsPrivateUrl(event?.messages, event?.prompt);
         // before_prompt_build runs once per attempt, just after the runtime
-        // arms that attempt's own timer; the notices keep the response's
-        // schedule (run-deadline.mjs). Only the owner's own turns: subagent
-        // and cron lanes can run with another timeout or none, and team
-        // workers report to their coordinator, not the owner.
+        // arms that attempt's own timer; the notices and the guard's own stop
+        // keep the response's schedule (run-deadline.mjs). Only the owner's
+        // own turns: subagent and cron lanes can run with another timeout or
+        // none, and team workers report to their coordinator, not the owner.
         state.runDeadline = state.artifactOwnerInteractive && !state.managedTeamWorker
           ? createRunDeadline(capabilities.runTimeoutSeconds, now(), state.runDeadline) : undefined;
         state.runDeadlineReached = false;
+        armResponseDeadline(state, runId);
         // Like the deadline, a cut belongs to the attempt that wrote it.
         state.lastReplyCut = undefined;
         state.outputLimitStop = undefined;
@@ -13752,11 +13756,43 @@ export function createToolLoopGuard({
     if (state) {state.previewRevalidationCandidate=undefined;state.previewVerificationGeneration=(state.previewVerificationGeneration ?? 0)+1;}
   }
 
+  // A later attempt's own timer, or a compaction grace, would let the
+  // response run past Portal's ingress, which then cuts it off with no reply
+  // at all; a goal ends there instead of continuing (dashboard-api
+  // portal_goal.py). So each attempt of an owner response that is still
+  // running at the response's deadline is stopped here, and agent_end names
+  // the deadline as the cause (run-deadline.mjs responseDeadlineDelay).
+  function armResponseDeadline(state, runId) {
+    clearTimer(state.responseDeadlineTimer);
+    state.responseDeadlineTimer = undefined;
+    state.responseDeadlineStopped = false;
+    const delay = responseDeadlineDelay(state.runDeadline, now());
+    if (delay === undefined || typeof abortActiveRun !== 'function') return;
+    state.responseDeadlineTimer = setTimer(() => stopAtResponseDeadline(state, runId), delay);
+    state.responseDeadlineTimer?.unref?.();
+  }
+
+  function stopAtResponseDeadline(state, runId) {
+    state.responseDeadlineTimer = undefined;
+    // The owner's cancel owns its own stop and drain; a newer run in this
+    // session must never be stopped by an older run's deadline.
+    const sessionId = state.currentSessionId;
+    if (runs.get(runId) !== state || state.clientCancelled || !sessionId || sessionRuns.get(sessionId) !== runId) return;
+    try {
+      // Not the guard's abortRun: it marks an ODS stop, whose own text replaces
+      // the deadline's at agent_end. An ODS stop already made keeps its text.
+      state.responseDeadlineStopped = abortActiveRun(sessionId, state.currentSessionKey) === true;
+    } catch (error) {
+      warn(`Pixel response-deadline stop failed for run ${runId}: ${String(error)}`);
+    }
+    if (state.responseDeadlineStopped) info(`Pixel stopped run ${runId} at its response deadline`);
+  }
+
   // agent_end: a later cancel for this user can no longer name this run's
   // request as the one it withdrew. It also classifies the runtime's run
-  // deadline, which no hook reports directly. An ODS stop (owner cancel, tool
-  // limit, recursive-delete refusal or any other guard abort) has its own
-  // delivery text.
+  // deadline, which no hook reports directly, or the guard's own stop at it.
+  // An ODS stop (owner cancel, tool limit, recursive-delete refusal or any
+  // other guard abort) has its own delivery text.
   function observeAgentEnd(event, context) {
     const runId = context?.runId ?? event?.runId;
     recordExampleOutcome({...context, runId}, examples.end(runId));
@@ -13768,8 +13804,11 @@ export function createToolLoopGuard({
       endEvents.add(event);
     }
     state.runEnded = true;
+    // This attempt is over; a next attempt arms its own stop.
+    clearTimer(state.responseDeadlineTimer);
+    state.responseDeadlineTimer = undefined;
     state.runDeadlineReached = !state.clientCancelled && !state.odsAborted && !state.progressBudget.exhausted &&
-      !state.recursiveDeleteDenied && runDeadlineReached(state.runDeadline, event, now());
+      !state.recursiveDeleteDenied && runDeadlineReached(state.runDeadline, event, now(), state.responseDeadlineStopped);
     // The harness runs tool calls only after a 'toolUse' stop, so a reply cut
     // at the output limit ends the response with its last call never run.
     // Only the owner's own turns: team workers and other lanes report to a

@@ -13,6 +13,7 @@ import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
 import {PREVIEW_EARLIER_NOTE} from '../plugin/preview-explanation.mjs';
 import {PROGRESS_FINALIZATION_INSTRUCTION} from '../plugin/progress-finalization.mjs';
 import {RUN_PROGRESS_LIMITS, RUN_PROGRESS_STOP_REASON} from '../plugin/run-progress-budget.mjs';
+import {RUN_DEADLINE_GRACE_MS} from '../plugin/run-deadline.mjs';
 
 const RUN_ID = 'chatcmpl_3d1f6c0a-6b1e-4f7a-9a52-2e6f0c7d1a30';
 const USER = 'ods-' + 'a'.repeat(64);
@@ -38,11 +39,15 @@ const CUT_OFF = {success: false, durationMs: minutes(30), messages: [
   {role: 'assistant', stopReason: 'aborted', content: []},
 ]};
 
-function fixture({context = OWNER, capabilities = CAPABILITIES, prompt = PROMPT, goal = false} = {}) {
+function fixture({context = OWNER, capabilities = CAPABILITIES, prompt = PROMPT, goal = false, abortAcknowledged = () => true} = {}) {
   let clock = 0;
   const aborts = [];
+  // The guard's own timers, which run as the clock passes them (at).
+  const timers = new Set();
   const guard = createToolLoopGuard({now: () => clock, goalRun: () => goal,
-    abortRun: sessionId => { aborts.push(sessionId); return true; },
+    setTimer: (run, ms) => { const timer = {run, due: clock + ms}; timers.add(timer); return timer; },
+    clearTimer: timer => { timers.delete(timer); },
+    abortRun: sessionId => { aborts.push(sessionId); return abortAcknowledged(); },
     abortRunAndDrain: async () => ({aborted: true, drained: true})});
   const begin = () => guard.observeRun(context, 'pixel', {prompt}, capabilities);
   begin();
@@ -91,7 +96,11 @@ function fixture({context = OWNER, capabilities = CAPABILITIES, prompt = PROMPT,
     invoke('pixel_ods_workspace_preview', {relativeDirectory: 'game'}, {content: [{type: 'text', text: 'published'}], details}, 'preview');
     return details.url;
   };
-  return {guard, aborts, begin, read, exec, edit, publish, at: value => { clock = minutes(value); }};
+  const at = value => {
+    clock = minutes(value);
+    for (const timer of [...timers].sort((a, b) => a.due - b.due)) if (timer.due <= clock && timers.delete(timer)) timer.run();
+  };
+  return {guard, aborts, timers, begin, read, exec, edit, publish, at};
 }
 
 const notices = message => message.content.filter(block => block?.type === 'text' && NOTICE.test(block.text));
@@ -123,17 +132,23 @@ for (const [name, context, capabilities, prompt] of [
   ['a turn without a trigger', {...OWNER, trigger: undefined}, CAPABILITIES],
   ['an owner turn without a configured timeout', OWNER, {...CAPABILITIES, runTimeoutSeconds: undefined}],
   ['a team worker in the owner session', OWNER, CAPABILITIES, `You are the Builder in the owner's Portal team.\n\n${PROMPT}`],
-]) test(`no notice or deadline copy for ${name}`, () => {
+]) test(`no notice, deadline copy or stop for ${name}`, () => {
   const f = fixture({context, capabilities, prompt});
+  // A later attempt too: its own timer would come after the deadline.
+  f.at(10);
+  f.begin();
   for (const value of [25, 28]) { f.at(value); assert.equal(notices(f.read().persisted).length, 0); }
-  f.at(30);
+  f.at(31);
+  assert.deepEqual(f.aborts, [], 'Portal never stops it at the deadline');
   f.guard.observeAgentEnd(CUT_OFF, context);
   assert.doesNotMatch(f.guard.deliveryVerificationForRun(RUN_ID).text ?? '', /Portal stopped this response/);
 });
 
 // The ingress stops the whole response at 32 minutes, whatever attempt it is
-// on, so a retry's fresh runtime timer must not move the notices past it.
-test('a later attempt keeps the response\'s notice schedule; only its own time counts as the deadline', () => {
+// on, with no reply at all. A retry's fresh runtime timer must not move the
+// notices past it, and Portal stops a later attempt at the response's
+// deadline itself (laptop, 2026-10-30: a goal ended on such a cut round).
+test('a later attempt keeps the response\'s notice schedule and is stopped at the response\'s deadline', () => {
   const f = fixture();
   f.at(10);
   f.begin();
@@ -146,10 +161,93 @@ test('a later attempt keeps the response\'s notice schedule; only its own time c
   assert.equal(notices(f.read().persisted).length, 0, 'a delivered stage stays delivered');
   f.at(28);
   assert.match(notices(f.read().persisted)[0].text, /^\[ODS Pixel time limit\] About 2 minutes remain/);
-  // This attempt ran 4 of its 30 minutes.
+  // This attempt ran 4 of its own 30 minutes; the response ran all 30.
+  f.at(29.99);
+  assert.deepEqual(f.aborts, []);
   f.at(30);
+  assert.deepEqual(f.aborts, [OWNER.sessionId]);
   f.guard.observeAgentEnd(CUT_OFF, OWNER);
-  assert.notEqual(f.guard.deliveryVerificationForRun(RUN_ID).status, 'failed');
+  assert.deepEqual(f.guard.deliveryVerificationForRun(RUN_ID), {status: 'failed', text: UNCHANGED_STOP_COPY});
+  const reply = f.guard.replyPayloadSending({runId: RUN_ID, kind: 'final', payload: {text: 'No response from OpenClaw.', isError: true}});
+  assert.equal(reply.payload.text, UNCHANGED_STOP_COPY);
+});
+
+test('a goal round\'s retried attempt stopped at the deadline says which limit stopped it; a chat\'s does not', () => {
+  for (const goal of [true, false]) {
+    const f = fixture({goal});
+    f.at(4);
+    f.edit();
+    // A compaction retry or a revision: a new attempt with its own timer.
+    f.at(10);
+    f.begin();
+    f.at(30);
+    assert.deepEqual(f.aborts, [OWNER.sessionId]);
+    f.guard.observeAgentEnd(CUT_OFF, OWNER);
+    assert.deepEqual(f.guard.deliveryVerificationForRun(RUN_ID),
+      {status: 'failed', text: STOP_COPY, ...(goal ? {stop: 'run-deadline'} : {})});
+  }
+});
+
+// OpenClaw extends an attempt's own timer once, by compaction.timeoutSeconds
+// (30 more minutes on ODS), when it fires during a compaction.
+test('a first attempt its own timer did not stop is stopped after the grace', () => {
+  const f = fixture({goal: true});
+  f.at(12);
+  f.edit();
+  f.at(30);
+  f.at(30 + (RUN_DEADLINE_GRACE_MS - 1) / 60000);
+  assert.deepEqual(f.aborts, [], 'the runtime timer comes first');
+  f.at(30 + RUN_DEADLINE_GRACE_MS / 60000);
+  assert.deepEqual(f.aborts, [OWNER.sessionId]);
+  f.guard.observeAgentEnd(CUT_OFF, OWNER);
+  assert.deepEqual(f.guard.deliveryVerificationForRun(RUN_ID), {status: 'failed', text: STOP_COPY, stop: 'run-deadline'});
+});
+
+// A revision ends its attempt without agent_end, so the stop can come before
+// the next attempt has a run to stop.
+test('a stop that found no attempt to stop is made as the next attempt starts', () => {
+  let acknowledged = false;
+  const f = fixture({goal: true, abortAcknowledged: () => acknowledged});
+  f.at(10);
+  f.begin();
+  f.at(30);
+  assert.deepEqual(f.aborts, [OWNER.sessionId]);
+  acknowledged = true;
+  f.at(30.5);
+  f.begin();
+  assert.equal(f.aborts.length, 1, 'after the prompt hook, never inside it');
+  f.at(30.5);
+  assert.deepEqual(f.aborts, [OWNER.sessionId, OWNER.sessionId]);
+  f.guard.observeAgentEnd(CUT_OFF, OWNER);
+  assert.deepEqual(f.guard.deliveryVerificationForRun(RUN_ID), {status: 'failed', text: UNCHANGED_STOP_COPY, stop: 'run-deadline'});
+});
+
+test('Portal never stops an attempt that ended, a cancelled run, or a newer run in the chat', async () => {
+  // The runtime's own timer stopped this one.
+  const ended = fixture();
+  ended.at(30);
+  ended.guard.observeAgentEnd(CUT_OFF, OWNER);
+  ended.at(60);
+  assert.deepEqual(ended.aborts, []);
+  assert.equal(ended.timers.size, 0);
+  // The owner's Stop aborts and drains the run itself.
+  const cancelled = fixture();
+  cancelled.at(10);
+  cancelled.begin();
+  cancelled.at(20);
+  cancelled.exec('node --check game/ui.js');
+  assert.equal(await cancelled.guard.abortUserRun(USER), true);
+  cancelled.at(31);
+  assert.deepEqual(cancelled.aborts, []);
+  // The owner's next message started a newer run in the same session.
+  const replaced = fixture();
+  replaced.at(10);
+  replaced.begin();
+  replaced.at(20);
+  replaced.guard.observeRun({...OWNER, runId: 'chatcmpl_9e2a4b1c-3d5f-4a6b-8c7d-0e1f2a3b4c5d'}, 'pixel',
+    {prompt: 'Now make the boss slower.'}, CAPABILITIES);
+  replaced.at(31);
+  assert.deepEqual(replaced.aborts, []);
 });
 
 test('a new attempt clears an earlier deadline classification', () => {
@@ -334,8 +432,10 @@ async function close(server) {
   await new Promise(resolve => server.close(resolve));
 }
 
-for (const stream of [false, true]) for (const published of [false, true])
-test(`Portal receives the ODS stop over the real ingress, stream=${stream}, published=${published}`, async t => {
+// retried: the run's second attempt is still running at the response's
+// deadline, so Portal stops it there; OpenClaw then answers with no payload.
+for (const stream of [false, true]) for (const published of [false, true]) for (const retried of [false, true])
+test(`Portal receives the ODS stop over the real ingress, stream=${stream}, published=${published}, retried=${retried}`, async t => {
   // As a /goal round: its outcome also says which limit stopped it.
   const f = fixture({prompt: published ? `${PROMPT} Publish the game preview when it works.` : PROMPT, goal: true});
   f.edit();
@@ -354,9 +454,12 @@ test(`Portal receives the ODS stop over the real ingress, stream=${stream}, publ
       case '/health': result = {ok: true}; break;
       case '/v1/chat/completions':
         // The run ends inside the gateway request, before the verification read.
+        if (retried) { f.at(10); f.begin(); }
         f.at(30);
+        assert.deepEqual(f.aborts, retried ? [OWNER.sessionId] : []);
         f.guard.observeAgentEnd(CUT_OFF, OWNER);
-        result = {id: RUN_ID, choices: [{index: 0, message: {role: 'assistant', content: SPARK_CONTENT}, finish_reason: 'stop'}]};
+        result = {id: RUN_ID, choices: [{index: 0, message: {role: 'assistant',
+          content: retried ? 'No response from OpenClaw.' : SPARK_CONTENT}, finish_reason: 'stop'}]};
         break;
       case '/pixel-ods/verification': result = {...f.guard.deliveryVerificationForRun(body.runId), task}; break;
       case '/pixel-ods/subagent-delivery':
@@ -383,7 +486,7 @@ test(`Portal receives the ODS stop over the real ingress, stream=${stream}, publ
   const text = stream ? frames.map(frame => frame.choices?.[0]?.delta?.content ?? '').join('')
     : JSON.parse(body).choices[0].message.content;
   assert.equal(text, expected);
-  assert.doesNotMatch(body, /timeoutSeconds|LLM request failed/);
+  assert.doesNotMatch(body, /timeoutSeconds|LLM request failed|No response from OpenClaw/);
   // Goal mode's controller continues a goal after this stop (dashboard-api portal_goal.py).
   if (stream) assert.deepEqual(frames.at(-1).pixel_outcome, {schemaVersion: 1, status: 'failed', stop: 'run-deadline'});
 });
