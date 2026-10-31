@@ -706,8 +706,10 @@ which ODS resets. The model had no warning that the deadline was near.
   shorter timeouts), counted from the response's start, whatever attempt it
   is on. Other chats keep OpenClaw's timer and the ingress, as before, and so
   do goal rounds that would end their goal after a stop anyway (Operations,
-  exact downloads, managed extension requests, a repeated research loop). It
-  stops only where the abort reaches OpenClaw's run and costs no answer:
+  exact downloads, managed extension requests, a repeated research loop). A
+  round waiting on the owner's answer is stopped like any other and delivers
+  its question card, which the goal waits on. It stops only where the abort
+  reaches OpenClaw's run and costs no answer:
   - a tool that is running, with the run-ID marker that also ends a sandboxed
     command, like every ODS stop;
   - a model call of an agent turn at least 3 seconds old. An abort while a

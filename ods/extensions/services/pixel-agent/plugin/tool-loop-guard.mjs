@@ -8571,10 +8571,17 @@ export function createToolLoopGuard({
   // work gets one tool-free answer turn (progress-finalization.mjs). Receipt-
   // based work (Operations, exact downloads, managed extension requests, team
   // coordination) keeps the strict stop text: a model summary must not stand
-  // in for those host receipts.
+  // in for those host receipts. A pending owner question has its own card.
   function progressFinalizationEligible(state) {
+    return resumableWork(state) && !state.ownerQuestions;
+  }
+
+  // Not cancelled, not a refused delete, and not receipt-based work or a
+  // repeated web-research loop: resumed after a stop, it repeats no download,
+  // approval card or loop.
+  function resumableWork(state) {
     return !state.clientCancelled && !state.recursiveDeleteDenied &&
-      !state.unrequestedOperationsAborted && !state.webLoopAborted && !state.ownerQuestions &&
+      !state.unrequestedOperationsAborted && !state.webLoopAborted &&
       !state.operationsRequired && !state.exactDownloadRequested && !state.extensionCompletionGate?.active &&
       !state.extensionPendingHandoff && !state.managedTeamCoordinator;
   }
@@ -13804,24 +13811,19 @@ export function createToolLoopGuard({
   }
 
   // The stop is this attempt's to make: not superseded by a newer run in this
-  // session, and a /goal round that may continue after it (goalRoundContinues,
-  // decided when the stop is due, since goal-progress.mjs begins after
-  // observeRun), which also rules out an owner's cancel, whose cancel owns its
-  // own stop, and a refused delete, whose answer turn keeps its own text.
-  // Never in the one answer turn after a tool-limit stop either.
+  // session, and a /goal round (decided when the stop is due, since
+  // goal-progress.mjs begins after observeRun) whose goal goes on after it:
+  // resumable work, which also rules out an owner's cancel, whose cancel owns
+  // its own stop, and a refused delete, whose answer turn keeps its own text.
+  // Its stop carries stop: 'run-deadline' (deliveryVerificationForRun), or its
+  // pending question card, which the goal waits on; a run an ODS stop already
+  // aborted keeps that stop's text. Never in the one answer turn after a
+  // tool-limit stop either.
   function responseDeadlineOwned(state, runId, deadline) {
     const sessionId = state.currentSessionId;
     return state.responseDeadline === deadline && runs.get(runId) === state && Boolean(sessionId) &&
-      sessionRuns.get(sessionId) === runId && goalRoundContinues(state, runId) && !state.progressBudget.exhausted;
-  }
-
-  // A /goal round whose goal continues after a Portal limit stops it, for
-  // goal mode's controller (dashboard-api portal_goal.py). Not receipt-based
-  // work (Operations, exact downloads, managed extension requests, a refused
-  // delete) or a repeated web-research loop: resumed, they would repeat a
-  // download, an approval card or the loop.
-  function goalRoundContinues(state, runId) {
-    return goalRun(runId) === true && progressFinalizationEligible(state) && !state.operationsLoopAborted;
+      sessionRuns.get(sessionId) === runId && goalRun(runId) === true && resumableWork(state) &&
+      !state.progressBudget.exhausted;
   }
 
   // The stop lands only where it reaches OpenClaw's run: a tool running, or
@@ -14660,9 +14662,12 @@ export function createToolLoopGuard({
     if (notice) result = {...result, notice};
     // Which limit stopped this goal round, for goal mode's controller
     // (dashboard-api portal_goal.py): it continues the goal after these stops.
-    // Goal rounds only, since an ingress older than this field refuses it, and
-    // only those that may continue (goalRoundContinues).
-    const stop = result.status !== 'failed' || !state || !goalRoundContinues(state, runId) ? undefined
+    // Goal rounds only, since an ingress older than this field refuses it. Not
+    // for receipt-based work (Operations, exact downloads, managed extension
+    // requests, a refused delete) or a repeated web-research loop: resumed,
+    // they would repeat a download, an approval card or the loop.
+    const stop = result.status !== 'failed' || !state || !goalRun(runId) ||
+        !progressFinalizationEligible(state) || state.operationsLoopAborted ? undefined
       : state.runDeadlineReached ? 'run-deadline'
       : state.progressBudget.exhausted && !state.researchStopped ? 'tool-limit' : undefined;
     if (stop) result = {...result, stop};

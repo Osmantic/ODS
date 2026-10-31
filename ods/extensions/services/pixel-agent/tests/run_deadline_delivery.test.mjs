@@ -434,6 +434,27 @@ test('the stop\'s own refusals never make the round a tool-limit stop', () => {
   assert.deepEqual(f.guard.deliveryVerificationForRun(RUN_ID), {status: 'failed', text: UNCHANGED_STOP_COPY, stop: 'run-deadline'});
 });
 
+// Its question card is what it delivers, and the goal waits on the answer.
+test('a goal round waiting on the owner\'s answer is stopped like any other and delivers its question card', () => {
+  const f = fixture({goal: true});
+  f.model();
+  f.at(29);
+  f.modelEnd();
+  const questions = [{id: 'style', question: 'Which style should the wolves use?', options: ['Clean', 'Bright']}];
+  f.start('ask-1', 'pixel_ods_ask_user', {questions});
+  f.guard.afterToolCall({toolName: 'pixel_ods_ask_user', toolCallId: 'ask-1', params: {questions},
+    result: {content: [{type: 'text', text: 'Waiting for the owner.'}], details: {status: 'awaiting_user', questions}}},
+    {...OWNER, toolName: 'pixel_ods_ask_user', toolCallId: 'ask-1'});
+  // Its reply turn, still running at the deadline.
+  f.model();
+  f.at(STOP_AT);
+  assert.deepEqual(f.aborts, [OWNER.sessionId]);
+  f.guard.observeAgentEnd(CUT_OFF, OWNER);
+  const verification = f.guard.deliveryVerificationForRun(RUN_ID);
+  assert.equal(verification.status, 'pending');
+  assert.deepEqual(verification.questions.map(question => question.id), ['style']);
+});
+
 // Resumed, they would repeat a download or an approval card, so the stop would
 // end the goal anyway; they keep OpenClaw's timer and the ingress, as before.
 test('a goal round that cannot continue after a stop is not stopped', () => {
