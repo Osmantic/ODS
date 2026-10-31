@@ -15,6 +15,7 @@ from pixel_image_store import ImageStore, ImageStoreCapacity, ConversationDelete
 from pixel_image_transport import ImageResolutionError, resolve_image_parts
 from pixel_image_admission import ImageWorkBudget
 from security import verify_api_key
+from config import WINDOWS_DESKTOP_PROFILE
 
 
 router = APIRouter(prefix="/images", tags=["pixel"])
@@ -102,6 +103,10 @@ async def conversation_storage(method, owner, chat_id):
 async def delete_conversation_images(chat_id: str, response: Response, owner: str = Depends(verify_api_key)):
     from routers import pixel
     _check_scope(chat_id)
+    if WINDOWS_DESKTOP_PROFILE:
+        await pixel._delete_native_conversation_images(chat_id)
+        response.headers.update(_PRIVATE_HEADERS)
+        return {"schemaVersion": 1, "deleted": True}
     state = await conversation_storage("deletion", owner, chat_id)
     if state and state["completed"]:
         response.headers.update(_PRIVATE_HEADERS)
