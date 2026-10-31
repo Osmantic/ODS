@@ -304,6 +304,53 @@ test('a file the project\'s HTML loads as a classic script parses as one: pasted
     [{kind: 'parse', project: 'Playground/g', file: 'extra.js', line: 1}]);
 });
 
+test('the pages set a file\'s kind only as a browser loads it: not from comments, data- attributes or pages that disagree', async t => {
+  const TICK = 'function tick() {}\n';
+  const MODULE = "import {x} from './x.js';\nexport function tick() { return x; }\n";
+  const JSX = 'const App = () => <div className="app">Hi</div>;\nReactDOM.render(<App/>, document.body);\n';
+  const projects = {
+    // An old classic tag commented out above the live module tag.
+    comment: [{'index.html': '<!-- <script src="main.js"></script> -->\n<script type="module" src="main.js"></script>\n', 'main.js': TICK},
+      {'main.js': MODULE}],
+    // In-browser Babel, written after a data-type attribute, with ES imports.
+    babel: [{'index.html': '<script data-type="module" type="text/babel" src="app.js"></script>\n' +
+      '<script type="text/babel" data-type="module" src="ui.js"></script>\n', 'app.js': 'const a = 1;\n'},
+    {'app.js': JSX, 'ui.js': `import React from 'https://esm.sh/react';\n${JSX}`}],
+    // A lazy loader's data-src is no src.
+    lazy: [{'index.html': '<script data-src="lazy.js"></script>\n<script type="module" src="loader.js"></script>\n', 'lazy.js': TICK},
+      {'lazy.js': MODULE}],
+    // A leftover page still loads it as a classic script: its name and syntax decide.
+    pages: [{'index.html': '<script type="module" src="game.js"></script>\n', 'old/index-v1.html': '<script src="../game.js"></script>\n',
+      'game.js': TICK}, {'game.js': MODULE}],
+    // Real breakage: an upper-case tag with a bare src and a query string.
+    upper: [{'index.html': '<SCRIPT SRC=game.js?v=3></SCRIPT>\n', 'game.js': TICK}, {'game.js': `${TICK}${JSX}`}],
+    // A module only another module imports, in a project that runs its modules
+    // unbuilt (a .js module entry, by src or by an inline module's import).
+    entry: [{'index.html': '<script type="module" src="main.js"></script>\n', 'main.js': "import {Player} from './player.js';\n",
+      'player.js': 'export class Player {}\n'}, {'player.js': '<script>\nexport class Player {}\n</script>\n'}],
+    inline: [{'index.html': "<script type=\"module\">\n  import {start} from './main.js';\n  start();\n</script>\n",
+      'main.js': 'export function start() {}\n'}, {'util.js': 'export const tag = <b>bold</b>;\n'}],
+    // A bundled app (a .jsx entry; its old .js entry commented out): JSX in a
+    // file no page loads is the bundler's.
+    bundled: [{'index.html': '<!-- <script type="module" src="/src/main.js"></script> -->\n<script type="module" src="/src/main.jsx"></script>\n',
+      'src/main.jsx': 'import App from "./App.js";\n'}, {'src/App.js': `export ${JSX}`}],
+  };
+  const {root, write} = workspace(t, Object.fromEntries(Object.entries(projects).flatMap(([name, [files]]) =>
+    Object.entries(files).map(([file, content]) => [`Playground/${name}/${file}`, content]))));
+  // A stand-in for node --check: a module fails at a tag.
+  const checks = createChangedFileChecks({checkModule: async source => /<[A-Za-z]/.test(source)
+    ? {ok: false, line: 1, message: "Unexpected token '<'"} : {ok: true}, limits: {projects: 8}});
+  checks.touch(root, Object.keys(projects).map(name => `Playground/${name}`));
+  for (const [name, [, changes]] of Object.entries(projects))
+    for (const [file, content] of Object.entries(changes)) write(`Playground/${name}/${file}`, content);
+  await checks.settle();
+  assert.deepEqual(checks.findings({final: true}), [
+    {kind: 'parse', project: 'Playground/upper', file: 'game.js', line: 2},
+    {kind: 'parse', project: 'Playground/entry', file: 'player.js', line: 1},
+    {kind: 'parse', project: 'Playground/inline', file: 'util.js', line: 1},
+  ]);
+});
+
 test('vendored and minified files get the parse check only; a lib folder or a long line is not one; dist, build and venv are not entered', t => {
   const {root, write} = workspace(t, {'Playground/three/main.js': 'const a = 1;\n'});
   const checks = createChangedFileChecks();
@@ -328,6 +375,13 @@ test('vendored and minified files get the parse check only; a lib folder or a lo
     {kind: 'parse', project: 'Playground/three', file: 'vendor/broken.js', line: 1}]);
   assert.equal(generatedFile('src/app.js', '/**\n * Game helpers.\n * @license MIT\n */\nconst a = 1;\n'), true);
   assert.equal(generatedFile('src/app.js', '/** Game helpers. */\nconst a = 1;\n// @license MIT\n'), false);
+  // A library's own file names carry build or version suffixes only; a game
+  // names its own files after the library it uses.
+  for (const name of ['js/three.module.js', 'lib/phaser.min.js', 'react.production.min.js', 'react-dom.development.js',
+    'jquery-3.7.1.min.js', 'jquery.slim.js', 'p5.js', 'socket.io.js', 'lil-gui.module.min.js', 'babylon.max.js'])
+    assert.equal(generatedFile(name, 'const a = 1;\n'), true, name);
+  for (const name of ['phaser-game.js', 'three-scene.js', 'pixi-app.js', 'matter-world.js', 'react-ui.js', 'p5-sketch.js',
+    'js/three.helpers.js', 'game.js']) assert.equal(generatedFile(name, 'const a = 1;\n'), false, name);
 });
 
 test('library and devtools hooks, and names the owner\'s request uses, are not debug globals', t => {

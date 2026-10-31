@@ -15,15 +15,17 @@
 // folder. A command can change any file, so a file changed when its size or
 // mtime differs, or when it is new. Then:
 // - a changed .js/.mjs/.cjs file that is new, or parsed at first touch, still
-//   parses as the project loads it: a file the project's HTML loads with
+//   parses as the project loads it: a file the project's pages load only with
 //   <script src> as a classic script (no module, JSX or other reading of it),
-//   one loaded as type=module as an ES module, and any other by its name and
-//   syntax. Scripts and CommonJS parse in process; ES modules with
-//   `node --check`, which never runs them, in the background, through one
-//   queue for the gateway, and only for changed versions: a file's version at
-//   first touch is kept and parsed only when its changed version fails. A `<`
-//   is no failure in a file the HTML loads as text/babel, nor in an unloaded
-//   file with JSX-looking tags (a bundled app);
+//   one loaded only as type=module as an ES module, and any other (pages that
+//   disagree, or none) by its name and syntax. A file loaded as text/babel is
+//   not parsed: in-browser Babel reads more than JavaScript. Scripts and
+//   CommonJS parse in process; ES modules with `node --check`, which never
+//   runs them, in the background, through one queue for the gateway, and only
+//   for changed versions: a file's version at first touch is kept and parsed
+//   only when its changed version fails. A `<` is no failure in a file no
+//   page loads that has JSX-looking tags, unless a page loads a .js module
+//   entry (then the project runs its modules unbuilt);
 // - no top-level function, class, const or let is defined more often than at
 //   first touch (outside comments and template strings);
 // - no globalThis/window/self.__name write was added, other than library and
@@ -150,10 +152,11 @@ const DEBUG_GLOBAL = /(?<![\w$.])(globalThis|window|self)\s*(?:\.\s*(__[\w$]+)|\
 const LIBRARY_GLOBAL = /^__(?:THREE|PIXI_[A-Z0-9_]+|VUE(?:_[A-Z0-9_]+)?|REDUX_DEVTOOLS_EXTENSION(?:_COMPOSE)?|APOLLO_[A-Z0-9_]+|NEXT_DATA|NUXT|INITIAL_STATE|PRELOADED_STATE|PHASER_GAME|[A-Z0-9_]*DEVTOOLS[A-Z0-9_]*|[A-Z0-9_]*_GLOBAL_HOOK)__$|^__VUE_DEVTOOLS_/;
 const COMMENT_LINE = /^\s*(?:\/\/|\/\*|\*)/;
 // Vendored: a vendor/ folder, a .min.js name, a known library's file name (not
-// a word a game uses for its own file, such as stats or tween), or a banner
-// kept for a license (/*!, @license or @preserve).
+// a word a game uses for its own file, such as stats or tween) with build or
+// version suffixes only (three.module.js, jquery-3.7.1.min.js; not
+// three-scene.js), or a banner kept for a license (/*!, @license or @preserve).
 const VENDORED = /(?:^|\/)vendors?\/|\.min\.[cm]?js$/i;
-const LIBRARY_FILE = /(?:^|\/)(?:three|pixi|phaser|jquery|react|react-dom|vue|p5|matter|howler|gsap|d3|lodash|underscore|babel|kaboom|kaplay|babylon|socket\.io|axios|moment|dayjs|alpine|htmx|preact|lil-gui|dat\.gui|planck|excalibur|melonjs|playcanvas|aframe)(?:[.-][\w.-]*)?\.[cm]?js$/i;
+const LIBRARY_FILE = /(?:^|\/)(?:three|pixi|phaser|jquery|react|react-dom|vue|p5|matter|howler|gsap|d3|lodash|underscore|babel|kaboom|kaplay|babylon|socket\.io|axios|moment|dayjs|alpine|htmx|preact|lil-gui|dat\.gui|planck|excalibur|melonjs|playcanvas|aframe)(?:[.-](?:module|min|max|slim|esm|umd|cjs|iife|global|browser|production|development|v?\d+(?:\.\d+)*))*\.[cm]?js$/i;
 const LICENSE_BANNER = /^(?:#![^\n]*\n)?\s*(?:\/\*!|\/\*\*?(?:(?!\*\/)[\s\S]){0,2000}@(?:license|preserve)\b)/;
 // JSX-looking tags: the file is not plain JavaScript.
 const JSX_TAG = /<\/?[A-Za-z][\w.:-]*(?:\s[^<>]*?)?\/?>|<\/?>/;
@@ -302,12 +305,14 @@ export function scriptCheck(source, file) {
 }
 
 // The in-process parse for how the project loads the file: a classic
-// <script src> (or in-browser Babel) parses as a browser parses a classic
-// script, a type=module file needs an ES module check, and anything else
-// reads as scriptCheck does.
+// <script src> parses as a browser parses a classic script, a type=module
+// file needs an ES module check, a text/babel file is not parsed (in-browser
+// Babel takes JSX, imports and more), and anything else reads as scriptCheck
+// does.
 function loadedParse(source, file, kind) {
-  if (kind === 'classic' || kind === 'babel') return classicScript(source);
+  if (kind === 'classic') return classicScript(source);
   if (kind === 'module') return {module: true};
+  if (kind === 'babel') return {ok: true};
   return scriptCheck(source, file);
 }
 
@@ -549,32 +554,56 @@ function projectPath(page, src) {
   return parts.join('/') || undefined;
 }
 
-// How the project's pages load its script files: a classic <script src>, an
-// ES module (type=module), or in-browser Babel (type text/babel or text/jsx).
-// At most 16 pages of 256 KiB are read, and read again only once one changed
-// (cache: the last result, by the pages' sizes and times).
+// HTML comments, which hide the tags they hold (one left open runs to the end).
+const HTML_COMMENT = /<!--[\s\S]*?(?:-->|$)/g;
+// A classic script's type: none, or a JavaScript MIME type.
+const CLASSIC_TYPE = /^(?:(?:text|application)\/(?:x-)?(?:java|ecma)script|text\/javascript1\.[0-5]|text\/(?:jscript|livescript))?$/;
+// An inline module's import of a .js or .mjs file.
+const MODULE_IMPORT = /(?:\bfrom|\bimport)\s*\(?\s*(['"])[^'"\n]+\.m?js\1/;
+
+// A tag's attributes by lowercase name, as a browser reads them: whole names
+// (data-src is not src), quoted or bare values, the first of a repeated name.
+function tagAttributes(tag) {
+  const found = new Map();
+  for (const [, name, double, single, bare] of tag.slice(7, -1).matchAll(/([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g)) {
+    const key = name.toLowerCase();
+    if (!found.has(key)) found.set(key, double ?? single ?? bare ?? '');
+  }
+  return found;
+}
+
+// How the project's pages load its script files (loads): a classic
+// <script src>, an ES module (type=module), in-browser Babel (type text/babel
+// or text/jsx), or 'auto' when the pages disagree; and whether a page loads a
+// .js module entry, by src or by an inline module's import (modules). Tags
+// inside comments do not count. At most 16 pages of 256 KiB are read, and read
+// again only once one changed (cache: the last result, by the pages' sizes
+// and times).
 function pageScripts(folder, walked, limits, cache) {
   const pages = [...walked.files].filter(([key, stat]) => /\.html?$/i.test(key) && stat.size <= 256 * 1024).slice(0, 16);
   const version = pages.map(([key, stat]) => `${key}:${stat.size}:${stat.mtimeMs}`).join('\n');
-  if (cache.version === version) return cache.loads;
-  const found = new Map();
+  if (cache.version === version) return cache;
+  const kinds = new Map();
+  let modules = false;
   for (const [key, stat] of pages) {
-    const html = readExact(folder, key, stat, limits)?.toString('utf8') ?? '';
-    for (const [tag] of html.matchAll(/<script\b[^>]*>/gi)) {
-      const attribute = name => {
-        const match = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i').exec(tag);
-        return match && (match[1] ?? match[2] ?? match[3]);
-      };
-      const file = projectPath(key, attribute('src')?.trim());
-      const type = (attribute('type') ?? '').trim().toLowerCase();
-      const kind = type === 'module' ? 'module' : /^text\/(?:babel|jsx)$/.test(type) ? 'babel'
-        : !type || /^(?:text|application)\/(?:java|ecma)script$/.test(type) ? 'classic' : undefined;
-      // A file a page loads as a classic script is one, whatever else loads it.
-      if (file && kind && found.get(file) !== 'classic') found.set(file, kind);
+    const html = (readExact(folder, key, stat, limits)?.toString('utf8') ?? '').replace(HTML_COMMENT, '');
+    for (const tag of html.matchAll(/<script\b[^>]*>/gi)) {
+      const attributes = tagAttributes(tag[0]);
+      const type = (attributes.get('type') ?? '').trim().toLowerCase();
+      const kind = type === 'module' ? 'module' : /^text\/(?:babel|jsx)$/.test(type) ? 'babel' : CLASSIC_TYPE.test(type) ? 'classic' : undefined;
+      if (!kind) continue;
+      const file = attributes.has('src') ? projectPath(key, attributes.get('src').trim()) : undefined;
+      if (kind === 'module' && !attributes.has('src')) {
+        const start = tag.index + tag[0].length, close = /<\/script/gi;
+        close.lastIndex = start;
+        modules ||= MODULE_IMPORT.test(html.slice(start, close.exec(html)?.index ?? html.length));
+      }
+      modules ||= kind === 'module' && /\.m?js$/i.test(file ?? '');
+      if (file) (kinds.get(file) ?? kinds.set(file, new Set()).get(file)).add(kind);
     }
   }
-  Object.assign(cache, {version, loads: found});
-  return found;
+  const loads = new Map([...kinds].map(([file, found]) => [file, found.size === 1 ? [...found][0] : 'auto']));
+  return Object.assign(cache, {version, loads, modules});
 }
 
 // --------------------------------------------------------------- the run --
@@ -635,7 +664,7 @@ export function createChangedFileChecks({queue, checkModule = nodeModuleCheck, r
     if (!located.exists) return baseline;
     const walked = walk(located.folder, located.stat, limits);
     if (walked.truncated) return {root, project, skipped: 'size'};
-    const loads = pageScripts(located.folder, walked, limits, baseline.pages);
+    const {loads} = pageScripts(located.folder, walked, limits, baseline.pages);
     let budget = limits.readBytes;
     for (const [key, stat] of walked.files) {
       const record = {size: stat.size, mtimeMs: stat.mtimeMs};
@@ -697,15 +726,15 @@ export function createChangedFileChecks({queue, checkModule = nodeModuleCheck, r
       const {mark: marked} = baseline;
       baseline.mark = undefined;
       if (!walked) continue;
-      let loads;
+      let pages;
       for (const [key, stat] of walked.files) {
         if (marked && marked.files.get(key) !== fileVersion(stat)) mine.add(`${project}/${key}`);
         const before = baseline.files.get(key);
         if (!JAVASCRIPT.test(key) || !listablePath(key) || (before && fileVersion(before) === fileVersion(stat))) continue;
-        loads ??= pageScripts(located.folder, walked, limits, baseline.pages);
-        const after = analysis(baseline, located.folder, key, stat, budget, loads.get(key) ?? 'auto');
+        pages ??= pageScripts(located.folder, walked, limits, baseline.pages);
+        const after = analysis(baseline, located.folder, key, stat, budget, pages.loads.get(key) ?? 'auto');
         if (after === DEFERRED) rows.push({project, key, deferred: true});
-        if (after && after !== DEFERRED) rows.push({project, key, before, after});
+        if (after && after !== DEFERRED) rows.push({project, key, before, after, modules: pages.modules});
       }
       for (const [name, kind] of walked.entries) {
         if (marked && !marked.entries.has(name)) mine.add(`${project}/${name}`);
@@ -737,7 +766,8 @@ export function createChangedFileChecks({queue, checkModule = nodeModuleCheck, r
       // module check is asked for only now that the failure needs it.
       if (role && parse?.ok === false && before?.digest && parseOf(before) === undefined) ask('baseline', slot, before.digest);
       const prior = before && parseOf(before);
-      const exempt = parse?.message === "Unexpected token '<'" && (after.kind === 'babel' || (after.kind === 'auto' && after.jsx));
+      // JSX in a file no page loads, in a project that builds its modules.
+      const exempt = parse?.message === "Unexpected token '<'" && after.kind === 'auto' && after.jsx && !row.modules;
       if (parse === PENDING || parse == null) {
         waits ||= parse === PENDING;
         if (final) found.push({kind: 'unparsed', project, file});
