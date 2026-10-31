@@ -149,6 +149,15 @@ grep -Fx "PIXEL_SOURCE_GMAIL_SENT_PAGE_SIZE='100'" .generated/source-broker.env 
 grep -Fx "PIXEL_SOURCE_GMAIL_SENT_MAX_PAGES='1000'" .generated/source-broker.env >/dev/null
 grep -Fx "PIXEL_CALENDAR_DIRECT_ENABLED='1'" .generated/source-broker.env >/dev/null
 grep -Fx "PIXEL_SOURCE_STALE_AFTER_MS='180000'" .generated/gateway.env >/dev/null
+# Calendar changes stay on unless an answers file turns them off, and the gateway learns
+# the real web and Calendar-write flags.
+grep -Fx "PIXEL_LIMB_CALENDAR_WRITE_ENABLED='1'" .generated/source-broker.env >/dev/null
+grep -Fx "PIXEL_LIMB_CALENDAR_WRITE_ENABLED='1'" .generated/gateway.env >/dev/null
+grep -Fx "PIXEL_LIMB_WEB_ENABLED='0'" .generated/gateway.env >/dev/null
+grep -Fx "PIXEL_SOURCE_CALENDAR_MAX_PAGES='20'" .generated/source-broker.env >/dev/null
+grep -Fx "PIXEL_SOURCE_OAUTH_DIR='/var/lib/pixel-source-broker/private/oauth'" .generated/source-broker.env >/dev/null
+grep -Fx "PIXEL_USER_TIMEZONE=''" .env >/dev/null
+jq -e '.calendarMutationPolicy.writeEnabled == true' .generated/deployment.json >/dev/null
 printf "PIXEL_SOURCE_BROKER_STATE_DIR='%s'\nPIXEL_SOURCE_TOKEN_PATH='%s'\nPIXEL_SOURCE_BROKER_ENV='%s'\nPIXEL_OPS_BROKER_STATE_DIR='%s'\nPIXEL_OPS_BROKER_ENV='%s'\nPIXEL_OPS_POLICY_PATH='%s'\n" \
   "$tmp/isolated/source-state" "$tmp/isolated/source-state/private/google-token.json" "$tmp/isolated/source.env" \
   "$tmp/isolated/ops-state" "$tmp/isolated/ops.env" "$tmp/isolated/ops-policy/policy.json" >> .env
@@ -306,6 +315,15 @@ grep -F 'ReadWritePaths=/var/lib/pixel-source-broker/results' .generated/pixel-s
 grep -F 'ExecStart="/opt/pixel-source-broker/broker.py" --drain-direct' .generated/pixel-source-direct.service >/dev/null
 grep -F 'ReadOnlyPaths=/opt/pixel-source-broker /var/lib/pixel-source-broker/private /var/lib/pixel-source-broker/proposals' .generated/pixel-source-direct.service >/dev/null
 grep -F 'PathChanged=/var/lib/pixel-source-broker/proposals' .generated/pixel-source-direct.path >/dev/null
+# Sign-in exchange and revocation run as the broker identity with write access only to its
+# private state, never the gateway owner.
+grep -Fx 'User=pixel-source-broker' .generated/pixel-source-exchange@.service >/dev/null
+grep -Fx 'ExecStart="/opt/pixel-source-broker/broker.py" --exchange %i' .generated/pixel-source-exchange@.service >/dev/null
+grep -Fx 'ReadWritePaths=/var/lib/pixel-source-broker/private' .generated/pixel-source-exchange@.service >/dev/null
+grep -Fx 'ProtectSystem=strict' .generated/pixel-source-exchange@.service >/dev/null
+grep -Fx 'User=pixel-source-broker' .generated/pixel-source-revoke.service >/dev/null
+grep -Fx 'ExecStart="/opt/pixel-source-broker/broker.py" --revoke' .generated/pixel-source-revoke.service >/dev/null
+if grep -F -- '--exchange' .generated/pixel-source-revoke.service; then echo "Revocation unit can run a sign-in exchange" >&2; exit 1; fi
 grep -F 'NoNewPrivileges=true' .generated/openclaw-gateway.service >/dev/null
 grep -F 'OnUnitActiveSec=1min' .generated/pixel-source-broker.timer >/dev/null
 grep -F 'User=pixel-ops-broker' .generated/pixel-ops-broker.service >/dev/null
@@ -562,6 +580,8 @@ test "$(cat "$apply_backup/previous-release")" = "$tmp/home/.local/share/pixel/r
 test "$(cat "$apply_backup/previous-sandbox-version")" = 0.9.0
 test "$(cat "$apply_backup/previous-sandbox-image-id")" = "$previous_sandbox_image_id"
 test -f "$tmp/home/.local/share/pixel/releases/$pixel_version/plugin/email-query.js"
+test -f "$tmp/home/.local/share/pixel/releases/$pixel_version/plugin/calendar-query.js"
+test -f "$tmp/home/.local/share/pixel/releases/$pixel_version/plugin/source-status.js"
 test -f "$tmp/home/.local/share/pixel/releases/$pixel_version/plugin/web-courier.js"
 test -f "$tmp/home/.local/share/pixel/releases/$pixel_version/plugin/web-tool.js"
 grep -F 'rm -f -- afe79ff2ad96' "$PIXEL_FAKE_DOCKER_LOG" >/dev/null
@@ -644,6 +664,38 @@ jq -e --arg path "$repo/plugin" '
   (.agents.list[0].tools.deny | contains(["pixel_web_browse"]) | not) and
   (.agents.list[0].tools.deny | contains(["pixel_gmail_inbox","pixel_calendar_list","pixel_social_feed"]))
 ' "$tmp/web-only-openclaw.json" >/dev/null
+# Calendar changes on (the default) render exactly today's config; turning them off denies
+# only the three propose tools; a user time zone is rendered only when one is given.
+(
+  set -a
+  # shellcheck disable=SC1091
+  source .env
+  set +a
+  export PIXEL_LIMB_EMAIL_ENABLED=1 PIXEL_LIMB_CALENDAR_ENABLED=1 PIXEL_LIMB_SOCIAL_ENABLED=0 PIXEL_LIMB_WEB_ENABLED=0 \
+    PIXEL_LIMB_OPERATIONS_ENABLED=0 PIXEL_LIMB_FRONTIER_ENABLED=0 \
+    PIXEL_PLUGIN_PATH="$repo/plugin" PIXEL_OPS_PLUGIN_PATH="$repo/plugin-ops" PIXEL_FRONTIER_PLUGIN_PATH="$repo/plugin-frontier"
+  unset PIXEL_LIMB_CALENDAR_WRITE_ENABLED PIXEL_USER_TIMEZONE
+  node scripts/render-config.mjs "$tmp/calendar-default-openclaw.json" >/dev/null
+  PIXEL_LIMB_CALENDAR_WRITE_ENABLED=1 PIXEL_USER_TIMEZONE='' node scripts/render-config.mjs "$tmp/calendar-write-openclaw.json" >/dev/null
+  PIXEL_LIMB_CALENDAR_WRITE_ENABLED=0 node scripts/render-config.mjs "$tmp/calendar-read-only-openclaw.json" >/dev/null
+  PIXEL_USER_TIMEZONE=America/Chicago node scripts/render-config.mjs "$tmp/calendar-timezone-openclaw.json" >/dev/null
+  if PIXEL_USER_TIMEZONE='America/Chicago; rm' node scripts/render-config.mjs "$tmp/calendar-bad-timezone-openclaw.json" >/dev/null 2>&1; then
+    echo "Renderer accepted an unsafe user time zone" >&2; exit 1
+  fi
+)
+cmp -s "$tmp/calendar-default-openclaw.json" "$tmp/calendar-write-openclaw.json" || { echo "Calendar writes on changed the rendered config" >&2; exit 1; }
+jq -e '
+  (.agents.defaults.userTimezone == null) and
+  (.tools.alsoAllow | contains(["pixel_calendar_list","pixel_calendar_get","pixel_calendar_propose_create","pixel_calendar_propose_update","pixel_calendar_propose_delete"]))
+' "$tmp/calendar-default-openclaw.json" >/dev/null
+jq -e '
+  (.tools.alsoAllow | contains(["pixel_calendar_list","pixel_calendar_get"])) and
+  ([.tools.alsoAllow[] | select(startswith("pixel_calendar_propose_"))] == []) and
+  ([.tools.sandbox.tools.allow[] | select(startswith("pixel_calendar_propose_"))] == []) and
+  (.agents.list[0].tools.deny | contains(["pixel_calendar_propose_create","pixel_calendar_propose_update","pixel_calendar_propose_delete"])) and
+  (.agents.list[0].tools.deny | contains(["pixel_calendar_list"]) | not)
+' "$tmp/calendar-read-only-openclaw.json" >/dev/null
+jq -e '.agents.defaults.userTimezone == "America/Chicago"' "$tmp/calendar-timezone-openclaw.json" >/dev/null
 jq -e '(.plugins.allow | index("evil") | not) and (.plugins.allow | index("pixel-frontier-broker") | not) and (.plugins.entries.evil == null) and (.plugins.entries["pixel-frontier-broker"] == null)' "$tmp/home/.openclaw/openclaw.json" >/dev/null
 jq -e '(.agents.list[] | select(.id=="pixel") | .tools.deny | contains(["pixel_frontier_plan_review","pixel_frontier_failure_triage","pixel_frontier_job_get","pixel_frontier_job_wait","pixel_frontier_job_events","pixel_frontier_job_cancel","pixel_frontier_usage","pixel_frontier_finalize"]))' "$tmp/home/.openclaw/openclaw.json" >/dev/null
 jq -e --arg old "$tmp/old-source-plugin" --arg current "$tmp/home/.local/share/pixel/current/plugin" '(.plugins.load.paths | index($old) | not) and (.plugins.load.paths | index($current) != null)' "$tmp/home/.openclaw/openclaw.json" >/dev/null

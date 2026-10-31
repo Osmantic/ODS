@@ -40,7 +40,7 @@ Descriptions are concise routing summaries, not proof that a command is Supporte
 
 ## [Sources and external actions](cli/sources-external-actions.md)
 
-- `./pixel source-broker` — Install/refresh the isolated Source Broker (requires --confirm)
+- `./pixel source-broker` — Install/refresh the isolated Source Broker (requires --confirm; --prepare only prepares it)
 - `./pixel source-show` — Snapshot and inspect one Calendar proposal outside Pixel
 - `./pixel source-approve` — Apply one hash-bound Calendar proposal outside Pixel (requires --confirm)
 - `./pixel source-reconcile` — Reconcile an indeterminate Calendar create or update without retrying it
