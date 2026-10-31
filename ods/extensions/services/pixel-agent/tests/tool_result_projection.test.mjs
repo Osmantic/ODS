@@ -174,7 +174,7 @@ test('during a response a 131K model keeps twice the aggregate in view', () => {
 const GUARD_LIMIT = Math.floor(131072 * 4 * 0.9);
 const guardEstimate = messages => messages.reduce((sum, m) => sum + (m.role === 'toolResult' ? 2 * textOf(m).length
   : m.role === 'assistant' ? m.content.reduce((chars, b) => chars + (b.type === 'toolCall' ? JSON.stringify(b.arguments ?? {}).length : b.text.length), 0)
-  : m.content.length), 0);
+  : m.role === 'user' ? m.content.length : 256), 0);
 const write = (chars) => ({role: 'assistant', content: [{type: 'toolCall', id: `call-${nextId}`, name: 'write',
   arguments: {path: 'Playground/game/ui.js', content: 'x'.repeat(chars)}}]});
 
@@ -297,7 +297,9 @@ function tool(history, name, args, text, extra = {}) {
   return history;
 }
 const readLines = (history, file, start, end) => tool(history, 'read', {path: file, offset: start, limit: end - start + 1}, fileText(file, start, end));
-const edited = (history, file) => tool(history, 'edit', {path: file, edits: [{oldText: 'old', newText: 'new'}]}, `Successfully replaced 1 block(s) in ${file}.`);
+// An edit that replaces line 50 of the file by default.
+const edited = (history, file, oldText = lineText(file, 50)) => tool(history, 'edit', {path: file, edits: [{oldText, newText: 'new'}]},
+  `Successfully replaced 1 block(s) in ${file}.`);
 const superseded = (history) => Object.fromEntries(liveSupersededReads(history, MAX));
 const whole = (messages) => messages.filter((m) => m.role === 'toolResult').map((m) => !/truncated; rerun/.test(textOf(m)));
 const owner = () => [{role: 'user', content: 'owner'}];
@@ -327,18 +329,26 @@ test('a read of a file that a later change replaced goes before fresh reads', ()
   assert.deepEqual(whole(before(history).messages), [false, false, false, false, false, false, true, true, true, true, true, true]);
 });
 
-test('only a change its tool reports as made makes earlier reads stale', () => {
+test('only a change its tool reports as made, of what a read shows, makes the read stale', () => {
   const patch = '*** Begin Patch\n*** Update File: game/ui.js\n@@\n-old\n+new\n*** End Patch';
+  const shown = lineText('game/ui.js', 50), elsewhere = lineText('game/ui.js', 500);
   const changes = [
-    ['edit', {path: 'game/ui.js', edits: []}, 'Successfully replaced 1 block(s) in game/ui.js.', {}, true],
+    ['edit', {path: 'game/ui.js', edits: [{oldText: shown, newText: 'x'}]}, 'Successfully replaced 1 block(s) in game/ui.js.', {}, true],
+    ['edit', {path: 'game/ui.js', oldText: shown, newText: 'x'}, 'Successfully replaced 1 block(s) in game/ui.js.', {}, true],
+    ['edit', {path: 'game/ui.js', edits: [{oldText: elsewhere, newText: 'x'}]}, 'Successfully replaced 1 block(s) in game/ui.js.', {}, false],
+    ['edit', {path: 'game/ui.js', edits: [{oldText: elsewhere, newText: 'x'}, {oldText: shown, newText: 'y'}]}, 'Successfully replaced 2 block(s) in game/ui.js.', {}, true],
+    ['edit', {path: 'game/ui.js', edits: '[]'}, 'Successfully replaced 1 block(s) in game/ui.js.', {}, true],
     ['write', {path: '/workspace/game/ui.js', content: 'x'}, 'Successfully wrote 1 bytes to /workspace/game/ui.js', {}, true],
     ['apply_patch', {input: patch}, 'Success. Updated the following files:\nM game/ui.js', {}, true],
-    ['apply_patch', {input: patch.replace('Update File: game/ui.js', 'Update File: game/other.js\n*** Move to: game/ui.js')},
-      'Success. Updated the following files:\nM game/ui.js', {}, true],
-    ['edit', {path: 'game/ui.js', edits: []}, '{"status": "error", "tool": "edit", "error": "Could not find edits[0]"}', {isError: true}, false],
-    ['edit', {path: 'game/ui.js', edits: []}, 'Tool call blocked because before_tool_call hook failed', {}, false],
+    ['apply_patch', {input: patch.replace('Update File: game/ui.js', 'Update File: game/ui.js\n*** Move to: game/view.js')},
+      'Success. Updated the following files:\nM game/view.js', {}, true],
+    ['apply_patch', {input: `${patch}\n*** Delete File: game/ui.js`}, 'Success. Updated the following files:\nD game/ui.js', {}, true],
+    ['apply_patch', {input: patch.replace('*** End Patch', '*** Update File: game/b.js\n@@\n-old\n+new\n*** End Patch')},
+      'Success. Updated the following files:\nM game/b.js', {}, false],
+    ['edit', {path: 'game/ui.js', edits: [{oldText: shown, newText: 'x'}]}, '{"status": "error", "tool": "edit", "error": "Could not find edits[0]"}', {isError: true}, false],
+    ['edit', {path: 'game/ui.js', edits: [{oldText: shown, newText: 'x'}]}, 'Tool call blocked because before_tool_call hook failed', {}, false],
     ['write', {path: 'game/ui.js', content: 'x'}, 'Successfully wrote 1 bytes to game/ui.js', {isError: true}, false],
-    ['edit', {path: 'game/other.js', edits: []}, 'Successfully replaced 1 block(s) in game/other.js.', {}, false],
+    ['edit', {path: 'game/other.js', edits: [{oldText: shown, newText: 'x'}]}, 'Successfully replaced 1 block(s) in game/other.js.', {}, false],
     ['exec', {command: "sed -i 's/old/new/' game/ui.js"}, '', {}, false],
   ];
   for (const [name, args, text, extra, stale] of changes) {
@@ -467,41 +477,64 @@ test('a reduction counts only what superseded a result by its batch, so earlier 
   assert.deepEqual(run(structuredClone(reading)).messages, run(reading).messages, 'a fresh attempt sends the same bytes');
 });
 
-test('the superseded-first order never makes the guard trip sooner than the projection it extends', () => {
+// The guard and the pre-prompt check call the projection without a state; the
+// provider stream passes its attempt's state, and its input can count more
+// than the guard's (convertToLlm sends a compaction summary as user text).
+// The guard measures exactly the projection this extends, so it trips at the
+// same request; the stream sends either that same projection or a view that
+// fits the guard's limit on its own input.
+function assertStreamSafe(guardInput, streamInput, context, label, attempt, reference) {
+  const measured = realm(project(guardInput, context, MAX, 4 * MAX), guardInput).messages;
+  assert.deepEqual(measured, realm(previous(guardInput, context, MAX, 4 * MAX), guardInput).messages, `${label}: the guard measures the same`);
+  const streamed = realm(project(streamInput, context, MAX, 4 * MAX, attempt), streamInput).messages;
+  const expected = before(streamInput, context, reference).messages;
+  const ordered = !isDeepStrictEqual(streamed, expected);
+  assert.ok(!ordered || !attempt.liveOrderDeclined, `${label}: back to the order after declining it`);
+  assert.ok(!ordered || guardEstimate(streamed) <= Math.floor(context * 4 * 0.9), `${label}: ${guardEstimate(streamed)} sent in the order`);
+  return {ordered, tripped: guardEstimate(measured) > Math.floor(context * 4 * 0.9)};
+}
+
+test('the guard measures exactly the projection this extends, and the stream sends that or fits the guard', () => {
   // A long editing response: it re-reads ui.js in sliding windows, reads other
   // files once each, edits ui.js now and then, and writes large payloads until
   // the guard limit is reached.
   for (const context of [65536, 131072]) {
-    const limit = Math.floor(context * 4 * 0.9);
     const history = owner();
     const attempt = {}, reference = {};
-    let ordered = 0, tripped = false, referenceTripped = false, declined = false;
-    for (let i = 0; i < 400 && !(tripped && declined); i++) {
+    let ordered = 0, tripped = false;
+    for (let i = 0; i < 400 && !(tripped && attempt.liveOrderDeclined); i++) {
       readLines(history, 'game/ui.js', 1 + (i % 7) * 120, 120 + (i % 7) * 120);
       readLines(history, `game/part-${i}.js`, 1, 40);
-      if (i % 9 === 8) edited(history, 'game/ui.js');
+      if (i % 9 === 8) edited(history, 'game/ui.js', lineText('game/ui.js', 1 + (i % 7) * 120 + 60));
       history.push(write(context / 40), result(200));
-      const sent = realm(project(history, context, MAX, 4 * MAX, {}), history).messages;
-      const base = before(history, context).messages;
-      if (!isDeepStrictEqual(sent, base)) {
-        ordered++;
-        assert.ok(guardEstimate(sent) <= limit, `${context} round ${i}: ${guardEstimate(sent)} sent in the superseded-first order`);
-      }
-      tripped ||= guardEstimate(sent) > limit;
-      referenceTripped ||= guardEstimate(base) > limit;
-      assert.ok(!tripped || referenceTripped, `${context} round ${i}: the guard trips sooner`);
-      // One attempt: once it declines the order, it is projected exactly as the
-      // projection it extends projects it from then on.
-      const streamed = realm(project(history, context, MAX, 4 * MAX, attempt), history).messages;
-      const wasDeclined = declined;
-      declined = attempt.liveOrderDeclined === true;
-      if (wasDeclined) {
-        reference.liveWideDeclined ??= attempt.liveWideDeclined;
-        assert.deepEqual(streamed, before(history, context, reference).messages, `${context} round ${i}: back to the order`);
-      } else if (!declined) assert.deepEqual(streamed, sent);
+      const step = assertStreamSafe(history, history, context, `${context} round ${i}`, attempt, reference);
+      if (step.ordered) ordered++;
+      tripped ||= step.tripped;
     }
-    assert.ok(ordered > 10 && tripped && declined, JSON.stringify({context, ordered, tripped, declined}));
+    assert.ok(ordered > 10 && tripped && attempt.liveOrderDeclined, JSON.stringify({context, ordered, tripped}));
   }
+});
+
+test('a compaction summary the stream counts in full never lets it send what the guard would stop', () => {
+  // Review of this change: the guard counted a summary as 256 characters while
+  // the stream's input carried it whole, so the stream declined the order and
+  // then sent the base projection at requests where the guard, measuring the
+  // order, did not trip but would have measured that base projection above
+  // its limit.
+  const agent = [{role: 'compactionSummary', summary: 'Earlier work: '.padEnd(30000, 'x'), timestamp: 1}, {role: 'user', content: 'continue'}];
+  const toStream = (messages) => messages.map((m) => (m.role === 'compactionSummary' ? {role: 'user', content: `<summary>\n${m.summary}\n</summary>`} : m));
+  for (let i = 0; i < 2; i++) readLines(agent, 'game/ui.js', 1, 260);
+  for (const file of ['s1.js', 's2.js']) readLines(agent, `game/${file}`, 1, 17);
+  for (let i = 0; i < 2; i++) readLines(agent, 'game/ui.js', 1, 260);
+  const attempt = {}, reference = {};
+  let ordered = 0, tripped = false;
+  for (let k = 0; k < 60 && !tripped; k++) {
+    tool(agent, 'write', {path: `out/f${k}.js`, content: 'w'.repeat(10000)}, `Successfully wrote 10000 bytes to out/f${k}.js`);
+    const step = assertStreamSafe(agent, toStream(agent), 65536, `request ${k}`, attempt, reference);
+    if (step.ordered) ordered++;
+    tripped = step.tripped;
+  }
+  assert.ok(ordered > 3 && tripped && attempt.liveOrderDeclined, JSON.stringify({ordered, tripped}));
 });
 
 test('once an attempt declines the superseded-first order it keeps declining it though its input shrinks', () => {

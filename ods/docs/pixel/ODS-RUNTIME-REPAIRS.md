@@ -281,12 +281,14 @@ projection (`truncateOversizedToolResultsInMessages`):
   sees it, is measured at the base aggregate. The first request of the next turn
   can send the wider view when it fits the guard, so its room for the reply
   rests on the loop guard rather than on the pre-prompt check's reserve.
-- While a response is under way, a reduction takes the reads it has already
-  superseded first, oldest first, and only then the other results oldest first.
-  A read is superseded when a later read of the same file shows its text again
-  (the same lines or a wider range), or when a later `write`, `edit` or
-  `apply_patch` of that file succeeded, judged by the tool's own success text.
-  Reads are recognized from the call before each result: `read` with its path,
+- While a response is under way, the provider stream's reductions take the
+  reads it has already superseded first, oldest first, and only then the other
+  results oldest first. A read is superseded when a later read of the same
+  file shows its text again (the same lines or a wider range), or when a later
+  change replaced what it shows: an `edit` of text the read shows, a `write` of
+  the file, or an `apply_patch` whose result lists the file (or that moved it
+  away). Changes count only when the tool's own result reports them.
+- Reads are recognized from the call before each result: `read` with its path,
   offset and limit, or `exec` running, after at most one `cd`, a plain
   `sed -n` range of one file, `cat` or `cat -n` of one file, or `cat -n`,
   `nl -ba` or `grep -n ""` of one file piped to a `sed -n` range. Paths compare
@@ -294,12 +296,20 @@ projection (`truncateOversizedToolResultsInMessages`):
   `/workspace`. Any other result is never superseded, and changes made through
   `exec` are not seen. A reduction counts only what superseded a result by the
   batch it reduces for, so earlier sends stay byte-stable.
-- The superseded-first order is used only while the request fits the
-  tool-loop guard at every message, in the view the response starts with (the
-  wider view at 131k tokens or more, the base view below). Otherwise that
-  request, and the rest of its attempt, is projected exactly as above, so the
-  guard never trips sooner than without it. A transcript that ends with a final
-  reply is projected exactly as above too.
+- The tool-loop guard and the pre-prompt compaction check call the projection
+  without an attempt's state, and get exactly the projection above. So the
+  guard measures, and trips, as it would without the superseded-first order.
+  The stream uses the order only while its own input fits the guard's limit at
+  every message, in the view the response starts with (the wider view at 131k
+  tokens or more, the base view below). Its input can count more than the
+  guard's: OpenClaw sends a compaction summary to the model as user text, and
+  the guard counts it as 256 characters. Once the order does not fit, the
+  attempt sends exactly the projection above until it ends. That changes the
+  cached prompt prefix once; with the wider view, a later decline of that view
+  can change it once more.
+- The first request of the next turn can send the order when it fits, so, as
+  with the wider view, its room for the reply rests on the loop guard rather
+  than on the pre-prompt check's reserve.
 
 The session transcript, the pre-prompt compaction check and the recovery
 rewrite path are unchanged. `toolResultMaxChars` stays at 16k: doubling it on
