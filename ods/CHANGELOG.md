@@ -7,6 +7,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Portal can read your Google Calendar and Gmail. Connect them in Settings,
+  Connected apps: a wizard walks you through creating your own Google sign-in
+  app, and Portal then answers from your events and from summaries of your
+  Inbox and Sent mail (180 days), never attachments. The Google sign-in stays in
+  ODS's Source Broker, in its own system account on this machine; Portal reads
+  only the summaries. When Portal runs on a cloud model, that model's provider
+  sees what Portal reads. Disconnect removes ODS's access at Google and deletes
+  everything it saved; uninstalling ODS does the same. Linux and Windows (WSL2)
+  only for now. Set `PORTAL_CONNECTED_APPS_ENABLED=false` to hide it. See
+  `docs/pixel/CONNECTED-APPS.md`.
+- Portal can suggest calendar changes you approve. Turn on **Suggest calendar
+  changes you approve** when you connect Google, then ask Portal to add, move or
+  delete an event. Each change waits in Settings, Connected apps, showing exactly
+  what it would write; nothing reaches Google until you press **Approve**, and
+  ODS makes that exact change once. Portal's chat says when a change waits.
+- You can let Portal add or move your own private events without asking: events
+  with no guests, and moving an event to a new time, at most 20 an hour. Every
+  other change still waits for your approval. While Portal has Full Access, it
+  asks for these too; they resume when you switch back to Sandbox. The Full
+  Access confirmation now names what it means for connected apps. Settings lists
+  what Portal changed by itself this week, with Undo for each change, as long as
+  the event is still exactly as Portal left it.
+- Portal can write Gmail drafts you send yourself. Turn on **Write Gmail drafts
+  you send yourself** when you connect Google, then ask Portal to reply to an
+  email or write a new one. Each draft waits in Settings, Connected apps, shown
+  whole; nothing reaches Gmail until you press **Create draft**, and ODS creates
+  that exact draft once, in your Gmail Drafts. Portal can't send email: you send
+  the draft from Gmail. ODS now bundles Pixel 4.3.35, which adds the draft tool.
+- Portal plugins: Settings, Connected apps lists OpenClaw plugins reviewed for
+  ODS, each off until you turn it on, set up exactly as reviewed, and pinned to
+  the OpenClaw that ODS already installs. The first is the **Knowledge wiki**
+  (OpenClaw's memory-wiki): Portal keeps Markdown pages of what it learns about
+  your people, projects and decisions in `~/.openclaw/wiki/portal`, notes where
+  each fact came from, and checks them before it answers. It can't reach the
+  internet or run programs. Review: `docs/pixel/plugins/memory-wiki.md`.
 - Portal's workspace includes one finished example project, Elf of Doom, a
   small browser game Portal wrote in ODS from natural-language prompts. The
   installer adds `Playground/elf-of-doom` whenever that name is absent and the

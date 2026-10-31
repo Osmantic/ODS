@@ -51,11 +51,22 @@ class ReleaseGenerationTests(unittest.TestCase):
             evidence.write_text("# Fixture evidence\n", encoding="utf-8")
             self.run_node(root, "scripts/generate-release-files.mjs", "--write")
             self.assertIn(f"[audit]({audit})", (root / "OPENCLAW-COMPATIBILITY.md").read_text(encoding="utf-8"))
+            self.run_node(root, "scripts/docs/generate-status.mjs", "--write")
+            self.assertIn(f"](../{audit})", (root / "docs/status.md").read_text(encoding="utf-8"))
             evidence.unlink()
             self.run_node(root, "scripts/generate-release-files.mjs", "--write")
+            self.run_node(root, "scripts/docs/generate-status.mjs", "--write")
             table = (root / "OPENCLAW-COMPATIBILITY.md").read_text(encoding="utf-8")
             self.assertNotIn(f"[audit]({audit})", table)
             self.assertIn(f"Historical audit not included in this source export (`{audit}`)", table)
+            status = json.loads((root / "docs/status.json").read_text(encoding="utf-8"))
+            page = (root / "docs/status.md").read_text(encoding="utf-8")
+            self.assertEqual(status["repository"]["evidenceDocument"], audit)
+            for row in (status["repository"], status["latestSupportedCompatibility"]):
+                document = row["evidenceDocument"]
+                if not (root / document).exists():
+                    self.assertNotIn(f"](../{document})", page)
+                    self.assertIn(f"`{document}` (not included in this source export)", page)
             self.assertEqual(matrix, json.loads((root / "OPENCLAW-COMPATIBILITY.json").read_text(encoding="utf-8")))
 
     def test_drift_is_rejected_and_regeneration_repairs_it(self):
@@ -269,6 +280,7 @@ class ReleaseGenerationTests(unittest.TestCase):
             env = dict(os.environ)
             env.update({
                 "PIXEL_SOURCE_BROKER_ENABLED": "0",
+                "PIXEL_SKIP_NPM_CI": "1",
                 "PIXEL_OPS_BROKER_ENABLED": "0",
                 "PIXEL_FRONTIER_BROKER_ENABLED": "0",
                 "PIXEL_WEB_COURIER_ENABLED": "0",

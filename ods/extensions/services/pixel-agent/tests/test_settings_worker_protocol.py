@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT / "bin"))
 import pixel_access_bridge as bridge
 import pixel_access_protocol as protocol
+from pixel_connections import plugins
 
 
 def request(operation="settings-apply", **changes):
@@ -44,10 +45,31 @@ def request(operation="settings-apply", **changes):
         value['binding'] = None
     if operation == 'access-relocate':
         value['relocation'] = {'source_config': '/opt/ods/openclaw.json', 'source_sha256': 'c' * 64}
+    if operation == 'schedules':
+        value.update(schedule_request={'action': 'list', 'offset': 0}, gateway_port=18789)
+    if operation == 'native-mcp-oauth':
+        from pixel_connections.native_mcp import BINDING_KEYS
+        binding = {key: 'a' * 64 for key in BINDING_KEYS if key.endswith('Sha256')}
+        binding.update(ownerUid=1000, home='/home/owner', stateDir='/home/owner/.openclaw',
+                       configPath='/home/owner/.openclaw/openclaw.json', packageDir='/opt/openclaw',
+                       binaryPath='/opt/openclaw/openclaw.mjs', nodePath='/usr/bin/node', serverName='qa-notes')
+        value['native_oauth_request'] = dict(action='begin', binding=binding, serverName='qa-notes',
+                                            redirectUri='http://127.0.0.1:43123/')
     if operation == 'provider-worker-status':
         value['provider_probe'] = {'python': '/usr/bin/python3',
             'launcher': '/opt/ods/bin/ods-pixel-route-lease', 'providerDirectory': '/home/owner/data/pixel-providers',
             'receipt': {'schemaVersion': 1, 'revision': 0, 'runtime': None}}
+    if operation in ('connection-owner-status', 'connection-apply'):
+        value['answers_path'] = '/home/owner/ods/data/pixel/onboarding.json'
+    if operation in ('connection-apply', 'connection-recover'):
+        value['transaction_id'] = 'b' * 64
+    if operation == 'connection-apply':
+        value['connection_target'] = dict(email=True, emailDrafts=False, calendar=True, calendarWrite=False,
+                                          calendarDirect=False, userTimezone='America/Chicago', plugins=['memory-wiki'])
+        value['connection_answers'] = dict(timeZone='America/Chicago', googleAccount='owner@example.com',
+            calendarId='primary', emailLimbEnabled=True, calendarLimbEnabled=True, calendarDirectEnabled=False,
+            userTimezone='America/Chicago', calendarWriteEnabled=False, gmailWindowDays=180, emailDraftsEnabled=False,
+            portalPlugins=plugins.answers(['memory-wiki']))
     if operation.endswith("status"):
         value["config_sha256"] = None
     value.update(changes)

@@ -95,11 +95,13 @@ def test_managed_plugin_update_rejects_ambiguous_or_lossy_selection(fault):
 
 
 @pytest.mark.parametrize('fault', [None, 'key', 'provider', 'workspace', 'state', 'model', 'store',
-    'agent-dir', 'port', 'hash', 'previous', 'extra'])
+    'agent-dir', 'port', 'hash', 'previous', 'extra', 'mcp-added', 'mcp-changed', 'mcp-null'])
 def test_preservation_verifier_checks_values_even_when_candidate_hash_is_recomputed(fault):
     previous = {'agents': {'defaults': {}, 'list': [{'id': 'pixel', 'workspace': '/owner/work',
         'model': 'ods-gateway/ods/current'}]}, 'models': {'providers': {'ods-gateway': {'apiKey': 'keep'}}},
         'gateway': {'port': 18789, 'auth': {'mode': 'token', 'token': 'keep'}}, 'session': {}}
+    if fault == 'mcp-changed':
+        previous['mcp'] = {'servers': {'project': {'transport': 'stdio', 'command': '/usr/bin/true'}}}
     candidate = copy.deepcopy(previous)
     record = {'schemaVersion': 1, 'kind': 'legacy-native', 'stateDir': '/owner/state',
         'workspace': '/owner/work', 'agentId': 'pixel', 'requiresJointActivation': True,
@@ -115,6 +117,12 @@ def test_preservation_verifier_checks_values_even_when_candidate_hash_is_recompu
     if fault == 'store': candidate['session']['store'] = '/other/sessions.json'
     if fault == 'agent-dir': candidate['agents']['list'][0]['agentDir'] = '/other/agent'
     if fault == 'port': candidate['gateway']['port'] = 18889
+    if fault == 'mcp-added':
+        candidate['mcp'] = {'servers': {}}
+    if fault == 'mcp-changed':
+        candidate['mcp']['servers']['project']['command'] = '/usr/bin/false'
+    if fault == 'mcp-null':
+        candidate['mcp'] = None
     if fault == 'previous': record['previousConfigSha256'] = '0' * 64
     if fault == 'extra': record['skipChecks'] = True
     body = json.dumps(candidate).encode()

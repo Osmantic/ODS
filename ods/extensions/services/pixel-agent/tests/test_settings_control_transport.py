@@ -19,7 +19,7 @@ import pixel_access_client as client
 from pixel_access_protocol import control_request
 
 
-@pytest.mark.parametrize("operation", ["status", "change", "settings-status", "settings-change"])
+@pytest.mark.parametrize("operation", ["status", "change", "settings-status", "settings-change", "connection-status"])
 def test_client_uses_fixed_socket_and_only_data_directory_fingerprint(tmp_path, monkeypatch, operation):
     temporary = tempfile.TemporaryDirectory(prefix="ods-access-", dir="/tmp")
     path = str(Path(temporary.name) / "control.sock")

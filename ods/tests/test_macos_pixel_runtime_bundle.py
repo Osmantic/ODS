@@ -165,6 +165,18 @@ def shared_repairs(artifacts, monkeypatch):
             dependency = 'embedded-agent-subscribe.handlers.compaction.runtime-BcFOW95l.js'
             (dist / dependency).write_bytes(b'reviewed dependency')
             manifest['reviewedDependencies'] = {dependency: hashlib.sha256(b'reviewed dependency').hexdigest()}
+        elif name == 'openclaw-image-envelope.json':
+            dependency = 'src-M7TBQdDX.js'
+            raw = b'reviewed native validation fixture'
+            (dist / dependency).write_bytes(raw)
+            manifest['reviewedDependencies'] = {dependency: hashlib.sha256(raw).hexdigest()}
+        elif name == 'openclaw-direct-tool-completion.json':
+            manifest['reviewedDependencies'] = {}
+            for dependency in ('hook-helpers-CZ2oRHhZ.js', 'hook-runner-global-mWFYlTIy.js',
+                               'agent-tools.before-tool-call-bDDdy3YD.js'):
+                raw = ('reviewed fixture dependency ' + dependency).encode()
+                (dist / dependency).write_bytes(raw)
+                manifest['reviewedDependencies'][dependency] = hashlib.sha256(raw).hexdigest()
         (manifests / name).write_text(json.dumps(manifest))
     monkeypatch.setattr(bundle, 'REPAIR_ROOT', manifests)
     return manifests
@@ -180,7 +192,7 @@ def test_shared_repairs_compose_deterministically_only_in_staging(artifacts, sha
     manifest, _ = bundle.verify(root, expected_digest=digest)
     repairs = json.loads((root / 'ods-runtime-repairs.json').read_bytes())
     stream = json.loads((root / 'ods-runtime-patches.json').read_bytes())[0]
-    assert len(repairs) == 23
+    assert len(repairs) == 24
     assert {item["manifest"] for item in repairs}.issuperset({
         "openclaw-context-usage.json", "openclaw-no-tools-ingress.json", "openclaw-yield-usage.json", "openclaw-compaction-empty.json", "openclaw-compaction-no-work.json", "openclaw-hook-provenance.json", "openclaw-run-id-redaction.json", "openclaw-subagent-admission.json"})
     assert any(item['module'] == 'windows-command-C7mWWxtt.js'

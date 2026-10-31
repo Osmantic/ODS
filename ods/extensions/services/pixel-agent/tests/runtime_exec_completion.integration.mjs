@@ -9,6 +9,7 @@ import {mkdtempSync,mkdirSync,writeFileSync,symlinkSync,readFileSync,rmSync,copy
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
+import {createLoopbackGatewayFetch} from '../host/pixel_ingress.mjs';
 const installed=process.env.OPENCLAW_PACKAGE;
 const guardModule=process.env.ODS_PROJECT_DELIVERY_GUARD_MODULE ?? new URL('../plugin/tool-loop-guard.mjs',import.meta.url).href;
 let pkg=installed, runtimeCopy;
@@ -88,8 +89,13 @@ for(const mode of ['plain','wrapped','sandbox','deferred','unrelated','write','w
     child=spawn(process.execPath,[join(pkg,'openclaw.mjs'),'gateway','run'],{cwd:root,detached:true,env:{PATH:process.env.PATH,HOME:root,TMPDIR:root,OPENCLAW_STATE_DIR:join(root,'state'),OPENCLAW_CONFIG_PATH:join(root,'openclaw.json'),OPENCLAW_SKIP_CHANNELS:'1'},stdio:['ignore','pipe','pipe']});
     childStartTicks=startTicks(child.pid);
     child.stdout.on('data',x=>log+=x);child.stderr.on('data',x=>log+=x);
-    let ready=false;for(let n=0;n<250;n++){try{ready=(await fetch('http://127.0.0.1:'+port+'/health',{signal:AbortSignal.timeout(500)})).ok;}catch{}if(ready)break;assert.equal(child.exitCode,null,log);await delay(100);}assert.ok(ready,log);
-    const response=await fetch('http://127.0.0.1:'+port+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer fixture-only-0123456789abcdef'},body:JSON.stringify({model:'openclaw:'+agentId,stream:true,user:writeMode?'ods-'+'a'.repeat(64):'exec-fixture',messages:[{role:'user',content:writeMode?filePrompt:'Run the three shell diagnostics and report their actual completion status.'}]}),signal:AbortSignal.timeout(45000)});
+    const gatewayTransport=createLoopbackGatewayFetch();
+    const gatewayFetch=async(...args)=>{
+      const response=await gatewayTransport(...args);
+      return new Response(response.body,{status:response.status});
+    };
+    let ready=false;for(let n=0;n<250;n++){try{ready=(await gatewayFetch('http://127.0.0.1:'+port+'/health',{signal:AbortSignal.timeout(1500)})).ok;}catch{}if(ready)break;assert.equal(child.exitCode,null,log);await delay(100);}assert.ok(ready,log);
+    const response=await gatewayFetch('http://127.0.0.1:'+port+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer fixture-only-0123456789abcdef'},body:JSON.stringify({model:'openclaw:'+agentId,stream:true,user:writeMode?'ods-'+'a'.repeat(64):'exec-fixture',messages:[{role:'user',content:writeMode?filePrompt:'Run the three shell diagnostics and report their actual completion status.'}]}),signal:AbortSignal.timeout(45000)});
     const body=await response.text();assert.equal(response.status,200,body+'\n'+log);assert.equal(rounds,writeMode?2:4,log);
     const hooks=readFileSync(join(root,'hooks.jsonl'),'utf8').trim().split('\n').map(JSON.parse);console.log(JSON.stringify({mode,hooks,wire:toolResults.map(x=>({toolCallId:x.tool_call_id,completion:JSON.stringify(x.content).includes('[ODS Pixel execution]'),artifactGuidance:JSON.stringify(x.content).includes('exact publication args')}))}));
     if(writeMode) {

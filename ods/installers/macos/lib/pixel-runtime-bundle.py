@@ -75,6 +75,7 @@ SHARED_REPAIRS = (
     ('openclaw-compaction-no-work.json', 'compact-DuWIsaq_.js'),
     ('openclaw-command-attempt-warning.json', 'payloads-CC0zlj7W.js'),
     ('openclaw-utf8-output.json', 'windows-command-C7mWWxtt.js'),
+    ('openclaw-direct-tool-completion.json', 'tools-invoke-shared-dvxhZAis.js'),
     ('openclaw-compaction-budget.json', 'selection-BEwSQKM-.js'),
 )
 

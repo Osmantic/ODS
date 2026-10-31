@@ -5,10 +5,45 @@ import net from 'node:net';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import {handleAccessMode, readAccessOwnerKey, requestAccessController} from '../host/access_mode_relay.mjs';
+import {handleAccessMode, handleSchedules, handleConnections, readAccessOwnerKey, requestAccessController} from '../host/access_mode_relay.mjs';
+import {createHash} from 'node:crypto';
 
 const ownerKey = 'o'.repeat(64);
 const change = {mode:'full-access', confirmed:true, revision:'a'.repeat(64)};
+
+test('schedule relay binds the authenticated ingress key, not caller-selected authority', async t => {
+  const calls=[];
+  const page={kind:'tasks',items:[],offset:0,hasMore:false,nextOffset:null,pendingCreates:[],pendingCount:0,pendingRemovals:[]};
+  const server=http.createServer((req,res)=>void handleSchedules(req,res,{ownerKey,request:async value=>{calls.push(value);return {status:200,body:page}}}));
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const url=`http://127.0.0.1:${server.address().port}/v1/schedules`;
+  const body=JSON.stringify({action:'list',offset:0});
+  for (const key of ['', 'c'.repeat(64)]) {
+    assert.equal((await fetch(url,{method:'POST',headers:{authorization:`Bearer ${key}`,'content-type':'application/json'},body})).status,403);
+  }
+  assert.equal(calls.length,0);
+  const response=await fetch(url,{method:'POST',headers:{authorization:`Bearer ${ownerKey}`,'content-type':'application/json'},body});
+  assert.equal(response.status,200);assert.deepEqual(await response.json(),page);
+  assert.equal(response.headers.get('cache-control'),'no-store');
+  assert.deepEqual(calls,[{operation:'schedules',request:{action:'list',offset:0},source:{kind:'owner-key',identity:createHash('sha256').update(ownerKey).digest('hex')}}]);
+  assert.equal((await fetch(url+'?owner=other',{method:'POST',headers:{authorization:`Bearer ${ownerKey}`,'content-type':'application/json'},body})).status,400);
+  assert.equal(calls.length,1);
+});
+
+test('large schedule results use their own bounded socket frame; legacy frame cap stays intact', async t => {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'schedules-socket-'));
+  const socketPath=path.join(dir,'control.sock');
+  const body={kind:'runs',taskId:'fixture-job',items:[{timestamp:1,status:'ok',summary:'A'.repeat(100000),summaryTruncated:false,durationMs:1}],offset:0,hasMore:false,nextOffset:null};
+  const server=net.createServer(socket=>socket.once('data',()=>socket.end(JSON.stringify({status:200,body})+'\n')));
+  await new Promise(resolve=>server.listen(socketPath,resolve));
+  t.after(async()=>{await new Promise(resolve=>server.close(resolve));fs.rmSync(dir,{recursive:true,force:true});});
+  const payload={operation:'schedules',request:{action:'runs',id:'fixture-job',offset:0}};
+  assert.deepEqual((await requestAccessController(payload,{socketPath,timeout:1000})).body,body);
+  await assert.rejects(requestAccessController({operation:'status'},{socketPath,timeout:1000}));
+  body.items[0].summary='A'.repeat(525313);
+  await assert.rejects(requestAccessController(payload,{socketPath,timeout:1000}));
+});
 
 test('owner-authenticated relay keeps the exact change and rejects ordinary chat authority', async t => {
   const calls=[];
@@ -69,4 +104,92 @@ test('controller timeout and oversized response fail without retry', async t => 
   await assert.rejects(requestAccessController({operation:'status'},{socketPath,timeout:20}));
   await assert.rejects(requestAccessController({operation:'status'},{socketPath,timeout:1000}));
   assert.equal(connections,2);
+});
+
+test('connected-apps status is owner-only, read-only and asks the controller one fixed question', async t => {
+  const calls=[];
+  const server=http.createServer((req,res)=>void handleConnections(req,res,{ownerKey, request:async (value, options)=>{calls.push([value, options]);return {status:200,body:{schemaVersion:1}}}}));
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const url=`http://127.0.0.1:${server.address().port}/v1/connections`;
+  for(const key of ['', 'c'.repeat(64)]) {
+    assert.equal((await fetch(url,{headers:{authorization:`Bearer ${key}`}})).status,403);
+  }
+  assert.equal((await fetch(url,{method:'PUT',headers:{authorization:`Bearer ${ownerKey}`,'content-type':'application/json'},body:'{}'})).status,405);
+  assert.equal((await fetch(url+'?account=other',{headers:{authorization:`Bearer ${ownerKey}`}})).status,400);
+  assert.equal(calls.length,0);
+  const response=await fetch(url,{headers:{authorization:`Bearer ${ownerKey}`}});
+  assert.equal(response.status,200);
+  assert.equal(response.headers.get('cache-control'),'no-store');
+  assert.deepEqual(await response.json(),{schemaVersion:1});
+  assert.deepEqual(calls,[[{operation:'connection-status'},{timeout:20000}]]);
+});
+
+async function connectionServer(t, answer) {
+  const calls=[];
+  const server=http.createServer((req,res)=>void handleConnections(req,res,{ownerKey, request:async (value, options)=>{calls.push([value, options]);return answer(value);}}));
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const url=`http://127.0.0.1:${server.address().port}/v1/connections`;
+  const post=(body, headers={})=>fetch(url,{method:'POST',headers:{authorization:`Bearer ${ownerKey}`,'content-type':'application/json',...headers},body});
+  return {calls, url, post};
+}
+
+test('each custodian action reaches the controller once, with its own time budget', async t => {
+  const {calls, post}=await connectionServer(t, value=>({status:200,body:{outcome:value.operation==='connection-sync'?'started':'applied'}}));
+  for (const [operation, request, budget] of [['connection-sync', {}, 25000], ['connection-activate', {}, 305000],
+      ['connection-cancel', {flowId:'a'.repeat(32)}, 25000], ['connection-disconnect', {connector:'google'}, 155000],
+      ['connection-proposals', {}, 25000], ['connection-decline', {proposalId:'calendar-1761500000000-0badc0de'}, 25000],
+      ['connection-approve', {proposalId:'calendar-1761500000000-0badc0de', sha256:'c'.repeat(64)}, 155000],
+      ['connection-reconcile', {proposalId:'calendar-1761500000000-0badc0de'}, 155000],
+      ['connection-activity', {}, 25000], ['connection-undo', {proposalId:'calendar-1761500000000-0badc0de'}, 155000],
+      ['connection-drafts', {}, 25000], ['connection-plugin', {plugin:'memory-wiki', enabled:true}, 305000],
+      ['connection-approve', {proposalId:'gmail-draft-1761500000000-0badc0de', sha256:'c'.repeat(64)}, 155000]]) {
+    calls.length=0;
+    const response=await post(JSON.stringify({operation, request}));
+    assert.equal(response.status,200);
+    assert.equal(response.headers.get('cache-control'),'no-store');
+    await response.json();
+    assert.deepEqual(calls,[[{operation, request},{timeout:budget}]]);
+  }
+});
+
+test('only an exact action frame reaches the controller', async t => {
+  const {calls, url, post}=await connectionServer(t, ()=>({status:200,body:{outcome:'started'}}));
+  for (const body of ['{}', '[]', 'not json', JSON.stringify({operation:'connection-status', request:{}}),
+      JSON.stringify({operation:'connection-sync', request:[]}), JSON.stringify({operation:'connection-sync', request:{}, extra:1}),
+      JSON.stringify({operation:'__proto__', request:{}})]) {
+    assert.equal((await post(body)).status,400,body);
+  }
+  assert.equal((await post(JSON.stringify({operation:'connection-sync', request:{pad:'x'.repeat(4096)}}))).status,413);
+  assert.equal((await post('{}',{'content-type':'text/plain'})).status,415);
+  assert.equal((await fetch(url,{method:'POST',headers:{authorization:'Bearer '+'c'.repeat(64),'content-type':'application/json'},
+    body:JSON.stringify({operation:'connection-sync', request:{}})})).status,403);
+  assert.equal((await fetch(url+'?x=1',{method:'POST',headers:{authorization:`Bearer ${ownerKey}`,'content-type':'application/json'},
+    body:JSON.stringify({operation:'connection-sync', request:{}})})).status,400);
+  assert.equal(calls.length,0);
+});
+
+test('a controller refusal keeps only its code', async t => {
+  let answer={status:409,body:{error:'runtime-busy'}};
+  const {post}=await connectionServer(t, ()=>answer);
+  const sync=JSON.stringify({operation:'connection-sync', request:{}});
+  let response=await post(sync);
+  assert.equal(response.status,409);
+  assert.deepEqual(await response.json(),{error:'runtime-busy'});
+  answer={status:503,body:{error:'Private Path /etc'}};
+  response=await post(sync);
+  assert.equal(response.status,503);
+  assert.deepEqual(await response.json(),{error:'connection-change-unconfirmed'});
+});
+
+test('an unreachable controller gives a plain unavailable answer', async t => {
+  const server=http.createServer((req,res)=>void handleConnections(req,res,{ownerKey, request:async ()=>{throw new Error('private-sentinel');}}));
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const response=await fetch(`http://127.0.0.1:${server.address().port}/v1/connections`,{headers:{authorization:`Bearer ${ownerKey}`}});
+  assert.equal(response.status,503);
+  const text=await response.text();
+  assert.match(text,/connections-unavailable/);
+  assert.doesNotMatch(text,/private-sentinel/);
 });

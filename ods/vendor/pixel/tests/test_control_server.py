@@ -231,6 +231,9 @@ class ControlServerTests(unittest.TestCase):
             "PIXEL_SOURCE_PROJECTION_DIR": str(self.base / "source-projection"),
             "PIXEL_ACTION_PROPOSAL_DIR": str(self.base / "source-proposals"),
             "PIXEL_LIMB_CALENDAR_ENABLED": "1",
+            # The gateway's Calendar-write and web flags reach the chat plugin too.
+            "PIXEL_LIMB_CALENDAR_WRITE_ENABLED": "0",
+            "PIXEL_LIMB_WEB_ENABLED": "0",
             "PIXEL_SOURCE_STALE_AFTER_MS": "3600000",
             "SEARXNG_BASE_URL": "http://127.0.0.1:8890",
         }
@@ -325,6 +328,14 @@ class ControlServerTests(unittest.TestCase):
                 classification = control_module._chat_tool_class(name)
                 self.assertTrue(classification[3])
                 self.assertFalse(classification[4])
+
+    def test_count_tools_are_projection_reads_without_classifying_unknown_calendar_tools(self):
+        for name in ("pixel_gmail_count", "pixel_calendar_count"):
+            with self.subTest(name=name):
+                self.assertEqual(control_module._chat_tool_class(name),
+                                 ("source-read", "owner-local-projection", "read-only", False, True))
+        self.assertFalse(control_module._chat_tool_class("pixel_calendar_count_unknown")[4])
+        self.assertNotEqual(control_module._chat_tool_class("pixel_calendar_count_unknown")[0], "source-read")
 
     def test_private_chat_proves_bounded_broker_effects_without_false_approval(self):
         read_evidence = {

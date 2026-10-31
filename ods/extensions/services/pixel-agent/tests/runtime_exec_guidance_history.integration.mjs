@@ -10,7 +10,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 import {EXEC_GUIDANCE_LEAK_DELIVERY} from '../plugin/exec-guidance-provenance.mjs';
-import {createIngressServer} from '../host/pixel_ingress.mjs';
+import {createIngressServer, createLoopbackGatewayFetch} from '../host/pixel_ingress.mjs';
 
 const pkg=process.env.OPENCLAW_PACKAGE;
 const NOTE='[ODS Pixel execution] Exec returned completed with exit code 0. This result has no background session ID. Use the returned output; do not invent a session ID or poll a PID.';
@@ -98,12 +98,22 @@ for(const mode of ['corrected','ignored','replay','literal','owner-quote','curre
         env:{PATH:process.env.PATH,HOME:root,TMPDIR:root,OPENCLAW_STATE_DIR:join(root,'state'),OPENCLAW_CONFIG_PATH:join(root,'openclaw.json'),OPENCLAW_SKIP_CHANNELS:'1'},
         stdio:['ignore','pipe','pipe']});
       child.stdout.on('data',x=>log+=x);child.stderr.on('data',x=>log+=x);
-      let ready=false;
+      // Use the production read-only IPv6/IPv4 qualification. A loopback
+      // gateway may be healthy on IPv6 while the WSL IPv4 forwarding path is not.
+      const gatewayTransport=createLoopbackGatewayFetch();
+      const gatewayFetch=async(...args)=>{
+        const response=await gatewayTransport(...args);
+        return new Response(response.body,{status:response.status});
+      };
+      let ready=false,health;
       for(let n=0;n<250;n++) {
-        try{ready=(await fetch(`http://127.0.0.1:${port}/health`,{signal:AbortSignal.timeout(500)})).ok;}catch{}
+        try{
+          const response=await gatewayFetch(`http://127.0.0.1:${port}/health`,{signal:AbortSignal.timeout(1500)});
+          ready=response.ok;health={status:response.status,body:(await response.text()).slice(0,1000)};
+        }catch(error){health={message:error.message,code:error.cause?.code};}
         if(ready)break;assert.equal(child.exitCode,null,log.slice(-6000));await delay(100);
       }
-      assert.ok(ready,log.slice(-6000));
+      assert.ok(ready,JSON.stringify({port,pid:child.pid,exitCode:child.exitCode,signalCode:child.signalCode,health})+'\n'+log.slice(-6000));
       ingress=createIngressServer({token:'fixture-only',gatewayPort:port});
       await new Promise(resolve=>ingress.listen(0,'127.0.0.1',resolve));
       const post=async prompt=>{

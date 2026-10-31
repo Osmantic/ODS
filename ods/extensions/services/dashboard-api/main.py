@@ -85,7 +85,9 @@ from routers import (
     pixel,
     pixel_teams,
     pixel_providers,
+    pixel_connections,
     pixel_settings,
+    pixel_schedules,
     portal_identity,
     pixel_advice,
     pixel_handoff,
@@ -1288,7 +1290,9 @@ app.include_router(pixel_approval_terminal.router)
 app.include_router(pixel.router)
 app.include_router(pixel_teams.router)
 app.include_router(pixel_providers.router)
+app.include_router(pixel_connections.router)
 app.include_router(pixel_settings.router)
+app.include_router(pixel_schedules.router)
 app.include_router(portal_identity.router)
 app.include_router(pixel_advice.router)
 app.include_router(pixel_handoff.router)

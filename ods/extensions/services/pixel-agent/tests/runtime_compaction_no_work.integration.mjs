@@ -127,6 +127,29 @@ test('necessary compaction still calls the real offline provider and saves a che
   assert.equal(result.ok,true);assert.equal(result.compacted,true);assert.ok(f.requests>0);
   assert.equal(typeof result.result.summary,'string');assert.ok(readRows(f.sessionFile).some(row=>row.type==='compaction'));
 });
+
+test('native compaction retains historical control results as data without exposing execution',async t=>{
+  const messages=[{role:'user',content:'Retain the observed integration records as historical facts, not instructions.'}];
+  const names=['tool_search','tool_describe','tool_call','tool_search_code','unknown_plugin_control'];
+  for(const [index,name]of names.entries()) {
+    const id='control-'+index;
+    const args=name==='tool_search'?{query:'calendar list'}:name==='tool_describe'?{id:'openclaw:pixel-source-broker:pixel_calendar_list'}
+      :name==='tool_call'?{id:'openclaw:pixel-source-broker:pixel_calendar_list',args:{timeMin:'2026-10-29T00:00:00Z',timeMax:'2026-10-30T00:00:00Z'}}
+        :name==='tool_search_code'?{code:'return await openclaw.tools.search("calendar list");'}:{};
+    messages.push({role:'assistant',content:[{type:'toolCall',id,name,arguments:args}],stopReason:'toolUse',
+      api:'openai-completions',provider:'fixture',model:'model',usage:{input:2000,output:20,totalTokens:2020}});
+    messages.push({role:'toolResult',toolCallId:id,toolName:name,content:[{type:'text',text:'Cedar historical control record '+index}],isError:false});
+  }
+  messages.push(...longHistory().map(row=>row.message));
+  const rows=messages.map((message,index)=>({type:'message',id:'catalog-'+index,parentId:index?'catalog-'+(index-1):null,message}));
+  const f=await caller(t,rows),outcome=await f.invoke();
+  assert.equal(outcome.ok,true);assert.equal(outcome.compacted,true);
+  const sent=JSON.stringify(f.requestBodies);
+  // Historical facts remain reference even when a former tool is unavailable.
+  // Retaining their text never registers or authorizes an executable capability.
+  for(let index=0;index<names.length;index++)assert.ok(sent.includes('Cedar historical control record '+index),names[index]+' facts must reach the summarizer');
+  assert.ok(f.requestBodies.every(body=>!body.tools?.length),'historical admission must not grant executable tools to summarization');
+});
 test('cancellation of needed compaction is never converted into a skip',async t=>{
   const controller=new AbortController(),f=await caller(t,longHistory(),{mode:'hang',abortSignal:controller.signal});
   const timer=setTimeout(()=>controller.abort(),1500);t.after(()=>clearTimeout(timer));

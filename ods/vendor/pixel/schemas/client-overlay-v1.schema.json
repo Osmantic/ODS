@@ -13,7 +13,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["pixel", "modificationAllowed", "privateStateOutsideCore"],
       "properties": {
-        "pixel": {"const": "4.3.33"},
+        "pixel": {"const": "4.3.41"},
         "modificationAllowed": {"const": false},
         "privateStateOutsideCore": {"const": true}
       }

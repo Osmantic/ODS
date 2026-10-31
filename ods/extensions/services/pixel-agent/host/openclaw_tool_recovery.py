@@ -20,6 +20,7 @@ MANIFEST = Path(__file__).with_name("openclaw-tool-recovery.json")
 MODULE = "tool-loop-detection-C0oQKkXZ.js"
 COMPLETION_MODULE = "agent-command-DeS125kF.js"
 IMAGE_MODULE = "tool-search-BInRpkE3.js"
+IMAGE_DEPENDENCIES = frozenset({"src-M7TBQdDX.js"})
 COMPACTION_MODULE = "embedded-agent-subscribe.handlers.compaction.runtime.js"
 COMPACTION_CHUNK = "embedded-agent-subscribe.handlers.compaction.runtime-BcFOW95l.js"
 COMPACTION_IDLE_MODULE = "sessions-KE_Xmzwf.js"
@@ -40,6 +41,9 @@ COMPACTION_NO_WORK_MODULE = "compact-DuWIsaq_.js"
 DIAGNOSTIC_STREAM_MODULE = "attempt.model-diagnostic-events-DqqiPQPY.js"
 COMMAND_ATTEMPT_MODULE = "payloads-CC0zlj7W.js"
 UTF8_OUTPUT_MODULE = "windows-command-C7mWWxtt.js"
+DIRECT_TOOL_MODULE = "tools-invoke-shared-dvxhZAis.js"
+DIRECT_TOOL_DEPENDENCIES = frozenset({"hook-helpers-CZ2oRHhZ.js", "hook-runner-global-mWFYlTIy.js",
+                                      "agent-tools.before-tool-call-bDDdy3YD.js"})
 VERSION = "2026.6.33"
 SHA256 = re.compile(r"[0-9a-f]{64}")
 RUNTIME_MODULE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,254}\.js")
@@ -82,7 +86,9 @@ def atomic_write(path, data, mode=0o600):
 def verify_dependencies(runtime_root, manifest, module_name):
     """A facade repair is valid only with its reviewed implementation chunk."""
     expected = manifest.get("reviewedDependencies", {})
-    allowed = {COMPACTION_CHUNK} if module_name == COMPACTION_MODULE else set()
+    allowed = ({COMPACTION_CHUNK} if module_name == COMPACTION_MODULE else
+               DIRECT_TOOL_DEPENDENCIES if module_name == DIRECT_TOOL_MODULE else
+               IMAGE_DEPENDENCIES if module_name == IMAGE_MODULE else set())
     if not isinstance(expected, dict) or set(expected) != allowed:
         raise ValueError("runtime repair dependency contract mismatch")
     for name, sha256 in expected.items():
@@ -136,7 +142,7 @@ def repair(runtime_root, state_dir, *, restore=False, manifest_path=MANIFEST,
            module_name=MODULE):
     if module_name not in {MODULE, COMPLETION_MODULE, IMAGE_MODULE, COMPACTION_MODULE, COMPACTION_IDLE_MODULE,
                            COMPACTION_RESUME_MODULE, COMPACTION_BUDGET_MODULE, READ_RANGE_MODULE,
-                           TOOL_RESULT_PROJECTION_MODULE, DIAGNOSTIC_STREAM_MODULE, COMMAND_ATTEMPT_MODULE, UTF8_OUTPUT_MODULE, CONTEXT_USAGE_MODULE, YIELD_USAGE_MODULE,
+                           TOOL_RESULT_PROJECTION_MODULE, DIAGNOSTIC_STREAM_MODULE, COMMAND_ATTEMPT_MODULE, UTF8_OUTPUT_MODULE, DIRECT_TOOL_MODULE, CONTEXT_USAGE_MODULE, YIELD_USAGE_MODULE,
                            COMPACTION_EMPTY_MODULE, COMPACTION_NO_WORK_MODULE, SUBAGENT_ADMISSION_MODULE, SUBAGENT_SESSION_MODULE, HOOK_PROVENANCE_MODULE, RUN_ID_REDACTION_MODULE, NO_TOOLS_INGRESS_MODULE, *SANDBOX_MKDIR_MODULES.values()}:
         raise ValueError("unsupported runtime repair module")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -358,6 +364,7 @@ def main():
     selection.add_argument("--diagnostic-stream-writes", action="store_true")
     selection.add_argument("--command-attempt-warning", action="store_true")
     selection.add_argument("--utf8-output", action="store_true")
+    selection.add_argument("--direct-tool-completion", action="store_true")
     selection.add_argument("--restore-foreign", type=Path, metavar="PATCHES_ROOT",
                            help="restore and archive patch sets not named by --known")
     args = parser.parse_args()
@@ -422,6 +429,9 @@ def main():
     elif args.utf8_output:
         options = {"module_name": UTF8_OUTPUT_MODULE,
                    "manifest_path": MANIFEST.with_name("openclaw-utf8-output.json")}
+    elif args.direct_tool_completion:
+        options = {"module_name": DIRECT_TOOL_MODULE,
+                   "manifest_path": MANIFEST.with_name("openclaw-direct-tool-completion.json")}
     elif args.command_attempt_warning:
         options = {"module_name": COMMAND_ATTEMPT_MODULE,
                    "manifest_path": MANIFEST.with_name("openclaw-command-attempt-warning.json")}

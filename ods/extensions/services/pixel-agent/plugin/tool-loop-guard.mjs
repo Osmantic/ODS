@@ -26,6 +26,7 @@ import { captureNativeWebSearchResult, projectNativeWebSearchResult, projectWebR
 import { SEARCH_PACING_STREAK, SEARCH_PACING_REASON, searchTerms, nearDuplicateSearch, searchLeadUrls,
   duplicateSearchReason, ownerResearchDate, staleSearchDate, staleSearchDateGuidance } from "./research-pacing.mjs";
 import { createCompletionAssurance } from "./completion-assurance.mjs";
+import {createConnectionEvidence,GOOGLE_LOOKUP_UNVERIFIED} from './connection-evidence.mjs';
 import { englishOnly, inResponseLanguage, managedTurnOwnerWords } from "./response-language.mjs";
 import { researchRequestProblem } from "./perplexica-research.mjs";
 import { HOST_CITATION_LIMITS } from './citation-verification.mjs';
@@ -8352,6 +8353,7 @@ export function createToolLoopGuard({
       pruneRuns();
       state = {
         completionAssurance: createCompletionAssurance({englishOnly: englishOnly(responseLanguage), now}),
+        connectionEvidence: createConnectionEvidence(),
         extensionCompletionGate: undefined,
         workspaceLaneRequested: false,
         workspaceExtensionIsolated: false,
@@ -8742,6 +8744,8 @@ export function createToolLoopGuard({
     const toolName = context?.toolName ?? event?.toolName;
     const { runId } = runIdentity(event, context);
     const state = context?.agentId === agentId && runId ? runs.get(runId) : undefined;
+    const connectionCall = connectionCallBinding({...event,params:decision?.params ?? event?.params},context,state);
+    if (state && connectionCall) state.connectionEvidence.prepare(connectionCall);
     if (!state || workspaceReadOnlyCall(toolName, event?.params)) return decision;
     const callId = context?.toolCallId ?? event?.toolCallId;
     if (decision?.block === true && typeof callId === 'string' && callId) {
@@ -8759,6 +8763,18 @@ export function createToolLoopGuard({
       state.previewRevalidationCandidate = undefined;
     }
     return decision;
+  }
+
+  function connectionCallBinding(event,context,state) {
+    const runId = context?.runId ?? event?.runId;
+    if (!state || event?.runId && event.runId !== runId
+        || event?.toolCallId && context?.toolCallId && event.toolCallId !== context.toolCallId
+        || event?.toolName && context?.toolName && event.toolName !== context.toolName
+        || context?.sessionId && state.currentSessionId && context.sessionId !== state.currentSessionId
+        || context?.sessionKey && state.currentSessionKey && context.sessionKey !== state.currentSessionKey) return undefined;
+    return {runId,callId:context?.toolCallId ?? event?.toolCallId,
+      toolName:context?.toolName ?? event?.toolName,params:event?.params,
+      sessionId:context?.sessionId ?? state.currentSessionId,sessionKey:context?.sessionKey ?? state.currentSessionKey};
   }
 
   function decideToolCall(event, context, agentId) {
@@ -11481,6 +11497,8 @@ export function createToolLoopGuard({
     if (typeof runId !== "string" || !runId) return;
     recordExampleOutcome({...context, runId}, examples.check(runId), context?.toolCallId ?? event?.toolCallId);
     const state = stateFor(runId);
+    const connectionCall = connectionCallBinding(event,context,state);
+    if (connectionCall) state.connectionEvidence.observe(connectionCall,event?.result,event?.error);
     state.completionAssurance.observe(toolName, event);
     if (state.extensionCompletionGate && !state.workspaceExtensionIsolated && !state.extensionMutationExcluded) {
       for (const name of [
@@ -14621,6 +14639,16 @@ export function createToolLoopGuard({
     const notice = result.status === 'pending' ? undefined
       : [cut, exampleNoticeForRun(runId)].filter(Boolean).join(' ').slice(0, 1024);
     if (notice) result = {...result, notice};
+    // A failed account/source observation is not proof of absence. Do not let
+    // preview/progress composition reintroduce unverified model prose after
+    // this final evidence decision. Independent tools continue; their typed
+    // preview/artifact receipts remain deliverable, not their arbitrary prose.
+    if (state?.connectionEvidence.unresolved() && !state.clientCancelled && result.status !== 'pending') {
+      result = {...result,status:'failed',text:GOOGLE_LOOKUP_UNVERIFIED};
+      delete result.deliveryMode;
+      delete result.code;
+      delete result.suppressStaleExecWarning;
+    }
     // Which limit stopped this goal round, for goal mode's controller
     // (dashboard-api portal_goal.py): it continues the goal after these stops.
     // Goal rounds only, since an ingress older than this field refuses it. Not

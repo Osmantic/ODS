@@ -58,6 +58,7 @@ def test_shared_contract_and_private_output(contract):
     assert "pixel_ods_workspace_bundle" in value["gatewayExtensions"][0]["tools"]
     assert "pixel_ods_workspace_artifact" in value["gatewayExtensions"][0]["tools"]
     assert "pixel_ods_image_read" in value["gatewayExtensions"][0]["tools"]
+    assert "pixel_ods_connections_status" in value["gatewayExtensions"][0]["tools"]
     assert {'pixel_ods_python_library_proposal', 'pixel_ods_extension_request_status',
             'pixel_ods_extension_request_prepare', 'pixel_ods_extension_request_advance'}.issubset(value['gatewayExtensions'][0]['tools'])
     assert value["operationsLimbEnabled"] is True
@@ -297,7 +298,160 @@ _ods_pixel_write_onboarding fixture "$2" "$3" /opt/pixel/bin/openclaw /opt/pixel
         cwd="/", env={**os.environ, "MAX_CONTEXT": "16384", "LLAMA_REASONING": "off",
                       "PIXEL_MODEL_RELAY_KEY": "test-only-relay-key",
                       "PIXEL_MODEL_RELAY_PORT": "4006", "PIXEL_GATEWAY_PORT": "18789",
-                      "SEARXNG_PORT": "8888"}, capture_output=True, text=True)
+                      "SEARXNG_PORT": "8888",
+                      "ODS_PORTAL_CONNECTIONS_FILE": str(answers.parent / "absent-connections.json")},
+        capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert answers.read_bytes() == expected
     assert not list(answers.parent.glob(".pixel-gateway-key.*"))
+
+
+# Connected apps: /etc/ods/portal-connections.json and whether the broker holds the sign-in.
+
+CONNECTED_GOOGLE = {
+    "schemaVersion": 1, "kind": "ods-portal-connections", "updatedAt": "2026-10-25T20:00:00Z",
+    "ownerTimeZone": "America/Chicago",
+    "connectors": {"google": {
+        "status": "connected", "account": "owner@example.com", "calendarId": "primary",
+        "gmailWindowDays": 180,
+        "capabilities": {"calendar.read": True, "calendar.write": True, "calendar.direct": False,
+                         "gmail.read": True, "gmail.drafts": False},
+        "cloudModels": True, "connectedAt": "2026-10-25T20:00:00Z",
+    }},
+}
+
+
+def write_record(tmp_path, content, mode=0o640):
+    directory = tmp_path / "etc-ods"
+    directory.mkdir(mode=0o755, exist_ok=True)
+    path = directory / "portal-connections.json"
+    path.write_bytes(content if isinstance(content, bytes) else json.dumps(content).encode())
+    path.chmod(mode)
+    return path
+
+
+def baseline_contract(answers, args):
+    assert render(args).returncode == 0
+    expected = answers.read_bytes()
+    answers.unlink()
+    return expected
+
+
+def test_without_a_record_the_contract_is_unchanged(contract, tmp_path):
+    answers, args = contract
+    expected = baseline_contract(answers, args)
+    for custody in ("present", "absent"):
+        result = render([*args, str(tmp_path / "missing" / "portal-connections.json"), custody])
+        assert result.returncode == 0, result.stderr
+        assert answers.read_bytes() == expected
+        assert not result.stderr
+        answers.unlink()
+
+
+def test_a_connected_google_account_turns_on_its_sources_across_updates(contract, tmp_path):
+    answers, args = contract
+    path = write_record(tmp_path, CONNECTED_GOOGLE)
+    result = render([*args, str(path), "present"])
+    assert result.returncode == 0, result.stderr
+    value = json.loads(answers.read_text())
+    assert value["emailLimbEnabled"] is True
+    assert value["calendarLimbEnabled"] is True
+    assert value["calendarWriteEnabled"] is True
+    assert value["calendarDirectEnabled"] is False
+    assert value["googleAccount"] == "owner@example.com"
+    assert value["calendarId"] == "primary"
+    assert value["gmailWindowDays"] == 180
+    assert value["timeZone"] == value["userTimezone"] == "America/Chicago"
+    assert value["socialLimbEnabled"] is False and value["webLimbEnabled"] is False
+    assert not result.stderr
+    # An update renders again from the same record and keeps the connection.
+    first = answers.read_bytes()
+    assert render([*args, str(path), "present"]).returncode == 0
+    assert answers.read_bytes() == first
+
+
+def test_a_connection_without_its_sign_in_keeps_sources_off(contract, tmp_path):
+    answers, args = contract
+    path = write_record(tmp_path, CONNECTED_GOOGLE)
+    result = render([*args, str(path), "absent"])
+    assert result.returncode == 0, result.stderr
+    value = json.loads(answers.read_text())
+    assert value["emailLimbEnabled"] is False and value["calendarLimbEnabled"] is False
+    assert "calendarWriteEnabled" not in value
+    assert value["googleAccount"] == "ods@localhost.local"
+    assert value["timeZone"] == "America/Chicago"
+    assert "Reconnect Google in Settings" in result.stderr
+
+
+@pytest.mark.parametrize("content,mode", [
+    (b"{not json", 0o640),
+    (json.dumps({**CONNECTED_GOOGLE, "unexpected": True}).encode(), 0o640),
+    (json.dumps(CONNECTED_GOOGLE).encode(), 0o666),
+])
+def test_an_unusable_record_never_fails_an_install(contract, tmp_path, content, mode):
+    answers, args = contract
+    expected = baseline_contract(answers, args)
+    path = write_record(tmp_path, content, mode)
+    result = render([*args, str(path), "present"])
+    assert result.returncode == 0, result.stderr
+    assert answers.read_bytes() == expected
+    assert "connected apps stay off" in result.stderr
+    assert "https://discord.gg/4ntNp9MAwC" in result.stderr
+
+
+@pytest.mark.parametrize("record,custody", [
+    (None, "absent"), (CONNECTED_GOOGLE, "present"), (CONNECTED_GOOGLE, "absent"),
+    ({**CONNECTED_GOOGLE, "connectors": {}}, "absent"), ({**CONNECTED_GOOGLE, "ownerTimeZone": None}, "present"),
+    ({**CONNECTED_GOOGLE, "connectors": {}, "nativeApps": {"notion": False}}, "absent"),
+    ({**CONNECTED_GOOGLE, "connectors": {}, "nativeApps": {"notion": True}}, "absent"),
+])
+def test_the_custodian_writes_the_connection_answers_a_render_would(contract, tmp_path, record, custody):
+    # Root's coordinator updates these keys in place when the owner connects or
+    # disconnects; a later render (an update, a model change) must agree.
+    sys.path.insert(0, str(LIB.parents[1] / "bin"))
+    from pixel_connections import state
+    answers, args = contract
+    path = write_record(tmp_path, record) if record else tmp_path / "missing" / "portal-connections.json"
+    assert render([*args, str(path), custody]).returncode == 0
+    value = json.loads(answers.read_text())
+    assert ({key: value.get(key) for key in state.ANSWER_KEYS}
+            == state.connection_answers(record, google_custody=custody == "present"))
+
+
+def test_connection_arguments_are_validated(contract, tmp_path):
+    answers, args = contract
+    path = write_record(tmp_path, CONNECTED_GOOGLE)
+    assert render([*args, str(path), "maybe"]).returncode != 0
+    assert render([*args, str(path)]).returncode != 0
+    assert not answers.exists()
+
+
+@pytest.mark.parametrize("token_present", [True, False])
+def test_shell_wrapper_reads_the_record_and_asks_root_about_the_sign_in(contract, tmp_path, token_present):
+    answers, args = contract
+    path = write_record(tmp_path, CONNECTED_GOOGLE)
+    token = tmp_path / "broker-private" / "google-token.json"
+    if token_present:
+        token.parent.mkdir()
+        token.write_text("{}")
+    script = '''
+source "$1/pixel-host-install.sh"
+ods_pixel_run_as_owner() { shift 2; "$@"; }
+ods_sudo() { "$@"; }
+_ods_pixel_gateway_model_alias() { printf 'ods/current'; }
+_ods_pixel_runtime_model_identity() { printf 'Qwen3.5-9B'; }
+ai_bad() { printf '%s\\n' "$*" >&2; }
+_ods_pixel_write_onboarding fixture "$2" "$3" /opt/pixel/bin/openclaw /opt/pixel/plugin "$4"
+'''
+    result = subprocess.run(["bash", "-eu", "-c", script, "onboarding-test",
+                             str(LIB), args[2], str(answers), "a" * 64],
+        cwd="/", env={**os.environ, "MAX_CONTEXT": "16384", "LLAMA_REASONING": "off",
+                      "PIXEL_MODEL_RELAY_KEY": "test-only-relay-key",
+                      "PIXEL_MODEL_RELAY_PORT": "4006", "PIXEL_GATEWAY_PORT": "18789",
+                      "SEARXNG_PORT": "8888", "ODS_PORTAL_CONNECTIONS_FILE": str(path),
+                      "ODS_PIXEL_SOURCE_TOKEN_PATH": str(token)}, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    value = json.loads(answers.read_text())
+    assert value["emailLimbEnabled"] is token_present
+    assert value["calendarLimbEnabled"] is token_present
+    assert value["timeZone"] == "America/Chicago"

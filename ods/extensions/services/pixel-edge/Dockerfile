@@ -19,6 +19,8 @@ COPY image_message.py ./
 COPY image_admission.py ./
 COPY runtime_identity.py ./
 COPY access_mode.py ./
+COPY native_app_contract.py ./
+COPY schedule_contract.py ./
 COPY transition_gate.py ./
 COPY edge_entrypoint.py ./
 RUN chmod -R a+rX /app

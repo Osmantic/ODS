@@ -6,6 +6,24 @@ const runId = 'chatcmpl_11111111-2222-4333-8444-555555555555';
 const ctx = {agentId:'pixel',runId};
 const now = () => '2026-09-08T20:00:00.000Z';
 
+test('connection-status reads have content-free read activity both direct and deferred', () => {
+  for (const deferred of [false, true]) {
+    const recorder=createTaskActivity({now});recorder.begin({},ctx);
+    const event=deferred
+      ? {toolName:'tool_call',params:{id:'openclaw:pixel-ods:pixel_ods_connections_status',args:{}}}
+      : {toolName:'pixel_ods_connections_status',params:{}};
+    const context={...ctx,toolCallId:'status-read',toolName:event.toolName};
+    recorder.before(event,context);
+    recorder.after({result:{content:[{type:'text',text:'private-status-not-in-activity'}]}},context);
+    recorder.finish({success:true},ctx);
+    const value=recorder.projection(runId);
+    assert.equal(value.calls,1);
+    assert.deepEqual(value.activities.map(item=>item.kind),['read']);
+    assert.doesNotMatch(JSON.stringify(value),/private-status|connections_status|args/);
+    assert.equal(parseTaskActivity(value,runId),value);
+  }
+});
+
 test('a fresh owned prompt attempt recovers an overflow failure without erasing tool history', () => {
   let instant = '2026-09-23T18:39:00.000Z';
   const context = {...ctx, sessionId:'owned-session', sessionKey:'agent:pixel:openai-user:ods-'+'a'.repeat(64)};

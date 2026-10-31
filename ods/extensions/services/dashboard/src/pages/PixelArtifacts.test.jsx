@@ -117,7 +117,8 @@ it.each(['missing','nonterminal'])('does not bind a download with %s metadata',a
   if(kind==='nonterminal')frames.push({...marker,choices:[{finish_reason:null}]})
   reply=stream([...frames,'[DONE]'])
   render(<Pixel/>);await send()
-  expect(await screen.findByRole('link',{name:/^Download/})).toHaveAttribute('href',href)
+  // The response reveal still runs when metadata cannot bind a download.
+  expect(await screen.findByRole('link',{name:/^Download/},{timeout:5000})).toHaveAttribute('href',href)
   expect(screen.queryByRole('button',{name:'Download verified report.md'})).toBeNull()
 })
 

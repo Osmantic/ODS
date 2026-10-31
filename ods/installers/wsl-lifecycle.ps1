@@ -1250,9 +1250,15 @@ function Invoke-ODSWslLifecycle([string]$Action,[string]$Distro,[string]$Install
         Assert-ODSWslStartupStillWanted
         if (Test-Path -LiteralPath (Join-Path $identity.directory 'startup-config.json')) {
             Enable-ODSWslStartup $identity
-            $null=Assert-ODSWslStartupTask $identity
+            $startupTask=Assert-ODSWslStartupTask $identity
             Assert-ODSWslStartupStillWanted
-            Enable-ScheduledTask -TaskName ($identity.taskName + '-Startup') | Out-Null
+            # Enabled owner tasks need no Scheduler write; a redundant enable
+            # can be denied even though the verified registration is usable.
+            if ($startupTask.State -eq 'Disabled') {
+                Enable-ScheduledTask -TaskName ($identity.taskName + '-Startup') | Out-Null
+            } elseif ($startupTask.State -notin @('Ready','Queued','Running')) {
+                throw 'Owned WSL startup task state is unknown; inspect its registration before retrying start'
+            }
         }
         # Stack commands emit progress and an adapter receipt. Keep them on
         # stderr so the public success pipeline contains one lifetime result.

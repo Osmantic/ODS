@@ -52,6 +52,31 @@ class AccessError(Exception):
         super().__init__(code)
 
 
+def guard_native_enrollment(bridge):
+    """Refuse fresh writers across native/source intent inside Root's lock."""
+    # Enrollment imports this module and the connection coordinator. Defer the
+    # dependency until initialization is complete, without acquiring any lock.
+    try:
+        from pixel_connections.native_enrollment import guard_idle
+        from pixel_connections.native_mcp import NativeError
+    except ImportError:
+        raise AccessError("native-app-transition-unavailable") from None
+    try:
+        guard_idle(bridge)
+    except NativeError as error:
+        raise AccessError(error.code) from None
+    except OSError:
+        raise AccessError("native-app-transition-unavailable") from None
+    try:
+        from pixel_source_upgrade import guard_fresh_admission, UpgradeError
+    except ImportError:
+        raise AccessError("source-transition-unavailable") from None
+    try:
+        guard_fresh_admission(bridge)
+    except UpgradeError as error:
+        raise AccessError(str(error)) from None
+
+
 PROBE_FAILURES = frozenset((
     "probe-directory-unavailable",
     "sandbox-resolution",
@@ -318,6 +343,31 @@ class SystemdAccessBridge:
             if data_dir_id != self.settings_source(): raise AccessError("settings-data-directory-changed")
             return status(self)
 
+    def schedules(self, request, *, source):
+        from pixel_schedules import validate_request
+        validate_request(request)
+        with self.bounded(180), self.locked():
+            self.discover()
+            # A Windows host and its WSL guest have different path namespaces.
+            # The private ingress instead binds this request to its installed
+            # owner key, which root already binds to this exact deployment.
+            if source['kind'] == 'data-directory':
+                expected = self.settings_source()
+            else:
+                if type(self.edge_key) is not str or not 32 <= len(self.edge_key) <= 4096:
+                    raise AccessError('access-owner-auth-unavailable')
+                expected = hashlib.sha256(self.edge_key.encode('ascii')).hexdigest()
+            if source['identity'] != expected:
+                raise AccessError('schedule-installation-mismatch')
+            starting = request['action'] == 'create' or (request['action'] == 'set-enabled' and request['enabled'])
+            if starting and self.pending() is not None:
+                raise AccessError('runtime-change-pending')
+            snapshot = self.worker('settings-status')
+            if starting and snapshot['pending']:
+                raise AccessError('runtime-change-pending')
+            return self.worker('schedules', config_hash=snapshot['configSha256'], schedule_request=request,
+                               gateway_port=self.native_port)
+
     def settings_source(self):
         from pixel_settings.runtime import settings_data_directory
         env_file = self.install / ".env"
@@ -360,6 +410,14 @@ class SystemdAccessBridge:
 
     def model_control(self, operation, request=None):
         from pixel_model_coordinator import control
+        return control(self, operation, request)
+
+    def connection_control(self, operation, request):
+        # Linux and WSL only: the Source Broker is a set of systemd units.
+        if operation.startswith('connection-app-'):
+            from pixel_connections.native_public import control
+            return control(self, operation, request)
+        from pixel_connections.coordinator import control
         return control(self, operation, request)
 
     def command(self, args, timeout=20):
@@ -653,7 +711,15 @@ class SystemdAccessBridge:
                                      payload, timeout=min(3, budget()))
             pending = self.pending()
             if operation is None and pending:
-                return self.stopped_native(pending["token"])
+                try:
+                    return self.stopped_native(pending["token"])
+                except AccessError as stopped_error:
+                    if stopped_error.code != "native-idle-unconfirmed":
+                        raise
+                    # An active/restarting unit is not proof of stopped idle.
+                    # Keep the original read failure so readiness callers can
+                    # distinguish a transient channel loss from an HTTP refusal.
+                    # This neither retries a POST nor fabricates an idle state.
             raise
 
     def owns_native_hold(self, snapshot, token):
@@ -762,9 +828,14 @@ class SystemdAccessBridge:
                binding=None, activate_provider=None, expected_projection=None, provider_probe=None,
                model_target=None, model_outcome=None, relocation=None,
                candidate_path=None, candidate_sha256=None, release_outcome=None, verify_release=None,
-               receipt_sha256=None):
+               receipt_sha256=None, connection_target=None, connection_answers=None, activate_connection=None,
+               schedule_request=None, gateway_port=None, native_oauth_request=None):
         env = self.worker_environment()
         request = dict(operation=operation, openclaw=self.binary, config_sha256=config_hash, confirmed=confirmed)
+        if operation == 'schedules':
+            request.update(schedule_request=schedule_request, gateway_port=gateway_port)
+        if operation == 'native-mcp-oauth':
+            request['native_oauth_request'] = native_oauth_request
         if operation.startswith('release-'):
             request['transaction_id'] = transaction_id
             if operation == 'release-prepare':
@@ -777,8 +848,13 @@ class SystemdAccessBridge:
             request['relocation'] = relocation
         if operation == 'provider-worker-status':
             request['provider_probe'] = provider_probe
-        if operation in ("settings-apply", "settings-recover", "provider-change", "provider-recover"):
+        if operation in ("settings-apply", "settings-recover", "provider-change", "provider-recover",
+                         "connection-apply", "connection-recover"):
             request["transaction_id"] = transaction_id
+        if operation in ("connection-owner-status", "connection-apply"):
+            request["answers_path"] = str(self.install / "data/pixel/onboarding.json")
+        if operation == "connection-apply":
+            request.update(connection_target=connection_target, connection_answers=connection_answers)
         if operation.startswith("model-") and operation != "model-status":
             request["transaction_id"] = transaction_id
         if operation == "model-apply": request["model_target"] = model_target
@@ -797,6 +873,7 @@ class SystemdAccessBridge:
         except (ValueError, TypeError, RecursionError):
             raise AccessError("owner-protocol-failed") from None
         deadline = time.monotonic() + remaining(OWNER_TIMEOUT)
+        reply_limit = protocol.SCHEDULE_REPLY if operation == 'schedules' else protocol.MAX_REPLY
         process = self._launch_owner_worker(env)
         try:
             _pipe_send(process.stdin, encoded, deadline)
@@ -809,15 +886,15 @@ class SystemdAccessBridge:
                     # and retain framing without losing the outer deadline.
                     if b"\n" not in buffered:
                         if not selector.select(min(1, max(0, deadline - time.monotonic()))): continue
-                        chunk = os.read(process.stdout.fileno(), protocol.MAX_REPLY + 1)
+                        chunk = os.read(process.stdout.fileno(), reply_limit + 1)
                         if not chunk: raise AccessError("owner-protocol-failed")
                         buffered += chunk
                     raw, separator, rest = buffered.partition(b"\n")
-                    if len(raw) + 1 > protocol.MAX_REPLY: raise AccessError("owner-protocol-failed")
+                    if len(raw) + 1 > reply_limit: raise AccessError("owner-protocol-failed")
                     if not separator: continue
                     buffered = rest
                     try:
-                        value = protocol.decode_frame(raw.decode("utf-8") + "\n", protocol.MAX_REPLY)
+                        value = protocol.decode_frame(raw.decode("utf-8") + "\n", reply_limit)
                         if type(value) is not dict: raise ValueError()
                     except ValueError:
                         raise AccessError("owner-protocol-failed") from None
@@ -838,7 +915,8 @@ class SystemdAccessBridge:
                         raise AccessError("owner-protocol-failed")
                     callback = {"busy": busy, "restart": restart, "settings-activate": activate_settings,
                                 "provider-activate": activate_provider,
-                                "release-verify": verify_release}.get(value["hook"])
+                                "release-verify": verify_release,
+                                "connection-activate": activate_connection}.get(value["hook"])
                     if callback is None: raise AccessError("owner-protocol-failed")
                     remaining(deadline - time.monotonic())
                     answer = callback()
@@ -1158,6 +1236,27 @@ class SystemdAccessBridge:
                 if installer_source:
                     return self.resume_source_begin()
                 raise AccessError("transition-recovery-required")
+            source_plan = None
+            if installer_source and platform.system() == 'Linux' and os.path.lexists(self.state / 'source-upgrade'):
+                if os.geteuid() != 0:
+                    raise AccessError('source-installer-root-required')
+                self.discover(allow_installing=True)
+                from pixel_source_upgrade import begin_plan, UpgradeError
+                try:
+                    source_plan = begin_plan(self.state, self.install, self.owner, installer=True)
+                except UpgradeError as error:
+                    raise AccessError(str(error)) from None
+            # bind() durably reserves a source transaction before transition.json.
+            # Preserve only that already-started, exact-baseline crash recovery.
+            reserved_source = False
+            if source_plan is not None:
+                from pixel_source_upgrade import reserved_begin_plan
+                try:
+                    reserved_source = reserved_begin_plan(source_plan, self.owner)
+                except UpgradeError as error:
+                    raise AccessError(str(error)) from None
+            if not reserved_source:
+                guard_native_enrollment(self)
             try:
                 snapshot = self.inspect(allow_installing=True)
             except AccessError as error:
@@ -1169,13 +1268,13 @@ class SystemdAccessBridge:
                     raise
                 self.restart_stopped_source_edge()
                 snapshot = self.inspect(allow_installing=True)
-            source_plan = None
             if installer_source or (platform.system() == 'Linux' and os.path.lexists(self.state / 'source-upgrade')):
                 if platform.system() != 'Linux' or (installer_source and os.geteuid() != 0):
                     raise AccessError('source-installer-root-required')
                 from pixel_source_upgrade import begin_plan, UpgradeError
                 try:
-                    source_plan = begin_plan(self.state, self.install, self.owner, installer=installer_source)
+                    if source_plan is None:
+                        source_plan = begin_plan(self.state, self.install, self.owner, installer=installer_source)
                     if (source_plan is not None and snapshot['_config'].get('config_sha256')
                             != source_plan.journal()['identity']['configSha256']):
                         raise AccessError('source-owner-state-changed')
@@ -2236,6 +2335,7 @@ class SystemdAccessBridge:
                 raise AccessError("settings-recovery-required")
             if pending and request["mode"] != "sandboxed": raise AccessError("restore-required")
             if not pending:
+                guard_native_enrollment(self)
                 pending = {"kind": "access", "token": os.urandom(32).hex(), "phase": "acquiring", "edge_revision": snapshot["_edge"]["revision"]}
                 self.prepare_access_marker(pending, snapshot["_config"]["config_sha256"])
                 atomic_json(self.state / "transition.json", pending)

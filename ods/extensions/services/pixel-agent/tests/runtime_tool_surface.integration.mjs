@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { createPublicWebExtractTool } from '../plugin/web-extract.mjs';
 import { createWorkspacePreviewInspectTool, INSPECTION_KIND, INSPECTION_SCOPE, inspectionPlanHash } from '../plugin/workspace-preview-inspect.mjs';
+import { createConnectionsStatusTool } from '../plugin/connections-status.mjs';
 
 const file = process.env.OPENCLAW_TOOL_SEARCH_MODULE;
 const manifest = JSON.parse(readFileSync(new URL('../host/openclaw-image-envelope.json', import.meta.url)));
@@ -15,6 +16,19 @@ const { u: apply, m: createRef, h: createControls, v: resolveExact } = await imp
 const { t: filterByPolicy } = await import(pathToFileURL(join(dirname(file), 'agent-tools.policy-Dyn4VuLn.js')));
 const tool = name => ({ name, label: name, description: name, parameters: { type: 'object', properties: {} }, execute: async () => ({ content: [] }) });
 const controls = ['tool_search', 'tool_describe', 'tool_call'].map(tool);
+
+function connectionStatusTool(reads) {
+  const unknownSource=()=>({lastObservedState:'unknown',recent:null,lastSuccessAt:null,complete:null,error:null});
+  return createConnectionsStatusTool({read:async()=>{
+    reads.push('fixed-status-read');
+    return {schemaVersion:1,kind:'ods-connection-agent-status',scope:'reviewed-google',
+      observedAt:'2026-10-29T00:00:00Z',available:false,reason:'not-connected',
+      recordConfigured:false,localSavedSignIn:false,connectionState:'not-connected',
+      ownerEnabled:{gmailRead:false,calendarRead:false},
+      providerPermissionObserved:{gmailRead:null,calendarRead:null},sourceCheckedAt:null,
+      reads:{email:unknownSource(),calendar:unknownSource()},providerCheckedNow:false};
+  }});
+}
 function run(tools, extra = {}) {
   const catalogRef = createRef();
   const result = apply({ tools: [...controls, ...tools], agentId: 'pixel',
@@ -22,6 +36,70 @@ function run(tools, extra = {}) {
     config: { tools: { toolSearch: { enabled: true, mode: 'tools' } } }, ...extra });
   return { ...result, catalogRef };
 }
+
+test('connection status has a stable direct32K surface and native discovery at smaller contexts', async () => {
+  const name='pixel_ods_connections_status';
+  for(const contextTokens of [4096,8192,16384,32767,32768,65536]) {
+    const reads=[], original=connectionStatusTool(reads), existing=tool('pixel_gmail_read');
+    const config={agents:{defaults:{contextTokens:65536},list:[{id:'pixel',contextTokens}]},
+      tools:{toolSearch:{enabled:true,mode:'tools'}}};
+    const result=run([original,existing],{config});
+    assert.equal(result.tools.includes(original),contextTokens>=32768);
+    assert.equal(result.catalogToolCount,2,'keep both permitted implementations in the catalog');
+    const ctx={agentId:'pixel',catalogRef:result.catalogRef,config};
+    const api=Object.fromEntries(createControls(ctx).map(value=>[value.name,value]));
+    const found=await api.tool_search.execute('find',{query:name,limit:10});
+    const hit=found.details.find(value=>value.name===name);
+    assert.ok(hit);
+    assert.deepEqual((await api.tool_describe.execute('describe',{id:hit.id})).details.parameters,
+      {type:'object',additionalProperties:false,properties:{}});
+    assert.equal(resolveExact(ctx,original.name),original);
+    await api.tool_call.execute('status',{id:hit.id,args:{}});
+    assert.deepEqual(reads,['fixed-status-read']);
+    await assert.rejects(api.tool_call.execute('override',{id:hit.id,args:{url:'https://invalid.test'}}));
+    assert.deepEqual(reads,['fixed-status-read'],'invalid arguments never enter the status reader');
+  }
+});
+
+test('status visibility does not bypass policy or select duplicate implementations', async () => {
+  const reads=[], original=connectionStatusTool(reads), existing=tool('read');
+  const config={agents:{list:[{id:'pixel',contextTokens:32768}]},tools:{toolSearch:{enabled:true,mode:'tools'}}};
+  const denied=run(filterByPolicy([original,existing],{deny:[original.name]}),{config});
+  assert.ok(!denied.tools.includes(original));
+  const ctx={agentId:'pixel',catalogRef:denied.catalogRef,config};
+  assert.equal(resolveExact(ctx,original.name),undefined);
+  const api=Object.fromEntries(createControls(ctx).map(value=>[value.name,value]));
+  assert.ok(!(await api.tool_search.execute('find',{query:original.name})).details.some(value=>value.name===original.name));
+  await assert.rejects(api.tool_describe.execute('denied',{id:original.name}));
+  await assert.rejects(api.tool_call.execute('denied',{id:original.name,args:{}}));
+  assert.deepEqual(reads,[]);
+  const duplicate=run([original,connectionStatusTool(reads),existing],{config});
+  assert.equal(duplicate.catalogToolCount,3);
+  assert.ok(duplicate.tools.every(value=>value.name!==original.name),'ambiguous names remain deferred');
+  assert.deepEqual(run([original],{config,agentId:'another-agent'}).tools,controls);
+  assert.deepEqual(run([original]).tools,controls,'unknown context does not assume a qualified32K profile');
+});
+
+test('resolved native model context fills absent config and never widens an explicit cap', () => {
+  for (const [modelWindow,explicit,visible] of [
+    [65536,undefined,true],[8192,undefined,false],
+    [65536,8192,false],[8192,65536,false],[65536,32768,true],
+  ]) {
+    const status=connectionStatusTool([]);
+    const config={agents:{defaults:{model:{primary:'fixture/model'}},list:[{id:'pixel'}]},
+      models:{providers:{fixture:{models:[{id:'model',contextWindow:modelWindow}]}}},
+      tools:{toolSearch:{enabled:true,mode:'tools'}}};
+    if(explicit!==undefined)config.agents.list[0].contextTokens=explicit;
+    assert.equal(run([status],{config,modelContextWindowTokens:modelWindow}).tools.includes(status),visible);
+  }
+});
+
+test('the new runtime model-window fallback does not change other agents', () => {
+  const config={agents:{defaults:{},list:[{id:'another-agent'}]},
+    tools:{toolSearch:{enabled:true,mode:'tools'}}};
+  const originals=[tool('pixel_gmail_read'),connectionStatusTool([])];
+  assert.deepEqual(run(originals,{config,agentId:'another-agent',modelContextWindowTokens:8192}).tools,controls);
+});
 
 test('working tools are direct while specialist tools remain in the real catalog', () => {
   const read = tool('read'), status = tool('pixel_ods_extension_request_status');
@@ -128,6 +206,161 @@ test('disabled search preserves the input tools', () => {
   const result = run([read], { config: { tools: { toolSearch: { enabled: false, mode: 'tools' } } } });
   assert.equal(result.compacted, false);
   assert.deepEqual(result.tools, [...controls, read]);
+});
+
+test('8K connected reads expose their original schemas without exposing source writes', async () => {
+  const names=['pixel_gmail_search','pixel_gmail_read','pixel_calendar_list','pixel_calendar_get'];
+  const reads=names.map(name=>({...tool(name),parameters:{type:'object',properties:{marker:{type:'string'}},required:['marker']},
+    execute:async(_id,args)=>({content:[{type:'text',text:name+':'+args.marker}]})}));
+  const write=tool('pixel_calendar_propose_create');
+  const config={agents:{defaults:{contextTokens:65536},list:[{id:'pixel',contextTokens:8192}]},
+    tools:{toolSearch:{enabled:true,mode:'tools'}}};
+  const result=run([...reads,write],{config});
+  assert.deepEqual(result.tools,[...controls,...reads]);
+  assert.equal(result.catalogToolCount,reads.length+1,'keep every permitted tool in native discovery');
+  for(const original of reads) {
+    const direct=result.tools.find(value=>value.name===original.name);
+    assert.equal(direct,original,'preserve the exact policy-filtered implementation and schema');
+    assert.equal((await direct.execute('read',{marker:'fresh-fact'})).content[0].text,original.name+':fresh-fact');
+  }
+  const api=Object.fromEntries(createControls({agentId:'pixel',catalogRef:result.catalogRef,config}).map(t=>[t.name,t]));
+  const found=await api.tool_search.execute('find',{query:write.name});
+  assert.ok(found.details.some(value=>value.name===write.name),'a permitted write remains discoverable');
+  for(const contextTokens of [4096,8191,16384]) {
+    config.agents.list[0].contextTokens=contextTokens;
+    assert.deepEqual(run(reads,{config}).tools,controls,'retain the existing surface outside the qualified 8K profile');
+  }
+});
+
+test('permitted count tools stay deferred, searchable and policy-filtered across context profiles', async () => {
+  const counts = [
+    {...tool('pixel_gmail_count'), parameters: {type:'object',additionalProperties:false,
+      properties:{query:{type:'string',maxLength:1000}}}},
+    {...tool('pixel_calendar_count'), parameters: {type:'object',additionalProperties:false,required:['window'],
+      properties:{window:{type:'object',additionalProperties:false,required:['kind','days'],
+        properties:{kind:{const:'rolling'},days:{type:'integer',minimum:1,maximum:730}}}}}},
+  ];
+  // Synthetic implementations isolate catalog/dispatcher behavior; Source
+  // contract and returned-data privacy are qualified by Source plugin tests.
+  const existing = [tool('pixel_gmail_read'),tool('pixel_calendar_list'),tool('pixel_calendar_propose_create')];
+  for (const contextTokens of [8192,32768,65536]) {
+    const config={agents:{list:[{id:'pixel',contextTokens}]},tools:{toolSearch:{enabled:true,mode:'tools'}}};
+    const originals=[...counts,...existing], result=run(originals,{config});
+    assert.equal(result.catalogToolCount,originals.length,'retain every permitted count and existing tool');
+    assert.ok(counts.every(count=>!result.tools.includes(count)),'counts add no direct-schema surface');
+    const dispatched=[];
+    const ctx={agentId:'pixel',catalogRef:result.catalogRef,config,executeTool:async request=>{
+      dispatched.push(request);return {content:[{type:'text',text:'synthetic-count-receipt'}]};
+    }};
+    const api=Object.fromEntries(createControls(ctx).map(value=>[value.name,value]));
+    for(const [index,original] of counts.entries()) {
+      const found=await api.tool_search.execute('find',{query:original.name,limit:10});
+      const hit=found.details.find(value=>value.name===original.name);
+      assert.ok(hit);
+      const described=await api.tool_describe.execute('describe',{id:hit.id});
+      assert.deepEqual(described.details.parameters,original.parameters);
+      const args=index===0?{}:{window:{kind:'rolling',days:7}};
+      await api.tool_call.execute('count',{id:hit.id,args});
+      assert.equal(dispatched.at(-1).tool,original);
+      assert.deepEqual(dispatched.at(-1).input,args);
+    }
+    const permitted=filterByPolicy(originals,{deny:['pixel_calendar_count']});
+    const restricted=run(permitted,{config}), restrictedCtx={...ctx,catalogRef:restricted.catalogRef};
+    assert.equal(restricted.catalogToolCount,originals.length-1);
+    assert.equal(resolveExact(restrictedCtx,'pixel_calendar_count'),undefined);
+    const deniedApi=Object.fromEntries(createControls(restrictedCtx).map(value=>[value.name,value]));
+    await assert.rejects(deniedApi.tool_call.execute('denied',{id:'pixel_calendar_count',
+      args:{window:{kind:'rolling',days:7}}}));
+    assert.equal(dispatched.length,counts.length,'denied count never reaches the dispatcher');
+    assert.ok(existing.every(value=>resolveExact(restrictedCtx,value.name)===value));
+  }
+});
+
+test('8K read visibility never restores a denied tool or selects an ambiguous implementation', () => {
+  const names=['pixel_gmail_search','pixel_gmail_read','pixel_calendar_list','pixel_calendar_get'];
+  const originals=names.map(tool);
+  const permitted=filterByPolicy(originals,{deny:[names[0]]});
+  const config={agents:{list:[{id:'pixel',contextTokens:8192}]},tools:{toolSearch:{enabled:true,mode:'tools'}}};
+  const denied=run(permitted,{config});
+  assert.deepEqual(denied.tools,[...controls,...originals.slice(1)]);
+  assert.equal(resolveExact({agentId:'pixel',catalogRef:denied.catalogRef},names[0]),undefined);
+  const ambiguous=run([...permitted,tool(names[1])],{config});
+  assert.deepEqual(ambiguous.tools,[...controls,...originals.slice(2)]);
+  assert.deepEqual(run(originals,{config,agentId:'another-agent'}).tools,controls);
+});
+
+test('discovery bounds long manuals while describe and dispatch retain the complete original tool', async () => {
+  const description='Calendar read summary. '+ 'Detailed operating instructions. '.repeat(160)
+    + 'Final approval rule and distinctive-calendar-needle.';
+  const original={...tool('calendar_specialist'),description,
+    parameters:{type:'object',required:['date'],properties:{date:{type:'string',description:'Use the full date.'}}}};
+  const {catalogRef}=run([original]);
+  const dispatched=[];
+  const ctx={agentId:'pixel',catalogRef,config:{tools:{toolSearch:{enabled:true,mode:'tools'}}},
+    executeTool:async params=>{dispatched.push(params);return {content:[{type:'text',text:'original-read-receipt'}]};}};
+  const api=Object.fromEntries(createControls(ctx).map(value=>[value.name,value]));
+  // Matching still uses the full description, including text outside the summary.
+  const found=await api.tool_search.execute('find',{query:'distinctive-calendar-needle'});
+  assert.equal(found.details.length,1);
+  const entry=found.details[0];
+  assert.equal(entry.name,original.name);
+  assert.ok(entry.description.length<=180,'discovery must not inject the complete manual');
+  assert.ok(entry.description.endsWith('...'),'a shortened summary must be recognizable');
+  assert.deepEqual(JSON.parse(found.content[0].text),found.details,'the bounded search reply stays valid JSON');
+  const described=await api.tool_describe.execute('describe',{id:entry.id});
+  assert.equal(described.details.description,description,'full instructions remain available through describe');
+  assert.deepEqual(described.details.parameters,original.parameters);
+  for(const key of ['id','source','sourceName','name','label'])assert.equal(entry[key],described.details[key]);
+  const args={date:'2026-10-29'};
+  await api.tool_call.execute('read',{id:entry.id,args});
+  assert.equal(dispatched.length,1);
+  assert.equal(dispatched[0].tool,original);
+  assert.deepEqual(dispatched[0].input,args);
+  assert.equal(original.description,description);
+});
+
+test('ordinary discovery pages fit the result limit and keep upstream descriptions outside the Portal tools mode', async () => {
+  const originals=Array.from({length:5},(_,index)=>({...tool('calendar_'+index),description:'Calendar manual. '+ 'Details. '.repeat(600)}));
+  // Directory mode does not register search controls or a searchable catalog.
+  for(const [agentId,mode] of [['pixel','tools'],['other-agent','tools'],['pixel','code']]) {
+    const config={tools:{toolSearch:{enabled:true,mode}}};
+    const catalogRef=createRef();
+    const ctx={agentId,catalogRef,config,runId:randomUUID()};
+    const nativeControls=createControls(ctx);
+    const applied=apply({...ctx,tools:[...nativeControls,...originals]});
+    assert.equal(applied.catalogRegistered,true,`${agentId}/${mode} must have a real catalog`);
+    const api=Object.fromEntries(nativeControls.map(value=>[value.name,value]));
+    const found=await api.tool_search.execute('find',{query:'calendar',limit:5});
+    assert.equal(found.details.length,5);
+    if(agentId==='pixel' && mode==='tools') {
+      assert.ok(found.content[0].text.length<3000,'a normal five-result page must not be cut at the 4K tool-result limit');
+      assert.deepEqual(JSON.parse(found.content[0].text),found.details);
+    } else for(const entry of found.details)assert.equal(entry.description,originals[0].description);
+  }
+});
+
+test('Portal discovery uses compact JSON without changing schema strings or structured metadata', async () => {
+  const original={...tool('calendar_layout'),description:'Preserve line one.\n  Preserve line two: "ação".',
+    parameters:{type:'object',required:['body'],properties:{body:{type:'string',
+      description:'Literal indentation:\n  do not trim\n\nfinal line',default:'  keep these spaces  '}}}};
+  for(const [agentId,mode] of [['pixel','tools'],['other-agent','tools'],['pixel','code']]) {
+    const config={tools:{toolSearch:{enabled:true,mode}}};
+    const catalogRef=createRef();
+    const ctx={agentId,catalogRef,config,runId:randomUUID()};
+    const nativeControls=createControls(ctx);
+    apply({...ctx,tools:[...nativeControls,original]});
+    const api=Object.fromEntries(nativeControls.map(value=>[value.name,value]));
+    const found=await api.tool_search.execute('find',{query:original.name});
+    const described=await api.tool_describe.execute('describe',{id:found.details[0].id});
+    for(const reply of [found,described]) {
+      assert.deepEqual(JSON.parse(reply.content[0].text),reply.details);
+      const expected=agentId==='pixel' && mode==='tools'
+        ? JSON.stringify(reply.details) : JSON.stringify(reply.details,null,2);
+      assert.equal(reply.content[0].text,expected,`${agentId}/${mode} discovery serialization`);
+    }
+    assert.equal(described.details.description,original.description);
+    assert.deepEqual(described.details.parameters,original.parameters);
+  }
 });
 
 test('tool visibility is independent of owner language and request content', () => {
@@ -327,10 +560,11 @@ test('document delivery is discoverable and callable through actual pinned ToolS
  const described=await byName.tool_describe.execute('describe',{id:ARTIFACT_TOOL});assert.deepEqual(described.details.parameters,{type:'object',additionalProperties:false,required:['relativePath'],properties:{relativePath:{type:'string',minLength:1,maxLength:512},sourcePath:{type:'string',minLength:1,maxLength:512}}});
  const args={relativePath:'project/report.md'};
  // Live cloud regression: the model searched the tool but guessed `path`.
- // The actual dispatcher must return schema guidance before any broker work.
+ // Native argument validation must name the required field before any
+ // executor or broker work, just as it does for a directly offered tool.
  admission.before({toolName:'tool_call',params:{id:ARTIFACT_TOOL,args:{path:args.relativePath}}},owner);
- const malformed=await byName.tool_call.execute('deliver',{id:ARTIFACT_TOOL,args:{path:args.relativePath}});
- assert.match(JSON.stringify(malformed),/invalid-arguments/);assert.match(JSON.stringify(malformed),/relativePath, not path/);assert.equal(requests,0);
+ await assert.rejects(byName.tool_call.execute('deliver',{id:ARTIFACT_TOOL,args:{path:args.relativePath}}),/Validation failed[\s\S]*relativePath/);
+ assert.equal(requests,0);
  const toolContext={...owner,trigger:undefined,toolName:'tool_call'};
  const admittedEvent={toolName:'tool_call',toolCallId:owner.toolCallId,params:{id:ARTIFACT_TOOL,args}};
  const decision=guard.beforeToolCall(admittedEvent,toolContext);

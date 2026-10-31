@@ -1312,6 +1312,30 @@ def test_coordinator_reserves_source_token_before_gate_and_replays_lost_write(tr
         return manager
     monkeypatch.setattr(upgrade, 'begin_plan', plan)
     monkeypatch.setattr(bridge_module.os, 'geteuid', lambda: 0)
+    # This fixture models Root and a synthetic before-config hash. Keep that
+    # custody simulation coherent for the native guard and reserved-plan proof.
+    previous_lstat = Path.lstat
+    def root_state(path, *args, **kwargs):
+        info = previous_lstat(path, *args, **kwargs)
+        if path == bridge.state:
+            fields = list(info)
+            fields[4] = 0
+            return os.stat_result(fields)
+        return info
+    monkeypatch.setattr(Path, 'lstat', root_state)
+    monkeypatch.setattr(upgrade, 'owner_baseline', lambda *args:
+                        {'configSha256': identity['configSha256'], 'receiptSha256': identity['receiptSha256']})
+    monkeypatch.setattr(upgrade, '_protected_json', lambda *args: ({}, identity['markerSha256']))
+    # begin_plan above deliberately maps this fake controller to the manager's
+    # separate real fixture tree. The fresh-admission reader needs that same
+    # mapping, rather than an empty placeholder source directory.
+    source_class = upgrade.SourceUpgrade
+    def bound_manager(state, install, owner_uid, **kwargs):
+        if Path(state) == bridge.state / 'source-upgrade':
+            assert Path(install) == old and owner_uid == os.getuid()
+            return manager
+        return source_class(state, install, owner_uid, **kwargs)
+    monkeypatch.setattr(upgrade, 'SourceUpgrade', bound_manager)
     def interrupted(path, value):
         assert manager.journal()['hold'] == value['transaction_id']
         raise RuntimeError('crash before admission journal write')
@@ -1321,7 +1345,7 @@ def test_coordinator_reserves_source_token_before_gate_and_replays_lost_write(tr
     reserved = manager.journal()['hold']
     assert reserved and not (bridge.state / 'transition.json').exists()
     assert not any(call.startswith(('native:', 'edge:')) for call in bridge.calls)
-    with pytest.raises(bridge_module.AccessError, match='source-installer-hold-required'):
+    with pytest.raises(bridge_module.AccessError, match='source-transition-in-progress'):
         bridge.model_begin()
     def atomic(path, value):
         path.write_text(json.dumps(value))

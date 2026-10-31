@@ -290,8 +290,10 @@ CHAT_ENVIRONMENT_PATH_KEYS = frozenset({
     "PIXEL_FRONTIER_CANCEL_DIR", "PIXEL_FRONTIER_FEEDBACK_DIR",
 })
 CHAT_ENVIRONMENT_FLAG_KEYS = frozenset({
-    "PIXEL_CALENDAR_DIRECT_ENABLED", "PIXEL_LIMB_EMAIL_ENABLED", "PIXEL_LIMB_CALENDAR_ENABLED",
-    "PIXEL_LIMB_SOCIAL_ENABLED", "PIXEL_LIMB_OPERATIONS_ENABLED", "PIXEL_LIMB_FRONTIER_ENABLED",
+    "PIXEL_CALENDAR_DIRECT_ENABLED", "PIXEL_LIMB_EMAIL_ENABLED", "PIXEL_LIMB_EMAIL_DRAFTS_ENABLED",
+    "PIXEL_LIMB_CALENDAR_ENABLED",
+    "PIXEL_LIMB_CALENDAR_WRITE_ENABLED", "PIXEL_LIMB_SOCIAL_ENABLED", "PIXEL_LIMB_WEB_ENABLED",
+    "PIXEL_LIMB_OPERATIONS_ENABLED", "PIXEL_LIMB_FRONTIER_ENABLED",
 })
 CHAT_ENVIRONMENT_KEYS = CHAT_ENVIRONMENT_PATH_KEYS | CHAT_ENVIRONMENT_FLAG_KEYS | frozenset({
     "PIXEL_SOURCE_STALE_AFTER_MS", "SEARXNG_BASE_URL",
@@ -850,7 +852,7 @@ def _chat_tool_class(name: str) -> tuple[str, str, str, bool, bool]:
         return "source-write", "authorized-provider", "external-write-capable", True, False
     if (
         name.startswith("pixel_gmail_") or name.startswith("pixel_social_")
-        or name in {"pixel_limb_status", "pixel_calendar_list", "pixel_calendar_get"}
+        or name in {"pixel_limb_status", "pixel_calendar_list", "pixel_calendar_get", "pixel_calendar_count"}
     ):
         return "source-read", "owner-local-projection", "read-only", False, True
     if name in {"pixel_ops_inventory", "pixel_ops_job_get", "pixel_ops_job_wait", "pixel_ops_job_events"}:

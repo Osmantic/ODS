@@ -1,5 +1,5 @@
 import {useEffect,useId,useRef,useState} from 'react'
-import {Globe2,FileCode2,FileText,Files,Users,PanelRightClose,PanelRightOpen,RefreshCw,ExternalLink,X,MoreHorizontal,Maximize2,Minimize2} from 'lucide-react'
+import {Globe2,FileCode2,FileText,Files,Users,Clock3,PanelRightClose,PanelRightOpen,RefreshCw,ExternalLink,X,MoreHorizontal,Maximize2,Minimize2} from 'lucide-react'
 import {loadSnapshotFiles} from '../lib/pixelArtifacts'
 import useVerifiedPreview from '../lib/useVerifiedPreview'
 import PixelPreviewSource from './PixelPreviewSource'
@@ -10,12 +10,14 @@ import PortalFileTreeResize,{useFileTreeResize} from './PortalFileTreeResize'
 import PortalSubagents from './PortalSubagents'
 import PortalLiveReview,{completedReviewChanges} from './PortalLiveReview'
 import PortalSourceReview from './PortalSourceReview'
+import PortalScheduledTasks from './PortalScheduledTasks'
 import './portal-workspace.css'
 
 export default function PortalWorkspace({preview,before,access:providedAccess,title,request,onRequestHandled,refresh=0,onRefresh,onClose,collapsed,onCollapse,onPublish,expanded,onExpand,agents,renderApproval,task,working=false}) {
   const access=useVerifiedPreview(preview,providedAccess,refresh)
-  const [active,setActive]=useState(request?.kind==='agents'?'agents':!preview?'review':'preview'),[tabs,setTabs]=useState([]),[manifest,setManifest]=useState(null)
+  const [active,setActive]=useState(['agents','schedules'].includes(request?.kind)?request.kind:!preview?'review':'preview'),[tabs,setTabs]=useState([]),[manifest,setManifest]=useState(null)
   const [agentsTabOpen,setAgentsTabOpen]=useState(request?.kind==='agents')
+  const [schedulesTabOpen,setSchedulesTabOpen]=useState(request?.kind==='schedules')
   const [pendingPath,setPendingPath]=useState(null),[missingPath,setMissingPath]=useState(null)
   const manifestKey=`${preview?.siteId}/${preview?.sha256}`
   const files=manifest?.key===manifestKey?manifest.files:null,error=manifest?.key===manifestKey && manifest.error
@@ -28,9 +30,10 @@ export default function PortalWorkspace({preview,before,access:providedAccess,ti
   const hasEdits=completedReviewChanges(task).length>0
   const visibleReviewMode=reviewMode==='edits' && !hasEdits?(preview?.source?'source':'output'):reviewMode
   const consumed=useRef(null),root=useRef(null)
+  useEffect(()=>{root.current?.querySelector('[role=tab][aria-selected=true]')?.scrollIntoView?.({block:'nearest',inline:'nearest'})},[active,collapsed])
   const treeLayout=useFileTreeResize(root,{narrowBelow:561})
   useEffect(()=>{
-    setTabs([]);setActive(current=>current==='agents'?'agents':request?.siteId===preview?.siteId && request?.kind==='review'?'review':!preview?'review':'preview');setReviewPath(null);setOptions(false);setPendingPath(null);setMissingPath(null)
+    setTabs([]);setActive(current=>['agents','schedules'].includes(current)?current:request?.siteId===preview?.siteId && request?.kind==='review'?'review':!preview?'review':'preview');setReviewPath(null);setOptions(false);setPendingPath(null);setMissingPath(null)
   },[preview?.siteId])
   useEffect(()=>setReviewMode(preview?.source?'source':'output'),[preview?.siteId,preview?.source?.sourceId])
   useEffect(()=>{
@@ -52,6 +55,9 @@ export default function PortalWorkspace({preview,before,access:providedAccess,ti
     if(request.kind==='agents'){
       consumed.current=request;setAgentsTabOpen(true);setActive('agents');setOptions(false);setPendingPath(null);setMissingPath(null);onRequestHandled?.(request);return
     }
+    if(request.kind==='schedules'){
+      consumed.current=request;setSchedulesTabOpen(true);setActive('schedules');setOptions(false);setPendingPath(null);setMissingPath(null);onRequestHandled?.(request);return
+    }
     if(request.siteId!==preview?.siteId)return
     consumed.current=request
     if(request.kind==='file'){setActive('review');openFile(request.path)}
@@ -60,10 +66,11 @@ export default function PortalWorkspace({preview,before,access:providedAccess,ti
   },[request,preview?.siteId,files,onRequestHandled])
   const selected=files?.find(file=>`file:${file.path}`===active)
   const fileView=active.startsWith('file:')
-  const tabList=[{id:'preview',label:'Preview',Icon:Globe2},{id:'review',label:'Review',Icon:FileCode2},...tabs.map(path=>({id:`file:${path}`,label:path.split('/').at(-1),Icon:FileText})),...(agentsTabOpen && agents?[{id:'agents',label:'Subagents',Icon:Users}]:[])]
+  const tabList=[{id:'preview',label:'Preview',Icon:Globe2},{id:'review',label:'Review',Icon:FileCode2},...tabs.map(path=>({id:`file:${path}`,label:path.split('/').at(-1),Icon:FileText})),...(agentsTabOpen && agents?[{id:'agents',label:'Subagents',Icon:Users}]:[]),...(schedulesTabOpen?[{id:'schedules',label:'Scheduled tasks',Icon:Clock3}]:[])]
   function switchTab(id) {consumed.current=request;setPendingPath(null);setMissingPath(null);setActive(id);setOptions(false)}
   function closeTab(id) {
     if(id==='agents'){setAgentsTabOpen(false);agents?.select(null);if(active===id)setActive('preview')}
+    else if(id==='schedules'){setSchedulesTabOpen(false);if(active===id)setActive(preview?'preview':'review')}
     else {const path=id.slice(5);setTabs(value=>value.filter(item=>item!==path));if(active===id)setActive('review')}
     setTimeout(()=>root.current?.querySelector('[role=tab][aria-selected=true]')?.focus(),0)
   }
@@ -77,23 +84,24 @@ export default function PortalWorkspace({preview,before,access:providedAccess,ti
         event.currentTarget.querySelectorAll('[role=tab]')[next]?.focus()
       }}>{tabList.map(({id,label,Icon})=><div key={id} className="portal-workbench-tab" data-selected={active===id}>
         <button type="button" role="tab" id={tabDomId(id)} aria-controls={panelDomId(id)} aria-selected={active===id} tabIndex={active===id?0:-1} title={id.startsWith('file:')?id.slice(5):undefined} onClick={()=>switchTab(id)}><Icon size={13}/><span>{label}</span></button>
-        {!['preview','review'].includes(id) && <button type="button" aria-label={id==='agents'?'Close Subagents':`Close ${id.slice(5)}`} onClick={()=>closeTab(id)}><X size={12}/></button>}
+        {!['preview','review'].includes(id) && <button type="button" aria-label={id==='agents'?'Close Subagents':id==='schedules'?'Close Scheduled tasks':`Close ${id.slice(5)}`} onClick={()=>closeTab(id)}><X size={12}/></button>}
       </div>)}</div>}
       <div className="portal-workbench-window-actions">
-        {!collapsed && preview && active!=='agents' && <>
+        {!collapsed && preview && !['agents','schedules'].includes(active) && <>
           <button type="button" title="Reload preview" aria-label="Reload preview" onClick={onRefresh}><RefreshCw size={14}/></button>
           {active!=='review' && <button type="button" title="Browse files" aria-label="Browse files" aria-pressed={treeOpen} onClick={()=>setTreeOpen(value=>!value)}><Files size={14}/></button>}
           <button type="button" title="Workspace options" aria-label="Workspace options" aria-expanded={options} onClick={()=>setOptions(value=>!value)}><MoreHorizontal size={16}/></button>
         </>}
         {!collapsed && <button type="button" title={expanded?'Restore workspace size':'Expand workspace'} aria-label={expanded?'Restore workspace size':'Expand workspace'} onClick={onExpand}>{expanded?<Minimize2 size={14}/>:<Maximize2 size={14}/>}</button>}
-        <button type="button" title={collapsed?'Expand preview':'Collapse preview'} aria-label={collapsed?'Expand preview':'Collapse preview'} onClick={onCollapse}>{collapsed?<PanelRightOpen size={14}/>:<PanelRightClose size={14}/>}</button>
-        <button type="button" title="Close preview" aria-label="Close preview" onClick={onClose}><X size={14}/></button>
+        <button type="button" title={active==='schedules'?(collapsed?'Expand workspace':'Collapse workspace'):(collapsed?'Expand preview':'Collapse preview')} aria-label={active==='schedules'?(collapsed?'Expand workspace':'Collapse workspace'):(collapsed?'Expand preview':'Collapse preview')} onClick={onCollapse}>{collapsed?<PanelRightOpen size={14}/>:<PanelRightClose size={14}/>}</button>
+        <button type="button" title={active==='schedules'?'Close workspace':'Close preview'} aria-label={active==='schedules'?'Close workspace':'Close preview'} onClick={onClose}><X size={14}/></button>
       </div>
     </header>
     {!collapsed && !preview && active==='preview' && <section className="portal-workbench-empty"><Files size={24}/><h2>No files to show yet</h2><p>Published files and web previews will appear here.</p>{onPublish && <button type="button" onClick={onPublish}>Ask Portal to publish</button>}</section>}
     <div className="portal-workbench-live" hidden={!!preview || collapsed || active!=='review'}><PortalLiveReview task={task} active={working}/></div>
     {agentsTabOpen && agents && <div className="portal-workbench-body" hidden={collapsed || active!=='agents'} id={panelDomId('agents')} role="tabpanel" aria-labelledby={tabDomId('agents')}><PortalSubagents controller={agents} renderApproval={renderApproval}/></div>}
-    {preview && <div className="portal-workbench-body" hidden={collapsed || active==='agents'}>
+    {schedulesTabOpen && <div className="portal-workbench-body" hidden={collapsed || active!=='schedules'} id={panelDomId('schedules')} role="tabpanel" aria-labelledby={tabDomId('schedules')}><PortalScheduledTasks/></div>}
+    {preview && <div className="portal-workbench-body" hidden={collapsed || ['agents','schedules'].includes(active)}>
       {error && <section className="portal-workbench-empty" role="status"><h2>Preview unavailable</h2><button type="button" onClick={()=>setRetry(value=>value+1)}>Check publication again</button>{onPublish && <button type="button" onClick={onPublish}>Ask Portal to publish again</button>}</section>}
       {missingPath && <p role="status" className="portal-source-notice">This file is not available in this publication. <button type="button" onClick={()=>setMissingPath(null)}>Dismiss</button></p>}
       {pendingPath && <p role="status" className="portal-source-notice">{error?'Files unavailable.':'Opening file…'}{error && <button type="button" onClick={()=>setRetry(value=>value+1)}>Retry</button>}</p>}

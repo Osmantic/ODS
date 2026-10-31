@@ -448,7 +448,7 @@ select option, select optgroup { background-color:rgb(var(--theme-card)); color:
 .dashboard-view-tabs button:hover,.dashboard-pagination button:hover { background:#222527; color:#e3e6e9; }
 .dashboard-pagination { display:flex; gap:4px; justify-content:center; flex-wrap:wrap; margin-top:auto; padding:8px 0 0; }
 .dashboard-service-list summary { min-height:36px; }
-.pixel-preview-panel { position:relative; width:var(--preview-width,440px); max-width:60%; min-width:0; min-height:0; border-left:1px solid var(--pixel-border); background:var(--pixel-canvas); }
+.pixel-preview-panel { position:relative; width:var(--preview-width,440px); max-width:60%; min-width:0; min-height:0; border:0; background:var(--pixel-canvas); }
 .pixel-preview-panel.is-collapsed { width:48px; }
 .pixel-preview-panel.is-collapsed > div:not(.portal-panel-resizer) { flex-direction:column; padding:8px 4px; }
 .pixel-preview-panel.is-collapsed :is(details,a,button[title='Reload preview']) { display:none; }
@@ -481,13 +481,13 @@ select option, select optgroup { background-color:rgb(var(--theme-card)); color:
 }
 @container portal-chat (max-width:680px) {
   .pixel-chat-preview-layout { flex-direction:column; overflow-y:auto; }
-  .pixel-preview-panel { width:100%; max-width:100%; height:42vh; min-height:240px; border-left:0; border-top:1px solid #303232; }
+  .pixel-preview-panel { width:100%; max-width:100%; height:42vh; min-height:240px; border:0; }
   .pixel-preview-panel > .portal-panel-resizer { display:none; }
   .pixel-preview-panel.is-collapsed { width:100%; height:48px; min-height:48px; }
   .pixel-preview-panel.is-collapsed > div { flex-direction:row!important; justify-content:flex-end; }
 }
 @media(max-width:1023px) {
-  .pixel-preview-panel { width:100%; max-width:100%; height:46vh; border-left:0; border-top:1px solid #303232; }
+  .pixel-preview-panel { width:100%; max-width:100%; height:46vh; border:0; }
   .pixel-preview-panel > .portal-panel-resizer { display:none; }
   .pixel-preview-panel.is-collapsed { width:100%; height:48px; }
   .pixel-preview-panel.is-collapsed > div { flex-direction:row!important; justify-content:flex-end; }

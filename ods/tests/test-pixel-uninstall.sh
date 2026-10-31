@@ -68,6 +68,10 @@ ACCESS_PROBE_BASE="$TEST_ROOT/var/lib/ods-pixel-access-probes"
 OPS_IDENTITY_LOG="$TEST_ROOT/ops-identity.log"
 OPS_PASSWD_STATE="$TEST_ROOT/ops-passwd"
 OPS_GROUP_STATE="$TEST_ROOT/ops-group"
+SOURCE_ENV="$TEST_ROOT/pixel-source-broker.env"
+SOURCE_INSTALL="$TEST_ROOT/opt/pixel-source-broker"
+SOURCE_STATE="$TEST_ROOT/var/lib/pixel-source-broker"
+SOURCE_PASSWD_STATE="$TEST_ROOT/source-passwd"
 mkdir -p "$MOCK_BIN" "$SYSTEMD_DIR" "$ETC_DIR" "$LIBEXEC_DIR" "$HOME_DIR"
 
 # Relocate the inspection service's fixed paths as well as the configurable
@@ -181,12 +185,18 @@ cat >"$MOCK_BIN/getent" <<'SH'
 #!/usr/bin/env bash
 case "${1:-}:${2:-}" in
     passwd:pixel-ops-broker) [[ -f "$OPS_PASSWD_STATE" ]] && cat "$OPS_PASSWD_STATE" ;;
+    passwd:pixel-source-broker) [[ -f "$SOURCE_PASSWD_STATE" ]] && cat "$SOURCE_PASSWD_STATE" ;;
     group:pixel-ops) [[ -f "$OPS_GROUP_STATE" ]] && cat "$OPS_GROUP_STATE" ;;
     *) exec /usr/bin/getent "$@" ;;
 esac
 SH
 cat >"$MOCK_BIN/userdel" <<'SH'
 #!/usr/bin/env bash
+if [[ "${1:-}" == pixel-source-broker && -f "$SOURCE_PASSWD_STATE" ]]; then
+    printf 'userdel %s\n' "$1" >>"$OPS_IDENTITY_LOG"
+    rm -f -- "$SOURCE_PASSWD_STATE"
+    exit 0
+fi
 [[ "${1:-}" == pixel-ops-broker && -f "$OPS_PASSWD_STATE" ]] || exit 1
 printf 'userdel %s\n' "$1" >>"$OPS_IDENTITY_LOG"
 rm -f -- "$OPS_PASSWD_STATE"
@@ -200,7 +210,10 @@ SH
 chmod +x "$MOCK_BIN/sudo" "$MOCK_BIN/systemctl" "$MOCK_BIN/docker" \
     "$MOCK_BIN/getent" "$MOCK_BIN/userdel" "$MOCK_BIN/groupdel"
 export PATH="$MOCK_BIN:$HOST_GUARD_BIN:$PATH" SYSTEMCTL_LOG DOCKER_LOG DOCKER_STATE
-export OPS_IDENTITY_LOG OPS_PASSWD_STATE OPS_GROUP_STATE
+export OPS_IDENTITY_LOG OPS_PASSWD_STATE OPS_GROUP_STATE SOURCE_PASSWD_STATE
+export ODS_PIXEL_UNINSTALL_SOURCE_ENV="$SOURCE_ENV"
+export ODS_PIXEL_UNINSTALL_SOURCE_INSTALL_DIR="$SOURCE_INSTALL"
+export ODS_PIXEL_UNINSTALL_SOURCE_STATE_DIR="$SOURCE_STATE"
 export ODS_PIXEL_UNINSTALL_SYSTEMD_DIR="$SYSTEMD_DIR"
 export ODS_PIXEL_UNINSTALL_ETC_DIR="$ETC_DIR"
 export ODS_PIXEL_UNINSTALL_LIBEXEC_DIR="$LIBEXEC_DIR"
@@ -395,6 +408,7 @@ write_access_fixture() {
     local owner_uid relative source relay_digest
     owner_uid="$(id -u)"
     mkdir -p "$INSTALL_DIR/bin/pixel_settings" "$INSTALL_DIR/bin/pixel_provider" \
+        "$INSTALL_DIR/bin/pixel_connections" "$access_program/pixel_connections" \
         "$access_program/pixel_settings" "$access_program/pixel_provider" \
         "$access_dropin_dir" "$ACCESS_STATE" "$ACCESS_PROBE_BASE/$owner_uid" \
         "$access_runtime_state"
@@ -408,9 +422,13 @@ write_access_fixture() {
         "extensions/services/pixel-agent/host/provider_transaction.py"
         "extensions/services/pixel-agent/host/model_transaction.py"
         "extensions/services/pixel-agent/host/access_release_transaction.py"
+        "extensions/services/pixel-agent/host/connection_transaction.py"
+        "extensions/services/pixel-agent/host/native_mcp_owner.py"
+        "extensions/services/pixel-agent/host/native_mcp_oauth.mjs"
         "bin/pixel_access_bridge.py"
         "bin/pixel_gateway_service.py"
         "bin/pixel_access_client.py"
+        "bin/pixel_connection_agent_status.py"
         "bin/pixel_access_reconcile.py"
         "bin/pixel_model_transition.py"
         "bin/pixel_access_protocol.py"
@@ -430,6 +448,23 @@ write_access_fixture() {
         "bin/pixel_provider/service_activation.py"
         "bin/pixel_provider/runtime_custody.py"
         "bin/pixel_provider/coordinator.py"
+        "bin/pixel_connections/__init__.py"
+        "bin/pixel_connections/state.py"
+        "bin/pixel_connections/status.py"
+        "bin/pixel_connections/catalog.py"
+        "bin/pixel_connections/oauth.py"
+        "bin/pixel_connections/custody.py"
+        "bin/pixel_connections/planner.py"
+        "bin/pixel_connections/coordinator.py"
+        "bin/pixel_connections/lifecycle.py"
+        "bin/pixel_connections/approvals.py"
+        "bin/pixel_connections/activity.py"
+        "bin/pixel_connections/drafts.py"
+        "bin/pixel_connections/plugins.py"
+        "bin/pixel_connections/native_mcp.py"
+        "bin/pixel_connections/native_apps.py"
+        "bin/pixel_connections/native_enrollment.py"
+        "bin/pixel_connections/google_app.py"
     )
     for relative in "${access_sources[@]}"; do
         source="$ROOT_DIR/$relative"
@@ -438,6 +473,7 @@ write_access_fixture() {
             extensions/services/pixel-agent/host/*) cp "$source" "$access_program/${relative##*/}" ;;
             bin/pixel_settings/*) cp "$source" "$access_program/pixel_settings/${relative##*/}" ;;
             bin/pixel_provider/*) cp "$source" "$access_program/pixel_provider/${relative##*/}" ;;
+            bin/pixel_connections/*) cp "$source" "$access_program/pixel_connections/${relative##*/}" ;;
             bin/*) cp "$source" "$access_program/${relative##*/}" ;;
         esac
     done
@@ -459,9 +495,11 @@ JSON
         > "$access_runtime_state/state.json"
     printf '%s\n' '{"pid":999999}' > "$access_runtime_state/process.json"
     : > "$access_runtime_state/.process-claim"
-    chmod 0755 "$access_program" "$access_program/pixel_settings" "$access_program/pixel_provider"
+    chmod 0755 "$access_program" "$access_program/pixel_settings" "$access_program/pixel_provider" \
+        "$access_program/pixel_connections"
     chmod 0644 "$access_program"/*.py "$access_program/pixel_settings"/*.py \
-        "$access_program/pixel_provider"/*.py "$SYSTEMD_DIR/ods-pixel-access.service" \
+        "$access_program/pixel_provider"/*.py "$access_program/pixel_connections"/*.py \
+        "$SYSTEMD_DIR/ods-pixel-access.service" \
         "$access_dropin_dir/90-ods-full-access.conf"
     chmod 0600 "$ETC_DIR/pixel-access.json" "$ETC_DIR/pixel-access-relay.key" "$ACCESS_STATE/lock" \
         "$ACCESS_STATE/service-baseline.json"
@@ -2398,6 +2436,39 @@ else
         || fail "current partial access-bundle refusal caused mutation"
 fi
 
+# The connection-status reader joined the exact Root bundle later. Only
+# absence from BOTH the source and installed bundle identifies an old release;
+# a current half-copy or changed reader must still refuse before service stop.
+write_access_fixture
+rm -f -- "$INSTALL_DIR/bin/pixel_connection_agent_status.py" \
+    "$LIBEXEC_DIR/ods-pixel-access/pixel_connection_agent_status.py"
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR" \
+    && [[ ! -e "$LIBEXEC_DIR/ods-pixel-access" && ! -e "$ACCESS_STATE" \
+        && ! -e "$HOME_DIR/.config/ods/pixel-managed.json" ]]; then
+    pass "legacy access bundle without the later connection-status reader remains removable"
+else
+    fail "legacy access bundle was stranded by the connection-status reader"
+fi
+
+for status_reader_fault in missing-copy missing-source changed-copy; do
+    write_access_fixture
+    case "$status_reader_fault" in
+        missing-copy) rm -f -- "$LIBEXEC_DIR/ods-pixel-access/pixel_connection_agent_status.py" ;;
+        missing-source) rm -f -- "$INSTALL_DIR/bin/pixel_connection_agent_status.py" ;;
+        changed-copy) printf '\n# operator changes\n' >> "$LIBEXEC_DIR/ods-pixel-access/pixel_connection_agent_status.py" ;;
+    esac
+    if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
+        fail "unsafe connection-status reader accepted: $status_reader_fault"
+    else
+        [[ -e "$LIBEXEC_DIR/ods-pixel-access/access_mode_server.py" \
+            && -e "$ETC_DIR/pixel-access.json" && -e "$ACCESS_STATE/service-baseline.json" \
+            && -e "$HOME_DIR/.config/ods/pixel-managed.json" && ! -s "$SYSTEMCTL_LOG" ]] \
+            && pass "connection-status reader refuses before mutation: $status_reader_fault" \
+            || fail "connection-status reader refusal mutated artifacts: $status_reader_fault"
+    fi
+done
+unset status_reader_fault
+
 write_access_fixture
 printf '%s\n' '# legacy access server without unix peer dependency' \
     > "$INSTALL_DIR/extensions/services/pixel-agent/host/access_mode_server.py"
@@ -2753,6 +2824,85 @@ for source_case in replace-lock replace-directory late-journal; do
     fi
     unset SOURCE_IDLE_TEST_DRIVER SOURCE_IDLE_TEST_MODE SOURCE_IDLE_PROBE_RECEIPT
 done
+
+SOURCE_UNITS=(pixel-source-broker.timer pixel-source-direct.path pixel-source-broker.service
+    pixel-source-direct.service pixel-source-action@.service pixel-source-reconcile@.service
+    pixel-source-exchange@.service pixel-source-revoke.service)
+write_source_broker_fixture() {
+    local unit
+    mkdir -p "$SOURCE_INSTALL" "$SOURCE_STATE/private/oauth" "$SOURCE_STATE/projection" \
+        "$SOURCE_STATE/results/.journal/calendar-1"
+    printf '%s\n' '#!/usr/bin/env python3' > "$SOURCE_INSTALL/broker.py"
+    printf '%s\n' '{}' > "$SOURCE_STATE/private/google-token.json"
+    printf '%s\n' '{"records":[]}' > "$SOURCE_STATE/projection/email.json"
+    printf '%s\n' '{}' > "$SOURCE_STATE/results/.journal/calendar-1/state.json"
+    printf "PIXEL_LIMB_EMAIL_ENABLED='1'\n" > "$SOURCE_ENV"
+    printf '%s\n' '{"schemaVersion":1}' > "$ETC_DIR/portal-connections.json"
+    for unit in "${SOURCE_UNITS[@]}"; do
+        printf '[Unit]\n' > "$SYSTEMD_DIR/$unit"
+    done
+    printf 'pixel-source-broker:x:997:997::/nonexistent:/usr/sbin/nologin\n' > "$SOURCE_PASSWD_STATE"
+}
+source_broker_remains() {
+    local unit
+    [[ -e "$SOURCE_STATE" || -e "$SOURCE_INSTALL" || -e "$SOURCE_ENV" || -e "$ETC_DIR/portal-connections.json"
+        || -e "$SOURCE_PASSWD_STATE" ]] && return 0
+    for unit in "${SOURCE_UNITS[@]}"; do
+        [[ -e "$SYSTEMD_DIR/$unit" ]] && return 0
+    done
+    return 1
+}
+
+# A connected Google account stops syncing, is revoked at Google, and leaves nothing behind,
+# including the coordinator's broker kit and its journal of a connection in progress.
+write_access_fixture
+write_source_broker_fixture
+kit_dir="$LIBEXEC_DIR/ods-pixel-access/pixel_connections/source-broker-kit"
+mkdir -p "$kit_dir"
+printf '%s\n' '#!/usr/bin/env python3' > "$kit_dir/broker.py"
+printf '[Unit]\n' > "$kit_dir/pixel-source-revoke.service"
+chmod 0755 "$kit_dir"
+chmod 0644 "$kit_dir/broker.py" "$kit_dir/pixel-source-revoke.service"
+printf '%s\n' '{"kind":"connection"}' > "$ACCESS_STATE/connection.json"
+chmod 0600 "$ACCESS_STATE/connection.json"
+printf '%s\n' '{"kind":"native-mcp-consent"}' > "$ACCESS_STATE/native-mcp-consent.json"
+chmod 0600 "$ACCESS_STATE/native-mcp-consent.json"
+printf '%s\n' '{"kind":"native-app-enrollment"}' > "$ACCESS_STATE/native-app-enrollment.json"
+chmod 0600 "$ACCESS_STATE/native-app-enrollment.json"
+printf '%s\n' '{"kind":"native-app-access-observation"}' > "$ACCESS_STATE/native-app-access.json"
+chmod 0600 "$ACCESS_STATE/native-app-access.json"
+: > "$SYSTEMCTL_LOG"
+: > "$OPS_IDENTITY_LOG"
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR" && ! source_broker_remains \
+    && [[ ! -e "$kit_dir" && ! -e "$ACCESS_STATE" ]]; then
+    timer_line="$(grep -n '^disable --now pixel-source-broker.timer$' "$SYSTEMCTL_LOG" | cut -d: -f1)"
+    revoke_line="$(grep -n '^start pixel-source-revoke.service$' "$SYSTEMCTL_LOG" | cut -d: -f1)"
+    gateway_line="$(grep -n '^disable --now openclaw-gateway.service$' "$SYSTEMCTL_LOG" | cut -d: -f1)"
+    if [[ -n "$timer_line" && -n "$revoke_line" && -n "$gateway_line" \
+        && "$timer_line" -lt "$revoke_line" && "$revoke_line" -lt "$gateway_line" ]] \
+        && grep -Fx 'userdel pixel-source-broker' "$OPS_IDENTITY_LOG" >/dev/null; then
+        pass "uninstall stops the Source Broker, revokes at Google and removes all of it first"
+    else
+        fail "Source Broker uninstall order was wrong: $(tr '\n' ';' <"$SYSTEMCTL_LOG")"
+    fi
+else
+    fail "uninstall left a connected Google account's Source Broker behind"
+fi
+
+# An account that ODS did not create is never deleted, and then nothing else is touched.
+write_access_fixture
+write_source_broker_fixture
+printf 'pixel-source-broker:x:1500:1500::/home/someone:/bin/bash\n' > "$SOURCE_PASSWD_STATE"
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
+    fail "uninstall removed a pixel-source-broker account ODS did not create"
+elif [[ -f "$SOURCE_STATE/private/google-token.json" && -f "$ETC_DIR/pixel-access.json" \
+    && -f "$SOURCE_PASSWD_STATE" ]]; then
+    pass "an unexpected pixel-source-broker account refuses the uninstall before any change"
+else
+    fail "an unexpected pixel-source-broker account still removed files"
+fi
+rm -rf -- "$SOURCE_STATE" "$SOURCE_INSTALL" "$SOURCE_ENV" "$ETC_DIR/portal-connections.json" "$SOURCE_PASSWD_STATE"
+for unit in "${SOURCE_UNITS[@]}"; do rm -f -- "$SYSTEMD_DIR/$unit"; done
 
 if [[ -s "$HOST_GUARD_LOG" ]]; then
     fail "fixture tried to invoke host sudo after its mock was removed"

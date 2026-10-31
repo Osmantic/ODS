@@ -813,11 +813,41 @@ test('direct tools and detached exec keep transition busy after agent end', () =
   const runtime = createAccessRuntime(fixture());
   runtime.admit({}, {runId: 'work'});
   runtime.beforeTool({toolCallId: 'exec-1'}, {runId: 'work'});
-  runtime.afterTool({toolCallId: 'exec-1', toolName: 'exec', result: {details: {status: 'running', sessionId: 'child'}}});
+  runtime.afterTool({toolCallId: 'exec-1', toolName: 'exec', result: {details: {status: 'running', sessionId: 'child'}}}, {runId: 'work'});
   runtime.finish({}, {runId: 'work'});
   assert.throws(() => runtime.acquire(token, runtime.status().revision));
   runtime.beforeTool({toolCallId: 'poll'});
   runtime.afterTool({toolCallId: 'poll', toolName: 'process', params: {sessionId: 'child'}, result: {details: {status: 'completed', exitCode: 0}}});
+  assert.equal(runtime.status().phase, 'idle');
+});
+
+test('overlapping direct invocations with one native id retain each admission', () => {
+  const runtime = createAccessRuntime(fixture());
+  runtime.beforeTool({toolCallId:'http-same-key'}, {});
+  runtime.beforeTool({toolCallId:'http-same-key'}, {});
+  runtime.afterTool({toolCallId:'http-same-key'}, {});
+  assert.equal(runtime.status().active, 1);
+  assert.throws(() => runtime.acquire(token, runtime.status().revision));
+  runtime.afterTool({toolCallId:'http-same-key'}, {});
+  assert.equal(runtime.status().phase, 'idle');
+});
+
+test('one run cannot complete another run with the same tool call id', () => {
+  const runtime = createAccessRuntime(fixture());
+  runtime.beforeTool({toolCallId:'same'}, {runId:'one'});
+  runtime.beforeTool({toolCallId:'same'}, {runId:'two'});
+  runtime.afterTool({toolCallId:'same'}, {runId:'one'});
+  assert.equal(runtime.status().active, 1);
+  assert.throws(() => runtime.acquire(token, runtime.status().revision));
+  runtime.afterTool({toolCallId:'same'}, {runId:'two'});
+  assert.equal(runtime.status().phase, 'idle');
+});
+
+test('repeated observation of one embedded call stays idempotent', () => {
+  const runtime = createAccessRuntime(fixture());
+  runtime.beforeTool({toolCallId:'same'}, {runId:'one'});
+  runtime.beforeTool({toolCallId:'same'}, {runId:'one'});
+  runtime.afterTool({toolCallId:'same'}, {runId:'one'});
   assert.equal(runtime.status().phase, 'idle');
 });
 

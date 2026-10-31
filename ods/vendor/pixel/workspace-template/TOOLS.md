@@ -4,6 +4,8 @@ Document deployment-specific facts that help Pixel use installed tools safely: s
 
 ## External-source projections
 
+- For counts only, prefer `pixel_gmail_count` when offered. It returns no message records. Report indexed scope, freshness, coverage and limitations; never present the index as the mailbox total. If unavailable, use list/search with `maxResults: 1` without pagination or full-message reads just to count.
+- For counts only, prefer `pixel_calendar_count` when offered. Describe its absolute/rolling/civil-days window; the tool resolves its clock and configured time zone and returns no event records. Only `completeMatchCount` proves a covered count; otherwise report limitations and never invent a time zone.
 - Gmail tools read broker-owned projection records, not Gmail. The broker exhaustively
   paginates Inbox and Sent by default; each tool response remains bounded and exposes an
   `offset`/`hasMore` cursor. Inbox records have sanitized summaries; Sent records are

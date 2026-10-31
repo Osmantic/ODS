@@ -1,5 +1,50 @@
 # Changelog
 
+## 4.3.35 - ODS-maintained candidate
+
+- Gmail drafts the owner approves, behind a new answers-file key,
+  `emailDraftsEnabled` (default off, needs the email limb):
+  - `pixel_gmail_draft_propose` writes a proposal only: recipients, subject,
+    body, and optionally the projected message it replies to. There is no send
+    tool; the owner sends the draft from Gmail.
+  - `--approve gmail-draft-…` creates exactly the approved snapshot in the
+    owner's Drafts folder through `users.drafts.create`, once. The draft carries
+    a Message-ID fixed before any Gmail call, so `--reconcile` finds an
+    unconfirmed draft by `rfc822msgid:` instead of creating another. A definite
+    Gmail refusal settles it as rejected.
+  - A draft is refused before Gmail when it has a multi-line subject, an
+    invalid, repeated or Bcc recipient, a projection placeholder, or what looks
+    like a vendor credential. Replies take `In-Reply-To`, `References` and the
+    thread from the original message.
+  - The gateway and broker environments carry `PIXEL_LIMB_EMAIL_DRAFTS_ENABLED`.
+- See `ODS-QUALIFICATION-4.3.35.md` for scoped validation and pending installed
+  upgrade qualification. Prior compatibility records remain historical.
+
+## 4.3.34 - ODS-maintained candidate
+
+- Source Broker readiness for owner-connected Google accounts:
+  - Calendar follows `nextPageToken` up to a page cap and records the synced
+    window and truncation; the list tool says when a request falls outside it.
+  - Each refresh reads every source on its own. A failing source keeps its
+    last snapshot and marks only itself in a new content-free `status.json`.
+  - Scopes Google granted are recorded; a missing read scope is reported
+    without calling that API.
+  - `--exchange FLOW` turns a root-written sign-in handoff into a token held
+    only by the broker identity; `--revoke` revokes the grant and deletes it.
+    The token and result name only the account Google's ID token verifies,
+    never the requested account hint.
+    `./pixel source-broker --prepare` installs the identity and units without
+    starting anything.
+  - Every release carries the plugin's `typebox` dependency, so a source turned
+    on later loads the plugin from the active release.
+  - `pixel verify` accepts a broker whose first refresh is still running, which
+    a large mailbox can take minutes to finish.
+- Optional answers-file keys `calendarWriteEnabled`, `gmailWindowDays` and
+  `userTimezone` default to the previous behaviour. The gateway environment
+  carries the real web and Calendar-write flags.
+- See `ODS-QUALIFICATION-4.3.34.md` for scoped validation and pending installed
+  upgrade qualification. Prior compatibility records remain historical.
+
 ## 4.3.33 - ODS-maintained candidate
 
 - Patch Web Courier's hash-locked certifi to 2026.10.19 and urllib3 to 2.8.0.
