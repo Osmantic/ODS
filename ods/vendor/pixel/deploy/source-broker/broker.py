@@ -6,6 +6,8 @@ from __future__ import annotations
 import base64
 import argparse
 import hashlib
+import hmac
+import http.client
 import json
 import os
 import re
@@ -515,6 +517,57 @@ CALENDAR_API = "https://www.googleapis.com/calendar/v3"
 SAFE_TEXT_LIMIT = 800
 MAX_SOURCE_CHARS = 200_000
 DEFINITE_REJECTION_CODES = {400, 401, 403, 412, 422}
+GOOGLE_AUTH_URI = "https://accounts.google.com/o/oauth2/auth"
+GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
+GOOGLE_REVOKE_URI = "https://oauth2.googleapis.com/revoke"
+CALENDAR_PAGE_SIZE = 250
+STATUS_KIND = "pixel-source-broker-status"
+STATUS_BOUNDARY = {"contentFree": True, "credentialsIncluded": False}
+# Error classes name the owner's fix, never provider message text.
+SOURCE_ERROR_CLASSES = frozenset({
+    "not-connected", "invalid-grant", "missing-scope", "api-disabled", "rate-limited",
+    "network", "client-invalid", "blocked-by-admin", "unknown",
+})
+OAUTH_ERROR_CLASSES = SOURCE_ERROR_CLASSES | {
+    "invalid-flow", "flow-expired", "state-mismatch", "redirect-mismatch", "no-refresh-token",
+}
+ERROR_REASON = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
+ERROR_TYPE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+RATE_LIMIT_REASONS = frozenset({
+    "rateLimitExceeded", "userRateLimitExceeded", "quotaExceeded", "dailyLimitExceeded",
+    "RESOURCE_EXHAUSTED", "RATE_LIMIT_EXCEEDED",
+})
+API_DISABLED_REASONS = frozenset({"accessNotConfigured", "SERVICE_DISABLED"})
+MISSING_SCOPE_REASONS = frozenset({"insufficientPermissions", "ACCESS_TOKEN_SCOPE_INSUFFICIENT", "insufficient_scope"})
+CLIENT_INVALID_REASONS = frozenset({"invalid_client", "unauthorized_client", "deleted_client"})
+EMAIL_READ_SCOPES = frozenset({
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://mail.google.com/",
+})
+CALENDAR_READ_SCOPES = frozenset({
+    "https://www.googleapis.com/auth/calendar.events.readonly",
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/calendar",
+})
+GOOGLE_SCOPE = re.compile(r"^(?:https://www\.googleapis\.com/auth/[a-z0-9._-]{1,100}|https://mail\.google\.com/|openid|email|profile)$")
+OAUTH_FLOW_ID = re.compile(r"^[a-f0-9]{32}$")
+OAUTH_STATE = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
+PKCE_VERIFIER = re.compile(r"^[A-Za-z0-9._~-]{43,128}$")
+OAUTH_CODE = re.compile(r"^[\x21-\x7e]{1,2048}$")
+OAUTH_REDIRECT = re.compile(
+    r"^(?:http://(?:127\.0\.0\.1|localhost|\[::1\]):[0-9]{2,5}"
+    r"|https://[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::[0-9]{2,5})?)"
+    r"(?:/[A-Za-z0-9._~/-]{0,200})?$"
+)
+OAUTH_FLOW_MAX_SECONDS = 15 * 60
+OAUTH_FILE_MAX_BYTES = 64 * 1024
+OAUTH_FLOW_KEYS = {
+    "schemaVersion", "kind", "flowId", "state", "codeVerifier", "redirectUri", "client",
+    "requestedScopes", "account", "createdAt", "expiresAt",
+}
+OAUTH_CODE_KEYS = {"schemaVersion", "kind", "flowId", "state", "code"}
 
 SIGNAL_PATTERNS = {
     "agent-targeting": re.compile(r"\b(system prompt|developer message|system\s+(?:agent|assistant))\b|\b(pixel|assistant|agent)\b.{0,100}\b(ignore|instruction|rule|policy|prompt|command|tool|must|should|run|execute|memory)\b|\b(ignore|override)\b.{0,100}\b(pixel|assistant|agent)\b", re.I),
@@ -550,9 +603,18 @@ LEET = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t"
 
 
 class UpstreamHTTPError(RuntimeError):
-    def __init__(self, code: int) -> None:
+    def __init__(self, code: int, reasons: frozenset[str] = frozenset()) -> None:
         super().__init__(f"upstream request failed with HTTP {code}")
         self.code = code
+        self.reasons = reasons
+
+
+class SourceUnavailable(RuntimeError):
+    """A source cannot be read for a recorded, content-free reason."""
+
+    def __init__(self, error_class: str, message: str) -> None:
+        super().__init__(message)
+        self.error_class = error_class
 
 
 class TextExtractor(HTMLParser):
@@ -900,6 +962,25 @@ def social_projection(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def error_reasons(raw: bytes) -> frozenset[str]:
+    """Return Google's machine-readable error tokens, never its message text."""
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, ValueError):
+        return frozenset()
+    found: list[Any] = []
+    error = value.get("error") if isinstance(value, dict) else None
+    if isinstance(error, str):
+        found.append(error)
+    elif isinstance(error, dict):
+        found.append(error.get("status"))
+        for key in ("errors", "details"):
+            items = error.get(key)
+            if isinstance(items, list):
+                found.extend(item.get("reason") for item in items[:20] if isinstance(item, dict))
+    return frozenset(item for item in found if isinstance(item, str) and ERROR_REASON.fullmatch(item))
+
+
 def request_json(url: str, *, method: str = "GET", headers: dict[str, str] | None = None, body: bytes | None = None) -> dict[str, Any]:
     request = urllib.request.Request(url, method=method, headers=headers or {}, data=body)
     try:
@@ -907,14 +988,39 @@ def request_json(url: str, *, method: str = "GET", headers: dict[str, str] | Non
             raw = response.read()
             return json.loads(raw.decode("utf-8")) if raw else {}
     except urllib.error.HTTPError as error:
-        raise UpstreamHTTPError(error.code) from error
+        try:
+            raw = error.read(OAUTH_FILE_MAX_BYTES)
+        except (OSError, http.client.HTTPException):
+            raw = b""
+        raise UpstreamHTTPError(error.code, error_reasons(raw or b"")) from error
 
 
-def access_token(token_path: Path) -> str:
-    credentials = json.loads(token_path.read_text(encoding="utf-8"))
+def read_credentials(token_path: Path) -> dict[str, Any]:
+    try:
+        credentials = json.loads(token_path.read_text(encoding="utf-8"))
+    except FileNotFoundError as error:
+        raise SourceUnavailable("not-connected", "No Google connection is stored for the Source Broker") from error
+    except ValueError as error:
+        raise SourceUnavailable("not-connected", "The stored Google connection is unreadable") from error
+    if not isinstance(credentials, dict):
+        raise SourceUnavailable("not-connected", "The stored Google connection is unreadable")
     for key in ("client_id", "client_secret", "refresh_token"):
         if not credentials.get(key):
-            raise RuntimeError(f"OAuth credential is missing {key}")
+            raise SourceUnavailable("not-connected", f"OAuth credential is missing {key}")
+    if credentials.get("token_uri") not in (None, "", GOOGLE_TOKEN_URI):
+        raise SourceUnavailable("client-invalid", "OAuth credential does not use Google's fixed token endpoint")
+    return credentials
+
+
+def granted_scopes(credentials: dict[str, Any]) -> frozenset[str] | None:
+    """Scopes Google reported at sign-in; None for credentials that predate that record."""
+    value = credentials.get("grantedScope")
+    if not isinstance(value, str):
+        return None
+    return frozenset(item for item in value.split() if GOOGLE_SCOPE.fullmatch(item))
+
+
+def refresh_access_token(credentials: dict[str, Any]) -> str:
     body = urllib.parse.urlencode({
         "client_id": credentials["client_id"],
         "client_secret": credentials["client_secret"],
@@ -922,7 +1028,7 @@ def access_token(token_path: Path) -> str:
         "grant_type": "refresh_token",
     }).encode("ascii")
     response = request_json(
-        str(credentials.get("token_uri") or "https://oauth2.googleapis.com/token"),
+        GOOGLE_TOKEN_URI,
         method="POST",
         headers={"content-type": "application/x-www-form-urlencoded"},
         body=body,
@@ -931,6 +1037,46 @@ def access_token(token_path: Path) -> str:
     if not token:
         raise RuntimeError("OAuth refresh returned no access token")
     return token
+
+
+def access_token(token_path: Path) -> str:
+    return refresh_access_token(read_credentials(token_path))
+
+
+def classify_source_error(error: BaseException) -> str:
+    """Map a failed read or sign-in step to the owner-facing fix it needs."""
+    if isinstance(error, SourceUnavailable):
+        return error.error_class
+    if isinstance(error, UpstreamHTTPError):
+        reasons = error.reasons
+        if "invalid_grant" in reasons:
+            return "invalid-grant"
+        if "admin_policy_enforced" in reasons:
+            return "blocked-by-admin"
+        if "redirect_uri_mismatch" in reasons:
+            return "redirect-mismatch"
+        if reasons & CLIENT_INVALID_REASONS:
+            return "client-invalid"
+        if error.code == 429 or reasons & RATE_LIMIT_REASONS:
+            return "rate-limited"
+        if reasons & API_DISABLED_REASONS:
+            return "api-disabled"
+        if reasons & MISSING_SCOPE_REASONS:
+            return "missing-scope"
+        return "network" if error.code >= 500 else "unknown"
+    if isinstance(error, (urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException)):
+        return "network"
+    return "unknown"
+
+
+def failure_record(error: BaseException) -> dict[str, Any]:
+    """A content-free description of one failure: class, HTTP status and exception type."""
+    error_type = type(error).__name__
+    return {
+        "errorClass": classify_source_error(error),
+        "httpStatus": error.code if isinstance(error, UpstreamHTTPError) else None,
+        "errorType": error_type if ERROR_TYPE.fullmatch(error_type) else "Error",
+    }
 
 
 def google_get(base: str, path: str, token: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -1095,19 +1241,68 @@ def gmail_records(token: str, cached_records: list[dict[str, Any]] | None = None
     }
 
 
-def calendar_records(token: str) -> list[dict[str, Any]]:
+def calendar_records(token: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     now = utc_now()
     past_days = min(max(int(os.environ.get("PIXEL_SOURCE_CALENDAR_PAST_DAYS", "7")), 0), 365)
     future_days = min(max(int(os.environ.get("PIXEL_SOURCE_CALENDAR_FUTURE_DAYS", "90")), 1), 730)
+    max_pages = min(max(int(os.environ.get("PIXEL_SOURCE_CALENDAR_MAX_PAGES", "20")), 1), 400)
     calendar_id = urllib.parse.quote(os.environ.get("PIXEL_SOURCE_CALENDAR_ID", "primary"), safe="")
-    result = google_get(CALENDAR_API, f"/calendars/{calendar_id}/events", token, {
-        "timeMin": iso(now - timedelta(days=past_days)),
-        "timeMax": iso(now + timedelta(days=future_days)),
-        "singleEvents": "true",
-        "orderBy": "startTime",
-        "maxResults": 250,
-    })
-    return [calendar_projection(item) for item in result.get("items") or []]
+    window_start = iso(now - timedelta(days=past_days))
+    window_end = iso(now + timedelta(days=future_days))
+    items: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    seen_page_tokens: set[str] = set()
+    page_token = ""
+    pages_fetched = 0
+    truncated = False
+    truncation_reason = ""
+    while pages_fetched < max_pages:
+        params: dict[str, Any] = {
+            "timeMin": window_start,
+            "timeMax": window_end,
+            "singleEvents": "true",
+            "orderBy": "startTime",
+            "maxResults": CALENDAR_PAGE_SIZE,
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        result = google_get(CALENDAR_API, f"/calendars/{calendar_id}/events", token, params)
+        pages_fetched += 1
+        for item in result.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get("id") or "")
+            if item_id and item_id in seen_ids:
+                continue
+            seen_ids.add(item_id)
+            items.append(item)
+        next_page_token = str(result.get("nextPageToken") or "")
+        if not next_page_token:
+            break
+        if next_page_token in seen_page_tokens:
+            truncated = True
+            truncation_reason = "repeated-page-token"
+            break
+        if pages_fetched >= max_pages:
+            truncated = True
+            truncation_reason = "safety-page-limit"
+            break
+        seen_page_tokens.add(next_page_token)
+        page_token = next_page_token
+    return [calendar_projection(item) for item in items], {
+        "bounded": True,
+        "windowStart": window_start,
+        "windowEnd": window_end,
+        "pastDays": past_days,
+        "futureDays": future_days,
+        "pageSize": CALENDAR_PAGE_SIZE,
+        "maxPages": max_pages,
+        "pagesFetched": pages_fetched,
+        "fetched": len(items),
+        "truncated": truncated,
+        "truncationReason": truncation_reason,
+        "completeWithinWindow": not truncated,
+    }
 
 
 def social_records(path: Path | None) -> list[dict[str, Any]]:
@@ -1119,7 +1314,7 @@ def social_records(path: Path | None) -> list[dict[str, Any]]:
     return [social_projection(item) for item in value[:500] if isinstance(item, dict)]
 
 
-def atomic_json(path: Path, value: dict[str, Any]) -> None:
+def atomic_json(path: Path, value: dict[str, Any], *, mode: int = 0o640) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary = Path(temporary_name)
@@ -1129,7 +1324,7 @@ def atomic_json(path: Path, value: dict[str, Any]) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.chmod(temporary, 0o640)
+        os.chmod(temporary, mode)
         os.replace(temporary, path)
         if os.name != "nt":
             directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
@@ -1480,7 +1675,7 @@ def _definite_provider_rejection(error: Exception) -> bool:
 def projection(
     source: str,
     records: list[dict[str, Any]],
-    generated_at: str,
+    generated_at: str | None,
     enabled: bool = True,
     coverage: dict[str, Any] | None = None,
     *,
@@ -1499,44 +1694,172 @@ def projection(
             "instructionsAuthorized": False,
             "projectionOnly": True,
         },
+        "sanitizerRevision": SANITIZER_REVISION,
     }
-    if source == "gmail":
-        value["sanitizerRevision"] = SANITIZER_REVISION
     if coverage is not None:
         value["coverage"] = coverage
     return value
 
 
+def retained_projection(path: Path, source: str) -> dict[str, Any] | None:
+    """The last good projection of an enabled source, kept while that source cannot refresh."""
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if (
+        not isinstance(value, dict)
+        or value.get("schemaVersion") != SCHEMA_VERSION
+        or value.get("source") != source
+        or value.get("enabled") is not True
+        or value.get("sanitizerRevision") != SANITIZER_REVISION
+        or not valid_iso_timestamp(value.get("generatedAt"))
+        or not isinstance(value.get("records"), list)
+        or not isinstance(value.get("boundary"), dict)
+        or value["boundary"].get("projectionOnly") is not True
+    ):
+        return None
+    return value
+
+
+def previous_status(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(value, dict) or value.get("kind") != STATUS_KIND or not isinstance(value.get("sources"), dict):
+        return {}
+    return {name: item for name, item in value["sources"].items() if isinstance(item, dict)}
+
+
+def source_status(prior: dict[str, Any], *, enabled: bool, attempted_at: str,
+                  failure: dict[str, Any] | None = None, record_count: int = 0,
+                  complete: bool | None = None, kept_generated_at: str | None = None) -> dict[str, Any]:
+    """Content-free state for one source: when it last worked and why it does not now."""
+    if not enabled:
+        return {"enabled": False, "state": "disabled", "errorClass": None, "httpStatus": None,
+                "errorType": None, "lastAttemptAt": None, "lastSuccessAt": None,
+                "failingSince": None, "recordCount": 0, "complete": None}
+    if failure is None:
+        return {"enabled": True, "state": "ok", "errorClass": None, "httpStatus": None,
+                "errorType": None, "lastAttemptAt": attempted_at, "lastSuccessAt": attempted_at,
+                "failingSince": None, "recordCount": record_count, "complete": complete}
+    # Without an earlier status (the first refresh after an upgrade), the kept snapshot's
+    # own time is when this source last worked.
+    last_success = (prior.get("lastSuccessAt") if valid_iso_timestamp(prior.get("lastSuccessAt"))
+                    else kept_generated_at)
+    failing_since = (prior.get("failingSince") if prior.get("state") == "error"
+                     and valid_iso_timestamp(prior.get("failingSince")) else attempted_at)
+    return {"enabled": True, "state": "error", **failure, "lastAttemptAt": attempted_at,
+            "lastSuccessAt": last_success, "failingSince": failing_since,
+            "recordCount": record_count, "complete": complete}
+
+
+def cached_email_records(path: Path) -> list[dict[str, Any]]:
+    try:
+        previous = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if (
+        isinstance(previous, dict)
+        and previous.get("schemaVersion") == SCHEMA_VERSION
+        and previous.get("sanitizerRevision") == SANITIZER_REVISION
+        and isinstance(previous.get("boundary"), dict)
+        and previous["boundary"].get("projectionOnly") is True
+        and isinstance(previous.get("records"), list)
+    ):
+        return previous["records"]
+    return []
+
+
+def coverage_complete(name: str, coverage: dict[str, Any]) -> bool:
+    if name == "email":
+        folders = coverage.get("folders") or {}
+        return bool(folders) and all(folder.get("completeWithinQuery") is True for folder in folders.values())
+    if name == "calendar":
+        return coverage.get("completeWithinWindow") is True
+    return True
+
+
 def refresh() -> int:
+    """Refresh each source on its own; a failing source marks only itself in status.json."""
     token_path = Path(os.environ.get("PIXEL_SOURCE_TOKEN_PATH", "/var/lib/pixel-source-broker/private/google-token.json"))
     output_dir = Path(os.environ.get("PIXEL_SOURCE_PROJECTION_DIR", "/var/lib/pixel-source-broker/projection"))
     social_path_value = os.environ.get("PIXEL_SOURCE_SOCIAL_INPUT", "")
-    email_enabled = env_enabled("PIXEL_LIMB_EMAIL_ENABLED", True)
-    calendar_enabled = env_enabled("PIXEL_LIMB_CALENDAR_ENABLED", True)
-    social_enabled = env_enabled("PIXEL_LIMB_SOCIAL_ENABLED", False)
-    token = access_token(token_path) if email_enabled or calendar_enabled else ""
+    enabled = {
+        "email": env_enabled("PIXEL_LIMB_EMAIL_ENABLED", True),
+        "calendar": env_enabled("PIXEL_LIMB_CALENDAR_ENABLED", True),
+        "social": env_enabled("PIXEL_LIMB_SOCIAL_ENABLED", False),
+    }
     started_at = iso(utc_now())
-    cached_email: list[dict[str, Any]] = []
-    email_path = output_dir / "email.json"
-    try:
-        previous = json.loads(email_path.read_text(encoding="utf-8"))
-        if (
-            previous.get("schemaVersion") == SCHEMA_VERSION
-            and previous.get("sanitizerRevision") == SANITIZER_REVISION
-            and previous.get("boundary", {}).get("projectionOnly") is True
-            and isinstance(previous.get("records"), list)
-        ):
-            cached_email = previous["records"]
-    except (OSError, ValueError, TypeError):
-        pass
-    email, email_coverage = gmail_records(token, cached_email) if email_enabled else ([], {"bounded": True, "folders": {}})
-    calendar = calendar_records(token) if calendar_enabled else []
-    social = social_records(Path(social_path_value) if social_path_value else None) if social_enabled else []
+    prior = previous_status(output_dir / "status.json")
+    granted: frozenset[str] | None = None
+    token = ""
+    token_failure: BaseException | None = None
+    if enabled["email"] or enabled["calendar"]:
+        try:
+            credentials = read_credentials(token_path)
+            granted = granted_scopes(credentials)
+            token = refresh_access_token(credentials)
+        except Exception as error:  # Recorded for each Google source below; social still refreshes.
+            token_failure = error
+    fetchers = {
+        "email": ("gmail", EMAIL_READ_SCOPES, lambda: gmail_records(token, cached_email_records(output_dir / "email.json"))),
+        "calendar": ("google-calendar", CALENDAR_READ_SCOPES, lambda: calendar_records(token)),
+        "social": ("social", None, lambda: (social_records(Path(social_path_value) if social_path_value else None), None)),
+    }
+    sources: dict[str, dict[str, Any]] = {}
+    for name, (label, required_scopes, fetch) in fetchers.items():
+        path = output_dir / f"{name}.json"
+        attempted_at = iso(utc_now())
+        if not enabled[name]:
+            coverage = {"bounded": True, "folders": {}} if name == "email" else None
+            atomic_json(path, projection(label, [], attempted_at, False, coverage, started_at=started_at))
+            sources[name] = source_status(prior.get(name, {}), enabled=False, attempted_at=attempted_at)
+            continue
+        try:
+            if required_scopes is not None and token_failure is not None:
+                raise token_failure
+            if required_scopes is not None and granted is not None and not granted & required_scopes:
+                raise SourceUnavailable("missing-scope", f"Google did not grant {name} read access")
+            records, coverage = fetch()
+        except Exception as error:  # One source failing must not stale or block the others.
+            failure = failure_record(error)
+            # A removed sign-in means the owner disconnected: never keep serving that data.
+            kept = None if failure["errorClass"] == "not-connected" else retained_projection(path, label)
+            if kept is None:
+                unavailable = {"bounded": True, "available": False, "reason": failure["errorClass"]}
+                atomic_json(path, projection(label, [], None, True, unavailable, started_at=started_at))
+            sources[name] = source_status(
+                prior.get(name, {}), enabled=True, attempted_at=attempted_at, failure=failure,
+                record_count=len(kept["records"]) if kept else 0, complete=False,
+                kept_generated_at=kept["generatedAt"] if kept else None,
+            )
+            continue
+        generated_at = iso(utc_now())
+        atomic_json(path, projection(label, records, generated_at, True, coverage, started_at=started_at))
+        sources[name] = source_status(
+            prior.get(name, {}), enabled=True, attempted_at=generated_at,
+            record_count=len(records), complete=coverage_complete(name, coverage or {}),
+        )
     generated_at = iso(utc_now())
-    atomic_json(output_dir / "email.json", projection("gmail", email, generated_at, email_enabled, email_coverage, started_at=started_at))
-    atomic_json(output_dir / "calendar.json", projection("google-calendar", calendar, generated_at, calendar_enabled, started_at=started_at))
-    atomic_json(output_dir / "social.json", projection("social", social, generated_at, social_enabled, started_at=started_at))
-    print(json.dumps({"startedAt": started_at, "generatedAt": generated_at, "limbs": {"email": email_enabled, "calendar": calendar_enabled, "social": social_enabled}, "email": len(email), "calendar": len(calendar), "social": len(social)}))
+    atomic_json(output_dir / "status.json", {
+        "schemaVersion": SCHEMA_VERSION,
+        "kind": STATUS_KIND,
+        "startedAt": started_at,
+        "generatedAt": generated_at,
+        "grantedScopes": sorted(granted) if granted is not None else None,
+        "sources": sources,
+        "boundary": STATUS_BOUNDARY,
+    })
+    print(json.dumps({
+        "startedAt": started_at,
+        "generatedAt": generated_at,
+        "limbs": enabled,
+        "states": {name: item["state"] for name, item in sources.items()},
+        "errors": {name: item["errorClass"] for name, item in sources.items() if item["state"] == "error"},
+        **{name: item["recordCount"] for name, item in sources.items()},
+    }))
     return 0
 
 
@@ -1842,6 +2165,8 @@ def projection_placeholders(value: Any, path: str = "values") -> list[str]:
 def approve(proposal_id: str, *, required_status: str = "pending-operator-approval") -> int:
     if not env_enabled("PIXEL_LIMB_CALENDAR_ENABLED", True):
         raise RuntimeError("Calendar limb is disabled")
+    if not env_enabled("PIXEL_LIMB_CALENDAR_WRITE_ENABLED", True):
+        raise RuntimeError("Calendar changes are turned off for this deployment")
     if not re.fullmatch(r"calendar-[0-9]{13}-[a-f0-9]{8}", proposal_id):
         raise RuntimeError("unsafe proposal ID")
     result_dir = Path(os.environ.get("PIXEL_ACTION_RESULT_DIR", "/var/lib/pixel-source-broker/results"))
@@ -2239,6 +2564,8 @@ def reconcile(proposal_id: str) -> int:
 def direct(proposal_id: str) -> int:
     if not env_enabled("PIXEL_CALENDAR_DIRECT_ENABLED", False):
         raise RuntimeError("bounded direct Calendar execution is disabled")
+    if not env_enabled("PIXEL_LIMB_CALENDAR_WRITE_ENABLED", True):
+        raise RuntimeError("Calendar changes are turned off for this deployment")
     if not re.fullmatch(r"calendar-[0-9]{13}-[a-f0-9]{8}", proposal_id):
         raise RuntimeError("unsafe proposal ID")
     proposal_dir = Path(os.environ.get("PIXEL_ACTION_PROPOSAL_DIR", "/var/lib/pixel-source-broker/proposals"))
@@ -2284,6 +2611,225 @@ def drain_direct() -> int:
     return 0
 
 
+def private_handoff(path: Path) -> dict[str, Any]:
+    """Read one root-written sign-in handoff that only the broker identity can read."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError as error:
+        raise SourceUnavailable("invalid-flow", "sign-in handoff is missing") from error
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > OAUTH_FILE_MAX_BYTES:
+            raise SourceUnavailable("invalid-flow", "sign-in handoff is not a bounded regular file")
+        if os.name != "nt" and (info.st_mode & 0o077 or info.st_uid != os.geteuid()):
+            raise SourceUnavailable("invalid-flow", "sign-in handoff is not private to the Source Broker")
+        payload = bytearray()
+        while True:
+            chunk = os.read(descriptor, OAUTH_FILE_MAX_BYTES + 1 - len(payload))
+            if not chunk:
+                break
+            payload.extend(chunk)
+            if len(payload) > OAUTH_FILE_MAX_BYTES:
+                raise SourceUnavailable("invalid-flow", "sign-in handoff exceeds its size limit")
+    finally:
+        os.close(descriptor)
+
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise SourceUnavailable("invalid-flow", f"sign-in handoff contains duplicate key: {key}")
+            value[key] = item
+        return value
+
+    try:
+        value = json.loads(payload.decode("utf-8"), object_pairs_hook=unique_object)
+    except (UnicodeError, ValueError) as error:
+        raise SourceUnavailable("invalid-flow", "sign-in handoff is not strict JSON") from error
+    if not isinstance(value, dict):
+        raise SourceUnavailable("invalid-flow", "sign-in handoff must be a JSON object")
+    return value
+
+
+def oauth_client(value: Any) -> dict[str, str]:
+    """Accept a Google client only when it uses Pixel's fixed Google endpoints."""
+    source = value.get("installed") or value.get("web") or value if isinstance(value, dict) else None
+    if not isinstance(source, dict):
+        raise SourceUnavailable("invalid-flow", "sign-in handoff has no OAuth client")
+    client: dict[str, str] = {}
+    for key, maximum in (("client_id", 2048), ("client_secret", 8192)):
+        item = source.get(key)
+        if not isinstance(item, str) or not 1 <= len(item) <= maximum or CONTROL_CHARS.search(item) or "\n" in item or "\r" in item:
+            raise SourceUnavailable("client-invalid", f"OAuth client {key} is missing or invalid")
+        client[key] = item
+    for key, expected in (("auth_uri", GOOGLE_AUTH_URI), ("token_uri", GOOGLE_TOKEN_URI)):
+        if source.get(key) not in (None, expected):
+            raise SourceUnavailable("client-invalid", f"OAuth client {key} is not Google's fixed endpoint")
+    return client
+
+
+def parsed_instant(value: Any) -> datetime:
+    if not valid_iso_timestamp(value):
+        raise SourceUnavailable("invalid-flow", "sign-in handoff time is invalid")
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+
+def validated_oauth_flow(flow: dict[str, Any], completion: dict[str, Any], flow_id: str) -> dict[str, Any]:
+    if set(flow) != OAUTH_FLOW_KEYS or flow.get("schemaVersion") != 1 or flow.get("kind") != "pixel-source-oauth-flow":
+        raise SourceUnavailable("invalid-flow", "sign-in flow record has missing or unknown fields")
+    if set(completion) != OAUTH_CODE_KEYS or completion.get("schemaVersion") != 1 or completion.get("kind") != "pixel-source-oauth-code":
+        raise SourceUnavailable("invalid-flow", "sign-in completion has missing or unknown fields")
+    if flow.get("flowId") != flow_id or completion.get("flowId") != flow_id:
+        raise SourceUnavailable("invalid-flow", "sign-in handoff names another flow")
+    state, verifier = flow.get("state"), flow.get("codeVerifier")
+    redirect_uri, code = flow.get("redirectUri"), completion.get("code")
+    if not isinstance(state, str) or not OAUTH_STATE.fullmatch(state):
+        raise SourceUnavailable("invalid-flow", "sign-in flow state is invalid")
+    if not isinstance(verifier, str) or not PKCE_VERIFIER.fullmatch(verifier):
+        raise SourceUnavailable("invalid-flow", "sign-in flow PKCE verifier is invalid")
+    if not isinstance(redirect_uri, str) or not OAUTH_REDIRECT.fullmatch(redirect_uri):
+        raise SourceUnavailable("invalid-flow", "sign-in flow redirect address is not allowed")
+    if not isinstance(code, str) or not OAUTH_CODE.fullmatch(code):
+        raise SourceUnavailable("invalid-flow", "sign-in completion code is invalid")
+    returned_state = completion.get("state")
+    if not isinstance(returned_state, str) or not hmac.compare_digest(returned_state.encode(), state.encode()):
+        raise SourceUnavailable("state-mismatch", "sign-in completion does not belong to this flow")
+    created, expires = parsed_instant(flow.get("createdAt")), parsed_instant(flow.get("expiresAt"))
+    now = utc_now()
+    if not created <= expires <= created + timedelta(seconds=OAUTH_FLOW_MAX_SECONDS) or created > now + timedelta(minutes=2):
+        raise SourceUnavailable("invalid-flow", "sign-in flow lifetime is invalid")
+    if now >= expires:
+        raise SourceUnavailable("flow-expired", "sign-in flow expired")
+    scopes = flow.get("requestedScopes")
+    if (not isinstance(scopes, list) or not 1 <= len(scopes) <= 20 or len(set(scopes)) != len(scopes)
+            or any(not isinstance(item, str) or not GOOGLE_SCOPE.fullmatch(item) for item in scopes)):
+        raise SourceUnavailable("invalid-flow", "sign-in flow scopes are invalid")
+    account = flow.get("account")
+    if account is not None and (not isinstance(account, str) or len(account) > 320 or not EMAIL_PATTERN.fullmatch(account)):
+        raise SourceUnavailable("invalid-flow", "sign-in flow account hint is invalid")
+    return {
+        "client": oauth_client(flow.get("client")), "code": code, "verifier": verifier,
+        "redirectUri": redirect_uri, "requestedScopes": scopes, "account": account or "",
+    }
+
+
+def id_token_email(token: Any, client_id: str) -> str:
+    """The account email Google verified, read from an ID token the token endpoint returned.
+
+    The token came straight from Google's fixed token endpoint over TLS, so its claims
+    are read without a signature check (OpenID Connect Core 3.1.3.7). An absent,
+    malformed or unverified token gives no account; an owner-typed hint never does.
+    """
+    if not isinstance(token, str) or len(token) > 16384 or token.count(".") != 2:
+        return ""
+    payload = token.split(".")[1]
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    except (ValueError, UnicodeError):
+        return ""
+    if (not isinstance(claims, dict) or claims.get("aud") != client_id
+            or claims.get("iss") not in ("https://accounts.google.com", "accounts.google.com")
+            or claims.get("email_verified") is not True):
+        return ""
+    email = claims.get("email")
+    if not isinstance(email, str) or len(email) > 320 or not EMAIL_PATTERN.fullmatch(email):
+        return ""
+    return email
+
+
+def oauth_result(path: Path, kind: str, value: dict[str, Any]) -> None:
+    atomic_json(path, {"schemaVersion": SCHEMA_VERSION, "kind": kind, "finishedAt": iso(utc_now()), **value}, mode=0o600)
+
+
+def exchange(flow_id: str) -> int:
+    """Exchange one owner sign-in code for a refresh token held only by this identity."""
+    if not OAUTH_FLOW_ID.fullmatch(flow_id or ""):
+        raise RuntimeError("unsafe OAuth flow ID")
+    oauth_dir = Path(os.environ.get("PIXEL_SOURCE_OAUTH_DIR", "/var/lib/pixel-source-broker/private/oauth"))
+    token_path = Path(os.environ.get("PIXEL_SOURCE_TOKEN_PATH", "/var/lib/pixel-source-broker/private/google-token.json"))
+    flow_path, code_path = oauth_dir / f"{flow_id}.flow.json", oauth_dir / f"{flow_id}.code.json"
+    result_path = oauth_dir / f"{flow_id}.result.json"
+    try:
+        try:
+            flow, completion = private_handoff(flow_path), private_handoff(code_path)
+        finally:
+            # The handoff is single-use whether or not the exchange succeeds.
+            for path in (flow_path, code_path):
+                path.unlink(missing_ok=True)
+        handoff = validated_oauth_flow(flow, completion, flow_id)
+        client = handoff["client"]
+        response = request_json(GOOGLE_TOKEN_URI, method="POST", headers={"content-type": "application/x-www-form-urlencoded"}, body=urllib.parse.urlencode({
+            "code": handoff["code"],
+            "code_verifier": handoff["verifier"],
+            "client_id": client["client_id"],
+            "client_secret": client["client_secret"],
+            "redirect_uri": handoff["redirectUri"],
+            "grant_type": "authorization_code",
+        }).encode("ascii"))
+        refresh_token = response.get("refresh_token")
+        if not isinstance(refresh_token, str) or not 1 <= len(refresh_token) <= 4096 or not OAUTH_CODE.fullmatch(refresh_token):
+            raise SourceUnavailable("no-refresh-token", "Google returned no refresh token")
+        reported = response.get("scope")
+        granted = sorted({item for item in reported.split() if GOOGLE_SCOPE.fullmatch(item)}) if isinstance(reported, str) else []
+        account = id_token_email(response.get("id_token"), client["client_id"])
+        atomic_json(token_path, {
+            "client_id": client["client_id"],
+            "client_secret": client["client_secret"],
+            "refresh_token": refresh_token,
+            "token_uri": GOOGLE_TOKEN_URI,
+            "scope": " ".join(granted),
+            "grantedScope": " ".join(granted),
+            "requestedScope": " ".join(handoff["requestedScopes"]),
+            "email": account,
+            "obtainedAt": iso(utc_now()),
+        }, mode=0o600)
+    except Exception as error:  # Every failure leaves a content-free result for the custodian.
+        failure = failure_record(error)
+        oauth_result(result_path, "pixel-source-oauth-result", {"flowId": flow_id, "outcome": "failed", **failure, "grantedScopes": [], "account": None})
+        print(json.dumps({"flowId": flow_id, "outcome": "failed", "errorClass": failure["errorClass"]}))
+        return 1
+    oauth_result(result_path, "pixel-source-oauth-result", {"flowId": flow_id, "outcome": "connected", "errorClass": None, "httpStatus": None, "errorType": None, "grantedScopes": granted, "account": account or None})
+    print(json.dumps({"flowId": flow_id, "outcome": "connected", "grantedScopes": granted}))
+    return 0
+
+
+def revoke() -> int:
+    """Revoke the stored Google grant at Google, then delete it here whatever Google says."""
+    oauth_dir = Path(os.environ.get("PIXEL_SOURCE_OAUTH_DIR", "/var/lib/pixel-source-broker/private/oauth"))
+    token_path = Path(os.environ.get("PIXEL_SOURCE_TOKEN_PATH", "/var/lib/pixel-source-broker/private/google-token.json"))
+    outcome, failure = "revoked", {"errorClass": None, "httpStatus": None, "errorType": None}
+    refresh_token = None
+    try:
+        try:
+            stored = json.loads(token_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            outcome = "not-connected"
+        except (OSError, ValueError) as error:
+            outcome, failure = "local-only", failure_record(error)
+        else:
+            # Revoking needs only the refresh token, whatever else the file holds.
+            candidate = stored.get("refresh_token") if isinstance(stored, dict) else None
+            if isinstance(candidate, str) and candidate:
+                refresh_token = candidate
+            else:
+                outcome, failure = "local-only", failure_record(SourceUnavailable("not-connected", "no refresh token"))
+        if refresh_token is not None:
+            try:
+                request_json(GOOGLE_REVOKE_URI, method="POST", headers={"content-type": "application/x-www-form-urlencoded"},
+                             body=urllib.parse.urlencode({"token": refresh_token}).encode("ascii"))
+            except UpstreamHTTPError as error:
+                # Google answers invalid_token for a grant that is already revoked or expired.
+                if not (error.code == 400 and "invalid_token" in error.reasons):
+                    outcome, failure = "local-only", failure_record(error)
+            except Exception as error:  # Any other failure still ends with the sign-in deleted here.
+                outcome, failure = "local-only", failure_record(error)
+    finally:
+        token_path.unlink(missing_ok=True)
+        oauth_result(oauth_dir / "revoke.result.json", "pixel-source-oauth-revoke-result", {"outcome": outcome, **failure})
+    print(json.dumps({"outcome": outcome, "errorClass": failure["errorClass"]}))
+    return 0
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--approve", metavar="PROPOSAL_ID")
@@ -2292,7 +2838,9 @@ if __name__ == "__main__":
     parser.add_argument("--reconcile-create", metavar="PROPOSAL_ID")
     parser.add_argument("--reconcile-update", metavar="PROPOSAL_ID")
     parser.add_argument("--drain-direct", action="store_true")
+    parser.add_argument("--exchange", metavar="FLOW_ID")
+    parser.add_argument("--revoke", action="store_true")
     arguments = parser.parse_args()
-    if sum(bool(item) for item in (arguments.approve, arguments.direct, arguments.reconcile, arguments.reconcile_create, arguments.reconcile_update, arguments.drain_direct)) > 1:
+    if sum(bool(item) for item in (arguments.approve, arguments.direct, arguments.reconcile, arguments.reconcile_create, arguments.reconcile_update, arguments.drain_direct, arguments.exchange, arguments.revoke)) > 1:
         parser.error("choose exactly one action")
-    raise SystemExit(drain_direct() if arguments.drain_direct else reconcile(arguments.reconcile) if arguments.reconcile else reconcile_update(arguments.reconcile_update) if arguments.reconcile_update else reconcile_create(arguments.reconcile_create) if arguments.reconcile_create else direct(arguments.direct) if arguments.direct else approve(arguments.approve) if arguments.approve else refresh())
+    raise SystemExit(exchange(arguments.exchange) if arguments.exchange else revoke() if arguments.revoke else drain_direct() if arguments.drain_direct else reconcile(arguments.reconcile) if arguments.reconcile else reconcile_update(arguments.reconcile_update) if arguments.reconcile_update else reconcile_create(arguments.reconcile_create) if arguments.reconcile_create else direct(arguments.direct) if arguments.direct else approve(arguments.approve) if arguments.approve else refresh())
