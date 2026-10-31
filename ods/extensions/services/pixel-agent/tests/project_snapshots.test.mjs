@@ -92,8 +92,16 @@ test('every way a call names a project is found, and a Playground-wide mention t
   assert.deepEqual(exec('cd game && python3 fix.py', 'Playground'), all(['game']));
   assert.deepEqual(exec('x'.repeat(1024 * 1024 + 1)), all([]), 'a command too long to read touches them all');
   assert.deepEqual(exec('sed -i s/a/b/ Playground/game*/chars.js'), all([]));
+  // A named project left with .. may reach any other.
+  assert.deepEqual(exec('cd Playground/game && cd ../notes && rm -f *'), all(['game']));
+  assert.deepEqual(exec('cat Playground/game/../notes/b.md > /dev/null && rm Playground/game/../notes/b.md'), all(['game']));
+  assert.deepEqual(exec('cd /workspace/Playground/game; rm -rf ../notes'), all(['game']));
+  assert.deepEqual(exec("rm -rf '..'", 'Playground/game'), all(['game']));
+  assert.deepEqual(named('process', {action: 'write', sessionId: 's1', data: 'cd Playground/game\ncd ..\n'}), all(['game']));
   // Named projects.
   assert.deepEqual(exec("cd /workspace/Playground/elf-of-doom; python3 - <<'PY'\nsrc=open('chars.js').read()\nPY"), only('elf-of-doom'));
+  assert.deepEqual(exec('node -e "const a=[...b]; f(...a)" Playground/game/x.js'), only('game'), 'the ... of code is no parent folder');
+  assert.deepEqual(exec('node -e "g(...args)"', 'Playground/game'), only('game'));
   assert.deepEqual(exec('python3 fix.py', 'Playground/game/src'), only('game'));
   assert.deepEqual(exec(`cat ${root}/Playground/notes/a.md && cat "Playground\\game\\x"`), only('notes', 'game'));
   assert.deepEqual(named('process', {action: 'write', sessionId: 's1', data: "open('Playground/game/chars.js','w').write('')\n"}), only('game'));
@@ -128,8 +136,9 @@ test("a response's first call that may change files takes one fingerprint, befor
   await f.call('write', {path: 'Playground/notes/b.md', content: 'b'});
   await f.call('exec', {command: 'ls'});
   assert.deepEqual(f.ops(), ['copy', 'fingerprint', 'copy'], 'one fingerprint and one copy per project per response');
-  assert.deepEqual(f.requests[2], {operation: 'copy', workspace: f.root, id: run(1), root: '/state/copies',
+  assert.deepEqual(f.requests[2], {operation: 'copy', workspace: f.root, id: run(1), root: '/state/copies', live: [run(1)],
     projects: [{name: 'notes', start: 'absent'}]}, 'a project a complete fingerprint did not see is new');
+  assert.equal('live' in f.requests[1], false, 'a fingerprint ends no copy');
   await f.call('write', {path: 'Playground/game/chars.js', content: 'x'}, {runId: run(2)});
   assert.deepEqual(f.ops().slice(3), ['fingerprint', 'copy']);
   assert.deepEqual(f.requests.at(-1).projects, [{name: 'game', start: FP('a')}]);
@@ -156,6 +165,16 @@ test('a Playground-wide mention copies the sixteen most recently changed project
   await f.call('exec', {command: 'rm -rf Playground/*'});
   assert.deepEqual(f.requests.at(-1).projects.map(item => item.name),
     Array.from({length: 16}, (_, n) => `p${String(19 - n).padStart(2, '0')}`));
+  // A file edited in place leaves its folder's time: the fingerprint's newest change inside counts.
+  const g = fixture({projects, script: {fingerprint: () => ({projects: {}, complete: false,
+    newest: {p00: Date.UTC(2026, 1, 1), p01: Date.UTC(2026, 1, 2)}})}});
+  for (const [n, name] of Object.keys(projects).entries()) {
+    const time = new Date(Date.UTC(2026, 0, 1, 0, n));
+    fs.utimesSync(path.join(g.root, 'Playground', name), time, time);
+  }
+  await g.call('exec', {command: 'sed -i s/a/b/ Playground/*/a.js'});
+  assert.deepEqual(g.requests.at(-1).projects.map(item => item.name).slice(0, 3), ['p01', 'p00', 'p19']);
+  assert.equal(g.requests.at(-1).projects.length, 16);
 });
 
 test('nothing is copied for a refused call, another agent, a run that is no Portal response, or a linked project', async () => {
@@ -222,7 +241,7 @@ test("the turn's end records how it left the projects it kept; options and resto
   await f.call('exec', {command: 'touch Playground/game/a Playground/notes/b'});
   const ending = f.snapshots.end({runId: run(1)}, {agentId: 'pixel', runId: run(1)});
   await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(f.requests.at(-1), {operation: 'after', workspace: f.root, id: run(1), root: '/state/copies',
+  assert.deepEqual(f.requests.at(-1), {operation: 'after', workspace: f.root, id: run(1), root: '/state/copies', live: [],
     projects: [{name: 'game'}, {name: 'notes'}]});
   const options = f.snapshots.options({runs: [run(1).toUpperCase()]});
   await new Promise(resolve => setImmediate(resolve));
@@ -230,10 +249,49 @@ test("the turn's end records how it left the projects it kept; options and resto
   finish();
   await ending;
   assert.deepEqual(await options, {status: 200, body: {schemaVersion: 1, projects: []}});
-  assert.deepEqual(f.requests.at(-1), {operation: 'options', workspace: f.root, root: '/state/copies', runs: [run(1)]});
+  assert.deepEqual(f.requests.at(-1), {operation: 'options', workspace: f.root, root: '/state/copies', live: [], runs: [run(1)]});
   await f.snapshots.end({runId: run(2)}, {agentId: 'pixel', runId: run(2)});
   await f.snapshots.end({runId: run(1)}, {agentId: 'other', runId: run(1)});
   assert.equal(f.ops().filter(item => item === 'after').length, 1, 'a run that kept nothing, or another agent, records nothing');
+});
+
+test('the helper hears which runs are live: a run until its chat session ends it, then while its chat is busy', async () => {
+  let chatBusy = false;
+  const f = fixture({busy: () => chatBusy});
+  await f.call('read', {path: 'Playground/game/chars.js'});
+  await f.call('read', {path: 'Playground/game/chars.js'}, {runId: run(2)});
+  assert.deepEqual(f.requests.at(-1).live, [run(1), run(2)]);
+  await f.snapshots.end({runId: run(1)}, {agentId: 'pixel', runId: run(1), sessionKey: SESSION});
+  assert.deepEqual(f.requests.at(-1), {operation: 'after', workspace: f.root, id: run(1), root: '/state/copies',
+    live: [run(2)], projects: [{name: 'game'}]});
+  chatBusy = true; // its delegated work still runs
+  await f.snapshots.options({runs: [run(1)]});
+  assert.deepEqual(f.requests.at(-1).live, [run(1), run(2)]);
+  chatBusy = false;
+  await f.call('read', {path: 'Playground/notes/a.md'}, {runId: run(1)}); // a continuation of run 1
+  await f.snapshots.restore();
+  assert.deepEqual(f.requests.at(-1).live, [run(1), run(2)]);
+});
+
+test("a delegated child's end records nothing while its owner's session works, and the owner's end records it all", async () => {
+  const child = 'f00dcafe-1111-4222-8333-944455556666', childSession = 'agent:pixel:subagent:f00dcafe-1111-4222-8333-944455556666';
+  const f = fixture({ownerRun: context => [child, 'announce:v1:x:y'].includes(context.runId) ? run(1) : undefined});
+  const childCall = () => f.snapshots.before({toolName: 'write', params: {path: 'Playground/game/a.js'}},
+    {agentId: 'pixel', runId: child, sessionKey: childSession, toolName: 'write'}, undefined);
+  const childEnd = () => f.snapshots.end({runId: child}, {agentId: 'pixel', runId: child, sessionKey: childSession});
+  await f.call('exec', {command: 'echo spawn'});
+  await childCall();
+  await childEnd();
+  assert.equal(f.ops().includes('after'), false, 'the owner still works');
+  await f.snapshots.end({runId: run(1)}, {agentId: 'pixel', runId: run(1), sessionKey: SESSION});
+  assert.deepEqual(f.ops().filter(item => item === 'after'), ['after']);
+  // A child that outlives its owner's session records the response's end.
+  await childCall();
+  await childEnd();
+  assert.deepEqual(f.ops().filter(item => item === 'after'), ['after', 'after']);
+  // So does a continuation announced into the chat, also without a session key.
+  await f.snapshots.end({runId: 'announce:v1:x:y'}, {agentId: 'pixel', runId: 'announce:v1:x:y'});
+  assert.deepEqual(f.ops().filter(item => item === 'after'), ['after', 'after', 'after']);
 });
 
 // ------------------------------------------------------------ the restore --
@@ -242,7 +300,7 @@ test('a restore passes the receipt through in the spelling asked, and tells the 
   const f = fixture();
   const answer = await f.restore({snapshot: MIXED});
   assert.deepEqual(answer, {status: 200, body: receipt({snapshot: MIXED})});
-  assert.deepEqual(f.requests.at(-1), {operation: 'restore', workspace: f.root, root: '/state/copies', project: 'game', snapshot: LOWER});
+  assert.deepEqual(f.requests.at(-1), {operation: 'restore', workspace: f.root, root: '/state/copies', live: [], project: 'game', snapshot: LOWER});
   assert.deepEqual(f.changes, [[f.root, 'game']]);
   const confirm = FP('c');
   const g = fixture({script: {restore: receipt({status: 'confirm', written: 0, undo: null,
@@ -285,11 +343,19 @@ test("a call that may change files waits for a running restore; a read does not"
   let wrote = false, read = false;
   const writing = f.call('exec', {command: 'python3 tools/x.py'}).then(() => { wrote = true; });
   const reading = f.call('read', {path: 'Playground/notes/a.md'}, {runId: run(2)}).then(() => { read = true; });
+  // A cron job's, webhook's or channel's run, and a child whose spawn receipt is unknown, wait the same way.
+  let others = 0;
+  const unowned = ['cron:job-1', '6f1c2b7e-1111-4222-8333-944455556666'].map(runId =>
+    f.call('exec', {command: 'echo x >> Playground/game/chars.js'}, {runId}).then(() => { others += 1; }));
   await new Promise(resolve => setTimeout(resolve, 20));
-  assert.deepEqual([wrote, read], [false, false], 'the read waits only for the helper queue');
+  assert.deepEqual([wrote, read, others], [false, false, 0], 'the read waits only for the helper queue');
   release();
-  await Promise.all([restoring, writing, reading]);
+  await Promise.all([restoring, writing, reading, ...unowned]);
+  assert.equal(others, 2);
   assert.deepEqual(f.ops(), ['restore', 'copy', 'fingerprint']);
+  const g = fixture();
+  await g.call('read', {path: 'Playground/game/chars.js'}, {runId: 'cron:job-1'});
+  assert.deepEqual(g.ops(), [], 'such a run keeps no copy: it is no Portal response');
 });
 
 test("the helper's refusals become fixed codes, and anything unexpected an unknown outcome", async () => {
@@ -302,6 +368,7 @@ test("the helper's refusals become fixed codes, and anything unexpected an unkno
     [receipt({snapshot: run(2)}), 503, 'project-restore-unavailable'], [receipt({undo: null}), 503, 'project-restore-unavailable'],
     [receipt({status: 'unchanged'}), 503, 'project-restore-unavailable'], [receipt({left: ['a'], leftCount: 0}), 503, 'project-restore-unavailable'],
     [receipt({failed: ['a\nb'], failedCount: 1}), 503, 'project-restore-unavailable'], [receipt({failure: 'disk'}), 503, 'project-restore-unavailable'],
+    [receipt({left: ['notes\u0085.md'], leftCount: 1}), 503, 'project-restore-unavailable'],
     [{...receipt(), extra: 1}, 503, 'project-restore-unavailable'], [() => null, 503, 'project-restore-unavailable'],
     [() => { throw new Error('helper crashed'); }, 503, 'project-restore-unavailable'],
   ];

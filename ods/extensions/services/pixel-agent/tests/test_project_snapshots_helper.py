@@ -17,6 +17,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest
 from unittest import mock
@@ -84,8 +85,8 @@ class PathFolder:
             data = stream.read(info.st_size + 1)
         return data if len(data) == info.st_size and helper.identity(os.lstat(target)) == helper.identity(info) else None
 
-    def write(self, name, data, mode, durable=True):
-        temporary = os.path.join(self.path, helper.LEFTOVER + secrets.token_hex(8))
+    def write(self, name, data, mode, durable=True, prefix=helper.LEFTOVER):
+        temporary = os.path.join(self.path, prefix + secrets.token_hex(8))
         with open(temporary, "xb") as stream:
             stream.write(data)
         os.chmod(temporary, mode)
@@ -107,6 +108,30 @@ FOLDER = helper.Folder if DESCRIPTORS else PathFolder
 
 def put(path, text):
     Path(path).write_bytes(text.encode())
+
+
+def touch(path, seconds=5):
+    """Only the file's times change."""
+    later = time.time() + seconds
+    os.utime(path, (later, later))
+
+
+def leave(folder, name):
+    """A file created and never renamed, as a restore killed midway leaves its temporary."""
+    if hasattr(folder, "fd"):
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=folder.fd)
+    else:
+        fd = os.open(os.path.join(folder.path, name), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.write(fd, b"half written")
+    os.close(fd)
+
+
+class Killed(BaseException):
+    """The helper process dying where it stands (SIGKILL, the plugin's timeout)."""
+
+
+def snapshots(answer):
+    return [entry["snapshot"] for entry in answer["projects"]]
 
 
 def write_tree(folder, files):
@@ -268,10 +293,20 @@ class CopyAndRestoreTests(unittest.TestCase):
         self.assertEqual(w.options(run(1))["projects"][0]["restore"], {"undo": again["undo"], "side": "before"})
         self.assertEqual(w.restore(again["undo"])["status"], "restored")
         self.assertEqual(w.options(run(1))["projects"][0]["restore"]["side"], "after")
-        # A later change hides the undo: putting files back then would lose it.
+        # Files changed since: the undo is still offered, and asks first when it would overwrite a change.
+        offered = w.options(run(1))["projects"][0]["restore"]
+        touch(w.project / "chars.js")
+        self.assertEqual(w.options(run(1))["projects"][0]["restore"], offered, "a touch hides nothing")
         put(w.project / "chars.js", "edited by the owner")
-        self.assertIsNone(w.options(run(1))["projects"][0]["restore"])
+        self.assertEqual(w.options(run(1))["projects"][0]["restore"], offered)
+        asked = w.restore(offered["undo"])
+        self.assertEqual((asked["status"], asked["confirm"]["overwrite"]), ("confirm", ["chars.js"]))
+        self.assertEqual(w.text("chars.js"), "edited by the owner")
         self.assertEqual(w.options(run(2)), {"projects": []})
+        # A later turn that changes the project takes over its Put back, without the old undo.
+        w.turn(2, lambda: put(w.project / "chars.js", "turn 2"))
+        self.assertEqual(w.options(run(1), run(2))["projects"], [{"project": "Playground/game", "snapshot": run(2),
+                                                                  "late": False, "restore": None}])
 
     def test_changed_deleted_and_created_files_and_folders_are_put_back(self):
         w = Workspace(self, {"chars.js": ORIGINAL, "src/a.js": "a", "src/b.js": "b", "assets": None})
@@ -362,7 +397,7 @@ class WhatACopyHoldsTests(unittest.TestCase):
         w.after(1)
         restored = w.restore(run(1))
         self.assertEqual((restored["written"], restored["left"], restored["leftCount"]), (1, [], 0))
-        self.assertFalse((w.project / ".ods-restore-0123abcd").exists(), "a restore clears old temporaries")
+        self.assertTrue((w.project / ".ods-restore-0123abcd").exists(), "a restore removes only temporaries it wrote")
         self.assertEqual(tree(outside), {"secret.txt": "SECRET-OUTSIDE"})
 
     def test_a_link_the_turn_put_in_place_of_a_file_is_named_and_left(self):
@@ -496,18 +531,161 @@ class RetentionTests(unittest.TestCase):
                     for name in w.objects())
         self.assertLessEqual(total, 10000)
 
-    def test_copies_of_a_project_gone_for_two_weeks_are_dropped(self):
+    def test_copies_of_a_project_missing_for_two_weeks_are_dropped_counted_from_when_it_went_missing(self):
         w = Workspace(self, {"a.js": "a"})
         w.turn(1, lambda: put(w.project / "a.js", "b"))
         write_tree(w.playground / "other", {"x.js": "x"})
         store = w.state / helper.store_key(str(w.root), "game")
+        old = next((store / "copies").iterdir())
+        old.rename(old.with_name("000000000000001" + old.name[15:]))  # a turn from long ago
         shutil.rmtree(w.project)
         w.call("copy", id=run(2), projects=[{"name": "other"}], collect=True)
-        self.assertTrue(store.exists(), "kept while recent: the owner may still put it back")
-        old = next((store / "copies").iterdir())
-        old.rename(old.with_name("000000000000001" + old.name[15:]))
+        self.assertTrue(store.exists(), "kept two weeks from when ODS found it missing, however old its copies")
+        self.assertEqual(snapshots(w.options(run(1))), [run(1)])
+        # Back meanwhile, then gone again: the two weeks start over.
+        w.project.mkdir()
         w.call("copy", id=run(3), projects=[{"name": "other"}], collect=True)
+        self.assertFalse((store / "missing.json").exists())
+        shutil.rmtree(w.project)
+        w.call("copy", id=run(4), projects=[{"name": "other"}], collect=True)
+        missing = json.loads((store / "missing.json").read_text())
+        (store / "missing.json").write_text(json.dumps({**missing, "since": missing["since"] - 13 * 86400}))
+        w.call("copy", id=run(5), projects=[{"name": "other"}], collect=True)
+        self.assertTrue(store.exists())
+        (store / "missing.json").write_text(json.dumps({**missing, "since": missing["since"] - 15 * 86400}))
+        w.call("copy", id=run(6), projects=[{"name": "other"}], collect=True)
         self.assertFalse(store.exists())
+
+    def test_the_size_cap_never_drops_a_projects_only_put_back_copy_for_another_projects_copy(self):
+        w = Workspace(self, {"chars.js": "x" * 60}, limits={"storeBytes": 100})
+        w.turn(1, lambda: put(w.project / "chars.js", "BROKEN"))
+        write_tree(w.playground / "other", {"readme.md": "y" * 60})
+        w.call("copy", id=run(2), projects=[{"name": "other"}], collect=True, live=[run(2)])
+        self.assertEqual(sorted(snapshots(w.options(run(1), run(2)))), [run(1), run(2)])
+        self.assertEqual(w.restore(run(1))["status"], "restored")
+        self.assertEqual(w.text("chars.js"), "x" * 60)
+
+
+class LiveRunTests(unittest.TestCase):
+    """The gateway names the runs it still runs (live); a copy's run outside them has ended."""
+
+    def test_a_copy_whose_run_is_gone_is_ended_at_the_next_request_and_never_hides_the_changing_turn(self):
+        w = Workspace(self, {"chars.js": "v0"})
+        w.turn(1, lambda: put(w.project / "chars.js", "BROKEN by turn 1"))
+        w.call("copy", id=run(2), projects=[{"name": "game"}], live=[run(2)])  # turn 2 reads; the gateway restarts
+        self.assertEqual(snapshots(w.call("options", runs=[run(1), run(2)], live=[run(2)])), [run(2)],
+                         "while turn 2 runs, it may still change the project")
+        self.assertEqual(snapshots(w.call("options", runs=[run(1), run(2)], live=[])), [run(1)])
+        self.assertEqual(w.restore(run(1))["status"], "restored", "nothing changed after turn 1: no question")
+        # A turn that changed the project before the gateway stopped is offered, and asks first.
+        w.call("copy", id=run(3), projects=[{"name": "game"}], live=[run(3)])
+        put(w.project / "chars.js", "changed by turn 3 before the gateway stopped")
+        self.assertEqual(snapshots(w.call("options", runs=[run(1), run(3)], live=[])), [run(3)])
+        asked = w.call("restore", project="game", snapshot=run(3), live=[])
+        self.assertEqual((asked["status"], asked["confirm"]["overwrite"]), ("confirm", ["chars.js"]))
+        done = w.call("restore", project="game", snapshot=run(3), confirm=asked["confirm"]["token"], live=[])
+        self.assertEqual((done["status"], w.text("chars.js")), ("restored", "v0"))
+
+    def test_a_live_runs_copy_is_never_dropped_and_a_turn_that_ran_beside_another_change_asks_first(self):
+        w = Workspace(self, {"chars.js": "v0"})
+        w.call("copy", id=run(1), projects=[{"name": "game"}], live=[run(1)])
+        w.call("after", id=run(1), projects=[{"name": "game"}], live=[run(1)])  # an end recorded too early
+        time.sleep(0.01)
+        w.call("copy", id=run(2), projects=[{"name": "game"}], live=[run(1), run(2)])  # another chat's turn
+        self.assertEqual(w.records(), [run(1), run(2)], "a live run's copy is kept, though nothing changed yet")
+        time.sleep(0.01)
+        put(w.project / "chars.js", "changed by turn 1")
+        w.call("after", id=run(1), projects=[{"name": "game"}], live=[run(2)])
+        time.sleep(0.01)
+        w.call("after", id=run(2), projects=[{"name": "game"}], live=[])
+        # Turn 2 only read, but turn 1 changed the project while it ran: putting either back asks first.
+        for snapshot in (run(2), run(1)):
+            asked = w.restore(snapshot)
+            self.assertEqual((asked["status"], asked["confirm"]["overwrite"]), ("confirm", ["chars.js"]), snapshot)
+        self.assertEqual(w.text("chars.js"), "changed by turn 1")
+        # Turns one after the other ask nothing.
+        w.turn(3, lambda: put(w.project / "chars.js", "turn 3"))
+        self.assertEqual(w.restore(run(3))["status"], "restored")
+
+    def test_the_fingerprint_says_when_anything_in_each_project_last_changed(self):
+        w = Workspace(self, {"chars.js": "x"})
+        write_tree(w.playground / "other", {"a.js": "a"})
+        time.sleep(0.05)
+        before = os.stat(w.project)
+        put(w.project / "chars.js", "edited in place")
+        os.utime(w.project, ns=(before.st_atime_ns, before.st_mtime_ns))
+        newest = w.fingerprint()["newest"]
+        self.assertGreater(newest["game"], newest["other"])
+        self.assertGreaterEqual(newest["game"], os.stat(w.project / "chars.js").st_mtime_ns // 1_000_000)
+
+
+def killed_after_one_write():
+    """Folder.write that writes one project file, then dies in the middle of the next, leaving its temporary."""
+    real, written = FOLDER.write, []
+
+    def write(folder, name, data, mode, durable=True, prefix=helper.LEFTOVER):
+        if prefix != helper.LEFTOVER and written:
+            leave(folder, prefix + "0123456789abcdef")
+            raise Killed()
+        if prefix != helper.LEFTOVER:  # a project file, not the store's
+            written.append(name)
+        return real(folder, name, data, mode, durable, prefix)
+    return write
+
+
+class KilledRestoreTests(unittest.TestCase):
+    def test_a_restore_killed_midway_is_finished_by_its_retry_and_its_undo_keeps_the_turns_version(self):
+        w = Workspace(self, {"a.js": "before a", "b.js": "before b", "c.js": "before c"})
+        w.turn(1, lambda: [put(w.project / name, f"TURN {name}") for name in ("a.js", "b.js", "c.js")])
+        turned = tree(w.project)
+        with mock.patch.object(FOLDER, "write", killed_after_one_write()), self.assertRaises(Killed):
+            w.restore(run(1))
+        self.assertEqual(sum(w.text(name).startswith("before") for name in ("a.js", "b.js", "c.js")), 1)
+        state = json.loads((w.state / helper.store_key(str(w.root), "game") / "restore.json").read_text())
+        self.assertTrue(state["pending"])
+        self.assertEqual(w.options(run(1))["projects"][0]["restore"], None, "no undo before the restore is finished")
+        w.turn(2, lambda: None, "game")  # a later turn's copy and prune keep the killed restore's undo copy
+        retry = w.restore(run(1))
+        self.assertEqual((retry["status"], retry["undo"], retry["written"]), ("restored", state["undo"], 2))
+        self.assertEqual([w.text(name) for name in ("a.js", "b.js", "c.js")], ["before a", "before b", "before c"])
+        self.assertEqual([name for name in os.listdir(w.project) if name.startswith(".ods-restore-")], [],
+                         "the retry removes what its killed attempt left")
+        w.restore(retry["undo"])
+        self.assertEqual(tree(w.project), turned, "the undo puts back the turn's version, not the half-restored one")
+
+    def test_an_undo_killed_midway_is_offered_again_and_finished_under_its_own_undo(self):
+        w = Workspace(self, {"a.js": "before a", "b.js": "before b"})
+        w.turn(1, lambda: [put(w.project / name, f"TURN {name}") for name in ("a.js", "b.js")])
+        first = w.restore(run(1))
+        with mock.patch.object(FOLDER, "write", killed_after_one_write()), self.assertRaises(Killed):
+            w.restore(first["undo"])
+        self.assertEqual(w.options(run(1))["projects"][0]["restore"], {"undo": first["undo"], "side": "before"},
+                         "the next step is that Undo again")
+        retry = w.restore(first["undo"])
+        self.assertEqual((retry["status"], w.text("a.js"), w.text("b.js")), ("restored", "TURN a.js", "TURN b.js"))
+        self.assertEqual(w.options(run(1))["projects"][0]["restore"], {"undo": retry["undo"], "side": "after"})
+        w.restore(retry["undo"])
+        self.assertEqual((w.text("a.js"), w.text("b.js")), ("before a", "before b"))
+
+    def test_a_restore_that_cannot_list_its_result_still_answers_restored_and_its_retry_keeps_the_undo(self):
+        w = Workspace(self, {"chars.js": ORIGINAL})
+        w.turn(1, lambda: put(w.project / "chars.js", "broken"))
+        real, walks = helper.walk, []
+
+        def unlistable_after_applying(project, limits):
+            walks.append(project)
+            if len(walks) == 2:
+                raise helper.HelperError("folder-unusable")
+            return real(project, limits)
+        with mock.patch.object(helper, "walk", unlistable_after_applying):
+            first = w.restore(run(1))
+        self.assertEqual((first["status"], first["written"]), ("restored", 1), "never 'nothing was changed'")
+        self.assertEqual(w.text("chars.js"), ORIGINAL)
+        again = w.restore(run(1))
+        self.assertEqual((again["status"], again["undo"], again["written"]), ("restored", first["undo"], 0))
+        self.assertEqual(w.restore(run(1)), again, "the result is known now")
+        w.restore(first["undo"])
+        self.assertEqual(w.text("chars.js"), "broken")
 
 
 class RefusalTests(unittest.TestCase):
@@ -532,6 +710,31 @@ class RefusalTests(unittest.TestCase):
         self.assertEqual(w.restore(run(1)), {"error": "folder-unusable"})
         self.assertEqual(tree(outside), {})
 
+    def test_a_listing_read_back_with_a_path_outside_its_project_is_damaged(self):
+        w = Workspace(self, {"chars.js": ORIGINAL, "src/a.js": "a"})
+        w.turn(1, lambda: put(w.project / "chars.js", "broken"))
+        store = w.state / helper.store_key(str(w.root), "game")
+        record_file = next((store / "copies").iterdir())
+        record = json.loads(record_file.read_text())
+        saved = json.loads((store / "lists" / record["list"]).read_text())
+        for bad in ("../outside.js", "src//a.js", "./chars.js", "/chars.js", "src/..", ""):
+            doc = {**saved, "files": [[bad] + saved["files"][0][1:]] + saved["files"][1:]}
+            data = helper.canonical(doc)
+            (store / "lists" / helper.sha256(data)).write_bytes(data)
+            record_file.write_text(json.dumps({**record, "list": helper.sha256(data)}))
+            self.assertEqual(w.restore(run(1)), {"error": "damaged"}, bad)
+        self.assertEqual(w.text("chars.js"), "broken")
+        self.assertEqual(sorted(os.listdir(w.root.parent)), ["state", "workspace"])
+
+    def test_a_name_with_a_control_character_is_never_listed_named_or_removed(self):
+        w = Workspace(self, {"chars.js": ORIGINAL})
+        w.turn(1, lambda: (put(w.project / "chars.js", "broken"), put(w.project / "notes\x85.md", "made by the turn")))
+        restored = w.restore(run(1))
+        self.assertEqual((restored["written"], restored["removed"], restored["left"]), (1, 0, []))
+        self.assertTrue((w.project / "notes\x85.md").exists())
+        self.assertFalse(helper.visible("a\x9fb") or helper.visible("a\x7fb") or helper.visible("a\x1fb"))
+        self.assertTrue(helper.visible("a\xa0b"))
+
     def test_requests_are_checked(self):
         w = Workspace(self, {"chars.js": ORIGINAL})
         for bad in ({"operation": "copy", "id": run(1), "projects": [{"name": "../x"}]},
@@ -539,6 +742,8 @@ class RefusalTests(unittest.TestCase):
                     {"operation": "restore", "project": "game", "snapshot": run(1), "confirm": "not-a-token"},
                     {"operation": "restore", "project": "game/src", "snapshot": run(1)},
                     {"operation": "copy", "id": run(1), "projects": [{"name": "game"}], "limits": {"files": 10 ** 9}},
+                    {"operation": "copy", "id": run(1), "projects": [{"name": "game"}], "live": ["x"]},
+                    {"operation": "options", "runs": [], "live": run(1)},
                     {"operation": "delete"}):
             self.assertEqual(w.call(**{"operation": bad.pop("operation")}, **bad), {"error": "invalid"}, bad)
 
@@ -570,10 +775,10 @@ class DescriptorTests(unittest.TestCase):
         w.turn(1, change)
         real = helper.apply_plan
 
-        def swapped(project, steps, objects):
+        def swapped(project, steps, objects, undo):
             os.rename(w.project, w.playground / ".g")
             os.symlink(outside, w.project)
-            return real(project, steps, objects)
+            return real(project, steps, objects, undo)
         helper.apply_plan = swapped
         try:
             restored = w.restore(run(1))
@@ -589,10 +794,10 @@ class DescriptorTests(unittest.TestCase):
         w.turn(1, lambda: put(w.project / "src" / "a.js", "turn"))
         real = helper.apply_plan
 
-        def swapped(project, steps, objects):
+        def swapped(project, steps, objects, undo):
             os.rename(w.project / "src", w.project / ".src")
             os.symlink(outside, w.project / "src")
-            return real(project, steps, objects)
+            return real(project, steps, objects, undo)
         helper.apply_plan = swapped
         try:
             restored = w.restore(run(1))
@@ -647,6 +852,21 @@ class DescriptorTests(unittest.TestCase):
         os.chmod(w.project, 0)
         self.addCleanup(os.chmod, w.project, 0o755)
         self.assertEqual(w.restore(restored["undo"]), {"error": "folder-unusable"})
+
+    def test_a_mode_read_back_from_the_store_is_only_permission_bits(self):
+        w = Workspace(self, {"tool.sh": "echo hi"})
+        os.chmod(w.project / "tool.sh", 0o755)
+        w.turn(1, lambda: put(w.project / "tool.sh", "broken"))
+        store = w.state / helper.store_key(str(w.root), "game")
+        record_file = next((store / "copies").iterdir())
+        record = json.loads(record_file.read_text())
+        saved = json.loads((store / "lists" / record["list"]).read_text())
+        saved["files"][0][3] = 0o4755
+        data = helper.canonical(saved)
+        (store / "lists" / helper.sha256(data)).write_bytes(data)
+        record_file.write_text(json.dumps({**record, "list": helper.sha256(data)}))
+        self.assertEqual(w.restore(run(1))["status"], "restored")
+        self.assertEqual(stat.S_IMODE(os.stat(w.project / "tool.sh").st_mode), 0o755)
 
     def test_an_unprivate_copies_folder_is_refused(self):
         w = Workspace(self, {"a.js": "a"})

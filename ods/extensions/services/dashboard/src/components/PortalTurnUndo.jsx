@@ -13,7 +13,8 @@ const pick = (count, one, many) => (count === 1 ? one : many)
 // Toward 'before' puts back the files from before the turn; toward 'after'
 // undoes that.
 const PLACE = {before: 'how it was before this turn', after: 'how it was before you put the files back'}
-const PREVIEW = 'A preview of this project still shows the earlier files until Portal publishes it again.'
+// A restore never publishes: a preview keeps what Portal last published, often the turn's own version.
+const PREVIEW = "A preview of this project may still show this turn's version until Portal publishes it again."
 const lateText = project => `ODS made this copy after the turn had already changed some files in ${project}, so putting it back may not undo every change.`
 
 // Why some files could not be changed, and what to do: a step that can work,
@@ -26,13 +27,23 @@ function failureText({failed, failedCount, failure}) {
   return {text: `${files} could not be changed.`, retry: true, help: true}
 }
 
+// A restore that could not change some files: what it did change (detail),
+// or that it changed nothing.
+function partlyText(project, toward, detail) {
+  if (toward === 'before') return detail ? `ODS put back only some of the files in ${project}${detail}.` : `ODS could not put back the files in ${project}.`
+  return detail ? `ODS undid only part of putting back ${project}${detail}.` : `ODS could not undo putting back ${project}.`
+}
+
 // What a finished restore did, what it left as it was and why, and what it
 // could not change.
 function outcomeNotice(receipt, toward) {
   const {project, status, written, removed, left, leftCount, failedCount, late} = receipt
   const lines = [], changes = [written && `${plural(written, 'file')} written back`, removed && `${plural(removed, 'file')} removed`].filter(Boolean)
+  const detail = changes.length ? `: ${changes.join(' and ')}` : ''
   let help = false, retry = false, alert = false
-  if (status === 'restored') lines.push(`${project} is back to ${PLACE[toward]}${changes.length ? `: ${changes.join(' and ')}` : ''}.`)
+  // Some files could not be changed: the project is not back to how it was.
+  if (status === 'restored' && failedCount) lines.push(partlyText(project, toward, changes.length ? detail : null))
+  else if (status === 'restored') lines.push(`${project} is back to ${PLACE[toward]}${detail}.`)
   else if (!leftCount) lines.push(`${project} already matches ${PLACE[toward]}, so nothing changed.`)
   else lines.push(`Nothing in ${project} was changed.`)
   if (late && toward === 'before') lines.push(lateText(project))
@@ -47,7 +58,7 @@ function outcomeNotice(receipt, toward) {
     retry = Boolean(failure.retry)
     alert = true
   }
-  if (status === 'restored' && written + removed > 0) lines.push(PREVIEW)
+  if (status === 'restored' && toward === 'before' && written + removed > 0) lines.push(PREVIEW)
   return {text: lines.join(' '), alert, help, retry}
 }
 
@@ -61,7 +72,7 @@ function refusalNotice(code, project, toward) {
     case 'project-snapshot-pruned':
       return {text: `ODS no longer keeps ${copy} (it keeps the latest few), so nothing was changed.`, gone: true}
     case 'project-snapshot-unavailable':
-      return {text: `ODS did not keep ${copy}, so nothing was changed.`, gone: true}
+      return {text: `ODS no longer keeps ${copy}, so nothing was changed.`, gone: true}
     case 'project-snapshot-damaged':
       return {text: `${copy[0].toUpperCase()}${copy.slice(1)} is damaged, so nothing was changed.`, gone: true, help: true, alert: true}
     case 'project-folder-unusable':

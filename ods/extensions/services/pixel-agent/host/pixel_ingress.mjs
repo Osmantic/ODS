@@ -1702,8 +1702,9 @@ const PROJECT_RESTORE_TIMEOUT_MS = 30000;
 const sameKeys = (value, keys) => !!value && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).sort().join() === [...keys].sort().join();
 const restoreCount = item => Number.isSafeInteger(item) && item >= 0 && item <= 65536;
+// No C0, DEL or C1 control character in a file name, as dashboard-api refuses them.
 const restoreListed = (items, total) => Array.isArray(items) && items.length <= 8 && items.length <= total
-  && items.every(item => typeof item === 'string' && item.length >= 1 && item.length <= 512 && !/[\x00-\x1f\x7f]/.test(item));
+  && items.every(item => typeof item === 'string' && item.length >= 1 && item.length <= 512 && !/[\x00-\x1f\x7f-\x9f]/.test(item));
 
 export function projectRestoreReceipt(value, request) {
   const confirm = value?.confirm;

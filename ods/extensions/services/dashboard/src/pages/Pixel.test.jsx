@@ -207,7 +207,7 @@ describe('Pixel', () => {
     await waitFor(()=>expect(fetch.mock.calls.some(([url])=>url==='/api/pixel/projects/restore')).toBe(true))
     const [, options] = fetch.mock.calls.find(([url])=>url==='/api/pixel/projects/restore')
     expect(JSON.parse(options.body)).toEqual({chat_id:'undo-chat',project:'Playground/game',snapshot:runId})
-    expect(await screen.findByText('Playground/game is back to how it was before this turn: 1 file written back. A preview of this project still shows the earlier files until Portal publishes it again.')).toBeVisible()
+    expect(await screen.findByText("Playground/game is back to how it was before this turn: 1 file written back. A preview of this project may still show this turn's version until Portal publishes it again.")).toBeVisible()
     expect(screen.getByRole('button',{name:'Undo putting back Playground/game'})).toBeEnabled()
     // The host is asked again, so a reload would offer the same Undo.
     await waitFor(()=>expect(fetch.mock.calls.filter(([url])=>url==='/api/pixel/projects/restore-options').length).toBe(2))

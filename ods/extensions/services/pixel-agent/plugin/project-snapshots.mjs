@@ -18,10 +18,12 @@
 // ODS tool is given, or Playground/<name> anywhere in an exec command or in
 // what a process call sends (also inside interpreter code). A mention of
 // Playground without one plain project name (Playground/*, cd Playground && ...,
-// os.path.join('Playground', ...), find Playground) touches every project, up
-// to 16. Before a response's first call that may change files, the helper
-// also takes a stat-level fingerprint of every project; a copy taken after its
-// project had already changed is marked late, and Portal says so.
+// os.path.join('Playground', ...), find Playground), or a named project left
+// with .. (cd Playground/game && cd ../notes), touches every project, up to the
+// 16 whose files changed most recently. Before a response's first call that
+// may change files, the helper also takes a stat-level fingerprint of every
+// project; a copy taken after its project had already changed is marked late,
+// and Portal says so.
 import {spawn} from 'node:child_process';
 import * as fs from 'node:fs';
 import os from 'node:os';
@@ -93,6 +95,8 @@ const PATCH_FILE = /^\*\*\* (?:(?:Add|Update|Delete) File|Move to): ([^\r\n]+)$/
 const MENTION = /(?<![A-Za-z0-9._-])playground(?![A-Za-z0-9_-])/gi;
 const NAMED = /^[\\/]+([A-Za-z0-9][A-Za-z0-9._-]*)/;
 const WORD = /[A-Za-z0-9][A-Za-z0-9._-]{0,63}/g;
+// A parent folder (..) as a part of a path or a cd, not the ... of code.
+const PARENT = /(?:^|[\s/'"`=:;(&|])\.\.(?=$|[\s/'"`;)&|])/m;
 const MAX_SCANNED = 1024 * 1024;
 
 // A path as the workspace sees it: relative, under the sandbox alias
@@ -153,11 +157,13 @@ export function projectsNamed(toolName, params, root, folders = () => []) {
         .map(([, value]) => value).join('\n');
     const mentioned = mentions(text);
     mentioned.names.forEach(item => found.add(item));
-    all ||= mentioned.all;
+    // A project named and then left with .. (cd Playground/game && cd ../notes,
+    // Playground/game/../notes): any other project.
+    all ||= mentioned.all || (mentioned.names.size > 0 && PARENT.test(text));
     const where = name === 'exec' ? workspaceRelative(args.workdir, root) : null;
     if (/^playground(?:\/|$)/i.test(where ?? '')) {
       // Run in Playground itself, or leaving its project with ..: every project.
-      if (!where.split('/')[1] || text.includes('..')) all = true;
+      if (!where.split('/')[1] || PARENT.test(text)) all = true;
       const present = new Set(folders());
       for (const [word] of text.slice(0, MAX_SCANNED).matchAll(WORD)) if (present.has(word) && projectName(word)) found.add(word);
     }
@@ -184,11 +190,15 @@ function playgroundNames(root) {
   catch (error) { if (typeof error?.code === 'string') return []; throw error; }
 }
 
-// The projects a Playground-wide mention copies: the most recently changed first.
-function busiestProjects(root) {
+// The projects a Playground-wide mention copies: the most recently changed
+// first, by the newest change to anything inside each (the fingerprint's
+// newest; an edit in place does not change its folder's time), else by the
+// project folder's own time.
+function busiestProjects(root, newest = {}) {
   return playgroundNames(root).filter(projectName).flatMap(name => {
     const stat = lstatOrNull(path.join(root, 'Playground', name));
-    return realDirectory(stat) ? [{name, time: stat.mtimeMs}] : [];
+    const inside = Number.isSafeInteger(newest?.[name]) ? newest[name] : 0;
+    return realDirectory(stat) ? [{name, time: Math.max(inside, stat.mtimeMs)}] : [];
   }).sort((a, b) => b.time - a.time).slice(0, ALL_PROJECTS).map(item => item.name);
 }
 
@@ -224,8 +234,9 @@ export function helperRunner({python = '/usr/bin/python3', helper = HELPER, time
 // ----------------------------------------------------------------- receipts --
 
 const count = value => Number.isSafeInteger(value) && value >= 0 && value <= 65536;
+// No C0, DEL or C1 control character, as dashboard-api refuses them.
 const pathList = (items, total) => Array.isArray(items) && items.length <= 8 && items.length <= total
-  && items.every(item => typeof item === 'string' && item.length >= 1 && item.length <= 512 && !/[\x00-\x1f\x7f]/.test(item));
+  && items.every(item => typeof item === 'string' && item.length >= 1 && item.length <= 512 && !/[\x00-\x1f\x7f-\x9f]/.test(item));
 
 // The helper's restore answer for exactly this project and copy, or null.
 function validReceipt(value, project, snapshot) {
@@ -272,22 +283,31 @@ function remember(map, key, value, limit = 512) {
 // runs at agent_end and records how the turn left them; restore() and
 // options() serve the owner's routes. workspaceRoot() is the configured
 // workspace, ownerRun(context) the owner run a delegated run works for,
-// busy(user) whether a response runs in that chat, portalActive() whether any
-// Portal run, tool or background command is alive, and changed(root, name)
-// hears of each restore that changed a project.
+// busy(user) whether a response or its delegated work runs in that chat,
+// portalActive() whether any Portal run, tool or background command is alive,
+// and changed(root, name) hears of each restore that changed a project.
 export function createProjectSnapshots({agentId = 'pixel', workspaceRoot = () => undefined, ownerRun = () => undefined,
   busy = () => true, portalActive = () => true, changed = () => {}, warn = () => {}, now = Date.now,
   stateDir = path.join(process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.openclaw'), SNAPSHOT_DIRECTORY),
   runHelper = helperRunner(), limits, waitMs = 10000} = {}) {
   const runs = new Map(), ending = new Map(), restoring = new Map();
+  const chat = `agent:${agentId}:openai-user:`;
   // false once the helper answers that this system lacks what it needs:
   // then no copy is asked for again, and no turn offers an undo.
   let supported = true, tail = Promise.resolve(), collected = 0;
+  const stillBusy = user => { try { return Boolean(busy(user)); } catch { return true; } };
+  // The runs whose copies may still change: a run is live from its first call
+  // until its owner's chat session ends it, and after that while its chat
+  // still has delegated work. The helper never drops their copies, and ends
+  // any other copy that has no end yet (a run of an earlier gateway process).
+  const liveRuns = () => [...runs].filter(([, run]) => !run.ended || run.kept.size && run.user && stillBusy(run.user))
+    .map(([id]) => id);
   // One helper at a time, so copies, ends and restores never overlap. ready()
   // is asked again when the request's turn comes; false answers busy.
   const queue = (request, ready = () => true) => {
     const next = tail.then(() => ready()
-      ? runHelper({...request, root: stateDir, ...(limits ? {limits} : {})}) : {error: 'busy'});
+      ? runHelper({...request, root: stateDir, ...(request.operation === 'fingerprint' ? {} : {live: liveRuns()}),
+        ...(limits ? {limits} : {})}) : {error: 'busy'});
     tail = next.catch(() => {});
     return next;
   };
@@ -297,6 +317,10 @@ export function createProjectSnapshots({agentId = 'pixel', workspaceRoot = () =>
     const runId = ownerRun(context) ?? context?.runId ?? event?.runId;
     return typeof runId === 'string' && RUN.test(runId) ? runId.toLowerCase() : null;
   };
+  // Whether a run works in its owner's own chat session (the Portal response,
+  // or a continuation announced into it), not in a delegated child's session.
+  const ownSession = context => typeof context?.sessionKey === 'string' ? context.sessionKey.startsWith(chat)
+    : String(context?.runId ?? '').startsWith('announce:') || [undefined, context?.runId].includes(ownerRun(context));
 
   async function fingerprint(root) {
     try {
@@ -312,21 +336,31 @@ export function createProjectSnapshots({agentId = 'pixel', workspaceRoot = () =>
 
   async function copy(event, context, decision) {
     if (!supported || decision?.block === true || context?.agentId !== agentId) return;
+    const toolName = context?.toolName ?? event?.toolName;
+    const mayChange = !READ_ONLY.has(toolOf(toolName, event?.params));
+    // Every Pixel call that may change files waits for a running restore,
+    // whatever started its run: a Portal response, a cron job, a webhook, a
+    // channel, or a child whose spawn receipt is not known yet.
+    if (mayChange) await Promise.all([...restoring.values()]);
     const id = runOf(event, context), root = id && canonicalRoot(workspaceRoot());
     if (!root) return;
-    const toolName = context?.toolName ?? event?.toolName, folders = () => playgroundNames(root);
-    const mayChange = !READ_ONLY.has(toolOf(toolName, event?.params));
-    // A call that may change files waits for a restore that is running.
-    if (mayChange) await Promise.all([...restoring.values()]);
+    const folders = () => playgroundNames(root);
     // The call as the model wrote it (an exec command before ODS wraps it)
     // and as it will run (a routed path or working directory).
     const touched = [projectsNamed(toolName, event?.params, root, folders), projectsNamed(toolName, decision?.params, root, folders)];
     const names = new Set(touched.flatMap(item => item.names));
-    if (touched.some(item => item.all)) busiestProjects(root).forEach(name => names.add(name));
-    const run = runs.get(id) ?? remember(runs, id, {kept: new Set(), attempts: new Map(), start: null});
+    const run = runs.get(id) ?? remember(runs, id, {kept: new Set(), attempts: new Map(), start: null,
+      ended: false, ownerOpen: false, user: null});
+    run.ended = false;
+    if (ownSession(context)) {
+      run.ownerOpen = true;
+      const user = context?.sessionKey?.startsWith(chat) ? context.sessionKey.slice(chat.length) : '';
+      if (USER.test(user)) run.user = user;
+    }
     if (!run.start && mayChange) run.start = fingerprint(root);
     const start = run.start ? await run.start : null;
     if (!supported) return;
+    if (touched.some(item => item.all)) busiestProjects(root, start?.newest).forEach(name => names.add(name));
     const wanted = [];
     for (const spelled of names) {
       const project = projectFolder(root, spelled);
@@ -351,9 +385,18 @@ export function createProjectSnapshots({agentId = 'pixel', workspaceRoot = () =>
     }
   }
 
+  // A response's end is its owner session's: the Portal run, or the last
+  // continuation announced into its chat. A delegated child that ends while
+  // that session still works records nothing; one that outlives it records
+  // the projects as the whole response left them.
   async function end(event, context) {
     if (context?.agentId !== agentId) return;
-    const id = runOf(event, context), run = id && runs.get(id), root = run?.kept.size && canonicalRoot(workspaceRoot());
+    const id = runOf(event, context), run = id && runs.get(id);
+    if (!run) return;
+    if (ownSession(context)) run.ownerOpen = false;
+    else if (run.ownerOpen) return;
+    run.ended = true;
+    const root = run.kept.size && canonicalRoot(workspaceRoot());
     if (!root) return;
     const pending = queue({operation: 'after', workspace: root, id, projects: [...run.kept].map(name => ({name}))});
     remember(ending, id, pending.catch(() => {}));

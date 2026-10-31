@@ -25,7 +25,7 @@ test('one step puts the files back, says what changed, and Undo reverses it; the
   expect(screen.getAllByRole('button')).toHaveLength(1)
   fireEvent.click(screen.getByRole('button', {name: PUT_BACK}))
   expect(await screen.findByText('Playground/game is back to how it was before this turn: 1 file written back and 2 files removed. '
-    + 'A preview of this project still shows the earlier files until Portal publishes it again.')).toBeVisible()
+    + "A preview of this project may still show this turn's version until Portal publishes it again.")).toBeVisible()
   expect(fetch).toHaveBeenCalledWith('/api/pixel/projects/restore', expect.objectContaining({method: 'POST', cache: 'no-store'}))
   // A success never looks like an error.
   expect(screen.queryByRole('alert')).toBeNull()
@@ -35,7 +35,8 @@ test('one step puts the files back, says what changed, and Undo reverses it; the
 
   fetch.mockResolvedValueOnce(answer(receipt({snapshot: UNDO, written: 3, removed: 0, undo: UNDO_2})))
   fireEvent.click(screen.getByRole('button', {name: 'Undo putting back Playground/game'}))
-  expect(await screen.findByText(/^Playground\/game is back to how it was before you put the files back: 3 files written back\./)).toBeVisible()
+  // Back to the turn's own version: a preview Portal published in the turn shows it already.
+  expect(await screen.findByText('Playground/game is back to how it was before you put the files back: 3 files written back.')).toBeVisible()
   // The Undo's own copy puts the files from before the turn back again.
   fetch.mockResolvedValueOnce(answer(receipt({snapshot: UNDO_2, undo: 'restore_77777777-2222-4333-8444-555555555555'})))
   fireEvent.click(screen.getByRole('button', {name: PUT_BACK}))
@@ -113,7 +114,10 @@ test('files that could not be changed are named with their cause, and Try again 
     vi.stubGlobal('fetch', fetch)
     const {unmount} = render(<PortalTurnUndo chatId="chat-1" entries={[entry()]}/>)
     fireEvent.click(screen.getByRole('button', {name: PUT_BACK}))
-    expect(await screen.findByRole('alert')).toHaveTextContent(text)
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(text)
+    // Never "back to how it was" while some files could not be changed.
+    expect(alert.textContent.startsWith('ODS put back only some of the files in Playground/game: 1 file written back and 2 files removed.')).toBe(true)
     expect(Boolean(screen.queryByRole('button', {name: 'Try again'}))).toBe(retry)
     expect(Boolean(screen.queryByRole('link'))).toBe(help)
     // The part that was put back can still be undone.
@@ -125,6 +129,22 @@ test('files that could not be changed are named with their cause, and Try again 
     }
     unmount()
   }
+})
+
+test('a restore that changed nothing it could, or an Undo that did part, says so first', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => answer(receipt({written: 0, removed: 0, failed: ['chars.js'], failedCount: 1, failure: 'in-use'}))))
+  const {unmount} = render(<PortalTurnUndo chatId="chat-1" entries={[entry()]}/>)
+  fireEvent.click(screen.getByRole('button', {name: PUT_BACK}))
+  expect(await screen.findByRole('alert')).toHaveTextContent('ODS could not put back the files in Playground/game. '
+    + 'chars.js could not be changed because a program is using it. Close it, then try again.')
+  expect(screen.queryByText(/preview/)).toBeNull()
+  unmount()
+  vi.stubGlobal('fetch', vi.fn(async () => answer(receipt({snapshot: UNDO, written: 2, removed: 0, undo: UNDO_2,
+    failed: ['a.js'], failedCount: 1, failure: 'changed'}))))
+  render(<PortalTurnUndo chatId="chat-1" entries={[entry({restore: {undo: UNDO, side: 'before'}})]}/>)
+  fireEvent.click(screen.getByRole('button', {name: 'Undo putting back Playground/game'}))
+  expect(await screen.findByRole('alert')).toHaveTextContent('ODS undid only part of putting back Playground/game: 2 files written back. '
+    + 'a.js changed while ODS was working, so it was left as it is. Try again to finish.')
 })
 
 test('a copy made after the turn had already changed files says so', async () => {
@@ -140,7 +160,7 @@ test('each refusal says why nothing changed; a copy that is gone takes its butto
   const cases = [
     [refusal('project-restore-busy', 409), 'Portal is still working on a reply or a command it started, in this chat or another. Nothing was changed; try again once it finishes.', false, false, true],
     [refusal('project-snapshot-pruned', 404), 'ODS no longer keeps the copy of Playground/game from before this turn (it keeps the latest few), so nothing was changed.', false, false, false],
-    [refusal('project-snapshot-unavailable', 404), 'ODS did not keep the copy of Playground/game from before this turn, so nothing was changed.', false, false, false],
+    [refusal('project-snapshot-unavailable', 404), 'ODS no longer keeps the copy of Playground/game from before this turn, so nothing was changed.', false, false, false],
     [refusal('project-snapshot-damaged', 422), 'The copy of Playground/game from before this turn is damaged, so nothing was changed.', true, true, false],
     [refusal('project-folder-unusable', 422), 'Playground/game is not a folder ODS can use (it may be a link or a file), so nothing was changed.', true, true, true],
     [refusal('project-copies-unusable', 503), 'ODS cannot use the folder where it keeps project copies (its owner or permissions changed), so nothing was changed.', true, true, false],

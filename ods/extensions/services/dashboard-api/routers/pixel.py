@@ -1255,7 +1255,7 @@ _PROJECT_RESTORE_SECONDS = 42.0
 _RESTORE_REFUSALS = {
     409: {"project-restore-busy": "Portal is still working on a reply or a command it started, in this chat or another. "
                                   "Nothing was changed; put the files back once it finishes."},
-    404: {"project-snapshot-unavailable": "ODS did not keep a copy of this project from before that turn, so nothing was changed.",
+    404: {"project-snapshot-unavailable": "ODS no longer keeps a copy of this project from before that turn, so nothing was changed.",
           "project-snapshot-pruned": "ODS no longer keeps that copy of this project, so nothing was changed."},
     422: {"project-snapshot-damaged": "The copy ODS kept of this project is damaged, so nothing was changed.",
           "project-folder-unusable": "The project is not a folder ODS can use, so nothing was changed."},
@@ -1432,8 +1432,9 @@ async def pixel_project_restore_options(body: ProjectRestoreOptionsRequest) -> d
 
     For each Playground project whose latest turn that changed it is one of
     runs: that turn, whether its copy was taken after the project had
-    already changed (late), and the latest restore's undo while the project
-    is still as that restore left it, with the version it now holds.
+    already changed (late), and the undo of the latest restore of that turn,
+    with the version the project now holds. An undo that would overwrite
+    files changed since asks first.
     """
     config = _pixel_config()
     if config is None or not body.runs:

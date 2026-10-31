@@ -143,7 +143,7 @@ class ProjectRestoreRelayTests(unittest.IsolatedAsyncioTestCase):
                              (200, {**RECEIPT, "undo": None}), (200, {**RECEIPT, "status": "unchanged"}),
                              (200, {**RECEIPT, "schemaVersion": 1}), (200, {**RECEIPT, "written": True}),
                              (200, {**RECEIPT, "late": 0}), (200, {**RECEIPT, "failure": "disk"}),
-                             (200, {**RECEIPT, "failure": ["permission"]}), (200, {**RECEIPT, "left": ["a\nb"]}),
+                             (200, {**RECEIPT, "failure": ["permission"]}), (200, {**RECEIPT, "left": ["a\nb"]}), (200, {**RECEIPT, "left": ["notes\u0085.md"]}),
                              (200, {**RECEIPT, "extra": "/private"}), (200, {**CONFIRM, "confirm": None}),
                              (200, {**CONFIRM, "confirm": {**CONFIRM["confirm"], "token": "x"}}),
                              (200, {**CONFIRM, "confirm": {**CONFIRM["confirm"], "overwriteCount": 0}}),

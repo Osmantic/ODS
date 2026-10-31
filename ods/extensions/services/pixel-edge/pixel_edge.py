@@ -970,7 +970,8 @@ _RESTORE_RUN = re.compile(rf"chatcmpl_{_RESTORE_UUID}", re.IGNORECASE)
 _RESTORE_SNAPSHOT = re.compile(rf"(?:chatcmpl|restore)_{_RESTORE_UUID}", re.IGNORECASE)
 _RESTORE_UNDO = re.compile(rf"restore_{_RESTORE_UUID}")
 _RESTORE_TOKEN = re.compile(r"[a-f0-9]{64}")
-_RESTORE_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+# Control characters (C0, DEL and C1) in a file name, as dashboard-api refuses them.
+_RESTORE_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 # The refusals this relay passes on, by status. Any other answer, an
 # unexpected code too, is an unknown outcome.
 _RESTORE_REFUSALS = {

@@ -52,9 +52,10 @@ export function finishedRuns(messages) {
 }
 
 // For each project whose latest turn that changed it is one of runs: that
-// turn (snapshot), whether its copy was made late, and the latest restore's
-// undo while the project is still as that restore left it, with the version
-// the project holds (side 'before': the files from before the turn).
+// turn (snapshot), whether its copy was made late, and the undo of the
+// latest restore of that turn, with the version the project holds (side
+// 'before': the files from before the turn). An undo that would overwrite
+// files changed since asks first.
 export async function restoreOptions(runs, signal) {
   const response = await post('/api/pixel/projects/restore-options', {runs}, signal)
   const value = response.ok ? await response.json() : null

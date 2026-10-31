@@ -21,8 +21,14 @@ never mounts and no preview publishes. One store per workspace and project:
         objects/<sha256>        each file content, stored once
         lists/<sha256>          each listing of the project, by content
         copies/<ms>-<id>.json   one per kept copy (a turn's, or a restore's undo)
-        restore.json            the latest restore, for its undo and retries
+        restore.json            the latest restore, for its undo and retries (pending
+                                until it finished changing the project)
         pruned.json             ids of copies no longer kept
+        missing.json            when a collection first found the project missing
+
+The gateway names the runs it still runs (live): their copies are never
+dropped, and any other copy without an end (a run of a gateway that
+restarted) is ended at the next request, as the project is then.
 
 A copy lists every entry first, then copies code and small files first within
 the caps; what it leaves out (links, hard-linked and special files, bulk
@@ -105,13 +111,41 @@ def canonical(value):
 
 
 def visible(name):
-    """A name a listing holds: UTF-8, no control character or backslash, and not a restore's temporary."""
+    """A name a listing holds: UTF-8, no backslash and no control character (C0, DEL or C1, as every relay
+    of a receipt refuses them), and not a restore's temporary."""
     try:
         name.encode("utf-8")
     except UnicodeEncodeError:
         return False
     return (bool(name) and not name.startswith(LEFTOVER) and "\\" not in name
-            and not any(ord(c) < 32 or ord(c) == 127 for c in name))
+            and not any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in name))
+
+
+def stored_path(path):
+    """A path read back from the store: relative, with no empty, '.' or '..' part, every part a visible name."""
+    return (isinstance(path, str) and 0 < len(path) <= 4096
+            and all(part not in (".", "..") and visible(part) for part in path.split("/")))
+
+
+def valid_list(doc):
+    """A listing read back from the store holds only paths below its project and content hashes."""
+    try:
+        return (isinstance(doc, dict) and isinstance(doc["complete"], bool)
+                and all(stored_path(path) for path in doc["dirs"])
+                and all(stored_path(item[0]) and isinstance(item[1], str) and SHA.fullmatch(item[1]) is not None
+                        and type(item[2]) is int and type(item[3]) is int for item in doc["files"])
+                and all(stored_path(item[0]) for item in doc["skipped"]))
+    except (KeyError, TypeError, IndexError):
+        return False
+
+
+def now_ms():
+    return int(time.time() * 1000)
+
+
+def record_ms(name):
+    """When a kept copy was made, from its record's file name."""
+    return int(name[:15])
 
 
 def project_name(value):
@@ -182,12 +216,13 @@ class Folder:
         finally:
             os.close(fd)
 
-    def write(self, name, data, mode, durable=True):
+    def write(self, name, data, mode, durable=True, prefix=LEFTOVER):
         """data written beside `name` and renamed over it, so the name holds the old file or the new one.
 
-        Not durable: no fsync, for store contents whose hash is checked before use.
+        Not durable: no fsync, for store contents whose hash is checked before
+        use. The temporary's name starts with prefix (a restore's own).
         """
-        temporary = LEFTOVER + secrets.token_hex(8)
+        temporary = prefix + secrets.token_hex(8)
         fd = os.open(temporary, CREATE, 0o600, dir_fd=self.fd)
         try:
             try:
@@ -263,6 +298,7 @@ class Listing:
         self.files = {}     # relative path -> stat of a one-link regular file
         self.skipped = {}   # relative path -> (reason, identity or None)
         self.complete = True
+        self.newest = 0     # the latest modification or change time of any entry, in ns
 
 
 def walk(project, limits):
@@ -296,6 +332,7 @@ def walk(project, limits):
                 info = folder.lstat(name)
                 if info is None:
                     continue
+                listing.newest = max(listing.newest, info.st_mtime_ns, info.st_ctime_ns)
                 if stat.S_ISLNK(info.st_mode):
                     listing.skipped[path] = ("link", None)
                 elif stat.S_ISDIR(info.st_mode):
@@ -482,10 +519,19 @@ def classify(error):
     return "other"
 
 
-def apply_plan(project, steps, objects):
-    """Applies a plan below the open project folder, through descriptors; returns what it did."""
+def temporaries(undo):
+    """The start of the temporary names one restore writes in the project, the same on its retry."""
+    return f"{LEFTOVER}{undo[len('restore_'):][:8]}-"
+
+
+def apply_plan(project, steps, objects, undo):
+    """Applies a plan below the open project folder, through descriptors; returns what it did.
+
+    Its temporaries are named for the restore (see temporaries()), so one a
+    killed attempt left behind is removed by the retry, and nothing else is.
+    """
     done = {"written": 0, "removed": 0, "failed": [], "failure": None}
-    touched = {}
+    touched, prefix = {}, temporaries(undo)
 
     def fail(path, error):
         done["failed"].append(path)
@@ -530,16 +576,16 @@ def apply_plan(project, steps, objects):
                     folder.rmdir(name)
                 elif info is not None and not stat.S_ISREG(info.st_mode):
                     raise HelperError("changed")
-                folder.write(name, objects[item[1]], item[3])
+                folder.write(name, objects[item[1]], item[3] & 0o777, prefix=prefix)
                 done["written"] += 1
             except (OSError, HelperError) as error:
                 fail(item[0], error)
         for folder in touched.values():
             try:
                 for name in folder.names():
-                    info = folder.lstat(name) if name.startswith(LEFTOVER) else None
+                    info = folder.lstat(name) if name.startswith(prefix) else None
                     if info is not None and stat.S_ISREG(info.st_mode):
-                        folder.unlink(name)  # left by a restore that stopped midway
+                        folder.unlink(name)  # left by this restore's attempt that was killed midway
                 folder.sync()
             except OSError:
                 pass  # A folder this restore removed has nothing left to tidy.
@@ -632,14 +678,14 @@ class Store:
                 folder.close()
 
     def has_object(self, digest):
-        return self.objects.lstat(digest) is not None
+        return isinstance(digest, str) and SHA.fullmatch(digest) is not None and self.objects.lstat(digest) is not None
 
     def put_object(self, digest, data):
         if not self.has_object(digest):
             self.objects.write(digest, data, 0o600, durable=False)  # get_object checks the hash
 
     def get_object(self, digest, size):
-        info = self.objects.lstat(digest)
+        info = self.objects.lstat(digest) if self.has_object(digest) else None
         data = self.objects.read(digest, info, size) if info is not None and info.st_size == size else None
         if data is None or sha256(data) != digest:
             raise HelperError("damaged")
@@ -657,7 +703,13 @@ class Store:
         data = self.lists.read(digest, info, 64 * 1024 * 1024) if info is not None else None
         if data is None or sha256(data) != digest:
             raise HelperError("damaged")
-        return json.loads(data.decode("utf-8"))
+        try:
+            doc = json.loads(data.decode("utf-8"))
+        except ValueError:
+            raise HelperError("damaged") from None
+        if not valid_list(doc):
+            raise HelperError("damaged")
+        return doc
 
     def records(self):
         """The kept copies, newest first, as (file name, record). An unreadable record is no copy."""
@@ -714,13 +766,13 @@ class Store:
                 if name not in keep:
                     folder.unlink(name)
 
-    def prune(self, limits):
+    def prune(self, limits, live=frozenset()):
         """Keeps the newest turn copies that changed their project, and the latest restore's copies.
 
         Of restore copies, the latest restore's undo and the copy it put back
         (for a retry) are kept. A turn that changed nothing keeps its copy
-        only while it is the newest (a delegated part of the same response
-        may still change the project).
+        only while it is the newest. The copy of a live run is never dropped:
+        its response may still change the project.
         """
         state, turns = self.state(), 0
         keep = {state.get("undo"), state.get("from")} if state else set()
@@ -730,11 +782,11 @@ class Store:
                 if record["id"] not in keep:
                     self.drop(name, record)
             elif after and not after["changed"]:
-                if index:
+                if index and record["id"] not in live:
                     self.drop(name, record)
             else:
                 turns += 1
-                if turns > limits["turns"]:
+                if turns > limits["turns"] and record["id"] not in live:
                     self.drop(name, record)
         self.collect()
 
@@ -743,6 +795,75 @@ class Store:
         return next((record for _, record in self.records() if record["kind"] == "turn"
                      and (not record.get("after") or record["after"]["changed"])), None)
 
+    def protected(self, live):
+        """The copies the size cap never drops: the latest turn's that offers Put back, the latest
+        restore's, and those of live runs."""
+        state, latest = self.state(), self.latest()
+        keep = {state.get("undo"), state.get("from")} if state else set()
+        return keep | ({latest["id"]} if latest else set()) | set(live)
+
+    def settle(self, current, live):
+        """Records the end of each turn copy whose run is not live in the gateway (it restarted, or the
+        run ended without its end being recorded), as the project is now.
+
+        current() lists the project now. A copy settled so is never put back
+        without the owner's yes: changes since its run may be anyone's.
+        """
+        if live is None:
+            return
+        dead = [(name, record) for name, record in self.records()
+                if record["kind"] == "turn" and not record.get("after") and record["id"] not in live]
+        if not dead:
+            return
+        try:
+            doc = current()
+        except (OSError, HelperError):
+            return  # A project that cannot be listed now: its copies wait for the next request.
+        for name, record in dead:
+            try:
+                changed = bool(record["late"]) or content(doc) != content(self.get_list(record["list"]))
+            except HelperError:
+                changed = True  # A damaged copy: putting it back is refused anyway.
+            self.put_record({**record, "after": {"list": self.put_list(doc), "changed": changed, "recordedAt": now(),
+                                                 "endedMs": now_ms(), "settled": True}}, name)
+
+    def shared(self, found):
+        """Whether another turn that changed the project, or still may, ran while this turn did.
+
+        A turn's window runs from its copy to its recorded end (to now while
+        it has none). Putting back a copy whose window overlapped another
+        changing turn would undo that turn's work too.
+        """
+        name, record = found
+        start, after, moment = record_ms(name), record.get("after"), now_ms()
+        end = after.get("endedMs", start) if after else moment
+        for other_name, other in self.records():
+            other_after = other.get("after")
+            if other_name == name or other["kind"] != "turn" or other_after and not other_after["changed"]:
+                continue
+            other_start = record_ms(other_name)
+            other_end = other_after.get("endedMs", other_start) if other_after else moment
+            if other_start < end and start < other_end:
+                return True
+        return False
+
+
+def known_hashes(store):
+    """Known content hashes by path from the store's newest listings, for files whose stat is unchanged."""
+    known = {}
+    for _, record in store.records()[:2]:
+        for digest in ([record["after"]["list"]] if record.get("after") else []) + [record["list"]]:
+            for item in store.get_list(digest)["files"]:
+                known.setdefault(item[0], (item[1], item[3], item[4]))
+    return known
+
+
+def listed_now(project, store, limits):
+    """A listing document of the project as it is now (an empty one when it is missing), without storing contents."""
+    listing = walk(project, limits) if project is not None else Listing()
+    chosen = admit(listing, limits)
+    return document(listing, capture(project, store, listing, chosen, limits, known_hashes(store), keep=False))
+
 
 class Session:
     """The open workspace, Playground, project and store of one request, under the store lock."""
@@ -750,6 +871,9 @@ class Session:
     def __init__(self, request, opener, create):
         self.limits, self.workspace_path, self.opened = request["limits"], request["workspace"], []
         self.name, self.request_id, self.root, self.store = request.get("project"), request.get("id"), None, None
+        # The runs the gateway still runs: their copies may still change and are never dropped.
+        # None when the request does not say (then no copy's end is recorded for it).
+        self.live = frozenset(request["live"]) if "live" in request else None
         try:
             self.workspace = self.keep(opener(request["workspace"]))
         except OSError:
@@ -794,14 +918,8 @@ class Session:
     def listing(self):
         return walk(self.project, self.limits) if self.project is not None else Listing()
 
-    def reuse(self):
-        """Known hashes by path from the newest listings, for files whose stat is unchanged."""
-        known = {}
-        for _, record in self.store.records()[:2]:
-            for digest in ([record["after"]["list"]] if record.get("after") else []) + [record["list"]]:
-                for item in self.store.get_list(digest)["files"]:
-                    known.setdefault(item[0], (item[1], item[3], item[4]))
-        return known
+    def protected_live(self):
+        return self.live or frozenset()
 
     def ensure_project(self):
         """Playground and the project folder, made again when a turn removed them."""
@@ -816,10 +934,14 @@ class Session:
 # --------------------------------------------------------------- operations --
 
 def op_fingerprint(request, opener):
-    """Stat-level fingerprints of the Playground projects, before a response's first change."""
+    """Stat-level fingerprints of the Playground projects, before a response's first change.
+
+    With each, when anything in the project last changed (newest, in ms):
+    a Playground-wide mention copies the projects changed most recently.
+    """
     session = Session({**request, "project": None}, opener, True)
     try:
-        found, budget, complete = {}, request["limits"]["fingerprintEntries"], True
+        found, newest, budget, complete = {}, {}, request["limits"]["fingerprintEntries"], True
         names = sorted(name for name in (session.playground.names() if session.playground else []) if project_name(name))
         for name in names:
             info = session.playground.lstat(name)
@@ -841,7 +963,8 @@ def op_fingerprint(request, opener):
                 folder.close()
             budget -= len(listing.files) + len(listing.dirs) + len(listing.skipped)
             found[name] = fingerprint(listing)
-        return {"projects": found, "complete": complete}
+            newest[name] = max(listing.newest, info.st_mtime_ns, info.st_ctime_ns) // 1_000_000
+        return {"projects": found, "newest": newest, "complete": complete}
     finally:
         session.close()
 
@@ -875,11 +998,11 @@ def copy_one(session, entry):
     # The project changed after the response's first change, before this copy.
     late = start is not None and start != stamp and not (start == "absent" and not listing.files and not listing.dirs)
     chosen = admit(listing, session.limits)
-    files = capture(session.project, store, listing, chosen, session.limits, session.reuse())
+    doc = document(listing, capture(session.project, store, listing, chosen, session.limits, known_hashes(store)))
+    store.settle(lambda: doc, session.live)
     store.put_record({"schemaVersion": 2, "id": session.request_id, "kind": "turn", "createdAt": now(),
-                      "list": store.put_list(document(listing, files)), "fingerprint": stamp, "late": late,
-                      "after": None})
-    store.prune(session.limits)
+                      "list": store.put_list(doc), "fingerprint": stamp, "late": late, "after": None})
+    store.prune(session.limits, session.protected_live())
     return {"status": "kept", "late": late}
 
 
@@ -890,6 +1013,8 @@ def op_copy(request, opener):
         session = Session({**request, "project": None}, opener, True)
         try:
             collect_all(session)
+        except (HelperError, OSError):
+            pass  # A collection that fails leaves the copies for the next one; the copies above stand.
         finally:
             session.close()
     return answer
@@ -902,12 +1027,12 @@ def after_one(session, entry):
     if found is None:
         return {"status": "none"}
     name, record = found
-    listing = session.listing()
-    chosen = admit(listing, session.limits)
-    doc = document(listing, capture(session.project, store, listing, chosen, session.limits, session.reuse(), keep=False))
+    doc = listed_now(session.project, store, session.limits)
     changed = bool(record["late"]) or content(doc) != content(store.get_list(record["list"]))
-    store.put_record({**record, "after": {"list": store.put_list(doc), "changed": changed, "recordedAt": now()}}, name)
-    store.prune(session.limits)
+    store.put_record({**record, "after": {"list": store.put_list(doc), "changed": changed, "recordedAt": now(),
+                                          "endedMs": now_ms()}}, name)
+    store.settle(lambda: doc, session.live)
+    store.prune(session.limits, session.protected_live())
     return {"status": "changed" if changed else "unchanged"}
 
 
@@ -932,8 +1057,37 @@ def receipt(request, status, done, steps, late, undo, confirm=None):
             "failure": done["failure"], "late": late, "undo": undo, "confirm": confirm}
 
 
+def later_changes(store, state, found, current, saved, pending, finishing):
+    """The paths changed since the copy's turn ended (or since the restore an undo reverses), or None when
+    that is unknown and every overwrite or removal needs the owner's yes."""
+    record = found[1]
+    if pending:
+        # A restore that stopped midway: what it had put back and what it had
+        # not reached yet are its own; anything else changed since.
+        undo = store.record(state["undo"])
+        before = store.get_list(undo[1]["list"]) if undo else None
+        return changed_paths(current, before) & changed_paths(current, saved) if before is not None else None
+    if finishing:
+        return changed_paths(current, store.get_list(state["result"])) if state.get("result") else None
+    if record["kind"] == "turn":
+        after = record.get("after")
+        # Unknown when the turn's end was recorded late, or another changing turn ran meanwhile.
+        if after and not after.get("settled") and not store.shared(found):
+            return changed_paths(current, store.get_list(after["list"]))
+        return None
+    if state and state.get("undo") == record["id"] and state.get("result"):
+        return changed_paths(current, store.get_list(state["result"]))
+    return None
+
+
 def op_restore(request, opener):
-    """Puts one project back to a kept copy (see plan()); asks first before overwriting later changes."""
+    """Puts one project back to a kept copy (see plan()); asks first before overwriting later changes.
+
+    The undo copy and a pending restore.json are written before anything in
+    the project changes: a restore that is killed midway is finished by its
+    retry under the same undo, which still puts back the files as they were
+    before it.
+    """
     session = Session(request, opener, False)
     try:
         store, snapshot = session.store, request["snapshot"]
@@ -942,31 +1096,29 @@ def op_restore(request, opener):
         state = store.state()
         listing = session.listing()
         stamp = fingerprint(listing)
-        # The latest restore from this copy, with nothing changed since: a
-        # retry gets the same answer or, when some files could not be changed,
-        # tries those again under the same undo.
-        finishing = bool(state) and state.get("from") == snapshot and state.get("fingerprint") == stamp
-        if finishing and not state["receipt"]["failedCount"]:
+        # The latest restore from this copy: a retry gets the same answer
+        # while nothing changed since; one that stopped midway, could not
+        # change some files or could not list its result is finished under
+        # the same undo.
+        same = bool(state) and state.get("from") == snapshot
+        pending = same and bool(state.get("pending"))
+        unchanged_since = same and not pending and state.get("fingerprint") is not None and state["fingerprint"] == stamp
+        if unchanged_since and not state["receipt"]["failedCount"]:
             return state["receipt"]
+        finishing = pending or unchanged_since or same and state.get("fingerprint") is None
         found = store.record(snapshot)
         if found is None:
             raise HelperError("pruned" if store.pruned(snapshot) else "unavailable-copy")
         record = found[1]
         saved = store.get_list(record["list"])
         chosen = admit(listing, session.limits)
-        current = document(listing, capture(session.project, store, listing, chosen, session.limits, session.reuse()))
+        current = document(listing, capture(session.project, store, listing, chosen, session.limits, known_hashes(store)))
+        store.settle(lambda: current, session.live)
         steps = plan(saved, current)
         late = bool(record.get("late"))
         # Changes made after the copy's turn ended (or after the restore this
         # undoes) that the restore would overwrite or remove need the owner's yes.
-        base = None
-        if finishing:
-            base = store.get_list(state["result"])
-        elif record["kind"] == "turn" and record.get("after"):
-            base = store.get_list(record["after"]["list"])
-        elif record["kind"] == "restore" and state and state.get("undo") == snapshot:
-            base = store.get_list(state["result"])
-        changed = changed_paths(current, base) if base is not None else None
+        changed = later_changes(store, state, found, current, saved, pending, finishing)
         present = {item[0] for item in current["files"]}
         overwrite = [item[0] for item in steps["write"] if item[0] in present and (changed is None or item[0] in changed)]
         removing = [path for path in steps["remove"] if changed is None or path in changed]
@@ -976,44 +1128,90 @@ def op_restore(request, opener):
             return receipt(request, "confirm", NOTHING, steps, late, None,
                            {"token": token(current), "overwrite": shown, "overwriteCount": shown_count,
                             "remove": gone, "removeCount": gone_count})
-        if not (steps["write"] or steps["remove"] or steps["removeDirs"] or steps["createDirs"]):
+        keep_undo = finishing and isinstance(state.get("undo"), str) and store.record(state["undo"]) is not None
+        work = steps["write"] or steps["remove"] or steps["removeDirs"] or steps["createDirs"]
+        # Nothing left to change: a restore being finished answers as restored, with its undo.
+        if not work and not keep_undo:
             return receipt(request, "unchanged", NOTHING, steps, late, None)
-        objects = {item[1]: store.get_object(item[1], item[2]) for item in steps["write"]}
-        keep_undo = finishing and store.record(state["undo"]) is not None
         undo = state["undo"] if keep_undo else f"restore_{uuid.uuid4()}"
         # Which version the project holds afterwards: the files from before
         # the turn, or the turn's own (after an Undo). Each restore's undo
-        # flips it, so the owner can go back and forth.
-        side = state.get("side", "before") if keep_undo else (
-            "before" if record["kind"] == "turn" or (state or {}).get("side") == "after" else "after")
-        try:
-            session.ensure_project()
-        except OSError:
-            raise HelperError("folder-unusable") from None
-        if not keep_undo:
-            store.put_record({"schemaVersion": 2, "id": undo, "kind": "restore", "createdAt": now(),
-                              "list": store.put_list(current), "fingerprint": stamp, "late": False, "after": None})
-        done = apply_plan(session.project, steps, objects)
-        result = walk(session.project, session.limits)
-        result_stamp = fingerprint(result)
-        # Files this restore wrote are read again: their stat does not prove what they hold.
-        written = {item[0] for item in steps["write"]}
-        reuse = {item[0]: (item[1], item[3], item[4]) for item in current["files"] if item[0] not in written}
-        result_files = capture(session.project, store, result, admit(result, session.limits), session.limits,
-                               reuse, keep=False)
-        answer = receipt(request, "restored", done, steps, late, undo)
-        write_json(store.folder, "restore.json", {"schemaVersion": 1, "from": snapshot, "undo": undo, "side": side,
-                                                  "fingerprint": result_stamp,
-                                                  "result": store.put_list(document(result, result_files)),
-                                                  "receipt": answer})
-        store.prune(session.limits)
-        return answer
+        # flips it, so the owner can go back and forth. turn: the turn whose
+        # Put back started this chain of restores.
+        if keep_undo:
+            side, turn = state.get("side", "before"), state.get("turn")
+        else:
+            side = "before" if record["kind"] == "turn" or (state or {}).get("side") == "after" else "after"
+            turn = (snapshot if record["kind"] == "turn"
+                    else (state or {}).get("turn") if (state or {}).get("undo") == snapshot else None)
+        done = NOTHING
+        if work:
+            objects = {item[1]: store.get_object(item[1], item[2]) for item in steps["write"]}
+            try:
+                session.ensure_project()
+            except OSError:
+                raise HelperError("folder-unusable") from None
+            if not keep_undo:
+                store.put_record({"schemaVersion": 2, "id": undo, "kind": "restore", "createdAt": now(),
+                                  "list": store.put_list(current), "fingerprint": stamp, "late": False, "after": None})
+            write_json(store.folder, "restore.json", {"schemaVersion": 2, "from": snapshot, "undo": undo, "side": side,
+                                                      "turn": turn, "pending": True, "fingerprint": None,
+                                                      "result": None, "receipt": None})
+            done = apply_plan(session.project, steps, objects, undo)
+        return finish_restore(session, request, steps, current, done, late, undo, side, turn)
     finally:
         session.close()
 
 
+def finish_restore(session, request, steps, current, done, late, undo, side, turn):
+    """Records a restore that changed the project, and answers its receipt.
+
+    Never a refusal: the project has changed. When the project cannot be
+    listed now, its result is unknown, so a retry finishes under the same
+    undo and the undo asks before overwriting anything.
+    """
+    store, answer, result, result_stamp = session.store, receipt(request, "restored", done, steps, late, undo), None, None
+    try:
+        listing = session.listing()
+        result_stamp = fingerprint(listing)
+        # Files this restore wrote are read again: their stat does not prove what they hold.
+        written = {item[0] for item in steps["write"]}
+        reuse = {item[0]: (item[1], item[3], item[4]) for item in current["files"] if item[0] not in written}
+        files = capture(session.project, store, listing, admit(listing, session.limits), session.limits, reuse, keep=False)
+        result = store.put_list(document(listing, files))
+    except (OSError, HelperError):
+        result_stamp = None
+    write_json(store.folder, "restore.json", {"schemaVersion": 2, "from": request["snapshot"], "undo": undo, "side": side,
+                                              "turn": turn, "pending": False, "fingerprint": result_stamp,
+                                              "result": result, "receipt": answer})
+    try:
+        store.prune(session.limits, session.protected_live())
+    except (OSError, HelperError):
+        pass  # Old copies are dropped by the next copy instead.
+    return answer
+
+
+def project_now(session, store, name):
+    """A function listing the project `name` of this session's workspace as it is now (empty when missing)."""
+    def current():
+        project = None
+        try:
+            if session.playground is not None and session.playground.lstat(name) is not None:
+                project = session.playground.child(name)
+            return listed_now(project, store, session.limits)
+        finally:
+            if project is not None:
+                project.close()
+    return current
+
+
 def op_options(request, opener):
-    """For each project whose latest kept turn copy is one of `runs`: that copy, and an undo still in reach."""
+    """For each project whose latest kept turn copy is one of `runs`: that copy, and the latest restore's undo.
+
+    The undo is offered while the latest restore belongs to that turn (it put
+    back the turn's copy, or undid that, and so on), also when files changed
+    since: putting files back then asks the owner first.
+    """
     session = Session({**request, "project": None}, opener, False)
     try:
         entries, runs = [], set(request["runs"])
@@ -1030,24 +1228,21 @@ def op_options(request, opener):
                 continue
             store = Store(session.root, request["workspace"], name, False)
             try:
+                store.settle(project_now(session, store, name), session.live)
                 latest = store.latest()
                 if latest is None or latest["id"] not in runs:
                     continue
                 entry = {"project": f"Playground/{name}", "snapshot": latest["id"], "late": bool(latest["late"]),
                          "restore": None}
                 state = store.state()
-                if state and state.get("undo") and store.record(state["undo"]) is not None:
-                    project = None
-                    try:
-                        project = session.playground.child(name) if session.playground is not None else None
-                        stamp = fingerprint(walk(project, session.limits) if project is not None else Listing())
-                    except (OSError, HelperError):  # gone, or not a folder ODS can list
-                        stamp = None
-                    finally:
-                        if project is not None:
-                            project.close()
-                    if stamp == state.get("fingerprint"):
+                if state and state.get("turn") == latest["id"]:
+                    if (not state.get("pending") and isinstance(state.get("undo"), str)
+                            and store.record(state["undo"]) is not None):
                         entry["restore"] = {"undo": state["undo"], "side": state.get("side", "before")}
+                    elif (state.get("pending") and state.get("from") != latest["id"]
+                          and isinstance(state.get("from"), str) and store.record(state["from"]) is not None):
+                        # An Undo (or a Put back again) that stopped midway: the next step finishes it.
+                        entry["restore"] = {"undo": state["from"], "side": "before" if state.get("side") == "after" else "after"}
                 entries.append(entry)
             finally:
                 store.close()
@@ -1056,10 +1251,29 @@ def op_options(request, opener):
         session.close()
 
 
+def missing_too_long(store, present, limits):
+    """Whether a store's project has been missing for limits["missingDays"], counted from when a collection
+    first found it missing; missing.json keeps that time until the project is back."""
+    missing = read_json(store.folder, "missing.json")
+    if present:
+        if missing is not None:
+            store.folder.unlink("missing.json")
+        return False
+    since = missing.get("since") if isinstance(missing, dict) else None
+    if not isinstance(since, (int, float)) or isinstance(since, bool):
+        write_json(store.folder, "missing.json", {"schemaVersion": 1, "since": time.time()})
+        return False
+    return since < time.time() - limits["missingDays"] * 86400
+
+
 def collect_all(session):
-    """Across all stores: drops those of projects gone for a while, then the oldest copies over the size cap."""
-    limits, cutoff = session.limits, time.time() - session.limits["missingDays"] * 86400
-    kept = []
+    """Across all stores: drops those of projects missing for a while, then the oldest copies over the size cap.
+
+    The size cap never drops a project's latest copy that offers Put back,
+    the latest restore's copies, or a live run's copy; when only those are
+    left, they stay.
+    """
+    limits, kept = session.limits, []
     for key in sorted(session.root.names()):
         if not SHA.fullmatch(key):
             continue
@@ -1071,40 +1285,35 @@ def collect_all(session):
         workspace, name = about.get("workspace"), str(about.get("project", "")).split("/", 1)[-1]
         if not isinstance(workspace, str) or not project_name(name) or store_key(workspace, name) != key:
             continue
-        store = Store(session.root, workspace, name, False)
-        try:
-            records, size = store.records(), store.object_bytes()
-        finally:
-            store.close()
-        newest = int(records[0][0][:15]) / 1000 if records else 0
         present = (workspace == session.workspace_path and session.playground is not None
                    and session.playground.lstat(name) is not None)
-        if not present and newest < cutoff:
+        store = Store(session.root, workspace, name, False)
+        try:
+            gone = missing_too_long(store, present, limits)
+            if not gone:
+                protected = store.protected(session.protected_live())
+                # Oldest first: the copies the size cap may drop.
+                spare = [entry for entry in reversed(store.records()) if entry[1]["id"] not in protected]
+                kept.append([workspace, name, store.object_bytes(), spare])
+        finally:
+            store.close()
+        if gone:
             remove_tree(session.root, key)
-        else:
-            kept.append([workspace, name, size])
     total = sum(item[2] for item in kept)
     while total > limits["storeBytes"]:
-        oldest = None
-        for item in kept:
-            store = Store(session.root, item[0], item[1], False)
-            try:
-                records = store.records()
-            finally:
-                store.close()
-            if records and (oldest is None or records[-1][0] < oldest[0]):
-                oldest = (records[-1][0], item)
-        if oldest is None:
+        candidates = [item for item in kept if item[3]]
+        if not candidates:
             break
-        store = Store(session.root, oldest[1][0], oldest[1][1], False)
+        item = min(candidates, key=lambda entry: entry[3][0][0])
+        store = Store(session.root, item[0], item[1], False)
         try:
-            store.drop(oldest[0], store.record(oldest[0][16:-5])[1])
+            store.drop(*item[3].pop(0))
             store.collect()
             size = store.object_bytes()
         finally:
             store.close()
-        total -= oldest[1][2] - size
-        oldest[1][2] = size
+        total -= item[2] - size
+        item[2] = size
 
 
 OPERATIONS = {"fingerprint": op_fingerprint, "copy": op_copy, "after": op_after, "restore": op_restore,
@@ -1137,6 +1346,9 @@ def validate(request):
         raise HelperError("invalid")
     runs = request.get("runs", [])
     if not isinstance(runs, list) or len(runs) > 128 or not all(isinstance(run, str) and ID.fullmatch(run) for run in runs):
+        raise HelperError("invalid")
+    live = request.get("live", [])
+    if not isinstance(live, list) or len(live) > 1024 or not all(isinstance(run, str) and ID.fullmatch(run) for run in live):
         raise HelperError("invalid")
     supplied = request.get("limits") or {}
     if not isinstance(supplied, dict) or any(key not in LIMITS or type(value) is not int or not 0 < value <= LIMITS[key]

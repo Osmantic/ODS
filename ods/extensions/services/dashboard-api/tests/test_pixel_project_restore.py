@@ -164,7 +164,8 @@ async def test_host_refusals_keep_their_fixed_code_and_anything_else_leaves_the_
                      Response(body={**RECEIPT, "undo": None}), Response(body={**RECEIPT, "status": "unchanged"}),
                      Response(body={**RECEIPT, "extra": "/home/owner"}), Response(body={**RECEIPT, "written": True}),
                      Response(body={**RECEIPT, "late": None}), Response(body={**RECEIPT, "failure": "disk"}),
-                     Response(body={**RECEIPT, "left": ["a\nb"]}), Response(body={**RECEIPT, "failed": ["a"], "failedCount": 0}),
+                     Response(body={**RECEIPT, "left": ["a\nb"]}), Response(body={**RECEIPT, "left": ["notes\u0085.md"]}),
+                     Response(body={**RECEIPT, "failed": ["a"], "failedCount": 0}),
                      Response(body={**CONFIRM, "confirm": None}), Response(body={**CONFIRM, "confirm": {**ASKED, "token": "x"}}),
                      Response(body={**RECEIPT, "confirm": ASKED}), Response(body=b"x" * 17000)):
         error = await refused(response)

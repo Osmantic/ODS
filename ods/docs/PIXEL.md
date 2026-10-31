@@ -676,13 +676,16 @@ when it names a path in `Playground/<name>/`: a read, write, edit or patch, an
 exec whose working directory is in it, an ODS tool given the folder, or that
 path anywhere in an exec command or in what a process call sends. A mention of
 Playground without one plain project name (`Playground/*`, `cd Playground`,
-`os.path.join('Playground', ...)`, `find Playground`) touches every project, up
-to the 16 most recently changed. Before a response's first call that may
-change files, the plugin also takes a stat-level fingerprint of every project;
-a copy taken after its project had already changed is marked late, and Portal
-says that putting it back may not undo every change. A project changed only by
-a command that names neither it nor Playground (a script that edits every
-project) gets no copy.
+`os.path.join('Playground', ...)`, `find Playground`), or a named project left
+with `..` (`cd Playground/game && cd ../notes`), touches every project, up to
+the 16 whose files changed most recently. Before a response's first call that
+may change files, the plugin also takes a stat-level fingerprint of every
+project; a copy taken after its project had already changed is marked late, and
+Portal says that putting it back may not undo every change. A project changed
+only by a command that names neither it nor Playground (a script that edits
+every project) gets no copy. Every Pixel call that may change files, whatever
+started its run (a Portal response, a cron job, a webhook or a channel), waits
+while a restore runs.
 
 Copies and restores run in `plugin/project-snapshots.py`, a child process of
 the gateway, so they never block it. It opens the project and every folder
@@ -691,34 +694,45 @@ files only with the `*at()` calls on those descriptors, so a link is never
 followed, even when a folder is swapped for one while a copy or restore runs:
 no file outside the project folder is read into a copy, or written or removed
 by a restore, and a process that moves the project folder itself only moves
-where the files land, inside the workspace. Systems without those calls (Windows) offer no undo. Copies live
-in the OpenClaw state folder, `.ods-project-snapshots/` (private to the
+where the files land, inside the workspace. Paths read back from the copies
+are checked too. Systems without those calls (Windows) offer no undo. Copies
+live in the OpenClaw state folder, `.ods-project-snapshots/` (private to the
 gateway's user, never mounted into the agent's sandbox and never published),
 with each file's content stored once. A copy lists every entry first, then
 copies code and small files first; links, hard-linked and special files,
 `node_modules`, `dist`, `out`, `venv` and dot-folders such as `.git`, files over
-8 MiB and anything past 2,048 files or 32 MiB are listed, not copied. Each
-project keeps the copies of its five latest turns that changed it, and all
-copies together stay under 512 MiB, oldest dropped first; copies of a project
-gone for two weeks are dropped.
+8 MiB and anything past 2,048 files or 32 MiB are listed, not copied; a name
+with a control character is skipped. Each project keeps the copies of its five
+latest turns that changed it, and all copies together stay under 512 MiB,
+oldest dropped first, though never a project's latest copy that offers Put
+back, the latest restore's copies or a running response's copy. A project's
+copies are dropped two weeks after ODS first finds the project missing.
 
-Only the latest turn that changed a project offers **Put back files from before
-this turn** (`/api/pixel/projects/restore-options` asks which turns do;
+A response's end, recorded when its own chat session ends (a delegated child
+that ends earlier records nothing), says whether the turn changed each
+project. A copy whose response never ended, because the gateway restarted, is
+ended at the helper's next request. Only the latest turn that changed a
+project offers **Put back files from before this turn**
+(`/api/pixel/projects/restore-options` asks which turns do;
 `/api/pixel/projects/restore` puts back, relayed by the edge and the ingress to
 the gateway routes `/pixel-ods/project-restore-options` and
 `/pixel-ods/project-restore`). Putting back makes the project match the copy:
 files the turn changed or deleted are written back, and when the copy listed
 everything, files and folders added since the copy are removed. What either
 copy left out stays as it is and is named. If files changed after the turn
-ended, Portal first names the files it would overwrite or remove and changes
-nothing until the owner says yes. A restore first keeps a copy of the files as
-they are, which its **Undo** puts back, and the host remembers the latest one,
-so the Undo is still offered after a reload while the project stays as the
-restore left it. A retried restore gets the same answer; one that could not
-change some files names them and why, and its retry finishes the job under the
-same Undo. A restore is refused while any Portal run, tool or background
-command is alive. A preview keeps showing the earlier files until Portal
-publishes the project again.
+ended, if another response changed the project while the turn ran, or if the
+turn's end was recorded only after a restart, Portal first names the files it
+would overwrite or remove and changes nothing until the owner says yes. A
+restore first keeps a copy of the files as they are, which its **Undo** puts
+back, and records that it started before it changes anything: a restore that
+stops midway is finished by trying again, and its Undo still brings back the
+turn's version. The host remembers the latest restore, so the Undo is still
+offered after a reload; if files changed since, it asks first in the same way.
+A retried restore gets the same answer; one that could not change some files
+names them and why, and its retry finishes the job under the same Undo. A
+restore is refused while any Portal run, tool or background command is alive.
+A preview keeps what Portal last published, often the turn's version, until
+Portal publishes the project again.
 
 ### Model swapping
 
