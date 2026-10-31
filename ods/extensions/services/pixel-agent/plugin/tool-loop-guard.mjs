@@ -15054,6 +15054,8 @@ export function createToolLoopGuard({
     observeExampleRun,
     exampleContextForRun,
     exampleNoticeForRun,
+    // The owner put a Playground project's files back (project-snapshots.mjs).
+    exampleOwnerChanged: (workspaceRoot, project) => examples.ownerChanged(workspaceRoot, project),
     beforeToolCall,
     invalidateWorkspaceBundle(context) {
       const state = runs.get(context?.runId);

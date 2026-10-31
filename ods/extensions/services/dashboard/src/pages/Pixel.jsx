@@ -49,6 +49,8 @@ import { conversationProject } from '../lib/conversationProjects'
 import PortalStreamingText from '../components/PortalStreamingText'
 import PortalResponseActions from '../components/PortalResponseActions'
 import PortalResponseError from '../components/PortalResponseError'
+import PortalTurnUndo from '../components/PortalTurnUndo'
+import useProjectRestoreOptions from '../hooks/useProjectRestoreOptions'
 import {isProviderRateLimit, isAdmissionRejected, isBusyRefusal, busyRefusalText, portalResponseFailure} from '../lib/portalResponseFailure'
 import {publicationDisplayText} from '../lib/publicationDisplay'
 import {isQuestionAnswer, parseQuestionsFrame, questionMetadata} from '../lib/pixelQuestions'
@@ -828,6 +830,8 @@ export default function Pixel({ systemStatus = null }) {
   // Portal could not prove what happened to the last turn. Sending waits for
   // the owner's Continue, which is offered right where they look.
   const restoredUnconfirmed = interrupted && !sending && restoredActivity === 'unknown'
+  const turnUndoBusy = sending || restoredActive || restoredChecking || stopping
+  const turnUndo = useProjectRestoreOptions(chatIdRef.current, messages, turnUndoBusy)
   const contextCapacity=contextRuntime?.source==='external-host'
     ? Number(contextRuntime.contextLength) || null
     : Number(contextRuntime?.contextLength || systemStatus?.inference?.contextSize || systemStatus?.model?.contextLength) || null
@@ -2384,6 +2388,7 @@ export default function Pixel({ systemStatus = null }) {
                 <span className="break-words whitespace-pre-wrap">{message.content}</span>
               )}
               {message.role === 'assistant' && message.questions && <PixelQuestions questions={message.questions} answers={message.questionDraft} answered={index<messages.length-1} disabled={message.goalMode ? message.goalState!=='waiting' : isDisabled || sending || restoredActive || restoredChecking} onChange={questionDraft=>setMessages(previous=>previous.map((item,i)=>i===index?{...item,questionDraft}:item))} onSubmit={answer=>message.goalMode ? teams.answer(message.teamId,'0',message.questionDraft) : sendMessage(message.task?.goal ? continueGoal(messages,index,answer) : answer)}/>}
+              {message.role === 'assistant' && message.status !== 'streaming' && <PortalTurnUndo key={`turn-undo/${chatIdRef.current}/${message.task?.runId}`} chatId={chatIdRef.current} entries={turnUndo.forRun(message.task?.runId)} busy={turnUndoBusy} onChanged={turnUndo.refresh}/>}
               {message.goalMode && message.goalNotice && <p role="status" className="mt-3 text-xs text-theme-text-secondary">{message.goalNotice}</p>}
               {message.teamId && !(message.goalMode && ACTIVE_TEAMS.has(message.goalState)) && <button type="button" onClick={()=>openAgents({teamId:message.teamId,agentId:'0'})} className={message.goalMode?"mt-3 border-0 bg-transparent px-0 py-2 text-xs hover:underline":"mt-3 rounded-lg border border-theme-border px-3 py-2 text-xs hover:bg-theme-border/30"}>{message.goalMode?'View goal history':'View agents and conversations'}</button>}
 
