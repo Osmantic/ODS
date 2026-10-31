@@ -5011,15 +5011,17 @@ _remote_provider_write_payload() {
 }
 
 # The route's vision verdict (status.vision, from the host agent's two-square
-# probe of the route), in words.
-_REMOTE_PROVIDER_IMAGE_INPUT_JQ='def image_input:
+# probe of the route), in words: a jq definition the print functions share.
+_remote_provider_image_input_jq() {
+    printf '%s' 'def image_input:
     (if .imageInput == "supported" then "seen the test image"
      elif .imageInput == "unsupported" then "text only" else "not measured" end)
     + (if (.verifiedAt // "") != "" then " (checked \(.verifiedAt))" else "" end);'
+}
 
 _remote_provider_print_status() {
     local response_file="$1"
-    jq -r "$_REMOTE_PROVIDER_IMAGE_INPUT_JQ"'
+    jq -r "$(_remote_provider_image_input_jq)"'
         "Remote provider: \(.status // "unknown")",
         (if .status == "ready" then
             "Ready means set up and proven" +
@@ -5066,7 +5068,7 @@ _remote_provider_print_apply_result() {
 
 _remote_provider_print_probe_result() {
     local response_file="$1"
-    jq -r "$_REMOTE_PROVIDER_IMAGE_INPUT_JQ"'
+    jq -r "$(_remote_provider_image_input_jq)"'
         "Remote provider probe: " + (if .ok == true then "ok" else "failed" end),
         "Transport: \(.transport // "unknown")",
         (if .probe then
