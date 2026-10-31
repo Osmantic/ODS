@@ -130,14 +130,16 @@ Each app runs on this computer, usually from the ODS extension catalog. Their se
 are reserved, so an MCP server cannot be named after them. Settings
 fills in the address the catalog uses; change it for an app installed elsewhere.
 The owner gives each app a key, which stays with the other secrets, and **Test**
-says what answered.
+says what answered. An app can be tested before it is turned on.
 
 - **Documents:** Portal searches Paperless-ngx's full text and reads a document's
-  text (up to 12,000 characters). It cannot change or delete documents.
+  text (up to 12,000 characters). It cannot change or delete documents. When more
+  documents match than it shows, it says how many.
 - **Photos:** Portal searches by place (a city or country Immich knows), by date,
   or by what is in a photo. Searching by what is in a photo needs Immich's machine
   learning container, which the catalog does not include; Portal says so instead
-  of guessing. Results are links that open the photo in Immich.
+  of guessing, and **Test** says which searches work and what to turn on. Results
+  are links that open the photo in Immich, with a note when more photos match.
 - **Watched pages:** Portal lists, adds and removes watches in changedetection.io.
   Adding and removing are **Ask first** or **Allowed**. The service looks at the
   watches every 2 minutes and notifies the owner when a page changed. A price
@@ -146,7 +148,9 @@ says what answered.
   first only recorded, so adding one does not notify. Its tools say which need approval,
   as an MCP tool set to Ask first does. changedetection.io refuses pages on private
   networks (such as a router or another local service) unless its
-  `ALLOW_IANA_RESTRICTED_ADDRESSES` setting is turned on.
+  `ALLOW_IANA_RESTRICTED_ADDRESSES` setting is turned on. Settings lists the
+  watched pages, with each price limit and the last price Portal saw. A price is
+  read only for a watch that changed since the last look.
 - **News:** Portal reads the unread stories from FreshRSS (up to 40), grouped by
   feed. FreshRSS needs API access allowed and an API password.
 
@@ -155,15 +159,21 @@ says what answered.
 Scheduled tasks are OpenClaw's own cron jobs, however they were made. When one of
 Portal's tasks finishes, the plugin passes the result to the service, which sends
 a notification as the owner chose: when it finishes or fails, only when it fails,
-or never. A failure notification is sent with high priority.
+or never. A failure notification is sent with high priority. OpenClaw retries a
+failed task a few times within minutes, so only the first failure in a row
+notifies; the next good run sends "works again", also when the owner chose only
+failures.
 
 The daily news digest is one more scheduled task, named *Daily news digest*. The
 plugin keeps it in step with the owner's setting about once a minute: it adds the
 task, changes its time, or removes it. At the chosen time Portal reads the unread
-stories and writes the digest, which is sent through ntfy. The digest run may use
-only `pixel_ods_mcp`, so it cannot wander off searching the web. If Portal did not read
-the news in that run, or the run fails or takes more than 10 minutes, the owner
-gets the plain list of unread stories instead, so the digest always arrives.
+stories and writes a short brief: one line per story, grouped by topic, at most 15
+stories, without links. It is sent through ntfy, cut to fit one message (ntfy
+sends a longer one as a file). The digest run may use only `pixel_ods_mcp`, so it
+cannot wander off searching the web. If Portal did not read the news in that run,
+or the run fails or takes more than 10 minutes, the owner gets the plain brief of
+unread story titles instead, so the digest always arrives. **Send a digest now**
+in Settings sends that plain brief right away.
 
 ## Setting up
 
@@ -203,7 +213,10 @@ can read any folder the owner can.
   matching rule that keeps its state folder out of the native gateway's sandbox.
 - Sign-in with OAuth is not supported; servers take a token.
 - The activity list keeps the latest 500 entries and can be cleared.
-- Notifications are plain text, up to 4,000 characters.
+- Notifications are plain text, up to 4,000 characters; the digest stays under
+  3,900 bytes.
+- The service forgets which scheduled tasks were failing when it restarts, so a
+  task still failing then notifies once more.
 - MCP results passed to the model are clipped to 8,000 characters.
 - Up to 20 MCP servers, and up to 200 tools per server.
 - Scheduled tasks can also end by calling `pixel_ods_notify` with their own message.
