@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
+import {isDeepStrictEqual} from 'node:util';
 import vm from 'node:vm';
 
 // The installed replacement runs against OpenClaw's own helpers. These stand-ins
@@ -18,12 +19,14 @@ function calculateMaxToolResultChars() { return 16000; }
 function calculateRecoveryAggregateToolResultChars(ctx, max, aggregate) { return Math.max(1, aggregate ?? max ?? calculateMaxToolResultChars(ctx)); }
 function truncateToolResultMessage(msg, maxChars) { let left = maxChars; return {...msg, content: msg.content.map(b => { if (!isToolResultTextBlock(b)) return b; const text = b.text.slice(0, Math.max(0, left)); left -= text.length; return {...b, text}; })}; }
 `;
-const project = vm.runInNewContext(`${helpers}\n${definition[1]}\ntruncateOversizedToolResultsInMessages`, {Math, Map, Set, Array, Object, Number});
+const project = vm.runInNewContext(`${helpers}\n${definition[1]}\ntruncateOversizedToolResultsInMessages`, {Math, Map, Set, Array, Object, Number, JSON, Boolean});
 const MAX = 16000, BUDGET = 4 * MAX;
 // Return main-realm values so structural assertions compare plain data.
 const realm = (projection, input) => ({messages: projection.messages === input ? input : structuredClone(projection.messages),
   truncatedCount: projection.truncatedCount});
-const run = (messages, max = MAX) => realm(project(messages, 131072, max, 4 * max, {}), messages);
+// Below 128K tokens the base aggregate applies throughout; `wide` runs a 131K model.
+const run = (messages, max = MAX) => realm(project(messages, 65536, max, 4 * max, {}), messages);
+const wide = (messages, max = MAX) => realm(project(messages, 131072, max, 4 * max, {}), messages);
 const textOf = (message) => message.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n');
 let nextId = 0;
 const call = () => ({role: 'assistant', content: [{type: 'toolCall', id: `call-${nextId}`, name: 'exec', arguments: {}}]});
@@ -132,6 +135,148 @@ test('within budget nothing changes; an oversized result is still capped per res
   const capped = run(history);
   assert.equal(textOf(capped.messages.at(-1)).length, MAX);
   assert.equal(capped.truncatedCount, 1);
+});
+
+const inView = messages => messages.filter((m) => m.role === 'toolResult' && !/truncated; rerun/.test(textOf(m)))
+  .reduce((sum, m) => sum + textOf(m).length, 0);
+
+test('during a response a 131K model keeps twice the aggregate in view', () => {
+  // Laptop, 2026-10-30: one response re-read all of ui.js about nine times once
+  // its earlier reads were reduced, with the prompt never above 55K of 131K tokens.
+  const history = [{role: 'user', content: 'owner'}];
+  let previous = null, rewrites = 0;
+  const steady = [];
+  for (let i = 0; i < 60; i++) {
+    turn(history, 6000);
+    const {messages} = wide(history);
+    assert.equal(textOf(messages.at(-1)).length, 6000, `result ${i} delivered whole`);
+    const kept = inView(messages);
+    assert.ok(kept <= 2 * BUDGET, `in view ${kept}`);
+    if (i >= 25) steady.push(kept);
+    const sent = messages.map((m) => (m.role === 'toolResult' ? textOf(m) : null));
+    if (previous && previous.some((text, index) => text !== sent[index])) rewrites++;
+    previous = sent;
+  }
+  // Between trims to the low watermark (half the doubled aggregate) the view
+  // grows back to 128k: 60-128k in view instead of 32-64k.
+  assert.ok(Math.min(...steady) >= BUDGET - 6000, `at least the base aggregate less one result (${Math.min(...steady)})`);
+  const mean = steady.reduce((sum, kept) => sum + kept, 0) / steady.length;
+  assert.ok(mean >= 1.4 * BUDGET, `on average ${Math.round(mean)} in view`);
+  // Reductions stay rare: about one per 64k of new output.
+  assert.ok(rewrites >= 3 && rewrites <= 5, `rewrites ${rewrites}`);
+  // Below 128K tokens nothing changes.
+  assert.ok(inView(run(history).messages) <= BUDGET);
+});
+
+// The tool loop's overflow guard (tool-result-context-guard) measures this
+// projection: tool output counts twice against window x 4 x 0.9 characters,
+// tool-call arguments and other text once.
+const GUARD_LIMIT = Math.floor(131072 * 4 * 0.9);
+const guardEstimate = messages => messages.reduce((sum, m) => sum + (m.role === 'toolResult' ? 2 * textOf(m).length
+  : m.role === 'assistant' ? m.content.reduce((chars, b) => chars + (b.type === 'toolCall' ? JSON.stringify(b.arguments ?? {}).length : b.text.length), 0)
+  : m.content.length), 0);
+const write = (chars) => ({role: 'assistant', content: [{type: 'toolCall', id: `call-${nextId}`, name: 'write',
+  arguments: {path: 'Playground/game/ui.js', content: 'x'.repeat(chars)}}]});
+
+// The wider walk alone: at a huge window the guard limit is never reached.
+const unguarded = (messages) => realm(project(messages, 1e7, MAX, 4 * MAX, {}), messages);
+
+// Every request either fits the guard or sends exactly the base projection,
+// so the guard trips at the same request as without the wider view; once a
+// response has sent the base projection where the wider walk differs, it never
+// returns to the wider view.
+function assertGuardSafe(history, label, state) {
+  const sent = wide(history).messages;
+  const base = run(history).messages;
+  const wider = unguarded(history).messages;
+  const isBase = isDeepStrictEqual(sent, base);
+  assert.ok(isBase || isDeepStrictEqual(sent, wider), `${label}: neither the base nor the wider view`);
+  assert.ok(isBase || guardEstimate(sent) <= GUARD_LIMIT, `${label}: ${guardEstimate(sent)} sent in the wider view`);
+  if (state.narrowed) assert.ok(isBase, `${label}: back to the wider view`);
+  if (isBase && !isDeepStrictEqual(base, wider)) state.narrowed = true;
+  if (!isBase) state.widened = true;
+  if (guardEstimate(sent) > GUARD_LIMIT) state.tripped = true;
+  assert.equal(guardEstimate(sent) > GUARD_LIMIT, guardEstimate(base) > GUARD_LIMIT, `${label}: trips exactly where the base does`);
+  return sent;
+}
+
+test('the wider view never makes the overflow guard trip sooner, and a response never returns to it', () => {
+  // A long editing response: every round writes 5k of code and reads 6k, and
+  // now and then a queued owner message arrives between rounds.
+  const history = [{role: 'user', content: 'owner'}];
+  const state = {};
+  for (let i = 0; i < 90; i++) {
+    history.push(write(5000), result(6000));
+    const sent = assertGuardSafe(history, `round ${i}`, state);
+    assert.equal(textOf(sent.at(-1)).length, 6000, `result ${i} delivered whole`);
+    // A queued owner message just big enough to pass the limit in the wider view.
+    const gap = GUARD_LIMIT - guardEstimate(sent);
+    if (!isDeepStrictEqual(sent, run(history).messages) && gap < 60000) {
+      const probe = [...history, {role: 'user', content: 'q'.repeat(gap + 1)}];
+      const probed = wide(probe).messages;
+      assert.ok(isDeepStrictEqual(probed, run(probe).messages) || guardEstimate(probed) <= GUARD_LIMIT,
+        `round ${i}: a queued message sent ${guardEstimate(probed)} in the wider view`);
+      state.probed = true;
+    }
+    if (i % 7 === 3) {
+      history.push({role: 'user', content: `Also keep the boss fight smooth. ${'y'.repeat(3000)}`});
+      assertGuardSafe(history, `round ${i} queued message`, state);
+    }
+  }
+  assert.ok(state.widened && state.narrowed && state.tripped && state.probed, JSON.stringify(state));
+  // A reading response with little else keeps the wider view throughout.
+  const reading = [{role: 'user', content: 'owner'}];
+  for (let i = 0; i < 90; i++) turn(reading, 6000);
+  assert.ok(inView(wide(reading).messages) > BUDGET);
+});
+
+test('once an attempt declines the wider view, it keeps the base projection though its input shrinks', () => {
+  // The provider stream passes one projection state per attempt. Between its
+  // requests OpenClaw prunes old images and drops prompt context, so the same
+  // transcript can arrive smaller; restoring results already sent as notices
+  // would rewrite the cached prompt prefix.
+  const big = [{role: 'user', content: `owner ${'p'.repeat(330000)}`}];
+  for (let i = 0; i < 16; i++) turn(big, 6000);
+  const shrunk = [{role: 'user', content: 'owner'}, ...big.slice(1)];
+  const attempt = {};
+  assert.deepEqual(realm(project(big, 131072, MAX, 4 * MAX, attempt), big).messages, run(big).messages);
+  assert.equal(attempt.liveWideDeclined, true);
+  assert.deepEqual(realm(project(shrunk, 131072, MAX, 4 * MAX, attempt), shrunk).messages, run(shrunk).messages);
+  // A new attempt decides afresh.
+  assert.ok(inView(wide(shrunk).messages) > inView(run(shrunk).messages));
+});
+
+test('dense scripts give up the wider view sooner, as OpenClaw counts them', () => {
+  // About one token per character: 128k characters of it would fill the window.
+  const dense = [{role: 'user', content: 'owner'}];
+  const latin = [{role: 'user', content: 'owner'}];
+  for (let i = 0; i < 40; i++) {
+    turn(dense, {...result(0), content: [{type: 'text', text: '游戏'.repeat(3000)}]});
+    turn(latin, 6000);
+  }
+  assert.ok(inView(wide(latin).messages) > BUDGET);
+  const sent = wide(dense).messages;
+  assert.deepEqual(sent, run(dense).messages);
+});
+
+test('a transcript that ends with a final reply keeps the base aggregate the compaction check measures', () => {
+  const history = [{role: 'user', content: 'owner'}];
+  for (let i = 0; i < 30; i++) turn(history, 6000);
+  assert.ok(inView(wide(history).messages) > BUDGET);
+  history.push({role: 'assistant', content: [{type: 'text', text: 'Done: the cache is in place.'}]});
+  assert.ok(inView(wide(history).messages) <= BUDGET, 'the pre-prompt check sees what it saw before');
+  // A reply that still calls tools is not final.
+  history.push({role: 'assistant', content: [{type: 'text', text: 'Checking once more.'}, {type: 'toolCall', id: 'x', name: 'exec', arguments: {}}]});
+  assert.ok(inView(wide(history).messages) > BUDGET);
+});
+
+test('the next owner message keeps what the response sent, so its prefix stays byte-stable', () => {
+  const history = [{role: 'user', content: 'owner'}];
+  for (let i = 0; i < 30; i++) turn(history, 6000);
+  const during = wide(history).messages;
+  history.push({role: 'assistant', content: [{type: 'text', text: 'Done.'}]}, {role: 'user', content: 'continue'});
+  const next = wide(history).messages;
+  assert.deepEqual(next.slice(0, during.length), during);
 });
 
 test('repair is selected by Linux/WSL installation, foreign restore and native macOS composition', () => {

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createRunProgressBudget, failedToolOutcome, isLiteralEcho, lookupFoundNothing, nodeReportedFailure, RUN_PROGRESS_LIMITS} from '../plugin/run-progress-budget.mjs';
+import {createRunProgressBudget, failedToolOutcome, isLiteralEcho, lookupFoundNothing, nodeReportedFailure, RUN_PROGRESS_LIMITS,
+  RUN_PROGRESS_WARNING} from '../plugin/run-progress-budget.mjs';
 
 test('a single lookup found nothing only when it completed with exit 1 and printed no error', () => {
   const receipt = (exitCode, text = '', details = {}) => ({content:[{type:'text', text:`${text}\n\n(Command exited with code ${exitCode})`}],
@@ -84,6 +85,170 @@ test('a chain of read-only searches whose last search came up empty found nothin
     // rg 13 prints some errors without a prefix, so rg may only be the last step.
     'rg -n -t jsx showScreen src; grep -n zzz ui.js', 'rg -t jsx x src | head -5 && grep zzz f', 'rg -n "a" f && grep b f',
   ]) assert.equal(lookupFoundNothing(chain, receipt('')), false, chain);
+});
+
+test('the search shapes Portal charged on the laptop on 2026-10-30 are empty answers too', () => {
+  const receipt = (text, exitCode = 1) => ({content:[{type:'text', text:`${text}\n\n(Command exited with code ${exitCode})`}],
+    details:{status:'completed', exitCode, durationMs:5}});
+  // The commands and output of the two runs that stopped (sessions e1fb59de and 73ba639b).
+  for (const [command, output] of [
+    ['cd /workspace/Playground/elf-of-doom; grep -n "function updateEnemies" -A 40 engine.js', ''],
+    ['cd /workspace/Playground/elf-of-doom; grep -n "bake\\|blit\\|ARENA_METHODS" dungeon.js | head -40; echo ===; grep -n "ARENA_METHODS =" -A 8 ui.js',
+      '7:// backdrop is baked and before the first update tick\n10:const ARENA_METHODS = Object.freeze([\n==='],
+    ["cd /workspace/Playground/elf-of-doom; grep -n \"D.baked\" ui.js dungeon.js; echo ===; sed -n '185,205p' dungeon.js; echo === EMIT; grep -n \"function emitLight\" -A 8 ui.js",
+      'ui.js:1128:  if (D && D.baked) { g.drawImage(D.baked, 0, 0); }\n===\n  // while the arena\n=== EMIT'],
+    ['cd /workspace/Playground/elf-of-doom; grep -n "function strokeEllipse" -A 12 chars.js | head -30; echo ===; grep -n "function drawEyes" -A 16 chars.js | head -25; echo === INKL; grep -n "function inkLine" -A 8 chars.js',
+      '===\n=== INKL'],
+    ['cd /workspace/Playground/elf-of-doom; grep -rn "strokeRect\\s*(\\|function strokeRect\\|strokeRect =" *.js | grep "function" ; grep -rn "drawEyes" *.js | head -5; grep -rn "function drawEyes" -A 10 world.js',
+      'legacy.js:26:function strokeRect(g, x, y, w, h, fill, lw) {\nchars.js:94:  drawEyes(g, 3, -45, 4.3, 3, p.atkT > 0);'],
+    ['cd /workspace/Playground/elf-of-doom; grep -n "drawEyes" world.js ui.js | head -3; grep -n "drawEyes = \\|function drawEyes" world.js ui.js chars.js', ''],
+    ["cd /workspace/Playground/elf-of-doom && grep -n \"\" ui.js | sed -n '560,600p'; echo ====; grep -n \"\" ui.js | sed -n '1762,1830p'; echo ====; grep -n \"function updateCamera\" -A 18 engine.js",
+      '560:  if (G.freezeT > 0) { G.freezeT -= dt; return; }\n===='],
+  ]) assert.equal(lookupFoundNothing(command, receipt(output)), true, command);
+  // A cd that failed printed the shell's error: not an answer, whichever separator
+  // follows it and whatever path the shell names itself by.
+  for (const command of ['cd /workspace/missing; grep -n x ui.js', 'cd /workspace/missing && grep -n x ui.js']) {
+    for (const error of ["sh: 1: cd: can't cd to /workspace/missing", "/bin/sh: 1: cd: can't cd to /workspace/missing",
+      'bash: line 1: cd: /workspace/missing: No such file or directory'])
+      assert.equal(lookupFoundNothing(command, receipt(error)), false, `${command} / ${error}`);
+  }
+  assert.equal(nodeReportedFailure('cd /workspace/missing; node --check chars.js',
+    receipt("/bin/sh: 1: cd: can't cd to /workspace/missing\nchars.js:3\nSyntaxError: Unexpected token")), false);
+  // In a pipe, sed may only print a line range of what it is piped.
+  for (const command of [
+    "grep -n x f | sed -n '1,5p' f; grep -n y f", "grep -n x f | sed '1,5p'; grep -n y f", "grep -n x f | sed -n '1,5w out'; grep -n y f",
+    "grep -n x f | sed -n -i '1p'; grep -n y f", "grep -n x f | sed -n '1,5p' -i; grep -n y f", "grep -n x f | sed -n 'e rm f'; grep -n y f",
+    'cd a; cd b; grep x f', 'cd a; rm f; grep x f', 'grep x f | grep y | sh; grep z f',
+  ]) assert.equal(lookupFoundNothing(command, receipt('')), false, command);
+  assert.equal(nodeReportedFailure('cd /workspace/Playground/elf-of-doom; node --check chars.js',
+    receipt('chars.js:3\nSyntaxError: Unexpected token')), true);
+});
+
+// Positions of the charged failures among all results of the three long
+// elf-of-doom changes on the laptop, up to where each stopped at the old
+// twelfth failure (2026-10-28 session 930936f4 at result 85; 2026-10-30
+// e1fb59de at 226 and 73ba639b at 140). Replayed from the transcripts through
+// this module, before the search shapes above became free.
+const LAPTOP_RUNS = [
+  {results: 101, failures: [24, 29, 30, 43, 48, 51, 56, 59, 62, 74, 79, 85]},
+  {results: 227, failures: [19, 28, 48, 62, 74, 76, 84, 93, 173, 201, 219, 226]},
+  {results: 140, failures: [13, 21, 31, 42, 54, 79, 118, 119, 120, 129, 136, 140]},
+];
+
+test('the long laptop runs that stopped at twelve failures keep going', () => {
+  for (const {results, failures} of LAPTOP_RUNS) {
+    const budget = createRunProgressBudget();
+    for (let n = 1; n <= results; n++) {
+      budget.beginModelRound();
+      budget.observeResult({callId:`call-${n}`, tool:'read', params:{path:`file-${n}`}, failed:failures.includes(n)});
+    }
+    assert.equal(budget.exhausted, false, `stopped with failures ${failures}`);
+  }
+});
+
+test('failures count over the recent results: a failure-heavy stretch still stops', () => {
+  // One failure in five, for 300 results: 8 in any 40.
+  const steady = createRunProgressBudget();
+  for (let n = 0; n < 300; n++) {
+    steady.beginModelRound();
+    steady.observeResult({callId:`steady-${n}`, tool:'read', params:{path:`f-${n}`}, failed:n % 5 === 4});
+  }
+  assert.equal(steady.exhausted, false);
+  // One failure in three: the twelfth among the last 40 results stops it.
+  const heavy = createRunProgressBudget();
+  let failures = 0;
+  for (let n = 0; n < 40; n++) {
+    assert.equal(heavy.exhausted, false);
+    const failed = n % 3 === 0;
+    failures += failed ? 1 : 0;
+    heavy.observeResult({callId:`heavy-${n}`, tool:'read', params:{path:`f-${n}`}, failed});
+    if (failures === RUN_PROGRESS_LIMITS.recentFailures) break;
+  }
+  assert.equal(heavy.exhausted, true);
+  // Failures older than the last 40 results no longer count.
+  const later = createRunProgressBudget();
+  for (let n = 0; n < 11; n++) {
+    later.observeResult({callId:`old-fail-${n}`, failed:true});
+    later.observeResult({callId:`old-ok-${n}`, tool:'read', params:{path:`a-${n}`}, failed:false});
+  }
+  for (let n = 0; n < 40; n++) later.observeResult({callId:`ok-${n}`, tool:'read', params:{path:`b-${n}`}, failed:false});
+  for (let n = 0; n < 11; n++) {
+    later.observeResult({callId:`new-fail-${n}`, failed:true});
+    later.observeResult({callId:`new-ok-${n}`, tool:'read', params:{path:`c-${n}`}, failed:false});
+  }
+  assert.equal(later.exhausted, false);
+  later.observeResult({callId:'twelfth', failed:true});
+  assert.equal(later.exhausted, true);
+  // Discovery never dilutes the recent results.
+  const diluted = createRunProgressBudget();
+  for (let n = 0; n < 12; n++) {
+    for (let k = 0; k < 10; k++) diluted.observeResult({callId:`search-${n}-${k}`, tool:'tool_search', params:{query:`${n}-${k}`}, failed:false});
+    diluted.observeResult({callId:`fail-${n}`, failed:true});
+    diluted.observeResult({callId:`read-${n}`, tool:'read', params:{path:`d-${n}`}, failed:false});
+  }
+  assert.equal(diluted.exhausted, true);
+});
+
+test('one warning comes before a failure limit, again only after a full window, never after the stop', () => {
+  assert.deepEqual({...RUN_PROGRESS_WARNING}, {consecutiveFailures:3, recentFailures:8});
+  const streak = createRunProgressBudget();
+  for (let n = 0; n < 2; n++) streak.observeResult({callId:`f-${n}`, failed:true});
+  assert.equal(streak.takeWarning(), false);
+  streak.observeResult({callId:'f-2', failed:true});
+  assert.equal(streak.takeWarning(), true);
+  assert.equal(streak.takeWarning(), false);
+  streak.observeResult({callId:'f-3', failed:true});
+  assert.equal(streak.exhausted, true);
+  assert.equal(streak.takeWarning(), false);
+
+  const spread = createRunProgressBudget();
+  const warnedAt = [];
+  for (let n = 0; n < 200; n++) {
+    spread.observeResult({callId:`r-${n}`, tool:'read', params:{path:`f-${n}`}, failed:n % 5 === 0});
+    if (spread.takeWarning()) warnedAt.push(n);
+  }
+  assert.equal(spread.exhausted, false);
+  // The eighth failure in the window (result 35), then once per 40 results while it stays there.
+  assert.deepEqual(warnedAt, [35, 75, 115, 155, 195]);
+
+  // Lane failures count toward the recent failures, not the global streak.
+  const stopped = createRunProgressBudget();
+  for (let n = 0; n < 8; n++) stopped.observeResult({callId:`s-${n}`, failed:true, lane:'extension'});
+  assert.equal(stopped.exhausted, false);
+  stopped.stop();
+  assert.equal(stopped.takeWarning(), false);
+  const near = createRunProgressBudget();
+  for (let n = 0; n < 8; n++) near.observeResult({callId:`s-${n}`, failed:true, lane:'extension'});
+  assert.equal(near.takeWarning(), true);
+});
+
+test('a new streak, a lane streak and a compacted warning are warned again; polls do not dilute', () => {
+  const again = createRunProgressBudget();
+  for (let n = 0; n < 3; n++) again.observeResult({callId:`a-${n}`, failed:true});
+  assert.equal(again.takeWarning(), true);
+  again.observeResult({callId:'ok', tool:'read', params:{path:'x'}, failed:false});
+  for (let n = 3; n < 6; n++) again.observeResult({callId:`a-${n}`, failed:true});
+  assert.equal(again.takeWarning(), true, 'a new streak after a success');
+  // A lane streak that has not yet stopped its lane is warned, then the lane stops.
+  const lane = createRunProgressBudget();
+  for (let n = 0; n < 3; n++) lane.observeResult({callId:`w-${n}`, failed:true, lane:'workspace'});
+  assert.equal(lane.takeWarning(), true);
+  assert.equal(lane.takeWarning(), false);
+  // Compaction may summarize a delivered warning away: the one due comes again.
+  lane.rearmWarning();
+  assert.equal(lane.takeWarning(), true);
+  lane.observeResult({callId:'w-3', failed:true, lane:'workspace'});
+  assert.equal(lane.laneExhausted('workspace'), true);
+  // A running process's polls are verified waits, not results: three polls
+  // between failing calls cannot keep a failing loop going.
+  const polls = createRunProgressBudget();
+  let stoppedAt;
+  for (let n = 0; n < 200 && stoppedAt === undefined; n++) {
+    for (let k = 0; k < 3; k++) polls.observeResult({callId:`p-${n}-${k}`, tool:'process', pending:true, failed:false});
+    polls.observeResult({callId:`c-${n}`, tool:'exec', params:{command:`curl -s localhost:${3000 + n}`}, failed:true});
+    if (polls.exhausted) stoppedAt = n;
+  }
+  assert.equal(stoppedAt, RUN_PROGRESS_LIMITS.recentFailures - 1);
 });
 
 test('a node check, test or harness reported a failure only when it completed with exit 1 and printed it', () => {
@@ -253,7 +418,7 @@ test('an external stop is sticky and changes no limit', () => {
   assert.equal(budget.exhausted, true);
   budget.observeResult({callId: 'later', tool: 'read', params: {path: 'x'}, failed: false});
   assert.equal(budget.exhausted, true);
-  assert.deepEqual(RUN_PROGRESS_LIMITS, {consecutiveFailures: 4, totalFailures: 12, roundsWithoutProgress: 8, identicalSuccesses: 2});
+  assert.deepEqual(RUN_PROGRESS_LIMITS, {consecutiveFailures: 4, recentFailures: 12, recentResults: 40, roundsWithoutProgress: 8, identicalSuccesses: 2});
 });
 
 test('verified pending process receipts do not exhaust progress rounds', () => {

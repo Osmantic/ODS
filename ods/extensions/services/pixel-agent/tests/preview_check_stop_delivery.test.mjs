@@ -27,7 +27,7 @@ import {PREVIEW_CONTINUE_NOTE, PREVIEW_INCOMPLETE_NOTE, PREVIEW_STOPPED_NOTE,
   PREVIEW_UNFINISHED_NOTE} from '../plugin/preview-explanation.mjs';
 import {PREVIEW_CHECK_FINALIZATION_INSTRUCTION, PROGRESS_FINALIZATION_INSTRUCTION,
   PROGRESS_FINALIZATION_NOTE} from '../plugin/progress-finalization.mjs';
-import {RUN_PROGRESS_LIMITS, RUN_PROGRESS_STOP_REASON} from '../plugin/run-progress-budget.mjs';
+import {RUN_PROGRESS_LIMITS, RUN_PROGRESS_STOP_REASON, RUN_PROGRESS_WARNING_TEXT} from '../plugin/run-progress-budget.mjs';
 
 const USER = 'ods-' + '5f0'.repeat(21) + 'a';
 const runId = 'chatcmpl_5f0a7c11-2d3e-4f50-8a61-7b8c9d0e1f2a';
@@ -142,6 +142,9 @@ async function stopwatchTurn({published = true, edited = false, checks = publish
   return {guard, preview, inspections, persisted, aborts, round, call, persist};
 }
 
+// Portal's record of the page file the stopwatch turn wrote, between its line and the card.
+const CHANGED = 'Files changed in this response: `stopwatch/index.html`.';
+
 const receiptOf = guard => {
   const recorded = guard.verificationForRun(runId).text;
   return recorded.slice(recorded.indexOf('Your preview is ready.'));
@@ -149,8 +152,11 @@ const receiptOf = guard => {
 
 test('Spark stopwatch: the check that stops the run tells the model to stop checking and wrap up', async () => {
   const {guard, inspections, persisted, call, persist, round, aborts} = await stopwatchTurn();
-  // The first two checks reach the model unchanged; they did not stop the run.
-  assert.deepEqual(inspections.slice(0, 2).map(item => item.persisted), inspections.slice(0, 2).map(item => item.result.content[0].text));
+  // The first two checks reach the model with their own text; they did not stop
+  // the run. The second, the third failure in a row, also carries the one
+  // warning that comes before the stop.
+  assert.equal(inspections[0].persisted, inspections[0].result.content[0].text);
+  assert.equal(inspections[1].persisted, `${inspections[1].result.content[0].text}\n${RUN_PROGRESS_WARNING_TEXT}`);
   // The third one stopped it: its persisted result, which the next model request
   // carries, is the wrap-up instruction instead of the stop text.
   assert.equal(inspections[2].persisted, PREVIEW_CHECK_FINALIZATION_INSTRUCTION);
@@ -181,7 +187,7 @@ test('Spark stopwatch: without an answer the owner reads one plain line and the 
   guard.beforeAgentFinalize({lastAssistantMessage: 'Let me check the files again.'}, context);
   const delivery = guard.deliveryVerificationForRun(runId);
   assert.equal(delivery.status, 'failed', 'Portal certifies nothing');
-  assert.equal(delivery.text, `${PREVIEW_UNFINISHED_NOTE}\n\n${receiptOf(guard)}`);
+  assert.equal(delivery.text, `${PREVIEW_UNFINISHED_NOTE}\n\n${CHANGED}\n\n${receiptOf(guard)}`);
   assert.ok(delivery.text.includes(`\n\nYour preview is ready.\n\n[Open preview](${preview.url})\n\n`), 'the receipt becomes the card');
   assert.doesNotMatch(delivery.text, ALARM);
   assert.equal(delivery.preview.siteId, preview.siteId, 'the preview card stays');
@@ -197,7 +203,7 @@ test('Spark stopwatch: the model\'s own wrap-up comes first, then Portal\'s line
     {role: 'assistant', content: [{type: 'text', text: ANSWER}], stopReason: 'stop'}]}, context);
   const delivery = guard.deliveryVerificationForRun(runId);
   assert.equal(delivery.status, 'failed');
-  assert.equal(delivery.text, `${ANSWER}\n\n${PREVIEW_UNFINISHED_NOTE}\n\n${receiptOf(guard)}`);
+  assert.equal(delivery.text, `${ANSWER}\n\n${PREVIEW_UNFINISHED_NOTE}\n\n${CHANGED}\n\n${receiptOf(guard)}`);
   assert.doesNotMatch(delivery.text.slice(ANSWER.length), ALARM);
   assert.ok(!delivery.text.includes(PROGRESS_FINALIZATION_NOTE));
   assert.equal(delivery.preview.sha256, preview.sha256);
@@ -217,7 +223,7 @@ test('a stopped build whose files changed since publication links the earlier pr
   round();
   call('read', {path: 'stopwatch/app.js'});
   const delivery = guard.deliveryVerificationForRun(runId);
-  assert.equal(delivery.text, `${PREVIEW_STOPPED_NOTE}\n\n[Open last published preview](${preview.url})`);
+  assert.equal(delivery.text, `${PREVIEW_STOPPED_NOTE}\n\n${CHANGED}\n\n[Open last published preview](${preview.url})`);
   assert.doesNotMatch(delivery.text, ALARM);
   assert.equal(delivery.preview.sha256, preview.sha256);
 });
@@ -238,12 +244,13 @@ test('a stopped build with no preview says so plainly, with what there is, the n
   const delivery = guard.deliveryVerificationForRun(runId);
   assert.equal(delivery.status, 'failed');
   assert.equal(delivery.preview, undefined);
-  assert.equal(delivery.text, `${PROGRESS_STOPPED_DELIVERY_PREFIX}\n\n${WORKSPACE_PREVIEW_UNVERIFIED_DELIVERY_PREFIX}\n\n${PROGRESS_STOP_HELP}`);
+  assert.equal(delivery.text,
+    `${PROGRESS_STOPPED_DELIVERY_PREFIX}\n\n${WORKSPACE_PREVIEW_UNVERIFIED_DELIVERY_PREFIX}\n\n${CHANGED}\n\n${PROGRESS_STOP_HELP}`);
   assert.doesNotMatch(delivery.text, /localhost|tool failures|corrected approach/);
 });
 
 test('the wrap-up never lets another tool run, and the budget is unchanged', async () => {
-  assert.deepEqual(RUN_PROGRESS_LIMITS, {consecutiveFailures: 4, totalFailures: 12, roundsWithoutProgress: 8, identicalSuccesses: 2});
+  assert.deepEqual(RUN_PROGRESS_LIMITS, {consecutiveFailures: 4, recentFailures: 12, recentResults: 40, roundsWithoutProgress: 8, identicalSuccesses: 2});
   const {round, call} = await stopwatchTurn();
   const decisions = [];
   for (const [toolName, params] of [['exec', {command: 'ls'}], ['pixel_ods_workspace_preview_inspect', {siteId: 'x'}],
@@ -336,7 +343,7 @@ test('a mixed request with a managed installation keeps the strict stop text, so
   assert.match(h.guard.verificationForRun(runId).text, /ODS did not observe a verified managed installation receipt/);
   const delivery = h.guard.deliveryVerificationForRun(runId);
   assert.equal(delivery.status, 'failed');
-  assert.equal(delivery.text, `${RUN_PROGRESS_STOP_REASON}\n\n[Open last published preview](${preview.url})\n\n` +
+  assert.equal(delivery.text, `${RUN_PROGRESS_STOP_REASON}\n\n${CHANGED}\n\n[Open last published preview](${preview.url})\n\n` +
     'This is the last verified publication, not proof that all requested work completed.',
   'the owner reads that the request was not completed, not only a calm line over the card');
   assert.equal(delivery.preview.sha256, preview.sha256);
@@ -355,7 +362,7 @@ test('a stop after failed edits says the published page may be unfinished, not t
   h.guard.beforeAgentFinalize({lastAssistantMessage: 'Let me check.'}, context);
   assert.equal(h.guard.verificationForRun(runId).status, 'passed', 'the record: a publication without failed checks');
   const delivery = h.guard.deliveryVerificationForRun(runId);
-  assert.equal(delivery.text, `${PREVIEW_INCOMPLETE_NOTE}\n\n${receiptOf(h.guard)}`);
+  assert.equal(delivery.text, `${PREVIEW_INCOMPLETE_NOTE}\n\n${CHANGED}\n\n${receiptOf(h.guard)}`);
   assert.doesNotMatch(delivery.text, /couldn't finish checking/);
   assert.match(PREVIEW_INCOMPLETE_NOTE, /^Portal stopped before it finished\b.*\. Send a message to continue\.$/);
   assert.equal(delivery.preview.sha256, preview.sha256);
@@ -379,7 +386,7 @@ test('a call the runtime rejects after the stop hands over the instruction, and 
   h.round();
   h.guard.beforeAgentFinalize(answerTurn(answer), context);
   const delivery = h.guard.deliveryVerificationForRun(runId);
-  assert.equal(delivery.text, `${answer}\n\n${PREVIEW_INCOMPLETE_NOTE}\n\n${receiptOf(h.guard)}`);
+  assert.equal(delivery.text, `${answer}\n\n${PREVIEW_INCOMPLETE_NOTE}\n\n${CHANGED}\n\n${receiptOf(h.guard)}`);
   assert.deepEqual(h.aborts, []);
 
   // The bound is unchanged: a tool call in that answer turn ends the run.
@@ -392,7 +399,8 @@ test('a call the runtime rejects after the stop hands over the instruction, and 
   bounded.round();
   assert.equal(bounded.call('read', {path: 'stopwatch/app.js'}).decision.blockReason, RUN_PROGRESS_STOP_REASON);
   assert.equal(bounded.aborts.length, 1);
-  assert.equal(bounded.guard.deliveryVerificationForRun(runId).text, `${PREVIEW_INCOMPLETE_NOTE}\n\n${receiptOf(bounded.guard)}`);
+  assert.equal(bounded.guard.deliveryVerificationForRun(runId).text,
+    `${PREVIEW_INCOMPLETE_NOTE}\n\n${CHANGED}\n\n${receiptOf(bounded.guard)}`);
 });
 
 test('an answer that ends unfinished is followed by the line that its next step has not started', () => {
@@ -413,7 +421,7 @@ test('an answer that ends unfinished is followed by the line that its next step 
   assert.equal(partial.guard.beforeToolCall({toolName: 'edit', runId, toolCallId: id, params: {path: 'stopwatch/index.html'}},
     {...context, toolName: 'edit', toolCallId: id}).blockReason, RUN_PROGRESS_STOP_REASON);
   const refused = partial.guard.deliveryVerificationForRun(runId);
-  assert.equal(refused.text, `${text}\n\n${PREVIEW_CONTINUE_NOTE}\n\n${receiptOf(partial.guard)}`);
+  assert.equal(refused.text, `${text}\n\n${PREVIEW_CONTINUE_NOTE}\n\n${CHANGED}\n\n${receiptOf(partial.guard)}`);
   // A tool-free answer that announces more work reads the same way.
   const announced = harness();
   announced.guard.observeModelCall({}, context);
@@ -422,5 +430,5 @@ test('an answer that ends unfinished is followed by the line that its next step 
   announced.round();
   announced.guard.beforeAgentFinalize(answerTurn(text), context);
   assert.equal(announced.guard.deliveryVerificationForRun(runId).text,
-    `${text}\n\n${PREVIEW_CONTINUE_NOTE}\n\n${receiptOf(announced.guard)}`);
+    `${text}\n\n${PREVIEW_CONTINUE_NOTE}\n\n${CHANGED}\n\n${receiptOf(announced.guard)}`);
 });
