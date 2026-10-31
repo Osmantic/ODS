@@ -378,10 +378,11 @@ test('vendored and minified files get the parse check only; a lib folder or a lo
   // A library's own file names carry build or version suffixes only; a game
   // names its own files after the library it uses.
   for (const name of ['js/three.module.js', 'lib/phaser.min.js', 'react.production.min.js', 'react-dom.development.js',
-    'jquery-3.7.1.min.js', 'jquery.slim.js', 'p5.js', 'socket.io.js', 'lil-gui.module.min.js', 'babylon.max.js'])
+    'jquery-3.7.1.min.js', 'jquery.slim.js', 'p5.js', 'socket.io.js', 'lil-gui.module.min.js', 'babylon.max.js',
+    'phaser-v3.80.1.js', 'd3.v7.min.js', `d3-0${'.0'.repeat(200)}.js`])
     assert.equal(generatedFile(name, 'const a = 1;\n'), true, name);
   for (const name of ['phaser-game.js', 'three-scene.js', 'pixi-app.js', 'matter-world.js', 'react-ui.js', 'p5-sketch.js',
-    'js/three.helpers.js', 'game.js']) assert.equal(generatedFile(name, 'const a = 1;\n'), false, name);
+    'js/three.helpers.js', 'game.js', `d3-0${'.0'.repeat(200)}x.js`]) assert.equal(generatedFile(name, 'const a = 1;\n'), false, name);
 });
 
 test('library and devtools hooks, and names the owner\'s request uses, are not debug globals', t => {

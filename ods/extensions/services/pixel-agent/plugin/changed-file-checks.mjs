@@ -155,8 +155,11 @@ const COMMENT_LINE = /^\s*(?:\/\/|\/\*|\*)/;
 // a word a game uses for its own file, such as stats or tween) with build or
 // version suffixes only (three.module.js, jquery-3.7.1.min.js; not
 // three-scene.js), or a banner kept for a license (/*!, @license or @preserve).
+// A version is one number per suffix (3.7.1 is -3, .7 and .1), so a long run
+// of numbers has one reading and never backtracks.
 const VENDORED = /(?:^|\/)vendors?\/|\.min\.[cm]?js$/i;
-const LIBRARY_FILE = /(?:^|\/)(?:three|pixi|phaser|jquery|react|react-dom|vue|p5|matter|howler|gsap|d3|lodash|underscore|babel|kaboom|kaplay|babylon|socket\.io|axios|moment|dayjs|alpine|htmx|preact|lil-gui|dat\.gui|planck|excalibur|melonjs|playcanvas|aframe)(?:[.-](?:module|min|max|slim|esm|umd|cjs|iife|global|browser|production|development|v?\d+(?:\.\d+)*))*\.[cm]?js$/i;
+const LIBRARY_FILE = /(?:^|\/)(?:three|pixi|phaser|jquery|react|react-dom|vue|p5|matter|howler|gsap|d3|lodash|underscore|babel|kaboom|kaplay|babylon|socket\.io|axios|moment|dayjs|alpine|htmx|preact|lil-gui|dat\.gui|planck|excalibur|melonjs|playcanvas|aframe)(?:[.-](?:module|min|max|slim|esm|umd|cjs|iife|global|browser|production|development|v?\d+))*\.[cm]?js$/i;
+const escapeRegExp = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const LICENSE_BANNER = /^(?:#![^\n]*\n)?\s*(?:\/\*!|\/\*\*?(?:(?!\*\/)[\s\S]){0,2000}@(?:license|preserve)\b)/;
 // JSX-looking tags: the file is not plain JavaScript.
 const JSX_TAG = /<\/?[A-Za-z][\w.:-]*(?:\s[^<>]*?)?\/?>|<\/?>/;
@@ -789,7 +792,7 @@ export function createChangedFileChecks({queue, checkModule = nodeModuleCheck, r
       for (const [name, count] of after.globals) {
         const bare = name.slice(name.indexOf('.') + 1);
         if (count > (before?.globals.get(name) ?? 0) && name.length <= 80 && !LIBRARY_GLOBAL.test(bare) &&
-            !new RegExp(`(?<![\\w$])${bare.replace(/\$/g, '\\$')}(?![\\w$])`).test(requested))
+            !new RegExp(`(?<![\\w$])${escapeRegExp(bare)}(?![\\w$])`).test(requested))
           found.push({kind: 'global', project, file, name});
       }
     }
