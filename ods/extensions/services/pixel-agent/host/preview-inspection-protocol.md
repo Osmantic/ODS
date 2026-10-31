@@ -735,12 +735,13 @@ with no hedge or refusal word, at most three words besides framing ones
 (left, right, square, and, the, is, colour and the like), that names both
 colours as whole words in that order records `supported`; a guess matches 1
 time in 30. `unsupported` is recorded only for an unambiguous miss: an answer
-naming a palette colour that is not in the image; one that names no colour
-and says the model cannot see images; or a refused request (4xx other than
-408 and 429) whose error names image input apart from the model's own id,
-when the same request without the image is then answered. Anything else (a
-swapped order, one colour, a longer or hedged answer, a cut-off one, an
-error, a timeout) is inconclusive. The receipt is kept in the route state
+naming two palette colours, one of them not in the image (a third may be a
+background, and one alone may describe a single square); one that names no
+colour and says the model cannot see images; or a refused request (4xx
+other than 408 and 429) whose error names image input apart from the
+model's own id, when the same request without the image is then answered.
+Anything else (a swapped order, one or three colours, a longer or hedged
+answer, a cut-off one, an error, a timeout) is inconclusive. The receipt is kept in the route state
 (`data/remote-provider/routing-state.json`, `status.vision`) with the route
 fingerprint (transport, base URL, model, context, output limit, reasoning),
 and the route's Pixel contract (`_remote_provider_runtime_contract`)
@@ -752,14 +753,19 @@ carries the receipt of the same route into the state it rewrites. When a
 check of the route already in use measures a verdict that changes the
 contract, Pixel alone takes it through a model transaction, without
 recreating LiteLLM or the relay; without a managed Pixel only the activation
-record changes. If that transaction fails it rolls back to the previous
+record changes. If that transaction fails, an uncertain `model-apply`
+included, the rebind does what a local switch's rollback does: it proves
+that the controller still holds the transaction, on the previous contract or
+on the target it may already have taken, and rolls back to the previous
 contract after proving only the route's identity, since nothing on the
-inference side changed; a controller that refuses the new contract leaves
-the transaction held on the previous one, and it rolls back the same way.
-When the controller refuses to begin because Portal is busy (`active-run`,
-`transition-busy`), the receipt stays as it was, the check says that its
-result applies at the next check once Portal is idle (`imageCheck`), and the
-next check applies it; any other refusal fails the check with its reason.
+inference side changed. When the controller cannot prove its hold, the
+transaction stays held for recovery, and the journal keeps the target so
+that recovery can still complete it. When the controller refuses to begin
+because Portal is busy (`runtime-busy`, `model-inspection-changed`,
+`transition-busy`, `active-run` or the `native-transition-busy` family), the
+receipt stays as it was, the check says that its result applies at the next
+check once Portal is idle (`imageCheck`), and the next check applies it; any
+other refusal fails the check with its reason.
 `ods remote-provider status` and `test` print the verdict as image input
 "seen the test image", "text only" or "not measured"; the Dashboard does not
 show it yet.
@@ -894,13 +900,15 @@ counts only when the same request without the image is answered), the drawn
 colours, an inconclusive probe that keeps the receipt, and a changed verdict
 without a managed Pixel. `test_model_profile_probes.py` covers the image, the
 answer judge, the refusal confirmation and the shared budget, and
-`test_model_transaction.py` a refused `model-apply` that leaves the
-transaction held for a clean rollback. `test_remote_model_transaction.py`
+`test_model_transaction.py` a refused `model-apply` that stays uncertain with
+its target recorded, so that a rollback or recovery still resolves it after
+the gateway took the target. `test_remote_model_transaction.py`
 checks one probe per proof, after LiteLLM serves the route and before Pixel
 is bound, a rebind of Pixel alone only when the answer changed, a busy
-Portal (`active-run`, `transition-busy`) that keeps the receipt until the
-next check while any other refusal fails the check, a failed rebind that
-rolls back to the previous receipt without a live completion, an enable that
+Portal (each busy code above) that keeps the receipt until the next check
+while any other refusal fails the check, a failed rebind (a refused or lost
+`model-apply`, a failed receipt write) that rolls back to the previous
+receipt without a live completion, an enable that
 keeps the route's receipt through an inconclusive probe, the status a proof
 reports, and an enable of the active route that stays a no-op.
 `tests/test_pixel_onboarding.py` checks that an installer rerun after a

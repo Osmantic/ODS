@@ -528,9 +528,10 @@ def judge_remote_vision(content: str, colors: tuple[str, str]) -> tuple[str, str
 
     "pass" only for exactly those colours in that order, with no hedge, in at
     most three words besides the framing ones. "fail" only for an unambiguous
-    miss: a palette colour that is not in the image, or a stated inability to
-    see images from a model that names no colour. Anything else (a swapped
-    order, one colour, a longer or hedged answer) is "unknown".
+    miss: two palette colours, one of them not in the image, or a stated
+    inability to see images from a model that names no colour. Anything else
+    (a swapped order, one or three colours, a longer or hedged answer) is
+    "unknown".
     """
     text = remote_vision_answer(content)
     words = _REMOTE_WORD.findall(text)
@@ -545,7 +546,9 @@ def judge_remote_vision(content: str, colors: tuple[str, str]) -> tuple[str, str
         return "unknown", "long-answer"
     if named == list(colors):
         return "pass", None
-    if any(name not in colors for name in named):
+    # Two colours, one of them not in the image; a third ("on white") may be
+    # a background, and one alone may describe a single square.
+    if len(named) == 2 and any(name not in colors for name in named):
         return "fail", "wrong-color"
     return "unknown", "partial"
 

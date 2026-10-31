@@ -337,6 +337,10 @@ def test_remote_vision_image_is_two_squares_of_the_drawn_colours():
     # Everything else is no evidence either way.
     ("I can't see the image very well, but: yellow, black", "unknown", "hedged"),
     ("I cannot see images, but the squares are probably yellow and black", "unknown", "hedged"),
+    # A third colour may be a background, and one alone may name a single square.
+    ("Yellow and black on white", "unknown", "partial"),
+    ("Red and black on white", "unknown", "partial"),
+    ("Red", "unknown", "partial"),
     ("Black, yellow", "unknown", "partial"),
     ("Yellow", "unknown", "partial"),
     ("Shared", "unknown", "partial"),

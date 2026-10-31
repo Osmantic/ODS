@@ -4867,13 +4867,6 @@ class _PixelModelTransaction:
                     and value['transactionId']!=self.id):
                 self._save('completed','rollback')
                 raise error
-            # A refused apply changed nothing: the transaction still holds the
-            # previous contract, so the caller rolls back as from any failure.
-            if (operation=='model-apply' and isinstance(error,_PixelModelTransactionRejected)
-                    and self._matches(value, 'held', self.previous)):
-                self.target = None
-                self._save('held')
-                raise error
         if not self._matches(value, phase, contract, outcome):
             raise _PixelModelTransactionUncertain('Managed model transaction outcome is unconfirmed; recovery is required')
         return value
@@ -5707,10 +5700,14 @@ def _record_remote_provider_vision(route: dict, env: dict) -> dict:
     return state
 
 
-# The model controller's refusals that mean Portal is busy right now: a run in
-# progress, or another model operation holding its lock. Any other refusal is
-# a real failure.
-_PORTAL_BUSY_CODES = frozenset({"active-run", "transition-busy"})
+# The model controller's refusals of model-begin that mean Portal is busy
+# right now (bin/pixel_model_coordinator.py): a run holds the runtime
+# (runtime-busy, also from its hold, and the native-transition-busy family),
+# a run started after the status read (model-inspection-changed), another
+# model operation holds the lock (transition-busy), or the access lane is in
+# use (active-run). Any other refusal is a real failure.
+_PORTAL_BUSY_CODES = frozenset({"runtime-busy", "model-inspection-changed", "transition-busy", "active-run"})
+_PORTAL_BUSY_CODE_PREFIXES = ("native-transition-busy",)
 
 
 def _rebind_remote_provider_pixel(runtime: dict[str, object]) -> dict[str, object] | None:
@@ -5731,7 +5728,7 @@ def _rebind_remote_provider_pixel(runtime: dict[str, object]) -> dict[str, objec
     try:
         transaction = _begin_pixel_model_transaction(load_env(env_path))
     except _PixelModelTransactionRejected as exc:
-        if exc.code not in _PORTAL_BUSY_CODES:
+        if exc.code not in _PORTAL_BUSY_CODES and not exc.code.startswith(_PORTAL_BUSY_CODE_PREFIXES):
             raise
         logger.info("Remote route image input waits until Portal is idle: %s", exc)
         return None
@@ -5757,10 +5754,11 @@ def _rebind_remote_provider_pixel(runtime: dict[str, object]) -> dict[str, objec
             transaction.finish('commit')
         return activation_public
     except Exception as exc:
-        if isinstance(exc, _PixelModelTransactionUncertain):
-            raise
         if transaction is not None and transaction.completed:
             raise _PixelModelTransactionUncertain('Pixel took the remote route image input, but its final recovery receipt could not be saved') from exc
+        # As a local switch's rollback does, an uncertain apply included:
+        # verify_held proves the controller still holds this transaction, on
+        # the previous contract or on the target it took, or raises Uncertain.
         if transaction is not None:
             transaction.verify_held()
         _restore_text_file(activation_path, activation_snapshot)
@@ -5774,6 +5772,8 @@ def _rebind_remote_provider_pixel(runtime: dict[str, object]) -> dict[str, objec
             if not _remote_provider_contract_matches_route(pixel_before):
                 raise _PixelModelTransactionUncertain('Previous remote route contract does not match the saved route; maintenance remains held') from exc
             transaction.finish('rollback')
+        if isinstance(exc, _PixelModelTransactionUncertain):
+            raise RuntimeError('Pixel did not confirm the remote route image input; its previous contract was restored') from exc
         raise
 
 

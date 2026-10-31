@@ -384,11 +384,11 @@ colours, left first, Portal treats it as able to read images: images you
 attach are sent without the image-test confirmation, and Portal's preview
 check shows the model a screenshot of the page it built. When the provider
 refuses the test image but answers the same question without it, or the
-model names a colour that is not there, or names none and says it cannot see
-images, Portal treats the model as text-only: it refuses image attachments
-and image reads for it, and a chat with images in its history cannot
-continue on it. Any other answer, an error or a timeout changes nothing: a
-route checked before keeps its earlier result, also through
+model names two colours and one of them is not there, or names none and says
+it cannot see images, Portal treats the model as text-only: it refuses image
+attachments and image reads for it, and a chat with images in its history
+cannot continue on it. Any other answer, an error or a timeout changes
+nothing: a route checked before keeps its earlier result, also through
 **Reconcile route** or `ods remote-provider enable`, and a new route keeps
 Portal asking before it sends an image. If Portal is busy when a check
 changes the result, the next check applies it; `ods remote-provider test`

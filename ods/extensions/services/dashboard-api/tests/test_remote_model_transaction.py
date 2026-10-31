@@ -29,7 +29,7 @@ def runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(_mod,'DATA_DIR',data)
     helpers=_LifecycleFixtures()
     helpers._patch_successful_probe(monkeypatch)
-    state=SimpleNamespace(events=[],transactions=[],held=False,failure=None,vision='unknown',begin_code='active-run',
+    state=SimpleNamespace(events=[],transactions=[],held=False,failure=None,vision='unknown',begin_code='runtime-busy',
         native={'model':'local','contextLength':65536,'maxTokens':4096,'reasoning':False},
         root=root,data=data,cloud=cloud,env=env,helpers=helpers)
 
@@ -47,11 +47,9 @@ def runtime(tmp_path, monkeypatch):
             assert state.held
             self.target=deepcopy(target)
             state.events.append('apply')
-            # The controller refused the target outright: as _PixelModelTransaction
-            # does then, the transaction is held again on its previous contract.
-            if state.failure=='apply-refused':
-                self.target=None
-                raise _mod._PixelModelTransactionRejected('refused',code='invalid-target')
+            # A refused apply whose native status still shows the previous
+            # contract: _PixelModelTransaction cannot tell it from a lost reply.
+            if state.failure=='apply-refused':raise _mod._PixelModelTransactionUncertain('apply refused')
             state.native=deepcopy(target)
             if state.failure=='apply':raise _mod._PixelModelTransactionUncertain('apply unknown')
             return 'reconciled'
@@ -203,7 +201,8 @@ def test_each_proof_of_the_active_route_probes_vision_once_and_rebinds_pixel_onl
     assert runtime.events==['vision-probe','begin','apply','finish-commit'] and not runtime.held
 
 
-@pytest.mark.parametrize('code',['active-run','transition-busy'])
+@pytest.mark.parametrize('code',['runtime-busy','model-inspection-changed','transition-busy','active-run',
+                                 'native-transition-busy-active-run'])
 def test_a_busy_portal_keeps_the_receipt_and_the_next_check_applies_it(runtime,monkeypatch,code):
     configure(runtime)
     monkeypatch.setattr(_mod,'_litellm_route_failure',lambda env,*,model='ods/current':None)
@@ -265,7 +264,10 @@ def test_a_saved_receipt_is_carried_only_for_its_own_route(runtime):
     assert _mod._remote_provider_saved_vision({'status':{'proven':False,'reason':'disabled'}},route) is None
 
 
-@pytest.mark.parametrize('failure',['apply-refused','receipt-write'])
+# apply-refused: the controller still holds the previous contract; apply: it
+# took the target (the gateway loaded it) though the reply was lost. Both are
+# uncertain applies that verify_held proves and the rebind rolls back.
+@pytest.mark.parametrize('failure',['apply-refused','apply','receipt-write'])
 def test_a_failed_rebind_rolls_back_and_keeps_the_previous_receipt(runtime,monkeypatch,failure):
     runtime.vision='supported'
     configure(runtime)
@@ -279,9 +281,9 @@ def test_a_failed_rebind_rolls_back_and_keeps_the_previous_receipt(runtime,monke
     def provider_down(*_args,**_kwargs):raise RuntimeError('LiteLLM did not serve a completion')
     monkeypatch.setattr(_mod,'_verify_litellm_route',provider_down)
     runtime.vision='unsupported'
-    if failure=='apply-refused':
-        runtime.failure='apply-refused'
-        expected=_mod._PixelModelTransactionRejected
+    expected={'apply-refused':RuntimeError,'apply':RuntimeError,'receipt-write':OSError}[failure]
+    if expected is RuntimeError:
+        runtime.failure=failure
     else:
         # The rebind's public receipt (the check's own has "unchanged") fails
         # after the activation record already took the new contract.
@@ -290,10 +292,12 @@ def test_a_failed_rebind_rolls_back_and_keeps_the_previous_receipt(runtime,monke
             if not value.get('unchanged'):raise OSError('receipt write failed')
             write(value)
         monkeypatch.setattr(_mod,'_write_remote_provider_activation_public',failing_write)
-        expected=OSError
     runtime.events.clear()
-    with pytest.raises(expected):
+    with pytest.raises(expected) as failed:
         proof(runtime)
+    if expected is RuntimeError:
+        assert not isinstance(failed.value,_mod._PixelModelTransactionUncertain)
+        assert 'previous contract was restored' in str(failed.value)
     assert saved_vision()==previous_receipt and runtime.native==previous_native
     assert _mod._read_remote_provider_activation_state()==previous_record
     assert _mod._remote_provider_activation_public_path().read_bytes()==previous_public
