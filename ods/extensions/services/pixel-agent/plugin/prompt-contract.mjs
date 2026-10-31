@@ -31,6 +31,7 @@ import {
   workspacePreviewMode,
   userMessageRequestsWorkspaceDocumentDelivery,
   userMessageReportsDefect,
+  userMessagePreviewStance,
 } from "./tool-loop-guard.mjs";
 import { AGENT_SKILLS, PREVIEW_RUNTIME_CONTRACT } from "./agent-skills.mjs";
 import { WORKSPACE_ARTIFACT_DELIVERY_GUIDANCE } from './workspace-artifact.mjs';
@@ -474,10 +475,14 @@ export function promptContractForAgent(
   const workspaceDownload = !exactDownload && (repositoryAcquisition ||
     userMessageRequestsWorkspaceDownloadContinuation(event?.messages, event?.prompt))
     ? ` ${ODS_PUBLIC_DOWNLOAD_WORKSPACE_CONTRACT}` : "";
+  // Ask for a publication only when nothing in the owner's words limits it: an
+  // outweighed "don't show" leaves publishing optional, and a prohibition is
+  // refused by the guard anyway.
+  const previewOpen = userMessagePreviewStance(event?.messages, event?.prompt) === "open";
   const workspaceVerificationContinuation = userMessageRequestsWorkspaceVerificationContinuation(
     event?.messages, event?.prompt
   );
-  const workspaceVisualContinuation =
+  const workspaceVisualContinuation = previewOpen &&
     (workspaceVerificationContinuation || userMessageRequestsWorkspaceVisualContinuation(
       event?.messages,
       event?.prompt
@@ -486,7 +491,7 @@ export function promptContractForAgent(
         ? ODS_WORKSPACE_VERIFICATION_CONTINUATION_CONTRACT
         : ODS_WORKSPACE_VISUAL_CONTINUATION_CONTRACT}`
       : "";
-  const previewMode = workspacePreviewMode(event?.messages, event?.prompt);
+  const previewMode = previewOpen ? workspacePreviewMode(event?.messages, event?.prompt) : undefined;
   const workspacePreview = workspaceVisualContinuation ||
     (previewMode
       ? ` ${previewMode === "new-static"
