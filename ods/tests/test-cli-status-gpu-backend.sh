@@ -13,6 +13,10 @@ export NVIDIA_CALLS="$FIXTURE/nvidia-calls"
 cat > "$FIXTURE/bin/nvidia-smi" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$NVIDIA_CALLS"
+if [[ "${FAIL_NVIDIA_PROBE:-0}" == 1 ]]; then
+    echo 'partial output from failed driver query'
+    exit 9
+fi
 case "$*" in
     --list-gpus) echo 'GPU 0: Test NVIDIA GPU' ;;
     *query-gpu=index,name*) echo '0, Test NVIDIA GPU, 1024, 8192, 25, 50, 75' ;;
@@ -43,7 +47,8 @@ chmod +x "$FIXTURE/bin/"*
 
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 run_cli() {
-    INSTALL_DIR="$FIXTURE/install" PATH="$FIXTURE/bin:$PATH" bash "$CLI" "$@"
+    INSTALL_DIR="$FIXTURE/install" ODS_HOME="$FIXTURE/install" HOME="$FIXTURE/home" \
+        PATH="$FIXTURE/bin:$PATH" bash "$CLI" "$@"
 }
 
 for backend in amd apple cpu intel arc; do
@@ -75,6 +80,21 @@ output=$(FAIL_APPLE_PROBE=1 run_cli status)
     || fail 'Apple status did not degrade gracefully when its GPU probe failed'
 [[ ! -s "$NVIDIA_CALLS" ]] || fail 'Apple probe failure invoked NVIDIA tooling'
 echo '[PASS] Apple status survives an unavailable GPU probe'
+
+# The JSON status is also used when gathering diagnostics during a driver
+# failure. Optional telemetry must not discard the service-state document.
+summary=$(FAIL_APPLE_PROBE=1 run_cli status --json 2>"$FIXTURE/apple-error")
+jq -e '.gpu.backend == "apple" and .gpu.unified_memory_gb == 32
+    and .gpu.gpu_cores == null and (.services | type == "array")' <<< "$summary" >/dev/null
+grep -q 'GPU' "$FIXTURE/apple-error" || fail 'Apple JSON status omitted the unavailable-probe diagnostic'
+echo '[PASS] Apple JSON status retains memory and services when GPU observation fails'
+
+printf 'GPU_BACKEND=nvidia\n' > "$FIXTURE/install/.env"
+summary=$(FAIL_NVIDIA_PROBE=1 run_cli status --json 2>"$FIXTURE/nvidia-error")
+jq -e '.gpu == null and (.services | type == "array")' <<< "$summary" >/dev/null
+grep -q 'nvidia-smi' "$FIXTURE/nvidia-error" || fail 'NVIDIA JSON status omitted the failed-driver diagnostic'
+[[ "$summary" != *'partial output'* ]] || fail 'NVIDIA JSON status published incomplete failed telemetry'
+echo '[PASS] NVIDIA JSON status discards a failed partial observation and retains services'
 
 # Exercise the production AMD reporter with a private DRM tree. Intercept
 # reads after the existence checks to model a disappearing device or sensor.
