@@ -34,8 +34,12 @@ ods_model_lifecycle_lock_file() {
     printf '%s/ods-model-lifecycle-%s.lock\n' "${lock_root%/}" "$lock_key"
 }
 
+# Usage: ods_model_lifecycle_lock_acquire <install_dir> [actor] [nowait]
+# Returns 0 once the lock is held, waiting for another holder unless "nowait"
+# is given; "nowait" returns 2 while another operation holds it. Returns 1
+# when the lock cannot be taken safely (no flock, a foreign lock directory).
 ods_model_lifecycle_lock_acquire() {
-    local install_dir="$1" actor="${2:-model lifecycle operation}" lock_file
+    local install_dir="$1" actor="${2:-model lifecycle operation}" mode="${3:-wait}" lock_file
 
     [[ "$(uname -s 2>/dev/null || true)" == "Linux" ]] || return 0
     if [[ -n "${ODS_MODEL_LIFECYCLE_LOCK_FD:-}" ]]; then
@@ -61,6 +65,13 @@ ods_model_lifecycle_lock_acquire() {
     fi
 
     if ! flock -xn "$ODS_MODEL_LIFECYCLE_LOCK_FD"; then
+        if [[ "$mode" == nowait ]]; then
+            # Same scoped close as below; a just-opened descriptor has nothing to flush.
+            { exec {ODS_MODEL_LIFECYCLE_LOCK_FD}>&-; } 2>/dev/null || true
+            ODS_MODEL_LIFECYCLE_LOCK_FD=""
+            _ods_model_lifecycle_log "Another model lifecycle operation holds the lock; not waiting for $actor."
+            return 2
+        fi
         _ods_model_lifecycle_log "Waiting for another model lifecycle operation before $actor..."
         if ! flock -x "$ODS_MODEL_LIFECYCLE_LOCK_FD"; then
             { exec {ODS_MODEL_LIFECYCLE_LOCK_FD}>&-; } 2>/dev/null || true
