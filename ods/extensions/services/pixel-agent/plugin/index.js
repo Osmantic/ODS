@@ -1,6 +1,7 @@
 import {createWorkspaceArtifactAdmission,createWorkspaceArtifactTool} from './workspace-artifact.mjs';
 import {createAgentSkillTool} from './agent-skills.mjs';
 import {registerProjectBuild} from './project-registration.mjs';
+import {projectCapabilityOutputLimit} from './project-capabilities.mjs';
 import {createProjectRunControl} from './project-run-control.mjs';
 import {registerBootstrapCapabilities} from './bootstrap-capabilities.mjs';
 import {registerStableRuntimeLine} from './runtime-line.mjs';
@@ -392,6 +393,8 @@ export default definePluginEntry({
       // (model-runtime-readback.mjs); its output limit is the owner's setting.
       remoteModelRoute: () => typeof (api.runtime?.config?.current?.() ?? api.config)
         ?.plugins?.entries?.['pixel-ods']?.config?.modelRouteFingerprint === 'string',
+      // The per-result cap a tool-limit stop's result must fit (4,000 when unset).
+      toolResultMaxChars: () => projectCapabilityOutputLimit(api.runtime?.config?.current?.() ?? api.config, AGENT_ID),
     });
     const bundleExecution = createWorkspaceBundleExecution({
       readConfig: () => api.runtime?.config?.current?.() ?? api.config,
