@@ -13119,10 +13119,15 @@ export function createToolLoopGuard({
     // the answer instruction, as the refusal that carries it: the stop text
     // says to continue "with a corrected approach", and on the RTX Spark
     // (2026-10-25) the model then kept calling tools and forfeited the turn.
+    // A call that ran (admitted, so it has a pending record) keeps its own
+    // output ahead of that text, so the answer reports what really happened:
+    // on the laptop (2026-10-31) the hidden output of the call that tripped
+    // the limit was a node --check SyntaxError, and the answer said the file
+    // passed node --check. A refused call has nothing of its own to keep.
     if (state?.progressBudget.exhausted) {
       const answerTurnAhead = ['pending', 'instructed'].includes(deliverInstruction(state, toolCallId).phase);
-      return {message: {...message, content: [{type: 'text',
-        text: answerTurnAhead ? finalizationInstruction(state) : RUN_PROGRESS_STOP_REASON}]}};
+      const stop = {type: 'text', text: answerTurnAhead ? finalizationInstruction(state) : RUN_PROGRESS_STOP_REASON};
+      return {message: {...message, content: pending && Array.isArray(message.content) ? [...message.content, stop] : [stop]}};
     }
     if (message.isError === true && state?.progressBudget.laneExhausted(progressLane)) {
       return {message:{...message,content:[...(message.content ?? []),{type:'text',text:progressLaneStopReason(progressLane)}]}};
