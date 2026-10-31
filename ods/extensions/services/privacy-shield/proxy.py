@@ -123,7 +123,7 @@ http_client = httpx.AsyncClient(
 # maxsize=10000 sessions, ttl=3600 seconds (1 hour)
 SESSION_MAXSIZE = int(os.getenv("SHIELD_SESSION_MAXSIZE", "10000"))
 SESSION_TTL = int(os.getenv("SHIELD_SESSION_TTL", "3600"))
-sessions = TTLCache(maxsize=SESSION_MAXSIZE, ttl=SESSION_TTL)
+sessions: "TTLCache[str, CachedPrivacyShield]" = TTLCache(maxsize=SESSION_MAXSIZE, ttl=SESSION_TTL)
 
 
 class CachedPrivacyShield(PrivacyShield):
