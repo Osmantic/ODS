@@ -50,6 +50,7 @@ _SAFE_PROJECTION_KEYS = {"publicModel", "gateway", "egressBaseUrl", "consumerRou
 _SSH_SUPERVISOR_SCHEMA = "ods.remote-provider-ssh-supervisor-plan.v1"
 _EGRESS_PROBE_SCHEMA = "ods.remote-provider-egress-probe.v1"
 _PROOF_RECORD_SCHEMA = "ods.remote-provider-proof-record.v1"
+_VISION_RECEIPT_SCHEMA = "ods.remote-provider-vision-receipt.v1"
 _SSH_CONTROL_TUNNEL_HOST = "remote-provider-ssh-tunnel"
 _SSH_CONTROL_TUNNEL_PORT = 18092
 _LOCAL_HOSTNAMES = {
@@ -301,7 +302,22 @@ def _safe_probe_receipt(value: Any) -> dict[str, Any] | None:
     return receipt
 
 
-def _safe_route_status(value: Any) -> dict[str, Any]:
+def _safe_vision_receipt(value: Any, fingerprint: str | None) -> dict[str, str] | None:
+    """The host agent's vision verdict for the route, if it measured this one."""
+    if (
+        not isinstance(value, Mapping)
+        or value.get("schema") != _VISION_RECEIPT_SCHEMA
+        or value.get("imageInput") not in {"supported", "unsupported"}
+        or (fingerprint is not None and value.get("routeFingerprint") != fingerprint)
+    ):
+        return None
+    return {
+        "imageInput": value["imageInput"],
+        "verifiedAt": _safe_text(value.get("verifiedAt"), max_length=64),
+    }
+
+
+def _safe_route_status(value: Any, *, fingerprint: str | None = None) -> dict[str, Any]:
     status = value if isinstance(value, Mapping) else {}
     clean: dict[str, Any] = {
         "proven": bool(status.get("proven")),
@@ -310,6 +326,9 @@ def _safe_route_status(value: Any) -> dict[str, Any]:
     last_probe = _safe_probe_receipt(status.get("lastProbe"))
     if last_probe is not None:
         clean["lastProbe"] = last_probe
+    vision = _safe_vision_receipt(status.get("vision"), fingerprint)
+    if vision is not None:
+        clean["vision"] = vision
     return clean
 
 
@@ -334,7 +353,10 @@ def _state_response(
         "provider": _safe_provider(provider) if enabled else None,
         "peer": _safe_peer_metadata(peer) if enabled else None,
         "projection": _safe_string_map(projection, _SAFE_PROJECTION_KEYS),
-        "status": _safe_route_status(status),
+        # A verdict counts only for the route it measured; a paused route has none.
+        "status": _safe_route_status(
+            status, fingerprint=_route_fingerprint({"provider": provider}) if enabled else "",
+        ),
         "resumeAvailable": bool(resume_available),
         "errors": errors or [],
     }
@@ -881,6 +903,18 @@ def _safe_proof_record(payload: Any) -> dict[str, Any]:
             "publicModel": _safe_text(activation.get("publicModel"), max_length=64),
             "model": _safe_text(activation.get("model"), max_length=256),
             "pixel": _safe_text(activation.get("pixel"), max_length=64),
+        }
+    # A verdict this check measured but could not apply while Portal was busy.
+    image_check = payload.get("imageCheck")
+    if (
+        isinstance(image_check, Mapping)
+        and image_check.get("applied") is False
+        and image_check.get("imageInput") in {"supported", "unsupported"}
+    ):
+        result["imageCheck"] = {
+            "applied": False,
+            "imageInput": image_check["imageInput"],
+            "reason": _safe_text(image_check.get("reason"), max_length=64),
         }
     return result
 
