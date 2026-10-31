@@ -68,3 +68,14 @@ def test_busy_refusal_is_not_reported_as_an_unverified_change():
         response = client.post("/api/pixel/access-mode", headers=headers, json=request)
     assert response.status_code == 409
     assert "was not verified" in response.json()["detail"]
+
+
+def test_sandbox_recheck_is_offered_only_while_portal_is_idle():
+    # Nothing can re-check the sandbox while a response runs: the host's
+    # re-proof and Verify Sandbox both wait for idle (laptop, 2026-10-31: the
+    # banner sat through a whole run with nothing able to clear it).
+    assert pixel._access_recovery(safe) == "verify-sandbox"
+    assert pixel._access_recovery({**safe, "busy": True}) is None
+    # A held chat keeps its own recovery either way.
+    held = {**safe, "reason": "chat-recovery-required", "busy": True}
+    assert pixel._access_recovery(held) == "verify-sandbox"

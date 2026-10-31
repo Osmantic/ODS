@@ -33,7 +33,7 @@ const COPY = {
 // Held states show the API's own explanation. An available or offline Portal
 // already shows its status text elsewhere, so it gets these short lines.
 const MESSAGES = {
-  'verify-sandbox': 'Portal restarted and has not re-checked its sandbox yet. ODS re-checks it automatically; you can also check it now.',
+  'verify-sandbox': 'Portal’s sandbox check is out of date. ODS re-checks it automatically while Portal is idle; you can also check it now.',
   'restore-sandbox': 'An earlier permissions change did not finish, so Portal’s sandbox is not verified.',
   'resume-model': 'The model runtime is not running, so Portal is paused.',
   'recover-model': 'A model switch stopped before it finished, so new messages are held.',

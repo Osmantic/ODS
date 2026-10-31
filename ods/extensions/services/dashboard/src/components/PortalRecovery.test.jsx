@@ -27,6 +27,9 @@ it('verifies an idle Sandbox with a fresh revision, exactly as Portal permission
   const settled = vi.fn()
   render(<PortalRecovery status="available" action="verify-sandbox" onSettled={settled}/>)
   expect(banner().getByRole('status')).toHaveTextContent('ODS re-checks it automatically')
+  // An out-of-date check is not a restart (laptop, 2026-10-31: shown after hours of uptime).
+  expect(banner().getByRole('status')).toHaveTextContent('sandbox check is out of date')
+  expect(banner().getByRole('status')).not.toHaveTextContent('restarted')
   // Nothing is sent before the owner chooses it.
   expect(fetch).not.toHaveBeenCalled()
   fireEvent.click(banner().getByRole('button', {name:'Verify now'}))

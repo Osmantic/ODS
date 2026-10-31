@@ -150,9 +150,11 @@ async def test_the_chat_gate_offers_the_one_permissions_action_that_recovers_it(
     # A gateway restart dropped an idle Sandbox's proof: Verify now.
     ({**ACCESS, "runtime_verified": False, "effective_mode": "unknown", "reason": "runtime-proof-required"},
      None, "verify-sandbox"),
-    # Busy work is refused by the host before anything changes; offer it anyway.
+    # While a response runs nothing can re-check it: the host refuses a busy
+    # Verify and re-proves by itself once idle. Offering it then only left a
+    # banner up for a whole run (laptop, 2026-10-31), so nothing is offered.
     ({**ACCESS, "runtime_verified": False, "effective_mode": "unknown", "reason": "runtime-proof-required",
-      "busy": True}, None, "verify-sandbox"),
+      "busy": True}, None, None),
     # An unverified Full Access is left to the host's same-mode reproof.
     ({**ACCESS, "configured_mode": "full-access", "runtime_verified": False, "effective_mode": "unknown",
       "reason": "runtime-proof-required"}, None, None),

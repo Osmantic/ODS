@@ -426,7 +426,9 @@ def _access_recovery(access, *, model_hold_possible=True) -> str | None:
     if reason == "chat-recovery-required":
         # Settings offers only this while a chat is held: Enable Full Access waits.
         return {"sandboxed": "verify-sandbox", "full-access": "restore-sandbox"}.get(mode)
-    if not access["pending"] and reason == "runtime-proof-required" and mode == "sandboxed":
+    # Nothing can re-check the sandbox while a response runs (the host's
+    # re-proof and Verify Sandbox both wait for idle), so offer it only then.
+    if not access["pending"] and not access["busy"] and reason == "runtime-proof-required" and mode == "sandboxed":
         return "verify-sandbox"
     # An unfinished access change resumes only by restoring Sandbox. A held
     # model transaction reads the same way but has its own recovery.
