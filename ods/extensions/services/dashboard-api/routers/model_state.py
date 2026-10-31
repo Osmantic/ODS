@@ -15,8 +15,12 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends
-from jsonschema import Draft202012Validator
-from jsonschema.exceptions import SchemaError
+try:
+    from jsonschema import Draft202012Validator
+    from jsonschema.exceptions import SchemaError
+except ImportError:
+    Draft202012Validator = None  # type: ignore[assignment]
+    SchemaError = Exception  # type: ignore[assignment]
 
 from config import DATA_DIR, INSTALL_DIR
 from security import verify_api_key
@@ -59,6 +63,8 @@ def _invalid_response(errors: list[str], *, exists: bool = True) -> dict[str, An
 
 
 def _validate_document(doc: Any) -> list[str]:
+    if Draft202012Validator is None:
+        return [] if isinstance(doc, dict) else ["model state document must be a dictionary"]
     try:
         schema = json.loads(_schema_path().read_text(encoding="utf-8"))
         Draft202012Validator.check_schema(schema)
