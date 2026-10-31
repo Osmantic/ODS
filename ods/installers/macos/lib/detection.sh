@@ -19,6 +19,12 @@ get_apple_silicon_info() {
     # Returns chip model, variant, and core counts
     local arch
     arch=$(uname -m 2>/dev/null || echo "unknown")
+    # Rosetta makes uname -m say x86_64 on an Apple Silicon Mac, while
+    # hw.optional.arm64 still reports the hardware. Intel Macs lack the key and
+    # sysctl fails there, which correctly leaves them unsupported (#3256).
+    if [[ "$arch" != "arm64" ]] && [[ "$(sysctl -n hw.optional.arm64 2>/dev/null)" == "1" ]]; then
+        arch="arm64"
+    fi
 
     APPLE_ARCH="$arch"
     APPLE_CHIP=""
