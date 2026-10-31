@@ -376,7 +376,9 @@ def page_notices(listing, state, prices):
         before = state.get(uuid) or {}
         entry = {"lastChanged": changed, "below": before.get("below"), "lastPrice": before.get("lastPrice")}
         title = str(watch.get("title") or watch.get("url") or "A watched page")[:200]
+        # A watch made in changedetection.io itself may hold any address; the phone opens only web pages.
         link = str(watch.get("url", ""))
+        link = link if link.lower().startswith(("http://", "https://")) else ""
         if entry["below"] is None:
             if before.get("lastChanged") is not None and changed > before["lastChanged"]:
                 notices.append({"title": f"Page changed: {title}", "message": f"{title} changed.", "link": link})

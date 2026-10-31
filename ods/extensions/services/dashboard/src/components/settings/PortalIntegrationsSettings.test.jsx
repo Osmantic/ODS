@@ -323,6 +323,18 @@ it('keeps unsaved edits while the watched pages load', async () => {
   expect(screen.getByRole('region', { name: 'Unsaved changes' })).toBeInTheDocument()
 })
 
+it('links only to web addresses in the watched pages list', async () => {
+  const watches = { total: 2, watches: [
+    { id: 'w1', title: 'Odd', url: 'javascript:alert(1)', lastChanged: 0, below: null, lastPrice: null },
+    { id: 'w2', title: 'Shop', url: 'HTTPS://shop.example/', lastChanged: 0, below: null, lastPrice: null },
+  ] }
+  fakeService(withApps({ watch: { ...APPS.watch, enabled: true } }, { watch: true }), { watches })
+  const list = await screen.findByLabelText('Watched pages list')
+  expect(await within(list).findByRole('link', { name: 'Shop' })).toHaveAttribute('href', 'HTTPS://shop.example/')
+  expect(within(list).queryByRole('link', { name: 'Odd' })).toBeNull()
+  expect(within(list).getByText('Odd')).toBeInTheDocument()
+})
+
 it('says when no page is watched yet', async () => {
   fakeService(withApps({ watch: { ...APPS.watch, enabled: true } }, { watch: true }), { watches: { total: 0, watches: [] } })
   expect(await screen.findByText(/No pages are watched yet/)).toBeInTheDocument()

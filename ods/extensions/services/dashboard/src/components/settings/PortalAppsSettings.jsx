@@ -35,7 +35,9 @@ function WatchList({ ready, revision, onLoad }) {
     {list && !list.watches.length && <p className="text-sm text-theme-text-muted">No pages are watched yet. Ask Portal, for example: “Watch this page and tell me when it changes.”</p>}
     {list && list.watches.length > 0 && <ul className="divide-y divide-theme-border rounded border border-theme-border">
       {list.watches.map(watch => <li key={watch.id} className="px-3 py-2 text-sm min-w-0">
-        <a className="block truncate text-theme-text hover:underline" href={watch.url} target="_blank" rel="noreferrer">{watch.title || watch.url}</a>
+        {/^https?:\/\//i.test(watch.url)
+          ? <a className="block truncate text-theme-text hover:underline" href={watch.url} target="_blank" rel="noreferrer">{watch.title || watch.url}</a>
+          : <span className="block truncate text-theme-text">{watch.title || watch.url}</span>}
         <span className="block text-xs text-theme-text-muted">{watchDetail(watch)}</span>
       </li>)}
     </ul>}

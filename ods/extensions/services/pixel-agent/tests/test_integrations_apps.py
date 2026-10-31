@@ -540,6 +540,8 @@ class AppTests(unittest.TestCase):
         notices, _ = apps.page_notices({"a": {**listing["a"], "last_changed": 6}}, kept, {})
         self.assertEqual(notices, [{"title": "Page changed: A", "message": "A changed.", "link": "https://a"}])
         self.assertEqual(apps.page_notices({}, kept, {}), ([], {}))  # A removed watch is forgotten.
+        odd = {"a": {"url": "javascript:alert(1)", "title": "Odd", "last_changed": 7}}
+        self.assertEqual(apps.page_notices(odd, kept, {})[0], [{"title": "Page changed: Odd", "message": "Odd changed.", "link": ""}])
         self.assertEqual([apps.count(n, "feed") for n in (0, 1, 2)], ["0 feeds", "1 feed", "2 feeds"])
 
     # The apps as Portal sees them: built-in servers in its MCP tool.
