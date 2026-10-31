@@ -6535,7 +6535,70 @@ function ownerDeclinesPreviewDelivery(text) {
   return optional;
 }
 
-function ownerForbidsWorkspacePreview(messages, prompt) {
+// The negations the preview prohibition rules read.
+const PREVIEW_NEGATION = /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b/i;
+// A negation that reaches a publishing word in its sentence: "don't show or
+// publish it", "never show me the preview", "do not open a live preview".
+const PUBLISHING_NEGATION =
+  /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:publish|republish|preview|serv(?:e|es|ed|ing)\b|deploy)/i;
+// A negated show, view, open or display, directly ("don't even show it yet"),
+// in a list, or put off ("wait to show it"): not "don't change how the menu
+// opens".
+const SHOW_NEGATION =
+  /\bwait\s+(?:to|before|on)\s+(?:show|view|open|display)(?:ing)?\b|\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:(?:even|yet|actually|really|ever|just|bother(?:\s+to)?|need\s+to|have\s+to|want\s+to|please)\s+)*(?:(?:try|attempt)\s+to\s+)?(?:(?:create|build|edit|write|run|execute)\s*(?:,\s*|and\s+|or\s+))*(?:show|view|open|display)(?:ing)?\b|\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:and|or|nor)\s+(?:show|view|open|display)(?:ing)?\b/i;
+// A request put off until the owner or someone else acts, or to a later time,
+// is not a request now: "check it in the preview later", "publish it after
+// approval". "When you're done" still asks Portal now, and a purpose clause
+// ("... so I can review it tomorrow") puts nothing off. A phrasing this misses
+// only leaves publishing optional.
+const DEFERRED_REQUEST = /\b(?:later|tomorrow|tonight|eventually|someday|at\s+some\s+point|pending|approv\w*|sign(?:s|ed)?[- ]?off|not\s+(?:yet|now|today|until|till|before)|only\s+(?:after|when|if|once)|next\s+(?:time|week|month|turn|round|session|day|morning|weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|(?:on|this|by)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekend)|in\s+the\s+(?:morning|afternoon|evening)|in\s+(?:an?|\d+|a\s+few|two|three)\s+(?:hours?|minutes?|days?|weeks?)|(?:after|before|once|when|whenever|until|till|unless|as\s+soon\s+as)\s+(?:I\b|I['’](?:ve|m|ll|d)\b|we\b|we['’](?:ve|re|ll)\b|my\b|our\b|the\s+(?:client|customer|boss|team)\b|they\b|you\s+hear\b|review\b))/i;
+const PURPOSE_CLAUSE = /\b(?:so\s+(?:that\s+)?(?:I|we)\b|because\b|while\s+(?:I|we)\b)/i;
+// After the request only an explicit hold on it counts, one that names who
+// must act: "Only after I approve, though.", "But not until the client signs
+// off.", "Wait for my go.", "Hold it." A sign-off ("talk later", "I'll look at
+// it tonight") or a test step ("Wait for the attack to finish", "Hold on, one
+// more thing", "after the client connects") does not.
+const OWNER_ACTS = String.raw`(?:I|we|the\s+(?:client|customer|boss|team)|they)\b`;
+const ACTION_DEFERRAL = new RegExp(String.raw`(?:^|[.!?;:,]\s*|\bbut\s+)not\s+(?:yet|now|today)\b|\bnot\s+(?:until|till|before)\s+${OWNER_ACTS}|\bonly\s+(?:after|when|once|if)\s+${OWNER_ACTS}|\bwait\s+(?:for\s+(?:me\b|(?:my|our)\s+(?:go|ok(?:ay)?|approval|word|sign[- ]?off|green\s+light)\b)|until\s+(?:I|we)\b)|\bhold\s+(?:it|off)\b|\b(?:after|until|till|once)\s+(?:${OWNER_ACTS}\s*(?:approves?|signs?|confirms?|okays?|gives?|says?\s+so|reviews?|reviewed)|(?:my\s+|our\s+|the\s+)?(?:approval|sign[- ]?off|go[- ]ahead|review)\b)`, 'i');
+// The owner asks Portal itself to look at the page in the preview, at the start
+// of a sentence or after the repair it asks for: "check it in the preview",
+// "please fix those and check it in the preview", "can you verify it in the
+// preview?". "I'll just check it in the preview myself", a question to the
+// owner and a quoted instruction are not requests.
+const OWNER_CHECKS_IN_PREVIEW = /^\s*(?:(?:ok(?:ay)?|now|then|also|so|and|just|please)[,\s]+)*(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|I\s+(?:want|need)\s+you\s+to\s+)?(?:(?:fix|repair|correct|update|change|edit|patch|adjust|tweak|improve|finish|redo|rewrite|make|build|create|add|remove)\b[^.!?;\n]{0,120}?(?:\s(?:and(?:\s+then)?|then)|,\s*then|,\s*and)\s+(?:please\s+)?(?:also\s+)?)?(?:check|test|verify|inspect|try|look\s+at|see)\b[^.!?;\n]{0,48}\b(?:in|on|with|via|through|using)\s+(?:the|a|your)\s+(?:ODS\s+|workspace\s+|live\s+)?preview\b/i;
+// A publication command; open, show and view also name steps to reproduce a bug.
+const PUBLICATION_DIRECTIVE = /(?:^|\b(?:and(?:\s+then)?|then|now|instead)\s+)\s*(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|I\s+(?:want|need)\s+you\s+to\s+)?(?:try\s+to\s+)?(?:publish|republish|preview|serve)\b/i;
+
+// An explicit request to use the preview outweighs a negated show, open, view
+// or display before it, which is most often a bug report: "...so attacks never
+// show. Please fix those and check it in the preview this time" was refused
+// three times on the laptop (2026-10-30). The request must stand in a sentence
+// with no negation. A negation after the last request is the owner's later
+// word ("... Actually, don't show it yet."), and nothing outweighs a negation
+// that reaches a publishing word, so "don't publish" and "don't show me the
+// preview" always forbid. Without such a request every negation forbids as
+// before. Naming the session's verified project ("Publish log-viewer-lab.") is
+// such a request. An outweighed negation only makes publishing optional (see
+// ownerPreviewStance), so a misread request can never push Portal to publish.
+function ownerRequestOutweighsShowNegation(text, sessionPreview = undefined) {
+  if (PUBLISHING_NEGATION.test(text)) return false;
+  let start = 0, requestEnd = -1;
+  // "e.g." and "i.e." do not end a sentence.
+  for (const boundary of [...text.matchAll(/[!?;\n]+|(?<!\b(?:e\.g|i\.e))\.(?=\s|$)/gi), {index: text.length, 0: ''}]) {
+    const sentence = text.slice(start, boundary.index);
+    if (!PREVIEW_NEGATION.test(sentence) && !DEFERRED_REQUEST.test(sentence.split(PURPOSE_CLAUSE)[0]) && (OWNER_CHECKS_IN_PREVIEW.test(sentence) ||
+      (PUBLICATION_DIRECTIVE.test(sentence) && hasExplicitWorkspacePreviewDirective(sentence)) ||
+      requestsNamedSessionPreview(sentence, sessionPreview))) requestEnd = boundary.index;
+    start = boundary.index + boundary[0].length;
+  }
+  const after = text.slice(requestEnd);
+  return requestEnd >= 0 && !SHOW_NEGATION.test(after) && !ACTION_DEFERRAL.test(after);
+}
+
+// "forbidden": the owner forbids publication. "optional": a negated show the
+// owner's own request outweighs; Portal may publish, but nothing requires,
+// coaches or performs it. "open": no prohibition.
+function ownerPreviewStance(messages, prompt, sessionPreview = undefined) {
   const text = localPreviewPolicyText(currentOwnerIntentText(messages, prompt))
     .replace(/(?:\x60{3}|~{3})[\s\S]*?(?:\x60{3}|~{3})/g, " ")
     .replace(/^\s*>[^\n]*/gm, " ")
@@ -6549,8 +6612,17 @@ function ownerForbidsWorkspacePreview(messages, prompt) {
   const coordinatedProhibition = text
     .split(/[!?;\n]+|\.(?=\s|$)|\b(?:but|however|instead|then)\b/i)
     .some((clause) => !independentEnglishPreviewAfterConstraint(clause) && /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:and|or|nor)\s+(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(clause));
-  if (coordinatedProhibition || ownerDeclinesPreviewDelivery(text)) return true;
-  return portuguesePreviewForbidden(text) || /\b(?:only|just)\s+(?:the\s+)?(?:code|source(?:\s+code)?)\b/i.test(text) || /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:(?:try|attempt)\s+to\s+)?(?:(?:create|build|edit|write|run|execute)\s*(?:,\s*|and\s+|or\s+))*(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(text);
+  if (ownerDeclinesPreviewDelivery(text) || portuguesePreviewForbidden(text) ||
+    /\b(?:only|just)\s+(?:the\s+)?(?:code|source(?:\s+code)?)\b/i.test(text)) return "forbidden";
+  const negatedDelivery = coordinatedProhibition || /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:(?:try|attempt)\s+to\s+)?(?:(?:create|build|edit|write|run|execute)\s*(?:,\s*|and\s+|or\s+))*(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(text);
+  if (!negatedDelivery) return "open";
+  return ownerRequestOutweighsShowNegation(text, sessionPreview) ? "optional" : "forbidden";
+}
+
+// The owner's preview stance for the prompt's guidance, without session
+// evidence: only "open" asks the model for a publication.
+export function userMessagePreviewStance(messages, prompt = undefined) {
+  return ownerPreviewStance(messages, prompt);
 }
 
 function portuguesePreviewForbidden(text) {
@@ -7166,7 +7238,8 @@ export function userMessageRequestsWorkspaceVisualContinuation(
 // retain the ordinary read/edit continuation contract.
 export function userMessageRequestsWorkspaceVerificationContinuation(messages, prompt = undefined) {
   const text = currentOwnerIntentText(messages, prompt).trim();
-  if (!text || freshWorkspaceCreationRequested(text) || ownerForbidsWorkspacePreview([], text)) return false;
+  // An outweighed negation leaves publishing optional, never a contract.
+  if (!text || freshWorkspaceCreationRequested(text) || ownerPreviewStance([], text) !== "open") return false;
   const command = /^(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?)?(?:finish\s+)?(?:verif(?:y|ying)|test(?:ing)?|inspect(?:ing)?|check(?:ing)?)\s+(?:(?:the|this|that|my|our|existing|current|previous|prior|same)\s+)+(?:preview|page|site|website|app|artifact)\b/i.exec(text);
   if (!command) return false;
   // Conditional repairs remain possible after a failed check; they are not a
@@ -8470,6 +8543,7 @@ export function createToolLoopGuard({
         workspaceVerificationRequested: false,
         workspacePreviewRequired: false,
         workspacePreviewForbidden: false,
+        workspacePreviewOptional: false,
         workspaceDocumentDeliveryRequested: false,
         workspacePreviewMode: undefined,
         workspacePreviewAuthorshipRequired: false,
@@ -10965,11 +11039,13 @@ export function createToolLoopGuard({
       takePendingClarification(state, runId, context, agentId, ownerIntent);
       if (currentUserText(event?.messages, event?.prompt)) {
         state.ownerIntentObserved = true;
-        state.workspacePreviewForbidden = ownerForbidsWorkspacePreview(event?.messages, event?.prompt);
-        state.workspaceDocumentDeliveryRequested = userMessageRequestsWorkspaceDocumentDelivery(event?.messages, event?.prompt);
         const previousPreview = typeof sessionId === "string" && sessionId
           ? sessionPreviews.get(sessionId)
           : undefined;
+        const previewStance = ownerPreviewStance(event?.messages, event?.prompt, previousPreview);
+        state.workspacePreviewForbidden = previewStance === "forbidden";
+        state.workspacePreviewOptional = previewStance === "optional";
+        state.workspaceDocumentDeliveryRequested = userMessageRequestsWorkspaceDocumentDelivery(event?.messages, event?.prompt);
         // A failed verification in a later turn cannot erase an immutable
         // publication from this session. This is historical evidence only;
         // it neither verifies current files nor grants continuation scope.
@@ -11014,7 +11090,7 @@ export function createToolLoopGuard({
         // A prose-only continuation guess is not a workspace access boundary.
         // With no verified previous preview, ordinary tools must remain usable
         // to locate the requested files. Only a real preview binds its scope.
-        state.workspacePreviewRequired = !state.workspacePreviewForbidden && (
+        state.workspacePreviewRequired = !state.workspacePreviewForbidden && !state.workspacePreviewOptional && (
           state.workspacePreviewVerificationRequested || Boolean(trustedSessionPreview) || state.workspaceVisualArtifactProduced ||
           ((!visualContinuationRequested || explicitDelivery) && previewRequested)
         );
@@ -11964,7 +12040,7 @@ export function createToolLoopGuard({
     const completedVisualMutationPath = completedEditPath ?? completedWritePath;
     const previousVisualDirectory = sessionPreviews.get(state.currentSessionId)?.relativeDirectory;
     const updatesPublishedProject = previousVisualDirectory && completedVisualMutationPath?.startsWith(`${previousVisualDirectory}/`);
-    if (state.ownerIntentObserved && !state.workspacePreviewForbidden &&
+    if (state.ownerIntentObserved && !state.workspacePreviewForbidden && !state.workspacePreviewOptional &&
         !state.operationsRequired && !state.exactDownloadRequested &&
         completedVisualMutationPath && (updatesPublishedProject || /\.(?:html?|svg|jsx|tsx|vue|svelte)$/i.test(completedVisualMutationPath)) &&
         !/(?:^|\/)(?:node_modules|vendor|__tests__|tests?|fixtures?)(?:\/|$)/i.test(completedVisualMutationPath)) {
