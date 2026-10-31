@@ -125,10 +125,19 @@ def test_status_reports_whether_a_session_cookie_is_in_use(test_client):
     test_client.cookies.clear()
     assert test_client.get("/api/auth/dashboard-session").status_code == 401
     assert test_client.get("/api/auth/dashboard-session", headers=test_client.auth_headers).json() == {
-        "signedIn": True, "session": False, "passwordConfigured": False}
+        "signedIn": True, "session": False, "passwordConfigured": False, "remoteAccess": True}
     test_client.cookies.set(COOKIE, ds.issue_session())
     assert test_client.get("/api/auth/dashboard-session", headers=test_client.auth_headers).json() == {
-        "signedIn": True, "session": True, "passwordConfigured": False}
+        "signedIn": True, "session": True, "passwordConfigured": False, "remoteAccess": True}
+
+
+def test_windows_desktop_reports_no_remote_access(test_client, monkeypatch):
+    # Loopback only: no other device can reach it, so no password is offered.
+    from runtime_profile import parse
+    desktop = parse({"ODS_RUNTIME_PROFILE": "windows-desktop", "ODS_DATA_DIR": "/data", "DASHBOARD_API_KEY": "k"})
+    monkeypatch.setattr(ds, "RUNTIME_PROFILE", desktop)
+    body = test_client.get("/api/auth/dashboard-session", headers=test_client.auth_headers).json()
+    assert body["remoteAccess"] is False and body["passwordConfigured"] is False
 
 
 def test_logout_clears_the_session_cookie(test_client):

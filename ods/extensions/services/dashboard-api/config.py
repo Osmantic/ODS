@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 import yaml
 
 from env_values import parse_env_value
+from runtime_profile import RUNTIME_PROFILE, is_loopback_host
 
 logger = logging.getLogger(__name__)
 
@@ -620,6 +621,11 @@ def load_extension_manifests(
                 host_env = service.get("host_env")
                 default_host = service.get("default_host", "localhost")
                 host = os.environ.get(host_env, default_host) if host_env else default_host
+                if RUNTIME_PROFILE.is_desktop and not is_loopback_host(host):
+                    # Desktop runs only what its launcher starts on this PC.
+                    # A Compose service name resolves to nothing here, and on
+                    # Windows each failed lookup stalls a probe for seconds.
+                    continue
 
                 ext_port_env = service.get("external_port_env")
                 ext_port_default = service.get("external_port_default", service.get("port", 0))
@@ -920,6 +926,10 @@ def _resolve_agent_host() -> str:
          under default Docker iptables, but kept so explicit operator setups
          relying on it don't silently change)
     """
+    if RUNTIME_PROFILE.is_desktop:
+        # No host agent exists. Any fallback name could reach a Docker or WSL
+        # ODS on the same PC, so leave the address empty.
+        return ""
     explicit = os.environ.get("ODS_AGENT_HOST", "").strip()
     if explicit:
         return explicit
@@ -941,7 +951,7 @@ def _resolve_agent_host() -> str:
 
 AGENT_HOST = _resolve_agent_host()
 AGENT_PORT = int(os.environ.get("ODS_AGENT_PORT", "7710"))
-AGENT_URL = f"http://{AGENT_HOST}:{AGENT_PORT}"
+AGENT_URL = f"http://{AGENT_HOST}:{AGENT_PORT}" if AGENT_HOST else ""
 DASHBOARD_API_KEY = os.environ.get("DASHBOARD_API_KEY", "")
 # Prefer dedicated ODS_AGENT_KEY; fall back to DASHBOARD_API_KEY for
 # existing installs that haven't generated a separate key yet.

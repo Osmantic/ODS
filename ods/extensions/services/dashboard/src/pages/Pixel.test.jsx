@@ -130,6 +130,17 @@ describe('Pixel', () => {
     expect(screen.queryByRole('textbox', {name:'Portal is unavailable'})).toBeNull()
   })
 
+  it('chats with the local model directly on Windows Desktop', async () => {
+    globalThis.fetch.mockImplementation(async url => url === '/api/local-chat/status'
+      ? response({state:'ready', model:'Llama-3.2-1B-Instruct-Q4_K_M.gguf', contextSize:4096})
+      : response({available:false, detail:'Portal is not enabled'}))
+    render(<Pixel systemStatus={{runtimeProfile:'windows-desktop', services:[]}} />)
+    expect(await screen.findByRole('region', {name:'Local chat'})).toBeVisible()
+    expect(await screen.findByText(/Llama-3\.2-1B-Instruct-Q4_K_M\.gguf/)).toBeVisible()
+    expect(screen.queryByRole('link', {name:'Open local chat'})).toBeNull()
+    expect(screen.queryByText(/Open WebUI/)).toBeNull()
+  })
+
   it('does not offer a dead chat link while native Core chat is unhealthy', async () => {
     globalThis.fetch.mockResolvedValue(response({available:false, detail:'Portal is not enabled'}))
     render(<Pixel systemStatus={{services:[{

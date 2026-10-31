@@ -65,6 +65,8 @@ import PixelHandoffApproval from '../components/PixelHandoffApproval.jsx'
 import PixelProviderScopes from '../components/PixelProviderScopes.jsx'
 import { usePortalIdentity } from '../contexts/PortalIdentityContext'
 import { serviceUrl } from '../lib/serviceUrls'
+import { isWindowsDesktop } from '../lib/runtimeProfile'
+import LocalChat from '../components/LocalChat'
 import {usePixelSendKey, shouldSendMessage} from '../lib/usePixelSendKey'
 import {
   AlertCircle,
@@ -2162,6 +2164,8 @@ export default function Pixel({ systemStatus = null }) {
   // Portal outage; give it a working first action without hiding recoverable
   // Portal conversations on other installations.
   if (status === 'unavailable' && statusDetail === 'Portal is not enabled') {
+    // Windows Desktop runs its own llama-server and chats with it directly.
+    if (isWindowsDesktop(systemStatus)) return <LocalChat />
     const chatService = (systemStatus?.services || []).find(service =>
       service?.id === 'open-webui' && service?.status === 'healthy')
     const chatHref = chatService ? serviceUrl(chatService) : null
