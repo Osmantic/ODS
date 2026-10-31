@@ -2890,7 +2890,7 @@ _ods_pixel_initial_unconfigured_marker() {
     ods_pixel_run_as_owner "$owner" "$home" python3 - \
         "$home/.config/ods/pixel-managed.json" "$home/.openclaw/openclaw.json" \
         "${INSTALL_DIR:?}" "$home" "${PIXEL_SOURCE_REF:?}" "${3:-}" <<'PY'
-import json, os, pathlib, re, stat, sys
+import json, os, pathlib, re, stat, subprocess, sys
 marker = json.load(open(sys.argv[1]))
 initial = (
     set(marker) == {"schema_version", "manager", "state", "initial_active_state",
@@ -2926,7 +2926,10 @@ if not sys.argv[6]:
 manifest = json.loads((pathlib.Path(sys.argv[6]) / 'RELEASE-MANIFEST.json').read_text())
 plugins = config.get('plugins') if isinstance(config, dict) else None
 meta = config.get('meta') if isinstance(config, dict) else None
-if (set(config) != {'plugins', 'meta'} or not isinstance(plugins, dict)
+gateway = config.get('gateway') if isinstance(config, dict) else None
+has_gateway = isinstance(config, dict) and 'gateway' in config
+if (set(config) not in ({'plugins', 'meta'}, {'plugins', 'meta', 'gateway'})
+        or not isinstance(plugins, dict)
         or set(plugins) != {'entries'} or not isinstance(meta, dict)
         or set(meta) != {'lastTouchedVersion', 'lastTouchedAt'}
         or meta['lastTouchedVersion'] != manifest['openclaw']
@@ -2939,6 +2942,35 @@ if (not isinstance(entries, dict) or not entries
         or any(not isinstance(value, dict) or set(value) != {'enabled'}
                or value['enabled'] is not True for value in entries.values())):
     raise SystemExit(1)
+if has_gateway:
+    # The installer enables this endpoint before apply. It is still an inert
+    # first-install artifact only when its whole shape matches and no unit exists.
+    value = gateway
+    for key in ('http', 'endpoints', 'chatCompletions', 'enabled'):
+        if not isinstance(value, dict) or set(value) != {key}:
+            raise SystemExit(1)
+        value = value[key]
+    if value is not True:
+        raise SystemExit(1)
+    try:
+        result = subprocess.run(
+            ['/usr/bin/systemctl', 'show', 'openclaw-gateway.service',
+             '--property=LoadState', '--property=ActiveState', '--property=MainPID'],
+            capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        raise SystemExit(1)
+    if result.returncode != 0 or len(result.stdout) > 1024:
+        raise SystemExit(1)
+    fields = {}
+    for line in result.stdout.splitlines():
+        if '=' not in line:
+            raise SystemExit(1)
+        key, _, value = line.partition('=')
+        if key in fields:
+            raise SystemExit(1)
+        fields[key] = value
+    if fields != {'LoadState': 'not-found', 'ActiveState': 'inactive', 'MainPID': '0'}:
+        raise SystemExit(1)
 raise SystemExit(0)
 PY
 }
@@ -4891,11 +4923,28 @@ for name, source in sources.items():
                 or info.st_size > 2 * 1024 * 1024):
             raise SystemExit(f'Unsafe Source Broker kit input: {name}')
         data[name] = handle.read(2 * 1024 * 1024 + 1)
-for directory in (kit.parent.parent, kit.parent, kit):
-    directory.mkdir(mode=0o755, exist_ok=True)
+# /usr/local/libexec is not present on every fresh installation. Create only
+# that missing component, after checking its existing root-owned ancestors.
+def protected_directory(directory):
     info = directory.lstat()
-    if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != 0:
+    if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+            or info.st_uid != 0 or info.st_mode & 0o022):
         raise SystemExit('The Source Broker kit directory is not root protected')
+
+for ancestor in (pathlib.Path('/usr'), pathlib.Path('/usr/local')):
+    protected_directory(ancestor)
+libexec = kit.parent.parent.parent
+created_libexec = not os.path.lexists(libexec)
+if created_libexec:
+    libexec.mkdir(mode=0o755)
+protected_directory(libexec)
+if created_libexec:
+    os.chmod(libexec, 0o755, follow_symlinks=False)
+# Preserve this shared directory's mode when it already existed.
+for directory in (kit.parent.parent, kit.parent, kit):
+    if not os.path.lexists(directory):
+        directory.mkdir(mode=0o755)
+    protected_directory(directory)
     os.chmod(directory, 0o755, follow_symlinks=False)
 for entry in os.scandir(kit):
     if entry.name not in data:
