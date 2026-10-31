@@ -33,12 +33,20 @@ const COPY = {
 // Held states show the API's own explanation. An available or offline Portal
 // already shows its status text elsewhere, so it gets these short lines.
 const MESSAGES = {
-  'verify-sandbox': 'Portal’s sandbox check is out of date. ODS re-checks it automatically while Portal is idle; you can also check it now.',
+  'verify-sandbox': 'Portal’s sandbox check is out of date. ODS usually re-checks it on its own; if this message stays, you can check it now.',
   'restore-sandbox': 'An earlier permissions change did not finish, so Portal’s sandbox is not verified.',
   'resume-model': 'The model runtime is not running, so Portal is paused.',
   'recover-model': 'A model switch stopped before it finished, so new messages are held.',
 }
 const HELD_STATES = new Set(['recovery', 'unloaded', 'model-recovery'])
+// Verify for an available Portal holds no messages, and the host usually
+// re-checks the sandbox by itself within seconds of Portal going idle. So a
+// new hint of it is drawn only once it has stayed this long; drawn at once, it
+// flashed after every reply (laptop, 2026-10-31). Held states show at once.
+export const VERIFY_HINT_DELAY_MS = 20000
+// Sandbox attempts. Their outcome ends at the next status update that does
+// not name them; Resume model keeps its outcome while Portal reads "switching".
+const ACCESS_ACTIONS = new Set(['verify-sandbox', 'restore-sandbox'])
 const REVISION = /^[a-f0-9]{64}$/
 const verified = value => value?.available === true && value.runtime_verified === true && value.pending === false
   && value.reason == null && ['sandboxed', 'full-access'].includes(value.effective_mode)
@@ -125,21 +133,49 @@ async function recoverModel(release) {
   'Open Models to read its current state and choose another model if needed.')
 }
 
-/** One primary button for a held Portal state, with progress and a helpful failure. */
-export default function PortalRecovery({status, action = null, detail = '', onSettled}) {
-  const chosen = portalRecoveryAction(status, action)
-  // {action, phase: working|failed|releasable|done, failure}. A run stays
-  // visible while Portal's status moves through it (Resume model reads as a
-  // switch), so its outcome is never lost.
+/**
+ * One primary button for a held Portal state, with progress and a helpful failure.
+ * `update` counts status updates, so it changes on every poll even when the
+ * status and its hint do not.
+ */
+export default function PortalRecovery({status, action = null, detail = '', update = 0, onSettled}) {
+  // {action, phase: working|failed|releasable|done, failure, update}. A run
+  // stays visible while Portal's status moves through it (Resume model reads
+  // as a switch), so its outcome is never lost. A finished run records the
+  // status update count it finished at.
   const [run, setRun] = useState(null)
+  // What the status names now, and what is drawn: a new Verify hint for an
+  // available Portal waits until it has stayed VERIFY_HINT_DELAY_MS. One the
+  // owner already acted on is not new, so its button keeps working.
+  const named = portalRecoveryAction(status, action)
+  const quiet = status === 'available' && named === 'verify-sandbox'
+  const [quietDue, setQuietDue] = useState(false)
+  const chosen = quiet && !quietDue && run?.action !== named ? null : named
   const lock = useRef(false), mounted = useRef(true)
   const settled = useRef(onSettled)
   settled.current = onSettled
+  const updates = useRef(update)
+  updates.current = update
   useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
+  // The hint has to stay for the whole delay: an update without it restarts it.
+  useEffect(() => {
+    setQuietDue(false)
+    if (!quiet) return undefined
+    const timer = setTimeout(() => setQuietDue(true), VERIFY_HINT_DELAY_MS)
+    return () => clearTimeout(timer)
+  }, [quiet])
   // Another held state, or none, retires an earlier outcome.
   useEffect(() => {
-    setRun(current => current && current.phase !== 'working' && current.action !== chosen ? null : current)
-  }, [chosen])
+    setRun(current => current && current.phase !== 'working' && current.action !== named ? null : current)
+  }, [named])
+  // A finished Sandbox attempt also ends at a later status update that does
+  // not name it, even an unchanged one. A reply that starts meanwhile withdraws
+  // the hint, and the host's own re-check then clears it without naming it
+  // again, so waiting for a change left a stale attempt and its button up.
+  useEffect(() => {
+    setRun(current => current && current.phase !== 'working' && ACCESS_ACTIONS.has(current.action)
+      && current.update < update && current.action !== named ? null : current)
+  }, [update, named])
 
   async function start(release = false) {
     const target = run?.phase === 'releasable' ? run.action : chosen
@@ -152,11 +188,11 @@ export default function PortalRecovery({status, action = null, detail = '', onSe
       else if (target === 'recover-model') phase = await recoverModel(release)
       else await recoverAccess()
       if (!mounted.current) return
-      setRun({action: target, phase, failure: null})
+      setRun({action: target, phase, failure: null, update: updates.current})
       if (phase === 'done') settled.current?.()
     } catch (error) {
       if (!mounted.current) return
-      setRun({action: target, phase: 'failed', failure: error instanceof RecoveryFailure ? error
+      setRun({action: target, phase: 'failed', update: updates.current, failure: error instanceof RecoveryFailure ? error
         : new RecoveryFailure('Portal could not finish this step.', 'Try again.')})
     } finally {
       lock.current = false
