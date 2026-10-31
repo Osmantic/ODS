@@ -44,7 +44,7 @@ function quickSwitchProfile(model) {
 export default function PortalModelSelector(props) {
   const [started,setStarted]=useState(false)
   const lastCatalogSource=useRef(props.runtimeSource)
-  const confirmedSource=['remote-provider','local-switchboard','external-host'].includes(props.runtimeSource)
+  const confirmedSource=['remote-provider','local-switchboard','external-host','windows-desktop'].includes(props.runtimeSource)
   useEffect(()=>{if(confirmedSource)lastCatalogSource.current=props.runtimeSource},[props.runtimeSource,confirmedSource])
   const lastLabel=useRef({scope:props.displayScope,value:null})
   // A fresh validated poll can confirm the new chat's label even when its
@@ -94,7 +94,7 @@ function LoadedModelSelector({activeModel='',runtimeSource,observeCatalog,unavai
   const [recoveryPending,setRecoveryPending]=useState(false),[recoveryBusy,setRecoveryBusy]=useState(false)
   const root=useRef(null),trigger=useRef(null),list=useRef(null),mounted=useRef(true),submitLock=useRef(false)
   const managementUnavailable=hostRuntime===true && modelManagement?.managed==null
-  const id=useId(),remote=runtimeSource==='remote-provider',external=runtimeSource==='external-host' && !managementUnavailable && modelManagement?.managed!==true,local=runtimeSource==='local-switchboard' || (runtimeSource==='external-host' && modelManagement?.managed===true)
+  const id=useId(),remote=runtimeSource==='remote-provider',external=runtimeSource==='external-host' && !managementUnavailable && modelManagement?.managed!==true,local=['local-switchboard','windows-desktop'].includes(runtimeSource) || (runtimeSource==='external-host' && modelManagement?.managed===true)
   // A confirmed cloud route is independent of the local catalog's lifecycle,
   // which may remain stale after a catalog failure. Keep mutations initiated
   // here blocking until their own completion, even if the route changes.
