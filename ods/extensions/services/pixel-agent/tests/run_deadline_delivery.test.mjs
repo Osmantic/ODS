@@ -346,13 +346,19 @@ test('an attempt that wrote its answer is never stopped, and is delivered as usu
   cut.reply({stopReason: 'length', content: [{type: 'text', text: 'The wolves now use two circles each and'}]});
   cut.at(31);
   assert.deepEqual(cut.aborts, []);
-  // A further agent turn means that reply was not the last.
+  // A further agent turn means that reply was not the last, and a failed
+  // reply is no answer.
   const more = fixture();
   more.model();
   more.reply(ANSWER);
   more.model();
   more.at(STOP_AT);
   assert.deepEqual(more.aborts, [OWNER.sessionId]);
+  const failed = fixture();
+  failed.model();
+  failed.reply({stopReason: 'error', content: [{type: 'text', text: 'The wolves now'}]});
+  failed.at(STOP_AT);
+  assert.deepEqual(failed.aborts, [OWNER.sessionId]);
 });
 
 test('a tool-limit stop\'s answer turn and a refused delete keep their own stop', () => {
