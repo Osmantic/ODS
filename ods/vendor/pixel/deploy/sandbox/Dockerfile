@@ -3,7 +3,7 @@ FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bb
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-      bash ca-certificates curl git jq python3 ripgrep rsync \
+      bash ca-certificates curl git jq python3 python-is-python3 ripgrep rsync \
       poppler-utils tesseract-ocr tesseract-ocr-eng \
       python3-docx python3-pil catdoc unzip file xz-utils \
     && rm -rf /var/lib/apt/lists/*
