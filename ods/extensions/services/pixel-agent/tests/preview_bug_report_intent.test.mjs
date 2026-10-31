@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import {
   createToolLoopGuard, userMessageRequestsWorkspacePreview, userMessageRequestsWorkspaceVerificationContinuation,
 } from '../plugin/tool-loop-guard.mjs';
+import {
+  ODS_WORKSPACE_NEW_STATIC_CONTRACT, ODS_WORKSPACE_PREVIEW_CONTRACT, ODS_WORKSPACE_VERIFICATION_CONTINUATION_CONTRACT,
+  ODS_WORKSPACE_VISUAL_CONTINUATION_CONTRACT, promptContractForAgent,
+} from '../plugin/prompt-contract.mjs';
 
 // A bug report describes what the page does; it does not forbid a preview. On
 // the laptop (2026-10-30) "…so attacks never show" in an owner's bug report was
@@ -57,10 +61,13 @@ test('a bug report gets its preview when the owner asks to check it there', () =
     'Fix it, then publish demo/index.html.', 'Fix it and check it in the preview when you are done.']) {
     assert.equal(previewRefused(`In demo, attacks never show. ${request}`), false, request);
   }
-  // A later constraint on the code is not a later "don't show".
-  for (const constraint of ["Don't change how the menu opens.", "Don't change the display font.", 'Never remove the show-more button.']) {
+  // A later constraint on the code is not a later "don't show", and a sign-off
+  // or a purpose clause puts nothing off.
+  for (const constraint of ["Don't change how the menu opens.", "Don't change the display font.", 'Never remove the show-more button.',
+    "I'll look at it later tonight.", 'Thanks, talk later!', "I'll be back in an hour."]) {
     assert.equal(previewRefused(`In demo, attacks never show. Fix it and check it in the preview. ${constraint}`), false, constraint);
   }
+  assert.equal(previewRefused('In demo, attacks never show. Please fix those and check it in the preview this time so I can review it tomorrow.'), false);
 });
 
 test('a prohibition still forbids the preview, however it is written', () => {
@@ -163,6 +170,20 @@ test('an outweighed "don\'t show" makes publishing optional: allowed, never requ
     assert.equal(userMessageRequestsWorkspacePreview([], prompt), false, prompt);
   }
   assert.equal(previewRefused('In demo, attacks never show. Fix it and publish demo/index.html.'), false);
+});
+
+test('the prompt asks for a publication only when nothing in the owner\'s words limits it', () => {
+  const contract = prompt => promptContractForAgent({agentId: 'pixel'}, 'pixel', {prompt}).appendSystemContext;
+  const asksToPublish = prompt => [ODS_WORKSPACE_PREVIEW_CONTRACT, ODS_WORKSPACE_NEW_STATIC_CONTRACT,
+    ODS_WORKSPACE_VISUAL_CONTINUATION_CONTRACT, ODS_WORKSPACE_VERIFICATION_CONTINUATION_CONTRACT].some(text => contract(prompt).includes(text));
+  for (const prompt of ['Fix the existing page in demo and check it in the preview.', 'Fix demo/index.html and publish it.']) {
+    assert.equal(asksToPublish(prompt), true, prompt);
+  }
+  for (const prompt of [OWNER_2026_10_30, "Fix the existing page in demo. Don't show it yet. Check it in the preview come Friday.",
+    "Don’t show it yet. Publish demo/index.html come Friday.", "Don't display it yet. Publish demo/index.html come Friday.",
+    "Fix demo/index.html and publish it, but don't show it to anyone yet."]) {
+    assert.equal(asksToPublish(prompt), false, prompt);
+  }
 });
 
 test('a prohibition still keeps a check of the existing page from republishing it', () => {

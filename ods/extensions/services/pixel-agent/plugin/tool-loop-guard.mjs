@@ -6542,16 +6542,21 @@ const PREVIEW_NEGATION = /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not
 const PUBLISHING_NEGATION =
   /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:publish|republish|preview|serv(?:e|es|ed|ing)\b|deploy)/i;
 // A negated show, view, open or display, directly ("don't even show it yet"),
-// in a list, or put off ("hold off on showing it"): not "don't change how the
-// menu opens".
+// in a list, or put off ("wait to show it"): not "don't change how the menu
+// opens".
 const SHOW_NEGATION =
-  /\bhold\s+off\s+on\s+(?:show|view|open|display)ing\b|\bwait\s+(?:to|before|on)\s+(?:show|view|open|display)(?:ing)?\b|\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:(?:even|yet|actually|really|ever|just|bother(?:\s+to)?|need\s+to|have\s+to|want\s+to|please)\s+)*(?:(?:try|attempt)\s+to\s+)?(?:(?:create|build|edit|write|run|execute)\s*(?:,\s*|and\s+|or\s+))*(?:show|view|open|display)(?:ing)?\b|\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:and|or|nor)\s+(?:show|view|open|display)(?:ing)?\b/i;
+  /\bwait\s+(?:to|before|on)\s+(?:show|view|open|display)(?:ing)?\b|\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:(?:even|yet|actually|really|ever|just|bother(?:\s+to)?|need\s+to|have\s+to|want\s+to|please)\s+)*(?:(?:try|attempt)\s+to\s+)?(?:(?:create|build|edit|write|run|execute)\s*(?:,\s*|and\s+|or\s+))*(?:show|view|open|display)(?:ing)?\b|\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:and|or|nor)\s+(?:show|view|open|display)(?:ing)?\b/i;
 // A request put off until the owner or someone else acts, or to a later time,
-// is not a request now, in its own sentence or after it: "check it in the
-// preview later", "publish it after approval", "... Only after I approve,
-// though." "When you're done" still asks Portal now. A phrasing this misses
+// is not a request now: "check it in the preview later", "publish it after
+// approval". "When you're done" still asks Portal now, and a purpose clause
+// ("... so I can review it tomorrow") puts nothing off. A phrasing this misses
 // only leaves publishing optional.
 const DEFERRED_REQUEST = /\b(?:later|tomorrow|tonight|eventually|someday|at\s+some\s+point|pending|approv\w*|sign(?:s|ed)?[- ]?off|not\s+(?:yet|now|today|until|till|before)|only\s+(?:after|when|if|once)|next\s+(?:time|week|month|turn|round|session|day|morning|weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|(?:on|this|by)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekend)|in\s+the\s+(?:morning|afternoon|evening)|in\s+(?:an?|\d+|a\s+few|two|three)\s+(?:hours?|minutes?|days?|weeks?)|(?:after|before|once|when|whenever|until|till|unless|as\s+soon\s+as)\s+(?:I\b|I['’](?:ve|m|ll|d)\b|we\b|we['’](?:ve|re|ll)\b|my\b|our\b|the\s+(?:client|customer|boss|team)\b|they\b|you\s+hear\b|review\b))/i;
+const PURPOSE_CLAUSE = /\b(?:so\s+(?:that\s+)?(?:I|we)\b|because\b|while\s+(?:I|we)\b)/i;
+// After the request only an explicit hold on it counts ("Only after I approve,
+// though.", "But not until the client signs off.", "Wait for my go."); a
+// sign-off such as "talk later" or "I'll look at it tonight" does not.
+const ACTION_DEFERRAL = /\b(?:only\s+(?:after|when|if|once)|not\s+(?:yet|now|today|until|till|before)|wait\s+(?:for\s+(?:my|me|the|our|a)\b|until)|hold\s+(?:it|off|on)\b|(?:after|until|till|once)\s+(?:(?:I|we)\s+(?:approve|review|say|confirm|sign|give|check|decide)|the\s+(?:client|customer|boss|team)|approval|sign[- ]?off))/i;
 // The owner asks Portal itself to look at the page in the preview, at the start
 // of a sentence or after the repair it asks for: "check it in the preview",
 // "please fix those and check it in the preview", "can you verify it in the
@@ -6578,13 +6583,13 @@ function ownerRequestOutweighsShowNegation(text, sessionPreview = undefined) {
   // "e.g." and "i.e." do not end a sentence.
   for (const boundary of [...text.matchAll(/[!?;\n]+|(?<!\b(?:e\.g|i\.e))\.(?=\s|$)/gi), {index: text.length, 0: ''}]) {
     const sentence = text.slice(start, boundary.index);
-    if (!PREVIEW_NEGATION.test(sentence) && !DEFERRED_REQUEST.test(sentence) && (OWNER_CHECKS_IN_PREVIEW.test(sentence) ||
+    if (!PREVIEW_NEGATION.test(sentence) && !DEFERRED_REQUEST.test(sentence.split(PURPOSE_CLAUSE)[0]) && (OWNER_CHECKS_IN_PREVIEW.test(sentence) ||
       (PUBLICATION_DIRECTIVE.test(sentence) && hasExplicitWorkspacePreviewDirective(sentence)) ||
       requestsNamedSessionPreview(sentence, sessionPreview))) requestEnd = boundary.index;
     start = boundary.index + boundary[0].length;
   }
   const after = text.slice(requestEnd);
-  return requestEnd >= 0 && !SHOW_NEGATION.test(after) && !DEFERRED_REQUEST.test(after);
+  return requestEnd >= 0 && !SHOW_NEGATION.test(after) && !ACTION_DEFERRAL.test(after);
 }
 
 // "forbidden": the owner forbids publication. "optional": a negated show the
@@ -6611,8 +6616,10 @@ function ownerPreviewStance(messages, prompt, sessionPreview = undefined) {
   return ownerRequestOutweighsShowNegation(text, sessionPreview) ? "optional" : "forbidden";
 }
 
-function ownerForbidsWorkspacePreview(messages, prompt, sessionPreview = undefined) {
-  return ownerPreviewStance(messages, prompt, sessionPreview) === "forbidden";
+// The owner's preview stance for the prompt's guidance, without session
+// evidence: only "open" asks the model for a publication.
+export function userMessagePreviewStance(messages, prompt = undefined) {
+  return ownerPreviewStance(messages, prompt);
 }
 
 function portuguesePreviewForbidden(text) {
