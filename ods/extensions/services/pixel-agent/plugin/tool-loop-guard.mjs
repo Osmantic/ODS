@@ -11268,7 +11268,8 @@ export function createToolLoopGuard({
     if (!state || !context?.sessionId || context.sessionId !== state.currentSessionId) return;
     const compaction = state.compactionWindow;
     if (compaction?.calls.delete(event?.callId) && compaction.calls.size === 0) state.compactionWindow = undefined;
-    if (state.responseDeadline?.call?.id === event?.callId) state.responseDeadline.call = undefined;
+    const deadline = state.responseDeadline;
+    if (deadline?.call && deadline.call.id === event?.callId) deadline.call = undefined;
     if (event?.outcome === 'completed') {
       state.modelRouteFailed = false;
       // A later model call completed, so that abort did not end this run.
