@@ -524,11 +524,13 @@ test('after a tool-limit stop the model is told nothing more, and the stop lists
     step('read', {path: `Playground/sprite-game/missing-${i}.js`}, {isError: true, content: [{type: 'text', text: 'ENOENT'}],
       details: {status: 'error'}});
   }
-  // The call that reaches the limit also leaves a scratch file: its result is
-  // the stop's answer instruction only.
+  // The call that reaches the limit also leaves a scratch file: the stop adds
+  // no check notice, and its result ends with the answer instruction (the
+  // tool limit may keep the call's own output ahead of it).
   const stopped = step('exec', {command: 'sh crop.sh', workdir: WORKDIR}, failed('crop failed'),
     () => write('Playground/sprite-game/.crop-return.txt', 'x'));
-  assert.deepEqual(stopped, [PROGRESS_FINALIZATION_INSTRUCTION]);
+  assert.equal(stopped.at(-1), PROGRESS_FINALIZATION_INSTRUCTION);
+  assert.equal(checkNotes(stopped).length, 0, stopped.join('\n'));
   // The one tool-free answer turn.
   guard.observeModelCall({}, context);
   guard.observeModelEnd({}, context);
