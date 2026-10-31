@@ -8478,6 +8478,8 @@ export function createToolLoopGuard({
     }
     pendingToolRuns.set(toolCallId, {
       runId,
+      // The model round of the call (stoppedExcerptShare).
+      round: state?.operationsPromptRound,
       selectedToolName,
       selectedParams: [PREVIEW_INSPECTION_TOOL, 'exec', SYNCHRONOUS_HOST_OBSERVE_TOOL,
         SYNCHRONOUS_HOST_COMMAND_TOOL].includes(selectedToolName)
@@ -11674,18 +11676,21 @@ export function createToolLoopGuard({
       failed: failedToolOutcome(event)};
   }
 
-  // A stopped result's excerpt share. Its batch is the calls of the run that
-  // ran and are not yet persisted: parallel calls all finish before the first
-  // of them is persisted. Failed results split STOPPED_BATCH_EXCERPT_CHARS and
-  // the others STOPPED_SUCCESS_EXCERPT_CHARS, in call order, a shorter output
-  // leaving the rest of its share to the next.
+  // A stopped result's excerpt share. Its batch is the calls of the same run
+  // and model round that ran and are not yet persisted: parallel calls all
+  // finish before the first of them is persisted, and a record left from an
+  // earlier round takes nothing. Failed results split STOPPED_BATCH_EXCERPT_CHARS
+  // and the others STOPPED_SUCCESS_EXCERPT_CHARS, shortest output first, so a
+  // short one takes only what it needs and the rest goes to the longer ones,
+  // whatever their call order.
   function stoppedExcerptShare(state, runId, toolCallId, pending) {
     if (!state.stoppedExcerptShares?.has(toolCallId)) {
       const batch = [[toolCallId, pending], ...[...pendingToolRuns].filter(([id, run]) => id !== toolCallId &&
-        run.runId === runId && run.executedOutput && !run.refused)];
+        run.runId === runId && run.round === pending.round && run.executedOutput && !run.refused)];
       const shares = new Map();
       for (const [failed, budget] of [[true, STOPPED_BATCH_EXCERPT_CHARS], [false, STOPPED_SUCCESS_EXCERPT_CHARS]]) {
-        const group = batch.filter(([, run]) => run.executedOutput.failed === failed);
+        const group = batch.filter(([, run]) => run.executedOutput.failed === failed)
+          .sort(([, a], [, b]) => (sourceLength(a.executedOutput.source) - sourceLength(b.executedOutput.source)) || 0);
         let left = budget;
         group.forEach(([id, run], index) => {
           const share = Math.min(Math.floor(left / (group.length - index)), sourceLength(run.executedOutput.source));
@@ -13367,7 +13372,10 @@ export function createToolLoopGuard({
       const answerTurnAhead = ['pending', 'instructed'].includes(deliverInstruction(state, toolCallId).phase);
       const stop = {type: 'text', text: answerTurnAhead ? finalizationInstruction(state) : RUN_PROGRESS_STOP_REASON};
       if (!pending?.executedOutput) return {message: {...message, content: [stop]}};
-      const cap = toolResultMaxChars();
+      // A config the lookup cannot read means the 4,000 floor: thrown here, the
+      // error would leave the result persisted without the stop text at all.
+      let cap;
+      try { cap = toolResultMaxChars(); } catch { cap = undefined; }
       const limit = Number.isSafeInteger(cap) && cap > 0 ? Math.min(STOPPED_RESULT_TEXT_LIMIT, cap - 100) : STOPPED_RESULT_TEXT_LIMIT;
       // The same notes, in the same order, as an unstopped result carries,
       // where they fit beside the stop text.

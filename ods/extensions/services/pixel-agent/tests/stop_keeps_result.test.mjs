@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import v8 from 'node:v8';
+import vm from 'node:vm';
 import {createToolLoopGuard, STOPPED_BATCH_EXCERPT_CHARS, STOPPED_RESULT_TEXT_LIMIT, STOPPED_SUCCESS_EXCERPT_CHARS,
   stoppedOutputExcerpt} from '../plugin/tool-loop-guard.mjs';
 import {RUN_PROGRESS_LIMITS, RUN_PROGRESS_STOP_REASON} from '../plugin/run-progress-budget.mjs';
@@ -224,8 +226,12 @@ for (const wrapped of [false, true]) {
     assert.ok(b[0].endsWith(`SyntaxError: Unexpected token ':'${EXITED}`));
     assert.equal(c.at(-1), I);
     assert.ok(c[0].startsWith('const sprite0 = bake(0);'));
-    assert.ok(a[0].length + c[0].length <= STOPPED_SUCCESS_EXCERPT_CHARS, 'the calls that did not fail share their budget');
-    assert.ok(b[0].length <= STOPPED_BATCH_EXCERPT_CHARS);
+    // The calls that did not fail share 600 characters: the short one keeps
+    // all of its 19, and the rest goes to the long one.
+    assert.equal(STOPPED_SUCCESS_EXCERPT_CHARS, 600);
+    assert.ok(a[0].length + c[0].length <= 600, `${a[0].length} + ${c[0].length}`);
+    assert.ok(c[0].length > 500, `the long read gets what the short one left: ${c[0].length}`);
+    assert.ok(b[0].length <= 2400);
     assert.doesNotMatch([...a, ...b, ...c].join('\n'), /rerun|…\(truncated\)…/);
   });
 
@@ -262,6 +268,116 @@ for (const wrapped of [false, true]) {
     assert.deepEqual(texts(stopped), [output, correction, EXAMPLE_NOTES.restored.model, I]);
   });
 }
+
+test('the failed calls of a stopped batch share 2,400 characters, shortest output first', () => {
+  // Three long failures: a third each, never a whole budget apiece.
+  {
+    const {begin, after, persist, failReads} = harness();
+    failReads();
+    const calls = ['a', 'b', 'c'].map((tag, i) => begin('exec', {command: `cd /workspace/Playground/game && python3 patch_${tag}.py`},
+      {round: i === 0}));
+    calls.forEach((call, i) => after(call, execResult(`${'patch line\n'.repeat(1000)}SyntaxError in patch_${'abc'[i]}${EXITED}`)));
+    const kept = calls.map(call => texts(persist(call).persisted));
+    for (const blocks of kept) assert.equal(blocks.at(-1), I);
+    const shared = kept.reduce((sum, blocks) => sum + blocks[0].length, 0);
+    assert.ok(shared <= 2400 && shared > 2000, `${shared}`);
+  }
+  // The call that tripped the limit first in call order, three short failures
+  // after it: they keep their few characters, and it keeps the rest.
+  {
+    const {begin, after, persist, failReads} = harness();
+    failReads();
+    const tripping = begin('exec', PATCH_AND_CHECK);
+    const shorts = ['x', 'y', 'z'].map(name => begin('read', {path: `Playground/game/${name}.js`}, {round: false}));
+    const missing = call => `ENOENT: no such file or directory, open '${call.params.path}'`;
+    after(tripping, execResult(`${'patch line\n'.repeat(1000)}${SYNTAX_ERROR}${EXITED}`));
+    for (const call of shorts) after(call, {isError: true, content: [{type: 'text', text: missing(call)}], details: {status: 'error'}});
+    const kept = texts(persist(tripping).persisted);
+    assert.ok(kept[0].length > 2000, `${kept[0].length}`);
+    assert.ok(kept[0].endsWith(`SyntaxError: Unexpected token ':'${EXITED}`));
+    for (const call of shorts) assert.deepEqual(texts(persist(call).persisted), [missing(call), I]);
+  }
+});
+
+test('a record left from an earlier round takes no share of the stopped batch', () => {
+  const {begin, after, persist, failReads} = harness();
+  // Ran and failed in an earlier round, and was never persisted.
+  after(begin('exec', {command: 'cd /workspace/Playground/game && python3 patch_old.py'}),
+    execResult(`${'old patch line\n'.repeat(1000)}SyntaxError in patch_old${EXITED}`));
+  failReads(RUN_PROGRESS_LIMITS.consecutiveFailures - 2);
+  const kept = texts(persist(after(begin('exec', PATCH_AND_CHECK),
+    execResult(`${'patch line\n'.repeat(1000)}${SYNTAX_ERROR}${EXITED}`))).persisted);
+  assert.equal(kept.at(-1), I);
+  assert.ok(kept[0].length > 2000, `the whole failed budget: ${kept[0].length}`);
+});
+
+test('a killed process poll over the cap says it exited with a signal, not with code 0', () => {
+  const {begin, after, persist, step, failReads} = harness();
+  persist(after(begin('exec', {command: 'cd /workspace/Playground/game && npm test', background: true}),
+    {content: [{type: 'text', text: 'Command still running (session sess-1, pid 42). Use process (list/poll/log/write/kill/clear/remove) for follow-up.'}],
+      details: {status: 'running', sessionId: 'sess-1', pid: 42, startedAt: 1, cwd: '/workspace/Playground/game', tail: ''}}));
+  failReads();
+  // OpenClaw's details for a session ended by a signal: status failed, exit code 0.
+  const fresh = `${progress(600)}\nFAIL tests/enemy_draw.test.js`;
+  const kept = texts(step('process', {action: 'poll', sessionId: 'sess-1'},
+    {content: [{type: 'text', text: `${fresh}\n\nProcess exited with signal SIGKILL.`}],
+      details: {status: 'failed', sessionId: 'sess-1', exitCode: 0, aggregated: fresh, name: 'npm test'}}).persisted);
+  assert.equal(kept.at(-1), I);
+  assert.ok(kept[0].endsWith('FAIL tests/enemy_draw.test.js\n\nProcess exited with a signal.'), kept[0].slice(-80));
+});
+
+test('an exec over the cap keeps the warnings OpenClaw put above its output', () => {
+  const {step, failReads} = harness();
+  failReads();
+  const warning = 'Warning: workdir /workspace/Playground/gme does not exist; using /workspace.';
+  const output = `${'patch line\n'.repeat(2000)}${SYNTAX_ERROR}${EXITED}`;
+  const kept = texts(step('exec', PATCH_AND_CHECK, {isError: true, content: [{type: 'text', text: `${warning}\n\n${output}`}],
+    details: {status: 'completed', exitCode: 1, aggregated: output}}).persisted);
+  assert.ok(kept[0].startsWith(`${warning}\n\n`), kept[0].slice(0, 120));
+  assert.ok(kept[0].endsWith(`SyntaxError: Unexpected token ':'${EXITED}`));
+});
+
+test('notes that do not fit a small cap give way, so the instruction still fits', () => {
+  // The notes test at an agent cap of 1,000: both notes beside the instruction
+  // would not fit, and OpenClaw's cap would then cut the instruction.
+  let restoreNext = false;
+  const exampleGuard = {begin: () => undefined, guarding: () => false, end: () => undefined,
+    check: () => restoreNext ? (restoreNext = false, {outcome: 'restored'}) : undefined};
+  const {step, failReads} = harness({workspaceRoot: ROOT, executionHost: 'sandbox', exampleGuard, toolResultMaxChars: () => 1000});
+  failReads();
+  const output = `sh: 1: cd: can't cd to ${ROOT}/Playground/game${EXITED}`;
+  restoreNext = true;
+  const stopped = step('exec', {command: `cd ${ROOT}/Playground/game && python3 patch_b.py`}, execResult(output)).persisted;
+  assert.deepEqual(texts(stopped), [output, I]);
+  assert.ok(total(stopped) <= 900);
+});
+
+test('a call waiting to be persisted keeps a small copy of its output, never the whole output', () => {
+  v8.setFlagsFromString('--expose-gc');
+  const gc = vm.runInNewContext('gc');
+  const heap = () => { gc(); gc(); return process.memoryUsage().heapUsed; };
+  const {begin, after} = harness();
+  const before = heap();
+  // A hundred execs that ran, each with a fresh 400,000-character output that
+  // after_tool_call gets whole in details.aggregated: a copy cut from it by
+  // slicing would keep all of it, about 40 MB here.
+  for (let i = 0; i < 100; i++) {
+    const output = `${i} `.padEnd(64, 'x') + `line ${i} of the build\n`.repeat(18000);
+    after(begin('exec', {command: `cd /workspace/Playground/game && node build_${i}.js`}),
+      {content: [{type: 'text', text: output}], details: {status: 'completed', exitCode: 0, aggregated: output}});
+  }
+  const grown = heap() - before;
+  assert.ok(grown < 10 * 1048576, `${(grown / 1048576).toFixed(1)} MB kept`);
+});
+
+test('a cap lookup that throws falls back to the 4,000 floor, never to a result without the instruction', () => {
+  const {step, failReads} = harness({toolResultMaxChars: () => { throw new TypeError('config.agents.list.find is not a function'); }});
+  failReads();
+  const stopped = step('exec', PATCH_AND_CHECK, execResult(`${'patch line\n'.repeat(1000)}${SYNTAX_ERROR}${EXITED}`)).persisted;
+  assert.equal(texts(stopped).at(-1), I);
+  assert.ok(texts(stopped)[0].endsWith(`SyntaxError: Unexpected token ':'${EXITED}`));
+  assert.ok(total(stopped) <= 3900);
+});
 
 for (const receipt of ['veto', 'error']) test(`the research web-loop stop, a refusal of a recorded call, keeps only the instruction (${receipt} receipt)`, () => {
   const {step} = harness({limits: {search: 1, fetch: 4, total: 5}, receipt,
