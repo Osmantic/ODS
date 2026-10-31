@@ -206,7 +206,8 @@ test('a goal round\'s retried attempt stopped at the deadline says which limit s
   f.at(STOP_AT);
   assert.deepEqual(f.aborts, [OWNER.sessionId]);
   f.guard.observeAgentEnd(CUT_OFF, OWNER);
-  assert.deepEqual(f.guard.deliveryVerificationForRun(RUN_ID), {status: 'failed', text: STOP_COPY, stop: 'run-deadline'});
+  assert.deepEqual(f.guard.deliveryVerificationForRun(RUN_ID),
+    {status: 'failed', text: `${STOP_COPY}\n\n${changed('game/ui.js')}`, stop: 'run-deadline'});
 });
 
 // Their own timer and the ingress decide, as before this stop existed.
@@ -227,7 +228,7 @@ test('an ordinary chat is never stopped by Portal', () => {
   f.edit();
   f.at(30);
   f.guard.observeAgentEnd(CUT_OFF, OWNER);
-  assert.deepEqual(f.guard.deliveryVerificationForRun(RUN_ID), {status: 'failed', text: STOP_COPY});
+  assert.deepEqual(f.guard.deliveryVerificationForRun(RUN_ID), {status: 'failed', text: `${STOP_COPY}\n\n${changed('game/ui.js')}`});
 });
 
 // Its own timer's recovery can outlast the ingress: a compaction and a retry
@@ -243,7 +244,8 @@ test('the first attempt is stopped just before its own timer', () => {
   f.at(STOP_AT);
   assert.deepEqual(f.aborts, [OWNER.sessionId]);
   f.guard.observeAgentEnd(CUT_OFF, OWNER);
-  assert.deepEqual(f.guard.deliveryVerificationForRun(RUN_ID), {status: 'failed', text: STOP_COPY, stop: 'run-deadline'});
+  assert.deepEqual(f.guard.deliveryVerificationForRun(RUN_ID),
+    {status: 'failed', text: `${STOP_COPY}\n\n${changed('game/ui.js')}`, stop: 'run-deadline'});
 });
 
 // An abort before an attempt's first model call cannot reach the prompt
