@@ -30,6 +30,30 @@ async def _body(request):
 
 
 async def _request(method, payload=None):
+    import config
+    from pathlib import Path
+    from pixel_chat_identity import read_local_desktop_identity
+
+    if config.WINDOWS_DESKTOP_PROFILE:
+        current = read_local_desktop_identity()
+        if method == "POST" and payload is not None:
+            if payload["expectedRevision"] != current["revision"]:
+                raise HTTPException(409, "Assistant identity changed elsewhere; refresh before saving.", headers=NO_STORE)
+            updated = normalize_document({
+                "schemaVersion": 1,
+                "revision": current["revision"] + 1,
+                "displayName": payload["displayName"],
+            })
+            if config.DATA_DIR:
+                try:
+                    path = Path(config.DATA_DIR) / "portal-identity.json"
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(json.dumps(updated), encoding="utf-8")
+                except OSError:
+                    pass
+            return JSONResponse(updated, headers=NO_STORE)
+        return JSONResponse(current, headers=NO_STORE)
+
     path = "/v1/pixel/identity/save" if method == "POST" else "/v1/pixel/identity"
     try:
         result = await request_agent_json(method, path, payload=payload, timeout=10)
