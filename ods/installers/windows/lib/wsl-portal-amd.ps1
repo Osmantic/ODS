@@ -36,6 +36,7 @@ $script:ODSPortalRuntimeOwnedFiles = @('runtime.json', 'runtime-options.json', '
 # The scheduled task's description, by llama.cpp backend. Vulkan is the AMD
 # route and the default.
 $script:ODSPortalRuntimeTaskDescriptions = @{
+    'nvidia-cuda-x64' = 'ODS: llama.cpp CUDA x64 model server for the NVIDIA GPU (127.0.0.1, API key). Starts at sign-in.'
     vulkan = 'ODS: llama.cpp model server for the AMD GPU (127.0.0.1, API key). Starts at sign-in.'
     cuda = 'ODS: llama.cpp model server for the NVIDIA GPU (127.0.0.1, API key). Starts at sign-in.'
 }
@@ -54,14 +55,15 @@ function Get-ODSPortalRuntimeDir { return (Join-Path (Get-ODSPortalStateDir) 'po
 
 function Get-ODSPortalModelsDir { return (Join-Path (Get-ODSPortalStateDir) 'models') }
 
-function Get-ODSPortalAmdPlan([string]$SourceRoot) {
+function Get-ODSPortalAmdPlan([string]$SourceRoot, [ValidateSet('amd', 'nvidia')][string]$GpuVendor = 'amd') {
     # $null means "no AMD GPU route": NVIDIA and CPU-only machines keep the
     # in-WSL llama-server path.
     $gpu = Get-GpuInfo
-    if ($gpu.Backend -ne 'amd') { return $null }
+    if ($gpu.Backend -ne $GpuVendor) { return $null }
     $ramGB = Get-SystemRamGB
     $tier = [string](ConvertTo-TierFromGpu -GpuInfo $gpu -SystemRamGB $ramGB)
     if ($tier -eq '0') {
+        if ($GpuVendor -eq 'nvidia') { throw 'No verified local model fits this NVIDIA GPU. NVIDIA CUDA was not activated; the existing route was not changed.' }
         Write-Host "         $($gpu.Name) has too little graphics memory for a local model; ODS will run the model on the CPU."
         return $null
     }
@@ -71,6 +73,7 @@ function Get-ODSPortalAmdPlan([string]$SourceRoot) {
         $config = Resolve-CatalogModelRecommendation -TierConfig $config -Tier $tier -GpuInfo $gpu `
             -SystemRamGB $ramGB -SourceRoot $SourceRoot -MinContext $script:HERMES_MIN_CONTEXT
     } catch {
+        if ($GpuVendor -eq 'nvidia') { throw }
         # Low reported VRAM can mean a reserved UMA framebuffer or an older
         # discrete card. Without a catalog fit, keep Pixel on the CPU route
         # rather than infer usable GPU memory from an adapter name.
@@ -79,8 +82,11 @@ function Get-ODSPortalAmdPlan([string]$SourceRoot) {
         Write-Host "         $($gpu.Name) has no verified model fit with its reported memory. Pixel will use the CPU route; no GPU capacity was assumed."
         return $null
     }
+    if ($GpuVendor -eq 'nvidia' -and ($config.RecommendationSource -cne 'catalog_fit_pre_download' -or $config.RuntimeProfile)) {
+        throw 'NVIDIA CUDA requires a verified catalog fit without a specialized runtime profile. This profile has not been qualified for the Windows CUDA launch options; the existing route was not changed.'
+    }
     if (-not $config.GgufFile -or -not $config.GgufUrl -or -not $config.MaxContext) {
-        throw "No model is defined for AMD tier $tier."
+        throw "No model is defined for $GpuVendor tier $tier."
     }
     # The Linux installer accepts tiers 1-4; larger AMD classes use its top tier.
     $linuxTier = if ($tier -match '^[1-4]$') { $tier } else { '4' }
@@ -765,6 +771,12 @@ function Undo-ODSPortalRuntimeCutover($Existing, [string]$Backup, [bool]$Registe
     if ($Existing.Kind -eq 'lemonade') {
         Restore-ODSPortalLemonadeLaunches $Existing.Launches
     } elseif ($Existing.Kind -eq 'llama-server') {
+        # The registration may also have changed the backend description.
+        # Restore the saved task definition, including its original action,
+        # before pairing it with the restored options and restarting it.
+        if ($Registered -and [string](Get-ODSPortalRuntimeTask).Description -cne [string]$Existing.Task.Description) {
+            Set-ScheduledTask -InputObject $Existing.Task -ErrorAction Stop | Out-Null
+        }
         if (@($Existing.Launches).Count) { Restore-ODSPortalLemonadeLaunches $Existing.Launches }
         if ($Existing.WasEnabled) {
             Set-ODSPortalRuntimeIntent 'running'
@@ -933,7 +945,26 @@ function Invoke-ODSPortalCudaQualification {
         Qualification = $qualification; Check = $check }
 }
 
-function Initialize-ODSPortalAmdRuntime($Plan, [string]$SourceRoot, [bool]$NonInteractive, [string]$WslDistro = '', [string]$WslInstallDir = '') {
+function Assert-ODSPortalNvidiaCudaHost([string]$SourceRoot) {
+    $gpu = Get-GpuInfo
+    $rows = @(Get-ODSSparkNvidiaRows | Where-Object { $_.IsCudaGpu })
+    if ($rows.Count -ne 1 -or (ConvertTo-ODSNativeLlamaAdapterKey ([string]$rows[0].Name)) -cne
+        (ConvertTo-ODSNativeLlamaAdapterKey ([string]$gpu.Name))) {
+        throw 'Native NVIDIA CUDA requires one unambiguous GPU matching Windows detection. Check the NVIDIA Windows driver; nothing was downloaded or changed.'
+    }
+    $pin = Get-ODSNativeLlamaPin -SourceRoot $SourceRoot -Backend nvidia -Architecture x64
+    Assert-ODSNativeLlamaDriver $pin ([string]$rows[0].DriverVersion)
+    $compute = [string]$rows[0].ComputeCap
+    $map = $pin.RequiredCudaArchs
+    $supported = if ($map -is [Collections.IDictionary]) { $map.Contains($compute) } else { $map -and $null -ne $map.PSObject.Properties[$compute] }
+    if (-not $supported) {
+        throw "The pinned Windows CUDA build has not been qualified for compute capability '$compute'. Keep the default Ubuntu route; nothing was downloaded or changed."
+    }
+    return $rows[0]
+}
+
+function Initialize-ODSPortalAmdRuntime($Plan, [string]$SourceRoot, [bool]$NonInteractive, [string]$WslDistro = '', [string]$WslInstallDir = '',
+    [ValidateSet('amd', 'nvidia')][string]$GpuVendor = 'amd', [bool]$PreparationConfirmed = $false) {
     <#
     .SYNOPSIS
         Stage, qualify and cut over to llama.cpp, then return the Linux
@@ -942,32 +973,43 @@ function Initialize-ODSPortalAmdRuntime($Plan, [string]$SourceRoot, [bool]$NonIn
     #>
     # Validate what ODS already runs before anything changes.
     $existing = Get-ODSPortalExistingRuntime
-    $pin = Get-ODSNativeLlamaPin -SourceRoot $SourceRoot
+    if ($GpuVendor -eq 'nvidia') { $null = Assert-ODSPortalNvidiaCudaHost $SourceRoot }
+    $vendorName = if ($GpuVendor -eq 'nvidia') { 'NVIDIA' } else { 'AMD' }
+    $pin = if ($GpuVendor -eq 'nvidia') { Get-ODSNativeLlamaPin -SourceRoot $SourceRoot -Backend nvidia -Architecture x64 } else { Get-ODSNativeLlamaPin -SourceRoot $SourceRoot }
+    $backendName = if ($GpuVendor -eq 'nvidia') { 'CUDA' } else { 'Vulkan' }
     $runtime = $null
     $installDir = Get-ODSNativeLlamaInstallDirectory $pin
     if (Test-Path -LiteralPath $installDir) {
-        try { $runtime = Test-ODSNativeLlamaInstall -Directory $installDir -ExpectedZipSha256 $pin.Sha256 -ExpectedReleaseTag $pin.ReleaseTag } catch { $runtime = $null }
+        $verificationArgs = @{}
+        if ($GpuVendor -eq 'nvidia') { $verificationArgs.ExpectedArchives = $pin.Archives }
+        try { $runtime = Test-ODSNativeLlamaInstall -Directory $installDir -ExpectedZipSha256 $pin.Sha256 -ExpectedReleaseTag $pin.ReleaseTag @verificationArgs } catch { $runtime = $null }
     }
     if (-not $runtime) {
         $mib = [math]::Ceiling($pin.Size / 1MB)
-        if ($existing.Kind -eq 'none') {
-            if (-not (Confirm-ODSPortalPreparation "Download llama.cpp $($pin.ReleaseTag) (Vulkan) from github.com/ggml-org (about $mib MiB, SHA-256 pinned) to run the AI model on your AMD GPU? It runs only on this computer (127.0.0.1)." $NonInteractive)) {
+        if ($GpuVendor -eq 'nvidia') { $mib = [math]::Ceiling(($pin.Archives | Measure-Object -Property Size -Sum).Sum / 1MB) }
+        if ($existing.Kind -eq 'none' -and -not ($GpuVendor -eq 'nvidia' -and $PreparationConfirmed)) {
+            if (-not (Confirm-ODSPortalPreparation "Download llama.cpp $($pin.ReleaseTag) ($backendName) from github.com/ggml-org (about $mib MiB, SHA-256 pinned) to run the AI model on your $vendorName GPU? It runs only on this computer (127.0.0.1)." $NonInteractive)) {
+                if ($GpuVendor -eq 'nvidia') { throw 'NVIDIA CUDA preparation was cancelled; the existing model route was not changed.' }
                 Write-Host '         Continuing without the GPU: the model will run on the CPU (slower).'
                 return $null
             }
-        } else {
+        } elseif ($existing.Kind -ne 'none') {
             $previous = if ($existing.Kind -eq 'lemonade') { 'Lemonade Server' } else { 'its previous llama.cpp build' }
-            Write-Host "         ODS now runs the model with llama.cpp $($pin.ReleaseTag) (Vulkan) from github.com/ggml-org instead of $previous. Downloading it (about $mib MiB, SHA-256 pinned)."
+            Write-Host "         ODS now runs the model with llama.cpp $($pin.ReleaseTag) ($backendName) from github.com/ggml-org instead of $previous. Downloading it (about $mib MiB, SHA-256 pinned)."
         }
         # Staging happens while the previous runtime keeps serving.
         $runtime = Install-ODSNativeLlamaRuntime -Pin $pin
     }
-    $qualification = Test-ODSNativeLlamaQualification -ExecutablePath $runtime.ExecutablePath -ExpectedBuild $pin.Build -AdapterName $Plan.GpuName
+    $qualificationArgs = @{}
+    if ($GpuVendor -eq 'nvidia') { $qualificationArgs = @{GpuVendor='nvidia'; Backend='cuda'; Architecture='x64'} }
+    $qualification = Test-ODSNativeLlamaQualification -ExecutablePath $runtime.ExecutablePath -ExpectedBuild $pin.Build -AdapterName $Plan.GpuName @qualificationArgs
     if ($qualification.PolicyHint) { Write-Host "         $($qualification.PolicyHint)" }
     if (-not $qualification.Device) {
         $seen = @($qualification.Devices | ForEach-Object { "$($_.Name) $($_.Description)" }) -join '; '
         $found = if ($seen) { " (it lists: $seen)" } else { '' }
-        $message = "llama.cpp found no usable Vulkan device for $($Plan.GpuName)$found. Update the AMD Adrenalin driver from amd.com/support and restart Windows."
+        $driverAdvice = if ($GpuVendor -eq 'nvidia') { 'Update the NVIDIA Windows driver from nvidia.com and restart Windows.' } else { 'Update the AMD Adrenalin driver from amd.com/support and restart Windows.' }
+        $message = "llama.cpp found no usable $backendName device for $($Plan.GpuName)$found. $driverAdvice"
+        if ($GpuVendor -eq 'nvidia') { throw "$message The model route was not changed; rerun with -WindowsLlmBackend cuda after resolving the driver/device problem." }
         if ($existing.Kind -ne 'none') { throw "$message Your current ODS runtime was not changed; rerun setup after updating the driver." }
         Write-Host "         $message Continuing on the CPU route (slower); rerun setup afterwards to use the GPU."
         return $null
@@ -989,13 +1031,18 @@ function Initialize-ODSPortalAmdRuntime($Plan, [string]$SourceRoot, [bool]$NonIn
         $port = Select-ODSPortalRuntimePort
     }
     $apiKey = Get-ODSPortalApiKey
-    $options = New-ODSPortalRuntimeOptions $runtime $qualification
+    $options = if ($GpuVendor -eq 'nvidia') { New-ODSPortalRuntimeOptions $runtime $qualification -Backend cuda -Architecture x64 } else { New-ODSPortalRuntimeOptions $runtime $qualification }
+    $cutoverArgs = @{}
+    if ($GpuVendor -eq 'nvidia') {
+        $options.GpuVendor = 'nvidia'
+        $cutoverArgs.TaskDescription = $script:ODSPortalRuntimeTaskDescriptions['nvidia-cuda-x64']
+    }
     $runtimePlan = [ordered]@{ ExecutablePath = $runtime.ExecutablePath; Port = $port; ModelsDir = (Get-ODSPortalModelsDir)
         ContextSize = $selection.ContextSize; GgufFile = $selection.GgufFile }
     if ($selection.MmprojFile) { $runtimePlan.MmprojFile = $selection.MmprojFile }
     Write-Host "         Starting llama.cpp on 127.0.0.1:$port with $($selection.GgufFile)..."
     $null = Invoke-ODSPortalRuntimeCutover -Existing $existing -Plan $runtimePlan -Options $options -ApiKey $apiKey `
-        -KeepPort $keepPort -WslDistro $WslDistro -WslInstallDir $WslInstallDir
+        -KeepPort $keepPort -WslDistro $WslDistro -WslInstallDir $WslInstallDir @cutoverArgs
     $previousDirectory = if ($existing.Kind -eq 'llama-server') { Split-Path -Parent $existing.Launch.ExecutablePath } else { '' }
     Remove-ODSNativeLlamaOldRuntimes -KeepDirectory $runtime.Directory -PreviousDirectory $previousDirectory
     Write-Host "         GPU model ready: $($selection.GgufFile) ($($selection.ContextSize) tokens of context)."

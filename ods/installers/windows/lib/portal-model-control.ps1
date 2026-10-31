@@ -4,7 +4,7 @@
 # with a plan digest compare-and-swap. The observation is
 # {status:"verified", modelId:<GGUF>, contextLength:<n_ctx>}, reporting the
 # requested size when llama.cpp aligned it upward by fewer than 256 cells.
-# On the CUDA route (options Backend cuda) a switch is refused before anything
+# On the Arm64 CUDA route a switch is refused before anything
 # is stopped when Windows cannot lend the new model its memory, and status
 # carries the launcher's own refusal (runtimeError, startRefusal); the next
 # Resume of a refused plan is Start anyway. Vulkan (AMD) runs no memory check.
@@ -143,12 +143,14 @@ function Get-ODSPortalManagedConfiguration($Request) {
     # from before vision support declares none and is never handed a projector.
     $options = [Text.UTF8Encoding]::new($false, $true).GetString(
         (Read-ODSPortalPlanBytes (Join-Path $runtimeDir 'runtime-options.json'))) | ConvertFrom-Json -ErrorAction Stop
+    Assert-ODSNativeLlamaOptions $options
     $features = @(@($options.PlanFeatures) | Where-Object { $_ -is [string] -and $_ -cin @('MmprojFile') })
     $taskName = if ($tasks[0].TaskName) { $tasks[0].TaskName } else { Get-ODSPortalRuntimeTaskName }
     return [pscustomobject]@{ Task = $tasks[0]; TaskName = $taskName; ShellPath = $shell[0].Source; Plan = $plan
         PlanPath = $path; PlanDigest = $digest; ReadyPath = Join-Path $runtimeDir 'ready.json'
         ApiKeyPath = Join-Path $runtimeDir 'api-key'; Features = $features
         Backend = (Get-ODSNativeLlamaOptionsBackend $options)
+        Architecture = (Get-ODSNativeLlamaOptionsArchitecture $options)
         MemoryPlanPath = Join-Path $runtimeDir 'memory-plan.json'; OverridePath = Join-Path $runtimeDir 'start-override.json' }
 }
 
@@ -408,13 +410,13 @@ function Invoke-ODSPortalModelControl($Request) {
         }
         if ($Request.action -cne 'stop') { Assert-ODSPortalControlModel $next }
         $memoryPlan = $null
-        if ($configuration.Backend -ceq 'cuda' -and $Request.action -ceq 'activate') {
+        if ($configuration.Backend -ceq 'cuda' -and $configuration.Architecture -ceq 'arm64' -and $Request.action -ceq 'activate') {
             # Only a switch is ever refused, and before anything is disarmed.
             $wslGiB = Get-ODSPortalControlWslGiB $configuration
             $need = Get-ODSPortalControlMemoryNeed $next
             Assert-ODSPortalControlMemoryFit $configuration $next $need $wslGiB
             $memoryPlan = New-ODSPortalMemoryPlanRecord $next $need $wslGiB
-        } elseif ($configuration.Backend -ceq 'cuda' -and $Request.action -ceq 'restore') {
+        } elseif ($configuration.Backend -ceq 'cuda' -and $configuration.Architecture -ceq 'arm64' -and $Request.action -ceq 'restore') {
             # restore (and start) is the host agent's rollback: never refused,
             # and never stopped by its sizing. Without figures the launcher
             # logs that it skipped its check (the older memory plan names
