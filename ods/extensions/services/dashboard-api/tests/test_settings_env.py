@@ -101,7 +101,7 @@ def settings_env_fixture(tmp_path, monkeypatch):
         lambda method, path, *, timeout: {"status": "ok"},
     )
 
-    def fake_env_update(raw_text):
+    def fake_env_update(raw_text, expected_sha256):
         backup_dir = data_root / "config-backups"
         backup_dir.mkdir(parents=True, exist_ok=True)
         backup_path = backup_dir / ".env.backup.test"
@@ -712,7 +712,7 @@ def test_api_settings_env_gpu_layer_change_recreates_llama_server(
 def test_api_settings_env_save_uses_host_agent_canonical_value(
     test_client, settings_env_fixture, monkeypatch,
 ):
-    def fake_env_update(raw_text):
+    def fake_env_update(raw_text, expected_sha256):
         return {
             "backup_path": "data/config-backups/.env.backup.test",
             "enforced_values": {"WEBUI_AUTH": "true"},
@@ -2024,10 +2024,109 @@ def test_is_secret_field_name_heuristic(key, expected):
     assert _is_secret_field(key) is expected
 
 
+def _load_host_agent():
+    import importlib.util
+    import sys
+
+    agent_path = Path(__file__).resolve().parents[4] / "bin" / "ods-host-agent.py"
+    spec = importlib.util.spec_from_file_location("ods_host_agent_env_race", agent_path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture()
+def _real_call_agent_env_update():
+    import main
+
+    return main._call_agent_env_update
+
+
+@pytest.fixture()
+def real_agent_env_update(_real_call_agent_env_update, settings_env_fixture, monkeypatch):
+    """Route the dashboard's /v1/env/update call through the real host-agent handler."""
+    import io
+
+    from host_agent_client import AgentHTTPError
+
+    agent = _load_host_agent()
+    monkeypatch.setattr(agent, "INSTALL_DIR", settings_env_fixture["install_root"])
+    monkeypatch.setattr(agent, "DATA_DIR", settings_env_fixture["data_root"])
+    monkeypatch.setattr(agent, "AGENT_API_KEY", "agent-key")
+    monkeypatch.setattr("main._call_agent_env_update", _real_call_agent_env_update)
+    hooks = {"before_write": lambda: None, **settings_env_fixture}
+
+    class Handler:
+        def __init__(self, body):
+            self.headers = {"Authorization": "Bearer agent-key", "Content-Length": str(len(body))}
+            self.rfile = io.BytesIO(body)
+            self.wfile = io.BytesIO()
+            self.client_address = ("127.0.0.1", 1)
+            self.path = "/v1/env/update"
+            self.response_code = None
+
+        def send_response(self, code):
+            self.response_code = code
+
+        def send_header(self, *_):
+            pass
+
+        def end_headers(self):
+            pass
+
+    def fake_request(method, path, *, payload=None, timeout=None):
+        assert (method, path) == ("POST", "/v1/env/update")
+        hooks["before_write"]()
+        handler = Handler(json.dumps(payload).encode("utf-8"))
+        agent.AgentHandler._handle_env_update(handler)
+        body = json.loads(handler.wfile.getvalue().decode("utf-8"))
+        if handler.response_code != 200:
+            raise AgentHTTPError(handler.response_code, body.get("error", ""))
+        return body
+
+    monkeypatch.setattr("main.request_agent_json", fake_request)
+    return hooks
+
+
+def test_settings_save_refuses_to_overwrite_env_changed_after_read(
+    test_client, real_agent_env_update,
+):
+    env_path = real_agent_env_update["env_path"]
+    env_path.write_text(env_path.read_text(encoding="utf-8") + "GGUF_FILE=old.gguf\n",
+                        encoding="utf-8")
+
+    def model_activation_lands():
+        # Simulates a model activation writing .env after the dashboard read it.
+        env_path.write_text(
+            env_path.read_text(encoding="utf-8").replace("old.gguf", "new.gguf"),
+            encoding="utf-8",
+        )
+
+    real_agent_env_update["before_write"] = model_activation_lands
+    response = test_client.put("/api/settings/env", headers=test_client.auth_headers,
+                               json={"mode": "form", "values": {"LLM_BACKEND": "cloud"}})
+
+    assert "GGUF_FILE=new.gguf" in env_path.read_text(encoding="utf-8")
+    assert response.status_code == 409, response.text
+    assert "reload" in response.json()["detail"]["message"].lower()
+
+
+def test_settings_save_with_unchanged_env_writes_through_host_agent(
+    test_client, real_agent_env_update,
+):
+    env_path = real_agent_env_update["env_path"]
+    response = test_client.put("/api/settings/env", headers=test_client.auth_headers,
+                               json={"mode": "form", "values": {"LLM_BACKEND": "cloud"}})
+
+    assert response.status_code == 200, response.text
+    assert "LLM_BACKEND=cloud" in env_path.read_text(encoding="utf-8")
+
+
 def test_api_settings_env_save_binds_env_revision_to_apply_plan(test_client, settings_env_fixture, monkeypatch):
     monkeypatch.setattr('main._active_settings_apply_services', lambda: {'open-webui'})
     revision = 'a' * 64
-    monkeypatch.setattr('main._call_agent_env_update', lambda raw_text: {
+    monkeypatch.setattr('main._call_agent_env_update', lambda raw_text, expected_sha256: {
         'backup_path': 'data/config-backups/.env.backup.test',
         'env_revision': revision,
     })
@@ -2039,7 +2138,7 @@ def test_api_settings_env_save_binds_env_revision_to_apply_plan(test_client, set
 
 def test_api_settings_env_save_marks_plan_unsupported_without_revision(test_client, settings_env_fixture, monkeypatch):
     monkeypatch.setattr('main._active_settings_apply_services', lambda: {'open-webui'})
-    monkeypatch.setattr('main._call_agent_env_update', lambda raw_text: {
+    monkeypatch.setattr('main._call_agent_env_update', lambda raw_text, expected_sha256: {
         'backup_path': 'data/config-backups/.env.backup.test',
     })
     response = test_client.put('/api/settings/env', headers=test_client.auth_headers,

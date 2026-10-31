@@ -12570,6 +12570,14 @@ class AgentHandler(BaseHTTPRequestHandler):
             raw_text = _upsert_env_text(raw_text, "WEBUI_AUTH", "true")
             enforced_values["WEBUI_AUTH"] = "true"
         backup = body.get("backup", True)
+        # The caller renders the whole file from the .env it read; without this
+        # check a model activation or CLI write that lands in between is
+        # silently reverted by the os.replace() below.
+        expected_sha256 = body.get("expected_sha256")
+        if not isinstance(expected_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+            logger.warning("env_update rejected: expected_sha256 missing/invalid from %s", client_ip)
+            json_response(self, 400, {"error": "expected_sha256 required (sha256 hex of the .env that was read)"})
+            return
 
         schema_path = INSTALL_DIR / ".env.schema.json"
         if not schema_path.exists():
@@ -12623,6 +12631,14 @@ class AgentHandler(BaseHTTPRequestHandler):
         env_path = INSTALL_DIR / ".env"
         backup_relative_path = None
         try:
+            try:
+                current_bytes = env_path.read_bytes()
+            except FileNotFoundError:
+                current_bytes = b""
+            if hashlib.sha256(current_bytes).hexdigest() != expected_sha256:
+                logger.warning("env_update rejected: .env changed since it was read (request from %s)", client_ip)
+                json_response(self, 409, {"error": ".env changed since it was read; reload and try again"})
+                return
             if backup and env_path.exists():
                 backup_dir = DATA_DIR / "config-backups"
                 backup_path = _copy_unique_env_backup(env_path, backup_dir)

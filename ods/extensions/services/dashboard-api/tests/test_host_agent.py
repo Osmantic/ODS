@@ -5956,8 +5956,23 @@ def env_update_env(tmp_path, monkeypatch):
     return install_dir, data_dir
 
 
-def _make_body(raw_text: str, backup: bool = True) -> bytes:
-    return json.dumps({"raw_text": raw_text, "backup": backup}).encode("utf-8")
+NL = chr(10)
+
+
+def _current_env_sha256() -> str:
+    env_path = _mod.INSTALL_DIR / ".env"
+    raw = env_path.read_bytes() if env_path.exists() else b""
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _make_body(raw_text: str, backup: bool = True, expected_sha256=None) -> bytes:
+    if expected_sha256 is None:
+        expected_sha256 = _current_env_sha256()
+    return json.dumps({
+        "raw_text": raw_text,
+        "backup": backup,
+        "expected_sha256": expected_sha256,
+    }).encode("utf-8")
 
 
 class TestExtensionConfiguration:
@@ -6243,6 +6258,31 @@ class TestHandleEnvUpdate:
 
         assert handler.response_code == 200
 
+    def test_409_when_env_changed_since_read(self, env_update_env):
+        install_dir, data_dir = env_update_env
+        read_hash = _current_env_sha256()
+        # A model activation lands between the dashboard's read and its write.
+        changed = "ODS_AGENT_KEY=existing" + NL + "GGUF_FILE=new.gguf" + NL
+        (install_dir / ".env").write_text(changed, encoding="utf-8")
+        handler = _FakeHandler(_make_body("ODS_AGENT_KEY=existing" + NL, expected_sha256=read_hash))
+        _mod.AgentHandler._handle_env_update(handler)
+        assert handler.response_code == 409
+        assert (install_dir / ".env").read_text(encoding="utf-8") == changed
+        assert not (data_dir / "config-backups").exists()
+        assert _mod._model_activate_lock.acquire(blocking=False)
+        _mod._model_activate_lock.release()
+
+    @pytest.mark.parametrize("expected", [None, "", "abc", 123, "A" * 64])
+    def test_400_without_valid_expected_sha256(self, env_update_env, expected):
+        install_dir, _ = env_update_env
+        payload = {"raw_text": "ODS_AGENT_KEY=new" + NL, "backup": True}
+        if expected is not None:
+            payload["expected_sha256"] = expected
+        handler = _FakeHandler(json.dumps(payload).encode("utf-8"))
+        _mod.AgentHandler._handle_env_update(handler)
+        assert handler.response_code == 400
+        assert (install_dir / ".env").read_text(encoding="utf-8") == "ODS_AGENT_KEY=existing" + NL
+
     def test_409_lock_contention(self, env_update_env):
         body = _make_body("ODS_AGENT_KEY=newvalue\n")
         handler = _FakeHandler(body)
@@ -6279,8 +6319,9 @@ class TestHandleEnvUpdate:
                 digest_reads.append(path)
             return original_read_bytes(path)
 
-        monkeypatch.setattr(_mod.Path, 'read_bytes', guarded_read)
+        # Build the body (which reads .env for expected_sha256) before guarding reads.
         handler = _FakeHandler(_make_body('ODS_AGENT_KEY=newvalue\nBIND_ADDRESS=0.0.0.0\nWEBUI_AUTH=false'))
+        monkeypatch.setattr(_mod.Path, 'read_bytes', guarded_read)
         _mod.AgentHandler._handle_env_update(handler)
         assert handler.response_code == 200
         body = handler.parse_response()
