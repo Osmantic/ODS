@@ -335,6 +335,21 @@ it('links only to web addresses in the watched pages list', async () => {
   expect(within(list).getByText('Odd')).toBeInTheDocument()
 })
 
+it('shows why a save failed in the bar where Save was pressed', async () => {
+  fakeService()
+  const card = await screen.findByRole('listitem', { name: 'Photos' })
+  vi.stubGlobal('fetch', vi.fn(async (url, options) => options.method === 'POST'
+    ? response({ detail: 'Give the Immich key, or turn it off.', code: 'invalid-settings' }, 400)
+    : response(view())))
+  fireEvent.click(within(card).getByLabelText('Let Portal search my photos'))
+  const bar = screen.getByRole('region', { name: 'Unsaved changes' })
+  fireEvent.click(within(bar).getByRole('button', { name: 'Save' }))
+  expect(await within(bar).findByRole('alert')).toHaveTextContent('Give the Immich key, or turn it off.')
+  expect(screen.getAllByRole('alert')).toHaveLength(1)  // Not also at the top, out of sight.
+  fireEvent.click(within(bar).getByRole('button', { name: 'Discard' }))
+  expect(screen.queryByRole('alert')).toBeNull()
+})
+
 it('says when no page is watched yet', async () => {
   fakeService(withApps({ watch: { ...APPS.watch, enabled: true } }, { watch: true }), { watches: { total: 0, watches: [] } })
   expect(await screen.findByText(/No pages are watched yet/)).toBeInTheDocument()

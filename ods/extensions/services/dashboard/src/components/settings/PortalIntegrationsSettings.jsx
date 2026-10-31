@@ -149,7 +149,8 @@ export default function PortalIntegrationsSettings() {
           <button className={buttonStyle} disabled={busy || !dirty} onClick={save}>Save changes</button>
         </div>
       </div>
-      {error && <p role="alert" className="text-sm text-red-400 whitespace-pre-wrap break-words">{error}</p>}
+      {/* With unsaved changes the error shows in the bar, where the owner pressed Save. */}
+      {error && !dirty && <p role="alert" className="text-sm text-red-400 whitespace-pre-wrap break-words">{error}</p>}
       {notice && <p role="status" className="text-sm text-theme-text-muted">{notice}</p>}
     </section>
 
@@ -221,7 +222,9 @@ export default function PortalIntegrationsSettings() {
 
     {/* Always in reach, wherever the change was made on this long page. */}
     {dirty && <div role="region" aria-label="Unsaved changes" className="sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-theme-accent bg-theme-card p-3 shadow-lg">
-      <p className="text-sm">You have unsaved changes.</p>
+      {error
+        ? <p role="alert" className="min-w-0 text-sm text-red-400 whitespace-pre-wrap break-words">{error}</p>
+        : <p className="text-sm">You have unsaved changes.</p>}
       <div className="flex gap-2">
         <button className={buttonStyle} disabled={busy} onClick={discard}>Discard</button>
         <button className="rounded bg-theme-accent px-3 py-2 text-sm font-medium text-white disabled:opacity-40 focus:outline-none focus:ring-2 focus:ring-theme-accent" disabled={busy} onClick={save}>Save</button>
