@@ -279,6 +279,47 @@ rm -rf data/hermes                # wipes all sessions / memories / skills
 
 The container image stays cached — `docker image prune` removes it.
 
+## ODS Talk conversation recovery
+
+Talk uses an explicit conversation ID bound to the current signed owner cookie.
+The dashboard API stores that binding and turn state in its private
+`data/talk/conversations.sqlite3`; Hermes keeps the actual native history. The
+browser saves its visible transcript and conversation ID together, checks the
+binding before restoring the transcript, and provides **New conversation** to
+start over. A different or expired owner session cannot adopt the old binding.
+Clearing browser storage removes the browser's saved transcript; it does not
+delete Hermes's native session data.
+
+Full and user-data backups include `data/talk` alongside `data/hermes`. Stop
+the dashboard API and Hermes before taking this filesystem snapshot, and
+restore both directories with the matching configuration and session-signing
+secret. The backup utility does not make a coordinated live database snapshot.
+Restoring a conversation with an unresolved turn keeps it blocked; restoring a
+backup must never be used to retry that turn. The existing native Pixel
+user-data backup restriction still applies to native Pixel installations.
+
+Text, transcribed voice, text attachments and tool approvals carry
+`X-ODS-Talk-Conversation`. API clients allocate an ID with `POST /api/talk/session`
+and inspect it with `GET /api/talk/session/{id}`. Old clients missing the header
+receive a refresh/start-conversation error rather than silently creating a new
+native session. Image questions remain separate, single-turn vision requests.
+
+On a closed idle transport, Talk manually resumes the bound native session with
+its full history. It never automatically resubmits a prompt. A process failure,
+ambiguous submit, interrupted native recovery marker, or unconfirmed completion
+requires an explicit new conversation. Browser disconnects cancel text and
+voice work, settle durable turn state, deny a pending approval, and attempt a
+session-scoped interrupt through a separate Hermes control connection.
+
+The read-only `talk-runtime` adapter is loaded through `PYTHONPATH` and is
+guarded by hashes of the pinned upstream source. It disables automatic turn
+continuation only for Talk's manual-resume calls. A custom image without this
+verified capability is refused by Talk; it must be requalified before changing
+the hashes. `tests/test-hermes-talk-runtime-native.sh` checks native create,
+cold resume, transport reattachment, bridge integration and the actual auth/s6
+startup path in disposable containers without model calls or network access.
+The Dashboard workflow runs this suite as well as API and frontend tests.
+
 ## Upstream attribution
 
 Hermes Agent is © 2026 Nous Research, MIT-licensed. ODS's contribution is the packaging layer (`extensions/services/hermes/`) — no code is forked from upstream. The pinned image is pulled directly from `docker.io/nousresearch/hermes-agent`.

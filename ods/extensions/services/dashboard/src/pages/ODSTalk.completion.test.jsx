@@ -1,8 +1,9 @@
+import { installTalkFetch, boundFrame } from '../test/talk-session'
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { render } from '../test/test-utils'
 import ODSTalk from './ODSTalk' // eslint-disable-line no-unused-vars
 
-const encode = value => new TextEncoder().encode(`data: ${JSON.stringify(value)}\n\n`)
+const encode = value => new TextEncoder().encode(`data: ${JSON.stringify(boundFrame(value))}\n\n`)
 const json = body => ({ ok: true, status: 200, json: async () => body })
 
 function stream(frames, { open = false, fail = false, split = false } = {}) {
@@ -32,7 +33,7 @@ async function start(reply, { spoken = false, attachment = false } = {}) {
     if (url === '/api/talk/message/stream' || url === '/api/talk/attachment') return reply.response
     throw new Error(`Unexpected request: ${url}`)
   })
-  vi.stubGlobal('fetch', fetcher)
+  installTalkFetch(fetcher)
   render(<ODSTalk />)
   await screen.findByText('Ready')
   if (attachment) {
@@ -55,7 +56,7 @@ it.each([
   const reply = stream(frames)
   await start(reply)
   expect(await screen.findByRole('alert')).toHaveTextContent('ended before it was complete')
-  expect(screen.getByRole('button', { name: 'Retry last message' })).toBeEnabled()
+  expect(screen.getByRole('button', { name: 'Retry last message' })).toBeDisabled()
   expect(reply.body.locked).toBe(false)
 })
 
@@ -68,12 +69,12 @@ it.each([false, true])('retains interrupted text and suppresses speech (attachme
   expect(fetcher.mock.calls.some(([url]) => url === (attachment ? '/api/talk/attachment' : '/api/talk/message/stream'))).toBe(true)
 })
 
-it('preserves partial text separately from the server failure and permits retry', async () => {
+it('preserves partial text and blocks retry after an unconfirmed server failure', async () => {
   const reply = stream([{ type: 'delta', text: 'Useful partial result' }, { type: 'error', detail: 'Hermes stopped working.' }, { type: 'done' }])
   await start(reply)
   expect(await screen.findByRole('alert')).toHaveTextContent('Hermes stopped working.')
   expect(screen.getByText('Useful partial result')).toBeVisible()
-  expect(screen.getByRole('button', { name: 'Retry last message' })).toBeEnabled()
+  expect(screen.getByRole('button', { name: 'Retry last message' })).toBeDisabled()
 })
 
 it('retains text if the transport rejects after a delta', async () => {
@@ -124,7 +125,7 @@ it.each([
   expect(await screen.findByRole('alert')).toHaveTextContent(detail)
   expect(screen.getByText('Useful work before the interruption')).toBeVisible()
   expect(screen.queryByText('Terminal failure metadata')).toBeNull()
-  expect(screen.getByRole('button', { name: 'Retry last message' })).toBeEnabled()
+  expect(screen.getByRole('button', { name: 'Retry last message' })).toHaveProperty('disabled', status === 'unexpected')
   expect(fetcher.mock.calls.some(([url]) => url === '/api/talk/speak')).toBe(false)
   expect(reply.body.locked).toBe(false)
 })
@@ -186,7 +187,7 @@ describe('voice messages', () => {
       if (url === '/api/talk/message/stream') return stream([{ type: 'complete', text: 'Answer on retry' }, { type: 'done' }]).response
       throw new Error(`Unexpected request: ${url}`)
     })
-    vi.stubGlobal('fetch', fetcher)
+    installTalkFetch(fetcher)
     render(<ODSTalk />)
     await screen.findByText('Ready')
     fireEvent.click(screen.getByRole('button', { name: 'Record voice' }))
