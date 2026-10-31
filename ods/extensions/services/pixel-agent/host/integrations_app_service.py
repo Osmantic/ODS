@@ -1,6 +1,6 @@
 """The owner's apps for the integrations service: what Portal asks of them, page watching,
 and notifications for finished scheduled tasks. Mixed into the service's Integrations class,
-which provides store, _approval and digest_called_at.
+which provides store, _approval, digest_called_at and failing_tasks.
 
 Portal reaches the apps through its MCP tool, where each app the owner turned on is listed as
 a built-in server (documents, photos, watch, news) next to the owner's MCP servers. The
@@ -9,7 +9,7 @@ gateway's plugin may declare only a few tools, so the apps add none of their own
 import time
 
 import integrations_apps as apps
-from integrations_common import IntegrationError, clip, digest
+from integrations_common import IntegrationError, digest
 from integrations_ntfy import send_notification
 
 APP_ACTIONS = {"documents-search": "documents", "documents-read": "documents", "photos-search": "photos",
@@ -42,26 +42,38 @@ APP_SERVER_NAMES = {"documents": "Documents (Paperless-ngx)", "photos": "Photos 
                     "watch": "Watched pages (changedetection.io)", "news": "News (FreshRSS)"}
 
 
+def _watch_line(watch):
+    line = f"Watch {watch['id']}: {watch['title'] or watch['url']}"
+    if watch["below"] is not None:
+        seen = f"; last seen at {watch['lastPrice']:g}" if watch["lastPrice"] is not None else ""
+        line += f" (notifies when the price is at or under {watch['below']:g}{seen})"
+    return f"{line}\n  {watch['url']}"
+
+
 def app_text(action, reply):
     """What Portal reads back from an app."""
     if action == "documents-search":
         if not reply["results"]:
             return "No document holds those words. Try other words."
+        shown = len(reply["results"])
+        more = (f"\n\nShowing {shown} of {reply['total']} documents. Use more specific words to find the others."
+                if reply["total"] > shown else "")
         return "\n".join(f"Document {hit['id']}: {hit['title']} ({hit['created']})" + (f" — {hit['snippet']}" if hit["snippet"] else "")
-                         + f"\n  {hit['link']}" for hit in reply["results"]) + "\n\nRead a document (tool read with its id) before quoting it."
+                         + f"\n  {hit['link']}" for hit in reply["results"]) + more + "\n\nRead a document (tool read with its id) before quoting it."
     if action == "documents-read":
         return f"{reply['title']} ({reply['created']})\n{reply['link']}\n\n{reply['text']}"
     if action == "photos-search":
         if not reply["results"]:
             return reply.get("note") or "No photos match. Try another place or other dates."
+        more = (f"\n\nShowing the first {len(reply['results'])}; more photos match. Narrow the search by place or dates."
+                if reply.get("more") else "")
         return "\n".join(f"{photo['file']} — taken {photo['taken'] or 'on an unknown date'}" + (f" in {photo['place']}" if photo["place"] else "")
-                         + f"\n  {photo['link']}" for photo in reply["results"]) + "\n\nGive the owner the links; they open the photos in Immich."
+                         + f"\n  {photo['link']}" for photo in reply["results"]) + more + "\n\nGive the owner the links; they open the photos in Immich."
     if action == "watch-list":
         if not reply["watches"]:
             return "No pages are watched."
-        return "\n".join(f"Watch {watch['id']}: {watch['title'] or watch['url']}"
-                         + (f" (notifies when the price is at or under {watch['below']:g})" if watch["below"] is not None else "")
-                         + f"\n  {watch['url']}" for watch in reply["watches"])
+        more = (f"\n\nShowing {len(reply['watches'])} of {reply['total']} watched pages." if reply["total"] > len(reply["watches"]) else "")
+        return "\n".join(_watch_line(watch) for watch in reply["watches"]) + more
     if action == "watch-add":
         return f"Done: {reply['done']}. The owner gets a notification when it changes."
     if action == "watch-remove":
@@ -130,14 +142,43 @@ class AppActions:
             self.store.log("news-digest", "unread news", f"{len(items)} stories")
             return {"items": items, "text": apps.digest_text(items)}
         if action == "watch-list":
-            return {"watches": self._watch_list(settings, key)}
+            return self._watch_list(settings, key)
         return self._watch_change(config, settings, key, action, request)
 
     def _watch_list(self, settings, key):
-        state = self.store.watch_state()
-        return [{"id": uuid, "title": str(watch.get("title") or "")[:200], "url": str(watch.get("url", ""))[:500],
-                 "lastChanged": watch.get("last_changed") or 0, "below": state.get(uuid, {}).get("below")}
-                for uuid, watch in list(apps.watches(settings, key).items())[:apps.MAX_WATCHES]]
+        """The watched pages, with each price watch's limit and the last price Portal saw."""
+        listing = apps.watches(settings, key)
+        with self.store.lock:
+            state = self.store.watch_state()
+        watches = [{"id": uuid, "title": str(watch.get("title") or "")[:200], "url": str(watch.get("url", ""))[:500],
+                    "lastChanged": watch.get("last_changed") or 0, "below": state.get(uuid, {}).get("below"),
+                    "lastPrice": state.get(uuid, {}).get("lastPrice")}
+                   for uuid, watch in list(listing.items())[:apps.MAX_WATCHES]]
+        return {"watches": watches, "total": len(listing)}
+
+    def watch_overview(self):
+        """The watched pages for Settings."""
+        config = self.store.config()
+        settings = apps.app_settings(config, "watch")
+        key = self._key("watch")
+        if not key:
+            raise IntegrationError("app-no-key", "Save the changedetection.io API key first.")
+        return self._watch_list(settings, key)
+
+    def send_digest_now(self):
+        """Send the owner today's news brief right away, without waiting for the scheduled time."""
+        config = self.store.config()
+        settings = apps.app_settings(config, "news")
+        if not config["notifications"]["enabled"]:
+            raise IntegrationError("notifications-off", "Turn notifications on and save before sending a digest.")
+        items = apps.unread_news(settings, self._key("news"))
+        send_notification(config, self.store.secrets(), apps.DIGEST_NAME,
+                          apps.digest_brief(items, len(items) >= apps.MAX_NEWS_ITEMS))
+        self.store.log("notify", apps.DIGEST_NAME, "sent")
+        shown = min(len(items), apps.MAX_BRIEF_STORIES)
+        if not shown:
+            return "Digest sent: there is no unread news."
+        return f"Digest sent with {shown} {'story' if shown == 1 else 'stories'}."
 
     def _watch_change(self, config, settings, key, action, request):
         if action == "watch-add":
@@ -179,7 +220,7 @@ class AppActions:
         listing = apps.watches(settings, key)
         with self.store.lock:
             state = self.store.watch_state()
-        prices = {uuid: apps.watch_price(settings, key, uuid) for uuid in listing if state.get(uuid, {}).get("below") is not None}
+        prices = {uuid: apps.watch_price(settings, key, uuid) for uuid in apps.prices_to_read(listing, state)}
         notices, kept = apps.page_notices(listing, state, prices)
         with self.store.lock:
             # Portal may have added or removed a watch during the slow look: a watch no look has
@@ -197,21 +238,27 @@ class AppActions:
         news = config["apps"]["news"]
         if event.get("description") == apps.DIGEST_MARKER and news["enabled"] and news["digest"]["enabled"]:
             return {"notified": self._send_digest(config, event)}
-        notice = apps.task_notice(config["notifications"]["scheduledTasks"], event)
+        job = str(event.get("jobId") or event.get("name") or "")
+        was_failing = job in self.failing_tasks
+        if event.get("status") == "error":
+            self.failing_tasks.add(job)
+        elif event.get("status") == "ok":
+            self.failing_tasks.discard(job)
+        notice = apps.task_notice(config["notifications"]["scheduledTasks"], event, was_failing)
         if notice is None:
             return {"notified": False}
         return {"notified": self._tell(config, notice["title"], notice["message"], notice["priority"])}
 
     def _send_digest(self, config, event):
-        """The digest Portal wrote in this run, or the plain list of unread stories when it wrote none."""
+        """The brief Portal wrote in this run, or the plain brief of unread stories when it wrote none."""
         started = (event.get("runAtMs") or 0) / 1000
         summary = str(event.get("summary") or "").strip()
         if event.get("status") == "ok" and summary and self.digest_called_at >= started:
-            text = summary
+            text = apps.fit_notice(summary)
         else:
-            news = config["apps"]["news"]
-            text = apps.digest_text(apps.unread_news(news, self._key("news")))
-        return self._tell(config, apps.DIGEST_NAME, clip(text, 3900))
+            items = apps.unread_news(config["apps"]["news"], self._key("news"))
+            text = apps.digest_brief(items, len(items) >= apps.MAX_NEWS_ITEMS)
+        return self._tell(config, apps.DIGEST_NAME, text)
 
     def _tell(self, config, title, message, priority="default", link=""):
         """Send the owner a notification; a failure is logged, since nobody is waiting for it."""

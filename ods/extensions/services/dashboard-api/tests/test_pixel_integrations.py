@@ -90,6 +90,17 @@ def test_app_tests_relay_with_the_app_name(client, agent):
     assert client.post('/api/pixel/integrations/test-app', headers=AUTH, json={'app': 'news', 'key': 'x'}).status_code == 400
 
 
+def test_watch_list_and_send_digest_relay_without_fields(client, agent):
+    agent.return_value = {'settings': {'revision': 3}, 'approvals': [], 'activity': [], 'watches': {'watches': [], 'total': 0}}
+    assert client.post('/api/pixel/integrations/watch-list', headers=AUTH, json={}).json()['watches'] == {'watches': [], 'total': 0}
+    agent.assert_awaited_with('POST', '/v1/pixel/integrations/watch-list', payload={}, timeout=140)
+    agent.return_value = {'settings': {'revision': 3}, 'approvals': [], 'activity': [], 'notice': 'Digest sent with 2 stories.'}
+    assert client.post('/api/pixel/integrations/send-digest', headers=AUTH, json={}).json()['notice'] == 'Digest sent with 2 stories.'
+    agent.assert_awaited_with('POST', '/v1/pixel/integrations/send-digest', payload={}, timeout=140)
+    for action in ('watch-list', 'send-digest'):
+        assert client.post(f'/api/pixel/integrations/{action}', headers=AUTH, json={'app': 'news'}).status_code == 400
+
+
 def test_macos_says_integrations_are_not_available_yet(client, agent):
     refusal = json.dumps({'error': 'unsupported', 'message': "Portal integrations aren't available on macOS yet."})
     agent.side_effect = AgentHTTPError(400, 'unsupported', refusal)

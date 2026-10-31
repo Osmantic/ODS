@@ -21,14 +21,17 @@ MAX_APP_BYTES = 4 * 1024 * 1024
 MAX_HITS = 10
 MAX_DOCUMENT_CHARS = 12000
 MAX_NEWS_ITEMS = 40
+MAX_BRIEF_STORIES = 15
 MAX_WATCHES = 100
+# ntfy turns a longer message into a file attachment (4,096 bytes); stay under it.
+MAX_NOTICE_BYTES = 3900
 DIGEST_NAME = "Daily news digest"
 DIGEST_MARKER = "Created by Portal integrations for the daily news digest."
 # Portal reaches plugin tools through tool_call, so the prompt names the exact call.
 DIGEST_PROMPT = ('Use tool_call with id "pixel_ods_mcp" and args {"action": "call", "server": "news", "tool": "digest", '
                  '"arguments": {}}. From its result, write the '
-                 "owner's news digest for today: one short line per story, grouped by topic, keeping each story's link. "
-                 "Do not search the web. Reply with the digest only.")
+                 f"owner's news brief for today: one short line per story, grouped by topic, at most {MAX_BRIEF_STORIES} "
+                 "stories, without links. Do not search the web. Reply with the brief only.")
 # A run that takes longer ends as an error, and the owner gets the plain list of stories instead.
 DIGEST_SECONDS = 600
 # The run may only read the news: with web search at hand the small model wandered off for minutes.
@@ -48,6 +51,16 @@ def plain(value, limit=300):
 
 def count(number, thing):
     return f"{number} {thing}" + ("" if number == 1 else "s")
+
+
+def fit_notice(text, limit=MAX_NOTICE_BYTES):
+    """Text that fits in one ntfy message, cut at a line or word when it is too long."""
+    raw = text.encode()
+    if len(raw) <= limit:
+        return text
+    cut = raw[:limit - 4].decode("utf-8", "ignore")
+    cut = cut[:max(cut.rfind("\n"), cut.rfind(" "))] if max(cut.rfind("\n"), cut.rfind(" ")) > 0 else cut
+    return cut.rstrip() + " …"
 
 
 def app_settings(config, app):
@@ -114,7 +127,8 @@ def documents_search(settings, token, query):
         snippet = plain(hit.get("highlights")) or plain(item.get("content"), 200)
         hits.append({"id": item["id"], "title": str(item.get("title", ""))[:200], "created": str(item.get("created", ""))[:10],
                      "snippet": snippet, "link": f"{settings['url']}/documents/{item['id']}/details"})
-    return {"results": hits, "total": reply.get("count", len(hits))}
+    total = reply.get("count") if isinstance(reply.get("count"), int) else len(hits)
+    return {"results": hits, "total": max(total, len(hits))}
 
 
 def documents_read(settings, token, document_id):
@@ -192,22 +206,41 @@ def photos_search(settings, key, *, query="", place="", after="", before=""):
         reply = _immich(settings, key, "/api/search/metadata", body)
         mode = "details"
     _shape("photos", isinstance(reply, dict) and isinstance((reply.get("assets") or {}).get("items"), list))
+    found = reply["assets"]["items"]
+    # Immich gives the next page's number while more photos match.
+    more = len(found) > MAX_HITS or bool(reply["assets"].get("nextPage"))
     results = []
-    for asset in reply["assets"]["items"][:MAX_HITS]:
+    for asset in found[:MAX_HITS]:
         exif = asset.get("exifInfo") or {}
         where = ", ".join(part for part in (exif.get("city"), exif.get("country")) if part)
         results.append({"id": asset["id"], "file": str(asset.get("originalFileName", ""))[:200],
                         "taken": str(asset.get("localDateTime") or asset.get("fileCreatedAt") or "")[:10], "place": where,
                         "link": f"{settings['url']}/photos/{asset['id']}"})
-    return {"results": results, "mode": mode}
+    return {"results": results, "mode": mode, "more": more}
+
+
+def _machine_learning_runs(settings, key):
+    """Whether Immich can search by what is in a photo right now: one tiny search tells."""
+    try:
+        _immich(settings, key, "/api/search/smart", {"query": "photo", "size": 1})
+    except IntegrationError as error:
+        if error.code != "app-failed":
+            raise
+        return False
+    return True
 
 
 def photos_test(settings, key):
     me = _immich(settings, key, "/api/users/me")
     _shape("photos", isinstance(me, dict) and "name" in me)
-    described = ("turned on; it works while Immich's machine learning runs" if describes_photos(settings, key)
-                 else "off until Immich's machine learning runs")
-    return f"Immich answered as {me['name']}. Searching by what is in a photo is {described}."
+    answered = f"Immich answered as {me['name']}."
+    if not describes_photos(settings, key):
+        return (f"{answered} Searching by place and date works. To also search by what is in a photo, turn on Smart "
+                "Search in Immich under Administration → Settings → Machine Learning.")
+    if not _machine_learning_runs(settings, key):
+        return (f"{answered} Searching by place and date works. Searching by what is in a photo needs Immich's machine "
+                "learning, which is not running. Start Immich's machine-learning service to use it.")
+    return f"{answered} Searching by place, date and what is in a photo works."
 
 
 # ---------------------------------------------------------------- watched pages (changedetection.io)
@@ -263,6 +296,23 @@ def remove_watch(settings, key, uuid):
 
 def watch_test(settings, key):
     return f"changedetection.io answered: {count(len(watches(settings, key)), 'watched page')}."
+
+
+def prices_to_read(listing, state):
+    """The price watches whose price may have moved since the last look.
+
+    changedetection.io marks a watch changed when its price or stock changes, so a price is
+    read only for a watch Portal has not priced yet, or one that changed since the last look.
+    """
+    wanted = []
+    for uuid, watch in listing.items():
+        entry = state.get(uuid) or {}
+        if entry.get("below") is None:
+            continue
+        changed = watch.get("last_changed") if isinstance(watch.get("last_changed"), int) else 0
+        if entry.get("lastPrice") is None or entry.get("lastChanged") is None or changed > entry["lastChanged"]:
+            wanted.append(uuid)
+    return wanted
 
 
 def page_notices(listing, state, prices):
@@ -321,17 +371,36 @@ def unread_news(settings, password, limit=MAX_NEWS_ITEMS):
     return items
 
 
+def by_feed(items):
+    """Stories grouped by feed, feeds in the order their first story came (newest first)."""
+    feeds = {}
+    for item in items:
+        feeds.setdefault(item["feed"] or "News", []).append(item)
+    return feeds
+
+
 def digest_text(items):
-    """A plain digest of unread stories, grouped by feed."""
+    """Unread stories grouped by feed, with links: what Portal reads when asked for the news."""
     if not items:
         return "No unread news."
-    lines, feed = [], None
-    for item in items:
-        if item["feed"] != feed:
-            feed = item["feed"]
-            lines.append(f"\n{feed or 'News'}:")
-        lines.append(f"- {item['title']}" + (f" ({item['link']})" if item["link"] else ""))
-    return "\n".join(lines).strip()
+    return "\n\n".join(f"{feed}:\n" + "\n".join(f"- {item['title']}" + (f" ({item['link']})" if item["link"] else "")
+                                             for item in stories) for feed, stories in by_feed(items).items())
+
+
+def digest_brief(items, capped=False):
+    """The digest for a phone: story titles grouped by feed, at most MAX_BRIEF_STORIES of them.
+
+    capped means FreshRSS had more unread stories than Portal fetched.
+    """
+    if not items:
+        return "No unread news."
+    shown = items[:MAX_BRIEF_STORIES]
+    brief = "\n\n".join(f"{feed}:\n" + "\n".join(f"- {item['title']}" for item in stories)
+                         for feed, stories in by_feed(shown).items())
+    left = len(items) - len(shown)
+    if left:
+        brief += f"\n\n…and {left}{'+' if capped else ''} more in FreshRSS."
+    return fit_notice(brief)
 
 
 def news_test(settings, password):
@@ -352,17 +421,27 @@ def digest_plan(settings):
 
 # ---------------------------------------------------------------- scheduled tasks
 
-def task_notice(mode, event):
-    """The notification for a finished scheduled task, or None. mode is off, failures or all."""
+def task_notice(mode, event, was_failing):
+    """The notification for a finished scheduled task, or None. mode is off, failures or all.
+
+    was_failing means the task's previous run failed too. OpenClaw retries a failed task a few
+    times within minutes, so only the first failure in a row notifies, and the next good run
+    says the task works again.
+    """
     status = event.get("status")
-    if mode == "off" or status not in ("ok", "error") or (mode == "failures" and status != "error"):
+    if mode == "off" or status not in ("ok", "error"):
         return None
     name = str(event.get("name") or "A scheduled task")[:120]
     if status == "error":
+        if was_failing:
+            return None
+        reason = clip(str(event.get("error") or "It stopped with an error."), 1500)
         return {"title": f"Scheduled task failed: {name}", "priority": "high",
-                "message": clip(str(event.get("error") or "It stopped with an error."), 1500)}
-    return {"title": f"Scheduled task done: {name}", "priority": "default",
-            "message": clip(str(event.get("summary") or "It finished."), 1500)}
+                "message": f"{reason}\n\nOpenClaw may try it again. You hear from Portal again when it works."}
+    if mode == "failures" and not was_failing:
+        return None
+    title = f"Scheduled task works again: {name}" if was_failing else f"Scheduled task done: {name}"
+    return {"title": title, "priority": "default", "message": clip(str(event.get("summary") or "It finished."), 1500)}
 
 
 # ---------------------------------------------------------------- settings

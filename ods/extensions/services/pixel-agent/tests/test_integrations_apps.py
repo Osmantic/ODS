@@ -44,6 +44,7 @@ class Fake(http.server.BaseHTTPRequestHandler):
 
 class FakePaperless(Fake):
     key_header, key = "Authorization", "Token doc-token"
+    unseen = 0
     documents = {1: {"title": "Car insurance policy", "created": "2026-03-02T00:00:00Z", "content": "Your car insurance covers glass."},
                  2: {"title": "Lease", "created": "2025-09-01T00:00:00Z", "content": "The deposit is two months of rent."}}
 
@@ -57,7 +58,8 @@ class FakePaperless(Fake):
             hits = [(number, doc) for number, doc in self.documents.items() if words and all(word in doc["content"].lower() for word in words)]
             results = [{"id": number, "title": doc["title"], "created": doc["created"], "content": doc["content"],
                         "__search_hit__": {"highlights": f"Your <span class=\"match\">{words[0]}</span> &amp; more"}} for number, doc in hits]
-            return self.reply({"count": len(results) if words else len(self.documents), "results": results})
+            # unseen stands for matches past the first page, which Paperless counts but does not send.
+            return self.reply({"count": (len(results) + FakePaperless.unseen) if words else len(self.documents), "results": results})
         number = int(url.path.strip("/").split("/")[-1])
         if number not in self.documents:
             return self.reply({"detail": "Not found."}, 404)
@@ -68,6 +70,7 @@ class FakeImmich(Fake):
     key_header, key = "x-api-key", "photo-key"
     smart = False
     smart_fails = False
+    next_page = None
     searches = []
     assets = [{"id": "a1", "originalFileName": "beach.jpg", "localDateTime": "2026-07-04T10:00:00.000Z",
                "exifInfo": {"city": "Lisbon", "country": "Portugal"}},
@@ -98,13 +101,14 @@ class FakeImmich(Fake):
             items = [asset for asset in self.assets
                      if all(body.get(field, asset["exifInfo"][field]) == asset["exifInfo"][field] for field in ("city", "country"))
                      and body.get("takenAfter", "") <= asset["localDateTime"] <= body.get("takenBefore", "9999")]
-        self.reply({"assets": {"items": items, "total": len(items)}})
+        self.reply({"assets": {"items": items, "total": len(items), "nextPage": FakeImmich.next_page}})
 
 
 class FakeChanges(Fake):
     key_header, key = "x-api-key", "watch-key"
     watches = {}
     prices = {}
+    price_reads = []
 
     def do_GET(self):
         if not self.allowed():
@@ -115,6 +119,7 @@ class FakeChanges(Fake):
         if uuid not in self.watches:
             return self.reply({}, 404)
         if self.path.endswith("/history/latest"):  # As changedetection.io 0.60 writes a price watch's snapshot.
+            FakeChanges.price_reads.append(uuid)
             price = self.prices.get(uuid)
             return self.reply(None, text=f"In Stock: True - Price: {float(price)}") if price is not None else self.reply({}, 404)
         return self.reply(self.watches[uuid])
@@ -152,7 +157,8 @@ class FakeReader(Fake):
             return
         if "subscription/list" in self.path:
             return self.reply({"subscriptions": [{"id": "feed/1"}, {"id": "feed/2"}]})
-        self.reply({"items": self.items})
+        wanted = int(urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)["n"][0])
+        self.reply({"items": FakeReader.items[:wanted]})
 
 
 class FakeNtfy(Fake):
@@ -183,8 +189,10 @@ class AppTests(unittest.TestCase):
             self.addCleanup(server.shutdown)
         FakeNtfy.sent.clear()
         FakeImmich.searches.clear()
-        FakeImmich.smart = False
-        FakeChanges.watches, FakeChanges.prices = {}, {}
+        FakeImmich.smart, FakeImmich.next_page = False, None
+        FakeChanges.watches, FakeChanges.prices, FakeChanges.price_reads = {}, {}, []
+        FakePaperless.unseen = 0
+        self.addCleanup(setattr, FakeReader, "items", FakeReader.items)
 
     def url(self, name):
         return f"http://127.0.0.1:{self.servers[name].server_address[1]}"
@@ -290,8 +298,8 @@ class AppTests(unittest.TestCase):
         self.owner("decide", approvalId=waiting["approvalId"], decision="approve")
         added = self.app("watch", "add", url="https://shop.example/page", title="Shop")
         self.assertEqual(added["id"], "w1")
-        self.assertEqual(self.app("watch", "list")["watches"], [{"id": "w1", "title": "Shop", "url": "https://shop.example/page",
-                                                              "lastChanged": 0, "below": None}])
+        self.assertEqual(self.app("watch", "list"), {"watches": [{"id": "w1", "title": "Shop", "url": "https://shop.example/page",
+                                                                  "lastChanged": 0, "below": None, "lastPrice": None}], "total": 1})
         FakeNtfy.sent.clear()
         FakeChanges.watches["w1"]["last_changed"] = 100  # Its first snapshot: only remembered.
         self.service.check_watches()
@@ -399,18 +407,46 @@ class AppTests(unittest.TestCase):
 
     # Scheduled tasks.
     def test_finished_tasks_notify_as_the_owner_chose(self):
-        done = {"name": "Water plants", "status": "ok", "summary": "Reminded you.", "runAtMs": 1}
-        failed = {"name": "Backup", "status": "error", "error": "Disk full", "runAtMs": 1}
-        skipped = {"name": "Backup", "status": "skipped", "runAtMs": 1}
         expected = {"all": [True, True, False], "failures": [False, True, False], "off": [False, False, False]}
         for mode, outcome in expected.items():
             self.save(self.settings(tasks=mode))
+            done = {"jobId": f"plants-{mode}", "name": "Water plants", "status": "ok", "summary": "Reminded you.", "runAtMs": 1}
+            failed = {"jobId": f"backup-{mode}", "name": "Backup", "status": "error", "error": "Disk full", "runAtMs": 1}
+            skipped = {"jobId": f"other-{mode}", "name": "Backup", "status": "skipped", "runAtMs": 1}
             self.assertEqual([self.agent("task-finished", **event)["notified"] for event in (done, failed, skipped)], outcome, mode)
         self.assertEqual(FakeNtfy.sent[:2], [
             {"title": "Scheduled task done: Water plants", "message": "Reminded you.", "priority": "default", "click": None, "actions": None},
-            {"title": "Scheduled task failed: Backup", "message": "Disk full", "priority": "high", "click": None, "actions": None}])
+            {"title": "Scheduled task failed: Backup", "priority": "high", "click": None, "actions": None,
+             "message": "Disk full\n\nOpenClaw may try it again. You hear from Portal again when it works."}])
         self.save(self.settings(tasks="all", notify=False))
-        self.assertFalse(self.agent("task-finished", **done)["notified"])
+        self.assertFalse(self.agent("task-finished", jobId="plants", name="Water plants", status="ok", runAtMs=1)["notified"])
+
+    def test_a_retried_failure_notifies_once_and_its_recovery_once(self):
+        self.save(self.settings(tasks="failures"))
+        failed = {"jobId": "j1", "name": "Backup", "status": "error", "error": "Disk full", "runAtMs": 1}
+        # OpenClaw retries a failed run a few times within minutes.
+        self.assertEqual([self.agent("task-finished", **failed)["notified"] for _ in range(4)], [True, False, False, False])
+        self.assertTrue(self.agent("task-finished", jobId="j1", name="Backup", status="ok", summary="Backed up.", runAtMs=2)["notified"])
+        self.assertFalse(self.agent("task-finished", jobId="j1", name="Backup", status="ok", summary="Backed up.", runAtMs=3)["notified"])
+        self.assertTrue(self.agent("task-finished", **failed)["notified"])  # A new failure after it worked again.
+        self.assertEqual([note["title"] for note in FakeNtfy.sent],
+                         ["Scheduled task failed: Backup", "Scheduled task works again: Backup", "Scheduled task failed: Backup"])
+        # Another task failing at the same time is told on its own.
+        self.assertTrue(self.agent("task-finished", jobId="j2", name="Report", status="error", error="x", runAtMs=1)["notified"])
+        # A skipped run does not end a failure streak.
+        self.agent("task-finished", jobId="j2", name="Report", status="skipped", runAtMs=2)
+        self.assertFalse(self.agent("task-finished", jobId="j2", name="Report", status="error", error="x", runAtMs=3)["notified"])
+
+    def test_task_notice_is_a_pure_choice(self):
+        failed, done = {"name": "T", "status": "error", "error": "e"}, {"name": "T", "status": "ok", "summary": "s"}
+        self.assertEqual(apps.task_notice("all", done, False)["title"], "Scheduled task done: T")
+        self.assertEqual(apps.task_notice("all", done, True)["title"], "Scheduled task works again: T")
+        self.assertIsNone(apps.task_notice("failures", done, False))
+        self.assertIsNone(apps.task_notice("all", failed, True))
+        self.assertIsNone(apps.task_notice("off", failed, False))
+        self.assertIsNone(apps.task_notice("all", {"name": "T", "status": "skipped"}, False))
+        self.assertEqual(apps.task_notice("all", {"status": "error"}, False)["title"], "Scheduled task failed: A scheduled task")
+        self.assertLessEqual(len(apps.task_notice("all", {"name": "T", "status": "error", "error": "x" * 9000}, False)["message"]), 1600)
 
     def test_the_digest_task_sends_portal_s_summary_or_the_plain_list(self):
         self.save(self.settings(digest=True, tasks="off"))
@@ -435,7 +471,8 @@ class AppTests(unittest.TestCase):
         self.save(self.settings())
         notices = {app: self.owner("test-app", app=app)["notice"] for app in apps.APPS}
         self.assertEqual(notices, {"documents": "Paperless-ngx answered: 2 documents.",
-                                   "photos": "Immich answered as Owner. Searching by what is in a photo is off until Immich's machine learning runs.",
+                                   "photos": "Immich answered as Owner. Searching by place and date works. To also search by what is "
+                                             "in a photo, turn on Smart Search in Immich under Administration → Settings → Machine Learning.",
                                    "watch": "changedetection.io answered: 0 watched pages.", "news": "FreshRSS answered: 2 feeds."})
         with self.assertRaisesRegex(service.IntegrationError, "Unknown app"):
             self.owner("test-app", app="mail")
@@ -510,6 +547,155 @@ class AppTests(unittest.TestCase):
         settings["mcp"]["servers"] = [{"id": "news", "name": "News", "kind": "http", "enabled": False, "url": "http://127.0.0.1:9/mcp"}]
         with self.assertRaisesRegex(service.IntegrationError, "belong to the apps"):
             self.save(settings)
+
+    # Many results.
+    def test_many_documents_say_how_many_more_match(self):
+        self.save(self.settings())
+        FakePaperless.unseen = 41
+        found = self.app("documents", "search", query="insurance")
+        self.assertEqual(found["total"], 42)
+        text = self.agent("mcp-call", server="documents", tool="search", arguments={"query": "insurance"})["text"]
+        self.assertIn("Showing 1 of 42 documents. Use more specific words to find the others.", text)
+        FakePaperless.unseen = 0
+        self.assertNotIn("Showing", self.agent("mcp-call", server="documents", tool="search", arguments={"query": "insurance"})["text"])
+
+    def test_many_photos_say_more_match(self):
+        self.save(self.settings())
+        FakeImmich.next_page = "2"
+        self.assertTrue(self.app("photos", "search", place="Lisbon")["more"])
+        self.assertIn("Showing the first 1; more photos match.", self.agent("mcp-call", server="photos", tool="search",
+                                                                           arguments={"place": "Lisbon"})["text"])
+        FakeImmich.next_page = None
+        self.assertFalse(self.app("photos", "search", place="Lisbon")["more"])
+        many = [{**FakeImmich.assets[0], "id": f"p{number}"} for number in range(apps.MAX_HITS + 3)]
+        original = FakeImmich.assets
+        FakeImmich.assets = many
+        self.addCleanup(setattr, FakeImmich, "assets", original)
+        found = self.app("photos", "search", place="Lisbon")
+        self.assertEqual((len(found["results"]), found["more"]), (apps.MAX_HITS, True))
+
+    def test_many_watches_say_how_many_are_shown(self):
+        self.save(self.settings())
+        FakeChanges.watches = {f"w{n}": {"url": f"https://shop.example/{n}", "title": f"Item {n}", "last_changed": 0}
+                               for n in range(apps.MAX_WATCHES + 5)}
+        listed = self.app("watch", "list")
+        self.assertEqual((len(listed["watches"]), listed["total"]), (apps.MAX_WATCHES, apps.MAX_WATCHES + 5))
+        self.assertIn(f"Showing {apps.MAX_WATCHES} of {apps.MAX_WATCHES + 5} watched pages.",
+                      self.agent("mcp-call", server="watch", tool="list", arguments={})["text"])
+
+    # Immich's test explains search by what is in a photo.
+    def test_the_immich_test_says_what_searches_work(self):
+        self.save(self.settings())
+        FakeImmich.smart = True
+        self.assertEqual(self.owner("test-app", app="photos")["notice"],
+                         "Immich answered as Owner. Searching by place, date and what is in a photo works.")
+        FakeImmich.smart_fails = True
+        self.addCleanup(setattr, FakeImmich, "smart_fails", False)
+        self.assertEqual(self.owner("test-app", app="photos")["notice"],
+                         "Immich answered as Owner. Searching by place and date works. Searching by what is in a photo needs "
+                         "Immich's machine learning, which is not running. Start Immich's machine-learning service to use it.")
+
+    def test_an_app_can_be_tested_before_it_is_turned_on(self):
+        self.save(self.settings(enabled=False))
+        self.assertEqual(self.owner("test-app", app="news")["notice"], "FreshRSS answered: 2 feeds.")
+        self.assertEqual(self.agent("mcp-tools")["servers"], [])  # Still off for Portal.
+
+    # The digest as a brief.
+    def stories(self, number, feeds=("Weather", "City")):
+        return [{"title": f"Story {n}", "canonical": [{"href": f"https://news.example/{n}"}],
+                 "origin": {"title": feeds[n % len(feeds)]}, "summary": {"content": ""}} for n in range(number)]
+
+    def test_the_brief_groups_feeds_and_says_how_many_more(self):
+        items = [{"feed": feed, "title": title, "link": "https://x", "summary": ""}
+                 for feed, title in (("A", "a1"), ("B", "b1"), ("A", "a2"), ("", "n1"))]
+        self.assertEqual(apps.digest_brief(items), "A:\n- a1\n- a2\n\nB:\n- b1\n\nNews:\n- n1")
+        self.assertEqual(apps.digest_text(items[:3]), "A:\n- a1 (https://x)\n- a2 (https://x)\n\nB:\n- b1 (https://x)")
+        many = [{**items[0], "title": f"t{n}"} for n in range(20)]
+        brief = apps.digest_brief(many)
+        self.assertEqual(brief.count("\n- "), apps.MAX_BRIEF_STORIES)
+        self.assertTrue(brief.endswith("\n\n…and 5 more in FreshRSS."))
+        self.assertTrue(apps.digest_brief(many * 2, capped=True).endswith("…and 25+ more in FreshRSS."))
+        self.assertEqual(apps.digest_brief([]), "No unread news.")
+
+    def test_a_long_brief_fits_one_ntfy_message(self):
+        items = [{"feed": "Ünïcödé feed", "title": "é" * 300 + f" {n}", "link": "", "summary": ""} for n in range(15)]
+        brief = apps.digest_brief(items)
+        self.assertLessEqual(len(brief.encode()), apps.MAX_NOTICE_BYTES)
+        self.assertTrue(brief.endswith(" …"))
+        self.assertEqual(apps.fit_notice("short"), "short")
+        self.assertLessEqual(len(apps.fit_notice("x" * 10000).encode()), apps.MAX_NOTICE_BYTES)  # No space to cut at.
+
+    def test_the_scheduled_digest_sends_a_brief(self):
+        FakeReader.items = self.stories(apps.MAX_NEWS_ITEMS)
+        self.save(self.settings(digest=True, tasks="off"))
+        self.agent("task-finished", jobId="d", name="Daily news digest", description=apps.DIGEST_MARKER, status="error", error="slow", runAtMs=1)
+        message = FakeNtfy.sent[-1]["message"]
+        self.assertEqual(message.count("\n- "), apps.MAX_BRIEF_STORIES)
+        self.assertEqual((message.count("Weather:"), message.count("City:")), (1, 1))  # Grouped, though the stories alternate.
+        self.assertTrue(message.endswith("…and 25+ more in FreshRSS."))
+        self.assertNotIn("https://", message)
+        self.app("news", "digest")
+        self.agent("task-finished", jobId="d", name="Daily news digest", description=apps.DIGEST_MARKER, status="ok",
+                   summary="Big news. " * 1000, runAtMs=1)
+        self.assertLessEqual(len(FakeNtfy.sent[-1]["message"].encode()), apps.MAX_NOTICE_BYTES)
+        self.assertIn("at most 15 stories, without links", apps.DIGEST_PROMPT)
+
+    def test_a_digest_can_be_sent_now(self):
+        self.save(self.settings())
+        self.assertEqual(self.owner("send-digest")["notice"], "Digest sent with 2 stories.")
+        self.assertEqual((FakeNtfy.sent[-1]["title"], FakeNtfy.sent[-1]["message"]),
+                         ("Daily news digest", "Weather:\n- Rain & wind tomorrow\n\nCity:\n- New library opens"))
+        FakeReader.items = []
+        self.assertEqual(self.owner("send-digest")["notice"], "Digest sent: there is no unread news.")
+        FakeReader.items = self.stories(1)
+        self.assertEqual(self.owner("send-digest")["notice"], "Digest sent with 1 story.")
+        self.save(self.settings(notify=False))
+        with self.assertRaisesRegex(service.IntegrationError, "Turn notifications on"):
+            self.owner("send-digest")
+        self.save(self.settings(enabled=False))
+        with self.assertRaisesRegex(service.IntegrationError, "FreshRSS is not set up"):
+            self.owner("send-digest")
+        with self.assertRaisesRegex(service.IntegrationError, "Only the owner"):
+            self.agent("send-digest")
+
+    # Watched pages in Settings, and fewer price reads.
+    def test_settings_lists_the_watches_with_their_last_price(self):
+        self.save(self.settings(changes="allow"))
+        self.app("watch", "add", url="https://shop.example/kettle", title="Kettle", below=50)
+        self.app("watch", "add", url="https://shop.example/hours", title="Hours")
+        FakeChanges.prices["w1"] = 55
+        self.service.check_watches()
+        listed = self.owner("watch-list")["watches"]
+        self.assertEqual([(w["title"], w["below"], w["lastPrice"]) for w in listed["watches"]], [("Kettle", 50.0, 55.0), ("Hours", None, None)])
+        self.assertIn("(notifies when the price is at or under 50; last seen at 55)",
+                      self.agent("mcp-call", server="watch", tool="list", arguments={})["text"])
+        self.save(self.settings(), secrets={"apps": {"watch": ""}})
+        with self.assertRaisesRegex(service.IntegrationError, "Save the changedetection.io API key first"):
+            self.owner("watch-list")
+        self.save(self.settings(enabled=False))
+        with self.assertRaisesRegex(service.IntegrationError, "changedetection.io is not set up"):
+            self.owner("watch-list")
+
+    def test_a_price_is_read_only_when_the_watch_changed(self):
+        self.save(self.settings(changes="allow"))
+        self.app("watch", "add", url="https://shop.example/kettle", title="Kettle", below=50)
+        self.service.check_watches()  # No snapshot yet: read, nothing found.
+        FakeChanges.prices["w1"] = 60
+        self.service.check_watches()  # Still no price known: read again.
+        self.service.check_watches()  # Priced and unchanged: not read.
+        FakeChanges.watches["w1"]["last_changed"] = 50
+        FakeChanges.prices["w1"] = 40
+        self.service.check_watches()  # Changed: read, and notifies.
+        self.service.check_watches()
+        self.assertEqual(FakeChanges.price_reads, ["w1", "w1", "w1"])
+        self.assertEqual([note["title"] for note in FakeNtfy.sent], ["Price drop: Kettle"])
+
+    def test_prices_to_read_is_a_pure_choice(self):
+        listing = {"page": {"last_changed": 9}, "new": {"last_changed": 0}, "same": {"last_changed": 5}, "moved": {"last_changed": 7}}
+        state = {"page": {"below": None, "lastChanged": 1}, "new": {"below": 5.0, "lastChanged": None, "lastPrice": None},
+                 "same": {"below": 5.0, "lastChanged": 5, "lastPrice": 6.0}, "moved": {"below": 5.0, "lastChanged": 5, "lastPrice": 6.0}}
+        self.assertEqual(apps.prices_to_read(listing, state), ["new", "moved"])
+        self.assertEqual(apps.prices_to_read(listing, {}), [])
 
 
 if __name__ == "__main__":

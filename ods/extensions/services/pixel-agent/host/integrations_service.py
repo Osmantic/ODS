@@ -42,7 +42,8 @@ POLICIES = ("off", "ask", "allow")
 SERVER_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 TOPIC = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
-OWNER_ACTIONS = {"get", "save", "test-notification", "discover", "test", "test-app", "restart", "decide", "clear-activity"}
+OWNER_ACTIONS = {"get", "save", "test-notification", "discover", "test", "test-app", "watch-list", "send-digest", "restart",
+                 "decide", "clear-activity"}
 TASK_MODES = ("off", "failures", "all")
 WATCH_SECONDS = 120
 OWNER_SOCKET = "owner.sock"
@@ -165,6 +166,7 @@ class Integrations(AppActions):
         self.store = store
         self.local = local_servers or LocalServers()
         self.digest_called_at = 0  # When Portal last asked for the news digest, to tell its runs apart.
+        self.failing_tasks = set()  # Scheduled tasks whose last run failed, so a retry does not notify again.
 
     def handle(self, role, request):
         """role is "owner" or "agent", set by the socket the request came in on."""
@@ -195,6 +197,10 @@ class Integrations(AppActions):
             return {**self.view(), "notice": self.test(request.get("serverId"))}
         elif action == "test-app":
             return {**self.view(), "notice": self.test_app(request.get("app"))}
+        elif action == "watch-list":
+            return {**self.view(), "watches": self.watch_overview()}
+        elif action == "send-digest":
+            return {**self.view(), "notice": self.send_digest_now()}
         elif action == "restart":
             server = self._server(self.store.config(), request.get("serverId"), enabled=False)
             self.local.stop(server["id"], "the owner restarted it")
