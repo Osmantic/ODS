@@ -174,7 +174,7 @@ test('during a response a 131K model keeps twice the aggregate in view', () => {
 const GUARD_LIMIT = Math.floor(131072 * 4 * 0.9);
 const guardEstimate = messages => messages.reduce((sum, m) => sum + (m.role === 'toolResult' ? 2 * textOf(m).length
   : m.role === 'assistant' ? m.content.reduce((chars, b) => chars + (b.type === 'toolCall' ? JSON.stringify(b.arguments ?? {}).length : b.text.length), 0)
-  : m.content.length), 0);
+  : m.role === 'user' ? m.content.length : 256), 0);
 const write = (chars) => ({role: 'assistant', content: [{type: 'toolCall', id: `call-${nextId}`, name: 'write',
   arguments: {path: 'Playground/game/ui.js', content: 'x'.repeat(chars)}}]});
 
@@ -277,6 +277,309 @@ test('the next owner message keeps what the response sent, so its prefix stays b
   history.push({role: 'assistant', content: [{type: 'text', text: 'Done.'}]}, {role: 'user', content: 'continue'});
   const next = wide(history).messages;
   assert.deepEqual(next.slice(0, during.length), during);
+});
+
+// The reviewed recipe this change extends (Osmantic/ODS#8336). The
+// superseded-first order must never make the guard trip sooner than it.
+const PREVIOUS_PROJECTION = '595818ac5da06acc428175a056052561c1a3adf8ef5e8d5d047670d26e07695a';
+const load = (source, names) => vm.runInNewContext(`${helpers}\n${source}\n({${names}})`, {Math, Map, Set, Array, Object, Number, JSON, Boolean});
+const [[, previousDefinition]] = manifest.previousReplacements[PREVIOUS_PROJECTION];
+const {truncateOversizedToolResultsInMessages: previous} = load(previousDefinition, 'truncateOversizedToolResultsInMessages');
+const {liveSupersededReads} = load(definition[1], 'liveSupersededReads');
+const before = (messages, context = 65536, state = {}) => realm(previous(messages, context, MAX, 4 * MAX, state), messages);
+// Synthetic files: every line is 60 characters with its newline, so 100 lines are 5,999.
+const lineText = (file, n) => `${file} line ${n} `.padEnd(59, '.');
+const fileText = (file, start, end) => Array.from({length: end - start + 1}, (_, i) => lineText(file, start + i)).join('\n');
+function tool(history, name, args, text, extra = {}) {
+  history.push({role: 'assistant', content: [{type: 'toolCall', id: `call-${nextId}`, name, arguments: args}]});
+  history.push({role: 'toolResult', toolCallId: `call-${nextId++}`, toolName: name, timestamp: 1000 + nextId,
+    content: [{type: 'text', text}], ...extra});
+  return history;
+}
+const readLines = (history, file, start, end) => tool(history, 'read', {path: file, offset: start, limit: end - start + 1}, fileText(file, start, end));
+// An edit that replaces line 50 of the file by default.
+const edited = (history, file, oldText = lineText(file, 50)) => tool(history, 'edit', {path: file, edits: [{oldText, newText: 'new'}]},
+  `Successfully replaced 1 block(s) in ${file}.`);
+const superseded = (history) => Object.fromEntries(liveSupersededReads(history, MAX));
+const whole = (messages) => messages.filter((m) => m.role === 'toolResult').map((m) => !/truncated; rerun/.test(textOf(m)));
+const owner = () => [{role: 'user', content: 'owner'}];
+
+test('a reduction drops reads the response made again before its fresh reads', () => {
+  // Laptop, 2026-10-30: one response re-read the same parts of ui.js again and
+  // again. Reducing strictly oldest first dropped its other reads and kept the copies.
+  const history = owner();
+  for (const file of ['a.js', 'b.js', 'c.js', 'd.js', 'e.js']) readLines(history, `game/${file}`, 1, 100);
+  for (let i = 0; i < 6; i++) readLines(history, 'game/ui.js', 1, 100);
+  // Eleven 6k reads pass the 64k budget once and are reduced to the 32k watermark.
+  assert.deepEqual(whole(run(history).messages), [false, true, true, true, true, false, false, false, false, false, true]);
+  assert.deepEqual(whole(before(history).messages), [false, false, false, false, false, false, true, true, true, true, true],
+    'the projection this extends dropped every fresh read and kept five copies');
+});
+
+test('a read of a file that a later change replaced goes before fresh reads', () => {
+  const history = owner();
+  for (const file of ['a.js', 'b.js', 'c.js', 'd.js', 'e.js', 'f.js', 'g.js', 'h.js']) readLines(history, `game/${file}`, 1, 100);
+  readLines(history, 'game/ui.js', 1, 100);
+  edited(history, 'game/ui.js');
+  readLines(history, 'game/i.js', 1, 100);
+  readLines(history, 'game/j.js', 1, 100);
+  // a..e are the oldest fresh reads; the stale ui.js read goes first. The
+  // short edit confirmation stays whole.
+  assert.deepEqual(whole(run(history).messages), [false, false, false, false, false, true, true, true, false, true, true, true]);
+  assert.deepEqual(whole(before(history).messages), [false, false, false, false, false, false, true, true, true, true, true, true]);
+});
+
+test('only a change its tool reports as made, of what a read shows, makes the read stale', () => {
+  const patch = '*** Begin Patch\n*** Update File: game/ui.js\n@@\n-old\n+new\n*** End Patch';
+  const shown = lineText('game/ui.js', 50), elsewhere = lineText('game/ui.js', 500);
+  const changes = [
+    ['edit', {path: 'game/ui.js', edits: [{oldText: shown, newText: 'x'}]}, 'Successfully replaced 1 block(s) in game/ui.js.', {}, true],
+    ['edit', {path: 'game/ui.js', oldText: shown, newText: 'x'}, 'Successfully replaced 1 block(s) in game/ui.js.', {}, true],
+    ['edit', {path: 'game/ui.js', edits: [{oldText: elsewhere, newText: 'x'}]}, 'Successfully replaced 1 block(s) in game/ui.js.', {}, false],
+    ['edit', {path: 'game/ui.js', edits: [{oldText: elsewhere, newText: 'x'}, {oldText: shown, newText: 'y'}]}, 'Successfully replaced 2 block(s) in game/ui.js.', {}, true],
+    ['edit', {path: 'game/ui.js', edits: JSON.stringify([{oldText: shown, newText: 'x'}])}, 'Successfully replaced 1 block(s) in game/ui.js.', {}, true],
+    ['edit', {path: 'game/ui.js', edits: JSON.stringify([{oldText: elsewhere, newText: 'x'}])}, 'Successfully replaced 1 block(s) in game/ui.js.', {}, false],
+    ['edit', {path: 'game/ui.js', edits: [{oldText: elsewhere, newText: 'x'}], oldText: shown, newText: 'y'}, 'Successfully replaced 2 block(s) in game/ui.js.', {}, true],
+    ['write', {path: '/workspace/game/ui.js', content: 'x'}, 'Successfully wrote 1 bytes to /workspace/game/ui.js', {}, true],
+    ['apply_patch', {input: patch}, 'Success. Updated the following files:\nM game/ui.js', {}, true],
+    ['apply_patch', {input: patch.replace('Update File: game/ui.js', 'Update File: game/ui.js\n*** Move to: game/view.js')},
+      'Success. Updated the following files:\nM game/view.js', {}, true],
+    ['apply_patch', {input: `${patch}\n*** Delete File: game/ui.js`}, 'Success. Updated the following files:\nD game/ui.js', {}, true],
+    ['apply_patch', {input: patch.replace('*** End Patch', '*** Update File: game/b.js\n@@\n-old\n+new\n*** End Patch')},
+      'Success. Updated the following files:\nM game/b.js', {}, false],
+    ['edit', {path: 'game/ui.js', edits: [{oldText: shown, newText: 'x'}]}, '{"status": "error", "tool": "edit", "error": "Could not find edits[0]"}', {isError: true}, false],
+    ['edit', {path: 'game/ui.js', edits: [{oldText: shown, newText: 'x'}]}, 'Tool call blocked because before_tool_call hook failed', {}, false],
+    ['write', {path: 'game/ui.js', content: 'x'}, 'Successfully wrote 1 bytes to game/ui.js', {isError: true}, false],
+    ['edit', {path: 'game/other.js', edits: [{oldText: shown, newText: 'x'}]}, 'Successfully replaced 1 block(s) in game/other.js.', {}, false],
+    ['exec', {command: "sed -i 's/old/new/' game/ui.js"}, '', {}, false],
+  ];
+  for (const [name, args, text, extra, stale] of changes) {
+    const history = readLines(owner(), 'game/ui.js', 1, 100);
+    tool(history, name, args, text, extra);
+    assert.deepEqual(superseded(history), stale ? {2: 4} : {}, `${name}: ${text.slice(0, 40)}`);
+  }
+});
+
+test('an edit sent as a JSON string projects as the parsed edit the attempt saw', () => {
+  // Review of this change: the edit tool parses a JSON-string edits in the
+  // attempt's own copy while the session file keeps the string, so the next
+  // turn must reach the same reductions from either form.
+  const build = (edits) => {
+    const history = owner();
+    for (const file of ['a.js', 'b.js', 'c.js', 'd.js', 'e.js', 'f.js', 'g.js', 'h.js']) readLines(history, `game/${file}`, 1, 100);
+    readLines(history, 'game/ui.js', 1, 100);
+    tool(history, 'edit', {path: 'game/ui.js', edits}, 'Successfully replaced 1 block(s) in game/ui.js.');
+    for (const file of ['i.js', 'j.js']) readLines(history, `game/${file}`, 1, 100);
+    return history;
+  };
+  const results = (messages) => messages.filter((m) => m.role === 'toolResult').map(textOf);
+  for (const line of [500, 50]) {
+    const edits = [{oldText: lineText('game/ui.js', line), newText: 'x'}];
+    const attempt = build(edits), reloaded = build(JSON.stringify(edits));
+    assert.deepEqual(superseded(reloaded), superseded(attempt), `line ${line}`);
+    assert.deepEqual(results(run(reloaded).messages), results(run(attempt).messages), `line ${line}`);
+  }
+});
+
+test('a later read supersedes an earlier one only when it shows that text again', () => {
+  const pair = (first, second, secondText) => {
+    const history = readLines(owner(), 'game/ui.js', ...first);
+    if (secondText === undefined) return superseded(readLines(history, 'game/ui.js', ...second));
+    return superseded(tool(history, 'read', {path: 'game/ui.js', offset: second[0], limit: second[1] - second[0] + 1}, secondText));
+  };
+  assert.deepEqual(pair([1, 100], [1, 100]), {2: 4});
+  assert.deepEqual(pair([101, 200], [1, 300]), {2: 4}, 'a wider range');
+  assert.deepEqual(pair([1, 300], [101, 200]), {}, 'a narrower range');
+  assert.deepEqual(pair([101, 200], [150, 300]), {}, 'an overlapping range');
+  assert.deepEqual(pair([1, 100], [1, 100], fileText('game/ui.js', 1, 100).replace('line 50 ', 'line 50 changed ')), {},
+    'the file changed in a way the transcript does not show');
+  // A later read cut at the per-result cap shows only its first 16k characters.
+  assert.deepEqual(pair([101, 200], [1, 1000]), {2: 4});
+  assert.deepEqual(pair([501, 600], [1, 1000]), {}, 'lines past the cap are not shown again');
+  // The read tool's closing line after a partial read is not content.
+  const partial = (start, end) => `${fileText('game/ui.js', start, end)}\n\n[${2000 - end} more lines in file. Use offset=${end + 1} to continue.]`;
+  const history = tool(owner(), 'read', {path: 'game/ui.js', offset: 1, limit: 100}, partial(1, 100));
+  tool(history, 'read', {path: 'game/ui.js', offset: 1, limit: 200}, partial(1, 200));
+  tool(history, 'read', {path: 'game/ui.js', offset: 1}, `${fileText('game/ui.js', 1, 200)}\n\n[Showing lines 1-200 of 2000 (50.0KB limit). Use offset=201 to continue.]`);
+  assert.deepEqual(superseded(history), {2: 4, 4: 6});
+  // The same text read from other lines (a repeated block) is not the same read.
+  const block = fileText('game/ui.js', 1, 100);
+  for (const [name, first, second] of [
+    ['read', {path: 'game/ui.js', offset: 501, limit: 100}, {path: 'game/ui.js', offset: 1, limit: 100}],
+    ['exec', {command: 'sed -n 501,600p game/ui.js'}, {command: 'sed -n 1,100p game/ui.js'}],
+  ]) assert.deepEqual(superseded(tool(tool(owner(), name, first, block), name, second, block)), {}, name);
+  // A result marked as an error never supersedes, whatever it printed.
+  const failed = readLines(owner(), 'game/ui.js', 1, 100);
+  tool(failed, 'read', {path: 'game/ui.js', offset: 1, limit: 100}, fileText('game/ui.js', 1, 100), {isError: true});
+  assert.deepEqual(superseded(failed), {});
+});
+
+test('plain sed -n and cat reads in exec name the same file as the read tool', () => {
+  const text = fileText('Playground/game/ui.js', 1, 100);
+  // [tool, arguments, reads the whole file]
+  const same = [
+    ['read', {path: '/workspace/Playground/game/ui.js', offset: 1, limit: 100}, false],
+    ['read', {path: 'Playground/x/../game/./ui.js', offset: 1, limit: 100}, false],
+    ['exec', {command: 'cd /workspace/Playground/game && sed -n 1,100p ui.js'}, false],
+    ['exec', {command: "cd /workspace/Playground/game; sed -n '1,100p' ui.js"}, false],
+    ['exec', {command: 'sed -n "1,100p" Playground/game/ui.js'}, false],
+    ['exec', {command: 'sed -n 1,100p ui.js', workdir: 'Playground/game'}, false],
+    ['exec', {command: "cd game && sed -n '1,$p' ui.js", workdir: '/workspace/Playground'}, true],
+    ['exec', {command: 'cat Playground/game/ui.js'}, true],
+    ['exec', {command: "cd '/workspace/Playground/game' && cat ui.js"}, true],
+  ];
+  for (const [name, args, wholeFile] of same) {
+    const history = tool(readLines(owner(), 'Playground/game/ui.js', 1, 100), name, args, text);
+    assert.deepEqual(superseded(history), {2: 4}, JSON.stringify(args));
+    // The other way round, lines 1-100 supersede it only when it read no more.
+    const reverse = readLines(tool(owner(), name, args, text), 'Playground/game/ui.js', 1, 100);
+    assert.deepEqual(superseded(reverse), wholeFile ? {} : {2: 4}, `${JSON.stringify(args)}, then the read tool`);
+  }
+  // A numbered listing piped to sed -n is a read in its own format.
+  const numbered = (start, end) => fileText('Playground/game/ui.js', start, end).split('\n').map((line, i) => `${start + i}:${line}`).join('\n');
+  const listing = tool(owner(), 'exec', {command: `cd /workspace/Playground/game && grep -n "" ui.js | sed -n '1,100p'`}, numbered(1, 100));
+  tool(listing, 'exec', {command: `cd /workspace/Playground/game && nl -ba ui.js | sed -n '1,300p'`}, numbered(1, 300));
+  tool(listing, 'exec', {command: `cat -n Playground/game/ui.js | sed -n 1,300p`}, numbered(1, 300));
+  assert.deepEqual(superseded(listing), {2: 4, 4: 6});
+  assert.deepEqual(superseded(tool(readLines(owner(), 'Playground/game/ui.js', 1, 100), 'exec',
+    {command: `grep -n '' Playground/game/ui.js | sed -n '1,100p'`}, numbered(1, 100))), {}, 'numbered lines do not show the plain text');
+  const other = [
+    {command: 'cd /workspace/Playground/game && sed -n 1,100p ui.js; echo done'},
+    {command: 'sed -n 1,100p Playground/game/ui.js | head -100'},
+    {command: 'cat Playground/game/ui.js Playground/game/b.js'},
+    {command: 'cat Playground/game/*.js'},
+    {command: "sed -n '1,100p;200,300p' Playground/game/ui.js"},
+    {command: 'sed -n 1,100p $FILE'},
+    {command: 'sed -n 1,$p Playground/game/ui.js'},
+    {command: 'cd /tmp && sed -n 1,100p ui.js'},
+    {command: 'cd ~ && sed -n 1,100p ui.js'},
+    {command: 'cd /workspace/Playground; cd game && sed -n 1,100p ui.js'},
+    {command: 'sed -n 1,100p ../../ui.js'},
+    {command: 'sed -n 1,100p ui.js', workdir: '/tmp'},
+    {command: 'sed -n 1,100p\nui.js'},
+  ];
+  for (const args of other) {
+    assert.deepEqual(superseded(tool(tool(owner(), 'exec', args, text), 'exec', args, text)), {}, JSON.stringify(args));
+  }
+  for (const path of ['~/ui.js', '/etc/ui.js', '..\\ui.js', '']) {
+    const args = {path, offset: 1, limit: 100};
+    assert.deepEqual(superseded(tool(tool(owner(), 'read', args, text), 'read', args, text)), {}, path);
+  }
+});
+
+test('the newest batch stays whole even when it reads one range twice', () => {
+  const history = owner();
+  for (const file of ['a.js', 'b.js', 'c.js', 'd.js', 'e.js', 'f.js', 'g.js', 'h.js', 'i.js']) readLines(history, `game/${file}`, 1, 100);
+  const calls = [`call-${nextId}`, `call-${nextId + 1}`];
+  history.push({role: 'assistant', content: calls.map((id) => ({type: 'toolCall', id, name: 'read', arguments: {path: 'game/ui.js', offset: 1, limit: 100}}))});
+  for (const id of calls) history.push({role: 'toolResult', toolCallId: id, toolName: 'read', timestamp: 1000 + nextId++, content: [{type: 'text', text: fileText('game/ui.js', 1, 100)}]});
+  assert.deepEqual(superseded(history), {20: 21});
+  assert.deepEqual(whole(run(history).messages).slice(-2), [true, true]);
+});
+
+test('a reduction counts only what superseded a result by its batch, so earlier sends stay byte-stable', () => {
+  // ui.js is read once among other reads and read again only after the reduction.
+  const history = owner();
+  for (const file of ['a.js', 'b.js', 'c.js', 'd.js', 'e.js', 'f.js', 'g.js']) readLines(history, `game/${file}`, 1, 100);
+  readLines(history, 'game/ui.js', 1, 100);
+  for (const file of ['h.js', 'i.js', 'j.js']) readLines(history, `game/${file}`, 1, 100);
+  const sent = run(history).messages;
+  assert.deepEqual(whole(sent), [false, false, false, false, false, false, true, true, true, true, true]);
+  readLines(history, 'game/ui.js', 1, 100);
+  assert.deepEqual(run(history).messages.slice(0, sent.length), sent, 'the earlier copy is now superseded, but the reduction already sent stays');
+  // Over a long response of sliding re-reads, reductions stay as rare as before.
+  const reading = owner();
+  let previousSent = null, rewrites = 0;
+  for (let i = 0; i < 60; i++) {
+    readLines(reading, 'game/ui.js', 1 + (i % 9) * 100, 100 + (i % 9) * 100);
+    const now = run(reading).messages.map((m) => (m.role === 'toolResult' ? textOf(m) : null));
+    if (previousSent && previousSent.some((text, index) => text !== now[index])) rewrites++;
+    previousSent = now;
+  }
+  assert.ok(rewrites >= 7 && rewrites <= 10, `rewrites ${rewrites}`);
+  assert.deepEqual(run(structuredClone(reading)).messages, run(reading).messages, 'a fresh attempt sends the same bytes');
+});
+
+// The guard and the pre-prompt check call the projection without a state; the
+// provider stream passes its attempt's state, and its input can count more
+// than the guard's (convertToLlm sends a compaction summary as user text).
+// The guard measures exactly the projection this extends, so it trips at the
+// same request; the stream sends either that same projection or a view that
+// fits the guard's limit on its own input.
+function assertStreamSafe(guardInput, streamInput, context, label, attempt, reference) {
+  const measured = realm(project(guardInput, context, MAX, 4 * MAX), guardInput).messages;
+  assert.deepEqual(measured, realm(previous(guardInput, context, MAX, 4 * MAX), guardInput).messages, `${label}: the guard measures the same`);
+  const streamed = realm(project(streamInput, context, MAX, 4 * MAX, attempt), streamInput).messages;
+  const expected = before(streamInput, context, reference).messages;
+  const ordered = !isDeepStrictEqual(streamed, expected);
+  assert.ok(!ordered || !attempt.liveOrderDeclined, `${label}: back to the order after declining it`);
+  assert.ok(!ordered || guardEstimate(streamed) <= Math.floor(context * 4 * 0.9), `${label}: ${guardEstimate(streamed)} sent in the order`);
+  return {ordered, tripped: guardEstimate(measured) > Math.floor(context * 4 * 0.9)};
+}
+
+test('the guard measures exactly the projection this extends, and the stream sends that or fits the guard', () => {
+  // A long editing response: it re-reads ui.js in sliding windows, reads other
+  // files once each, edits ui.js now and then, and writes large payloads until
+  // the guard limit is reached.
+  for (const context of [65536, 131072]) {
+    const history = owner();
+    const attempt = {}, reference = {};
+    let ordered = 0, tripped = false;
+    for (let i = 0; i < 400 && !(tripped && attempt.liveOrderDeclined); i++) {
+      readLines(history, 'game/ui.js', 1 + (i % 7) * 120, 120 + (i % 7) * 120);
+      readLines(history, `game/part-${i}.js`, 1, 40);
+      if (i % 9 === 8) edited(history, 'game/ui.js', lineText('game/ui.js', 1 + (i % 7) * 120 + 60));
+      history.push(write(context / 40), result(200));
+      const step = assertStreamSafe(history, history, context, `${context} round ${i}`, attempt, reference);
+      if (step.ordered) ordered++;
+      tripped ||= step.tripped;
+    }
+    assert.ok(ordered > 10 && tripped && attempt.liveOrderDeclined, JSON.stringify({context, ordered, tripped}));
+  }
+});
+
+test('a compaction summary the stream counts in full never lets it send what the guard would stop', () => {
+  // Review of this change: the guard counted a summary as 256 characters while
+  // the stream's input carried it whole, so the stream declined the order and
+  // then sent the base projection at requests where the guard, measuring the
+  // order, did not trip but would have measured that base projection above
+  // its limit.
+  const agent = [{role: 'compactionSummary', summary: 'Earlier work: '.padEnd(30000, 'x'), timestamp: 1}, {role: 'user', content: 'continue'}];
+  const toStream = (messages) => messages.map((m) => (m.role === 'compactionSummary' ? {role: 'user', content: `<summary>\n${m.summary}\n</summary>`} : m));
+  for (let i = 0; i < 2; i++) readLines(agent, 'game/ui.js', 1, 260);
+  for (const file of ['s1.js', 's2.js']) readLines(agent, `game/${file}`, 1, 17);
+  for (let i = 0; i < 2; i++) readLines(agent, 'game/ui.js', 1, 260);
+  const attempt = {}, reference = {};
+  let ordered = 0, tripped = false;
+  for (let k = 0; k < 60 && !tripped; k++) {
+    tool(agent, 'write', {path: `out/f${k}.js`, content: 'w'.repeat(10000)}, `Successfully wrote 10000 bytes to out/f${k}.js`);
+    const step = assertStreamSafe(agent, toStream(agent), 65536, `request ${k}`, attempt, reference);
+    if (step.ordered) ordered++;
+    tripped = step.tripped;
+  }
+  assert.ok(ordered > 3 && tripped && attempt.liveOrderDeclined, JSON.stringify({ordered, tripped}));
+});
+
+test('once an attempt declines the superseded-first order it keeps declining it though its input shrinks', () => {
+  const big = [{role: 'user', content: `owner ${'p'.repeat(232000)}`}];
+  for (const file of ['a.js', 'b.js', 'c.js', 'd.js', 'e.js']) readLines(big, `game/${file}`, 1, 100);
+  for (let i = 0; i < 7; i++) readLines(big, 'game/ui.js', 1, 100);
+  const shrunk = [{role: 'user', content: 'owner'}, ...big.slice(1)];
+  const attempt = {};
+  assert.deepEqual(realm(project(big, 65536, MAX, 4 * MAX, attempt), big).messages, before(big).messages);
+  assert.equal(attempt.liveOrderDeclined, true);
+  assert.deepEqual(realm(project(shrunk, 65536, MAX, 4 * MAX, attempt), shrunk).messages, before(shrunk).messages);
+  // A new attempt decides afresh.
+  assert.notDeepEqual(run(shrunk).messages, before(shrunk).messages);
+});
+
+test('a transcript that ends with a final reply is measured exactly as before', () => {
+  const history = owner();
+  for (const file of ['a.js', 'b.js', 'c.js', 'd.js', 'e.js']) readLines(history, `game/${file}`, 1, 100);
+  for (let i = 0; i < 30; i++) readLines(history, 'game/ui.js', 1 + (i % 3) * 100, 100 + (i % 3) * 100);
+  assert.notDeepEqual(wide(history).messages, before(history, 131072).messages);
+  history.push({role: 'assistant', content: [{type: 'text', text: 'Done: the cache is in place.'}]});
+  for (const context of [65536, 131072]) assert.deepEqual(realm(project(history, context, MAX, 4 * MAX, {}), history).messages, before(history, context).messages);
 });
 
 test('repair is selected by Linux/WSL installation, foreign restore and native macOS composition', () => {

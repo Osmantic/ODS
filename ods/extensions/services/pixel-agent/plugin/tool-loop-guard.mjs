@@ -37,7 +37,7 @@ import { assistantMessageText, changedFilesNote, composeProgressFinalization, co
   PREVIEW_CHECK_FINALIZATION_INSTRUCTION, PROGRESS_FINALIZATION_INSTRUCTION, progressFinalizationHead,
   unverifiedLinksNote } from "./progress-finalization.mjs";
 import { STOP_SYNTHESIS_LIMITS, STOP_SYNTHESIS_NOTE, synthesisAnswer, synthesisRequest } from "./stop-synthesis.mjs";
-import { createRunDeadline, runDeadlineReached, runDeadlineStopText, takeRunDeadlineNotice } from "./run-deadline.mjs";
+import { createRunDeadline, responseDeadlineDelay, runDeadlineReached, runDeadlineStopText, takeRunDeadlineNotice } from "./run-deadline.mjs";
 import { outputLimitContext, outputLimitCut, outputLimitNotice, outputLimitStopText } from "./output-limit.mjs";
 import { OWNER_VISIBLE_REPLY_INSTRUCTION, OWNER_VISIBLE_REPLY_REASON, ownerInteractiveTurn, silentReplyText } from "./owner-visible-reply.mjs";
 import { leakedExecGuidance, execGuidanceRevisionInstruction, EXEC_GUIDANCE_LEAK_REASON, EXEC_GUIDANCE_LEAK_DELIVERY } from "./exec-guidance-provenance.mjs";
@@ -612,6 +612,13 @@ const EVIDENCE_REPORT_TOOL = "pixel_ods_evidence_report";
 const EVIDENCE_READBACK_TOOL = "pixel_ods_evidence_readback";
 const WORKSPACE_PREVIEW_TOOL = "pixel_ods_workspace_preview";
 const MAX_TRACKED_RUNS = 256;
+// How long a model call must have run before the guard's deadline stop may
+// abort it: past its stream setup (responseDeadlineDue).
+const RESPONSE_STREAM_STARTED_MS = 3000;
+// The longest delay a Node timer holds; a longer one fires at once.
+const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
+// The refusal of a tool call made after the response's deadline.
+const RESPONSE_DEADLINE_TOOL_REASON = 'Portal stopped this response at its time limit before this call ran.';
 const MAX_SESSION_DOWNLOAD_JOBS = 32;
 const MAX_PENDING_EXEC_SESSIONS = 64;
 const ODS_OPENAI_USER = /^ods-[0-9a-f]{64}$/;
@@ -4962,6 +4969,177 @@ export function textRequestsPrivateUrlAccess(text) {
   );
 }
 
+// The output a call that ran keeps when the run-progress budget has stopped
+// the response (toolResultPersist): an excerpt, the notes bound to that
+// output, then the stop text. The whole result stays within the agent's
+// per-result cap less 100 (STOPPED_RESULT_TEXT_LIMIT at the 4,000 floor ODS
+// installs, also used when the cap is unknown), so neither OpenClaw's persist
+// cap nor the next request's projection cuts it. Over the cap, every text
+// block keeps only its share: the instruction would lose its middle and end in
+// "rerun with narrower args if needed".
+export const STOPPED_RESULT_TEXT_LIMIT = 4000 - 100;
+// The failed results of one stopped batch (the parallel calls of the round
+// that hit the limit) share STOPPED_BATCH_EXCERPT_CHARS, and its other results
+// share STOPPED_SUCCESS_EXCERPT_CHARS, so a batch of any size adds about as
+// much to the next request as one result: more would reduce earlier results of
+// a long response to notices where the stop text alone does not.
+export const STOPPED_BATCH_EXCERPT_CHARS = 2400;
+export const STOPPED_SUCCESS_EXCERPT_CHARS = 600;
+// A cut excerpt shorter than this says too little to be worth its space.
+const STOPPED_EXCERPT_MIN_CHARS = 200;
+// Kept per call until its result is persisted: a text of up to CAPTURE_WHOLE
+// characters whole, a longer one as its first CAPTURE_HEAD and last
+// CAPTURE_TAIL characters, which hold any excerpt (at most
+// STOPPED_BATCH_EXCERPT_CHARS: a third head, two thirds tail).
+const CAPTURE_WHOLE = 3000;
+const CAPTURE_HEAD = 1000;
+const CAPTURE_TAIL = 2000;
+// OpenClaw 2026.6.33 hands after_tool_call each top-level text block cut to
+// 8,000 characters with this suffix (embedded-agent-subscribe.tools
+// truncateToolText); details are not cut.
+const LIVE_RESULT_TRUNCATION_MARK = "\n…(truncated)…";
+// The suffix OpenClaw's persist cap gives a block it cut (tool-result-truncation
+// formatContextLimitTruncationNotice).
+const PERSIST_CAP_CUT = /\[\.\.\. \d+ more characters truncated; rerun with narrower args if needed\]$/;
+// The refusals OpenClaw turns into an error rather than a veto receipt: a
+// before_tool_call hook that failed, an approval that was not given
+// (agent-tools.before-tool-call). The call never ran.
+const HOOK_REFUSALS = new Set([
+  "Tool call blocked because before_tool_call hook failed", "Plugin approval request failed",
+  "Plugin approval unavailable (no approval route)", "Plugin approval required (gateway unavailable)",
+  "Plugin approval required", "Denied by user", "Approval timed out", "Approval cancelled (run aborted)",
+]);
+
+// A copy that does not keep the string it was cut from alive: in V8 a slice,
+// a template of slices and a join with an empty part all reference their
+// source, which for a long output stays in memory with every pending call.
+// A join of two non-empty parts copies.
+const flat = text => text.length > 1 ? [text.slice(0, 1), text.slice(1)].join("") : text;
+
+// An excerpt source for a text known whole.
+function outputSource(text) {
+  return text.length <= CAPTURE_WHOLE ? {text: flat(text)}
+    : {head: flat(text.slice(0, CAPTURE_HEAD)), tail: flat(text.slice(-CAPTURE_TAIL)), length: text.length};
+}
+
+// At most `limit` characters of a source (a text, or what outputSource and
+// executedOutputSource keep): the head and, at twice its length, the tail,
+// where an error usually is, around a marker that says only what was left
+// out. A source whose length is unknown is cut at a gap of unknown size:
+// before its known end, or, without one, after its start. Cuts prefer line
+// breaks and never split a UTF-16 surrogate pair.
+export function stoppedOutputExcerpt(source, limit = STOPPED_BATCH_EXCERPT_CHARS) {
+  const from = typeof source === "string" ? outputSource(source) : source ?? {};
+  const max = Math.min(limit, STOPPED_BATCH_EXCERPT_CHARS);
+  if (typeof from.text === "string" && from.text.length <= max) return from.text;
+  const head = from.text ?? from.head ?? "";
+  const tail = from.text ?? from.tail ?? "";
+  const length = from.text?.length ?? from.length;
+  const known = Number.isSafeInteger(length);
+  const marker = omitted => known ? `\n[... ${omitted} characters of this output omitted ...]\n`
+    : tail ? "\n[... part of this output omitted ...]\n" : "\n[... the rest of this output omitted ...]";
+  const room = max - marker(known ? length : 0).length;
+  if (room <= 0) return "";
+  let headEnd = Math.min(head.length, tail ? Math.floor(room / 3) : room);
+  const headBreak = head.lastIndexOf("\n", headEnd);
+  if (headBreak > headEnd * 0.8) headEnd = headBreak;
+  if (headEnd > 0 && head.charCodeAt(headEnd - 1) >= 0xD800 && head.charCodeAt(headEnd - 1) <= 0xDBFF) headEnd -= 1;
+  let tailStart = tail ? Math.max(0, tail.length - (room - Math.min(head.length, Math.floor(room / 3)))) : 0;
+  const tailBreak = tail.indexOf("\n", tailStart);
+  if (tailBreak !== -1 && tailBreak < tailStart + (tail.length - tailStart) * 0.2) tailStart = tailBreak + 1;
+  if (tailStart < tail.length && tail.charCodeAt(tailStart) >= 0xDC00 && tail.charCodeAt(tailStart) <= 0xDFFF) tailStart += 1;
+  const kept = tail.length - tailStart;
+  return [head.slice(0, headEnd), marker(known ? length - headEnd - kept : 0), tail.slice(tailStart)].join("");
+}
+
+// OpenClaw's result for a call a before_tool_call hook refused (this guard or
+// another plugin layer): the veto receipt (buildBlockedToolResult), or the
+// error a refusal that is not a veto becomes.
+function refusalReceipt(result) {
+  const details = result?.details && typeof result.details === "object" ? result.details : {};
+  if (details.status === "blocked" && (Object.hasOwn(details, "deniedReason") || Object.hasOwn(details, "reason"))) return true;
+  if (details.status === "error" && HOOK_REFUSALS.has(details.error)) return true;
+  const blocks = Array.isArray(result?.content) ? result.content.filter(block => block?.type === "text") : [];
+  return blocks.length === 1 && HOOK_REFUSALS.has(String(blocks[0].text ?? "").trim());
+}
+
+// The selected tool's own result inside this call's Tool Search envelope
+// ({tool: catalog entry, result}), never the envelope with its catalog entry.
+function toolSearchInnerResult(details) {
+  const tool = details && typeof details === "object" ? details.tool : undefined;
+  return tool && typeof tool === "object" && typeof tool.id === "string" && typeof tool.name === "string" &&
+    details.result && typeof details.result === "object" && !Array.isArray(details.result) ? details.result : undefined;
+}
+
+// OpenClaw keeps the reason a command did not complete only in its text
+// (formatExecFailureReason); its details say whether it timed out.
+function execFailureLine(details) {
+  if (details.timedOut === true) return "(Command timed out.)";
+  return Number.isSafeInteger(details.exitCode) ? `(Command failed with exit code ${details.exitCode}.)`
+    : "(Command did not finish.)";
+}
+
+// OpenClaw's process poll text ends with the session's state.
+function processStatusLine(details) {
+  if (details.status === "running") return "Process still running.";
+  if (details.status === "failed" && details.exitCode === 0) return "Process exited with a signal.";
+  return Number.isSafeInteger(details.exitCode) ? `Process exited with code ${details.exitCode}.` : "Process exited.";
+}
+
+// The excerpt source for a result as after_tool_call receives it. Where
+// OpenClaw cut that copy's text, details give the rest only where they hold
+// it: an exec's own output, with its warnings and, for a command that did not
+// complete, its failure; or a process poll's latest output and state (its
+// aggregated is the whole session). Anything else keeps its start.
+function executedOutputSource(result, selectedToolName) {
+  const blocks = Array.isArray(result?.content)
+    ? result.content.filter(block => block?.type === "text" && typeof block.text === "string") : [];
+  const cut = block => block.text.endsWith(LIVE_RESULT_TRUNCATION_MARK);
+  const text = blocks.map(block => cut(block) ? block.text.slice(0, -LIVE_RESULT_TRUNCATION_MARK.length) : block.text).join("\n");
+  if (!blocks.some(cut)) return outputSource(text);
+  const details = result?.details && typeof result.details === "object" && !Array.isArray(result.details) ? result.details : {};
+  const aggregated = typeof details.aggregated === "string" ? details.aggregated : undefined;
+  if (selectedToolName === "exec" && aggregated !== undefined && ["completed", "failed"].includes(details.status)) {
+    const at = aggregated ? text.indexOf(aggregated.slice(0, 200)) : -1;
+    const warnings = at > 0 ? text.slice(0, at) : "";
+    return outputSource(details.status === "completed" ? `${warnings}${aggregated}`
+      : `${warnings}${aggregated}${aggregated ? "\n\n" : ""}${execFailureLine(details)}`);
+  }
+  if (selectedToolName === "process" && aggregated !== undefined && typeof details.sessionId === "string" &&
+      ["completed", "failed", "running"].includes(details.status)) {
+    return {head: flat(text.slice(0, CAPTURE_HEAD)), tail: flat(`${aggregated.slice(-CAPTURE_TAIL)}\n\n${processStatusLine(details)}`)};
+  }
+  return {head: flat(text.slice(0, CAPTURE_WHOLE)), tail: ""};
+}
+
+// The persisted copy's text, which is what the model would have read, unless
+// OpenClaw's persist cap already cut it.
+function persistedOutputSource(content) {
+  const blocks = Array.isArray(content) ? content.filter(block => block?.type === "text" && typeof block.text === "string") : [];
+  if (!blocks.length || blocks.some(block => PERSIST_CAP_CUT.test(block.text))) return undefined;
+  return outputSource(blocks.map(block => block.text).join("\n"));
+}
+
+// The length of a source's text, when known.
+const sourceLength = source => typeof source?.text === "string" ? source.text.length
+  : Number.isSafeInteger(source?.length) ? source.length : Infinity;
+
+// A stopped result's own part: the excerpt in place of its text blocks, and
+// its other blocks (images) where they were.
+function stoppedResultContent(content, excerpt) {
+  const kept = [];
+  let placed = false;
+  for (const block of Array.isArray(content) ? content : []) {
+    if (block?.type !== "text") kept.push(block);
+    else if (!placed) {
+      placed = true;
+      if (excerpt) kept.push({type: "text", text: excerpt});
+    }
+  }
+  if (!placed && excerpt) kept.unshift({type: "text", text: excerpt});
+  return kept;
+}
+
 function messageContentText(content) {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -6542,7 +6720,70 @@ function ownerDeclinesPreviewDelivery(text) {
   return optional;
 }
 
-function ownerForbidsWorkspacePreview(messages, prompt) {
+// The negations the preview prohibition rules read.
+const PREVIEW_NEGATION = /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b/i;
+// A negation that reaches a publishing word in its sentence: "don't show or
+// publish it", "never show me the preview", "do not open a live preview".
+const PUBLISHING_NEGATION =
+  /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:publish|republish|preview|serv(?:e|es|ed|ing)\b|deploy)/i;
+// A negated show, view, open or display, directly ("don't even show it yet"),
+// in a list, or put off ("wait to show it"): not "don't change how the menu
+// opens".
+const SHOW_NEGATION =
+  /\bwait\s+(?:to|before|on)\s+(?:show|view|open|display)(?:ing)?\b|\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:(?:even|yet|actually|really|ever|just|bother(?:\s+to)?|need\s+to|have\s+to|want\s+to|please)\s+)*(?:(?:try|attempt)\s+to\s+)?(?:(?:create|build|edit|write|run|execute)\s*(?:,\s*|and\s+|or\s+))*(?:show|view|open|display)(?:ing)?\b|\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:and|or|nor)\s+(?:show|view|open|display)(?:ing)?\b/i;
+// A request put off until the owner or someone else acts, or to a later time,
+// is not a request now: "check it in the preview later", "publish it after
+// approval". "When you're done" still asks Portal now, and a purpose clause
+// ("... so I can review it tomorrow") puts nothing off. A phrasing this misses
+// only leaves publishing optional.
+const DEFERRED_REQUEST = /\b(?:later|tomorrow|tonight|eventually|someday|at\s+some\s+point|pending|approv\w*|sign(?:s|ed)?[- ]?off|not\s+(?:yet|now|today|until|till|before)|only\s+(?:after|when|if|once)|next\s+(?:time|week|month|turn|round|session|day|morning|weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|(?:on|this|by)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekend)|in\s+the\s+(?:morning|afternoon|evening)|in\s+(?:an?|\d+|a\s+few|two|three)\s+(?:hours?|minutes?|days?|weeks?)|(?:after|before|once|when|whenever|until|till|unless|as\s+soon\s+as)\s+(?:I\b|I['’](?:ve|m|ll|d)\b|we\b|we['’](?:ve|re|ll)\b|my\b|our\b|the\s+(?:client|customer|boss|team)\b|they\b|you\s+hear\b|review\b))/i;
+const PURPOSE_CLAUSE = /\b(?:so\s+(?:that\s+)?(?:I|we)\b|because\b|while\s+(?:I|we)\b)/i;
+// After the request only an explicit hold on it counts, one that names who
+// must act: "Only after I approve, though.", "But not until the client signs
+// off.", "Wait for my go.", "Hold it." A sign-off ("talk later", "I'll look at
+// it tonight") or a test step ("Wait for the attack to finish", "Hold on, one
+// more thing", "after the client connects") does not.
+const OWNER_ACTS = String.raw`(?:I|we|the\s+(?:client|customer|boss|team)|they)\b`;
+const ACTION_DEFERRAL = new RegExp(String.raw`(?:^|[.!?;:,]\s*|\bbut\s+)not\s+(?:yet|now|today)\b|\bnot\s+(?:until|till|before)\s+${OWNER_ACTS}|\bonly\s+(?:after|when|once|if)\s+${OWNER_ACTS}|\bwait\s+(?:for\s+(?:me\b|(?:my|our)\s+(?:go|ok(?:ay)?|approval|word|sign[- ]?off|green\s+light)\b)|until\s+(?:I|we)\b)|\bhold\s+(?:it|off)\b|\b(?:after|until|till|once)\s+(?:${OWNER_ACTS}\s*(?:approves?|signs?|confirms?|okays?|gives?|says?\s+so|reviews?|reviewed)|(?:my\s+|our\s+|the\s+)?(?:approval|sign[- ]?off|go[- ]ahead|review)\b)`, 'i');
+// The owner asks Portal itself to look at the page in the preview, at the start
+// of a sentence or after the repair it asks for: "check it in the preview",
+// "please fix those and check it in the preview", "can you verify it in the
+// preview?". "I'll just check it in the preview myself", a question to the
+// owner and a quoted instruction are not requests.
+const OWNER_CHECKS_IN_PREVIEW = /^\s*(?:(?:ok(?:ay)?|now|then|also|so|and|just|please)[,\s]+)*(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|I\s+(?:want|need)\s+you\s+to\s+)?(?:(?:fix|repair|correct|update|change|edit|patch|adjust|tweak|improve|finish|redo|rewrite|make|build|create|add|remove)\b[^.!?;\n]{0,120}?(?:\s(?:and(?:\s+then)?|then)|,\s*then|,\s*and)\s+(?:please\s+)?(?:also\s+)?)?(?:check|test|verify|inspect|try|look\s+at|see)\b[^.!?;\n]{0,48}\b(?:in|on|with|via|through|using)\s+(?:the|a|your)\s+(?:ODS\s+|workspace\s+|live\s+)?preview\b/i;
+// A publication command; open, show and view also name steps to reproduce a bug.
+const PUBLICATION_DIRECTIVE = /(?:^|\b(?:and(?:\s+then)?|then|now|instead)\s+)\s*(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|I\s+(?:want|need)\s+you\s+to\s+)?(?:try\s+to\s+)?(?:publish|republish|preview|serve)\b/i;
+
+// An explicit request to use the preview outweighs a negated show, open, view
+// or display before it, which is most often a bug report: "...so attacks never
+// show. Please fix those and check it in the preview this time" was refused
+// three times on the laptop (2026-10-30). The request must stand in a sentence
+// with no negation. A negation after the last request is the owner's later
+// word ("... Actually, don't show it yet."), and nothing outweighs a negation
+// that reaches a publishing word, so "don't publish" and "don't show me the
+// preview" always forbid. Without such a request every negation forbids as
+// before. Naming the session's verified project ("Publish log-viewer-lab.") is
+// such a request. An outweighed negation only makes publishing optional (see
+// ownerPreviewStance), so a misread request can never push Portal to publish.
+function ownerRequestOutweighsShowNegation(text, sessionPreview = undefined) {
+  if (PUBLISHING_NEGATION.test(text)) return false;
+  let start = 0, requestEnd = -1;
+  // "e.g." and "i.e." do not end a sentence.
+  for (const boundary of [...text.matchAll(/[!?;\n]+|(?<!\b(?:e\.g|i\.e))\.(?=\s|$)/gi), {index: text.length, 0: ''}]) {
+    const sentence = text.slice(start, boundary.index);
+    if (!PREVIEW_NEGATION.test(sentence) && !DEFERRED_REQUEST.test(sentence.split(PURPOSE_CLAUSE)[0]) && (OWNER_CHECKS_IN_PREVIEW.test(sentence) ||
+      (PUBLICATION_DIRECTIVE.test(sentence) && hasExplicitWorkspacePreviewDirective(sentence)) ||
+      requestsNamedSessionPreview(sentence, sessionPreview))) requestEnd = boundary.index;
+    start = boundary.index + boundary[0].length;
+  }
+  const after = text.slice(requestEnd);
+  return requestEnd >= 0 && !SHOW_NEGATION.test(after) && !ACTION_DEFERRAL.test(after);
+}
+
+// "forbidden": the owner forbids publication. "optional": a negated show the
+// owner's own request outweighs; Portal may publish, but nothing requires,
+// coaches or performs it. "open": no prohibition.
+function ownerPreviewStance(messages, prompt, sessionPreview = undefined) {
   const text = localPreviewPolicyText(currentOwnerIntentText(messages, prompt))
     .replace(/(?:\x60{3}|~{3})[\s\S]*?(?:\x60{3}|~{3})/g, " ")
     .replace(/^\s*>[^\n]*/gm, " ")
@@ -6556,8 +6797,17 @@ function ownerForbidsWorkspacePreview(messages, prompt) {
   const coordinatedProhibition = text
     .split(/[!?;\n]+|\.(?=\s|$)|\b(?:but|however|instead|then)\b/i)
     .some((clause) => !independentEnglishPreviewAfterConstraint(clause) && /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:and|or|nor)\s+(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(clause));
-  if (coordinatedProhibition || ownerDeclinesPreviewDelivery(text)) return true;
-  return portuguesePreviewForbidden(text) || /\b(?:only|just)\s+(?:the\s+)?(?:code|source(?:\s+code)?)\b/i.test(text) || /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:(?:try|attempt)\s+to\s+)?(?:(?:create|build|edit|write|run|execute)\s*(?:,\s*|and\s+|or\s+))*(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(text);
+  if (ownerDeclinesPreviewDelivery(text) || portuguesePreviewForbidden(text) ||
+    /\b(?:only|just)\s+(?:the\s+)?(?:code|source(?:\s+code)?)\b/i.test(text)) return "forbidden";
+  const negatedDelivery = coordinatedProhibition || /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:(?:try|attempt)\s+to\s+)?(?:(?:create|build|edit|write|run|execute)\s*(?:,\s*|and\s+|or\s+))*(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(text);
+  if (!negatedDelivery) return "open";
+  return ownerRequestOutweighsShowNegation(text, sessionPreview) ? "optional" : "forbidden";
+}
+
+// The owner's preview stance for the prompt's guidance, without session
+// evidence: only "open" asks the model for a publication.
+export function userMessagePreviewStance(messages, prompt = undefined) {
+  return ownerPreviewStance(messages, prompt);
 }
 
 function portuguesePreviewForbidden(text) {
@@ -7173,7 +7423,8 @@ export function userMessageRequestsWorkspaceVisualContinuation(
 // retain the ordinary read/edit continuation contract.
 export function userMessageRequestsWorkspaceVerificationContinuation(messages, prompt = undefined) {
   const text = currentOwnerIntentText(messages, prompt).trim();
-  if (!text || freshWorkspaceCreationRequested(text) || ownerForbidsWorkspacePreview([], text)) return false;
+  // An outweighed negation leaves publishing optional, never a contract.
+  if (!text || freshWorkspaceCreationRequested(text) || ownerPreviewStance([], text) !== "open") return false;
   const command = /^(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?)?(?:finish\s+)?(?:verif(?:y|ying)|test(?:ing)?|inspect(?:ing)?|check(?:ing)?)\s+(?:(?:the|this|that|my|our|existing|current|previous|prior|same)\s+)+(?:preview|page|site|website|app|artifact)\b/i.exec(text);
   if (!command) return false;
   // Conditional repairs remain possible after a failed check; they are not a
@@ -7883,6 +8134,9 @@ export function createToolLoopGuard({
   warn = () => {},
   info = () => {},
   now = Date.now,
+  // For the guard's own stop at a response's run deadline (run-deadline.mjs).
+  setTimer = setTimeout,
+  clearTimer = clearTimeout,
   // The owner run a delegated child or announced continuation reports to
   // (subagent-delivery.mjs ownerRunOf), for the shipped example's guard.
   exampleOwnerRun = () => undefined,
@@ -7897,6 +8151,9 @@ export function createToolLoopGuard({
   // Whether Pixel's model is the owner's remote API route, whose output limit
   // the owner sets (Settings → Remote model), for output-limit stop text.
   remoteModelRoute = () => false,
+  // The agent's configured contextLimits.toolResultMaxChars, which a stopped
+  // result must fit (STOPPED_RESULT_TEXT_LIMIT when unknown).
+  toolResultMaxChars = () => undefined,
 } = {}) {
   const effective = normalizedLimits(limits);
   const examples = exampleGuard ?? createExampleGuard({warn, now});
@@ -8321,6 +8578,8 @@ export function createToolLoopGuard({
     }
     pendingToolRuns.set(toolCallId, {
       runId,
+      // The model round of the call (stoppedExcerptShare).
+      round: state?.operationsPromptRound,
       selectedToolName,
       selectedParams: [PREVIEW_INSPECTION_TOOL, 'exec', SYNCHRONOUS_HOST_OBSERVE_TOOL,
         SYNCHRONOUS_HOST_COMMAND_TOOL].includes(selectedToolName)
@@ -8487,6 +8746,7 @@ export function createToolLoopGuard({
         workspaceVerificationRequested: false,
         workspacePreviewRequired: false,
         workspacePreviewForbidden: false,
+        workspacePreviewOptional: false,
         workspaceDocumentDeliveryRequested: false,
         workspacePreviewMode: undefined,
         workspacePreviewAuthorshipRequired: false,
@@ -8627,10 +8887,17 @@ export function createToolLoopGuard({
   // work gets one tool-free answer turn (progress-finalization.mjs). Receipt-
   // based work (Operations, exact downloads, managed extension requests, team
   // coordination) keeps the strict stop text: a model summary must not stand
-  // in for those host receipts.
+  // in for those host receipts. A pending owner question has its own card.
   function progressFinalizationEligible(state) {
+    return resumableWork(state) && !state.ownerQuestions;
+  }
+
+  // Not cancelled, not a refused delete, and not receipt-based work or a
+  // repeated web-research loop: resumed after a stop, it repeats no download,
+  // approval card or loop.
+  function resumableWork(state) {
     return !state.clientCancelled && !state.recursiveDeleteDenied &&
-      !state.unrequestedOperationsAborted && !state.webLoopAborted && !state.ownerQuestions &&
+      !state.unrequestedOperationsAborted && !state.webLoopAborted &&
       !state.operationsRequired && !state.exactDownloadRequested && !state.extensionCompletionGate?.active &&
       !state.extensionPendingHandoff && !state.managedTeamCoordinator;
   }
@@ -8672,8 +8939,11 @@ export function createToolLoopGuard({
   }
 
   // Charges one tool result to the progress budget and remembers a failed
-  // preview check that stopped the run (finalizationInstruction).
+  // preview check that stopped the run (finalizationInstruction). Not once
+  // the deadline stop is due: its own refusals and the commands it ends would
+  // otherwise name the tool limit as the cause (responseDeadlineToolCall).
   function observeProgress(state, outcome, tool) {
+    if (state.responseDeadline?.due) return;
     const running = !state.progressBudget.exhausted;
     state.progressBudget.observeResult(outcome);
     if (!running || !state.progressBudget.exhausted) return;
@@ -8862,8 +9132,18 @@ export function createToolLoopGuard({
       ? {...originalDecision,blockReason:NATIVE_DELEGATION_WAIT_REASON} : originalDecision;
     const toolName = context?.toolName ?? event?.toolName;
     const { runId } = runIdentity(event, context);
-    const state = context?.agentId === agentId && runId ? runs.get(runId) : undefined;
     const callId = context?.toolCallId ?? event?.toolCallId;
+    // Many refusals come after rememberToolRun recorded the call. A refused
+    // call never runs, so a stopped response keeps nothing of it.
+    if (decision?.block === true && context?.agentId === agentId && typeof callId === 'string' && callId) {
+      const pending = pendingToolRuns.get(callId);
+      if (pending) pending.refused = true;
+    }
+    const state = context?.agentId === agentId && runId ? runs.get(runId) : undefined;
+    // A tool now running, which the deadline stop may end (responseDeadlineDue).
+    if (state?.responseDeadline && decision?.block !== true && typeof callId === 'string' && callId) {
+      state.responseDeadline.tools.add(callId);
+    }
     if (state && decision?.block !== true) touchProjects(state, runId, toolName, event?.params, callId);
     if (!state || workspaceReadOnlyCall(toolName, event?.params)) return decision;
     if (decision?.block === true && typeof callId === 'string' && callId) {
@@ -8926,6 +9206,7 @@ export function createToolLoopGuard({
       stopExhaustedRun(state, runId);
       return {block:true, blockReason:RUN_PROGRESS_STOP_REASON};
     }
+    if (state && responseDeadlineToolCall(state, runId)) return {block:true, blockReason:RESPONSE_DEADLINE_TOOL_REASON};
     const malformedPath = malformedRelativeWorkspacePath(toolName, normalizedParams ?? event?.params,
       state?.configuredWorkspaceRoot, state?.playgroundOwnerIntent);
     if (malformedPath) return {block:true, blockReason:malformedPath};
@@ -11057,13 +11338,14 @@ export function createToolLoopGuard({
         state.privateBrowserAccess = capabilities.privateBrowserAccess === true &&
           userMessageRequestsPrivateUrl(event?.messages, event?.prompt);
         // before_prompt_build runs once per attempt, just after the runtime
-        // arms that attempt's own timer; the notices keep the response's
-        // schedule (run-deadline.mjs). Only the owner's own turns: subagent
-        // and cron lanes can run with another timeout or none, and team
-        // workers report to their coordinator, not the owner.
+        // arms that attempt's own timer; the notices and the guard's own stop
+        // keep the response's schedule (run-deadline.mjs). Only the owner's
+        // own turns: subagent and cron lanes can run with another timeout or
+        // none, and team workers report to their coordinator, not the owner.
         state.runDeadline = state.artifactOwnerInteractive && !state.managedTeamWorker
           ? createRunDeadline(capabilities.runTimeoutSeconds, now(), state.runDeadline) : undefined;
         state.runDeadlineReached = false;
+        armResponseDeadline(state, runId);
         // Like the deadline, a cut belongs to the attempt that wrote it.
         state.lastReplyCut = undefined;
         state.outputLimitStop = undefined;
@@ -11087,11 +11369,13 @@ export function createToolLoopGuard({
       takePendingClarification(state, runId, context, agentId, ownerIntent);
       if (currentUserText(event?.messages, event?.prompt)) {
         state.ownerIntentObserved = true;
-        state.workspacePreviewForbidden = ownerForbidsWorkspacePreview(event?.messages, event?.prompt);
-        state.workspaceDocumentDeliveryRequested = userMessageRequestsWorkspaceDocumentDelivery(event?.messages, event?.prompt);
         const previousPreview = typeof sessionId === "string" && sessionId
           ? sessionPreviews.get(sessionId)
           : undefined;
+        const previewStance = ownerPreviewStance(event?.messages, event?.prompt, previousPreview);
+        state.workspacePreviewForbidden = previewStance === "forbidden";
+        state.workspacePreviewOptional = previewStance === "optional";
+        state.workspaceDocumentDeliveryRequested = userMessageRequestsWorkspaceDocumentDelivery(event?.messages, event?.prompt);
         // A failed verification in a later turn cannot erase an immutable
         // publication from this session. This is historical evidence only;
         // it neither verifies current files nor grants continuation scope.
@@ -11136,7 +11420,7 @@ export function createToolLoopGuard({
         // A prose-only continuation guess is not a workspace access boundary.
         // With no verified previous preview, ordinary tools must remain usable
         // to locate the requested files. Only a real preview binds its scope.
-        state.workspacePreviewRequired = !state.workspacePreviewForbidden && (
+        state.workspacePreviewRequired = !state.workspacePreviewForbidden && !state.workspacePreviewOptional && (
           state.workspacePreviewVerificationRequested || Boolean(trustedSessionPreview) || state.workspaceVisualArtifactProduced ||
           ((!visualContinuationRequested || explicitDelivery) && previewRequested)
         );
@@ -11442,6 +11726,7 @@ export function createToolLoopGuard({
     if (state.progressBudget.exhausted && !compactionCall) progressFinalization(state).modelCallStarted();
     // A further agent turn means the reply seen at finalization was not final.
     if (!compactionCall) state.finalReplyText = undefined;
+    responseDeadlineModelCall(state, runId, event?.callId, compactionCall);
   }
 
   function observeModelEnd(event, context, agentId = "pixel") {
@@ -11451,6 +11736,8 @@ export function createToolLoopGuard({
     if (!state || !context?.sessionId || context.sessionId !== state.currentSessionId) return;
     const compaction = state.compactionWindow;
     if (compaction?.calls.delete(event?.callId) && compaction.calls.size === 0) state.compactionWindow = undefined;
+    const deadline = state.responseDeadline;
+    if (deadline?.call && deadline.call.id === event?.callId) deadline.call = undefined;
     if (event?.outcome === 'completed') {
       state.modelRouteFailed = false;
       // A later model call completed, so that abort did not end this run.
@@ -11596,6 +11883,55 @@ export function createToolLoopGuard({
     return turn?.exampleOutcome ? exampleNotice(turn.exampleOutcome, turn.exampleRecovered) : undefined;
   }
 
+  // Marks a recorded call that actually ran, with the source of an excerpt of
+  // its own output for a stopped response (toolResultPersist). Taken here
+  // because after_tool_call sees the selected tool's result inside a Tool
+  // Search envelope and an exec's whole output, before OpenClaw caps the
+  // persisted copy. Never for a refusal: this guard's (refused) or another
+  // layer's (refusalReceipt), direct or inside the envelope. A Tool Search
+  // child is folded into its outer call, which keeps the output once.
+  function recordExecutedOutput(pending, event, runId, toolCallId, toolName) {
+    if (!pending || pending.refused || pending.runId !== runId || pending.transport !== toolName ||
+        typeof toolCallId !== 'string' || toolCallId.startsWith('tool_search_code:') ||
+        (event?.toolCallId !== undefined && event.toolCallId !== toolCallId)) return;
+    const result = event?.result;
+    if (!result || typeof result !== 'object' || Array.isArray(result)) return;
+    // An outer call refused itself has no envelope: its result is the receipt.
+    const selected = toolName === 'tool_call' ? toolSearchInnerResult(result.details) ?? result : result;
+    if (refusalReceipt(selected)) return;
+    pending.executedOutput = {source: executedOutputSource(selected, pending.selectedToolName),
+      failed: failedToolOutcome(event)};
+  }
+
+  // A stopped result's excerpt share. Its batch is the calls of the same run
+  // and model round that ran and are not yet persisted: parallel calls all
+  // finish before the first of them is persisted, and a record left from an
+  // earlier round takes nothing. Failed results split STOPPED_BATCH_EXCERPT_CHARS
+  // and the others STOPPED_SUCCESS_EXCERPT_CHARS, shortest output first, so a
+  // short one takes only what it needs and the rest goes to the longer ones,
+  // whatever their call order.
+  function stoppedExcerptShare(state, runId, toolCallId, pending) {
+    if (!state.stoppedExcerptShares?.has(toolCallId)) {
+      const batch = [[toolCallId, pending], ...[...pendingToolRuns].filter(([id, run]) => id !== toolCallId &&
+        run.runId === runId && run.round === pending.round && run.executedOutput && !run.refused)];
+      const shares = new Map();
+      for (const [failed, budget] of [[true, STOPPED_BATCH_EXCERPT_CHARS], [false, STOPPED_SUCCESS_EXCERPT_CHARS]]) {
+        const group = batch.filter(([, run]) => run.executedOutput.failed === failed)
+          .sort(([, a], [, b]) => (sourceLength(a.executedOutput.source) - sourceLength(b.executedOutput.source)) || 0);
+        let left = budget;
+        group.forEach(([id, run], index) => {
+          const share = Math.min(Math.floor(left / (group.length - index)), sourceLength(run.executedOutput.source));
+          shares.set(id, share);
+          left -= share;
+        });
+      }
+      state.stoppedExcerptShares = shares;
+    }
+    const share = state.stoppedExcerptShares.get(toolCallId);
+    state.stoppedExcerptShares.delete(toolCallId);
+    return share;
+  }
+
   function afterToolCall(event, context, agentId = "pixel") {
     if (context?.agentId !== agentId) return;
     const toolName = context?.toolName ?? event?.toolName;
@@ -11603,6 +11939,7 @@ export function createToolLoopGuard({
     if (typeof runId !== "string" || !runId) return;
     recordExampleOutcome({...context, runId}, examples.check(runId), context?.toolCallId ?? event?.toolCallId);
     const state = stateFor(runId);
+    state.responseDeadline?.tools.delete(context?.toolCallId ?? event?.toolCallId);
     state.completionAssurance.observe(toolName, event);
     if (state.extensionCompletionGate && !state.workspaceExtensionIsolated && !state.extensionMutationExcluded) {
       for (const name of [
@@ -11645,6 +11982,7 @@ export function createToolLoopGuard({
     state.execCallsInFlight.delete(toolCallId);
     const pendingToolRun = pendingToolRuns.get(toolCallId);
     if (pendingToolRun) pendingToolRun.hostResultEvidence = undefined;
+    recordExecutedOutput(pendingToolRun, event, runId, toolCallId, toolName);
     if (workspacePreviewInspectionAvailable && pendingToolRun?.selectedToolName === PREVIEW_INSPECTION_TOOL &&
         pendingToolRun.runId === runId && pendingToolRun.transport === toolName &&
         pendingToolRun.inspectionGeneration === state.workspaceInspectionGeneration &&
@@ -12086,7 +12424,7 @@ export function createToolLoopGuard({
     const completedVisualMutationPath = completedEditPath ?? completedWritePath;
     const previousVisualDirectory = sessionPreviews.get(state.currentSessionId)?.relativeDirectory;
     const updatesPublishedProject = previousVisualDirectory && completedVisualMutationPath?.startsWith(`${previousVisualDirectory}/`);
-    if (state.ownerIntentObserved && !state.workspacePreviewForbidden &&
+    if (state.ownerIntentObserved && !state.workspacePreviewForbidden && !state.workspacePreviewOptional &&
         !state.operationsRequired && !state.exactDownloadRequested &&
         completedVisualMutationPath && (updatesPublishedProject || /\.(?:html?|svg|jsx|tsx|vue|svelte)$/i.test(completedVisualMutationPath)) &&
         !/(?:^|\/)(?:node_modules|vendor|__tests__|tests?|fixtures?)(?:\/|$)/i.test(completedVisualMutationPath)) {
@@ -13218,6 +13556,9 @@ export function createToolLoopGuard({
         && sessionRuns.get(item.sessionId) === item.runId) : undefined;
     const runId = pending?.runId ?? context?.runId ?? event?.runId ?? active?.runId;
     const state = runs.get(runId);
+    // The tool is done: its result persists before the next model call,
+    // ahead of after_tool_call (responseDeadlineDue).
+    state?.responseDeadline?.tools.delete(toolCallId);
     const continuation = trustedOperationsContinuation(state, runId);
     if (!event?.message || typeof event.message !== "object") {
       return undefined;
@@ -13241,16 +13582,50 @@ export function createToolLoopGuard({
     // the answer instruction, as the refusal that carries it: the stop text
     // says to continue "with a corrected approach", and on the RTX Spark
     // (2026-10-25) the model then kept calling tools and forfeited the turn.
+    // A call that ran (recordExecutedOutput) first keeps an excerpt of its own
+    // output and the notes bound to it, so the answer reports what really
+    // happened: on the laptop (2026-10-31) the hidden output of the call that
+    // tripped the limit was a node --check SyntaxError, and the answer said
+    // the file passed node --check. A refused call, including one refused
+    // after rememberToolRun or by another plugin layer, never ran: its result
+    // is the instruction alone. The excerpt comes from the persisted copy,
+    // which is what the model would have read, unless OpenClaw's cap cut it
+    // (then from after_tool_call); for Tool Search, from the selected tool's
+    // result. The whole result fits the agent's cap less 100.
+    const sandboxPathCorrection = pending?.sandboxPathCorrection &&
+      message.role === 'toolResult' && message.toolName === pending.transport &&
+      (!message.toolCallId || message.toolCallId === toolCallId) &&
+      (!event?.toolCallId || event.toolCallId === toolCallId) &&
+      (!context?.runId || context.runId === pending.runId) &&
+      (!event?.runId || event.runId === pending.runId)
+      ? pending.sandboxPathCorrection : undefined;
     if (state?.progressBudget.exhausted) {
       const answerTurnAhead = ['pending', 'instructed'].includes(deliverInstruction(state, toolCallId).phase);
-      return {message: {...message, content: [{type: 'text',
-        text: answerTurnAhead ? finalizationInstruction(state) : RUN_PROGRESS_STOP_REASON}]}};
+      const stop = {type: 'text', text: answerTurnAhead ? finalizationInstruction(state) : RUN_PROGRESS_STOP_REASON};
+      if (!pending?.executedOutput) return {message: {...message, content: [stop]}};
+      // A config the lookup cannot read means the 4,000 floor: thrown here, the
+      // error would leave the result persisted without the stop text at all.
+      let cap;
+      try { cap = toolResultMaxChars(); } catch { cap = undefined; }
+      const limit = Number.isSafeInteger(cap) && cap > 0 ? Math.min(STOPPED_RESULT_TEXT_LIMIT, cap - 100) : STOPPED_RESULT_TEXT_LIMIT;
+      // The same notes, in the same order, as an unstopped result carries,
+      // where they fit beside the stop text.
+      let notes = [sandboxPathCorrection, exampleOutcome ? EXAMPLE_NOTES[exampleOutcome]?.model : undefined]
+        .filter(text => typeof text === 'string' && text);
+      const used = () => stop.text.length + notes.reduce((sum, text) => sum + text.length, 0);
+      if (used() > limit) notes = [];
+      const room = Math.min(limit - used(), stoppedExcerptShare(state, runId, toolCallId, pending));
+      const source = (pending.transport !== 'tool_call' ? persistedOutputSource(message.content) : undefined) ??
+        pending.executedOutput.source;
+      const excerpt = room >= STOPPED_EXCERPT_MIN_CHARS || sourceLength(source) <= room ? stoppedOutputExcerpt(source, room) : '';
+      return {message: {...message, content: [...stoppedResultContent(message.content, excerpt),
+        ...notes.map(text => ({type: 'text', text})), stop]}};
     }
     if (message.isError === true && state?.progressBudget.laneExhausted(progressLane)) {
       return {message:{...message,content:[...(message.content ?? []),{type:'text',text:progressLaneStopReason(progressLane)}]}};
     }
     // The only mid-attempt channel to the live model; never on a stopped run.
-    const deadlineNotice = state && !state.clientCancelled && !state.odsAborted
+    const deadlineNotice = state && !state.clientCancelled && !state.odsAborted && !state.responseDeadline?.stopped
       ? takeRunDeadlineNotice(state.runDeadline, now()) : undefined;
     // Same channel, once before the failure limits stop the run, so a change
     // spread over several files is not left half made (laptop, 2026-10-30: the
@@ -13367,13 +13742,6 @@ export function createToolLoopGuard({
       ? pending.redirectOrderNote : undefined;
     const unittestRecoveryInstruction = executionGuidance
       ? pending.unittestRecoveryInstruction : undefined;
-    const sandboxPathCorrection = pending?.sandboxPathCorrection &&
-      message.role === 'toolResult' && message.toolName === pending.transport &&
-      (!message.toolCallId || message.toolCallId === toolCallId) &&
-      (!event?.toolCallId || event.toolCallId === toolCallId) &&
-      (!context?.runId || context.runId === pending.runId) &&
-      (!event?.runId || event.runId === pending.runId)
-      ? pending.sandboxPathCorrection : undefined;
     const compactCoreResult = compactVerification
       ? undefined
       : compactWorkspaceCoreResult(message, pending, state);
@@ -13998,11 +14366,112 @@ export function createToolLoopGuard({
     if (state) {state.previewRevalidationCandidate=undefined;state.previewVerificationGeneration=(state.previewVerificationGeneration ?? 0)+1;}
   }
 
+  // Portal's ingress cuts a response off with no reply at all 1920 s after it
+  // began, and a /goal round then ends its goal instead of continuing
+  // (dashboard-api portal_goal.py). OpenClaw's own timer cannot be relied on
+  // to end the round first: a later attempt gets a fresh one, and the first
+  // attempt's can extend for a compaction or retry after one. So the guard
+  // stops a goal round still running just before its deadline
+  // (run-deadline.mjs responseDeadlineDelay), and agent_end names the
+  // deadline as the cause. Other chats keep OpenClaw's timer and the
+  // ingress, unchanged. Armed per attempt, with what this attempt is doing:
+  // its model call in flight, its tools running, whether it wrote its answer.
+  function armResponseDeadline(state, runId) {
+    clearTimer(state.responseDeadline?.timer);
+    state.responseDeadline = {call: undefined, tools: new Set(), answered: false, due: false, stopped: false};
+    const delay = responseDeadlineDelay(state.runDeadline, now());
+    // Beyond what a timer can hold (OpenClaw clamps its own) there is no stop.
+    if (delay === undefined || delay > MAX_TIMER_DELAY_MS || typeof abortActiveRun !== 'function') return;
+    scheduleResponseDeadline(state, runId, delay);
+  }
+
+  function scheduleResponseDeadline(state, runId, delay) {
+    const deadline = state.responseDeadline;
+    deadline.timer = setTimer(() => { deadline.timer = undefined; responseDeadlineDue(state, runId, deadline); }, delay);
+    deadline.timer?.unref?.();
+  }
+
+  // The stop is this attempt's to make: not superseded by a newer run in this
+  // session, and a /goal round (decided when the stop is due, since
+  // goal-progress.mjs begins after observeRun) whose goal goes on after it:
+  // resumable work, which also rules out an owner's cancel, whose cancel owns
+  // its own stop, and a refused delete, whose answer turn keeps its own text.
+  // Its stop carries stop: 'run-deadline' (deliveryVerificationForRun), or its
+  // pending question card, which the goal waits on; a run an ODS stop already
+  // aborted keeps that stop's text. Never in the one answer turn after a
+  // tool-limit stop either.
+  function responseDeadlineOwned(state, runId, deadline) {
+    const sessionId = state.currentSessionId;
+    return state.responseDeadline === deadline && runs.get(runId) === state && Boolean(sessionId) &&
+      sessionRuns.get(sessionId) === runId && goalRun(runId) === true && resumableWork(state) &&
+      !state.progressBudget.exhausted;
+  }
+
+  // The stop lands only where it reaches OpenClaw's run: a tool running, or
+  // a model call of an agent turn well under way. One that has just begun may
+  // still be setting up its stream: an abort there leaves the attempt hung
+  // until its own timer (real harness, 2026-10-30), so the stop waits until
+  // the call is RESPONSE_STREAM_STARTED_MS old. Between calls it waits for the
+  // next turn, or for the next tool call, which it refuses
+  // (responseDeadlineToolCall). Never once the attempt wrote its answer,
+  // which OpenClaw drops from an aborted attempt: it finishes, and a tool call
+  // or a revision after it is stopped.
+  function responseDeadlineDue(state, runId, deadline) {
+    if (!responseDeadlineOwned(state, runId, deadline)) return;
+    deadline.due = true;
+    if (deadline.stopped || deadline.answered) return;
+    if (deadline.tools.size) { stopAtResponseDeadline(state, runId, deadline); return; }
+    if (!deadline.call) return;
+    const wait = deadline.call.at + RESPONSE_STREAM_STARTED_MS - now();
+    if (wait > 0) scheduleResponseDeadline(state, runId, wait);
+    else stopAtResponseDeadline(state, runId, deadline);
+  }
+
+  function stopAtResponseDeadline(state, runId, deadline) {
+    // Like every ODS stop: OpenClaw's abort alone leaves a sandboxed command running.
+    try { execControl?.signal?.(runId); }
+    catch (error) { warn(`Pixel response-deadline execution signal failed: ${String(error)}`); }
+    try {
+      // Not the guard's abortRun: it marks an ODS stop, whose own text replaces
+      // the deadline's at agent_end. An ODS stop already made keeps its text.
+      deadline.stopped = abortActiveRun(state.currentSessionId, state.currentSessionKey) === true;
+    } catch (error) {
+      warn(`Pixel response-deadline stop failed for run ${runId}: ${String(error)}`);
+    }
+    // Not acknowledged: the attempt's next model or tool call tries again.
+    if (deadline.stopped) info(`Pixel stopped run ${runId} at its response deadline`);
+  }
+
+  // model_call_started of an agent turn: the attempt's run is live and the
+  // last turn's tools are done. A compaction call is neither a turn nor a stop
+  // point: one before the attempt's prompt runs with no live run, and an abort
+  // there would let the prompt start on unsupervised. An answer stays an
+  // answer until a reply that is not one (observeReplyEnd): the compaction
+  // that follows an answer can start before its before_compaction hook, which
+  // waits behind the finalization hooks, so it looks like a turn here.
+  function responseDeadlineModelCall(state, runId, callId, compactionCall) {
+    const deadline = state.responseDeadline;
+    if (!deadline || compactionCall) return;
+    deadline.call = {id: callId, at: now()};
+    deadline.tools.clear();
+    if (deadline.due && !deadline.stopped && !deadline.timer) scheduleResponseDeadline(state, runId, RESPONSE_STREAM_STARTED_MS);
+  }
+
+  // A tool call past the deadline: the stop lands here, at a tool boundary
+  // like the tool limit's, and the call does not run. Its turn's reply had
+  // tool calls, so the attempt's answer, if any, was not its last.
+  function responseDeadlineToolCall(state, runId) {
+    const deadline = state.responseDeadline;
+    if (!deadline?.due || !responseDeadlineOwned(state, runId, deadline)) return false;
+    if (!deadline.stopped) stopAtResponseDeadline(state, runId, deadline);
+    return true;
+  }
+
   // agent_end: a later cancel for this user can no longer name this run's
   // request as the one it withdrew. It also classifies the runtime's run
-  // deadline, which no hook reports directly. An ODS stop (owner cancel, tool
-  // limit, recursive-delete refusal or any other guard abort) has its own
-  // delivery text.
+  // deadline, which no hook reports directly, or the guard's own stop at it.
+  // An ODS stop (owner cancel, tool limit, recursive-delete refusal or any
+  // other guard abort) has its own delivery text.
   function observeAgentEnd(event, context) {
     const runId = context?.runId ?? event?.runId;
     recordExampleOutcome({...context, runId}, examples.end(runId));
@@ -14014,8 +14483,14 @@ export function createToolLoopGuard({
       endEvents.add(event);
     }
     state.runEnded = true;
+    // This attempt is over; a next attempt arms its own stop.
+    if (state.responseDeadline) {
+      clearTimer(state.responseDeadline.timer);
+      Object.assign(state.responseDeadline, {timer: undefined, due: false, call: undefined});
+      state.responseDeadline.tools.clear();
+    }
     state.runDeadlineReached = !state.clientCancelled && !state.odsAborted && !state.progressBudget.exhausted &&
-      !state.recursiveDeleteDenied && runDeadlineReached(state.runDeadline, event, now());
+      !state.recursiveDeleteDenied && runDeadlineReached(state.runDeadline, event, now(), state.responseDeadline?.stopped === true);
     // The harness runs tool calls only after a 'toolUse' stop, so a reply cut
     // at the output limit ends the response with its last call never run.
     // Only the owner's own turns: team workers and other lanes report to a
@@ -14039,7 +14514,16 @@ export function createToolLoopGuard({
     if (agent !== undefined && agent !== agentId) return;
     if (event?.message?.role !== 'assistant') return;
     const active = activeSessionRun(context?.sessionKey ?? event?.sessionKey);
-    if (active) active.state.lastReplyCut = outputLimitCut(event.message);
+    if (!active) return;
+    active.state.lastReplyCut = outputLimitCut(event.message);
+    // A reply with text and no tool calls ends the attempt's turns: from here
+    // OpenClaw delivers it, after the finalization hooks, which can take a
+    // while (responseDeadlineDue). A reply cut at the output limit too.
+    const message = event.message;
+    if (active.state.responseDeadline) active.state.responseDeadline.answered = Array.isArray(message.content) &&
+      !message.content.some(block => block?.type === 'toolCall') &&
+      !['error', 'aborted'].includes(String(message.stopReason ?? '').trim().toLowerCase()) &&
+      Boolean(finalText(message)?.trim?.());
   }
 
   // Model-only prompt context for one attempt (before_prompt_build
@@ -14998,6 +15482,8 @@ export function createToolLoopGuard({
     observeExampleRun,
     exampleContextForRun,
     exampleNoticeForRun,
+    // The owner put a Playground project's files back (project-snapshots.mjs).
+    exampleOwnerChanged: (workspaceRoot, project) => examples.ownerChanged(workspaceRoot, project),
     beforeToolCall,
     invalidateWorkspaceBundle(context) {
       const state = runs.get(context?.runId);

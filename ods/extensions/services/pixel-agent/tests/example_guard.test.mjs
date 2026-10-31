@@ -630,6 +630,27 @@ test('a run that starts while another works keeps the known-good tree, so the fi
   assert.ok(first.finish('Reformatted.').endsWith(first.notice()));
 });
 
+test('the owner putting the example\'s files back while another run works is kept, not put back', () => {
+  const {root, example, original} = workspace();
+  const guard = createToolLoopGuard();
+  const other = turn(guard, 'Make the snake faster', root, {sessionKey: chat('b')});
+  // Portal's Put back files (project-snapshots.mjs) changes the folder outside any run.
+  const putBack = () => fs.appendFileSync(path.join(example, 'chars.js'), '\n// as before the turn\n');
+  putBack();
+  guard.exampleOwnerChanged(root, 'snake-game');
+  assert.match(other.read('Playground/snake-game/game.js').text, /speed/);
+  assert.deepEqual(tree(example), original, 'another project\'s restore does not make this change the owner\'s');
+  putBack();
+  guard.exampleOwnerChanged(root, 'elf-of-doom');
+  const kept = tree(example);
+  assert.notDeepEqual(kept, original);
+  other.read('Playground/snake-game/game.js');
+  assert.deepEqual(tree(example), kept);
+  assert.equal(other.finish('The snake is faster.'), `The snake is faster.\n\n${other.notice()}`);
+  assert.equal(other.recovered.length, 1, 'only the first change was put back');
+  assert.deepEqual(tree(example), kept);
+});
+
 test('after a gateway restart the folder as ODS first finds it is the known-good tree', () => {
   const {root, example} = workspace();
   fs.appendFileSync(path.join(example, 'ui.js'), '\n// before the restart\n');

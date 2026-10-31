@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createRunDeadline, RUN_DEADLINE_GRACE_MS, runDeadlineReached, runDeadlineStopText,
+import {createRunDeadline, responseDeadlineDelay, RUN_DEADLINE_GRACE_MS, runDeadlineReached, runDeadlineStopText,
   takeRunDeadlineNotice} from '../plugin/run-deadline.mjs';
 
 const START = 1_000_000;
@@ -80,19 +80,44 @@ test('the deadline is reached only by a failed attempt that ran its full time wi
   assert.equal(runDeadlineReached(deadline, {messages: aborted.messages}, at(1800)), false);
   assert.equal(runDeadlineReached(undefined, aborted, at(1800)), false);
   assert.equal(runDeadlineReached(deadline, {success: false}, at(1800)), true);
-  // A later attempt has its own runtime timer.
+  // A later attempt has its own runtime timer, unless the guard stopped it at
+  // the response's deadline.
   const retry = createRunDeadline(1800, at(600), deadline);
   assert.equal(runDeadlineReached(retry, aborted, at(1800)), false);
   assert.equal(runDeadlineReached(retry, aborted, at(2400)), true);
+  assert.equal(runDeadlineReached(retry, aborted, at(1800), true), true);
+  assert.equal(runDeadlineReached(retry, {...aborted, success: true}, at(1800), true), false);
+  assert.equal(runDeadlineReached(undefined, aborted, at(1800), true), false);
+});
+
+// Portal's ingress cuts the whole response off 1920 s after it began.
+test('the guard stops a response just before its deadline, whatever attempt it is on', () => {
+  const first = createRunDeadline(1800, START);
+  // Ahead of the first attempt's own timer.
+  assert.equal(responseDeadlineDelay(first, at(0)), 1800000 - RUN_DEADLINE_GRACE_MS);
+  assert.equal(responseDeadlineDelay(first, at(1700)), 100000 - RUN_DEADLINE_GRACE_MS);
+  // A later attempt's own timer fires 30 minutes after it began.
+  const retry = createRunDeadline(1800, at(600), first);
+  assert.equal(responseDeadlineDelay(retry, at(600)), 1200000 - RUN_DEADLINE_GRACE_MS);
+  // One that begins past that point is due at once.
+  assert.equal(responseDeadlineDelay(createRunDeadline(1800, at(1790), retry), at(1790)), 0);
+  assert.equal(responseDeadlineDelay(undefined, at(0)), undefined);
+  // The lead scales down for short timeouts.
+  assert.equal(responseDeadlineDelay(createRunDeadline(60, START), at(0)), 59000);
+  assert.equal(responseDeadlineDelay(createRunDeadline(8, START), at(0)), 8000 - 133);
 });
 
 test('a completed final answer is OpenClaw\'s to deliver, a cut-off one is not', () => {
   const deadline = createRunDeadline(1800, START);
   const ending = message => ({success: false, messages: [{role: 'user', content: 'Fix it.'}, message,
     {role: 'toolResult', toolCallId: 'x', content: [{type: 'text', text: 'ok'}]}]});
-  for (const stopReason of ['stop', 'end_turn', 'completed', ' STOP '])
-    assert.equal(runDeadlineReached(deadline, ending({role: 'assistant', stopReason,
-      content: [{type: 'text', text: 'Both hitboxes are fixed and every level loads.'}]}), at(1800)), false, stopReason);
+  for (const stopReason of ['stop', 'end_turn', 'completed', ' STOP ']) {
+    const answered = ending({role: 'assistant', stopReason,
+      content: [{type: 'text', text: 'Both hitboxes are fixed and every level loads.'}]});
+    assert.equal(runDeadlineReached(deadline, answered, at(1800)), false, stopReason);
+    // OpenClaw drops it after any other abort, such as the guard's own stop.
+    assert.equal(runDeadlineReached(deadline, answered, at(1800), true), true, stopReason);
+  }
   for (const message of [
     {role: 'assistant', stopReason: 'aborted', content: []},
     {role: 'assistant', stopReason: 'toolUse', content: [{type: 'text', text: 'Now the chars.js edit.'}, {type: 'toolCall', id: 'e', name: 'edit'}]},

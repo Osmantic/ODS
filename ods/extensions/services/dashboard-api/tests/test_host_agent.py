@@ -4456,6 +4456,7 @@ class TestRemoteProviderLifecycle:
         })
         (tmp_path / ".env").write_text("ODS_MODE=cloud\nLLM_API_URL=http://litellm:4000\n", encoding="utf-8")
         monkeypatch.setattr(_mod, "_managed_pixel_runtime_contract", lambda: runtime)
+        monkeypatch.setattr(_mod, "_remote_provider_vision_probe", lambda _env, _runtime: "unknown")
         return root / "routing-state.json"
 
     def test_provider_outage_on_an_active_route_is_reported_without_reactivation(
@@ -5390,6 +5391,8 @@ class TestRemoteProviderLifecycle:
 
         monkeypatch.setattr(_mod, "_render_remote_provider_cloud_config", fake_render)
         monkeypatch.setattr(_mod, "_reconcile_managed_pixel_contract", fake_reconcile)
+        # No route state here: the routes keep no vision receipt (unknown).
+        monkeypatch.setattr(_mod, "_record_remote_provider_vision", lambda route, _env: route)
         private_writes = []
         real_private_write = _mod._write_remote_provider_activation_state
         real_public_write = _mod._write_remote_provider_activation_public
@@ -5607,6 +5610,7 @@ class TestRemoteProviderLifecycle:
         monkeypatch.setattr(_mod, "_managed_pixel_runtime_contract", lambda: current_pixel["value"])
         monkeypatch.setattr(_mod, "_managed_pixel_thinking_control", lambda: None)
         monkeypatch.setattr(_mod, "_reconcile_managed_pixel_contract", reconcile)
+        monkeypatch.setattr(_mod, "_record_remote_provider_vision", lambda route, _env: route)
         route = _mod._plan_remote_provider_lifecycle_operation(self._configure_payload())["route"]
 
         _mod._activate_remote_provider_route(route)

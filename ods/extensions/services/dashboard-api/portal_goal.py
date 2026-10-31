@@ -6,9 +6,11 @@ import re
 # The Portal limits that stop a round without ending its goal (pixel_outcome
 # `stop`, set by the Pixel plugin's tool-loop-guard). The next round continues
 # from the saved work, within the same round and stall limits as any other.
-# Not covered: a round whose attempt was retried (after compaction) can reach
-# the ingress's whole-response limit first; it delivers no outcome, and the
-# goal ends as before.
+# Pixel stops a round just before its run deadline even when an attempt was
+# retried (run-deadline.mjs responseDeadlineDelay), ahead of the ingress's
+# whole-response limit. A round that limit still cuts off (such as one in a
+# long compaction between attempts) has no outcome and ends the goal, never
+# replayed.
 GOAL_CONTINUE_STOPS = frozenset({'tool-limit', 'run-deadline'})
 # Plain words without defect vocabulary: Pixel picks its defect-report guide
 # from this prompt (tool-loop-guard.mjs userMessageReportsDefect).

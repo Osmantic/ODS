@@ -89,13 +89,27 @@ const XP_REQUIREMENT_SCALE = 1.5;
 // exactly once, at the point of assignment, so this value must stay unscaled: pre-scaling it
 // would apply the +50% twice at level 1.
 const XP_BASE = 26;
-// Flat late-game gate. Once the hero reaches XP_FLAT_FROM_LEVEL, every gate is exactly
-// XP_FLAT instead of following the ×1.45 curve, which by level ~11 demanded 30k+ XP per level
-// and stalled leveling in the deeper realms. Fixed cost keeps picks coming at a steady pace
-// forever. Curve value at level 11 was 3233 (×1.5 = gate shown in HUD), so 2500 is slightly
-// below that — a deliberate easing, not a nerf of an already-climbable hill.
+// First tier of the flat late-game gate. Once the hero reaches XP_FLAT_FROM_LEVEL, gates stop
+// following the ×1.45 curve, which by level ~11 demanded 30k+ XP per level and stalled leveling
+// in the deeper realms. A fixed cost keeps picks coming at a steady pace. Curve value at level
+// 11 was 3233 (×1.5 = gate shown in HUD), so 2500 is slightly below that — a deliberate easing,
+// not a nerf of an already-climbable hill. Used as the first tier cost below; later tiers rise.
 const XP_FLAT = 2500;
-const XP_FLAT_FROM_LEVEL = 11; // the gate FOR level 11 and every level after
+const XP_FLAT_FROM_LEVEL = 11; // the first flat tier starts here
+// Tiered late-game gates. A single flat 2500 kept picks coming too fast deep into the run — at
+// circuit 10 the hero was level 257 and the boon panels never stopped. So the flat gate steps up
+// in tiers: 2500 from level 11, then 5000 after level 25, 10000 after 50 and 15000 after 75.
+// Each entry is {fromLevel, cost}, and gainXp looks it up with the level the hero JUST REACHED
+// (P.lvl is incremented before the lookup), so fromLevel is the level reached whose reward gate
+// — i.e. the step from fromLevel to fromLevel+1 — first costs `cost`.
+// So the step after 25 costs 5000, after 50 costs 10000, after 75 costs 15000. Read by
+// xpGateFor() in engine.js; below the first fromLevel the ×1.45 curve still runs unchanged.
+const XP_TIERED = [
+  { fromLevel: XP_FLAT_FROM_LEVEL, cost: XP_FLAT }, // reaching 11..24 pays 2500 for the next level
+  { fromLevel: 25, cost: 5000 },                    // reaching 25..49 pays 5000
+  { fromLevel: 50, cost: 10000 },                   // reaching 50..74 pays 10000
+  { fromLevel: 75, cost: 15000 },                   // reaching 75+ pays 15000
+];
 // Spider web slow. A web bolt that lands on the hero cuts movement speed to WEB_SLOW of normal
 // for WEB_SLOW_T seconds. Kept as dials here because both the projectile hit (ui.js) and the
 // movement step (ui.js) read them.
