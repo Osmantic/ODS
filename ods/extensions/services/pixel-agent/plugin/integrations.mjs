@@ -8,7 +8,10 @@ import net from 'node:net';
 const SOCKET = '/run/ods-pixel-integrations/control.sock';
 const MAX_REPLY = 512 * 1024;
 const TIMEOUT_MS = 130000;
-const APPROVAL_TEXT = 'Waiting for the owner. Tell the owner this needs their approval in Settings → Portal integrations (they may also get a notification). After they approve, call this tool again with exactly the same arguments; do not change them. In a scheduled task, do not wait: say it needs approval and finish; once approved, the next run within 24 hours with the same arguments goes ahead.';
+const MCP_USAGE = 'Give the arguments too. To see the servers and their tools: {"action": "list"}. To run a tool: '
+  + '{"action": "call", "server": "<server id>", "tool": "<tool name>", "arguments": {...}}, for example '
+  + '{"action": "call", "server": "photos", "tool": "search", "arguments": {"place": "Lisbon"}}.';
+const APPROVAL_TEXT ='Waiting for the owner. Tell the owner this needs their approval in Settings → Portal integrations (they may also get a notification). After they approve, call this tool again with exactly the same arguments; do not change them. In a scheduled task, do not wait: say it needs approval and finish; once approved, the next run within 24 hours with the same arguments goes ahead.';
 
 export function submitIntegration(payload, {connect = net.createConnection, platform = process.platform, signal} = {}) {
   return new Promise((resolve, reject) => {
@@ -121,7 +124,8 @@ export function createIntegrationTools({submit = submitIntegration} = {}) {
           arguments: {type: 'object', description: 'For call: the tool arguments as an object.'}}},
       execute: (_id, params, signal) => {
         if (params?.action === 'list') return run(submit, {action: 'mcp-tools'}, signal, toolsText);
-        if (params?.action !== 'call') return Promise.resolve(text('Use action list or call.', {status: 'invalid'}, true));
+        // A small model sometimes sends no arguments at all; show it the exact shape to retry with.
+        if (params?.action !== 'call') return Promise.resolve(text(MCP_USAGE, {status: 'invalid'}, true));
         const args = params?.arguments && typeof params.arguments === 'object' && !Array.isArray(params.arguments) ? params.arguments : {};
         return run(submit, {action: 'mcp-call', server: str(params?.server), tool: str(params?.tool), arguments: args}, signal,
           reply => `${reply.isError ? 'The tool reported an error:\n' : ''}${reply.text}`);

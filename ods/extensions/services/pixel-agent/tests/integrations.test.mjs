@@ -57,6 +57,18 @@ test('an action waiting for approval tells the model to stop and repeat the same
   assert.match(result.content[0].text, /exactly the same arguments/);
 });
 
+test('a call without arguments shows the model how to call again', async () => {
+  const {sent, tools} = recording([]);
+  for (const params of [undefined, {}, {action: 'delete'}]) {
+    const result = await tool(tools, 'pixel_ods_mcp').execute('1', params);
+    assert.equal(result.isError, true);
+    assert.equal(result.details.status, 'invalid');
+    assert.match(result.content[0].text, /\{"action": "list"\}/);
+    assert.match(result.content[0].text, /"action": "call", "server": "photos", "tool": "search", "arguments": \{"place": "Lisbon"\}/);
+  }
+  assert.deepEqual(sent, []);
+});
+
 test('refusals and an absent service are errors with the service message', async () => {
   const {tools} = recording([{ok: false, error: 'notifications-off', message: 'Notifications are not set up.'}]);
   const refused = await tool(tools, 'pixel_ods_notify').execute('1', {message: 'hi'});
