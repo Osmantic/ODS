@@ -300,16 +300,17 @@ projection (`truncateOversizedToolResultsInMessages`):
   exactly the projection above, so it measures, and trips, as it would without
   the superseded-first order. Only calls with the attempt's state use the
   order: the provider stream, and the pre-prompt compaction check at the start
-  of an attempt, which then sees what the attempt's first request sends (a
-  transcript that ends with a final reply still gets the base projection).
-  They use the order only while their own input fits the guard's limit at
-  every message, in the view the response starts with (the wider view at 131k
-  tokens or more, the base view below). The stream's input can count more than
-  the guard's: OpenClaw sends a compaction summary to the model as user text,
-  and the guard counts it as 256 characters. Once the order does not fit, the
-  attempt sends exactly the projection above until it ends. That changes the
-  cached prompt prefix once; with the wider view, a later decline of that view
-  can change it once more.
+  of an attempt (a transcript that ends with a final reply still gets the base
+  projection there). They use the order only while their own input fits the
+  guard's limit at every message, in the view the response starts with (the
+  wider view at 131k tokens or more, the base view below). The stream's input
+  can count more than the guard's or the pre-prompt check's: OpenClaw sends a
+  compaction summary to the model as user text, and those checks count it as
+  256 characters. So after a compaction the first request can decline the
+  order the pre-prompt check used. Once the order does not fit, the attempt
+  sends exactly the projection above until it ends. That changes the cached
+  prompt prefix once; with the wider view, a later decline of that view can
+  change it once more.
 - Edit arguments are read as the edit tool reads them: `edits` can arrive as a
   JSON string, which the tool parses in the attempt's copy while the session
   file keeps the string, and a legacy `oldText` joins them. So the next turn
