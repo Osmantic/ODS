@@ -430,6 +430,22 @@ except Exception:
                 # shellcheck source=../../lib/pixel-uninstall.sh
                 source "$SCRIPT_DIR/lib/pixel-uninstall.sh"
             fi
+            if [[ "$SCRIPT_DIR" != "$INSTALL_DIR" ]]; then
+                if ! declare -F ods_copy_install_source >/dev/null 2>&1; then
+                    # shellcheck source=../lib/source-copy.sh
+                    source "$SCRIPT_DIR/installers/lib/source-copy.sh"
+                fi
+                if [[ -d "$INSTALL_DIR" && ! -w "$INSTALL_DIR" ]] && ods_sudo_available; then
+                    ods_sudo chown -R "$(id -u):$(id -g)" "$INSTALL_DIR" 2>/dev/null || true
+                fi
+                mkdir -p "$INSTALL_DIR"
+                if ! ods_copy_install_source "$SCRIPT_DIR" "$INSTALL_DIR" "$LOG_FILE"; then
+                    error "Could not restore verified source to $INSTALL_DIR for orphaned Pixel cleanup."
+                    return 1
+                fi
+            else
+                mkdir -p "$INSTALL_DIR"
+            fi
             if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME" "source-transition"; then
                 log "Orphaned Pixel host state cleaned. Proceeding with clean installation."
                 _phase06_pixel_source_transition=1
@@ -594,6 +610,9 @@ except Exception:
     # Create directories
     _phase06_step "create-directories"
     ods_progress 38 "directories" "Creating directory structure"
+    if [[ -d "$INSTALL_DIR" && ! -w "$INSTALL_DIR" ]] && ods_sudo_available; then
+        ods_sudo chown -R "$(id -u):$(id -g)" "$INSTALL_DIR" 2>/dev/null || true
+    fi
     mkdir -p "$INSTALL_DIR"/{config,data,models}
     mkdir -p "$INSTALL_DIR"/data/{open-webui,whisper,tts,n8n,qdrant,models,privacy-shield,ape,token-spy,hermes,persona}
     # llama-server's CUDA kernel cache (docker-compose.nvidia.yml).
