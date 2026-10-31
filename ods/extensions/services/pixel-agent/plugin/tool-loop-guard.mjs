@@ -6541,14 +6541,17 @@ const PREVIEW_NEGATION = /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not
 // publish it", "never show me the preview", "do not open a live preview".
 const PUBLISHING_NEGATION =
   /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:publish|republish|preview|serv(?:e|es|ed|ing)\b|deploy)/i;
-// A negated show, view, open or display as the prohibition rules read it,
-// directly or in a list: not "don't change how the menu opens".
+// A negated show, view, open or display, directly ("don't even show it yet"),
+// in a list, or put off ("hold off on showing it"): not "don't change how the
+// menu opens".
 const SHOW_NEGATION =
-  /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:(?:try|attempt)\s+to\s+)?(?:(?:create|build|edit|write|run|execute)\s*(?:,\s*|and\s+|or\s+))*(?:show|view|open|display)(?:ing)?\b|\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:and|or|nor)\s+(?:show|view|open|display)(?:ing)?\b/i;
+  /\bhold\s+off\s+on\s+(?:show|view|open|display)ing\b|\bwait\s+(?:to|before|on)\s+(?:show|view|open|display)(?:ing)?\b|\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:(?:even|yet|actually|really|ever|just|bother(?:\s+to)?|need\s+to|have\s+to|want\s+to|please)\s+)*(?:(?:try|attempt)\s+to\s+)?(?:(?:create|build|edit|write|run|execute)\s*(?:,\s*|and\s+|or\s+))*(?:show|view|open|display)(?:ing)?\b|\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:and|or|nor)\s+(?:show|view|open|display)(?:ing)?\b/i;
 // A request put off until the owner or someone else acts, or to a later time,
-// is not a request now: "check it in the preview later", "publish it after
-// the client signs off". "When you're done" still asks Portal now.
-const DEFERRED_REQUEST = /\b(?:later|tomorrow|tonight|next\s+(?:time|week|month|turn|round|session)|(?:after|once|when|whenever|until|till|unless)\s+(?:I\b|I['’](?:ve|m|ll|d)\b|we\b|we['’](?:ve|re|ll)\b|my\b|our\b|the\s+(?:client|customer|boss|team)\b|they\b|you\s+hear\b)|only\s+(?:after|when|if|once)\b)/i;
+// is not a request now, in its own sentence or after it: "check it in the
+// preview later", "publish it after approval", "... Only after I approve,
+// though." "When you're done" still asks Portal now. A phrasing this misses
+// only leaves publishing optional.
+const DEFERRED_REQUEST = /\b(?:later|tomorrow|tonight|eventually|someday|at\s+some\s+point|pending|approv\w*|sign(?:s|ed)?[- ]?off|not\s+(?:yet|now|today|until|till|before)|only\s+(?:after|when|if|once)|next\s+(?:time|week|month|turn|round|session|day|morning|weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|(?:on|this|by)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekend)|in\s+the\s+(?:morning|afternoon|evening)|in\s+(?:an?|\d+|a\s+few|two|three)\s+(?:hours?|minutes?|days?|weeks?)|(?:after|before|once|when|whenever|until|till|unless|as\s+soon\s+as)\s+(?:I\b|I['’](?:ve|m|ll|d)\b|we\b|we['’](?:ve|re|ll)\b|my\b|our\b|the\s+(?:client|customer|boss|team)\b|they\b|you\s+hear\b|review\b))/i;
 // The owner asks Portal itself to look at the page in the preview, at the start
 // of a sentence or after the repair it asks for: "check it in the preview",
 // "please fix those and check it in the preview", "can you verify it in the
@@ -6567,7 +6570,8 @@ const PUBLICATION_DIRECTIVE = /(?:^|\b(?:and(?:\s+then)?|then|now|instead)\s+)\s
 // that reaches a publishing word, so "don't publish" and "don't show me the
 // preview" always forbid. Without such a request every negation forbids as
 // before. Naming the session's verified project ("Publish log-viewer-lab.") is
-// such a request.
+// such a request. An outweighed negation only makes publishing optional (see
+// ownerPreviewStance), so a misread request can never push Portal to publish.
 function ownerRequestOutweighsShowNegation(text, sessionPreview = undefined) {
   if (PUBLISHING_NEGATION.test(text)) return false;
   let start = 0, requestEnd = -1;
@@ -6579,10 +6583,14 @@ function ownerRequestOutweighsShowNegation(text, sessionPreview = undefined) {
       requestsNamedSessionPreview(sentence, sessionPreview))) requestEnd = boundary.index;
     start = boundary.index + boundary[0].length;
   }
-  return requestEnd >= 0 && !SHOW_NEGATION.test(text.slice(requestEnd));
+  const after = text.slice(requestEnd);
+  return requestEnd >= 0 && !SHOW_NEGATION.test(after) && !DEFERRED_REQUEST.test(after);
 }
 
-function ownerForbidsWorkspacePreview(messages, prompt, sessionPreview = undefined) {
+// "forbidden": the owner forbids publication. "optional": a negated show the
+// owner's own request outweighs; Portal may publish, but nothing requires,
+// coaches or performs it. "open": no prohibition.
+function ownerPreviewStance(messages, prompt, sessionPreview = undefined) {
   const text = localPreviewPolicyText(currentOwnerIntentText(messages, prompt))
     .replace(/(?:\x60{3}|~{3})[\s\S]*?(?:\x60{3}|~{3})/g, " ")
     .replace(/^\s*>[^\n]*/gm, " ")
@@ -6597,9 +6605,14 @@ function ownerForbidsWorkspacePreview(messages, prompt, sessionPreview = undefin
     .split(/[!?;\n]+|\.(?=\s|$)|\b(?:but|however|instead|then)\b/i)
     .some((clause) => !independentEnglishPreviewAfterConstraint(clause) && /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:and|or|nor)\s+(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(clause));
   if (ownerDeclinesPreviewDelivery(text) || portuguesePreviewForbidden(text) ||
-    /\b(?:only|just)\s+(?:the\s+)?(?:code|source(?:\s+code)?)\b/i.test(text)) return true;
+    /\b(?:only|just)\s+(?:the\s+)?(?:code|source(?:\s+code)?)\b/i.test(text)) return "forbidden";
   const negatedDelivery = coordinatedProhibition || /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:(?:try|attempt)\s+to\s+)?(?:(?:create|build|edit|write|run|execute)\s*(?:,\s*|and\s+|or\s+))*(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(text);
-  return negatedDelivery && !ownerRequestOutweighsShowNegation(text, sessionPreview);
+  if (!negatedDelivery) return "open";
+  return ownerRequestOutweighsShowNegation(text, sessionPreview) ? "optional" : "forbidden";
+}
+
+function ownerForbidsWorkspacePreview(messages, prompt, sessionPreview = undefined) {
+  return ownerPreviewStance(messages, prompt, sessionPreview) === "forbidden";
 }
 
 function portuguesePreviewForbidden(text) {
@@ -6757,20 +6770,15 @@ function requestsNamedSessionPreview(text, preview) {
   );
   // Keep this an owner command, rather than a quoted command, explanation,
   // subordinate clause, or instruction found inside a code block.
-  const commands = (value) => value.matchAll(
+  const commands = ownerText.matchAll(
     /(?:^|[.!?;\n]|\b(?:and(?:\s+then)?|then)\s+)\s*(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|I\s+(?:want|need)\s+you\s+to\s+)?(?:publish|republish|preview|display|show|open|view)\s+([^!?;\n]{1,512})/gi
   );
   // A bare reference can reopen this session's actual verified artifact.
   // Extra names or clauses (for example a public site's research request)
   // must not inherit that artifact merely because the session has one.
   const bareTarget = /^(?:me\s+)?(?:(?:the|this|that)\s+)(?:website|site|web\s*page|frontend|dashboard|preview|artwork|animation|illustration|scene|game|chart|diagram|svg)(?:\s+(?:again|here))?\s*[.!?]?\s*$/i;
-  const namesTarget = (value) => [...commands(value)].some((match) => target.test(match[1]) || bareTarget.test(match[1]));
-  if (!namesTarget(ownerText)) return false;
-  if (!/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:publish(?:ing)?|republish(?:ing)?|preview(?:ing)?|display(?:ing)?|show(?:ing)?|open(?:ing)?|view(?:ing)?)\b/i.test(ownerText)) return true;
-  // A negated show before it ("the error rows never show") does not veto the
-  // command in a sentence of its own; a later one or a publishing prohibition
-  // always does.
-  return ownerRequestOutweighsShowNegation(ownerText, preview);
+  if (![...commands].some((match) => target.test(match[1]) || bareTarget.test(match[1]))) return false;
+  return !/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:publish(?:ing)?|republish(?:ing)?|preview(?:ing)?|display(?:ing)?|show(?:ing)?|open(?:ing)?|view(?:ing)?)\b/i.test(ownerText);
 }
 
 function workspacePreviewRestrictions(text) {
@@ -6973,7 +6981,7 @@ export function userMessageRequestsWorkspacePreview(messages, prompt = undefined
       !/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b/i.test(clause) &&
       hasExplicitWorkspacePreviewDirective(clause));
   if (
-    (rejectsPreview && !ownerRequestOutweighsShowNegation(text)) ||
+    rejectsPreview ||
     (rejectsCreation && !independentDelivery) ||
     nativeOnly ||
     (!explicitDelivery && (explanatoryOnly || nonVisualImplementation))
@@ -7220,7 +7228,8 @@ export function userMessageRequestsWorkspaceVisualContinuation(
 // retain the ordinary read/edit continuation contract.
 export function userMessageRequestsWorkspaceVerificationContinuation(messages, prompt = undefined) {
   const text = currentOwnerIntentText(messages, prompt).trim();
-  if (!text || freshWorkspaceCreationRequested(text) || ownerForbidsWorkspacePreview([], text)) return false;
+  // An outweighed negation leaves publishing optional, never a contract.
+  if (!text || freshWorkspaceCreationRequested(text) || ownerPreviewStance([], text) !== "open") return false;
   const command = /^(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?)?(?:finish\s+)?(?:verif(?:y|ying)|test(?:ing)?|inspect(?:ing)?|check(?:ing)?)\s+(?:(?:the|this|that|my|our|existing|current|previous|prior|same)\s+)+(?:preview|page|site|website|app|artifact)\b/i.exec(text);
   if (!command) return false;
   // Conditional repairs remain possible after a failed check; they are not a
@@ -8524,6 +8533,7 @@ export function createToolLoopGuard({
         workspaceVerificationRequested: false,
         workspacePreviewRequired: false,
         workspacePreviewForbidden: false,
+        workspacePreviewOptional: false,
         workspaceDocumentDeliveryRequested: false,
         workspacePreviewMode: undefined,
         workspacePreviewAuthorshipRequired: false,
@@ -11022,7 +11032,9 @@ export function createToolLoopGuard({
         const previousPreview = typeof sessionId === "string" && sessionId
           ? sessionPreviews.get(sessionId)
           : undefined;
-        state.workspacePreviewForbidden = ownerForbidsWorkspacePreview(event?.messages, event?.prompt, previousPreview);
+        const previewStance = ownerPreviewStance(event?.messages, event?.prompt, previousPreview);
+        state.workspacePreviewForbidden = previewStance === "forbidden";
+        state.workspacePreviewOptional = previewStance === "optional";
         state.workspaceDocumentDeliveryRequested = userMessageRequestsWorkspaceDocumentDelivery(event?.messages, event?.prompt);
         // A failed verification in a later turn cannot erase an immutable
         // publication from this session. This is historical evidence only;
@@ -11068,7 +11080,7 @@ export function createToolLoopGuard({
         // A prose-only continuation guess is not a workspace access boundary.
         // With no verified previous preview, ordinary tools must remain usable
         // to locate the requested files. Only a real preview binds its scope.
-        state.workspacePreviewRequired = !state.workspacePreviewForbidden && (
+        state.workspacePreviewRequired = !state.workspacePreviewForbidden && !state.workspacePreviewOptional && (
           state.workspacePreviewVerificationRequested || Boolean(trustedSessionPreview) || state.workspaceVisualArtifactProduced ||
           ((!visualContinuationRequested || explicitDelivery) && previewRequested)
         );
@@ -12018,7 +12030,7 @@ export function createToolLoopGuard({
     const completedVisualMutationPath = completedEditPath ?? completedWritePath;
     const previousVisualDirectory = sessionPreviews.get(state.currentSessionId)?.relativeDirectory;
     const updatesPublishedProject = previousVisualDirectory && completedVisualMutationPath?.startsWith(`${previousVisualDirectory}/`);
-    if (state.ownerIntentObserved && !state.workspacePreviewForbidden &&
+    if (state.ownerIntentObserved && !state.workspacePreviewForbidden && !state.workspacePreviewOptional &&
         !state.operationsRequired && !state.exactDownloadRequested &&
         completedVisualMutationPath && (updatesPublishedProject || /\.(?:html?|svg|jsx|tsx|vue|svelte)$/i.test(completedVisualMutationPath)) &&
         !/(?:^|\/)(?:node_modules|vendor|__tests__|tests?|fixtures?)(?:\/|$)/i.test(completedVisualMutationPath)) {

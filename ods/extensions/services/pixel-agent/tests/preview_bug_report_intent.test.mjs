@@ -95,6 +95,9 @@ test('a prohibition still forbids the preview, however it is written', () => {
     'Fix it and test it in the preview. On second thought, don\'t show it until I say so.',
     'Publish demo/index.html. Wait, no, don\'t show it yet.', 'Show me the existing site. Never mind, don\'t open it.',
     'In demo, attacks never show. Fix it and check it in the preview. Don\'t touch the layout or show it to anyone yet.',
+    'In demo, attacks never show. Fix it and check it in the preview. Actually, don\'t even show it yet.',
+    'In demo, attacks never show. Fix it and check it in the preview. Actually, do not yet show it.',
+    'In demo, attacks never show. Fix it and check it in the preview. Actually, hold off on showing it.',
     // Statements, questions, quotes, future requests and steps to reproduce are not requests.
     "I'll just check it in the preview myself. Don't show it.", 'I also test it in the preview myself. Don\'t show it to me.',
     'Should I just check it in the preview? Don\'t show it yet.', 'The docs say: check it in the preview. Don\'t show it yet.',
@@ -110,6 +113,13 @@ test('a prohibition still forbids the preview, however it is written', () => {
     "Fix demo/index.html. Don't open it yet. Check it in the preview once I give the OK.",
     "Fix demo/index.html. Don't show it yet. Test it in the preview when I say go.",
     "Don't show it yet. Publish demo/index.html after the client signs off.", "Don't show it yet. Publish demo/index.html tomorrow.",
+    "Fix demo/index.html. Don't show it yet. Publish demo/index.html after approval.",
+    "Fix demo/index.html. Don't show it yet. Publish demo/index.html on Monday.",
+    "Fix demo/index.html. Don't show it yet. Check it in the preview once approved.",
+    "Fix demo/index.html. Don't show it yet. Check it in the preview pending my review.",
+    "Fix demo/index.html. Don't show it yet. Check it in the preview. Only after I approve, though.",
+    "Fix demo/index.html. Don't show it yet. Publish demo/index.html. But not until the client signs off.",
+    "Fix demo/index.html. Don't show it yet. Publish demo/index.html. Tomorrow, not today.",
   ]) assert.equal(previewRefused(prompt), true, prompt);
 });
 
@@ -124,17 +134,43 @@ test('a request to use the preview never outweighs a publishing prohibition', ()
   ]) assert.equal(previewRefused(prompt), true, prompt);
 });
 
-test('a bug description does not weaken a publication request', () => {
-  for (const prompt of ['In demo, the score resets every frame. Fix it and publish demo/index.html.',
-    'In demo, attacks never show. Fix it and publish demo/index.html.']) {
-    assert.equal(userMessageRequestsWorkspacePreview([], prompt), true, prompt);
+// Status of the run after Portal rewrites demo/index.html: "failed" while a
+// publication is still required, "none" when nothing requires one.
+function statusAfterPageWrite(prompt) {
+  const guard = createToolLoopGuard();
+  const context = {agentId: 'pixel', runId: 'r', sessionId: 's', sessionKey: 'agent:pixel:openai-user:t', trigger: 'user'};
+  guard.observeRun(context, 'pixel', {prompt, messages: []});
+  const write = {toolName: 'write', params: {path: 'demo/index.html', content: '<!doctype html><p>fixed</p>'}};
+  guard.beforeToolCall(write, {...context, toolCallId: 'w1'});
+  guard.afterToolCall({...write, result: {details: {status: 'completed'}}}, {...context, toolCallId: 'w1'});
+  return guard.verificationForRun('r').status;
+}
+
+test('an outweighed "don\'t show" makes publishing optional: allowed, never required', () => {
+  // Without the bug description, the same requests require the publication.
+  for (const prompt of ['In demo, the score resets every frame. Fix it and check it in the preview.',
+    'In demo, the score resets every frame. Fix it and publish demo/index.html.']) {
+    assert.equal(statusAfterPageWrite(prompt), 'failed', prompt);
+    assert.equal(userMessageRequestsWorkspacePreview([], prompt), prompt.includes('publish'), prompt);
   }
+  // With it, Portal may publish but nothing requires, coaches or performs it,
+  // so even a deferral the rules miss ("come Friday") cannot push a publication.
+  for (const prompt of ['In demo, attacks never show. Fix it and check it in the preview.',
+    'In demo, attacks never show. Fix it and publish demo/index.html.',
+    "Fix demo/index.html. Don't show it yet. Publish demo/index.html come Friday.",
+    "Fix demo/index.html. Don't show it yet. Check it in the preview when the stars align."]) {
+    assert.equal(statusAfterPageWrite(prompt), 'none', prompt);
+    assert.equal(userMessageRequestsWorkspacePreview([], prompt), false, prompt);
+  }
+  assert.equal(previewRefused('In demo, attacks never show. Fix it and publish demo/index.html.'), false);
 });
 
 test('a prohibition still keeps a check of the existing page from republishing it', () => {
   for (const prompt of ['Check the existing site - do not republish it.', 'Inspect the current page. Btw don\'t publish.',
     "Check the existing page, but don't open a live preview.", "Verify the current site, but don't show me until it works.",
-    "Check the existing site. Whatever happens don't show it to anyone."]) {
+    "Check the existing site. Whatever happens don't show it to anyone.",
+    // An outweighed "don't show" leaves publishing optional, never a contract.
+    'Check the existing page. The hit rings never show. Check it in the preview.']) {
     assert.equal(userMessageRequestsWorkspaceVerificationContinuation([], prompt), false, prompt);
   }
 });
