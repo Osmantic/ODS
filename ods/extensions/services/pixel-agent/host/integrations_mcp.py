@@ -23,7 +23,7 @@ import time
 import urllib.error
 import urllib.request
 
-from integrations_common import IntegrationError, MAX_RESPONSE_BYTES, NETWORK_TIMEOUT, clip, digest
+from integrations_common import IntegrationError, MAX_RESPONSE_BYTES, NETWORK_TIMEOUT, clip, digest, open_direct
 
 MCP_PROTOCOL = "2025-03-26"
 MAX_TOOLS = 200
@@ -76,7 +76,7 @@ class HttpSession:
         request = urllib.request.Request(self.server["url"], data=json.dumps(message).encode(),
                                          headers=self._headers(), method="POST")
         try:
-            with urllib.request.urlopen(request, timeout=NETWORK_TIMEOUT) as response:
+            with open_direct(request, timeout=NETWORK_TIMEOUT) as response:
                 self.session_id = response.headers.get("Mcp-Session-Id") or self.session_id
                 return response.read(MAX_RESPONSE_BYTES + 1), response.headers.get("Content-Type", "")
         except urllib.error.HTTPError as error:

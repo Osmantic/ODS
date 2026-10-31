@@ -65,8 +65,11 @@ tools must be checked again.
 An "ask first" action creates an approval in Settings, and an ntfy ping if that is
 turned on:
 
-- The approval is bound to the exact server, tool and arguments, or the exact
-  note, text and mode.
+- The approval is bound to the saved settings and credentials, and to the exact
+  server, tool and arguments, or the opened vault, note, text and mode.
+- Saving settings or checking tools revokes pending and approved requests,
+  including when the edit concerns another integration. Repeat the action to
+  request a new approval. Replacing the vault directory also requires a new approval.
 - It can be used once and expires after 24 hours.
 - After the owner approves, Portal repeats the same call. A scheduled task does
   not wait: it reports that the action needs approval, and its next run within 24
@@ -74,6 +77,12 @@ turned on:
 - The ping can carry an **Open approvals** button. It only opens the Settings
   page, where the owner still signs in; the link grants nothing. Use an address
   the phone can reach.
+
+Calls already admitted may finish with their original destination and credentials
+after settings are saved. New calls use the updated settings. Settings remains
+available while a remote service responds. If a local server is still starting
+when settings change or it is restarted, that startup is stopped before any tool
+call can use it. A tools check whose settings changed must be repeated.
 
 ## Local servers
 
@@ -106,9 +115,15 @@ Notes:
 
 - Portal never deletes or overwrites a note. It only appends to a note or creates
   a new one.
-- Hidden folders (such as `.obsidian`), symbolic links and paths outside the vault
-  are refused.
+- Hidden files and folders (such as `.obsidian`), symbolic links, hard-linked
+  files and paths outside the vault are refused. The vault and every folder in
+  its full path must be actual directories, without symbolic links.
 - Search covers up to 5,000 notes of up to 1 MB each.
+
+HTTP MCP and ntfy addresses must be their final service addresses. Redirects are
+refused, including redirects on the same host, so credentials and actions cannot
+be forwarded to a different destination. Update the saved address if a server
+returns a redirect.
 
 ## Setting up
 

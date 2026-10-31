@@ -6,6 +6,7 @@ import pathlib
 import threading
 import time
 import uuid
+import urllib.request
 
 SCHEMA_VERSION = 1
 MAX_REQUEST_BYTES = 64 * 1024
@@ -13,6 +14,18 @@ MAX_RESPONSE_BYTES = 256 * 1024
 MAX_RESULT_CHARS = 8000
 NETWORK_TIMEOUT = 20
 ACTIVITY_LINES = 500
+
+
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # A redirect is a different request, not part of the approved action.
+        # Never forward credentials or replay a POST, even same-origin.
+        return None
+
+
+def open_direct(request, *, timeout):
+    """Use the configured URL exactly; ordinary TLS verification stays enabled."""
+    return urllib.request.build_opener(_NoRedirects()).open(request, timeout=timeout)
 
 
 class IntegrationError(Exception):
