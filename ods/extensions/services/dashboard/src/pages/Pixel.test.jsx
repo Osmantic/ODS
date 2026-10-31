@@ -79,15 +79,20 @@ const sseResponse = (frames, { status = 200, chunks } = {}) => {
 }
 
 describe('Pixel', () => {
+  // What the host answers when the page asks which turns offer "Put back
+  // files"; a test that needs a button sets its own.
+  let restoreOptionsAnswer
   beforeEach(() => {
     previewManifests.clear()
-    // Stream fixtures are independent of background context reads. The full
-    // context lifecycle is exercised in PixelCompaction.test.jsx; retain all
-    // network observations here without consuming the next SSE fixture.
+    // Stream fixtures are independent of background context and turn-undo
+    // reads. The full context lifecycle is exercised in PixelCompaction.test.jsx;
+    // retain all network observations here without consuming the next SSE fixture.
+    restoreOptionsAnswer=()=>response({schemaVersion:1,projects:[]})
     const responses=vi.fn()
     const fetchMock=vi.fn((url,...args)=>previewManifests.has(url)?Promise.resolve(previewManifestResponse(previewManifests.get(url))):url==='/api/pixel/chat/context'
       ? Promise.resolve(response({schemaVersion:1,status:'missing',sessionRevision:null,context:null,model:null,
         compaction:{status:'idle',count:0},history:{revision:null,acknowledgedMessages:0}}))
+      : url==='/api/pixel/projects/restore-options' ? Promise.resolve(restoreOptionsAnswer())
       : responses(url,...args))
     for(const method of ['mockResolvedValue','mockResolvedValueOnce','mockRejectedValue','mockRejectedValueOnce','mockImplementation','mockImplementationOnce']) {
       fetchMock[method]=(...args)=>{responses[method](...args);return fetchMock}
@@ -181,11 +186,9 @@ describe('Pixel', () => {
         [project('game','2026-10-30T12:03:00.000Z')])},
     ]}))
     let restored = false
+    restoreOptionsAnswer = () => response({schemaVersion:1,projects:[{project:'Playground/game',snapshot:runId,late:false,
+      restore:restored ? {undo,side:'before'} : null}]})
     fetch.mockImplementation(async url => {
-      if (url === '/api/pixel/projects/restore-options') {
-        return response({schemaVersion:1,projects:[{project:'Playground/game',snapshot:runId,late:false,
-          restore:restored ? {undo,side:'before'} : null}]})
-      }
       if (url === '/api/pixel/projects/restore') {
         restored = true
         return response({schemaVersion:2,status:'restored',project:'Playground/game',snapshot:runId,written:1,removed:0,left:[],leftCount:0,
