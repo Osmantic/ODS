@@ -7,7 +7,7 @@
 //
 // The guard records when each owner response and each of its attempts began,
 // warns the model through persisted tool results as the deadline nears,
-// stops the response itself just before it (responseDeadlineDelay), and
+// stops a /goal round itself just before it (responseDeadlineDelay), and
 // replaces the runtime's advice with what happened. Pure functions; the
 // caller supplies the clock.
 import { assistantMessageText } from './progress-finalization.mjs';
@@ -69,7 +69,7 @@ export function takeRunDeadlineNotice(deadline, now) {
   return noticeText(stage, deadline.timeoutMs);
 }
 
-// When, in ms from `now`, the guard stops a response still running: just
+// When, in ms from `now`, the guard stops a goal round still running: just
 // before its deadline, ahead of the first attempt's own timer. Portal's
 // ingress cuts the whole response off without a reply 1920 s after it began,
 // and that timer's own recovery can outlast it: a compaction and a retry when

@@ -150,7 +150,7 @@ for (const [name, context, capabilities, prompt] of [
   ['an owner turn without a configured timeout', OWNER, {...CAPABILITIES, runTimeoutSeconds: undefined}],
   ['a team worker in the owner session', OWNER, CAPABILITIES, `You are the Builder in the owner's Portal team.\n\n${PROMPT}`],
 ]) test(`no notice, deadline copy or stop for ${name}`, () => {
-  const f = fixture({context, capabilities, prompt});
+  const f = fixture({context, capabilities, prompt, goal: true});
   // A later attempt too, whose own timer would come after the deadline.
   f.at(10);
   f.begin();
@@ -164,10 +164,11 @@ for (const [name, context, capabilities, prompt] of [
 
 // The ingress stops the whole response at 32 minutes, whatever attempt it is
 // on, with no reply at all. A retry's fresh runtime timer must not move the
-// notices past it, and Portal stops a later attempt before the response's
-// deadline itself (laptop, 2026-10-30: a goal ended on such a cut round).
+// notices past it, and Portal stops a goal round's later attempt before the
+// response's deadline itself (laptop, 2026-10-30: a goal ended on such a cut
+// round).
 test('a later attempt keeps the response\'s notice schedule and is stopped just before the response\'s deadline', () => {
-  const f = fixture();
+  const f = fixture({goal: true});
   f.at(10);
   f.begin();
   f.model();
@@ -187,26 +188,44 @@ test('a later attempt keeps the response\'s notice schedule and is stopped just 
   f.at(STOP_AT);
   assert.deepEqual(f.aborts, [OWNER.sessionId]);
   f.guard.observeAgentEnd(CUT_OFF, OWNER);
-  assert.deepEqual(f.guard.deliveryVerificationForRun(RUN_ID), {status: 'failed', text: UNCHANGED_STOP_COPY});
+  assert.deepEqual(f.guard.deliveryVerificationForRun(RUN_ID), {status: 'failed', text: UNCHANGED_STOP_COPY, stop: 'run-deadline'});
   const reply = f.guard.replyPayloadSending({runId: RUN_ID, kind: 'final', payload: {text: 'No response from OpenClaw.', isError: true}});
   assert.equal(reply.payload.text, UNCHANGED_STOP_COPY);
 });
 
-test('a goal round\'s retried attempt stopped at the deadline says which limit stopped it; a chat\'s does not', () => {
-  for (const goal of [true, false]) {
-    const f = fixture({goal});
-    f.at(4);
-    f.edit();
-    // A compaction retry or a revision: a new attempt with its own timer.
-    f.at(10);
-    f.begin();
+test('a goal round\'s retried attempt stopped at the deadline says which limit stopped it', () => {
+  const f = fixture({goal: true});
+  f.at(4);
+  f.edit();
+  // A compaction retry or a revision: a new attempt with its own timer.
+  f.at(10);
+  f.begin();
+  f.model();
+  f.at(STOP_AT);
+  assert.deepEqual(f.aborts, [OWNER.sessionId]);
+  f.guard.observeAgentEnd(CUT_OFF, OWNER);
+  assert.deepEqual(f.guard.deliveryVerificationForRun(RUN_ID), {status: 'failed', text: STOP_COPY, stop: 'run-deadline'});
+});
+
+// Their own timer and the ingress decide, as before this stop existed.
+test('an ordinary chat is never stopped by Portal', () => {
+  for (const later of [false, true]) {
+    const f = fixture();
     f.model();
+    if (later) { f.at(10); f.begin(); f.model(); }
     f.at(STOP_AT);
-    assert.deepEqual(f.aborts, [OWNER.sessionId]);
-    f.guard.observeAgentEnd(CUT_OFF, OWNER);
-    assert.deepEqual(f.guard.deliveryVerificationForRun(RUN_ID),
-      {status: 'failed', text: STOP_COPY, ...(goal ? {stop: 'run-deadline'} : {})});
+    const ctx = {...OWNER, toolName: 'read', toolCallId: 'late-read'};
+    assert.notEqual(f.guard.beforeToolCall({toolName: 'read', params: {path: 'game/ui.js'}, toolCallId: 'late-read'}, ctx)
+      ?.blockReason, 'Portal stopped this response at its time limit before this call ran.');
+    f.at(31);
+    assert.deepEqual(f.aborts, [], `later=${later}`);
   }
+  // The first attempt's own timer still gets the same copy, with no stop field.
+  const f = fixture();
+  f.edit();
+  f.at(30);
+  f.guard.observeAgentEnd(CUT_OFF, OWNER);
+  assert.deepEqual(f.guard.deliveryVerificationForRun(RUN_ID), {status: 'failed', text: STOP_COPY});
 });
 
 // Its own timer's recovery can outlast the ingress: a compaction and a retry
@@ -340,29 +359,90 @@ test('an attempt that wrote its answer is never stopped, and is delivered as usu
   assert.deepEqual(f.aborts, []);
   f.guard.observeAgentEnd({success: true, messages: [{role: 'user', content: PROMPT}, {role: 'assistant', ...ANSWER}]}, OWNER);
   assert.notEqual(f.guard.deliveryVerificationForRun(RUN_ID).status, 'failed');
-  // A reply cut at the output limit is delivered too; one with tool calls is not an answer.
-  const cut = fixture();
+  // A reply cut at the output limit is delivered too.
+  const cut = fixture({goal: true});
   cut.model();
   cut.reply({stopReason: 'length', content: [{type: 'text', text: 'The wolves now use two circles each and'}]});
   cut.at(31);
   assert.deepEqual(cut.aborts, []);
-  // A further agent turn means that reply was not the last, and a failed
-  // reply is no answer.
-  const more = fixture();
+  // A further agent turn means that reply was not the last; a failed reply
+  // and one with tool calls are no answer.
+  const more = fixture({goal: true});
   more.model();
   more.reply(ANSWER);
   more.model();
   more.at(STOP_AT);
   assert.deepEqual(more.aborts, [OWNER.sessionId]);
-  const failed = fixture();
+  const failed = fixture({goal: true});
   failed.model();
   failed.reply({stopReason: 'error', content: [{type: 'text', text: 'The wolves now'}]});
   failed.at(STOP_AT);
   assert.deepEqual(failed.aborts, [OWNER.sessionId]);
+  const calling = fixture({goal: true});
+  calling.model();
+  calling.at(20);
+  calling.modelEnd();
+  calling.reply({stopReason: 'stop', content: [{type: 'text', text: 'Now the chars.js edit.'},
+    {type: 'toolCall', id: 'edit-1', name: 'edit', arguments: {}}]});
+  calling.start('edit-1', 'edit', {path: 'game/chars.js', oldText: 'wolfHitShape(', newText: 'wolfHitShapes('});
+  calling.at(STOP_AT);
+  assert.deepEqual(calling.aborts, [OWNER.sessionId]);
+});
+
+// The attempt went on after its answer, such as for a queued follow-up.
+test('a stop that came while the attempt had its answer is made at its next turn or tool call', () => {
+  const f = fixture({goal: true});
+  f.model();
+  f.at(29.7);
+  f.reply(ANSWER);
+  f.at(STOP_AT);
+  assert.deepEqual(f.aborts, []);
+  f.at(29.8);
+  f.model();
+  f.at(29.8 + STREAM_STARTED);
+  assert.deepEqual(f.aborts, [OWNER.sessionId]);
+  const tool = fixture({goal: true});
+  tool.model();
+  tool.at(29.7);
+  tool.reply(ANSWER);
+  tool.at(STOP_AT);
+  tool.reply({stopReason: 'toolUse', content: [{type: 'toolCall', id: 'read-9', name: 'read', arguments: {}}]});
+  const decision = tool.guard.beforeToolCall({toolName: 'read', params: {path: 'game/ui.js'}, toolCallId: 'read-9'},
+    {...OWNER, toolName: 'read', toolCallId: 'read-9'});
+  assert.equal(decision?.block, true);
+  assert.deepEqual(tool.aborts, [OWNER.sessionId]);
+});
+
+// One before the attempt's prompt runs with no live run to abort; one after
+// an answer belongs to that answer.
+test('a compaction call is no stop point', () => {
+  const compaction = (f, callId) => {
+    f.guard.observeCompaction(OWNER, 'start');
+    f.guard.observeModelCall({callId}, OWNER);
+  };
+  const f = fixture({goal: true});
+  f.at(10);
+  f.begin();
+  f.at(STOP_AT);
+  compaction(f, 'compact-1');
+  f.at(29.9);
+  assert.deepEqual(f.aborts, []);
+  f.guard.observeModelEnd({callId: 'compact-1', outcome: 'completed'}, OWNER);
+  f.guard.observeCompaction(OWNER, 'end');
+  f.model();
+  f.at(29.9 + STREAM_STARTED);
+  assert.deepEqual(f.aborts, [OWNER.sessionId]);
+  const answered = fixture({goal: true});
+  answered.model();
+  answered.at(29.7);
+  answered.reply(ANSWER);
+  compaction(answered, 'compact-2');
+  answered.at(31);
+  assert.deepEqual(answered.aborts, []);
 });
 
 test('a tool-limit stop\'s answer turn and a refused delete keep their own stop', () => {
-  const f = fixture();
+  const f = fixture({goal: true});
   f.model();
   for (let i = 0; i < RUN_PROGRESS_LIMITS.consecutiveFailures; i++) {
     const toolCallId = `failed-${i}`;
@@ -371,7 +451,7 @@ test('a tool-limit stop\'s answer turn and a refused delete keep their own stop'
   }
   f.at(31);
   assert.deepEqual(f.aborts, []);
-  const refused = fixture();
+  const refused = fixture({goal: true});
   refused.model();
   const ctx = {...OWNER, toolName: 'exec', toolCallId: 'rm-1'};
   assert.equal(refused.guard.beforeToolCall({toolName: 'exec', toolCallId: 'rm-1',
@@ -382,23 +462,31 @@ test('a tool-limit stop\'s answer turn and a refused delete keep their own stop'
 
 test('Portal\'s stop ends a sandboxed command too, like every ODS stop', () => {
   const signalled = [];
-  const f = fixture({execControl: {signal: runId => { signalled.push(runId); return true; }}});
+  const f = fixture({goal: true, execControl: {signal: runId => { signalled.push(runId); return true; }}});
   f.model();
   f.at(STOP_AT);
   assert.deepEqual(signalled, [RUN_ID]);
   assert.deepEqual(f.aborts, [OWNER.sessionId]);
 });
 
+// Beyond what a Node timer holds a timer fires at once (OpenClaw clamps its own).
+test('a timeout too long for a timer arms no stop', () => {
+  const f = fixture({goal: true, capabilities: {...CAPABILITIES, runTimeoutSeconds: 3_000_000}});
+  assert.equal(f.timers.size, 0);
+  assert.equal(fixture({goal: true}).timers.size, 1);
+});
+
 test('Portal never stops an attempt that ended, a cancelled run, or a newer run in the chat', async () => {
-  const ended = fixture();
+  const ended = fixture({goal: true});
   ended.model();
   ended.at(29);
   ended.guard.observeAgentEnd({success: true, messages: []}, OWNER);
   assert.equal(ended.timers.size, 0, 'agent_end cancels the stop');
   ended.at(60);
   assert.deepEqual(ended.aborts, []);
-  // The owner's Stop aborts and drains the run itself.
-  const cancelled = fixture();
+  // The owner's Stop aborts and drains the run itself, also once this stop
+  // was due: a later tool call is not this stop's to refuse.
+  const cancelled = fixture({goal: true});
   cancelled.at(10);
   cancelled.begin();
   cancelled.model();
@@ -407,8 +495,19 @@ test('Portal never stops an attempt that ended, a cancelled run, or a newer run 
   assert.equal(await cancelled.guard.abortUserRun(USER), true);
   cancelled.at(31);
   assert.deepEqual(cancelled.aborts, []);
+  const due = fixture({goal: true});
+  due.at(10);
+  due.begin();
+  due.at(20);
+  due.exec('node --check game/ui.js');
+  due.at(STOP_AT);
+  assert.equal(await due.guard.abortUserRun(USER), true);
+  const late = due.guard.beforeToolCall({toolName: 'read', params: {path: 'game/ui.js'}, toolCallId: 'read-late'},
+    {...OWNER, toolName: 'read', toolCallId: 'read-late'});
+  assert.notEqual(late?.blockReason, 'Portal stopped this response at its time limit before this call ran.');
+  assert.deepEqual(due.aborts, []);
   // The owner's next message started a newer run in the same session.
-  const replaced = fixture();
+  const replaced = fixture({goal: true});
   replaced.at(10);
   replaced.begin();
   replaced.model();

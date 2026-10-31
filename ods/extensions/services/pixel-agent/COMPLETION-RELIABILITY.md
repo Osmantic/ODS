@@ -694,30 +694,34 @@ which ODS resets. The model had no warning that the deadline was near.
     is sent again with the same bytes. A tool-limit stop, its tool-free answer
     turn, an owner cancel, the guard's own deadline stop and any other ODS
     abort get no notice.
-- **Portal stops the response itself, just before the deadline.** OpenClaw's
+- **Portal stops a `/goal` round itself, just before the deadline.** OpenClaw's
   timer cannot be relied on to end a response before the ingress cuts it off
-  with no reply (laptop, 2026-10-30: a `/goal` round then ended its goal
-  instead of continuing). A later attempt gets a fresh 30 minutes. The first
-  attempt's timer can extend by the compaction grace
+  with no reply, and a goal round cut off that way ends its goal instead of
+  continuing (laptop, 2026-10-30). A later attempt gets a fresh 30 minutes.
+  The first attempt's timer can extend by the compaction grace
   (`agents.defaults.compaction.timeoutSeconds`, which ODS pins to 1800
   seconds) when a compaction is in flight, or start a compaction and a retry
-  when the prompt fills over 65% of the window. So for the owner's own turns
-  the guard stops the response 15 seconds before its deadline (1/60 of
+  when the prompt fills over 65% of the window. So for the owner's goal
+  rounds the guard stops the response 15 seconds before its deadline (1/60 of
   shorter timeouts), counted from the response's start, whatever attempt it
-  is on. It stops only where the abort reaches OpenClaw's run and costs no
-  answer:
+  is on. Other chats keep OpenClaw's timer and the ingress, as before. It
+  stops only where the abort reaches OpenClaw's run and costs no answer:
   - a tool that is running, with the run-ID marker that also ends a sandboxed
     command, like every ODS stop;
-  - a model call at least 3 seconds old. An abort while a call still sets up
-    its stream left the attempt hung until its own timer, and one before the
-    attempt's first call cannot reach the prompt OpenClaw starts next. So the
-    stop waits for the call;
+  - a model call of an agent turn at least 3 seconds old. An abort while a
+    call still sets up its stream left the attempt hung until its own timer,
+    and one before the attempt's first turn cannot reach the prompt OpenClaw
+    starts next. So the stop waits for that turn. A compaction call is never
+    a stop point: before the prompt there is no live run to abort, and after
+    an answer it belongs to that answer;
   - the next tool call, which it refuses.
 
   It never stops an attempt that wrote its answer (OpenClaw drops the answer
-  of an attempt anything but its own timer aborted), the answer turn after a
-  tool-limit stop or a refused delete, an owner's Stop, or a newer run in the
-  chat. If the stop is not taken, the next model or tool call tries again.
+  of an attempt anything but its own timer aborted): if that attempt goes on,
+  its next turn or tool call is stopped, and so is a revision it asks for. It
+  never stops the answer turn after a tool-limit stop or a refused delete, an
+  owner's Stop, or a newer run in the chat. If the stop is not taken, the next
+  turn or tool call tries again.
 - **The owner is told what happened.** No hook reports the runtime's timeout
   kind, so `agent_end` classifies it. After the guard's own stop the deadline
   is the cause. Otherwise all of these must hold:
@@ -751,12 +755,17 @@ which ODS resets. The model had no warning that the deadline was near.
   verification. This also covers a deadline during a tool call, where OpenClaw
   emits no timeout text at all.
 
-Some responses still reach the ingress's cut with no reply. There is no
-attempt to stop while a compaction runs between attempts. An attempt that
-wrote its answer finishes its finalization, however long that takes. Time the
-ingress spends preparing history before the first attempt counts against its
-1920 seconds but not against the 30 minutes. The dashboard then shows "Portal
-could not complete the response", and a goal ends there.
+Some goal rounds still reach the ingress's cut with no reply:
+- a compaction between attempts, or a compaction call in flight, that runs
+  past the cut: there is nothing safe to stop until the next turn;
+- an attempt that wrote its answer and is still finalizing;
+- a model call that begins in the last 3 seconds before the first attempt's
+  own timer, which then fires first and may start its compaction and retry;
+- a long history preparation by the ingress before the first attempt, which
+  counts against its 1920 seconds but not against the 30 minutes.
+
+The dashboard then shows "Portal could not complete the response", and the
+goal ends there.
 
 Subagent, cron and team-worker runs get no notice, stop or copy: subagent and
 cron lanes can use another timeout or none, and a team worker reports to its
