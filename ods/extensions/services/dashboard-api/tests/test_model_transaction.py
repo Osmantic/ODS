@@ -161,6 +161,31 @@ def test_journal_is_private_and_precedes_begin_without_secrets(controller):
 
 
 @pytest.mark.parametrize('partial',[False,True])
+def test_a_refused_apply_is_resolved_by_fresh_native_state(controller,monkeypatch,partial):
+    _,state,calls,call=controller
+    tx=host._begin_pixel_model_transaction({'PIXEL_OPENWEBUI_KEY':'configured'})
+    def refuse(operation,request=None,*,config):
+        if operation=='model-apply':
+            if partial:call(operation,request,config=config)
+            else:calls.append(operation)
+            raise host._PixelModelTransactionRejected('refused',code='invalid-target')
+        return call(operation,request,config=config)
+    monkeypatch.setattr(host,'_runtime_model_control',refuse)
+    if partial:
+        # The controller took the target before refusing to answer: applied.
+        assert tx.apply(NEW)=='reconciled' and state['contract']==NEW
+        return
+    # A refusal that changed nothing leaves the transaction held for a clean rollback.
+    with pytest.raises(host._PixelModelTransactionRejected):tx.apply(NEW)
+    journal=json.loads(host._pixel_model_journal_path().read_text())
+    assert journal['phase']=='held' and journal['target'] is None and tx.target is None
+    tx.verify_held()
+    tx.finish('rollback')
+    assert state['contract']==OLD and not host._pixel_model_recovery_status()['pending']
+    assert calls==['model-status','model-begin','model-apply','model-status','model-status','model-finish']
+
+
+@pytest.mark.parametrize('partial',[False,True])
 def test_begin_409_is_resolved_by_fresh_native_state_not_status_code(controller,monkeypatch,partial):
     _,state,calls,call=controller
     def reject(operation,request=None,*,config):

@@ -4159,6 +4159,7 @@ def _remote_provider_route_state_from_plan(
     *,
     probe_receipt: dict | None = None,
     resume: dict | None = None,
+    vision: dict | None = None,
 ) -> dict:
     route = plan.get("route") if isinstance(plan.get("route"), dict) else {}
     enabled = route.get("enabled") is True
@@ -4187,7 +4188,18 @@ def _remote_provider_route_state_from_plan(
     # an exact recovery target.
     if isinstance(resume, dict):
         state["resume"] = resume
+    if enabled and isinstance(vision, dict):
+        state["status"]["vision"] = vision
     return state
+
+
+def _remote_provider_saved_vision(saved_state: object, route: dict) -> dict | None:
+    """The saved route's vision receipt, when it was measured on this same route."""
+    status = saved_state.get("status") if isinstance(saved_state, dict) else None
+    receipt = status.get("vision") if isinstance(status, dict) else None
+    if isinstance(receipt, dict) and receipt.get("routeFingerprint") == _remote_provider_route_fingerprint(route):
+        return receipt
+    return None
 
 
 def _remote_provider_safe_text(value, *, max_length: int) -> str:
@@ -4855,6 +4867,13 @@ class _PixelModelTransaction:
                     and value['transactionId']!=self.id):
                 self._save('completed','rollback')
                 raise error
+            # A refused apply changed nothing: the transaction still holds the
+            # previous contract, so the caller rolls back as from any failure.
+            if (operation=='model-apply' and isinstance(error,_PixelModelTransactionRejected)
+                    and self._matches(value, 'held', self.previous)):
+                self.target = None
+                self._save('held')
+                raise error
         if not self._matches(value, phase, contract, outcome):
             raise _PixelModelTransactionUncertain('Managed model transaction outcome is unconfirmed; recovery is required')
         return value
@@ -4925,16 +4944,20 @@ def _pixel_local_identity_matches(config: dict, identity: str, expected: str) ->
     return identity == str(_active_model_directory(config) / gguf)
 
 
+def _remote_provider_contract_matches_route(contract: dict) -> bool:
+    """Whether a Pixel contract names the saved remote route, image input aside."""
+    expected = _remote_provider_runtime_contract(_read_remote_provider_route_state_for_update())
+    observed = dict(contract)
+    # This proves route identity, not image understanding. The native model
+    # transaction separately verifies the transport policy.
+    expected.pop('imageInput', None)
+    observed.pop('imageInput', None)
+    return _valid_managed_pixel_runtime_contract(contract) and expected == observed
+
+
 def _prove_pixel_model_contract(config: dict, contract: dict) -> bool:
     if 'routeFingerprint' in contract:
-        route = _read_remote_provider_route_state_for_update()
-        expected = _remote_provider_runtime_contract(route)
-        observed = dict(contract)
-        # This endpoint proves route identity, not image understanding. The
-        # native model transaction separately verifies the transport policy.
-        expected.pop('imageInput', None)
-        observed.pop('imageInput', None)
-        if not _valid_managed_pixel_runtime_contract(contract) or expected != observed:
+        if not _remote_provider_contract_matches_route(contract):
             logger.warning("Portal model contract proof failed: the contract does not match the saved remote route")
             return False
         try:
@@ -5621,7 +5644,7 @@ def _remote_provider_vision_colors() -> tuple[str, str]:
     return left, right
 
 
-def _remote_provider_vision_probe(env: dict, max_tokens: int) -> str:
+def _remote_provider_vision_probe(env: dict, runtime: dict[str, object]) -> str:
     """supported, unsupported or unknown from one two-square probe of ods/current."""
     if _model_profile_probes is None:
         return "unknown"
@@ -5629,7 +5652,8 @@ def _remote_provider_vision_probe(env: dict, max_tokens: int) -> str:
         lambda path, payload, timeout: _litellm_exchange(env, path, payload, timeout),
         _model_profile_probes.Budget(_REMOTE_PROVIDER_VISION_PROBE_SECONDS),
         _remote_provider_vision_colors(),
-        max_tokens=min(max_tokens, _REMOTE_PROVIDER_VISION_MAX_TOKENS),
+        max_tokens=min(int(runtime["maxTokens"]), _REMOTE_PROVIDER_VISION_MAX_TOKENS),
+        model=str(runtime["model"]),
     )
     logger.info("Remote route vision probe: %s %s (%d ms)",
                 result["status"], result["failureClass"] or "", result["ms"])
@@ -5640,7 +5664,7 @@ def _remote_provider_vision_probe(env: dict, max_tokens: int) -> str:
 def _remote_provider_vision_receipt(route: dict, env: dict) -> dict | None:
     """A receipt of one vision probe of the route LiteLLM serves; None when inconclusive."""
     runtime = _remote_provider_runtime_contract(route)
-    image_input = _remote_provider_vision_probe(env, runtime["maxTokens"])
+    image_input = _remote_provider_vision_probe(env, runtime)
     if image_input == "unknown":
         return None
     return {
@@ -5683,6 +5707,12 @@ def _record_remote_provider_vision(route: dict, env: dict) -> dict:
     return state
 
 
+# The model controller's refusals that mean Portal is busy right now: a run in
+# progress, or another model operation holding its lock. Any other refusal is
+# a real failure.
+_PORTAL_BUSY_CODES = frozenset({"active-run", "transition-busy"})
+
+
 def _rebind_remote_provider_pixel(runtime: dict[str, object]) -> dict[str, object] | None:
     """Bind Pixel to a new image input of the route LiteLLM and the relay already serve.
 
@@ -5701,6 +5731,8 @@ def _rebind_remote_provider_pixel(runtime: dict[str, object]) -> dict[str, objec
     try:
         transaction = _begin_pixel_model_transaction(load_env(env_path))
     except _PixelModelTransactionRejected as exc:
+        if exc.code not in _PORTAL_BUSY_CODES:
+            raise
         logger.info("Remote route image input waits until Portal is idle: %s", exc)
         return None
     pixel_before = transaction.previous if transaction is not None else _managed_pixel_runtime_contract()
@@ -5736,8 +5768,11 @@ def _rebind_remote_provider_pixel(runtime: dict[str, object]) -> dict[str, objec
         if transaction is None:
             _reconcile_managed_pixel_contract(pixel_before)
         else:
-            if not _prove_pixel_model_contract(load_env(env_path), pixel_before):
-                raise _PixelModelTransactionUncertain('Previous remote route contract could not be proved; maintenance remains held') from exc
+            # Nothing on the inference side changed, so the previous contract
+            # needs its route identity, not a live completion: a provider
+            # outage must not leave the model lane held.
+            if not _remote_provider_contract_matches_route(pixel_before):
+                raise _PixelModelTransactionUncertain('Previous remote route contract does not match the saved route; maintenance remains held') from exc
             transaction.finish('rollback')
         raise
 
@@ -6049,11 +6084,13 @@ def _write_remote_provider_route_state(
     *,
     probe_receipt: dict | None = None,
     resume: dict | None = None,
+    vision: dict | None = None,
 ) -> None:
     state = _remote_provider_route_state_from_plan(
         plan,
         probe_receipt=probe_receipt,
         resume=resume,
+        vision=vision,
     )
     _atomic_write_text(
         _remote_provider_route_state_path(),
@@ -6334,6 +6371,9 @@ def _apply_remote_provider_lifecycle_operation(payload: dict, plan: dict) -> dic
                 plan,
                 probe_receipt=probe_receipt,
                 resume=resume,
+                # A receipt for this same route stands until a conclusive
+                # probe of this proof replaces it.
+                vision=_remote_provider_saved_vision(saved_state, route),
             )
             mutation_started = True
             if ssh_enable:

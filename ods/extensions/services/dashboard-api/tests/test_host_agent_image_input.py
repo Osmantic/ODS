@@ -311,19 +311,31 @@ def _png_pixels(url):
     return width, height, tuple(row[:3]), tuple(row[-3:])
 
 
+_IMAGE_REFUSED = (400, '{"error": {"message": "image input is not supported"}}')
+
+
 @pytest.mark.parametrize("answers,expected", [
     ([_completion("Green, blue.")], "supported"),
     ([_completion("<think>Two squares: green, then blue.</think>\n\n**Green** and **Blue**")], "supported"),
+    # Framing words around the two colours do not count toward the limit.
+    ([_completion("Left: green, right: blue.")], "supported"),
+    ([_completion("Green square, blue square")], "supported"),
+    ([_completion("The left square is green and the right one is blue.")], "supported"),
+    # Reasoning that lost its opening tag ends at the closing one.
+    ([_completion("The user asks about colors. I cannot see images? No, I can.</think>\n\nGreen, blue")], "supported"),
     # Unambiguous misses: a palette colour that is not there, or no sight.
     ([_completion("Red, blue")], "unsupported"),
     ([_completion("I can't see the image you've shared.")], "unsupported"),
-    ([(400, '{"error": {"message": "image input is not supported"}}')], "unsupported"),
-    # Neither: a swap, one colour, a hedge, a long or cut-off answer, an error.
+    # A refusal naming image input, when the same request without it is answered.
+    ([_IMAGE_REFUSED, _completion("I see no squares.")], "unsupported"),
+    # Neither: a swap, one colour, a hedge, a cut-off answer, an unconfirmed refusal, an error.
     ([_completion("Blue, green")], "unknown"),
     ([_completion("Green")], "unknown"),
     ([_completion("Maybe green, blue")], "unknown"),
-    ([_completion("The left square is green and the right one is blue.")], "unknown"),
+    ([_completion("I can't see the image very well, but: green, blue")], "unknown"),
     ([_completion("Green, bl", "length")], "unknown"),
+    ([_IMAGE_REFUSED, (400, '{"error": {"message": "seed is not supported"}}')], "unknown"),
+    ([(400, '{"error": {"message": "seed is not supported for remote-vision"}}')], "unknown"),
     ([(400, '{"error": {"message": "max_tokens is too large"}}')], "unknown"),
     ([(429, "image requests are rate limited")], "unknown"),
     ([(200, "not json")], "unknown"),
@@ -335,15 +347,20 @@ def _png_pixels(url):
 def test_one_vision_probe_through_the_gateway_decides_only_on_a_clear_answer(monkeypatch, answers, expected):
     monkeypatch.setattr(agent, "_remote_provider_vision_colors", lambda: ("green", "blue"))
     requests = _litellm_answers(monkeypatch, *answers)
-    assert agent._remote_provider_vision_probe({}, 4096) == expected
+    # The route's model id itself names vision: that alone is no refusal.
+    assert agent._remote_provider_vision_probe({}, agent._remote_provider_runtime_contract(_remote_state())) == expected
     assert len(requests) == len(answers)
     for path, payload, timeout in requests:
         assert path == "/v1/chat/completions" and 0 < timeout <= 30
-        text, image = payload["messages"][0]["content"]
+        text, *image = payload["messages"][0]["content"]
         assert text["text"] == agent._model_profile_probes.REMOTE_VISION_PROMPT
-        assert _png_pixels(image["image_url"]["url"]) == (224, 112, (0, 160, 0), (0, 0, 255))
         # No thinking switch a provider could refuse; room for a reasoning model.
         assert "chat_template_kwargs" not in payload and payload["max_tokens"] == 1024
+        if image:
+            assert _png_pixels(image[0]["image_url"]["url"]) == (224, 112, (0, 160, 0), (0, 0, 255))
+    # Only the confirmation of a refusal leaves the image out.
+    assert [len(payload["messages"][0]["content"]) for _, payload, _ in requests] == (
+        [2, 1] if answers[0] == _IMAGE_REFUSED else [2] * len(answers))
 
 
 @pytest.mark.parametrize("answer", ["I can't see the image you've shared.", "No image appeared.", "Shared",
@@ -353,13 +370,14 @@ def test_a_word_that_merely_contains_a_colour_is_never_sight(monkeypatch, answer
     # The P6 substring test read "red" in all of these (H1): none may pass.
     monkeypatch.setattr(agent, "_remote_provider_vision_colors", lambda: ("red", "blue"))
     _litellm_answers(monkeypatch, _completion(answer))
-    assert agent._remote_provider_vision_probe({}, 4096) != "supported"
+    assert agent._remote_provider_vision_probe({}, agent._remote_provider_runtime_contract(_remote_state())) != "supported"
 
 
 def test_the_probe_answers_within_the_route_output_limit(monkeypatch):
     requests = _litellm_answers(monkeypatch, _completion("Green, blue"))
     monkeypatch.setattr(agent, "_remote_provider_vision_colors", lambda: ("green", "blue"))
-    assert agent._remote_provider_vision_probe({}, 256) == "supported"
+    runtime = agent._remote_provider_runtime_contract(_remote_state(maxTokens=256))
+    assert agent._remote_provider_vision_probe({}, runtime) == "supported"
     assert requests[0][1]["max_tokens"] == 256
 
 
