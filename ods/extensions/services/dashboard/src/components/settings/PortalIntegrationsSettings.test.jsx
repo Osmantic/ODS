@@ -350,6 +350,15 @@ it('shows why a save failed in the bar where Save was pressed', async () => {
   expect(screen.queryByRole('alert')).toBeNull()
 })
 
+it('says the digest waits until News is turned on', async () => {
+  fakeService()
+  const news = await screen.findByRole('listitem', { name: 'News' })
+  fireEvent.click(within(news).getByLabelText('Send me a daily news digest'))
+  expect(within(news).getByText(/The digest starts once you turn on/)).toBeInTheDocument()
+  fireEvent.click(within(news).getByLabelText('Let Portal read my news feeds'))
+  expect(within(news).queryByText(/The digest starts once you turn on/)).toBeNull()
+})
+
 it('says when no page is watched yet', async () => {
   fakeService(withApps({ watch: { ...APPS.watch, enabled: true } }, { watch: true }), { watches: { total: 0, watches: [] } })
   expect(await screen.findByText(/No pages are watched yet/)).toBeInTheDocument()
