@@ -6553,10 +6553,13 @@ const SHOW_NEGATION =
 // only leaves publishing optional.
 const DEFERRED_REQUEST = /\b(?:later|tomorrow|tonight|eventually|someday|at\s+some\s+point|pending|approv\w*|sign(?:s|ed)?[- ]?off|not\s+(?:yet|now|today|until|till|before)|only\s+(?:after|when|if|once)|next\s+(?:time|week|month|turn|round|session|day|morning|weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|(?:on|this|by)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekend)|in\s+the\s+(?:morning|afternoon|evening)|in\s+(?:an?|\d+|a\s+few|two|three)\s+(?:hours?|minutes?|days?|weeks?)|(?:after|before|once|when|whenever|until|till|unless|as\s+soon\s+as)\s+(?:I\b|I['’](?:ve|m|ll|d)\b|we\b|we['’](?:ve|re|ll)\b|my\b|our\b|the\s+(?:client|customer|boss|team)\b|they\b|you\s+hear\b|review\b))/i;
 const PURPOSE_CLAUSE = /\b(?:so\s+(?:that\s+)?(?:I|we)\b|because\b|while\s+(?:I|we)\b)/i;
-// After the request only an explicit hold on it counts ("Only after I approve,
-// though.", "But not until the client signs off.", "Wait for my go."); a
-// sign-off such as "talk later" or "I'll look at it tonight" does not.
-const ACTION_DEFERRAL = /\b(?:only\s+(?:after|when|if|once)|not\s+(?:yet|now|today|until|till|before)|wait\s+(?:for\s+(?:my|me|the|our|a)\b|until)|hold\s+(?:it|off|on)\b|(?:after|until|till|once)\s+(?:(?:I|we)\s+(?:approve|review|say|confirm|sign|give|check|decide)|the\s+(?:client|customer|boss|team)|approval|sign[- ]?off))/i;
+// After the request only an explicit hold on it counts, one that names who
+// must act: "Only after I approve, though.", "But not until the client signs
+// off.", "Wait for my go.", "Hold it." A sign-off ("talk later", "I'll look at
+// it tonight") or a test step ("Wait for the attack to finish", "Hold on, one
+// more thing", "after the client connects") does not.
+const OWNER_ACTS = String.raw`(?:I|we|the\s+(?:client|customer|boss|team)|they)\b`;
+const ACTION_DEFERRAL = new RegExp(String.raw`(?:^|[.!?;:,]\s*|\bbut\s+)not\s+(?:yet|now|today)\b|\bnot\s+(?:until|till|before)\s+${OWNER_ACTS}|\bonly\s+(?:after|when|once|if)\s+${OWNER_ACTS}|\bwait\s+(?:for\s+(?:me\b|(?:my|our)\s+(?:go|ok(?:ay)?|approval|word|sign[- ]?off|green\s+light)\b)|until\s+(?:I|we)\b)|\bhold\s+(?:it|off)\b|\b(?:after|until|till|once)\s+(?:${OWNER_ACTS}\s*(?:approves?|signs?|confirms?|okays?|gives?|says?\s+so|reviews?|reviewed)|(?:my\s+|our\s+|the\s+)?(?:approval|sign[- ]?off|go[- ]ahead|review)\b)`, 'i');
 // The owner asks Portal itself to look at the page in the preview, at the start
 // of a sentence or after the repair it asks for: "check it in the preview",
 // "please fix those and check it in the preview", "can you verify it in the

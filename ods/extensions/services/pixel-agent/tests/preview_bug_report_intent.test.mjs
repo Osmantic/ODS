@@ -64,7 +64,9 @@ test('a bug report gets its preview when the owner asks to check it there', () =
   // A later constraint on the code is not a later "don't show", and a sign-off
   // or a purpose clause puts nothing off.
   for (const constraint of ["Don't change how the menu opens.", "Don't change the display font.", 'Never remove the show-more button.',
-    "I'll look at it later tonight.", 'Thanks, talk later!', "I'll be back in an hour."]) {
+    "I'll look at it later tonight.", 'Thanks, talk later!', "I'll be back in an hour.",
+    'Wait for the attack animation to finish before checking the rings.', 'Hold on, one more thing: the rings should be red.',
+    'Make sure the rings show after the client connects.', 'The ring should show only after a hit.']) {
     assert.equal(previewRefused(`In demo, attacks never show. Fix it and check it in the preview. ${constraint}`), false, constraint);
   }
   assert.equal(previewRefused('In demo, attacks never show. Please fix those and check it in the preview this time so I can review it tomorrow.'), false);
@@ -127,6 +129,10 @@ test('a prohibition still forbids the preview, however it is written', () => {
     "Fix demo/index.html. Don't show it yet. Check it in the preview. Only after I approve, though.",
     "Fix demo/index.html. Don't show it yet. Publish demo/index.html. But not until the client signs off.",
     "Fix demo/index.html. Don't show it yet. Publish demo/index.html. Tomorrow, not today.",
+    "Fix demo/index.html. Don't show it yet. Check it in the preview. Wait for my go.",
+    "Fix demo/index.html. Don't show it yet. Check it in the preview. But wait for me first.",
+    "Fix demo/index.html. Don't show it yet. Publish demo/index.html. Hold it until Friday.",
+    "Fix demo/index.html. Don't show it yet. Check it in the preview. Only when I say so.",
   ]) assert.equal(previewRefused(prompt), true, prompt);
 });
 
