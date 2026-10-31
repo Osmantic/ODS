@@ -642,6 +642,20 @@ for (const prompt of [
   });
 }
 
+test("a bug description does not weaken a named publication request", () => {
+  // "the error rows never show" describes the page; the request still holds.
+  for (const prompt of ["Publish log-viewer-lab.", "In log-viewer-lab, the error rows never show. Publish log-viewer-lab."]) {
+    const guard = createToolLoopGuard();
+    const { params } = seedNamedPreview(guard);
+    const context = { agentId: "pixel", runId: "run-named-report", sessionId: "session-1" };
+    guard.observeRun(context, "pixel", { prompt });
+    assert.equal(guard.verificationForRun(context.runId).status, "failed", prompt);
+    assert.notEqual(call(guard, "pixel_ods_workspace_preview", {
+      context, event: { runId: context.runId, params },
+    })?.block, true, prompt);
+  }
+});
+
 for (const [prompt, sessionId] of [
   ["Publish another-lab.", "session-1"],
   ["Publish log-viewer-lab.other.", "session-1"],

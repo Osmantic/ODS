@@ -6535,27 +6535,75 @@ function ownerDeclinesPreviewDelivery(text) {
   return optional;
 }
 
+// A bug report says what the page does, not what Portal may do: "...so
+// attacks never show", "the labels don't show up", "the page loads without
+// showing the score". On the laptop (2026-10-30) "attacks never show" in an
+// owner's bug report refused publication three times, in a turn that asked
+// for a preview. The preview intent checks read the message with those
+// descriptions masked, as the host-action words above are read. A negation is
+// masked only after its own subject: a plural noun, a noun after "the", "my"
+// and the like, or "they". That subject is never Portal, the owner, an
+// audience, a deliverable or a time ("this time don't ..."); the verb is never
+// a publishing verb; and the clause never opens with "if" or "when", whose
+// last word may end that clause. An instruction to Portal has no subject, so
+// every prohibition still forbids as before.
+const NOT_A_DESCRIBED_SUBJECT = new Set((
+  'i we you u portal portals pixel ods agent agents assistant assistants ai bot bots model models claude codex ' +
+  'client clients customer customers user users visitor visitors people others everyone anyone nobody public ' +
+  'team teams guest guests viewer viewers reader readers ' +
+  'yes thanks thx pls ps guys folks always sometimes perhaps besides afterwards towards regardless nevertheless ' +
+  'whereas as was has does its ' +
+  'time times moment moments round rounds turn turns run runs step steps way ways point points case cases ' +
+  'meantime meanwhile end rest day days week weeks hour hours minute minutes second seconds try tries attempt ' +
+  'attempts now later ' +
+  'preview previews page pages webpage webpages site sites website websites app apps application applications ' +
+  'result results output outputs demo demos game games project projects build builds version versions file files ' +
+  'snapshot snapshots artifact artifacts prototype prototypes'
+).split(' '));
+// A subject is a noun phrase: never a modal ("the agent must never show it"
+// has the subject "agent"), a conjunction ("create the page and never show
+// it" has none) or a pronoun object.
+const NOUN_PHRASE_WORD = String.raw`(?!(?:should|must|will|would|can|could|do|and|or|nor|but|so|then|yet|also|just|please|now|still|it|me|us|them|him|to|of|in|on|at|for|with|from|by|that|this|which|who|if|when|after|before|until|once|while)\b)[a-z][\w'’-]*`;
+const DESCRIBED_NEGATION = new RegExp(String.raw`\b(?:(the|my|our|your|its|their|his|her|these|those|all|some|both|each|every)\s+(?:${NOUN_PHRASE_WORD}\s+){0,2})?(${NOUN_PHRASE_WORD})\s+((?:should|must|will|would|can|could)\s+)?((?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip)\s+(?!(?:(?:try|attempt)\s+to\s+)?(?:publish|republish|preview|serve|deploy))[a-z][\w-]*)`, 'gi');
+// "the game restarts without showing the menu": a subject opens the clause.
+const DESCRIBED_WITHOUT = /((?:^|[!?;:\n,]|\.(?=\s))\s*(?:in\s+[\w./-]+\s+)?(?:(?:the|my|our|your|its|their|his|her|these|those|each|every)\s+(?:[a-z][\w'’-]*\s+){0,2}[a-z][\w-]*|it)\s+[a-z][\w-]*[^\W_su]s\s+)without\s+(?:show|display|open|view)ing\b/gi;
+// "the hit rings flicker and never show." ends with the description's verb.
+const DESCRIBED_TRAILING_NEVER = /\b(and|then)\s+never\s+(?:show|display|open|view)(?=\s*(?:[.,;:!?)]|$))/gi;
+const SUBORDINATE_CLAUSE_START =
+  /^\s*(?:(?:and|but|or|so)\s+)?(?:if|when|whenever|once|after|before|until|unless|while|since|as\s+soon\s+as|as\s+long\s+as|so\s+long\s+as|in\s+case|provided)\b/i;
+
+function maskBehaviorDescriptions(text) {
+  return text
+    // "Don't show up" never means "don't publish".
+    .replace(/\b(do\s+not|don['’]t|never)\s+show(ing)?\s+up\b/gi, '$1 appear$2')
+    .replace(DESCRIBED_WITHOUT, '$1described')
+    .replace(DESCRIBED_TRAILING_NEVER, '$1 described')
+    .replace(DESCRIBED_NEGATION, (match, determiner, subject, modal, negated, offset, whole) => {
+      const head = subject.toLowerCase();
+      const clause = whole.slice(0, offset).split(/[!?;:\n,]|\.(?=\s)/).pop();
+      const hasModal = Boolean(modal) || /^(?:must|should)\s/i.test(negated);
+      const described = !NOT_A_DESCRIBED_SUBJECT.has(head) && !SUBORDINATE_CLAUSE_START.test(clause) &&
+        (Boolean(determiner) || /[^\W_siu]s$/i.test(head) || (head === 'they' && !hasModal));
+      return described ? match.slice(0, -negated.length) + 'described' : match;
+    });
+}
+
 function ownerForbidsWorkspacePreview(messages, prompt) {
-  const text = localPreviewPolicyText(currentOwnerIntentText(messages, prompt))
+  const text = maskBehaviorDescriptions(localPreviewPolicyText(currentOwnerIntentText(messages, prompt))
     .replace(/(?:\x60{3}|~{3})[\s\S]*?(?:\x60{3}|~{3})/g, " ")
     .replace(/^\s*>[^\n]*/gm, " ")
-    .replace(/"[^"\n]*"|\x60[^\x60\n]*\x60/g, " ");
+    .replace(/"[^"\n]*"|\x60[^\x60\n]*\x60/g, " "));
   // Preserve explicit owner constraints without requiring a positive visual
   // vocabulary to use the local snapshot tool. These are delivery actions,
   // not filenames, quoted examples, or another clause's edit restriction.
-  // Publishing verbs forbid wherever they are negated. Showing, displaying,
-  // opening or viewing forbids only with an object aimed at Portal ("don't
-  // show it", "a preview", "in the browser", "here"): an owner's bug
-  // report said "...so attacks never show" on the laptop (2026-10-30), and
-  // publishing was refused three times in a turn that asked for a preview.
   // A coordinated prohibition can include objects: "Do not edit files or
   // publish anything". Stop at contrast/sentence boundaries so "do not edit
   // files, but publish the existing site" remains a publication request.
   const coordinatedProhibition = text
     .split(/[!?;\n]+|\.(?=\s|$)|\b(?:but|however|instead|then)\b/i)
-    .some((clause) => !independentEnglishPreviewAfterConstraint(clause) && /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:and|or|nor)\s+(?:(?:preview(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?)\b|(?:show(?:ing)?|view(?:ing)?|open(?:ing)?|display(?:ing)?)\s+(?:(?:me|us)\s+)?(?:(?:it|this|that|them|anything)\b|(?:a|the|my|your)\s+(?:preview|site|website|web\s*page|page|result|app)\b|[^.!?;\n]{0,40}\b(?:in\s+(?:the\s+|a\s+)?browser|here)\b))/i.test(clause));
+    .some((clause) => !independentEnglishPreviewAfterConstraint(clause) && /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:and|or|nor)\s+(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(clause));
   if (coordinatedProhibition || ownerDeclinesPreviewDelivery(text)) return true;
-  return portuguesePreviewForbidden(text) || /\b(?:only|just)\s+(?:the\s+)?(?:code|source(?:\s+code)?)\b/i.test(text) || /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:(?:try|attempt)\s+to\s+)?(?:(?:create|build|edit|write|run|execute)\s*(?:,\s*|and\s+|or\s+))*(?:(?:preview(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?)\b|(?:show(?:ing)?|view(?:ing)?|open(?:ing)?|display(?:ing)?)\s+(?:(?:me|us)\s+)?(?:(?:it|this|that|them|anything)\b|(?:a|the|my|your)\s+(?:preview|site|website|web\s*page|page|result|app)\b|[^.!?;\n]{0,40}\b(?:in\s+(?:the\s+|a\s+)?browser|here)\b))/i.test(text);
+  return portuguesePreviewForbidden(text) || /\b(?:only|just)\s+(?:the\s+)?(?:code|source(?:\s+code)?)\b/i.test(text) || /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:(?:try|attempt)\s+to\s+)?(?:(?:create|build|edit|write|run|execute)\s*(?:,\s*|and\s+|or\s+))*(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(text);
 }
 
 function portuguesePreviewForbidden(text) {
@@ -6701,9 +6749,9 @@ function requestsNamedSessionPreview(text, preview) {
   if (!text || !preview?.relativeDirectory) return false;
   // A verified project name is a usable target: owners need not repeat
   // "website" or its full HTML path on every publication request.
-  const ownerText = text
+  const ownerText = maskBehaviorDescriptions(text
     .replace(/(?:\x60{3}|~{3})[\s\S]*?(?:\x60{3}|~{3})/g, " ")
-    .replace(/^\s*>[^\n]*/gm, " ");
+    .replace(/^\s*>[^\n]*/gm, " "));
   const directory = preview.relativeDirectory.replace(/[^A-Za-z0-9_/-]/g, "\\$&");
   const target = new RegExp(
     "^(?:(?:the|this|that|existing|current|updated|repaired)\\s+)*" +
@@ -6825,7 +6873,7 @@ function clauseRequestsVisualArtifact(clause, actionPattern, targetPattern) {
 }
 
 export function userMessageRequestsWorkspacePreview(messages, prompt = undefined) {
-  const text = workspacePreviewInstructionText(currentOwnerIntentText(messages, prompt));
+  const text = maskBehaviorDescriptions(workspacePreviewInstructionText(currentOwnerIntentText(messages, prompt)));
   if (!text) return false;
   if (portuguesePreviewForbidden(text) || ownerDeclinesPreviewDelivery(text)) return false;
   // Classify visual targets and actions from the same positive request text.
