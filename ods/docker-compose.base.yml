@@ -151,6 +151,12 @@ services:
       # ODS pins and updates Open WebUI itself; the upstream "new version"
       # check only calls GitHub and advertises releases ODS has not qualified.
       ENABLE_VERSION_UPDATE_CHECK: "false"
+      # The upstream changelog ("What's New") opens for the administrator on
+      # every first sign-in after a version change, and confuses a new owner
+      # (RTX Spark laptop, 2026-10-25). These are the defaults for interface
+      # settings a user has not changed; an administrator can still turn it
+      # on in Settings > Interface.
+      DEFAULT_INTERFACE_SETTINGS: '{"showChangelog":false}'
       # Arbitrary local models may answer chat but fail native tool calling.
       # Explicit per-model or chat Native settings override this default.
       DEFAULT_MODEL_PARAMS: '{"function_calling":"legacy"}'
