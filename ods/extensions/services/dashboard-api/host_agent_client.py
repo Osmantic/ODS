@@ -131,6 +131,8 @@ def _get_sync_client() -> httpx.Client:
     client = _sync_client
     if client is not None and not client.is_closed:
         return client
+    if not AGENT_URL:
+        raise AgentUnavailable("Host agent is disabled in this runtime profile")
     with _sync_client_lock:
         client = _sync_client
         if client is None or client.is_closed:
@@ -160,6 +162,8 @@ async def _get_async_client() -> httpx.AsyncClient:
         if owner_loop is None:
             setattr(client, "_ods_owner_loop", loop)
         return client
+    if not AGENT_URL:
+        raise AgentUnavailable("Host agent is disabled in this runtime profile")
     with _async_client_lock:
         client = _async_client
         owner_loop = getattr(client, "_ods_owner_loop", None) if client is not None else None

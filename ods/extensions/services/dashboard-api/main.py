@@ -39,6 +39,7 @@ from env_values import parse_env_value, quote_env_value
 from config import (
     SERVICES, DATA_DIR, INSTALL_DIR, SIDEBAR_ICONS, MANIFEST_ERRORS, ALWAYS_ON_SERVICES,
     AGENT_HOST, AGENT_PORT, AGENT_URL, ODS_AGENT_KEY,
+    RUNTIME_PROFILE, WINDOWS_DESKTOP_PROFILE,
     _detect_container_default_gateway, _running_inside_container,
     _read_env_from_file,
     get_env_file_read_error,
@@ -49,7 +50,7 @@ from models import (
     FullStatus, PortCheckRequest,
 )
 from security import verify_api_key
-from gpu import get_gpu_info
+from gpu import get_gpu_info, read_windows_user_gpu_preference
 from helpers import (
     get_all_services, get_cached_services, get_services_cache_revision, set_services_cache,
     get_disk_usage, dir_size_gb, get_model_info, get_bootstrap_status,
@@ -350,30 +351,40 @@ def _build_readiness_payload(
                 if not chat_ready and not bootstrap_info.active and not engine_starting else None),
     ))
 
-    webui = _service_by_id(service_statuses, "open-webui")
-    if webui is not None and webui.status == "not_deployed":
-        # The install switched Open WebUI off (ENABLE_OPEN_WEBUI; Portal is
-        # the chat app on fresh Pixel installs): nothing waits for it, and
-        # restarting a service the install leaves out repairs nothing.
+    if WINDOWS_DESKTOP_PROFILE:
         checks.append(_readiness_check(
             check_id="open-webui",
             name="Open WebUI",
             required=False,
             ready=False,
             status="disabled",
-            detail="Open WebUI is switched off in this install",
+            detail="Open WebUI is not used in the Windows Desktop profile",
         ))
     else:
-        webui_ready = _service_is_healthy(service_statuses, "open-webui")
-        checks.append(_readiness_check(
-            check_id="open-webui",
-            name="Open WebUI",
-            required=True,
-            ready=webui_ready,
-            status="ready" if webui_ready else "blocked",
-            detail="Open WebUI is reachable" if webui_ready else "Open WebUI is not healthy",
-            repair="ods restart open-webui" if not webui_ready else None,
-        ))
+        webui = _service_by_id(service_statuses, "open-webui")
+        if webui is not None and webui.status == "not_deployed":
+            # The install switched Open WebUI off (ENABLE_OPEN_WEBUI; Portal is
+            # the chat app on fresh Pixel installs): nothing waits for it, and
+            # restarting a service the install leaves out repairs nothing.
+            checks.append(_readiness_check(
+                check_id="open-webui",
+                name="Open WebUI",
+                required=False,
+                ready=False,
+                status="disabled",
+                detail="Open WebUI is switched off in this install",
+            ))
+        else:
+            webui_ready = _service_is_healthy(service_statuses, "open-webui")
+            checks.append(_readiness_check(
+                check_id="open-webui",
+                name="Open WebUI",
+                required=True,
+                ready=webui_ready,
+                status="ready" if webui_ready else "blocked",
+                detail="Open WebUI is reachable" if webui_ready else "Open WebUI is not healthy",
+                repair="ods restart open-webui" if not webui_ready else None,
+            ))
 
     checks.append(_readiness_check(
         check_id="dashboard-api",
@@ -385,15 +396,25 @@ def _build_readiness_payload(
     ))
 
     host_agent_ready = bool(host_agent.get("available"))
-    checks.append(_readiness_check(
-        check_id="host-agent",
-        name="Host Agent",
-        required=False,
-        ready=host_agent_ready,
-        status="ready" if host_agent_ready else "needs_repair",
-        detail="Host agent is reachable" if host_agent_ready else "Host agent is not reachable",
-        repair="ods agent restart" if not host_agent_ready else None,
-    ))
+    if WINDOWS_DESKTOP_PROFILE:
+        checks.append(_readiness_check(
+            check_id="host-agent",
+            name="Host Agent",
+            required=False,
+            ready=False,
+            status="disabled",
+            detail="Host agent is not used in the Windows Desktop profile",
+        ))
+    else:
+        checks.append(_readiness_check(
+            check_id="host-agent",
+            name="Host Agent",
+            required=False,
+            ready=host_agent_ready,
+            status="ready" if host_agent_ready else "needs_repair",
+            detail="Host agent is reachable" if host_agent_ready else "Host agent is not reachable",
+            repair="ods agent restart" if not host_agent_ready else None,
+        ))
 
     hermes_service = _service_by_id(service_statuses, "hermes")
     if hermes_service is None or hermes_service.status == "not_deployed":
@@ -1341,6 +1362,12 @@ async def host_agent_diagnostics():
 @app.get("/api/preflight/docker", dependencies=[Depends(verify_api_key)])
 async def preflight_docker():
     """Check if Docker is available."""
+    if WINDOWS_DESKTOP_PROFILE:
+        return {
+            "available": False,
+            "applicable": False,
+            "reason": "Docker is not used in the Windows Desktop profile",
+        }
     if os.path.exists("/.dockerenv"):
         return {"available": True, "version": "available (host)"}
     try:
@@ -1531,6 +1558,7 @@ async def api_status(api_key: str = Depends(verify_api_key)):
         fallback = {
             "gpu": None, "services": [], "model": None,
             "bootstrap": None, "uptime": 0,
+            "runtimeProfile": RUNTIME_PROFILE,
             "version": app.version, "tier": "Cloud" if cloud_mode else "Unknown",
             "inferenceMode": "cloud" if cloud_mode else "local",
             "inferenceSource": "cloud-mode" if cloud_mode else "unknown",
@@ -1657,11 +1685,19 @@ async def _build_api_status() -> dict:
                 app.state.cloud_telemetry_client)
         context_size = remote_runtime["contextLength"] if remote_runtime else None
     else:
-        loaded_model = await get_loaded_model()
-        llama_metrics_data, context_size = await asyncio.gather(
-            get_llama_metrics(model_hint=loaded_model),
-            get_llama_context_size(model_hint=loaded_model),
+        llama_down_in_desktop = bool(
+            WINDOWS_DESKTOP_PROFILE
+            and isinstance(service_statuses, (list, tuple))
+            and any(getattr(s, "id", "") == "llama-server" and getattr(s, "status", "") == "down" for s in service_statuses)
         )
+        if llama_down_in_desktop:
+            loaded_model, llama_metrics_data, context_size = None, {}, None
+        else:
+            loaded_model = await get_loaded_model()
+            llama_metrics_data, context_size = await asyncio.gather(
+                get_llama_metrics(model_hint=loaded_model),
+                get_llama_context_size(model_hint=loaded_model),
+            )
 
     # Remote/cloud inference does not use the local GPU for primary inference.
     # Suppress local GPU/tier reporting so the UI cannot present local hardware
@@ -1727,6 +1763,7 @@ async def _build_api_status() -> dict:
     result = {
         "gpu": gpu_data, "services": services_data, "model": model_data,
         "bootstrap": bootstrap_data, "uptime": uptime,
+        "runtimeProfile": RUNTIME_PROFILE,
         "version": app.version, "tier": tier,
         "inferenceMode": inference_mode_value,
         "inferenceSource": inference_source_value,
@@ -1751,6 +1788,8 @@ async def _build_api_status() -> dict:
         },
         "manifest_errors": _public_manifest_errors(),
     }
+    if WINDOWS_DESKTOP_PROFILE:
+        result["gpuPreference"] = await asyncio.to_thread(read_windows_user_gpu_preference)
     env_file_read_error = get_env_file_read_error()
     if env_file_read_error:
         result["envFileReadError"] = env_file_read_error
@@ -2019,7 +2058,11 @@ async def _get_services() -> list[ServiceStatus]:
     cached = get_cached_services()
     if cached is not None:
         return cached
-    return await get_all_services()
+    revision = get_services_cache_revision()
+    statuses = await get_all_services()
+    if WINDOWS_DESKTOP_PROFILE:
+        set_services_cache(statuses, expected_revision=revision)
+    return statuses
 
 
 async def _poll_service_health():
@@ -2038,6 +2081,15 @@ async def _poll_service_health():
         except Exception:
             logger.exception("Service health poll failed")
         await asyncio.sleep(_SERVICE_POLL_INTERVAL)
+
+
+if WINDOWS_DESKTOP_PROFILE:
+    from native_front import DashboardFiles, DashboardGate, resolve_dashboard_dist
+
+    _dashboard_dist_dir = resolve_dashboard_dist()
+    if _dashboard_dist_dir is not None:
+        app.add_middleware(DashboardGate)
+        app.mount("/", DashboardFiles(_dashboard_dist_dir), name="dashboard-static")  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":
