@@ -219,9 +219,21 @@ def photos_search(settings, key, *, query="", place="", after="", before=""):
         raise IntegrationError("invalid-request", "The first date (after) must not come after the second (before).")
     if not (query or place or after or before):
         raise IntegrationError("invalid-request", "Say what is in the photos, where or when they were taken.")
+    # Where and when narrow either search; withExif brings each photo's place back.
+    filters = {"size": MAX_HITS, "withExif": True}
+    if place:
+        found = _city(settings, key, place)
+        if found is None:
+            return {"results": [], "mode": "details", "more": False, "note": f"No photos are from a place named {place}."}
+        filters[found[0]] = found[1]
+    if after:
+        filters["takenAfter"] = f"{after}T00:00:00.000Z"
+    if before:
+        filters["takenBefore"] = f"{before}T23:59:59.999Z"
+    note = ""
     if query and describes_photos(settings, key):
         try:
-            reply = _immich(settings, key, "/api/search/smart", {"query": query, "size": MAX_HITS})
+            reply = _immich(settings, key, "/api/search/smart", {"query": query, **filters})
         except IntegrationError as error:
             if error.code != "app-failed":
                 raise
@@ -233,17 +245,10 @@ def photos_search(settings, key, *, query="", place="", after="", before=""):
         raise IntegrationError("photos-no-description", "Immich cannot search by what is in a photo until its machine "
                                "learning is running. Search by place or date instead.")
     else:
-        body = {"size": MAX_HITS, "order": "desc", "withExif": True}
-        if place:
-            found = _city(settings, key, place)
-            if found is None:
-                return {"results": [], "mode": "details", "note": f"No photos are from a place named {place}."}
-            body[found[0]] = found[1]
-        if after:
-            body["takenAfter"] = f"{after}T00:00:00.000Z"
-        if before:
-            body["takenBefore"] = f"{before}T23:59:59.999Z"
-        reply = _immich(settings, key, "/api/search/metadata", body)
+        if query:
+            note = (f"Searched by place and date only, not for \"{query}\": searching by what is in a photo needs "
+                    "Immich's machine learning.")
+        reply = _immich(settings, key, "/api/search/metadata", {**filters, "order": "desc"})
         mode = "details"
     _shape("photos", isinstance(reply, dict) and isinstance(reply.get("assets"), dict) and _records(reply["assets"].get("items"), "id"))
     found = reply["assets"]["items"]
@@ -256,7 +261,7 @@ def photos_search(settings, key, *, query="", place="", after="", before=""):
         results.append({"id": asset["id"], "file": str(asset.get("originalFileName", ""))[:200],
                         "taken": str(asset.get("localDateTime") or asset.get("fileCreatedAt") or "")[:10], "place": where,
                         "link": f"{settings['url']}/photos/{asset['id']}"})
-    return {"results": results, "mode": mode, "more": more}
+    return {"results": results, "mode": mode, "more": more, **({"note": note} if note else {})}
 
 
 def _machine_learning_runs(settings, key):

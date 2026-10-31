@@ -67,6 +67,8 @@ def app_text(action, reply):
             return reply.get("note") or "No photos match. Try another place or other dates."
         more = (f"\n\nShowing the first {len(reply['results'])}; more photos match. Narrow the search by place or dates."
                 if reply.get("more") else "")
+        if reply.get("note"):
+            more += f"\n\n{reply['note']}"
         return "\n".join(f"{photo['file']} — taken {photo['taken'] or 'on an unknown date'}" + (f" in {photo['place']}" if photo["place"] else "")
                          + f"\n  {photo['link']}" for photo in reply["results"]) + more + "\n\nGive the owner the links; they open the photos in Immich."
     if action == "watch-list":

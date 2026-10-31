@@ -96,14 +96,12 @@ class FakeImmich(Fake):
             return
         body = json.loads(self.body())
         FakeImmich.searches.append((self.path, body))
-        if self.path == "/api/search/smart":
-            if FakeImmich.smart_fails:
-                return self.reply({"message": "Machine learning is not reachable"}, 500)
-            items = self.assets[:1]
-        else:
-            items = [asset for asset in self.assets
-                     if all(body.get(field, asset["exifInfo"][field]) == asset["exifInfo"][field] for field in ("city", "country"))
-                     and body.get("takenAfter", "") <= asset["localDateTime"] <= body.get("takenBefore", "9999")]
+        if self.path == "/api/search/smart" and FakeImmich.smart_fails:
+            return self.reply({"message": "Machine learning is not reachable"}, 500)
+        # Both searches take the same place and date filters; a smart search ranks by its query on top.
+        items = [asset for asset in self.assets
+                 if all(body.get(field, asset["exifInfo"][field]) == asset["exifInfo"][field] for field in ("city", "country"))
+                 and body.get("takenAfter", "") <= asset["localDateTime"] <= body.get("takenBefore", "9999")]
         self.reply({"assets": {"items": items, "total": len(items), "nextPage": FakeImmich.next_page}})
 
 
@@ -286,11 +284,28 @@ class AppTests(unittest.TestCase):
         with self.assertRaisesRegex(service.IntegrationError, "what is in the photos"):
             self.app("photos", "search")
 
+    def test_a_description_that_cannot_be_used_is_said_not_dropped(self):
+        self.save(self.settings())
+        found = self.app("photos", "search", query="dog", place="Lisbon")
+        self.assertEqual(([photo["file"] for photo in found["results"]], found["mode"]), (["beach.jpg"], "details"))
+        self.assertIn('not for "dog"', found["note"])
+        text = self.agent("mcp-call", server="photos", tool="search", arguments={"query": "dog", "place": "Lisbon"})["text"]
+        self.assertIn("beach.jpg", text)
+        self.assertIn("Searched by place and date only, not for \"dog\": searching by what is in a photo needs Immich's machine learning.", text)
+        self.assertNotIn("note", self.app("photos", "search", place="Lisbon"))
+
     def test_photos_by_description_when_immich_can(self):
         FakeImmich.smart = True
         self.save(self.settings())
         found = self.app("photos", "search", query="dog on the beach")
-        self.assertEqual((found["mode"], FakeImmich.searches[-1]), ("description", ("/api/search/smart", {"query": "dog on the beach", "size": 10})))
+        self.assertEqual((found["mode"], FakeImmich.searches[-1]),
+                         ("description", ("/api/search/smart", {"query": "dog on the beach", "size": 10, "withExif": True})))
+        self.assertEqual(found["results"][0]["place"], "Lisbon, Portugal")  # Each photo's place comes back too.
+        found = self.app("photos", "search", query="snow", place="Norway", after="2026-01-01")
+        self.assertEqual(FakeImmich.searches[-1], ("/api/search/smart", {"query": "snow", "size": 10, "withExif": True,
+                                                                          "country": "Norway", "takenAfter": "2026-01-01T00:00:00.000Z"}))
+        self.assertEqual([photo["file"] for photo in found["results"]], ["snow.jpg"])
+        self.assertNotIn("note", found)
         FakeImmich.smart_fails = True  # Turned on, but its machine learning is not running.
         self.addCleanup(setattr, FakeImmich, "smart_fails", False)
         with self.assertRaisesRegex(service.IntegrationError, "machine learning may not be running"):
