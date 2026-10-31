@@ -5878,8 +5878,9 @@ def _write_remote_provider_secret(ref: str, value: str) -> None:
 
 
 def _repair_remote_provider_secret_permissions() -> list[str]:
-    """Migrate legacy provider-consumed secrets from 0600 to safe 0640.
+    """Repair group traversal and legacy provider-consumed secrets safely.
 
+    The two state directories only gain group read and traverse (g+rx).
     Existing installations may have secrets written before provider services
     received the installation data group. Never follow links or touch a file
     owned by another account when the host agent is unprivileged. A failure is
@@ -5905,12 +5906,27 @@ def _repair_remote_provider_secret_permissions() -> list[str]:
         | getattr(os, "O_NOFOLLOW", 0)
     )
     try:
-        provider_root_fd = os.open(_remote_provider_root(), directory_flags)
+        # Anchor state lookup in the declared data directory as well: a
+        # replaced data symlink must not turn permission repair into mutation
+        # of a foreign tree.
+        data_fd = os.open(_remote_provider_root().parent, directory_flags)
     except FileNotFoundError:
         return []
     except OSError as exc:
         logger.warning("Could not safely open remote-provider state directory: %s", exc)
         return []
+    try:
+        try:
+            provider_root_fd = os.open(
+                _remote_provider_root().name, directory_flags, dir_fd=data_fd
+            )
+        except FileNotFoundError:
+            return []
+        except OSError as exc:
+            logger.warning("Could not safely open remote-provider state directory: %s", exc)
+            return []
+    finally:
+        os.close(data_fd)
     try:
         try:
             secret_dir_fd = os.open("secrets", directory_flags, dir_fd=provider_root_fd)
@@ -5921,6 +5937,37 @@ def _repair_remote_provider_secret_permissions() -> list[str]:
             return []
         try:
             repaired: list[str] = []
+            # Readable files are unreachable when a strict installer umask
+            # leaves either parent at 0700. Only add group read and traverse:
+            # rootless Docker and the Dashboard API reach the routing state
+            # through the other bits, so no bit is ever taken away and the
+            # owner and group stay as they are. Inspect both held, no-follow
+            # descriptors before changing either one.
+            try:
+                pending: list[tuple[int, int]] = []
+                for descriptor in (provider_root_fd, secret_dir_fd):
+                    metadata = os.fstat(descriptor)
+                    if not stat_mod.S_ISDIR(metadata.st_mode):
+                        raise RuntimeError("remote-provider state is not a directory")
+                    mode = stat_mod.S_IMODE(metadata.st_mode)
+                    if mode & 0o050 == 0o050:
+                        continue
+                    if effective_uid != 0 and metadata.st_uid != desired_uid:
+                        raise RuntimeError("remote-provider directory is owned by another user")
+                    pending.append((descriptor, mode | 0o050))
+                for descriptor, mode in pending:
+                    os.fchmod(descriptor, mode)
+                    if stat_mod.S_IMODE(os.fstat(descriptor).st_mode) != mode:
+                        raise RuntimeError("remote-provider directory repair did not persist")
+            except (OSError, RuntimeError) as exc:
+                root = _remote_provider_root()
+                logger.warning(
+                    "Could not give the remote provider group access to %s (%s); it cannot "
+                    "read its route or key until then. Fix it as the folders' owner with: "
+                    "chmod g+rx %s %s",
+                    root, exc, root, root / "secrets",
+                )
+                return []
             file_flags = (
                 os.O_RDONLY
                 | getattr(os, "O_CLOEXEC", 0)

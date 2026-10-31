@@ -1332,6 +1332,36 @@ async def remote_provider_enable() -> dict[str, Any]:
     return staged
 
 
+# invalid_route_state is also what an unreadable state folder produces (#7608).
+_EGRESS_ACTIVATION_HINTS = {
+    "invalid_route_state": (
+        "it cannot read or parse data/remote-provider/routing-state.json. If those folders are "
+        "not group-readable, run chmod g+rx data/remote-provider data/remote-provider/secrets "
+        "in the ODS folder, then try again"
+    ),
+}
+
+
+async def _with_egress_reason(detail: str) -> str:
+    """Name the egress's own health reason after a failed activation.
+
+    The host agent only learns that LiteLLM served no completion. It has
+    already rolled back, and a restored route keeps an unreadable state
+    folder visible to the egress. An egress that is ready, disabled or
+    unreachable adds nothing.
+    """
+    egress = await _fetch_egress_health()
+    reason = egress.get("reason")
+    if (egress.get("ready") or not egress.get("reachable") or not egress.get("valid")
+            or not reason or reason == "remote_route_disabled"):
+        return detail
+    hint = _EGRESS_ACTIVATION_HINTS.get(reason)
+    known = _EGRESS_ERROR_MESSAGES.get(reason)
+    explanation = f": {hint}" if hint else f" ({known})" if known else ""
+    separator = " " if detail.rstrip().endswith((".", "!", "?")) else ". "
+    return f"{detail.rstrip()}{separator}The remote-provider egress reports {reason}{explanation}."
+
+
 @router.post("/api/remote-provider/apply", dependencies=[Depends(verify_api_key)])
 async def remote_provider_apply(payload: dict[str, Any]) -> dict[str, Any]:
     """Apply a remote-provider lifecycle request through the host agent."""
@@ -1343,7 +1373,10 @@ async def remote_provider_apply(payload: dict[str, Any]) -> dict[str, Any]:
             timeout=LIFECYCLE_APPLY_TIMEOUT_SECONDS,
         )
     except AgentHTTPError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        detail = exc.detail
+        if exc.status_code >= 500 and payload.get("action") in {"configure", "enable"}:
+            detail = await _with_egress_reason(detail)
+        raise HTTPException(status_code=exc.status_code, detail=detail) from exc
     except AgentUnavailable as exc:
         raise HTTPException(status_code=503, detail=f"Host agent unreachable: {exc}") from exc
     except AgentProtocolError as exc:
