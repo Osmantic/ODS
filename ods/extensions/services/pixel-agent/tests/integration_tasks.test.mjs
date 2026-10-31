@@ -87,3 +87,19 @@ test('the digest sync runs at gateway start and every minute, and stops with the
   hooks.gatewayStop();
   assert.equal(timers.cleared.length, 1);
 });
+
+test('overlapping digest syncs add the job only once', async () => {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const cron = fakeCron();
+  const slowList = cron.list;
+  cron.list = async options => { await gate; return slowList(options); };
+  const hooks = createTaskHooks({submit: async () => ({ok: true, plan: PLAN})});
+  await hooks.cronChanged({action: 'added', jobId: 'x'}, {getCron: () => cron});
+  const first = hooks.syncDigest();
+  const second = hooks.syncDigest();  // The minute timer fires while the start-up sync still waits.
+  release();
+  assert.deepEqual(await Promise.all([first, second]), ['added', 'added']);
+  assert.equal(cron.calls.filter(([kind]) => kind === 'add').length, 1);
+  assert.equal(await hooks.syncDigest(), 'kept');  // A later sync runs on its own again.
+});

@@ -28,7 +28,14 @@ export function createTaskHooks({submit = submitIntegration, agentId = 'pixel', 
     if (service) cron = service;
   };
 
-  async function syncDigest() {
+  // One sync at a time: two that overlap could both find no digest job and both add one.
+  let syncing;
+  function syncDigest() {
+    syncing ??= syncOnce().finally(() => { syncing = undefined; });
+    return syncing;
+  }
+
+  async function syncOnce() {
     if (!cron) return 'no-cron';
     const reply = await submit({action: 'digest-plan'});
     if (!reply?.ok) throw new Error(reply?.message || 'The digest settings could not be read.');
