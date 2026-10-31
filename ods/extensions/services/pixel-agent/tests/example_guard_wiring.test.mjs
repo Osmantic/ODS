@@ -107,7 +107,7 @@ function entry(root) {
     getSessionEntry: () => undefined, resolveStorePath: () => undefined, resolveUserPath: value => value,
     resolveAgentWorkspaceDir: config => config?.agents?.list?.find(agent => agent.id === 'pixel')?.workspace,
     bundleAdmission: createWorkspaceBundleAdmission(), artifactAdmission: createWorkspaceArtifactAdmission(),
-    projectRunControl: createProjectRunControl(), compactToolResultEnvelope,
+    projectRunControl: createProjectRunControl(), projectSnapshots: {before() {}}, compactToolResultEnvelope,
   });
   return {callbacks, delivery: links.delegationDelivery, guard: links.toolLoopGuard};
 }

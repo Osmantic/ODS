@@ -43,7 +43,7 @@ function hooks(guardResult, managedRuntime = false, delivery = {}) {
     },
     goalProgress: {before() {}, update() {}, finish() {}},
     conversationImageLifecycle,
-    bundleAdmission, artifactAdmission, projectRunControl, managedRuntime, accessRuntime: runtime, withPixelCronDeliveryDefault, withCronCommandPayloadBlock,
+    bundleAdmission, artifactAdmission, projectRunControl, projectSnapshots: {before() {}}, managedRuntime, accessRuntime: runtime, withPixelCronDeliveryDefault, withCronCommandPayloadBlock,
     delegationDelivery:{end(){lifecycleCalls.push('delegation');},blocked(){},before(){},after(){},admission(){},hasPendingChildren(){return false;},...delivery},
     withPixelSubagentWorkspace, resolveUserPath: value=>value,
     resolveAgentWorkspaceDir:config=>config?.agents?.list?.find(agent=>agent.id==='pixel')?.workspace,

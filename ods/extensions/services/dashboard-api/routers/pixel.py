@@ -1238,6 +1238,106 @@ async def pixel_example_project_open(body: ExampleProjectOpenRequest) -> dict[st
         raise HTTPException(status_code=503, detail="Portal could not publish the example project's preview.") from exc
 
 
+_RESTORE_PROJECT = re.compile(r"Playground/([A-Za-z0-9][A-Za-z0-9._-]{0,63})")
+_RESERVED_PROJECT = re.compile(r"(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?", re.IGNORECASE)
+_RESTORE_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+_RESTORE_SNAPSHOT = re.compile(rf"(?:chatcmpl|restore)_{_RESTORE_UUID}", re.IGNORECASE)
+_RESTORE_UNDO = re.compile(rf"restore_{_RESTORE_UUID}")
+_RESTORE_KEYS = frozenset(("complete", "failed", "failedCount", "kept", "keptCount", "project", "removed",
+                           "schemaVersion", "snapshot", "undo", "written"))
+_PROJECT_RESTORE_SECONDS = 42.0
+_RESTORE_BUSY = "Portal is still working. Put the files back when it finishes."
+
+
+class ProjectRestoreRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    chat_id: str
+    project: str = Field(max_length=75)
+    snapshot: str = Field(max_length=45)
+
+    @field_validator("chat_id")
+    @classmethod
+    def _chat_id(cls, value: str) -> str:
+        if not _SAFE_CHAT_ID.fullmatch(value):
+            raise ValueError("invalid chat_id")
+        return value
+
+    @field_validator("project")
+    @classmethod
+    def _project(cls, value: str) -> str:
+        # Exactly one Playground project folder: never a nested, absolute,
+        # traversing or reserved path.
+        match = _RESTORE_PROJECT.fullmatch(value)
+        if match is None or match.group(1).endswith(".") or _RESERVED_PROJECT.fullmatch(match.group(1)):
+            raise ValueError("invalid project")
+        return value
+
+    @field_validator("snapshot")
+    @classmethod
+    def _snapshot(cls, value: str) -> str:
+        if not _RESTORE_SNAPSHOT.fullmatch(value):
+            raise ValueError("invalid snapshot")
+        return value
+
+
+def _project_restore_receipt(value, body: ProjectRestoreRequest) -> dict[str, object]:
+    def count(item):
+        return type(item) is int and 0 <= item <= 65536
+
+    def listed(items, total):
+        return (isinstance(items, list) and len(items) <= 8 and len(items) <= total
+                and all(isinstance(item, str) and 1 <= len(item) <= 512 and not _CONTROL.search(item) for item in items))
+
+    if (not isinstance(value, dict) or set(value) != _RESTORE_KEYS
+            or type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1
+            or value["project"] != body.project or value["snapshot"] != body.snapshot
+            or not all(count(value[key]) for key in ("written", "removed", "keptCount", "failedCount"))
+            or not listed(value["kept"], value["keptCount"]) or not listed(value["failed"], value["failedCount"])
+            or type(value["complete"]) is not bool
+            or not (value["undo"] is None or isinstance(value["undo"], str) and _RESTORE_UNDO.fullmatch(value["undo"]))):
+        raise ValueError("invalid project restore receipt")
+    return {key: value[key] for key in sorted(_RESTORE_KEYS)}
+
+
+@router.post("/projects/restore")
+async def pixel_project_restore(body: ProjectRestoreRequest, owner: str = Depends(verify_api_key)) -> dict[str, object]:
+    """Put one Playground project back to the copy ODS kept before a Portal turn touched it.
+
+    Portal's "Put back files". The host first keeps a copy of the files as
+    they are, so the receipt's undo names a copy that reverses this restore.
+    It is refused while a Portal response runs in this chat, or in another
+    chat whose response touched the project, and it changes nothing outside
+    that project folder.
+    """
+    config = _pixel_config()
+    if config is None:
+        raise HTTPException(status_code=503, detail="Portal is not set up on this ODS install.")
+    edge_url, key = config
+    if isinstance(owner, str) and _owns_live_work((owner_namespace(owner), body.chat_id)):
+        raise HTTPException(status_code=409, detail=_RESTORE_BUSY)
+    try:
+        timeout = httpx.Timeout(connect=2.0, read=_PROJECT_RESTORE_SECONDS, write=2.0, pool=2.0)
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=False) as client:
+            async with client.stream("POST", f"{edge_url}/v1/project-restore",
+                                     json={"user": body.chat_id, "project": body.project, "snapshot": body.snapshot},
+                                     headers=_edge_headers(key, accept="application/json")) as response:
+                if response.status_code == 409:
+                    raise HTTPException(status_code=409, detail=_RESTORE_BUSY)
+                if response.status_code == 404:
+                    raise HTTPException(status_code=404,
+                                        detail="ODS no longer keeps that copy of this project, so nothing was changed.")
+                if response.status_code == 422:
+                    raise HTTPException(status_code=422,
+                                        detail="The copy ODS kept of this project is damaged, so nothing was changed.")
+                if response.status_code != 200 or not response.headers.get("content-type", "").lower().startswith("application/json"):
+                    raise ValueError("project restore unavailable")
+                raw = await _bounded_response_bytes(response, 16384)
+        return _project_restore_receipt(json.loads(raw), body)
+    except (httpx.HTTPError, asyncio.TimeoutError, ValueError, TypeError, RecursionError) as exc:
+        raise HTTPException(status_code=503,
+                            detail="Portal could not confirm that the project's files were put back.") from exc
+
+
 class _ClientDisconnected(Exception):
     """The dashboard consumer left while Pixel was still producing a turn."""
 

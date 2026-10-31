@@ -166,6 +166,35 @@ describe('Pixel', () => {
     expect(screen.queryByRole('button',{name:'Copy Markdown'})).toBeNull()
   })
 
+  it('offers Put back files under a finished turn that changed a project, for that chat and turn', async () => {
+    const runId = 'chatcmpl_12345678-1234-1234-1234-123456789012'
+    const project = (name, observedAt) => ({schemaVersion:1,kind:'ods-workspace-project',relativeDirectory:`Playground/${name}`,observedAt})
+    const task = (id, startedAt, finishedAt, projects) => ({schemaVersion:4,runId:id,startedAt,finishedAt,state:'completed',calls:1,failures:0,blocked:0,truncated:false,
+      activities:[{kind:'run',calls:1,failures:0,blocked:0}],events:[{sequence:1,kind:'run',state:'completed',startedAt,finishedAt,display:null}],context:null,goal:null,projects})
+    localStorage.setItem('ods.pixel.chat.v1',JSON.stringify({schema:1,chatId:'undo-chat',messages:[
+      {role:'user',content:'Make the elves faster'},
+      {role:'assistant',content:'The elves are faster.',task:task(runId,'2026-10-30T12:00:00.000Z','2026-10-30T12:05:00.000Z',
+        [project('game','2026-10-30T12:03:00.000Z')])},
+      {role:'user',content:'What did you change?'},
+      {role:'assistant',content:'I changed chars.js.',task:task('chatcmpl_22345678-1234-1234-1234-123456789012','2026-10-30T12:10:00.000Z','2026-10-30T12:11:00.000Z',
+        [project('game','2026-10-30T12:03:00.000Z')])},
+    ]}))
+    fetch.mockImplementation(async url => url === '/api/pixel/projects/restore'
+      ? response({schemaVersion:1,project:'Playground/game',snapshot:runId,written:1,removed:0,kept:[],keptCount:0,failed:[],failedCount:0,complete:true,
+        undo:'restore_99999999-2222-4333-8444-555555555555'})
+      : response({available:true,model:'pixel/default'}))
+    render(<Pixel/>)
+    await waitFor(()=>expect(screen.getByText('Available')).toBeInTheDocument())
+    // Only the turn that changed the project offers it; the later question did not.
+    const buttons = screen.getAllByRole('button',{name:'Put back files from before this turn'})
+    expect(buttons).toHaveLength(1)
+    fireEvent.click(buttons[0])
+    await waitFor(()=>expect(fetch.mock.calls.some(([url])=>url==='/api/pixel/projects/restore')).toBe(true))
+    const [, options] = fetch.mock.calls.find(([url])=>url==='/api/pixel/projects/restore')
+    expect(JSON.parse(options.body)).toEqual({chat_id:'undo-chat',project:'Playground/game',snapshot:runId})
+    expect(await screen.findByText('Playground/game is back to how it was before this turn: 1 file put back.')).toBeVisible()
+  })
+
   it('accepts only the fixed approval receipt grammar', () => {
     const jobId = 'ops-1788127319657-f3262c99a419'
     const planHash = 'e'.repeat(64)

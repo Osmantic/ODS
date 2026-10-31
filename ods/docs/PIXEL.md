@@ -669,6 +669,25 @@ literal effort `off` as truthy and can otherwise spend the whole output budget
 in hidden reasoning after a tool call. This policy does not broaden the tool
 allowlist or make custom tools replay-safe.
 
+Playground project folders are not Git repositories, so before a response
+first touches a project (a read, write, edit or patch under
+`Playground/<name>/`, an exec whose working directory is in it or whose command
+names it, or an ODS tool given the folder) the plugin keeps a copy of that
+project's files (`plugin/project-snapshots.mjs`). Copies live in the OpenClaw
+state folder, `.ods-project-snapshots/`, which the agent's sandbox never mounts
+and no preview publishes. Only regular files are copied and links are never
+followed; `node_modules`, dot-folders such as `.git`, files over 8 MiB and
+anything past 2,048 files or 32 MiB are left out and listed. The last five turn
+copies of each project are kept. Under a finished turn that changed a project,
+Portal offers **Put back files from before this turn**
+(`/api/pixel/projects/restore`, relayed by the edge and the ingress to the
+gateway route `/pixel-ods/project-restore`). A restore first keeps a copy of
+the files as they are, which its **Undo** puts back; it then writes back what
+the turn changed or deleted and removes what it created. It leaves whatever
+either copy left out as it is, changes nothing outside that project folder,
+and is refused while a Portal response runs in that chat or in another chat
+whose response touched the project.
+
 ### Model swapping
 
 Pixel follows the same model gateway as the rest of ODS. Its private OpenClaw

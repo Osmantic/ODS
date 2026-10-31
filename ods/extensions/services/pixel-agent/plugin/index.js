@@ -90,6 +90,7 @@ import {createWorkspaceBundleAdmission, createWorkspaceBundleService, createWork
 import {createWorkspaceBundleExecution} from './workspace-bundle-execution.mjs';
 import { createTaskActivity } from "./task-activity.mjs";
 import { createWorkspaceProjects } from "./workspace-projects.mjs";
+import { createProjectRestoreRoute, createProjectSnapshots } from "./project-snapshots.mjs";
 import { createAccessRuntime, executionHostForAgent } from "./access-runtime.mjs";
 import { createManagedRuntimeRegistry } from "./managed-runtime-lifecycle.mjs";
 import {createContextCompaction, readContextRequest, prepareStableContextModel} from './context-compaction.mjs';
@@ -115,6 +116,7 @@ const pendingClarifications = createPendingClarifications();
 const taskActivity = createTaskActivity({agentId:AGENT_ID, goalForRun:id=>goalProgress.projection(id),projectsForSession:key=>workspaceProjects.forSession(key)});
 let execCancellationControl;
 let accessRuntime;
+let projectSnapshots;
 let contextCompaction;
 let conversationImageLifecycle;
 let currentManagedRuntime;
@@ -415,6 +417,19 @@ export default definePluginEntry({
         return !resolveActiveEmbeddedRunSessionId(sessionKey);
       },
     });
+    // Before a response first touches a Playground project, a copy of its
+    // files; the owner's "Put back files" restores one, never while a
+    // response runs in that chat or in another that touched the project.
+    projectSnapshots ??= createProjectSnapshots({
+      workspaceRoot: () => api.config?.agents?.list?.find(agent => agent.id === AGENT_ID)?.workspace
+        ?? api.config?.agents?.defaults?.workspace,
+      ownerRun: context => delegationDelivery.ownerRunOf(context),
+      busy: user => Boolean(resolveActiveEmbeddedRunSessionId(`agent:${AGENT_ID}:openai-user:${user}`))
+        || delegationDelivery.pending(user, key => Boolean(resolveActiveEmbeddedRunSessionId(key))),
+      active: key => Boolean(resolveActiveEmbeddedRunSessionId(key)),
+      changed: (root, name) => toolLoopGuard.exampleOwnerChanged(root, name),
+      warn: message => api.logger.warn(message),
+    });
     api.on('subagent_spawned',(event,context)=>delegationDelivery.nativeSpawn(event,context));
     api.on('gateway_stop',()=>delegationDelivery.invalidate());
     const executeBundle = createWorkspaceBundleService({runHelper: bundleExecution.runHelper,
@@ -536,6 +551,7 @@ export default definePluginEntry({
       artifactAdmission.before(event, context, decision);
       projectRunControl.before(event, context, decision);
       taskActivity.before(event, context, decision?.block === true);
+      projectSnapshots.before(event, context, decision);
       return decision;
     });
     api.on("after_tool_call", (event, context) => {
@@ -798,6 +814,11 @@ export default definePluginEntry({
         return true;
       },
     });
+    // Portal's "Put back files": the owner restores one Playground project to
+    // the copy kept before a turn touched it. The host ingress calls it under
+    // the chat's history lock.
+    api.registerHttpRoute({path: '/pixel-ods/project-restore', auth: 'gateway', match: 'exact',
+      handler: createProjectRestoreRoute({snapshots: projectSnapshots, sendJson})});
     // Portal's sidebar lists the shipped example project (Elf of Doom) like
     // any other Playground project while its folder exists, and opens it with
     // a create-only preview publication of that folder: no model run.

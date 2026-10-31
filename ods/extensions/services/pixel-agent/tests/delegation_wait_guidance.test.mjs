@@ -20,7 +20,7 @@ function fixture(){
  vm.runInNewContext(source.slice(start,end),{api:{on:(_name,callback)=>{before=callback;},config:{}},AGENT_ID:'pixel',toolLoopGuard:guard,delegationDelivery:registry,
   accessRuntime:{isProbe:()=>false,beforeTool:()=>undefined},withPixelCronDeliveryDefault:decision=>decision,withPixelSubagentWorkspace:decision=>decision,withCronCommandPayloadBlock:decision=>decision,
   resolveUserPath:()=>{},resolveAgentWorkspaceDir:()=>{},
-  goalProgress:{before:()=>undefined},bundleAdmission:{before:()=>{}},artifactAdmission:{before:()=>{}},projectRunControl:{before:()=>{}},taskActivity:{before:()=>{}}});
+  goalProgress:{before:()=>undefined},bundleAdmission:{before:()=>{}},artifactAdmission:{before:()=>{}},projectRunControl:{before:()=>{}},taskActivity:{before:()=>{}},projectSnapshots:{before:()=>{}}});
  function spawn({key=child,runId=childRun,native=true,accepted=true}={}){
   const context={...owner,toolName:'sessions_spawn',toolCallId:'spawn-'+key};registry.before({params:{runtime:'subagent',mode:'run'}},context);
   if(native)registry.nativeSpawn({runId,childSessionKey:key},{runId,childSessionKey:key,requesterSessionKey:owner.sessionKey});
