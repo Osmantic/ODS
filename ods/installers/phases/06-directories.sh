@@ -432,11 +432,11 @@ except Exception:
             fi
             if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME" "source-transition"; then
                 log "Orphaned Pixel host state cleaned. Proceeding with clean installation."
+                _phase06_pixel_source_transition=1
             else
-                log "Could not clean all orphaned Pixel state; removing stale marker."
-                rm -f "$_phase06_pixel_marker"
+                error "Could not clean orphaned Pixel host state; the management marker was preserved to protect retained runtime state. Inspect host services or complete uninstallation before retrying."
+                return 1
             fi
-            _phase06_pixel_source_transition=1
         else
         _phase06_pixel_owner="$(ods_pixel_install_owner)" || {
             error "Could not identify the ODS owner for a Pixel source transition."
