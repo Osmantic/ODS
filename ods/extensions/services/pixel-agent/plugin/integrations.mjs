@@ -1,8 +1,8 @@
 import net from 'node:net';
 
-// Portal tools for the owner's integrations: an Obsidian vault, ntfy notifications and MCP
-// servers. The gateway holds no token or vault path: every call goes to the host
-// integrations service, which checks what the owner turned on and keeps "ask first"
+// Portal tools for the owner's integrations: an Obsidian vault, ntfy notifications, and MCP
+// servers, among them the owner's apps. The gateway holds no token or vault path: every call
+// goes to the host integrations service, which checks what the owner turned on and keeps "ask first"
 // actions waiting for the owner's approval. Results are the owner's own data or a server's
 // answer and are passed on as untrusted text.
 const SOCKET = '/run/ods-pixel-integrations/control.sock';
@@ -113,7 +113,7 @@ export function createIntegrationTools({submit = submitIntegration} = {}) {
     },
     {
       name: 'pixel_ods_mcp',
-      description: "The owner's connected MCP servers, such as Home Assistant. action list: show each server id and the tools Portal may use, with their arguments; always list before the first call. action call: run one tool with server, tool and arguments. Some tools need the owner's approval first.",
+      description: "The owner's apps and connected MCP servers: documents (Paperless-ngx), photos (Immich), watched web pages and price alerts, news feeds, Home Assistant and others. action list: show each server id and the tools Portal may use, with their arguments; always list before the first call. action call: run one tool with server, tool and arguments. Some tools need the owner's approval first.",
       parameters: {type: 'object', additionalProperties: false, required: ['action'],
         properties: {action: {type: 'string', enum: ['list', 'call']},
           server: {type: 'string', description: 'For call: the server id from list, such as home.'},

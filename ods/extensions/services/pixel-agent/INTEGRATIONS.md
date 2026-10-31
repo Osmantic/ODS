@@ -1,7 +1,7 @@
 # Portal integrations
 
-Portal can use four of the owner's own services. Each is off until the owner sets it
-up in **Settings → Portal integrations**:
+Portal can use the owner's own services. Each is off until the owner sets it up in
+**Settings → Portal integrations**:
 
 - **Notes (Obsidian):** search, read, and add to notes in a vault folder.
 - **Notifications (ntfy):** send a notification to the owner's phone or computer.
@@ -9,8 +9,19 @@ up in **Settings → Portal integrations**:
 - **MCP servers:** connect any MCP server over Streamable HTTP or as a local stdio
   command. Portal sees only the tools the owner allowed.
 - **Home Assistant:** a preset for Home Assistant's built-in MCP server.
+- **Documents (Paperless-ngx):** search documents and read their text.
+- **Photos (Immich):** find photos by place and date, and by what is in them when
+  Immich's machine learning runs.
+- **Watched pages (changedetection.io):** watch a page, or a product's price, and
+  get a notification when it changes.
+- **News (FreshRSS):** the unread stories, and a daily digest sent to the phone.
+- **Scheduled tasks:** a notification when one finishes or fails.
 
-Portal gets three tools: `pixel_ods_notes`, `pixel_ods_notify` and `pixel_ods_mcp`.
+Portal gets three tools: `pixel_ods_notes`, `pixel_ods_notify` and `pixel_ods_mcp`. The
+apps add no tools of their own: each app the owner turns on is listed in `pixel_ods_mcp`
+as a built-in server (`documents`, `photos`, `watch`, `news`) next to the owner's MCP
+servers. The pinned gateway accepts at most 32 tools from the Portal plugin, so new
+integrations should not add tools either.
 
 ## How it works
 
@@ -20,7 +31,9 @@ Settings page ──► dashboard-api ──► host agent ──► owner.sock 
 Portal gateway (pixel-ods plugin) ──────────► control.sock ────┘   (runs as the owner)
                                                                     ├─ vault folder
                                                                     ├─ ntfy
-                                                                    └─ MCP servers
+                                                                    ├─ MCP servers
+                                                                    └─ apps (Paperless-ngx, Immich,
+                                                                       changedetection.io, FreshRSS)
 ```
 
 `pixel-integrations.service` runs as the owner and does every integration action.
@@ -32,11 +45,12 @@ The gateway runs as the same user, so the service uses separate sockets to tell
 owner requests from agent requests. A uid check could not do that.
 
 - **Agent socket:** `/run/ods-pixel-integrations/control.sock`. It accepts only
-  agent actions: search and read notes, write notes, notify, and list and call MCP
-  tools.
+  agent actions: search and read notes, write notes, notify, list and call MCP
+  tools, use the apps, and report a finished scheduled task.
 - **Owner socket:** `~/.config/ods/pixel-integrations/owner.sock`. It accepts
   only owner actions: read settings, save, test notification, check tools, test a
-  server, restart a local server, approve or decline, and clear the activity list. The gateway's `ProtectHome=tmpfs` hides this folder, so the
+  server, test an app, restart a local server, approve or decline, and clear the
+  activity list. The gateway's `ProtectHome=tmpfs` hides this folder, so the
   owner socket is out of its reach. The installer refuses to start the service if
   any gateway bind covers it.
 
@@ -110,6 +124,47 @@ Notes:
   are refused.
 - Search covers up to 5,000 notes of up to 1 MB each.
 
+## Apps
+
+Each app runs on this computer, usually from the ODS extension catalog. Their server ids
+are reserved, so an MCP server cannot be named after them. Settings
+fills in the address the catalog uses; change it for an app installed elsewhere.
+The owner gives each app a key, which stays with the other secrets, and **Test**
+says what answered.
+
+- **Documents:** Portal searches Paperless-ngx's full text and reads a document's
+  text (up to 12,000 characters). It cannot change or delete documents.
+- **Photos:** Portal searches by place (a city or country Immich knows), by date,
+  or by what is in a photo. Searching by what is in a photo needs Immich's machine
+  learning container, which the catalog does not include; Portal says so instead
+  of guessing. Results are links that open the photo in Immich.
+- **Watched pages:** Portal lists, adds and removes watches in changedetection.io.
+  Adding and removing are **Ask first** or **Allowed**. The service looks at the
+  watches every 2 minutes and notifies the owner when a page changed. A price
+  watch reads the product's price from the page and notifies once when it is at
+  or under the limit, and again only after it has gone back above it. A watch is
+  first only recorded, so adding one does not notify. Its tools say which need approval,
+  as an MCP tool set to Ask first does. changedetection.io refuses pages on private
+  networks (such as a router or another local service) unless its
+  `ALLOW_IANA_RESTRICTED_ADDRESSES` setting is turned on.
+- **News:** Portal reads the unread stories from FreshRSS (up to 40), grouped by
+  feed. FreshRSS needs API access allowed and an API password.
+
+## Scheduled tasks and the daily digest
+
+Scheduled tasks are OpenClaw's own cron jobs, however they were made. When one of
+Portal's tasks finishes, the plugin passes the result to the service, which sends
+a notification as the owner chose: when it finishes or fails, only when it fails,
+or never. A failure notification is sent with high priority.
+
+The daily news digest is one more scheduled task, named *Daily news digest*. The
+plugin keeps it in step with the owner's setting about once a minute: it adds the
+task, changes its time, or removes it. At the chosen time Portal reads the unread
+stories and writes the digest, which is sent through ntfy. The digest run may use
+only `pixel_ods_mcp`, so it cannot wander off searching the web. If Portal did not read
+the news in that run, or the run fails or takes more than 10 minutes, the owner
+gets the plain list of unread stories instead, so the digest always arrives.
+
 ## Setting up
 
 **ntfy:**
@@ -131,6 +186,14 @@ The integration exposes the entities shared with Assist.
 **Obsidian:** enter the vault's full path. The service runs as the owner, so it
 can read any folder the owner can.
 
+**Apps:**
+
+- *Paperless-ngx:* the API auth token from your profile (top right).
+- *Immich:* an API key from Account settings → API keys.
+- *changedetection.io:* the API key from Settings → API.
+- *FreshRSS:* your user name, and an API password from Settings → Profile. Allow
+  API access under Settings → Authentication.
+
 ## Limits
 
 - Linux, including Windows through WSL2, which runs the same installer code. Not
@@ -143,4 +206,5 @@ can read any folder the owner can.
 - Notifications are plain text, up to 4,000 characters.
 - MCP results passed to the model are clipped to 8,000 characters.
 - Up to 20 MCP servers, and up to 200 tools per server.
-- Scheduled tasks can end by calling `pixel_ods_notify` to report their result.
+- Scheduled tasks can also end by calling `pixel_ods_notify` with their own message.
+- Up to 10 results per document or photo search, and up to 100 watched pages.

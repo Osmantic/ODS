@@ -15,7 +15,7 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "host"))
 import integrations_mcp as mcp  # noqa: E402
 import integrations_service as service  # noqa: E402
-from integrations_common import Store  # noqa: E402
+from integrations_common import Store, default_apps  # noqa: E402
 
 # A local MCP server that misbehaves on purpose. Its first argument picks how.
 SERVER = textwrap.dedent('''
@@ -129,8 +129,9 @@ class LocalServerTests(unittest.TestCase):
     def save(self, *servers, secrets=None):
         revision = self.owner("get")["settings"]["revision"]
         settings = {"notifications": {"enabled": False, "url": "http://127.0.0.1:9", "topic": "t", "username": "",
-                                      "notifyApprovals": True, "approvalLink": ""},
-                    "notes": {"enabled": False, "vaultPath": "", "write": "ask"}, "mcp": {"servers": list(servers)}}
+                                      "notifyApprovals": True, "approvalLink": "", "scheduledTasks": "all"},
+                    "notes": {"enabled": False, "vaultPath": "", "write": "ask"}, "mcp": {"servers": list(servers)},
+                    "apps": default_apps()}
         return self.owner("save", expectedRevision=revision, settings=settings, secrets=secrets or {})
 
     def ready(self, mode="plain", policies=None, **fields):

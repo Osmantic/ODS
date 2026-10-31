@@ -24,6 +24,8 @@ test('the tools match the declared names and keep schemas small enough for the m
     assert.equal(item.parameters.additionalProperties, false);
     assert.doesNotMatch(JSON.stringify(item.parameters), /maxLength|minLength/);
   }
+  // The owner's apps add no tools of their own; the model finds them in the MCP tool.
+  assert.match(tools.find(item => item.name === 'pixel_ods_mcp').description, /documents.*photos.*watched web pages.*news/);
 });
 
 test('notes actions become exact service requests and readable results', async () => {

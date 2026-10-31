@@ -13,6 +13,9 @@ MAX_RESPONSE_BYTES = 256 * 1024
 MAX_RESULT_CHARS = 8000
 NETWORK_TIMEOUT = 20
 ACTIVITY_LINES = 500
+# The owner's apps and the local addresses the ODS extension catalog publishes them on.
+APP_URLS = {"documents": "http://127.0.0.1:7807", "photos": "http://127.0.0.1:2283",
+            "watch": "http://127.0.0.1:11039", "news": "http://127.0.0.1:11029"}
 
 
 class IntegrationError(Exception):
@@ -36,20 +39,32 @@ def clip(text, limit=MAX_RESULT_CHARS):
     return text if len(text) <= limit else text[:limit] + "\n[truncated]"
 
 
+def default_apps():
+    return {"documents": {"enabled": False, "url": APP_URLS["documents"]},
+            "photos": {"enabled": False, "url": APP_URLS["photos"]},
+            "watch": {"enabled": False, "url": APP_URLS["watch"], "changes": "ask"},
+            "news": {"enabled": False, "url": APP_URLS["news"], "username": "",
+                     "digest": {"enabled": False, "time": "07:00", "timezone": "UTC"}}}
+
+
 def default_config():
     return {
         "schemaVersion": SCHEMA_VERSION,
         "revision": 0,
         "notifications": {"enabled": False, "url": "http://127.0.0.1:8097", "topic": "portal",
-                          "username": "", "notifyApprovals": True, "approvalLink": ""},
+                          "username": "", "notifyApprovals": True, "approvalLink": "",
+                          "scheduledTasks": "all"},
         "notes": {"enabled": False, "vaultPath": "", "write": "ask"},
         "mcp": {"servers": []},
+        "apps": default_apps(),
     }
 
 
 def upgrade_config(config):
     """Settings saved by an earlier version, with the fields added since."""
     config["notifications"].setdefault("approvalLink", "")
+    config["notifications"].setdefault("scheduledTasks", "all")
+    config.setdefault("apps", default_apps())
     for server in config["mcp"]["servers"]:
         server.setdefault("workingFolder", "")
         server.setdefault("envNames", [])
@@ -94,7 +109,7 @@ class Store:
         self._write("config.json", value)
 
     def secrets(self):
-        return {"ntfyPassword": "", "mcp": {}, "mcpEnv": {}, **self._read("secrets.json", {})}
+        return {"ntfyPassword": "", "mcp": {}, "mcpEnv": {}, "apps": {}, **self._read("secrets.json", {})}
 
     def save_secrets(self, value):
         self._write("secrets.json", value)
@@ -105,6 +120,12 @@ class Store:
 
     def save_approvals(self, value):
         self._write("approvals.json", value[-200:])
+
+    def watch_state(self):
+        return self._read("watch-state.json", {})
+
+    def save_watch_state(self, value):
+        self._write("watch-state.json", value)
 
     def log(self, action, target, outcome):
         path = self.root / "activity.jsonl"
