@@ -58,8 +58,10 @@ def fit_notice(text, limit=MAX_NOTICE_BYTES):
     raw = text.encode()
     if len(raw) <= limit:
         return text
-    cut = raw[:limit - 4].decode("utf-8", "ignore")
-    cut = cut[:max(cut.rfind("\n"), cut.rfind(" "))] if max(cut.rfind("\n"), cut.rfind(" ")) > 0 else cut
+    cut = raw[:limit - 4].decode("utf-8", "ignore")  # Room for " …"; a split character is dropped.
+    edge = max(cut.rfind("\n"), cut.rfind(" "))
+    if edge > 0:
+        cut = cut[:edge]
     return cut.rstrip() + " …"
 
 
