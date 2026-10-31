@@ -6535,64 +6535,37 @@ function ownerDeclinesPreviewDelivery(text) {
   return optional;
 }
 
-// A bug report says what the page does, not what Portal may do: "...so
-// attacks never show", "the labels don't show up", "the page loads without
-// showing the score". On the laptop (2026-10-30) "attacks never show" in an
-// owner's bug report refused publication three times, in a turn that asked
-// for a preview. The preview intent checks read the message with those
-// descriptions masked, as the host-action words above are read. A negation is
-// masked only after its own subject: a plural noun, a noun after "the", "my"
-// and the like, or "they". That subject is never Portal, the owner, an
-// audience, a deliverable or a time ("this time don't ..."); the verb is never
-// a publishing verb; and the clause never opens with "if" or "when", whose
-// last word may end that clause. An instruction to Portal has no subject, so
-// every prohibition still forbids as before.
-const NOT_A_DESCRIBED_SUBJECT = new Set((
-  'i we you u portal portals pixel ods agent agents assistant assistants ai bot bots model models claude codex ' +
-  'client clients customer customers user users visitor visitors people others everyone anyone nobody public ' +
-  'team teams guest guests viewer viewers reader readers ' +
-  'yes thanks thx pls ps guys folks always sometimes perhaps besides afterwards towards regardless nevertheless ' +
-  'whereas as was has does its ' +
-  'time times moment moments round rounds turn turns run runs step steps way ways point points case cases ' +
-  'meantime meanwhile end rest day days week weeks hour hours minute minutes second seconds try tries attempt ' +
-  'attempts now later ' +
-  'preview previews page pages webpage webpages site sites website websites app apps application applications ' +
-  'result results output outputs demo demos game games project projects build builds version versions file files ' +
-  'snapshot snapshots artifact artifacts prototype prototypes'
-).split(' '));
-// A subject is a noun phrase: never a modal ("the agent must never show it"
-// has the subject "agent"), a conjunction ("create the page and never show
-// it" has none) or a pronoun object.
-const NOUN_PHRASE_WORD = String.raw`(?!(?:should|must|will|would|can|could|do|and|or|nor|but|so|then|yet|also|just|please|now|still|it|me|us|them|him|to|of|in|on|at|for|with|from|by|that|this|which|who|if|when|after|before|until|once|while)\b)[a-z][\w'’-]*`;
-const DESCRIBED_NEGATION = new RegExp(String.raw`\b(?:(the|my|our|your|its|their|his|her|these|those|all|some|both|each|every)\s+(?:${NOUN_PHRASE_WORD}\s+){0,2})?(${NOUN_PHRASE_WORD})\s+((?:should|must|will|would|can|could)\s+)?((?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip)\s+(?!(?:(?:try|attempt)\s+to\s+)?(?:publish|republish|preview|serve|deploy))[a-z][\w-]*)`, 'gi');
-// "the game restarts without showing the menu": a subject opens the clause.
-const DESCRIBED_WITHOUT = /((?:^|[!?;:\n,]|\.(?=\s))\s*(?:in\s+[\w./-]+\s+)?(?:(?:the|my|our|your|its|their|his|her|these|those|each|every)\s+(?:[a-z][\w'’-]*\s+){0,2}[a-z][\w-]*|it)\s+[a-z][\w-]*[^\W_su]s\s+)without\s+(?:show|display|open|view)ing\b/gi;
-// "the hit rings flicker and never show." ends with the description's verb.
-const DESCRIBED_TRAILING_NEVER = /\b(and|then)\s+never\s+(?:show|display|open|view)(?=\s*(?:[.,;:!?)]|$))/gi;
-const SUBORDINATE_CLAUSE_START =
-  /^\s*(?:(?:and|but|or|so)\s+)?(?:if|when|whenever|once|after|before|until|unless|while|since|as\s+soon\s+as|as\s+long\s+as|so\s+long\s+as|in\s+case|provided)\b/i;
+// The negations the preview prohibition rules read.
+const PREVIEW_NEGATION = /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b/i;
+// A negation that reaches a publishing word in its sentence: "don't show or
+// publish it", "never show me the preview", "do not open a live preview".
+const PUBLISHING_NEGATION =
+  /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:publish|republish|preview|serv(?:e|ing)|deploy)/i;
+// The owner asks Portal itself to look at the page in the preview: "check it
+// in the preview", "and test the menu in the preview", "can you verify it in
+// the preview?". "I'll check it in the preview myself" is not a request.
+const OWNER_CHECKS_IN_PREVIEW = /(?:^|:|\b(?:and(?:\s+then)?|then|now|also|so|just)\s+)\s*(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|I\s+(?:want|need)\s+you\s+to\s+)?(?:check|test|verify|inspect|try|look\s+at|see)\b[^.!?;\n]{0,48}\b(?:in|on|with|via|through|using)\s+(?:the|a|your)\s+(?:ODS\s+|workspace\s+|live\s+)?preview\b/i;
 
-function maskBehaviorDescriptions(text) {
-  return text
-    // "Don't show up" never means "don't publish".
-    .replace(/\b(do\s+not|don['’]t|never)\s+show(ing)?\s+up\b/gi, '$1 appear$2')
-    .replace(DESCRIBED_WITHOUT, '$1described')
-    .replace(DESCRIBED_TRAILING_NEVER, '$1 described')
-    .replace(DESCRIBED_NEGATION, (match, determiner, subject, modal, negated, offset, whole) => {
-      const head = subject.toLowerCase();
-      const clause = whole.slice(0, offset).split(/[!?;:\n,]|\.(?=\s)/).pop();
-      const hasModal = Boolean(modal) || /^(?:must|should)\s/i.test(negated);
-      const described = !NOT_A_DESCRIBED_SUBJECT.has(head) && !SUBORDINATE_CLAUSE_START.test(clause) &&
-        (Boolean(determiner) || /[^\W_siu]s$/i.test(head) || (head === 'they' && !hasModal));
-      return described ? match.slice(0, -negated.length) + 'described' : match;
-    });
+// An explicit request to use the preview outweighs a negated show, open, view
+// or display elsewhere in the message, which is most often a bug report: "...so
+// attacks never show. Please fix those and check it in the preview this time"
+// was refused three times on the laptop (2026-10-30). The request must stand in
+// a sentence with no negation, and nothing outweighs a negation that reaches a
+// publishing word, so "don't publish" and "don't show me the preview" always
+// forbid. Without such a request every negation forbids as before. Naming the
+// session's verified project ("Publish log-viewer-lab.") is such a request.
+function ownerRequestOutweighsShowNegation(text, sessionPreview = undefined) {
+  if (PUBLISHING_NEGATION.test(text)) return false;
+  return text.split(/[!?;\n]+|\.(?=\s|$)/).some((sentence) =>
+    !PREVIEW_NEGATION.test(sentence) && (OWNER_CHECKS_IN_PREVIEW.test(sentence) || hasExplicitWorkspacePreviewDirective(sentence) ||
+      requestsNamedSessionPreview(sentence, sessionPreview)));
 }
 
-function ownerForbidsWorkspacePreview(messages, prompt) {
-  const text = maskBehaviorDescriptions(localPreviewPolicyText(currentOwnerIntentText(messages, prompt))
+function ownerForbidsWorkspacePreview(messages, prompt, sessionPreview = undefined) {
+  const text = localPreviewPolicyText(currentOwnerIntentText(messages, prompt))
     .replace(/(?:\x60{3}|~{3})[\s\S]*?(?:\x60{3}|~{3})/g, " ")
     .replace(/^\s*>[^\n]*/gm, " ")
-    .replace(/"[^"\n]*"|\x60[^\x60\n]*\x60/g, " "));
+    .replace(/"[^"\n]*"|\x60[^\x60\n]*\x60/g, " ");
   // Preserve explicit owner constraints without requiring a positive visual
   // vocabulary to use the local snapshot tool. These are delivery actions,
   // not filenames, quoted examples, or another clause's edit restriction.
@@ -6602,8 +6575,10 @@ function ownerForbidsWorkspacePreview(messages, prompt) {
   const coordinatedProhibition = text
     .split(/[!?;\n]+|\.(?=\s|$)|\b(?:but|however|instead|then)\b/i)
     .some((clause) => !independentEnglishPreviewAfterConstraint(clause) && /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:and|or|nor)\s+(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(clause));
-  if (coordinatedProhibition || ownerDeclinesPreviewDelivery(text)) return true;
-  return portuguesePreviewForbidden(text) || /\b(?:only|just)\s+(?:the\s+)?(?:code|source(?:\s+code)?)\b/i.test(text) || /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:(?:try|attempt)\s+to\s+)?(?:(?:create|build|edit|write|run|execute)\s*(?:,\s*|and\s+|or\s+))*(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(text);
+  if (ownerDeclinesPreviewDelivery(text) || portuguesePreviewForbidden(text) ||
+    /\b(?:only|just)\s+(?:the\s+)?(?:code|source(?:\s+code)?)\b/i.test(text)) return true;
+  const negatedDelivery = coordinatedProhibition || /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:(?:try|attempt)\s+to\s+)?(?:(?:create|build|edit|write|run|execute)\s*(?:,\s*|and\s+|or\s+))*(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(text);
+  return negatedDelivery && !ownerRequestOutweighsShowNegation(text, sessionPreview);
 }
 
 function portuguesePreviewForbidden(text) {
@@ -6749,9 +6724,9 @@ function requestsNamedSessionPreview(text, preview) {
   if (!text || !preview?.relativeDirectory) return false;
   // A verified project name is a usable target: owners need not repeat
   // "website" or its full HTML path on every publication request.
-  const ownerText = maskBehaviorDescriptions(text
+  const ownerText = text
     .replace(/(?:\x60{3}|~{3})[\s\S]*?(?:\x60{3}|~{3})/g, " ")
-    .replace(/^\s*>[^\n]*/gm, " "));
+    .replace(/^\s*>[^\n]*/gm, " ");
   const directory = preview.relativeDirectory.replace(/[^A-Za-z0-9_/-]/g, "\\$&");
   const target = new RegExp(
     "^(?:(?:the|this|that|existing|current|updated|repaired)\\s+)*" +
@@ -6761,15 +6736,20 @@ function requestsNamedSessionPreview(text, preview) {
   );
   // Keep this an owner command, rather than a quoted command, explanation,
   // subordinate clause, or instruction found inside a code block.
-  const commands = ownerText.matchAll(
+  const commands = (value) => value.matchAll(
     /(?:^|[.!?;\n]|\b(?:and(?:\s+then)?|then)\s+)\s*(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|I\s+(?:want|need)\s+you\s+to\s+)?(?:publish|republish|preview|display|show|open|view)\s+([^!?;\n]{1,512})/gi
   );
   // A bare reference can reopen this session's actual verified artifact.
   // Extra names or clauses (for example a public site's research request)
   // must not inherit that artifact merely because the session has one.
   const bareTarget = /^(?:me\s+)?(?:(?:the|this|that)\s+)(?:website|site|web\s*page|frontend|dashboard|preview|artwork|animation|illustration|scene|game|chart|diagram|svg)(?:\s+(?:again|here))?\s*[.!?]?\s*$/i;
-  if (![...commands].some((match) => target.test(match[1]) || bareTarget.test(match[1]))) return false;
-  return !/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:publish(?:ing)?|republish(?:ing)?|preview(?:ing)?|display(?:ing)?|show(?:ing)?|open(?:ing)?|view(?:ing)?)\b/i.test(ownerText);
+  const namesTarget = (value) => [...commands(value)].some((match) => target.test(match[1]) || bareTarget.test(match[1]));
+  if (!namesTarget(ownerText)) return false;
+  if (!/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:publish(?:ing)?|republish(?:ing)?|preview(?:ing)?|display(?:ing)?|show(?:ing)?|open(?:ing)?|view(?:ing)?)\b/i.test(ownerText)) return true;
+  // A negated show elsewhere ("the error rows never show") does not veto the
+  // command in a sentence of its own; a publishing prohibition always does.
+  return !PUBLISHING_NEGATION.test(ownerText) && ownerText.split(/[!?;\n]+|\.(?=\s|$)/)
+    .some((sentence) => !PREVIEW_NEGATION.test(sentence) && namesTarget(sentence));
 }
 
 function workspacePreviewRestrictions(text) {
@@ -6873,7 +6853,7 @@ function clauseRequestsVisualArtifact(clause, actionPattern, targetPattern) {
 }
 
 export function userMessageRequestsWorkspacePreview(messages, prompt = undefined) {
-  const text = maskBehaviorDescriptions(workspacePreviewInstructionText(currentOwnerIntentText(messages, prompt)));
+  const text = workspacePreviewInstructionText(currentOwnerIntentText(messages, prompt));
   if (!text) return false;
   if (portuguesePreviewForbidden(text) || ownerDeclinesPreviewDelivery(text)) return false;
   // Classify visual targets and actions from the same positive request text.
@@ -6972,7 +6952,7 @@ export function userMessageRequestsWorkspacePreview(messages, prompt = undefined
       !/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b/i.test(clause) &&
       hasExplicitWorkspacePreviewDirective(clause));
   if (
-    rejectsPreview ||
+    (rejectsPreview && !ownerRequestOutweighsShowNegation(text)) ||
     (rejectsCreation && !independentDelivery) ||
     nativeOnly ||
     (!explicitDelivery && (explanatoryOnly || nonVisualImplementation))
@@ -11018,11 +10998,11 @@ export function createToolLoopGuard({
       takePendingClarification(state, runId, context, agentId, ownerIntent);
       if (currentUserText(event?.messages, event?.prompt)) {
         state.ownerIntentObserved = true;
-        state.workspacePreviewForbidden = ownerForbidsWorkspacePreview(event?.messages, event?.prompt);
-        state.workspaceDocumentDeliveryRequested = userMessageRequestsWorkspaceDocumentDelivery(event?.messages, event?.prompt);
         const previousPreview = typeof sessionId === "string" && sessionId
           ? sessionPreviews.get(sessionId)
           : undefined;
+        state.workspacePreviewForbidden = ownerForbidsWorkspacePreview(event?.messages, event?.prompt, previousPreview);
+        state.workspaceDocumentDeliveryRequested = userMessageRequestsWorkspaceDocumentDelivery(event?.messages, event?.prompt);
         // A failed verification in a later turn cannot erase an immutable
         // publication from this session. This is historical evidence only;
         // it neither verifies current files nor grants continuation scope.
