@@ -296,17 +296,24 @@ projection (`truncateOversizedToolResultsInMessages`):
   `/workspace`. Any other result is never superseded, and changes made through
   `exec` are not seen. A reduction counts only what superseded a result by the
   batch it reduces for, so earlier sends stay byte-stable.
-- The tool-loop guard and the pre-prompt compaction check call the projection
-  without an attempt's state, and get exactly the projection above. So the
-  guard measures, and trips, as it would without the superseded-first order.
-  The stream uses the order only while its own input fits the guard's limit at
+- The tool-loop guard calls the projection without an attempt's state and gets
+  exactly the projection above, so it measures, and trips, as it would without
+  the superseded-first order. Only calls with the attempt's state use the
+  order: the provider stream, and the pre-prompt compaction check at the start
+  of an attempt, which then sees what the attempt's first request sends (a
+  transcript that ends with a final reply still gets the base projection).
+  They use the order only while their own input fits the guard's limit at
   every message, in the view the response starts with (the wider view at 131k
-  tokens or more, the base view below). Its input can count more than the
-  guard's: OpenClaw sends a compaction summary to the model as user text, and
-  the guard counts it as 256 characters. Once the order does not fit, the
+  tokens or more, the base view below). The stream's input can count more than
+  the guard's: OpenClaw sends a compaction summary to the model as user text,
+  and the guard counts it as 256 characters. Once the order does not fit, the
   attempt sends exactly the projection above until it ends. That changes the
   cached prompt prefix once; with the wider view, a later decline of that view
   can change it once more.
+- Edit arguments are read as the edit tool reads them: `edits` can arrive as a
+  JSON string, which the tool parses in the attempt's copy while the session
+  file keeps the string, and a legacy `oldText` joins them. So the next turn
+  reaches the same reductions as the attempt that made the edit.
 - The first request of the next turn can send the order when it fits, so, as
   with the wider view, its room for the reply rests on the loop guard rather
   than on the pre-prompt check's reserve.

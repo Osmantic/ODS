@@ -205,6 +205,52 @@ test('a read, edit and check run reduces replaced and repeated reads first, with
     'FAIL: fresh reads were reduced while replaced or repeated reads stayed\n' + trace);
 });
 
+// Review of the change above: the edit tool parses a JSON-string `edits` in the
+// attempt's own copy, while the session file keeps the string. The next turn
+// reloads the string and must re-send the shared history byte for byte, or the
+// prompt cache misses from the first difference on.
+test('the next turn re-sends the shared tool results byte for byte after a JSON-string edit', {timeout: 120000}, async t => {
+  const lines = (name, n) => Array.from({length: n}, (_, i) => `  const ${name}${i} = grid.cells[${i}] ?? spawn(${i});`.padEnd(59, ' '));
+  const ui = lines('cell', 320);
+  const others = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o'];
+  const script = [...others.slice(0, 8).map(name => ['read', {path: `${name}.js`}]),
+    ['read', {path: 'ui.js', offset: 1, limit: 160}],
+    ['edit', {path: 'ui.js', edits: JSON.stringify([{oldText: ui[300], newText: ui[300].replace('spawn', 'reuse')}])}],
+    ...others.slice(8).map(name => ['read', {path: `${name}.js`}]),
+    ['read', {path: 'a.js'}]];
+  let step = 0;
+  const upstream = provider(t, body => {
+    if (isSummary(body)) return {delta: {content: 'Summary.'}};
+    const owner = [...body.messages].reverse().find(message => message.role === 'user');
+    if (textOf(owner?.content).includes('Second turn')) return {delta: {content: 'Done again.'}};
+    if (step >= script.length) return {delta: {content: 'Done.'}};
+    const [name, args] = script[step];
+    return {delta: {tool_calls: [{index: 0, id: `call-${step++}`, type: 'function', function: {name, arguments: JSON.stringify(args)}}]}};
+  });
+  const area = fs.mkdtempSync(path.join(root, 'next-turn-')), {config: value, workspace, agentDir} = config(area, await upstream.ready);
+  value.tools.allow = ['read', 'edit'];
+  for (const name of others) fs.writeFileSync(path.join(workspace, `${name}.js`), lines(name, 160).join('\n'));
+  fs.writeFileSync(path.join(workspace, 'ui.js'), ui.join('\n'));
+  const sessionId = '7aaaaaaa-2222-4333-8444-555555555555', sessionFile = path.join(area, sessionId + '.jsonl');
+  fs.writeFileSync(sessionFile, JSON.stringify({type: 'session', version: 3, id: sessionId, timestamp: new Date().toISOString(), cwd: workspace}) + '\n');
+  const common = {agentId: 'pixel', sessionId, sessionFile, sessionKey: 'agent:pixel:next-turn-fixture', workspaceDir: workspace, agentDir, config: value,
+    provider: 'fixture', model: 'model', trigger: 'user', timeoutMs: 60000};
+  const first = await runEmbeddedAgent({...common, prompt: 'Read the files and fix ui.js, then say Done.', runId: 'long-run-next-1'});
+  const turn1 = upstream.bodies.filter(body => !isSummary(body));
+  const second = await runEmbeddedAgent({...common, prompt: 'Second turn: say Done again.', runId: 'long-run-next-2'});
+  const turn2 = upstream.bodies.filter(body => !isSummary(body)).slice(turn1.length);
+  const tools = body => body.messages.filter(message => message.role === 'tool').map(message => textOf(message.content));
+  const before = tools(turn1.at(-1)), after = tools(turn2[0]);
+  const stored = transcript(sessionFile).flatMap(row => row.message?.role === 'assistant' ? row.message.content : [])
+    .filter(block => block?.type === 'toolCall' && block.name === 'edit').map(block => typeof block.arguments?.edits);
+  const trace = JSON.stringify({answers: [first.payloads, second.payloads].map(payloads => payloads?.map(payload => payload.text ?? '').join('')), stored,
+    reduced: before.map(text => /^\[\.\.\. \d+ more characters truncated/.test(text) ? 'N' : 'W').join('')});
+  t.diagnostic(trace);
+  assert.deepEqual(stored, ['string'], 'the session file keeps the JSON string\n' + trace);
+  assert.ok(before.some(text => /^\[\.\.\. \d+ more characters truncated/.test(text)), 'the first turn reduced results\n' + trace);
+  assert.deepEqual(after.slice(0, before.length), before, 'FAIL: the next turn re-sent the shared tool results differently\n' + trace);
+});
+
 // Positive control. The projection caps tool results only; tool-call arguments
 // (write and edit payloads) reach the provider whole. A run of large writes
 // must still trip the guard (window x 3.6 characters) before the provider

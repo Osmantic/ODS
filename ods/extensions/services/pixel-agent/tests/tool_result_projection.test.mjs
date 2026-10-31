@@ -337,7 +337,9 @@ test('only a change its tool reports as made, of what a read shows, makes the re
     ['edit', {path: 'game/ui.js', oldText: shown, newText: 'x'}, 'Successfully replaced 1 block(s) in game/ui.js.', {}, true],
     ['edit', {path: 'game/ui.js', edits: [{oldText: elsewhere, newText: 'x'}]}, 'Successfully replaced 1 block(s) in game/ui.js.', {}, false],
     ['edit', {path: 'game/ui.js', edits: [{oldText: elsewhere, newText: 'x'}, {oldText: shown, newText: 'y'}]}, 'Successfully replaced 2 block(s) in game/ui.js.', {}, true],
-    ['edit', {path: 'game/ui.js', edits: '[]'}, 'Successfully replaced 1 block(s) in game/ui.js.', {}, true],
+    ['edit', {path: 'game/ui.js', edits: JSON.stringify([{oldText: shown, newText: 'x'}])}, 'Successfully replaced 1 block(s) in game/ui.js.', {}, true],
+    ['edit', {path: 'game/ui.js', edits: JSON.stringify([{oldText: elsewhere, newText: 'x'}])}, 'Successfully replaced 1 block(s) in game/ui.js.', {}, false],
+    ['edit', {path: 'game/ui.js', edits: [{oldText: elsewhere, newText: 'x'}], oldText: shown, newText: 'y'}, 'Successfully replaced 2 block(s) in game/ui.js.', {}, true],
     ['write', {path: '/workspace/game/ui.js', content: 'x'}, 'Successfully wrote 1 bytes to /workspace/game/ui.js', {}, true],
     ['apply_patch', {input: patch}, 'Success. Updated the following files:\nM game/ui.js', {}, true],
     ['apply_patch', {input: patch.replace('Update File: game/ui.js', 'Update File: game/ui.js\n*** Move to: game/view.js')},
@@ -355,6 +357,27 @@ test('only a change its tool reports as made, of what a read shows, makes the re
     const history = readLines(owner(), 'game/ui.js', 1, 100);
     tool(history, name, args, text, extra);
     assert.deepEqual(superseded(history), stale ? {2: 4} : {}, `${name}: ${text.slice(0, 40)}`);
+  }
+});
+
+test('an edit sent as a JSON string projects as the parsed edit the attempt saw', () => {
+  // Review of this change: the edit tool parses a JSON-string edits in the
+  // attempt's own copy while the session file keeps the string, so the next
+  // turn must reach the same reductions from either form.
+  const build = (edits) => {
+    const history = owner();
+    for (const file of ['a.js', 'b.js', 'c.js', 'd.js', 'e.js', 'f.js', 'g.js', 'h.js']) readLines(history, `game/${file}`, 1, 100);
+    readLines(history, 'game/ui.js', 1, 100);
+    tool(history, 'edit', {path: 'game/ui.js', edits}, 'Successfully replaced 1 block(s) in game/ui.js.');
+    for (const file of ['i.js', 'j.js']) readLines(history, `game/${file}`, 1, 100);
+    return history;
+  };
+  const results = (messages) => messages.filter((m) => m.role === 'toolResult').map(textOf);
+  for (const line of [500, 50]) {
+    const edits = [{oldText: lineText('game/ui.js', line), newText: 'x'}];
+    const attempt = build(edits), reloaded = build(JSON.stringify(edits));
+    assert.deepEqual(superseded(reloaded), superseded(attempt), `line ${line}`);
+    assert.deepEqual(results(run(reloaded).messages), results(run(attempt).messages), `line ${line}`);
   }
 });
 
