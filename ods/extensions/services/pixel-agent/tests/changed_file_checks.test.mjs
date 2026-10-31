@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {createChangedFileChecks, debugGlobalWrites, FILE_CHECK_INSTRUCTION, FILE_CHECK_LIMITS, FILE_CHECK_REMOVAL, fileCheckFacts,
-  fileCheckInstruction, nodeModuleCheck, parseCheck, scratchEntry, topLevelDefinitions, touchedProjects} from '../plugin/changed-file-checks.mjs';
+import {createChangedFileChecks, createModuleCheckQueue, debugGlobalWrites, FILE_CHECK_INSTRUCTION, FILE_CHECK_LIMITS, FILE_CHECK_REMOVAL,
+  FILE_CHECKS_OFF, fileCheckFacts, fileCheckInstruction, generatedFile, nodeModuleCheck, parseCheck, scratchEntry, topLevelDefinitions,
+  touchedProjects} from '../plugin/changed-file-checks.mjs';
 
 // Portal's checks of the files a response changed (changed-file-checks.mjs).
 // On 2026-10-30/31 a one-off Python patch run through exec rewrote the game's
@@ -42,13 +43,22 @@ test('top-level definitions are counted at column 0, outside comments and templa
     'var canvas = null;\nvar canvas = document.querySelector("canvas");\n' +
     '/*\nfunction a() { return 0; }\n*/\nconst src = `\nfunction b() {}\n${1}\nclass I {}\n`;\n' +
     "const re = /'/;\nfunction m() {}\nconst s = 'x\\\n';\nfunction n() {}\n" +
-    // A regular expression holding /*, and a template nested in a ${} across lines.
-    'const re2 = /x\\/*/;\nfunction m2() {}\n' +
-    "const page = `<ul>${items.map(item => `\n<li>${item}</li>`).join('')}</ul>`;\nfunction render() {}\n";
+    // A regular expression holding /* (a later comment closes no comment of
+    // its), and templates nested in a ${} across lines.
+    'const re2 = /x\\/*/;\nfunction m2() {}\n/* note */\n' +
+    "const page = `<ul>${items.map(item => `\n<li>${item}</li>`).join('')}</ul>`;\nfunction render() {}\n" +
+    'const t = `a ${`\nfunction hidden() {}\n`} b`;\nfunction after() {}\n';
   assert.deepEqual(Object.fromEntries(topLevelDefinitions(source)),
-    {a: 2, b: 1, c: 1, d: 1, e: 1, f: 1, I: 1, j: 1, k: 1, l: 1, src: 1, re: 1, m: 1, s: 1, n: 1, re2: 1, m2: 1, page: 1, render: 1});
+    {a: 2, b: 1, c: 1, d: 1, e: 1, f: 1, I: 1, j: 1, k: 1, l: 1, src: 1, re: 1, m: 1, s: 1, n: 1, re2: 1, m2: 1, page: 1, render: 1,
+      t: 1, after: 1});
   assert.deepEqual(Object.fromEntries(topLevelDefinitions(DOUBLED)),
     {SPRITE_pose: 2, SPRITE_blit: 2, SPRITE_CACHE: 2, drawEnemy: 2});
+  // A backquote the lexer cannot place (JSX text, a regular expression after
+  // a closing parenthesis) leaves a template open at the end: every line after
+  // it counts, and the lines before it as they were read.
+  assert.deepEqual(Object.fromEntries(topLevelDefinitions('const doc = `\nfunction hidden() {}\n`;\n' +
+    'function P() { return <p>Press the ` key</p>; }\nfunction P() {}\n')), {doc: 1, P: 2});
+  assert.deepEqual(Object.fromEntries(topLevelDefinitions('if (ok) /`/.test(s);\nfunction Q() {}\nfunction Q() {}\n')), {Q: 2});
 });
 
 test('debug globals are writes to globalThis, window or self properties named __...', () => {
@@ -67,13 +77,19 @@ test('debug globals are writes to globalThis, window or self properties named __
 
 test('a new entry is reported when it looks like scratch; conventional dotfiles are not', () => {
   for (const name of ['.crop-return.txt', '.crop_actual.js', '.crop', '.tmp-out', '.scratch', '.debug.log', '.notes.json',
-    '.frame.png', 'chars.js.bak', 'chars.js.orig', 'out.tmp', 'tmp-build', 'tmp-crops', 'chars-tmp.js', 'build-tmp2', 'NOTES.BAK'])
+    '.frame.png', 'chars.js.bak', 'chars.js.orig', 'out.tmp', 'tmp-build', 'tmp-crops', 'chars-tmp.js', 'build-tmp2', 'NOTES.BAK',
+    // Not an rc file: a tool's name has three letters or more before rc.
+    '.src.js', '.orc.txt'])
     assert.equal(scratchEntry(name), true, name);
   for (const name of ['.gitignore', '.gitattributes', '.git', '.github', '.editorconfig', '.prettierrc', '.prettierrc.json',
     '.eslintrc.cjs', '.env', '.env.local', '.npmrc', '.nvmrc', '.babelrc', '.vscode', '.idea', '.well-known', '.htaccess',
     '.nojekyll', '.DS_Store', '.next', '.parcel-cache', '.svelte-kit', '.astro', '.nuxt', '.output', '.pytest_cache', '.venv',
     '.cache', '.dockerignore', '.husky', '.foo', 'chars.js', 'index.html', 'README.md', 'tmp', 'template.js', 'attempt.js',
-    'chart-tmpl.js', 'backup.js', 'orig.js', undefined]) assert.equal(scratchEntry(name), false, String(name));
+    'chart-tmpl.js', 'backup.js', 'orig.js', undefined,
+    // CI, hook, lint and release settings.
+    '.travis.yml', '.pre-commit-config.yaml', '.pre-commit-hooks.yaml', '.markdownlint.json', '.markdownlint-cli2.jsonc',
+    '.release-it.json', '.codeclimate.yml', '.readthedocs.yaml', '.golangci.yml', '.goreleaser.yaml', '.hadolint.yaml',
+    '.mergify.yml', '.lintstagedrc.json', '.mocharc.yml']) assert.equal(scratchEntry(name), false, String(name));
 });
 
 test('the parse check finds the doubled file and passes scripts, CommonJS and ES modules', async () => {
@@ -99,8 +115,10 @@ test('the parse check finds the doubled file and passes scripts, CommonJS and ES
   assert.deepEqual(parsed(await parseCheck('import {x} from "./x.js";\n\nexport function (\n', 'main.js')), {ok: false, line: 3});
   assert.deepEqual(await parseCheck('export const a = 1;\n', 'lib.mjs'), {ok: true});
   assert.deepEqual(parsed(await parseCheck('const ok = 1;\nexport const = 1;\n', 'lib.mjs')), {ok: false, line: 2});
-  // A syntax error ahead of any module syntax is the script's own.
+  // A syntax error ahead of any module syntax is the script's own; a module
+  // statement makes the file a module, whose top-level return is the failure.
   assert.deepEqual(parsed(await parseCheck('const a = ;\nconst b = 2;\n', 'main.js')), {ok: false, line: 1});
+  assert.deepEqual(parsed(await parseCheck('if (x) return;\nexport const a = 1;\n', 'main.js')), {ok: false, line: 1});
   // Nothing is claimed when the check cannot finish.
   assert.equal(await parseCheck('export const a = 1;\n', 'main.js', async () => undefined), undefined);
   assert.equal(await parseCheck('['.repeat(200000), 'deep.js'), undefined);
@@ -141,6 +159,10 @@ test('a call touches the Playground projects it may change, as written or routed
   assert.deepEqual(touchedProjects('exec', {command: "python3 - <<'EOF'\nfrom pathlib import Path\np = Path('Playground') / 'snake' / 'x.js'\nEOF"}, root),
     ['Playground/snake']);
   assert.deepEqual(touchedProjects('exec', {command: 'cd snake && python3 patch.py', workdir: '/workspace/Playground'}, root), ['Playground/snake']);
+  assert.deepEqual(touchedProjects('exec', {command: 'cd snake/src && python3 patch.py', workdir: '/workspace/Playground'}, root),
+    ['Playground/snake']);
+  assert.deepEqual(touchedProjects('exec', {command: 'cd Playground && cd elf-of-doom && python3 patch.py', workdir: '/workspace'}, root),
+    ['Playground/elf-of-doom']);
   assert.deepEqual(touchedProjects('exec', {command: 'cd Playground\\elf-of-doom && python patch.py'}, root), ['Playground/elf-of-doom']);
   assert.deepEqual(touchedProjects('exec', {command: 'python patch.py', workdir: 'c:\\users\\ods\\workspace\\Playground\\snake'},
     'C:\\Users\\ods\\workspace'), ['Playground/snake']);
@@ -149,6 +171,8 @@ test('a call touches the Playground projects it may change, as written or routed
     ['write', {path: 'playground/snake/main.js'}], ['exec', {command: 'ls Playground/', workdir: '/workspace'}],
     ['exec', {command: 'cat MyPlayground/snake/x.js'}], ['exec', {command: 'ls', workdir: '/workspace/Playground'}],
     ['exec', {command: 'cd snake', workdir: '/workspace'}], ['write', {path: 'Playground/con/x.js'}],
+    ['exec', {command: 'cd Playground && ls', workdir: '/workspace'}],
+    ['exec', {command: `echo '["Playground", "notes"]' > folders.json`, workdir: '/workspace'}],
     ['tool_call', {id: 'openclaw:core:read', args: {path: 'Playground/a/b.js'}}],
     ['web_fetch', {url: 'https://example.com/Playground/x'}]]) assert.deepEqual(touchedProjects(tool, params, root), [], JSON.stringify(params));
   // At most FILE_CHECK_LIMITS.projects per call.
@@ -236,18 +260,74 @@ test('JSX, and a file the project\'s HTML loads as text/babel, are not reported 
   assert.deepEqual(checks.findings({final: true}), [{kind: 'parse', project: 'Playground/cra', file: 'src/util.js', line: 1}]);
 });
 
-test('vendored, minified and generated files get the parse check only, and dist, build and venv are not entered', t => {
+test('a file the project\'s HTML loads as a classic script parses as one: pasted tags, export and top-level await fail there', async t => {
+  const {root, write} = workspace(t, {
+    'Playground/g/index.html': '<canvas id="c"></canvas>\n<script src="game.js"></script>\n<script src="js/ui.js?v=2"></script>\n' +
+      "<script type='text/javascript' src='./js/net.js'></script>\n<script type=\"module\" src=\"/src/main.js\"></script>\n" +
+      '<script src="https://cdn.example.com/lib.js"></script>\n',
+    'Playground/g/game.js': 'function tick() {}\n',
+    'Playground/g/js/ui.js': 'const ui = {};\n',
+    'Playground/g/js/net.js': 'const net = {};\n',
+    'Playground/g/src/main.js': 'const main = 1;\n',
+    'Playground/g/levels.js': 'const levels = [];\n',
+    // A page in a folder loads its script from that folder.
+    'Playground/g/levels/one.html': '<script src="one.js"></script>\n',
+    'Playground/g/levels/one.js': 'const one = 1;\n',
+  });
+  // A stand-in for node --check: a module may not use with (strict mode).
+  const checks = createChangedFileChecks({checkModule: async source => source.includes('with (')
+    ? {ok: false, line: 2, message: 'Strict mode code may not include a with statement'} : {ok: true}});
+  checks.touch(root, ['Playground/g']);
+  // The model moved the inline script into game.js and kept its tags.
+  write('Playground/g/game.js', '<script>\nconst canvas = document.getElementById("c");\nfunction tick() {}\n</script>\n');
+  write('Playground/g/js/ui.js', 'export const ui = {};\n');
+  write('Playground/g/js/net.js', 'const data = await fetch("levels.json");\n');
+  write('Playground/g/levels/one.js', 'export const one = 1;\n');
+  // Loaded as a module: parsed as one, even with no module syntax. Loaded by
+  // no page: module syntax is its to use.
+  write('Playground/g/src/main.js', 'const main = 1;\nwith (Math) { main2 = PI; }\n');
+  write('Playground/g/levels.js', 'export const levels = await fetch("levels.json");\n');
+  // Delivery scans and asks for what it needs, with no result in between.
+  await checks.settle();
+  assert.deepEqual(checks.findings({final: true}), [
+    {kind: 'parse', project: 'Playground/g', file: 'game.js', line: 1},
+    {kind: 'parse', project: 'Playground/g', file: 'js/net.js', line: 1},
+    {kind: 'parse', project: 'Playground/g', file: 'js/ui.js', line: 1},
+    {kind: 'parse', project: 'Playground/g', file: 'levels/one.js', line: 1},
+    {kind: 'parse', project: 'Playground/g', file: 'src/main.js', line: 2},
+  ]);
+  // A page changed in the response is read again.
+  write('Playground/g/index.html', '<script src="game.js"></script>\n<script src="extra.js"></script>\n');
+  write('Playground/g/extra.js', 'export const extra = 1;\n');
+  await checks.settle();
+  assert.deepEqual(checks.findings({final: true}).filter(finding => finding.file === 'extra.js'),
+    [{kind: 'parse', project: 'Playground/g', file: 'extra.js', line: 1}]);
+});
+
+test('vendored and minified files get the parse check only; a lib folder or a long line is not one; dist, build and venv are not entered', t => {
   const {root, write} = workspace(t, {'Playground/three/main.js': 'const a = 1;\n'});
   const checks = createChangedFileChecks();
   checks.touch(root, ['Playground/three']);
   const three = "const REVISION = '160';\nif ( window.__THREE__ ) {\n} else {\n\twindow.__DEBUG_HOOK = REVISION;\n}\nfunction a() {}\nfunction a() {}\n";
-  write('Playground/three/vendor/three.module.js', three);
+  // Vendored: a vendor folder, a .min.js name, a library's file name, a license banner; minified: long lines on average.
+  write('Playground/three/vendor/sprites.js', three);
+  write('Playground/three/js/game.min.js', three);
+  write('Playground/three/lib/three.js', three);
+  write('Playground/three/js/helpers.js', `/*! helpers v2 | MIT */\n${three}`);
+  write('Playground/three/js/bundle.js', `${three.replaceAll('\n', ';')}var pad = ${'1+'.repeat(FILE_CHECK_LIMITS.minifiedLine)}1;\n`);
+  // The project's own code: a lib folder, a level written on one long line, a file named like a game's stats.
   write('Playground/three/lib/engine.js', three);
-  write('Playground/three/js/three.min.js', three);
-  write('Playground/three/js/bundle.js', `${three}${'x'.repeat(FILE_CHECK_LIMITS.minifiedLine + 1)}\n`);
+  write('Playground/three/js/level.js', `${three}const LEVEL = "${'#'.repeat(FILE_CHECK_LIMITS.minifiedLine + 200)}";\n`);
+  write('Playground/three/js/stats.js', 'function show() {}\nfunction show() {}\n');
   for (const folder of ['dist', 'build', 'venv', 'node_modules', '.next']) write(`Playground/three/${folder}/chunk.js`, 'const = ;\n');
   write('Playground/three/vendor/broken.js', 'const = ;\n');
-  assert.deepEqual(checks.findings(), [{kind: 'parse', project: 'Playground/three', file: 'vendor/broken.js', line: 1}]);
+  const own = file => [{kind: 'definition', project: 'Playground/three', file, name: 'a', count: 2},
+    {kind: 'global', project: 'Playground/three', file, name: 'window.__DEBUG_HOOK'}];
+  assert.deepEqual(checks.findings(), [...own('js/level.js'),
+    {kind: 'definition', project: 'Playground/three', file: 'js/stats.js', name: 'show', count: 2}, ...own('lib/engine.js'),
+    {kind: 'parse', project: 'Playground/three', file: 'vendor/broken.js', line: 1}]);
+  assert.equal(generatedFile('src/app.js', '/**\n * Game helpers.\n * @license MIT\n */\nconst a = 1;\n'), true);
+  assert.equal(generatedFile('src/app.js', '/** Game helpers. */\nconst a = 1;\n// @license MIT\n'), false);
 });
 
 test('library and devtools hooks, and names the owner\'s request uses, are not debug globals', t => {
@@ -358,31 +438,96 @@ test('the same finding in two projects is told for each, and names the texts can
   assert.deepEqual(checks.take(), [{kind: 'parse', project: 'Playground/b', file: 'x.js', line: 1}]);
 });
 
-test('module parses run in the background, bounded per response, each version once; what could not be checked is said', async t => {
-  const {root, write} = workspace(t, {'Playground/mods/base.mjs': 'export const base = ;\n'});
+test('module parses run in the background on changed versions only, two at a time, each version once for every response', async t => {
+  const {root, write} = workspace(t, {'Playground/mods/base.mjs': 'export const base = 1;\n', 'Playground/mods/keep.mjs': 'export const keep = 1;\n'});
   const sources = [];
   let release;
   const gate = new Promise(resolve => { release = resolve; });
-  const checks = createChangedFileChecks({limits: {moduleChecks: 4, moduleBaseline: 1, moduleConcurrency: 1},
-    checkModule: async source => { sources.push(source); await gate; return /= ;/.test(source) ? {ok: false, line: 1} : {ok: true}; }});
+  const queue = createModuleCheckQueue({checkModule: async source => {
+    sources.push(source);
+    await gate;
+    return /= ;/.test(source) ? {ok: false, line: 1} : {ok: true};
+  }});
+  const checks = createChangedFileChecks({queue, limits: {moduleChecks: 4, moduleFinal: 1, moduleBaseline: 1}});
   checks.touch(root, ['Playground/mods']);
-  assert.equal(sources.length, 1, 'the first touch queues its module file');
-  for (let i = 0; i < 4; i++) write(`Playground/mods/m${i}.mjs`, `export const a${i} = ;\n`);
+  assert.deepEqual(sources, [], 'the first touch parses no module');
+  write('Playground/mods/base.mjs', 'export const base = ;\n');
   write('Playground/mods/copy.mjs', 'export const a0 = ;\n');
-  // Not yet known: no finding, nothing told; one check runs at a time.
+  for (let i = 0; i < 5; i++) write(`Playground/mods/m${i}.mjs`, `export const a${i} = ;\n`);
+  // Not yet known: nothing told; two run, two wait, the rest are past the
+  // response's checks while it works. m0 is copy.mjs's version.
   assert.deepEqual(checks.take(), []);
-  assert.equal(sources.length, 1, 'one at a time');
+  assert.equal(sources.length, 2, 'two at a time');
+  release();
+  // At delivery: m3 from the final checks, and base.mjs as it was at first
+  // touch, now that its changed version fails. m4 is past both.
+  await checks.settle();
+  assert.deepEqual(sources.slice(2).sort(),
+    ['export const a1 = ;\n', 'export const a2 = ;\n', 'export const a3 = ;\n', 'export const base = 1;\n']);
+  // Results come on a later result, even one that walks nothing.
+  assert.deepEqual(checks.take({walk: false}).map(finding => finding.file), ['base.mjs', 'copy.mjs', 'm0.mjs', 'm1.mjs', 'm2.mjs', 'm3.mjs']);
+  assert.deepEqual(checks.take({walk: false}), []);
+  assert.deepEqual(checks.findings({final: true}).filter(finding => finding.kind === 'unparsed'),
+    [{kind: 'unparsed', project: 'Playground/mods', file: 'm4.mjs'}]);
+  assert.equal(sources.length, 6);
+  // Another response through the same queue: a version parsed before is
+  // known at once, and not parsed again.
+  const next = createChangedFileChecks({queue});
+  next.touch(root, ['Playground/mods']);
+  write('Playground/mods/m5.mjs', 'export const a0 = ;\n');
+  assert.deepEqual(next.take(), [{kind: 'parse', project: 'Playground/mods', file: 'm5.mjs', line: 1}]);
+  assert.equal(sources.length, 6);
+});
+
+test('a newer version of a file takes the place of its check still waiting', async t => {
+  const {root, write} = workspace(t);
+  const sources = [];
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const queue = createModuleCheckQueue({checkModule: async source => { sources.push(source); await gate; return {ok: true}; }, limits: {concurrency: 1}});
+  const checks = createChangedFileChecks({queue});
+  checks.touch(root, ['Playground/mods']);
+  write('Playground/mods/a.mjs', 'export const a = 1;\n');
+  write('Playground/mods/b.mjs', 'export const b = 1;\n');
+  checks.take();
+  // b.mjs waits behind a.mjs; two newer versions of it arrive meanwhile.
+  write('Playground/mods/b.mjs', 'export const b = 2;\n');
+  checks.take();
+  write('Playground/mods/b.mjs', 'export const b = 3;\n');
+  checks.take();
   release();
   await checks.settle();
-  // Results come on a later result, even one that walks nothing.
-  assert.deepEqual(checks.take({walk: false}).map(finding => finding.file), ['copy.mjs', 'm0.mjs', 'm1.mjs', 'm2.mjs']);
-  assert.deepEqual(checks.take({walk: false}), []);
-  // m3 was past the response's checks: the owner reads that it could not be checked.
-  assert.deepEqual(checks.findings({final: true}).filter(finding => finding.kind === 'unparsed'),
-    [{kind: 'unparsed', project: 'Playground/mods', file: 'm3.mjs'}]);
-  assert.equal(sources.length, 4, 'base, m0 (and copy), m1, m2');
-  assert.deepEqual(checks.findings().length, 5, 'nothing is checked twice');
-  assert.equal(sources.length, 4);
+  assert.deepEqual(sources, ['export const a = 1;\n', 'export const b = 3;\n']);
+  assert.deepEqual(checks.findings({final: true}), []);
+});
+
+test('the first touch of many modules parses none; only a failing file is parsed as it was then', async t => {
+  const files = {'Playground/big/style.css': 'body {}\n'};
+  for (let i = 0; i < 20; i++) files[`Playground/big/src/m${String(i).padStart(2, '0')}.mjs`] = `export const m${i} = ${i};\n`;
+  const {root, write} = workspace(t, files);
+  const sources = [];
+  const checks = createChangedFileChecks({checkModule: async source => {
+    sources.push(source);
+    return source.includes('BROKEN') ? {ok: false, line: 1} : {ok: true};
+  }});
+  checks.touch(root, ['Playground/big']);
+  // A change to the style sheet alone parses nothing, and delivery does not wait.
+  write('Playground/big/style.css', 'body { color: red; }\n');
+  assert.deepEqual(checks.take(), []);
+  const started = Date.now();
+  await checks.settle();
+  assert.ok(Date.now() - started < 1000);
+  assert.deepEqual(sources, []);
+  write('Playground/big/src/m19.mjs', 'export const m19 = BROKEN BROKEN;\n');
+  write('Playground/big/src/m03.mjs', 'export const m3 = BROKEN BROKEN;\n');
+  write('Playground/big/src/m10.mjs', 'export const m10 = 100;\n');
+  checks.take();
+  await checks.settle();
+  assert.deepEqual(checks.findings({final: true}), [
+    {kind: 'parse', project: 'Playground/big', file: 'src/m03.mjs', line: 1},
+    {kind: 'parse', project: 'Playground/big', file: 'src/m19.mjs', line: 1},
+  ]);
+  assert.equal(sources.length, 5, 'the three changed versions, and the two failing ones as they were at first touch');
 });
 
 test('a told parse failure stays told while the next version of its file is still being checked', async t => {
@@ -406,16 +551,22 @@ test('a told parse failure stays told while the next version of its file is stil
   assert.deepEqual(checks.take({walk: false}), []);
 });
 
-test('a failing module whose first-touch check has not finished waits for it, and could not be checked at the end', async t => {
+test('a failing module whose first-touch version could not be parsed in time is the owner\'s to hear about, as unknown before', async t => {
   const {root, write} = workspace(t, {'Playground/mods/m.mjs': 'export const a = 1; // first touch\n'});
   const checks = createChangedFileChecks({checkModule: source => source.includes('first touch') ? new Promise(() => {}) : {ok: false, line: 1}});
   checks.touch(root, ['Playground/mods']);
   write('Playground/mods/m.mjs', 'export const = ;\n');
-  checks.findings();
+  checks.take();
   await checks.settle(50);
-  // It may have been broken already: not reported as broken, and not dropped either.
+  // It may have been broken already: the model is not told, and the owner
+  // reads that it does not parse, and that before could not be checked.
+  assert.deepEqual(checks.take({walk: false}), []);
   assert.deepEqual(checks.findings(), []);
-  assert.deepEqual(checks.findings({final: true}), [{kind: 'unparsed', project: 'Playground/mods', file: 'm.mjs'}]);
+  const found = checks.findings({final: true});
+  assert.deepEqual(found, [{kind: 'parse', project: 'Playground/mods', file: 'm.mjs', line: 1, before: 'unknown'}]);
+  assert.equal(fileCheckFacts(found), "Portal's checks of the changed files in `Playground/mods`: `m.mjs` does not parse (line 1); " +
+    'whether it parsed before these changes could not be checked.');
+  assert.equal(fileCheckInstruction(found), '');
 });
 
 test('a module check that never ends is not waited for past the settle time, and could not be checked', async t => {
@@ -471,6 +622,12 @@ test('the owner reads the findings as one bounded line of fixed text and names',
   "Portal's checks of the changed files in `Playground/elf-of-doom`: `a.js` does not parse (line 1). " +
     'In `Playground/big`: not checked, the folder has more than 2,000 files and folders. ' +
     'Still found from earlier changes in `Playground/snake`: `b.js` does not parse (line 2).');
+  // A defect switched the checks off in the turn: said first. What an earlier
+  // response could not check is not carried.
+  assert.equal(fileCheckFacts([], 900, [], true), FILE_CHECKS_OFF);
+  assert.equal(fileCheckFacts([finding('parse', {file: 'a.js', line: 1})], 900, [finding('unparsed', {file: 'm.mjs'})], true),
+    `${FILE_CHECKS_OFF} Portal's checks of the changed files in \`Playground/elf-of-doom\`: \`a.js\` does not parse (line 1).`);
+  assert.equal(fileCheckFacts([], 900, [{kind: 'unchecked', project: 'Playground/big'}]), '');
 });
 
 test('the model is never told of a new folder or of what could not be checked', () => {

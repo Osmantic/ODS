@@ -15,23 +15,30 @@
 // folder. A command can change any file, so a file changed when its size or
 // mtime differs, or when it is new. Then:
 // - a changed .js/.mjs/.cjs file that is new, or parsed at first touch, still
-//   parses (scripts and CommonJS in process; ES modules with `node --check`,
-//   in the background, which never runs them). A JSX file's `<` is not a
-//   failure;
+//   parses as the project loads it: a file the project's HTML loads with
+//   <script src> as a classic script (no module, JSX or other reading of it),
+//   one loaded as type=module as an ES module, and any other by its name and
+//   syntax. Scripts and CommonJS parse in process; ES modules with
+//   `node --check`, which never runs them, in the background, through one
+//   queue for the gateway, and only for changed versions: a file's version at
+//   first touch is kept and parsed only when its changed version fails. A `<`
+//   is no failure in a file the HTML loads as text/babel, nor in an unloaded
+//   file with JSX-looking tags (a bundled app);
 // - no top-level function, class, const or let is defined more often than at
 //   first touch (outside comments and template strings);
 // - no globalThis/window/self.__name write was added, other than library and
-//   devtools hooks and names the owner's request uses;
+//   devtools hooks and names the owner's own words use;
 // - no scratch file or folder was added to the project folder. Conventional
-//   dotfiles (.gitignore, .env, .eslintrc.json, build caches) are not scratch.
-// Vendored, minified and generated files get the parse check only, and
-// node_modules, dist, build, venv and dot folders are not entered.
-// tool-loop-guard.mjs tells the model each file finding once, on a tool
-// result, and lists what is still found under the answer. New folders and
-// what could not be checked are told to the owner only: a folder is removed
-// with rm -rf, which Portal refuses for the rest of the response. Links are
-// never followed, every walk, read and parse is bounded, and nothing here
-// changes a file.
+//   dotfiles (.gitignore, .env, .eslintrc.json, CI settings, build caches)
+//   are not scratch.
+// Vendored and minified files get the parse check only, and node_modules,
+// dist, build, venv and dot folders are not entered. tool-loop-guard.mjs
+// tells the model each file finding once, on a tool result (a delegated child
+// only of files that changed while its own calls ran), and lists what is
+// still found under the answer. New folders and what could not be checked are
+// told to the owner only: a folder is removed with rm -rf, which Portal
+// refuses for the rest of the response. Links are never followed, every walk,
+// read and parse is bounded, and nothing here changes a file.
 import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import * as fs from 'node:fs';
@@ -50,21 +57,28 @@ export const FILE_CHECK_LIMITS = Object.freeze({
   // JavaScript read per file, and per fingerprint or check.
   fileBytes: 2 * 1024 * 1024,
   readBytes: 16 * 1024 * 1024,
-  // ES module parses (`node --check`), in the background: per response, of
-  // which at most moduleBaseline for files as they were at first touch, so
-  // many at a time, each this long at most. Delivery waits for them settleMs.
-  moduleChecks: 32,
+  // ES module parses (`node --check`, in the background) per response: while
+  // it works; for its files' final versions at delivery; and for a failing
+  // file as it was at first touch.
+  moduleChecks: 24,
+  moduleFinal: 16,
   moduleBaseline: 16,
-  moduleConcurrency: 2,
   moduleTimeoutMs: 2000,
+  // How long a delivery waits for them. The delegated-delivery route, whose
+  // caller gives up after 5 s, waits less.
   settleMs: 4000,
-  // A line this long marks a minified or generated file.
+  delegatedSettleMs: 1500,
+  // Lines this long on average mark a minified or generated file.
   minifiedLine: 1000,
   // Names listed per finding; characters in the owner's line and the model's notice.
   names: 3,
   ownerChars: 900,
   modelChars: 1600,
 });
+
+// One gateway's module checks (createModuleCheckQueue): so many at a time,
+// results kept, and first-touch and waiting sources kept (characters).
+export const MODULE_QUEUE_LIMITS = Object.freeze({concurrency: 2, results: 4096, retainedChars: 16 * 1024 * 1024});
 
 // Tools whose call can change a project's files, and so can touch it first.
 export const FILE_CHANGING_TOOLS = Object.freeze(['write', 'edit', 'apply_patch', 'exec']);
@@ -78,10 +92,12 @@ const projectFolderName = name => typeof name === 'string' && PROJECT_NAME.test(
 // Playground/<name> where a command names it: a cd target, an argument, or a
 // path in a script's own text.
 const COMMAND_PROJECT = /(?<![A-Za-z0-9._-])Playground[\\/]([A-Za-z0-9][A-Za-z0-9._-]{0,63})(?![A-Za-z0-9._-])/g;
-// os.path.join('Playground', '<name>'), Path('Playground') / '<name>'.
-const JOINED_PROJECT = /(['"])Playground\1\s*\)?\s*[,/]\s*(['"])([A-Za-z0-9][A-Za-z0-9._-]{0,63})\2/g;
-// cd <name> as a step of a command run in the Playground folder itself.
-const ENTERED_PROJECT = /(?:^|[;&|(\n])\s*cd\s+(['"]?)([A-Za-z0-9][A-Za-z0-9._-]{0,63})\1(?=[ \t]*(?:$|[;&|)\n]))/g;
+// os.path.join(..., 'Playground', '<name>'), Path('Playground') / '<name>'.
+const JOINED_PROJECT = /[(,]\s*(['"])Playground\1\s*(?:,|\)\s*\/)\s*(['"])([A-Za-z0-9][A-Za-z0-9._-]{0,63})\2/g;
+// cd <name>[/...] as a step of a command run in the Playground folder itself,
+// and cd Playground followed by such a step.
+const ENTERED_PROJECT = /(?:^|[;&|(\n])\s*cd\s+(['"]?)([A-Za-z0-9][A-Za-z0-9._-]{0,63})(?:\/[^\s;&|)'"]*)?\1(?=[ \t]*(?:$|[;&|)\n]))/g;
+const ENTERS_PLAYGROUND = /(?:^|[;&|(\n])\s*cd\s+(['"]?)(?:\.\/|\/workspace\/)?Playground\/?\1[ \t]*(?:&&|;|\n)([^\n]*)/;
 
 // A path relative to the workspace: /workspace/... and <root>/... (any letter
 // case on a Windows root) lose that prefix; ./ is dropped.
@@ -115,7 +131,8 @@ export function touchedProjects(tool, params, root) {
     const command = typeof params.command === 'string' && params.command.length <= 65536 ? params.command : '';
     for (const match of command.matchAll(COMMAND_PROJECT)) add(projectFolderName(match[1]));
     for (const match of command.matchAll(JOINED_PROJECT)) add(projectFolderName(match[3]));
-    if (workdir === 'Playground') for (const match of command.matchAll(ENTERED_PROJECT)) add(projectFolderName(match[2]));
+    const entered = workdir === 'Playground' ? command : command.match(ENTERS_PLAYGROUND)?.[2] ?? '';
+    for (const match of entered.matchAll(ENTERED_PROJECT)) add(projectFolderName(match[2]));
   }
   return found;
 }
@@ -132,8 +149,12 @@ const DEBUG_GLOBAL = /(?<![\w$.])(globalThis|window|self)\s*(?:\.\s*(__[\w$]+)|\
 // Hooks that libraries and devtools write: not debug globals.
 const LIBRARY_GLOBAL = /^__(?:THREE|PIXI_[A-Z0-9_]+|VUE(?:_[A-Z0-9_]+)?|REDUX_DEVTOOLS_EXTENSION(?:_COMPOSE)?|APOLLO_[A-Z0-9_]+|NEXT_DATA|NUXT|INITIAL_STATE|PRELOADED_STATE|PHASER_GAME|[A-Z0-9_]*DEVTOOLS[A-Z0-9_]*|[A-Z0-9_]*_GLOBAL_HOOK)__$|^__VUE_DEVTOOLS_/;
 const COMMENT_LINE = /^\s*(?:\/\/|\/\*|\*)/;
-// Vendored and minified files: the parse check only.
-const VENDORED = /(?:^|\/)(?:vendor|lib)\/|\.min\.[cm]?js$/i;
+// Vendored: a vendor/ folder, a .min.js name, a known library's file name (not
+// a word a game uses for its own file, such as stats or tween), or a banner
+// kept for a license (/*!, @license or @preserve).
+const VENDORED = /(?:^|\/)vendors?\/|\.min\.[cm]?js$/i;
+const LIBRARY_FILE = /(?:^|\/)(?:three|pixi|phaser|jquery|react|react-dom|vue|p5|matter|howler|gsap|d3|lodash|underscore|babel|kaboom|kaplay|babylon|socket\.io|axios|moment|dayjs|alpine|htmx|preact|lil-gui|dat\.gui|planck|excalibur|melonjs|playcanvas|aframe)(?:[.-][\w.-]*)?\.[cm]?js$/i;
+const LICENSE_BANNER = /^(?:#![^\n]*\n)?\s*(?:\/\*!|\/\*\*?(?:(?!\*\/)[\s\S]){0,2000}@(?:license|preserve)\b)/;
 // JSX-looking tags: the file is not plain JavaScript.
 const JSX_TAG = /<\/?[A-Za-z][\w.:-]*(?:\s[^<>]*?)?\/?>|<\/?>/;
 // A regular expression may start after these words (otherwise / divides).
@@ -150,10 +171,13 @@ const wordCode = c => (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 &
 // string or a template literal. A small lexer over character codes
 // (comments, strings, templates with ${} nesting, regular expressions after
 // an operator or keyword): enough to tell a commented-out or quoted
-// definition from a real one, not a parser.
+// definition from a real one, not a parser. A template or comment still open
+// at the end means it lost its place (a backquote in JSX text, or in a
+// regular expression after a closing parenthesis): then every line after the
+// one that opened it counts.
 function codeLineStarts(source) {
   const starts = [true], templates = [];
-  let mode = CODE, depth = 0, regex = true;
+  let mode = CODE, depth = 0, regex = true, opened = 0;
   for (let i = 0; i < source.length; i++) {
     const c = source.charCodeAt(i);
     if (c === 10) {
@@ -181,14 +205,14 @@ function codeLineStarts(source) {
     if (c === 47) {
       const next = source.charCodeAt(i + 1);
       if (next === 47) { mode = LINE; i++; }
-      else if (next === 42) { mode = BLOCK; i++; }
+      else if (next === 42) { mode = BLOCK; i++; if (!templates.length) opened = starts.length - 1; }
       else if (regex) mode = REGEX;
       else regex = true;
       continue;
     }
     if (c === 39) { mode = SINGLE; continue; }
     if (c === 34) { mode = DOUBLE; continue; }
-    if (c === 96) { mode = TEMPLATE; continue; }
+    if (c === 96) { mode = TEMPLATE; if (!templates.length) opened = starts.length - 1; continue; }
     if (c === 123) { depth++; regex = true; continue; }
     if (c === 125) {
       if (depth === 0 && templates.length) { depth = templates.pop(); mode = TEMPLATE; continue; }
@@ -204,6 +228,7 @@ function codeLineStarts(source) {
     }
     regex = c !== 41 && c !== 93;
   }
+  if (mode === TEMPLATE || mode === BLOCK || templates.length) starts.fill(true, opened + 1);
   return starts;
 }
 
@@ -217,7 +242,7 @@ function sourceCounts(source) {
     if (end < 0) end = text.length;
     if (starts[line]) {
       const content = text.slice(start, end);
-      const match = /^[acefl]/.test(content) && TOP_LEVEL.exec(content);
+      const match = TOP_LEVEL.exec(content);
       if (match) counted(definitions, match[1] ?? match[2]);
       if (content.includes('__') && !COMMENT_LINE.test(content)) {
         for (const write of content.matchAll(DEBUG_GLOBAL)) {
@@ -233,16 +258,14 @@ function sourceCounts(source) {
 export const topLevelDefinitions = source => sourceCounts(source).definitions;
 export const debugGlobalWrites = source => sourceCounts(source).globals;
 
-// A vendored, minified or generated file: its definitions and globals are
-// not this project's code.
-function generatedFile(key, source) {
-  if (VENDORED.test(key)) return true;
-  for (let start = 0, end; start < source.length; start = end + 1) {
-    end = source.indexOf('\n', start);
-    if (end < 0) end = source.length;
-    if (end - start > FILE_CHECK_LIMITS.minifiedLine) return true;
-  }
-  return false;
+// A vendored or minified file: its definitions and globals are not this
+// project's code. Minified: lines that average limits.minifiedLine or more,
+// so a game file with a long level line or a sprite string still counts.
+export function generatedFile(key, source) {
+  if (VENDORED.test(key) || LIBRARY_FILE.test(key) || LICENSE_BANNER.test(source.slice(0, 4096))) return true;
+  let lines = 1;
+  for (let at = source.indexOf('\n'); at >= 0; at = source.indexOf('\n', at + 1)) lines++;
+  return source.length / lines >= FILE_CHECK_LIMITS.minifiedLine;
 }
 
 // Where a script parse stops when the file is an ES module.
@@ -261,6 +284,7 @@ function compiled(compile) {
     return {ok: false, message: error.message, ...(line ? {line: Number(line)} : {})};
   }
 }
+const classicScript = source => compiled(() => new vm.Script(source, {filename: 'checked.js'}));
 
 // The parse that runs in process, as the kind the name and syntax make the
 // file: .cjs, and .js with a top-level return, as CommonJS; anything else as a
@@ -271,10 +295,20 @@ export function scriptCheck(source, file) {
   const extension = path.extname(String(file)).toLowerCase();
   if (extension === '.mjs') return {module: true};
   if (extension === '.cjs') return commonjs();
-  const script = compiled(() => new vm.Script(source, {filename: 'checked.js'}));
+  const script = classicScript(source);
   if (script?.ok !== false) return script;
   if (MODULE_SYNTAX.test(script.message) || MODULE_STATEMENT.test(source)) return {module: true};
   return script.message === 'Illegal return statement' ? commonjs() : script;
+}
+
+// The in-process parse for how the project loads the file: a classic
+// <script src> (or in-browser Babel) parses as a browser parses a classic
+// script, a type=module file needs an ES module check, and anything else
+// reads as scriptCheck does.
+function loadedParse(source, file, kind) {
+  if (kind === 'classic' || kind === 'babel') return classicScript(source);
+  if (kind === 'module') return {module: true};
+  return scriptCheck(source, file);
 }
 
 // `node --check` of an ES module read from standard input, by this Node
@@ -310,6 +344,92 @@ export function nodeModuleCheck(source, timeout = FILE_CHECK_LIMITS.moduleTimeou
 export async function parseCheck(source, file, checkModule = nodeModuleCheck) {
   const result = scriptCheck(source, file);
   return result?.module ? checkModule(source) : result;
+}
+
+// --------------------------------------------------------- module checks --
+
+// A module check's state besides its result ({ok...}, or null when it did
+// not finish): queued or running.
+const PENDING = Symbol('pending');
+const digestOf = source => createHash('sha256').update(source).digest('hex');
+
+// One gateway's ES module checks, shared by every response: limits.concurrency
+// at a time; each result kept by content digest, so the same bytes are checked
+// once whichever response asks; a queued check dropped when a newer version
+// of the same file (its slot) takes its place; and the sources of checks not
+// asked for yet (a file as it was at first touch, a version past a budget)
+// kept, oldest dropped first, up to limits.retainedChars.
+export function createModuleCheckQueue({checkModule = nodeModuleCheck, limits: overrides = {}} = {}) {
+  const limits = {...MODULE_QUEUE_LIMITS, ...overrides};
+  const results = new Map(), queued = new Map(), running = new Set(), retained = new Map();
+  let retainedChars = 0, finished = 0, woke, wake;
+  const sleep = () => { woke = new Promise(resolve => { wake = resolve; }); };
+  sleep();
+  const release = digest => {
+    if (!retained.has(digest)) return;
+    retainedChars -= retained.get(digest).length;
+    retained.delete(digest);
+  };
+  function pump() {
+    for (const [slot, {digest, source}] of queued) {
+      if (running.size >= limits.concurrency) return;
+      queued.delete(slot);
+      if (results.has(digest) || running.has(digest)) continue;
+      running.add(digest);
+      let check;
+      // A check that throws has no result, like one that did not finish.
+      try { check = Promise.resolve(checkModule(source)); } catch { check = Promise.resolve(null); }
+      check.then(result => result ?? null, () => null).then(result => {
+        running.delete(digest);
+        results.delete(digest);
+        results.set(digest, result);
+        while (results.size > limits.results) results.delete(results.keys().next().value);
+        release(digest);
+        finished += 1;
+        const resolve = wake;
+        sleep();
+        resolve();
+        pump();
+      });
+    }
+  }
+  function state(digest) {
+    if (results.has(digest)) return results.get(digest);
+    if (running.has(digest)) return PENDING;
+    for (const entry of queued.values()) if (entry.digest === digest) return PENDING;
+    return undefined;
+  }
+  return {
+    state,
+    // Keeps a version's source for a check that may be asked for later.
+    retain(digest, source) {
+      if (retained.has(digest) || results.has(digest) || source.length > limits.retainedChars) return;
+      retained.set(digest, source);
+      retainedChars += source.length;
+      while (retainedChars > limits.retainedChars) release(retained.keys().next().value);
+    },
+    // Queues a version's check in its slot (one file of one response),
+    // dropping an older version still waiting there: 'queued', 'replaced',
+    // or undefined when nothing new was queued (known, queued or running
+    // already, or its source not kept).
+    request(slot, digest) {
+      if (state(digest) !== undefined) return undefined;
+      const source = retained.get(digest);
+      if (source === undefined) return undefined;
+      const replaced = queued.delete(slot);
+      queued.set(slot, {digest, source});
+      pump();
+      return replaced ? 'replaced' : 'queued';
+    },
+    // Resolves when the next check finishes, or after ms.
+    async next(ms) {
+      let timer;
+      await Promise.race([woke, new Promise(resolve => { timer = setTimeout(resolve, Math.max(0, ms)); })]);
+      clearTimeout(timer);
+    },
+    // How many checks have finished, so a response can tell when to look again.
+    get finished() { return finished; },
+  };
 }
 
 // ------------------------------------------------------------ the folder --
@@ -404,9 +524,10 @@ const SCRATCH = /^(?:tmp-.*|.*-tmp(?![a-z]).*|.*\.(?:bak|orig|tmp))$/i;
 const SCRATCH_DOT = /^\.(?:crop|tmp|scratch)/i;
 // A dotfile with a data or code extension (.notes.json, .debug.log).
 const DATA_OR_CODE = /\.(?:txt|log|out|json|jsonl|ndjson|csv|tsv|xml|ya?ml|toml|ini|md|html?|css|[cm]?js|jsx|tsx?|py|rb|php|pl|lua|sh|bash|ps1|go|rs|java|kt|c|cc|cpp|h|hpp|cs|swift|png|jpe?g|gif|webp|bmp|svg|ico|tiff?|mp3|wav|ogg|mp4|webm|bin|dat|db|sqlite|pkl|pickle|npy|patch|diff)$/i;
-// Conventional dot entries, never scratch: git, editor and tool settings,
-// environment files, web server files and build caches.
-const CONVENTIONAL_DOT = /^\.(?:git.*|editorconfig|env(?:\..+)?|vscode|idea|well-known|htaccess|nojekyll|ds_store|next|parcel-cache|svelte-kit|astro|nuxt|output|pytest_cache|venv|cache|[\w-]*rc(?:\.\w+)?|[\w-]*ignore)$/i;
+// Conventional dot entries, never scratch: git, editor and tool settings
+// (an rc file is a tool's name of at least three letters, then rc), CI and
+// release settings, environment files, web server files and build caches.
+const CONVENTIONAL_DOT = /^\.(?:git.*|editorconfig|env(?:\..+)?|vscode|idea|well-known|htaccess|nojekyll|ds_store|next|parcel-cache|svelte-kit|astro|nuxt|output|pytest_cache|venv|cache|travis\.ya?ml|pre-commit-(?:config|hooks)\.ya?ml|markdownlint(?:-cli2)?\.(?:jsonc?|ya?ml|c?js)|release-it\.(?:json|ya?ml|c?js|ts)|codeclimate\.ya?ml|readthedocs\.ya?ml|golangci\.ya?ml|goreleaser\.ya?ml|hadolint\.ya?ml|mergify\.ya?ml|[\w-]{3,}rc(?:\.\w+)?|[\w-]*ignore)$/i;
 // A new entry in the project folder that the checks report.
 export function scratchEntry(name) {
   if (typeof name !== 'string' || !name) return false;
@@ -414,88 +535,95 @@ export function scratchEntry(name) {
   return name.startsWith('.') && !CONVENTIONAL_DOT.test(name) && DATA_OR_CODE.test(name);
 }
 
-// Script files a project's HTML loads as text/babel (in-browser JSX).
-function babelScripts(folder, walked, limits) {
-  const found = new Set();
-  for (const [key, stat] of walked.files) {
-    if (key.includes('/') || !/\.html?$/i.test(key) || stat.size > 256 * 1024) continue;
+// A script's src as a project-relative path: /x from the project folder,
+// anything else from the page's folder; undefined for another site's URL.
+function projectPath(page, src) {
+  if (!src || /^[a-z][\w+.-]*:|^\/\//i.test(src)) return undefined;
+  const parts = [];
+  const base = src.startsWith('/') ? [] : page.split('/').slice(0, -1);
+  for (const part of [...base, ...src.replace(/[?#].*$/, '').split('/')]) {
+    if (!part || part === '.') continue;
+    if (part !== '..') parts.push(part);
+    else if (!parts.pop()) return undefined;
+  }
+  return parts.join('/') || undefined;
+}
+
+// How the project's pages load its script files: a classic <script src>, an
+// ES module (type=module), or in-browser Babel (type text/babel or text/jsx).
+// At most 16 pages of 256 KiB are read, and read again only once one changed
+// (cache: the last result, by the pages' sizes and times).
+function pageScripts(folder, walked, limits, cache) {
+  const pages = [...walked.files].filter(([key, stat]) => /\.html?$/i.test(key) && stat.size <= 256 * 1024).slice(0, 16);
+  const version = pages.map(([key, stat]) => `${key}:${stat.size}:${stat.mtimeMs}`).join('\n');
+  if (cache.version === version) return cache.loads;
+  const found = new Map();
+  for (const [key, stat] of pages) {
     const html = readExact(folder, key, stat, limits)?.toString('utf8') ?? '';
     for (const [tag] of html.matchAll(/<script\b[^>]*>/gi)) {
-      const source = /\bsrc\s*=\s*["']([^"'?#]+)/i.exec(tag)?.[1];
-      if (/\btype\s*=\s*["']?text\/(?:babel|jsx)\b/i.test(tag) && source && !/^[a-z]+:|^\/\//i.test(source))
-        found.add(source.replace(/^(?:\.\/|\/)+/, ''));
+      const attribute = name => {
+        const match = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i').exec(tag);
+        return match && (match[1] ?? match[2] ?? match[3]);
+      };
+      const file = projectPath(key, attribute('src')?.trim());
+      const type = (attribute('type') ?? '').trim().toLowerCase();
+      const kind = type === 'module' ? 'module' : /^text\/(?:babel|jsx)$/.test(type) ? 'babel'
+        : !type || /^(?:text|application)\/(?:java|ecma)script$/.test(type) ? 'classic' : undefined;
+      // A file a page loads as a classic script is one, whatever else loads it.
+      if (file && kind && found.get(file) !== 'classic') found.set(file, kind);
     }
   }
+  Object.assign(cache, {version, loads: found});
   return found;
 }
 
 // --------------------------------------------------------------- the run --
 
-// Module check states besides a result: waiting for its turn or running,
-// and not done because the response used its checks. A file past a scan's
-// bytes waits for a later scan.
-const PENDING = Symbol('pending');
-const CAPPED = Symbol('capped');
+// A file past a scan's bytes waits for a later scan.
 const DEFERRED = Symbol('deferred');
 // Findings the owner reads but the model is not told: a new folder (its
-// removal is a recursive delete), and what could not be checked.
+// removal is a recursive delete), what could not be checked, and a file that
+// does not parse when whether it parsed at first touch is unknown.
 export const ownerOnly = finding => finding.kind === 'unchecked' || finding.kind === 'unparsed' ||
-  (finding.kind === 'entry' && finding.folder);
+  (finding.kind === 'entry' && finding.folder) || (finding.kind === 'parse' && finding.before === 'unknown');
 export const fileCheckKey = finding => JSON.stringify([finding.kind, finding.project, finding.file ?? '', finding.name ?? '']);
+// A response's module checks of each kind: while it works, final versions
+// at delivery, and first-touch versions of failing files.
+const ROLE_LIMIT = {working: 'moduleChecks', final: 'moduleFinal', baseline: 'moduleBaseline'};
+const fileVersion = stat => `${stat.size}:${stat.mtimeMs}`;
+let serial = 0;
 
 // One response's checks: the projects it touched, the findings told to the
 // model, and caches so an unchanged version of a file is analyzed once.
-// requested: the owner's request, whose names are not debug globals.
-export function createChangedFileChecks({checkModule = nodeModuleCheck, requested = '', limits: overrides = {}} = {}) {
+// queue: the gateway's module checks (createModuleCheckQueue; a queue of its
+// own with checkModule when none). requested: the owner's words, whose names
+// are not debug globals.
+export function createChangedFileChecks({queue, checkModule = nodeModuleCheck, requested = '', limits: overrides = {}} = {}) {
   const limits = {...FILE_CHECK_LIMITS, ...overrides};
-  const projects = new Map(), told = new Set();
-  // ES module results by content digest, so the same bytes are checked once.
-  const modules = new Map(), queue = [], waiting = [];
-  let running = 0, used = 0, baselineUsed = 0, arrived = false, rows = [];
+  const modules = queue ?? createModuleCheckQueue({checkModule});
+  const id = `checks-${++serial}`, projects = new Map(), told = new Set(), spent = {working: 0, final: 0, baseline: 0};
+  // Files and entries that changed while one of this response's own calls
+  // ran (touch with mark), as project/path.
+  const mine = new Set();
+  let rows = [], seen = modules.finished;
 
-  const idle = () => !running && !queue.length;
-  function pump() {
-    while (running < limits.moduleConcurrency && queue.length) {
-      const [digest, source] = queue.shift();
-      running += 1;
-      let check;
-      // A check that throws has no result, like one that did not finish.
-      try { check = Promise.resolve(checkModule(source)); } catch { check = Promise.resolve(null); }
-      check.then(result => result ?? null, () => null).then(result => {
-        modules.set(digest, result);
-        running -= 1;
-        arrived = true;
-        pump();
-        if (idle()) for (const resolve of waiting.splice(0)) resolve();
-      });
-    }
+  // A version's parse: the in-process result, or its module check's state.
+  const parseOf = record => record.digest ? modules.state(record.digest) : record.parse;
+  // Asks for a version's module check within the response's checks of a role.
+  function ask(role, slot, digest) {
+    if (spent[role] >= limits[ROLE_LIMIT[role]]) return;
+    if (modules.request(`${id}:${role === 'baseline' ? 'before:' : ''}${slot}`, digest) === 'queued') spent[role] += 1;
   }
-  // The digest of source, whose module check is queued unless it is known or
-  // the response used its checks.
-  function moduleDigest(source, baseline) {
-    const digest = createHash('sha256').update(source).digest('hex');
-    if (modules.has(digest)) return digest;
-    if (used >= limits.moduleChecks || (baseline && baselineUsed >= limits.moduleBaseline)) {
-      modules.set(digest, CAPPED);
-      return digest;
-    }
-    used += 1;
-    if (baseline) baselineUsed += 1;
-    modules.set(digest, PENDING);
-    queue.push([digest, source]);
-    pump();
-    return digest;
-  }
-  // A version's parse: the in-process result, or its module check's.
-  const parseOf = record => record.digest ? modules.get(record.digest) : record.parse;
 
-  // The source's analysis: parse (or the digest of its module check), counts
-  // unless the file is vendored or generated, and whether it has JSX tags.
-  function analyze(key, source, baseline) {
-    const parse = scriptCheck(source, key);
-    const generated = generatedFile(key, source);
-    return {...(parse?.module ? {digest: moduleDigest(source, baseline)} : {parse}), jsx: JSX_TAG.test(source),
-      ...(generated ? {generated} : sourceCounts(source))};
+  // The source's analysis for how the project loads it (kind): its parse, or
+  // the digest of the module check it needs (its source kept for that); counts
+  // unless the file is vendored or minified; whether it has JSX-looking tags.
+  function analyze(key, source, kind) {
+    const parse = loadedParse(source, key, kind);
+    let module;
+    if (parse?.module) { module = {digest: digestOf(source)}; modules.retain(module.digest, source); }
+    return {kind, ...(module ?? {parse}), jsx: JSX_TAG.test(source),
+      ...(generatedFile(key, source) ? {generated: true} : sourceCounts(source))};
   }
 
   // The project as it is before a call changes it. {skipped} for a project
@@ -503,17 +631,18 @@ export function createChangedFileChecks({checkModule = nodeModuleCheck, requeste
   function fingerprint(root, project) {
     const located = projectFolder(root, project);
     if (!located) return {skipped: 'link'};
-    const baseline = {root, project, files: new Map(), entries: new Map(), analyzed: new Map()};
+    const baseline = {root, project, files: new Map(), entries: new Map(), analyzed: new Map(), pages: {}};
     if (!located.exists) return baseline;
     const walked = walk(located.folder, located.stat, limits);
     if (walked.truncated) return {root, project, skipped: 'size'};
+    const loads = pageScripts(located.folder, walked, limits, baseline.pages);
     let budget = limits.readBytes;
     for (const [key, stat] of walked.files) {
       const record = {size: stat.size, mtimeMs: stat.mtimeMs};
       const bytes = JAVASCRIPT.test(key) && stat.size <= budget ? readExact(located.folder, key, stat, limits) : undefined;
       if (bytes) {
         budget -= bytes.length;
-        Object.assign(record, analyze(key, bytes.toString('utf8'), true));
+        Object.assign(record, analyze(key, bytes.toString('utf8'), loads.get(key) ?? 'auto'));
       }
       baseline.files.set(key, record);
     }
@@ -521,23 +650,38 @@ export function createChangedFileChecks({checkModule = nodeModuleCheck, requeste
     return baseline;
   }
 
-  // A changed file's analysis, once per version (size, times and inode);
-  // DEFERRED past this scan's bytes, undefined when it cannot be read now.
-  function analysis(baseline, folder, key, stat, budget) {
-    const version = [stat.size, stat.mtimeMs, stat.ctimeMs, stat.ino].join(':');
+  // The project's file versions and entry names as a call starts, which the
+  // next scan compares with to tell what changed while it ran.
+  function mark(baseline, fresh) {
+    if (fresh) {
+      baseline.mark = {files: new Map([...baseline.files].map(([key, record]) => [key, fileVersion(record)])),
+        entries: new Set(baseline.entries.keys())};
+      return;
+    }
+    const located = projectFolder(baseline.root, baseline.project);
+    const walked = located?.exists ? walk(located.folder, located.stat, limits) : {files: new Map(), entries: new Map()};
+    if (walked.truncated) return;
+    baseline.mark = {files: new Map([...walked.files].map(([key, stat]) => [key, fileVersion(stat)])),
+      entries: new Set(walked.entries.keys())};
+  }
+
+  // A changed file's analysis, once per version (size, times, inode) and
+  // kind; DEFERRED past this scan's bytes, undefined when it cannot be read.
+  function analysis(baseline, folder, key, stat, budget, kind) {
+    const version = [stat.size, stat.mtimeMs, stat.ctimeMs, stat.ino, kind].join(':');
     const known = baseline.analyzed.get(key);
     if (known?.version === version) return known;
     if (stat.size > budget.bytes) return DEFERRED;
     const bytes = readExact(folder, key, stat, limits);
     if (!bytes) return undefined;
     budget.bytes -= bytes.length;
-    const entry = {version, ...analyze(key, bytes.toString('utf8'), false)};
+    const entry = {version, ...analyze(key, bytes.toString('utf8'), kind)};
     baseline.analyzed.set(key, entry);
     return entry;
   }
 
   // What every touched project holds now that differs from first touch, as
-  // rows that collect() turns into findings.
+  // rows that collect() turns into findings; and what changed since a mark.
   function scan() {
     const budget = {bytes: limits.readBytes};
     rows = [];
@@ -548,23 +692,23 @@ export function createChangedFileChecks({checkModule = nodeModuleCheck, requeste
         continue;
       }
       const located = projectFolder(baseline.root, project);
-      if (!located?.exists) continue;
-      const walked = walk(located.folder, located.stat, limits);
-      if (walked.truncated) { rows.push({project, unchecked: true}); continue; }
-      let babel;
+      const walked = located?.exists ? walk(located.folder, located.stat, limits) : undefined;
+      if (walked?.truncated) { rows.push({project, unchecked: true}); continue; }
+      const {mark: marked} = baseline;
+      baseline.mark = undefined;
+      if (!walked) continue;
+      let loads;
       for (const [key, stat] of walked.files) {
+        if (marked && marked.files.get(key) !== fileVersion(stat)) mine.add(`${project}/${key}`);
         const before = baseline.files.get(key);
-        if (!JAVASCRIPT.test(key) || !listablePath(key) ||
-            (before && before.size === stat.size && before.mtimeMs === stat.mtimeMs)) continue;
-        const after = analysis(baseline, located.folder, key, stat, budget);
+        if (!JAVASCRIPT.test(key) || !listablePath(key) || (before && fileVersion(before) === fileVersion(stat))) continue;
+        loads ??= pageScripts(located.folder, walked, limits, baseline.pages);
+        const after = analysis(baseline, located.folder, key, stat, budget, loads.get(key) ?? 'auto');
         if (after === DEFERRED) rows.push({project, key, deferred: true});
-        if (!after || after === DEFERRED) continue;
-        // A '<' parse failure is no failure for a JSX file, nor for one the
-        // project's HTML loads as text/babel (looked up once per scan).
-        const babelFile = () => (babel ??= babelScripts(located.folder, walked, limits)).has(key);
-        rows.push({project, key, before, after, babelFile});
+        if (after && after !== DEFERRED) rows.push({project, key, before, after});
       }
       for (const [name, kind] of walked.entries) {
+        if (marked && !marked.entries.has(name)) mine.add(`${project}/${name}`);
         if (!baseline.entries.has(name) && scratchEntry(name) && listablePath(name))
           rows.push({project, entry: name, folder: kind === 'folder'});
       }
@@ -572,30 +716,42 @@ export function createChangedFileChecks({checkModule = nodeModuleCheck, requeste
     return rows;
   }
 
-  // The findings in rows; pending holds the files whose parse is still to be
-  // told (a module check that has not finished). With final, those, and the
-  // ones the response had no checks left for, could not be checked.
-  function collect({final = false} = {}) {
+  // The findings in rows. role: the module checks to ask for now ('working'
+  // while the response works, 'final' at delivery). pending: the files whose
+  // parse is still to be told; waits: whether a module check it needs is
+  // still running. With final, a parse still unknown could not be checked.
+  function collect({role, final = false} = {}) {
     const found = [], pending = new Set();
+    let waits = false;
     for (const row of rows) {
       const {project} = row;
       if (row.unchecked) { found.push({kind: 'unchecked', project}); continue; }
       if (row.entry) { found.push({kind: 'entry', project, name: row.entry, folder: row.folder}); continue; }
-      if (row.deferred) { pending.add(JSON.stringify([project, row.key])); continue; }
+      const place = JSON.stringify([project, row.key]);
+      if (row.deferred) { pending.add(place); continue; }
       const {key: file, before, after} = row;
+      const slot = `${project}/${file}`;
+      if (role && after.digest && parseOf(after) === undefined) ask(role, slot, after.digest);
       const parse = parseOf(after);
+      // A failure counts when the file is new or parsed at first touch, whose
+      // module check is asked for only now that the failure needs it.
+      if (role && parse?.ok === false && before?.digest && parseOf(before) === undefined) ask('baseline', slot, before.digest);
       const prior = before && parseOf(before);
-      if (parse === PENDING || (parse?.ok === false && prior === PENDING)) {
-        pending.add(JSON.stringify([project, file]));
+      const exempt = parse?.message === "Unexpected token '<'" && (after.kind === 'babel' || (after.kind === 'auto' && after.jsx));
+      if (parse === PENDING || parse == null) {
+        waits ||= parse === PENDING;
         if (final) found.push({kind: 'unparsed', project, file});
-      } else if (parse === CAPPED || parse === null) {
-        found.push({kind: 'unparsed', project, file});
-      } else if (parse?.ok === false && (!before || prior?.ok === true) &&
-          !(parse.message === "Unexpected token '<'" && (after.jsx || row.babelFile()))) {
-        found.push({kind: 'parse', project, file, ...(parse.line ? {line: parse.line} : {})});
+        else pending.add(place);
+      } else if (!parse.ok && !exempt) {
+        const failure = {kind: 'parse', project, file, ...(parse.line ? {line: parse.line} : {})};
+        waits ||= prior === PENDING;
+        if (!before || prior?.ok === true) found.push(failure);
+        else if (prior?.ok === false) { /* broken at first touch: not this response's */ }
+        else if (final) found.push({...failure, before: 'unknown'});
+        else pending.add(place);
       }
       // Counts compare with first touch: a file read then, or a new file.
-      if (after.generated || (before && !before.definitions)) continue;
+      if (after.generated || (before && (before.generated || !before.definitions))) continue;
       for (const [name, count] of after.definitions) {
         if (count >= 2 && count > (before?.definitions.get(name) ?? 0) && name.length <= 64)
           found.push({kind: 'definition', project, file, name, count});
@@ -607,20 +763,24 @@ export function createChangedFileChecks({checkModule = nodeModuleCheck, requeste
           found.push({kind: 'global', project, file, name});
       }
     }
-    return {found, pending};
+    return {found, pending, waits};
   }
 
   return {
     // Before a call that may change these Playground/<name> folders runs: the
-    // first touch of each fingerprints it.
-    touch(root, touched) {
+    // first touch of each fingerprints it. With mark, what changes until the
+    // next scan counts as this response's own change.
+    touch(root, touched, {mark: marking = false} = {}) {
       for (const project of touched) {
-        if (projects.has(project) || projects.size >= limits.projects) continue;
-        projects.set(project, fingerprint(root, project));
+        const fresh = !projects.has(project);
+        if (fresh && projects.size >= limits.projects) continue;
+        if (fresh) projects.set(project, fingerprint(root, project));
+        const baseline = projects.get(project);
+        if (marking && !baseline.skipped) mark(baseline, fresh);
       }
     },
     // What the checks find now in every project this response touched. With
-    // final (the delivery), a module check still running could not be checked.
+    // final (the delivery), a module check not finished could not be checked.
     findings({final = false} = {}) {
       scan();
       return collect({final}).found;
@@ -628,29 +788,31 @@ export function createChangedFileChecks({checkModule = nodeModuleCheck, requeste
     // The model's findings not told yet. Each is told once, and again only
     // after it was gone (a file that breaks again). With walk false (after a
     // call that changed nothing), only module checks finished since count.
-    take({walk = true} = {}) {
+    // With own, only files that changed while this response's own calls ran
+    // (a child run working beside others).
+    take({walk = true, own = false} = {}) {
       if (walk) scan();
-      else if (!arrived) return [];
-      arrived = false;
-      const {found, pending} = collect();
+      else if (modules.finished === seen) return [];
+      seen = modules.finished;
+      const {found, pending} = collect({role: 'working'});
       const tellable = found.filter(finding => !ownerOnly(finding));
       const present = new Set(tellable.map(fileCheckKey));
       for (const key of told) {
         const [, project, file] = JSON.parse(key);
         if (!present.has(key) && !pending.has(JSON.stringify([project, file]))) told.delete(key);
       }
-      const fresh = tellable.filter(finding => !told.has(fileCheckKey(finding)));
+      const fresh = tellable.filter(finding => !told.has(fileCheckKey(finding)) &&
+        (!own || mine.has(`${finding.project}/${finding.file ?? finding.name}`)));
       for (const finding of fresh) told.add(fileCheckKey(finding));
       return fresh;
     },
-    // Resolves once the module checks this response queued have finished, or
-    // after ms; never rejects.
-    settle(ms = limits.settleMs) {
-      if (idle()) return Promise.resolve();
-      return new Promise(resolve => {
-        const timer = setTimeout(resolve, ms);
-        waiting.push(() => { clearTimeout(timer); resolve(); });
-      });
+    // At delivery: scans, asks for the module checks the final versions still
+    // need (and first-touch versions of failing files), and resolves once
+    // none is running, or after ms. A check that fails or hangs never rejects it.
+    async settle(ms = limits.settleMs) {
+      const deadline = Date.now() + ms;
+      scan();
+      while (collect({role: 'final'}).waits && Date.now() < deadline) await modules.next(deadline - Date.now());
     },
   };
 }
@@ -684,7 +846,10 @@ function items(findings) {
         return `not checked, the folder has more than ${FILE_CHECK_LIMITS.entries.toLocaleString('en-US')} files and folders`;
       }
       if (first.kind === 'unparsed') return `could not check whether ${names(list.map(item => item.file))} ${plural ? 'parse' : 'parses'}`;
-      if (first.kind === 'parse') return `${file} does not parse${first.line ? ` (line ${first.line})` : ''}`;
+      if (first.kind === 'parse') {
+        return `${file} does not parse${first.line ? ` (line ${first.line})` : ''}` +
+          (first.before === 'unknown' ? '; whether it parsed before these changes could not be checked' : '');
+      }
       if (first.kind === 'global') return `new debug global${plural ? 's' : ''} ${names(list.map(item => item.name), 'global')} in ${file}`;
       if (first.kind === 'entry') {
         return `new ${first.folder ? 'folder' : 'file'}${plural ? 's' : ''} ${names(list.map(item => item.name))} in the project folder`;
@@ -714,12 +879,19 @@ function compose(sections, end, maxChars) {
   return shown ? text + close(flat.length - shown) : '';
 }
 
-// The owner's line of host facts under the answer: this turn's findings, and
-// what an earlier response's checks still find that its delivery could not
-// show (a question card carries no notice).
-export function fileCheckFacts(findings, maxChars = FILE_CHECK_LIMITS.ownerChars, carried = []) {
-  return compose([{lead: "Portal's checks of the changed files in", findings: Array.isArray(findings) ? findings : []},
-    {lead: 'Still found from earlier changes in', findings: Array.isArray(carried) ? carried : []}], '', maxChars);
+// The owner's line when a defect switched the checks off in the turn.
+export const FILE_CHECKS_OFF = "Portal's checks of the changed files could not finish in this response.";
+// The owner's line of host facts under the answer: that the checks could not
+// finish (off), this turn's findings, and what an earlier response's checks
+// still find that its delivery could not show (a question card carries no
+// notice); not what that one could not check.
+export function fileCheckFacts(findings, maxChars = FILE_CHECK_LIMITS.ownerChars, carried = [], off = false) {
+  const lead = off && FILE_CHECKS_OFF.length <= maxChars ? FILE_CHECKS_OFF : '';
+  const facts = compose([{lead: "Portal's checks of the changed files in", findings: Array.isArray(findings) ? findings : []},
+    {lead: 'Still found from earlier changes in',
+      findings: (Array.isArray(carried) ? carried : []).filter(finding => !['unchecked', 'unparsed'].includes(finding.kind))}],
+  '', maxChars - (lead ? lead.length + 1 : 0));
+  return [lead, facts].filter(Boolean).join(' ');
 }
 
 // The model's one notice of new findings, on a tool result. Owner-only

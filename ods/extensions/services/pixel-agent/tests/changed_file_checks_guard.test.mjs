@@ -4,8 +4,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {createAskUserTool} from '../plugin/ask-user.mjs';
-import {FILE_CHECK_INSTRUCTION, FILE_CHECK_REMOVAL} from '../plugin/changed-file-checks.mjs';
+import {FILE_CHECK_INSTRUCTION, FILE_CHECK_LIMITS, FILE_CHECK_REMOVAL, FILE_CHECKS_OFF} from '../plugin/changed-file-checks.mjs';
 import {exampleNotice} from '../plugin/example-guard.mjs';
+import {createPendingClarifications} from '../plugin/pending-clarification.mjs';
 import {PROGRESS_FINALIZATION_INSTRUCTION, PROGRESS_FINALIZATION_NOTE} from '../plugin/progress-finalization.mjs';
 import {RUN_PROGRESS_LIMITS, RUN_PROGRESS_STOP_REASON} from '../plugin/run-progress-budget.mjs';
 import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
@@ -37,12 +38,20 @@ const FACTS = `Portal's checks of the changed files in ${FOUND}`;
 const USER = `ods-${'5c'.repeat(32)}`;
 const RUN = 'chatcmpl_6e2b9f80-4c1d-4a3e-9b7f-0d5c3a2e1f40';
 const NEXT_RUN = 'chatcmpl_7a1c0e92-5d2f-4b8a-8c6e-1f3d5b7a9c20';
+// Delegated children of RUN, each in its own subagent session.
+const CHILDREN = ['chatcmpl_1c4e7a20-0b3d-4f6a-9c8e-2d5b7f9a1c31', 'chatcmpl_2d5f8b31-1c4e-4a7b-8d9f-3e6c8a0b2d42',
+  'chatcmpl_3e6a9c42-2d5f-4b8c-9e0a-4f7d9b1c3e53'];
+const child = (index, shared, options = {}) => harness(null, {shared, runId: CHILDREN[index], sessionId: `child-${index}`,
+  sessionKey: `agent:pixel:subagent:${index}${'0'.repeat(7)}-1111-4222-8333-944455556666`, ...options});
+const delegatedFrom = context => context.runId === RUN ? undefined : RUN;
 const ok = {content: [{type: 'text', text: '(no output)'}], details: {status: 'completed', exitCode: 0, durationMs: 4}};
 const failed = text => ({isError: true, content: [{type: 'text', text}], details: {status: 'completed', exitCode: 2, durationMs: 4}});
 const quietExample = {begin: () => undefined, guarding: () => false, check: () => undefined, end: () => undefined};
 
 function harness(t, {files = {'Playground/sprite-game/index.html': '<script src="chars.js"></script>\n',
-  'Playground/sprite-game/chars.js': CHARS}, prompt = PROMPT, wrapped = false, runId = RUN, shared, ...options} = {}) {
+  'Playground/sprite-game/chars.js': CHARS}, prompt = PROMPT, wrapped = false, runId = RUN, shared,
+  sessionKey = `agent:pixel:openai-user:${USER}`, sessionId = 'sprite-session', trigger = 'user', clarifications = false,
+  ...options} = {}) {
   let root = shared?.root;
   if (!root) {
     root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ods-file-checks-guard-')));
@@ -52,9 +61,12 @@ function harness(t, {files = {'Playground/sprite-game/index.html': '<script src=
   const write = (relative, content) => { fs.mkdirSync(path.dirname(at(relative)), {recursive: true}); fs.writeFileSync(at(relative), content); };
   if (!shared) for (const [relative, content] of Object.entries(files)) write(relative, content);
   let clock = 0;
+  // clarifications: the chat keeps a question card's record, in the test's folder.
   const guard = shared?.guard ?? createToolLoopGuard({now: () => clock, abortRun: () => true, exampleGuard: quietExample,
-    abortRunAndDrain: async () => ({aborted: true, drained: true}), ...options});
-  const context = {agentId: 'pixel', runId, sessionId: 'sprite-session', sessionKey: `agent:pixel:openai-user:${USER}`, trigger: 'user'};
+    abortRunAndDrain: async () => ({aborted: true, drained: true}),
+    ...(clarifications ? {pendingClarifications: createPendingClarifications({stateDir: path.join(root, 'clarifications')})} : {}),
+    ...options});
+  const context = {agentId: 'pixel', runId, sessionId, sessionKey, trigger};
   guard.observeRun(context, 'pixel', {prompt}, {workspaceRoot: root, executionHost: 'sandbox', runTimeoutSeconds: 1800});
   guard.observeExampleRun(context, 'pixel');
   let sequence = 0;
@@ -194,6 +206,168 @@ test('a delegated continuation reports what the owner run it continues changed',
   assert.equal((await continuation.finish('The frames are done.')).delivery.notice, FACTS);
 });
 
+test('children working side by side each hear only of what changed while their own calls ran; the turn lists each finding once', async t => {
+  // The owner run only delegates; two children work in the project.
+  const owner = harness(t, {exampleOwnerRun: delegatedFrom});
+  const a = child(0, owner, {prompt: 'Give the sprites eight frames.'}), b = child(1, owner, {prompt: 'Tune the speed.'});
+  assert.deepEqual(checkNotes(b.step('exec', {command: 'python3 speed.py', workdir: WORKDIR})), []);
+  assert.deepEqual(checkNotes(a.step('exec', {command: PATCH, workdir: WORKDIR}, ok, a.doubling)), [NOTICE]);
+  // b found the same files changed since its own first touch, by a's call.
+  assert.deepEqual(checkNotes(b.step('exec', {command: 'python3 speed.py --check', workdir: WORKDIR})), []);
+  // b's own change later is b's to hear about.
+  assert.deepEqual(checkNotes(b.step('exec', {command: 'python3 speed.py --write', workdir: WORKDIR}, ok,
+    () => b.write('Playground/sprite-game/speed.js', 'const SPEED = 2;\nwindow.__SPEED = SPEED;\n'))),
+  ['[ODS Pixel check] Portal checked the files this response changed in `Playground/sprite-game`: ' +
+    `new debug global \`window.__SPEED\` in \`speed.js\`. ${FILE_CHECK_INSTRUCTION}`]);
+  // The continuation delivers the turn: both children's findings, each once.
+  const continuation = harness(t, {shared: owner, runId: NEXT_RUN, prompt: 'Report the result.'});
+  assert.equal((await continuation.finish('The frames are done.')).delivery.notice,
+    FACTS.replace('in `chars.js`; new file', 'in `chars.js`; new debug global `window.__SPEED` in `speed.js`; new file'));
+});
+
+test('names in the owner\'s own words are not debug globals in the children they delegate to; a delegated task\'s are', async t => {
+  const owner = harness(t, {exampleOwnerRun: delegatedFrom, prompt: 'In Playground/sprite-game, expose the game as window.__GAME.'});
+  const worker = child(0, owner, {prompt: 'Add window.__GAME, and a window.__TRACE log.'});
+  const added = worker.step('exec', {command: 'python3 hooks.py', workdir: WORKDIR}, ok,
+    () => worker.write('Playground/sprite-game/chars.js', `${CHARS}window.__GAME = SPRITE_CACHE;\nwindow.__TRACE = [];\n`));
+  assert.deepEqual(checkNotes(added), ['[ODS Pixel check] Portal checked the files this response changed in `Playground/sprite-game`: ' +
+    `new debug global \`window.__TRACE\` in \`chars.js\`. ${FILE_CHECK_INSTRUCTION}`]);
+  // A scheduled run's prompt is not the owner's words either.
+  const cron = harness(t, {trigger: 'cron', prompt: 'Nightly: set window.__NIGHTLY in Playground/sprite-game.'});
+  assert.deepEqual(checkNotes(cron.step('exec', {command: 'python3 nightly.py', workdir: WORKDIR}, ok,
+    () => cron.write('Playground/sprite-game/chars.js', `${CHARS}window.__NIGHTLY = 1;\n`))),
+  ['[ODS Pixel check] Portal checked the files this response changed in `Playground/sprite-game`: ' +
+    `new debug global \`window.__NIGHTLY\` in \`chars.js\`. ${FILE_CHECK_INSTRUCTION}`]);
+});
+
+test('names in the request a question card recorded are the owner\'s words when the owner answers it', async t => {
+  const first = harness(t, {clarifications: true, prompt: 'In Playground/sprite-game, expose the game as window.__GAME.'});
+  await first.ask('Should the hook also hold the level?');
+  assert.equal((await first.finish('Should the hook also hold the level?')).delivery.status, 'pending');
+  const answer = harness(t, {shared: first, runId: NEXT_RUN, prompt: 'Should the hook also hold the level?\nYes'});
+  const hooked = answer.step('exec', {command: 'python3 hook.py', workdir: WORKDIR}, ok,
+    () => answer.write('Playground/sprite-game/chars.js', `${CHARS}window.__GAME = SPRITE_CACHE;\nwindow.__LEVEL = 1;\n`));
+  assert.deepEqual(checkNotes(hooked), ['[ODS Pixel check] Portal checked the files this response changed in `Playground/sprite-game`: ' +
+    `new debug global \`window.__LEVEL\` in \`chars.js\`. ${FILE_CHECK_INSTRUCTION}`]);
+});
+
+test('what a question card could not show waits for an owner turn: a cron run or a delegated child leaves it for the next answer', async t => {
+  const LATER = 'chatcmpl_5a8c1e64-4f71-4dae-9a2c-6b9f1d3e5a75';
+  const first = harness(t, {exampleOwnerRun: context => context.runId === CHILDREN[0] ? LATER : undefined});
+  const patch = first.call('exec', {command: PATCH, workdir: WORKDIR});
+  first.doubling();
+  await first.ask('Should the eight frames also play faster?');
+  patch.finish();
+  assert.equal((await first.finish('Should they also play faster?')).delivery.status, 'pending');
+  // A scheduled run in the same chat, and a child that a later owner turn,
+  // still running, delegated to.
+  const cron = harness(t, {shared: first, runId: 'chatcmpl_4f7b0d53-3e60-4c9d-8f1b-5a8e0c2d4f64', trigger: 'cron', prompt: 'Daily summary.'});
+  assert.equal((await cron.finish('Summary sent.')).delivery.notice, undefined);
+  harness(t, {shared: first, runId: LATER, prompt: 'Draw the sprites with a helper.'});
+  const worker = child(0, first, {prompt: 'Draw the sprites.'});
+  assert.equal((await worker.finish('Drawn.')).delivery.notice, undefined);
+  const next = harness(t, {shared: first, runId: NEXT_RUN, prompt: 'Yes, faster too.'});
+  assert.equal((await next.finish('Done: they play faster.')).delivery.notice, `Still found from earlier changes in ${FOUND}`);
+});
+
+test('a pending run that is no owner turn keeps what an earlier pending turn left, beside its own', async t => {
+  const first = harness(t);
+  const patch = first.call('exec', {command: PATCH, workdir: WORKDIR});
+  first.doubling();
+  await first.ask('Should the eight frames also play faster?');
+  patch.finish();
+  assert.equal((await first.finish('Should they also play faster?')).delivery.status, 'pending');
+  // A scheduled run in the same chat changes a file and asks too.
+  const cron = harness(t, {shared: first, runId: 'chatcmpl_4f7b0d53-3e60-4c9d-8f1b-5a8e0c2d4f64', trigger: 'cron', prompt: 'Nightly tidy.'});
+  cron.step('exec', {command: 'python3 tidy.py', workdir: WORKDIR}, ok,
+    () => cron.write('Playground/sprite-game/tidy.js', 'window.__TIDY = 1;\n'));
+  await cron.ask('Keep the nightly log?');
+  assert.equal((await cron.finish('Keep the nightly log?')).delivery.status, 'pending');
+  const next = harness(t, {shared: first, runId: NEXT_RUN, prompt: 'Yes, faster too.'});
+  assert.equal((await next.finish('Done: they play faster.')).delivery.notice, `Still found from earlier changes in ${
+    FOUND.replace('in `chars.js`; new file', 'in `chars.js`; new debug global `window.__TIDY` in `tidy.js`; new file')}`);
+});
+
+test('a chat carries the checks of its last eight pending responses', async t => {
+  const first = harness(t);
+  let turn = first;
+  for (let i = 0; i < 9; i++) {
+    if (i) turn = harness(t, {shared: first, runId: `chatcmpl_9${i}0000a0-1a2b-4c3d-8e4f-5a6b7c8d9e0${i}`, prompt: `Answer ${i}.`});
+    const hook = turn;
+    hook.step('exec', {command: `python3 hook.py ${i}`, workdir: WORKDIR}, ok,
+      () => hook.write(`Playground/sprite-game/hook-${i}.js`, `window.__HOOK${i} = ${i};\n`));
+    await hook.ask(`Question ${i}?`);
+    assert.equal((await hook.finish(`Question ${i}?`)).delivery.status, 'pending');
+  }
+  // Only the first response found the first hook: it is no longer carried.
+  const last = harness(t, {shared: first, runId: NEXT_RUN, prompt: 'Thanks.'});
+  const {notice} = (await last.finish('Done.')).delivery;
+  assert.match(notice, /^Still found from earlier changes in `Playground\/sprite-game`: .*`window\.__HOOK8`/);
+  assert.doesNotMatch(notice, /window\.__HOOK0`/);
+});
+
+test('a defect that switched off a child\'s checks is said in the turn\'s line', async t => {
+  const changedFileChecks = () => ({touch() { throw new TypeError('child defect'); }, take: () => [], findings: () => [], settle: async () => {}});
+  const owner = harness(t, {exampleOwnerRun: delegatedFrom, changedFileChecks});
+  const worker = child(0, owner, {prompt: 'Give the sprites eight frames.'});
+  assert.deepEqual(checkNotes(worker.step('exec', {command: PATCH, workdir: WORKDIR}, ok, worker.doubling)), []);
+  const continuation = harness(t, {shared: owner, runId: NEXT_RUN, prompt: 'Report the result.'});
+  assert.equal((await continuation.finish('The frames are done.')).delivery.notice, FILE_CHECKS_OFF);
+});
+
+test('a finding that both an earlier pending response and this one made is listed once, as this one\'s', async t => {
+  const first = harness(t);
+  const hook = first.call('exec', {command: 'python3 hook.py', workdir: WORKDIR});
+  first.write('Playground/sprite-game/chars.js', `${CHARS}window.__A = 1;\n`);
+  await first.ask('Keep the debug hook?');
+  hook.finish();
+  assert.equal((await first.finish('Keep it?')).delivery.status, 'pending');
+  const next = harness(t, {shared: first, runId: NEXT_RUN, prompt: 'Yes, and set it twice.'});
+  next.step('exec', {command: 'python3 hook.py --twice', workdir: WORKDIR}, ok,
+    () => next.write('Playground/sprite-game/chars.js', `${CHARS}window.__A = 1;\nwindow.__A = 2;\n`));
+  assert.equal((await next.finish('Done.')).delivery.notice,
+    "Portal's checks of the changed files in `Playground/sprite-game`: new debug global `window.__A` in `chars.js`.");
+});
+
+test('one module queue for the gateway: two parses at a time, each version once whichever response asks', async t => {
+  let calls = 0, live = 0, peak = 0;
+  const checkModule = async () => {
+    calls += 1; live += 1; peak = Math.max(peak, live);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    live -= 1;
+    return {ok: true};
+  };
+  const name = i => `Playground/esm/m${String(i).padStart(2, '0')}.js`;
+  const files = {'Playground/esm/index.html': '<script type="module" src="m00.js"></script>\n'};
+  for (let i = 0; i < 6; i++) files[name(i)] = `export const m${i} = ${i};\n`;
+  const owner = harness(t, {files, exampleOwnerRun: delegatedFrom, checkModule, prompt: 'In Playground/esm, double every module.'});
+  owner.step('exec', {command: 'python3 plan.py', workdir: '/workspace/Playground/esm'});
+  for (let k = 0; k < 3; k++) {
+    const worker = child(k, owner, {prompt: `Double modules ${2 * k} and ${2 * k + 1}.`});
+    worker.step('exec', {command: `python3 double.py ${k}`, workdir: '/workspace/Playground/esm'}, ok, () => {
+      for (const i of [2 * k, 2 * k + 1]) worker.write(name(i), `export const m${i} = ${i} * 2;\n`);
+    });
+  }
+  const continuation = harness(t, {shared: owner, runId: NEXT_RUN, prompt: 'Report the result.'});
+  assert.equal((await continuation.finish('Doubled.')).delivery.notice, undefined);
+  assert.equal(calls, 6, 'each changed version once, none at first touch');
+  assert.ok(peak <= 2, `${peak} at once`);
+});
+
+test('the delegated-delivery route waits a bounded time for module parses, then says what could not be checked', async t => {
+  const {guard, step, write, context} = harness(t, {files: {'Playground/mod-game/main.mjs': 'export const a = 1;\n'},
+    prompt: 'In Playground/mod-game, add a score module.', checkModule: () => new Promise(() => {})});
+  step('write', {path: 'Playground/mod-game/score.mjs', content: 'export const score = 0;\n'}, ok,
+    () => write('Playground/mod-game/score.mjs', 'export const score = 0;\n'));
+  const started = Date.now();
+  await guard.settleDelivery(context.runId, {delegated: true});
+  const waited = Date.now() - started;
+  // Its caller gives up after 5 s (host/pixel_ingress.mjs).
+  assert.ok(waited >= FILE_CHECK_LIMITS.delegatedSettleMs - 100 && waited < FILE_CHECK_LIMITS.settleMs, `${waited} ms`);
+  assert.equal(guard.deliveryVerificationForRun(context.runId).notice,
+    "Portal's checks of the changed files in `Playground/mod-game`: could not check whether `score.mjs` parses.");
+});
+
 test('a new game is checked where the guard routed it, in its Playground folder', async t => {
   const {step, write, finish} = harness(t, {files: {}, prompt: 'Make me a snake game.'});
   const game = 'function tick() {}\nfunction tick() {}\nwindow.__SNAKE = state;\n';
@@ -320,19 +494,20 @@ test('no notice while a question waits, after coding tools ended, a refused dele
 
 test('a defect in the checks never blocks a call or the delivery: they switch off with a warning', async t => {
   const warnings = [];
-  for (const broken of ['touch', 'take', 'findings']) {
+  for (const broken of ['touch', 'take', 'findings', 'settle']) {
     const changedFileChecks = () => ({
       touch() { if (broken === 'touch') throw new TypeError('touch defect'); },
       take() { if (broken === 'take') throw new TypeError('take defect'); return []; },
       findings() { if (broken === 'findings') throw new TypeError('findings defect'); return []; },
-      settle: async () => {},
+      async settle() { if (broken === 'settle') throw new TypeError('settle defect'); },
     });
     const h = harness(t, {changedFileChecks, warn: message => warnings.push(message)});
     const patch = h.call('exec', {command: PATCH, workdir: WORKDIR});
     assert.notEqual(patch.decision?.block, true, broken);
     assert.deepEqual(checkNotes(patch.finish(h.doubling)), [], broken);
     const {delivery} = await h.finish('Done.');
-    assert.equal(delivery.notice, undefined, broken);
+    // The owner reads that they could not finish.
+    assert.equal(delivery.notice, FILE_CHECKS_OFF, broken);
     assert.ok(warnings.some(warning => warning.includes(`${broken} defect`)), broken);
     // Off for the rest of the response: no further call reaches them.
     assert.deepEqual(checkNotes(h.step('exec', {command: 'python3 again.py', workdir: WORKDIR})), [], broken);
