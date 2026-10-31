@@ -129,7 +129,9 @@ test('mac-mini d4a61f33 replay: refusals name the exact next path and the unchan
   // way, so it never read the answer instruction; both now carry it.
   assert.ok(RUN_PROGRESS_STOP_REASON.startsWith(list.recorded.resultHead));
   assert.ok(RUN_PROGRESS_STOP_REASON.startsWith(listLong.recorded.resultHead));
-  assert.equal(listing.text, PROGRESS_FINALIZATION_INSTRUCTION, 'charged exactly as recorded: the fuse trips at call 4');
+  // The listing ran, so its own error stays ahead of the instruction.
+  assert.ok(listing.text.endsWith(`\n${PROGRESS_FINALIZATION_INSTRUCTION}`), 'charged exactly as recorded: the fuse trips at call 4');
+  assert.match(listing.text, /^ls: cannot access 'Playground\/photo-renamer-test': No such file or directory/);
   const next = h.exec(listLong.args, 'Playground/photo-renamer-test', listLong.id);
   assert.equal(next.decision?.block, true);
   assert.equal(stopped(next.decision.blockReason), true);
