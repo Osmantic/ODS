@@ -440,6 +440,18 @@ their credentials and qualification paths are configured. The Operations limb
 is enabled through Pixel's isolated broker, not by granting the model a host
 shell, Docker socket, or privileged credential.
 
+Email and Calendar turn on only when the owner connects Google. The choice is
+kept in `/etc/ods/portal-connections.json` (root-owned, readable by the
+`ods-pixel` group, mode `0640`), which holds no credentials: the capabilities the
+owner turned on, the account, the Calendar ID, the Gmail window and the owner's
+time zone. Every install and update reads it, so a connection survives an update,
+and runs `pixel source-broker --confirm` next to the Operations Broker when a
+source limb is on. A connection counts only while the Source Broker still holds
+the Google sign-in: after a restore without it, the sources stay off and Settings
+asks the owner to reconnect. A record that fails validation also leaves them off;
+it never fails an install. Without the file, the onboarding contract is the same
+as before connected apps existed.
+
 The installer writes an owner-private, mode-`0600` policy at
 `$INSTALL_DIR/data/pixel/operations-policy.json`. Pixel copies the reviewed
 policy into root-controlled broker custody. The gateway can write typed request
