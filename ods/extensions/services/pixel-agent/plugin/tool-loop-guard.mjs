@@ -6541,8 +6541,14 @@ const PREVIEW_NEGATION = /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not
 // publish it", "never show me the preview", "do not open a live preview".
 const PUBLISHING_NEGATION =
   /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:publish|republish|preview|serv(?:e|es|ed|ing)\b|deploy)/i;
+// A negated show, view, open or display as the prohibition rules read it,
+// directly or in a list: not "don't change how the menu opens".
 const SHOW_NEGATION =
-  /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:show|view|open|display)/i;
+  /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:(?:try|attempt)\s+to\s+)?(?:(?:create|build|edit|write|run|execute)\s*(?:,\s*|and\s+|or\s+))*(?:show|view|open|display)(?:ing)?\b|\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:and|or|nor)\s+(?:show|view|open|display)(?:ing)?\b/i;
+// A request put off until the owner or someone else acts, or to a later time,
+// is not a request now: "check it in the preview later", "publish it after
+// the client signs off". "When you're done" still asks Portal now.
+const DEFERRED_REQUEST = /\b(?:later|tomorrow|tonight|next\s+(?:time|week|month|turn|round|session)|(?:after|once|when|whenever|until|till|unless)\s+(?:I\b|I['’](?:ve|m|ll|d)\b|we\b|we['’](?:ve|re|ll)\b|my\b|our\b|the\s+(?:client|customer|boss|team)\b|they\b|you\s+hear\b)|only\s+(?:after|when|if|once)\b)/i;
 // The owner asks Portal itself to look at the page in the preview, at the start
 // of a sentence or after the repair it asks for: "check it in the preview",
 // "please fix those and check it in the preview", "can you verify it in the
@@ -6565,9 +6571,10 @@ const PUBLICATION_DIRECTIVE = /(?:^|\b(?:and(?:\s+then)?|then|now|instead)\s+)\s
 function ownerRequestOutweighsShowNegation(text, sessionPreview = undefined) {
   if (PUBLISHING_NEGATION.test(text)) return false;
   let start = 0, requestEnd = -1;
-  for (const boundary of [...text.matchAll(/[!?;\n]+|\.(?=\s|$)/g), {index: text.length, 0: ''}]) {
+  // "e.g." and "i.e." do not end a sentence.
+  for (const boundary of [...text.matchAll(/[!?;\n]+|(?<!\b(?:e\.g|i\.e))\.(?=\s|$)/gi), {index: text.length, 0: ''}]) {
     const sentence = text.slice(start, boundary.index);
-    if (!PREVIEW_NEGATION.test(sentence) && (OWNER_CHECKS_IN_PREVIEW.test(sentence) ||
+    if (!PREVIEW_NEGATION.test(sentence) && !DEFERRED_REQUEST.test(sentence) && (OWNER_CHECKS_IN_PREVIEW.test(sentence) ||
       (PUBLICATION_DIRECTIVE.test(sentence) && hasExplicitWorkspacePreviewDirective(sentence)) ||
       requestsNamedSessionPreview(sentence, sessionPreview))) requestEnd = boundary.index;
     start = boundary.index + boundary[0].length;

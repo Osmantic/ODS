@@ -54,8 +54,12 @@ test('a bug report gets its preview when the owner asks to check it there', () =
     assert.equal(previewRefused(prompt), false, prompt);
   }
   for (const request of ['Please fix those and test it in the preview this time.', 'Can you verify it in the preview?',
-    'Fix it, then publish demo/index.html.']) {
+    'Fix it, then publish demo/index.html.', 'Fix it and check it in the preview when you are done.']) {
     assert.equal(previewRefused(`In demo, attacks never show. ${request}`), false, request);
+  }
+  // A later constraint on the code is not a later "don't show".
+  for (const constraint of ["Don't change how the menu opens.", "Don't change the display font.", 'Never remove the show-more button.']) {
+    assert.equal(previewRefused(`In demo, attacks never show. Fix it and check it in the preview. ${constraint}`), false, constraint);
   }
 });
 
@@ -90,6 +94,7 @@ test('a prohibition still forbids the preview, however it is written', () => {
     "Fix demo/index.html and check it in the preview. Actually, don't show it yet.",
     'Fix it and test it in the preview. On second thought, don\'t show it until I say so.',
     'Publish demo/index.html. Wait, no, don\'t show it yet.', 'Show me the existing site. Never mind, don\'t open it.',
+    'In demo, attacks never show. Fix it and check it in the preview. Don\'t touch the layout or show it to anyone yet.',
     // Statements, questions, quotes, future requests and steps to reproduce are not requests.
     "I'll just check it in the preview myself. Don't show it.", 'I also test it in the preview myself. Don\'t show it to me.',
     'Should I just check it in the preview? Don\'t show it yet.', 'The docs say: check it in the preview. Don\'t show it yet.',
@@ -98,6 +103,13 @@ test('a prohibition still forbids the preview, however it is written', () => {
     "Steps:\n1. Open the existing site.\n2. Click Start.\nFix it. Don't open the page until it works.",
     "Don't open the page until it works. Steps:\n1. Open the existing site.\n2. Click Start.",
     "Don't show it yet. I'll just check it in the preview myself.",
+    "Don't show it yet. I'll test it myself, e.g. check it in the preview.",
+    // A request put off until the owner acts, or to a later time, is not a request now.
+    "Fix demo/index.html. Don't show it yet. Check it in the preview later.",
+    "Fix demo/index.html. Don't show it yet. Check it in the preview after I've reviewed the code.",
+    "Fix demo/index.html. Don't open it yet. Check it in the preview once I give the OK.",
+    "Fix demo/index.html. Don't show it yet. Test it in the preview when I say go.",
+    "Don't show it yet. Publish demo/index.html after the client signs off.", "Don't show it yet. Publish demo/index.html tomorrow.",
   ]) assert.equal(previewRefused(prompt), true, prompt);
 });
 
