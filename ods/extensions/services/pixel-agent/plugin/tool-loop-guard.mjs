@@ -37,7 +37,7 @@ import { assistantMessageText, changedFilesNote, composeProgressFinalization, co
   PREVIEW_CHECK_FINALIZATION_INSTRUCTION, PROGRESS_FINALIZATION_INSTRUCTION, progressFinalizationHead,
   unverifiedLinksNote } from "./progress-finalization.mjs";
 import { STOP_SYNTHESIS_LIMITS, STOP_SYNTHESIS_NOTE, synthesisAnswer, synthesisRequest } from "./stop-synthesis.mjs";
-import { createRunDeadline, runDeadlineReached, runDeadlineStopText, takeRunDeadlineNotice } from "./run-deadline.mjs";
+import { createRunDeadline, responseDeadlineDelay, runDeadlineReached, runDeadlineStopText, takeRunDeadlineNotice } from "./run-deadline.mjs";
 import { outputLimitContext, outputLimitCut, outputLimitNotice, outputLimitStopText } from "./output-limit.mjs";
 import { OWNER_VISIBLE_REPLY_INSTRUCTION, OWNER_VISIBLE_REPLY_REASON, ownerInteractiveTurn, silentReplyText } from "./owner-visible-reply.mjs";
 import { leakedExecGuidance, execGuidanceRevisionInstruction, EXEC_GUIDANCE_LEAK_REASON, EXEC_GUIDANCE_LEAK_DELIVERY } from "./exec-guidance-provenance.mjs";
@@ -605,6 +605,13 @@ const EVIDENCE_REPORT_TOOL = "pixel_ods_evidence_report";
 const EVIDENCE_READBACK_TOOL = "pixel_ods_evidence_readback";
 const WORKSPACE_PREVIEW_TOOL = "pixel_ods_workspace_preview";
 const MAX_TRACKED_RUNS = 256;
+// How long a model call must have run before the guard's deadline stop may
+// abort it: past its stream setup (responseDeadlineDue).
+const RESPONSE_STREAM_STARTED_MS = 3000;
+// The longest delay a Node timer holds; a longer one fires at once.
+const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
+// The refusal of a tool call made after the response's deadline.
+const RESPONSE_DEADLINE_TOOL_REASON = 'Portal stopped this response at its time limit before this call ran.';
 const MAX_SESSION_DOWNLOAD_JOBS = 32;
 const MAX_PENDING_EXEC_SESSIONS = 64;
 const ODS_OPENAI_USER = /^ods-[0-9a-f]{64}$/;
@@ -7876,6 +7883,9 @@ export function createToolLoopGuard({
   warn = () => {},
   info = () => {},
   now = Date.now,
+  // For the guard's own stop at a response's run deadline (run-deadline.mjs).
+  setTimer = setTimeout,
+  clearTimer = clearTimeout,
   // The owner run a delegated child or announced continuation reports to
   // (subagent-delivery.mjs ownerRunOf), for the shipped example's guard.
   exampleOwnerRun = () => undefined,
@@ -8610,10 +8620,17 @@ export function createToolLoopGuard({
   // work gets one tool-free answer turn (progress-finalization.mjs). Receipt-
   // based work (Operations, exact downloads, managed extension requests, team
   // coordination) keeps the strict stop text: a model summary must not stand
-  // in for those host receipts.
+  // in for those host receipts. A pending owner question has its own card.
   function progressFinalizationEligible(state) {
+    return resumableWork(state) && !state.ownerQuestions;
+  }
+
+  // Not cancelled, not a refused delete, and not receipt-based work or a
+  // repeated web-research loop: resumed after a stop, it repeats no download,
+  // approval card or loop.
+  function resumableWork(state) {
     return !state.clientCancelled && !state.recursiveDeleteDenied &&
-      !state.unrequestedOperationsAborted && !state.webLoopAborted && !state.ownerQuestions &&
+      !state.unrequestedOperationsAborted && !state.webLoopAborted &&
       !state.operationsRequired && !state.exactDownloadRequested && !state.extensionCompletionGate?.active &&
       !state.extensionPendingHandoff && !state.managedTeamCoordinator;
   }
@@ -8655,8 +8672,11 @@ export function createToolLoopGuard({
   }
 
   // Charges one tool result to the progress budget and remembers a failed
-  // preview check that stopped the run (finalizationInstruction).
+  // preview check that stopped the run (finalizationInstruction). Not once
+  // the deadline stop is due: its own refusals and the commands it ends would
+  // otherwise name the tool limit as the cause (responseDeadlineToolCall).
   function observeProgress(state, outcome, tool) {
+    if (state.responseDeadline?.due) return;
     const running = !state.progressBudget.exhausted;
     state.progressBudget.observeResult(outcome);
     if (!running || !state.progressBudget.exhausted) return;
@@ -8742,8 +8762,12 @@ export function createToolLoopGuard({
     const toolName = context?.toolName ?? event?.toolName;
     const { runId } = runIdentity(event, context);
     const state = context?.agentId === agentId && runId ? runs.get(runId) : undefined;
-    if (!state || workspaceReadOnlyCall(toolName, event?.params)) return decision;
     const callId = context?.toolCallId ?? event?.toolCallId;
+    // A tool now running, which the deadline stop may end (responseDeadlineDue).
+    if (state?.responseDeadline && decision?.block !== true && typeof callId === 'string' && callId) {
+      state.responseDeadline.tools.add(callId);
+    }
+    if (!state || workspaceReadOnlyCall(toolName, event?.params)) return decision;
     if (decision?.block === true && typeof callId === 'string' && callId) {
       const refused = state.previewRevalidationRefusedCalls ??= new Set();
       if (refused.size >= MAX_TRACKED_RUNS) refused.delete(refused.values().next().value);
@@ -8804,6 +8828,7 @@ export function createToolLoopGuard({
       stopExhaustedRun(state, runId);
       return {block:true, blockReason:RUN_PROGRESS_STOP_REASON};
     }
+    if (state && responseDeadlineToolCall(state, runId)) return {block:true, blockReason:RESPONSE_DEADLINE_TOOL_REASON};
     const malformedPath = malformedRelativeWorkspacePath(toolName, normalizedParams ?? event?.params,
       state?.configuredWorkspaceRoot, state?.playgroundOwnerIntent);
     if (malformedPath) return {block:true, blockReason:malformedPath};
@@ -10935,13 +10960,14 @@ export function createToolLoopGuard({
         state.privateBrowserAccess = capabilities.privateBrowserAccess === true &&
           userMessageRequestsPrivateUrl(event?.messages, event?.prompt);
         // before_prompt_build runs once per attempt, just after the runtime
-        // arms that attempt's own timer; the notices keep the response's
-        // schedule (run-deadline.mjs). Only the owner's own turns: subagent
-        // and cron lanes can run with another timeout or none, and team
-        // workers report to their coordinator, not the owner.
+        // arms that attempt's own timer; the notices and the guard's own stop
+        // keep the response's schedule (run-deadline.mjs). Only the owner's
+        // own turns: subagent and cron lanes can run with another timeout or
+        // none, and team workers report to their coordinator, not the owner.
         state.runDeadline = state.artifactOwnerInteractive && !state.managedTeamWorker
           ? createRunDeadline(capabilities.runTimeoutSeconds, now(), state.runDeadline) : undefined;
         state.runDeadlineReached = false;
+        armResponseDeadline(state, runId);
         // Like the deadline, a cut belongs to the attempt that wrote it.
         state.lastReplyCut = undefined;
         state.outputLimitStop = undefined;
@@ -11320,6 +11346,7 @@ export function createToolLoopGuard({
     if (state.progressBudget.exhausted && !compactionCall) progressFinalization(state).modelCallStarted();
     // A further agent turn means the reply seen at finalization was not final.
     if (!compactionCall) state.finalReplyText = undefined;
+    responseDeadlineModelCall(state, runId, event?.callId, compactionCall);
   }
 
   function observeModelEnd(event, context, agentId = "pixel") {
@@ -11329,6 +11356,8 @@ export function createToolLoopGuard({
     if (!state || !context?.sessionId || context.sessionId !== state.currentSessionId) return;
     const compaction = state.compactionWindow;
     if (compaction?.calls.delete(event?.callId) && compaction.calls.size === 0) state.compactionWindow = undefined;
+    const deadline = state.responseDeadline;
+    if (deadline?.call && deadline.call.id === event?.callId) deadline.call = undefined;
     if (event?.outcome === 'completed') {
       state.modelRouteFailed = false;
       // A later model call completed, so that abort did not end this run.
@@ -11481,6 +11510,7 @@ export function createToolLoopGuard({
     if (typeof runId !== "string" || !runId) return;
     recordExampleOutcome({...context, runId}, examples.check(runId), context?.toolCallId ?? event?.toolCallId);
     const state = stateFor(runId);
+    state.responseDeadline?.tools.delete(context?.toolCallId ?? event?.toolCallId);
     state.completionAssurance.observe(toolName, event);
     if (state.extensionCompletionGate && !state.workspaceExtensionIsolated && !state.extensionMutationExcluded) {
       for (const name of [
@@ -13096,6 +13126,9 @@ export function createToolLoopGuard({
         && sessionRuns.get(item.sessionId) === item.runId) : undefined;
     const runId = pending?.runId ?? context?.runId ?? event?.runId ?? active?.runId;
     const state = runs.get(runId);
+    // The tool is done: its result persists before the next model call,
+    // ahead of after_tool_call (responseDeadlineDue).
+    state?.responseDeadline?.tools.delete(toolCallId);
     const continuation = trustedOperationsContinuation(state, runId);
     if (!event?.message || typeof event.message !== "object") {
       return undefined;
@@ -13128,7 +13161,7 @@ export function createToolLoopGuard({
       return {message:{...message,content:[...(message.content ?? []),{type:'text',text:progressLaneStopReason(progressLane)}]}};
     }
     // The only mid-attempt channel to the live model; never on a stopped run.
-    const deadlineNotice = state && !state.clientCancelled && !state.odsAborted
+    const deadlineNotice = state && !state.clientCancelled && !state.odsAborted && !state.responseDeadline?.stopped
       ? takeRunDeadlineNotice(state.runDeadline, now()) : undefined;
     // Same channel, once before the failure limits stop the run, so a change
     // spread over several files is not left half made (laptop, 2026-10-30: the
@@ -13855,11 +13888,112 @@ export function createToolLoopGuard({
     if (state) {state.previewRevalidationCandidate=undefined;state.previewVerificationGeneration=(state.previewVerificationGeneration ?? 0)+1;}
   }
 
+  // Portal's ingress cuts a response off with no reply at all 1920 s after it
+  // began, and a /goal round then ends its goal instead of continuing
+  // (dashboard-api portal_goal.py). OpenClaw's own timer cannot be relied on
+  // to end the round first: a later attempt gets a fresh one, and the first
+  // attempt's can extend for a compaction or retry after one. So the guard
+  // stops a goal round still running just before its deadline
+  // (run-deadline.mjs responseDeadlineDelay), and agent_end names the
+  // deadline as the cause. Other chats keep OpenClaw's timer and the
+  // ingress, unchanged. Armed per attempt, with what this attempt is doing:
+  // its model call in flight, its tools running, whether it wrote its answer.
+  function armResponseDeadline(state, runId) {
+    clearTimer(state.responseDeadline?.timer);
+    state.responseDeadline = {call: undefined, tools: new Set(), answered: false, due: false, stopped: false};
+    const delay = responseDeadlineDelay(state.runDeadline, now());
+    // Beyond what a timer can hold (OpenClaw clamps its own) there is no stop.
+    if (delay === undefined || delay > MAX_TIMER_DELAY_MS || typeof abortActiveRun !== 'function') return;
+    scheduleResponseDeadline(state, runId, delay);
+  }
+
+  function scheduleResponseDeadline(state, runId, delay) {
+    const deadline = state.responseDeadline;
+    deadline.timer = setTimer(() => { deadline.timer = undefined; responseDeadlineDue(state, runId, deadline); }, delay);
+    deadline.timer?.unref?.();
+  }
+
+  // The stop is this attempt's to make: not superseded by a newer run in this
+  // session, and a /goal round (decided when the stop is due, since
+  // goal-progress.mjs begins after observeRun) whose goal goes on after it:
+  // resumable work, which also rules out an owner's cancel, whose cancel owns
+  // its own stop, and a refused delete, whose answer turn keeps its own text.
+  // Its stop carries stop: 'run-deadline' (deliveryVerificationForRun), or its
+  // pending question card, which the goal waits on; a run an ODS stop already
+  // aborted keeps that stop's text. Never in the one answer turn after a
+  // tool-limit stop either.
+  function responseDeadlineOwned(state, runId, deadline) {
+    const sessionId = state.currentSessionId;
+    return state.responseDeadline === deadline && runs.get(runId) === state && Boolean(sessionId) &&
+      sessionRuns.get(sessionId) === runId && goalRun(runId) === true && resumableWork(state) &&
+      !state.progressBudget.exhausted;
+  }
+
+  // The stop lands only where it reaches OpenClaw's run: a tool running, or
+  // a model call of an agent turn well under way. One that has just begun may
+  // still be setting up its stream: an abort there leaves the attempt hung
+  // until its own timer (real harness, 2026-10-30), so the stop waits until
+  // the call is RESPONSE_STREAM_STARTED_MS old. Between calls it waits for the
+  // next turn, or for the next tool call, which it refuses
+  // (responseDeadlineToolCall). Never once the attempt wrote its answer,
+  // which OpenClaw drops from an aborted attempt: it finishes, and a tool call
+  // or a revision after it is stopped.
+  function responseDeadlineDue(state, runId, deadline) {
+    if (!responseDeadlineOwned(state, runId, deadline)) return;
+    deadline.due = true;
+    if (deadline.stopped || deadline.answered) return;
+    if (deadline.tools.size) { stopAtResponseDeadline(state, runId, deadline); return; }
+    if (!deadline.call) return;
+    const wait = deadline.call.at + RESPONSE_STREAM_STARTED_MS - now();
+    if (wait > 0) scheduleResponseDeadline(state, runId, wait);
+    else stopAtResponseDeadline(state, runId, deadline);
+  }
+
+  function stopAtResponseDeadline(state, runId, deadline) {
+    // Like every ODS stop: OpenClaw's abort alone leaves a sandboxed command running.
+    try { execControl?.signal?.(runId); }
+    catch (error) { warn(`Pixel response-deadline execution signal failed: ${String(error)}`); }
+    try {
+      // Not the guard's abortRun: it marks an ODS stop, whose own text replaces
+      // the deadline's at agent_end. An ODS stop already made keeps its text.
+      deadline.stopped = abortActiveRun(state.currentSessionId, state.currentSessionKey) === true;
+    } catch (error) {
+      warn(`Pixel response-deadline stop failed for run ${runId}: ${String(error)}`);
+    }
+    // Not acknowledged: the attempt's next model or tool call tries again.
+    if (deadline.stopped) info(`Pixel stopped run ${runId} at its response deadline`);
+  }
+
+  // model_call_started of an agent turn: the attempt's run is live and the
+  // last turn's tools are done. A compaction call is neither a turn nor a stop
+  // point: one before the attempt's prompt runs with no live run, and an abort
+  // there would let the prompt start on unsupervised. An answer stays an
+  // answer until a reply that is not one (observeReplyEnd): the compaction
+  // that follows an answer can start before its before_compaction hook, which
+  // waits behind the finalization hooks, so it looks like a turn here.
+  function responseDeadlineModelCall(state, runId, callId, compactionCall) {
+    const deadline = state.responseDeadline;
+    if (!deadline || compactionCall) return;
+    deadline.call = {id: callId, at: now()};
+    deadline.tools.clear();
+    if (deadline.due && !deadline.stopped && !deadline.timer) scheduleResponseDeadline(state, runId, RESPONSE_STREAM_STARTED_MS);
+  }
+
+  // A tool call past the deadline: the stop lands here, at a tool boundary
+  // like the tool limit's, and the call does not run. Its turn's reply had
+  // tool calls, so the attempt's answer, if any, was not its last.
+  function responseDeadlineToolCall(state, runId) {
+    const deadline = state.responseDeadline;
+    if (!deadline?.due || !responseDeadlineOwned(state, runId, deadline)) return false;
+    if (!deadline.stopped) stopAtResponseDeadline(state, runId, deadline);
+    return true;
+  }
+
   // agent_end: a later cancel for this user can no longer name this run's
   // request as the one it withdrew. It also classifies the runtime's run
-  // deadline, which no hook reports directly. An ODS stop (owner cancel, tool
-  // limit, recursive-delete refusal or any other guard abort) has its own
-  // delivery text.
+  // deadline, which no hook reports directly, or the guard's own stop at it.
+  // An ODS stop (owner cancel, tool limit, recursive-delete refusal or any
+  // other guard abort) has its own delivery text.
   function observeAgentEnd(event, context) {
     const runId = context?.runId ?? event?.runId;
     recordExampleOutcome({...context, runId}, examples.end(runId));
@@ -13871,8 +14005,14 @@ export function createToolLoopGuard({
       endEvents.add(event);
     }
     state.runEnded = true;
+    // This attempt is over; a next attempt arms its own stop.
+    if (state.responseDeadline) {
+      clearTimer(state.responseDeadline.timer);
+      Object.assign(state.responseDeadline, {timer: undefined, due: false, call: undefined});
+      state.responseDeadline.tools.clear();
+    }
     state.runDeadlineReached = !state.clientCancelled && !state.odsAborted && !state.progressBudget.exhausted &&
-      !state.recursiveDeleteDenied && runDeadlineReached(state.runDeadline, event, now());
+      !state.recursiveDeleteDenied && runDeadlineReached(state.runDeadline, event, now(), state.responseDeadline?.stopped === true);
     // The harness runs tool calls only after a 'toolUse' stop, so a reply cut
     // at the output limit ends the response with its last call never run.
     // Only the owner's own turns: team workers and other lanes report to a
@@ -13896,7 +14036,16 @@ export function createToolLoopGuard({
     if (agent !== undefined && agent !== agentId) return;
     if (event?.message?.role !== 'assistant') return;
     const active = activeSessionRun(context?.sessionKey ?? event?.sessionKey);
-    if (active) active.state.lastReplyCut = outputLimitCut(event.message);
+    if (!active) return;
+    active.state.lastReplyCut = outputLimitCut(event.message);
+    // A reply with text and no tool calls ends the attempt's turns: from here
+    // OpenClaw delivers it, after the finalization hooks, which can take a
+    // while (responseDeadlineDue). A reply cut at the output limit too.
+    const message = event.message;
+    if (active.state.responseDeadline) active.state.responseDeadline.answered = Array.isArray(message.content) &&
+      !message.content.some(block => block?.type === 'toolCall') &&
+      !['error', 'aborted'].includes(String(message.stopReason ?? '').trim().toLowerCase()) &&
+      Boolean(finalText(message)?.trim?.());
   }
 
   // Model-only prompt context for one attempt (before_prompt_build
