@@ -8,11 +8,20 @@ const TOOLS = [
   { name: 'GetLiveContext', title: '', description: 'Read device states', readOnly: true, destructive: false, inputSchema: {}, policy: 'allow' },
   { name: 'HassTurnOn', title: '', description: 'Turn a device on', readOnly: false, destructive: false, inputSchema: {}, policy: 'ask' },
 ]
-const settings = (revision = 0, servers = []) => ({
+const APPS = {
+  documents: { enabled: false, url: 'http://127.0.0.1:7807' },
+  photos: { enabled: false, url: 'http://127.0.0.1:2283' },
+  watch: { enabled: false, url: 'http://127.0.0.1:11039', changes: 'ask' },
+  news: { enabled: false, url: 'http://127.0.0.1:11029', username: '', digest: { enabled: false, time: '07:00', timezone: 'UTC' } },
+}
+const savedApps = (apps = APPS, keys = {}) => Object.fromEntries(Object.entries(apps).map(([id, app]) => [id, { ...app, hasKey: Boolean(keys[id]) }]))
+const settings = (revision = 0, servers = [], apps = savedApps()) => ({
   schemaVersion: 1, revision,
-  notifications: { enabled: false, url: 'http://127.0.0.1:8097', topic: 'portal', username: '', notifyApprovals: true, hasPassword: false },
+  notifications: { enabled: false, url: 'http://127.0.0.1:8097', topic: 'portal', username: '', notifyApprovals: true, hasPassword: false,
+    approvalLink: '', scheduledTasks: 'all' },
   notes: { enabled: false, vaultPath: '', write: 'ask' },
   mcp: { servers },
+  apps,
 })
 const view = (overrides = {}) => ({ settings: settings(), approvals: [], activity: [], ...overrides })
 const response = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body })
@@ -31,12 +40,17 @@ function fakeService(initial = view()) {
       const servers = body.settings.mcp.servers.map(server => ({ ...server, hasToken: Boolean(body.secrets.mcp?.[server.id]),
         hasEnv: Object.fromEntries(server.envNames.map(name => [name, Boolean(body.secrets.mcpEnv?.[server.id]?.[name])])),
         tools: current.settings.mcp.servers.find(item => item.id === server.id)?.tools || [], discoveredAt: current.settings.mcp.servers.find(item => item.id === server.id)?.discoveredAt || null }))
-      current = { ...current, settings: { ...settings(body.expectedRevision + 1, servers), notifications: { ...body.settings.notifications, hasPassword: Boolean(body.secrets.ntfyPassword) }, notes: body.settings.notes } }
+      const keys = Object.fromEntries(Object.entries(current.settings.apps).map(([id, app]) => [id, app.hasKey || Boolean(body.secrets.apps?.[id])]))
+      current = { ...current, settings: { ...settings(body.expectedRevision + 1, servers, savedApps(body.settings.apps, keys)),
+        notifications: { ...body.settings.notifications, hasPassword: Boolean(body.secrets.ntfyPassword) }, notes: body.settings.notes } }
     } else if (action === 'discover') {
       const servers = current.settings.mcp.servers.map(server => server.id === body.serverId ? { ...server, tools: TOOLS, discoveredAt: 1 } : server)
       current = { ...current, settings: { ...current.settings, revision: current.settings.revision + 1, mcp: { servers } } }
     } else if (action === 'test') {
       return response({ ...current, notice: 'Echo answered with 1 tools.' })
+    } else if (action === 'test-app') {
+      if (body.app === 'documents') return response({ detail: 'Paperless-ngx refused the token or password.', code: 'app-refused' }, 400)
+      return response({ ...current, notice: 'FreshRSS answered: 2 feeds.' })
     } else if (action === 'clear-activity') {
       current = { ...current, activity: [] }
     } else if (action === 'decide') {
@@ -62,8 +76,8 @@ it('saves only what changed and never sends an empty password', async () => {
   await screen.findByText('Saved.')
   expect(posts).toEqual([['save', { expectedRevision: 0, secrets: { ntfyPassword: 'pw' }, settings: {
     notifications: { enabled: true, url: 'http://127.0.0.1:8097', topic: 'portal', username: 'portal', notifyApprovals: true,
-      approvalLink: `${window.location.origin}/settings?section=portal-integrations` },
-    notes: { enabled: false, vaultPath: '', write: 'ask' }, mcp: { servers: [] } } }]])
+      approvalLink: `${window.location.origin}/settings?section=portal-integrations`, scheduledTasks: 'all' },
+    notes: { enabled: false, vaultPath: '', write: 'ask' }, mcp: { servers: [] }, apps: APPS } }]])
   expect(screen.getByLabelText('Password or access token')).toHaveValue('')
   expect(screen.getByLabelText('Password or access token')).toHaveAttribute('placeholder', 'Saved. Type to replace.')
 })
@@ -203,4 +217,62 @@ it('gives a new server the id of its name, with its secrets, and keeps saved ids
   expect(posts[0][1].settings.mcp.servers.map(server => server.id)).toEqual(['home', 'files'])
   expect(posts[0][1].secrets).toEqual({ mcpEnv: { files: { KEY: 'v' } } })
   expect(posts[1]).toEqual(['discover', { serverId: 'files' }])
+})
+
+it('connects an app with a secret that is never shown back, then tests it', async () => {
+  const { posts } = fakeService()
+  const card = await screen.findByRole('listitem', { name: 'News' })
+  fireEvent.click(within(card).getByLabelText('Let Portal read my news feeds'))
+  fireEvent.change(within(card).getByLabelText('FreshRSS user'), { target: { value: 'owner' } })
+  fireEvent.change(within(card).getByLabelText('API password'), { target: { value: 'secret' } })
+  fireEvent.click(within(card).getByRole('button', { name: 'Test FreshRSS' }))
+  await screen.findByText('FreshRSS answered: 2 feeds.')
+  expect(posts.map(([action]) => action)).toEqual(['save', 'test-app'])
+  expect(posts[0][1].secrets).toEqual({ apps: { news: 'secret' } })
+  expect(posts[0][1].settings.apps.news).toMatchObject({ enabled: true, username: 'owner' })
+  expect(posts[1][1]).toEqual({ app: 'news' })
+  // The answer also shows in the card, next to the button that asked.
+  expect(within(card).getByRole('status')).toHaveTextContent('FreshRSS answered: 2 feeds.')
+  expect(within(screen.getByRole('listitem', { name: 'Photos' })).queryByRole('status')).toBeNull()
+  expect(within(card).getByLabelText('API password')).toHaveValue('')
+  expect(within(card).getByLabelText('API password')).toHaveAttribute('placeholder', 'Saved. Type to replace.')
+})
+
+it('keeps the digest in the owner\'s time zone and asks before watching pages by default', async () => {
+  const { posts } = fakeService()
+  const news = await screen.findByRole('listitem', { name: 'News' })
+  expect(within(news).getByLabelText(/Digest time/)).toBeDisabled()
+  fireEvent.click(within(news).getByLabelText('Send me a daily news digest'))
+  fireEvent.change(within(news).getByLabelText(/Digest time/), { target: { value: '06:45' } })
+  const watch = screen.getByRole('listitem', { name: 'Watched pages' })
+  expect(within(watch).getByLabelText('Adding and removing watched pages')).toHaveValue('ask')
+  expect(within(watch).getByRole('button', { name: 'Test changedetection.io' })).toBeDisabled()
+  fireEvent.change(screen.getByLabelText('Notify me when a scheduled task'), { target: { value: 'failures' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+  await screen.findByText('Saved.')
+  const saved = posts[0][1].settings
+  expect(saved.apps.news.digest).toEqual({ enabled: true, time: '06:45', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone })
+  expect(saved.notifications.scheduledTasks).toBe('failures')
+  expect(posts[0][1].secrets).toEqual({})
+})
+
+it('shows a refused app key as an error in that app\'s card', async () => {
+  fakeService()
+  const card = await screen.findByRole('listitem', { name: 'Documents' })
+  fireEvent.change(within(card).getByLabelText('API token'), { target: { value: 'wrong' } })
+  fireEvent.click(within(card).getByRole('button', { name: 'Test Paperless-ngx' }))
+  expect(await within(card).findByRole('alert')).toHaveTextContent('Paperless-ngx refused the token or password.')
+  // The token was saved before the test; nothing is left unsaved, and saving again is not stale.
+  expect(screen.queryByRole('region', { name: 'Unsaved changes' })).toBeNull()
+  expect(within(card).getByLabelText('API token')).toHaveAttribute('placeholder', 'Saved. Type to replace.')
+})
+
+it('never gives a new MCP server an id the apps use', () => {
+  expect(newServerId('News', [])).toBe('news-2')
+  expect(newServerId('Photos', [{ id: 'photos-2' }])).toBe('photos-3')
+  expect(newServerId('Home', [])).toBe('home')
+})
+
+it('drafts and saves every app field, and sends only typed app secrets', () => {
+  expect(secretsFrom({ ntfyPassword: '', mcp: {}, mcpEnv: {}, apps: { documents: 'tok', photos: '' } })).toEqual({ apps: { documents: 'tok' } })
 })

@@ -81,6 +81,15 @@ def test_server_tests_restarts_and_clearing_activity_relay(client, agent):
     assert client.post('/api/pixel/integrations/clear-activity', headers=AUTH, json={'all': True}).status_code == 400
 
 
+def test_app_tests_relay_with_the_app_name(client, agent):
+    agent.return_value = {'settings': {'revision': 3}, 'approvals': [], 'activity': [], 'notice': 'FreshRSS answered: 2 feeds.'}
+    reply = client.post('/api/pixel/integrations/test-app', headers=AUTH, json={'app': 'news'})
+    assert reply.json()['notice'] == 'FreshRSS answered: 2 feeds.'
+    agent.assert_awaited_with('POST', '/v1/pixel/integrations/test-app', payload={'app': 'news'}, timeout=140)
+    assert client.post('/api/pixel/integrations/test-app', headers=AUTH, json={}).status_code == 400
+    assert client.post('/api/pixel/integrations/test-app', headers=AUTH, json={'app': 'news', 'key': 'x'}).status_code == 400
+
+
 def test_macos_says_integrations_are_not_available_yet(client, agent):
     refusal = json.dumps({'error': 'unsupported', 'message': "Portal integrations aren't available on macOS yet."})
     agent.side_effect = AgentHTTPError(400, 'unsupported', refusal)

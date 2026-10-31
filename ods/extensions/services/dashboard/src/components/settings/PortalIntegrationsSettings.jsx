@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import McpServerCard from './McpServerCard'
-import { HOME_ASSISTANT, NO_SECRETS, POLICY_LABELS, approvalLinkFor, draftFrom, idsForSave, newServerId, renameServers, sameDraft, secretsFrom, settingsFrom, typedForDraft } from './portalIntegrationsForm'
+import PortalAppsSettings from './PortalAppsSettings'
+import { HOME_ASSISTANT, NO_SECRETS, POLICY_LABELS, TASK_NOTICES, approvalLinkFor, draftFrom, idsForSave, newServerId, renameServers, sameDraft, secretsFrom, settingsFrom, typedForDraft } from './portalIntegrationsForm'
 
 const inputStyle = 'w-full rounded border border-theme-border bg-theme-bg px-3 py-2 text-theme-text focus:outline-none focus:ring-2 focus:ring-theme-accent'
 const buttonStyle = 'rounded border border-theme-border px-3 py-2 text-sm hover:bg-white/5 disabled:opacity-40 focus:outline-none focus:ring-2 focus:ring-theme-accent'
@@ -41,7 +42,10 @@ function Approvals({ approvals, busy, onDecide }) {
 const ACTIVITY_LABELS = {
   settings: 'Settings', notify: 'Notification', 'notes-search': 'Searched notes', 'notes-read': 'Read a note',
   'notes-write': 'Changed a note', 'mcp-call': 'Used an MCP tool', 'mcp-discover': 'Checked MCP tools', 'mcp-test': 'Tested an MCP server',
-  'mcp-restart': 'Restarted an MCP server', approval: 'Approval',
+  'mcp-restart': 'Restarted an MCP server', approval: 'Approval', 'app-test': 'Tested an app',
+  'documents-search': 'Searched documents', 'documents-read': 'Read a document', 'photos-search': 'Searched photos',
+  'news-digest': 'Read the news', 'watch-add': 'Watched a page', 'watch-remove': 'Stopped watching a page',
+  'watch-check': 'Checked watched pages',
 }
 
 function Activity({ entries, busy, onClear }) {
@@ -64,6 +68,7 @@ export default function PortalIntegrationsSettings() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [appResult, setAppResult] = useState(null)
   const typedSecrets = draft ? secretsFrom(typedForDraft(typed, draft)) : {}
   const dirty = Boolean(view && draft) && (!sameDraft(draft, draftFrom(view.settings)) || Object.keys(typedSecrets).length > 0)
   const dirtyRef = useRef(dirty)
@@ -74,15 +79,20 @@ export default function PortalIntegrationsSettings() {
     if (!keepDraft) { setDraft(draftFrom(result.settings)); setTyped(NO_SECRETS) }
   }, [])
 
+  // What happened, also returned so a card far down the page can show it next to its button.
   const run = useCallback(async (steps, done, { keepDraft = false } = {}) => {
     setBusy(true); setError(''); setNotice('')
+    let result
     try {
-      let result
       for (const [action, payload] of steps) result = await call(action, payload)
       show(result, { keepDraft })
       if (result.notice || done) setNotice(result.notice || done)
+      return { ok: true, message: result.notice || done || '' }
     } catch (failure) {
+      // A save before the failed step went through; show it, or the page would still look unsaved.
+      if (result) show(result, { keepDraft })
       setError(failure.message)
+      return { ok: false, message: failure.message }
     } finally {
       setBusy(false)
     }
@@ -118,6 +128,8 @@ export default function PortalIntegrationsSettings() {
     id: newServerId(template.name, previous.servers), enabled: false, url: '', command: '', workingFolder: '', envNames: [], policies: {}, preset: '', kind: 'http', ...template }] }))
   const removeServer = id => setDraft(previous => ({ ...previous, servers: previous.servers.filter(server => server.id !== id) }))
   const savedServer = id => view.settings.mcp.servers.find(server => server.id === id)
+  const setApp = (id, patch) => setDraft(previous => ({ ...previous, apps: { ...previous.apps, [id]: { ...previous.apps[id], ...patch } } }))
+  const setAppSecret = (id, value) => setTyped(previous => ({ ...previous, apps: { ...previous.apps, [id]: value } }))
   const setEnvValue = (id, name, value) => setTyped(previous => ({ ...previous, mcpEnv: { ...previous.mcpEnv, [id]: { ...previous.mcpEnv[id], [name]: value } } }))
   const notifications = draft.notifications
   // Turning notifications on suggests this page for the "Open approvals" button.
@@ -128,7 +140,7 @@ export default function PortalIntegrationsSettings() {
     <section className={cardStyle} aria-labelledby="portal-integrations-title">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0"><h2 id="portal-integrations-title" className="text-lg font-semibold">Portal integrations</h2>
-          <p className="text-sm text-theme-text-muted">Let Portal read your notes, send you notifications and use MCP servers such as Home Assistant. Passwords and tokens stay on this computer.</p></div>
+          <p className="text-sm text-theme-text-muted">Let Portal read your notes, send you notifications, use MCP servers such as Home Assistant, and work with your documents, photos, watched pages and news. Passwords and tokens stay on this computer.</p></div>
         <div className="flex gap-2">
           <button className={buttonStyle} disabled={busy} onClick={() => run([[null]], '', { keepDraft: dirty })}>Reload</button>
           <button className={buttonStyle} disabled={busy || !dirty} onClick={save}>Save changes</button>
@@ -155,6 +167,11 @@ export default function PortalIntegrationsSettings() {
       <label className="block text-sm">“Open approvals” button opens (optional)<input className={inputStyle} value={notifications.approvalLink} disabled={busy} spellCheck={false}
         placeholder={approvalLinkFor(window.location.origin)} onChange={event => setNotifications({ approvalLink: event.target.value })} /></label>
       <p className="text-xs text-theme-text-muted">Use an address your phone can open. The button only opens this page; you still sign in to approve.</p>
+      <label className="block text-sm">Notify me when a scheduled task
+        <select className={inputStyle} value={notifications.scheduledTasks} disabled={busy} onChange={event => setNotifications({ scheduledTasks: event.target.value })}>
+          {Object.entries(TASK_NOTICES).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+        </select>
+      </label>
       <button className={buttonStyle} disabled={busy || !notifications.enabled} onClick={() => run(withSave([['test-notification']]), 'Test notification sent.')}>Send test notification</button>
     </section>
 
@@ -191,6 +208,9 @@ export default function PortalIntegrationsSettings() {
           onRemove={() => removeServer(server.id)} />)}
       </ul>
     </section>
+
+    <PortalAppsSettings apps={draft.apps} saved={view.settings.apps} typed={typed.apps} busy={busy} onChange={setApp} onSecret={setAppSecret}
+      result={appResult} onTest={async app => { setAppResult(null); setAppResult({ app, ...await run(withSave([['test-app', { app }]])) }) }} />
 
     <Activity entries={view.activity} busy={busy} onClear={() => run([['clear-activity']], 'Activity cleared.', { keepDraft: dirty })} />
 

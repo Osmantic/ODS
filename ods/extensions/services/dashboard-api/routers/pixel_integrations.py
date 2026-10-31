@@ -21,11 +21,12 @@ FIELDS = {
     'test-notification': set(),
     'discover': {'serverId'},
     'test': {'serverId'},
+    'test-app': {'app'},
     'restart': {'serverId'},
     'decide': {'approvalId', 'decision'},
     'clear-activity': set(),
 }
-SLOW = {'discover', 'test'}  # A local server may download itself on its first start.
+SLOW = {'discover', 'test', 'test-app'}  # A local server may download itself on its first start; an app test makes two calls.
 
 
 async def _body(request, action):
