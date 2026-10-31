@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createToolLoopGuard, FREE_CORRECTIONS_PER_KIND, PHANTOM_PROCESS_REASON,
   VERIFICATION_COMMAND_NOT_AUDITABLE_REASON} from '../plugin/tool-loop-guard.mjs';
-import {RUN_PROGRESS_LIMITS, RUN_PROGRESS_STOP_REASON} from '../plugin/run-progress-budget.mjs';
+import {RUN_PROGRESS_LIMITS, RUN_PROGRESS_STOP_REASON, RUN_PROGRESS_WARNING, RUN_PROGRESS_WARNING_TEXT} from '../plugin/run-progress-budget.mjs';
 import {PROGRESS_FINALIZATION_INSTRUCTION} from '../plugin/progress-finalization.mjs';
 
 // Exhaustion refuses every further tool. The first refusal carries the
@@ -69,10 +69,14 @@ test('the refusal names the supported path in fixed text', () => {
 for (const wrapped of [false, true]) {
   test(`redirected test runs are refused before execution with the same text (wrapped=${wrapped})`, () => {
     const {prepared, step} = harness({wrapped});
-    for (const command of redirected) {
+    for (const [index, command] of redirected.entries()) {
       const {decision, text} = step('exec', {command, workdir:'/workspace/project'}, passingTests);
       assert.deepEqual(decision, {block:true, blockReason:VERIFICATION_COMMAND_NOT_AUDITABLE_REASON}, command);
-      assert.equal(text, VERIFICATION_COMMAND_NOT_AUDITABLE_REASON, command);
+      // Refusals past the free ones are charged; the third of those in a row
+      // also carries the one warning that comes before the failure limits.
+      const warned = index === FREE_CORRECTIONS_PER_KIND + RUN_PROGRESS_WARNING.consecutiveFailures - 1;
+      assert.equal(text, warned ? `${VERIFICATION_COMMAND_NOT_AUDITABLE_REASON}\n${RUN_PROGRESS_WARNING_TEXT}`
+        : VERIFICATION_COMMAND_NOT_AUDITABLE_REASON, command);
     }
     assert.deepEqual(prepared, [], 'no refused command reaches execution');
   });

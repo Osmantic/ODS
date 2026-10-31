@@ -57,8 +57,8 @@ def execute(argv, cwd, timeout=30):
         raise Refused("Hermes mount verification command failed") from exc
 
 
-def desktop_data_source_matches(source, expected):
-    """Prove a Desktop directory proxy aliases this installation's live data."""
+def desktop_source_matches(source, expected, is_expected_kind):
+    """Prove a Desktop proxy still aliases the installed source inode."""
     if not isinstance(source, str) or not DESKTOP_FILE_SOURCE.fullmatch(source):
         return False
     distro, digest = source.rsplit("/", 2)[1:]
@@ -71,10 +71,18 @@ def desktop_data_source_matches(source, expected):
             return False
         actual = os.stat(visible, follow_symlinks=False)
         wanted = os.stat(expected, follow_symlinks=False)
-        return (stat.S_ISDIR(actual.st_mode) and stat.S_ISDIR(wanted.st_mode)
+        return (is_expected_kind(actual.st_mode) and is_expected_kind(wanted.st_mode)
                 and (actual.st_dev, actual.st_ino) == (wanted.st_dev, wanted.st_ino))
     except (OSError, RuntimeError):
         return False
+
+
+def desktop_data_source_matches(source, expected):
+    return desktop_source_matches(source, expected, stat.S_ISDIR)
+
+
+def desktop_file_source_matches(source, expected):
+    return desktop_source_matches(source, expected, stat.S_ISREG)
 
 
 def host_digests(root):
@@ -159,10 +167,24 @@ def refresh(root, docker, compose, run=execute):
             raise Refused("Hermes file hashes could not be verified")
         return values
 
+    def file_aliases_current(item):
+        # A running container can still read a deleted Desktop file alias.
+        # Equal bytes alone do not prove that Docker can mount it on restart.
+        # Native absolute paths are resolved again by Docker at startup; WSL
+        # proxies must still identify the installed file, not an old inode.
+        for destination, relative in FILES.items():
+            source = next(mount["Source"] for mount in item["Mounts"]
+                          if mount["Destination"] == destination)
+            expected_path = root / relative
+            if source != str(expected_path) and not desktop_file_source_matches(source, expected_path):
+                return False
+        return True
+
     expected = host_digests(root)
-    identity = container()["Id"]
+    original = container()
+    identity = original["Id"]
     before = observed(identity)
-    if all(before[path] == value for path, value in expected.items()):
+    if all(before[path] == value for path, value in expected.items()) and file_aliases_current(original):
         return "current"
     # Recheck the installation and selected container immediately before the
     # only mutation. Never repair an unreadable file or a changed ownership claim.
@@ -188,6 +210,8 @@ def refresh(root, docker, compose, run=execute):
     after = observed(new_identity)
     if host_digests(root) != expected or any(after[path] != value for path, value in expected.items()):
         raise Refused("Hermes mounted files still differ after one recreation")
+    if not file_aliases_current(refreshed):
+        raise Refused("Hermes file aliases still differ after one recreation")
     if before[LIVE_CONFIG] is not None and before[LIVE_CONFIG] != after[LIVE_CONFIG]:
         raise Refused("Hermes live configuration changed during recreation; review before continuing")
     return "refreshed"

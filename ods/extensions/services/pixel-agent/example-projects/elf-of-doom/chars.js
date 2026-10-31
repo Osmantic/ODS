@@ -1,7 +1,7 @@
 // Elf of Doom — characters (cartoon canvas art)
 "use strict";
 
-// ---------- hero: Gabriel with elven bow ----------
+// ---------- hero: Shasan with elven bow ----------
 function drawElf(g, p, time) {
   const s = p.face; // 1 right, -1 left
   const moving = p.moving;

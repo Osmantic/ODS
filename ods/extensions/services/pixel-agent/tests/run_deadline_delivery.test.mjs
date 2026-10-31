@@ -28,6 +28,8 @@ const STOP_COPY = '**Portal stopped this response after 30 minutes, the most one
 const UNCHANGED_STOP_COPY = '**Portal stopped this response after 30 minutes, the most one response can run.** ' +
   'This request needed more time. Send "continue" to pick up where it left off.' +
   ' If it keeps happening, [get help on Discord](https://discord.gg/4ntNp9MAwC).';
+// Portal's own record of the files the response changed follows the stop copy.
+const changed = (...files) => `Files changed in this response: ${files.map(file => `\`${file}\``).join(', ')}.`;
 const NOTICE = /\[ODS Pixel time limit\]/;
 const minutes = value => value * 60000;
 // The deadline fired while the model was still editing (288 model calls, 6 edits).
@@ -38,10 +40,10 @@ const CUT_OFF = {success: false, durationMs: minutes(30), messages: [
   {role: 'assistant', stopReason: 'aborted', content: []},
 ]};
 
-function fixture({context = OWNER, capabilities = CAPABILITIES, prompt = PROMPT} = {}) {
+function fixture({context = OWNER, capabilities = CAPABILITIES, prompt = PROMPT, goal = false} = {}) {
   let clock = 0;
   const aborts = [];
-  const guard = createToolLoopGuard({now: () => clock,
+  const guard = createToolLoopGuard({now: () => clock, goalRun: () => goal,
     abortRun: sessionId => { aborts.push(sessionId); return true; },
     abortRunAndDrain: async () => ({aborted: true, drained: true})});
   const begin = () => guard.observeRun(context, 'pixel', {prompt}, capabilities);
@@ -238,9 +240,9 @@ test('Spark replay: the deadline stop replaces the runtime advice in every deliv
   f.at(30);
   f.guard.observeAgentEnd(CUT_OFF, OWNER);
   const verification = f.guard.deliveryVerificationForRun(RUN_ID);
-  assert.deepEqual(verification, {status: 'failed', text: STOP_COPY});
+  assert.deepEqual(verification, {status: 'failed', text: `${STOP_COPY}\n\n${changed('game/ui.js')}`});
   const reply = f.guard.replyPayloadSending({runId: RUN_ID, kind: 'final', payload: {text: OPENCLAW_TIMEOUT_TEXT, isError: true}});
-  assert.equal(reply.payload.text, STOP_COPY);
+  assert.equal(reply.payload.text, `${STOP_COPY}\n\n${changed('game/ui.js')}`);
 });
 
 test('a response that changed no files is not told its project may be broken', () => {
@@ -274,7 +276,7 @@ test('the last verified preview follows the deadline copy, with its receipt', ()
   f.guard.observeAgentEnd(CUT_OFF, OWNER);
   const verification = f.guard.deliveryVerificationForRun(RUN_ID);
   assert.equal(verification.status, 'failed');
-  assert.equal(verification.text, `${STOP_COPY}\n\n[Open last published preview](${url})\n\n` +
+  assert.equal(verification.text, `${STOP_COPY}\n\n${changed('game/index.html')}\n\n[Open last published preview](${url})\n\n` +
     'This is the last verified publication, not proof that all requested work completed.');
   assert.equal(verification.preview.url, url);
   assert.equal(verification.preview.kind, 'ods-pixel-workspace-preview');
@@ -293,7 +295,8 @@ test('a preview edited since it was published is linked once, with what it does 
   f.guard.observeAgentEnd(CUT_OFF, OWNER);
   const verification = f.guard.deliveryVerificationForRun(RUN_ID);
   // The owner reads Portal's plain line about the stale preview, not its facts.
-  assert.equal(verification.text, `${STOP_COPY}\n\n${PREVIEW_EARLIER_NOTE}\n\n[Open last published preview](${url})`);
+  assert.equal(verification.text,
+    `${STOP_COPY}\n\n${changed('game/index.html', 'game/ui.js')}\n\n${PREVIEW_EARLIER_NOTE}\n\n[Open last published preview](${url})`);
   assert.match(stale.text, /may not include subsequent changes and does not verify completion/);
   assert.equal(verification.text.split(url).length, 2, 'one link');
   assert.deepEqual(verification.preview, stale.preview);
@@ -311,7 +314,7 @@ test('failed test facts follow the deadline copy', () => {
   f.guard.observeAgentEnd(CUT_OFF, OWNER);
   const verification = f.guard.deliveryVerificationForRun(RUN_ID);
   assert.equal(verification.status, 'failed');
-  assert.equal(verification.text, `${STOP_COPY}\n\n${failed.text}`);
+  assert.equal(verification.text, `${STOP_COPY}\n\n${changed('game/test_hitboxes.py')}\n\n${failed.text}`);
 });
 
 test('the prompt hook passes the live configured run timeout', () => {
@@ -336,11 +339,12 @@ async function close(server) {
 
 for (const stream of [false, true]) for (const published of [false, true])
 test(`Portal receives the ODS stop over the real ingress, stream=${stream}, published=${published}`, async t => {
-  const f = fixture({prompt: published ? `${PROMPT} Publish the game preview when it works.` : PROMPT});
+  // As a /goal round: its outcome also says which limit stopped it.
+  const f = fixture({prompt: published ? `${PROMPT} Publish the game preview when it works.` : PROMPT, goal: true});
   f.edit();
   const url = published ? f.publish() : undefined;
-  const expected = published ? `${STOP_COPY}\n\n[Open last published preview](${url})\n\n` +
-    'This is the last verified publication, not proof that all requested work completed.' : STOP_COPY;
+  const expected = published ? `${STOP_COPY}\n\n${changed('game/ui.js', 'game/index.html')}\n\n[Open last published preview](${url})\n\n` +
+    'This is the last verified publication, not proof that all requested work completed.' : `${STOP_COPY}\n\n${changed('game/ui.js')}`;
   const task = {schemaVersion: 1, runId: RUN_ID, startedAt: '2026-10-16T13:32:54.000Z', finishedAt: '2026-10-16T14:02:54.000Z',
     state: 'completed', calls: 47, failures: 1, blocked: 0, truncated: false,
     activities: [{kind: 'read', calls: 40, failures: 0, blocked: 0}, {kind: 'edit', calls: 7, failures: 1, blocked: 0}]};
@@ -383,5 +387,6 @@ test(`Portal receives the ODS stop over the real ingress, stream=${stream}, publ
     : JSON.parse(body).choices[0].message.content;
   assert.equal(text, expected);
   assert.doesNotMatch(body, /timeoutSeconds|LLM request failed/);
-  if (stream) assert.equal(frames.at(-1).pixel_outcome.status, 'failed');
+  // Goal mode's controller continues a goal after this stop (dashboard-api portal_goal.py).
+  if (stream) assert.deepEqual(frames.at(-1).pixel_outcome, {schemaVersion: 1, status: 'failed', stop: 'run-deadline'});
 });

@@ -2,6 +2,10 @@
 // Recognize only the separate completion block appended to a paired exec
 // result; command output and owner quotations remain ordinary content.
 const COMPLETION_NOTE = /^\[ODS Pixel execution\] Exec returned completed with exit code -?\d+\. This result has no background session ID\. Use the returned output; do not invent a session ID or poll a PID\.$/;
+// Fixed notices the guard may append after a result's own blocks (the run
+// deadline, the failure warning, the edit-early notice): the completion note
+// is the last block before them.
+const TRAILING_NOTICE = /^\[ODS Pixel (?:time limit|failure warning)\] |^\[ODS Pixel next step\] Many tool calls in this response have read files, and none has changed one with write, edit or apply_patch\./;
 
 export function leakedExecGuidance(reply, messages, ownerText = '', currentReceipts = []) {
   if (typeof reply !== 'string' || !Array.isArray(messages)) return undefined;
@@ -22,7 +26,9 @@ export function leakedExecGuidance(reply, messages, ownerText = '', currentRecei
     }
     if (message.role !== 'toolResult' || message.toolName !== 'exec' ||
         !calls.delete(message.toolCallId)) continue;
-    const blocks = message.content;
+    let end = message.content.length;
+    while (end > 1 && message.content[end - 1]?.type === 'text' && TRAILING_NOTICE.test(message.content[end - 1].text)) end--;
+    const blocks = message.content.slice(0, end);
     const last = blocks.at(-1);
     const annotated = blocks.length >= 2 && last?.type === 'text' && COMPLETION_NOTE.test(last.text);
     const output = (annotated ? blocks.slice(0, -1) : blocks)
