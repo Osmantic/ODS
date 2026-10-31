@@ -7733,7 +7733,7 @@ ${CYAN}Examples:${NC}
   ods backup -l                 # List all backups
   ods backup verify <id>        # Verify backup integrity
   ods restore                   # Interactive restore
-  ods restore 20260309-120000   # Restore specific backup
+  ods restore backup-12345-20260309-120000 # Restore specific backup
   ods rollback                  # Rollback after failed update
   ods logs llm                  # Watch llama-server logs (via alias)
   ods restart stt               # Restart Whisper (via alias)
