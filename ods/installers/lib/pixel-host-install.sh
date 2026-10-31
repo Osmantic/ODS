@@ -1774,6 +1774,20 @@ if normalized_sandbox_ulimits is not None:
     normalized_sandbox_ulimits.pop("nproc", None)
     if not normalized_sandbox_ulimits:
         normalized_sandbox_docker.pop("ulimits", None)
+# Same AppArmor profile rule as pixel-runtime-budget.py.
+apparmor_enabled = pathlib.Path(os.environ.get(
+    "ODS_PIXEL_APPARMOR_ENABLED_FILE", "/sys/module/apparmor/parameters/enabled"))
+apparmor_profile = pathlib.Path(os.environ.get(
+    "ODS_PIXEL_SANDBOX_APPARMOR_FILE", "/etc/apparmor.d/ods-pixel-sandbox"))
+try:
+    use_apparmor_profile = (apparmor_enabled.read_text(encoding="ascii").strip() == "Y"
+                            and apparmor_profile.is_file())
+except OSError:
+    use_apparmor_profile = False
+if use_apparmor_profile:
+    normalized_sandbox_docker.setdefault("apparmorProfile", "ods-pixel-sandbox")
+elif normalized_sandbox_docker.get("apparmorProfile") == "ods-pixel-sandbox":
+    normalized_sandbox_docker.pop("apparmorProfile")
 # OpenClaw's OpenAI-compatible transport adds a 1.25 character-based input
 # safety margin after its independent pre-prompt compaction estimate. Reserve
 # enough headroom that the precheck runs before that transport can silently
@@ -2258,6 +2272,35 @@ _ods_pixel_recreate_agent_sandbox() {
     remaining="$(ods_pixel_run_as_owner "$owner" "$home" docker ps --all --quiet \
         --filter 'name=^/pixel-sbx-agent-pixel-')" || return 1
     [[ -z "${remaining//[[:space:]]/}" ]]
+}
+
+# AppArmor 5 (Ubuntu 26.04) labels `docker exec` processes as a stack with
+# unconfined, which Docker's default profile does not let signal each other.
+# The Pixel sandbox could then not cancel its own commands, and the access
+# runtime's cancellation proof failed. Where Docker enforces AppArmor, load
+# ODS's sandbox profile (docker-default plus that stacked peer) from
+# /etc/apparmor.d so it also loads at boot; pixel-runtime-budget.py selects it.
+_ods_pixel_install_sandbox_apparmor_profile() {
+    local owner="$1" home="$2"
+    local source="${INSTALL_DIR:?}/extensions/services/pixel-agent/host/ods-pixel-sandbox.apparmor"
+    local target="/etc/apparmor.d/ods-pixel-sandbox" enabled="" parser="" security
+    local enabled_file="/sys/module/apparmor/parameters/enabled"
+    [[ -r "$enabled_file" ]] && read -r enabled < "$enabled_file"
+    [[ "$enabled" == Y ]] || return 0
+    security="$(ods_pixel_run_as_owner "$owner" "$home" docker info \
+        --format '{{range .SecurityOptions}}{{println .}}{{end}}')" || return 1
+    grep -q '^name=apparmor' <<<"$security" || return 0
+    for parser in /usr/sbin/apparmor_parser /sbin/apparmor_parser; do
+        [[ -x "$parser" ]] && break
+    done
+    if [[ ! -x "$parser" ]]; then
+        ai "AppArmor is enabled but apparmor_parser is missing; the Pixel sandbox keeps Docker's default profile."
+        return 0
+    fi
+    [[ -f "$source" && ! -L "$source" ]] || return 1
+    ods_sudo install -o root -g root -m 0644 "$source" "$target" || return 1
+    ods_sudo "$parser" -r -W "$target" || return 1
+    [[ -f "$target" && ! -L "$target" ]]
 }
 
 _ods_pixel_apply_runtime_budget() {
@@ -5936,6 +5979,10 @@ ods_pixel_install_default_agent() {
     # reconciliation path instead of attempting to reapply an active release.
     if ! _ods_pixel_mark_verified_installing "$owner" "$home" "$contract_sha256" "$pixel_root"; then
         ai_bad "Could not bind the verified Pixel release before managed-runtime configuration."
+        return 1
+    fi
+    if ! _ods_pixel_install_sandbox_apparmor_profile "$owner" "$home"; then
+        ai_bad "Could not load the ODS Pixel sandbox AppArmor profile."
         return 1
     fi
     runtime_budget_status="$(_ods_pixel_apply_runtime_budget "$owner" "$home" \
