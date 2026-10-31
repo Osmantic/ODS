@@ -4955,6 +4955,91 @@ export function textRequestsPrivateUrlAccess(text) {
   );
 }
 
+// The output a call that ran keeps when the run-progress budget has stopped
+// the response (toolResultPersist): an excerpt, the notes bound to that
+// output, then the stop text. The whole result stays within the smallest
+// per-result cap ODS installs (toolResultMaxChars floor 4,000, less 100 spare),
+// so neither OpenClaw's persist cap nor the next request's projection cuts it.
+// Over the cap, every text block keeps only its share: the instruction would
+// lose its middle and end in "rerun with narrower args if needed". A small
+// result also leaves the earlier results of a long response in view.
+export const STOPPED_RESULT_TEXT_LIMIT = 4000 - 100;
+// The longest stop text (PROGRESS_FINALIZATION_INSTRUCTION) and both notes fit
+// beside it (stop_keeps_result.test.mjs).
+export const STOPPED_OUTPUT_EXCERPT_CHARS = 2400;
+// OpenClaw 2026.6.33 hands after_tool_call each top-level text block cut to
+// 8,000 characters with this suffix (embedded-agent-subscribe.tools
+// truncateToolText); details are not cut.
+const LIVE_RESULT_TRUNCATION_MARK = "\n…(truncated)…";
+const OMITTED_REST = "\n[... the rest of this text omitted ...]";
+
+// At most `limit` characters: the head and, at twice its length, the tail,
+// where an error usually is, around a marker that says only what was left out.
+// Cuts prefer line breaks and never split a UTF-16 surrogate pair.
+export function stoppedOutputExcerpt(text, limit = STOPPED_OUTPUT_EXCERPT_CHARS) {
+  if (typeof text !== "string") return "";
+  if (text.length <= limit) return text;
+  const marker = omitted => `\n[... ${omitted} characters of this output omitted ...]\n`;
+  const room = limit - marker(text.length).length;
+  if (room <= 0) return "";
+  let headEnd = Math.floor(room / 3);
+  let tailStart = text.length - (room - headEnd);
+  const headBreak = text.lastIndexOf("\n", headEnd);
+  if (headBreak > headEnd * 0.8) headEnd = headBreak;
+  const tailBreak = text.indexOf("\n", tailStart);
+  if (tailBreak !== -1 && tailBreak < tailStart + (text.length - tailStart) * 0.2) tailStart = tailBreak + 1;
+  const code = index => text.charCodeAt(index);
+  if (headEnd > 0 && code(headEnd - 1) >= 0xD800 && code(headEnd - 1) <= 0xDBFF) headEnd -= 1;
+  if (tailStart < text.length && code(tailStart) >= 0xDC00 && code(tailStart) <= 0xDFFF) tailStart += 1;
+  return `${text.slice(0, headEnd)}${marker(tailStart - headEnd)}${text.slice(tailStart)}`;
+}
+
+// OpenClaw's receipt for a call a before_tool_call hook refused (this guard or
+// another plugin layer): the call never ran (buildBlockedToolResult).
+function vetoReceipt(result) {
+  const details = result?.details;
+  return Boolean(details) && typeof details === "object" && details.status === "blocked" &&
+    (Object.hasOwn(details, "deniedReason") || Object.hasOwn(details, "reason"));
+}
+
+// The selected tool's own result inside this call's Tool Search envelope
+// ({tool: catalog entry, result}), never the envelope with its catalog entry.
+function toolSearchInnerResult(details) {
+  const tool = details && typeof details === "object" ? details.tool : undefined;
+  return tool && typeof tool === "object" && typeof tool.id === "string" && tool.id.startsWith("openclaw:") &&
+    typeof tool.name === "string" && details.result && typeof details.result === "object" &&
+    !Array.isArray(details.result) ? details.result : undefined;
+}
+
+// A result's own output text, whole where it can be: a block after_tool_call
+// received cut gives way to an exec's complete aggregated output, and
+// otherwise says that the rest of it is missing.
+function executedOutputText(result) {
+  const blocks = Array.isArray(result?.content)
+    ? result.content.filter(block => block?.type === "text" && typeof block.text === "string") : [];
+  const cut = block => block.text.endsWith(LIVE_RESULT_TRUNCATION_MARK);
+  if (!blocks.some(cut)) return blocks.map(block => block.text).join("\n");
+  if (typeof result?.details?.aggregated === "string") return result.details.aggregated;
+  return blocks.map(block => cut(block)
+    ? block.text.slice(0, -LIVE_RESULT_TRUNCATION_MARK.length) + OMITTED_REST : block.text).join("\n");
+}
+
+// A stopped result's own part: the excerpt in place of its text blocks, and
+// its other blocks (images) where they were.
+function stoppedResultContent(content, excerpt) {
+  const kept = [];
+  let placed = false;
+  for (const block of Array.isArray(content) ? content : []) {
+    if (block?.type !== "text") kept.push(block);
+    else if (!placed) {
+      placed = true;
+      if (excerpt) kept.push({type: "text", text: excerpt});
+    }
+  }
+  if (!placed && excerpt) kept.unshift({type: "text", text: excerpt});
+  return kept;
+}
+
 function messageContentText(content) {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -8741,9 +8826,15 @@ export function createToolLoopGuard({
       ? {...originalDecision,blockReason:NATIVE_DELEGATION_WAIT_REASON} : originalDecision;
     const toolName = context?.toolName ?? event?.toolName;
     const { runId } = runIdentity(event, context);
+    const callId = context?.toolCallId ?? event?.toolCallId;
+    // Many refusals come after rememberToolRun recorded the call. A refused
+    // call never runs, so a stopped response keeps nothing of it.
+    if (decision?.block === true && context?.agentId === agentId && typeof callId === 'string' && callId) {
+      const pending = pendingToolRuns.get(callId);
+      if (pending) pending.refused = true;
+    }
     const state = context?.agentId === agentId && runId ? runs.get(runId) : undefined;
     if (!state || workspaceReadOnlyCall(toolName, event?.params)) return decision;
-    const callId = context?.toolCallId ?? event?.toolCallId;
     if (decision?.block === true && typeof callId === 'string' && callId) {
       const refused = state.previewRevalidationRefusedCalls ??= new Set();
       if (refused.size >= MAX_TRACKED_RUNS) refused.delete(refused.values().next().value);
@@ -11474,6 +11565,25 @@ export function createToolLoopGuard({
     return turn?.exampleOutcome ? exampleNotice(turn.exampleOutcome, turn.exampleRecovered) : undefined;
   }
 
+  // Marks a recorded call that actually ran, with an excerpt of its own output
+  // for a stopped response (toolResultPersist). Taken here because
+  // after_tool_call sees the complete output (an exec's aggregated text, the
+  // selected tool's result inside a Tool Search envelope), before OpenClaw caps
+  // the persisted copy. Never for a refusal: this guard's (refused) or another
+  // layer's (the veto receipt), direct or inside the envelope. A Tool Search
+  // child is folded into its outer call, which records the output.
+  function recordExecutedOutput(pending, event, runId, toolCallId, toolName) {
+    if (!pending || pending.refused || pending.runId !== runId || pending.transport !== toolName ||
+        typeof toolCallId !== 'string' || toolCallId.startsWith('tool_search_code:') ||
+        (event?.toolCallId !== undefined && event.toolCallId !== toolCallId)) return;
+    const result = event?.result;
+    if (!result || typeof result !== 'object' || Array.isArray(result)) return;
+    // An outer call refused itself has no envelope: its result is the receipt.
+    const selected = toolName === 'tool_call' ? toolSearchInnerResult(result.details) ?? result : result;
+    if (vetoReceipt(selected)) return;
+    pending.executedOutput = {excerpt: stoppedOutputExcerpt(executedOutputText(selected))};
+  }
+
   function afterToolCall(event, context, agentId = "pixel") {
     if (context?.agentId !== agentId) return;
     const toolName = context?.toolName ?? event?.toolName;
@@ -11523,6 +11633,7 @@ export function createToolLoopGuard({
     state.execCallsInFlight.delete(toolCallId);
     const pendingToolRun = pendingToolRuns.get(toolCallId);
     if (pendingToolRun) pendingToolRun.hostResultEvidence = undefined;
+    recordExecutedOutput(pendingToolRun, event, runId, toolCallId, toolName);
     if (workspacePreviewInspectionAvailable && pendingToolRun?.selectedToolName === PREVIEW_INSPECTION_TOOL &&
         pendingToolRun.runId === runId && pendingToolRun.transport === toolName &&
         pendingToolRun.inspectionGeneration === state.workspaceInspectionGeneration &&
@@ -13119,15 +13230,29 @@ export function createToolLoopGuard({
     // the answer instruction, as the refusal that carries it: the stop text
     // says to continue "with a corrected approach", and on the RTX Spark
     // (2026-10-25) the model then kept calling tools and forfeited the turn.
-    // A call that ran (admitted, so it has a pending record) keeps its own
-    // output ahead of that text, so the answer reports what really happened:
-    // on the laptop (2026-10-31) the hidden output of the call that tripped
-    // the limit was a node --check SyntaxError, and the answer said the file
-    // passed node --check. A refused call has nothing of its own to keep.
+    // A call that ran (recordExecutedOutput) first keeps an excerpt of its own
+    // output and the notes bound to it, so the answer reports what really
+    // happened: on the laptop (2026-10-31) the hidden output of the call that
+    // tripped the limit was a node --check SyntaxError, and the answer said
+    // the file passed node --check. A refused call, including one refused
+    // after rememberToolRun or by another plugin layer, never ran: its result
+    // is the instruction alone. The whole result fits STOPPED_RESULT_TEXT_LIMIT.
+    const sandboxPathCorrection = pending?.sandboxPathCorrection &&
+      message.role === 'toolResult' && message.toolName === pending.transport &&
+      (!message.toolCallId || message.toolCallId === toolCallId) &&
+      (!event?.toolCallId || event.toolCallId === toolCallId) &&
+      (!context?.runId || context.runId === pending.runId) &&
+      (!event?.runId || event.runId === pending.runId)
+      ? pending.sandboxPathCorrection : undefined;
     if (state?.progressBudget.exhausted) {
       const answerTurnAhead = ['pending', 'instructed'].includes(deliverInstruction(state, toolCallId).phase);
       const stop = {type: 'text', text: answerTurnAhead ? finalizationInstruction(state) : RUN_PROGRESS_STOP_REASON};
-      return {message: {...message, content: pending && Array.isArray(message.content) ? [...message.content, stop] : [stop]}};
+      if (!pending?.executedOutput) return {message: {...message, content: [stop]}};
+      // The same notes, in the same order, as an unstopped result carries.
+      const notes = [sandboxPathCorrection, exampleOutcome ? EXAMPLE_NOTES[exampleOutcome]?.model : undefined]
+        .filter(text => typeof text === 'string' && text).map(text => ({type: 'text', text}));
+      return {message: {...message, content: [
+        ...stoppedResultContent(message.content, pending.executedOutput.excerpt), ...notes, stop]}};
     }
     if (message.isError === true && state?.progressBudget.laneExhausted(progressLane)) {
       return {message:{...message,content:[...(message.content ?? []),{type:'text',text:progressLaneStopReason(progressLane)}]}};
@@ -13239,13 +13364,6 @@ export function createToolLoopGuard({
       ? pending.redirectOrderNote : undefined;
     const unittestRecoveryInstruction = executionGuidance
       ? pending.unittestRecoveryInstruction : undefined;
-    const sandboxPathCorrection = pending?.sandboxPathCorrection &&
-      message.role === 'toolResult' && message.toolName === pending.transport &&
-      (!message.toolCallId || message.toolCallId === toolCallId) &&
-      (!event?.toolCallId || event.toolCallId === toolCallId) &&
-      (!context?.runId || context.runId === pending.runId) &&
-      (!event?.runId || event.runId === pending.runId)
-      ? pending.sandboxPathCorrection : undefined;
     const compactCoreResult = compactVerification
       ? undefined
       : compactWorkspaceCoreResult(message, pending, state);
