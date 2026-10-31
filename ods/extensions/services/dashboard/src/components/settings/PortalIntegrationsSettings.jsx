@@ -98,6 +98,9 @@ export default function PortalIntegrationsSettings() {
     }
   }, [show])
 
+  // Read on its own, so it never disturbs the page's unsaved edits or messages.
+  const loadWatches = useCallback(async () => (await call('watch-list')).watches, [])
+
   useEffect(() => { run([[null]]) }, [run])
   // New approvals arrive while this page is open; keep the owner's unsaved edits.
   useEffect(() => {
@@ -210,7 +213,9 @@ export default function PortalIntegrationsSettings() {
     </section>
 
     <PortalAppsSettings apps={draft.apps} saved={view.settings.apps} typed={typed.apps} busy={busy} onChange={setApp} onSecret={setAppSecret}
-      result={appResult} onTest={async app => { setAppResult(null); setAppResult({ app, ...await run(withSave([['test-app', { app }]])) }) }} />
+      revision={view.settings.revision} notifications={notifications.enabled} onLoadWatches={loadWatches} result={appResult}
+      onTest={async app => { setAppResult(null); setAppResult({ app, ...await run(withSave([['test-app', { app }]])) }) }}
+      onSendDigest={async () => { setAppResult(null); setAppResult({ app: 'news', ...await run(withSave([['send-digest']])) }) }} />
 
     <Activity entries={view.activity} busy={busy} onClear={() => run([['clear-activity']], 'Activity cleared.', { keepDraft: dirty })} />
 

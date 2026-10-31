@@ -26,8 +26,13 @@ const settings = (revision = 0, servers = [], apps = savedApps()) => ({
 const view = (overrides = {}) => ({ settings: settings(), approvals: [], activity: [], ...overrides })
 const response = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body })
 
+const WATCHES = { total: 2, watches: [
+  { id: 'w1', title: 'Kettle', url: 'https://shop.example/kettle', lastChanged: 5, below: 50, lastPrice: 55 },
+  { id: 'w2', title: '', url: 'https://shop.example/hours', lastChanged: 0, below: null, lastPrice: null },
+] }
+
 // A fake service: save stores the settings, discover adds the tools.
-function fakeService(initial = view()) {
+function fakeService(initial = view(), { watches = WATCHES } = {}) {
   let current = initial
   const posts = []
   const fetchMock = vi.fn(async (url, options) => {
@@ -51,6 +56,11 @@ function fakeService(initial = view()) {
     } else if (action === 'test-app') {
       if (body.app === 'documents') return response({ detail: 'Paperless-ngx refused the token or password.', code: 'app-refused' }, 400)
       return response({ ...current, notice: 'FreshRSS answered: 2 feeds.' })
+    } else if (action === 'watch-list') {
+      if (watches instanceof Error) return response({ detail: watches.message, code: 'app-unreachable' }, 400)
+      return response({ ...current, watches })
+    } else if (action === 'send-digest') {
+      return response({ ...current, notice: 'Digest sent with 2 stories.' })
     } else if (action === 'clear-activity') {
       current = { ...current, activity: [] }
     } else if (action === 'decide') {
@@ -271,6 +281,91 @@ it('never gives a new MCP server an id the apps use', () => {
   expect(newServerId('News', [])).toBe('news-2')
   expect(newServerId('Photos', [{ id: 'photos-2' }])).toBe('photos-3')
   expect(newServerId('Home', [])).toBe('home')
+})
+
+const withApps = (patch, keys, notificationsOn = false) => {
+  const base = view({ settings: settings(0, [], savedApps({ ...APPS, ...patch }, keys)) })
+  base.settings.notifications.enabled = notificationsOn
+  return base
+}
+
+it('tests an app before it is turned on, and leaves it off', async () => {
+  const { posts } = fakeService()
+  const card = await screen.findByRole('listitem', { name: 'News' })
+  fireEvent.change(within(card).getByLabelText('API password'), { target: { value: 'secret' } })
+  fireEvent.click(within(card).getByRole('button', { name: 'Test FreshRSS' }))
+  expect(await within(card).findByRole('status')).toHaveTextContent('FreshRSS answered: 2 feeds.')
+  expect(posts.map(([action]) => action)).toEqual(['save', 'test-app'])
+  expect(posts[0][1].settings.apps.news.enabled).toBe(false)
+  expect(within(card).getByLabelText('Let Portal read my news feeds')).not.toBeChecked()
+})
+
+it('lists the watched pages with their price limits once watching is saved', async () => {
+  const { posts } = fakeService(withApps({ watch: { ...APPS.watch, enabled: true } }, { watch: true }))
+  const card = await screen.findByRole('listitem', { name: 'Watched pages' })
+  const list = await within(card).findByLabelText('Watched pages list')
+  expect(await within(list).findByRole('link', { name: 'Kettle' })).toHaveAttribute('href', 'https://shop.example/kettle')
+  expect(within(list).getByText('Notifies at or under 50 · last seen at 55')).toBeInTheDocument()
+  expect(within(list).getByRole('link', { name: 'https://shop.example/hours' })).toBeInTheDocument()
+  expect(within(list).getByText('Notifies when the page changes')).toBeInTheDocument()
+  expect(within(list).getByRole('heading', { name: 'Watched now (2)' })).toBeInTheDocument()
+  fireEvent.click(within(list).getByRole('button', { name: 'Refresh' }))
+  await waitFor(() => expect(posts.filter(([action]) => action === 'watch-list')).toHaveLength(2))
+})
+
+it('keeps unsaved edits while the watched pages load', async () => {
+  fakeService(withApps({ watch: { ...APPS.watch, enabled: true } }, { watch: true }))
+  const card = await screen.findByRole('listitem', { name: 'Watched pages' })
+  fireEvent.change(within(card).getByLabelText('Adding and removing watched pages'), { target: { value: 'allow' } })
+  fireEvent.click(within(card).getByRole('button', { name: 'Refresh' }))
+  await within(card).findByRole('link', { name: 'Kettle' })
+  expect(within(card).getByLabelText('Adding and removing watched pages')).toHaveValue('allow')
+  expect(screen.getByRole('region', { name: 'Unsaved changes' })).toBeInTheDocument()
+})
+
+it('says when no page is watched yet', async () => {
+  fakeService(withApps({ watch: { ...APPS.watch, enabled: true } }, { watch: true }), { watches: { total: 0, watches: [] } })
+  expect(await screen.findByText(/No pages are watched yet/)).toBeInTheDocument()
+})
+
+it('says how many watched pages are not shown', async () => {
+  fakeService(withApps({ watch: { ...APPS.watch, enabled: true } }, { watch: true }), { watches: { ...WATCHES, total: 140 } })
+  expect(await screen.findByText('Showing 2 of 140. See them all in changedetection.io.')).toBeInTheDocument()
+})
+
+it('shows why the watched pages could not be read', async () => {
+  fakeService(withApps({ watch: { ...APPS.watch, enabled: true } }, { watch: true }),
+    { watches: new Error('changedetection.io at http://127.0.0.1:11039 could not be reached.') })
+  const card = await screen.findByRole('listitem', { name: 'Watched pages' })
+  expect(await within(card).findByRole('alert')).toHaveTextContent('could not be reached')
+})
+
+it('asks for a saved key before listing watched pages', async () => {
+  const { posts } = fakeService(withApps({ watch: { ...APPS.watch, enabled: true } }, {}))
+  const card = await screen.findByRole('listitem', { name: 'Watched pages' })
+  expect(within(card).getByText(/Turn this on with its API key and save/)).toBeInTheDocument()
+  expect(posts.some(([action]) => action === 'watch-list')).toBe(false)
+})
+
+it('sends a digest now only with news and notifications on', async () => {
+  const news = { ...APPS.news, enabled: true, username: 'owner' }
+  const { posts } = fakeService(withApps({ news }, { news: true }, true))
+  const card = await screen.findByRole('listitem', { name: 'News' })
+  fireEvent.click(within(card).getByRole('button', { name: 'Send a digest now' }))
+  expect(await within(card).findByRole('status')).toHaveTextContent('Digest sent with 2 stories.')
+  expect(posts.map(([action]) => action)).toEqual(['send-digest'])
+  // With unsaved edits, they are saved first so the digest uses them.
+  fireEvent.change(within(card).getByLabelText('FreshRSS user'), { target: { value: 'me' } })
+  fireEvent.click(within(card).getByRole('button', { name: 'Send a digest now' }))
+  await waitFor(() => expect(posts.map(([action]) => action)).toEqual(['send-digest', 'save', 'send-digest']))
+  expect(posts[1][1].settings.apps.news.username).toBe('me')
+})
+
+it('explains why a digest cannot be sent while notifications are off', async () => {
+  fakeService(withApps({ news: { ...APPS.news, enabled: true, username: 'owner' } }, { news: true }, false))
+  const card = await screen.findByRole('listitem', { name: 'News' })
+  expect(within(card).getByRole('button', { name: 'Send a digest now' })).toBeDisabled()
+  expect(within(card).getByText(/Turn on notifications through ntfy above/)).toBeInTheDocument()
 })
 
 it('drafts and saves every app field, and sends only typed app secrets', () => {
