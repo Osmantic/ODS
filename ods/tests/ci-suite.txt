@@ -22,6 +22,7 @@ tests/contracts/test-overlay-map-coherence.sh
 tests/contracts/test-plist-log-paths.sh
 tests/contracts/test-remote-provider-cli.py
 tests/contracts/test-remote-provider-ssh-tunnel-service.py
+tests/contracts/test-remote-provider-ssh-process-lifecycle.py
 tests/contracts/test-windows-hermes-config-patching.sh
 tests/contracts/test-windows-lifecycle-command-policy.sh
 tests/contracts/test-windows-llm-model-readiness.sh
