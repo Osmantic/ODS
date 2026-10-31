@@ -772,6 +772,24 @@ class AppTests(unittest.TestCase):
             with self.assertRaisesRegex(service.IntegrationError, "price limit", msg=repr(bad)):
                 self.app("watch", "add", url="https://shop.example/x", below=bad)
 
+    def test_a_place_with_its_country_finds_the_city(self):
+        self.save(self.settings())
+        found = self.app("photos", "search", place="Lisbon, Portugal")
+        self.assertEqual([photo["file"] for photo in found["results"]], ["beach.jpg"])
+        self.assertEqual(FakeImmich.searches[-1][1].get("city"), "Lisbon")
+
+    def test_best_place_prefers_the_exact_name(self):
+        known = [("city", "Venice"), ("city", "Nice"), ("country", "France"), ("city", "Portland"), ("country", "Portugal"),
+                 ("city", "São Paulo")]
+        self.assertEqual(apps.best_place("nice", known), ("city", "Nice"))
+        self.assertEqual(apps.best_place("Port", known), ("city", "Portland"))  # Starts with, in Immich's order.
+        self.assertEqual(apps.best_place("tugal", known), ("country", "Portugal"))
+        self.assertEqual(apps.best_place("Nice, France", known), ("city", "Nice"))
+        self.assertEqual(apps.best_place("Atlantis, France", known), ("country", "France"))
+        self.assertEqual(apps.best_place("são paulo", known), ("city", "São Paulo"))
+        self.assertIsNone(apps.best_place("Mars", known))
+        self.assertIsNone(apps.best_place(" , ", known))
+
     def test_a_watch_address_with_spaces_is_refused(self):
         self.save(self.settings(changes="allow"))
         for bad in ("https://shop.example/a b", "https://shop.example/a\tb", "https://shop.example/\nx"):

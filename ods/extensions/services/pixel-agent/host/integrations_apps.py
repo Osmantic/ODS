@@ -180,12 +180,26 @@ def describes_photos(settings, key):
 
 def _city(settings, key, place):
     """The city or country name Immich knows that matches the owner's words."""
-    wanted = place.casefold()
+    known = []
     for asset in _immich(settings, key, "/api/search/cities") or []:
         exif = asset.get("exifInfo") or {}
-        for field in ("city", "country"):
-            if exif.get(field) and wanted in exif[field].casefold():
-                return field, exif[field]
+        known += [(field, exif[field]) for field in ("city", "country") if exif.get(field)]
+    return best_place(place, known)
+
+
+def best_place(place, known):
+    """The best (field, name) in known for words such as "Lisbon" or "Lisbon, Portugal", or None.
+
+    Each part between commas is tried in turn. An exact name wins over one that starts with the
+    words, which wins over one that only holds them, so "Nice" finds Nice, not Venice.
+    """
+    for part in (piece.strip().casefold() for piece in place.split(",")):
+        if not part:
+            continue
+        for matches in (lambda name: name == part, lambda name: name.startswith(part), lambda name: part in name):
+            found = next(((field, name) for field, name in known if matches(name.casefold())), None)
+            if found:
+                return found
     return None
 
 
