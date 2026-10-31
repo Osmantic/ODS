@@ -34,9 +34,9 @@ optional credential-free route fingerprint. A local switch declares image
 input `supported` only when the final readiness proof's `/props` answer
 reports `modalities.vision` true, that is, the activated model's llama-server
 loaded a vision projector. Otherwise it keeps that model's catalog value or
-`unknown`. A remote route declares what one vision probe of that route
-measured at its latest proof (`supported` or `unsupported`), bound to its
-route fingerprint, and is `unknown` without such a receipt. Requests
+`unknown`. A remote route declares what the latest conclusive vision probe of
+that route measured (`supported` or `unsupported`), bound to its route
+fingerprint, and is `unknown` without such a receipt. Requests
 cannot select a filesystem path, endpoint, executable, user or service unit.
 Sampling and template customizations are retained; context and output limits
 are recalculated for the selected model.

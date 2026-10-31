@@ -4456,7 +4456,7 @@ class TestRemoteProviderLifecycle:
         })
         (tmp_path / ".env").write_text("ODS_MODE=cloud\nLLM_API_URL=http://litellm:4000\n", encoding="utf-8")
         monkeypatch.setattr(_mod, "_managed_pixel_runtime_contract", lambda: runtime)
-        monkeypatch.setattr(_mod, "_remote_provider_vision_probe", lambda _env: "unknown")
+        monkeypatch.setattr(_mod, "_remote_provider_vision_probe", lambda _env, _max_tokens: "unknown")
         return root / "routing-state.json"
 
     def test_provider_outage_on_an_active_route_is_reported_without_reactivation(

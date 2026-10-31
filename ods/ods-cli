@@ -5010,9 +5010,16 @@ _remote_provider_write_payload() {
         }' > "$payload_file" || error "Could not build remote-provider lifecycle request"
 }
 
+# The route's vision verdict (status.vision, from the host agent's two-square
+# probe of the route), in words.
+_REMOTE_PROVIDER_IMAGE_INPUT_JQ='def image_input:
+    (if .imageInput == "supported" then "seen the test image"
+     elif .imageInput == "unsupported" then "text only" else "not measured" end)
+    + (if (.verifiedAt // "") != "" then " (checked \(.verifiedAt))" else "" end);'
+
 _remote_provider_print_status() {
     local response_file="$1"
-    jq -r '
+    jq -r "$_REMOTE_PROVIDER_IMAGE_INPUT_JQ"'
         "Remote provider: \(.status // "unknown")",
         (if .status == "ready" then
             "Ready means set up and proven" +
@@ -5028,6 +5035,9 @@ _remote_provider_print_status() {
          end),
         (if .routeState.enabled == true and .routeState.provider then
             "Provider: \(.routeState.provider.model // "unknown") via \(.routeState.provider.transport // "unknown") at \(.routeState.provider.baseUrl // "unknown")"
+         else empty end),
+        (if .routeState.enabled == true then
+            "Image input: " + (.routeState.status.vision | image_input)
          else empty end),
         "Egress: \(.egress.status // "unknown")" +
             (if (.egress.reason // "") != "" then " (\(.egress.reason))" else "" end),
@@ -5056,7 +5066,7 @@ _remote_provider_print_apply_result() {
 
 _remote_provider_print_probe_result() {
     local response_file="$1"
-    jq -r '
+    jq -r "$_REMOTE_PROVIDER_IMAGE_INPUT_JQ"'
         "Remote provider probe: " + (if .ok == true then "ok" else "failed" end),
         "Transport: \(.transport // "unknown")",
         (if .probe then
@@ -5076,6 +5086,14 @@ _remote_provider_print_probe_result() {
                 "not recorded" +
                 (if (.routeProof.reason // "") != "" then " (\(.routeProof.reason))" else "" end)
              end)
+         else empty end),
+        (if .routeProof.recorded == true then
+            "Image input: " + (.routeProof.status.vision | image_input)
+         else empty end),
+        (if .routeProof.imageCheck.applied == false then
+            "Image check: Portal is busy, so the result of this check (" +
+            ({imageInput: .routeProof.imageCheck.imageInput} | image_input) +
+            ") applies at the next check once Portal is idle"
          else empty end)
     ' "$response_file"
 }

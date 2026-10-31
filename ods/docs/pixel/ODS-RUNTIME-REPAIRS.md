@@ -390,16 +390,17 @@ OPENCLAW_PACKAGE_DIR=/path/to/openclaw node --test \
 own preview to a model ODS declares image-capable
 (`host/preview-inspection-protocol.md`, Viewport screenshot). The declaration
 is evidence, never an assumption: llama-server's report of a loaded vision
-projector for a local model, and for a remote model API route one vision
-probe of that exact route at each of its proofs. The tool result,
+projector for a local model, and for a remote model API route a conclusive
+vision probe of that exact route (the model named both colours of a
+two-square test image drawn for that check). The tool result,
 image included, stays in the session transcript, because ODS sends the
 persisted copy of a result to the next request of the attempt. The pinned
 runtime then resends tool-result images from the last three completed turns to
 whatever model serves the next turn. It strips them only for a row whose
 `input` lacks `image`, and Portal writes `["text","image"]` for an `unknown`
 route too. So after a switch of the Portal alias from a vision model to one
-whose image input is unknown (or a remote route whose next proof gets no
-answer from its probe), earlier screenshots would reach it as
+whose image input is unknown (or to another remote route, or to one that a
+later check measured text-only), earlier screenshots would reach it as
 `image_url` parts (up to nine in one request): an image test the owner never
 allowed, and one that llama-server without a projector rejects.
 

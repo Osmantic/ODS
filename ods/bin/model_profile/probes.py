@@ -14,6 +14,9 @@ Model behaviour never raises: transport failures and unexpected response
 shapes are ``error``, an exhausted budget is ``unknown``. Requests run at
 temperature 0 with a fixed seed and a bounded ``max_tokens``. Prompts are
 fixed product text with no owner, host or fleet details.
+
+``probe_remote_vision`` is not part of the battery: the host agent runs it
+through ``ods/current`` on each proof of a remote model API route.
 """
 
 from __future__ import annotations
@@ -466,6 +469,117 @@ def probe_vision(exchange: Exchange, budget: Budget, control: str, *, vision: bo
     if "red" not in content.lower():
         return _result("fail", "wrong", evidence, ms)
     return _result("pass", None, evidence, ms)
+
+
+# A remote model API route has no /props report, so only its answer can show
+# that it sees. Two squares in two colours drawn per proof make a lucky guess
+# 1 in 30, and only a short, plain answer naming both, left first, counts.
+REMOTE_VISION_COLORS = {
+    "red": (255, 0, 0), "green": (0, 160, 0), "blue": (0, 0, 255),
+    "yellow": (255, 255, 0), "black": (0, 0, 0), "white": (255, 255, 255),
+}
+REMOTE_VISION_PROMPT = ("What color is the left square, and what color is the right square? "
+                        "Reply with the two color words only, left first.")
+_REMOTE_WORD = re.compile(r"[a-z]+(?:'[a-z]+)?")
+# Words that make a short answer a refusal or a guess rather than a reading.
+_REMOTE_HEDGES = frozenset({"no", "not", "none", "nothing", "cannot", "can't", "unable", "sorry", "don't",
+                            "unknown", "unclear", "unsure", "maybe", "perhaps", "probably", "likely", "guess"})
+# A model that says it cannot see images, whatever the answer's length.
+_REMOTE_CANNOT_SEE = re.compile(
+    r"\b(?:cannot|can't|can not|unable to|not able to)\s+(?:see|view|process|read|interpret|analy[sz]e)\s+"
+    r"(?:any\s+|the\s+|this\s+)?(?:images?|pictures?|photos?|visuals?)\b")
+# A refused request (4xx) that names image input: the route takes none.
+_REMOTE_IMAGE_REJECTION = re.compile(r"image|vision|multi-?modal|mmproj", re.IGNORECASE)
+
+
+def two_squares_png(left: str, right: str, side: int = 112) -> bytes:
+    """Two side x side squares in REMOTE_VISION_COLORS, side by side, as an RGB PNG."""
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+    row = b"\x00" + bytes(REMOTE_VISION_COLORS[left]) * side + bytes(REMOTE_VISION_COLORS[right]) * side
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", 2 * side, side, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(row * side, 9))
+            + chunk(b"IEND", b""))
+
+
+def remote_vision_answer(content: str) -> str:
+    """The visible answer, lowercased, without reasoning blocks or channel markup."""
+    text = content.replace("’", "'")
+    final = "<|channel|>final<|message|>"
+    if final in text:
+        text = text.rsplit(final, 1)[1]
+    text = re.sub(r"<think>.*?</think>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+    # An unclosed reasoning block runs to the end: no answer follows it.
+    text = re.split(r"<think>", text, maxsplit=1, flags=re.IGNORECASE)[0]
+    return re.sub(r"<\|[^|>]*\|>", " ", text).lower()
+
+
+def judge_remote_vision(content: str, colors: tuple[str, str]) -> tuple[str, str | None]:
+    """(status, failureClass) for an answer about squares of ``colors`` (left, right).
+
+    "pass" only for exactly those colours in that order, in at most three
+    words with no hedge. "fail" only for an unambiguous miss: a palette colour
+    that is not in the image, or a stated inability to see images. Anything
+    else (a swapped order, one colour, a longer or hedged answer) is "unknown".
+    """
+    text = remote_vision_answer(content)
+    if _REMOTE_CANNOT_SEE.search(text):
+        return "fail", "cannot-see"
+    words = _REMOTE_WORD.findall(text)
+    if not words:
+        return "unknown", "empty"
+    if len(words) > 3:
+        return "unknown", "long-answer"
+    if any(word in _REMOTE_HEDGES for word in words):
+        return "unknown", "hedged"
+    named = [word for word in words if word in REMOTE_VISION_COLORS]
+    if named == list(colors):
+        return "pass", None
+    if any(name not in colors for name in named):
+        return "fail", "wrong-color"
+    return "unknown", "partial"
+
+
+def probe_remote_vision(exchange: Exchange, budget: Budget, colors: tuple[str, str], *, max_tokens: int) -> dict:
+    """A remote route's image input: name two squares' colours, inside one budget.
+
+    No thinking switch is sent, which some providers refuse; ``max_tokens``
+    leaves a model that reasons first room for its answer. A busy route
+    (502/503) is asked once more with what is left of the same budget.
+    """
+    image = "data:image/png;base64," + base64.b64encode(two_squares_png(*colors)).decode("ascii")
+    payload = {"messages": [{"role": "user", "content": [
+        {"type": "text", "text": REMOTE_VISION_PROMPT},
+        {"type": "image_url", "image_url": {"url": image}},
+    ]}], "temperature": 0, "seed": SEED, "max_tokens": max_tokens, "stream": False}
+    started = time.monotonic()
+    for attempt in (1, 2):
+        timeout = budget.remaining()
+        if timeout < MIN_PROBE_SECONDS:
+            return _result("unknown", "budget-exhausted", {}, int((time.monotonic() - started) * 1000))
+        try:
+            status, text = exchange(CHAT_PATH, payload, timeout)
+        except OSError as exc:
+            return _result("error", "unreachable", {"error": _excerpt(str(exc), 200)},
+                           int((time.monotonic() - started) * 1000))
+        if status not in {502, 503} or attempt == 2:
+            break
+    ms = int((time.monotonic() - started) * 1000)
+    if status != 200:
+        if 400 <= status < 500 and status not in {408, 429} and _REMOTE_IMAGE_REJECTION.search(text or ""):
+            return _result("fail", "image-rejected", {"http": status, "error": _excerpt(text, 300)}, ms)
+        return _http_failure(status, text, ms)
+    try:
+        message, finish = _message(text)
+    except (ValueError, KeyError, IndexError, TypeError) as exc:
+        return _shape_error(exc, text, ms)
+    content = message.get("content") if isinstance(message.get("content"), str) else ""
+    evidence = {"http": status, "finishReason": finish, "content": _excerpt(content, 160), "colors": list(colors)}
+    if finish == "length":
+        return _result("unknown", "truncated", evidence, ms)
+    verdict, failure = judge_remote_vision(content, colors)
+    return _result(verdict, failure, evidence, ms)
 
 
 def probe_speed(exchange: Exchange, budget: Budget, control: str) -> dict:

@@ -719,21 +719,37 @@ still decides last. The value is computed for each switch's model alone, so
 the next switch to a model without a projector gets its own value back.
 A remote model API route (`ods remote-provider`) never reads a local report;
 it gets one vision probe of its own at each proof of the route (configure,
-enable, and the egress proof behind the Dashboard's connection check), once
-LiteLLM serves that route as `ods/current`. The probe is the model profile's
-red square (`bin/model_profile/probes.py` `probe_vision`), sent through
-`ods/current` so it crosses LiteLLM and the egress as Portal's images do,
-with no thinking switch, room for a model that reasons first, and one
-30-second budget (`bin/ods-host-agent.py` `_remote_provider_vision_probe`).
-An answer naming the colour records `supported`; a complete answer without it
-records `unsupported`; no answer, a cut-off one or an error records nothing.
+enable, and the egress proof behind the Dashboard's connection check and
+`ods remote-provider test`), once LiteLLM serves that route as `ods/current`
+(`bin/ods-host-agent.py` `_remote_provider_vision_probe`,
+`bin/model_profile/probes.py` `probe_remote_vision`). The probe sends one
+image of two squares in two colours drawn for that proof from six (red,
+green, blue, yellow, black, white) through `ods/current`, so it crosses
+LiteLLM and the egress as Portal's images do, and asks for both colours, left
+first. It sends no thinking switch, allows at most 1,024 answer tokens (the
+route's output limit when that is lower) and has one 30-second budget, which
+the single second request to a busy route (after a 502 or 503) shares. Only
+an answer of at most three words, with no hedge or refusal word, that names
+both colours as whole words in that order records `supported`; a guess
+matches 1 time in 30. `unsupported` is recorded only for an unambiguous miss:
+a refused request (4xx other than 408 and 429) that names image input, an
+answer saying the model cannot see images, or one naming a palette colour
+that is not in the image. Anything else (a swapped order, one colour, a
+longer or hedged answer, a cut-off one, an error, a timeout) is inconclusive.
 The receipt is kept in the route state (`data/remote-provider/routing-state.json`,
 `status.vision`) with the route fingerprint (transport, base URL, model,
 context, output limit, reasoning), and the route's Pixel contract
 (`_remote_provider_runtime_contract`) declares only what a receipt for the
-same fingerprint says. A changed route, a missing receipt or a proof whose
-probe got no answer is `unknown`. A proof of the route already in use probes
-again and rebinds Pixel only when the answer changed.
+same fingerprint says: a new route, or one whose probes were all
+inconclusive, is `unknown`. Only a conclusive verdict replaces a receipt; an
+inconclusive probe keeps it. When a check of the route already in use
+measures a verdict that changes the contract, Pixel alone takes it through a
+model transaction, without recreating LiteLLM or the relay; without a managed
+Pixel only the activation record changes. While Portal is busy the controller
+refuses that transaction: the receipt stays as it was, the check says that
+its result applies at the next check once Portal is idle (`imageCheck`), and
+the next check applies it. `ods remote-provider status` and `test` print the
+verdict as image input "seen the test image", "text only" or "not measured".
 An installation that already runs a vision model gets the readback on its
 next model switch. Every installer run, including an update, writes
 `unknown` over a `supported` declaration (`installers/lib/pixel-onboarding.py`):
@@ -742,7 +758,10 @@ that model's projector file still checks out (`scripts/preserve-active-model.py`
 so the model may now run without its projector, and the renderer cannot see
 which happened. `unsupported` and `unknown` carry over for the same route; the
 next switch reads the projector back. The renderer writes a remote route as
-`unknown` too, and the route's next proof measures it again.
+`unknown` too: it cannot tell which route LiteLLM serves after the rerun (a
+local install's update pauses the remote route), and the route's next proof
+(`ods remote-provider enable`, or the Dashboard's **Reconcile route**)
+measures it again.
 
 **The directive.** When the gate is open and the run guard grants one of the
 run's at most three screenshots (`tool-loop-guard.mjs`
@@ -854,9 +873,15 @@ the readback rule, switches with a reported, false, missing and unreadable
 vision state, a vision-to-text switch on both reconcile paths, and a remote
 activation that never reads it and binds Pixel to its own probe's answer;
 they also cover the remote receipt (its route fingerprint, a changed route
-and malformed receipts read `unknown`) and the probe's request and answer
-rules. `test_remote_model_transaction.py` checks one probe per proof, after
-LiteLLM serves the route and before Pixel is bound, a rebind only when the
-answer changed, and an enable of the active route that stays a no-op.
+and malformed receipts read `unknown`), the probe's request and answer rules
+(words that only contain a colour, such as "shared", never pass), the drawn
+colours, an inconclusive probe that keeps the receipt, and a changed verdict
+without a managed Pixel. `test_model_profile_probes.py` covers the image, the
+answer judge and the shared budget. `test_remote_model_transaction.py` checks
+one probe per proof, after LiteLLM serves the route and before Pixel is
+bound, a rebind of Pixel alone only when the answer changed, a busy Portal
+that keeps the receipt until the next check, a refused rebind that rolls
+back to the previous receipt, the status a proof reports, and an enable of
+the active route that stays a no-op.
 `tests/test_pixel_onboarding.py` checks that an installer rerun after a
 `supported` switch renders `unknown` and keeps the rest of the route.

@@ -1,10 +1,13 @@
 """Image policy must have evidence for the exact activated model route."""
 
+import base64
 import importlib.util
 import json
 from pathlib import Path
+import struct
 import subprocess
 import sys
+import zlib
 
 import pytest
 
@@ -229,8 +232,9 @@ def test_only_a_reported_vision_projector_declares_support(proof, configured, ex
 
 
 # A remote route declares image input only from a vision probe of that route:
-# the red square (model_profile P6) through ods/current, recorded in the route
-# state with the route fingerprint (_record_remote_provider_vision).
+# two squares in two colours drawn per proof (model_profile
+# probe_remote_vision) through ods/current, recorded in the route state with
+# the route fingerprint (_record_remote_provider_vision).
 
 _REMOTE_PROVIDER = {"model": "remote-vision", "transport": "direct", "baseUrl": "https://example.invalid/v1",
                     "contextLength": 32768, "maxTokens": 4096, "reasoning": False}
@@ -298,32 +302,72 @@ def test_a_malformed_vision_receipt_is_no_evidence(change):
     assert agent._remote_provider_runtime_contract(state)["imageInput"] == "unknown"
 
 
+def _png_pixels(url):
+    """(width, height, left RGB, right RGB) of the probe's two-square PNG data URL."""
+    data = base64.b64decode(url.split(",", 1)[1])
+    width, height = struct.unpack(">II", data[16:24])
+    raw = zlib.decompress(data[data.index(b"IDAT") + 4:data.index(b"IEND") - 8])
+    row = raw[1:1 + 3 * width]
+    return width, height, tuple(row[:3]), tuple(row[-3:])
+
+
 @pytest.mark.parametrize("answers,expected", [
-    ([_completion("Red.")], "supported"),
-    ([_completion("Blue")], "unsupported"),
-    ([_completion("I cannot see images.")], "unsupported"),
-    # Out of tokens while reasoning, or cut off mid-answer: no evidence.
-    ([_completion("", "length")], "unknown"),
-    ([_completion("The square is", "length")], "unknown"),
-    ([_completion("")], "unknown"),
-    ([(400, '{"error": {"message": "image input is not supported"}}')], "unknown"),
+    ([_completion("Green, blue.")], "supported"),
+    ([_completion("<think>Two squares: green, then blue.</think>\n\n**Green** and **Blue**")], "supported"),
+    # Unambiguous misses: a palette colour that is not there, or no sight.
+    ([_completion("Red, blue")], "unsupported"),
+    ([_completion("I can't see the image you've shared.")], "unsupported"),
+    ([(400, '{"error": {"message": "image input is not supported"}}')], "unsupported"),
+    # Neither: a swap, one colour, a hedge, a long or cut-off answer, an error.
+    ([_completion("Blue, green")], "unknown"),
+    ([_completion("Green")], "unknown"),
+    ([_completion("Maybe green, blue")], "unknown"),
+    ([_completion("The left square is green and the right one is blue.")], "unknown"),
+    ([_completion("Green, bl", "length")], "unknown"),
+    ([(400, '{"error": {"message": "max_tokens is too large"}}')], "unknown"),
+    ([(429, "image requests are rate limited")], "unknown"),
     ([(200, "not json")], "unknown"),
     ([OSError("LiteLLM did not answer in time")], "unknown"),
-    # A busy answer is asked once more inside the same budget, never again.
-    ([(503, "busy"), _completion("red")], "supported"),
+    # A busy route is asked once more inside the same budget, never again.
+    ([(503, "busy"), _completion("green blue")], "supported"),
     ([(503, "busy"), (503, "busy")], "unknown"),
 ])
 def test_one_vision_probe_through_the_gateway_decides_only_on_a_clear_answer(monkeypatch, answers, expected):
+    monkeypatch.setattr(agent, "_remote_provider_vision_colors", lambda: ("green", "blue"))
     requests = _litellm_answers(monkeypatch, *answers)
-    assert agent._remote_provider_vision_probe({}) == expected
+    assert agent._remote_provider_vision_probe({}, 4096) == expected
     assert len(requests) == len(answers)
     for path, payload, timeout in requests:
         assert path == "/v1/chat/completions" and 0 < timeout <= 30
         text, image = payload["messages"][0]["content"]
-        assert text["text"] == "What color is this square? One word."
-        assert image["image_url"]["url"].startswith("data:image/png;base64,")
+        assert text["text"] == agent._model_profile_probes.REMOTE_VISION_PROMPT
+        assert _png_pixels(image["image_url"]["url"]) == (224, 112, (0, 160, 0), (0, 0, 255))
         # No thinking switch a provider could refuse; room for a reasoning model.
-        assert "chat_template_kwargs" not in payload and payload["max_tokens"] >= 1024
+        assert "chat_template_kwargs" not in payload and payload["max_tokens"] == 1024
+
+
+@pytest.mark.parametrize("answer", ["I can't see the image you've shared.", "No image appeared.", "Shared",
+                                    "Which colored square do you mean?", "Rendered.", "Red", "Shared, blue.",
+                                    "Rendered blue"])
+def test_a_word_that_merely_contains_a_colour_is_never_sight(monkeypatch, answer):
+    # The P6 substring test read "red" in all of these (H1): none may pass.
+    monkeypatch.setattr(agent, "_remote_provider_vision_colors", lambda: ("red", "blue"))
+    _litellm_answers(monkeypatch, _completion(answer))
+    assert agent._remote_provider_vision_probe({}, 4096) != "supported"
+
+
+def test_the_probe_answers_within_the_route_output_limit(monkeypatch):
+    requests = _litellm_answers(monkeypatch, _completion("Green, blue"))
+    monkeypatch.setattr(agent, "_remote_provider_vision_colors", lambda: ("green", "blue"))
+    assert agent._remote_provider_vision_probe({}, 256) == "supported"
+    assert requests[0][1]["max_tokens"] == 256
+
+
+def test_each_proof_draws_two_different_palette_colours():
+    palette = set(agent._model_profile_probes.REMOTE_VISION_COLORS)
+    pairs = {agent._remote_provider_vision_colors() for _ in range(300)}
+    assert all(left != right and {left, right} <= palette for left, right in pairs)
+    assert len(pairs) > 20, "a fixed or narrow choice would make the answer guessable"
 
 
 def test_the_gateway_exchange_names_the_alias_and_keeps_the_key_off_argv(monkeypatch):
@@ -365,26 +409,32 @@ def _saved_route(tmp_path, monkeypatch, state):
     return path
 
 
-def test_a_route_proof_records_its_vision_with_the_route_and_a_probe_error_forgets_it(tmp_path, monkeypatch):
+def test_a_route_proof_records_its_vision_and_an_inconclusive_probe_keeps_it(tmp_path, monkeypatch):
     state = _remote_state()
     path = _saved_route(tmp_path, monkeypatch, state)
     monkeypatch.setattr(agent, "_iso_now", lambda: "2026-10-30T12:00:00+00:00")
-    _litellm_answers(monkeypatch, _completion("Red"), OSError("LiteLLM did not answer in time"))
+    monkeypatch.setattr(agent, "_remote_provider_vision_colors", lambda: ("green", "blue"))
+    _litellm_answers(monkeypatch, _completion("Green, blue"), OSError("LiteLLM did not answer in time"),
+                     (503, "busy"), (503, "busy"), _completion("", "length"), _completion("Red, white"))
 
     recorded = agent._record_remote_provider_vision({"provider": dict(_REMOTE_PROVIDER)}, {})
 
     saved = json.loads(path.read_text(encoding="utf-8"))
     assert saved == recorded
-    assert saved["status"] == {"proven": True, "reason": "provider-handshake-ok", "vision": {
-        "schema": "ods.remote-provider-vision-receipt.v1", "imageInput": "supported",
-        "routeFingerprint": agent._remote_provider_route_fingerprint(state),
-        "verifiedAt": "2026-10-30T12:00:00+00:00"}}
+    receipt = {"schema": "ods.remote-provider-vision-receipt.v1", "imageInput": "supported",
+               "routeFingerprint": agent._remote_provider_route_fingerprint(state),
+               "verifiedAt": "2026-10-30T12:00:00+00:00"}
+    assert saved["status"] == {"proven": True, "reason": "provider-handshake-ok", "vision": receipt}
     assert agent._remote_provider_runtime_contract(saved)["imageInput"] == "supported"
 
-    # The next proof's probe fails: the earlier receipt does not stand for it.
-    forgotten = agent._record_remote_provider_vision(saved, {})
-    assert "vision" not in forgotten["status"]
-    assert agent._remote_provider_runtime_contract(json.loads(path.read_text(encoding="utf-8")))["imageInput"] == "unknown"
+    # A timeout, a busy route or a cut-off answer is no evidence: the receipt stands.
+    for _ in range(3):
+        before = path.read_bytes()
+        assert agent._record_remote_provider_vision(saved, {})["status"]["vision"] == receipt
+        assert path.read_bytes() == before
+    # A clear miss replaces it.
+    assert agent._record_remote_provider_vision(saved, {})["status"]["vision"]["imageInput"] == "unsupported"
+    assert agent._remote_provider_runtime_contract(json.loads(path.read_text(encoding="utf-8")))["imageInput"] == "unsupported"
 
 
 def test_a_vision_probe_never_records_against_another_saved_route(tmp_path, monkeypatch):
@@ -396,7 +446,7 @@ def test_a_vision_probe_never_records_against_another_saved_route(tmp_path, monk
     assert path.read_bytes() == before
 
 
-@pytest.mark.parametrize("answer,image_input", [(_completion("Red"), "supported"),
+@pytest.mark.parametrize("answer,image_input", [(_completion("Green, blue"), "supported"),
                                                 (OSError("LiteLLM did not answer"), "unknown")])
 def test_a_remote_route_never_reads_the_local_vision_report(tmp_path, monkeypatch, answer, image_input):
     # Whatever the local llama-server would report, the remote route's image
@@ -444,6 +494,7 @@ def test_a_remote_route_never_reads_the_local_vision_report(tmp_path, monkeypatc
 
     requests: list = []
     monkeypatch.setattr(agent, "_litellm_exchange", probe)
+    monkeypatch.setattr(agent, "_remote_provider_vision_colors", lambda: ("green", "blue"))
     route = {"provider": dict(_REMOTE_PROVIDER)}
 
     activation = agent._activate_remote_provider_route(route)
@@ -456,3 +507,39 @@ def test_a_remote_route_never_reads_the_local_vision_report(tmp_path, monkeypatc
     assert ("vision" in saved["status"]) is (image_input != "unknown")
     assert agent._read_remote_provider_activation_state()["remote"] == expected
     assert agent._read_remote_provider_activation_state()["previous"]["pixel"] == local
+
+
+def test_without_portal_a_changed_verdict_rewrites_only_the_activation_record(tmp_path, monkeypatch):
+    # No managed Pixel and no Portal admission lane: nothing to rebind, and
+    # LiteLLM and the relay already serve the route, so nothing restarts.
+    install, data = tmp_path / "install", tmp_path / "data"
+    install.mkdir()
+    (install / ".env").write_text("ODS_MODE=cloud\nLLM_API_URL=http://litellm:4000\nLITELLM_KEY=k\n", encoding="utf-8")
+    monkeypatch.setattr(agent, "INSTALL_DIR", install)
+    state = _remote_state()
+    state_path = _saved_route(data, monkeypatch, state)
+    runtime = agent._remote_provider_runtime_contract(state)
+    agent._write_remote_provider_activation_state({
+        "schema": "ods.remote-provider-activation-state.v1", "phase": "active", "remote": runtime,
+        "routeFingerprint": runtime["routeFingerprint"], "updatedAt": "2026-10-30T00:00:00+00:00",
+        "previous": {"odsMode": "local", "llmApiUrl": "http://llama-server:8080", "pixel": None,
+                     "cloudConfig": {"exists": False, "text": None, "mode": None, "uid": None, "gid": None}}})
+    monkeypatch.setattr(agent, "_managed_pixel_runtime_contract", lambda: None)
+    monkeypatch.setattr(agent, "_ods_managed_pixel_identity", lambda: None)
+    monkeypatch.setattr(agent, "_litellm_route_failure", lambda _env, *, model="ods/current": None)
+    for name in ("_restart_existing_container", "_capture_container_state", "_render_remote_provider_cloud_config",
+                 "_verify_litellm_route"):
+        monkeypatch.setattr(agent, name, lambda *_a, _name=name, **_k: pytest.fail(f"the rebind called {_name}"))
+    monkeypatch.setattr(agent, "_remote_provider_vision_colors", lambda: ("green", "blue"))
+    _litellm_answers(monkeypatch, _completion("Green, blue"))
+    proof = {"schema": "ods.remote-provider-egress-probe.v1", "ok": True, "transport": "direct",
+             "probe": {"schema": "ods.remote-provider-probe-receipt.v1", "ok": True,
+                       "verifiedAt": "2026-10-30T12:00:00+00:00", "endpoint": "/v1/models", "httpStatus": 200}}
+
+    result = agent._record_remote_provider_egress_probe(proof)
+
+    record = agent._read_remote_provider_activation_state()
+    assert record["remote"]["imageInput"] == "supported" and record["previous"]["odsMode"] == "local"
+    assert result["activation"]["pixel"] == "not_installed" and "imageCheck" not in result
+    saved = json.loads(state_path.read_text(encoding="utf-8"))
+    assert result["status"] == saved["status"] and saved["status"]["vision"]["imageInput"] == "supported"

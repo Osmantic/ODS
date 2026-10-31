@@ -99,7 +99,8 @@ test('owner images need no image-test consent after the readback, and need it ag
 
 // A remote route's target (bin/ods-host-agent.py _remote_provider_runtime_contract)
 // carries its route fingerprint and the image input of that route's own vision
-// probe: supported only after the probe saw the red square through ods/current.
+// probe: supported only after the model named both test squares' colours
+// through ods/current.
 const remote = (imageInput, routeFingerprint = 'b'.repeat(64)) => ({model: 'Qwen3.8-Flash-Next', contextLength: 131072,
   maxTokens: 32768, reasoning: true, routeFingerprint, imageInput});
 

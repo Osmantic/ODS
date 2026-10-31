@@ -4438,6 +4438,7 @@ def _record_remote_provider_egress_probe(payload: dict) -> dict:
         # The route's image input stands until this proof measures it again.
         state["status"]["vision"] = vision
     _atomic_write_text(state_path, json.dumps(state, indent=2, sort_keys=True) + "\n", 0o644)
+    image_check = None
     try:
         runtime = _remote_provider_runtime_contract(state)
         activation_state = _read_remote_provider_activation_state()
@@ -4450,14 +4451,12 @@ def _record_remote_provider_egress_probe(payload: dict) -> dict:
         )
         activation = _verify_current_remote_provider_consumers(state, runtime) \
             if activation_current else None
-        if activation is not None:
-            # The consumers already serve this route: this proof's one vision
-            # probe runs here, and a changed image input re-binds Pixel to it.
-            state = _record_remote_provider_vision(state, load_env(INSTALL_DIR / ".env"))
-            if _remote_provider_runtime_contract(state) != runtime:
-                activation = _activate_remote_provider_route(state, measure_vision=False)
-        else:
+        if activation is None:
             activation = _activate_remote_provider_route(state)
+        else:
+            # The consumers already serve this route: this proof's one vision
+            # probe runs here, and a changed verdict rebinds Pixel alone.
+            activation, image_check = _remeasure_remote_provider_vision(state, runtime, activation)
     except _PixelModelTransactionUncertain:
         # An admitted activation can outlive an ambiguous transport response.
         # Preserve its receipt/journal for read-only recovery, not stale bytes.
@@ -4465,12 +4464,16 @@ def _record_remote_provider_egress_probe(payload: dict) -> dict:
     except Exception:
         _restore_text_file(state_path, state_snapshot)
         raise
-    return {
+    record = {
         "schema": _REMOTE_PROVIDER_PROOF_RECORD_SCHEMA,
         "recorded": True,
-        "status": state["status"],
+        # What this proof left on disk, its vision receipt included.
+        "status": _read_remote_provider_route_state_document().get("status"),
         "activation": activation,
     }
+    if image_check is not None:
+        record["imageCheck"] = image_check
+    return record
 
 
 def _remote_provider_ssh_supervisor_error(reason: str, *, status: str = "invalid") -> dict:
@@ -5605,77 +5608,170 @@ def _restore_pixel_model_relay(state: dict[str, bool]) -> None:
         )
 
 
-# P6's own ceiling for the one vision probe of a remote route proof. Its single
-# retry of a busy 502/503 answer shares this budget.
+# The vision probe of a remote route proof: one budget, a busy route's single
+# re-ask included, and at most this many answer tokens (or the route's own
+# lower output limit).
 _REMOTE_PROVIDER_VISION_PROBE_SECONDS = 30.0
+_REMOTE_PROVIDER_VISION_MAX_TOKENS = 1024
 
 
-def _remote_provider_vision_probe(env: dict) -> str:
-    """supported, unsupported or unknown from one red-square probe (P6) of ods/current."""
+def _remote_provider_vision_colors() -> tuple[str, str]:
+    """This proof's two test colours, left then right, drawn from the probe's palette."""
+    left, right = secrets.SystemRandom().sample(sorted(_model_profile_probes.REMOTE_VISION_COLORS), 2)
+    return left, right
+
+
+def _remote_provider_vision_probe(env: dict, max_tokens: int) -> str:
+    """supported, unsupported or unknown from one two-square probe of ods/current."""
     if _model_profile_probes is None:
         return "unknown"
-    result = _model_profile_probes.probe_vision(
+    result = _model_profile_probes.probe_remote_vision(
         lambda path, payload, timeout: _litellm_exchange(env, path, payload, timeout),
         _model_profile_probes.Budget(_REMOTE_PROVIDER_VISION_PROBE_SECONDS),
-        # "always" sends no thinking switch, which some providers refuse, and
-        # leaves a model that reasons first room to reach its answer.
-        "always",
-        vision=True,
+        _remote_provider_vision_colors(),
+        max_tokens=min(max_tokens, _REMOTE_PROVIDER_VISION_MAX_TOKENS),
     )
     logger.info("Remote route vision probe: %s %s (%d ms)",
                 result["status"], result["failureClass"] or "", result["ms"])
-    if result["status"] == "pass":
-        return "supported"
-    # A complete, visible answer without the color is a model that did not see
-    # the square. No answer, a cut-off one or an error is no evidence.
-    evidence = result["evidence"]
-    if (result["status"] == "fail" and evidence.get("finishReason") != "length"
-            and str(evidence.get("content") or "").strip()):
-        return "unsupported"
-    return "unknown"
+    # "fail" is only an unambiguous miss; an error or unknown is no evidence.
+    return {"pass": "supported", "fail": "unsupported"}.get(result["status"], "unknown")
 
 
-def _record_remote_provider_vision(route: dict, env: dict) -> dict:
-    """Probe the route's image input once and record it in its route state.
+def _remote_provider_vision_receipt(route: dict, env: dict) -> dict | None:
+    """A receipt of one vision probe of the route LiteLLM serves; None when inconclusive."""
+    runtime = _remote_provider_runtime_contract(route)
+    image_input = _remote_provider_vision_probe(env, runtime["maxTokens"])
+    if image_input == "unknown":
+        return None
+    return {
+        "schema": _REMOTE_PROVIDER_VISION_RECEIPT_SCHEMA,
+        "routeFingerprint": runtime["routeFingerprint"],
+        "imageInput": image_input,
+        "verifiedAt": _iso_now(),
+    }
 
-    Runs while LiteLLM serves this route as ods/current, so the probe crosses
-    LiteLLM and the egress as Portal's images do. A pass (supported) or a
-    clear miss (unsupported) is recorded with the route fingerprint; any
-    other outcome drops an earlier receipt, so the route reads unknown.
-    Returns the route state as written.
-    """
-    fingerprint = _remote_provider_route_fingerprint(route)
-    state = _read_remote_provider_route_state_for_update()
-    if _remote_provider_route_fingerprint(state) != fingerprint:
-        raise RuntimeError("remote-provider route state does not describe the route being proven")
-    status = dict(state["status"]) if isinstance(state.get("status"), dict) else {}
-    status.pop("vision", None)
-    image_input = _remote_provider_vision_probe(env)
-    if image_input != "unknown":
-        status["vision"] = {
-            "schema": _REMOTE_PROVIDER_VISION_RECEIPT_SCHEMA,
-            "routeFingerprint": fingerprint,
-            "imageInput": image_input,
-            "verifiedAt": _iso_now(),
-        }
-    state["status"] = status
+
+def _with_remote_provider_vision(state: dict, receipt: dict) -> dict:
+    status = state.get("status") if isinstance(state.get("status"), dict) else {}
+    return {**state, "status": {**status, "vision": receipt}}
+
+
+def _write_remote_provider_route_state_document(state: dict) -> None:
     _atomic_write_text(
         _remote_provider_route_state_path(),
         json.dumps(state, indent=2, sort_keys=True) + "\n",
         0o644,
     )
+
+
+def _record_remote_provider_vision(route: dict, env: dict) -> dict:
+    """Probe the route's image input once and keep the verdict with its route state.
+
+    Runs while LiteLLM serves this route as ods/current, so the probe crosses
+    LiteLLM and the egress as Portal's images do. A conclusive verdict
+    replaces the route's receipt; an inconclusive probe keeps it. Returns the
+    route state.
+    """
+    state = _read_remote_provider_route_state_for_update()
+    if _remote_provider_route_fingerprint(state) != _remote_provider_route_fingerprint(route):
+        raise RuntimeError("remote-provider route state does not describe the route being proven")
+    receipt = _remote_provider_vision_receipt(state, env)
+    if receipt is None:
+        return state
+    state = _with_remote_provider_vision(state, receipt)
+    _write_remote_provider_route_state_document(state)
     return state
+
+
+def _rebind_remote_provider_pixel(runtime: dict[str, object]) -> dict[str, object] | None:
+    """Bind Pixel to a new image input of the route LiteLLM and the relay already serve.
+
+    Only Pixel's contract and the activation receipts change; no consumer is
+    restarted. Returns None, having changed nothing, when the controller
+    refuses to begin the model transaction because Portal is busy.
+    """
+    env_path = INSTALL_DIR / ".env"
+    activation_path = _remote_provider_activation_state_path()
+    activation_public_path = _remote_provider_activation_public_path()
+    activation_snapshot = _snapshot_text_file(activation_path)
+    activation_public_snapshot = _snapshot_text_file(activation_public_path)
+    record = _read_remote_provider_activation_state()
+    if not isinstance(record, dict) or record.get("phase") != "active":
+        raise RuntimeError("The remote-provider route is not active")
+    try:
+        transaction = _begin_pixel_model_transaction(load_env(env_path))
+    except _PixelModelTransactionRejected as exc:
+        logger.info("Remote route image input waits until Portal is idle: %s", exc)
+        return None
+    pixel_before = transaction.previous if transaction is not None else _managed_pixel_runtime_contract()
+    try:
+        pixel_status = transaction.apply(runtime) if transaction is not None \
+            else _reconcile_managed_pixel_contract(runtime)
+        _write_remote_provider_activation_state({**record, "remote": runtime, "updatedAt": _iso_now()})
+        activation_public = {
+            "active": True,
+            "gateway": "litellm-cloud",
+            "publicModel": "ods/current",
+            "model": runtime["model"],
+            "routeFingerprint": runtime["routeFingerprint"],
+            "contextLength": runtime["contextLength"],
+            "maxTokens": runtime["maxTokens"],
+            "reasoning": runtime["reasoning"],
+            "pixel": pixel_status,
+            "proven": True,
+        }
+        _write_remote_provider_activation_public(activation_public)
+        if transaction is not None:
+            transaction.finish('commit')
+        return activation_public
+    except Exception as exc:
+        if isinstance(exc, _PixelModelTransactionUncertain):
+            raise
+        if transaction is not None and transaction.completed:
+            raise _PixelModelTransactionUncertain('Pixel took the remote route image input, but its final recovery receipt could not be saved') from exc
+        if transaction is not None:
+            transaction.verify_held()
+        _restore_text_file(activation_path, activation_snapshot)
+        _restore_text_file(activation_public_path, activation_public_snapshot)
+        if transaction is None:
+            _reconcile_managed_pixel_contract(pixel_before)
+        else:
+            if not _prove_pixel_model_contract(load_env(env_path), pixel_before):
+                raise _PixelModelTransactionUncertain('Previous remote route contract could not be proved; maintenance remains held') from exc
+            transaction.finish('rollback')
+        raise
+
+
+def _remeasure_remote_provider_vision(
+    state: dict, runtime: dict[str, object], activation: dict[str, object],
+) -> tuple[dict[str, object], dict | None]:
+    """This proof's vision probe of the route in use: (activation, imageCheck).
+
+    An inconclusive probe keeps the route's receipt. A verdict that changes
+    the contract rebinds Pixel alone. While Portal is busy the receipt stays
+    as it was, the result says so, and the next check applies the verdict.
+    """
+    receipt = _remote_provider_vision_receipt(state, load_env(INSTALL_DIR / ".env"))
+    if receipt is None:
+        return activation, None
+    measured = _with_remote_provider_vision(state, receipt)
+    target = _remote_provider_runtime_contract(measured)
+    if target != runtime:
+        rebound = _rebind_remote_provider_pixel(target)
+        if rebound is None:
+            return activation, {"applied": False, "imageInput": receipt["imageInput"], "reason": "portal-busy"}
+        activation = rebound
+    _write_remote_provider_route_state_document(measured)
+    return activation, None
 
 
 def _activate_remote_provider_route(
     route: dict, *, transaction=None, defer_consumer_rollback: bool = False,
-    measure_vision: bool = True,
 ) -> dict[str, object]:
     """Commit a proven egress route to LiteLLM and managed Pixel, or roll back.
 
     Pixel's image input comes from one vision probe once LiteLLM serves the
-    route. A caller that measured it during the same proof passes
-    measure_vision=False, and the route's receipt stands.
+    route (_record_remote_provider_vision).
     """
     if defer_consumer_rollback and transaction is None:
         raise RuntimeError("Deferred consumer rollback requires the lifecycle transaction")
@@ -5742,10 +5838,9 @@ def _activate_remote_provider_route(
             raise RuntimeError("LiteLLM route could not be recreated")
         _wait_for_container_health("ods-litellm")
         _verify_litellm_route(env, model="ods/current")
-        if measure_vision:
-            # Recorded with the route before Pixel is bound to what it decides.
-            runtime = _remote_provider_runtime_contract(_record_remote_provider_vision(route, env))
-            candidate_state["remote"] = runtime
+        # Recorded with the route before Pixel is bound to what it decides.
+        runtime = _remote_provider_runtime_contract(_record_remote_provider_vision(route, env))
+        candidate_state["remote"] = runtime
         # Portal reaches the model through the relay, so it must follow
         # ODS_MODE to LiteLLM before Pixel is bound to the remote model.
         relay_attempted = True
