@@ -884,6 +884,36 @@ function Invoke-ODSPortalRuntimeCutover {
     }
 }
 
+function Get-ODSPortalAmdMemoryShare($Plan, $Device, $Selection, [string]$ModelsDir = (Get-ODSPortalModelsDir)) {
+    <#
+    .SYNOPSIS
+        How much of Windows' own memory (its commit) this AMD model takes, for
+        the WSL memory budget (wsl-memory-budget.ps1).
+    .DESCRIPTION
+        A discrete GPU keeps the model in its own memory: SharesSystemMemory
+        is $false. On a unified-memory APU (Strix Halo) the firmware's
+        carve-out (the BIOS UMA frame buffer, Vulkan's device-local memory)
+        is not Windows memory; what does not fit it, llama.cpp keeps in
+        system memory that Windows also lends WSL. That part counts: the
+        model's files plus 2 GiB for its context and buffers, less the
+        carve-out. (On an RTX Spark every GPU allocation counts instead.)
+    #>
+    if ([string]$Plan.MemoryType -cne 'unified') {
+        return [pscustomobject]@{ SharesSystemMemory = $false; EngineCommitGiB = 0.0; Engine = '' }
+    }
+    $files = @(Get-ODSGgufSplitSiblings ([string]$Selection.GgufFile))
+    if ($Selection.MmprojFile) { $files += [string]$Selection.MmprojFile }
+    $bytes = [double]0
+    foreach ($name in $files) {
+        $path = Join-Path $ModelsDir $name
+        if (Test-Path -LiteralPath $path -PathType Leaf) { $bytes += (Get-Item -LiteralPath $path -Force).Length }
+    }
+    $deviceGiB = if ($Device -and [double]$Device.TotalMiB -gt 0) { [double]$Device.TotalMiB / 1024 } else { 0.0 }
+    $commit = [math]::Max(0.0, $bytes / 1GB + 2 - $deviceGiB)
+    return [pscustomobject]@{ SharesSystemMemory = $true; EngineCommitGiB = [math]::Round($commit, 2)
+        Engine = "llama.cpp (Vulkan) with $($Selection.GgufFile)" }
+}
+
 function Write-ODSPortalFitWarning($Device, [string]$ModelPath) {
     if (-not (Test-Path -LiteralPath $ModelPath -PathType Leaf) -or $Device.TotalMiB -le 0) { return }
     $modelMiB = [long][math]::Ceiling((Get-Item -LiteralPath $ModelPath).Length / 1MB)
@@ -1000,6 +1030,8 @@ function Initialize-ODSPortalAmdRuntime($Plan, [string]$SourceRoot, [bool]$NonIn
     Remove-ODSNativeLlamaOldRuntimes -KeepDirectory $runtime.Directory -PreviousDirectory $previousDirectory
     Write-Host "         GPU model ready: $($selection.GgufFile) ($($selection.ContextSize) tokens of context)."
     return [pscustomobject]@{
+        # Whether the model shares Windows' memory with WSL (setup sizes WSL's limit).
+        Memory = (Get-ODSPortalAmdMemoryShare $Plan $qualification.Device $selection)
         Arguments = @(
             '--native-llm-url', "http://localhost:$port",
             '--native-llm-host-transport', 'model-router',
