@@ -28,6 +28,7 @@ BOOTSTRAP_MAX_CONTEXT=65536
 #
 # Returns 0 (true) when ALL of these hold:
 #   1. Tier is above 0 (full model is larger than the bootstrap model)
+#      and the full GGUF is not the bootstrap GGUF itself
 #   2. Full model GGUF file does NOT already exist on disk
 #   3. --no-bootstrap flag was NOT set
 #   4. Not in offline mode (can't download anything)
@@ -42,6 +43,10 @@ bootstrap_needed() {
 
     # Tier 0: the full model IS the bootstrap model — no point
     [[ "$tier_rank" -le 0 ]] && return 1
+
+    # Full model IS the bootstrap file — a background swap would only recreate
+    # llama-server on the model it already serves.
+    [[ "$GGUF_FILE" == "$BOOTSTRAP_GGUF_FILE" ]] && return 1
 
     # Full model already on disk — skip bootstrap, use it directly
     [[ -f "${INSTALL_DIR}/data/models/${GGUF_FILE}" ]] && return 1
