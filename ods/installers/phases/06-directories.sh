@@ -412,10 +412,11 @@ else
 
         # If the marker exists and records this install dir as ODS-managed, but the
         # recorded installation directory has no active installation (.env or config),
+        # or has an in-progress recovery receipt from a previous attempt,
         # the prior deployment directory was wiped or moved without uninstalling.
         # Clean up the orphaned host state so the installer can bootstrap cleanly rather
         # than failing an impossible in-place upgrade.
-        if [[ ! -f "$INSTALL_DIR/.env" && ! -d "$INSTALL_DIR/config" ]] && "${ODS_PYTHON_CMD:-python3}" -c '
+        if [[ ( ! -f "$INSTALL_DIR/.env" && ! -d "$INSTALL_DIR/config" ) || -f "$INSTALL_DIR/.ods-pixel-recovery" ]] && "${ODS_PYTHON_CMD:-python3}" -c '
 import json, pathlib, sys
 marker = pathlib.Path(sys.argv[1])
 try:
@@ -430,23 +431,34 @@ except Exception:
                 # shellcheck source=../../lib/pixel-uninstall.sh
                 source "$SCRIPT_DIR/lib/pixel-uninstall.sh"
             fi
+            if [[ -d "$INSTALL_DIR" && ! -w "$INSTALL_DIR" ]] && ods_sudo_available; then
+                ods_sudo chown -R "$(id -u):$(id -g)" "$INSTALL_DIR" 2>/dev/null || true
+            fi
+            mkdir -p "$INSTALL_DIR"
+            _phase06_pixel_recovery_receipt="$INSTALL_DIR/.ods-pixel-recovery"
+            printf '{"manager":"ods","recovery":"pixel-orphan-state"}\n' > "$_phase06_pixel_recovery_receipt" 2>/dev/null || true
+            chmod 0600 "$_phase06_pixel_recovery_receipt" 2>/dev/null || true
+
             if [[ "$SCRIPT_DIR" != "$INSTALL_DIR" ]]; then
-                if ! declare -F ods_copy_install_source >/dev/null 2>&1; then
-                    # shellcheck source=../lib/source-copy.sh
-                    source "$SCRIPT_DIR/installers/lib/source-copy.sh"
-                fi
-                if [[ -d "$INSTALL_DIR" && ! -w "$INSTALL_DIR" ]] && ods_sudo_available; then
-                    ods_sudo chown -R "$(id -u):$(id -g)" "$INSTALL_DIR" 2>/dev/null || true
-                fi
-                mkdir -p "$INSTALL_DIR"
-                if ! ods_copy_install_source "$SCRIPT_DIR" "$INSTALL_DIR" "$LOG_FILE"; then
-                    error "Could not restore verified source to $INSTALL_DIR for orphaned Pixel cleanup."
-                    return 1
-                fi
-            else
-                mkdir -p "$INSTALL_DIR"
+                # Stage verified Pixel host validation templates separately from the full source tree
+                # so incoming config/ is not treated as a completed installation on retry.
+                for _phase06_tmpl_dir in bin lib extensions vendor; do
+                    if [[ -d "$SCRIPT_DIR/$_phase06_tmpl_dir" ]]; then
+                        mkdir -p "$INSTALL_DIR/$_phase06_tmpl_dir"
+                        if command -v rsync >/dev/null 2>&1; then
+                            rsync -a --no-owner --no-group --chmod=go-w \
+                                --exclude='.git' --exclude='data/' --exclude='logs/' \
+                                --exclude='models/' --exclude='.env' --exclude='node_modules/' \
+                                --exclude='dist/' --exclude='*.log' \
+                                "$SCRIPT_DIR/$_phase06_tmpl_dir/" "$INSTALL_DIR/$_phase06_tmpl_dir/" 2>>"$LOG_FILE" || true
+                        else
+                            cp -r "$SCRIPT_DIR/$_phase06_tmpl_dir"/. "$INSTALL_DIR/$_phase06_tmpl_dir/" 2>>"$LOG_FILE" || true
+                        fi
+                    fi
+                done
             fi
             if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME" "source-transition"; then
+                rm -f "$_phase06_pixel_recovery_receipt"
                 log "Orphaned Pixel host state cleaned. Proceeding with clean installation."
                 _phase06_pixel_source_transition=1
             else

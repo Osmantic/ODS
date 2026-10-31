@@ -43,6 +43,10 @@ class Phase06OrphanedPixelCleanupTests(unittest.TestCase):
         (self.source_dir / "vendor" / "pixel.bundle").write_bytes((ROOT / "vendor" / "pixel.bundle").read_bytes())
         (self.source_dir / "extensions" / "services" / "pixel-agent" / "host").mkdir(parents=True)
 
+        # Include incoming config/ tree in source directory
+        (self.source_dir / "config").mkdir(parents=True, exist_ok=True)
+        (self.source_dir / "config" / "network-exposure-policy.json").write_text('{"policy":"fixture"}\n', encoding="utf-8")
+
         for rel in [
             "installers/phases/06-directories.sh",
             "bin/ods-pixel-approve",
@@ -230,6 +234,104 @@ source "$SCRIPT_DIR/installers/phases/06-directories.sh"
         self.assertEqual(result.returncode, 42, f"Phase should reach copy-source step: {result.stdout}\n{result.stderr}")
         self.assertTrue(canary.exists(), "Source copy / bootstrap step must be reached on successful cleanup")
         self.assertFalse(self.marker.exists(), "Marker should be unlinked upon successful cleanup")
+        self.assertFalse(access_unit.exists(), "Retained unit must be removed upon successful cleanup")
+
+    def test_cleanup_refusal_repair_retry_with_incoming_config(self):
+        """Cleanup refusal remains retryable even when incoming source tree contains config/."""
+        payload = {
+            "manager": "ods",
+            "schema_version": 2,
+            "state": "installing",
+            "initial_active_state": "absent",
+            "install_dir": str(self.installed),
+            "pixel_source_ref": "d2a2b6be552126f294fb30ee5fb46872acf82c89",
+        }
+        self._write_marker(payload)
+
+        # Ensure installation tree is absent initially
+        if self.installed.exists():
+            shutil.rmtree(self.installed)
+
+        # Verify incoming config/ is present in source tree
+        self.assertTrue((self.source_dir / "config").is_dir(), "Source must contain incoming config/")
+
+        access_unit = self.systemd_dir / "ods-pixel-access.service"
+        access_unit.write_text("[Unit]\nDescription=Drifted\n", encoding="utf-8")
+        access_unit.chmod(0o644)
+        canary = self.installed / "source-canary.txt"
+
+        script = r'''
+set -euo pipefail
+SCRIPT_DIR="$1"; INSTALL_DIR="$2"; HOME="$3"; ODS_PYTHON_CMD="$4"; CANARY="$5"; LOG_FILE="$6"; MOCK_BIN="$7"
+export PATH="$MOCK_BIN:$PATH"
+export ODS_PIXEL_UNINSTALL_SYSTEMD_DIR="$8"
+export ODS_PIXEL_UNINSTALL_ETC_DIR="$9"
+export ODS_PIXEL_UNINSTALL_LIBEXEC_DIR="${10}"
+export ODS_PIXEL_UNINSTALL_OPS_ENV="${9}/pixel-ops-broker.env"
+export ODS_PIXEL_UNINSTALL_OPS_POLICY="${9}/pixel-ops-broker/policy.json"
+export ODS_PIXEL_UNINSTALL_OPS_INSTALL_DIR="${10}/pixel-ops-broker"
+export ODS_PIXEL_UNINSTALL_OPS_STATE_DIR="${9}/var/lib/pixel-ops-broker"
+export ODS_PIXEL_UNINSTALL_ACCESS_STATE_DIR="${9}/var/lib/ods-pixel-access"
+export ODS_PIXEL_UNINSTALL_ACCESS_PROBE_DIR="${9}/var/lib/ods-pixel-access-probes"
+export ODS_PIXEL_UNINSTALL_PREVIEW_STATE_DIR="${9}/var/lib/ods-pixel-preview"
+export ODS_PIXEL_UNINSTALL_ROOT_UID="$(id -u)"
+export ODS_PIXEL_UNINSTALL_ROOT_GID="$(id -g)"
+
+DRY_RUN=false; ENABLE_PIXEL_RUNTIME=true; ODS_SUDO_AVAILABLE=true; ODS_ASSUME_ROOTLESS=false
+source "$SCRIPT_DIR/installers/lib/pixel-integration.sh"
+source "$SCRIPT_DIR/lib/pixel-uninstall.sh"
+_ods_pixel_project_cleanup(){ :; }
+_ods_pixel_inspection_cleanup(){ :; }
+ods_progress(){ :; }; chapter(){ :; }; log(){ :; }
+ai(){
+    if [[ "$*" == *"Copying source files"* ]]; then
+        touch "$CANARY"
+        exit 42
+    fi
+}
+error(){ printf '%s\n' "$*" >&2; return 1; }
+ods_pixel_install_owner(){ id -un; }
+ods_pixel_owner_home(){ printf '%s\n' "$HOME"; }
+
+source "$SCRIPT_DIR/installers/phases/06-directories.sh"
+'''
+        # Attempt 1: Run with drifted host unit
+        result1 = subprocess.run(
+            ["bash", "-c", script, "phase-fixture",
+             str(self.source_dir), str(self.installed), str(self.home),
+             sys.executable, str(canary), str(self.log_file), str(self.mock_bin),
+             str(self.systemd_dir), str(self.etc_dir), str(self.libexec_dir)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        self.assertNotEqual(result1.returncode, 0, f"Attempt 1 must fail closed on drifted unit: {result1.stdout}\n{result1.stderr}")
+        self.assertTrue(self.marker.exists(), "Marker must remain protected on refusal")
+        self.assertEqual(json.loads(self.marker.read_text(encoding="utf-8")), payload, "Marker payload must stay intact")
+        self.assertTrue(access_unit.exists(), "Drifted access unit must remain untouched")
+        self.assertEqual(access_unit.read_text(encoding="utf-8"), "[Unit]\nDescription=Drifted\n")
+        self.assertFalse(canary.exists(), "Clean install canary must not be touched on refusal")
+        self.assertFalse((self.installed / "config").exists(), "Pre-cleanup staging must not leave incoming config/ behind")
+
+        # Repair: replace drifted host unit with genuine unit matching source
+        genuine_source = ROOT / "extensions/services/pixel-agent/host/ods-pixel-access.service"
+        access_unit.write_bytes(genuine_source.read_bytes())
+
+        # Attempt 2 (Retry): Re-run on the same $INSTALL_DIR
+        result2 = subprocess.run(
+            ["bash", "-c", script, "phase-fixture",
+             str(self.source_dir), str(self.installed), str(self.home),
+             sys.executable, str(canary), str(self.log_file), str(self.mock_bin),
+             str(self.systemd_dir), str(self.etc_dir), str(self.libexec_dir)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        self.assertEqual(result2.returncode, 42, f"Attempt 2 retry must resume cleanup and proceed to clean install: {result2.stdout}\n{result2.stderr}")
+        self.assertTrue(canary.exists(), "Canary must be touched on successful clean install transition")
+        self.assertFalse(self.marker.exists(), "Marker must be unlinked upon successful cleanup")
         self.assertFalse(access_unit.exists(), "Retained unit must be removed upon successful cleanup")
 
     def test_normal_managed_upgrade_preserved(self):
