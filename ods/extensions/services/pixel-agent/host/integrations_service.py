@@ -22,6 +22,7 @@ import socketserver
 import stat
 import sys
 import threading
+import traceback
 import urllib.parse
 import uuid
 
@@ -494,13 +495,25 @@ def watch_pages(service, stop, seconds=WATCH_SECONDS):
             service.store.log("watch-check", "watched pages", error.message)
 
 
+def watch_or_exit(service, stop, seconds=WATCH_SECONDS, exit=os._exit):
+    """Watch pages; any other error ends the whole service, which systemd restarts with watching.
+
+    Left to itself, a crash would end only this thread, and pages would go unwatched in silence.
+    """
+    try:
+        watch_pages(service, stop, seconds)
+    except BaseException:
+        traceback.print_exc()
+        exit(1)
+
+
 def start(agent_socket, state_dir):
     """Both listeners and the page watcher, in background threads; the owner socket is STATE_DIR/owner.sock."""
     service = Integrations(Store(state_dir))
     servers = [_listener(service, agent_socket, "agent"), _listener(service, pathlib.Path(state_dir) / OWNER_SOCKET, "owner")]
     for server in servers:
         threading.Thread(target=server.serve_forever, daemon=True).start()
-    threading.Thread(target=watch_pages, args=(service, threading.Event()), daemon=True).start()
+    threading.Thread(target=watch_or_exit, args=(service, threading.Event()), daemon=True).start()
     return servers
 
 

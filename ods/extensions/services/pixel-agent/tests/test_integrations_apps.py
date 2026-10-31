@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 import urllib.parse
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "host"))
@@ -387,6 +388,18 @@ class AppTests(unittest.TestCase):
         watcher.join(5)
         self.assertFalse(watcher.is_alive())
         self.assertIn("could not be reached", next(entry for entry in self.store.activity() if entry["action"] == "watch-check")["outcome"])
+
+    def test_an_unexpected_watcher_error_ends_the_service_for_a_restart(self):
+        class Broken:
+            def check_watches(self):
+                raise RuntimeError("a bug")
+        exits = []
+        with unittest.mock.patch("traceback.print_exc"):
+            watcher = threading.Thread(target=service.watch_or_exit, args=(Broken(), threading.Event(), 0.01),
+                                       kwargs={"exit": exits.append})
+            watcher.start()
+            watcher.join(5)
+        self.assertEqual(exits, [1])
 
     def test_a_watch_added_during_a_look_keeps_its_price_limit(self):
         self.save(self.settings(changes="allow"))
