@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'ods/extensions/library/services/*/manifest.yaml'
+      - 'ods/extensions/services/*/manifest.yaml'
       - 'ods/scripts/generate-extensions-catalog.py'
       - 'ods/config/extensions-catalog.json'
       - 'ods/config/chat-templates/**'
@@ -17,6 +18,7 @@ on:
     branches: [main]
     paths:
       - 'ods/extensions/library/services/*/manifest.yaml'
+      - 'ods/extensions/services/*/manifest.yaml'
       - 'ods/scripts/generate-extensions-catalog.py'
       - 'ods/config/extensions-catalog.json'
       - 'ods/config/chat-templates/**'
