@@ -6548,9 +6548,9 @@ function ownerForbidsWorkspacePreview(messages, prompt) {
   // files, but publish the existing site" remains a publication request.
   const coordinatedProhibition = text
     .split(/[!?;\n]+|\.(?=\s|$)|\b(?:but|however|instead|then)\b/i)
-    .some((clause) => !independentEnglishPreviewAfterConstraint(clause) && /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:and|or|nor)\s+(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(clause));
+    .some((clause) => !independentEnglishPreviewAfterConstraint(clause) && /(?:(?:^|[,:(]|\b(?:and|or|so|also|please|just)\b)\s*(?:(?:please|also|just)\s+)*(?:(?:you|we)\s+(?=(?:must|should|do)\s+not\b|don['’]t\b))?(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip)|\bwithout)\b[^.!?;\n]{0,160}\b(?:and|or|nor)\s+(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(clause));
   if (coordinatedProhibition || ownerDeclinesPreviewDelivery(text)) return true;
-  return portuguesePreviewForbidden(text) || /\b(?:only|just)\s+(?:the\s+)?(?:code|source(?:\s+code)?)\b/i.test(text) || /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:(?:try|attempt)\s+to\s+)?(?:(?:create|build|edit|write|run|execute)\s*(?:,\s*|and\s+|or\s+))*(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(text);
+  return portuguesePreviewForbidden(text) || /\b(?:only|just)\s+(?:the\s+)?(?:code|source(?:\s+code)?)\b/i.test(text) || text.split(/[!?;\n]+|\.(?=\s|$)|\b(?:but|however|instead|then)\b/i).some(clause => /(?:(?:^|[,:(]|\b(?:and|or|so|also|please|just)\b)\s*(?:(?:please|also|just)\s+)*(?:(?:you|we)\s+(?=(?:must|should|do)\s+not\b|don['’]t\b))?(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip)|\bwithout)\s+(?:(?:try|attempt)\s+to\s+)?(?:(?:create|build|edit|write|run|execute)\s*(?:,\s*|and\s+|or\s+))*(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(clause));
 }
 
 function portuguesePreviewForbidden(text) {
@@ -6843,6 +6843,10 @@ export function userMessageRequestsWorkspacePreview(messages, prompt = undefined
   const requestedArtifactChange =
     /\b(?:build|create|develop|design|generate|implement|write|edit|fix|repair|modify|update|publish|republish|serve)\b/i.test(actionText);
   if (browserToolUse && browserInteraction && !requestedArtifactChange) return false;
+  // A request to check the work in the preview asks for a published, checked
+  // preview (laptop, 2026-10-30: "fix those and check it in the preview this
+  // time" was never held to one). Negated clauses are already gone.
+  if (/\b(?:check|test|verify|try)\b[^.!?;\n]{0,40}\bin\s+(?:the\s+)?(?:live\s+)?preview\b/i.test(actionText)) return true;
   const websitePattern =
     /\b(?:browser\b[^.!?;\n]{0,32}\bapps?|dashboards?|frontends?|landing\s+pages?|portals?|sites?|web\b[^.!?;\n]{0,32}\bapps?|web\s*pages?|websites?)\b/i;
   const website = websitePattern.test(actionText);
