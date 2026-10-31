@@ -6838,6 +6838,25 @@ def _precreate_data_dirs(service_id: str):
             _precreate_compose_data_dirs(service_id, ext_dir, compose_path)
 
 
+_COMPOSE_DEFAULT_VAR_RE = re.compile(r"\$\{(\w+):-([^${}]*)\}")
+
+
+def _compose_user_uid(user: str) -> int | None:
+    """The numeric uid a Compose ``user:`` value runs as, or None.
+
+    ``${VAR:-default}`` is resolved the way Compose does it from the install
+    .env (innermost first: n8n nests them) before the uid is split off, so
+    ``${ODS_UID:-1000}:${ODS_GID:-1000}`` gives the owner's ODS_UID. Anything
+    left unresolved is not a number, so no uid is taken from it.
+    """
+    if "${" in user:
+        env = load_env(INSTALL_DIR / ".env")
+        for _ in range(user.count("${")):
+            user = _COMPOSE_DEFAULT_VAR_RE.sub(lambda match: env.get(match.group(1)) or match.group(2), user)
+    uid = user.split(":")[0]
+    return int(uid) if uid.isascii() and uid.isdigit() else None
+
+
 def _precreate_compose_data_dirs(service_id: str, ext_dir: Path, compose_path: Path):
     """Create one Compose fragment's relative bind-mount sources."""
     try:
@@ -6868,12 +6887,7 @@ def _precreate_compose_data_dirs(service_id: str, ext_dir: Path, compose_path: P
         uid = None
         user_field = svc_def.get("user")
         if user_field:
-            user_str = str(user_field).split(":")[0]
-            m = re.match(r'\$\{[^:}]+:-(\d+)\}', user_str)
-            if m:
-                uid = int(m.group(1))
-            elif user_str.isdigit():
-                uid = int(user_str)
+            uid = _compose_user_uid(str(user_field))
         if uid is None:
             uid = manifest_uid
         volumes = svc_def.get("volumes", [])
