@@ -15,6 +15,7 @@ tests/contracts/test-docs-llama-host-port.sh
 tests/contracts/test-llama-metrics-flag.sh
 tests/contracts/test-llama-reasoning-format.sh
 tests/contracts/test-llama-runtime-tunables.py
+tests/contracts/test-windows-native-cpu-runtime-pins.py
 tests/contracts/test-ods-cli-contracts.py
 tests/contracts/test-overlay-map-coherence.sh
 tests/contracts/test-plist-log-paths.sh
