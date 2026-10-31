@@ -874,6 +874,15 @@ class Session:
         # The runs the gateway still runs: their copies may still change and are never dropped.
         # None when the request does not say (then no copy's end is recorded for it).
         self.live = frozenset(request["live"]) if "live" in request else None
+        # A session refused while opening releases what it opened, the store
+        # lock with it: the request's next project takes that lock.
+        try:
+            self.open(request, opener, create)
+        except BaseException:
+            self.close()
+            raise
+
+    def open(self, request, opener, create):
         try:
             self.workspace = self.keep(opener(request["workspace"]))
         except OSError:

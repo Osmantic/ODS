@@ -512,7 +512,8 @@ test('end to end: an exec that doubles a file is put back, the undo reverses it,
   assert.equal(fs.readFileSync(path.join(f.project, 'chars.js'), 'utf8'), ORIGINAL + ORIGINAL);
   assert.equal(fs.readFileSync(path.join(f.project, 'new.js'), 'utf8'), 'new');
   assert.deepEqual((await f.snapshots.options({runs: [run(1)]})).body.projects[0].restore, {undo: undone.body.undo, side: 'after'});
-  assert.deepEqual(f.changes, [[f.root, 'game'], [f.root, 'game']]);
+  // The restore, its retry (the same receipt) and the undo.
+  assert.deepEqual(f.changes, [[f.root, 'game'], [f.root, 'game'], [f.root, 'game']]);
   assert.deepEqual(f.warnings, []);
   const mode = fs.statSync(path.join(f.state, SNAPSHOT_DIRECTORY)).mode & 0o777;
   assert.equal(mode & 0o077, 0, 'the copies are private');

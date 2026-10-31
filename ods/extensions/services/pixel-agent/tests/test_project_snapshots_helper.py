@@ -874,6 +874,21 @@ class DescriptorTests(unittest.TestCase):
         os.chmod(w.state, 0o755)
         self.assertEqual(w.restore(run(1)), {"error": "copies-unusable"})
 
+    def test_a_project_refused_while_opening_leaves_the_lock_free_for_the_next(self):
+        w = Workspace(self, {"a.js": "a"})
+        w.copy(1)
+        shutil.rmtree(w.project)
+        put(w.project, "a file where the project folder was")
+        self.assertEqual(w.restore(run(1)), {"error": "folder-unusable"})
+        lock = os.open(w.state / ".lock", os.O_RDWR)
+        self.addCleanup(os.close, lock)
+        helper.fcntl.flock(lock, helper.fcntl.LOCK_EX | helper.fcntl.LOCK_NB)  # BlockingIOError while still held
+        helper.fcntl.flock(lock, helper.fcntl.LOCK_UN)
+        # One helper process answers every project of a request: the next one is not stopped.
+        write_tree(w.playground / "other", {"b.js": "b"})
+        self.assertEqual(w.copy(2, "game", "other"),
+                         {"projects": {"game": {"error": "folder-unusable"}, "other": {"status": "kept", "late": False}}})
+
     def test_the_command_line_answers_one_request(self):
         w = Workspace(self, {"a.js": "a"})
         request = {"operation": "copy", "workspace": str(w.root), "root": str(w.state), "id": run(1),

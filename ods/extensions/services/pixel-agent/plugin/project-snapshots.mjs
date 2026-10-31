@@ -285,7 +285,8 @@ function remember(map, key, value, limit = 512) {
 // workspace, ownerRun(context) the owner run a delegated run works for,
 // busy(user) whether a response or its delegated work runs in that chat,
 // portalActive() whether any Portal run, tool or background command is alive,
-// and changed(root, name) hears of each restore that changed a project.
+// and changed(root, name) hears of each restore that changed a project (again
+// for a retry that gets its receipt, while the project is as it left it).
 export function createProjectSnapshots({agentId = 'pixel', workspaceRoot = () => undefined, ownerRun = () => undefined,
   busy = () => true, portalActive = () => true, changed = () => {}, warn = () => {}, now = Date.now,
   stateDir = path.join(process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.openclaw'), SNAPSHOT_DIRECTORY),
