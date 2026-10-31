@@ -115,6 +115,10 @@ _MODEL_SUPPORT_REASONS = {
         "This model failed the tool-call check, so Portal tasks that use tools will likely fail. "
         "Chat still works."
     ),
+    "streaming-tools-unavailable": (
+        "This model failed the streaming tool check. Portal tasks that use tools may be unreliable; "
+        "chat and experiments remain available."
+    ),
     "not-profiled": (
         "ODS has not checked this model yet, so Portal tasks may not work. To check it, choose "
         "Check again on the running model in Models."
@@ -538,7 +542,8 @@ def _profile_support_reason(profile: dict, status: dict) -> str | None:
     """The most important measured advisory for the active model, if any.
 
     A context below Portal's floor breaks every task, so it comes first; then
-    a failed tool check, a model never checked, and one that always thinks.
+    failed direct or streaming tool checks, a model never checked, and one
+    that always thinks.
     """
     runtime = _active_runtime_projection(status)
     context = runtime.get("contextLength") if isinstance(runtime, dict) else None
@@ -547,6 +552,8 @@ def _profile_support_reason(profile: dict, status: dict) -> str | None:
         return "context-too-small"
     if profile.get("tools") is False:
         return "tools-unavailable"
+    if profile.get("toolsStreamed") is False:
+        return "streaming-tools-unavailable"
     if profile.get("state") == "not-profiled":
         return "not-profiled"
     if profile.get("thinkingControl") == "always":
