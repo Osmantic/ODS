@@ -255,6 +255,8 @@ export function googleCard(status, now = Date.now()) {
 export function refreshDelay(status, now = Date.now()) {
   const google = status?.connectors?.google
   if (!status?.available || !google) return null
+  const change = status?.pluginChange
+  if (change && !change.error) return 3000
   if (googleAdmissionHeld(status)) return google.pending?.error ? null : 3000
   if (google.pending?.phase === 'consent' && Date.parse(google.pending.expiresAt) > now) return 2000
   if (google.pending && !google.pending.error && google.pending.phase !== 'failed' && !stalled(google.pending, now)) return 3000

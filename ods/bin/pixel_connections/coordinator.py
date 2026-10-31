@@ -325,6 +325,13 @@ def _guard_google_exchange(bridge) -> None:
     if _google_transition(bridge) is not None:
         raise AccessError("connection-transition-in-progress")
     try:
+        pending = bridge.pending()
+    except (OSError, ValueError):
+        raise AccessError("invalid-connection-transition") from None
+    if pending and pending.get("kind") == "connection" and "pluginChange" in pending:
+        _journal(pending)
+        raise AccessError("connection-transition-in-progress")
+    try:
         journal = lifecycle.read(_lifecycle_path(bridge), owners=OWNERS)
         settled = bool(journal and journal.get("admissionComplete"))
     except lifecycle.LifecycleError:
@@ -756,7 +763,8 @@ def decline(bridge, request: Any) -> dict[str, Any]:
 def _journal(value: Any) -> dict[str, Any]:
     required = {"kind", "phase", "token", "transactionId", "edge_revision", "beforeSha", "boundary", "mode",
                 "beforeIdentity", "target", "markerBeforeSha"}
-    optional = {"error", "outcome", "restartIdentity", "noOwnerWrite", "afterSha", "answersSha", "google"}
+    optional = {"error", "outcome", "restartIdentity", "noOwnerWrite", "afterSha", "answersSha", "google",
+                "pluginChange"}
     if (not isinstance(value, dict) or not required <= set(value) or set(value) - required - optional
             or value["kind"] != "connection"
             or value["phase"] not in ("acquiring", "invoking", "restarting", "releasing")
@@ -775,6 +783,18 @@ def _journal(value: Any) -> dict[str, Any]:
                    for key in ('afterSha', 'answersSha') if key in value)):
         raise AccessError("invalid-connection-transition")
     planner.target(value["target"])
+    if "pluginChange" in value:
+        change = value["pluginChange"]
+        if (type(change) is not dict
+                or set(change) != {"plugin", "enabled", "beforeRecordSha", "afterRecordSha", "updatedAt"}
+                or type(change["plugin"]) is not str or change["plugin"] not in plugins.IDS
+                or type(change["enabled"]) is not bool
+                or any(type(change[key]) is not str or not HEX.fullmatch(change[key])
+                       for key in ("beforeRecordSha", "afterRecordSha"))
+                or type(change["updatedAt"]) is not str or not lifecycle.INSTANT.fullmatch(change["updatedAt"])
+                or (change["plugin"] in value["target"].get("plugins", [])) is not change["enabled"]
+                or "google" in value):
+            raise AccessError("invalid-connection-transition")
     if "google" in value:
         google = value["google"]
         keys = {"version", "flowId", "createdAt", "stage", "beforeRecordSha", "beforeTokenSha", "recordSha", "tokenSha",
@@ -1295,11 +1315,46 @@ def _bind_marker(bridge, journal: dict[str, Any]) -> None:
             os.unlink(temporary)
 
 
+def _plugin_record(before: dict[str, Any] | None, plugin: str, enabled: bool,
+                   updated_at: str) -> dict[str, Any]:
+    """The record a plugin change would leave: only that plugin's flag and updatedAt differ."""
+    base = before or {"schemaVersion": state.SCHEMA_VERSION, "kind": state.KIND, "updatedAt": None,
+                      "ownerTimeZone": None, "connectors": {}}
+    candidate = dict(base, updatedAt=updated_at,
+                     plugins=dict(base.get("plugins", {}), **{plugin: enabled}))
+    return state.validate(candidate)
+
+
+def _settle_plugin_record(bridge, journal: dict[str, Any], outcome: str) -> None:
+    """Bring the record in line with a verified plugin change; never write an arbitrary prior payload."""
+    change = journal.get("pluginChange")
+    if change is None:
+        return
+    current = _record()
+    current_sha = digest(current)
+    if outcome == "applied":
+        if current_sha == change["afterRecordSha"]:
+            return
+        if current_sha != change["beforeRecordSha"]:
+            raise AccessError("connection-record-changed")
+        candidate = _plugin_record(current, change["plugin"], change["enabled"], change["updatedAt"])
+        if digest(candidate) != change["afterRecordSha"]:
+            raise AccessError("connection-record-changed")
+        _write_record(candidate)
+        return
+    if outcome == "rolled-back":
+        if current_sha != change["beforeRecordSha"]:
+            raise AccessError("connection-record-changed")
+        return
+    raise AccessError("connection-record-changed")
+
+
 def _finish(bridge, journal: dict[str, Any], outcome: str) -> str:
     _verify(bridge, journal)
     _bind_marker(bridge, journal)
     journal.update(phase="releasing", outcome=outcome)
     _write(bridge, journal)
+    _settle_plugin_record(bridge, journal, outcome)
     _release(bridge, journal)
     return outcome
 
@@ -1401,7 +1456,8 @@ def _confirmed_step(bridge, target: dict[str, Any], answers: dict[str, Any], *, 
 
 
 def _change_gateway(bridge, target: dict[str, Any], answers: dict[str, Any], *, transaction_id: str | None = None,
-                    before_config_sha256: str | None = None, after_config_sha256: str | None = None) -> str:
+                    before_config_sha256: str | None = None, after_config_sha256: str | None = None,
+                    plugin_change: dict[str, Any] | None = None) -> str:
     """One gated gateway transaction toward ``target``: applied, rolled-back or unchanged.
 
     ``answers`` keeps ODS's onboarding contract in step, so a later model change
@@ -1411,6 +1467,17 @@ def _change_gateway(bridge, target: dict[str, Any], answers: dict[str, Any], *, 
     This function runs under its caller's existing non-reentrant Root lock.
     """
     exact = transaction_id is not None
+    if plugin_change is not None:
+        change = plugin_change
+        if (type(change) is not dict
+                or set(change) != {"plugin", "enabled", "beforeRecordSha", "afterRecordSha", "updatedAt"}
+                or type(change["plugin"]) is not str or change["plugin"] not in plugins.IDS
+                or type(change["enabled"]) is not bool
+                or any(type(change[key]) is not str or not HEX.fullmatch(change[key])
+                       for key in ("beforeRecordSha", "afterRecordSha"))
+                or type(change["updatedAt"]) is not str or not lifecycle.INSTANT.fullmatch(change["updatedAt"])
+                or (change["plugin"] in target["plugins"]) is not change["enabled"]):
+            raise AccessError("invalid-connection-transition")
     if (exact and (any(type(value) is not str or not HEX.fullmatch(value)
                       for value in (transaction_id, before_config_sha256, after_config_sha256))
                    or not state.valid_connection_answers(answers))
@@ -1419,6 +1486,11 @@ def _change_gateway(bridge, target: dict[str, Any], answers: dict[str, Any], *, 
     if exact:
         planner.target(target)
     pending = bridge.pending()
+    if pending and pending.get("kind") == "connection" and "pluginChange" in pending:
+        # A plugin journal is only resumed by its own operation, never by a
+        # generic caller that would apply a stale target over it, even when
+        # the caller supplies fresh metadata.
+        raise AccessError("connection-transition-in-progress")
     if pending and pending.get("kind") == "connection":
         if exact:
             _journal(pending)
@@ -1448,7 +1520,8 @@ def _change_gateway(bridge, target: dict[str, Any], answers: dict[str, Any], *, 
             before_sha=before_config_sha256, after_sha=after_config_sha256)
     if exact and config_hash != before_config_sha256:
         raise AccessError('connection-config-changed')
-    if _live_matches(owner, target) and owner["answers"] == answers:
+    if ((plugin_change is None or plugin_change["beforeRecordSha"] == plugin_change["afterRecordSha"])
+            and _live_matches(owner, target) and owner["answers"] == answers):
         if not exact:
             return "unchanged"
         if before_config_sha256 == after_config_sha256:
@@ -1463,6 +1536,8 @@ def _change_gateway(bridge, target: dict[str, Any], answers: dict[str, Any], *, 
                "markerBeforeSha": marker["configuration_sha256"] if marker else None}
     if exact:
         journal.update(afterSha=after_config_sha256, answersSha=digest(answers))
+    if plugin_change is not None:
+        journal["pluginChange"] = plugin_change
     _write(bridge, journal)
     try:
         _acquire(bridge, journal)
@@ -1495,6 +1570,11 @@ def activate(bridge, request: Any) -> dict[str, Any]:
         if google_hold is not None:
             return {"outcome": _google_activate(bridge, google_hold)}
         pending = bridge.pending()
+        if pending and pending.get("kind") == "connection" and "pluginChange" in pending:
+            # Resume the exact admitted plugin journal; never recompute a target
+            # from the old record and reapply it.
+            _journal(pending)
+            return {"outcome": _resume_plugin(bridge, pending)}
         if pending is None:
             _guard_fresh_source(bridge)
         elif pending.get("kind") != "connection":
@@ -1539,6 +1619,29 @@ def _plugin_request(request: Any) -> dict[str, Any]:
     return request
 
 
+def _plugin_metadata(plugin: str, enabled: bool, before: dict[str, Any] | None,
+                     after: dict[str, Any] | None, updated_at: str) -> dict[str, Any]:
+    return {"plugin": plugin, "enabled": enabled, "beforeRecordSha": digest(before),
+            "afterRecordSha": digest(after), "updatedAt": updated_at}
+
+
+def _resume_plugin(bridge, journal: dict[str, Any]) -> str:
+    """Resume a plugin journal; persist a bounded error and surface a verified rollback."""
+    _journal(journal)
+    try:
+        outcome = _resume(bridge, journal)
+    except AccessError as error:
+        code = error.code if type(error.code) is str and lifecycle.CODE.fullmatch(error.code) else \
+            "connection-transition-failed"
+        if (Path(bridge.state) / "transition.json").exists():
+            journal["error"] = code
+            _write(bridge, journal)
+        raise
+    if outcome == "rolled-back":
+        raise AccessError("plugin-change-rolled-back")
+    return outcome
+
+
 def plugin_change(bridge, request: Any) -> dict[str, Any]:
     """Turn one reviewed plugin on or off for Portal, through the same gated gateway change.
 
@@ -1549,23 +1652,31 @@ def plugin_change(bridge, request: Any) -> dict[str, Any]:
     with bridge.bounded(300), bridge.locked():
         bridge.discover()
         _guard_native_enrollment(bridge)
+        pending = bridge.pending()
+        if pending and pending.get("kind") == "connection" and "pluginChange" in pending:
+            _journal(pending)
+            change = pending["pluginChange"]
+            if change["plugin"] != request["plugin"] or change["enabled"] != request["enabled"]:
+                raise AccessError("connection-transition-in-progress")
+            return {"outcome": _resume_plugin(bridge, pending)}
         _guard_google_exchange(bridge)
         _guard_fresh_source(bridge)
         before = _record()
-        base = before or {"schemaVersion": state.SCHEMA_VERSION, "kind": state.KIND, "updatedAt": None,
-                          "ownerTimeZone": None, "connectors": {}}
-        record = dict(base, updatedAt=_iso(_now()),
-                      plugins=dict(base.get("plugins", {}), **{request["plugin"]: request["enabled"]}))
+        current = (before or {}).get("plugins", {}).get(request["plugin"]) is True
+        if current == request["enabled"]:
+            # Already the recorded choice: repair any legacy desired/live mismatch
+            # through the ordinary gateway change, without a new record or timestamp.
+            record = before
+            updated_at = _iso(_now())
+        else:
+            updated_at = _iso(_now())
+            record = _plugin_record(before, request["plugin"], request["enabled"], updated_at)
+        metadata = _plugin_metadata(request["plugin"], request["enabled"], before, record, updated_at)
         held = custody.holds_sign_in(PATHS)
-        _write_record(record)
-        try:
-            outcome = _change_gateway(bridge, gateway_target(record, custody_held=held),
-                                      state.connection_answers(record, google_custody=held))
-        except (AccessError, custody.CustodyError):
-            _write_record(before)
-            raise
+        outcome = _change_gateway(bridge, gateway_target(record, custody_held=held),
+                                  state.connection_answers(record, google_custody=held),
+                                  plugin_change=metadata)
         if outcome == "rolled-back":
-            _write_record(before)
             raise AccessError("plugin-change-rolled-back")
         return {"outcome": outcome}
 

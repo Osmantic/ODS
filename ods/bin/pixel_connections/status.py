@@ -177,6 +177,7 @@ SURFACES = frozenset({"linux-systemd", "wsl-systemd", "linux", "darwin", "window
 CAPABILITY_IDS = frozenset(capability["id"] for capability in catalog.GOOGLE["capabilities"])
 GOOGLE_KEYS = {"state", "reason", "account", "capabilities", "cloudModels", "connectedAt", "grantedScopes",
                "checkedAt", "sources", "pending", "waitingChanges", "waitingDrafts"}
+PLUGIN_CHANGE_KEYS = {"plugin", "enabled", "error"}
 SOURCE_KEYS = {"state", "errorClass", "httpStatus", "lastSuccessAt", "failingSince", "recordCount", "complete"}
 
 
@@ -220,6 +221,17 @@ def _valid_google(value: Any) -> bool:
                     for key in ("waitingChanges", "waitingDrafts")))
 
 
+def _valid_plugin_change(value: Any) -> bool:
+    if not isinstance(value, dict) or set(value) != PLUGIN_CHANGE_KEYS:
+        return False
+    plugin, enabled, error = value["plugin"], value["enabled"], value["error"]
+    if plugin is None and enabled is None:
+        return isinstance(error, str) and bool(TOKEN_PATTERN.fullmatch(error))
+    return (isinstance(plugin, str) and plugin in portal_plugins.IDS
+            and type(enabled) is bool
+            and _optional(error, lambda item: isinstance(item, str) and bool(TOKEN_PATTERN.fullmatch(item))))
+
+
 def plugin_flags(record: dict[str, Any] | None) -> dict[str, bool]:
     """Which reviewed plugins Portal may use; every one of them is off without a usable record."""
     chosen = state.enabled_plugins(record)
@@ -230,7 +242,7 @@ def validate_public(value: Any) -> dict[str, Any]:
     """Accept exactly the public status shape, so nothing else can reach the browser."""
     keys = {"schemaVersion", "available", "surface", "reason", "ownerTimeZone", "connectors", "plugins"}
     if (not isinstance(value, dict)
-            or not keys <= set(value) <= keys | {'googleAuth'}
+            or not keys <= set(value) <= keys | {'googleAuth', 'pluginChange'}
             or not isinstance(value["plugins"], dict) or set(value["plugins"]) != set(portal_plugins.IDS)
             or any(type(flag) is not bool for flag in value["plugins"].values())
             or value["schemaVersion"] != SCHEMA_VERSION or type(value["available"]) is not bool
@@ -240,6 +252,8 @@ def validate_public(value: Any) -> dict[str, Any]:
             or not _optional(value["ownerTimeZone"], lambda item: isinstance(item, str) and bool(state.TIME_ZONE.fullmatch(item)))
             or not isinstance(value["connectors"], dict) or set(value["connectors"]) != {"google"}
             or not _valid_google(value["connectors"]["google"])):
+        raise StatusError("connection status has an unexpected shape")
+    if 'pluginChange' in value and not _valid_plugin_change(value['pluginChange']):
         raise StatusError("connection status has an unexpected shape")
     if 'googleAuth' in value:
         try:
@@ -299,6 +313,45 @@ def _admission_pending(path: Path, owners: tuple, pending: dict[str, Any] | None
         return pending, False, True
 
 
+def _plugin_change(lifecycle_path: Path, owners: tuple) -> dict[str, Any] | None:
+    """Project only the reviewed plugin change from a connection transition journal.
+
+    Returns None when there is no plugin change to report. Returns a dict with
+    plugin/enabled/error when a connection journal exists; on any read or
+    validation failure for a journal that could contain plugin metadata, returns
+    the fail-closed unknown-pending shape.
+    """
+    journal_path = lifecycle_path.parent / "transition.json"
+    try:
+        operation = lifecycle.read_operation(journal_path, owners=owners)
+    except (lifecycle.LifecycleError, OSError):
+        return {"plugin": None, "enabled": None, "error": "connection-transition-unavailable"}
+    if not operation or operation.get("kind") != "connection":
+        return None
+    if "pluginChange" not in operation:
+        return None
+    try:
+        from .coordinator import _journal
+        from pixel_access_bridge import AccessError
+        try:
+            journal = _journal(operation)
+        except (AccessError, ValueError, KeyError, TypeError):
+            return {"plugin": None, "enabled": None, "error": "connection-transition-unavailable"}
+        change = journal.get("pluginChange")
+        if not isinstance(change, dict):
+            return {"plugin": None, "enabled": None, "error": "connection-transition-unavailable"}
+        plugin = change.get("plugin")
+        enabled = change.get("enabled")
+        if not isinstance(plugin, str) or plugin not in portal_plugins.IDS or type(enabled) is not bool:
+            return {"plugin": None, "enabled": None, "error": "connection-transition-unavailable"}
+        public = {"plugin": plugin, "enabled": enabled, "error": journal.get("error")}
+        if not _valid_plugin_change(public):
+            return {"plugin": None, "enabled": None, "error": "connection-transition-unavailable"}
+        return public
+    except (ImportError, OSError):
+        return {"plugin": None, "enabled": None, "error": "connection-transition-unavailable"}
+
+
 def report(*, surface: str, record_path: Path = state.PATH, token_path: Path = TOKEN,
            status_path: Path = BROKER_STATUS, lifecycle_path: Path = lifecycle.PATH, now: datetime | None = None,
            owners: tuple[int, ...] = (0,), broker_state: Path = BROKER_STATE) -> dict[str, Any]:
@@ -309,13 +362,17 @@ def report(*, surface: str, record_path: Path = state.PATH, token_path: Path = T
     pending, journal_unusable = _pending(lifecycle_path, owners)
     pending, admission_held, admission_unusable = _admission_pending(lifecycle_path, owners, pending, now)
     journal_unusable = journal_unusable or admission_unusable
+    plugin_change = _plugin_change(lifecycle_path, owners)
     try:
         record = state.read(record_path, owners=owners)
     except state.StateError:
         # Settings offers to reconnect; the install already kept everything off.
-        return {"schemaVersion": SCHEMA_VERSION, "available": True, "surface": surface,
-                "reason": "journal-unusable" if journal_unusable else "connection-admission-held" if admission_held else "record-unusable", "ownerTimeZone": None,
-                "connectors": {"google": not_connected(pending)}, "plugins": plugin_flags(None)}
+        result = {"schemaVersion": SCHEMA_VERSION, "available": True, "surface": surface,
+                  "reason": "journal-unusable" if journal_unusable else "connection-admission-held" if admission_held else "record-unusable", "ownerTimeZone": None,
+                  "connectors": {"google": not_connected(pending)}, "plugins": plugin_flags(None)}
+        if plugin_change is not None:
+            result["pluginChange"] = plugin_change
+        return result
     custody = token_path.is_file()
     broker, broker_error, waiting, waiting_drafts = None, False, 0, 0
     if record is not None and "google" in record["connectors"]:
@@ -327,7 +384,7 @@ def report(*, surface: str, record_path: Path = state.PATH, token_path: Path = T
             broker = read_broker_status(status_path)
         except StatusError:
             broker_error = True
-    return {
+    result = {
         "schemaVersion": SCHEMA_VERSION,
         "available": True,
         "surface": surface,
@@ -338,6 +395,9 @@ def report(*, surface: str, record_path: Path = state.PATH, token_path: Path = T
                                              waiting_drafts=waiting_drafts)},
         "plugins": plugin_flags(record),
     }
+    if plugin_change is not None:
+        result["pluginChange"] = plugin_change
+    return result
 
 
 def _agent_now(now):

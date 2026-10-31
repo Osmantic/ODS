@@ -657,3 +657,68 @@ def test_plugins_reach_settings_only_with_the_catalog_that_names_them(client, mo
         change(broken)
         mock_request.return_value = broken
         assert client.get("/api/pixel/connections", headers=AUTH).status_code == 502
+
+
+def _status_with_change(tmp_path, change):
+    value = host_reply(tmp_path)
+    value["pluginChange"] = change
+    return value
+
+
+def _get(client, mock_request, value):
+    mock_request.return_value = value
+    return client.get("/api/pixel/connections", headers=AUTH)
+
+
+def test_known_pending_projects_exactly(client, mock_request, tmp_path):
+    value = _status_with_change(tmp_path, {"plugin": "memory-wiki", "enabled": True, "error": None})
+    response = _get(client, mock_request, value)
+    assert response.status_code == 200
+    assert response.json()["pluginChange"] == {"plugin": "memory-wiki", "enabled": True, "error": None}
+    assert response.headers.get("cache-control") == "no-store"
+
+
+def test_unknown_pending_projects_exactly(client, mock_request, tmp_path):
+    value = _status_with_change(tmp_path, {"plugin": None, "enabled": None, "error": "journal-unreadable"})
+    response = _get(client, mock_request, value)
+    assert response.status_code == 200
+    assert response.json()["pluginChange"] == {"plugin": None, "enabled": None, "error": "journal-unreadable"}
+
+
+def test_old_absence_of_plugin_change_is_retained(client, mock_request, tmp_path):
+    value = host_reply(tmp_path)
+    assert "pluginChange" not in value
+    response = _get(client, mock_request, value)
+    assert response.status_code == 200
+    assert "pluginChange" not in response.json()
+
+
+@pytest.mark.parametrize("change", [
+    None,
+    {"plugin": "memory-wiki", "enabled": True},
+    {"plugin": "memory-wiki", "enabled": True, "error": None, "extra": 1},
+    {"plugin": "memory-wiki", "enabled": "true", "error": None},
+    {"plugin": "memory-wiki", "enabled": 1, "error": None},
+    {"plugin": "not-reviewed", "enabled": True, "error": None},
+    {"plugin": "memory-wiki", "enabled": True, "error": "has spaces here"},
+    {"plugin": "memory-wiki", "enabled": None, "error": None},
+    {"plugin": None, "enabled": True, "error": "journal-unreadable"},
+    {"plugin": None, "enabled": None, "error": None},
+    {"plugin": None, "enabled": None},
+])
+def test_invalid_plugin_change_is_502(client, mock_request, tmp_path, change):
+    value = _status_with_change(tmp_path, change)
+    response = _get(client, mock_request, value)
+    assert response.status_code == 502
+    assert response.headers.get("cache-control") == "no-store"
+    body = response.json()
+    assert body == {"detail": "Connected apps status could not be verified"}
+    assert "pluginChange" not in json.dumps(body)
+
+
+def test_private_hash_payload_is_502(client, mock_request, tmp_path):
+    value = _status_with_change(tmp_path, {"plugin": "memory-wiki", "enabled": True, "error": None,
+                                          "sha256": "a" * 64, "journal": "/root/private"})
+    response = _get(client, mock_request, value)
+    assert response.status_code == 502
+    assert "sha256" not in response.text and "/root/private" not in response.text

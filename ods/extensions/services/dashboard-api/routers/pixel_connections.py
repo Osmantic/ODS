@@ -203,6 +203,14 @@ class PluginCatalogEntry(Strict):
     tools: list[Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{1,63}$")]] = Field(max_length=32)
 
 
+class PluginChange(Strict):
+    """A pending reviewed-plugin change, projected from the root transition journal."""
+
+    plugin: PluginId | None
+    enabled: Annotated[bool, Field(strict=True)] | None
+    error: str | None = Field(pattern=TOKEN)
+
+
 class ConnectionStatus(Strict):
     schemaVersion: Literal[1]
     available: bool
@@ -213,6 +221,7 @@ class ConnectionStatus(Strict):
     plugins: dict[PluginId, bool] = Field(max_length=32)
     catalog: list[CatalogConnector]
     pluginCatalog: list[PluginCatalogEntry] = Field(max_length=32)
+    pluginChange: PluginChange | None = None
 
 
 def _projection(raw) -> dict:
@@ -227,6 +236,16 @@ def _projection(raw) -> dict:
             or set(status.plugins) != {entry.id for entry in status.pluginCatalog}
             or any(SCOPE_PATTERN.fullmatch(scope) is None for scope in google.grantedScopes or [])):
         raise HTTPException(502, "Connected apps status could not be verified", headers=NO_STORE)
+    change = status.pluginChange
+    if "pluginChange" in status.model_fields_set and change is None:
+        raise HTTPException(502, "Connected apps status could not be verified", headers=NO_STORE)
+    if change is not None:
+        if (change.plugin is None) != (change.enabled is None):
+            raise HTTPException(502, "Connected apps status could not be verified", headers=NO_STORE)
+        if change.plugin is None and change.error is None:
+            raise HTTPException(502, "Connected apps status could not be verified", headers=NO_STORE)
+        if change.plugin is not None and change.plugin not in status.plugins:
+            raise HTTPException(502, "Connected apps status could not be verified", headers=NO_STORE)
     # Preserve exact legacy absence of the optional managed auth fields, while
     # retaining explicit nulls in the existing connection/status contract.
     return status.model_dump(by_alias=True, exclude_unset=True)
