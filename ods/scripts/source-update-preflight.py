@@ -149,7 +149,11 @@ def check_native(install_dir):
 def check_rollback(install_dir, snapshot):
     """Generic configuration rollback cannot safely replace native selection."""
     if managed_pixel_identity(install_dir) is not None:
-        raise ValueError("Generic rollback cannot restore this managed native Pixel deployment. Keep its data and journals intact; use deployment-specific recovery.")
+        raise ValueError(
+            "Generic rollback cannot restore this managed native Pixel deployment and has changed "
+            "nothing. Keep its data and journals intact. 'ods update' does not touch the native "
+            "Pixel release: after a failed update, run 'ods status' and 'ods logs <service>' to "
+            "find the service that did not start, fix the cause, then run 'ods start'.")
     snapshot = Path(snapshot).resolve(strict=True)
     if not snapshot.is_dir():
         raise ValueError("Rollback snapshot must be a directory.")
@@ -192,6 +196,7 @@ def main():
             check_compose(json.load(sys.stdin))
     except (OSError, ValueError, RuntimeError, ImportError) as exc:
         print(f"{'Rollback' if args.mode == 'rollback' else 'Source update'} preflight refused: {exc}", file=sys.stderr)
+        print("  Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC", file=sys.stderr)
         return 1
     return 0
 

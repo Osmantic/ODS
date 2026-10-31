@@ -721,7 +721,7 @@ _check_version_compat() {
         warn "Target    : v${_COMPAT_TARGET_VER}  (major ${new_major})"
         echo ""
         log "Downgrading may corrupt data or break your installation."
-        log "Consider restoring a backup instead: ods rollback"
+        log "Answer N to keep the installed version; nothing has changed yet. On installs without Portal (Pixel), 'ods rollback' restores the last pre-update configuration instead."
         echo ""
         if [[ "$force" == "true" ]]; then
             warn "--force specified: proceeding with downgrade."
@@ -2554,8 +2554,12 @@ cmd_update() {
         _ods_cli_require_proxy_auth
     fi
 
+    # `ods rollback` refuses Portal (Pixel) installs, the Linux default, so the
+    # steps that work on every install come first.
     if ! _compose_run_with_summary "Recreating containers with new images" "${flags[@]}" up -d --force-recreate; then
-        error "Failed to recreate containers. Run 'ods rollback' to restore previous state."
+        log_error "Failed to recreate containers. Fix the cause shown above, then run 'ods start'; 'ods status' shows what is still down."
+        log_error "On installs without Portal (Pixel), 'ods rollback' can instead restore the pre-update configuration."
+        exit 1
     fi
 
     log "Waiting for services to stabilize..."
@@ -2618,8 +2622,9 @@ cmd_update() {
 
     if [[ $failed_services -gt 0 ]]; then
         log_error "Update verification failed: $failed_services/$total_services services are not running"
-        log_error "Run 'ods rollback' to restore previous state"
-        log_error "Or run 'ods status' to check service health"
+        log_error "Run 'ods status' and 'ods logs <service>' to see why, fix the cause, then run 'ods start'."
+        log_error "On installs without Portal (Pixel), 'ods rollback' can instead restore the pre-update configuration."
+        echo "  Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC" >&2
         exit 1
     fi
 
@@ -7618,7 +7623,7 @@ ${CYAN}Commands:${NC}
   backup [options]    Create a backup of user data and config
   backup verify <id>   Verify checksum integrity for a backup
   restore [backup_id] Restore from a backup
-  rollback [snapshot] Rollback to pre-update state (after failed update)
+  rollback [snapshot] Rollback to pre-update state (after failed update; not on Portal (Pixel) installs)
   logs <service>      Tail logs for a service
   restart [service] [--rebuild-images]
                       Restart services (all if no service specified)
@@ -7734,7 +7739,7 @@ ${CYAN}Examples:${NC}
   ods backup verify <id>        # Verify backup integrity
   ods restore                   # Interactive restore
   ods restore 20260309-120000   # Restore specific backup
-  ods rollback                  # Rollback after failed update
+  ods rollback                  # Rollback after failed update (not on Portal (Pixel) installs)
   ods logs llm                  # Watch llama-server logs (via alias)
   ods restart stt               # Restart Whisper (via alias)
   ods chat "What is 2+2?"      # Quick LLM test

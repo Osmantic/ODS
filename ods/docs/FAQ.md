@@ -205,8 +205,10 @@ ods rollback
 
 `ods update` normally creates a pre-update snapshot first, so `ods rollback` is
 usually available right after an update. On Portal (Pixel) installs, ordinary
-backups refuse to run because they can't capture Portal's state;
-`ods backup -t config` still works.
+backups and `ods rollback` refuse to run because they can't capture or restore
+Portal's state; `ods backup -t config` still works. `ods update` does not touch
+Portal, so when an update fails there, run `ods status` and `ods logs <service>`
+to find the service that did not start, fix the cause, then run `ods start`.
 
 ---
 
