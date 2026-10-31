@@ -1,0 +1,18 @@
+{
+  "tui_gateway/methods_session.py": {
+    "before": "6510098165745c41f92a53cbe35ec7bbf8cbbf6623ffc535f46e960b5a320623",
+    "after": "def2a92c6b03e033cfb848c4593d1bdc40128c87e4dff9550f66b53ae68f0857"
+  },
+  "tui_gateway/session_auto_continue.py": {
+    "before": "69dfb58c18fa365fb7c2e9f753e671ad49a071699502d534b2ef9b883573fc34",
+    "after": "7f6429767bb49539ea4cb122dbd9bb5e460fc90db3e93a1a269da76b88312f55"
+  },
+  "tui_gateway/server.py": {
+    "before": "164ad8a1b43671c2a47829502f9a40f4355fc8060f2f6c2506b8aec44f1c0a51",
+    "after": "cb134df5f3aebc2c98dea675bf96bc57795a69083484c05056b2fe8dab31254a"
+  },
+  "tui_gateway/contracts/sessions.py": {
+    "before": "d3fa2630e3bc571f42ca4b889af317c2409f4222967db23244587f6eab64fe1d",
+    "after": "cc59ca5428318a7e40cb540f229273057a8e002408a2585c020d16a18b67f803"
+  }
+}

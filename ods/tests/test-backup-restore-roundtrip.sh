@@ -272,3 +272,6 @@ pass "Interactive selection shows the table and resolves a clean backup ID"
 
 echo ""
 echo -e "${GREEN}✓ Round-trip backup/restore test passed${NC}"
+
+# Durable Talk adds a paired SQLite payload to the same real backup/restore path.
+python3 "$SCRIPT_DIR/test_talk_backup_restore.py"

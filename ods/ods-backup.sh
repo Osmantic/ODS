@@ -367,6 +367,9 @@ backup_user_data() {
             log_warn "Skipped (not found): $path"
         fi
     done < <(ods_backup_data_paths "$ODS_DIR")
+    # Replace copied live SQLite files/WALs with verified standalone snapshots
+    # before checksums or publication. A failed pair never becomes a backup.
+    python3 "$SCRIPT_DIR/scripts/backup-talk-state.py" capture "$ODS_DIR" "$backup_dir" || return 1
 }
 
 # Backup configuration

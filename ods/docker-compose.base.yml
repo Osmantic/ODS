@@ -283,6 +283,7 @@ services:
     environment:
       - ODS_INSTALL_DIR=/ods
       - ODS_DATA_DIR=/data
+      - ODS_TALK_DURABLE=${ODS_TALK_DURABLE:-false}
       - ODS_EXTENSIONS_LIBRARY_DIR=/data/extensions-library
       - ODS_MODE=${ODS_MODE:-local}
       # Service status reads this live from .env. An install owner other than
