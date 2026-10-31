@@ -42,6 +42,7 @@ read_env_value() {
 # shellcheck source=../../../lib/dotenv-quote.sh
 _ODS_MACOS_ENV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 . "$_ODS_MACOS_ENV_ROOT/lib/dotenv-quote.sh"
+. "$_ODS_MACOS_ENV_ROOT/lib/safe-env.sh"
 # shellcheck source=../../lib/searxng-locale.sh
 . "$_ODS_MACOS_ENV_ROOT/installers/lib/searxng-locale.sh"
 # shellcheck source=../../lib/llama-memory-budget.sh
@@ -208,6 +209,24 @@ normalize_n_gpu_layers() {
     printf '%s\n' "${value:-auto}"
 }
 
+macos_configured_port() {
+    local env_path="$1" key="$2" default="$3" value
+    # A present empty setting is invalid, not a request to discard a saved
+    # value. Decode saved quotes/comments without executing owner input.
+    if [[ "${!key+x}" == x ]]; then
+        value="${!key}"
+    elif env_key_exists "$env_path" "$key"; then
+        value="$(safe_env_decode_value "$(read_env_value "$env_path" "$key")")"
+    else
+        value="$default"
+    fi
+    if [[ ! "$value" =~ ^[1-9][0-9]{0,4}$ ]] || (( 10#$value > 65535 )); then
+        printf 'ERROR: %s must be a port from 1 to 65535\n' "$key" >&2
+        return 1
+    fi
+    printf '%s' "$value"
+}
+
 generate_ods_env() {
     local install_dir="$1"
     local tier="$2"
@@ -221,12 +240,47 @@ generate_ods_env() {
     local hermes_cpu_limit hermes_cpu_reservation comfyui_cpu_limit comfyui_cpu_reservation
     local host_uid="${SUDO_UID:-$(id -u)}"
     local host_gid="${SUDO_GID:-$(id -g)}"
+    # Resolve all ports consumed by the public readiness summary before any
+    # .env write, including retained reruns and forced regeneration. Native
+    # readiness and later independent CLI invocations read this saved choice.
+    local port_key port_default port_value port_index
+    local port_keys=() port_values=()
+    while read -r port_key port_default; do
+        port_value="$(macos_configured_port "$env_path" "$port_key" "$port_default")" || return 1
+        port_keys+=("$port_key")
+        port_values+=("$port_value")
+    done <<'MACOS_SERVICE_PORT_DEFAULTS'
+DASHBOARD_PORT 3001
+DASHBOARD_API_PORT 3002
+WEBUI_PORT 3000
+LITELLM_PORT 4000
+PERPLEXICA_PORT 3004
+N8N_PORT 5678
+MACOS_SERVICE_PORT_DEFAULTS
+    # An existing webhook may be an explicitly configured external URL.
+    # Derive a localhost URL only when no process or saved choice exists.
+    local n8n_webhook_url
+    if [[ "${N8N_WEBHOOK_URL+x}" == x ]]; then
+        n8n_webhook_url="$N8N_WEBHOOK_URL"
+    elif env_key_exists "$env_path" N8N_WEBHOOK_URL; then
+        n8n_webhook_url="$(safe_env_decode_value "$(read_env_value "$env_path" N8N_WEBHOOK_URL)")"
+    else
+        n8n_webhook_url="http://localhost:${port_values[5]}"
+    fi
+    for ((port_index=0; port_index<${#port_keys[@]}; port_index++)); do
+        export "${port_keys[$port_index]}=${port_values[$port_index]}"
+    done
+    export N8N_WEBHOOK_URL="$n8n_webhook_url"
     read -r cpu_limit_raw cpu_reservation_raw docker_available_cpus <<< "$(calculate_llama_cpu_budget "apple")"
     detected_cpu_limit="${cpu_limit_raw}.0"
     detected_cpu_reservation="${cpu_reservation_raw}.0"
 
     # Idempotency: preserve existing .env (and secrets) unless --force was provided.
     if [[ -f "$env_path" ]] && [[ "$force_overwrite" != "true" ]]; then
+        for ((port_index=0; port_index<${#port_keys[@]}; port_index++)); do
+            upsert_env_value "$env_path" "${port_keys[$port_index]}" "${port_values[$port_index]}" || return 1
+        done
+        upsert_env_value "$env_path" N8N_WEBHOOK_URL "$(dotenv_quote "$n8n_webhook_url")" || return 1
         ENV_DASHBOARD_KEY="$(read_env_value "$env_path" "DASHBOARD_API_KEY")"
 
         # SearXNG secret: prefer .env, fall back to settings.yml, then generate.
@@ -676,16 +730,18 @@ N8N_RUN_USER=node
 
 #=== Ports ===
 OLLAMA_PORT=${native_llama_port}
-WEBUI_PORT=3000
+DASHBOARD_PORT=${DASHBOARD_PORT}
+DASHBOARD_API_PORT=${DASHBOARD_API_PORT}
+WEBUI_PORT=${WEBUI_PORT}
 SEARXNG_PORT=8888
-PERPLEXICA_PORT=3004
+PERPLEXICA_PORT=${PERPLEXICA_PORT}
 WHISPER_PORT=${WHISPER_PORT:-9000}
 TTS_PORT=8880
-N8N_PORT=5678
+N8N_PORT=${N8N_PORT}
 QDRANT_PORT=6333
 QDRANT_GRPC_PORT=6334
 EMBEDDINGS_PORT=8090
-LITELLM_PORT=4000
+LITELLM_PORT=${LITELLM_PORT}
 LANGFUSE_PORT=3006
 
 #=== Hermes Agent ===
@@ -746,7 +802,7 @@ OPEN_WEBUI_LLM_API_KEY=${open_webui_llm_api_key}
 
 #=== n8n Settings ===
 N8N_HOST=localhost
-N8N_WEBHOOK_URL=http://localhost:5678
+N8N_WEBHOOK_URL=$(dotenv_quote "$n8n_webhook_url")
 TIMEZONE=${tz}
 
 #=== Langfuse (LLM Observability) ===
