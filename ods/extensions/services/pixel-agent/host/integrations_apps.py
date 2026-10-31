@@ -113,6 +113,11 @@ def _shape(app, check):
         raise IntegrationError("app-protocol", f"{NAMES[app]} did not answer as expected. Check its address.")
 
 
+def _records(value, *keys):
+    """Whether value is a list of objects, each with these keys."""
+    return isinstance(value, list) and all(isinstance(item, dict) and all(key in item for key in keys) for item in value)
+
+
 # ---------------------------------------------------------------- documents (Paperless-ngx)
 
 def _paperless(settings, token, path, **params):
@@ -125,7 +130,7 @@ def documents_search(settings, token, query):
     if not query:
         raise IntegrationError("invalid-request", "Give words to look for, such as \"car insurance\".")
     reply = _paperless(settings, token, "/api/documents/", query=query, page_size=MAX_HITS)
-    _shape("documents", isinstance(reply, dict) and isinstance(reply.get("results"), list))
+    _shape("documents", isinstance(reply, dict) and _records(reply.get("results"), "id"))
     hits = []
     for item in reply["results"][:MAX_HITS]:
         hit = item.get("__search_hit__") or {}
@@ -180,8 +185,10 @@ def describes_photos(settings, key):
 
 def _city(settings, key, place):
     """The city or country name Immich knows that matches the owner's words."""
+    cities = _immich(settings, key, "/api/search/cities")
+    _shape("photos", _records(cities))
     known = []
-    for asset in _immich(settings, key, "/api/search/cities") or []:
+    for asset in cities:
         exif = asset.get("exifInfo") or {}
         known += [(field, exif[field]) for field in ("city", "country") if exif.get(field)]
     return best_place(place, known)
@@ -238,7 +245,7 @@ def photos_search(settings, key, *, query="", place="", after="", before=""):
             body["takenBefore"] = f"{before}T23:59:59.999Z"
         reply = _immich(settings, key, "/api/search/metadata", body)
         mode = "details"
-    _shape("photos", isinstance(reply, dict) and isinstance((reply.get("assets") or {}).get("items"), list))
+    _shape("photos", isinstance(reply, dict) and isinstance(reply.get("assets"), dict) and _records(reply["assets"].get("items"), "id"))
     found = reply["assets"]["items"]
     # Immich gives the next page's number while more photos match.
     more = len(found) > MAX_HITS or bool(reply["assets"].get("nextPage"))
@@ -285,7 +292,8 @@ def _changes(settings, key, path, *, method="GET", body=None):
 def watches(settings, key):
     """Every watch, as {uuid: {...}}, the way changedetection.io lists them."""
     reply = _changes(settings, key, "/watch")
-    _shape("watch", isinstance(reply, dict))
+    # Every entry is looked into; one of another shape would stop the page watcher.
+    _shape("watch", isinstance(reply, dict) and all(isinstance(watch, dict) for watch in reply.values()))
     return reply
 
 
@@ -410,7 +418,7 @@ def unread_news(settings, password, limit=MAX_NEWS_ITEMS):
     stream = urllib.parse.quote("user/-/state/com.google/reading-list", safe="")
     query = urllib.parse.urlencode({"xt": "user/-/state/com.google/read", "n": limit, "output": "json"})
     reply = request("news", f"{base}/reader/api/0/stream/contents/{stream}?{query}", headers=headers)
-    _shape("news", isinstance(reply, dict) and isinstance(reply.get("items"), list))
+    _shape("news", isinstance(reply, dict) and _records(reply.get("items")))
     items = []
     for item in reply["items"][:limit]:
         links = item.get("canonical") or item.get("alternate") or [{}]

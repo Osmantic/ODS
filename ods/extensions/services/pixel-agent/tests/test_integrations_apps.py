@@ -792,6 +792,29 @@ class AppTests(unittest.TestCase):
         self.assertIsNone(apps.best_place("Mars", known))
         self.assertIsNone(apps.best_place(" , ", known))
 
+    def test_an_odd_watch_list_is_an_explained_error(self):
+        self.save(self.settings())
+        FakeChanges.watches = {"w1": "not a watch"}
+        with self.assertRaisesRegex(service.IntegrationError, "did not answer as expected"):
+            self.service.check_watches()
+        with self.assertRaisesRegex(service.IntegrationError, "did not answer as expected"):
+            self.app("watch", "list")
+
+    def test_odd_app_answers_are_explained_errors_not_crashes(self):
+        self.save(self.settings())
+        original = apps.request
+        self.addCleanup(setattr, apps, "request", original)
+        cases = [({"results": ["x"], "count": 1}, lambda: self.app("documents", "search", query="car")),
+                 ({"assets": {"items": [{"no": "id"}]}}, lambda: self.app("photos", "search", after="2026-01-01")),
+                 ({"assets": ["x"]}, lambda: self.app("photos", "search", after="2026-01-01")),
+                 ({"city": "Lisbon"}, lambda: self.app("photos", "search", place="Lisbon")),
+                 ({"items": [None]}, lambda: apps.unread_news({"url": self.url("news"), "username": "owner"}, "rss-pass"))]
+        for answer, ask in cases:
+            # FreshRSS signs in first with a text answer; everything else gets the odd answer.
+            apps.request = lambda app, url, *, answer=answer, **kw: "Auth=tok" if url.endswith("ClientLogin") else answer
+            with self.assertRaisesRegex(service.IntegrationError, "did not answer as expected", msg=repr(answer)):
+                ask()
+
     def test_a_watch_address_with_spaces_is_refused(self):
         self.save(self.settings(changes="allow"))
         for bad in ("https://shop.example/a b", "https://shop.example/a\tb", "https://shop.example/\nx"):
