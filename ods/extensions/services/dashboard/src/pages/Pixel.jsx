@@ -88,7 +88,7 @@ const MODEL_CAPABILITY_DETAIL = 'The active model is recorded as not agent-quali
 // detail text is never shown, and an unknown reason is rejected.
 const MODEL_ADVISORIES = new Map([
   ['context-too-small', 'This model runs with less than 16K tokens of context, too small for Portal tasks. Set its context to 16K or more in Models, or switch model.'],
-  ['tools-unavailable', 'This model failed the tool-call check, so Portal tasks that use tools will likely fail. Chat still works.'],
+  ['tools-unavailable', 'This model failed the tool-call check, so Portal tasks that use tools will likely fail. Chat remains available, but replies may also fail. Try asking without tools or switch models.'],
   ['not-profiled', 'ODS has not checked this model yet, so Portal tasks may not work. To check it, choose Check again on the running model in Models.'],
   ['thinking-always-on', 'This model always thinks before it answers, so Portal tasks are slower and use more of its context.'],
 ])

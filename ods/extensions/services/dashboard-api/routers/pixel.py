@@ -113,7 +113,7 @@ _MODEL_SUPPORT_REASONS = {
     ),
     "tools-unavailable": (
         "This model failed the tool-call check, so Portal tasks that use tools will likely fail. "
-        "Chat still works."
+        "Chat remains available, but replies may also fail. Try asking without tools or switch models."
     ),
     "not-profiled": (
         "ODS has not checked this model yet, so Portal tasks may not work. To check it, choose "

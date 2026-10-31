@@ -166,7 +166,7 @@ describe('ODSTalk', () => {
     expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
   })
 
-  const TALK_TOOLS_ADVISORY_COPY = 'This model failed the tool-call check. Talk can still chat, but actions that need tools may fail.'
+  const TALK_TOOLS_ADVISORY_COPY = 'This model failed the tool-call check. Chat remains available, but replies and actions may fail. You can try this model or switch models.'
 
   test('advises, never blocks, when the model failed the tool check', async () => {
     const fetchMock = vi.fn(async (url, options = {}) => {
