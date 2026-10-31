@@ -12,6 +12,14 @@ engine needs: its model selector already sized the model for that one GPU, and
 a model that fits one GPU is never split across GPUs. The other services take
 the remaining GPUs.
 
+--fit-need-mb is everything the model needs on its GPUs at its context
+(weights, KV cache and compute buffers), as the model catalog estimates it.
+When that fits the largest GPU, llama_server runs there alone: splitting a
+model that fits one GPU buys no decode speed and takes the other GPUs from
+extensions or a second model. Without it the topology-ranked split below
+decides, as before, since --model-size alone (the weights) cannot tell
+whether the KV cache fits too.
+
 Output: gpu_assignment JSON to stdout
 Errors: to stderr, exit code 1
 """
@@ -28,6 +36,9 @@ from typing import Optional
 #  Constants
 
 HIGH_BW_THRESHOLD = 80   # min rank for NVLink / XGMI
+# Memory a GPU keeps free when it holds a whole model alone (--fit-need-mb).
+SINGLE_GPU_HEADROOM_MB    = 1024
+SINGLE_GPU_HEADROOM_SHARE = 0.03
 DEFAULT_SERVICES  = ["llama_server", "whisper", "comfyui", "embeddings"]
 NON_LLAMA         = ["whisper", "comfyui", "embeddings"]
 
@@ -225,6 +236,22 @@ def span_subsets(all_gpus: list, rank_matrix: dict, model_size_mb: float, ordere
         f"Model size {model_size_mb:.0f}MB exceeds assignable free VRAM "
         f"({sum(g.memory_mb for g in all_gpus):.0f}MB across all GPUs)."
     )
+
+
+def single_llama_gpu(gpus: list, fit_need_mb: float) -> Optional[GPU]:
+    """The largest GPU that holds the whole model (``fit_need_mb``), or None.
+
+    Largest by schedulable memory (free VRAM when the topology reports it);
+    a tie goes to the lowest index. The model must fit with
+    max(SINGLE_GPU_HEADROOM_MB, SINGLE_GPU_HEADROOM_SHARE of the card) to
+    spare for the CUDA/HIP context and allocator slack: an AMD topology
+    reports the rounded total, not free VRAM. On an AMD APU + dGPU host
+    only the discrete GPUs are candidates, as for the split below.
+    """
+    candidates = [g for g in gpus if g.memory_type == "discrete"] or gpus
+    best = max(candidates, key=lambda g: (g.memory_mb, -g.index))
+    headroom = max(SINGLE_GPU_HEADROOM_MB, SINGLE_GPU_HEADROOM_SHARE * best.memory_total_mb)
+    return best if fit_need_mb <= best.memory_mb - headroom else None
 
 
 def pinned_llama_subset(gpus: list, rank_matrix: dict, uuid: str) -> Subset:
@@ -473,6 +500,9 @@ def main():
     parser.add_argument("--pin-llm-gpu", default="", metavar="UUID",
                         help="Give the LLM role exactly this GPU (the vLLM engine's VLLM_GPU_UUID); "
                              "the other services take the remaining GPUs")
+    parser.add_argument("--fit-need-mb", type=float, default=None, metavar="MB",
+                        help="Everything the model needs at its context (weights, KV cache, buffers); "
+                             "a model that fits the largest GPU runs there alone")
     args = parser.parse_args()
 
     # Load topology
@@ -492,6 +522,10 @@ def main():
 
     if not math.isfinite(model_size_mb) or model_size_mb <= 0:
         print("ERROR: --model-size must be a finite positive number", file=sys.stderr)
+        sys.exit(1)
+
+    if args.fit_need_mb is not None and (not math.isfinite(args.fit_need_mb) or args.fit_need_mb <= 0):
+        print("ERROR: --fit-need-mb must be a finite positive number", file=sys.stderr)
         sys.exit(1)
 
     if gpu_count == 0:
@@ -552,10 +586,16 @@ def main():
     ordered     = enumerate_subsets(gpus, rank_matrix)
 
     #  Phase 2: GPU assignment
+    # A model whose whole need fits the largest GPU runs there unsplit, and
+    # the spare GPUs are not handed back to it.
+    single = single_llama_gpu(gpus, args.fit_need_mb) if args.fit_need_mb is not None else None
     try:
-        llama_subset = find_llama_subset(ordered, model_size_mb)
-        if llama_subset is None:
-            llama_subset = span_subsets(gpus, rank_matrix, model_size_mb, ordered)
+        if single is not None:
+            llama_subset = compute_subset([single], rank_matrix)
+        else:
+            llama_subset = find_llama_subset(ordered, model_size_mb)
+            if llama_subset is None:
+                llama_subset = span_subsets(gpus, rank_matrix, model_size_mb, ordered)
     except ValueError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
@@ -564,7 +604,7 @@ def main():
 
     # AMD APU+dGPU hybrid: if topology has mixed memory types, ensure LLM
     # gets discrete GPUs. Re-sort llama subset to prefer discrete over unified.
-    if vendor == "amd":
+    if vendor == "amd" and single is None:
         has_mixed = (
             any(g.memory_type == "unified" for g in gpus)
             and any(g.memory_type == "discrete" for g in gpus)
@@ -578,7 +618,8 @@ def main():
                     llama_subset = discrete_subset
 
     service_assignments, final_llama_gpus, strategy = assign_services(
-        gpus, llama_subset.gpus, rank_matrix, enabled_services, model_size_mb, vendor=vendor
+        gpus, llama_subset.gpus, rank_matrix, enabled_services, model_size_mb, vendor=vendor,
+        grow_llama=single is None,
     )
 
     #  Phase 3: Llama parallelism

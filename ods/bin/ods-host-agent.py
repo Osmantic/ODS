@@ -1619,7 +1619,14 @@ def _gpu_capacity_by_uuid(topology: dict) -> dict[str, int]:
     return capacities
 
 
-def _run_gpu_planner(topology: dict, required_mb: int) -> dict:
+# assign_gpus.py's single-GPU rule: a model alone on one GPU keeps
+# max(1 GiB, 3% of the card) free for the CUDA/HIP context and allocator slack.
+_SINGLE_GPU_HEADROOM_MB = 1024
+_SINGLE_GPU_HEADROOM_SHARE = 0.03
+
+
+def _run_gpu_planner(topology: dict, required_mb: int, fit_need_mb: int | None = None) -> dict:
+    """Run assign_gpus.py; ``fit_need_mb`` keeps a model that fits the largest GPU there alone."""
     planner = INSTALL_DIR / "scripts" / "assign_gpus.py"
     if not planner.is_file():
         raise RuntimeError(f"GPU assignment planner is missing: {planner}")
@@ -1649,6 +1656,7 @@ def _run_gpu_planner(topology: dict, required_mb: int) -> dict:
                 str(topology_path),
                 "--model-size",
                 str(required_mb),
+                *(["--fit-need-mb", str(fit_need_mb)] if fit_need_mb is not None else []),
             ],
             capture_output=True,
             text=True,
@@ -1674,9 +1682,132 @@ def _run_gpu_planner(topology: dict, required_mb: int) -> dict:
     return planned
 
 
-def _run_nvidia_gpu_planner(topology: dict, required_mb: int) -> dict:
+def _run_nvidia_gpu_planner(topology: dict, required_mb: int, fit_need_mb: int | None = None) -> dict:
     """Preserve the NVIDIA safety-test hook over the shared planner."""
-    return _run_gpu_planner(topology, required_mb)
+    return _run_gpu_planner(topology, required_mb, fit_need_mb)
+
+
+def _other_services_gpus(assignment: dict) -> set[str]:
+    """The GPUs that services other than llama-server hold in an assignment."""
+    return {
+        uuid
+        for name, service in assignment["gpu_assignment"]["services"].items()
+        if name != "llama_server" and isinstance(service, dict)
+        for uuid in service.get("gpus") or []
+    }
+
+
+def _topology_subset(topology: dict, uuids: set[str]) -> dict:
+    """The topology limited to the GPUs ``uuids`` names and the links between them."""
+    subset = json.loads(json.dumps(topology))
+    subset["gpus"] = [
+        gpu
+        for gpu in subset.get("gpus") or []
+        if isinstance(gpu, dict) and str(gpu.get("uuid") or "").strip() in uuids
+    ]
+    indices = {gpu.get("index") for gpu in subset["gpus"]}
+    subset["links"] = [
+        link
+        for link in subset.get("links") or []
+        if isinstance(link, dict) and link.get("gpu_a") in indices and link.get("gpu_b") in indices
+    ]
+    subset["gpu_count"] = len(subset["gpus"])
+    return subset
+
+
+def _holds_model_alone(topology: dict, uuid: str, required_mb: int) -> bool:
+    """Whether one GPU may run the whole model alone, by assign_gpus.py's rule.
+
+    The model fits with the single-GPU headroom to spare, and on an AMD APU +
+    dGPU host the GPU is a discrete one, as for the installer's pick.
+    """
+    gpus = [gpu for gpu in topology.get("gpus") or [] if isinstance(gpu, dict)]
+    gpu = next(gpu for gpu in gpus if str(gpu.get("uuid") or "").strip() == uuid)
+    if gpu.get("memory_type") == "unified" and any(
+        other.get("memory_type", "discrete") == "discrete" for other in gpus
+    ):
+        return False
+    capacity_mb = _gpu_capacity_by_uuid(topology).get(uuid, 0)
+    headroom_mb = max(_SINGLE_GPU_HEADROOM_MB, _SINGLE_GPU_HEADROOM_SHARE * capacity_mb)
+    return required_mb <= capacity_mb - headroom_mb
+
+
+def _consolidation_plan(planner, topology: dict, required_mb: int,
+                        current_gpus: list, other_gpus: set[str]) -> dict | None:
+    """The planner's result when a split model now fits one of its own GPUs, else None.
+
+    Owner rule (2026-10-27): a model that fits one GPU is not split. A switch
+    moves only llama-server; the other services stay on their GPUs. So a split
+    model moves onto one of its own GPUs that no other service uses, when that
+    GPU holds the whole model; the others are freed. A planner failure keeps
+    the assignment as it is: the switch itself needs no new GPUs.
+    """
+    candidates = {
+        uuid
+        for uuid in current_gpus
+        if uuid not in other_gpus and _holds_model_alone(topology, uuid, required_mb)
+    }
+    if len(current_gpus) < 2 or not candidates:
+        return None
+    try:
+        planned = planner(_topology_subset(topology, candidates), required_mb, required_mb)
+    except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+        logger.warning("Keeping the split llama GPU assignment; the planner could not consolidate it: %s", exc)
+        return None
+    planned_gpus = planned["gpu_assignment"]["services"]["llama_server"]["gpus"]
+    if len(planned_gpus) != 1 or planned_gpus[0] not in candidates:
+        return None
+    return planned
+
+
+def _expansion_plan(planner, topology: dict, required_mb: int, other_gpus: set[str]) -> dict:
+    """Plan llama-server's GPUs for a model its current GPUs cannot hold.
+
+    A switch moves only llama-server, so the planner first sees only the GPUs
+    no other service uses: the model runs alone on one of them when it fits
+    (owner rule, 2026-10-27), else it splits across them. Only when they cannot
+    hold it does the topology-ranked split over every GPU decide, as before.
+    """
+    capacities = _gpu_capacity_by_uuid(topology)
+    free = set(capacities) - other_gpus
+    if free and sum(capacities[uuid] for uuid in free) >= required_mb:
+        try:
+            planned = planner(_topology_subset(topology, free), required_mb, required_mb)
+        except RuntimeError as exc:
+            logger.info("Planning llama-server over every GPU; the free GPUs cannot hold the model: %s", exc)
+        else:
+            planned_gpus = planned["gpu_assignment"]["services"]["llama_server"]["gpus"]
+            if len(planned_gpus) > 1 or _holds_model_alone(topology, planned_gpus[0], required_mb):
+                return planned
+    return planner(topology, required_mb)
+
+
+def _llama_switch_plan(planner, topology: dict, required_mb: int,
+                       current_assignment: dict, *, services_recorded: bool) -> dict | None:
+    """The planner's llama-server GPUs for a model switch, or None to keep them.
+
+    A manual assignment is the owner's choice: it never moves, and a model it
+    cannot hold is refused. A legacy assignment recovered from .env does not
+    record every service's GPU (Compose runs one without a GPU on GPU 0), so it
+    keeps the ranked split and is never consolidated.
+    """
+    root = current_assignment["gpu_assignment"]
+    current_gpus = root["services"]["llama_server"]["gpus"]
+    manual = str(root.get("strategy") or "").lower() == "manual"
+    capacities = _gpu_capacity_by_uuid(topology)
+    if sum(capacities[uuid] for uuid in current_gpus) >= required_mb:
+        if manual or not services_recorded:
+            return None
+        return _consolidation_plan(planner, topology, required_mb, current_gpus,
+                                   _other_services_gpus(current_assignment))
+    if manual:
+        raise RuntimeError(
+            "The manual llama GPU assignment is too small for this model; "
+            "run 'ods gpu reassign --manual' to choose a larger set"
+        )
+    if not services_recorded:
+        return planner(topology, required_mb)
+    return _expansion_plan(planner, topology, required_mb, _other_services_gpus(current_assignment))
 
 
 def _build_model_gpu_assignment_plan(
@@ -1687,8 +1818,9 @@ def _build_model_gpu_assignment_plan(
     *,
     context_length: int | None = None,
     runtime_profile: dict | None = None,
+    services_recorded: bool = True,
 ) -> dict | None:
-    """Return a validated llama GPU expansion while preserving other services."""
+    """Return a validated llama GPU replan while preserving other services."""
     capacities = _gpu_capacity_by_uuid(topology)
     if len(capacities) < 2:
         raise RuntimeError("Multi-GPU topology does not contain usable GPU capacities")
@@ -1708,16 +1840,10 @@ def _build_model_gpu_assignment_plan(
         context_length=context_length,
         runtime_profile=runtime_profile,
     )
-    current_capacity_mb = sum(capacities[uuid] for uuid in current_gpus)
-    if current_capacity_mb >= required_mb:
+    planned = _llama_switch_plan(_run_gpu_planner, topology, required_mb, current_assignment,
+                                 services_recorded=services_recorded)
+    if planned is None:
         return None
-    if str(current_assignment["gpu_assignment"].get("strategy") or "").lower() == "manual":
-        raise RuntimeError(
-            "The manual llama GPU assignment is too small for this model; "
-            "run 'ods gpu reassign --manual' to choose a larger set"
-        )
-
-    planned = _run_gpu_planner(topology, required_mb)
     planned_llama = planned["gpu_assignment"]["services"]["llama_server"]
     planned_gpus = planned_llama["gpus"]
     unknown = [uuid for uuid in planned_gpus if uuid not in capacities]
@@ -1841,6 +1967,7 @@ def _plan_nvidia_model_gpu_assignment(
     capacities = _gpu_capacity_by_uuid(topology)
     if len(capacities) < 2:
         raise RuntimeError("Multi-GPU topology does not contain usable NVIDIA capacities")
+    services_recorded = current_assignment is not None
     if current_assignment is None:
         current_assignment = _legacy_nvidia_gpu_assignment(env, topology)
         if current_assignment is None:  # Defensive: restriction checked above.
@@ -1861,16 +1988,10 @@ def _plan_nvidia_model_gpu_assignment(
         context_length=context_length,
         runtime_profile=runtime_profile,
     )
-    current_capacity_mb = sum(capacities[uuid] for uuid in current_gpus)
-    if current_capacity_mb >= required_mb:
+    planned = _llama_switch_plan(_run_nvidia_gpu_planner, topology, required_mb, current_assignment,
+                                 services_recorded=services_recorded)
+    if planned is None:
         return None
-    if str(current_assignment["gpu_assignment"].get("strategy") or "").lower() == "manual":
-        raise RuntimeError(
-            "The manual llama GPU assignment is too small for this model; "
-            "run 'ods gpu reassign --manual' to choose a larger set"
-        )
-
-    planned = _run_nvidia_gpu_planner(topology, required_mb)
     planned_llama = planned["gpu_assignment"]["services"]["llama_server"]
     planned_gpus = planned_llama["gpus"]
     unknown = [uuid for uuid in planned_gpus if uuid not in capacities]
@@ -2120,6 +2241,7 @@ def _plan_amd_model_gpu_assignment(
     if str(topology.get("vendor") or "").lower() != "amd":
         raise RuntimeError("Multi-GPU topology does not describe AMD devices")
 
+    services_recorded = current_assignment is not None
     if current_assignment is None:
         current_assignment = _legacy_amd_gpu_assignment(env, topology)
         if current_assignment is None:  # Defensive: restriction checked above.
@@ -2132,17 +2254,28 @@ def _plan_amd_model_gpu_assignment(
         target,
         context_length=context_length,
         runtime_profile=runtime_profile,
+        services_recorded=services_recorded,
     )
     if plan is None:
         return None
 
     planned_indices = plan["env_updates"]["LLAMA_SERVER_GPU_INDICES"]
     plan["env_updates"]["ROCR_VISIBLE_DEVICES"] = planned_indices
-    arch_updates, arch_removals = _amd_architecture_plan(
-        env,
-        topology,
-        plan["planned_gpus"],
-    )
+    try:
+        arch_updates, arch_removals = _amd_architecture_plan(
+            env,
+            topology,
+            plan["planned_gpus"],
+        )
+    except RuntimeError as exc:
+        # Only a consolidation plans a strict subset of the current GPUs: an
+        # expansion needs more capacity than they have. That switch needs no
+        # new GPU, so keep the split rather than fail it (Vulkan never reads
+        # the gfx version this check needs).
+        if not set(plan["planned_gpus"]) < set(plan["previous_gpus"]):
+            raise
+        logger.warning("Keeping the split llama GPU assignment: %s", exc)
+        return None
     plan["env_updates"].update(arch_updates)
     plan["env_removals"].extend(arch_removals)
     return plan
