@@ -158,12 +158,8 @@ class AppActions:
 
     def watch_overview(self):
         """The watched pages for Settings."""
-        config = self.store.config()
-        settings = apps.app_settings(config, "watch")
-        key = self._key("watch")
-        if not key:
-            raise IntegrationError("app-no-key", "Save the changedetection.io API key first.")
-        return self._watch_list(settings, key)
+        # Saving refuses an app turned on without its key.
+        return self._watch_list(apps.app_settings(self.store.config(), "watch"), self._key("watch"))
 
     def send_digest_now(self):
         """Send the owner today's news brief right away, without waiting for the scheduled time."""

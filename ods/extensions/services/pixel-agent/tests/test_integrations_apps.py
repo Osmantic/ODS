@@ -416,10 +416,22 @@ class AppTests(unittest.TestCase):
 
     def test_watching_is_quiet_while_the_app_is_off_or_has_no_key(self):
         self.save(self.settings(enabled=False))
-        self.service.check_watches()  # Would fail if it reached the fake without a key.
-        self.save(self.settings(), secrets={"apps": {"watch": ""}})
         self.service.check_watches()
+        self.save(self.settings(enabled=False), secrets={"apps": {"watch": ""}})
+        self.service.check_watches()  # Would fail if it reached the fake without a key.
         self.assertEqual(FakeNtfy.sent, [])
+
+    def test_an_app_cannot_be_turned_on_without_its_key(self):
+        with self.assertRaisesRegex(service.IntegrationError, "Give the Paperless-ngx key, or turn it off"):
+            self.save(self.settings(), secrets={"apps": {"photos": "photo-key", "watch": "watch-key", "news": "rss-pass"}})
+        self.assertEqual(self.owner("get")["settings"]["revision"], 0)  # Nothing was saved.
+        self.save(self.settings(enabled=False), secrets={"apps": {"documents": "doc-token"}})  # A key saved first...
+        only_documents = self.settings(enabled=False)
+        only_documents["apps"]["documents"]["enabled"] = True
+        self.save(only_documents, secrets={})  # ...lets it be turned on later.
+        self.assertEqual([server["id"] for server in self.agent("mcp-tools")["servers"]], ["documents"])
+        with self.assertRaisesRegex(service.IntegrationError, "Give the Paperless-ngx key"):
+            self.save(only_documents, secrets={"apps": {"documents": ""}})  # Removing the key of an app that is on.
 
     # News and the digest.
     def test_news_digest_groups_unread_stories_by_feed(self):
@@ -513,7 +525,7 @@ class AppTests(unittest.TestCase):
                                    "watch": "changedetection.io answered: 0 watched pages.", "news": "FreshRSS answered: 2 feeds."})
         with self.assertRaisesRegex(service.IntegrationError, "Unknown app"):
             self.owner("test-app", app="mail")
-        self.save(self.settings(), secrets={"apps": {"photos": ""}})
+        self.save(self.settings(enabled=False), secrets={"apps": {"photos": ""}})
         with self.assertRaisesRegex(service.IntegrationError, "Save the Immich token first"):
             self.owner("test-app", app="photos")
         with self.assertRaises(service.IntegrationError):
@@ -524,7 +536,7 @@ class AppTests(unittest.TestCase):
         view = self.owner("get")["settings"]["apps"]
         self.assertEqual({app: view[app]["hasKey"] for app in apps.APPS}, dict.fromkeys(apps.APPS, True))
         self.assertNotIn("doc-token", json.dumps(self.owner("get")))
-        self.save(self.settings(), secrets={"apps": {"photos": ""}})  # An empty value removes the key.
+        self.save(self.settings(enabled=False), secrets={"apps": {"photos": ""}})  # An empty value removes the key.
         self.assertFalse(self.owner("get")["settings"]["apps"]["photos"]["hasKey"])
         with self.assertRaisesRegex(service.IntegrationError, "app tokens"):
             self.save(self.settings(), secrets={"apps": {"mail": "x"}})
@@ -708,9 +720,6 @@ class AppTests(unittest.TestCase):
         self.assertEqual([(w["title"], w["below"], w["lastPrice"]) for w in listed["watches"]], [("Kettle", 50.0, 55.0), ("Hours", None, None)])
         self.assertIn("(notifies when the price is at or under 50; last seen at 55)",
                       self.agent("mcp-call", server="watch", tool="list", arguments={})["text"])
-        self.save(self.settings(), secrets={"apps": {"watch": ""}})
-        with self.assertRaisesRegex(service.IntegrationError, "Save the changedetection.io API key first"):
-            self.owner("watch-list")
         self.save(self.settings(enabled=False))
         with self.assertRaisesRegex(service.IntegrationError, "changedetection.io is not set up"):
             self.owner("watch-list")

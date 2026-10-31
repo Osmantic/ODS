@@ -257,6 +257,10 @@ class Integrations(AppActions):
             for app, value in app_changes.items():
                 secrets["apps"][app] = _text(value, f"the {apps.NAMES[app]} token", 4096)
             secrets["apps"] = {app: value for app, value in secrets["apps"].items() if value}
+            # Turned on without a key, Portal would list the app and every call would be refused.
+            missing = [apps.NAMES[app] for app in apps.APPS if updated["apps"][app]["enabled"] and not secrets["apps"].get(app)]
+            if missing:
+                raise IntegrationError("invalid-settings", f"Give the {missing[0]} key, or turn it off.")
             self.store.save_secrets(secrets)
             self.store.save_config(updated)
             self.store.log("settings", "integrations", "saved")

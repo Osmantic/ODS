@@ -130,7 +130,8 @@ Each app runs on this computer, usually from the ODS extension catalog. Their se
 are reserved, so an MCP server cannot be named after them. Settings
 fills in the address the catalog uses; change it for an app installed elsewhere.
 The owner gives each app a key, which stays with the other secrets, and **Test**
-says what answered. An app can be tested before it is turned on.
+says what answered. An app can be tested before it is turned on, but it can be
+turned on only with its key.
 
 - **Documents:** Portal searches Paperless-ngx's full text and reads a document's
   text (up to 12,000 characters). It cannot change or delete documents. When more
