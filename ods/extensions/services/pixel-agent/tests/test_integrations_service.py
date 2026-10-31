@@ -277,7 +277,7 @@ class IntegrationsTests(unittest.TestCase):
         link = "http://192.168.1.5:3001/settings?section=portal-integrations"
         self.save(self.settings(link=link), secrets={"ntfyPassword": "pw"})
         self.agent("notes-write", path="Groceries.md", text="bread", mode="append")
-        self.assertEqual(FakeNtfy.headers[-1], {"click": link, "actions": f"view, Open approvals, {link}"})
+        self.assertEqual(FakeNtfy.headers[-1], {"click": link, "actions": f'view, Open approvals, "{link}"'})
         self.assertIn("once, within 24 hours; a scheduled task goes ahead on its next run", FakeNtfy.sent[-1]["message"])
         # The link opens Settings and grants nothing: the approval id is not in it.
         self.assertNotIn(self.owner("get")["approvals"][0]["id"], FakeNtfy.headers[-1]["actions"])

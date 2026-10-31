@@ -1,9 +1,22 @@
 """Notifications to the owner's phone or computer through their ntfy server."""
 import base64
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from integrations_common import IntegrationError, NETWORK_TIMEOUT
+
+
+def header_text(value):
+    """A header value ntfy shows as written: ASCII as is, anything else RFC 2047 encoded."""
+    if value.isascii():
+        return value
+    return "=?UTF-8?B?" + base64.b64encode(value.encode()).decode() + "?="
+
+
+def header_link(link):
+    """A link fit for a header: characters outside ASCII, spaces and quotes percent-encoded."""
+    return urllib.parse.quote(link, safe="!#$%&'()*+,/:;=?@[]~")
 
 
 def send_notification(config, secrets, title, message, priority="default", link="", link_label="Open approvals"):
@@ -14,14 +27,15 @@ def send_notification(config, secrets, title, message, priority="default", link=
         raise IntegrationError("invalid-notification", "Give a message of up to 4,000 characters.")
     title = (title if isinstance(title, str) and title.strip() else "Portal").strip()[:200]
     request = urllib.request.Request(f"{settings['url']}/{settings['topic']}", data=message.strip().encode(), method="POST")
-    # ntfy reads non-ASCII header values only when RFC 2047 encoded; keep titles plain.
-    request.add_header("Title", title.encode("ascii", "replace").decode())
+    request.add_header("Title", header_text(title))
     request.add_header("Priority", priority if priority in ("min", "low", "default", "high", "urgent") else "default")
     request.add_header("Tags", "portal")
     if link:
         # Only opens a page (Settings, where the owner still signs in, or a watched page); it grants nothing.
+        link = header_link(link)
         request.add_header("Click", link)
-        request.add_header("Actions", f"view, {link_label}, {link}")
+        # ntfy splits an action at commas; a quoted link may hold them (its quotes are percent-encoded).
+        request.add_header("Actions", f'view, {link_label}, "{link}"')
     password = secrets.get("ntfyPassword")
     if password and settings["username"]:
         request.add_header("Authorization", "Basic " + base64.b64encode(f"{settings['username']}:{password}".encode()).decode())
