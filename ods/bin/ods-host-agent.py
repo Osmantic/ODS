@@ -7002,17 +7002,18 @@ def _repair_rootless_data_ownership(service_id: str) -> None:
         )
 
 
-def _extension_stop_targets(service_id: str) -> list[str]:
+def _extension_stop_targets(service_id: str, compose_name: str = "compose.yaml") -> list[str]:
     """Include namespaced companions owned by this extension's compose fragment.
 
     Never walk depends_on: those dependencies may be shared ODS services.
     A separately registered extension retains its independent lifecycle.
+    ``compose_name`` reads a disabled fragment (``compose.yaml.disabled``).
     """
     targets = [service_id]
     ext_dir = _find_ext_dir(service_id)
     if ext_dir is None:
         return targets
-    compose_path = ext_dir / "compose.yaml"
+    compose_path = ext_dir / compose_name
     if not compose_path.exists():
         return targets
     if compose_path.is_symlink():
@@ -7035,6 +7036,132 @@ def _extension_stop_targets(service_id: str) -> list[str]:
                 and _find_ext_dir(name) is None):
             targets.append(name)
     return targets
+
+
+def _remove_extension_containers(service_id: str, *, delete_volumes: bool) -> dict:
+    """Delete a disabled Library extension's stopped containers before it is removed.
+
+    Disable stops an extension's containers and keeps them. Once Remove has
+    deleted its definition nothing manages them any more, and they stayed
+    behind (ods-excalidraw, exited, RTX Spark laptop 2026-10-25). Ownership
+    comes from the containers' Compose labels, as for recovery stops. Named
+    volumes and ./data/<id> are kept unless the owner chose to delete the data.
+    """
+    # validate_service_id admitted the id; keep the path inside its folder anyway.
+    base = os.path.normpath(os.fspath(USER_EXTENSIONS_DIR))
+    full = os.path.normpath(os.path.join(base, service_id))
+    if not full.startswith(base + os.sep):
+        raise ValueError(f"Invalid extension id: {service_id}")
+    ext_dir = Path(full)
+    if ext_dir.is_symlink() or not ext_dir.is_dir():
+        raise ValueError(f"{service_id} is not an installed Library extension")
+    selected = ext_dir / "compose.yaml"
+    if selected.exists() or selected.is_symlink():
+        raise ValueError(f"{service_id} is still enabled; disable it before removing it")
+    try:
+        targets = _extension_stop_targets(service_id, "compose.yaml.disabled")
+    except RuntimeError as exc:
+        # An unreadable definition still names its own container.
+        logger.warning("Removing only the %s container: %s", service_id, exc)
+        targets = [service_id]
+    helper_path = INSTALL_DIR / "scripts" / "stop-owned-containers.py"
+    if helper_path.is_symlink() or not helper_path.is_file():
+        raise RuntimeError("The container removal helper is unavailable")
+    spec = importlib.util.spec_from_file_location("_ods_stop_owned", helper_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Cannot load the container removal helper")
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    containers, removed, kept = helper.remove_owned_containers(
+        INSTALL_DIR, targets, remove_volumes=delete_volumes)
+    return {"containers": containers, "volumes_removed": removed, "volumes_kept": kept}
+
+
+_EXTENSION_REMOVAL_RESERVED_DATA = frozenset({
+    "auth", "backends", "backups", "config", "config-backups", "data",
+    "extension-operations", "extension-progress", "extensions-library", "hermes-auth",
+    "installer-backups", "models", "openclaw", "paperless", "persona",
+    "piper", "pixel", "pixel-chat-results", "pixel-native",
+    "pixel-providers", "remote-provider", "state", "system-tuning",
+    "user-extensions",
+})
+
+
+def _extension_removal_child(parent: Path, name: str) -> Path:
+    """Require a normalized direct child before touching a requested path."""
+    base = os.path.normpath(os.fspath(parent))
+    full = os.path.normpath(os.path.join(base, name))
+    if not full.startswith(base + os.sep) or os.path.dirname(full) != base:
+        raise ValueError("Extension removal path is outside its owned directory")
+    return Path(full)
+
+
+def _remove_library_extension(service_id: str, *, delete_data: bool) -> dict:
+    """Keep the full Remove under the native CLI's selection authority.
+
+    macOS and its Docker VM do not share flock state even for the same bind
+    mount. The caller must not hold its graph lock while making this RPC:
+    on Linux that would wait on itself, while on Mac it offers no exclusion.
+    Failed deletion can have partial effects; the definition is removed last
+    so container/data failures leave a disabled extension to inspect or retry.
+    """
+    if (not SERVICE_ID_RE.fullmatch(service_id) or service_id in CORE_SERVICE_IDS
+            or service_id in ALWAYS_ON_SERVICES or type(delete_data) is not bool):
+        raise ValueError("Invalid Library extension removal")
+    root = INSTALL_DIR.resolve()
+    data = root / "data"
+    users = data / "user-extensions"
+    if (DATA_DIR != data or USER_EXTENSIONS_DIR != users
+            or data.is_symlink() or users.is_symlink()
+            or not data.is_dir() or not users.is_dir()):
+        raise ValueError("Extension data location requires inspection")
+    selector = _load_extension_selector()
+    try:
+        with selector._selection_lock(root, 15.0):
+            directory = _extension_removal_child(users, service_id)
+            if directory.is_symlink() or not directory.is_dir():
+                raise ValueError(f"{service_id} is not an installed Library extension")
+            selected = directory / "compose.yaml"
+            if selected.exists() or selected.is_symlink():
+                raise ValueError(f"{service_id} is still enabled; disable it before removing it")
+            selector._assert_no_dependents(root, service_id)
+            own_data = _extension_removal_child(data, service_id)
+            if delete_data:
+                if service_id in _EXTENSION_REMOVAL_RESERVED_DATA:
+                    raise ValueError(f"data/{service_id} belongs to ODS, not to an extension")
+                if own_data.is_symlink() or own_data.resolve() != own_data:
+                    raise ValueError(f"data/{service_id} redirects to another location; keep its data")
+                if own_data.exists() and not own_data.is_dir():
+                    raise ValueError(f"data/{service_id} is not an extension data directory")
+            backups = users / ".backups"
+            progress = data / "extension-progress"
+            if backups.is_symlink() or progress.is_symlink():
+                raise ValueError("Extension backup or progress location requires inspection")
+            # Fail before deletion if the Compose cache cannot be invalidated.
+            invalidate_compose_cache()
+            removed = _remove_extension_containers(service_id, delete_volumes=delete_data)
+            freed = None
+            if delete_data and own_data.is_dir():
+                total = 0
+                for parent, _, files in os.walk(own_data, followlinks=False):
+                    for name in files:
+                        info = os.stat(Path(parent) / name, follow_symlinks=False)
+                        if stat_mod.S_ISREG(info.st_mode):
+                            total += info.st_size
+                shutil.rmtree(own_data)
+                freed = round(total / (1024 ** 3), 3)
+            backup = _extension_removal_child(backups, service_id)
+            if backup.is_symlink():
+                backup.unlink()
+            elif backup.is_dir():
+                shutil.rmtree(backup)
+            # Clear only this extension's presentation record; keep operation receipts.
+            _extension_removal_child(progress, f"{service_id}.json").unlink(missing_ok=True)
+            shutil.rmtree(directory)
+            return {**removed, "definition_removed": True,
+                    "data_deleted": delete_data, "data_freed_gb": freed}
+    except selector.SelectionError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def _load_extension_selector():
@@ -8228,6 +8355,10 @@ def _iso_now() -> str:
 _install_operation_context = threading.local()
 _install_operation_guard = threading.Lock()
 _install_operation_live = set()
+# Each agent process has its own identity. Extension progress records carry
+# it, so a record an earlier agent process left behind (its worker died with
+# that process) is told apart from one this process is still writing.
+_AGENT_INSTANCE = secrets.token_hex(8)
 
 
 def _install_operation_path(service_id, operation_id):
@@ -8371,7 +8502,6 @@ def _write_progress(service_id: str, status: str, phase_label: str = "",
     progress_dir = DATA_DIR / "extension-progress"
     progress_dir.mkdir(parents=True, exist_ok=True)
     progress_file = progress_dir / f"{service_id}.json"
-    tmp_file = progress_file.with_suffix(".json.tmp")
 
     # Preserve started_at from existing file
     started_at = _iso_now()
@@ -8396,9 +8526,17 @@ def _write_progress(service_id: str, status: str, phase_label: str = "",
         "error": sanitized_error,
         "started_at": started_at,
         "updated_at": _iso_now(),
+        "agent_instance": _AGENT_INSTANCE,
         **({'operation_id': operation_id} if operation_id else {}),
         **({'exit_verified': True} if status == 'started' and exit_verified else {}),
     }
+    _replace_progress_file(progress_file, data)
+    _record_install_operation_progress(service_id, status, phase_label, exit_verified)
+
+
+def _replace_progress_file(progress_file: Path, data: dict) -> None:
+    """Atomically replace one progress record."""
+    tmp_file = progress_file.with_suffix(".json.tmp")
     tmp_file.write_text(json.dumps(data), encoding="utf-8")
     # os.replace (not os.rename) — Windows os.rename raises FileExistsError
     # when the destination exists; os.replace always overwrites atomically.
@@ -8406,7 +8544,6 @@ def _write_progress(service_id: str, status: str, phase_label: str = "",
     for attempt in range(6):
         try:
             os.replace(str(tmp_file), str(progress_file))
-            _record_install_operation_progress(service_id, status, phase_label, exit_verified)
             return
         except PermissionError as exc:
             last_error = exc
@@ -8417,6 +8554,81 @@ def _write_progress(service_id: str, status: str, phase_label: str = "",
             time.sleep(0.05 * (attempt + 1))
     if last_error is not None:
         raise last_error
+
+
+# Phases a worker writes while it is still running. A record left in one of
+# them has no worker once its agent process is gone.
+_ACTIVE_PROGRESS_STATES = frozenset({"pulling", "starting", "setup_hook"})
+# A record without an agent identity is the dashboard's own first "Starting
+# installation..." record, written just before its request to this agent.
+_DASHBOARD_PROGRESS_GRACE_SECONDS = 120
+INTERRUPTED_PROGRESS_ERROR = (
+    "ODS stopped before this finished, for example after a restart or a crash. "
+    "Retry to continue; anything already downloaded is reused."
+)
+
+
+def _live_extension_jobs() -> list[str]:
+    """Services with an operation running in this agent process right now.
+
+    Every worker that writes extension progress holds its service's lock
+    until it has written its final record: library installs, enable retries,
+    image downloads and the Open WebUI add. OpenCode setup has its own thread.
+    """
+    live = {service_id for service_id, lock in list(_service_locks.items()) if lock.locked()}
+    with _install_operation_guard:
+        live.update(service_id for service_id, _ in _install_operation_live)
+    # Setup writes its first record under this lock before its thread starts.
+    if not _opencode_setup_lock.acquire(timeout=2):
+        live.add(_OPENCODE_PROGRESS_ID)
+    else:
+        try:
+            if _opencode_setup_in_progress():
+                live.add(_OPENCODE_PROGRESS_ID)
+        finally:
+            _opencode_setup_lock.release()
+    return sorted(live)
+
+
+def _interrupt_orphaned_progress() -> list[str]:
+    """Mark the progress an earlier agent process left mid-operation.
+
+    Runs once at startup, before any request is served: no operation of this
+    process can be running yet, so a record still in an active phase belongs
+    to a worker that died with its agent (a WSL or Docker Desktop crash, a
+    reboot, a killed agent). The dashboard showed that record's last progress
+    line until it aged out an hour later (RTX Spark laptop, 2026-10-25). The
+    record becomes a failure the owner can retry or cancel. A record the
+    dashboard wrote moments ago for a request still on its way is left alone.
+    """
+    directory = DATA_DIR / "extension-progress"
+    if directory.is_symlink() or not directory.is_dir():
+        return []
+    interrupted = []
+    for path in sorted(directory.glob("*.json")):
+        if path.is_symlink() or not SERVICE_ID_RE.fullmatch(path.stem):
+            continue
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+            age = time.time() - path.stat().st_mtime
+        except (OSError, ValueError):
+            continue
+        if (not isinstance(record, dict) or record.get("status") not in _ACTIVE_PROGRESS_STATES
+                or record.get("service_id") != path.stem):
+            continue
+        if "agent_instance" not in record and age < _DASHBOARD_PROGRESS_GRACE_SECONDS:
+            continue
+        try:
+            _replace_progress_file(path, {
+                **record, "status": "error", "error": INTERRUPTED_PROGRESS_ERROR,
+                "interrupted": True, "interrupted_phase": record["status"],
+                "updated_at": _iso_now(), "agent_instance": _AGENT_INSTANCE,
+            })
+        except OSError as exc:
+            logger.warning("Could not mark the interrupted %s operation: %s", path.stem, exc)
+            continue
+        interrupted.append(path.stem)
+    return interrupted
 
 
 def _model_file_ready(path: Path) -> bool:
@@ -10505,6 +10717,19 @@ class AgentHandler(BaseHTTPRequestHandler):
                 return
             json_response(self, 200 if value is not None else 404,
                           {'operation': value} if value is not None else {'error': 'Operation not found'})
+        elif path == "/v1/extension/jobs":
+            # Which extension operations this agent process is running. The
+            # dashboard compares it with the progress records: a record no
+            # live operation will finish is shown as interrupted, not frozen.
+            # "now" is this host's clock, the one that stamped the records,
+            # read first: a record written after it may belong to an
+            # operation that started after the live list was read.
+            if not check_auth(self):
+                return
+            now = _iso_now()
+            live = _live_extension_jobs()
+            json_response(self, 200, {"schema_version": 1, "instance": _AGENT_INSTANCE,
+                                      "now": now, "live": live}, no_store=True)
         elif path == "/v1/system/metrics":
             self._handle_system_metrics()
         elif path == "/v1/gpu/metrics":
@@ -11189,6 +11414,10 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_extension_compose_toggle(activate=False)
         elif self.path == "/v1/extension/select":
             self._handle_extension_selection()
+        elif self.path == "/v1/extension/remove-containers":
+            self._handle_extension_remove_containers()
+        elif self.path == "/v1/extension/remove":
+            self._handle_extension_remove()
         elif self.path == "/v1/extension/sync_config":
             self._handle_extension_sync_config()
         elif self.path == "/v1/service/logs":
@@ -12860,6 +13089,48 @@ class AgentHandler(BaseHTTPRequestHandler):
         if outcome == "disabled":
             _clear_disabled_progress(service_ids[0])
         json_response(self, 200, {"status": "ok", "service_ids": service_ids, "action": outcome})
+
+    def _handle_extension_remove_containers(self):
+        """Old clients cannot finish a removal under native host authority."""
+        if not check_auth(self):
+            return
+        json_response(self, 410, {
+            "error": "Finish updating ODS before removing this extension."
+        })
+
+    def _handle_extension_remove(self):
+        """Remove a disabled Library extension under the native graph lock."""
+        if not check_auth(self):
+            return
+        body = read_json_body(self)
+        if body is None:
+            return
+        service_id = validate_service_id(self, body)
+        if service_id is None:
+            return
+        delete_data = body.get("delete_data", False)
+        if type(delete_data) is not bool:
+            json_response(self, 400, {"error": "delete_data must be boolean"})
+            return
+        lock = _service_locks[service_id]
+        if not lock.acquire(blocking=False):
+            json_response(self, 409, {"error": f"Operation in progress for {service_id}"})
+            return
+        try:
+            result = _remove_library_extension(service_id, delete_data=delete_data)
+        except ValueError as exc:
+            # A helper can fail after partial work; do not claim rollback.
+            json_response(self, 409, {"error": _redact_credential_text(str(exc))[:500]})
+            return
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            logger.warning("Container removal failed for %s: %s", service_id, type(exc).__name__)
+            json_response(self, 502, {"error": _redact_credential_text(str(exc))[:500]})
+            return
+        finally:
+            lock.release()
+        logger.info("Removed Library extension %s (containers: %s)",
+                    service_id, ", ".join(result["containers"]) or "none")
+        json_response(self, 200, {"status": "ok", "service_id": service_id, **result})
 
     def _handle_extension_sync_config(self):
         """Copy <ext_dir>/config/* into INSTALL_DIR/config/.
@@ -22695,6 +22966,11 @@ def main():
         sys.exit(1)
 
     server = _create_host_agent_server(env, bind_addr, port)
+    # The bound port proves no other agent serves this install; requests wait
+    # in the listen queue until serve_forever(), after this sweep.
+    interrupted = _interrupt_orphaned_progress()
+    if interrupted:
+        logger.info("Marked interrupted extension operations: %s", ", ".join(interrupted))
     signal.signal(signal.SIGTERM, lambda signum, _frame: _request_server_shutdown(server, signum))
     signal.signal(signal.SIGINT, lambda signum, _frame: _request_server_shutdown(server, signum))
     logger.info("ODS Host Agent v%s listening on %s:%d", VERSION, bind_addr, port)
