@@ -445,15 +445,7 @@ except Exception:
                 for _phase06_tmpl_dir in bin lib extensions vendor; do
                     if [[ -d "$SCRIPT_DIR/$_phase06_tmpl_dir" ]]; then
                         mkdir -p "$INSTALL_DIR/$_phase06_tmpl_dir"
-                        if command -v rsync >/dev/null 2>&1; then
-                            rsync -a --no-owner --no-group --chmod=go-w \
-                                --exclude='.git' --exclude='data/' --exclude='logs/' \
-                                --exclude='models/' --exclude='.env' --exclude='node_modules/' \
-                                --exclude='dist/' --exclude='*.log' \
-                                "$SCRIPT_DIR/$_phase06_tmpl_dir/" "$INSTALL_DIR/$_phase06_tmpl_dir/" 2>>"$LOG_FILE" || true
-                        else
-                            cp -r "$SCRIPT_DIR/$_phase06_tmpl_dir"/. "$INSTALL_DIR/$_phase06_tmpl_dir/" 2>>"$LOG_FILE" || true
-                        fi
+                        cp -r "$SCRIPT_DIR/$_phase06_tmpl_dir"/. "$INSTALL_DIR/$_phase06_tmpl_dir/" 2>>"$LOG_FILE" || true
                     fi
                 done
             fi
