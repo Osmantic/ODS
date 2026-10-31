@@ -196,7 +196,9 @@ jobs:
         shell: bash
         env:
           OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
-        run: node ods/extensions/services/pixel-agent/tests/runtime_history_hydration.integration.mjs
+        run: |
+          node ods/extensions/services/pixel-agent/tests/runtime_history_hydration.integration.mjs
+          node ods/extensions/services/pixel-agent/tests/runtime_nemo_archive_history.integration.mjs
       - name: Verify tool-limit finalization, stop synthesis and silent-reply recovery with real Pixel runtime
         if: runner.os != 'Windows'
         shell: bash
