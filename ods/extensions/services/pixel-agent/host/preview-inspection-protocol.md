@@ -717,7 +717,23 @@ switch computed before (the curated record's `vision` boolean, else
 `unknown`), and `ODS_MODEL_PROFILES=enabled` with a measured vision probe
 still decides last. The value is computed for each switch's model alone, so
 the next switch to a model without a projector gets its own value back.
-Remote routes are written as `unknown` and never read a local report.
+A remote model API route (`ods remote-provider`) never reads a local report;
+it gets one vision probe of its own at each proof of the route (configure,
+enable, and the egress proof behind the Dashboard's connection check), once
+LiteLLM serves that route as `ods/current`. The probe is the model profile's
+red square (`bin/model_profile/probes.py` `probe_vision`), sent through
+`ods/current` so it crosses LiteLLM and the egress as Portal's images do,
+with no thinking switch, room for a model that reasons first, and one
+30-second budget (`bin/ods-host-agent.py` `_remote_provider_vision_probe`).
+An answer naming the colour records `supported`; a complete answer without it
+records `unsupported`; no answer, a cut-off one or an error records nothing.
+The receipt is kept in the route state (`data/remote-provider/routing-state.json`,
+`status.vision`) with the route fingerprint (transport, base URL, model,
+context, output limit, reasoning), and the route's Pixel contract
+(`_remote_provider_runtime_contract`) declares only what a receipt for the
+same fingerprint says. A changed route, a missing receipt or a proof whose
+probe got no answer is `unknown`. A proof of the route already in use probes
+again and rebinds Pixel only when the answer changed.
 An installation that already runs a vision model gets the readback on its
 next model switch. Every installer run, including an update, writes
 `unknown` over a `supported` declaration (`installers/lib/pixel-onboarding.py`):
@@ -725,7 +741,8 @@ the installer keeps the active model and keeps `LLAMA_ARG_MMPROJ` only while
 that model's projector file still checks out (`scripts/preserve-active-model.py`),
 so the model may now run without its projector, and the renderer cannot see
 which happened. `unsupported` and `unknown` carry over for the same route; the
-next switch reads the projector back.
+next switch reads the projector back. The renderer writes a remote route as
+`unknown` too, and the route's next proof measures it again.
 
 **The directive.** When the gate is open and the run guard grants one of the
 run's at most three screenshots (`tool-loop-guard.mjs`
@@ -828,10 +845,18 @@ the current run keeps its own, and owner images keep the three-turn rule.
 `vision_readback.test.mjs` renders Pixel's config with the coordinator's
 `pixel_model_contract.plan` from the install default through a readback
 `supported` target to a text-only one and checks the gate and the owner-image
-route check on each. The host agent's `test_host_agent_image_input.py` and
-`test_model_activate.py` (`TestPixelVisionReadback`) cover the `/props`
-report on every local route, the readback rule, switches with a reported,
-false, missing and unreadable vision state, a vision-to-text switch on both
-reconcile paths, and a remote activation that never reads it.
+route check on each, and renders a remote route's probed `supported` target,
+whose inspection result carries the image block, beside another route and an
+unanswered probe that stay text-only. The host agent's
+`test_host_agent_image_input.py` and `test_model_activate.py`
+(`TestPixelVisionReadback`) cover the `/props` report on every local route,
+the readback rule, switches with a reported, false, missing and unreadable
+vision state, a vision-to-text switch on both reconcile paths, and a remote
+activation that never reads it and binds Pixel to its own probe's answer;
+they also cover the remote receipt (its route fingerprint, a changed route
+and malformed receipts read `unknown`) and the probe's request and answer
+rules. `test_remote_model_transaction.py` checks one probe per proof, after
+LiteLLM serves the route and before Pixel is bound, a rebind only when the
+answer changed, and an enable of the active route that stays a no-op.
 `tests/test_pixel_onboarding.py` checks that an installer rerun after a
 `supported` switch renders `unknown` and keeps the rest of the route.

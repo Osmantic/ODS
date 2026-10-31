@@ -29,7 +29,7 @@ def runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(_mod,'DATA_DIR',data)
     helpers=_LifecycleFixtures()
     helpers._patch_successful_probe(monkeypatch)
-    state=SimpleNamespace(events=[],transactions=[],held=False,failure=None,
+    state=SimpleNamespace(events=[],transactions=[],held=False,failure=None,vision='unknown',
         native={'model':'local','contextLength':65536,'maxTokens':4096,'reasoning':False},
         root=root,data=data,cloud=cloud,env=env,helpers=helpers)
 
@@ -98,6 +98,11 @@ def runtime(tmp_path, monkeypatch):
         state.events.append('route-proof')
         if state.failure in ('route','ownership'):raise RuntimeError('route unavailable')
     monkeypatch.setattr(_mod,'_verify_litellm_route',verify)
+    # What the route's model answers the vision probe (P6) through ods/current.
+    def vision(_env):
+        state.events.append('vision-probe')
+        return state.vision
+    monkeypatch.setattr(_mod,'_remote_provider_vision_probe',vision)
     def prove(_env,contract):
         state.events.append('prove-previous')
         if 'routeFingerprint' in contract:
@@ -135,6 +140,48 @@ def test_configure_holds_admission_before_egress_and_commits_after_receipts(runt
     assert events.count('begin')==1 and events.count('finish-commit')==1
     assert result['activation']['routeFingerprint']==runtime.native['routeFingerprint']
     assert not runtime.held
+
+
+@pytest.mark.parametrize('vision',['supported','unsupported','unknown'])
+def test_configure_binds_pixel_to_the_image_input_its_route_probe_measured(runtime,vision):
+    runtime.vision=vision
+    configure(runtime)
+    events=runtime.events
+    # One probe, after LiteLLM serves the route and before Pixel is bound.
+    assert events.count('vision-probe')==1
+    assert events.index('route-proof')<events.index('vision-probe')<events.index('apply')
+    saved=json.loads(_mod._remote_provider_route_state_path().read_text())
+    assert runtime.native['imageInput']==vision==_mod._remote_provider_runtime_contract(saved)['imageInput']
+    receipt=saved['status'].get('vision')
+    if vision=='unknown':assert receipt is None
+    else:assert receipt['imageInput']==vision and receipt['routeFingerprint']==runtime.native['routeFingerprint']
+
+
+def proof(state):
+    """The egress proof of the configured direct route (dashboard Check connection)."""
+    return _mod._record_remote_provider_egress_probe({**state.helpers._egress_probe_response(),'transport':'direct'})
+
+
+def test_each_proof_of_the_active_route_probes_vision_once_and_rebinds_pixel_only_on_change(runtime,monkeypatch):
+    configure(runtime)
+    assert runtime.native['imageInput']=='unknown'
+    monkeypatch.setattr(_mod,'_litellm_route_failure',lambda env,*,model='ods/current':None)
+    runtime.events.clear()
+    runtime.vision='supported'
+    result=proof(runtime)
+    assert result['recorded'] and result['status']['vision']['imageInput']=='supported'
+    assert runtime.events.count('vision-probe')==1 and runtime.events.count('begin')==1
+    assert runtime.native['imageInput']=='supported' and runtime.events[-1]=='finish-commit'
+    # The same answer again changes nothing: no transaction, no restart.
+    runtime.events.clear()
+    proof(runtime)
+    assert runtime.events==['vision-probe']
+    # A probe without an answer is no evidence: the route is unknown again.
+    runtime.vision='unknown'
+    runtime.events.clear()
+    result=proof(runtime)
+    assert 'vision' not in result['status'] and runtime.native['imageInput']=='unknown'
+    assert runtime.events.count('vision-probe')==1 and runtime.events[-1]=='finish-commit' and not runtime.held
 
 
 def test_two_remote_providers_with_same_model_use_distinct_transactions_and_fingerprints(runtime):
@@ -350,10 +397,13 @@ def enable():
     return _mod._apply_remote_provider_lifecycle_operation(payload,_mod._plan_remote_provider_lifecycle_operation(payload))
 
 
-def test_enable_of_the_active_route_reads_pixel_now_and_changes_nothing(runtime,monkeypatch):
+@pytest.mark.parametrize('vision',['unknown','supported'])
+def test_enable_of_the_active_route_reads_pixel_now_and_changes_nothing(runtime,monkeypatch,vision):
     # Fleet row 6 (Mac): configure rewrites the route state, which empties the
     # poll cache; the first enable then missed this no-op, began a model
-    # transaction, and the controller refused it (409).
+    # transaction, and the controller refused it (409). A vision receipt in
+    # the route state keeps it a no-op.
+    runtime.vision=vision
     configure(runtime)
     monkeypatch.setattr(_mod,'_active_remote_provider_pixel_runtime',ACTIVE_RUNTIME)
     monkeypatch.setattr(_mod,'_cached_managed_pixel_runtime_contract',lambda:None)

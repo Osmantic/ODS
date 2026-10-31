@@ -377,6 +377,15 @@ consumer activation only after the managed tunnel and egress proof succeed.
 The Dashboard reports the provider as Ready only when the egress path and the
 actual consumer route are both active and proven.
 
+Each of these proofs, and each connection check of the active route, also
+shows the provider's model one small test image through `ods/current`, the red
+square of the model profile's vision probe. When the model names its colour,
+Portal treats it as able to read images: images you attach are sent without
+the image-test confirmation, and Portal's preview check shows the model a
+screenshot of the page it built. A model that answers without the colour is
+treated as text-only. No answer, an error or a different provider route keeps
+Portal asking before it sends an image, until the next check.
+
 With managed Portal admission, SSH staging requires a verified local model to
 remain active. Disable an active remote provider before configuring or enabling
 its SSH replacement. Staging retains the local model and releases its maintenance

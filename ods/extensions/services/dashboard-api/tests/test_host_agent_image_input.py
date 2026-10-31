@@ -228,15 +228,185 @@ def test_only_a_reported_vision_projector_declares_support(proof, configured, ex
     assert agent._pixel_image_input_readback(configured, proof) == expected
 
 
-def test_a_remote_route_never_reads_the_local_vision_report(tmp_path, monkeypatch):
-    # Whatever the local llama-server would report, the remote provider's
-    # declaration stays unknown and the previous local one is kept for restore.
+# A remote route declares image input only from a vision probe of that route:
+# the red square (model_profile P6) through ods/current, recorded in the route
+# state with the route fingerprint (_record_remote_provider_vision).
+
+_REMOTE_PROVIDER = {"model": "remote-vision", "transport": "direct", "baseUrl": "https://example.invalid/v1",
+                    "contextLength": 32768, "maxTokens": 4096, "reasoning": False}
+
+
+def _remote_state(**changes):
+    """An enabled, proven direct route as the lifecycle writes it."""
+    return {"schema": "ods.remote-routing-state.v1", "enabled": True, "mode": "cloud",
+            "provider": {**_REMOTE_PROVIDER, **changes},
+            "status": {"proven": True, "reason": "provider-handshake-ok"}}
+
+
+def _vision_receipt(state, image_input):
+    return {"schema": "ods.remote-provider-vision-receipt.v1", "imageInput": image_input,
+            "routeFingerprint": agent._remote_provider_route_fingerprint(state),
+            "verifiedAt": "2026-10-30T00:00:00+00:00"}
+
+
+def _completion(content, finish="stop"):
+    return 200, json.dumps({"choices": [{"message": {"role": "assistant", "content": content},
+                                         "finish_reason": finish}]})
+
+
+def _litellm_answers(monkeypatch, *answers):
+    """Stand in for LiteLLM's ods/current; returns the requests it received."""
+    requests, pending = [], list(answers)
+
+    def exchange(_env, path, payload, timeout):
+        requests.append((path, payload, timeout))
+        answer = pending.pop(0)
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(agent, "_litellm_exchange", exchange)
+    return requests
+
+
+@pytest.mark.parametrize("image_input", ["supported", "unsupported"])
+def test_a_remote_route_declares_what_its_own_vision_receipt_measured(image_input):
+    state = _remote_state()
+    assert agent._remote_provider_runtime_contract(state)["imageInput"] == "unknown"
+    state["status"]["vision"] = _vision_receipt(state, image_input)
+    assert agent._remote_provider_runtime_contract(state)["imageInput"] == image_input
+
+
+@pytest.mark.parametrize("change", [
+    {"baseUrl": "https://other.invalid/v1"}, {"model": "remote-other"}, {"transport": "ssh"},
+    {"contextLength": 65536}, {"maxTokens": 8192}, {"reasoning": True},
+])
+def test_a_vision_receipt_belongs_to_the_route_it_measured(change):
+    state = _remote_state()
+    state["status"]["vision"] = _vision_receipt(state, "supported")
+    moved = {**state, "provider": {**state["provider"], **change}}
+    assert agent._remote_provider_runtime_contract(moved)["imageInput"] == "unknown"
+
+
+@pytest.mark.parametrize("change", [
+    {"schema": "ods.remote-provider-probe-receipt.v1"}, {"imageInput": "unknown"}, {"imageInput": True},
+    {"routeFingerprint": None},
+])
+def test_a_malformed_vision_receipt_is_no_evidence(change):
+    state = _remote_state()
+    state["status"]["vision"] = {**_vision_receipt(state, "supported"), **change}
+    assert agent._remote_provider_runtime_contract(state)["imageInput"] == "unknown"
+
+
+@pytest.mark.parametrize("answers,expected", [
+    ([_completion("Red.")], "supported"),
+    ([_completion("Blue")], "unsupported"),
+    ([_completion("I cannot see images.")], "unsupported"),
+    # Out of tokens while reasoning, or cut off mid-answer: no evidence.
+    ([_completion("", "length")], "unknown"),
+    ([_completion("The square is", "length")], "unknown"),
+    ([_completion("")], "unknown"),
+    ([(400, '{"error": {"message": "image input is not supported"}}')], "unknown"),
+    ([(200, "not json")], "unknown"),
+    ([OSError("LiteLLM did not answer in time")], "unknown"),
+    # A busy answer is asked once more inside the same budget, never again.
+    ([(503, "busy"), _completion("red")], "supported"),
+    ([(503, "busy"), (503, "busy")], "unknown"),
+])
+def test_one_vision_probe_through_the_gateway_decides_only_on_a_clear_answer(monkeypatch, answers, expected):
+    requests = _litellm_answers(monkeypatch, *answers)
+    assert agent._remote_provider_vision_probe({}) == expected
+    assert len(requests) == len(answers)
+    for path, payload, timeout in requests:
+        assert path == "/v1/chat/completions" and 0 < timeout <= 30
+        text, image = payload["messages"][0]["content"]
+        assert text["text"] == "What color is this square? One word."
+        assert image["image_url"]["url"].startswith("data:image/png;base64,")
+        # No thinking switch a provider could refuse; room for a reasoning model.
+        assert "chat_template_kwargs" not in payload and payload["max_tokens"] >= 1024
+
+
+def test_the_gateway_exchange_names_the_alias_and_keeps_the_key_off_argv(monkeypatch):
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, '{"choices": []}\n200', "")
+
+    monkeypatch.delenv("ODS_HOST_INSTALL_DIR", raising=False)
+    monkeypatch.setattr(agent.subprocess, "run", run)
+    env = {"LITELLM_KEY": "gateway-secret", "LITELLM_PORT": "4100"}
+    assert agent._litellm_exchange(env, "/v1/chat/completions", {"messages": []}, 30.0) == (200, '{"choices": []}')
+    command, kwargs = calls[0]
+    assert command[command.index("-X") + 2] == "http://127.0.0.1:4100/v1/chat/completions"
+    assert json.loads(command[command.index("-d") + 1]) == {"messages": [], "model": "ods/current"}
+    assert command[command.index("--max-time") + 1] == "30" and kwargs["timeout"] == 35
+    assert "gateway-secret" not in " ".join(command)
+    assert kwargs["input"] == "Authorization: Bearer gateway-secret\n"
+
+    for result in (subprocess.CompletedProcess([], 7, "", ""), subprocess.CompletedProcess([], 0, "\n000", "")):
+        monkeypatch.setattr(agent.subprocess, "run", lambda *_a, _result=result, **_k: _result)
+        with pytest.raises(OSError):
+            agent._litellm_exchange(env, "/v1/chat/completions", {"messages": []}, 30.0)
+
+    def slow(command, **_kwargs):
+        raise subprocess.TimeoutExpired(command, 35)
+
+    monkeypatch.setattr(agent.subprocess, "run", slow)
+    with pytest.raises(OSError, match="in time"):
+        agent._litellm_exchange(env, "/v1/chat/completions", {"messages": []}, 30.0)
+
+
+def _saved_route(tmp_path, monkeypatch, state):
+    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    path = tmp_path / "remote-provider" / "routing-state.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state), encoding="utf-8")
+    return path
+
+
+def test_a_route_proof_records_its_vision_with_the_route_and_a_probe_error_forgets_it(tmp_path, monkeypatch):
+    state = _remote_state()
+    path = _saved_route(tmp_path, monkeypatch, state)
+    monkeypatch.setattr(agent, "_iso_now", lambda: "2026-10-30T12:00:00+00:00")
+    _litellm_answers(monkeypatch, _completion("Red"), OSError("LiteLLM did not answer in time"))
+
+    recorded = agent._record_remote_provider_vision({"provider": dict(_REMOTE_PROVIDER)}, {})
+
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved == recorded
+    assert saved["status"] == {"proven": True, "reason": "provider-handshake-ok", "vision": {
+        "schema": "ods.remote-provider-vision-receipt.v1", "imageInput": "supported",
+        "routeFingerprint": agent._remote_provider_route_fingerprint(state),
+        "verifiedAt": "2026-10-30T12:00:00+00:00"}}
+    assert agent._remote_provider_runtime_contract(saved)["imageInput"] == "supported"
+
+    # The next proof's probe fails: the earlier receipt does not stand for it.
+    forgotten = agent._record_remote_provider_vision(saved, {})
+    assert "vision" not in forgotten["status"]
+    assert agent._remote_provider_runtime_contract(json.loads(path.read_text(encoding="utf-8")))["imageInput"] == "unknown"
+
+
+def test_a_vision_probe_never_records_against_another_saved_route(tmp_path, monkeypatch):
+    path = _saved_route(tmp_path, monkeypatch, _remote_state(baseUrl="https://other.invalid/v1"))
+    before = path.read_bytes()
+    monkeypatch.setattr(agent, "_litellm_exchange", lambda *_a: pytest.fail("no probe for another route"))
+    with pytest.raises(RuntimeError, match="does not describe the route"):
+        agent._record_remote_provider_vision({"provider": dict(_REMOTE_PROVIDER)}, {})
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("answer,image_input", [(_completion("Red"), "supported"),
+                                                (OSError("LiteLLM did not answer"), "unknown")])
+def test_a_remote_route_never_reads_the_local_vision_report(tmp_path, monkeypatch, answer, image_input):
+    # Whatever the local llama-server would report, the remote route's image
+    # input is its own probe's, and the previous local one is kept for restore.
     install, data = tmp_path / "install", tmp_path / "data"
     install.mkdir()
     (install / ".env").write_text("ODS_MODE=local\nLLM_API_URL=http://llama-server:8080\nLITELLM_KEY=k\n"
                                   "PIXEL_OPENWEBUI_KEY=configured\n", encoding="utf-8")
     monkeypatch.setattr(agent, "INSTALL_DIR", install)
-    monkeypatch.setattr(agent, "DATA_DIR", data)
+    state_path = _saved_route(data, monkeypatch, _remote_state())
     local = {"model": "vision.gguf", "contextLength": 65536, "maxTokens": 8192, "reasoning": False,
              "imageInput": "supported"}
     events: list = []
@@ -258,16 +428,31 @@ def test_a_remote_route_never_reads_the_local_vision_report(tmp_path, monkeypatc
     monkeypatch.setattr(agent, "_capture_container_state", lambda _name: {"exists": True, "running": True})
     monkeypatch.setattr(agent, "_restart_existing_container", lambda *_a, **_k: True)
     monkeypatch.setattr(agent, "_wait_for_container_health", lambda _name: None)
-    monkeypatch.setattr(agent, "_verify_litellm_route", lambda *_a, **_k: None)
+    verified: list = []
+    monkeypatch.setattr(agent, "_verify_litellm_route", lambda *_a, **_k: verified.append("ods/current"))
     monkeypatch.setattr(agent, "_render_remote_provider_cloud_config", lambda *_a: None)
     for name in ("_runtime_http", "_llama_runtime_props", "_wait_for_model_readiness"):
         monkeypatch.setattr(agent, name, lambda *_a, _name=name, **_k: pytest.fail(f"remote activation called {_name}"))
-    route = {"provider": {"model": "remote-vision", "transport": "direct", "baseUrl": "https://example.invalid/v1",
-                          "contextLength": 32768, "maxTokens": 4096, "reasoning": False}}
+
+    def probe(_env, path, payload, timeout):
+        assert verified, "the vision probe runs only once LiteLLM serves the route"
+        assert not events, "the probe decides before Pixel is bound"
+        requests.append(path)
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+    requests: list = []
+    monkeypatch.setattr(agent, "_litellm_exchange", probe)
+    route = {"provider": dict(_REMOTE_PROVIDER)}
 
     activation = agent._activate_remote_provider_route(route)
 
-    assert activation["pixel"] == "reconciled"
-    assert events == [("apply", agent._remote_provider_runtime_contract(route)), ("finish", "commit")]
-    assert events[0][1]["imageInput"] == "unknown"
+    saved = json.loads(state_path.read_text(encoding="utf-8"))
+    expected = agent._remote_provider_runtime_contract(saved)
+    assert activation["pixel"] == "reconciled" and requests == ["/v1/chat/completions"]
+    assert events == [("apply", expected), ("finish", "commit")]
+    assert expected["imageInput"] == image_input
+    assert ("vision" in saved["status"]) is (image_input != "unknown")
+    assert agent._read_remote_provider_activation_state()["remote"] == expected
     assert agent._read_remote_provider_activation_state()["previous"]["pixel"] == local

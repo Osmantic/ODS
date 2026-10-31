@@ -279,6 +279,7 @@ _REMOTE_PROVIDER_EGRESS_GID = 10778
 _REMOTE_PROVIDER_EGRESS_PROBE_SCHEMA = "ods.remote-provider-egress-probe.v1"
 _REMOTE_PROVIDER_PROOF_RECORD_SCHEMA = "ods.remote-provider-proof-record.v1"
 _REMOTE_PROVIDER_ACTIVATION_STATE_SCHEMA = "ods.remote-provider-activation-state.v1"
+_REMOTE_PROVIDER_VISION_RECEIPT_SCHEMA = "ods.remote-provider-vision-receipt.v1"
 _REMOTE_PROVIDER_SECRET_FIELD_TO_REF = {
     "apiKey": "REMOTE_LLM_API_KEY",
     "peerToken": "REMOTE_ODS_PEER_TOKEN",
@@ -4428,10 +4429,14 @@ def _record_remote_provider_egress_probe(payload: dict) -> dict:
     active_transport = str(provider.get("transport") or "direct")
     if payload_transport != active_transport:
         raise RuntimeError("remote-provider proof transport does not match active route")
+    vision = state["status"].get("vision") if isinstance(state.get("status"), dict) else None
     state["status"] = _remote_provider_route_status(
         enabled=True,
         probe_receipt=probe_receipt,
     )
+    if vision is not None:
+        # The route's image input stands until this proof measures it again.
+        state["status"]["vision"] = vision
     _atomic_write_text(state_path, json.dumps(state, indent=2, sort_keys=True) + "\n", 0o644)
     try:
         runtime = _remote_provider_runtime_contract(state)
@@ -4445,7 +4450,13 @@ def _record_remote_provider_egress_probe(payload: dict) -> dict:
         )
         activation = _verify_current_remote_provider_consumers(state, runtime) \
             if activation_current else None
-        if activation is None:
+        if activation is not None:
+            # The consumers already serve this route: this proof's one vision
+            # probe runs here, and a changed image input re-binds Pixel to it.
+            state = _record_remote_provider_vision(state, load_env(INSTALL_DIR / ".env"))
+            if _remote_provider_runtime_contract(state) != runtime:
+                activation = _activate_remote_provider_route(state, measure_vision=False)
+        else:
             activation = _activate_remote_provider_route(state)
     except _PixelModelTransactionUncertain:
         # An admitted activation can outlive an ambiguous transport response.
@@ -4553,15 +4564,34 @@ def _remote_provider_runtime_contract(route: dict) -> dict[str, object]:
         raise RuntimeError("Remote provider output limit must fit its context window")
     if type(reasoning) is not bool:
         raise RuntimeError("Remote provider reasoning capability must be boolean")
+    fingerprint = _remote_provider_route_fingerprint(route)
     return {
         "model": model,
         "contextLength": context_length,
         "maxTokens": max_tokens,
         "reasoning": reasoning,
-        "routeFingerprint": _remote_provider_route_fingerprint(route),
-        # This remote-route schema does not carry a verified vision capability.
-        "imageInput": "unknown",
+        "routeFingerprint": fingerprint,
+        # Only a vision probe of this exact route declares image input.
+        "imageInput": _remote_provider_image_input(route, fingerprint),
     }
+
+
+def _remote_provider_image_input(route: dict, fingerprint: str) -> str:
+    """The route's vision receipt (_record_remote_provider_vision), else unknown.
+
+    A receipt counts only for the route fingerprint it was measured on, so
+    another endpoint, model or limit reads unknown until its own proof.
+    """
+    status = route.get("status") if isinstance(route.get("status"), dict) else {}
+    receipt = status.get("vision")
+    if (
+        isinstance(receipt, dict)
+        and receipt.get("schema") == _REMOTE_PROVIDER_VISION_RECEIPT_SCHEMA
+        and receipt.get("routeFingerprint") == fingerprint
+        and receipt.get("imageInput") in ("supported", "unsupported")
+    ):
+        return receipt["imageInput"]
+    return "unknown"
 
 
 def _remote_provider_route_fingerprint(route: dict) -> str:
@@ -5575,10 +5605,78 @@ def _restore_pixel_model_relay(state: dict[str, bool]) -> None:
         )
 
 
+# P6's own ceiling for the one vision probe of a remote route proof. Its single
+# retry of a busy 502/503 answer shares this budget.
+_REMOTE_PROVIDER_VISION_PROBE_SECONDS = 30.0
+
+
+def _remote_provider_vision_probe(env: dict) -> str:
+    """supported, unsupported or unknown from one red-square probe (P6) of ods/current."""
+    if _model_profile_probes is None:
+        return "unknown"
+    result = _model_profile_probes.probe_vision(
+        lambda path, payload, timeout: _litellm_exchange(env, path, payload, timeout),
+        _model_profile_probes.Budget(_REMOTE_PROVIDER_VISION_PROBE_SECONDS),
+        # "always" sends no thinking switch, which some providers refuse, and
+        # leaves a model that reasons first room to reach its answer.
+        "always",
+        vision=True,
+    )
+    logger.info("Remote route vision probe: %s %s (%d ms)",
+                result["status"], result["failureClass"] or "", result["ms"])
+    if result["status"] == "pass":
+        return "supported"
+    # A complete, visible answer without the color is a model that did not see
+    # the square. No answer, a cut-off one or an error is no evidence.
+    evidence = result["evidence"]
+    if (result["status"] == "fail" and evidence.get("finishReason") != "length"
+            and str(evidence.get("content") or "").strip()):
+        return "unsupported"
+    return "unknown"
+
+
+def _record_remote_provider_vision(route: dict, env: dict) -> dict:
+    """Probe the route's image input once and record it in its route state.
+
+    Runs while LiteLLM serves this route as ods/current, so the probe crosses
+    LiteLLM and the egress as Portal's images do. A pass (supported) or a
+    clear miss (unsupported) is recorded with the route fingerprint; any
+    other outcome drops an earlier receipt, so the route reads unknown.
+    Returns the route state as written.
+    """
+    fingerprint = _remote_provider_route_fingerprint(route)
+    state = _read_remote_provider_route_state_for_update()
+    if _remote_provider_route_fingerprint(state) != fingerprint:
+        raise RuntimeError("remote-provider route state does not describe the route being proven")
+    status = dict(state["status"]) if isinstance(state.get("status"), dict) else {}
+    status.pop("vision", None)
+    image_input = _remote_provider_vision_probe(env)
+    if image_input != "unknown":
+        status["vision"] = {
+            "schema": _REMOTE_PROVIDER_VISION_RECEIPT_SCHEMA,
+            "routeFingerprint": fingerprint,
+            "imageInput": image_input,
+            "verifiedAt": _iso_now(),
+        }
+    state["status"] = status
+    _atomic_write_text(
+        _remote_provider_route_state_path(),
+        json.dumps(state, indent=2, sort_keys=True) + "\n",
+        0o644,
+    )
+    return state
+
+
 def _activate_remote_provider_route(
     route: dict, *, transaction=None, defer_consumer_rollback: bool = False,
+    measure_vision: bool = True,
 ) -> dict[str, object]:
-    """Commit a proven egress route to LiteLLM and managed Pixel, or roll back."""
+    """Commit a proven egress route to LiteLLM and managed Pixel, or roll back.
+
+    Pixel's image input comes from one vision probe once LiteLLM serves the
+    route. A caller that measured it during the same proof passes
+    measure_vision=False, and the route's receipt stands.
+    """
     if defer_consumer_rollback and transaction is None:
         raise RuntimeError("Deferred consumer rollback requires the lifecycle transaction")
     runtime = _remote_provider_runtime_contract(route)
@@ -5644,6 +5742,10 @@ def _activate_remote_provider_route(
             raise RuntimeError("LiteLLM route could not be recreated")
         _wait_for_container_health("ods-litellm")
         _verify_litellm_route(env, model="ods/current")
+        if measure_vision:
+            # Recorded with the route before Pixel is bound to what it decides.
+            runtime = _remote_provider_runtime_contract(_record_remote_provider_vision(route, env))
+            candidate_state["remote"] = runtime
         # Portal reaches the model through the relay, so it must follow
         # ODS_MODE to LiteLLM before Pixel is bound to the remote model.
         relay_attempted = True
@@ -6038,7 +6140,9 @@ def _apply_remote_provider_lifecycle_operation(payload: dict, plan: dict) -> dic
             plan = _remote_provider_plan_from_profile_route(profile_route)
             route = plan.get("route") if isinstance(plan.get("route"), dict) else {}
             route_status = saved_state.get("status")
-            runtime = _remote_provider_runtime_contract(route)
+            # The saved state, not the bare profile route, carries the
+            # route's vision receipt, as the active contract does.
+            runtime = _remote_provider_runtime_contract(saved_state)
             active_runtime = _active_remote_provider_pixel_runtime(fresh=True)
             if (
                 isinstance(route_status, dict)
@@ -20522,6 +20626,37 @@ def _litellm_route_failure(env: dict, *, model: str = "ods/current") -> tuple[in
     line = _provider_error_line(body)
     provider = (status >= 500 or status in {408, 429}) and not _LITELLM_OWN_FAULT.match(line)
     return status, _provider_error_text(line) or f"HTTP {status}", provider
+
+
+def _litellm_exchange(env: dict, path: str, payload: dict, timeout: float) -> tuple[int, str]:
+    """``(http_status, text)`` of one ods/current request to the active LiteLLM.
+
+    The ``exchange`` model_profile's probes take, aimed at the gateway alias
+    instead of llama-server. Error statuses are returned; OSError when LiteLLM
+    does not answer in time. The key travels on stdin (see
+    _litellm_route_failure).
+    """
+    host = "ods-litellm" if os.environ.get("ODS_HOST_INSTALL_DIR") else "127.0.0.1"
+    port = str(env.get("LITELLM_PORT") or "4000")
+    api_key = str(env.get("LITELLM_KEY") or env.get("LITELLM_MASTER_KEY") or "")
+    seconds = max(1, int(timeout))
+    command = [
+        "curl", "-s", "--max-time", str(seconds), "--max-filesize", "65536",
+        "-w", "\n%{http_code}", "-X", "POST", f"http://{host}:{port}{path}",
+        "-H", "Content-Type: application/json", "-H", "@-",
+        "-d", json.dumps({**payload, "model": "ods/current"}),
+    ]
+    try:
+        result = subprocess.run(
+            command, capture_output=True, encoding="utf-8", errors="replace", timeout=seconds + 5,
+            input=f"Authorization: Bearer {api_key}\n",
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise OSError("LiteLLM did not answer in time") from exc
+    body, _, code = result.stdout.rpartition("\n")
+    if result.returncode != 0 or not code.isdigit() or code == "000":
+        raise OSError(f"LiteLLM did not answer (curl exit {result.returncode})")
+    return int(code), body
 
 
 def _read_hermes_container_config() -> str:
