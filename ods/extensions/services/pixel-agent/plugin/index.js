@@ -91,6 +91,7 @@ import {createWorkspaceBundleAdmission, createWorkspaceBundleService, createWork
 import {createWorkspaceBundleExecution} from './workspace-bundle-execution.mjs';
 import { createTaskActivity } from "./task-activity.mjs";
 import { createWorkspaceProjects } from "./workspace-projects.mjs";
+import { createProjectRestoreRoute, createProjectSnapshots } from "./project-snapshots.mjs";
 import { createAccessRuntime, executionHostForAgent } from "./access-runtime.mjs";
 import { createManagedRuntimeRegistry } from "./managed-runtime-lifecycle.mjs";
 import {createContextCompaction, readContextRequest, prepareStableContextModel} from './context-compaction.mjs';
@@ -116,6 +117,7 @@ const pendingClarifications = createPendingClarifications();
 const taskActivity = createTaskActivity({agentId:AGENT_ID, goalForRun:id=>goalProgress.projection(id),projectsForSession:key=>workspaceProjects.forSession(key)});
 let execCancellationControl;
 let accessRuntime;
+let projectSnapshots;
 let contextCompaction;
 let conversationImageLifecycle;
 let currentManagedRuntime;
@@ -418,6 +420,19 @@ export default definePluginEntry({
         return !resolveActiveEmbeddedRunSessionId(sessionKey);
       },
     });
+    // Before a response first touches a Playground project, a copy of its
+    // files; the owner's "Put back files" restores one, never while a Portal
+    // run, tool or background command is alive.
+    projectSnapshots ??= createProjectSnapshots({
+      workspaceRoot: () => api.config?.agents?.list?.find(agent => agent.id === AGENT_ID)?.workspace
+        ?? api.config?.agents?.defaults?.workspace,
+      ownerRun: context => delegationDelivery.ownerRunOf(context),
+      busy: user => Boolean(resolveActiveEmbeddedRunSessionId(`agent:${AGENT_ID}:openai-user:${user}`))
+        || delegationDelivery.pending(user, key => Boolean(resolveActiveEmbeddedRunSessionId(key))),
+      portalActive: () => (currentManagedRuntime?.status() ?? accessRuntime.status())?.active !== 0,
+      changed: (root, name) => toolLoopGuard.exampleOwnerChanged(root, name),
+      warn: message => api.logger.warn(message),
+    });
     api.on('subagent_spawned',(event,context)=>delegationDelivery.nativeSpawn(event,context));
     api.on('gateway_stop',()=>delegationDelivery.invalidate());
     const executeBundle = createWorkspaceBundleService({runHelper: bundleExecution.runHelper,
@@ -516,7 +531,9 @@ export default definePluginEntry({
       try {conversationImageLifecycle.observe(context);}catch {api.logger.warn('Portal conversation image custody could not be updated.');}
       toolLoopGuard.endPreviewRevalidation(event, context);
       toolLoopGuard.observeAgentEnd(event, context);
-      if (!accessRuntime.isProbe(context)) { goalProgress.finish(event, context); taskActivity.finish(event, context); }
+      if (!accessRuntime.isProbe(context)) {
+        goalProgress.finish(event, context); taskActivity.finish(event, context); void projectSnapshots.end(event, context);
+      }
       if (!managedRuntime) return accessRuntime.finish({runId: event.runId}, context);
     });
     api.on("before_tool_call", async (event, context) => {
@@ -539,6 +556,7 @@ export default definePluginEntry({
       artifactAdmission.before(event, context, decision);
       projectRunControl.before(event, context, decision);
       taskActivity.before(event, context, decision?.block === true);
+      await projectSnapshots.before(event, context, decision);
       return decision;
     });
     api.on("after_tool_call", (event, context) => {
@@ -801,6 +819,13 @@ export default definePluginEntry({
         return true;
       },
     });
+    // Portal's "Put back files": the owner restores one Playground project to
+    // the copy kept before a turn touched it (the host ingress calls it under
+    // the chat's history lock), and asks which turns offer it.
+    api.registerHttpRoute({path: '/pixel-ods/project-restore', auth: 'gateway', match: 'exact',
+      handler: createProjectRestoreRoute({snapshots: projectSnapshots, sendJson})});
+    api.registerHttpRoute({path: '/pixel-ods/project-restore-options', auth: 'gateway', match: 'exact',
+      handler: createProjectRestoreRoute({snapshots: projectSnapshots, sendJson, kind: 'options'})});
     // Portal's sidebar lists the shipped example project (Elf of Doom) like
     // any other Playground project while its folder exists, and opens it with
     // a create-only preview publication of that folder: no model run.

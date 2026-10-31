@@ -1005,10 +1005,23 @@ function vignetteSprite(w, h) {
   return _VIG;
 }
 
+// Fixed font strings for the floating world numbers, so the per-frame text pass assigns a
+// constant instead of concatenating size + family per number. Identical to the strings the old
+// per-number expression built; hoisted so the canvas font changes at most twice per frame.
+const TEXT_FONT_SMALL = "bold 15px 'Trebuchet MS', sans-serif";
+const TEXT_FONT_BIG = "bold 22px 'Trebuchet MS', sans-serif";
+// Scratch buckets for the per-size text grouping in renderWorld. Reused across frames and always
+// truncated back to empty at the end of the same synchronous pass, so they hold nothing between
+// frames and allocate nothing per frame.
+const _nSmall = [];
+const _nBig = [];
+
 function renderBase() {
   const g = CX;
   g.setTransform(1, 0, 0, 1, 0, 0);
-  g.globalAlpha = 1; g.globalCompositeOperation = "source-over"; g.filter = "none";
+  // No g.filter here: the game never assigns a canvas filter, and writing "none" every frame
+  // still invalidates the engine's cached filter state (garbage that climbs over a long session).
+  g.globalAlpha = 1; g.globalCompositeOperation = "source-over";
   g.shadowBlur = 0; g.shadowColor = "transparent";
   g.lineCap = "butt"; g.lineJoin = "miter"; g.lineWidth = 1;
   g.imageSmoothingEnabled = true;
@@ -1111,7 +1124,7 @@ function _lightPass(g) {
   } catch (eVig2) { /* decorative falloff only */ }
   g.restore();
   g.setTransform(1, 0, 0, 1, 0, 0);
-  g.globalAlpha = 1; g.globalCompositeOperation = "source-over"; g.filter = "none";
+  g.globalAlpha = 1; g.globalCompositeOperation = "source-over";
 }
 
 function renderWorld(g) {
@@ -1195,19 +1208,47 @@ function renderWorld(g) {
   }
   g.globalAlpha = 1;
   // texts
+  // Two fixed font strings, set once before each group instead of a rebuilt font per number.
+  // The old line concatenated "bold 22px"/"bold 15px" with the family and assigned it for every
+  // text in every frame, which churned the 2D engine's font/glyph state (another source of the
+  // long-session garbage). The sizes are constants and the pool is small, so the texts are bucketed
+  // first and drawn big-group then small-group: the font changes at most twice per frame instead of
+  // once per number. Same strings, sizes, stroke-then-fill order and alpha as before; the only
+  // difference is that a big number now draws over a small one when they overlap, instead of in
+  // spawn order.
   g.textAlign = "center";
-  for (const tx of G.texts) {
-    g.globalAlpha = clamp(tx.t / .9, 0, 1);
-    g.font = (tx.big ? "bold 22px" : "bold 15px") + " 'Trebuchet MS', sans-serif";
-    g.lineWidth = 3; g.strokeStyle = "rgba(0,0,0,.7)"; g.strokeText(tx.str, tx.x, tx.y);
-    g.fillStyle = tx.color; g.fillText(tx.str, tx.x, tx.y);
+  g.lineWidth = 3; g.strokeStyle = "rgba(0,0,0,.7)";
+  // Bucket by size first, then draw each group under its one font. Both arrays are module-level
+  // scratch, truncated back to length 0 at the end of this pass, so nothing accumulates.
+  _nSmall.length = 0; _nBig.length = 0;
+  for (const tx of G.texts) { if (tx.big) _nBig.push(tx); else _nSmall.push(tx); }
+  if (_nBig.length) {
+    g.font = TEXT_FONT_BIG;
+    for (const tx of _nBig) {
+      g.globalAlpha = clamp(tx.t / .9, 0, 1);
+      g.strokeText(tx.str, tx.x, tx.y);
+      g.fillStyle = tx.color; g.fillText(tx.str, tx.x, tx.y);
+    }
   }
+  if (_nSmall.length) {
+    g.font = TEXT_FONT_SMALL;
+    for (const tx of _nSmall) {
+      g.globalAlpha = clamp(tx.t / .9, 0, 1);
+      g.strokeText(tx.str, tx.x, tx.y);
+      g.fillStyle = tx.color; g.fillText(tx.str, tx.x, tx.y);
+    }
+  }
+  _nSmall.length = 0; _nBig.length = 0;
   g.globalAlpha = 1;
   g.restore();
   // end of world transform: nothing inside it may leak state into the overlays
   g.setTransform(1, 0, 0, 1, 0, 0);
-  g.globalAlpha = 1; g.globalCompositeOperation = "source-over"; g.filter = "none";
-  g.shadowBlur = 0; g.shadowColor = "transparent";
+  // No filter reset here or at the other render-pass boundaries: nothing in the game assigns a
+  // canvas filter any more (the hit-flash brightness filter was replaced by the ring in
+  // drawEnemyHitRing), and every write to that property — even writing "none" back — drops the
+  // engine's cached filter state on the floor, which is where the long-session memory climb came
+  // from. State that could leak into the overlays is handled by the save/restore inside the world
+  // transform and by the explicit resets each pass already makes for alpha and composite.
 }
 
 function renderOverlay(g) {
@@ -1269,9 +1310,10 @@ function renderOverlay(g) {
   // drifting dust motes / embers (screen-space, purely decorative). Decorative, so it stays under
   // the veil - it is part of the hall's air, not a message.
   try { drawMotes(g); } catch (err) { /* decorative only */ }
-  // every decorative pass is isolated: nothing below may inherit leaked composite/alpha/filter state
+  // every decorative pass is isolated: nothing below may inherit leaked composite/alpha state
+  // (no filter line: the game never sets a canvas filter; see renderBase).
   g.setTransform(1, 0, 0, 1, 0, 0);
-  g.globalAlpha = 1; g.globalCompositeOperation = "source-over"; g.filter = "none";
+  g.globalAlpha = 1; g.globalCompositeOperation = "source-over";
   g.shadowBlur = 0; g.shadowColor = "transparent";
 
   // objective arrow and announcements moved to renderBanners(), which runs after the shadow veil
@@ -1287,7 +1329,7 @@ function renderOverlay(g) {
 // lifting them off it. Messages are not part of the hall, so they are not veiled with it.
 function renderBanners(g) {
   g.setTransform(1, 0, 0, 1, 0, 0);
-  g.globalAlpha = 1; g.globalCompositeOperation = "source-over"; g.filter = "none";
+  g.globalAlpha = 1; g.globalCompositeOperation = "source-over";
   g.shadowBlur = 0; g.shadowColor = "transparent";
 
   // objective arrow when path clear
@@ -1578,7 +1620,7 @@ function drawMotes(g) {
 
 function drawHeroEnt(g, time) {
   g.save();
-  g.globalAlpha = 1; g.globalCompositeOperation = "source-over"; g.filter = "none";
+  g.globalAlpha = 1; g.globalCompositeOperation = "source-over";
   g.shadowBlur = 0; g.shadowColor = "transparent";
   shadow(g, P.x, P.y, 16);
   // hero: always fully opaque (a stray globalAlpha anywhere must never be able to hide him)
@@ -1592,6 +1634,9 @@ function drawHeroEnt(g, time) {
   }
   // no flicker overlay while invulnerable — it read as a black flash and hid the elf
   g.restore();
+  // outer save from the top of this function. It was never restored, so every frame left one
+  // canvas state on the context's stack and every drawing call got slower until the game froze.
+  g.restore();
 }
 
 function drawEnemyEnt(g, e, time) {
@@ -1603,16 +1648,66 @@ function drawEnemyEnt(g, e, time) {
   if (G.shake > 0) g.translate(G.shX || 0, G.shY || 0);
   g.translate(-G.camX, -G.camY);
   g.globalAlpha = 1; g.globalCompositeOperation = "source-over";
-  // Only touch the canvas filter for the few enemies actually flashing from a hit. A
-  // crowded fight is precisely when a hit is landing somewhere, so assigning "none" here
-  // for every enemy on screen flipped the 2D filter pipeline on and off hundreds of times
-  // per frame — a big part of the "stutters then jumps" feeling. If it is already unset,
-  // assigning the same value is a no-op in most engines, so this is a cheap guard.
-  if (g.filter !== "none") g.filter = "none";
+  // No canvas filter reset per enemy: the game never sets a filter any more, and each write to
+  // that property — even writing back "none" — invalidates the 2D engine's cached filter state,
+  // which hundreds of enemies per frame turns into a steady climb over a long session.
   g.shadowBlur = 0; g.shadowColor = "transparent";
   g.save(); g.globalAlpha = 1;
   // Contact shadow, sized to the body that drawEnemyEnt is about to render: see shadowHalfWidth.
   shadow(g, e.x, e.y, shadowHalfWidth(e));
+  // Normal enemies go through the sprite cache instead of re-rasterising their art every frame.
+  // Consulted here, before the entity translate, because the blit does its own translate and
+  // mirror: a cache hit is one drawImage plus the overlays that were always drawn on top (hit
+  // ring, hp pip, boss bar), a miss is precisely the old code path. See "Enemy sprite cache" in
+  // chars.js for the key, the quantisation, the ceiling and the load-time warm-up; bosses are
+  // excluded there and stay procedural. Resolution is unchanged — cells are blitted 1:1.
+  //
+  // An archer never produces a whole-figure cell: its sprite is three separately keyed pieces
+  // (body per facing and walk frame, head per facing, bow arm per attack step, none keyed on aim),
+  // tried here first. A part-cache miss falls through to the procedural drawBruteArcher below, the
+  // same fallback every other kind has.
+  if (e.kind === "brutearcher" && !e.boss) {
+    const apose = SPRITE_pose(e, time);
+    const parts = apose && apose.parts ? archerSpriteFor(e, apose, time) : null;
+    if (parts) {
+      g.save(); g.translate(e.x, e.y);
+      if (SPRITE_blitArcherParts(g, parts, e, time)) {
+        drawEnemyHitRing(g, e);
+        g.restore();                          // entity transform
+        g.restore();                          // cull/bounds save, paired with the one above
+        if (e.hp < e.maxHp) {
+          const w = 30, hpw = w * clamp(e.hp / e.maxHp, 0, 1);
+          g.fillStyle = "rgba(0,0,0,.55)"; g.fillRect(e.x - w / 2, e.y - e.r - 38, w, 5);
+          g.fillStyle = "#8fce3a"; g.fillRect(e.x - w / 2, e.y - e.r - 38, hpw, 5);
+        }
+        g.globalAlpha = 1;
+        return;
+      }
+      g.restore();                            // entity transform, on the failed-stamp path
+    }
+  }
+  const cell = SPRITE_cell(e, time);
+  if (cell) {
+    // The cell is drawn in the entity's own transform, exactly as the procedural art is: translate
+    // to the feet first, then blit at the cell's anchor. Blitting at world (e.x, e.y) without that
+    // translate would put the sprite a body off, because the anchor is measured from the feet.
+    g.save(); g.translate(e.x, e.y);
+    SPRITE_blit(g, cell, e, time);
+    // The hit ring belongs here, inside the entity transform: it is drawn with multiply against
+    // the pixels the sprite just laid down, and it is centred on the body rather than the feet.
+    // Leaving it out is what made a shot at a cached enemy look like no shot at all.
+    drawEnemyHitRing(g, e);
+    g.restore();                            // entity transform
+    g.restore();                            // cull/bounds save, paired with the one above
+    if (!e.boss && e.hp < e.maxHp) {
+      const w = 30, hpw = w * clamp(e.hp / e.maxHp, 0, 1);
+      g.fillStyle = "rgba(0,0,0,.55)"; g.fillRect(e.x - w / 2, e.y - e.r - 38, w, 5);
+      g.fillStyle = "#8fce3a"; g.fillRect(e.x - w / 2, e.y - e.r - 38, hpw, 5);
+    }
+    if (e.boss) $("boss-fill").style.width = (clamp(e.hp / e.maxHp, 0, 1) * 100) + "%";
+    g.globalAlpha = 1;
+    return;
+  }
   g.save(); g.translate(e.x, e.y);
   // Hit flash history, kept because it explains the cost model, not the current code.
   // canvas.filter = "brightness(2.2)" is NOT cheap: it forces the 2D engine to allocate and run an
@@ -1664,34 +1759,7 @@ function drawEnemyEnt(g, e, time) {
     // body into an offscreen canvas sized to that one enemy's own box, at an identity transform the
     // art code is handed explicitly, and blit it to (e.x, e.y) in world space under the same
     // explicit transform, with the layer cleared at identity immediately before tracing.
-    const ha = clamp(e.hurtT / .18, 0, 1);
-    if (ha > 0) {
-      // The art is drawn above the origin (feet at y = 0, head near y = -2e.r), so the ring is
-      // centred on the body, not on the feet: centred at 0 it would ring the empty floor under him
-      // and miss him, which is a quieter version of the bug being fixed. Half-widths here are the
-      // drawn extents from SHADOW_HALF, the same source shadow() uses, so the ring follows the
-      // silhouette rather than the collision circle - and for a quadruped those differ a lot, since
-      // a hound is roughly 80 px long on a 17 px radius. Bosses carry e.scale in the renderer, and
-      // this ring is drawn in the same transform as the art, so multiplying the footprint by that
-      // scale is the whole story.
-      const s = e.boss ? (e.scale || 1) : 1;
-      const hw = Math.max(10, shadowHalfWidth(e));
-      const hh = Math.max(9, e.r * 1.15 * s);
-      g.save();
-      // "multiply", not "source-atop": source-atop composites against whatever the destination
-      // already holds, and on the visible canvas the destination is the baked floor, the walls and
-      // every enemy drawn before this one. multiply leaves those untouched and changes only the
-      // pixels the body painted, so the wolf darkens where the wolf is.
-      g.globalCompositeOperation = "multiply";
-      // .55 at peak is a firm but not blackout dip, and ha ramps it out over hurtT.
-      g.globalAlpha = ha * .55;
-      g.strokeStyle = "#4a3b36";
-      // Thick outline rather than a filled oval: the interior keeps its own shading, so the enemy
-      // reads as having taken a hit instead of having a stamp put on him.
-      g.lineWidth = Math.max(3.5, hw * .22);
-      g.beginPath(); g.ellipse(0, -hh * .92, hw * .82, hh * .9, 0, 0, TAU); g.stroke();
-      g.restore();
-    }
+    drawEnemyHitRing(g, e);
   }
   g.restore();          // entity transform, paired with translate(e.x, e.y)
   g.restore();          // cull/bounds save
@@ -1707,31 +1775,62 @@ function drawEnemyEnt(g, e, time) {
   if (e.boss) $("boss-fill").style.width = (clamp(e.hp / e.maxHp, 0, 1) * 100) + "%";
 }
 
+// The "took a hit" ring, drawn in the entity's own transform (origin at the feet, before the
+// restore of that transform). Extracted from drawEnemyEnt so the cached path and the procedural
+// path cannot drift apart: two copies of this geometry is exactly how "the ring works, except for
+// enemies that hit the sprite cache" gets written.
+//
+// The art is drawn above the origin (feet at y = 0, head near y = -2e.r), so the ring is centred
+// on the body, not on the feet: centred at 0 it would ring the empty floor under him and miss him.
+// Half-widths are the drawn extents from SHADOW_HALF, the same source shadow() uses, so the ring
+// follows the silhouette rather than the collision circle - and for a quadruped those differ a lot,
+// since a hound is roughly 80 px long on a 17 px radius. Bosses carry e.scale in the renderer, and
+// this ring is drawn in the same transform as the art, so multiplying the footprint by that scale
+// is the whole story.
+function drawEnemyHitRing(g, e) {
+  const ha = clamp(e.hurtT / .18, 0, 1);
+  if (ha <= 0) return;
+  const s = e.boss ? (e.scale || 1) : 1;
+  const hw = Math.max(10, shadowHalfWidth(e));
+  const hh = Math.max(9, e.r * 1.15 * s);
+  g.save();
+  // "multiply", not "source-atop": source-atop composites against whatever the destination already
+  // holds, and on the visible canvas the destination is the baked floor, the walls and every enemy
+  // drawn before this one. multiply leaves those untouched and changes only the pixels the body
+  // painted, so the wolf darkens where the wolf is.
+  g.globalCompositeOperation = "multiply";
+  // .55 at peak is a firm but not blackout dip, and ha ramps it out over hurtT.
+  g.globalAlpha = ha * .55;
+  g.strokeStyle = "#4a3b36";
+  // Thick outline rather than a filled oval: the interior keeps its own shading, so the enemy reads
+  // as having taken a hit instead of having a stamp put on him.
+  g.lineWidth = Math.max(3.5, hw * .22);
+  g.beginPath(); g.ellipse(0, -hh * .92, hw * .82, hh * .9, 0, 0, TAU); g.stroke();
+  g.restore();
+}
+
+// Pickups are blitted from the once-baked PICK_SPRITES (see legacy.js) instead of being redrawn
+// from paths every frame — the heart's glow in particular was a live shadowBlur, the most expensive
+// 2D call in Chromium, re-rasterized for every heart on the floor every frame. What stays live in
+// this function is motion only: the bob, and for arrows the pulsing sparkle, which drawArrowPickup
+// keeps animating on its own cached sprite. Behaviour is untouched: same positions, timers, values
+// and pickup radius as before.
 function drawPickup(g, pk, time) {
   const bob = Math.sin(time * .005 + pk.bob) * 3;
-  g.save(); g.translate(pk.x, pk.y + bob);
-  if (pk.kind === "gold") {
-    strokeCircle(g, 0, -6, 8, "#e8b62a", 2); strokeCircle(g, 0, -6, 4.5, "#ffd76b", 1.4);
-    g.fillStyle = "#7a5210"; g.font = "bold 8px sans-serif"; g.textAlign = "center"; g.fillText("S", 0, -3.4);
-  } else if (pk.kind === "arrows") {
-    g.restore();
+  if (pk.kind === "arrows") {
     drawArrowPickup(g, pk.x, pk.y + bob, time);
     return;
-  } else {
-    // glowing drawn heart (crisp at any zoom, unlike an emoji)
-    g.shadowColor = "rgba(255,70,70,.9)"; g.shadowBlur = 10;
-    g.fillStyle = "#d92c38"; g.strokeStyle = "#3a070c"; g.lineWidth = 1.6;
-    g.beginPath();
-    g.moveTo(0, 2);
-    g.bezierCurveTo(-9, -5, -6.5, -13, -1.5, -11.5);
-    g.bezierCurveTo(-.4, -11.2, -.4, -10.6, 0, -10.2);
-    g.bezierCurveTo(.4, -10.6, .4, -11.2, 1.5, -11.5);
-    g.bezierCurveTo(6.5, -13, 9, -5, 0, 2);
-    g.closePath(); g.fill(); g.stroke();
-    g.shadowBlur = 0;
-    g.fillStyle = "rgba(255,255,255,.55)";
-    g.beginPath(); g.ellipse(-3, -8.6, 1.8, 1.1, -.5, 0, TAU); g.fill();
   }
+  const sp = pk.kind === "gold" ? PICK_SPRITES.gold : PICK_SPRITES.heart;
+  g.save();
+  // The bob is a canvas translation, not part of the blit coordinates, for the same reason the bat's
+  // hover is applied at SPRITE_blit rather than baked: it is motion, not silhouette, and baking it
+  // would quantise a smooth glide. It also keeps this path pixel-faithful to the old one whenever a
+  // pickup sits on a fractional position — the transform carries that fraction exactly the way the
+  // old path's translate() did, so the art resamples in the same place instead of the sprite snapping
+  // to a different whole pixel. Same formula, same amplitude, same rate, same phase offset.
+  g.translate(pk.x, pk.y + bob);
+  g.drawImage(sp, -sp.ox, -sp.oy);
   g.restore();
 }
 
@@ -1926,4 +2025,13 @@ $("btn-resume").addEventListener("click", togglePause);
 
 // idle title render needs a zone
 updateHud();
+
+// Bake the normal-enemy sprite set before the first frame runs, so no fight pays for baking and
+// nothing ever falls back to the slow procedural path. Safe to call more than once (cells already
+// present are skipped); it is load-time work, not per-level work, because the pose set is a set of
+// constants — the same sprites at every zone. Bosses are deliberately absent, see chars.js.
+// Guarded: if the cache module is missing or a bake throws, the game still starts and enemies are
+// drawn procedurally, which is the pre-cache behaviour.
+try { SPRITE_warm(); } catch (err) { if (typeof spriteCacheClear === "function") spriteCacheClear(); }
+
 requestAnimationFrame(frame);

@@ -457,6 +457,17 @@ function killEnemy(e) {
   }
   updateHud();
 }
+// Gate cost shown AFTER reaching `lvl` — i.e. the price of the next level up — from the
+// XP_TIERED table in world.js. Callers pass the level just reached, so `fromLevel` reads as
+// "reaching this level switches the next gate to `cost`". Returns the cost of the highest tier
+// whose fromLevel is <= lvl, or 0 when lvl is below every tier (caller falls back to the ×1.45
+// curve). Scanning high→low keeps the table order irrelevant and costs nothing at four entries.
+function xpGateFor(lvl) {
+  for (let i = XP_TIERED.length - 1; i >= 0; i--) {
+    if (lvl >= XP_TIERED[i].fromLevel) return XP_TIERED[i].cost;
+  }
+  return 0;
+}
 function gainXp(n) {
   P.xp += n;
   // One boon per level, not one per kill-burst. The original called openLevelUp() inside the
@@ -470,11 +481,13 @@ function gainXp(n) {
     // scaled value made the +50% compound each level (level 6 reached +169% instead of +50%).
     // `|| XP_BASE` keeps a pathological round-to-zero from wedging leveling entirely.
     const curve = Math.round(P.xpNext / XP_REQUIREMENT_SCALE);
-    // Flat gate from XP_FLAT_FROM_LEVEL on: the curve stops compounding so late realms keep
-    // handing out boons instead of stalling. Below that threshold the curve is unchanged.
-    P.xpNext = (P.lvl >= XP_FLAT_FROM_LEVEL)
-      ? XP_FLAT
-      : (Math.round(Math.round(curve * 1.45 + 12) * XP_REQUIREMENT_SCALE) || XP_BASE);
+    // Flat tiered gate from XP_FLAT_FROM_LEVEL on: the curve stops compounding so late realms
+    // keep handing out boons instead of stalling, and the tiers step the cost up so picks slow
+    // down deep into a run. P.lvl has already been incremented above, so the lookup uses the
+    // level just reached: 2500 until reaching 25, 5000 until reaching 50, 10000 until reaching
+    // 75, then 15000. Below the first tier the curve is unchanged.
+    P.xpNext = xpGateFor(P.lvl)
+      || (Math.round(Math.round(curve * 1.45 + 12) * XP_REQUIREMENT_SCALE) || XP_BASE);
   }
   if (levels > 0) {
     P.__dmgCached = undefined;

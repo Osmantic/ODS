@@ -160,6 +160,37 @@ def test_journal_is_private_and_precedes_begin_without_secrets(controller):
     assert host._pixel_model_recovery_status()['pending'] is False
 
 
+@pytest.mark.parametrize('gateway_applied,resolution',[(False,'rollback'),(True,'rollback'),(True,'recovery')])
+def test_a_refused_apply_stays_uncertain_and_recoverable(controller,monkeypatch,gateway_applied,resolution):
+    # The coordinator can write the target and replace the config before it
+    # refuses (a restart timeout as host-command-failed, runtime-busy from its
+    # hold), and the gateway can load that config later. The journal keeps the
+    # target, so either native state is still provable.
+    _,state,calls,call=controller
+    env={'PIXEL_OPENWEBUI_KEY':'configured'}
+    tx=host._begin_pixel_model_transaction(env)
+    def refuse(operation,request=None,*,config):
+        if operation=='model-apply':
+            calls.append(operation)
+            raise host._PixelModelTransactionRejected('refused',code='host-command-failed')
+        return call(operation,request,config=config)
+    monkeypatch.setattr(host,'_runtime_model_control',refuse)
+    with pytest.raises(host._PixelModelTransactionUncertain):tx.apply(NEW)
+    journal=json.loads(host._pixel_model_journal_path().read_text())
+    assert journal['phase']=='applying' and journal['target']==NEW
+    if gateway_applied:
+        state.update(status='applied',contract=copy.deepcopy(NEW))
+    if resolution=='rollback':
+        # What a caller does after the failure (rollback_and_prove, the remote rebind).
+        tx.verify_held()
+        tx.finish('rollback')
+        assert state['contract']==OLD and state['outcome']=='rollback'
+    else:
+        # An owner's explicit recovery completes the transaction the gateway took.
+        assert host._recover_pixel_model_transaction(env)['outcome']=='commit' and state['contract']==NEW
+    assert not host._pixel_model_recovery_status()['pending']
+
+
 @pytest.mark.parametrize('partial',[False,True])
 def test_begin_409_is_resolved_by_fresh_native_state_not_status_code(controller,monkeypatch,partial):
     _,state,calls,call=controller

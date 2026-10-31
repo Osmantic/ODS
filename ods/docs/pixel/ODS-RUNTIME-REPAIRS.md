@@ -281,6 +281,43 @@ projection (`truncateOversizedToolResultsInMessages`):
   sees it, is measured at the base aggregate. The first request of the next turn
   can send the wider view when it fits the guard, so its room for the reply
   rests on the loop guard rather than on the pre-prompt check's reserve.
+- While a response is under way, the provider stream's reductions take the
+  reads it has already superseded first, oldest first, and only then the other
+  results oldest first. A read is superseded when a later read of the same
+  file shows its text again (the same lines or a wider range), or when a later
+  change replaced what it shows: an `edit` of text the read shows, a `write` of
+  the file, or an `apply_patch` whose result lists the file (or that moved it
+  away). Changes count only when the tool's own result reports them.
+- Reads are recognized from the call before each result: `read` with its path,
+  offset and limit, or `exec` running, after at most one `cd`, a plain
+  `sed -n` range of one file, `cat` or `cat -n` of one file, or `cat -n`,
+  `nl -ba` or `grep -n ""` of one file piped to a `sed -n` range. Paths compare
+  as the sandbox resolves them, relative to the workspace or under
+  `/workspace`. Any other result is never superseded, and changes made through
+  `exec` are not seen. A reduction counts only what superseded a result by the
+  batch it reduces for, so earlier sends stay byte-stable.
+- The tool-loop guard calls the projection without an attempt's state and gets
+  exactly the projection above, so it measures, and trips, as it would without
+  the superseded-first order. Only calls with the attempt's state use the
+  order: the provider stream, and the pre-prompt compaction check at the start
+  of an attempt (a transcript that ends with a final reply still gets the base
+  projection there). They use the order only while their own input fits the
+  guard's limit at every message, in the view the response starts with (the
+  wider view at 131k tokens or more, the base view below). The stream's input
+  can count more than the guard's or the pre-prompt check's: OpenClaw sends a
+  compaction summary to the model as user text, and those checks count it as
+  256 characters. So after a compaction the first request can decline the
+  order the pre-prompt check used. Once the order does not fit, the attempt
+  sends exactly the projection above until it ends. That changes the cached
+  prompt prefix once; with the wider view, a later decline of that view can
+  change it once more.
+- Edit arguments are read as the edit tool reads them: `edits` can arrive as a
+  JSON string, which the tool parses in the attempt's copy while the session
+  file keeps the string, and a legacy `oldText` joins them. So the next turn
+  reaches the same reductions as the attempt that made the edit.
+- The first request of the next turn can send the order when it fits, so, as
+  with the wider view, its room for the reply rests on the loop guard rather
+  than on the pre-prompt check's reserve.
 
 The session transcript, the pre-prompt compaction check and the recovery
 rewrite path are unchanged. `toolResultMaxChars` stays at 16k: doubling it on
@@ -388,14 +425,19 @@ OPENCLAW_PACKAGE_DIR=/path/to/openclaw node --test \
 
 `pixel_ods_workspace_preview_inspect` can return one screenshot of the agent's
 own preview to a model ODS declares image-capable
-(`host/preview-inspection-protocol.md`, Viewport screenshot). The tool result,
+(`host/preview-inspection-protocol.md`, Viewport screenshot). The declaration
+is evidence, never an assumption: llama-server's report of a loaded vision
+projector for a local model, and for a remote model API route a conclusive
+vision probe of that exact route (the model named both colours of a
+two-square test image drawn for that check). The tool result,
 image included, stays in the session transcript, because ODS sends the
 persisted copy of a result to the next request of the attempt. The pinned
 runtime then resends tool-result images from the last three completed turns to
 whatever model serves the next turn. It strips them only for a row whose
 `input` lacks `image`, and Portal writes `["text","image"]` for an `unknown`
 route too. So after a switch of the Portal alias from a vision model to one
-whose image input is unknown, earlier screenshots would reach it as
+whose image input is unknown (or to another remote route, or to one that a
+later check measured text-only), earlier screenshots would reach it as
 `image_url` parts (up to nine in one request): an image test the owner never
 allowed, and one that llama-server without a projector rejects.
 

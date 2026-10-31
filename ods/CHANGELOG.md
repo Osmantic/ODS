@@ -307,6 +307,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a long line of spaces.
 
 ### Changed
+- Elf of Doom stays fast in big fights and long sessions, and leveling slows
+  down deep into the endless loop. Enemies and floor pickups are drawn from
+  pictures baked once instead of being redrawn shape by shape every frame, so
+  150 enemies on screen while you move and shoot hold about 120 fps instead of
+  dropping to 26. The hero's drawing saved the canvas state twice per frame and
+  restored it once, so every game got slower the longer it ran; it now
+  restores what it saves. Every level after level 25 costs 5,000 XP, after
+  level 50 10,000 and after level 75 15,000; levels 12 to 25 still cost 2,500.
+  Portal made the changes, running Qwen3.8-Flash-Next on local hardware; the
+  game files are exactly the ones https://odsspark.com/game/ serves. An install
+  that already has `Playground/elf-of-doom` keeps its own copy.
 - Elf of Doom keeps its HUD on screen when you continue past the quest panel.
   The panel hid it and nothing showed it again, so every loop after the first
   was played without the portrait, health bar, level, realm name or arrow

@@ -56,14 +56,14 @@ RENAME_EXCL = 0x4
 EXAMPLES = {
     'elf-of-doom': {
         'README.md': '8e46f14d7566c21328c7f9131b5028ffe826be7c2e6e3ca404074b95d1d178f6',
-        'chars.js': '0b868b29929ba9fbc97d9cca54612c3ffdcf2bfcc1dd77c1c62d824ad95b57ff',
+        'chars.js': '71408b66267ecdec9fc45cd6732448b71500ccdf936b3d68394852e2b3eef7ff',
         'dungeon.js': '80dfc2e0517cb89bce4f445d75e6a85a4a9c2317893a6762d87666b5b136004c',
-        'engine.js': '756954695c9d0834a4d80b5544a8b8b1b5c422d3fcf415e4dacf1309f9693c47',
+        'engine.js': 'f32fc72e33854d3965587a85c9d7eaf501b0abcc6bc0483b194e68a857af609d',
         'index.html': '4a325311a23cdadbb17f390fecd493afbd379837630e675a593427d168bf012a',
-        'legacy.js': '41957b2172491e3c11bdc805124ad3f7df7b9eedf5547e627596dc82f244d719',
+        'legacy.js': '81e8f16fa20cd0961200fb0a78750ea7cd1365fbfda42ca2edbfac07410050eb',
         'style.css': '2364f00be5b34cde47d4ba83a73daabc8118f8c2163ffcb2206e4092557f9a6d',
-        'ui.js': '65968dac940a75cbe05bc97031368b113042df0fa3b46cbfb36006c4234f977c',
-        'world.js': 'ab9ea98a8f8817a8215fb8951e131f4034016e17e47e7109fc991593100b1fbd',
+        'ui.js': 'a4373aa0e53bf0727d99d5adc7af4e7e482cbb98c869dab2ec6bf97c72ed3062',
+        'world.js': '90ee17c8904eefe626e4f111a68025444a995a2d9383a2109bdc818b01d0b9e3',
     },
 }
 PINNED_NAMES = frozenset(name for files in EXAMPLES.values() for name in files)
