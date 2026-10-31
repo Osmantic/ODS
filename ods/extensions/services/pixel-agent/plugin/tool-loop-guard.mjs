@@ -13803,17 +13803,16 @@ export function createToolLoopGuard({
     deadline.timer?.unref?.();
   }
 
-  // The stop is this attempt's to make: a /goal round that may continue after
-  // it (goalRoundContinues, decided when the stop is due, since
-  // goal-progress.mjs begins after observeRun), not cancelled by the owner,
-  // whose cancel owns its own stop, and not superseded by a newer run in this
-  // session. Never in the one answer turn after a tool-limit stop or a
-  // refused delete, which keep their own stop text.
+  // The stop is this attempt's to make: not superseded by a newer run in this
+  // session, and a /goal round that may continue after it (goalRoundContinues,
+  // decided when the stop is due, since goal-progress.mjs begins after
+  // observeRun), which also rules out an owner's cancel, whose cancel owns its
+  // own stop, and a refused delete, whose answer turn keeps its own text.
+  // Never in the one answer turn after a tool-limit stop either.
   function responseDeadlineOwned(state, runId, deadline) {
     const sessionId = state.currentSessionId;
-    return state.responseDeadline === deadline && runs.get(runId) === state && !state.clientCancelled &&
-      Boolean(sessionId) && sessionRuns.get(sessionId) === runId && goalRoundContinues(state, runId) &&
-      !state.progressBudget.exhausted && !state.recursiveDeleteDenied;
+    return state.responseDeadline === deadline && runs.get(runId) === state && Boolean(sessionId) &&
+      sessionRuns.get(sessionId) === runId && goalRoundContinues(state, runId) && !state.progressBudget.exhausted;
   }
 
   // A /goal round whose goal continues after a Portal limit stops it, for
