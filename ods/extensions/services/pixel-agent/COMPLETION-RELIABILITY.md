@@ -704,7 +704,9 @@ which ODS resets. The model had no warning that the deadline was near.
   when the prompt fills over 65% of the window. So for the owner's goal
   rounds the guard stops the response 15 seconds before its deadline (1/60 of
   shorter timeouts), counted from the response's start, whatever attempt it
-  is on. Other chats keep OpenClaw's timer and the ingress, as before. It
+  is on. Other chats keep OpenClaw's timer and the ingress, as before, and so
+  do goal rounds that would end their goal after a stop anyway (Operations,
+  exact downloads, managed extension requests, a repeated research loop). It
   stops only where the abort reaches OpenClaw's run and costs no answer:
   - a tool that is running, with the run-ID marker that also ends a sandboxed
     command, like every ODS stop;
@@ -717,11 +719,16 @@ which ODS resets. The model had no warning that the deadline was near.
   - the next tool call, which it refuses.
 
   It never stops an attempt that wrote its answer (OpenClaw drops the answer
-  of an attempt anything but its own timer aborted): if that attempt goes on,
-  its next turn or tool call is stopped, and so is a revision it asks for. It
-  never stops the answer turn after a tool-limit stop or a refused delete, an
-  owner's Stop, or a newer run in the chat. If the stop is not taken, the next
-  turn or tool call tries again.
+  of an attempt anything but its own timer aborted). The answer counts until
+  a reply that is not one, not until the next model call: the compaction
+  after an answer can start before its `before_compaction` hook, which waits
+  behind the finalization hooks. If that attempt goes on, its next tool call
+  is stopped, and so is a revision it asks for. It never stops the answer
+  turn after a tool-limit stop or a refused delete, an owner's Stop, or a
+  newer run in the chat. If the stop is not taken, the next turn or tool call
+  tries again. Once the stop is due, tool results no longer count toward the
+  tool limit, so its own refusals and the commands it ends never make the
+  round a tool-limit stop.
 - **The owner is told what happened.** No hook reports the runtime's timeout
   kind, so `agent_end` classifies it. After the guard's own stop the deadline
   is the cause. Otherwise all of these must hold:
@@ -761,8 +768,12 @@ Some goal rounds still reach the ingress's cut with no reply:
 - an attempt that wrote its answer and is still finalizing;
 - a model call that begins in the last 3 seconds before the first attempt's
   own timer, which then fires first and may start its compaction and retry;
-- a long history preparation by the ingress before the first attempt, which
-  counts against its 1920 seconds but not against the 30 minutes.
+- a turn after an answer whose model call runs past the cut without calling
+  a tool;
+- time before the first attempt's prompt hook, which counts against the
+  ingress's 1920 seconds but not against the 30 minutes: a long history
+  preparation by the ingress, the gateway's session-lane wait, sandbox and
+  bootstrap setup.
 
 The dashboard then shows "Portal could not complete the response", and the
 goal ends there.

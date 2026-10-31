@@ -312,18 +312,22 @@ test('a tool still running at the deadline is stopped there', () => {
   f.start('slow-test', 'exec', {command: 'npm test', workdir: '/workspace/game'});
   f.at(STOP_AT);
   assert.deepEqual(f.aborts, [OWNER.sessionId]);
-  // One that finished is not running, and a new model call starts a new turn.
-  for (const finished of [true, false]) {
+  // One whose result persisted or that finished is not running, and a new
+  // model call starts a new turn.
+  for (const end of ['persisted', 'finished', 'next call']) {
     const done = fixture({goal: true});
     done.model();
     done.at(20);
     done.modelEnd();
     done.start('read-1');
-    if (finished) done.guard.afterToolCall({toolName: 'read', toolCallId: 'read-1', params: {path: 'game/ui.js'},
-      result: {content: [{type: 'text', text: 'ok'}]}}, {...OWNER, toolName: 'read', toolCallId: 'read-1'});
+    const ctx = {...OWNER, toolName: 'read', toolCallId: 'read-1'};
+    if (end === 'persisted') done.guard.toolResultPersist({toolName: 'read', toolCallId: 'read-1',
+      message: {role: 'toolResult', toolName: 'read', toolCallId: 'read-1', content: [{type: 'text', text: 'ok'}]}}, ctx);
+    else if (end === 'finished') done.guard.afterToolCall({toolName: 'read', toolCallId: 'read-1', params: {path: 'game/ui.js'},
+      result: {content: [{type: 'text', text: 'ok'}]}}, ctx);
     else { done.at(STOP_AT - 0.01); done.model(); }
     done.at(STOP_AT);
-    assert.deepEqual(done.aborts, [], `finished=${finished}`);
+    assert.deepEqual(done.aborts, [], end);
   }
 });
 
@@ -365,14 +369,16 @@ test('an attempt that wrote its answer is never stopped, and is delivered as usu
   cut.reply({stopReason: 'length', content: [{type: 'text', text: 'The wolves now use two circles each and'}]});
   cut.at(31);
   assert.deepEqual(cut.aborts, []);
-  // A further agent turn means that reply was not the last; a failed reply
-  // and one with tool calls are no answer.
+  // A model call after the answer is not stopped mid-call: the compaction
+  // after an answer can start before its before_compaction hook, which waits
+  // behind the finalization hooks. A failed reply and one with tool calls are
+  // no answer.
   const more = fixture({goal: true});
   more.model();
   more.reply(ANSWER);
   more.model();
-  more.at(STOP_AT);
-  assert.deepEqual(more.aborts, [OWNER.sessionId]);
+  more.at(STOP_AT + STREAM_STARTED);
+  assert.deepEqual(more.aborts, []);
   const failed = fixture({goal: true});
   failed.model();
   failed.reply({stopReason: 'error', content: [{type: 'text', text: 'The wolves now'}]});
@@ -389,8 +395,9 @@ test('an attempt that wrote its answer is never stopped, and is delivered as usu
   assert.deepEqual(calling.aborts, [OWNER.sessionId]);
 });
 
-// The attempt went on after its answer, such as for a queued follow-up.
-test('a stop that came while the attempt had its answer is made at its next turn or tool call', () => {
+// The attempt went on after its answer, such as for a queued follow-up: the
+// turn's model call runs, and its tool call is where the stop lands.
+test('a stop that came while the attempt had its answer is made at its next tool call', () => {
   const f = fixture({goal: true});
   f.model();
   f.at(29.7);
@@ -400,17 +407,45 @@ test('a stop that came while the attempt had its answer is made at its next turn
   f.at(29.8);
   f.model();
   f.at(29.8 + STREAM_STARTED);
-  assert.deepEqual(f.aborts, [OWNER.sessionId]);
-  const tool = fixture({goal: true});
-  tool.model();
-  tool.at(29.7);
-  tool.reply(ANSWER);
-  tool.at(STOP_AT);
-  tool.reply({stopReason: 'toolUse', content: [{type: 'toolCall', id: 'read-9', name: 'read', arguments: {}}]});
-  const decision = tool.guard.beforeToolCall({toolName: 'read', params: {path: 'game/ui.js'}, toolCallId: 'read-9'},
+  assert.deepEqual(f.aborts, []);
+  f.modelEnd();
+  f.reply({stopReason: 'toolUse', content: [{type: 'toolCall', id: 'read-9', name: 'read', arguments: {}}]});
+  const decision = f.guard.beforeToolCall({toolName: 'read', params: {path: 'game/ui.js'}, toolCallId: 'read-9'},
     {...OWNER, toolName: 'read', toolCallId: 'read-9'});
   assert.equal(decision?.block, true);
-  assert.deepEqual(tool.aborts, [OWNER.sessionId]);
+  assert.deepEqual(f.aborts, [OWNER.sessionId]);
+});
+
+// A turn after the stop can make several calls at once, each refused.
+test('the stop\'s own refusals never make the round a tool-limit stop', () => {
+  const f = fixture({goal: true});
+  f.model();
+  f.at(STOP_AT);
+  assert.deepEqual(f.aborts, [OWNER.sessionId]);
+  for (let i = 0; i < RUN_PROGRESS_LIMITS.consecutiveFailures + 1; i++) {
+    const toolCallId = `refused-${i}`, ctx = {...OWNER, toolName: 'read', toolCallId};
+    const decision = f.guard.beforeToolCall({toolName: 'read', params: {path: `game/part-${i}.js`}, toolCallId}, ctx);
+    assert.equal(decision?.block, true);
+    const result = {isError: true, content: [{type: 'text', text: decision.blockReason}], details: {status: 'blocked'}};
+    f.guard.afterToolCall({toolName: 'read', params: {path: `game/part-${i}.js`}, toolCallId, result, error: decision.blockReason}, ctx);
+    f.guard.toolResultPersist({toolName: 'read', toolCallId, message: {role: 'toolResult', toolName: 'read', toolCallId, ...result}}, ctx);
+  }
+  f.guard.observeAgentEnd(CUT_OFF, OWNER);
+  assert.deepEqual(f.guard.deliveryVerificationForRun(RUN_ID), {status: 'failed', text: UNCHANGED_STOP_COPY, stop: 'run-deadline'});
+});
+
+// Resumed, they would repeat a download or an approval card, so the stop would
+// end the goal anyway; they keep OpenClaw's timer and the ingress, as before.
+test('a goal round that cannot continue after a stop is not stopped', () => {
+  for (const prompt of [
+    '/goal Download the exact bytes of https://huggingface.co/acme/tool/resolve/main/tool.bin to workspace file named Playground/tool.bin, then write a loader.',
+    '/goal Use Pixel Operations to restart the comfyui service on this ODS host and verify it is healthy.',
+  ]) {
+    const f = fixture({goal: true, prompt});
+    f.model();
+    f.at(31);
+    assert.deepEqual(f.aborts, [], prompt);
+  }
 });
 
 // One before the attempt's prompt runs with no live run to abort; one after

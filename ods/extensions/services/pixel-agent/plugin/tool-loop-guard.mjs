@@ -8594,8 +8594,11 @@ export function createToolLoopGuard({
   }
 
   // Charges one tool result to the progress budget and remembers a failed
-  // preview check that stopped the run (finalizationInstruction).
+  // preview check that stopped the run (finalizationInstruction). Not once
+  // the deadline stop is due: its own refusals and the commands it ends would
+  // otherwise name the tool limit as the cause (responseDeadlineToolCall).
   function observeProgress(state, outcome, tool) {
+    if (state.responseDeadline?.due) return;
     const running = !state.progressBudget.exhausted;
     state.progressBudget.observeResult(outcome);
     if (!running || !state.progressBudget.exhausted) return;
@@ -13028,6 +13031,9 @@ export function createToolLoopGuard({
         && sessionRuns.get(item.sessionId) === item.runId) : undefined;
     const runId = pending?.runId ?? context?.runId ?? event?.runId ?? active?.runId;
     const state = runs.get(runId);
+    // The tool is done: its result persists before the next model call,
+    // ahead of after_tool_call (responseDeadlineDue).
+    state?.responseDeadline?.tools.delete(toolCallId);
     const continuation = trustedOperationsContinuation(state, runId);
     if (!event?.message || typeof event.message !== "object") {
       return undefined;
@@ -13797,16 +13803,26 @@ export function createToolLoopGuard({
     deadline.timer?.unref?.();
   }
 
-  // The stop is this attempt's to make: a /goal round (decided when the stop
-  // is due, since goal-progress.mjs begins after observeRun), not cancelled
-  // by the owner, whose cancel owns its own stop, and not superseded by a
-  // newer run in this session. Never in the one answer turn after a
-  // tool-limit stop or a refused delete, which keep their own stop text.
+  // The stop is this attempt's to make: a /goal round that may continue after
+  // it (goalRoundContinues, decided when the stop is due, since
+  // goal-progress.mjs begins after observeRun), not cancelled by the owner,
+  // whose cancel owns its own stop, and not superseded by a newer run in this
+  // session. Never in the one answer turn after a tool-limit stop or a
+  // refused delete, which keep their own stop text.
   function responseDeadlineOwned(state, runId, deadline) {
     const sessionId = state.currentSessionId;
     return state.responseDeadline === deadline && runs.get(runId) === state && !state.clientCancelled &&
-      Boolean(sessionId) && sessionRuns.get(sessionId) === runId && goalRun(runId) === true &&
+      Boolean(sessionId) && sessionRuns.get(sessionId) === runId && goalRoundContinues(state, runId) &&
       !state.progressBudget.exhausted && !state.recursiveDeleteDenied;
+  }
+
+  // A /goal round whose goal continues after a Portal limit stops it, for
+  // goal mode's controller (dashboard-api portal_goal.py). Not receipt-based
+  // work (Operations, exact downloads, managed extension requests, a refused
+  // delete) or a repeated web-research loop: resumed, they would repeat a
+  // download, an approval card or the loop.
+  function goalRoundContinues(state, runId) {
+    return goalRun(runId) === true && progressFinalizationEligible(state) && !state.operationsLoopAborted;
   }
 
   // The stop lands only where it reaches OpenClaw's run: a tool running, or
@@ -13816,8 +13832,8 @@ export function createToolLoopGuard({
   // the call is RESPONSE_STREAM_STARTED_MS old. Between calls it waits for the
   // next turn, or for the next tool call, which it refuses
   // (responseDeadlineToolCall). Never once the attempt wrote its answer,
-  // which OpenClaw drops from an aborted attempt: it finishes, and a turn or
-  // revision after it is stopped.
+  // which OpenClaw drops from an aborted attempt: it finishes, and a tool call
+  // or a revision after it is stopped.
   function responseDeadlineDue(state, runId, deadline) {
     if (!responseDeadlineOwned(state, runId, deadline)) return;
     deadline.due = true;
@@ -13844,17 +13860,18 @@ export function createToolLoopGuard({
     if (deadline.stopped) info(`Pixel stopped run ${runId} at its response deadline`);
   }
 
-  // model_call_started of an agent turn: the attempt's run is live, the last
-  // turn's tools are done, and its last reply was not final. A compaction
-  // call is neither a turn nor a stop point: one before the attempt's prompt
-  // runs with no live run, and an abort there would let the prompt start on
-  // unsupervised; one after an answer belongs to that answer.
+  // model_call_started of an agent turn: the attempt's run is live and the
+  // last turn's tools are done. A compaction call is neither a turn nor a stop
+  // point: one before the attempt's prompt runs with no live run, and an abort
+  // there would let the prompt start on unsupervised. An answer stays an
+  // answer until a reply that is not one (observeReplyEnd): the compaction
+  // that follows an answer can start before its before_compaction hook, which
+  // waits behind the finalization hooks, so it looks like a turn here.
   function responseDeadlineModelCall(state, runId, callId, compactionCall) {
     const deadline = state.responseDeadline;
     if (!deadline || compactionCall) return;
     deadline.call = {id: callId, at: now()};
     deadline.tools.clear();
-    deadline.answered = false;
     if (deadline.due && !deadline.stopped && !deadline.timer) scheduleResponseDeadline(state, runId, RESPONSE_STREAM_STARTED_MS);
   }
 
@@ -14644,12 +14661,9 @@ export function createToolLoopGuard({
     if (notice) result = {...result, notice};
     // Which limit stopped this goal round, for goal mode's controller
     // (dashboard-api portal_goal.py): it continues the goal after these stops.
-    // Goal rounds only, since an ingress older than this field refuses it. Not
-    // for receipt-based work (Operations, exact downloads, managed extension
-    // requests, a refused delete) or a repeated web-research loop: resumed,
-    // they would repeat a download, an approval card or the loop.
-    const stop = result.status !== 'failed' || !state || !goalRun(runId) ||
-        !progressFinalizationEligible(state) || state.operationsLoopAborted ? undefined
+    // Goal rounds only, since an ingress older than this field refuses it, and
+    // only those that may continue (goalRoundContinues).
+    const stop = result.status !== 'failed' || !state || !goalRoundContinues(state, runId) ? undefined
       : state.runDeadlineReached ? 'run-deadline'
       : state.progressBudget.exhausted && !state.researchStopped ? 'tool-limit' : undefined;
     if (stop) result = {...result, stop};
