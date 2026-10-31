@@ -541,7 +541,7 @@ function Test-ZipIntegrity {
         [string]$Path
     )
 
-    if (-not (Test-Path $Path)) {
+    if (-not (Test-Path -LiteralPath $Path)) {
         return @{
             Valid        = $false
             ErrorMessage = "File not found"
@@ -549,7 +549,7 @@ function Test-ZipIntegrity {
         }
     }
 
-    $fileInfo = Get-Item $Path
+    $fileInfo = Get-Item -LiteralPath $Path
     $sizeBytes = $fileInfo.Length
 
     # Check for empty or suspiciously small files
@@ -566,7 +566,7 @@ function Test-ZipIntegrity {
 
     try {
         # Attempt to open the zip file (validates central directory)
-        $zip = [System.IO.Compression.ZipFile]::OpenRead($Path)
+        $zip = [System.IO.Compression.ZipFile]::OpenRead($fileInfo.FullName)
         $entryCount = $zip.Entries.Count
         $zip.Dispose()
 
