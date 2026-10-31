@@ -186,14 +186,16 @@ export function unverifiedLinksNote(unverifiedLinks = []) {
 
 // Model answer first (the requested format stays intact), then host facts.
 // `synthesis` marks a stop synthesis (stop-synthesis.mjs): its note, and the
-// pages it was given, listed last.
+// pages it was given, listed last. `fileChecks` is the line of Portal's checks
+// of the changed files (changed-file-checks.mjs), after the list of them.
 export function composeProgressFinalization(answer, {preview, previewExpected = false,
   verificationStatus, researchLimit = false, unverifiedLinks = [], refusedToolCalls = false,
-  requestedTextMissing, synthesis, changedFiles = []} = {}) {
+  requestedTextMissing, synthesis, changedFiles = [], fileChecks} = {}) {
   const facts = [PROGRESS_FINALIZATION_NOTE];
   if (refusedToolCalls) facts.push(PROGRESS_FINALIZATION_REFUSED_CALLS_NOTE);
   const changed = changedFilesNote(changedFiles);
   if (changed) facts.push(changed);
+  if (typeof fileChecks === 'string' && fileChecks) facts.push(fileChecks);
   if (typeof synthesis?.note === 'string' && synthesis.note) facts.push(synthesis.note);
   if (researchLimit) facts.push("This response's web research allowance was used up, so no further sources could be read.");
   if (verificationStatus === 'failed') facts.push('The latest recognized test or verification command failed.');

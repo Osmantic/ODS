@@ -44,6 +44,8 @@ import { leakedExecGuidance, execGuidanceRevisionInstruction, EXEC_GUIDANCE_LEAK
 import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir, sandboxHostWorkspaceFailure, malformedRelativeWorkspacePath } from "./workspace-path-contract.mjs";
 import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
 import { createExampleGuard, EXAMPLE_NOTES, exampleNotice, mentionsExample, namesExample } from "./example-guard.mjs";
+import { createChangedFileChecks, createModuleCheckQueue, FILE_CHANGING_TOOLS, FILE_CHECK_LIMITS, fileCheckFacts,
+  fileCheckInstruction, fileCheckKey, nodeModuleCheck, touchedProjects } from "./changed-file-checks.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
 import {WORKSPACE_BUNDLE_TOOL, normalizeWorkspaceBundle} from './workspace-bundle.mjs';
 import {MAX_PREVIEW_SCREENSHOTS_PER_RUN} from './preview-screenshot.mjs';
@@ -555,6 +557,11 @@ const WEB_TOOLS = new Set(["web_search", "web_fetch", "pixel_ods_web_extract", "
 const CODING_TOOLS = new Set(["exec", "write", "edit", "apply_patch"]);
 const WORKSPACE_MUTATION_TOOLS = new Set(["write", "edit", "apply_patch"]);
 const FILE_PATH_TOOLS = new Set(["read", "write", "edit"]);
+// Results after which Portal's checks of the changed files run: the calls
+// that may change files, and process, through which a background exec ends.
+const FILE_RESULT_TOOLS = new Set([...FILE_CHANGING_TOOLS, "process"]);
+// Earlier responses' checks a chat carries across pending deliveries.
+const MAX_CARRIED_FILE_CHECKS = 8;
 const WORKSPACE_CONTINUATION_TOOLS = new Set([
   "read", "write", "edit", "apply_patch", "exec", "process",
   "pixel_ods_evidence_report", "pixel_ods_evidence_readback", WORKSPACE_BUNDLE_TOOL,
@@ -7880,6 +7887,10 @@ export function createToolLoopGuard({
   // (subagent-delivery.mjs ownerRunOf), for the shipped example's guard.
   exampleOwnerRun = () => undefined,
   exampleGuard,
+  // Each response's checks of the files it changed (changed-file-checks.mjs),
+  // and the ES module parse they share through one queue for the gateway.
+  changedFileChecks = createChangedFileChecks,
+  checkModule = nodeModuleCheck,
   // Whether a run is a /goal round (goal-progress.mjs), whose verification
   // says which limit stopped it.
   goalRun = () => false,
@@ -7912,6 +7923,12 @@ export function createToolLoopGuard({
   // A tool call the model's output limit cut off, which the chat's next turn
   // is told to write in smaller parts (output-limit.mjs).
   const sessionOutputLimits = new Map();
+  // Checks of changed files whose findings a pending delivery (a question
+  // card) could not show: the chat's next owner turn reports what is still found.
+  const sessionFileChecks = new Map();
+  // Every response's ES module parses: two at a time, each result kept by
+  // content, so a version is parsed once however many responses ask.
+  const moduleChecks = createModuleCheckQueue({checkModule});
   // Process-wide: a failed or timed-out stop synthesis pauses further ones.
   let stopSynthesisFailedAt = -Infinity;
   const pendingToolRuns = new Map();
@@ -8729,6 +8746,110 @@ export function createToolLoopGuard({
     } catch { observe({callbackThrew:true}); }
   }
 
+  // Portal's checks of the files a response changed (changed-file-checks.mjs).
+  // Before an allowed call that may change a Playground project this response
+  // has not touched yet, that project is fingerprinted. The call is read as
+  // the guard routed it, before the exec wrapper (rememberToolRun); an exec
+  // that only reads files changes nothing, so a later call takes the print. A
+  // delegated child may work beside others in the same project, so each of
+  // its calls also marks what the project holds as it starts.
+  function touchProjects(state, runId, toolName, params, callId) {
+    if (!fileChecksEligible(state)) return;
+    const pending = pendingToolRuns.get(callId);
+    const [tool, args] = pending?.runId === runId ? [pending.selectedToolName, pending.selectedParams] : [toolName, params];
+    if (tool === 'exec' && readOnlyLookup(args?.command)) return;
+    fileChecksSafely(state, () => {
+      const projects = touchedProjects(tool, args, state.configuredWorkspaceRoot);
+      if (projects.length) (state.changedFileChecks ??= changedFileChecks({queue: moduleChecks, requested: ownerWordsForChecks(state)}))
+        .touch(state.configuredWorkspaceRoot, projects, {mark: childRun(state)});
+    });
+  }
+
+  // A delegated child: its session is a subagent session.
+  const childRun = state => /^agent:[^:]+:subagent:/.test(state?.currentSessionKey ?? '');
+
+  // The owner's own words for the turn, whose names are not debug globals:
+  // the owner run's request (for its children and continuations too) and,
+  // when it answers a clarification card, the request and answers that card
+  // recorded. Never a delegated task or a cron prompt.
+  function ownerWordsForChecks(state) {
+    const owner = state.exampleTurnRunId ? runs.get(state.exampleTurnRunId) : state;
+    if (!owner?.artifactOwnerInteractive) return '';
+    const answered = owner.clarificationAnswer;
+    return [owner.ownerRequestText, answered?.request, ...(answered?.earlierAnswers ?? [])]
+      .filter(text => typeof text === 'string').join('\n');
+  }
+
+  // Runs whose files are checked at all: not after an owner Stop, nor in
+  // Operations, exact-download and read-only team runs, whose deliveries are
+  // receipts; and not once a defect switched the checks off.
+  function fileChecksKind(state) {
+    return Boolean(state) && !state.clientCancelled && !state.operationsRequired &&
+      !state.exactDownloadRequested && !state.managedTeamReadOnly && !state.managedTeamCoordinator;
+  }
+  const fileChecksEligible = state => fileChecksKind(state) && !state.fileChecksOff;
+
+  // Whether the model still gets told what the checks find: only while it can
+  // still change files in this response. Not after an ODS abort, once coding
+  // tools ended or the workspace lane stopped, after a refused recursive
+  // delete, or while a question waits for the owner. (A tool-limit stop
+  // replaces every later result with its answer instruction.)
+  function fileChecksOpen(state) {
+    return Boolean(state?.changedFileChecks) && fileChecksEligible(state) && !state.odsAborted &&
+      !state.progressBudget.laneExhausted('workspace') && !state.codingExhausted && !state.recursiveDeleteDenied &&
+      !state.ownerQuestions && !state.ownerNoTools;
+  }
+
+  // A defect in the checks never blocks a call or a delivery (OpenClaw fails
+  // before_tool_call closed): it switches them off for the run, with a
+  // warning, and the owner reads that they could not finish.
+  function fileChecksFailed(state, error) {
+    state.changedFileChecks = undefined;
+    state.fileChecksOff = true;
+    warn(`Portal's checks of the changed files are off for this response: ${String(error)}`);
+  }
+  function fileChecksSafely(state, action, fallback) {
+    try { return action(); }
+    catch (error) {
+      fileChecksFailed(state, error);
+      return fallback;
+    }
+  }
+
+  // The checks a delivery reports for its run's owner turn: the owner run's
+  // own, a continuation's that reports to it and the children it delegated to
+  // (observeExampleRun records that turn), then what a response in this chat
+  // that ended pending (a question card carries no notice) left unshown. off:
+  // a defect switched one of the turn's checks off.
+  function deliveryFileChecks(state, runId) {
+    if (!fileChecksKind(state)) return {own: [], carried: [], off: false};
+    const turn = state.exampleTurnRunId ?? runId;
+    const members = [...runs].filter(([id, other]) => id === runId || id === turn || other.exampleTurnRunId === turn)
+      .map(([, other]) => other).filter(fileChecksKind);
+    const own = members.filter(other => other.changedFileChecks && !other.fileChecksOff).map(other => other.changedFileChecks);
+    if (fileChecksEligible(state)) takeUnshownFileChecks(state, runId);
+    return {own, carried: (state.carriedFileChecks ?? []).filter(checks => !own.includes(checks)),
+      off: members.some(other => other.fileChecksOff)};
+  }
+
+  // Each finding once, however many of the turn's checks found it.
+  const uniqueFindings = findings => [...new Map(findings.map(finding => [fileCheckKey(finding), finding])).values()];
+
+  // An owner turn's delivery in a chat whose last response ended pending
+  // takes the checks that response could not show (deliveryVerificationForRun):
+  // the owner run's, or a continuation's that reports to it. A cron run or a
+  // team worker leaves them for the next owner turn; a delegated child runs
+  // in a session of its own.
+  function takeUnshownFileChecks(state, runId) {
+    const sessionKey = state.currentSessionKey;
+    const record = typeof sessionKey === 'string' ? sessionFileChecks.get(sessionKey) : undefined;
+    const turn = runs.get(state.exampleTurnRunId ?? runId);
+    if (!record || record.runId === runId || state.managedTeamWorker ||
+        !turn?.artifactOwnerInteractive || turn.managedTeamWorker) return;
+    sessionFileChecks.delete(sessionKey);
+    state.carriedFileChecks = [...new Set([...(state.carriedFileChecks ?? []), ...record.checks])];
+  }
+
   // Publication currency across later calls (see preview-revalidation.mjs).
   // A call this guard refuses runs nothing: it neither advances nor revokes a
   // pending host comparison, and its receipt is recognized by exact call ID.
@@ -8742,8 +8863,9 @@ export function createToolLoopGuard({
     const toolName = context?.toolName ?? event?.toolName;
     const { runId } = runIdentity(event, context);
     const state = context?.agentId === agentId && runId ? runs.get(runId) : undefined;
-    if (!state || workspaceReadOnlyCall(toolName, event?.params)) return decision;
     const callId = context?.toolCallId ?? event?.toolCallId;
+    if (state && decision?.block !== true) touchProjects(state, runId, toolName, event?.params, callId);
+    if (!state || workspaceReadOnlyCall(toolName, event?.params)) return decision;
     if (decision?.block === true && typeof callId === 'string' && callId) {
       const refused = state.previewRevalidationRefusedCalls ??= new Set();
       if (refused.size >= MAX_TRACKED_RUNS) refused.delete(refused.values().next().value);
@@ -13141,6 +13263,17 @@ export function createToolLoopGuard({
     // what is needed and start changing files.
     const editEarlyNotice = state && !state.clientCancelled && !state.odsAborted && !state.progressBudget.exhausted &&
       takeEditEarlyNotice(state) ? EDIT_EARLY_NOTICE : undefined;
+    // Same channel: what Portal's checks of the changed files find after a
+    // call that may have changed them, each finding once. This is the model's
+    // one chance to fix them: the pinned harness refuses a before_agent_finalize
+    // revision after potential side effects, and every file change is one. Any
+    // other result carries only module parses that finished in the background.
+    // A delegated child hears only of files that changed while its own calls
+    // ran; the owner's line lists everything.
+    const fileCheckWalk = FILE_RESULT_TOOLS.has(pending?.selectedToolName) &&
+      !(pending.selectedToolName === 'exec' && readOnlyLookup(pending.selectedParams?.command));
+    const fileCheckNote = fileChecksOpen(state) ? fileChecksSafely(state, () =>
+      fileCheckInstruction(state.changedFileChecks.take({walk: fileCheckWalk, own: childRun(state)})), '') : '';
     const boundWebCall = pending &&
       (!state?.currentSessionId || sessionRuns.get(state.currentSessionId) === pending.runId) &&
       (!message.toolCallId || message.toolCallId === toolCallId) &&
@@ -13478,6 +13611,7 @@ export function createToolLoopGuard({
       !deadlineNotice &&
       !progressWarning &&
       !editEarlyNotice &&
+      !fileCheckNote &&
       !exampleOutcome
     ) {
       return undefined;
@@ -13555,6 +13689,7 @@ export function createToolLoopGuard({
     }
     if (exampleOutcome) content.push({type: 'text', text: EXAMPLE_NOTES[exampleOutcome].model});
     // Last, and blocks of their own: the per-result cap keeps short blocks whole.
+    if (fileCheckNote) content.push({type: 'text', text: fileCheckNote});
     if (progressWarning) content.push({type: 'text', text: progressWarning});
     if (editEarlyNotice) content.push({type: 'text', text: editEarlyNotice});
     if (deadlineNotice) content.push({type: 'text', text: deadlineNotice});
@@ -13726,10 +13861,18 @@ export function createToolLoopGuard({
       .catch(error => { warn(`Pixel partial-answer citation check failed for run ${runId}: ${String(error)}`); });
   }
 
-  async function settleDelivery(runId) {
+  // delegated: the delegated-delivery route, whose caller gives up after 5 s.
+  async function settleDelivery(runId, {delegated = false} = {}) {
     const state = typeof runId === 'string' ? runs.get(runId) : undefined;
     if (!state) return;
     if (state.partialAnswerVerification) await state.partialAnswerVerification;
+    // ES module parses run in the background; their results join the owner's
+    // line when they finish in time (FILE_CHECK_LIMITS); what did not is
+    // listed as not checked.
+    const fileChecks = deliveryFileChecks(state, runId);
+    const wait = delegated ? FILE_CHECK_LIMITS.delegatedSettleMs : FILE_CHECK_LIMITS.settleMs;
+    await Promise.all([...fileChecks.own, ...fileChecks.carried].map(checks =>
+      Promise.resolve().then(() => checks.settle(wait)).catch(error => fileChecksFailed(state, error))));
     // Decided once per run: a request is never retried, and a skip stands.
     if (!state.stopSynthesis && !state.stopSynthesisOutcome) {
       const skip = stopSynthesisSkip(state, runId);
@@ -14585,8 +14728,22 @@ export function createToolLoopGuard({
     return !reason || reason === 'publication-attempt-limit' ? runs.get(scope.runId) : undefined;
   }
   function deliveryVerificationForRun(runId) {
-    let result=baseDeliveryVerificationForRun(runId);
     const state=runs.get(runId);
+    // What Portal's checks of the changed files still find as the response
+    // ends (changed-file-checks.mjs): host facts under the answer, after the
+    // model's one chance to fix them, with what an earlier pending response in
+    // this chat could not show. A stop's text says them after its list of
+    // changed files; any other reply gets them in its notice below.
+    const fileChecks=state ? deliveryFileChecks(state, runId) : {own: [], carried: [], off: false};
+    const [checked, carried]=fileChecksSafely(state ?? {}, () => {
+      const own=uniqueFindings(fileChecks.own.flatMap(checks => checks.findings({final: true})));
+      const shown=new Set(own.map(fileCheckKey));
+      return [own, uniqueFindings(fileChecks.carried.flatMap(checks => checks.findings({final: true})))
+        .filter(finding => !shown.has(fileCheckKey(finding)))];
+    }, [[], []]);
+    const checksOff=fileChecks.off || (state?.fileChecksOff === true && fileChecksKind(state));
+    const checkedLine=fileCheckFacts(checked, FILE_CHECK_LIMITS.ownerChars, carried, checksOff);
+    let result=baseDeliveryVerificationForRun(runId, checkedLine);
     const artifacts=state?.workspaceArtifacts;
     // A preview outcome delivered as is (no stop, deadline or question text
     // replaced it) reads in the owner's wording, with the agent's final reply
@@ -14618,9 +14775,19 @@ export function createToolLoopGuard({
     // The ingress takes one line of at most 1024 characters.
     const cut = state?.outputLimitStop?.answered && !state.clientCancelled && !state.progressBudget.exhausted
       ? outputLimitNotice(state.outputLimitStop, {remote: remoteModelRoute() === true}) : undefined;
-    const notice = result.status === 'pending' ? undefined
-      : [cut, exampleNoticeForRun(runId)].filter(Boolean).join(' ').slice(0, 1024);
+    const head = [cut, exampleNoticeForRun(runId)].filter(Boolean).join(' ').slice(0, 1024);
+    // The checks' line goes last, in what room the notice has left. A pending
+    // delivery carries no notice: the chat's next owner turn reports them.
+    const facts = !checkedLine || result.text?.includes(checkedLine) ? ''
+      : fileCheckFacts(checked, 1024 - head.length - (head ? 1 : 0), carried, checksOff);
+    const notice = result.status === 'pending' ? undefined : [head, facts].filter(Boolean).join(' ');
     if (notice) result = {...result, notice};
+    // Joined with what an earlier pending response left there untaken.
+    if (result.status === 'pending' && checkedLine && typeof state?.currentSessionKey === 'string') {
+      const left = sessionFileChecks.get(state.currentSessionKey)?.checks ?? [];
+      rememberBySessionKey(sessionFileChecks, state.currentSessionKey, {runId,
+        checks: [...new Set([...left, ...fileChecks.carried, ...fileChecks.own])].slice(-MAX_CARRIED_FILE_CHECKS)});
+    }
     // Which limit stopped this goal round, for goal mode's controller
     // (dashboard-api portal_goal.py): it continues the goal after these stops.
     // Goal rounds only, since an ingress older than this field refuses it. Not
@@ -14636,7 +14803,9 @@ export function createToolLoopGuard({
       ? {...result,artifacts:structuredClone(artifacts)} : result;
   }
 
-  function baseDeliveryVerificationForRun(runId) {
+  // fileChecks: the owner's line from Portal's checks of the changed files,
+  // which a stop's text carries right after its list of changed files.
+  function baseDeliveryVerificationForRun(runId, fileChecks = '') {
     const verification = verificationForRun(runId);
     const state = runs.get(runId);
     if (state?.extensionCompletionGate?.active && !state.extensionCompletionGate.verification && verification.status === 'none') {
@@ -14654,7 +14823,7 @@ export function createToolLoopGuard({
       // published, already links that preview and says what it does not prove.
       const preview = failure?.preview ? undefined : progressStopPreview(state);
       return {status: 'failed', text: [runDeadlineStopText(state.runDeadline, state.workspaceMutationObserved),
-        changedFilesNote([...state.changedFiles]),
+        changedFilesNote([...state.changedFiles]), fileChecks,
         preview && `[Open last published preview](${preview.url})\n\nThis is the last verified publication, not proof that all requested work completed.`,
         failure && ownerOutcomeText(failure)].filter(Boolean).join('\n\n').slice(0, MAX_INGRESS_VERIFICATION_TEXT),
       ...(failure?.preview ? {preview: failure.preview}
@@ -14702,14 +14871,14 @@ export function createToolLoopGuard({
           refusedToolCalls: state.progressFinalization.partial,
           requestedTextMissing: requestedTextDeliveryNote(preview, state.workspaceRequestedTextCheck,
             state.workspaceControlNameCheck),
-          changedFiles: [...state.changedFiles],
+          changedFiles: [...state.changedFiles], fileChecks,
           ...(modelAnswer ? {} : {synthesis: {note: STOP_SYNTHESIS_NOTE, pages: synthesized.pages}})});
         // A website build's owner reads the answer, then Portal's line in
-        // place of the stop facts after it; the files it changed, links the
-        // answer cites without a read receipt, and a host synthesis's source,
-        // stay said. A partial answer (its calls were refused) or one that
-        // announces more work ends unfinished.
-        const stop = progressStopPresentation(state, verification, [changed, unverifiedLinksNote(unverified),
+        // place of the stop facts after it; the files it changed and what the
+        // checks of them found, links the answer cites without a read receipt,
+        // and a host synthesis's source, stay said. A partial answer (its calls
+        // were refused) or one that announces more work ends unfinished.
+        const stop = progressStopPresentation(state, verification, [changed, fileChecks, unverifiedLinksNote(unverified),
           ...(modelAnswer ? [] : [STOP_SYNTHESIS_NOTE, composeReadPages(synthesized.pages)])],
         {continues: state.progressFinalization.partial || announcesMoreWork(answer)});
         const result = {status: 'failed', text, ...receipt};
@@ -14724,12 +14893,12 @@ export function createToolLoopGuard({
       const pages = readPages ? `\n\n${readPages}` : '';
       // Without an answer, a research-loop stop keeps its specific text.
       if (state.researchStopped) return {status: 'failed', text: WEB_LOOP_DELIVERY_REASON + pages, ...receipt};
-      const text = RUN_PROGRESS_STOP_REASON + (changed ? `\n\n${changed}` : '') + (preview
+      const text = RUN_PROGRESS_STOP_REASON + (changed ? `\n\n${changed}` : '') + (fileChecks ? `\n\n${fileChecks}` : '') + (preview
         ? `\n\n[Open last published preview](${preview.url})\n\nThis is the last verified publication, not proof that all requested work completed.` : '') +
         pages;
       // A website build's owner reads Portal's line and the preview card, or
       // what there is and what to do next, in place of this stop text.
-      const stop = progressStopPresentation(state, verification, [changed, readPages]);
+      const stop = progressStopPresentation(state, verification, [changed, fileChecks, readPages]);
       return stop ? previewOutcome({status: 'failed', text, ...receipt}, {...stop, text})
         : {status: 'failed', text, ...receipt};
     }
