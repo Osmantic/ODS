@@ -183,9 +183,7 @@ class AppActions:
     def _watch_change(self, config, settings, key, action, request):
         if action == "watch-add":
             url, title = apps.valid_watch_url(request.get("url")), str(request.get("title") or "").strip()[:200]
-            below = request.get("below")
-            if below is not None and (not isinstance(below, (int, float)) or isinstance(below, bool) or below <= 0):
-                raise IntegrationError("invalid-request", "Give the price limit as a number, such as 49.99.")
+            below = None if request.get("below") in (None, "") else apps.price_limit(request.get("below"))
             summary = f"Watch {title or url}" + (f" for a price at or under {below:g}" if below is not None else "")
             details = ("watch-add", url, title, below)
         else:
@@ -220,8 +218,15 @@ class AppActions:
         listing = apps.watches(settings, key)
         with self.store.lock:
             state = self.store.watch_state()
-        prices = {uuid: apps.watch_price(settings, key, uuid) for uuid in apps.prices_to_read(listing, state)}
+        prices, unread = {}, set()
+        for uuid in apps.prices_to_read(listing, state):
+            prices[uuid] = self._price(settings, key, uuid, listing[uuid])
+            if prices[uuid] is self.UNREAD:
+                prices[uuid] = None
+                unread.add(uuid)
         notices, kept = apps.page_notices(listing, state, prices)
+        for uuid in unread:  # Not read this time: keep the old mark, so the next look reads it again.
+            kept[uuid]["lastChanged"] = (state.get(uuid) or {}).get("lastChanged")
         with self.store.lock:
             # Portal may have added or removed a watch during the slow look: a watch no look has
             # seen yet is kept, and one removed meanwhile stays removed.
@@ -231,6 +236,16 @@ class AppActions:
             self.store.save_watch_state({**fresh, **seen})
         for notice in notices:
             self._tell(config, notice["title"], notice["message"], link=notice["link"])
+
+    UNREAD = object()
+
+    def _price(self, settings, key, uuid, watch):
+        """One watch's price, or UNREAD when it cannot be read now; one broken watch must not stop the others."""
+        try:
+            return apps.watch_price(settings, key, uuid)
+        except IntegrationError as error:
+            self.store.log("watch-check", str(watch.get("title") or watch.get("url") or uuid)[:80], error.message)
+            return self.UNREAD
 
     # Scheduled tasks.
     def task_finished(self, config, event):
@@ -256,7 +271,11 @@ class AppActions:
         if event.get("status") == "ok" and summary and self.digest_called_at >= started:
             text = apps.fit_notice(summary)
         else:
-            items = apps.unread_news(config["apps"]["news"], self._key("news"))
+            try:
+                items = apps.unread_news(config["apps"]["news"], self._key("news"))
+            except IntegrationError as error:
+                # The owner expects the digest at this time; say why it did not come instead of staying silent.
+                return self._tell(config, apps.DIGEST_NAME, f"Today's digest could not be made. {error.message}", "high")
             text = apps.digest_brief(items, len(items) >= apps.MAX_NEWS_ITEMS)
         return self._tell(config, apps.DIGEST_NAME, text)
 

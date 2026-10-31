@@ -6,12 +6,15 @@ Paperless-ngx (documents), Immich (photos), changedetection.io (watched pages) a
 kept by the integrations service. Documents, photos and news are only read; adding or
 removing a page watch follows the owner's choice, ask first or allowed.
 """
+import datetime
 import html
 import json
+import math
 import re
 import urllib.error
 import urllib.parse
 import urllib.request
+import zoneinfo
 
 from integrations_common import APP_URLS, IntegrationError, NETWORK_TIMEOUT, clip
 
@@ -134,6 +137,8 @@ def documents_search(settings, token, query):
 
 
 def documents_read(settings, token, document_id):
+    if isinstance(document_id, str) and document_id.strip().isdecimal():
+        document_id = int(document_id)  # The model often sends the id as text.
     if not isinstance(document_id, int) or isinstance(document_id, bool) or document_id < 1:
         raise IntegrationError("invalid-request", "Give the document id from a search.")
     item = _paperless(settings, token, f"/api/documents/{document_id}/")
@@ -154,6 +159,16 @@ def documents_test(settings, token):
 def _immich(settings, key, path, body=None):
     return request("photos", f"{settings['url']}{path}", method="POST" if body is not None else "GET",
                    headers={"x-api-key": key}, body=body)
+
+
+def day(value):
+    """A calendar date given as YYYY-MM-DD; Immich refuses one that does not exist, such as February 30."""
+    if not DATE.match(str(value)):
+        raise IntegrationError("invalid-request", "Give dates as YYYY-MM-DD.")
+    try:
+        return datetime.date.fromisoformat(str(value))
+    except ValueError:
+        raise IntegrationError("invalid-request", f"{value} is not a date in the calendar.") from None
 
 
 def describes_photos(settings, key):
@@ -177,8 +192,10 @@ def _city(settings, key, place):
 def photos_search(settings, key, *, query="", place="", after="", before=""):
     query, place = " ".join(str(query or "").split())[:200], " ".join(str(place or "").split())[:100]
     for value in (after, before):
-        if value and not DATE.match(str(value)):
-            raise IntegrationError("invalid-request", "Give dates as YYYY-MM-DD.")
+        if value:
+            day(value)
+    if after and before and str(after) > str(before):
+        raise IntegrationError("invalid-request", "The first date (after) must not come after the second (before).")
     if not (query or place or after or before):
         raise IntegrationError("invalid-request", "Say what is in the photos, where or when they were taken.")
     if query and describes_photos(settings, key):
@@ -277,9 +294,22 @@ def watch_price(settings, key, uuid):
 def valid_watch_url(url):
     url = str(url or "").strip()
     parsed = urllib.parse.urlsplit(url)
-    if len(url) > 2000 or parsed.scheme not in ("http", "https") or not parsed.hostname:
+    if (len(url) > 2000 or parsed.scheme not in ("http", "https") or not parsed.hostname
+            or any(char.isspace() or ord(char) < 32 for char in url)):
         raise IntegrationError("invalid-request", "Give the page's full web address, starting with https://.")
     return url
+
+
+def price_limit(value):
+    """The owner's price limit as a positive number; the model often sends it as text, such as "49.99"."""
+    if isinstance(value, str):
+        try:
+            value = float(value.strip())
+        except ValueError:
+            value = None
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value <= 0:
+        raise IntegrationError("invalid-request", "Give the price limit as a number, such as 49.99.")
+    return float(value)
 
 
 def add_watch(settings, key, url, title, below):
@@ -470,5 +500,19 @@ def validate_apps(value, text, http_url):
             or not isinstance(digest["time"], str) or not TIME.match(digest["time"])
             or not isinstance(digest["timezone"], str) or not TIMEZONE.match(digest["timezone"])):
         raise IntegrationError("invalid-settings", "Give the digest time as HH:MM.")
+    # OpenClaw refuses a cron job in a time zone it does not know, and the digest would never come.
+    if digest["enabled"] is True and not known_timezone(digest["timezone"]):
+        raise IntegrationError("invalid-settings", f"{digest['timezone']} is not a time zone. Choose one such as Europe/Lisbon.")
     result["news"]["digest"] = {"enabled": digest["enabled"] is True, "time": digest["time"], "timezone": digest["timezone"]}
     return result
+
+
+def known_timezone(name):
+    """Whether name is an IANA time zone; UTC always is, even where the zone files are missing."""
+    if name == "UTC":
+        return True
+    try:
+        zoneinfo.ZoneInfo(name)
+    except (zoneinfo.ZoneInfoNotFoundError, ValueError):
+        return False
+    return True

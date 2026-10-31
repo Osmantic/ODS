@@ -3,6 +3,7 @@ if sys.platform == "win32":
     from unittest import SkipTest
     raise SkipTest("Requires Unix sockets; run under Linux/WSL")
 
+import email.header
 import http.server
 import json
 import pathlib
@@ -14,6 +15,7 @@ import urllib.parse
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "host"))
 import integrations_apps as apps  # noqa: E402
+import integrations_ntfy as ntfy  # noqa: E402
 import integrations_service as service  # noqa: E402
 from integrations_common import Store, default_apps  # noqa: E402
 
@@ -109,6 +111,7 @@ class FakeChanges(Fake):
     watches = {}
     prices = {}
     price_reads = []
+    broken = set()  # Watches whose snapshot changedetection.io fails to read.
 
     def do_GET(self):
         if not self.allowed():
@@ -120,6 +123,8 @@ class FakeChanges(Fake):
             return self.reply({}, 404)
         if self.path.endswith("/history/latest"):  # As changedetection.io 0.60 writes a price watch's snapshot.
             FakeChanges.price_reads.append(uuid)
+            if uuid in FakeChanges.broken:
+                return self.reply({"message": "snapshot unreadable"}, 500)
             price = self.prices.get(uuid)
             return self.reply(None, text=f"In Stock: True - Price: {float(price)}") if price is not None else self.reply({}, 404)
         return self.reply(self.watches[uuid])
@@ -190,7 +195,7 @@ class AppTests(unittest.TestCase):
         FakeNtfy.sent.clear()
         FakeImmich.searches.clear()
         FakeImmich.smart, FakeImmich.next_page = False, None
-        FakeChanges.watches, FakeChanges.prices, FakeChanges.price_reads = {}, {}, []
+        FakeChanges.watches, FakeChanges.prices, FakeChanges.price_reads, FakeChanges.broken = {}, {}, [], set()
         FakePaperless.unseen = 0
         self.addCleanup(setattr, FakeReader, "items", FakeReader.items)
 
@@ -235,9 +240,10 @@ class AppTests(unittest.TestCase):
         read = self.app("documents", "read", id=1)
         self.assertEqual((read["title"], read["text"]), ("Car insurance policy", "Your car insurance covers glass."))
         self.assertEqual(self.app("documents", "search", query="spaceship")["results"], [])
-        for bad in ("1", 0, True, None):
+        for bad in ("one", "1.5", "-1", 0, True, None):
             with self.assertRaisesRegex(service.IntegrationError, "document id"):
                 self.app("documents", "read", id=bad)
+        self.assertEqual(self.app("documents", "read", id=" 1 ")["title"], "Car insurance policy")  # The model sends text.
         with self.assertRaisesRegex(service.IntegrationError, "no such item"):
             self.app("documents", "read", id=99)
         with self.assertRaisesRegex(service.IntegrationError, "words to look for"):
@@ -308,7 +314,7 @@ class AppTests(unittest.TestCase):
         self.service.check_watches()
         self.service.check_watches()
         self.assertEqual([(note["title"], note["click"], note["actions"]) for note in FakeNtfy.sent],
-                         [("Page changed: Shop", "https://shop.example/page", "view, Open, https://shop.example/page")])
+                         [("Page changed: Shop", "https://shop.example/page", 'view, Open, "https://shop.example/page"')])
         for bad in ("ftp://x", "shop.example", "https://" + "a" * 2000):
             with self.assertRaisesRegex(service.IntegrationError, "full web address"):
                 self.app("watch", "add", url=bad)
@@ -333,6 +339,24 @@ class AppTests(unittest.TestCase):
                 self.app("watch", "add", url="https://shop.example/x", below=bad)
         self.assertEqual(self.app("watch", "remove", id="w1")["done"], "Stop watching Kettle")
         self.assertEqual((FakeChanges.watches, self.store.watch_state()), ({}, {}))
+
+    def test_any_page_title_and_address_reach_the_phone_intact(self):
+        self.save(self.settings())
+        # An en dash is outside Latin-1: sent raw, it would stop the watcher with UnicodeEncodeError.
+        FakeChanges.watches["x1"] = {"url": "https://shop.example/café–menu?ids=1,2", "title": "Café – menu 🍰", "last_changed": 5}
+        self.service.check_watches()
+        FakeChanges.watches["x1"]["last_changed"] = 6
+        self.service.check_watches()
+        note = FakeNtfy.sent[-1]
+        self.assertEqual(str(email.header.make_header(email.header.decode_header(note["title"]))), "Page changed: Café – menu 🍰")
+        self.assertEqual(note["click"], "https://shop.example/caf%C3%A9%E2%80%93menu?ids=1,2")
+        self.assertEqual(note["actions"], 'view, Open, "https://shop.example/caf%C3%A9%E2%80%93menu?ids=1,2"')
+        self.assertEqual(note["message"], "Café – menu 🍰 changed.")
+
+    def test_header_values_stay_readable(self):
+        self.assertEqual(ntfy.header_text("Plain title"), "Plain title")
+        self.assertEqual(ntfy.header_link('https://x.example/a b"c?q=1,2#top'), "https://x.example/a%20b%22c?q=1,2#top")
+        self.assertEqual(ntfy.header_link("https://x.example/a%20b"), "https://x.example/a%20b")  # Already encoded stays.
 
     def test_a_price_already_under_the_limit_notifies_at_the_first_look(self):
         self.save(self.settings(changes="allow"))
@@ -689,6 +713,71 @@ class AppTests(unittest.TestCase):
         self.service.check_watches()
         self.assertEqual(FakeChanges.price_reads, ["w1", "w1", "w1"])
         self.assertEqual([note["title"] for note in FakeNtfy.sent], ["Price drop: Kettle"])
+
+    # Bugs found end to end.
+    def test_a_watch_that_cannot_be_read_does_not_silence_the_others(self):
+        self.save(self.settings(changes="allow"))
+        self.app("watch", "add", url="https://shop.example/kettle", title="Kettle", below=50)
+        FakeChanges.watches["p1"] = {"url": "https://blog.example", "title": "Blog", "last_changed": 5}
+        FakeChanges.broken.add("w1")
+        self.service.check_watches()
+        FakeChanges.watches["p1"]["last_changed"] = 6
+        FakeChanges.watches["w1"]["last_changed"] = 6
+        FakeChanges.prices["w1"] = 40
+        self.service.check_watches()
+        self.assertEqual([note["title"] for note in FakeNtfy.sent], ["Page changed: Blog"])
+        self.assertIn("answered 500", next(entry for entry in self.store.activity() if entry["target"] == "Kettle")["outcome"])
+        FakeChanges.broken.clear()  # Readable again: the change it missed still notifies.
+        self.service.check_watches()
+        self.assertEqual([note["title"] for note in FakeNtfy.sent], ["Page changed: Blog", "Price drop: Kettle"])
+
+    def test_a_digest_that_cannot_be_made_says_why(self):
+        self.save(self.settings(digest=True, tasks="off"))
+        broken = self.settings(digest=True, tasks="off")
+        broken["apps"]["news"]["url"] = "http://127.0.0.1:9"
+        self.save(broken, secrets={})
+        self.assertTrue(self.agent("task-finished", jobId="d", name="Daily news digest", description=apps.DIGEST_MARKER,
+                                   status="error", error="model failed", runAtMs=1)["notified"])
+        self.assertEqual((FakeNtfy.sent[-1]["message"], FakeNtfy.sent[-1]["priority"]),
+                         ("Today's digest could not be made. FreshRSS at http://127.0.0.1:9 could not be reached.", "high"))
+
+    def test_the_digest_time_zone_must_exist(self):
+        settings = self.settings(digest=True)
+        settings["apps"]["news"]["digest"]["timezone"] = "Mars/Base"
+        with self.assertRaisesRegex(service.IntegrationError, "Mars/Base is not a time zone"):
+            self.save(settings)
+        settings["apps"]["news"]["digest"].update(enabled=False)  # Only checked while the digest is on.
+        self.save(settings)
+        for zone in ("UTC", "Europe/Lisbon", "America/Argentina/Buenos_Aires", "Etc/GMT+3"):
+            self.assertTrue(apps.known_timezone(zone), zone)
+        for zone in ("Mars/Base", "Europe/Lisbonn", "../../etc/passwd", "/etc/localtime"):
+            self.assertFalse(apps.known_timezone(zone), zone)
+
+    def test_photo_dates_must_be_real_and_in_order(self):
+        self.save(self.settings())
+        with self.assertRaisesRegex(service.IntegrationError, "2026-02-30 is not a date in the calendar"):
+            self.app("photos", "search", after="2026-02-30")
+        with self.assertRaisesRegex(service.IntegrationError, "must not come after"):
+            self.app("photos", "search", after="2026-03-01", before="2026-01-01")
+        self.assertEqual([p["file"] for p in self.app("photos", "search", after="2026-01-10", before="2026-01-10")["results"]], ["snow.jpg"])
+        self.assertEqual(FakeImmich.searches[-1][1]["takenBefore"], "2026-01-10T23:59:59.999Z")
+
+    def test_a_price_limit_given_as_text_is_understood(self):
+        self.save(self.settings(changes="allow"))
+        self.app("watch", "add", url="https://shop.example/kettle", title="Kettle", below=" 49.99 ")
+        self.assertEqual(self.store.watch_state()["w1"]["below"], 49.99)
+        self.app("watch", "add", url="https://shop.example/page", title="Page", below="")  # Empty: an ordinary page watch.
+        self.assertIsNone(self.store.watch_state()["w2"]["below"])
+        for bad in ("cheap", "NaN", "inf", "-5", "0", float("nan"), float("inf"), [50]):
+            with self.assertRaisesRegex(service.IntegrationError, "price limit", msg=repr(bad)):
+                self.app("watch", "add", url="https://shop.example/x", below=bad)
+
+    def test_a_watch_address_with_spaces_is_refused(self):
+        self.save(self.settings(changes="allow"))
+        for bad in ("https://shop.example/a b", "https://shop.example/a\tb", "https://shop.example/\nx"):
+            with self.assertRaisesRegex(service.IntegrationError, "full web address"):
+                self.app("watch", "add", url=bad)
+        self.assertEqual(FakeChanges.watches, {})
 
     def test_prices_to_read_is_a_pure_choice(self):
         listing = {"page": {"last_changed": 9}, "new": {"last_changed": 0}, "same": {"last_changed": 5}, "moved": {"last_changed": 7}}
