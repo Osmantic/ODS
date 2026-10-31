@@ -64,6 +64,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     network-problem message.
 
 ### Fixed
+- ODS in WSL repairs itself after WSL restarts, and Windows setup keeps WSL
+  from using up the memory a model on Windows needs. On an RTX Spark
+  (2026-10-25) WSL grew to about 15 GB beside a model server holding about
+  96 GB, Windows ran out of commit (event 2004), WSL crashed and restarted,
+  and Docker Desktop brought ODS's containers back with an empty folder where
+  ODS's data belongs: the dashboard said the local model runtime was
+  unavailable until the containers were recreated by hand.
+  - After every WSL start the host agent checks whether the containers see
+    their data (`ods repair mounts --check`). When they do not, it recreates
+    the affected services from the images already on the PC (no pull, no
+    build, the stack's own Compose files), but only after a new container
+    proved it sees the real data; otherwise it changes nothing, says to
+    restart Docker Desktop, and repairs by itself once Docker Desktop is back.
+    At most two repairs per WSL start, each recorded before it runs. The same
+    repair is `ods repair mounts`, and `ods start` now runs the same proof.
+  - On Windows, when the model runs on Windows in memory Windows also lends
+    to WSL (an AMD unified-memory APU now; the RTX Spark route when it ships),
+    setup writes a WSL memory limit to `%USERPROFILE%\.wslconfig`: the commit
+    limit less the model's commit, a 16 GiB reserve for Windows and 8 GiB of
+    headroom, never under 12 GB and only below WSL's own default, plus
+    `autoMemoryReclaim=dropcache` where WSL supports it. An owner's own values
+    are never changed (setup says when theirs is above what the PC can
+    spare), other settings stay, the old file is backed up, and
+    `restore-windows-settings.ps1` puts it back. Setup says that WSL must
+    restart for it; it never restarts WSL and never changes the page file.
+  - `ods doctor` in WSL reports Windows' commit headroom (GlobalMemoryStatusEx
+    `ullAvailPageFile`, not a model server's own budget) and warns below
+    8 GiB, says when WSL still runs without its new limit, when a container
+    sees an empty folder instead of ODS's data, when Windows cannot reach a
+    running container's port, and what the host agent's last repair needs.
 - On Windows, a model download no longer trusts the free space that WSL's
   virtual disk reports. That disk grows into the Windows drive that stores it,
   up to about 1 TB, so the Hugging Face file picker offered 836 GiB while

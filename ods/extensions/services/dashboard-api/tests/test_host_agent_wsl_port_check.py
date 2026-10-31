@@ -474,7 +474,20 @@ def test_thread_body_needs_a_boot_id_and_logs_one_summary(tmp_path, monkeypatch,
 
 def test_check_starts_only_under_wsl_and_never_inside_a_container(monkeypatch):
     started = threading.Event()
-    monkeypatch.setattr(_mod, "_run_wsl_port_check", started.set)
+    order: list[str] = []
+
+    def mounts(_boot):
+        # The thread checks stale mounts first (test_host_agent_wsl_mount_check.py).
+        order.append("mounts")
+        return "healthy"
+
+    def ports():
+        order.append("ports")
+        started.set()
+        return {}
+
+    monkeypatch.setattr(_mod, "_run_wsl_bind_self_heal", mounts)
+    monkeypatch.setattr(_mod, "_run_wsl_port_check", ports)
     monkeypatch.delenv("ODS_HOST_INSTALL_DIR", raising=False)
 
     monkeypatch.setattr(_mod, "_is_wsl_linux", lambda: False)
@@ -489,6 +502,7 @@ def test_check_starts_only_under_wsl_and_never_inside_a_container(monkeypatch):
     thread = _mod._start_wsl_port_check()
     thread.join(5)
     assert started.is_set()
+    assert order == ["mounts", "ports"]
     assert thread.daemon and thread.name == "ods-wsl-port-check"
 
 
