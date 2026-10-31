@@ -180,6 +180,11 @@ services:
       # wrapper turns sign-in on whenever it is not loopback, whatever .env
       # says, so every way of recreating this container gets the same rule.
       ODS_WEBUI_BIND_ADDRESS: "${BIND_ADDRESS:-127.0.0.1}"
+      # The administrator Open WebUI creates at start while it has no accounts.
+      # When other devices can reach it, the start-up step requires these (or
+      # an existing account), since otherwise the first signup becomes admin.
+      WEBUI_ADMIN_EMAIL: "${WEBUI_ADMIN_EMAIL:-}"
+      WEBUI_ADMIN_PASSWORD: "${WEBUI_ADMIN_PASSWORD:-}"
       WEBUI_SECRET_KEY: "${WEBUI_SECRET:?WEBUI_SECRET must be set — run the installer or add it to .env}"
       ENABLE_WEB_SEARCH: "${ENABLE_WEB_SEARCH:-false}"
       WEB_SEARCH_ENGINE: "searxng"
