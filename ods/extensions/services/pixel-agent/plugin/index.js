@@ -709,7 +709,7 @@ export default definePluginEntry({
           const value=JSON.parse(Buffer.concat(chunks).toString('utf8'));
           if (!value || Object.keys(value).sort().join()!=='runId,user' || !OPENAI_RUN_ID.test(value.runId ?? '') || !/^ods-[a-f0-9]{64}$/.test(value.user ?? '')) throw Error();
           const finalRun=delegationDelivery.finalRun(value.user,value.runId);
-          if (finalRun) await toolLoopGuard.settleDelivery(finalRun);
+          if (finalRun) await toolLoopGuard.settleDelivery(finalRun,{delegated:true});
           // Recheck cancellation/access/owner custody after asynchronous receipt settlement.
           sendJson(res,200,delegationDelivery.read(value.user,value.runId));
         } catch {sendJson(res,409,{error:'delegated delivery unavailable'});}
