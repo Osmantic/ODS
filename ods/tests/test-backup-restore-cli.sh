@@ -1,201 +1,79 @@
-#!/bin/bash
-# Test suite for backup/restore CLI integration
-# Validates that ods-cli properly delegates to ods-backup.sh and ods-restore.sh
+#!/usr/bin/env bash
+# Exercise the shipped CLI dispatcher without touching an installed backup.
+set -euo pipefail
 
-set -uo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+INSTALL="$WORK/install with spaces"
+CALLER="$WORK/caller with spaces"
+mkdir -p "$INSTALL/lib" "$CALLER"
+cp "$ROOT/ods-cli" "$INSTALL/ods-cli"
+cp "$ROOT/lib/service-registry.sh" "$INSTALL/lib/"
+: > "$INSTALL/docker-compose.base.yml"
+: > "$INSTALL/.env"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ODS_CLI="$SCRIPT_DIR/../ods-cli"
+fail() { echo "[FAIL] $*" >&2; exit 1; }
+for helper in backup restore; do
+    cat > "$INSTALL/ods-$helper.sh" <<'HELPER'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\0' "${0##*/}" "$PWD" "$@" > "$CAPTURE"
+printf 'child stdout\n'
+printf 'child stderr\n' >&2
+exit "${CHILD_STATUS:-0}"
+HELPER
+    chmod +x "$INSTALL/ods-$helper.sh"
+done
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
-
-# Test counters
-PASSED=0
-FAILED=0
-
-# Test helpers
-pass() {
-    echo -e "${GREEN}✓${NC} $1"
-    ((PASSED++))
+run_cli() {
+    local expected_status="$1"
+    shift
+    rm -f "$WORK/capture"
+    local status=0
+    (cd "$CALLER" && env -u ODS_HOME -u ODS_SCRIPT_HINT -u ODS_INSTALL_DIR \
+        INSTALL_DIR="$INSTALL" CAPTURE="$WORK/capture" \
+        CHILD_STATUS="${CHILD_STATUS:-0}" bash "$INSTALL/ods-cli" "$@") \
+        > "$WORK/stdout" 2> "$WORK/stderr" || status=$?
+    [[ "$status" == "$expected_status" ]] \
+        || fail "$* exited $status instead of $expected_status"
 }
 
-fail() {
-    echo -e "${RED}✗${NC} $1"
-    ((FAILED++))
+assert_call() {
+    printf '%s\0' "$@" > "$WORK/expected"
+    cmp -s "$WORK/expected" "$WORK/capture" || fail "wrong helper, working directory or argument boundaries"
+    grep -Fxq 'child stdout' "$WORK/stdout" || fail 'child stdout was lost'
+    grep -Fxq 'child stderr' "$WORK/stderr" || fail 'child stderr was lost'
 }
 
-info() {
-    echo -e "${BLUE}ℹ${NC} $1"
-}
+run_cli 0 backup
+assert_call ods-backup.sh "$INSTALL"
+run_cli 0 backup --type config --description 'before upgrade *' --output 'external backups'
+assert_call ods-backup.sh "$INSTALL" --type config --description 'before upgrade *' --output "$CALLER/external backups"
+run_cli 0 backup -o "$WORK/absolute backups" --compress
+assert_call ods-backup.sh "$INSTALL" -o "$WORK/absolute backups" --compress
+run_cli 0 backup verify 'backup-123-20261025-120000.tar.gz'
+assert_call ods-backup.sh "$INSTALL" verify 'backup-123-20261025-120000.tar.gz'
+run_cli 0 restore --dry-run --force 'backup-123-20261025-120000'
+assert_call ods-restore.sh "$INSTALL" --dry-run --force 'backup-123-20261025-120000'
+echo '[PASS] backup and restore dispatch preserve arguments, paths and output'
 
-# Test 1: Verify ods-cli syntax
-test_syntax() {
-    info "Test 1: Validating ods-cli syntax"
-    if bash -n "$ODS_CLI" 2>/dev/null; then
-        pass "ods-cli syntax is valid"
-    else
-        fail "ods-cli has syntax errors"
-    fi
-}
+for command in backup restore; do
+    CHILD_STATUS=23 run_cli 23 "$command" --help
+    assert_call "ods-$command.sh" "$INSTALL" --help
+done
+CHILD_STATUS=29 run_cli 29 backup verify backup-123-20261025-120000
+assert_call ods-backup.sh "$INSTALL" verify backup-123-20261025-120000
+echo '[PASS] backup, verify and restore propagate child failure status'
 
-# Test 2: Verify backup command exists in help
-test_backup_in_help() {
-    info "Test 2: Checking if 'backup' appears in help text"
-    if grep -q "backup.*Create a backup" "$ODS_CLI" 2>/dev/null; then
-        pass "'backup' command listed in help"
-        return 0
-    else
-        fail "'backup' command not found in help"
-        return 0
-    fi
-}
-
-# Test 3: Verify restore command exists in help
-test_restore_in_help() {
-    info "Test 3: Checking if 'restore' appears in help text"
-    if grep -q "restore.*Restore from a backup" "$ODS_CLI" 2>/dev/null; then
-        pass "'restore' command listed in help"
-        return 0
-    else
-        fail "'restore' command not found in help"
-        return 0
-    fi
-}
-
-# Test 4: Verify backup examples in help
-test_backup_examples() {
-    info "Test 4: Checking for backup examples in help text"
-    if grep -q "ods backup" "$ODS_CLI" 2>/dev/null; then
-        pass "Backup examples present in help"
-        return 0
-    else
-        fail "Backup examples missing from help"
-        return 0
-    fi
-}
-
-# Test 5: Verify cmd_backup function exists
-test_cmd_backup_exists() {
-    info "Test 5: Checking if cmd_backup function is defined"
-    if grep -q "^cmd_backup()" "$ODS_CLI" 2>/dev/null; then
-        pass "cmd_backup function is defined"
-        return 0
-    else
-        fail "cmd_backup function not found"
-        return 0
-    fi
-}
-
-# Test 6: Verify cmd_restore function exists
-test_cmd_restore_exists() {
-    info "Test 6: Checking if cmd_restore function is defined"
-    if grep -q "^cmd_restore()" "$ODS_CLI" 2>/dev/null; then
-        pass "cmd_restore function is defined"
-        return 0
-    else
-        fail "cmd_restore function not found"
-        return 0
-    fi
-}
-
-# Test 7: Verify backup case in main switch
-test_backup_case() {
-    info "Test 7: Checking if 'backup' is in main case statement"
-    if grep -q "backup)" "$ODS_CLI" 2>/dev/null; then
-        pass "'backup' case exists in main switch"
-        return 0
-    else
-        fail "'backup' case missing from main switch"
-        return 0
-    fi
-}
-
-# Test 8: Verify restore case in main switch
-test_restore_case() {
-    info "Test 8: Checking if 'restore' is in main case statement"
-    if grep -q "restore)" "$ODS_CLI" 2>/dev/null; then
-        pass "'restore' case exists in main switch"
-        return 0
-    else
-        fail "'restore' case missing from main switch"
-        return 0
-    fi
-}
-
-# Test 9: Verify backup delegates to ods-backup.sh
-test_backup_delegation() {
-    info "Test 9: Checking if cmd_backup delegates to ods-backup.sh"
-    if grep -A5 "^cmd_backup()" "$ODS_CLI" 2>/dev/null | grep -q "ods-backup.sh"; then
-        pass "cmd_backup delegates to ods-backup.sh"
-        return 0
-    else
-        fail "cmd_backup does not delegate to ods-backup.sh"
-        return 0
-    fi
-}
-
-# Test 10: Verify restore delegates to ods-restore.sh
-test_restore_delegation() {
-    info "Test 10: Checking if cmd_restore delegates to ods-restore.sh"
-    if grep -A5 "^cmd_restore()" "$ODS_CLI" 2>/dev/null | grep -q "ods-restore.sh"; then
-        pass "cmd_restore delegates to ods-restore.sh"
-        return 0
-    else
-        fail "cmd_restore does not delegate to ods-restore.sh"
-        return 0
-    fi
-}
-
-# Test 11: Verify argument passing
-test_argument_passing() {
-    info "Test 11: Checking if arguments are passed through"
-    # cmd_backup may special-case subcommands (e.g. verify) but should still pass args through
-    # in its default path (directly, or after rewriting -o/--output into backup_args).
-    if grep -A40 "^cmd_backup()" "$ODS_CLI" 2>/dev/null         | grep -qE 'ods-backup\.sh" .*(\$@|backup_args\[@\])'; then
-        pass "cmd_backup passes arguments correctly"
-        return 0
-    else
-        fail "cmd_backup does not pass arguments"
-        return 0
-    fi
-}
-
-# Run all tests
-echo ""
-echo -e "${BLUE}━━━ Backup/Restore CLI Integration Tests ━━━${NC}"
-echo ""
-
-test_syntax
-test_backup_in_help
-test_restore_in_help
-test_backup_examples
-test_cmd_backup_exists
-test_cmd_restore_exists
-test_backup_case
-test_restore_case
-test_backup_delegation
-test_restore_delegation
-test_argument_passing
-
-# Summary
-echo ""
-echo -e "${BLUE}━━━ Test Summary ━━━${NC}"
-echo ""
-echo -e "  ${GREEN}Passed:${NC} $PASSED"
-if [[ $FAILED -gt 0 ]]; then
-    echo -e "  ${RED}Failed:${NC} $FAILED"
-fi
-echo ""
-
-if [[ $FAILED -eq 0 ]]; then
-    echo -e "${GREEN}✓ All tests passed${NC}"
-    exit 0
-else
-    echo -e "${RED}✗ Some tests failed${NC}"
-    exit 1
-fi
+run_cli 1 backup verify
+[[ ! -e "$WORK/capture" ]] || fail 'verify without an ID invoked the backup helper'
+grep -Fq 'Usage: ods backup verify' "$WORK/stderr" || fail 'missing verify ID has no usage guidance'
+for command in backup restore; do
+    mv "$INSTALL/ods-$command.sh" "$INSTALL/ods-$command.sh.unavailable"
+    run_cli 1 "$command"
+    [[ ! -e "$WORK/capture" ]] || fail 'unavailable helper was invoked'
+    grep -Fq "ods-$command.sh not found or not executable" "$WORK/stderr" \
+        || fail 'missing helper has no actionable diagnostic'
+done
+echo '[PASS] invalid verify and unavailable helpers refuse before dispatch'
