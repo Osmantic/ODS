@@ -4957,72 +4957,158 @@ export function textRequestsPrivateUrlAccess(text) {
 
 // The output a call that ran keeps when the run-progress budget has stopped
 // the response (toolResultPersist): an excerpt, the notes bound to that
-// output, then the stop text. The whole result stays within the smallest
-// per-result cap ODS installs (toolResultMaxChars floor 4,000, less 100 spare),
-// so neither OpenClaw's persist cap nor the next request's projection cuts it.
-// Over the cap, every text block keeps only its share: the instruction would
-// lose its middle and end in "rerun with narrower args if needed". A small
-// result also leaves the earlier results of a long response in view.
+// output, then the stop text. The whole result stays within the agent's
+// per-result cap less 100 (STOPPED_RESULT_TEXT_LIMIT at the 4,000 floor ODS
+// installs, also used when the cap is unknown), so neither OpenClaw's persist
+// cap nor the next request's projection cuts it. Over the cap, every text
+// block keeps only its share: the instruction would lose its middle and end in
+// "rerun with narrower args if needed".
 export const STOPPED_RESULT_TEXT_LIMIT = 4000 - 100;
-// The longest stop text (PROGRESS_FINALIZATION_INSTRUCTION) and both notes fit
-// beside it (stop_keeps_result.test.mjs).
-export const STOPPED_OUTPUT_EXCERPT_CHARS = 2400;
+// The failed results of one stopped batch (the parallel calls of the round
+// that hit the limit) share STOPPED_BATCH_EXCERPT_CHARS, and its other results
+// share STOPPED_SUCCESS_EXCERPT_CHARS, so a batch of any size adds about as
+// much to the next request as one result: more would reduce earlier results of
+// a long response to notices where the stop text alone does not.
+export const STOPPED_BATCH_EXCERPT_CHARS = 2400;
+export const STOPPED_SUCCESS_EXCERPT_CHARS = 600;
+// A cut excerpt shorter than this says too little to be worth its space.
+const STOPPED_EXCERPT_MIN_CHARS = 200;
+// Kept per call until its result is persisted: a text of up to CAPTURE_WHOLE
+// characters whole, a longer one as its first CAPTURE_HEAD and last
+// CAPTURE_TAIL characters, which hold any excerpt (at most
+// STOPPED_BATCH_EXCERPT_CHARS: a third head, two thirds tail).
+const CAPTURE_WHOLE = 3000;
+const CAPTURE_HEAD = 1000;
+const CAPTURE_TAIL = 2000;
 // OpenClaw 2026.6.33 hands after_tool_call each top-level text block cut to
 // 8,000 characters with this suffix (embedded-agent-subscribe.tools
 // truncateToolText); details are not cut.
 const LIVE_RESULT_TRUNCATION_MARK = "\n…(truncated)…";
-const OMITTED_REST = "\n[... the rest of this text omitted ...]";
+// The suffix OpenClaw's persist cap gives a block it cut (tool-result-truncation
+// formatContextLimitTruncationNotice).
+const PERSIST_CAP_CUT = /\[\.\.\. \d+ more characters truncated; rerun with narrower args if needed\]$/;
+// The refusals OpenClaw turns into an error rather than a veto receipt: a
+// before_tool_call hook that failed, an approval that was not given
+// (agent-tools.before-tool-call). The call never ran.
+const HOOK_REFUSALS = new Set([
+  "Tool call blocked because before_tool_call hook failed", "Plugin approval request failed",
+  "Plugin approval unavailable (no approval route)", "Plugin approval required (gateway unavailable)",
+  "Plugin approval required", "Denied by user", "Approval timed out", "Approval cancelled (run aborted)",
+]);
 
-// At most `limit` characters: the head and, at twice its length, the tail,
-// where an error usually is, around a marker that says only what was left out.
-// Cuts prefer line breaks and never split a UTF-16 surrogate pair.
-export function stoppedOutputExcerpt(text, limit = STOPPED_OUTPUT_EXCERPT_CHARS) {
-  if (typeof text !== "string") return "";
-  if (text.length <= limit) return text;
-  const marker = omitted => `\n[... ${omitted} characters of this output omitted ...]\n`;
-  const room = limit - marker(text.length).length;
-  if (room <= 0) return "";
-  let headEnd = Math.floor(room / 3);
-  let tailStart = text.length - (room - headEnd);
-  const headBreak = text.lastIndexOf("\n", headEnd);
-  if (headBreak > headEnd * 0.8) headEnd = headBreak;
-  const tailBreak = text.indexOf("\n", tailStart);
-  if (tailBreak !== -1 && tailBreak < tailStart + (text.length - tailStart) * 0.2) tailStart = tailBreak + 1;
-  const code = index => text.charCodeAt(index);
-  if (headEnd > 0 && code(headEnd - 1) >= 0xD800 && code(headEnd - 1) <= 0xDBFF) headEnd -= 1;
-  if (tailStart < text.length && code(tailStart) >= 0xDC00 && code(tailStart) <= 0xDFFF) tailStart += 1;
-  return `${text.slice(0, headEnd)}${marker(tailStart - headEnd)}${text.slice(tailStart)}`;
+// A copy that does not keep the string it was cut from alive: in V8 a slice,
+// a template of slices and a join with an empty part all reference their
+// source, which for a long output stays in memory with every pending call.
+// A join of two non-empty parts copies.
+const flat = text => text.length > 1 ? [text.slice(0, 1), text.slice(1)].join("") : text;
+
+// An excerpt source for a text known whole.
+function outputSource(text) {
+  return text.length <= CAPTURE_WHOLE ? {text: flat(text)}
+    : {head: flat(text.slice(0, CAPTURE_HEAD)), tail: flat(text.slice(-CAPTURE_TAIL)), length: text.length};
 }
 
-// OpenClaw's receipt for a call a before_tool_call hook refused (this guard or
-// another plugin layer): the call never ran (buildBlockedToolResult).
-function vetoReceipt(result) {
-  const details = result?.details;
-  return Boolean(details) && typeof details === "object" && details.status === "blocked" &&
-    (Object.hasOwn(details, "deniedReason") || Object.hasOwn(details, "reason"));
+// At most `limit` characters of a source (a text, or what outputSource and
+// executedOutputSource keep): the head and, at twice its length, the tail,
+// where an error usually is, around a marker that says only what was left
+// out. A source whose length is unknown is cut at a gap of unknown size:
+// before its known end, or, without one, after its start. Cuts prefer line
+// breaks and never split a UTF-16 surrogate pair.
+export function stoppedOutputExcerpt(source, limit = STOPPED_BATCH_EXCERPT_CHARS) {
+  const from = typeof source === "string" ? outputSource(source) : source ?? {};
+  const max = Math.min(limit, STOPPED_BATCH_EXCERPT_CHARS);
+  if (typeof from.text === "string" && from.text.length <= max) return from.text;
+  const head = from.text ?? from.head ?? "";
+  const tail = from.text ?? from.tail ?? "";
+  const length = from.text?.length ?? from.length;
+  const known = Number.isSafeInteger(length);
+  const marker = omitted => known ? `\n[... ${omitted} characters of this output omitted ...]\n`
+    : tail ? "\n[... part of this output omitted ...]\n" : "\n[... the rest of this output omitted ...]";
+  const room = max - marker(known ? length : 0).length;
+  if (room <= 0) return "";
+  let headEnd = Math.min(head.length, tail ? Math.floor(room / 3) : room);
+  const headBreak = head.lastIndexOf("\n", headEnd);
+  if (headBreak > headEnd * 0.8) headEnd = headBreak;
+  if (headEnd > 0 && head.charCodeAt(headEnd - 1) >= 0xD800 && head.charCodeAt(headEnd - 1) <= 0xDBFF) headEnd -= 1;
+  let tailStart = tail ? Math.max(0, tail.length - (room - Math.min(head.length, Math.floor(room / 3)))) : 0;
+  const tailBreak = tail.indexOf("\n", tailStart);
+  if (tailBreak !== -1 && tailBreak < tailStart + (tail.length - tailStart) * 0.2) tailStart = tailBreak + 1;
+  if (tailStart < tail.length && tail.charCodeAt(tailStart) >= 0xDC00 && tail.charCodeAt(tailStart) <= 0xDFFF) tailStart += 1;
+  const kept = tail.length - tailStart;
+  return [head.slice(0, headEnd), marker(known ? length - headEnd - kept : 0), tail.slice(tailStart)].join("");
+}
+
+// OpenClaw's result for a call a before_tool_call hook refused (this guard or
+// another plugin layer): the veto receipt (buildBlockedToolResult), or the
+// error a refusal that is not a veto becomes.
+function refusalReceipt(result) {
+  const details = result?.details && typeof result.details === "object" ? result.details : {};
+  if (details.status === "blocked" && (Object.hasOwn(details, "deniedReason") || Object.hasOwn(details, "reason"))) return true;
+  if (details.status === "error" && HOOK_REFUSALS.has(details.error)) return true;
+  const blocks = Array.isArray(result?.content) ? result.content.filter(block => block?.type === "text") : [];
+  return blocks.length === 1 && HOOK_REFUSALS.has(String(blocks[0].text ?? "").trim());
 }
 
 // The selected tool's own result inside this call's Tool Search envelope
 // ({tool: catalog entry, result}), never the envelope with its catalog entry.
 function toolSearchInnerResult(details) {
   const tool = details && typeof details === "object" ? details.tool : undefined;
-  return tool && typeof tool === "object" && typeof tool.id === "string" && tool.id.startsWith("openclaw:") &&
-    typeof tool.name === "string" && details.result && typeof details.result === "object" &&
-    !Array.isArray(details.result) ? details.result : undefined;
+  return tool && typeof tool === "object" && typeof tool.id === "string" && typeof tool.name === "string" &&
+    details.result && typeof details.result === "object" && !Array.isArray(details.result) ? details.result : undefined;
 }
 
-// A result's own output text, whole where it can be: a block after_tool_call
-// received cut gives way to an exec's complete aggregated output, and
-// otherwise says that the rest of it is missing.
-function executedOutputText(result) {
+// OpenClaw keeps the reason a command did not complete only in its text
+// (formatExecFailureReason); its details say whether it timed out.
+function execFailureLine(details) {
+  if (details.timedOut === true) return "(Command timed out.)";
+  return Number.isSafeInteger(details.exitCode) ? `(Command failed with exit code ${details.exitCode}.)`
+    : "(Command did not finish.)";
+}
+
+// OpenClaw's process poll text ends with the session's state.
+function processStatusLine(details) {
+  if (details.status === "running") return "Process still running.";
+  if (details.status === "failed" && details.exitCode === 0) return "Process exited with a signal.";
+  return Number.isSafeInteger(details.exitCode) ? `Process exited with code ${details.exitCode}.` : "Process exited.";
+}
+
+// The excerpt source for a result as after_tool_call receives it. Where
+// OpenClaw cut that copy's text, details give the rest only where they hold
+// it: an exec's own output, with its warnings and, for a command that did not
+// complete, its failure; or a process poll's latest output and state (its
+// aggregated is the whole session). Anything else keeps its start.
+function executedOutputSource(result, selectedToolName) {
   const blocks = Array.isArray(result?.content)
     ? result.content.filter(block => block?.type === "text" && typeof block.text === "string") : [];
   const cut = block => block.text.endsWith(LIVE_RESULT_TRUNCATION_MARK);
-  if (!blocks.some(cut)) return blocks.map(block => block.text).join("\n");
-  if (typeof result?.details?.aggregated === "string") return result.details.aggregated;
-  return blocks.map(block => cut(block)
-    ? block.text.slice(0, -LIVE_RESULT_TRUNCATION_MARK.length) + OMITTED_REST : block.text).join("\n");
+  const text = blocks.map(block => cut(block) ? block.text.slice(0, -LIVE_RESULT_TRUNCATION_MARK.length) : block.text).join("\n");
+  if (!blocks.some(cut)) return outputSource(text);
+  const details = result?.details && typeof result.details === "object" && !Array.isArray(result.details) ? result.details : {};
+  const aggregated = typeof details.aggregated === "string" ? details.aggregated : undefined;
+  if (selectedToolName === "exec" && aggregated !== undefined && ["completed", "failed"].includes(details.status)) {
+    const at = aggregated ? text.indexOf(aggregated.slice(0, 200)) : -1;
+    const warnings = at > 0 ? text.slice(0, at) : "";
+    return outputSource(details.status === "completed" ? `${warnings}${aggregated}`
+      : `${warnings}${aggregated}${aggregated ? "\n\n" : ""}${execFailureLine(details)}`);
+  }
+  if (selectedToolName === "process" && aggregated !== undefined && typeof details.sessionId === "string" &&
+      ["completed", "failed", "running"].includes(details.status)) {
+    return {head: flat(text.slice(0, CAPTURE_HEAD)), tail: flat(`${aggregated.slice(-CAPTURE_TAIL)}\n\n${processStatusLine(details)}`)};
+  }
+  return {head: flat(text.slice(0, CAPTURE_WHOLE)), tail: ""};
 }
+
+// The persisted copy's text, which is what the model would have read, unless
+// OpenClaw's persist cap already cut it.
+function persistedOutputSource(content) {
+  const blocks = Array.isArray(content) ? content.filter(block => block?.type === "text" && typeof block.text === "string") : [];
+  if (!blocks.length || blocks.some(block => PERSIST_CAP_CUT.test(block.text))) return undefined;
+  return outputSource(blocks.map(block => block.text).join("\n"));
+}
+
+// The length of a source's text, when known.
+const sourceLength = source => typeof source?.text === "string" ? source.text.length
+  : Number.isSafeInteger(source?.length) ? source.length : Infinity;
 
 // A stopped result's own part: the excerpt in place of its text blocks, and
 // its other blocks (images) where they were.
@@ -7971,6 +8057,9 @@ export function createToolLoopGuard({
   // Whether Pixel's model is the owner's remote API route, whose output limit
   // the owner sets (Settings → Remote model), for output-limit stop text.
   remoteModelRoute = () => false,
+  // The agent's configured contextLimits.toolResultMaxChars, which a stopped
+  // result must fit (STOPPED_RESULT_TEXT_LIMIT when unknown).
+  toolResultMaxChars = () => undefined,
 } = {}) {
   const effective = normalizedLimits(limits);
   const examples = exampleGuard ?? createExampleGuard({warn, now});
@@ -11565,13 +11654,13 @@ export function createToolLoopGuard({
     return turn?.exampleOutcome ? exampleNotice(turn.exampleOutcome, turn.exampleRecovered) : undefined;
   }
 
-  // Marks a recorded call that actually ran, with an excerpt of its own output
-  // for a stopped response (toolResultPersist). Taken here because
-  // after_tool_call sees the complete output (an exec's aggregated text, the
-  // selected tool's result inside a Tool Search envelope), before OpenClaw caps
-  // the persisted copy. Never for a refusal: this guard's (refused) or another
-  // layer's (the veto receipt), direct or inside the envelope. A Tool Search
-  // child is folded into its outer call, which records the output.
+  // Marks a recorded call that actually ran, with the source of an excerpt of
+  // its own output for a stopped response (toolResultPersist). Taken here
+  // because after_tool_call sees the selected tool's result inside a Tool
+  // Search envelope and an exec's whole output, before OpenClaw caps the
+  // persisted copy. Never for a refusal: this guard's (refused) or another
+  // layer's (refusalReceipt), direct or inside the envelope. A Tool Search
+  // child is folded into its outer call, which keeps the output once.
   function recordExecutedOutput(pending, event, runId, toolCallId, toolName) {
     if (!pending || pending.refused || pending.runId !== runId || pending.transport !== toolName ||
         typeof toolCallId !== 'string' || toolCallId.startsWith('tool_search_code:') ||
@@ -11580,8 +11669,35 @@ export function createToolLoopGuard({
     if (!result || typeof result !== 'object' || Array.isArray(result)) return;
     // An outer call refused itself has no envelope: its result is the receipt.
     const selected = toolName === 'tool_call' ? toolSearchInnerResult(result.details) ?? result : result;
-    if (vetoReceipt(selected)) return;
-    pending.executedOutput = {excerpt: stoppedOutputExcerpt(executedOutputText(selected))};
+    if (refusalReceipt(selected)) return;
+    pending.executedOutput = {source: executedOutputSource(selected, pending.selectedToolName),
+      failed: failedToolOutcome(event)};
+  }
+
+  // A stopped result's excerpt share. Its batch is the calls of the run that
+  // ran and are not yet persisted: parallel calls all finish before the first
+  // of them is persisted. Failed results split STOPPED_BATCH_EXCERPT_CHARS and
+  // the others STOPPED_SUCCESS_EXCERPT_CHARS, in call order, a shorter output
+  // leaving the rest of its share to the next.
+  function stoppedExcerptShare(state, runId, toolCallId, pending) {
+    if (!state.stoppedExcerptShares?.has(toolCallId)) {
+      const batch = [[toolCallId, pending], ...[...pendingToolRuns].filter(([id, run]) => id !== toolCallId &&
+        run.runId === runId && run.executedOutput && !run.refused)];
+      const shares = new Map();
+      for (const [failed, budget] of [[true, STOPPED_BATCH_EXCERPT_CHARS], [false, STOPPED_SUCCESS_EXCERPT_CHARS]]) {
+        const group = batch.filter(([, run]) => run.executedOutput.failed === failed);
+        let left = budget;
+        group.forEach(([id, run], index) => {
+          const share = Math.min(Math.floor(left / (group.length - index)), sourceLength(run.executedOutput.source));
+          shares.set(id, share);
+          left -= share;
+        });
+      }
+      state.stoppedExcerptShares = shares;
+    }
+    const share = state.stoppedExcerptShares.get(toolCallId);
+    state.stoppedExcerptShares.delete(toolCallId);
+    return share;
   }
 
   function afterToolCall(event, context, agentId = "pixel") {
@@ -13236,7 +13352,10 @@ export function createToolLoopGuard({
     // tripped the limit was a node --check SyntaxError, and the answer said
     // the file passed node --check. A refused call, including one refused
     // after rememberToolRun or by another plugin layer, never ran: its result
-    // is the instruction alone. The whole result fits STOPPED_RESULT_TEXT_LIMIT.
+    // is the instruction alone. The excerpt comes from the persisted copy,
+    // which is what the model would have read, unless OpenClaw's cap cut it
+    // (then from after_tool_call); for Tool Search, from the selected tool's
+    // result. The whole result fits the agent's cap less 100.
     const sandboxPathCorrection = pending?.sandboxPathCorrection &&
       message.role === 'toolResult' && message.toolName === pending.transport &&
       (!message.toolCallId || message.toolCallId === toolCallId) &&
@@ -13248,11 +13367,20 @@ export function createToolLoopGuard({
       const answerTurnAhead = ['pending', 'instructed'].includes(deliverInstruction(state, toolCallId).phase);
       const stop = {type: 'text', text: answerTurnAhead ? finalizationInstruction(state) : RUN_PROGRESS_STOP_REASON};
       if (!pending?.executedOutput) return {message: {...message, content: [stop]}};
-      // The same notes, in the same order, as an unstopped result carries.
-      const notes = [sandboxPathCorrection, exampleOutcome ? EXAMPLE_NOTES[exampleOutcome]?.model : undefined]
-        .filter(text => typeof text === 'string' && text).map(text => ({type: 'text', text}));
-      return {message: {...message, content: [
-        ...stoppedResultContent(message.content, pending.executedOutput.excerpt), ...notes, stop]}};
+      const cap = toolResultMaxChars();
+      const limit = Number.isSafeInteger(cap) && cap > 0 ? Math.min(STOPPED_RESULT_TEXT_LIMIT, cap - 100) : STOPPED_RESULT_TEXT_LIMIT;
+      // The same notes, in the same order, as an unstopped result carries,
+      // where they fit beside the stop text.
+      let notes = [sandboxPathCorrection, exampleOutcome ? EXAMPLE_NOTES[exampleOutcome]?.model : undefined]
+        .filter(text => typeof text === 'string' && text);
+      const used = () => stop.text.length + notes.reduce((sum, text) => sum + text.length, 0);
+      if (used() > limit) notes = [];
+      const room = Math.min(limit - used(), stoppedExcerptShare(state, runId, toolCallId, pending));
+      const source = (pending.transport !== 'tool_call' ? persistedOutputSource(message.content) : undefined) ??
+        pending.executedOutput.source;
+      const excerpt = room >= STOPPED_EXCERPT_MIN_CHARS || sourceLength(source) <= room ? stoppedOutputExcerpt(source, room) : '';
+      return {message: {...message, content: [...stoppedResultContent(message.content, excerpt),
+        ...notes.map(text => ({type: 'text', text})), stop]}};
     }
     if (message.isError === true && state?.progressBudget.laneExhausted(progressLane)) {
       return {message:{...message,content:[...(message.content ?? []),{type:'text',text:progressLaneStopReason(progressLane)}]}};
