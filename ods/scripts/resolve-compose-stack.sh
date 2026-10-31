@@ -1529,6 +1529,60 @@ def _note_refused_fragment(service_dir, compose_path, warnings):
         _refused_services.setdefault(str(name), reason)
 
 
+# Names and host ports claimed by user extensions already resolved, owner by
+# claim. Compose refuses the whole merged stack on a duplicate container name,
+# and `up` fails on a duplicate host port, so the later extension (in sorted
+# id order) is skipped instead. Mirrors dashboard-api _reject_installed_collisions.
+_user_claims = {}
+_PORT_EXPANSION = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::?-([^}]*))?\}")
+
+
+def _resolve_port_part(value):
+    match = _PORT_EXPANSION.fullmatch(value)
+    if match is None:
+        return value
+    return _install_env_value(match.group(1)) or (match.group(2) or "")
+
+
+def _compose_claims(compose_path):
+    data = _compose_policy_load(compose_path.read_text(encoding="utf-8"))
+    services = data.get("services") if isinstance(data, dict) else None
+    claims = set()
+    for name, service in (services.items() if isinstance(services, dict) else ()):
+        claims.add(("service name", str(name)))
+        if not isinstance(service, dict):
+            continue
+        if isinstance(service.get("container_name"), str):
+            claims.add(("container name", service["container_name"].lower()))
+        ports = service.get("ports")
+        for entry in ports if isinstance(ports, list) else ():
+            if isinstance(entry, dict):
+                host, port = str(entry.get("host_ip") or ""), str(entry.get("published") or "")
+            else:
+                host, rest = _split_port_host(str(entry))
+                if ":" not in rest:
+                    continue
+                end = rest.find("}") + 1 if rest.startswith("${") else 0
+                host, port = host or "", rest[:end] + rest[end:].split(":", 1)[0]
+            port = _resolve_port_part(port).split("/", 1)[0]
+            if port.isdigit():
+                # User extensions bind loopback only, so the port alone decides.
+                claims.add(("host port", port))
+    return claims
+
+
+def _claim_conflict(service_dir, compose_path):
+    """Return a warning when another resolved user extension owns a claim."""
+    claims = _compose_claims(compose_path)
+    for kind, value in sorted(claims):
+        owner = _user_claims.get((kind, value))
+        if owner is not None:
+            return f"{kind} '{value}' is already used by user extension '{owner}'; skipping"
+    for claim in claims:
+        _user_claims[claim] = service_dir.name
+    return None
+
+
 # Discover enabled user-installed extensions (from dashboard portal)
 user_ext_dir = script_dir / "data" / "user-extensions"
 if user_ext_dir.exists():
@@ -1606,6 +1660,11 @@ if user_ext_dir.exists():
                     print(f"WARNING: {service_dir.name}: {w}", file=sys.stderr)
                 if not ok:
                     _note_refused_fragment(service_dir, compose_path, warnings)
+                    continue
+                conflict = _claim_conflict(service_dir, compose_path)
+                if conflict is not None:
+                    print(f"WARNING: {service_dir.name}: {conflict}", file=sys.stderr)
+                    _note_refused_fragment(service_dir, compose_path, [conflict])
                     continue
                 resolved.append(str(compose_path.relative_to(script_dir)))
                 # GPU-specific overlay (filesystem discovery — not in manifest)
