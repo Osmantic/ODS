@@ -7,9 +7,9 @@
 //
 // The guard records when each owner response and each of its attempts began,
 // warns the model through persisted tool results as the deadline nears,
-// stops a response that its attempt's own timer would let outlive the
-// deadline (responseDeadlineDelay), and replaces the runtime's advice with
-// what happened. Pure functions; the caller supplies the clock.
+// stops the response itself just before it (responseDeadlineDelay), and
+// replaces the runtime's advice with what happened. Pure functions; the
+// caller supplies the clock.
 import { assistantMessageText } from './progress-finalization.mjs';
 
 // before_prompt_build records the start just after the runtime arms its timer,
@@ -69,30 +69,38 @@ export function takeRunDeadlineNotice(deadline, now) {
   return noticeText(stage, deadline.timeoutMs);
 }
 
-// When, in ms from `now`, the guard stops an attempt that is still running,
-// since Portal's ingress cuts the whole response off without a reply soon
-// after the response's deadline: at that deadline for a later attempt, whose
-// own timer fires later, and RUN_DEADLINE_GRACE_MS after it for the first,
-// whose own timer fires first unless a compaction in flight extended it
-// (OpenClaw's compaction grace, up to compaction.timeoutSeconds more).
+// When, in ms from `now`, the guard stops a response still running: just
+// before its deadline, ahead of the first attempt's own timer. Portal's
+// ingress cuts the whole response off without a reply 1920 s after it began,
+// and that timer's own recovery can outlast it: a compaction and a retry when
+// the prompt fills most of the window, or a grace of up to
+// compaction.timeoutSeconds when a compaction is in flight. A later attempt's
+// own timer comes after the cut. The lead scales down for short timeouts.
 export function responseDeadlineDelay(deadline, now) {
   if (!deadline) return undefined;
-  const grace = deadline.attemptStartedAt === deadline.startedAt ? RUN_DEADLINE_GRACE_MS : 0;
-  return Math.max(0, deadline.startedAt + deadline.timeoutMs + grace - now);
+  const lead = Math.min(RUN_DEADLINE_GRACE_MS, Math.round(deadline.timeoutMs / 60));
+  return Math.max(0, deadline.startedAt + deadline.timeoutMs - lead - now);
+}
+
+// The reply that ends an attempt with an answer, which OpenClaw delivers
+// unless something aborts the attempt before it ends.
+function completedAnswer(message) {
+  return message?.role === 'assistant' && COMPLETED_STOP_REASONS.has(String(message.stopReason ?? '').trim().toLowerCase()) &&
+    Boolean(assistantMessageText(message));
 }
 
 // agent_end of an attempt the deadline ended. No plugin hook sees the
 // runtime's timeout kind, so this is inferred: the attempt failed, ran its
 // full time, and did not end with a completed answer (OpenClaw delivers such
 // an answer itself, like its recoveredFinalAssistantTextAfterPromptTimeout).
-// After the guard's own stop at the response's deadline (`responseStopped`),
-// the attempt's own time does not matter.
+// After the guard's own stop (`responseStopped`) it is the cause: OpenClaw
+// drops the answer of an attempt anything but its own timer aborted.
 export function runDeadlineReached(deadline, event, now, responseStopped = false) {
   if (!deadline || event?.success !== false) return false;
-  if (!responseStopped && now - deadline.attemptStartedAt < deadline.timeoutMs - RUN_DEADLINE_GRACE_MS) return false;
+  if (responseStopped) return true;
+  if (now - deadline.attemptStartedAt < deadline.timeoutMs - RUN_DEADLINE_GRACE_MS) return false;
   const last = Array.isArray(event.messages) ? event.messages.findLast(message => message?.role === 'assistant') : undefined;
-  return !(COMPLETED_STOP_REASONS.has(String(last?.stopReason ?? '').trim().toLowerCase()) &&
-    assistantMessageText(last));
+  return !completedAnswer(last);
 }
 
 // Owner copy. No configuration advice: ODS manages the limit. The unfinished

@@ -39,12 +39,13 @@ const CUT_OFF = {success: false, durationMs: minutes(30), messages: [
   {role: 'assistant', stopReason: 'aborted', content: []},
 ]};
 
-function fixture({context = OWNER, capabilities = CAPABILITIES, prompt = PROMPT, goal = false, abortAcknowledged = () => true} = {}) {
+function fixture({context = OWNER, capabilities = CAPABILITIES, prompt = PROMPT, goal = false, abortAcknowledged = () => true,
+  execControl} = {}) {
   let clock = 0;
   const aborts = [];
   // The guard's own timers, which run as the clock passes them (at).
   const timers = new Set();
-  const guard = createToolLoopGuard({now: () => clock, goalRun: () => goal,
+  const guard = createToolLoopGuard({now: () => clock, goalRun: () => goal, execControl,
     setTimer: (run, ms) => { const timer = {run, due: clock + ms}; timers.add(timer); return timer; },
     clearTimer: timer => { timers.delete(timer); },
     abortRun: sessionId => { aborts.push(sessionId); return abortAcknowledged(); },
@@ -52,6 +53,18 @@ function fixture({context = OWNER, capabilities = CAPABILITIES, prompt = PROMPT,
   const begin = () => guard.observeRun(context, 'pixel', {prompt}, capabilities);
   begin();
   let calls = 0;
+  // An agent turn's model call starts (OpenClaw's run for the attempt is
+  // live) and, with end, finishes.
+  let modelCall;
+  const model = () => { modelCall = `model-${++calls}`; guard.observeModelCall({callId: modelCall}, context); };
+  const modelEnd = () => guard.observeModelEnd({callId: modelCall, outcome: 'completed'}, context);
+  // A tool call the guard admits, still running until its after_tool_call.
+  const start = (toolCallId, toolName = 'read', params = {path: 'game/ui.js'}) => {
+    const before = guard.beforeToolCall({toolName, params, toolCallId}, {...context, toolName, toolCallId});
+    assert.notEqual(before?.block, true, before?.blockReason);
+  };
+  // The attempt writes a reply (before_message_write).
+  const reply = message => guard.observeReplyEnd({message: {role: 'assistant', ...message}}, context);
   const invoke = (toolName, params, result, toolCallId) => {
     const ctx = {...context, toolName, toolCallId};
     const before = guard.beforeToolCall({toolName, params, toolCallId}, ctx);
@@ -100,8 +113,12 @@ function fixture({context = OWNER, capabilities = CAPABILITIES, prompt = PROMPT,
     clock = minutes(value);
     for (const timer of [...timers].sort((a, b) => a.due - b.due)) if (timer.due <= clock && timers.delete(timer)) timer.run();
   };
-  return {guard, aborts, timers, begin, read, exec, edit, publish, at};
+  return {guard, aborts, timers, begin, model, modelEnd, start, reply, read, exec, edit, publish, at};
 }
+
+// When Portal stops a response: 15 s before its 30 minutes are up.
+const STOP_AT = 30 - RUN_DEADLINE_GRACE_MS / 60000;
+const ANSWER = {stopReason: 'stop', content: [{type: 'text', text: 'Both hitboxes are fixed; all six levels load.'}]};
 
 const notices = message => message.content.filter(block => block?.type === 'text' && NOTICE.test(block.text));
 
@@ -134,9 +151,10 @@ for (const [name, context, capabilities, prompt] of [
   ['a team worker in the owner session', OWNER, CAPABILITIES, `You are the Builder in the owner's Portal team.\n\n${PROMPT}`],
 ]) test(`no notice, deadline copy or stop for ${name}`, () => {
   const f = fixture({context, capabilities, prompt});
-  // A later attempt too: its own timer would come after the deadline.
+  // A later attempt too, whose own timer would come after the deadline.
   f.at(10);
   f.begin();
+  f.model();
   for (const value of [25, 28]) { f.at(value); assert.equal(notices(f.read().persisted).length, 0); }
   f.at(31);
   assert.deepEqual(f.aborts, [], 'Portal never stops it at the deadline');
@@ -146,25 +164,27 @@ for (const [name, context, capabilities, prompt] of [
 
 // The ingress stops the whole response at 32 minutes, whatever attempt it is
 // on, with no reply at all. A retry's fresh runtime timer must not move the
-// notices past it, and Portal stops a later attempt at the response's
+// notices past it, and Portal stops a later attempt before the response's
 // deadline itself (laptop, 2026-10-30: a goal ended on such a cut round).
-test('a later attempt keeps the response\'s notice schedule and is stopped at the response\'s deadline', () => {
+test('a later attempt keeps the response\'s notice schedule and is stopped just before the response\'s deadline', () => {
   const f = fixture();
   f.at(10);
   f.begin();
+  f.model();
   f.at(24.99);
   assert.equal(notices(f.read().persisted).length, 0);
   f.at(25);
   assert.match(notices(f.read().persisted)[0].text, /^\[ODS Pixel time limit\] About 5 minutes remain/);
   f.at(26);
   f.begin();
+  f.model();
   assert.equal(notices(f.read().persisted).length, 0, 'a delivered stage stays delivered');
   f.at(28);
   assert.match(notices(f.read().persisted)[0].text, /^\[ODS Pixel time limit\] About 2 minutes remain/);
   // This attempt ran 4 of its own 30 minutes; the response ran all 30.
-  f.at(29.99);
+  f.at(STOP_AT - 0.001);
   assert.deepEqual(f.aborts, []);
-  f.at(30);
+  f.at(STOP_AT);
   assert.deepEqual(f.aborts, [OWNER.sessionId]);
   f.guard.observeAgentEnd(CUT_OFF, OWNER);
   assert.deepEqual(f.guard.deliveryVerificationForRun(RUN_ID), {status: 'failed', text: UNCHANGED_STOP_COPY});
@@ -180,7 +200,8 @@ test('a goal round\'s retried attempt stopped at the deadline says which limit s
     // A compaction retry or a revision: a new attempt with its own timer.
     f.at(10);
     f.begin();
-    f.at(30);
+    f.model();
+    f.at(STOP_AT);
     assert.deepEqual(f.aborts, [OWNER.sessionId]);
     f.guard.observeAgentEnd(CUT_OFF, OWNER);
     assert.deepEqual(f.guard.deliveryVerificationForRun(RUN_ID),
@@ -188,52 +209,193 @@ test('a goal round\'s retried attempt stopped at the deadline says which limit s
   }
 });
 
-// OpenClaw extends an attempt's own timer once, by compaction.timeoutSeconds
-// (30 more minutes on ODS), when it fires during a compaction.
-test('a first attempt its own timer did not stop is stopped after the grace', () => {
+// Its own timer's recovery can outlast the ingress: a compaction and a retry
+// when the prompt fills most of the window, or a grace of up to
+// compaction.timeoutSeconds (30 more minutes on ODS) for a compaction in flight.
+test('the first attempt is stopped just before its own timer', () => {
   const f = fixture({goal: true});
+  f.model();
   f.at(12);
   f.edit();
-  f.at(30);
-  f.at(30 + (RUN_DEADLINE_GRACE_MS - 1) / 60000);
-  assert.deepEqual(f.aborts, [], 'the runtime timer comes first');
-  f.at(30 + RUN_DEADLINE_GRACE_MS / 60000);
+  f.at(STOP_AT - 0.001);
+  assert.deepEqual(f.aborts, []);
+  f.at(STOP_AT);
   assert.deepEqual(f.aborts, [OWNER.sessionId]);
   f.guard.observeAgentEnd(CUT_OFF, OWNER);
   assert.deepEqual(f.guard.deliveryVerificationForRun(RUN_ID), {status: 'failed', text: STOP_COPY, stop: 'run-deadline'});
 });
 
-// A revision ends its attempt without agent_end, so the stop can come before
-// the next attempt has a run to stop.
-test('a stop that found no attempt to stop is made as the next attempt starts', () => {
+// An abort before an attempt's first model call cannot reach the prompt
+// OpenClaw is about to start, and one while a call is still setting up its
+// stream leaves the attempt hung until its own timer (real harness).
+const STREAM_STARTED = 3 / 60;
+test('a stop due with no call under way waits for one, and gives a new call time to set up', () => {
+  const f = fixture({goal: true});
+  f.at(10);
+  f.begin();
+  f.at(STOP_AT);
+  assert.deepEqual(f.aborts, []);
+  f.at(29.9);
+  f.model();
+  f.at(29.9 + STREAM_STARTED - 0.001);
+  assert.deepEqual(f.aborts, []);
+  f.at(29.9 + STREAM_STARTED);
+  assert.deepEqual(f.aborts, [OWNER.sessionId]);
+  f.guard.observeAgentEnd(CUT_OFF, OWNER);
+  assert.deepEqual(f.guard.deliveryVerificationForRun(RUN_ID), {status: 'failed', text: UNCHANGED_STOP_COPY, stop: 'run-deadline'});
+  // A call that began just before the deadline gets the same time.
+  const recent = fixture({goal: true});
+  recent.at(STOP_AT - 0.01);
+  recent.model();
+  recent.at(STOP_AT);
+  assert.deepEqual(recent.aborts, []);
+  recent.at(STOP_AT - 0.01 + STREAM_STARTED);
+  assert.deepEqual(recent.aborts, [OWNER.sessionId]);
+  // One that begins past the deadline, such as the revision an answer asked for.
+  const late = fixture({goal: true});
+  late.model();
+  late.at(STOP_AT - 1);
+  late.reply(ANSWER);
+  late.at(30.5);
+  late.begin();
+  late.at(30.5);
+  late.model();
+  late.at(30.5 + STREAM_STARTED - 0.001);
+  assert.deepEqual(late.aborts, []);
+  late.at(30.5 + STREAM_STARTED);
+  assert.deepEqual(late.aborts, [OWNER.sessionId]);
+});
+
+test('past the deadline a tool call is refused and the stop lands there', () => {
+  const f = fixture({goal: true});
+  f.at(10);
+  f.begin();
+  f.at(STOP_AT);
+  const ctx = {...OWNER, toolName: 'read', toolCallId: 'late-read'};
+  const decision = f.guard.beforeToolCall({toolName: 'read', params: {path: 'game/ui.js'}, toolCallId: 'late-read'}, ctx);
+  assert.equal(decision?.block, true);
+  assert.match(decision.blockReason, /^Portal stopped this response at its time limit before this call ran\.$/);
+  assert.deepEqual(f.aborts, [OWNER.sessionId]);
+  // No notice on the stopped run, not even after a compaction resets them.
+  f.guard.observeCompaction(OWNER, 'start');
+  f.guard.observeCompaction(OWNER, 'end');
+  assert.equal(notices(f.read().persisted).length, 0);
+  f.guard.observeAgentEnd(CUT_OFF, OWNER);
+  assert.deepEqual(f.guard.deliveryVerificationForRun(RUN_ID), {status: 'failed', text: UNCHANGED_STOP_COPY, stop: 'run-deadline'});
+});
+
+// A hung test or dev server is a typical way to reach the limit.
+test('a tool still running at the deadline is stopped there', () => {
+  const f = fixture({goal: true});
+  f.model();
+  f.at(20);
+  f.modelEnd();
+  f.start('slow-test', 'exec', {command: 'npm test', workdir: '/workspace/game'});
+  f.at(STOP_AT);
+  assert.deepEqual(f.aborts, [OWNER.sessionId]);
+  // One that finished is not running, and a new model call starts a new turn.
+  for (const finished of [true, false]) {
+    const done = fixture({goal: true});
+    done.model();
+    done.at(20);
+    done.modelEnd();
+    done.start('read-1');
+    if (finished) done.guard.afterToolCall({toolName: 'read', toolCallId: 'read-1', params: {path: 'game/ui.js'},
+      result: {content: [{type: 'text', text: 'ok'}]}}, {...OWNER, toolName: 'read', toolCallId: 'read-1'});
+    else { done.at(STOP_AT - 0.01); done.model(); }
+    done.at(STOP_AT);
+    assert.deepEqual(done.aborts, [], `finished=${finished}`);
+  }
+});
+
+test('a stop the runtime did not take is made again at the attempt\'s next model call', () => {
   let acknowledged = false;
   const f = fixture({goal: true, abortAcknowledged: () => acknowledged});
   f.at(10);
   f.begin();
-  f.at(30);
+  f.model();
+  f.at(STOP_AT);
   assert.deepEqual(f.aborts, [OWNER.sessionId]);
   acknowledged = true;
-  f.at(30.5);
-  f.begin();
-  assert.equal(f.aborts.length, 1, 'after the prompt hook, never inside it');
-  f.at(30.5);
+  f.at(29.9);
+  f.model();
+  f.at(29.9 + STREAM_STARTED);
   assert.deepEqual(f.aborts, [OWNER.sessionId, OWNER.sessionId]);
   f.guard.observeAgentEnd(CUT_OFF, OWNER);
   assert.deepEqual(f.guard.deliveryVerificationForRun(RUN_ID), {status: 'failed', text: UNCHANGED_STOP_COPY, stop: 'run-deadline'});
 });
 
+// OpenClaw drops the answer of an attempt anything but its own timer aborted,
+// and Pixel's finalization (preview checks, cited pages) runs after the answer.
+test('an attempt that wrote its answer is never stopped, and is delivered as usual', () => {
+  const f = fixture({goal: true});
+  f.at(10);
+  f.begin();
+  f.model();
+  f.at(STOP_AT - 0.5);
+  f.reply({stopReason: 'toolUse', content: [{type: 'toolCall', id: 'edit-9', name: 'edit', arguments: {}}]});
+  f.model();
+  f.reply(ANSWER);
+  f.at(31);
+  assert.deepEqual(f.aborts, []);
+  f.guard.observeAgentEnd({success: true, messages: [{role: 'user', content: PROMPT}, {role: 'assistant', ...ANSWER}]}, OWNER);
+  assert.notEqual(f.guard.deliveryVerificationForRun(RUN_ID).status, 'failed');
+  // A reply cut at the output limit is delivered too; one with tool calls is not an answer.
+  const cut = fixture();
+  cut.model();
+  cut.reply({stopReason: 'length', content: [{type: 'text', text: 'The wolves now use two circles each and'}]});
+  cut.at(31);
+  assert.deepEqual(cut.aborts, []);
+  // A further agent turn means that reply was not the last.
+  const more = fixture();
+  more.model();
+  more.reply(ANSWER);
+  more.model();
+  more.at(STOP_AT);
+  assert.deepEqual(more.aborts, [OWNER.sessionId]);
+});
+
+test('a tool-limit stop\'s answer turn and a refused delete keep their own stop', () => {
+  const f = fixture();
+  f.model();
+  for (let i = 0; i < RUN_PROGRESS_LIMITS.consecutiveFailures; i++) {
+    const toolCallId = `failed-${i}`;
+    f.guard.toolResultPersist({toolCallId, message: {role: 'toolResult', toolName: 'web_fetch', toolCallId, isError: true,
+      content: [{type: 'text', text: 'Web fetch failed (403)'}]}}, {...OWNER, toolName: 'web_fetch', toolCallId});
+  }
+  f.at(31);
+  assert.deepEqual(f.aborts, []);
+  const refused = fixture();
+  refused.model();
+  const ctx = {...OWNER, toolName: 'exec', toolCallId: 'rm-1'};
+  assert.equal(refused.guard.beforeToolCall({toolName: 'exec', toolCallId: 'rm-1',
+    params: {command: 'rm -rf /workspace/game/build', workdir: '/workspace/game'}}, ctx)?.block, true);
+  refused.at(31);
+  assert.deepEqual(refused.aborts, []);
+});
+
+test('Portal\'s stop ends a sandboxed command too, like every ODS stop', () => {
+  const signalled = [];
+  const f = fixture({execControl: {signal: runId => { signalled.push(runId); return true; }}});
+  f.model();
+  f.at(STOP_AT);
+  assert.deepEqual(signalled, [RUN_ID]);
+  assert.deepEqual(f.aborts, [OWNER.sessionId]);
+});
+
 test('Portal never stops an attempt that ended, a cancelled run, or a newer run in the chat', async () => {
-  // The runtime's own timer stopped this one.
   const ended = fixture();
-  ended.at(30);
-  ended.guard.observeAgentEnd(CUT_OFF, OWNER);
+  ended.model();
+  ended.at(29);
+  ended.guard.observeAgentEnd({success: true, messages: []}, OWNER);
+  assert.equal(ended.timers.size, 0, 'agent_end cancels the stop');
   ended.at(60);
   assert.deepEqual(ended.aborts, []);
-  assert.equal(ended.timers.size, 0);
   // The owner's Stop aborts and drains the run itself.
   const cancelled = fixture();
   cancelled.at(10);
   cancelled.begin();
+  cancelled.model();
   cancelled.at(20);
   cancelled.exec('node --check game/ui.js');
   assert.equal(await cancelled.guard.abortUserRun(USER), true);
@@ -243,6 +405,7 @@ test('Portal never stops an attempt that ended, a cancelled run, or a newer run 
   const replaced = fixture();
   replaced.at(10);
   replaced.begin();
+  replaced.model();
   replaced.at(20);
   replaced.guard.observeRun({...OWNER, runId: 'chatcmpl_9e2a4b1c-3d5f-4a6b-8c7d-0e1f2a3b4c5d'}, 'pixel',
     {prompt: 'Now make the boss slower.'}, CAPABILITIES);
@@ -282,7 +445,8 @@ test('a compaction sends the stage now due again, with the same bytes', () => {
 test('an ODS abort keeps its own outcome and ends the notices', () => {
   // A second call after the private-URL refusal is an ODS stop.
   const f = fixture({prompt: 'Open http://192.168.1.20:8080/ and fix the wolf hitboxes there.'});
-  f.at(29.9);
+  // Due a notice, just before Portal's own deadline stop.
+  f.at(29.7);
   const call = toolCallId => f.guard.beforeToolCall({toolName: 'web_fetch', params: {url: 'http://192.168.1.20:8080/'}, toolCallId},
     {...OWNER, toolName: 'web_fetch', toolCallId});
   assert.equal(call('fetch-1')?.block, true);
@@ -454,7 +618,7 @@ test(`Portal receives the ODS stop over the real ingress, stream=${stream}, publ
       case '/health': result = {ok: true}; break;
       case '/v1/chat/completions':
         // The run ends inside the gateway request, before the verification read.
-        if (retried) { f.at(10); f.begin(); }
+        if (retried) { f.at(10); f.begin(); f.model(); }
         f.at(30);
         assert.deepEqual(f.aborts, retried ? [OWNER.sessionId] : []);
         f.guard.observeAgentEnd(CUT_OFF, OWNER);

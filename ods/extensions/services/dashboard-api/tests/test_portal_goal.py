@@ -128,10 +128,11 @@ async def test_a_round_a_portal_limit_stopped_continues_the_goal(tmp_path, stop)
     assert row['agents'][0]['publication']==PUBLICATION
 
 
-# Pixel's stop for a round whose second attempt (a compaction retry or a
+# Pixel's stop for a round whose later attempt (a compaction retry or a
 # revision) was still running at its 30-minute deadline, as the ingress
 # delivers it (run_deadline_delivery.test.mjs). The ingress used to cut such a
-# round off at 32 minutes with no reply ('cut'), which ends the goal.
+# round off at 32 minutes with no reply, which ends the goal ('transport'
+# above).
 DEADLINE_STOP = ('**Portal stopped this response after 30 minutes, the most one response can run.** '
                  'This request needed more time. Files saved before the stop are kept, but the last change may be '
                  'unfinished, so the project may not work yet. Send "continue" to pick up where it left off. '
@@ -139,18 +140,13 @@ DEADLINE_STOP = ('**Portal stopped this response after 30 minutes, the most one 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('ending', ['stopped', 'cut'])
-async def test_a_retried_round_stopped_at_its_deadline_continues_the_goal(tmp_path, ending):
+async def test_a_retried_round_stopped_at_its_deadline_continues_the_goal(tmp_path):
     calls=[]
     async def run(owner,agent):
         calls.append(copy.deepcopy(agent))
         if len(calls)==1:
             yield stop_frame(edits=2)
-            if ending=='stopped':
-                for frame in stopped_round(DEADLINE_STOP,'run-deadline'):yield frame
-            else:
-                # The ingress holds the reply back until its outcome, so a cut round has none.
-                yield {'_done':True,'_state':'interrupted'}
+            for frame in stopped_round(DEADLINE_STOP,'run-deadline'):yield frame
         else:
             yield goal_frame('completed')
             for frame in finish('Actual final result'):yield frame
@@ -158,14 +154,10 @@ async def test_a_retried_round_stopped_at_its_deadline_continues_the_goal(tmp_pa
     manager.start(OWNER,'chat','goal','Make enemies draw from a sprite cache',None,'','goal')
     await settle(manager)
     row=manager.list(OWNER,'chat')[0]
-    if ending=='cut':
-        assert row['status']=='failed' and len(calls)==1
-        assert row['agents'][0]['error'].startswith('No completed response was received from the model runtime.')
-    else:
-        assert row['status']=='completed' and len(calls)==2
-        prompt=calls[1]['messages'][-1]['content']
-        assert "The last round reached Portal's time limit for one response before it finished." in prompt
-        assert any(m['content']==DEADLINE_STOP for m in calls[1]['messages'])
+    assert row['status']=='completed' and len(calls)==2
+    prompt=calls[1]['messages'][-1]['content']
+    assert "The last round reached Portal's time limit for one response before it finished." in prompt
+    assert any(m['content']==DEADLINE_STOP for m in calls[1]['messages'])
 
 
 @pytest.mark.asyncio
