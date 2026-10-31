@@ -15450,6 +15450,22 @@ class AgentHandler(BaseHTTPRequestHandler):
             if isinstance(memory_fit, dict) and context_length != memory_fit.get("contextLength"):
                 json_response(self, 400, {"error": "The selected context differs from the memory-qualified profile; requalify before activating it"})
                 return
+            if local_runtime_profile and local_runtime_profile.get("cacheType") == "f16":
+                try:
+                    # Bind admission to the branch that launches this registered
+                    # executable. It cannot enter the Linux GPU planners below;
+                    # WSL tasks and containers own different launch contracts.
+                    if (not windows_native_llama or wsl_managed.get('managed') is True
+                            or os.environ.get("ODS_HOST_INSTALL_DIR")):
+                        raise ValueError(
+                            "f16 registered cache currently requires the Windows native "
+                            "host launch; WSL, container and macOS routes are not qualified")
+                    _model_stores.admit_native_profile(
+                        {**local_runtime_profile, "contextLength": context_length}, target, env_pre,
+                        projector=_model_projector_file(_library_record_for_gguf(gguf_file), target.parent))
+                except ValueError as exc:
+                    json_response(self, 400, {"error": str(exc), "code": "native_cache_admission"})
+                    return
             if (
                 managed_pixel_identity is not None
                 and int(context_length) < _MIN_MANAGED_PIXEL_CONTEXT
@@ -15630,8 +15646,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                     remove_keys.update(gpu_assignment_plan.get("env_removals") or [])
                 remove_keys.difference_update(updates)
                 if local_runtime_profile:
-                    updates.update({"LLAMA_PARALLEL":"1", "LLAMA_ARG_FLASH_ATTN":"on",
-                                    "LLAMA_ARG_CACHE_TYPE_K":"q4_0", "LLAMA_ARG_CACHE_TYPE_V":"q4_0"})
+                    updates.update(_model_stores.native_profile_env(local_runtime_profile))
                     if local_runtime_profile["mtp"]:
                         updates.update({"LLAMA_ARG_SPEC_TYPE":"draft-mtp",
                                         "LLAMA_ARG_SPEC_DRAFT_N_MAX":str(local_runtime_profile["args"][local_runtime_profile["args"].index("--spec-draft-n-max")+1]),
@@ -21118,6 +21133,9 @@ def _restart_macos_native_llama_server(
     _require_macos_bridge_manager(env_path)
     env = load_env(env_path)
     profile = _model_stores.registered_runtime_profile(INSTALL_DIR / "data", env.get("GGUF_FILE", ""))
+    if profile and profile.get("cacheType") == "f16":
+        _model_stores.resolve_runtime_selection(INSTALL_DIR, verify_hashes=True)
+        env = {**env, **_model_stores.native_profile_env(profile)}
     selected_binary = Path(profile["executable"]) if profile else llama_bin
     _native_llama_tuning_arguments(env, selected_binary, defaults=profile is None)
     _stop_macos_native_llama_server(pid_file)
@@ -21136,6 +21154,9 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
     profile = _model_stores.registered_runtime_profile(INSTALL_DIR / "data", gguf_file)
     if profile:
         llama_bin = Path(profile["executable"])
+        if profile.get("cacheType") == "f16":
+            _model_stores.resolve_runtime_selection(INSTALL_DIR, verify_hashes=True)
+            env = {**env, **_model_stores.native_profile_env(profile)}
     ctx_size = env.get("CTX_SIZE", "32768")
     gpu_layers = env.get("N_GPU_LAYERS", "").strip() or "auto"
     model_path = _active_model_directory(env) / gguf_file
