@@ -1,111 +1,204 @@
-import {fireEvent, render, screen, waitFor, within} from '@testing-library/react'
+import {fireEvent, render, screen, waitFor} from '@testing-library/react'
 import PortalTurnUndo from './PortalTurnUndo'
-import {changedProjects, restoreProject} from '../lib/projectRestore'
+import {finishedRuns, restoreOptions, restoreProject} from '../lib/projectRestore'
 import {ODS_HELP_DISCORD_URL} from '../lib/support'
 
 const RUN = 'chatcmpl_11111111-2222-4333-8444-555555555555'
 const UNDO = 'restore_99999999-2222-4333-8444-555555555555'
-const project = (name, observedAt) => ({schemaVersion: 1, kind: 'ods-workspace-project', relativeDirectory: `Playground/${name}`, observedAt})
-// A finished turn of 12:00:00-12:05:00 that changed game; notes changed on an earlier turn.
-function task(projects = [project('game', '2026-10-30T12:03:00.000Z'), project('notes', '2026-10-30T11:00:00.000Z')], extra = {}) {
-  return {schemaVersion: 4, runId: RUN, startedAt: '2026-10-30T12:00:00.000Z', finishedAt: '2026-10-30T12:05:00.000Z',
-    state: 'completed', calls: 1, failures: 0, blocked: 0, truncated: false, activities: [{kind: 'run', calls: 1, failures: 0, blocked: 0}],
-    events: [{sequence: 1, kind: 'run', state: 'completed', startedAt: '2026-10-30T12:01:00.000Z', finishedAt: '2026-10-30T12:02:00.000Z', display: null}],
-    context: null, goal: null, projects, ...extra}
-}
-const receipt = (extra = {}) => ({schemaVersion: 1, project: 'Playground/game', snapshot: RUN, written: 1, removed: 2,
-  kept: [], keptCount: 0, failed: [], failedCount: 0, complete: true, undo: UNDO, ...extra})
+const UNDO_2 = 'restore_88888888-2222-4333-8444-555555555555'
+const TOKEN = 'c'.repeat(64)
+const entry = (extra = {}) => ({project: 'Playground/game', snapshot: RUN, late: false, restore: null, ...extra})
+const receipt = (extra = {}) => ({schemaVersion: 2, status: 'restored', project: 'Playground/game', snapshot: RUN, written: 1, removed: 2,
+  left: [], leftCount: 0, failed: [], failedCount: 0, failure: null, late: false, undo: UNDO, confirm: null, ...extra})
 const answer = (body, status = 200) => ({ok: status >= 200 && status < 300, status, json: async () => body})
+const refusal = (code, status) => answer({detail: {code, message: 'host words'}}, status)
+const sent = fetch => fetch.mock.calls.map(([, options]) => JSON.parse(options.body))
+const PUT_BACK = 'Put back files from before this turn'
 
 afterEach(() => vi.unstubAllGlobals())
 
-test('only projects whose latest change happened during the turn get Put back', () => {
-  expect(changedProjects(task())).toEqual(['Playground/game'])
-  // A turn that is still running has no end yet.
-  expect(changedProjects(task(undefined, {state: 'running', finishedAt: null}))).toEqual(['Playground/game'])
-  expect(changedProjects(task([project('notes', '2026-10-30T11:00:00.000Z')]))).toEqual([])
-  expect(changedProjects({...task(), schemaVersion: 3})).toEqual([])
-  expect(changedProjects({...task(), runId: 'other'})).toEqual([])
-  expect(changedProjects(undefined)).toEqual([])
-})
-
-test('one step puts the files back, says what changed, and Undo reverses it', async () => {
-  const fetch = vi.fn(async () => answer(receipt({kept: ['node_modules', '.git'], keptCount: 2})))
+test('one step puts the files back, says what changed, and Undo reverses it; the Undo can be reversed too', async () => {
+  const fetch = vi.fn(async () => answer(receipt()))
+  const changed = vi.fn()
   vi.stubGlobal('fetch', fetch)
-  render(<PortalTurnUndo chatId="chat-1" task={task()}/>)
+  render(<PortalTurnUndo chatId="chat-1" entries={[entry()]} onChanged={changed}/>)
   expect(screen.getAllByRole('button')).toHaveLength(1)
-  fireEvent.click(screen.getByRole('button', {name: 'Put back files from before this turn'}))
-  expect(await screen.findByText('Playground/game is back to how it was before this turn: 1 file put back and 2 new files removed. Not copied, so left as they are: node_modules and .git.')).toBeVisible()
+  fireEvent.click(screen.getByRole('button', {name: PUT_BACK}))
+  expect(await screen.findByText('Playground/game is back to how it was before this turn: 1 file written back and 2 files removed. '
+    + 'A preview of this project still shows the earlier files until Portal publishes it again.')).toBeVisible()
   expect(fetch).toHaveBeenCalledWith('/api/pixel/projects/restore', expect.objectContaining({method: 'POST', cache: 'no-store'}))
-  expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({chat_id: 'chat-1', project: 'Playground/game', snapshot: RUN})
   // A success never looks like an error.
   expect(screen.queryByRole('alert')).toBeNull()
   expect(screen.queryByRole('link')).toBeNull()
-  expect(screen.queryByRole('button', {name: 'Put back files from before this turn'})).toBeNull()
+  expect(screen.queryByRole('button', {name: PUT_BACK})).toBeNull()
+  expect(changed).toHaveBeenCalledTimes(1)
 
-  fetch.mockResolvedValueOnce(answer(receipt({snapshot: UNDO, written: 3, removed: 0, undo: 'restore_88888888-2222-4333-8444-555555555555'})))
+  fetch.mockResolvedValueOnce(answer(receipt({snapshot: UNDO, written: 3, removed: 0, undo: UNDO_2})))
   fireEvent.click(screen.getByRole('button', {name: 'Undo putting back Playground/game'}))
-  expect(await screen.findByText('Playground/game is back to how it was before you put the files back: 3 files put back.')).toBeVisible()
-  expect(JSON.parse(fetch.mock.calls[1][1].body).snapshot).toBe(UNDO)
-  // After the undo the turn's Put back is offered again.
-  expect(screen.getByRole('button', {name: 'Put back files from before this turn'})).toBeEnabled()
-  expect(screen.queryByRole('button', {name: /Undo/})).toBeNull()
+  expect(await screen.findByText(/^Playground\/game is back to how it was before you put the files back: 3 files written back\./)).toBeVisible()
+  // The Undo's own copy puts the files from before the turn back again.
+  fetch.mockResolvedValueOnce(answer(receipt({snapshot: UNDO_2, undo: 'restore_77777777-2222-4333-8444-555555555555'})))
+  fireEvent.click(screen.getByRole('button', {name: PUT_BACK}))
+  await screen.findByRole('button', {name: 'Undo putting back Playground/game'})
+  expect(sent(fetch)).toEqual([{chat_id: 'chat-1', project: 'Playground/game', snapshot: RUN},
+    {chat_id: 'chat-1', project: 'Playground/game', snapshot: UNDO}, {chat_id: 'chat-1', project: 'Playground/game', snapshot: UNDO_2}])
+  expect(changed).toHaveBeenCalledTimes(3)
 })
 
-test('nothing to put back is said calmly, without Undo', async () => {
-  vi.stubGlobal('fetch', vi.fn(async () => answer(receipt({written: 0, removed: 0, undo: null}))))
-  render(<PortalTurnUndo chatId="chat-1" task={task()}/>)
-  fireEvent.click(screen.getByRole('button', {name: 'Put back files from before this turn'}))
+test('after a reload the host says which step comes next', async () => {
+  const fetch = vi.fn(async () => answer(receipt({snapshot: UNDO, undo: UNDO_2})))
+  vi.stubGlobal('fetch', fetch)
+  const {unmount} = render(<PortalTurnUndo chatId="chat-1" entries={[entry({restore: {undo: UNDO, side: 'before'}})]}/>)
+  expect(screen.getByText('The files from before this turn were put back.')).toBeVisible()
+  fireEvent.click(screen.getByRole('button', {name: 'Undo putting back Playground/game'}))
+  await screen.findByRole('button', {name: PUT_BACK})
+  expect(sent(fetch)[0].snapshot).toBe(UNDO)
+  unmount()
+  render(<PortalTurnUndo chatId="chat-1" entries={[entry({restore: {undo: UNDO_2, side: 'after'}})]}/>)
+  fetch.mockResolvedValueOnce(answer(receipt({snapshot: UNDO_2})))
+  fireEvent.click(screen.getByRole('button', {name: PUT_BACK}))
+  await screen.findByRole('button', {name: 'Undo putting back Playground/game'})
+  expect(sent(fetch)[1].snapshot).toBe(UNDO_2)
+})
+
+test('changes made after the turn are named and need a yes; Cancel changes nothing', async () => {
+  const asks = receipt({status: 'confirm', written: 0, removed: 0, undo: null,
+    confirm: {token: TOKEN, overwrite: ['chars.js'], overwriteCount: 1, remove: ['new.js', 'a.js'], removeCount: 5}})
+  const fetch = vi.fn(async () => answer(asks))
+  vi.stubGlobal('fetch', fetch)
+  render(<PortalTurnUndo chatId="chat-1" entries={[entry()]}/>)
+  fireEvent.click(screen.getByRole('button', {name: PUT_BACK}))
+  expect(await screen.findByRole('alert')).toHaveTextContent('Putting back the files from before this turn will overwrite chars.js '
+    + 'and remove new.js, a.js and 3 more, which may hold changes made after this turn.')
+  fireEvent.click(screen.getByRole('button', {name: 'Cancel'}))
+  expect(screen.getByRole('button', {name: PUT_BACK})).toBeEnabled()
+  expect(screen.queryByRole('alert')).toBeNull()
+  fireEvent.click(screen.getByRole('button', {name: PUT_BACK}))
+  fetch.mockResolvedValueOnce(answer(receipt()))
+  fireEvent.click(await screen.findByRole('button', {name: 'Put back anyway'}))
+  await screen.findByRole('button', {name: 'Undo putting back Playground/game'})
+  expect(sent(fetch)).toEqual([{chat_id: 'chat-1', project: 'Playground/game', snapshot: RUN},
+    {chat_id: 'chat-1', project: 'Playground/game', snapshot: RUN},
+    {chat_id: 'chat-1', project: 'Playground/game', snapshot: RUN, confirm: TOKEN}])
+})
+
+test('nothing to put back is said calmly; what a copy could not hold is never called a match', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => answer(receipt({status: 'unchanged', written: 0, removed: 0, undo: null}))))
+  const {unmount} = render(<PortalTurnUndo chatId="chat-1" entries={[entry()]}/>)
+  fireEvent.click(screen.getByRole('button', {name: PUT_BACK}))
   expect(await screen.findByText('Playground/game already matches how it was before this turn, so nothing changed.')).toBeVisible()
   expect(screen.queryByRole('alert')).toBeNull()
   expect(screen.queryByRole('button', {name: /Undo/})).toBeNull()
+  unmount()
+  vi.stubGlobal('fetch', vi.fn(async () => answer(receipt({status: 'unchanged', written: 0, removed: 0, undo: null,
+    left: ['assets/song.wav'], leftCount: 1}))))
+  render(<PortalTurnUndo chatId="chat-1" entries={[entry()]}/>)
+  fireEvent.click(screen.getByRole('button', {name: PUT_BACK}))
+  const status = await screen.findByText(/^Nothing in Playground\/game was changed\./)
+  expect(status).toHaveTextContent("ODS left assets/song.wav as it is, because its copies could not hold it (a link, a very large file, or past a copy's limits).")
+  expect(screen.queryByText(/already matches/)).toBeNull()
+  expect(screen.getByRole('link', {name: 'Get help on Discord'})).toHaveAttribute('href', ODS_HELP_DISCORD_URL)
 })
 
-test('a busy chat waits calmly; a real failure says why, what to do, and links help', async () => {
-  const fetch = vi.fn(async () => answer({detail: 'busy'}, 409))
-  vi.stubGlobal('fetch', fetch)
-  const view = render(<PortalTurnUndo chatId="chat-1" task={task()} busy/>)
-  const button = screen.getByRole('button', {name: 'Put back files from before this turn'})
-  expect(button).toBeDisabled()
-  expect(button).toHaveAttribute('title', 'Portal is still working in this chat')
-  view.rerender(<PortalTurnUndo chatId="chat-1" task={task()}/>)
-  fireEvent.click(button)
-  expect(await screen.findByText('Portal is still working. Put the files back when it finishes.')).toBeVisible()
-  expect(screen.queryByRole('alert')).toBeNull()
-  for (const [status, text] of [
-    [404, 'ODS no longer has a copy of Playground/game from before this turn (it keeps only recent ones), so nothing was changed. Ask Portal to fix the files instead.'],
-    [422, 'The copy ODS kept of Playground/game is damaged, so nothing was changed. Ask Portal to fix the files instead.'],
-    [503, 'Portal could not confirm that the files were put back. Check Playground/game, then try again.'],
-  ]) {
-    fetch.mockResolvedValueOnce(answer({detail: 'x'}, status))
-    fireEvent.click(screen.getByRole('button', {name: 'Put back files from before this turn'}))
-    const alert = await screen.findByRole('alert')
-    await waitFor(() => expect(alert).toHaveTextContent(text))
-    expect(within(alert).getByRole('link', {name: /Get help on Discord/})).toHaveAttribute('href', ODS_HELP_DISCORD_URL)
+test('files that could not be changed are named with their cause, and Try again appears only where it can work', async () => {
+  const cases = [
+    ['in-use', 'chars.js could not be changed because a program is using it. Close it, then try again.', true, false],
+    ['changed', 'chars.js and a.js changed while ODS was working, so they were left as they are. Try again to finish.', true, false],
+    ['permission', 'ODS is not allowed to change chars.js, so it was left as it is.', false, true],
+    ['other', 'chars.js could not be changed.', true, true],
+  ]
+  for (const [failure, text, retry, help] of cases) {
+    const failed = failure === 'changed' ? ['chars.js', 'a.js'] : ['chars.js']
+    const fetch = vi.fn(async () => answer(receipt({failed, failedCount: failed.length, failure})))
+    vi.stubGlobal('fetch', fetch)
+    const {unmount} = render(<PortalTurnUndo chatId="chat-1" entries={[entry()]}/>)
+    fireEvent.click(screen.getByRole('button', {name: PUT_BACK}))
+    expect(await screen.findByRole('alert')).toHaveTextContent(text)
+    expect(Boolean(screen.queryByRole('button', {name: 'Try again'}))).toBe(retry)
+    expect(Boolean(screen.queryByRole('link'))).toBe(help)
+    // The part that was put back can still be undone.
+    expect(screen.getByRole('button', {name: 'Undo putting back Playground/game'})).toBeEnabled()
+    if (retry) {
+      fireEvent.click(screen.getByRole('button', {name: 'Try again'}))
+      await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2))
+      expect(sent(fetch)[1].snapshot).toBe(RUN)
+    }
+    unmount()
   }
-  // An unexpected receipt is not a success.
-  fetch.mockResolvedValueOnce(answer({...receipt(), project: 'Playground/other'}))
-  await expect(restoreProject({chatId: 'chat-1', project: 'Playground/game', snapshot: RUN})).rejects.toMatchObject({code: 'unavailable'})
 })
 
-test('files that could not be put back are named, with Undo and Put back to try again', async () => {
-  vi.stubGlobal('fetch', vi.fn(async () => answer(receipt({failed: ['chars.js'], failedCount: 1, written: 0}))))
-  render(<PortalTurnUndo chatId="chat-1" task={task()}/>)
-  fireEvent.click(screen.getByRole('button', {name: 'Put back files from before this turn'}))
-  const alert = await screen.findByRole('alert')
-  expect(alert).toHaveTextContent('chars.js could not be put back. Close any program that is using that file, then try again.')
-  expect(within(alert).getByRole('link', {name: /Get help on Discord/})).toBeVisible()
-  expect(screen.getByRole('button', {name: 'Put back files from before this turn'})).toBeEnabled()
-  expect(screen.getByRole('button', {name: 'Undo putting back Playground/game'})).toBeEnabled()
+test('a copy made after the turn had already changed files says so', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => answer(receipt({late: true}))))
+  render(<PortalTurnUndo chatId="chat-1" entries={[entry({late: true})]}/>)
+  const late = 'ODS made this copy after the turn had already changed some files in Playground/game, so putting it back may not undo every change.'
+  expect(screen.getByText(late)).toBeVisible()
+  fireEvent.click(screen.getByRole('button', {name: PUT_BACK}))
+  expect(await screen.findByRole('status')).toHaveTextContent(late)
 })
 
-test('a turn that changed two projects names each one, and a turn that changed none shows nothing', () => {
-  const both = task([project('game', '2026-10-30T12:03:00.000Z'), project('notes', '2026-10-30T12:04:00.000Z')])
-  const view = render(<PortalTurnUndo chatId="chat-1" task={both}/>)
-  expect(screen.getByRole('button', {name: 'Put back Playground/game from before this turn'})).toBeVisible()
-  expect(screen.getByRole('button', {name: 'Put back Playground/notes from before this turn'})).toBeVisible()
-  view.rerender(<PortalTurnUndo chatId="chat-1" task={task([project('notes', '2026-10-30T11:00:00.000Z')])}/>)
+test('each refusal says why nothing changed; a copy that is gone takes its button with it', async () => {
+  const cases = [
+    [refusal('project-restore-busy', 409), 'Portal is still working on a reply or a command it started, in this chat or another. Nothing was changed; try again once it finishes.', false, false, true],
+    [refusal('project-snapshot-pruned', 404), 'ODS no longer keeps the copy of Playground/game from before this turn (it keeps the latest few), so nothing was changed.', false, false, false],
+    [refusal('project-snapshot-unavailable', 404), 'ODS did not keep the copy of Playground/game from before this turn, so nothing was changed.', false, false, false],
+    [refusal('project-snapshot-damaged', 422), 'The copy of Playground/game from before this turn is damaged, so nothing was changed.', true, true, false],
+    [refusal('project-folder-unusable', 422), 'Playground/game is not a folder ODS can use (it may be a link or a file), so nothing was changed.', true, true, true],
+    [refusal('project-copies-unusable', 503), 'ODS cannot use the folder where it keeps project copies (its owner or permissions changed), so nothing was changed.', true, true, false],
+    [refusal('project-restore-unsupported', 503), 'This ODS install cannot put project files back, so nothing was changed.', true, true, false],
+    [refusal('project-restore-unavailable', 503), 'Portal could not confirm whether the files were put back. Check Playground/game before you try again.', true, true, true],
+    [answer({detail: 'Not Found'}, 404), 'Portal could not confirm whether the files were put back. Check Playground/game before you try again.', true, true, true],
+    [answer(receipt({project: 'Playground/other'})), 'Portal could not confirm whether the files were put back. Check Playground/game before you try again.', true, true, true],
+  ]
+  for (const [reply, text, alert, help, stays] of cases) {
+    vi.stubGlobal('fetch', vi.fn(async () => reply))
+    const {unmount} = render(<PortalTurnUndo chatId="chat-1" entries={[entry()]}/>)
+    fireEvent.click(screen.getByRole('button', {name: PUT_BACK}))
+    expect(await screen.findByText(text)).toBeVisible()
+    expect(Boolean(screen.queryByRole('alert'))).toBe(alert)
+    expect(Boolean(screen.queryByRole('link', {name: 'Get help on Discord'}))).toBe(help)
+    expect(Boolean(screen.queryByRole('button', {name: PUT_BACK}))).toBe(stays)
+    unmount()
+  }
+  vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('network down') }))
+  render(<PortalTurnUndo chatId="chat-1" entries={[entry()]}/>)
+  fireEvent.click(screen.getByRole('button', {name: PUT_BACK}))
+  expect(await screen.findByRole('alert')).toHaveTextContent('Portal could not confirm whether the files were put back.')
+})
+
+test('the buttons wait while Portal works, and several projects are named', () => {
+  render(<PortalTurnUndo chatId="chat-1" busy entries={[entry(), entry({project: 'Playground/notes'})]}/>)
+  for (const name of ['Put back Playground/game from before this turn', 'Put back Playground/notes from before this turn']) {
+    const button = screen.getByRole('button', {name})
+    expect(button).toBeDisabled()
+    expect(button).toHaveAttribute('title', 'Portal is still working')
+  }
+})
+
+test('without a chat or an entry from the host there is nothing to offer', () => {
+  const {container} = render(<PortalTurnUndo chatId="" entries={[entry()]}/>)
+  expect(container).toBeEmptyDOMElement()
+  render(<PortalTurnUndo chatId="chat-1" entries={[]}/>)
   expect(screen.queryByRole('button')).toBeNull()
-  view.rerender(<PortalTurnUndo chatId="" task={both}/>)
-  expect(screen.queryByRole('button')).toBeNull()
+})
+
+test('the client accepts only exact options and receipts', async () => {
+  const messages = [{role: 'user', content: 'x'}, {role: 'assistant', task: {runId: RUN}}, {role: 'assistant', task: {runId: 'cron-1'}},
+    {role: 'assistant', status: 'streaming', task: {runId: 'chatcmpl_00000000-2222-4333-8444-555555555555'}}, {role: 'assistant', task: {runId: RUN}}]
+  expect(finishedRuns(messages)).toEqual([RUN])
+  vi.stubGlobal('fetch', vi.fn(async () => answer({schemaVersion: 1, projects: [entry({restore: {undo: UNDO, side: 'before'}})]})))
+  expect(await restoreOptions([RUN])).toEqual([entry({restore: {undo: UNDO, side: 'before'}})])
+  for (const projects of [[entry({snapshot: UNDO})], [entry({restore: {undo: RUN, side: 'before'}})], [entry({extra: 1})],
+    [entry({project: 'Playground/a/b'})], [entry({restore: {undo: UNDO, side: 'sideways'}})]]) {
+    vi.stubGlobal('fetch', vi.fn(async () => answer({schemaVersion: 1, projects})))
+    await expect(restoreOptions([RUN])).rejects.toThrow()
+  }
+  vi.stubGlobal('fetch', vi.fn(async () => answer({detail: {code: 'project-restore-unavailable'}}, 503)))
+  await expect(restoreOptions([RUN])).rejects.toThrow()
+  for (const bad of [receipt({schemaVersion: 1}), receipt({undo: null}), receipt({status: 'unchanged'}), receipt({left: ['a'], leftCount: 0}),
+    receipt({failure: 'disk'}), receipt({confirm: {token: TOKEN, overwrite: [], overwriteCount: 0, remove: [], removeCount: 0}})]) {
+    vi.stubGlobal('fetch', vi.fn(async () => answer(bad)))
+    await expect(restoreProject({chatId: 'chat-1', project: 'Playground/game', snapshot: RUN})).rejects.toMatchObject({code: 'project-restore-unavailable'})
+  }
+  vi.stubGlobal('fetch', vi.fn(async () => refusal('project-snapshot-pruned', 404)))
+  await expect(restoreProject({chatId: 'chat-1', project: 'Playground/game', snapshot: RUN})).rejects.toMatchObject({code: 'project-snapshot-pruned'})
 })

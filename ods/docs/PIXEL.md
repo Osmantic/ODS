@@ -669,24 +669,56 @@ literal effort `off` as truthy and can otherwise spend the whole output budget
 in hidden reasoning after a tool call. This policy does not broaden the tool
 allowlist or make custom tools replay-safe.
 
-Playground project folders are not Git repositories, so before a response
-first touches a project (a read, write, edit or patch under
-`Playground/<name>/`, an exec whose working directory is in it or whose command
-names it, or an ODS tool given the folder) the plugin keeps a copy of that
-project's files (`plugin/project-snapshots.mjs`). Copies live in the OpenClaw
-state folder, `.ods-project-snapshots/`, which the agent's sandbox never mounts
-and no preview publishes. Only regular files are copied and links are never
-followed; `node_modules`, dot-folders such as `.git`, files over 8 MiB and
-anything past 2,048 files or 32 MiB are left out and listed. The last five turn
-copies of each project are kept. Under a finished turn that changed a project,
-Portal offers **Put back files from before this turn**
-(`/api/pixel/projects/restore`, relayed by the edge and the ingress to the
-gateway route `/pixel-ods/project-restore`). A restore first keeps a copy of
-the files as they are, which its **Undo** puts back; it then writes back what
-the turn changed or deleted and removes what it created. It leaves whatever
-either copy left out as it is, changes nothing outside that project folder,
-and is refused while a Portal response runs in that chat or in another chat
-whose response touched the project.
+Playground project folders are not Git repositories, so the first time a
+response touches a project, before that call runs, the plugin keeps a copy of
+the project's files (`plugin/project-snapshots.mjs`). A call touches a project
+when it names a path in `Playground/<name>/`: a read, write, edit or patch, an
+exec whose working directory is in it, an ODS tool given the folder, or that
+path anywhere in an exec command or in what a process call sends. A mention of
+Playground without one plain project name (`Playground/*`, `cd Playground`,
+`os.path.join('Playground', ...)`, `find Playground`) touches every project, up
+to the 16 most recently changed. Before a response's first call that may
+change files, the plugin also takes a stat-level fingerprint of every project;
+a copy taken after its project had already changed is marked late, and Portal
+says that putting it back may not undo every change. A project changed only by
+a command that names neither it nor Playground (a script that edits every
+project) gets no copy.
+
+Copies and restores run in `plugin/project-snapshots.py`, a child process of
+the gateway, so they never block it. It opens the project and every folder
+below it relative to an open folder descriptor with `O_NOFOLLOW` and changes
+files only with the `*at()` calls on those descriptors, so a link is never
+followed, even when a folder is swapped for one while a copy or restore runs:
+no file outside the project folder is read into a copy, or written or removed
+by a restore, and a process that moves the project folder itself only moves
+where the files land, inside the workspace. Systems without those calls (Windows) offer no undo. Copies live
+in the OpenClaw state folder, `.ods-project-snapshots/` (private to the
+gateway's user, never mounted into the agent's sandbox and never published),
+with each file's content stored once. A copy lists every entry first, then
+copies code and small files first; links, hard-linked and special files,
+`node_modules`, `dist`, `out`, `venv` and dot-folders such as `.git`, files over
+8 MiB and anything past 2,048 files or 32 MiB are listed, not copied. Each
+project keeps the copies of its five latest turns that changed it, and all
+copies together stay under 512 MiB, oldest dropped first; copies of a project
+gone for two weeks are dropped.
+
+Only the latest turn that changed a project offers **Put back files from before
+this turn** (`/api/pixel/projects/restore-options` asks which turns do;
+`/api/pixel/projects/restore` puts back, relayed by the edge and the ingress to
+the gateway routes `/pixel-ods/project-restore-options` and
+`/pixel-ods/project-restore`). Putting back makes the project match the copy:
+files the turn changed or deleted are written back, and when the copy listed
+everything, files and folders added since the copy are removed. What either
+copy left out stays as it is and is named. If files changed after the turn
+ended, Portal first names the files it would overwrite or remove and changes
+nothing until the owner says yes. A restore first keeps a copy of the files as
+they are, which its **Undo** puts back, and the host remembers the latest one,
+so the Undo is still offered after a reload while the project stays as the
+restore left it. A retried restore gets the same answer; one that could not
+change some files names them and why, and its retry finishes the job under the
+same Undo. A restore is refused while any Portal run, tool or background
+command is alive. A preview keeps showing the earlier files until Portal
+publishes the project again.
 
 ### Model swapping
 

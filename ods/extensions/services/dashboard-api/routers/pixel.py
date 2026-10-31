@@ -1241,12 +1241,33 @@ async def pixel_example_project_open(body: ExampleProjectOpenRequest) -> dict[st
 _RESTORE_PROJECT = re.compile(r"Playground/([A-Za-z0-9][A-Za-z0-9._-]{0,63})")
 _RESERVED_PROJECT = re.compile(r"(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?", re.IGNORECASE)
 _RESTORE_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+_RESTORE_RUN = re.compile(rf"chatcmpl_{_RESTORE_UUID}", re.IGNORECASE)
 _RESTORE_SNAPSHOT = re.compile(rf"(?:chatcmpl|restore)_{_RESTORE_UUID}", re.IGNORECASE)
 _RESTORE_UNDO = re.compile(rf"restore_{_RESTORE_UUID}")
-_RESTORE_KEYS = frozenset(("complete", "failed", "failedCount", "kept", "keptCount", "project", "removed",
-                           "schemaVersion", "snapshot", "undo", "written"))
+_RESTORE_TOKEN = re.compile(r"[a-f0-9]{64}")
+_RESTORE_KEYS = ("schemaVersion", "status", "project", "snapshot", "written", "removed", "left", "leftCount", "failed",
+                 "failedCount", "failure", "late", "undo", "confirm")
+_RESTORE_CONFIRM_KEYS = ("token", "overwrite", "overwriteCount", "remove", "removeCount")
+_RESTORE_FAILURES = ("permission", "in-use", "changed", "other")
 _PROJECT_RESTORE_SECONDS = 42.0
-_RESTORE_BUSY = "Portal is still working. Put the files back when it finishes."
+# The host's refusals by status. Nothing changed in any of them; the UI words
+# each code for the owner. Any other answer leaves the outcome unknown.
+_RESTORE_REFUSALS = {
+    409: {"project-restore-busy": "Portal is still working on a reply or a command it started, in this chat or another. "
+                                  "Nothing was changed; put the files back once it finishes."},
+    404: {"project-snapshot-unavailable": "ODS did not keep a copy of this project from before that turn, so nothing was changed.",
+          "project-snapshot-pruned": "ODS no longer keeps that copy of this project, so nothing was changed."},
+    422: {"project-snapshot-damaged": "The copy ODS kept of this project is damaged, so nothing was changed.",
+          "project-folder-unusable": "The project is not a folder ODS can use, so nothing was changed."},
+    503: {"project-copies-unusable": "ODS cannot use the folder where it keeps project copies, so nothing was changed.",
+          "project-restore-unsupported": "This ODS install cannot put project files back, so nothing was changed."},
+}
+_RESTORE_UNKNOWN = {"code": "project-restore-unavailable",
+                    "message": "Portal could not confirm whether the project's files were put back."}
+
+
+def _restore_refusal(status: int, code: str) -> HTTPException:
+    return HTTPException(status_code=status, detail={"code": code, "message": _RESTORE_REFUSALS[status][code]})
 
 
 class ProjectRestoreRequest(BaseModel):
@@ -1254,6 +1275,9 @@ class ProjectRestoreRequest(BaseModel):
     chat_id: str
     project: str = Field(max_length=75)
     snapshot: str = Field(max_length=45)
+    # The owner's yes to overwriting or removing what changed since the turn:
+    # the token of the answer that named those files.
+    confirm: str | None = Field(default=None, max_length=64)
 
     @field_validator("chat_id")
     @classmethod
@@ -1279,63 +1303,154 @@ class ProjectRestoreRequest(BaseModel):
             raise ValueError("invalid snapshot")
         return value
 
+    @field_validator("confirm")
+    @classmethod
+    def _confirm(cls, value: str | None) -> str | None:
+        if value is not None and not _RESTORE_TOKEN.fullmatch(value):
+            raise ValueError("invalid confirm")
+        return value
+
+
+class ProjectRestoreOptionsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    runs: list[str] = Field(max_length=64)
+
+    @field_validator("runs")
+    @classmethod
+    def _runs(cls, value: list[str]) -> list[str]:
+        if not all(_RESTORE_RUN.fullmatch(run) for run in value):
+            raise ValueError("invalid runs")
+        return value
+
+
+def _restore_count(item) -> bool:
+    return type(item) is int and 0 <= item <= 65536
+
+
+def _restore_listed(items, total) -> bool:
+    return (isinstance(items, list) and len(items) <= 8 and len(items) <= total
+            and all(isinstance(item, str) and 1 <= len(item) <= 512 and not _CONTROL.search(item) for item in items))
+
 
 def _project_restore_receipt(value, body: ProjectRestoreRequest) -> dict[str, object]:
-    def count(item):
-        return type(item) is int and 0 <= item <= 65536
-
-    def listed(items, total):
-        return (isinstance(items, list) and len(items) <= 8 and len(items) <= total
-                and all(isinstance(item, str) and 1 <= len(item) <= 512 and not _CONTROL.search(item) for item in items))
-
-    if (not isinstance(value, dict) or set(value) != _RESTORE_KEYS
-            or type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1
+    confirm = value.get("confirm") if isinstance(value, dict) else None
+    if (not isinstance(value, dict) or set(value) != set(_RESTORE_KEYS)
+            or type(value["schemaVersion"]) is not int or value["schemaVersion"] != 2
+            or value["status"] not in ("restored", "unchanged", "confirm")
             or value["project"] != body.project or value["snapshot"] != body.snapshot
-            or not all(count(value[key]) for key in ("written", "removed", "keptCount", "failedCount"))
-            or not listed(value["kept"], value["keptCount"]) or not listed(value["failed"], value["failedCount"])
-            or type(value["complete"]) is not bool
-            or not (value["undo"] is None or isinstance(value["undo"], str) and _RESTORE_UNDO.fullmatch(value["undo"]))):
+            or not all(_restore_count(value[key]) for key in ("written", "removed", "leftCount", "failedCount"))
+            or not _restore_listed(value["left"], value["leftCount"])
+            or not _restore_listed(value["failed"], value["failedCount"])
+            or not (value["failure"] is None or value["failure"] in _RESTORE_FAILURES)
+            or type(value["late"]) is not bool
+            or not (isinstance(value["undo"], str) and _RESTORE_UNDO.fullmatch(value["undo"]) is not None
+                    if value["status"] == "restored" else value["undo"] is None)
+            or not (isinstance(confirm, dict) and set(confirm) == set(_RESTORE_CONFIRM_KEYS)
+                    and isinstance(confirm["token"], str) and _RESTORE_TOKEN.fullmatch(confirm["token"]) is not None
+                    and _restore_count(confirm["overwriteCount"]) and _restore_count(confirm["removeCount"])
+                    and _restore_listed(confirm["overwrite"], confirm["overwriteCount"])
+                    and _restore_listed(confirm["remove"], confirm["removeCount"])
+                    if value["status"] == "confirm" else confirm is None)):
         raise ValueError("invalid project restore receipt")
-    return {key: value[key] for key in sorted(_RESTORE_KEYS)}
+    return {key: value[key] for key in _RESTORE_KEYS}
+
+
+def _project_restore_options(value, runs: list[str]) -> dict[str, object]:
+    entries = value.get("projects") if isinstance(value, dict) else None
+    if (not isinstance(value, dict) or set(value) != {"schemaVersion", "projects"}
+            or type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1
+            or not isinstance(entries, list) or len(entries) > 32
+            or not all(isinstance(entry, dict) and set(entry) == {"project", "snapshot", "late", "restore"}
+                       and isinstance(entry["project"], str) and _RESTORE_PROJECT.fullmatch(entry["project"])
+                       and entry["snapshot"] in runs and type(entry["late"]) is bool
+                       and (entry["restore"] is None
+                            or isinstance(entry["restore"], dict) and set(entry["restore"]) == {"undo", "side"}
+                            and isinstance(entry["restore"]["undo"], str)
+                            and _RESTORE_UNDO.fullmatch(entry["restore"]["undo"]) is not None
+                            and entry["restore"]["side"] in ("before", "after"))
+                       for entry in entries)):
+        raise ValueError("invalid project restore options")
+    return {"schemaVersion": 1, "projects": [{key: entry[key] for key in ("project", "snapshot", "late", "restore")}
+                                             for entry in entries]}
+
+
+async def _restore_refusal_code(response: httpx.Response) -> str | None:
+    """The host's refusal code when it is one of the fixed codes for this status, else None."""
+    if not response.headers.get("content-type", "").lower().startswith("application/json"):
+        return None
+    try:
+        value = json.loads(await _bounded_response_bytes(response, 1024))
+    except (ValueError, TypeError, RecursionError):
+        return None
+    code = value.get("error") if isinstance(value, dict) else None
+    return code if isinstance(code, str) and code in _RESTORE_REFUSALS[response.status_code] else None
 
 
 @router.post("/projects/restore")
 async def pixel_project_restore(body: ProjectRestoreRequest, owner: str = Depends(verify_api_key)) -> dict[str, object]:
     """Put one Playground project back to the copy ODS kept before a Portal turn touched it.
 
-    Portal's "Put back files". The host first keeps a copy of the files as
-    they are, so the receipt's undo names a copy that reverses this restore.
-    It is refused while a Portal response runs in this chat, or in another
-    chat whose response touched the project, and it changes nothing outside
-    that project folder.
+    Portal's "Put back files". When files changed after the turn, the first
+    answer is status "confirm" naming what the restore would overwrite or
+    remove, and changes nothing; the owner's yes sends its token back as
+    confirm. A restore first keeps a copy of the files as they are, so the
+    receipt's undo names a copy that reverses it. It is refused while any
+    Portal run, tool or background command is alive, and it changes nothing
+    outside that project folder. A refusal's detail has a fixed code; any
+    other failure leaves the outcome unknown.
     """
     config = _pixel_config()
     if config is None:
-        raise HTTPException(status_code=503, detail="Portal is not set up on this ODS install.")
+        raise _restore_refusal(503, "project-restore-unsupported")
     edge_url, key = config
     if isinstance(owner, str) and _owns_live_work((owner_namespace(owner), body.chat_id)):
-        raise HTTPException(status_code=409, detail=_RESTORE_BUSY)
+        raise _restore_refusal(409, "project-restore-busy")
+    payload = {"user": body.chat_id, "project": body.project, "snapshot": body.snapshot}
+    if body.confirm is not None:
+        payload["confirm"] = body.confirm
     try:
         timeout = httpx.Timeout(connect=2.0, read=_PROJECT_RESTORE_SECONDS, write=2.0, pool=2.0)
         async with httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=False) as client:
-            async with client.stream("POST", f"{edge_url}/v1/project-restore",
-                                     json={"user": body.chat_id, "project": body.project, "snapshot": body.snapshot},
+            async with client.stream("POST", f"{edge_url}/v1/project-restore", json=payload,
                                      headers=_edge_headers(key, accept="application/json")) as response:
-                if response.status_code == 409:
-                    raise HTTPException(status_code=409, detail=_RESTORE_BUSY)
-                if response.status_code == 404:
-                    raise HTTPException(status_code=404,
-                                        detail="ODS no longer keeps that copy of this project, so nothing was changed.")
-                if response.status_code == 422:
-                    raise HTTPException(status_code=422,
-                                        detail="The copy ODS kept of this project is damaged, so nothing was changed.")
+                if response.status_code in _RESTORE_REFUSALS:
+                    code = await _restore_refusal_code(response)
+                    if code is not None:
+                        raise _restore_refusal(response.status_code, code)
+                    raise ValueError("unknown project restore refusal")
                 if response.status_code != 200 or not response.headers.get("content-type", "").lower().startswith("application/json"):
                     raise ValueError("project restore unavailable")
                 raw = await _bounded_response_bytes(response, 16384)
         return _project_restore_receipt(json.loads(raw), body)
     except (httpx.HTTPError, asyncio.TimeoutError, ValueError, TypeError, RecursionError) as exc:
-        raise HTTPException(status_code=503,
-                            detail="Portal could not confirm that the project's files were put back.") from exc
+        raise HTTPException(status_code=503, detail=_RESTORE_UNKNOWN) from exc
+
+
+@router.post("/projects/restore-options", dependencies=[Depends(verify_api_key)])
+async def pixel_project_restore_options(body: ProjectRestoreOptionsRequest) -> dict[str, object]:
+    """Which of these Portal turns offer "Put back files".
+
+    For each Playground project whose latest turn that changed it is one of
+    runs: that turn, whether its copy was taken after the project had
+    already changed (late), and the latest restore's undo while the project
+    is still as that restore left it, with the version it now holds.
+    """
+    config = _pixel_config()
+    if config is None or not body.runs:
+        return {"schemaVersion": 1, "projects": []}
+    edge_url, key = config
+    try:
+        timeout = httpx.Timeout(connect=2.0, read=_PROJECT_RESTORE_SECONDS, write=2.0, pool=2.0)
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=False) as client:
+            async with client.stream("POST", f"{edge_url}/v1/project-restore-options", json={"runs": body.runs},
+                                     headers=_edge_headers(key, accept="application/json")) as response:
+                if response.status_code != 200 or not response.headers.get("content-type", "").lower().startswith("application/json"):
+                    raise ValueError("project restore options unavailable")
+                raw = await _bounded_response_bytes(response, 16384)
+        return _project_restore_options(json.loads(raw), body.runs)
+    except (httpx.HTTPError, asyncio.TimeoutError, ValueError, TypeError, RecursionError) as exc:
+        raise HTTPException(status_code=503, detail={"code": "project-restore-unavailable",
+                                                     "message": "Portal could not read which turns can be put back."}) from exc
 
 
 class _ClientDisconnected(Exception):

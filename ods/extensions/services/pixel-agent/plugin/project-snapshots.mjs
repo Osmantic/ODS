@@ -3,96 +3,97 @@
 // back: on 2026-10-30 a one-off Python patch run through exec doubled a
 // game's chars.js. Now, the first time a Portal response touches a Playground
 // project, ODS keeps a copy of that project's files before the call runs, and
-// the owner can put them back with "Put back files" under the turn.
+// under the latest turn that changed the project the owner can put them back
+// ("Put back files from before this turn") and undo that.
+//
+// Every copy and restore is done by project-snapshots.py, a child process that
+// works through folder descriptors and never follows a link, so neither a
+// slow disk nor a folder swapped for a link mid-copy reaches this gateway's
+// event loop or anything outside the project. This module decides when a call
+// touches a project, keeps the bookkeeping of each response and serves the
+// owner's routes.
 //
 // A call touches Playground/<name> when it names a path in it: a read, write,
-// edit or patch, an exec whose working directory is in it or whose command
-// mentions it (also inside interpreter code), or an ODS tool given the
-// project's folder. Exec is covered by what it names, not by watching what it
-// writes, so the copy is taken before any command runs there.
-//
-// A restore first keeps a copy of the files as they are, so it can be undone
-// the same way, then makes the project's files match the turn's copy: files
-// the turn changed or deleted are written back and files it created are
-// removed. It changes nothing outside that project folder, and it is refused
-// while a Portal response runs in that chat, or in any chat whose response
-// touched the project.
-//
-// Copies live in Portal's (OpenClaw's) state folder, which the agent's sandbox
-// never mounts and no preview publishes:
-// .ods-project-snapshots/<sha256 of workspace and project>/<time>-<id>/ holds
-// manifest.json and one file per distinct content, named by its SHA-256. Only
-// regular files are copied, read without following links (example-guard.mjs
-// readFile). Links, hard-linked and special files, node_modules, dot-folders
-// such as .git, files over 8 MiB and anything past 2,048 files or 32 MiB are
-// left out and listed in the manifest; a restore leaves those paths as they
-// are and says so. The last 5 turn copies and 3 restore copies of each project
-// are kept.
-import {createHash, randomBytes, randomUUID} from 'node:crypto';
+// edit or patch, an exec whose working directory is in it, a project folder an
+// ODS tool is given, or Playground/<name> anywhere in an exec command or in
+// what a process call sends (also inside interpreter code). A mention of
+// Playground without one plain project name (Playground/*, cd Playground && ...,
+// os.path.join('Playground', ...), find Playground) touches every project, up
+// to 16. Before a response's first call that may change files, the helper
+// also takes a stat-level fingerprint of every project; a copy taken after its
+// project had already changed is marked late, and Portal says so.
+import {spawn} from 'node:child_process';
 import * as fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {readFile} from './example-guard.mjs';
-import {filesystemError} from './example-projects.mjs';
+import {fileURLToPath} from 'node:url';
 
 export const SNAPSHOT_DIRECTORY = '.ods-project-snapshots';
-export const SNAPSHOT_LIMITS = Object.freeze({fileBytes: 8 * 1024 * 1024, totalBytes: 32 * 1024 * 1024, files: 2048,
-  entries: 8192, depth: 16, turns: 5, restores: 3});
-const ROUTE = '/pixel-ods/project-restore';
-const MAX_BODY = 512;
-const MAX_MANIFEST_BYTES = 4 * 1024 * 1024;
-// How many kept and failed paths a receipt names; it counts all of them.
-const LISTED = 8;
+const HELPER = fileURLToPath(new URL('./project-snapshots.py', import.meta.url));
+const ROUTES = Object.freeze({restore: '/pixel-ods/project-restore', options: '/pixel-ods/project-restore-options'});
+const MAX_BODY = 4096;
+const MAX_ANSWER = 1024 * 1024;
+const HELPER_TIMEOUT_MS = 60000;
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const RUN = new RegExp(`^chatcmpl_${UUID}$`, 'i');
 const SNAPSHOT = new RegExp(`^(?:chatcmpl|restore)_${UUID}$`, 'i');
-const ENTRY = new RegExp(`^(\\d{15})-((?:chatcmpl|restore)_${UUID})$`);
+const UNDO = new RegExp(`^restore_${UUID}$`);
 const SHA = /^[a-f0-9]{64}$/;
 const USER = /^ods-[a-f0-9]{64}$/;
 const RESERVED = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
-const REASONS = Object.freeze(['folder', 'link', 'large', 'limit', 'other']);
+// Calls that never change files. Any other call may (a plugin tool, a child
+// agent), so the first of a response takes the fingerprint before it runs.
+const READ_ONLY = new Set(['read', 'web_search', 'web_fetch', 'pixel_ods_ask_user', 'pixel_ods_activity',
+  'pixel_ods_goal', 'pixel_ods_status', 'pixel_ods_history', 'pixel_ods_workspace_preview_inspect']);
+// The most projects one Playground-wide mention copies; the fingerprint covers the rest.
+const ALL_PROJECTS = 16;
+const ATTEMPTS = 3;
+const COLLECT_EVERY_MS = 10 * 60 * 1000;
+// The helper's refusals as the routes answer them.
+const REFUSALS = Object.freeze({
+  busy: [409, 'project-restore-busy'],
+  'unavailable-copy': [404, 'project-snapshot-unavailable'],
+  pruned: [404, 'project-snapshot-pruned'],
+  damaged: [422, 'project-snapshot-damaged'],
+  'folder-unusable': [422, 'project-folder-unusable'],
+  'copies-unusable': [503, 'project-copies-unusable'],
+  unsupported: [503, 'project-restore-unsupported'],
+});
 
-const sha256 = value => createHash('sha256').update(value).digest('hex');
 const exact = (value, keys) => Boolean(value) && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).sort().join() === keys.split(',').sort().join();
 const projectName = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value)
   && !value.endsWith('.') && !RESERVED.test(value);
 const realDirectory = stat => Boolean(stat?.isDirectory() && !stat.isSymbolicLink());
-const parentOf = relative => relative.includes('/') ? relative.slice(0, relative.lastIndexOf('/')) : '';
-const baseOf = relative => relative.slice(relative.lastIndexOf('/') + 1);
-const ancestors = relative => relative.split('/').slice(0, -1).map((_, index, parts) => parts.slice(0, index + 1).join('/'));
-// A refusal to touch an entry that is not what a copy says is there.
-const unsafe = message => Object.assign(new Error(message), {unsafe: true});
-class DamagedSnapshot extends Error {}
+const refusal = (status, error) => ({status, body: {error}});
+const toolOf = (toolName, params) => toolName === 'tool_call' && typeof params?.id === 'string' ? params.id.split(':').at(-1) : toolName;
 
 function lstatOrNull(target) {
   try { return fs.lstatSync(target); }
   catch (error) { if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return null; throw error; }
 }
 
-// The canonical workspace root, or null for one that is unusable. The
-// configured root itself is trusted and may use a platform alias such as
-// macOS /var -> /private/var; nothing below it may be a link.
+// The canonical workspace root, or null for one that is unusable.
 function canonicalRoot(workspaceRoot) {
   if (typeof workspaceRoot !== 'string' || !path.isAbsolute(workspaceRoot)) return null;
-  const root = fs.realpathSync(path.resolve(workspaceRoot));
-  return root === path.parse(root).root || !fs.statSync(root).isDirectory() ? null : root;
+  try {
+    const root = fs.realpathSync(path.resolve(workspaceRoot));
+    return root === path.parse(root).root || !fs.statSync(root).isDirectory() ? null : root;
+  } catch (error) { if (typeof error?.code === 'string') return null; throw error; }
 }
 
 // ------------------------------------------------------- what a call touches --
 
 const FILE_KEYS = ['path', 'file_path', 'filePath'];
-// The workspace paths each tool takes: a file, exec's working directory, or
-// the project folder (or a file in it) an ODS project tool works on.
 const PATH_KEYS = new Map([['read', FILE_KEYS], ['write', FILE_KEYS], ['edit', FILE_KEYS], ['exec', ['workdir']],
   ['pixel_ods_workspace_preview', ['relativeDirectory']], ['pixel_ods_workspace_artifact', ['relativePath', 'sourcePath']],
   ['pixel_ods_workspace_bundle', ['outputRoot']], ['pixel_ods_download_promote', ['relativePath']],
   ['pixel_ods_project_build', ['project']]]);
 const PATCH_FILE = /^\*\*\* (?:(?:Add|Update|Delete) File|Move to): ([^\r\n]+)$/gm;
-// Playground/<name> anywhere in a command, also inside interpreter code or a
-// heredoc: a Python patch that opens Playground/<name>/chars.js names it.
-const COMMAND_PROJECT = /(?<![A-Za-z0-9._-])playground[\\/]+([A-Za-z0-9][A-Za-z0-9._-]{0,63})/gi;
+const MENTION = /(?<![A-Za-z0-9._-])playground(?![A-Za-z0-9_-])/gi;
+const NAMED = /^[\\/]+([A-Za-z0-9][A-Za-z0-9._-]*)/;
 const WORD = /[A-Za-z0-9][A-Za-z0-9._-]{0,63}/g;
+const MAX_SCANNED = 1024 * 1024;
 
 // A path as the workspace sees it: relative, under the sandbox alias
 // /workspace or under the configured root, normalized. Null for any other
@@ -100,8 +101,7 @@ const WORD = /[A-Za-z0-9][A-Za-z0-9._-]{0,63}/g;
 function workspaceRelative(value, root) {
   if (typeof value !== 'string' || !value || value.length > 4096 || value.includes('\0')) return null;
   let text = value.replaceAll('\\', '/');
-  const base = root.replaceAll('\\', '/').replace(/\/+$/, '');
-  const folded = text.toLowerCase();
+  const base = root.replaceAll('\\', '/').replace(/\/+$/, ''), folded = text.toLowerCase();
   if (folded === base.toLowerCase() || folded.startsWith(`${base.toLowerCase()}/`)) text = text.slice(base.length);
   else if (text === '/workspace' || text.startsWith('/workspace/')) text = text.slice('/workspace'.length);
   else if (/^(?:\/|[A-Za-z]:|~)/.test(text)) return null;
@@ -114,452 +114,330 @@ function projectOf(value, root) {
   return /^playground$/i.test(first ?? '') && projectName(name) ? name : null;
 }
 
-// The Playground project names one tool call touches: its path parameters, the
-// files of a patch and, for exec, every Playground/<name> its command
-// mentions. When exec runs in the Playground folder itself, a command word
-// that names one of its folders (folders() lists them) counts too, as in
-// "cd game && python3 fix.py". More names than the call uses only cost a copy.
-export function projectsNamed(toolName, params, root, folders = () => []) {
-  let name = toolName, args = params;
-  if (toolName === 'tool_call') {
-    name = typeof params?.id === 'string' ? params.id.split(':').at(-1) : '';
-    args = params?.args;
+// The project names a text mentions as Playground/<name>, and whether it
+// mentions Playground without one plain name, which touches every project.
+function mentions(text) {
+  const names = new Set();
+  if (text.length > MAX_SCANNED) return {names, all: true};
+  let all = false;
+  for (const match of text.matchAll(MENTION)) {
+    const after = text.slice(match.index + match[0].length, match.index + match[0].length + 80);
+    const named = NAMED.exec(after);
+    const name = named?.[1].replace(/\.+$/, '');
+    if (named && projectName(name) && !/^[*?[{]/.test(after.slice(named[0].length))) names.add(name);
+    else all = true;
   }
-  if (!args || typeof args !== 'object' || typeof root !== 'string') return [];
+  return {names, all};
+}
+
+// The Playground projects one call touches, and whether it touches them all.
+// folders() lists Playground, for an exec that runs inside it. Naming more
+// projects than a call uses only costs a copy.
+export function projectsNamed(toolName, params, root, folders = () => []) {
+  const name = toolOf(toolName, params), args = toolName === 'tool_call' ? params?.args : params;
   const found = new Set();
+  let all = false;
+  if (!args || typeof args !== 'object' || typeof root !== 'string') return {names: [], all};
   const add = value => { const project = projectOf(value, root); if (project) found.add(project); };
   for (const key of PATH_KEYS.get(name) ?? []) add(args[key]);
   if (name === 'apply_patch' && typeof args.input === 'string') {
-    for (const match of args.input.slice(0, 1048576).matchAll(PATCH_FILE)) add(match[1].trim());
+    for (const match of args.input.slice(0, MAX_SCANNED).matchAll(PATCH_FILE)) add(match[1].trim());
   }
   if (name === 'pixel_ods_workspace_bundle' && Array.isArray(args.files)) {
     for (const file of args.files.slice(0, 64)) add(file?.source);
   }
-  if (name === 'exec' && typeof args.command === 'string') {
-    const command = args.command.slice(0, 65536);
-    // A name ending a sentence ("see Playground/game.") does not end in a dot.
-    for (const match of command.matchAll(COMMAND_PROJECT)) add(`Playground/${match[1].replace(/\.+$/, '')}`);
-    if (/^playground$/i.test(workspaceRelative(args.workdir, root) ?? '')) {
+  if (name === 'exec' || name === 'process') {
+    // An exec command, or what a process call sends to a running command.
+    const text = name === 'exec' ? (typeof args.command === 'string' ? args.command : '')
+      : Object.entries(args).filter(([key, value]) => typeof value === 'string' && !['action', 'sessionId'].includes(key))
+        .map(([, value]) => value).join('\n');
+    const mentioned = mentions(text);
+    mentioned.names.forEach(item => found.add(item));
+    all ||= mentioned.all;
+    const where = name === 'exec' ? workspaceRelative(args.workdir, root) : null;
+    if (/^playground(?:\/|$)/i.test(where ?? '')) {
+      // Run in Playground itself, or leaving its project with ..: every project.
+      if (!where.split('/')[1] || text.includes('..')) all = true;
       const present = new Set(folders());
-      for (const [word] of command.matchAll(WORD)) if (present.has(word) && projectName(word)) found.add(word);
+      for (const [word] of text.slice(0, MAX_SCANNED).matchAll(WORD)) if (present.has(word) && projectName(word)) found.add(word);
     }
   }
-  return [...found];
+  return {names: [...found], all};
 }
 
-// The folder names directly in Playground, for an exec run there.
-function playgroundFolders(root) {
-  try { return fs.readdirSync(path.join(root, 'Playground')); }
-  catch (error) { if (filesystemError(error)) return []; throw error; }
-}
-
-// Playground/<name> in the canonical root, with the name as that folder holds
-// it: a disk that ignores case finds Playground/Game as Playground/game, and
-// the folder's own spelling names its copies, so a restore finds them
-// whichever spelling a turn used. A missing project is an empty one, so a
-// turn that creates it can be undone. Null when the workspace has no real
-// Playground folder or the name is a file or link there.
+// Playground/<name> in the canonical root, with the name as the folder holds
+// it (on a disk that ignores case, Playground/Game is Playground/game). A
+// missing project is an empty one. Null when Playground or the project is a
+// file or a link.
 function projectFolder(root, name) {
   if (!projectName(name)) return null;
-  const playground = path.join(root, 'Playground');
-  if (!realDirectory(lstatOrNull(playground))) return null;
-  const entry = lstatOrNull(path.join(playground, name));
+  const playground = path.join(root, 'Playground'), top = lstatOrNull(playground);
+  if (top && !realDirectory(top)) return null;
+  const entry = top ? lstatOrNull(path.join(playground, name)) : null;
   if (entry && !realDirectory(entry)) return null;
   const names = entry ? fs.readdirSync(playground) : [];
-  const actual = !entry || names.includes(name) ? name
-    : names.find(item => item.toLowerCase() === name.toLowerCase()) ?? name;
-  return {name: actual, folder: path.join(playground, actual)};
+  return {name: !entry || names.includes(name) ? name : names.find(item => item.toLowerCase() === name.toLowerCase()) ?? name};
 }
 
-// ------------------------------------------------------------------ copies --
-
-function privateDirectory(directory, create) {
-  if (create) fs.mkdirSync(directory, {recursive: true, mode: 0o700});
-  const info = fs.lstatSync(directory);
-  if (!realDirectory(info) || (process.platform !== 'win32'
-      && (info.uid !== process.getuid() || (info.mode & 0o077) !== 0))) throw unsafe('Project copies need a private folder');
-  return directory;
+function playgroundNames(root) {
+  try { return fs.readdirSync(path.join(root, 'Playground')); }
+  catch (error) { if (typeof error?.code === 'string') return []; throw error; }
 }
 
-// One project's kept copies, newest first.
-function copies(store) {
-  return fs.readdirSync(store).flatMap(name => {
-    const match = ENTRY.exec(name);
-    return match ? [{name, id: match[2], kind: match[2].startsWith('restore_') ? 'restore' : 'turn', time: Number(match[1])}] : [];
-  }).sort((a, b) => b.time - a.time || (a.name < b.name ? 1 : -1));
+// The projects a Playground-wide mention copies: the most recently changed first.
+function busiestProjects(root) {
+  return playgroundNames(root).filter(projectName).flatMap(name => {
+    const stat = lstatOrNull(path.join(root, 'Playground', name));
+    return realDirectory(stat) ? [{name, time: stat.mtimeMs}] : [];
+  }).sort((a, b) => b.time - a.time).slice(0, ALL_PROJECTS).map(item => item.name);
 }
 
-function temporaryIn(store) {
-  const temporary = path.join(store, `.tmp-${randomBytes(8).toString('hex')}`);
-  fs.mkdirSync(temporary, {mode: 0o700});
-  return temporary;
+// ----------------------------------------------------------------- the helper --
+
+// Runs project-snapshots.py with one request on stdin and parses its one answer.
+export function helperRunner({python = '/usr/bin/python3', helper = HELPER, timeoutMs = HELPER_TIMEOUT_MS} = {}) {
+  return request => new Promise((resolve, reject) => {
+    if (process.platform === 'win32') { resolve({error: 'unsupported'}); return; }
+    const child = spawn(python, ['-I', '-S', '-B', helper], {stdio: ['pipe', 'pipe', 'pipe'], cwd: '/',
+      env: {PATH: '/usr/bin:/bin', LANG: 'C.UTF-8', PYTHONDONTWRITEBYTECODE: '1'}});
+    const chunks = [];
+    let size = 0, stderr = '';
+    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
+    child.stdout.on('data', chunk => {
+      size += chunk.length;
+      if (size > MAX_ANSWER) child.kill('SIGKILL');
+      else chunks.push(chunk);
+    });
+    child.stderr.on('data', chunk => { if (stderr.length < 2048) stderr += chunk; });
+    child.stdin.on('error', () => { /* A helper that exited early is reported by its close. */ });
+    child.on('error', error => { clearTimeout(timer); reject(error); });
+    child.on('close', code => {
+      clearTimeout(timer);
+      if (code !== 0) { reject(Object.assign(new Error(`project copy helper exited with ${code}`), {stderr})); return; }
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
+      catch (error) { reject(error); }
+    });
+    child.stdin.end(JSON.stringify(request));
+  });
 }
 
-// A temporary that was not committed; one that cannot be removed now goes
-// with the next prune.
-function discard(temporary) {
-  try { fs.rmSync(temporary, {recursive: true, force: true}); }
-  catch (error) { if (!filesystemError(error)) throw error; }
+// ----------------------------------------------------------------- receipts --
+
+const count = value => Number.isSafeInteger(value) && value >= 0 && value <= 65536;
+const pathList = (items, total) => Array.isArray(items) && items.length <= 8 && items.length <= total
+  && items.every(item => typeof item === 'string' && item.length >= 1 && item.length <= 512 && !/[\x00-\x1f\x7f]/.test(item));
+
+// The helper's restore answer for exactly this project and copy, or null.
+function validReceipt(value, project, snapshot) {
+  const confirm = value?.confirm;
+  return exact(value, 'schemaVersion,status,project,snapshot,written,removed,left,leftCount,failed,failedCount,failure,late,undo,confirm')
+    && value.schemaVersion === 2 && ['restored', 'unchanged', 'confirm'].includes(value.status)
+    && value.project.toLowerCase() === project.toLowerCase() && value.snapshot.toLowerCase() === snapshot.toLowerCase()
+    && [value.written, value.removed, value.leftCount, value.failedCount].every(count)
+    && pathList(value.left, value.leftCount) && pathList(value.failed, value.failedCount)
+    && [null, 'permission', 'in-use', 'changed', 'other'].includes(value.failure) && typeof value.late === 'boolean'
+    && (value.status === 'restored' ? UNDO.test(value.undo ?? '') : value.undo === null)
+    && (value.status === 'confirm'
+      ? exact(confirm, 'token,overwrite,overwriteCount,remove,removeCount') && SHA.test(confirm.token ?? '')
+        && count(confirm.overwriteCount) && count(confirm.removeCount)
+        && pathList(confirm.overwrite, confirm.overwriteCount) && pathList(confirm.remove, confirm.removeCount)
+      : confirm === null);
 }
 
-function writeBlob(blobs, digest, content) {
-  let fd;
-  try { fd = fs.openSync(path.join(blobs, digest), 'wx', 0o600); }
-  catch (error) { if (error.code === 'EEXIST') return; throw error; }
-  try { fs.writeFileSync(fd, content); } finally { fs.closeSync(fd); }
-}
-
-// Writes the manifest into the temporary folder and renames that into place,
-// so a copy is either complete or absent.
-function commit(store, temporary, manifest) {
-  const fd = fs.openSync(path.join(temporary, 'manifest.json'), 'wx', 0o600);
-  try { fs.writeFileSync(fd, JSON.stringify(manifest)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-  fs.renameSync(temporary, path.join(store, `${String(Date.parse(manifest.createdAt)).padStart(15, '0')}-${manifest.id}`));
-}
-
-// Keeps the newest copies of each kind and drops temporaries a crash left.
-function prune(store, limits) {
-  for (const name of fs.readdirSync(store)) {
-    if (name.startsWith('.tmp-')) fs.rmSync(path.join(store, name), {recursive: true, force: true});
-  }
-  const counts = {turn: 0, restore: 0};
-  for (const copy of copies(store)) {
-    if (++counts[copy.kind] > (copy.kind === 'turn' ? limits.turns : limits.restores)) {
-      fs.rmSync(path.join(store, copy.name), {recursive: true, force: true});
-    }
-  }
-}
-
-// Copies the regular files of one project folder into blobs and lists them,
-// its folders and what it left out (each entry left out covers everything
-// below it). A missing folder is an empty project. Every entry is lstat-ed
-// and links are never followed. complete is false when the folder holds more
-// entries than a copy visits; such a copy never removes files on a restore.
-// A name with a backslash or a control character is neither copied nor
-// listed, so no restore ever touches it.
-export function captureProject(folder, blobs, limits = SNAPSHOT_LIMITS) {
-  const files = [], dirs = [], skipped = [];
-  let bytes = 0, entries = 0, complete = true;
-  const top = lstatOrNull(folder);
-  if (!top) return {complete, dirs, files, skipped};
-  if (!realDirectory(top)) throw unsafe('The project folder is not a folder');
-  const pending = [''];
-  walk: while (pending.length) {
-    const key = pending.shift();
-    let names;
-    try { names = fs.readdirSync(key ? path.join(folder, ...key.split('/')) : folder).sort(); }
-    catch (error) {
-      if (!key || !filesystemError(error)) throw error;
-      dirs.splice(dirs.indexOf(key), 1);
-      skipped.push({path: key, reason: 'other'});
-      continue;
-    }
-    for (const name of names) {
-      if (++entries > limits.entries) { complete = false; break walk; }
-      if (/[\\\x00-\x1f\x7f]/.test(name)) continue;
-      const relative = key ? `${key}/${name}` : name;
-      const skip = reason => skipped.push({path: relative, reason});
-      const target = path.join(folder, ...relative.split('/'));
-      const stat = lstatOrNull(target);
-      if (!stat) continue;
-      if (stat.isSymbolicLink()) skip('link');
-      else if (stat.isDirectory()) {
-        if (name === 'node_modules' || name.startsWith('.') || relative.split('/').length >= limits.depth) skip('folder');
-        else { dirs.push(relative); pending.push(relative); }
-      } else if (!stat.isFile() || stat.nlink !== 1) skip('other');
-      else if (stat.size > limits.fileBytes) skip('large');
-      else if (files.length >= limits.files || bytes + stat.size > limits.totalBytes) skip('limit');
-      else {
-        let content = null;
-        try { content = readFile(target, stat); } catch (error) { if (!filesystemError(error)) throw error; }
-        if (!content) { skip('other'); continue; }
-        const digest = sha256(content);
-        writeBlob(blobs, digest, content);
-        files.push({path: relative, size: content.length, sha256: digest, mode: stat.mode & 0o777});
-        bytes += content.length;
-      }
-    }
-  }
-  return {complete, dirs, files, skipped};
-}
-
-const relativePath = (value, limits) => typeof value === 'string' && value.length <= 4096
-  && value.split('/').length <= limits.depth && value.split('/').every(part => part && part !== '.' && part !== '..'
-    && !/[\\\x00-\x1f\x7f]/.test(part));
-
-function validManifest(value, id, project, limits) {
-  if (!exact(value, 'schemaVersion,id,kind,project,createdAt,complete,dirs,files,skipped') || value.schemaVersion !== 1
-      || value.id !== id || value.project !== project || !['turn', 'restore'].includes(value.kind)
-      || typeof value.createdAt !== 'string' || !Number.isFinite(Date.parse(value.createdAt)) || typeof value.complete !== 'boolean'
-      || !Array.isArray(value.dirs) || !Array.isArray(value.files) || !Array.isArray(value.skipped)
-      || value.files.length > limits.files || value.dirs.length + value.files.length + value.skipped.length > limits.entries) return false;
-  const seen = new Set();
-  let bytes = 0;
-  for (const dir of value.dirs) {
-    if (!relativePath(dir, limits) || seen.has(dir)) return false;
-    seen.add(dir);
-  }
-  for (const file of value.files) {
-    if (!exact(file, 'path,size,sha256,mode') || !relativePath(file.path, limits) || seen.has(file.path)
-        || !Number.isSafeInteger(file.size) || file.size < 0 || file.size > limits.fileBytes || !SHA.test(file.sha256)
-        || !Number.isInteger(file.mode) || file.mode < 0 || file.mode > 0o777) return false;
-    seen.add(file.path);
-    bytes += file.size;
-  }
-  return bytes <= limits.totalBytes && value.skipped.every(item => exact(item, 'path,reason')
-    && relativePath(item.path, limits) && REASONS.includes(item.reason));
-}
-
-function readManifest(directory, id, project, limits) {
-  const file = path.join(directory, 'manifest.json'), stat = lstatOrNull(file);
-  const bytes = stat?.isFile() && !stat.isSymbolicLink() && stat.size <= MAX_MANIFEST_BYTES ? readFile(file, stat) : null;
-  let value;
-  try { value = JSON.parse(bytes?.toString('utf8') ?? ''); }
-  catch (error) { if (error instanceof SyntaxError) throw new DamagedSnapshot('unreadable manifest'); throw error; }
-  if (!validManifest(value, id, project, limits)) throw new DamagedSnapshot('invalid manifest');
-  return value;
-}
-
-// The saved bytes a restore writes, each checked against its SHA-256 before
-// anything in the project changes.
-function loadBlobs(directory, files) {
-  const blobs = new Map();
-  for (const file of files) {
-    if (blobs.has(file.sha256)) continue;
-    const target = path.join(directory, file.sha256), stat = lstatOrNull(target);
-    const bytes = stat?.isFile() && !stat.isSymbolicLink() && stat.size === file.size ? readFile(target, stat) : null;
-    if (!bytes || sha256(bytes) !== file.sha256) throw new DamagedSnapshot('changed copy');
-    blobs.set(file.sha256, bytes);
-  }
-  return blobs;
-}
-
-// ---------------------------------------------------------------- restore --
-
-// A test for whether a copy left relative out: it or a folder above it.
-function coverage(skipped) {
-  const paths = new Set(skipped.map(item => item.path));
-  return relative => paths.has(relative) || ancestors(relative).some(parent => paths.has(parent));
-}
-
-// What a restore changes so the project's files match the saved copy, given
-// the copy just taken of them as they are (current). Files that differ or are
-// gone are written back. When the saved copy is complete, files and folders
-// it did not have are removed. A path either copy left out is never written
-// or removed: the saved copy does not know it, or current could not keep it
-// for an undo.
-export function planRestore(saved, current) {
-  const before = new Map(saved.files.map(file => [file.path, file]));
-  const now = new Map(current.files.map(file => [file.path, file]));
-  const keptBefore = coverage(saved.skipped), keptNow = coverage(current.skipped);
-  const presentDirs = new Set(current.dirs), savedDirs = new Set(saved.dirs);
-  return {
-    write: saved.files.filter(file => !keptNow(file.path)
-      && !(now.get(file.path)?.sha256 === file.sha256 && now.get(file.path).mode === file.mode)),
-    remove: saved.complete ? current.files.filter(file => !before.has(file.path) && !keptBefore(file.path)).map(file => file.path) : [],
-    // Deepest first, and only once empty.
-    removeDirs: saved.complete ? current.dirs.filter(dir => !savedDirs.has(dir) && !keptBefore(dir))
-      .sort((a, b) => b.split('/').length - a.split('/').length) : [],
-    createDirs: saved.dirs.filter(dir => !presentDirs.has(dir) && !keptNow(dir)),
-  };
-}
-
-// The real folder at relative inside folder, never reached through a link or
-// a file. With create, missing folders are made.
-function realFolder(folder, relative, create = false) {
-  let current = folder;
-  for (const part of relative ? relative.split('/') : []) {
-    current = path.join(current, part);
-    const stat = lstatOrNull(current);
-    if (!stat && create) fs.mkdirSync(current);
-    else if (!realDirectory(stat)) throw unsafe(`${relative} is not a folder`);
-  }
-  return current;
-}
-
-function removeFile(folder, relative) {
-  const target = path.join(realFolder(folder, parentOf(relative)), baseOf(relative)), stat = lstatOrNull(target);
-  if (stat && (!stat.isFile() || stat.isSymbolicLink())) throw unsafe(`${relative} is not a file`);
-  if (stat) fs.unlinkSync(target);
-}
-
-// A saved file written beside its place and renamed over it, so the place
-// holds the old file or the saved one. An empty folder there is removed
-// first; a link or special file there stays.
-function writeFile(folder, file, bytes) {
-  const directory = realFolder(folder, parentOf(file.path), true);
-  const target = path.join(directory, baseOf(file.path)), stat = lstatOrNull(target);
-  if (realDirectory(stat)) fs.rmdirSync(target);
-  else if (stat && (!stat.isFile() || stat.isSymbolicLink())) throw unsafe(`${file.path} is not a file`);
-  const temporary = path.join(directory, `.ods-restore-${randomBytes(8).toString('hex')}`);
-  try {
-    const fd = fs.openSync(temporary, 'wx', 0o600);
-    try { fs.writeFileSync(fd, bytes); fs.fchmodSync(fd, file.mode); } finally { fs.closeSync(fd); }
-    fs.renameSync(temporary, target);
-  } finally { fs.rmSync(temporary, {force: true}); }
-}
-
-// Applies a plan inside the project folder (made again if it was deleted).
-// A path that cannot be changed is listed and the rest still proceed; a
-// folder the turn made stays when it still holds what the restore keeps.
-function applyPlan(folder, plan, blobs) {
-  const failed = [];
-  const attempt = (relative, change) => {
-    try { change(); return true; }
-    catch (error) { if (!filesystemError(error) && !error.unsafe) throw error; failed.push(relative); return false; }
-  };
-  if ((plan.write.length || plan.createDirs.length) && !lstatOrNull(folder)) fs.mkdirSync(folder);
-  const removed = plan.remove.filter(relative => attempt(relative, () => removeFile(folder, relative))).length;
-  for (const relative of plan.removeDirs) {
-    try {
-      const target = path.join(realFolder(folder, parentOf(relative)), baseOf(relative));
-      if (realDirectory(lstatOrNull(target))) fs.rmdirSync(target);
-    } catch (error) { if (!filesystemError(error) && !error.unsafe) throw error; }
-  }
-  for (const relative of plan.createDirs) attempt(relative, () => realFolder(folder, relative, true));
-  const written = plan.write.filter(file => attempt(file.path, () => writeFile(folder, file, blobs.get(file.sha256)))).length;
-  return {written, removed, failed};
-}
-
-// What the owner is told: the counts, and the paths the restore left as they
-// are (what either copy left out, folders standing for their contents) or
-// could not change, each list naming at most LISTED.
-function restoreReceipt(request, saved, current, applied, undo) {
-  const skipped = new Set([...saved.skipped, ...current.skipped].map(item => item.path));
-  const kept = [...skipped].filter(item => !ancestors(item).some(parent => skipped.has(parent))).sort();
-  const listed = items => items.filter(item => item.length <= 512).slice(0, LISTED);
-  return {schemaVersion: 1, project: request.project, snapshot: request.snapshot, written: applied.written,
-    removed: applied.removed, kept: listed(kept), keptCount: kept.length, failed: listed(applied.failed),
-    failedCount: applied.failed.length, complete: saved.complete && current.complete, undo};
-}
-
-function validRequest(value) {
-  return exact(value, 'project,snapshot,user') && typeof value.user === 'string' && USER.test(value.user)
+function validRestoreRequest(value) {
+  return (exact(value, 'project,snapshot,user') || exact(value, 'confirm,project,snapshot,user') && SHA.test(value.confirm ?? ''))
+    && typeof value.user === 'string' && USER.test(value.user)
     && typeof value.project === 'string' && value.project.startsWith('Playground/') && projectName(value.project.slice(11))
     && typeof value.snapshot === 'string' && SNAPSHOT.test(value.snapshot);
 }
 
-// Adds value to the bounded set at key; true when it was not there.
-function note(map, key, value, keys = 512, values = 32) {
-  let set = map.get(key);
-  if (!set) {
-    if (map.size >= keys) map.delete(map.keys().next().value);
-    map.set(key, set = new Set());
-  }
-  if (set.has(value)) return false;
-  if (set.size >= values) set.delete(set.values().next().value);
-  set.add(value);
-  return true;
+const validOptionsRequest = value => exact(value, 'runs') && Array.isArray(value.runs) && value.runs.length <= 64
+  && value.runs.every(run => typeof run === 'string' && RUN.test(run));
+
+const validOption = (entry, ids) => exact(entry, 'project,snapshot,late,restore') && typeof entry.project === 'string'
+  && entry.project.startsWith('Playground/') && projectName(entry.project.slice(11)) && ids.has(entry.snapshot)
+  && typeof entry.late === 'boolean' && (entry.restore === null || exact(entry.restore, 'undo,side')
+    && UNDO.test(entry.restore.undo ?? '') && ['before', 'after'].includes(entry.restore.side));
+
+// Adds a value to a bounded map, dropping the oldest entry first.
+function remember(map, key, value, limit = 512) {
+  map.delete(key);
+  if (map.size >= limit) map.delete(map.keys().next().value);
+  map.set(key, value);
+  return value;
 }
 
 // One per gateway. before() runs in before_tool_call with the call's final
-// decision and keeps a copy of each project a response touches for the first
-// time; restore() serves the owner's route. workspaceRoot() is the configured
+// decision and keeps a copy of each project a response touches, once; end()
+// runs at agent_end and records how the turn left them; restore() and
+// options() serve the owner's routes. workspaceRoot() is the configured
 // workspace, ownerRun(context) the owner run a delegated run works for,
-// busy(user) whether a response runs in that chat, active(sessionKey) whether
-// one runs in a session, and changed(root, name) hears of each restore that
-// changed a project (the shipped example's guard keeps the owner's change).
+// busy(user) whether a response runs in that chat, portalActive() whether any
+// Portal run, tool or background command is alive, and changed(root, name)
+// hears of each restore that changed a project.
 export function createProjectSnapshots({agentId = 'pixel', workspaceRoot = () => undefined, ownerRun = () => undefined,
-  busy = () => true, active = () => true, changed = () => {}, warn = () => {}, now = Date.now, limits = SNAPSHOT_LIMITS,
-  stateDir = path.join(process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.openclaw'), SNAPSHOT_DIRECTORY)} = {}) {
-  // The projects each response already has a copy of, and the sessions whose
-  // calls touched each project, for the restore's busy check.
-  const runs = new Map(), sessions = new Map();
-  const storeFor = (key, create) => {
-    privateDirectory(stateDir, create);
-    return privateDirectory(path.join(stateDir, sha256(key)), create);
+  busy = () => true, portalActive = () => true, changed = () => {}, warn = () => {}, now = Date.now,
+  stateDir = path.join(process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.openclaw'), SNAPSHOT_DIRECTORY),
+  runHelper = helperRunner(), limits, waitMs = 10000} = {}) {
+  const runs = new Map(), ending = new Map(), restoring = new Map();
+  // false once the helper answers that this system lacks what it needs:
+  // then no copy is asked for again, and no turn offers an undo.
+  let supported = true, tail = Promise.resolve(), collected = 0;
+  // One helper at a time, so copies, ends and restores never overlap. ready()
+  // is asked again when the request's turn comes; false answers busy.
+  const queue = (request, ready = () => true) => {
+    const next = tail.then(() => ready()
+      ? runHelper({...request, root: stateDir, ...(limits ? {limits} : {})}) : {error: 'busy'});
+    tail = next.catch(() => {});
+    return next;
   };
-  const manifest = (id, kind, project, captured) => ({schemaVersion: 1, id, kind, project: `Playground/${project.name}`,
-    createdAt: new Date(now()).toISOString(), ...captured});
-  // Older copies that cannot be removed now stay until the next copy.
-  const tidy = store => {
-    try { prune(store, limits); }
-    catch (error) { if (!filesystemError(error)) throw error; warn(`Portal could not remove older project copies (${error.code}).`); }
+  const settled = promise => promise && Promise.race([promise.catch(() => {}),
+    new Promise(resolve => { setTimeout(resolve, waitMs).unref?.(); })]);
+  const runOf = (event, context) => {
+    const runId = ownerRun(context) ?? context?.runId ?? event?.runId;
+    return typeof runId === 'string' && RUN.test(runId) ? runId.toLowerCase() : null;
   };
 
-  function keep(key, project, id) {
-    const store = storeFor(key, true);
-    if (copies(store).some(copy => copy.id === id)) return;
-    const temporary = temporaryIn(store);
-    try { commit(store, temporary, manifest(id, 'turn', project, captureProject(project.folder, temporary, limits))); }
-    finally { discard(temporary); }
-    tidy(store);
+  async function fingerprint(root) {
+    try {
+      const answer = await queue({operation: 'fingerprint', workspace: root});
+      if (answer && typeof answer.projects === 'object' && typeof answer.complete === 'boolean') return answer;
+      if (answer?.error === 'unsupported') supported = false;
+      else warn(`Portal could not fingerprint the Playground projects before this turn (${answer?.error ?? 'no answer'}).`);
+    } catch (error) {
+      warn(`Portal could not fingerprint the Playground projects before this turn (${error.message}).`);
+    }
+    return null;
   }
 
-  function refusal(status, error) { return {status, body: {error}}; }
+  async function copy(event, context, decision) {
+    if (!supported || decision?.block === true || context?.agentId !== agentId) return;
+    const id = runOf(event, context), root = id && canonicalRoot(workspaceRoot());
+    if (!root) return;
+    const toolName = context?.toolName ?? event?.toolName, folders = () => playgroundNames(root);
+    const mayChange = !READ_ONLY.has(toolOf(toolName, event?.params));
+    // A call that may change files waits for a restore that is running.
+    if (mayChange) await Promise.all([...restoring.values()]);
+    // The call as the model wrote it (an exec command before ODS wraps it)
+    // and as it will run (a routed path or working directory).
+    const touched = [projectsNamed(toolName, event?.params, root, folders), projectsNamed(toolName, decision?.params, root, folders)];
+    const names = new Set(touched.flatMap(item => item.names));
+    if (touched.some(item => item.all)) busiestProjects(root).forEach(name => names.add(name));
+    const run = runs.get(id) ?? remember(runs, id, {kept: new Set(), attempts: new Map(), start: null});
+    if (!run.start && mayChange) run.start = fingerprint(root);
+    const start = run.start ? await run.start : null;
+    if (!supported) return;
+    const wanted = [];
+    for (const spelled of names) {
+      const project = projectFolder(root, spelled);
+      if (project && !run.kept.has(project.name) && (run.attempts.get(project.name) ?? 0) < ATTEMPTS) wanted.push(project.name);
+    }
+    if (!wanted.length) return;
+    const collect = now() - collected >= COLLECT_EVERY_MS;
+    if (collect) collected = now();
+    let answer;
+    try {
+      answer = await queue({operation: 'copy', workspace: root, id, ...(collect ? {collect} : {}),
+        projects: wanted.map(name => ({name, start: start?.projects?.[name] ?? (start?.complete ? 'absent' : null)}))});
+    } catch (error) { answer = {error: error.message}; }
+    if (answer?.error === 'unsupported') { supported = false; return; }
+    for (const name of wanted) {
+      const result = answer?.projects?.[name];
+      if (['kept', 'exists'].includes(result?.status)) run.kept.add(name);
+      else {
+        run.attempts.set(name, (run.attempts.get(name) ?? 0) + 1);
+        warn(`Portal could not keep a copy of Playground/${name} before this turn (${result?.error ?? answer?.error ?? 'no answer'}).`);
+      }
+    }
+  }
+
+  async function end(event, context) {
+    if (context?.agentId !== agentId) return;
+    const id = runOf(event, context), run = id && runs.get(id), root = run?.kept.size && canonicalRoot(workspaceRoot());
+    if (!root) return;
+    const pending = queue({operation: 'after', workspace: root, id, projects: [...run.kept].map(name => ({name}))});
+    remember(ending, id, pending.catch(() => {}));
+    const answer = await pending;
+    for (const name of run.kept) {
+      if (answer?.projects?.[name]?.error) warn(`Portal could not record how this turn left Playground/${name} (${answer.projects[name].error}).`);
+    }
+  }
 
   return {
-    before(event, context, decision) {
-      if (decision?.block === true || context?.agentId !== agentId) return;
-      const runId = ownerRun(context) ?? context?.runId ?? event?.runId;
-      if (typeof runId !== 'string' || !RUN.test(runId)) return;
-      let root = null;
-      try { root = canonicalRoot(workspaceRoot()); } catch (error) { if (!filesystemError(error)) throw error; }
-      if (!root) return;
-      const toolName = context?.toolName ?? event?.toolName, folders = () => playgroundFolders(root);
-      // The call as the model wrote it (an exec command before ODS wraps it)
-      // and as it will run (a routed path or working directory).
-      const names = new Set([...projectsNamed(toolName, event?.params, root, folders),
-        ...projectsNamed(toolName, decision?.params, root, folders)]);
-      for (const spelled of names) {
-        let project = null;
-        try { project = projectFolder(root, spelled); } catch (error) { if (!filesystemError(error)) throw error; }
-        if (!project) continue;
-        const key = `${root}\n${project.name}`;
-        if (typeof context?.sessionKey === 'string') note(sessions, key, context.sessionKey);
-        if (!note(runs, runId.toLowerCase(), key)) continue;
-        try { keep(key, project, runId.toLowerCase()); }
-        catch (error) {
-          if (!filesystemError(error) && !error.unsafe) throw error;
-          warn(`Portal could not keep a copy of Playground/${project.name} before this turn (${error.code ?? error.message}).`);
-        }
+    // Never throws into before_tool_call: a copy that fails is retried by the
+    // response's next call that touches the project, up to three times.
+    async before(event, context, decision) {
+      try { await copy(event, context, decision); }
+      catch (error) { warn(`Portal could not keep a project copy before this turn (${error.message}).`); }
+    },
+
+    async end(event, context) {
+      try { await end(event, context); }
+      catch (error) { warn(`Portal could not record how this turn left its projects (${error.message}).`); }
+    },
+
+    // {status, body}: 200 with the receipt (restored, unchanged, or confirm
+    // with the files it would overwrite or remove), 400 for a malformed
+    // request, 404 when that copy was never kept or is no longer, 409 while
+    // any Portal run, tool or background command is alive, 422 when the copy
+    // is damaged or the project path is not a usable folder, and 503 when the
+    // copies or the helper cannot be used or the outcome is unknown.
+    async restore(request) {
+      if (!validRestoreRequest(request)) return refusal(400, 'invalid-project-restore-request');
+      const idle = () => !busy(request.user) && !portalActive();
+      if (!idle()) return refusal(...REFUSALS.busy);
+      const root = canonicalRoot(workspaceRoot());
+      if (!root) return refusal(503, 'project-restore-unavailable');
+      const project = projectFolder(root, request.project.slice('Playground/'.length));
+      if (!project) return refusal(...REFUSALS['folder-unusable']);
+      const snapshot = request.snapshot.toLowerCase();
+      await settled(ending.get(snapshot));
+      let finish;
+      const marker = new Promise(resolve => { finish = resolve; });
+      restoring.set(project.name, marker);
+      try {
+        const answer = await queue({operation: 'restore', workspace: root, project: project.name, snapshot,
+          ...(request.confirm ? {confirm: request.confirm} : {})}, idle);
+        if (typeof answer?.error === 'string') return refusal(...(REFUSALS[answer.error] ?? [503, 'project-restore-unavailable']));
+        if (!validReceipt(answer, request.project, request.snapshot)) return refusal(503, 'project-restore-unavailable');
+        if (answer.status === 'restored') changed(root, project.name);
+        return {status: 200, body: {...answer, project: request.project, snapshot: request.snapshot}};
+      } catch (error) {
+        warn(`Portal could not put back Playground/${project.name} (${error.message}).`);
+        return refusal(503, 'project-restore-unavailable');
+      } finally {
+        finish();
+        if (restoring.get(project.name) === marker) restoring.delete(project.name);
       }
     },
 
-    // {status, body}: 200 with the receipt, 400 for a malformed request, 404
-    // when that copy is not kept, 409 while a response runs, 422 when the
-    // copy is damaged (nothing changed) and 503 when the workspace or the
-    // copies cannot be used.
-    restore(request) {
-      if (!validRequest(request)) return refusal(400, 'invalid-project-restore-request');
-      const id = request.snapshot.toLowerCase();
+    // For each project whose latest changing turn is one of `runs`: that
+    // turn, whether its copy is late, and the latest restore's undo while the
+    // project is still as that restore left it, with the version it holds.
+    async options(request) {
+      if (!validOptionsRequest(request)) return refusal(400, 'invalid-project-restore-request');
+      const root = canonicalRoot(workspaceRoot());
+      if (!root) return refusal(503, 'project-restore-unavailable');
+      const ids = new Map(request.runs.map(run => [run.toLowerCase(), run]));
+      await Promise.all([...ids.keys()].map(id => settled(ending.get(id))));
       try {
-        const root = canonicalRoot(workspaceRoot());
-        const project = root && projectFolder(root, request.project.slice('Playground/'.length));
-        if (!project) return refusal(503, 'project-restore-unavailable');
-        const key = `${root}\n${project.name}`;
-        if (busy(request.user) || [...sessions.get(key) ?? []].some(sessionKey => active(sessionKey))) {
-          return refusal(409, 'project-restore-busy');
+        const answer = await queue({operation: 'options', workspace: root, runs: [...ids.keys()]});
+        if (answer?.error === 'unsupported') return {status: 200, body: {schemaVersion: 1, projects: []}};
+        if (typeof answer?.error === 'string') return refusal(...(REFUSALS[answer.error] ?? [503, 'project-restore-unavailable']));
+        const entries = answer?.projects;
+        if (!Array.isArray(entries) || entries.length > 32 || !entries.every(entry => validOption(entry, ids))) {
+          return refusal(503, 'project-restore-unavailable');
         }
-        if (!lstatOrNull(path.join(stateDir, sha256(key)))) return refusal(404, 'project-snapshot-unavailable');
-        const store = storeFor(key, false), copy = copies(store).find(item => item.id === id);
-        if (!copy) return refusal(404, 'project-snapshot-unavailable');
-        const saved = readManifest(path.join(store, copy.name), id, `Playground/${project.name}`, limits);
-        const temporary = temporaryIn(store);
-        let body;
-        try {
-          const current = captureProject(project.folder, temporary, limits), plan = planRestore(saved, current);
-          const blobs = loadBlobs(path.join(store, copy.name), plan.write);
-          const changes = plan.write.length + plan.remove.length + plan.removeDirs.length + plan.createDirs.length;
-          // The files as they are now, kept first so this restore can be undone.
-          const undo = changes ? `restore_${randomUUID()}` : null;
-          if (undo) commit(store, temporary, manifest(undo, 'restore', project, current));
-          body = restoreReceipt(request, saved, current, undo ? applyPlan(project.folder, plan, blobs)
-            : {written: 0, removed: 0, failed: []}, undo);
-          if (undo) changed(root, project.name);
-        } finally { discard(temporary); }
-        tidy(store);
-        return {status: 200, body};
+        return {status: 200, body: {schemaVersion: 1, projects: entries.map(entry => ({...entry, snapshot: ids.get(entry.snapshot)}))}};
       } catch (error) {
-        if (error instanceof DamagedSnapshot) return refusal(422, 'project-snapshot-damaged');
-        if (filesystemError(error) || error.unsafe) return refusal(503, 'project-restore-unavailable');
-        throw error;
+        warn(`Portal could not read its project copies (${error.message}).`);
+        return refusal(503, 'project-restore-unavailable');
       }
     },
   };
 }
 
-async function readRestoreRequest(req) {
+async function readRequest(req) {
   const contentType = String(req.headers?.['content-type'] ?? '').toLowerCase();
   if (contentType.split(';', 1)[0].trim() !== 'application/json') return null;
   const chunks = [];
@@ -569,23 +447,19 @@ async function readRestoreRequest(req) {
     if (total > MAX_BODY) return null;
     chunks.push(Buffer.from(chunk));
   }
-  let body;
-  try { body = JSON.parse(Buffer.concat(chunks, total).toString('utf8')); }
+  try { return JSON.parse(Buffer.concat(chunks, total).toString('utf8')); }
   catch (error) { if (error instanceof SyntaxError) return null; throw error; }
-  return validRequest(body) ? body : null;
 }
 
-export const projectSnapshotTesting = Object.freeze({applyPlan});
-
-// POST {"user","project","snapshot"}: the host ingress asks for one owner
-// restore, under that chat's history lock.
-export function createProjectRestoreRoute({snapshots, sendJson}) {
+// POST /pixel-ods/project-restore {"user","project","snapshot"[,"confirm"]}
+// (the host ingress asks under that chat's history lock) and
+// /pixel-ods/project-restore-options {"runs"}.
+export function createProjectRestoreRoute({snapshots, sendJson, kind = 'restore'}) {
   return async (req, res) => {
-    if (req.url !== ROUTE) { sendJson(res, 400, {error: 'invalid request'}); return true; }
+    if (req.url !== ROUTES[kind]) { sendJson(res, 400, {error: 'invalid request'}); return true; }
     if (req.method !== 'POST') { sendJson(res, 405, {error: 'method not allowed'}); return true; }
-    const request = await readRestoreRequest(req);
-    if (!request) { sendJson(res, 400, {error: 'invalid-project-restore-request'}); return true; }
-    const {status, body} = snapshots.restore(request);
+    const request = await readRequest(req);
+    const {status, body} = request ? await snapshots[kind](request) : refusal(400, 'invalid-project-restore-request');
     sendJson(res, status, body);
     return true;
   };
