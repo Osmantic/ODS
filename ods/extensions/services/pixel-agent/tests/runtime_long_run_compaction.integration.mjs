@@ -26,6 +26,7 @@ const sha = value => createHash('sha256').update(value).digest('hex');
 const PREVIOUS = {
   'compaction-budget': '2e64e5eb0e35f5f363865d4f51bba54a599c9ac745241120b0a826e97613288e',
   'compaction-empty': '12fe33a44b48cfe9c5fe95e3f797371ff1e33d548877a95e5d5d0199088738fd',
+  'tool-result-projection': '595818ac5da06acc428175a056052561c1a3adf8ef5e8d5d047670d26e07695a',
 };
 function apply(source, replacements) {
   for (const [before, after] of replacements) {
@@ -157,6 +158,51 @@ test('the loop guard measures the projected prompt and leaves a small real promp
   assert.ok(turns.every(body => transportTokens(body) < 48000), 'the provider prompts stayed small\n' + trace);
   // The base aggregate alone stays near 25k (64k plus the newest result).
   assert.ok(turns.some(body => transportTokens(body) > 30000), 'the wider view was in use\n' + trace);
+});
+
+// Laptop, 2026-10-28 and 2026-10-30: a coding response reads part of a file,
+// edits it and reads it again, and reads other files along the way. With the
+// real read and edit tools, the reduction takes the read the edit replaced and
+// the copy read again before fresh reads (openclaw-tool-result-projection.json).
+test('a read, edit and check run reduces replaced and repeated reads first, without compacting', {timeout: 90000}, async t => {
+  // Whole-file reads of 160 lines of 60 characters: 9,599 characters each.
+  const lines = name => Array.from({length: 160}, (_, i) => `  const ${name}${i} = grid.cells[${i}] ?? spawn(${i});`.padEnd(59, ' '));
+  const others = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k'];
+  const ui = lines('cell');
+  const script = [...others.slice(0, 8).map(name => ['read', {path: `${name}.js`}]),
+    ['read', {path: 'ui.js', offset: 1, limit: 160}],
+    ['edit', {path: 'ui.js', edits: [{oldText: ui[5], newText: ui[5].replace('spawn', 'reuse')}]}],
+    ['read', {path: 'ui.js', offset: 1, limit: 160}],
+    ...['i', 'j', 'k'].map(name => ['read', {path: `${name}.js`}]),
+    ['read', {path: 'i.js'}]];
+  let step = 0;
+  const upstream = provider(t, body => {
+    if (isSummary(body)) return {delta: {content: 'Summary of the reads and the edit.'}};
+    if (step >= script.length) return {delta: {content: 'Done.'}};
+    const [name, args] = script[step];
+    return {delta: {tool_calls: [{index: 0, id: `call-${step++}`, type: 'function', function: {name, arguments: JSON.stringify(args)}}]}};
+  });
+  const area = fs.mkdtempSync(path.join(root, 'reread-')), {config: value, workspace, agentDir} = config(area, await upstream.ready);
+  value.tools.allow = ['read', 'edit'];
+  for (const name of others) fs.writeFileSync(path.join(workspace, `${name}.js`), lines(name).join('\n'));
+  fs.writeFileSync(path.join(workspace, 'ui.js'), [...ui, ...lines('tail')].join('\n'));
+  const sessionId = '5aaaaaaa-2222-4333-8444-555555555555', sessionFile = path.join(area, sessionId + '.jsonl');
+  fs.writeFileSync(sessionFile, JSON.stringify({type: 'session', version: 3, id: sessionId, timestamp: new Date().toISOString(), cwd: workspace}) + '\n');
+  const result = await runEmbeddedAgent({agentId: 'pixel', sessionId, sessionFile, sessionKey: 'agent:pixel:reread-fixture', workspaceDir: workspace, agentDir,
+    config: value, provider: 'fixture', model: 'model', prompt: 'Read the files, fix ui.js and check it, then say Done.', runId: 'long-run-reread', trigger: 'user', timeoutMs: 60000});
+  const summaries = upstream.bodies.filter(isSummary);
+  const tools = upstream.bodies.at(-1).messages.filter(message => message.role === 'tool').map(message => textOf(message.content));
+  const reduced = tools.map(text => /^\[\.\.\. \d+ more characters truncated; rerun with narrower args if needed\]$/.test(text));
+  const trace = JSON.stringify({error: result.meta?.error, step, summaries: summaries.length, sizes: tools.map(text => text.length)});
+  t.diagnostic(trace);
+  assert.equal(summaries.length, 0, trace);
+  assert.equal(result.payloads?.map(payload => payload.text ?? '').join(''), 'Done.', trace);
+  assert.match(tools[9], /^Successfully replaced 1 block\(s\) in ui\.js\.$/, trace);
+  assert.match(tools[10], /\n\n\[160 more lines in file\. Use offset=161 to continue\.\]$/, trace);
+  // 134,539 characters pass the 128k view once: down to 64k. The read the edit
+  // replaced and the first copy of i.js go first, then the oldest fresh reads.
+  assert.deepEqual(reduced, [true, true, true, true, true, true, false, false, true, false, false, true, false, false, false],
+    'FAIL: fresh reads were reduced while replaced or repeated reads stayed\n' + trace);
 });
 
 // Positive control. The projection caps tool results only; tool-call arguments

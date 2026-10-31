@@ -5,7 +5,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {readFileSync} from 'node:fs';
+import {mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
 import {isAbsolute, join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {isDeepStrictEqual} from 'node:util';
@@ -47,10 +48,18 @@ function load(source) {
   const region = source.slice(source.indexOf(start), source.indexOf('\nexport {'));
   return new Function('normalizeLowercaseStringOrEmpty',
     `${region}\nreturn {truncateOversizedToolResultsInMessages, createToolResultPromptProjectionState,
-      liveGuardChars: typeof liveGuardChars === 'function' ? liveGuardChars : undefined};`)(normalizeLowercaseStringOrEmpty);
+      liveGuardChars: typeof liveGuardChars === 'function' ? liveGuardChars : undefined,
+      liveSupersededReads: typeof liveSupersededReads === 'function' ? liveSupersededReads : undefined};`)(normalizeLowercaseStringOrEmpty);
 }
 const original = load(originalSource);
 const candidate = load(candidateSource);
+// The reviewed recipe this change extends (Osmantic/ODS#8336), from the pinned
+// bytes: the superseded-first order must never make the guard trip sooner.
+const PREVIOUS_PROJECTION = '595818ac5da06acc428175a056052561c1a3adf8ef5e8d5d047670d26e07695a';
+let previousSource = originalSource;
+for (const [before, after] of manifest.previousReplacements[PREVIOUS_PROJECTION]) previousSource = previousSource.replace(before, () => after);
+assert.equal(sha256(previousSource), PREVIOUS_PROJECTION);
+const previous = load(previousSource);
 
 // ODS sets toolResultMaxChars 16000; the attempt passes 4x as the aggregate.
 const MAX = 16000, CONTEXT = 131072;
@@ -221,4 +230,142 @@ test('every request sends the wider view only within the pinned guard limit, oth
     }
   }
   assert.ok(wider > 100 && based > 100, JSON.stringify({checked, wider, based}));
+});
+
+// Reads and changes as the pinned tools report them. The sandbox resolves
+// relative paths and /workspace/... to the same workspace file.
+test('reads and changes are recognized from the pinned tools\' own results', async () => {
+  assert.ok(readFileSync(join(packageDir, 'dist/constants-QknXC3cD.js'), 'utf8').includes('DEFAULT_SANDBOX_WORKDIR = "/workspace"'));
+  assert.ok(readFileSync(join(packageDir, 'dist/agent-tools-D1DOpg6D.js'), 'utf8').includes('const lines = ["Success. Updated the following files:"];'),
+    'apply_patch reports a change it made');
+  const {H: createReadToolDefinition, X: createEditToolDefinition, B: createWriteToolDefinition} = await import(dist('sessions-CZbwb3_c.js'));
+  const workspace = mkdtempSync(join(tmpdir(), 'ods-projection-'));
+  try {
+    const lines = Array.from({length: 640}, (_, i) => `  const cell${i} = grid.cells[${i}] ?? spawn(${i});`);
+    writeFileSync(join(workspace, 'ui.js'), lines.join('\n'));
+    const tools = Object.fromEntries([createReadToolDefinition, createEditToolDefinition, createWriteToolDefinition]
+      .map(create => create(workspace)).map(tool => [tool.name, tool]));
+    const messages = [{role: 'user', content: 'owner', timestamp: 0}];
+    const call = async (name, args) => {
+      const result = await tools[name].execute(`call_${++id}`, args);
+      messages.push({role: 'assistant', content: [{type: 'toolCall', id: `call_${id}`, name, arguments: args}], api: model.api,
+        provider: model.provider, model: model.id, stopReason: 'toolUse', timestamp: 1_790_000_000_000 + id},
+      {role: 'toolResult', toolCallId: `call_${id}`, toolName: name, isError: false, content: result.content, timestamp: 1_790_000_000_000 + id});
+      return result.content[0].text;
+    };
+    assert.match(await call('read', {path: 'ui.js', offset: 1, limit: 100}), /\n\n\[540 more lines in file\. Use offset=101 to continue\.\]$/);
+    await call('read', {path: 'ui.js', offset: 1, limit: 200});
+    assert.ok((await call('read', {path: './ui.js'})).length > MAX, 'the whole file is shown up to the per-result cap');
+    assert.equal(await call('edit', {path: 'ui.js', edits: [{oldText: lines[7], newText: lines[7].replace('spawn', 'reuse')}]}),
+      'Successfully replaced 1 block(s) in ui.js.');
+    await call('read', {path: 'ui.js', offset: 101, limit: 100});
+    assert.equal(await call('write', {path: 'notes.md', content: 'cache'}), 'Successfully wrote 5 bytes to notes.md');
+    // Each read is shown again by the next; the edit makes the last whole-file read stale.
+    assert.deepEqual(Object.fromEntries(candidate.liveSupersededReads(messages, MAX)), {2: 4, 4: 6, 6: 8});
+  } finally {
+    rmSync(workspace, {recursive: true, force: true});
+  }
+});
+
+// A long response of reads, sed -n windows, edits, large writes, images,
+// thinking, dense scripts and queued owner messages, at both context sizes.
+test('every request sends the superseded-first order only within the pinned guard limit, otherwise exactly the projection it extends', () => {
+  let seed = 20261031;
+  const random = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  const files = ['ui.js', 'chars.js', 'engine.js', 'world.js'];
+  const text = (file, version, start, end) => Array.from({length: end - start + 1}, (_, i) => `${file}@${version}:${start + i} ${'w'.repeat(44)}`).join('\n');
+  let checked = 0, ordered = 0, tripped = 0, declined = 0;
+  for (const context of [BASE_CONTEXT, CONTEXT]) for (let response = 0; response < 10; response++) {
+    const limit = Math.floor(context * 4 * 0.9);
+    const versions = new Map(files.map(file => [file, 0]));
+    const messages = [{role: 'user', content: `owner ${'o'.repeat(Math.floor(random() * 4000))}`, timestamp: 0}];
+    const attempt = candidate.createToolResultPromptProjectionState(), reference = previous.createToolResultPromptProjectionState();
+    let candidateTripped = false, previousTripped = false;
+    for (let round = 0; round < 160 && !candidateTripped; round++) {
+      const calls = Array.from({length: random() < 0.2 ? 2 : 1}, () => {
+        const file = files[Math.floor(random() * files.length)], kind = random(), version = versions.get(file);
+        const start = 1 + Math.floor(random() * 6) * 100, end = start + 99 + Math.floor(random() * 3) * 100;
+        const callId = `call_${++id}`;
+        if (kind < 0.4) return {callId, name: 'read', args: {path: `Playground/game/${file}`, offset: start, limit: end - start + 1}, text: text(file, version, start, end)};
+        if (kind < 0.65) return {callId, name: 'exec', args: {command: `cd /workspace/Playground/game && sed -n ${start},${end}p ${file}`}, text: text(file, version, start, end)};
+        if (kind < 0.75) {
+          const ok = random() < 0.8;
+          if (ok) versions.set(file, version + 1);
+          return {callId, name: 'edit', args: {path: `Playground/game/${file}`, edits: [{oldText: 'o'.repeat(200), newText: 'n'.repeat(400)}]},
+            text: ok ? `Successfully replaced 1 block(s) in Playground/game/${file}.` : 'Could not find the exact text in the file.', isError: !ok};
+        }
+        if (kind < 0.87) return {callId, name: 'write', args: {path: `Playground/game/part-${round}.js`, content: 'x'.repeat(Math.floor(random() * context / 12))},
+          text: `Successfully wrote 1 bytes to Playground/game/part-${round}.js`};
+        const dense = random() < 0.15;
+        return {callId, name: 'exec', args: {command: `grep -n draw ${file}`}, text: dense ? '画'.repeat(Math.floor(random() * 3000)) : 'g'.repeat(Math.floor(random() * 9000)),
+          image: random() < 0.1};
+      });
+      messages.push({role: 'assistant', api: model.api, provider: model.provider, model: model.id, stopReason: 'toolUse', timestamp: id,
+        content: [...random() < 0.3 ? [{type: 'thinking', thinking: 't'.repeat(Math.floor(random() * 3000))}] : [],
+          ...calls.map(({callId, name, args}) => ({type: 'toolCall', id: callId, name, arguments: args}))]});
+      for (const call of calls) messages.push({role: 'toolResult', toolCallId: call.callId, toolName: call.name, isError: call.isError === true, timestamp: id,
+        content: call.image ? [{type: 'text', text: call.text}, image] : [{type: 'text', text: call.text}]});
+      if (random() < 0.05) messages.push({role: 'user', content: `queued ${'q'.repeat(Math.floor(random() * 6000))}`, timestamp: id});
+      const sent = candidate.truncateOversizedToolResultsInMessages(messages, context, MAX, 4 * MAX).messages;
+      const base = previous.truncateOversizedToolResultsInMessages(messages, context, MAX, 4 * MAX).messages;
+      checked++;
+      if (!isDeepStrictEqual(sent, base)) {
+        ordered++;
+        assert.ok(guardChars(sent) <= limit, `${context} response ${response} round ${round}: ${guardChars(sent)} in the superseded-first order`);
+      }
+      candidateTripped = guardChars(sent) > limit;
+      previousTripped ||= guardChars(base) > limit;
+      assert.ok(!candidateTripped || previousTripped, `${context} response ${response} round ${round}: the guard trips sooner`);
+      // The stream's attempt: once it declines the order it is projected as the
+      // projection it extends projects that attempt.
+      const wasDeclined = attempt.liveOrderDeclined === true;
+      const streamed = candidate.truncateOversizedToolResultsInMessages(messages, context, MAX, 4 * MAX, attempt).messages;
+      if (wasDeclined) assert.deepEqual(streamed, previous.truncateOversizedToolResultsInMessages(messages, context, MAX, 4 * MAX, reference).messages);
+      else {
+        assert.deepEqual(streamed, sent, 'an attempt whose input only grows sends what the guard measures');
+        if (attempt.liveOrderDeclined) Object.assign(reference, {liveWideDeclined: attempt.liveWideDeclined});
+      }
+    }
+    if (candidateTripped) tripped++;
+    if (attempt.liveOrderDeclined) declined++;
+  }
+  assert.ok(ordered > 300 && tripped >= 4 && declined >= 4, JSON.stringify({checked, ordered, tripped, declined}));
+});
+
+// Laptop, 2026-10-28 and 2026-10-30: a coding response reads part of a file,
+// edits it, reads it again to check, and reads other files along the way.
+// Through the pinned transport, the superseded-first order keeps more lines of
+// the files as they are now in view, at both context sizes.
+test('a read, edit and check loop keeps more current file lines in view', () => {
+  for (const context of [BASE_CONTEXT, CONTEXT]) {
+    const versions = new Map();
+    const lines = (file, start, end) => Array.from({length: end - start + 1}, (_, i) => `${file}@${versions.get(file) ?? 0}:${start + i} ${'v'.repeat(48)}`).join('\n');
+    const messages = [{role: 'user', content: 'Make normal enemies draw from a sprite cache.', timestamp: 0}];
+    const current = [0, 0];
+    const call = (name, args, text) => {
+      const callId = `call_${++id}`;
+      messages.push({role: 'assistant', content: [{type: 'toolCall', id: callId, name, arguments: args}], api: model.api, provider: model.provider,
+        model: model.id, stopReason: 'toolUse', timestamp: id},
+      {role: 'toolResult', toolCallId: callId, toolName: name, isError: false, timestamp: id, content: [{type: 'text', text}]});
+      // Distinct lines in view whose file has not changed since they were read.
+      [previous, candidate].forEach((projection, k) => {
+        const sent = toolMessages(projection.truncateOversizedToolResultsInMessages(messages, context, MAX, 4 * MAX).messages);
+        current[k] += new Set(sent.flatMap(message => message.content.split('\n')).map(text => text.split(' ')[0])
+          .filter(key => /@\d+:/.test(key) && key.startsWith(`${key.split('@')[0]}@${versions.get(key.split('@')[0]) ?? 0}:`))).size;
+      });
+    };
+    const read = (file, start, end) => call('exec', {command: `cd /workspace/Playground/elf-of-doom && sed -n ${start},${end}p ${file}`}, lines(file, start, end));
+    const files = ['ui.js', 'chars.js', 'engine.js', 'dungeon.js', 'world.js'];
+    // Each read is about a seventeenth of the view: 60 lines at 64k, 160 at 131k.
+    const size = context === CONTEXT ? 160 : 60;
+    for (let step = 0; step < 40; step++) {
+      const file = files[step % files.length], start = 1 + (step % 7) * size;
+      read(file, start, start + size - 1);
+      read(files[(step + 2) % files.length], 1 + (step % 4) * size, (1 + step % 4) * size);
+      versions.set(file, (versions.get(file) ?? 0) + 1);
+      call('edit', {path: `Playground/elf-of-doom/${file}`, edits: [{oldText: 'old', newText: 'new'}]}, `Successfully replaced 1 block(s) in Playground/elf-of-doom/${file}.`);
+      read(file, start, start + size - 1);
+    }
+    assert.ok(current[1] > 1.05 * current[0], `${context}: ${current[1]} current lines in view over the response, ${current[0]} before`);
+  }
 });

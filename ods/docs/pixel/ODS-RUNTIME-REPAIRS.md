@@ -281,6 +281,25 @@ projection (`truncateOversizedToolResultsInMessages`):
   sees it, is measured at the base aggregate. The first request of the next turn
   can send the wider view when it fits the guard, so its room for the reply
   rests on the loop guard rather than on the pre-prompt check's reserve.
+- While a response is under way, a reduction takes the reads it has already
+  superseded first, oldest first, and only then the other results oldest first.
+  A read is superseded when a later read of the same file shows its text again
+  (the same lines or a wider range), or when a later `write`, `edit` or
+  `apply_patch` of that file succeeded, judged by the tool's own success text.
+  Reads are recognized from the call before each result: `read` with its path,
+  offset and limit, or `exec` running, after at most one `cd`, a plain
+  `sed -n` range of one file, `cat` or `cat -n` of one file, or `cat -n`,
+  `nl -ba` or `grep -n ""` of one file piped to a `sed -n` range. Paths compare
+  as the sandbox resolves them, relative to the workspace or under
+  `/workspace`. Any other result is never superseded, and changes made through
+  `exec` are not seen. A reduction counts only what superseded a result by the
+  batch it reduces for, so earlier sends stay byte-stable.
+- The superseded-first order is used only while the request fits the
+  tool-loop guard at every message, in the view the response starts with (the
+  wider view at 131k tokens or more, the base view below). Otherwise that
+  request, and the rest of its attempt, is projected exactly as above, so the
+  guard never trips sooner than without it. A transcript that ends with a final
+  reply is projected exactly as above too.
 
 The session transcript, the pre-prompt compaction check and the recovery
 rewrite path are unchanged. `toolResultMaxChars` stays at 16k: doubling it on
