@@ -40,6 +40,9 @@ DIGEST_PROMPT = ('Use tool_call with id "pixel_ods_mcp" and args {"action": "cal
 NO_NEW_STORIES = "No new stories since the last digest."
 # A run that takes longer ends as an error, and the owner gets the plain list of stories instead.
 DIGEST_SECONDS = 600
+# A digest run finding nothing new this soon after a digest went out sends nothing: OpenClaw retries
+# a failed run (up to 3 times, over about 6 minutes plus each run), and the owner may have sent one by hand.
+DIGEST_QUIET_SECONDS = 2 * 3600
 # The run may only read the news: with web search at hand the small model wandered off for minutes.
 DIGEST_TOOLS = ["pixel_ods_mcp"]
 TIME = re.compile(r"^([01][0-9]|2[0-3]):([0-5][0-9])$")

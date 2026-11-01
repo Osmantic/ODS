@@ -1,6 +1,6 @@
 """The owner's apps for the integrations service: what Portal asks of them, page watching,
 and notifications for finished scheduled tasks. Mixed into the service's Integrations class,
-which provides store, _approval, digest_called_at, digest_items and failing_tasks.
+which provides store, _approval, failing_tasks and the digest_* run memory.
 
 Portal reaches the apps through its MCP tool, where each app the owner turned on is listed as
 a built-in server (documents, photos, watch, news) next to the owner's MCP servers. The
@@ -192,6 +192,7 @@ class AppActions:
         return (items, len(unread) >= apps.MAX_NEWS_ITEMS) if with_cap else items
 
     def _remember_sent(self, items):
+        self.digest_sent_at = time.time()
         with self.store.lock:
             self.store.save_digest_sent(apps.with_sent(self.store.digest_sent(), items))
 
@@ -241,9 +242,18 @@ class AppActions:
             return None
         with self.store.lock:
             limit = (self.store.watch_state().get(uuid) or {}).get("below")
+        name = title or listing[uuid].get("title") or url
+        if below is not None and limit is None:
+            raise self._page_watched(name)  # Before asking the owner to approve a change that cannot be made.
         if below is not None and limit != below:
             return None
-        return {"done": f"{title or listing[uuid].get('title') or url} is already watched", "id": uuid}
+        return {"done": f"{name} is already watched", "id": uuid}
+
+    @staticmethod
+    def _page_watched(name):
+        # A page watch compares the page text; reading a price needs a price watch of its own.
+        return IntegrationError("watch-exists", f"{name} is already watched for any change. Remove that watch first "
+                                "to watch its price instead.")
 
     @staticmethod
     def _rewatch(state, uuid, name, below):
@@ -252,9 +262,7 @@ class AppActions:
         if below is None or entry["below"] == below:
             return f"{name} is already watched"
         if entry["below"] is None:
-            # A page watch compares the page text; reading a price needs a price watch of its own.
-            raise IntegrationError("watch-exists", f"{name} is already watched for any change. Remove that watch first "
-                                   "to watch its price instead.")
+            raise AppActions._page_watched(name)
         entry["below"] = below
         return f"Price limit for {name} is now {below:g}"
 
@@ -323,9 +331,18 @@ class AppActions:
             try:
                 items, capped = self._new_stories(config["apps"]["news"], self._key("news"), with_cap=True)
             except IntegrationError as error:
-                # The owner expects the digest at this time; say why it did not come instead of staying silent.
+                # The owner expects the digest at this time; say why it did not come instead of staying
+                # silent, once: OpenClaw retries a failed run a few times within minutes.
+                if self.digest_failing:
+                    return False
+                self.digest_failing = True
                 return self._tell(config, apps.DIGEST_NAME, f"Today's digest could not be made. {error.message}", "high")
             text = apps.digest_brief(items, capped)
+        self.digest_failing = False
+        if not items and time.time() - self.digest_sent_at < apps.DIGEST_QUIET_SECONDS:
+            # Nothing new just after a digest went out: OpenClaw retrying a run, or one sent from Settings.
+            self.store.log("notify", apps.DIGEST_NAME, "nothing new since the last digest")
+            return False
         sent = self._tell(config, apps.DIGEST_NAME, text)
         if sent:
             self._remember_sent(items)

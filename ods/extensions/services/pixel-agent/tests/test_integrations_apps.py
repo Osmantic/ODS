@@ -534,8 +534,8 @@ class AppTests(unittest.TestCase):
         FakeReader.items = self.stories(1) + FakeReader.items
         self.agent("task-finished", name="Daily news digest", description=apps.DIGEST_MARKER, status="ok", summary="I could not find any news.", runAtMs=9_999_999_999_999)
         self.assertEqual(FakeNtfy.sent[-1]["message"], "Weather:\n- Story 0")
-        self.agent("task-finished", name="Daily news digest", description=apps.DIGEST_MARKER, status="error", error="model failed", runAtMs=1)
-        self.assertEqual(FakeNtfy.sent[-1]["message"], "No new stories since the last digest.")
+        self.assertFalse(self.agent("task-finished", name="Daily news digest", description=apps.DIGEST_MARKER, status="error", error="model failed", runAtMs=1)["notified"])
+        self.assertEqual(FakeNtfy.sent[-1]["message"], "Weather:\n- Story 0")  # Nothing new just after a digest: a retry stays quiet.
         self.assertEqual({note["title"] for note in FakeNtfy.sent}, {"Daily news digest"})
         # The owner's own task that happens to have the same name is an ordinary task.
         self.agent("task-finished", name="Daily news digest", status="ok", summary="Mine.", runAtMs=1)
@@ -713,6 +713,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual((message.count("Weather:"), message.count("City:")), (1, 1))  # Grouped, though the stories alternate.
         self.assertTrue(message.endswith("…and 25+ more in FreshRSS."))
         self.assertNotIn("https://", message)
+        FakeReader.items = self.stories(apps.MAX_NEWS_ITEMS + 1)[::-1]  # One new story, newest first.
         self.app("news", "digest")
         self.agent("task-finished", jobId="d", name="Daily news digest", description=apps.DIGEST_MARKER, status="ok",
                    summary="Big news. " * 1000, runAtMs=1)
@@ -845,6 +846,40 @@ class AppTests(unittest.TestCase):
                                    status="error", error="model failed", runAtMs=1)["notified"])
         self.assertEqual((FakeNtfy.sent[-1]["message"], FakeNtfy.sent[-1]["priority"]),
                          ("Today's digest could not be made. FreshRSS at http://127.0.0.1:9 could not be reached.", "high"))
+        # OpenClaw retries the failed run; the owner was told once.
+        for _ in range(3):
+            self.assertFalse(self.agent("task-finished", jobId="d", name="Daily news digest", description=apps.DIGEST_MARKER,
+                                        status="error", error="model failed", runAtMs=1)["notified"])
+        self.assertEqual(len(FakeNtfy.sent), 1)
+        # Once FreshRSS answers again, the digest comes, and a later failure is told again.
+        self.save(self.settings(digest=True, tasks="off"))
+        self.assertTrue(self.agent("task-finished", jobId="d", name="Daily news digest", description=apps.DIGEST_MARKER,
+                                   status="error", error="model failed", runAtMs=1)["notified"])
+        self.assertIn("Rain & wind tomorrow", FakeNtfy.sent[-1]["message"])
+        self.save(broken, secrets={})
+        self.assertTrue(self.agent("task-finished", jobId="d", name="Daily news digest", description=apps.DIGEST_MARKER,
+                                   status="error", error="model failed", runAtMs=1)["notified"])
+
+    def test_a_retried_digest_with_nothing_new_stays_quiet(self):
+        self.save(self.settings(digest=True, tasks="off"))
+        self.assertTrue(self.finish_digest(status="error", error="slow")["notified"])
+        # OpenClaw's retry finds nothing new; Portal's own retry run too.
+        self.assertFalse(self.finish_digest(status="error", error="slow")["notified"])
+        self.assertEqual(self.app("news", "digest")["items"], [])
+        self.assertFalse(self.finish_digest(status="ok", summary="No news today.", runAtMs=0)["notified"])
+        self.assertEqual(len(FakeNtfy.sent), 1)
+        # A day later, nothing new is said once, so the owner knows the digest still works.
+        self.service.digest_sent_at -= apps.DIGEST_QUIET_SECONDS
+        self.assertTrue(self.finish_digest(status="error", error="slow")["notified"])
+        self.assertEqual(FakeNtfy.sent[-1]["message"], "No new stories since the last digest.")
+        self.assertFalse(self.finish_digest(status="error", error="slow")["notified"])
+        # A new story within the quiet time still goes out.
+        FakeReader.items = self.stories(1) + FakeReader.items
+        self.assertTrue(self.finish_digest(status="error", error="slow")["notified"])
+        # A digest sent from Settings counts too.
+        self.service.digest_sent_at -= apps.DIGEST_QUIET_SECONDS
+        self.owner("send-digest")
+        self.assertFalse(self.finish_digest(status="error", error="slow")["notified"])
 
     def test_the_digest_time_zone_must_exist(self):
         settings = self.settings(digest=True)
@@ -923,6 +958,19 @@ class AppTests(unittest.TestCase):
         # A new limit is a change, so it still asks first.
         self.assertEqual(self.app("watch", "add", url="https://shop.example/kettle", below=30)["status"], "approval-required")
         self.assertEqual(self.store.watch_state()["w1"]["below"], 50.0)
+
+    def test_a_price_for_a_page_watched_for_any_change_is_refused_before_approval(self):
+        self.save(self.settings(changes="allow"))
+        self.app("watch", "add", url="https://shop.example/page", title="Shop")
+        self.save(self.settings(changes="ask"))
+        with self.assertRaisesRegex(service.IntegrationError, "Shop is already watched for any change"):
+            self.app("watch", "add", url="https://shop.example/page", below=20)
+        self.assertEqual(self.owner("get")["approvals"], [])
+        # A watch made in changedetection.io itself, unknown to Portal, counts as a page watch.
+        FakeChanges.watches["w9"] = {"url": "https://shop.example/own", "title": "Own", "last_changed": 0}
+        with self.assertRaisesRegex(service.IntegrationError, "Own is already watched for any change"):
+            self.app("watch", "add", url="https://shop.example/own", below=20)
+        self.assertEqual(self.owner("get")["approvals"], [])
 
     def test_an_odd_watch_list_is_an_explained_error(self):
         self.save(self.settings())
