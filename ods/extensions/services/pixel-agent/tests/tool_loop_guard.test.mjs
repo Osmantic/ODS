@@ -642,6 +642,45 @@ for (const prompt of [
   });
 }
 
+test("a bug description does not block a named publication request", () => {
+  // "the error rows never show" describes the page, so the publication is
+  // allowed. It is optional rather than required, as for any outweighed
+  // "don't show".
+  // A repair of the session's verified page is optional too, not required.
+  for (const [prompt, status] of [
+    ["Make the error rows red in the existing log-viewer-lab and check it in the preview.", "failed"],
+    ["In log-viewer-lab the error rows never show. Make the error rows red in the existing log-viewer-lab and check it in the preview.", "none"]]) {
+    const guard = createToolLoopGuard();
+    seedNamedPreview(guard);
+    const context = { agentId: "pixel", runId: "run-named-repair", sessionId: "session-1" };
+    guard.observeRun(context, "pixel", { prompt });
+    assert.equal(guard.verificationForRun(context.runId).status, status, prompt);
+  }
+  for (const [prompt, status] of [["Publish log-viewer-lab.", "failed"],
+    ["In log-viewer-lab, the error rows never show. Publish log-viewer-lab.", "none"]]) {
+    const guard = createToolLoopGuard();
+    const { write, params } = seedNamedPreview(guard);
+    const context = { agentId: "pixel", runId: "run-named-report", sessionId: "session-1" };
+    guard.observeRun(context, "pixel", { prompt });
+    assert.equal(guard.verificationForRun(context.runId).status, status, prompt);
+    const read = { path: write.path };
+    call(guard, "read", { context, event: { runId: context.runId, params: read } });
+    afterCall(guard, "read", { context, event: {
+      runId: context.runId, params: read, result: { content: [{ type: "text", text: write.content }] },
+    } });
+    assert.notEqual(call(guard, "pixel_ods_workspace_preview", {
+      context, event: { runId: context.runId, params },
+    })?.block, true, prompt);
+  }
+  // A later negation is the owner's later word, even for a named project.
+  const guard = createToolLoopGuard();
+  const { params } = seedNamedPreview(guard);
+  const context = { agentId: "pixel", runId: "run-named-retracted", sessionId: "session-1" };
+  guard.observeRun(context, "pixel", { prompt: "Publish log-viewer-lab. Actually, don't show it yet." });
+  assert.equal(guard.verificationForRun(context.runId).status, "none");
+  assert.equal(call(guard, "pixel_ods_workspace_preview", { context, event: { runId: context.runId, params } })?.block, true);
+});
+
 for (const [prompt, sessionId] of [
   ["Publish another-lab.", "session-1"],
   ["Publish log-viewer-lab.other.", "session-1"],

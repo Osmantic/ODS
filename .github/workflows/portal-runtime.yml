@@ -226,6 +226,12 @@ jobs:
         env:
           OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node --test ods/extensions/services/pixel-agent/tests/runtime_cancel_recovery.integration.mjs
+      - name: Verify a retried attempt is stopped at the response's run deadline with the real runtime
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_retried_deadline.integration.mjs
       - name: Verify a clarification answer in a replaced session gets its request as model-only context with the real runtime
         if: runner.os != 'Windows'
         shell: bash

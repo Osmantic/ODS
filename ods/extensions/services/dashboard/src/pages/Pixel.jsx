@@ -50,6 +50,8 @@ import { conversationProject } from '../lib/conversationProjects'
 import PortalStreamingText from '../components/PortalStreamingText'
 import PortalResponseActions from '../components/PortalResponseActions'
 import PortalResponseError from '../components/PortalResponseError'
+import PortalTurnUndo from '../components/PortalTurnUndo'
+import useProjectRestoreOptions from '../hooks/useProjectRestoreOptions'
 import {isProviderRateLimit, isAdmissionRejected, isBusyRefusal, busyRefusalText, portalResponseFailure} from '../lib/portalResponseFailure'
 import {publicationDisplayText} from '../lib/publicationDisplay'
 import {isQuestionAnswer, parseQuestionsFrame, questionMetadata} from '../lib/pixelQuestions'
@@ -678,6 +680,9 @@ export default function Pixel({ systemStatus = null }) {
   const [statusDetail, setStatusDetail] = useState('')
   // The one-click fix the status API names for a held state, if any.
   const [statusRecovery, setStatusRecovery] = useState(null)
+  // Status updates so far. Portal recovery ends a finished attempt at a
+  // later update that does not name it, even when nothing else changed.
+  const [statusUpdates, setStatusUpdates] = useState(0)
   useEffect(() => {
     // Wake an already-open Permissions panel once when admission becomes held.
     // The panel still fetches its own authoritative access receipt.
@@ -828,6 +833,8 @@ export default function Pixel({ systemStatus = null }) {
   // Portal could not prove what happened to the last turn. Sending waits for
   // the owner's Continue, which is offered right where they look.
   const restoredUnconfirmed = interrupted && !sending && restoredActivity === 'unknown'
+  const turnUndoBusy = sending || restoredActive || restoredChecking || stopping
+  const turnUndo = useProjectRestoreOptions(chatIdRef.current, messages, turnUndoBusy)
   const contextCapacity=contextRuntime?.source==='external-host'
     ? Number(contextRuntime.contextLength) || null
     : Number(contextRuntime?.contextLength || systemStatus?.inference?.contextSize || systemStatus?.model?.contextLength) || null
@@ -1177,6 +1184,7 @@ export default function Pixel({ systemStatus = null }) {
         setStatusRecovery(PORTAL_RECOVERY_ACTIONS.has(data?.recovery) ? data.recovery : null)
         setModelActivation(modelActivationStatus(data.modelActivation))
         setStatusDetail(typeof data.detail === 'string' ? data.detail : '')
+        setStatusUpdates(value => value + 1)
       } catch (error) {
         if (!stopped) setModelActivation(null)
         if (!stopped && error?.name !== 'AbortError') {
@@ -1186,6 +1194,7 @@ export default function Pixel({ systemStatus = null }) {
           setStatusRecovery(null)
           setStatus('unavailable')
           setStatusDetail('Could not reach Portal backend')
+          setStatusUpdates(value => value + 1)
         }
       } finally {
         globalThis.clearTimeout(deadline)
@@ -2261,10 +2270,14 @@ export default function Pixel({ systemStatus = null }) {
           </span>
         </div>
       </header>
-      {status === 'available' && !portalRecoveryAction(status, statusRecovery) && <PortalReadiness readiness={runtimeReadiness} />}
+      {/* The Verify hint comes and goes with each reply and is a separate
+          problem from what this alert reports (changed runtime files, say), so
+          it never hides the alert. Restore Sandbox explains the same unfinished
+          change the alert would name, so it stands in for it. */}
+      {status === 'available' && portalRecoveryAction(status, statusRecovery) !== 'restore-sandbox' && <PortalReadiness readiness={runtimeReadiness} />}
       <ModelActivationNotice value={modelActivation} pending={status === 'switching'} available={status === 'available'} portal onRefresh={()=>setModelStatusRefresh(value=>value+1)}/>
       {status === 'held' && <p role="status" className="shrink-0 border-b border-theme-border px-4 py-2 text-xs text-theme-text-secondary sm:px-6">{statusDetail}</p>}
-      <PortalRecovery status={status} action={statusRecovery} detail={statusDetail} onSettled={()=>setModelStatusRefresh(value=>value+1)}/>
+      <PortalRecovery status={status} action={statusRecovery} detail={statusDetail} update={statusUpdates} onSettled={()=>setModelStatusRefresh(value=>value+1)}/>
       {status === 'available' && modelSupport && (
         <p role="status" aria-label="Model capability" className="shrink-0 border-b border-theme-border px-4 py-2 text-xs text-theme-text-secondary sm:px-6">
           {modelSupport.detail}
@@ -2383,6 +2396,7 @@ export default function Pixel({ systemStatus = null }) {
                 <span className="break-words whitespace-pre-wrap">{message.content}</span>
               )}
               {message.role === 'assistant' && message.questions && <PixelQuestions questions={message.questions} answers={message.questionDraft} answered={index<messages.length-1} disabled={message.goalMode ? message.goalState!=='waiting' : isDisabled || sending || restoredActive || restoredChecking} onChange={questionDraft=>setMessages(previous=>previous.map((item,i)=>i===index?{...item,questionDraft}:item))} onSubmit={answer=>message.goalMode ? teams.answer(message.teamId,'0',message.questionDraft) : sendMessage(message.task?.goal ? continueGoal(messages,index,answer) : answer)}/>}
+              {message.role === 'assistant' && message.status !== 'streaming' && <PortalTurnUndo key={`turn-undo/${chatIdRef.current}/${message.task?.runId}`} chatId={chatIdRef.current} entries={turnUndo.forRun(message.task?.runId)} busy={turnUndoBusy} onChanged={turnUndo.refresh}/>}
               {message.goalMode && message.goalNotice && <p role="status" className="mt-3 text-xs text-theme-text-secondary">{message.goalNotice}</p>}
               {message.teamId && !(message.goalMode && ACTIVE_TEAMS.has(message.goalState)) && <button type="button" onClick={()=>openAgents({teamId:message.teamId,agentId:'0'})} className={message.goalMode?"mt-3 border-0 bg-transparent px-0 py-2 text-xs hover:underline":"mt-3 rounded-lg border border-theme-border px-3 py-2 text-xs hover:bg-theme-border/30"}>{message.goalMode?'View goal history':'View agents and conversations'}</button>}
 

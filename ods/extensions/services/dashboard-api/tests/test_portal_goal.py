@@ -128,6 +128,38 @@ async def test_a_round_a_portal_limit_stopped_continues_the_goal(tmp_path, stop)
     assert row['agents'][0]['publication']==PUBLICATION
 
 
+# Pixel's stop for a round whose later attempt (a compaction retry or a
+# revision) was still running at its 30-minute deadline, as the ingress
+# delivers it (run_deadline_delivery.test.mjs). The ingress used to cut such a
+# round off at 32 minutes with no reply, which ends the goal ('transport'
+# above).
+DEADLINE_STOP = ('**Portal stopped this response after 30 minutes, the most one response can run.** '
+                 'This request needed more time. Files saved before the stop are kept, but the last change may be '
+                 'unfinished, so the project may not work yet. Send "continue" to pick up where it left off. '
+                 'If it keeps happening, [get help on Discord](https://discord.gg/4ntNp9MAwC).')
+
+
+@pytest.mark.asyncio
+async def test_a_retried_round_stopped_at_its_deadline_continues_the_goal(tmp_path):
+    calls=[]
+    async def run(owner,agent):
+        calls.append(copy.deepcopy(agent))
+        if len(calls)==1:
+            yield stop_frame(edits=2)
+            for frame in stopped_round(DEADLINE_STOP,'run-deadline'):yield frame
+        else:
+            yield goal_frame('completed')
+            for frame in finish('Actual final result'):yield frame
+    manager=TeamManager(TeamStore(tmp_path/'teams'),run,yes)
+    manager.start(OWNER,'chat','goal','Make enemies draw from a sprite cache',None,'','goal')
+    await settle(manager)
+    row=manager.list(OWNER,'chat')[0]
+    assert row['status']=='completed' and len(calls)==2
+    prompt=calls[1]['messages'][-1]['content']
+    assert "The last round reached Portal's time limit for one response before it finished." in prompt
+    assert any(m['content']==DEADLINE_STOP for m in calls[1]['messages'])
+
+
 @pytest.mark.asyncio
 async def test_a_stopped_round_continues_long_work_up_to_a_bound(tmp_path):
     # Changed files count as progress in a stopped round, three stopped rounds

@@ -156,8 +156,8 @@ function openExact(file, stat) {
 }
 
 // Exactly stat.size bytes of that file, never more; null when it is no longer
-// that file or no longer that size.
-function readFile(file, stat) {
+// that file or no longer that size. Project snapshots read with it too.
+export function readFile(file, stat) {
   const fd = openExact(file, stat);
   if (fd === null) return null;
   try {
@@ -438,6 +438,17 @@ export function createExampleGuard({warn = () => {}, now = Date.now} = {}) {
       expire();
       const run = runs.get(runId);
       return run ? settle(run.root) : undefined;
+    },
+    // The owner changed a Playground project outside any run (Portal's Put
+    // back files). When that is the example while a run that does not name
+    // it works, the folder as it is now becomes the known-good tree, so that
+    // run keeps the owner's change. A run that names it takes the folder as
+    // it is at its end, and with no run working the next run starts from it.
+    ownerChanged(workspaceRoot, project) {
+      if (project !== EXAMPLE) return;
+      expire();
+      const root = guardedRoot(workspaceRoot);
+      if (root && working(root) && !namedWorking(root)) observe(root);
     },
     // The run ended. One that names the example leaves the folder as it is
     // now as the known-good tree.

@@ -26,6 +26,7 @@ const sha = value => createHash('sha256').update(value).digest('hex');
 const PREVIOUS = {
   'compaction-budget': '2e64e5eb0e35f5f363865d4f51bba54a599c9ac745241120b0a826e97613288e',
   'compaction-empty': '12fe33a44b48cfe9c5fe95e3f797371ff1e33d548877a95e5d5d0199088738fd',
+  'tool-result-projection': '595818ac5da06acc428175a056052561c1a3adf8ef5e8d5d047670d26e07695a',
 };
 function apply(source, replacements) {
   for (const [before, after] of replacements) {
@@ -157,6 +158,97 @@ test('the loop guard measures the projected prompt and leaves a small real promp
   assert.ok(turns.every(body => transportTokens(body) < 48000), 'the provider prompts stayed small\n' + trace);
   // The base aggregate alone stays near 25k (64k plus the newest result).
   assert.ok(turns.some(body => transportTokens(body) > 30000), 'the wider view was in use\n' + trace);
+});
+
+// Laptop, 2026-10-28 and 2026-10-30: a coding response reads part of a file,
+// edits it and reads it again, and reads other files along the way. With the
+// real read and edit tools, the reduction takes the read the edit replaced and
+// the copy read again before fresh reads (openclaw-tool-result-projection.json).
+test('a read, edit and check run reduces replaced and repeated reads first, without compacting', {timeout: 90000}, async t => {
+  // Whole-file reads of 160 lines of 60 characters: 9,599 characters each.
+  const lines = name => Array.from({length: 160}, (_, i) => `  const ${name}${i} = grid.cells[${i}] ?? spawn(${i});`.padEnd(59, ' '));
+  const others = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k'];
+  const ui = lines('cell');
+  const script = [...others.slice(0, 8).map(name => ['read', {path: `${name}.js`}]),
+    ['read', {path: 'ui.js', offset: 1, limit: 160}],
+    ['edit', {path: 'ui.js', edits: [{oldText: ui[5], newText: ui[5].replace('spawn', 'reuse')}]}],
+    ['read', {path: 'ui.js', offset: 1, limit: 160}],
+    ...['i', 'j', 'k'].map(name => ['read', {path: `${name}.js`}]),
+    ['read', {path: 'i.js'}]];
+  let step = 0;
+  const upstream = provider(t, body => {
+    if (isSummary(body)) return {delta: {content: 'Summary of the reads and the edit.'}};
+    if (step >= script.length) return {delta: {content: 'Done.'}};
+    const [name, args] = script[step];
+    return {delta: {tool_calls: [{index: 0, id: `call-${step++}`, type: 'function', function: {name, arguments: JSON.stringify(args)}}]}};
+  });
+  const area = fs.mkdtempSync(path.join(root, 'reread-')), {config: value, workspace, agentDir} = config(area, await upstream.ready);
+  value.tools.allow = ['read', 'edit'];
+  for (const name of others) fs.writeFileSync(path.join(workspace, `${name}.js`), lines(name).join('\n'));
+  fs.writeFileSync(path.join(workspace, 'ui.js'), [...ui, ...lines('tail')].join('\n'));
+  const sessionId = '5aaaaaaa-2222-4333-8444-555555555555', sessionFile = path.join(area, sessionId + '.jsonl');
+  fs.writeFileSync(sessionFile, JSON.stringify({type: 'session', version: 3, id: sessionId, timestamp: new Date().toISOString(), cwd: workspace}) + '\n');
+  const result = await runEmbeddedAgent({agentId: 'pixel', sessionId, sessionFile, sessionKey: 'agent:pixel:reread-fixture', workspaceDir: workspace, agentDir,
+    config: value, provider: 'fixture', model: 'model', prompt: 'Read the files, fix ui.js and check it, then say Done.', runId: 'long-run-reread', trigger: 'user', timeoutMs: 60000});
+  const summaries = upstream.bodies.filter(isSummary);
+  const tools = upstream.bodies.at(-1).messages.filter(message => message.role === 'tool').map(message => textOf(message.content));
+  const reduced = tools.map(text => /^\[\.\.\. \d+ more characters truncated; rerun with narrower args if needed\]$/.test(text));
+  const trace = JSON.stringify({error: result.meta?.error, step, summaries: summaries.length, sizes: tools.map(text => text.length)});
+  t.diagnostic(trace);
+  assert.equal(summaries.length, 0, trace);
+  assert.equal(result.payloads?.map(payload => payload.text ?? '').join(''), 'Done.', trace);
+  assert.match(tools[9], /^Successfully replaced 1 block\(s\) in ui\.js\.$/, trace);
+  assert.match(tools[10], /\n\n\[160 more lines in file\. Use offset=161 to continue\.\]$/, trace);
+  // 134,539 characters pass the 128k view once: down to 64k. The read the edit
+  // replaced and the first copy of i.js go first, then the oldest fresh reads.
+  assert.deepEqual(reduced, [true, true, true, true, true, true, false, false, true, false, false, true, false, false, false],
+    'FAIL: fresh reads were reduced while replaced or repeated reads stayed\n' + trace);
+});
+
+// Review of the change above: the edit tool parses a JSON-string `edits` in the
+// attempt's own copy, while the session file keeps the string. The next turn
+// reloads the string and must re-send the shared history byte for byte, or the
+// prompt cache misses from the first difference on.
+test('the next turn re-sends the shared tool results byte for byte after a JSON-string edit', {timeout: 120000}, async t => {
+  const lines = (name, n) => Array.from({length: n}, (_, i) => `  const ${name}${i} = grid.cells[${i}] ?? spawn(${i});`.padEnd(59, ' '));
+  const ui = lines('cell', 320);
+  const others = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o'];
+  const script = [...others.slice(0, 8).map(name => ['read', {path: `${name}.js`}]),
+    ['read', {path: 'ui.js', offset: 1, limit: 160}],
+    ['edit', {path: 'ui.js', edits: JSON.stringify([{oldText: ui[300], newText: ui[300].replace('spawn', 'reuse')}])}],
+    ...others.slice(8).map(name => ['read', {path: `${name}.js`}]),
+    ['read', {path: 'a.js'}]];
+  let step = 0;
+  const upstream = provider(t, body => {
+    if (isSummary(body)) return {delta: {content: 'Summary.'}};
+    const owner = [...body.messages].reverse().find(message => message.role === 'user');
+    if (textOf(owner?.content).includes('Second turn')) return {delta: {content: 'Done again.'}};
+    if (step >= script.length) return {delta: {content: 'Done.'}};
+    const [name, args] = script[step];
+    return {delta: {tool_calls: [{index: 0, id: `call-${step++}`, type: 'function', function: {name, arguments: JSON.stringify(args)}}]}};
+  });
+  const area = fs.mkdtempSync(path.join(root, 'next-turn-')), {config: value, workspace, agentDir} = config(area, await upstream.ready);
+  value.tools.allow = ['read', 'edit'];
+  for (const name of others) fs.writeFileSync(path.join(workspace, `${name}.js`), lines(name, 160).join('\n'));
+  fs.writeFileSync(path.join(workspace, 'ui.js'), ui.join('\n'));
+  const sessionId = '7aaaaaaa-2222-4333-8444-555555555555', sessionFile = path.join(area, sessionId + '.jsonl');
+  fs.writeFileSync(sessionFile, JSON.stringify({type: 'session', version: 3, id: sessionId, timestamp: new Date().toISOString(), cwd: workspace}) + '\n');
+  const common = {agentId: 'pixel', sessionId, sessionFile, sessionKey: 'agent:pixel:next-turn-fixture', workspaceDir: workspace, agentDir, config: value,
+    provider: 'fixture', model: 'model', trigger: 'user', timeoutMs: 60000};
+  const first = await runEmbeddedAgent({...common, prompt: 'Read the files and fix ui.js, then say Done.', runId: 'long-run-next-1'});
+  const turn1 = upstream.bodies.filter(body => !isSummary(body));
+  const second = await runEmbeddedAgent({...common, prompt: 'Second turn: say Done again.', runId: 'long-run-next-2'});
+  const turn2 = upstream.bodies.filter(body => !isSummary(body)).slice(turn1.length);
+  const tools = body => body.messages.filter(message => message.role === 'tool').map(message => textOf(message.content));
+  const before = tools(turn1.at(-1)), after = tools(turn2[0]);
+  const stored = transcript(sessionFile).flatMap(row => row.message?.role === 'assistant' ? row.message.content : [])
+    .filter(block => block?.type === 'toolCall' && block.name === 'edit').map(block => typeof block.arguments?.edits);
+  const trace = JSON.stringify({answers: [first.payloads, second.payloads].map(payloads => payloads?.map(payload => payload.text ?? '').join('')), stored,
+    reduced: before.map(text => /^\[\.\.\. \d+ more characters truncated/.test(text) ? 'N' : 'W').join('')});
+  t.diagnostic(trace);
+  assert.deepEqual(stored, ['string'], 'the session file keeps the JSON string\n' + trace);
+  assert.ok(before.some(text => /^\[\.\.\. \d+ more characters truncated/.test(text)), 'the first turn reduced results\n' + trace);
+  assert.deepEqual(after.slice(0, before.length), before, 'FAIL: the next turn re-sent the shared tool results differently\n' + trace);
 });
 
 // Positive control. The projection caps tool results only; tool-call arguments

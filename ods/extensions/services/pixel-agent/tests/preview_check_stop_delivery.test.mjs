@@ -158,8 +158,9 @@ test('Spark stopwatch: the check that stops the run tells the model to stop chec
   assert.equal(inspections[0].persisted, inspections[0].result.content[0].text);
   assert.equal(inspections[1].persisted, `${inspections[1].result.content[0].text}\n${RUN_PROGRESS_WARNING_TEXT}`);
   // The third one stopped it: its persisted result, which the next model request
-  // carries, is the wrap-up instruction instead of the stop text.
-  assert.equal(inspections[2].persisted, PREVIEW_CHECK_FINALIZATION_INSTRUCTION);
+  // carries, is its own check text, then the wrap-up instruction instead of the
+  // stop text, so the answer can say what the check found.
+  assert.equal(inspections[2].persisted, `${inspections[2].result.content[0].text}\n${PREVIEW_CHECK_FINALIZATION_INSTRUCTION}`);
   assert.ok(!persisted.includes(RUN_PROGRESS_STOP_REASON), 'the model never reads "continue with a corrected approach"');
   assert.match(PREVIEW_CHECK_FINALIZATION_INSTRUCTION, /^\[ODS Pixel tool limit\] Stop checking the preview now: tools are disabled/);
   assert.match(PREVIEW_CHECK_FINALIZATION_INSTRUCTION, /say plainly which requested behavior you could not verify/);
@@ -353,8 +354,9 @@ test('a stop after failed edits says the published page may be unfinished, not t
   const h = harness();
   h.guard.observeModelCall({}, context);
   const preview = h.publish();
-  // Edits stopped the run, not a preview check: the general instruction.
-  assert.equal(h.failedEdits().persisted, PROGRESS_FINALIZATION_INSTRUCTION);
+  // Edits stopped the run, not a preview check: the edit's own error, then the
+  // general instruction.
+  assert.equal(h.failedEdits().persisted, `Could not find the exact text in stopwatch/index.html\n${PROGRESS_FINALIZATION_INSTRUCTION}`);
   h.round();
   assert.equal(h.call('read', {path: 'stopwatch/app.js'}).decision.blockReason, PROGRESS_FINALIZATION_INSTRUCTION);
   h.round();
