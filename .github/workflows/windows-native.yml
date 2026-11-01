@@ -127,8 +127,6 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          # build-bundle.ps1 runs the same code under strict mode; so does this.
-          Set-StrictMode -Version Latest
           $state = Join-Path $env:RUNNER_TEMP 'ods-state'
           $result = ./ods/installers/windows/native/fetch-runtime.ps1 `
             -StateRoot $state `

@@ -147,8 +147,13 @@ function Install-LlamaRuntime {
     }
     $llama = Join-Path $Bundle 'llama'
     # The bundled Python is x64, so the bundle is x64 whatever machine builds it.
-    # Download records go to the build's scratch folder, not the bundle.
-    $result = & $Script -StateRoot (Join-Path $Work 'llama-state') -Destination $llama -Architecture x64 -NativeApp
+    # Download records go to the build's scratch folder, not the bundle. The
+    # runtime library is not written for strict mode, so it runs in its own
+    # PowerShell process rather than inheriting this script's Set-StrictMode.
+    $shell = (Get-Process -Id $PID).Path
+    $result = & $shell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $Script `
+        -StateRoot (Join-Path $Work 'llama-state') -Destination $llama -Architecture x64 -NativeApp
+    if ($LASTEXITCODE -ne 0) { throw "$Script failed with exit code $LASTEXITCODE." }
     Write-Host "llama.cpp runtime: $result"
     if (-not (Test-Path -LiteralPath (Join-Path $llama 'llama-server.exe') -PathType Leaf)) {
         throw "$Script did not leave llama-server.exe in $llama."
