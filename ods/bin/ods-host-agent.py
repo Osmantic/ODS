@@ -9021,6 +9021,33 @@ def _start_enable_retry(handler, service_id: str, lock: threading.Lock) -> None:
         raise
 
 
+# The owner socket sits in the owner's state folder, which the gateway sandbox cannot see.
+PIXEL_INTEGRATIONS_SOCKET = str(Path.home() / ".config/ods/pixel-integrations/owner.sock")
+PIXEL_INTEGRATIONS_ACTIONS = ("save", "test-notification", "discover", "test", "test-app", "watch-list", "send-digest",
+                              "restart", "decide", "clear-activity")
+
+
+def _pixel_integrations_request(payload: dict) -> dict:
+    """One owner request to the Portal integrations service (one JSON line each way)."""
+    connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    connection.settimeout(130)
+    try:
+        connection.connect(PIXEL_INTEGRATIONS_SOCKET)
+        connection.sendall((json.dumps({"schemaVersion": 1, **payload}) + "\n").encode())
+        data = bytearray()
+        while not data.endswith(b"\n") and len(data) <= 512 * 1024:
+            piece = connection.recv(65536)
+            if not piece:
+                break
+            data.extend(piece)
+    finally:
+        connection.close()
+    reply = json.loads(data)
+    if not isinstance(reply, dict):
+        raise ValueError("integrations reply is not an object")
+    return reply
+
+
 def json_response(handler, code: int, body: dict, *, no_store=False):
     payload = json.dumps(body).encode("utf-8")
     handler.send_response(code)
@@ -10802,6 +10829,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_pixel_advice_runtime()
         elif path == "/v1/pixel/inference-sharing":
             self._handle_pixel_sharing()
+        elif path == "/v1/pixel/integrations" and not parsed.query:
+            self._handle_pixel_integrations()
         elif path == "/v1/pixel/access-mode" and not parsed.query:
             self._handle_pixel_access_mode(False)
         elif path == "/v1/host/port":
@@ -11476,6 +11505,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_pixel_scopes(self.path.rsplit('/', 1)[1])
         elif self.path in {"/v1/pixel/advice-runtime/prepare", "/v1/pixel/advice-runtime/status", "/v1/pixel/advice-runtime/cancel"}:
             self._handle_pixel_advice_runtime(self.path.rsplit('/', 1)[1])
+        elif self.path.startswith("/v1/pixel/integrations/") and self.path.rsplit("/", 1)[1] in PIXEL_INTEGRATIONS_ACTIONS and self.path.count("/") == 4:
+            self._handle_pixel_integrations(self.path.rsplit("/", 1)[1])
         elif self.path in {"/v1/pixel/inference-sharing/issue", "/v1/pixel/inference-sharing/enable", "/v1/pixel/inference-sharing/revoke", "/v1/pixel/inference-sharing/start", "/v1/pixel/inference-sharing/stop"}:
             self._handle_pixel_sharing(self.path.rsplit('/', 1)[1])
         elif self.path == "/v1/runtime/lemonade/ensure":
@@ -11502,6 +11533,35 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_network_wifi_forget()
         else:
             json_response(self, 404, {"error": "Not found"})
+
+    def _handle_pixel_integrations(self, action=None):
+        """The owner's Portal integrations: settings, tests, tool discovery and approvals.
+
+        The integrations service holds the settings and secrets; this relays the owner's
+        request and returns its answer, or its refusal with the sentence to show.
+        """
+        if not check_auth(self):
+            return
+        if sys.platform == "darwin":
+            json_response(self, 400, {"error": "unsupported", "message": "Portal integrations aren't available on macOS yet."}, no_store=True)
+            return
+        payload = {"action": action or "get"}
+        if action is not None:
+            body = read_json_body(self)
+            if body is None:
+                return
+            payload = {**body, "action": action}
+        try:
+            reply = _pixel_integrations_request(payload)
+        except (OSError, ValueError):
+            json_response(self, 503, {"error": "unavailable", "message": "The integrations service is not running."}, no_store=True)
+            return
+        if reply.get("ok") is True:
+            json_response(self, 200, {key: value for key, value in reply.items() if key != "ok"}, no_store=True)
+            return
+        status = 409 if reply.get("error") == "stale-revision" else 400
+        json_response(self, status, {"error": reply.get("error", "failed"),
+                                     "message": str(reply.get("message", "The request failed."))[:500]}, no_store=True)
 
     def _handle_pixel_sharing(self, action=None):
         if not check_auth(self):
