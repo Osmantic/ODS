@@ -419,10 +419,13 @@ class AppTests(unittest.TestCase):
     def test_a_watch_added_during_a_look_keeps_its_price_limit(self):
         self.save(self.settings(changes="allow"))
         original = apps.watches
+        added = []
 
         def slow_listing(settings, key):
             listing = original(settings, key)
-            self.app("watch", "add", url="https://shop.example/late", title="Late", below=10)  # Added meanwhile.
+            if not added:  # Added meanwhile, once; adding lists the watches too.
+                added.append(True)
+                self.app("watch", "add", url="https://shop.example/late", title="Late", below=10)
             return listing
         apps.watches = slow_listing
         self.addCleanup(setattr, apps, "watches", original)
@@ -828,6 +831,25 @@ class AppTests(unittest.TestCase):
         self.assertEqual(apps.best_place("são paulo", known), ("city", "São Paulo"))
         self.assertIsNone(apps.best_place("Mars", known))
         self.assertIsNone(apps.best_place(" , ", known))
+
+    def test_asking_twice_for_a_watch_keeps_one(self):
+        self.save(self.settings(changes="allow"))
+        self.app("watch", "add", url="https://shop.example/page", title="Shop")
+        again = self.app("watch", "add", url="https://shop.example/page", title="Shop")  # A retried call.
+        self.assertEqual((again["id"], again["done"], list(FakeChanges.watches)), ("w1", "Shop is already watched", ["w1"]))
+        self.assertIn("Done: Shop is already watched.", self.agent("mcp-call", server="watch", tool="add",
+                                                                   arguments={"url": "https://shop.example/page"})["text"])
+        with self.assertRaisesRegex(service.IntegrationError, "already watched for any change. Remove that watch first"):
+            self.app("watch", "add", url="https://shop.example/page", title="Shop", below=20)
+        self.app("watch", "add", url="https://shop.example/kettle", title="Kettle", below=50)
+        self.assertEqual(self.app("watch", "add", url="https://shop.example/kettle", title="Kettle", below="50")["done"],
+                         "Kettle is already watched")
+        lowered = self.app("watch", "add", url="https://shop.example/kettle", title="Kettle", below=40)
+        self.assertEqual((lowered["done"], self.store.watch_state()["w2"]["below"]), ("Price limit for Kettle is now 40", 40.0))
+        self.assertEqual(list(FakeChanges.watches), ["w1", "w2"])
+        FakeChanges.prices["w2"] = 45  # Over the new limit: no notice.
+        self.service.check_watches()
+        self.assertEqual(FakeNtfy.sent, [])
 
     def test_an_odd_watch_list_is_an_explained_error(self):
         self.save(self.settings())

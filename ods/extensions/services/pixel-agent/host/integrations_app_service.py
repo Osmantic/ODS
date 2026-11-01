@@ -197,15 +197,34 @@ class AppActions:
         with self.store.lock:
             state = self.store.watch_state()
             if action == "watch-add":
-                uuid = apps.add_watch(settings, key, url, title, below)
-                # Not yet seen: the first look only records the page (a price watch still checks its price).
-                state[uuid] = {"lastChanged": None, "below": float(below) if below is not None else None, "lastPrice": None}
+                listing = apps.watches(settings, key)
+                uuid = next((uuid for uuid, watch in listing.items() if watch.get("url") == url), None)
+                if uuid is not None:
+                    # Asked again, often a retried call: keep the one watch, so each change notifies once.
+                    summary = self._rewatch(state, uuid, title or listing[uuid].get("title") or url, below)
+                else:
+                    uuid = apps.add_watch(settings, key, url, title, below)
+                    # Not yet seen: the first look only records the page (a price watch still checks its price).
+                    state[uuid] = {"lastChanged": None, "below": below, "lastPrice": None}
             else:
                 apps.remove_watch(settings, key, uuid)
                 state.pop(uuid, None)
             self.store.save_watch_state(state)
         self.store.log(action, summary, "done")
         return {"done": summary, "id": uuid}
+
+    @staticmethod
+    def _rewatch(state, uuid, name, below):
+        """A page already watched: its price limit changes, or nothing does; the summary to report."""
+        entry = state.setdefault(uuid, {"lastChanged": None, "below": None, "lastPrice": None})
+        if below is None or entry["below"] == below:
+            return f"{name} is already watched"
+        if entry["below"] is None:
+            # A page watch compares the page text; reading a price needs a price watch of its own.
+            raise IntegrationError("watch-exists", f"{name} is already watched for any change. Remove that watch first "
+                                   "to watch its price instead.")
+        entry["below"] = below
+        return f"Price limit for {name} is now {below:g}"
 
     def check_watches(self):
         """Tell the owner about watched pages that changed since the last look."""
