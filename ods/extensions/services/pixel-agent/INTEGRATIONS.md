@@ -83,6 +83,8 @@ turned on:
   Replacing a vault, changing a server's endpoint, credential or schema, or
   disabling and re-enabling it invalidates the old approval. Returning to an
   earlier setting does not revive it.
+- Saving settings or checking tools revokes pending and approved requests, even
+  for an unrelated integration. Repeat the action to request a new approval.
 - It can be used once and expires after 24 hours.
 - After the owner approves, Portal repeats the same call. A scheduled task does
   not wait: it reports that the action needs approval, and its next run within 24

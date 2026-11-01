@@ -298,13 +298,25 @@ class LocalServer:
             self.last_used = time.monotonic()
             self.lock.release()
 
+    def _signal_group(self, sig):
+        try:
+            os.killpg(self.process.pid, sig)
+        except PermissionError:
+            # Darwin reports EPERM for a group containing only an unreaped
+            # child. Reap our exited leader, then retry: live descendants must
+            # still receive the signal, and real permission failures must fail.
+            if self.process.poll() is None:
+                raise
+            os.killpg(self.process.pid, sig)
+
+
     def stop(self, reason="it was stopped"):
         if self.process is None:
             return
         self.stopped_because = self.stopped_because or reason
         for sig in (signal.SIGTERM, signal.SIGKILL):
             try:
-                os.killpg(self.process.pid, sig)
+                self._signal_group(sig)
             except ProcessLookupError:
                 break
             try:
@@ -313,7 +325,7 @@ class LocalServer:
             except subprocess.TimeoutExpired:
                 continue
         try:
-            os.killpg(self.process.pid, signal.SIGKILL)  # Anything it started that outlived it.
+            self._signal_group(signal.SIGKILL)  # Anything it started that outlived it.
         except ProcessLookupError:
             pass
         with self.write_lock:

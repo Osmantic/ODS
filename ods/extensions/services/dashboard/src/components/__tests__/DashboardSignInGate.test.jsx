@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { StrictMode } from 'react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import DashboardSignInGate, { useDashboardSession } from '../DashboardSignInGate'
 import { ThemeProvider } from '../../contexts/ThemeContext'
@@ -13,6 +14,15 @@ const signInRequired = () => response(
   { detail: 'Sign in to the ODS dashboard to continue.' }, 401, { 'x-ods-sign-in': 'required' },
 )
 const json = (body, status = 200) => response(body, status)
+const deferred = () => {
+  let resolve
+  const promise = new Promise(done => { resolve = done })
+  return { promise, resolve }
+}
+const navigateLink = token => {
+  window.history.pushState(null, '', `/models?tab=local#ods-login=${token}`)
+  fireEvent(window, new Event('hashchange'))
+}
 
 function Dashboard() {
   const { session, signOut } = useDashboardSession()
@@ -93,6 +103,201 @@ describe('DashboardSignInGate', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('expired or was already used')
   })
 
+  it('consumes a new fragment on the already-loaded sign-in screen and scrubs it before validation', async () => {
+    const login = deferred()
+    fetchMock.mockResolvedValueOnce(signInRequired()).mockReturnValueOnce(login.promise)
+    renderGate()
+    await screen.findByLabelText('Password')
+    const token = 'n'.repeat(43)
+    navigateLink(token)
+    expect(window.location.hash).toBe('')
+    expect(window.location.pathname + window.location.search).toBe('/models?tab=local')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ token })
+    expect(screen.queryByText('Dashboard content')).not.toBeInTheDocument()
+    await act(async () => login.resolve(json({ signedIn: true })))
+    expect(await screen.findByText('Dashboard content')).toBeInTheDocument()
+  })
+
+  it('accepts a fresh fragment after an expired link and does not resubmit either token', async () => {
+    const old = 'e'.repeat(43)
+    const fresh = 'f'.repeat(43)
+    window.history.replaceState(null, '', `/#ods-login=${old}`)
+    fetchMock.mockResolvedValueOnce(json({ detail: 'Expired link.' }, 401)).mockResolvedValueOnce(json({ signedIn: true }))
+    renderGate()
+    expect(await screen.findByRole('alert')).toHaveTextContent('Expired link.')
+    navigateLink(fresh)
+    expect(await screen.findByText('Dashboard content')).toBeInTheDocument()
+    navigateLink(old)
+    navigateLink(fresh)
+    expect(window.location.hash).toBe('')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(screen.getByText('Dashboard content')).toBeInTheDocument()
+  })
+
+  it('removes malformed login fragments and accepts a later valid link', async () => {
+    fetchMock.mockResolvedValueOnce(signInRequired()).mockResolvedValueOnce(json({ signedIn: true }))
+    renderGate()
+    await screen.findByLabelText('Password')
+    navigateLink('short')
+    expect(window.location.hash).toBe('')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(screen.queryByText('Dashboard content')).not.toBeInTheDocument()
+    navigateLink('v'.repeat(43))
+    expect(await screen.findByText('Dashboard content')).toBeInTheDocument()
+  })
+
+  it('preserves unrelated fragments, query parameters, and history state when scrubbing a token', async () => {
+    const token = 'h'.repeat(43)
+    window.history.replaceState({ keep: true }, '', `/models?tab=local#section&ods-login=${token}&filter=a%20b`)
+    fetchMock.mockResolvedValueOnce(json({ signedIn: true }))
+    renderGate()
+    expect(window.location.pathname + window.location.search + window.location.hash).toBe('/models?tab=local#section&filter=a%20b')
+    expect(window.history.state).toEqual({ keep: true })
+    expect(await screen.findByText('Dashboard content')).toBeInTheDocument()
+  })
+
+  it('posts a one-time token only once under StrictMode and repeated hash events', async () => {
+    const token = 's'.repeat(43)
+    window.history.replaceState(null, '', `/#ods-login=${token}`)
+    fetchMock.mockResolvedValue(json({ signedIn: true }))
+    render(<StrictMode><ThemeProvider><DashboardSignInGate><Dashboard /></DashboardSignInGate></ThemeProvider></StrictMode>)
+    expect(await screen.findByText('Dashboard content')).toBeInTheDocument()
+    navigateLink(token)
+    fireEvent(window, new Event('hashchange'))
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(window.location.hash).toBe('')
+  })
+
+  it.each([true, false])('ignores a stale session check after a newer link result (accepted=%s)', async accepted => {
+    const check = deferred()
+    fetchMock.mockReturnValueOnce(check.promise).mockResolvedValueOnce(
+      accepted ? json({ signedIn: true }) : json({ detail: 'New link rejected.' }, 401),
+    )
+    renderGate()
+    navigateLink('c'.repeat(43))
+    if (accepted) await screen.findByText('Dashboard content')
+    else expect(await screen.findByRole('alert')).toHaveTextContent('New link rejected.')
+    await act(async () => check.resolve(accepted ? signInRequired() : json({ signedIn: true, session: true })))
+    expect(Boolean(screen.queryByText('Dashboard content'))).toBe(accepted)
+    if (!accepted) expect(screen.getByRole('alert')).toHaveTextContent('New link rejected.')
+  })
+
+  it('ignores a stale session body that finishes after link sign-in', async () => {
+    const body = deferred()
+    fetchMock.mockResolvedValueOnce({ ...json({}), json: () => body.promise }).mockResolvedValueOnce(json({ signedIn: true }))
+    renderGate()
+    await act(async () => {})
+    navigateLink('j'.repeat(43))
+    await screen.findByText('Dashboard content')
+    await act(async () => body.resolve({ signedIn: true, session: false, passwordConfigured: false }))
+    expect(screen.getByText('Dashboard content')).toBeInTheDocument()
+    expect(screen.queryByLabelText('New password')).not.toBeInTheDocument()
+  })
+
+  it.each([true, false])('keeps the newest link result when an older response arrives late (accepted=%s)', async accepted => {
+    const older = deferred()
+    window.history.replaceState(null, '', `/#ods-login=${'o'.repeat(43)}`)
+    fetchMock.mockReturnValueOnce(older.promise).mockResolvedValueOnce(
+      accepted ? json({ signedIn: true }) : json({ detail: 'Latest link rejected.' }, 401),
+    )
+    renderGate()
+    navigateLink('l'.repeat(43))
+    if (accepted) await screen.findByText('Dashboard content')
+    else await screen.findByRole('alert')
+    await act(async () => older.resolve(accepted ? json({ detail: 'Older link rejected.' }, 401) : json({ signedIn: true })))
+    expect(Boolean(screen.queryByText('Dashboard content'))).toBe(accepted)
+    if (!accepted) expect(screen.getByRole('alert')).toHaveTextContent('Latest link rejected.')
+  })
+
+  it('ignores a stale protected request after a fresh link establishes a session', async () => {
+    const stale = deferred()
+    fetchMock.mockResolvedValueOnce(json({ signedIn: true, session: true })).mockReturnValueOnce(stale.promise)
+      .mockResolvedValueOnce(json({ signedIn: true }))
+    renderGate()
+    await screen.findByText('Dashboard content')
+    const request = window.fetch('/api/status')
+    navigateLink('g'.repeat(43))
+    await screen.findByText('Dashboard content')
+    await act(async () => { stale.resolve(signInRequired()); await request })
+    expect(screen.getByText('Dashboard content')).toBeInTheDocument()
+    fetchMock.mockResolvedValueOnce(signInRequired())
+    await act(async () => { await window.fetch('/api/status') })
+    expect(await screen.findByLabelText('Password')).toBeInTheDocument()
+  })
+
+  it('ignores an older login body after the latest link is rejected', async () => {
+    const body = deferred()
+    window.history.replaceState(null, '', `/#ods-login=${'b'.repeat(43)}`)
+    fetchMock.mockResolvedValueOnce({ ...json({}), json: () => body.promise })
+      .mockResolvedValueOnce(json({ detail: 'Latest link rejected.' }, 401))
+    renderGate()
+    await act(async () => {})
+    navigateLink('d'.repeat(43))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Latest link rejected.')
+    await act(async () => body.resolve({ signedIn: true, passwordSetup: true }))
+    expect(screen.getByRole('alert')).toHaveTextContent('Latest link rejected.')
+    expect(screen.queryByLabelText('New password')).not.toBeInTheDocument()
+    expect(screen.queryByText('Dashboard content')).not.toBeInTheDocument()
+  })
+
+  it('ignores a stale sign-out response after a newer link signs in', async () => {
+    const logout = deferred()
+    fetchMock.mockResolvedValueOnce(json({ signedIn: true, session: true })).mockReturnValueOnce(logout.promise)
+      .mockResolvedValueOnce(json({ signedIn: true }))
+    renderGate()
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign out' }))
+    navigateLink('u'.repeat(43))
+    await screen.findByText('Dashboard content')
+    await act(async () => logout.resolve(json({ signedIn: false })))
+    expect(screen.getByText('Dashboard content')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Sign out' })).toBeInTheDocument()
+  })
+
+  it('does not restore the session when an older login finishes after sign-out', async () => {
+    const older = deferred()
+    window.history.replaceState(null, '', `/#ods-login=${'w'.repeat(43)}`)
+    fetchMock.mockReturnValueOnce(older.promise).mockResolvedValueOnce(json({ signedIn: true }))
+      .mockResolvedValueOnce(json({ signedIn: false }))
+    renderGate()
+    navigateLink('x'.repeat(43))
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign out' }))
+    await screen.findByLabelText('Password')
+    await act(async () => older.resolve(json({ signedIn: true })))
+    expect(screen.getByRole('alert')).toHaveTextContent('You signed out')
+    expect(screen.queryByText('Dashboard content')).not.toBeInTheDocument()
+  })
+
+  it('removes the fragment listener on unmount and ignores a pending login result', async () => {
+    const login = deferred()
+    window.history.replaceState(null, '', `/#ods-login=${'z'.repeat(43)}`)
+    fetchMock.mockReturnValueOnce(login.promise)
+    const page = renderGate()
+    page.unmount()
+    navigateLink('y'.repeat(43))
+    await act(async () => login.resolve(json({ signedIn: true })))
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(screen.queryByText('Dashboard content')).not.toBeInTheDocument()
+    expect(window.location.hash).toBe(`#ods-login=${'y'.repeat(43)}`)
+  })
+
+  it('ignores an earlier password-save rejection after a new recovery link', async () => {
+    const save = deferred()
+    window.history.replaceState(null, '', `/#ods-login=${'p'.repeat(43)}`)
+    fetchMock.mockResolvedValueOnce(json({ signedIn: true, passwordSetup: true })).mockReturnValueOnce(save.promise)
+      .mockResolvedValueOnce(json({ signedIn: true, passwordSetup: true }))
+    renderGate()
+    fireEvent.change(await screen.findByLabelText('New password'), { target: { value: 'chosen password' } })
+    fireEvent.change(screen.getByLabelText('Confirm password'), { target: { value: 'chosen password' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save password' }))
+    navigateLink('q'.repeat(43))
+    await screen.findByLabelText('New password')
+    await act(async () => save.resolve(signInRequired()))
+    expect(screen.getByLabelText('New password')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Password')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Not now' })).not.toBeInTheDocument()
+  })
+
   it('returns to sign-in when a later request is turned away, and after signing out', async () => {
     fetchMock
       .mockResolvedValueOnce(json({ signedIn: true, session: true }))
@@ -100,7 +305,7 @@ describe('DashboardSignInGate', () => {
     renderGate()
     expect(await screen.findByText('Dashboard content')).toBeInTheDocument()
 
-    await window.fetch('/api/status')
+    await act(async () => { await window.fetch('/api/status') })
     expect(await screen.findByLabelText('Password')).toBeInTheDocument()
     expect(screen.getByRole('alert')).toHaveTextContent('session ended')
   })
@@ -132,6 +337,16 @@ describe('DashboardSignInGate', () => {
     renderGate()
     expect(screen.getByText('Dashboard content')).toBeInTheDocument()
     await waitFor(() => expect(fetchMock).not.toHaveBeenCalled())
+  })
+
+  it('does not consume dashboard login fragments on a Talk page', async () => {
+    window.history.replaceState(null, '', `/talk#ods-login=${'t'.repeat(43)}`)
+    renderGate()
+    fireEvent(window, new Event('hashchange'))
+    expect(screen.getByText('Dashboard content')).toBeInTheDocument()
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(window.location.hash).not.toBe('')
+    await act(async () => {})
   })
 })
 

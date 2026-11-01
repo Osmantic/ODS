@@ -177,41 +177,57 @@ def _read(root, relative):
             os.close(fd)
 
 
-def _files(root):
-    count = 0
-    for directory, folders, files in os.walk(root, followlinks=False):
-        folders[:] = sorted(name for name in folders if not name.startswith('.'))
-        for name in sorted(files):
-            path = pathlib.Path(directory, name)
-            if not name.lower().endswith('.md') or name.startswith('.') or path.is_symlink():
-                continue
-            count += 1
-            if count > MAX_NOTE_FILES:
-                return
-            yield path
-
-
 def search(config, query):
     root = vault(config)
     terms = [term for term in re.findall(r'\w+', query.lower()) if len(term) > 1][:12]
     if not terms:
         raise IntegrationError('invalid-query', 'Give one or more words to search for.')
-    hits = []
-    for path in _files(root):
-        try:
-            relative, text = _read(root, path.relative_to(root).as_posix())
-        except IntegrationError:
-            continue
-        lowered, title = text.lower(), path.stem.lower()
-        matched = [term for term in terms if term in lowered or term in title]
-        if not matched:
-            continue
-        score = len(matched) * 100 + sum(lowered.count(term) for term in matched) + 20 * sum(term in title for term in matched)
-        lines = text.splitlines() or ['']
-        best = max(range(len(lines)), key=lambda index: (sum(term in lines[index].lower() for term in terms),
-                                                         not lines[index].lstrip().startswith('#')))
-        hits.append((score, {'path': relative, 'title': path.stem, 'line': best + 1,
-                            'snippet': lines[best].strip()[:240], 'matched': len(matched), 'of': len(terms)}))
+    hits, count = [], 0
+
+    def walk(directory, prefix='', depth=0):
+        nonlocal count
+        if depth > 64 or count >= MAX_NOTE_FILES:
+            return
+        for name in sorted(os.listdir(directory)):
+            if name.startswith('.') or count >= MAX_NOTE_FILES:
+                continue
+            relative = prefix + name
+            try:
+                info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                if stat.S_ISDIR(info.st_mode):
+                    child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                    dir_fd=directory)
+                    try:
+                        walk(child, relative + '/', depth + 1)
+                    finally:
+                        os.close(child)
+                    continue
+                if not name.lower().endswith('.md') or not stat.S_ISREG(info.st_mode):
+                    continue
+                count += 1
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+                             dir_fd=directory)
+                try:
+                    text = _read_fd(fd)
+                finally:
+                    os.close(fd)
+                title = pathlib.PurePosixPath(name).stem
+                lowered = text.lower()
+                matched = [term for term in terms if term in lowered or term in title.lower()]
+                if not matched:
+                    continue
+                score = len(matched) * 100 + sum(lowered.count(term) for term in matched) + 20 * sum(term in title.lower() for term in matched)
+                lines = text.splitlines() or ['']
+                best = max(range(len(lines)), key=lambda index: (sum(term in lines[index].lower() for term in terms),
+                                                                 not lines[index].lstrip().startswith('#')))
+                hits.append((score, {'path': relative, 'title': title, 'line': best + 1,
+                                    'snippet': lines[best].strip()[:240], 'matched': len(matched), 'of': len(terms)}))
+            except (OSError, IntegrationError):
+                continue
+
+    # One opened vault anchors the complete traversal, including renamed parents.
+    with _root(root) as root_fd:
+        walk(root_fd)
     hits.sort(key=lambda item: (-item[0], item[1]['path']))
     return [item for _score, item in hits[:8]]
 

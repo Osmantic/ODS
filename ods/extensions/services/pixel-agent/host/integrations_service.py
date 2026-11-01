@@ -22,6 +22,7 @@ import socketserver
 import stat
 import sys
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -32,7 +33,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import integrations_notes as notes  # noqa: E402
 from integrations_common import (IntegrationError, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES,  # noqa: E402
                                  NETWORK_TIMEOUT, SCHEMA_VERSION, Store, digest, now, safe_urlopen, redact_secrets)
-from integrations_mcp import LocalServers, McpSession, describe_tool  # noqa: E402
+from integrations_mcp import LocalServer, LocalServers, McpSession, SESSION_TIMEOUT, describe_tool  # noqa: E402
 
 MAX_SERVERS = 20
 MAX_ENV = 20
@@ -202,10 +203,22 @@ def send_notification(config, secrets, title, message, priority="default", link=
 
 # ---------------------------------------------------------------- the service
 
+class _AdmittedLocalServers:
+    """A session's immutable admission, checked again before publishing a local process."""
+
+    def __init__(self, service, revision):
+        self.service, self.revision = service, revision
+
+    def get(self, server, values, *, deadline=None):
+        return self.service._local_get(server, values, self.revision, deadline=deadline)
+
+
+
 class Integrations:
     def __init__(self, store, local_servers=None):
         self.store = store
         self.local = local_servers or LocalServers()
+        self._runtime_revision = 0
 
     def handle(self, role, request):
         """role is "owner" or "agent", set by the socket the request came in on."""
@@ -229,19 +242,25 @@ class Integrations:
         if action == "save":
             self.save(request.get("expectedRevision"), request.get("settings"), request.get("secrets", {}))
         elif action == "test-notification":
-            config = self.store.config()
+            with self.store.lock:
+                config, secrets = self.store.config(), self.store.secrets()
             if not config["notifications"]["enabled"]:
                 raise IntegrationError("notifications-off", "Turn notifications on and save before sending a test.")
-            send_notification(config, self.store.secrets(), "Portal", "Notifications from Portal are working.")
-            self.store.log("notify", "test", "sent")
+            send_notification(config, secrets, "Portal", "Notifications from Portal are working.")
+            self._log("notify", "test", "sent")
         elif action == "discover":
             self.discover(request.get("serverId"))
         elif action == "test":
             return {**self.view(), "notice": self.test(request.get("serverId"))}
         elif action == "restart":
-            server = self._server(self.store.config(), request.get("serverId"), enabled=False)
-            self.local.stop(server["id"], "the owner restarted it")
-            self.store.log("mcp-restart", server["name"], "stopped; starts on next use")
+            with self.store.lock:
+                server = self._server(self.store.config(), request.get("serverId"), enabled=False)
+                self._runtime_revision += 1
+                with self.local.lock:
+                    current = self.local.running.pop(server["id"], None)
+            if current:
+                current.stop("the owner restarted it")
+            self._log("mcp-restart", server["name"], "stopped; starts on next use")
         elif action == "decide":
             self.decide(request.get("approvalId"), request.get("decision"))
         elif action == "clear-activity":
@@ -252,6 +271,7 @@ class Integrations:
     def view(self):
         with self.store.lock:
             config, secrets, approvals = self.store.config(), self.store.secrets(), self.store.approvals()
+            activity = self.store.activity()
         waiting = [{key: item[key] for key in ("id", "kind", "summary", "createdAt", "expiresAt")}
                    for item in approvals if item["state"] == "pending"]
         processes = {server["id"]: self.local.status(server["id"])
@@ -260,12 +280,21 @@ class Integrations:
         # routing IDs/paths if a short credential happens to equal that value.
         for item in waiting:
             item['summary'] = redact_secrets(item['summary'], secrets)
-        activity = self.store.activity()
         for item in activity:
             for field in ('target', 'outcome'):
                 item[field] = redact_secrets(item[field], secrets)
         return {"settings": public_config(config, secrets), "approvals": waiting,
                 "activity": activity, "processes": redact_secrets(processes, secrets)}
+
+    def _log(self, action, target, outcome):
+        with self.store.lock:
+            self.store.log(action, target, outcome)
+
+
+    def _revision(self):
+        """Call under store.lock; include credentials as well as the public revision."""
+        return digest(self.store.config(), self.store.secrets(), self._runtime_revision)
+
 
     def save(self, expected_revision, settings, changes):
         with self.store.lock:
@@ -310,20 +339,79 @@ class Integrations:
                 old_binding = bindings.get('mcp', {}).get(server['id'])
                 changed = changed or old.get('enabled') != server['enabled'] or old.get('tools') != server['tools']
                 updated['approvalBindings']['mcp'][server['id']] = uuid.uuid4().hex if changed or not old_binding else old_binding
+            # Revoke before state writes; interrupted saves fail closed.
+            self.store.save_approvals([])
             self.store.save_secrets(secrets)
             self.store.save_config(updated)
-            self.store.log("settings", "integrations", "saved")
-        # A server that was removed or turned off stops now; a changed one restarts on its next use.
-        self.local.keep_only({server["id"] for server in updated["mcp"]["servers"] if server["enabled"]})
+            self._log("settings", "integrations", "saved")
+            # Detach atomically so an older save cannot stop a newer admission.
+            enabled = {server["id"] for server in updated["mcp"]["servers"] if server["enabled"]}
+            with self.local.lock:
+                stopped = [self.local.running.pop(server_id) for server_id in list(self.local.running)
+                           if server_id not in enabled]
+        for current in stopped:
+            current.stop("it was turned off")
 
-    def _session(self, server, secrets=None):
-        secrets = self.store.secrets() if secrets is None else secrets
-        return McpSession(server, secrets["mcp"].get(server["id"], ""), secrets["mcpEnv"].get(server["id"], {}), self.local)
+    def _session(self, server):
+        # Construction does no I/O. Capture endpoint/command and credentials in
+        # the same admission; __enter__ must run after releasing store.lock.
+        with self.store.lock:
+            config, secrets = self.store.config(), self.store.secrets()
+            if self._server(config, server["id"], enabled=False) != server:
+                raise IntegrationError("stale-revision", "These settings changed. Reload them and try again.")
+            admitted = _AdmittedLocalServers(self, digest(config, secrets, self._runtime_revision))
+            return McpSession(server, secrets["mcp"].get(server["id"], ""), secrets["mcpEnv"].get(server["id"], {}), admitted)
 
-    def _owner_tools(self, server, secrets=None):
+    def _local_get(self, server, values, revision, *, deadline=None):
+        """Start outside admission, but never publish a startup from stale settings.
+
+        The per-server startup lock prevents an older admission replacing a newer
+        process after waiting for its startup. Settings/get never wait for it.
+        """
+        deadline = time.monotonic() + SESSION_TIMEOUT if deadline is None else deadline
+        candidate = LocalServer(server, values)
+        with self.local.lock:
+            starting = self.local.starting[server["id"]]
+        if not starting.acquire(timeout=max(0, deadline - time.monotonic())):
+            raise IntegrationError("mcp-busy", f"{server['name']} is still starting. Try again shortly.")
+        try:
+            with self.store.lock:
+                if self._revision() != revision:
+                    raise IntegrationError("stale-revision", "These settings changed before the local server started. Try again.")
+                with self.local.lock:
+                    current = self.local.running.get(server["id"])
+                    if current and current.alive() and current.fingerprint == candidate.fingerprint:
+                        return current
+                    self.local.running.pop(server["id"], None)
+            if current:
+                current.stop("its settings changed")
+            try:
+                candidate.start(deadline=deadline)
+                with self.store.lock:
+                    if self._revision() != revision:
+                        raise IntegrationError("stale-revision", "These settings changed while the local server started. Try again.")
+                    with self.local.lock:
+                        self.local.running[server["id"]] = candidate
+                        self.local.failures.pop(server["id"], None)
+                        if self.local.reaper is None:
+                            self.local.reaper = threading.Thread(target=self.local._reap, daemon=True)
+                            self.local.reaper.start()
+            except BaseException:
+                with self.local.lock:
+                    self.local.failures[server["id"]] = candidate.detail() or candidate.stopped_because or ""
+                candidate.stop("it failed to start or its settings changed")
+                raise
+            return candidate
+
+        finally:
+            starting.release()
+
+    def _owner_tools(self, server):
         """The server's tools; a local program's failure also shows the owner its last error output."""
         try:
-            with self._session(server, secrets) as session:
+            with self.store.lock:
+                admitted = self._session(server)
+            with admitted as session:
                 return session.tools()
         except IntegrationError as error:
             output = self.local.detail(server["id"]) if server["kind"] == "stdio" else ""
@@ -340,8 +428,11 @@ class Integrations:
             server = self._server(self.store.config(), server_id, enabled=False)
             secrets = self.store.secrets()
             context = digest(server_context(server, secrets))
-        tools = self._owner_tools(server, secrets)
+            revision = self._revision()
+        tools = self._owner_tools(server)
         with self.store.lock:
+            if self._revision() != revision:
+                raise IntegrationError("stale-revision", "These settings changed while checking tools. Reload them and try again.")
             config = self.store.config()
             server = self._server(config, server_id, enabled=False)
             if context != digest(server_context(server, self.store.secrets())):
@@ -361,9 +452,10 @@ class Integrations:
             server["discoveredAt"] = now()
             server['checkedBinding'] = context
             config["revision"] += 1
+            self.store.save_approvals([])
             self.store.save_config(config)
             added = sum(tool["new"] for tool in server["tools"])
-            self.store.log("mcp-discover", server["name"], f"{len(tools)} tools" + (f", {added} new" if added else ""))
+            self._log("mcp-discover", server["name"], f"{len(tools)} tools" + (f", {added} new" if added else ""))
 
     def test(self, server_id):
         """Connect and list the tools without changing anything; a sentence for the owner."""
@@ -371,7 +463,7 @@ class Integrations:
         names = {tool["name"] for tool in self._owner_tools(server)}
         known = {tool["name"] for tool in server["tools"]}
         added, gone = len(names - known), len(known - names)
-        self.store.log("mcp-test", server["name"], f"{len(names)} tools")
+        self._log("mcp-test", server["name"], f"{len(names)} tools")
         changes = []
         if added and server["discoveredAt"]:
             changes.append(f"{added} new")
@@ -391,29 +483,30 @@ class Integrations:
             match["state"] = "approved" if decision == "approve" else "declined"
             match["decidedAt"] = now()
             self.store.save_approvals(approvals)
-            self.store.log("approval", match["summary"], match["state"])
+            self._log("approval", match["summary"], match["state"])
 
     # Gateway (Portal agent) actions.
     def _agent(self, action, request):
-        config = self.store.config()
+        with self.store.lock:
+            config, secrets = self.store.config(), self.store.secrets()
         if action == "notes-search":
             query = str(request.get("query", ""))[:300]
             hits = notes.search(config, query)
-            self.store.log("notes-search", query[:80], f"{len(hits)} notes")
+            self._log("notes-search", query[:80], f"{len(hits)} notes")
             return {"results": hits}
         if action == "notes-read":
             relative, text = notes.read(config, request.get("path"))
-            self.store.log("notes-read", relative, "read")
+            self._log("notes-read", relative, "read")
             return {"path": relative, "text": text}
         if action == "notes-write":
             return self._notes_write(config, request)
         if action == "notify":
-            title = send_notification(config, self.store.secrets(), request.get("title"), request.get("message"),
+            title = send_notification(config, secrets, request.get("title"), request.get("message"),
                                       request.get("priority", "default"))
-            self.store.log("notify", title, "sent")
+            self._log("notify", title, "sent")
             return {"sent": True}
         if action == "mcp-tools":
-            return {"servers": self._agent_servers(config, self.store.secrets())}
+            return {"servers": self._agent_servers(config, secrets)}
         if action == "mcp-call":
             return self._mcp_call(config, request)
         raise IntegrationError("invalid-request", "Unknown integration action.")
@@ -421,6 +514,7 @@ class Integrations:
     def _notes_write(self, config, request):
         mode, relative = request.get("mode", "append"), str(request.get("path", ""))
         notes.validate_write(request.get('text'), mode)
+        waiting, notification = None, None
         with self.store.lock:
             config = self.store.config()
             policy = config['notes']['write']
@@ -430,11 +524,14 @@ class Integrations:
             epoch = self._binding(config, 'notes')
             if policy == 'ask':
                 summary = f"{'Add to' if mode == 'append' else 'Create'} note {relative}"
-                waiting = self._approval('note', summary, digest('note-v2', epoch, target, relative, mode, request.get('text')))
-                if waiting:
-                    return waiting
-            written = notes.write(config, relative, request.get('text'), mode, expected_binding=target)
-        self.store.log("notes-write", written, mode)
+                waiting, notification = self._approval('note', summary, digest('note-v2', epoch, target, relative, mode, request.get('text')))
+            if not waiting:
+                written = notes.write(config, relative, request.get('text'), mode, expected_binding=target)
+                self._log("notes-write", written, mode)
+        if notification:
+            self._notify_approval(notification)
+        if waiting:
+            return waiting
         return {"written": written, "mode": mode}
 
     @staticmethod
@@ -449,6 +546,7 @@ class Integrations:
         name, arguments = request.get("tool"), request.get("arguments", {})
         if not isinstance(arguments, dict):
             raise IntegrationError("invalid-request", "Tool arguments must be an object.")
+        waiting, notification = None, None
         with self.store.lock:
             config, secrets = self.store.config(), self.store.secrets()
             server = self._server(config, request.get('server'), enabled=True)
@@ -462,12 +560,16 @@ class Integrations:
             if tool['policy'] == 'ask':
                 argument_summary = redact_secrets(json.dumps(arguments, sort_keys=True), secrets)[:300]
                 summary = redact_secrets(f"{server['name']}: {name} {argument_summary}", secrets)
-                waiting = self._approval('mcp', summary, digest('mcp-v2', epoch, context, tool, name, arguments))
-                if waiting:
-                    return waiting
-        with self._session(server, secrets) as session:
+                waiting, notification = self._approval('mcp', summary, digest('mcp-v2', epoch, context, tool, name, arguments))
+            if not waiting:
+                admitted = self._session(server)
+        if notification:
+            self._notify_approval(notification)
+        if waiting:
+            return waiting
+        with admitted as session:
             text, failed = session.call(name, arguments)
-        self.store.log("mcp-call", f"{server['name']}: {name}", "error" if failed else "done")
+        self._log("mcp-call", f"{server['name']}: {name}", "error" if failed else "done")
         return {"server": server["id"], "tool": name, "text": redact_secrets(text, secrets), "isError": failed}
 
     def _binding(self, config, kind, server_id=None, *, rotate=False):
@@ -480,36 +582,40 @@ class Integrations:
         return values[key]
 
     def _approval(self, kind, summary, request_digest):
-        """None when this exact request was approved (the approval is used up), else the waiting reply."""
+        """Return (waiting reply, notification); no external I/O under admission.
+
+        (None, None) consumes an exact approval once. Only a new pending request
+        supplies a notification summary, sent by the caller after unlocking.
+        """
         with self.store.lock:
             approvals = self.store.approvals()
             approved = next((item for item in approvals if item["digest"] == request_digest and item["state"] == "approved"), None)
             if approved:
                 approved["state"], approved["usedAt"] = "used", now()
                 self.store.save_approvals(approvals)
-                return None
+                return None, None
             pending = next((item for item in approvals if item["digest"] == request_digest and item["state"] == "pending"), None)
             created = pending is None
             if created:
                 pending = {"id": uuid.uuid4().hex[:12], "kind": kind, "summary": summary[:400], "digest": request_digest,
                            "state": "pending", "createdAt": now(), "expiresAt": now() + APPROVAL_SECONDS}
                 self.store.save_approvals(approvals + [pending])
-                self.store.log("approval", summary, "requested")
-        if created:
-            self._notify_approval(summary)
-        return {"status": "approval-required", "approvalId": pending["id"], "summary": pending["summary"]}
+                self._log("approval", summary, "requested")
+        return ({"status": "approval-required", "approvalId": pending["id"], "summary": pending["summary"]},
+                summary if created else None)
 
     def _notify_approval(self, summary):
-        config = self.store.config()
+        with self.store.lock:
+            config, secrets = self.store.config(), self.store.secrets()
         settings = config["notifications"]
         if not (settings["enabled"] and settings["notifyApprovals"]):
             return
         try:
-            send_notification(config, self.store.secrets(), "Portal needs your approval", f"{summary}\n\n{APPROVAL_HELP}",
+            send_notification(config, secrets, "Portal needs your approval", f"{summary}\n\n{APPROVAL_HELP}",
                               "high", settings["approvalLink"])
         except IntegrationError as error:
             # The approval is still waiting in Settings; only the ping failed.
-            self.store.log("notify", "approval", error.message)
+            self._log("notify", "approval", error.message)
 
     @staticmethod
     def _server(config, server_id, *, enabled):

@@ -12,6 +12,7 @@ import textwrap
 import threading
 import time
 import unittest
+from unittest.mock import Mock, call, patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "host"))
 import integrations_mcp as mcp  # noqa: E402
@@ -187,6 +188,39 @@ class LocalServerTests(unittest.TestCase):
             self.owner("discover", serverId="local")
         self.assertIn("API_KEY is not set", refused.exception.message)
         self.assertIn("API_KEY is not set", self.owner("get")["processes"]["local"]["lastError"])
+
+    def test_stopping_an_exited_child_reaps_and_retries_a_denied_group_signal(self):
+        candidate = mcp.LocalServer(self.server(), {})
+        candidate.process = Mock(pid=12345)
+        candidate.process.poll.return_value = 1
+        with patch.object(mcp.os, "killpg", side_effect=[PermissionError(), ProcessLookupError(), ProcessLookupError()]) as kill:
+            candidate.stop()
+        candidate.process.poll.assert_called_once_with()
+        candidate.process.stdin.close.assert_called_once_with()
+        self.assertEqual(kill.call_args_list, [call(12345, mcp.signal.SIGTERM), call(12345, mcp.signal.SIGTERM),
+                                              call(12345, mcp.signal.SIGKILL)])
+
+    def test_stopping_an_exited_leader_still_signals_its_live_descendants(self):
+        candidate = mcp.LocalServer(self.server(), {})
+        candidate.process = Mock(pid=12345)
+        candidate.process.poll.return_value = 1
+        with patch.object(mcp.os, "killpg", side_effect=[PermissionError(), None, None]) as kill:
+            candidate.stop()
+        self.assertEqual(kill.call_args_list, [call(12345, mcp.signal.SIGTERM), call(12345, mcp.signal.SIGTERM),
+                                              call(12345, mcp.signal.SIGKILL)])
+        candidate.process.wait.assert_called_once_with(timeout=mcp.STOP_SECONDS)
+
+    def test_stopping_a_live_group_preserves_permission_failures(self):
+        for returncode in (None, 1):
+            with self.subTest(returncode=returncode):
+                candidate = mcp.LocalServer(self.server(), {})
+                candidate.process = Mock(pid=12345)
+                candidate.process.poll.return_value = returncode
+                with patch.object(mcp.os, "killpg", side_effect=PermissionError()) as kill:
+                    with self.assertRaises(PermissionError):
+                        candidate.stop()
+                self.assertEqual(kill.call_count, 1 if returncode is None else 2)
+                candidate.process.wait.assert_not_called()
 
     def test_a_server_that_never_answers_initialize_is_stopped(self):
         self.save(self.server("silent-start"))

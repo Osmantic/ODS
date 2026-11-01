@@ -17,6 +17,12 @@ fail() { FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$1" >&2; }
 check() { if "$@"; then pass "$*"; else fail "$*"; fi; }
 
 TEST_ROOT="$(mktemp -d)"
+# A fleet host may already have ODS installed. Never select its real transition
+# helper or service while exercising synthetic installer fixtures. Dedicated
+# access tests below replace these paths within their own subshells.
+export ODS_PIXEL_ACCESS_HELPER="$TEST_ROOT/absent-access/pixel_model_transition.py"
+export ODS_PIXEL_ACCESS_UNIT_PATH="$TEST_ROOT/absent-access/ods-pixel-access.service"
+export ODS_PIXEL_ACCESS_STATE_DIR="$TEST_ROOT/absent-access/state"
 cleanup() {
     case "$TEST_ROOT" in /tmp/*|/var/tmp/*) rm -rf -- "$TEST_ROOT" ;; esac
 }

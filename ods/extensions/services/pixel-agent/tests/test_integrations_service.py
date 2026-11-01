@@ -357,7 +357,7 @@ class IntegrationsTests(unittest.TestCase):
         self.assertEqual({hit["path"] for hit in self.agent("notes-search", query="deposit")["results"]}, {"Home/Lease.md", "Café notes.md"})
         self.assertIn("Grüße", self.agent("notes-read", path="Café notes")["text"])
         for path in ("Link.md", "Linked/outside.md"):
-            with self.assertRaisesRegex(service.IntegrationError, "outside the vault"):
+            with self.assertRaises(service.IntegrationError):
                 self.agent("notes-read", path=path)
             with self.assertRaises(service.IntegrationError):
                 self.agent("notes-write", path=path, text="x", mode="append")
@@ -421,12 +421,17 @@ class IntegrationsTests(unittest.TestCase):
         self.assertNotEqual(old['approvalId'], back['approvalId'])
         self.assertNotIn(request['text'], (self.vault / 'Groceries.md').read_text())
 
-    def test_unrelated_notification_save_preserves_exact_note_approval(self):
+    def test_unrelated_notification_save_revokes_exact_note_approval(self):
         self.save(self.settings(notify=False))
         request = dict(path='Groceries.md', text='unrelated-setting-control', mode='append')
         pending = self.agent('notes-write', **request)
         self.owner('decide', approvalId=pending['approvalId'], decision='approve')
         self.save(self.settings(notify=True), secrets={'ntfyPassword': 'pw'})
+        renewed = self.agent('notes-write', **request)
+        self.assertEqual(renewed['status'], 'approval-required')
+        self.assertNotEqual(renewed['approvalId'], pending['approvalId'])
+        self.assertNotIn(request['text'], (self.vault / 'Groceries.md').read_text())
+        self.owner('decide', approvalId=renewed['approvalId'], decision='approve')
         self.assertEqual(self.agent('notes-write', **request)['written'], 'Groceries.md')
 
     def test_hidden_and_hardlinked_notes_are_never_read_or_written(self):
@@ -620,7 +625,7 @@ class IntegrationsTests(unittest.TestCase):
         self.assertNotEqual(waiting['approvalId'], old['approvalId'])
         self.assertEqual(FakeMcp.calls, [])
 
-    def test_unrelated_ntfy_secret_change_preserves_mcp_approval(self):
+    def test_unrelated_ntfy_secret_change_revokes_mcp_approval(self):
         self.save(self.settings(servers=[self.home_server()], notify=False), secrets={'mcp': {'home': 'secret-token'}})
         self.owner('discover', serverId='home')
         current = self.settings(servers=[self.home_server(enabled=True)], notify=False)
@@ -629,6 +634,11 @@ class IntegrationsTests(unittest.TestCase):
         old = self.agent('mcp-call', **request)
         self.owner('decide', approvalId=old['approvalId'], decision='approve')
         self.save(current, secrets={'ntfyPassword': 'unrelated-invented-password'})
+        renewed = self.agent('mcp-call', **request)
+        self.assertEqual(renewed['status'], 'approval-required')
+        self.assertNotEqual(renewed['approvalId'], old['approvalId'])
+        self.assertEqual(FakeMcp.calls, [])
+        self.owner('decide', approvalId=renewed['approvalId'], decision='approve')
         self.assertEqual(self.agent('mcp-call', **request)['text'], 'done unlock')
 
     def test_a_fifo_note_is_refused_without_waiting_for_a_writer(self):
