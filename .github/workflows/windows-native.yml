@@ -256,12 +256,25 @@ jobs:
           if (Get-ScheduledTask -TaskName 'ODS' -ErrorAction SilentlyContinue) { $left += 'scheduled task ODS' }
           if (Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -in 3002, 3004, 8080 }) { $left += 'listener on 3002/3004/8080' }
           if ($left) { throw "Left behind after uninstall: $($left -join ', ')" }
+      - name: Show the install and ODS logs
+        if: always()
+        shell: pwsh
+        run: |
+          # One folder for the artifact (upload-artifact needs a common root),
+          # and the text in the job log so a failure reads without a download.
+          $out = New-Item -ItemType Directory -Force -Path (Join-Path $env:RUNNER_TEMP 'install-logs')
+          $sources = @((Join-Path $env:RUNNER_TEMP 'setup.log')) +
+                     @(Get-ChildItem -Path "$env:LOCALAPPDATA\ODS\Native\logs" -File -ErrorAction SilentlyContinue | ForEach-Object FullName)
+          foreach ($file in $sources) {
+            if (-not (Test-Path -LiteralPath $file)) { continue }
+            Copy-Item -LiteralPath $file -Destination $out
+            Write-Host "===== $file (last 80 lines) ====="
+            Get-Content -LiteralPath $file -Tail 80 | Write-Host
+          }
       - name: Upload install logs
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: windows-native-installer-logs
-          path: |
-            ${{ runner.temp }}/setup.log
-            ~/AppData/Local/ODS/Native/logs
+          path: ${{ runner.temp }}/install-logs
           if-no-files-found: ignore
