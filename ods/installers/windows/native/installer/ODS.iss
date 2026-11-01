@@ -33,7 +33,6 @@
 #endif
 
 #define PowerShellExe "{sys}\WindowsPowerShell\v1.0\powershell.exe"
-#define ControlArgs "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ""{app}\ods-native.ps1"""
 
 [Setup]
 AppId={{5E3CDDB9-03AB-428D-85D6-F520BFB0D03A}
@@ -66,7 +65,7 @@ Name: "{userprograms}\ODS"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\
 Filename: "{sys}\wscript.exe"; Parameters: """{app}\launch-ods.vbs"""; Description: "Open ODS"; Flags: postinstall nowait skipifsilent
 
 [UninstallRun]
-Filename: "{#PowerShellExe}"; Parameters: "{#ControlArgs} uninstall-state"; Flags: runhidden waituntilterminated; RunOnceId: "ODSUninstallState"
+Filename: "{#PowerShellExe}"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ""{app}\ods-native.ps1"" uninstall-state"; Flags: runhidden waituntilterminated; RunOnceId: "ODSUninstallState"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
