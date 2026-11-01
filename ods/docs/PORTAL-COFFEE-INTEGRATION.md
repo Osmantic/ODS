@@ -195,6 +195,14 @@ accepts exactly the same closed projection; legacy absence remains valid and
 malformed or credential-bearing fields still refuse. Root/host/Edge parity,
 HTTP relay and connection-evidence delivery controls cover this seam.
 
+The WSL source checks also reproduced stale changed-file analysis after rapid
+equal-size rewrites. A cached analysis now requires the safely read content
+digest and loading kind; each candidate read still charges the existing scan
+budget. Exact-read and hard-link refusals remain intact. Deterministic colliding
+stat-clock controls and Windows/WSL tests cover the repair. The pre-existing
+baseline size/mtime filter is unchanged: this does not claim detection of every
+possible rewrite that deliberately restores the baseline metadata.
+
 The actual installation still matches `d0a722794` in the selected installed-byte
 inspection. The newer merge has separate source/fixture validation, not another
 claimed live installation. Full Access and the original read-only Google record,
