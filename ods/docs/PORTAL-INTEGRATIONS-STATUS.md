@@ -6,6 +6,12 @@ combined branch includes the existing connected-apps stack (#8196 through
 integration work. The original PRs remain separate; this document does not
 mark them merged or replace their review.
 
+The November 1 composition now includes Coffee's #8324 and its Mike follow-ups,
+with notes, ntfy, HTTP/Home Assistant and local MCP, per-tool policy, approvals
+and Settings connected to the native Portal harness. See the
+[composition and acceptance record](PORTAL-COFFEE-INTEGRATION.md) for the actual
+Windows/WSL model/browser evidence, later source-only checks and remaining limits.
+
 Work resumed on October 29. [Count tools](PORTAL-COUNT-TOOLS.md) now have a Source,
 permission and guide implementation. The ordinary installed 4.3.41 update
 completed on Windows/WSL with the original read-only Google grant and 9B/64K
@@ -444,22 +450,22 @@ earlier checks on #8226 do not certify this branch.
 Coffee owns custom MCP server setup by URL/local command, tool inspection and
 Off/Ask first/Allowed permissions, Home Assistant, ntfy notifications, Obsidian,
 their exact-action approvals and their separate integration service/Settings
-section. His reported scope also includes owner/agent transport separation,
-installer/uninstaller handling and controlled end-to-end tests. These are
-reported work items awaiting his PR, not code or security results validated by
-this branch.
+section. The composition now includes his actual #8324 and Mike's follow-ups,
+preserving their commits. Owner/agent transport separation, installation and
+uninstallation are joined with the existing connection and scheduling stack.
+Full Access limitations remain explicit; this is not a same-UID isolation claim.
 
 This branch supplies Google/email/Calendar, reviewed fixed-app connection,
 native runtime lifecycle and native cron foundations. It does not add a
-competing custom-MCP editor, notification service, vault connector or approval
+second custom-MCP editor, notification service, vault connector or approval
 service. The Knowledge wiki's local Markdown storage is distinct from Obsidian.
 
-When Coffee's PR is available, review the shared Settings navigation, native
-registry/server IDs, preserved grants, pending Root/source transitions and
-current-model scope. Scheduled tasks should invoke his notification tool through
-the existing native cron/permission path. Agreement on those seams requires the
-actual code; this document does not claim the two implementations already
-compose successfully.
+The [composition record](PORTAL-COFFEE-INTEGRATION.md) documents the shared
+Settings navigation, combined native tool inventory, preserved Google grant and
+real 9B notes/notification/cron observations. Later main/Mike changes have separate
+source validation. Native macOS service implementation and release acceptance
+remain open. Coffee's announced richer task notifications, Paperless/Immich,
+page watching and daily news remain his next scope; they are not claimed here.
 
 Further native MCP design and exact remaining wiring are documented in
 [Portal native apps](PORTAL-NATIVE-APPS.md). Keep this consolidation in draft

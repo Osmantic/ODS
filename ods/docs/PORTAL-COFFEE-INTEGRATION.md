@@ -8,9 +8,15 @@ mark either PR merged or establish release acceptance.
 
 - Coffee's reviewed starting point is `09a570d9814494d99faf270b59f0af0c0107c97f`.
   Its three commits retain their author and history in the composition merge.
+- The follow-up composition also preserves Mike's four commits on that branch
+  through `775fc0a0a8a076796bd82a66e2d1e03697a72f2a` and the existing draft's
+  recovery changes through `b89d464a5d0a4887eeabc726c6754cec190dee39`.
 - The existing Portal foundation starts at
   `8ae5af7b33fd4e86513427e19838149b903e1472`, with current main
   `a1073a2adf8f6e8944172ba7005bd9cbb549465e` merged separately.
+- The November 1 source checkpoint additionally merges main through
+  `82ed80df72dbb596aac52a1104e9a319ca3bb86a`. Installed evidence below remains
+  bound to its October 30 source; it is not retroactively assigned to this merge.
 - The design experiment is a different worktree. Its visual changes are not
   part of this integration branch.
 
@@ -164,6 +170,44 @@ was proved, and no readiness gate was bypassed.
 The earlier failed requests stay negative evidence; they are not counted as
 successful acceptance. The later observations establish these scoped 9B flows,
 not arbitrary-model reliability or full release acceptance.
+
+## November 1 composition follow-up
+
+The newer Coffee/Mike changes retain their own history. The combined service
+keeps destination generations, checked catalog identities, opened-parent and
+note identities, secret redaction and shared transport deadlines. Saving settings
+or checking tools now revokes pending and approved requests, including unrelated
+ones, before later state writes. The earlier tests that preserved approvals
+through unrelated saves were updated for this deliberate policy change; an
+ordinary software update without a settings save remains a different operation.
+
+Provider calls and approval notifications run outside the admission lock. Local
+MCP startup captures the admitted configuration, checks it again before publishing
+the process and keeps the existing session deadline while waiting for startup.
+Restart or a settings change cannot publish an obsolete startup. Notes search
+traverses one opened vault descriptor, while writes retain the reviewed target
+and parent identities. The Unix descriptor, redirect, concurrent approval and
+actual local-process controls pass on the composed source.
+
+Reviewing Mike's plugin-recovery changes exposed a wire gap: Root and the owner
+UI accepted optional `pluginChange` status, while Edge rejected it. Edge now
+accepts exactly the same closed projection; legacy absence remains valid and
+malformed or credential-bearing fields still refuse. Root/host/Edge parity,
+HTTP relay and connection-evidence delivery controls cover this seam.
+
+The actual installation still matches `d0a722794` in the selected installed-byte
+inspection. The newer merge has separate source/fixture validation, not another
+claimed live installation. Full Access and the original read-only Google record,
+credential bytes and observed scope remain unchanged in the November 1 passive
+inspection. All ten product containers were healthy after cleanup. The invented
+QA configurations and credentials were cleared through the owner API, and only
+the four owned test containers, two networks and two volumes were removed. Notes,
+private logs and backups were preserved; the four one-time test jobs remain
+archived with their results. The cleanup driver's initial missing-object parser
+failure was retained; a follow-up confirmed all exact QA resources absent.
+
+Current-head hosted checks are separate from these local results. This remains a
+development draft, not a request to merge or a completed release qualification.
 
 ## Protocol and platform limits
 
