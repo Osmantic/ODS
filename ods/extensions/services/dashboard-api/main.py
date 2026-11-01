@@ -49,7 +49,11 @@ from models import (
     FullStatus, PortCheckRequest,
 )
 from security import verify_api_key
+import security
 from gpu import get_gpu_info
+from native_gateway import NativeGateway
+from native_runtime import ENABLED_SERVICES, NATIVE, NATIVE_CHAT_PORT, runtime_summary
+from same_origin import is_cross_site_state_change
 from helpers import (
     get_all_services, get_cached_services, get_services_cache_revision, set_services_cache,
     get_disk_usage, dir_size_gb, get_model_info, get_bootstrap_status,
@@ -306,8 +310,17 @@ def _bootstrap_activity(phase: Optional[str]) -> str:
     }.get(phase, "still downloading")
 
 
+# Readiness check id -> the services it reports on. With an explicit enabled
+# list (native runtime) a check for services the install does not run is left out.
+_READINESS_CHECK_SERVICES = {
+    "chat": {"llama-server"}, "open-webui": {"open-webui"}, "dashboard-api": {"dashboard-api"},
+    "host-agent": {"host-agent"}, "hermes": {"hermes"}, "voice": {"whisper", "tts"},
+}
+
+
 def _build_readiness_payload(
     *,
+    enabled_services: Optional[frozenset[str]] = None,
     service_statuses: list[ServiceStatus],
     loaded_model: Optional[str],
     context_size: Optional[int],
@@ -429,6 +442,10 @@ def _build_readiness_payload(
             repair="ods repair voice" if not can_use_voice else None,
         ))
 
+    if enabled_services is not None:
+        checks = [check for check in checks
+                  if _READINESS_CHECK_SERVICES[check["id"]] & enabled_services]
+        can_use_voice = can_use_voice and bool(_READINESS_CHECK_SERVICES["voice"] & enabled_services)
     required_ready = all(check["ready"] for check in checks if check["required"])
     optional_issues = [
         check for check in checks
@@ -1194,43 +1211,20 @@ app.add_middleware(
 # agent, and every other non-browser caller. Browsers attach Origin to all
 # cross-site POSTs, which is the case being defended against.
 
-_STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
-
-
-def _origin_matches_host(origin: str, host_header: str | None) -> bool:
-    """True when Origin names the same host:port as the Host header."""
-    if not host_header:
-        return False
-    try:
-        parsed = urlparse(origin)
-    except ValueError:
-        return False
-    if not parsed.hostname:
-        return False
-    return parsed.netloc == host_header
-
-
 @app.middleware("http")
 async def enforce_same_origin_for_state_changes(request: Request, call_next):
     """Reject cross-site state-changing requests before the route runs."""
-    if request.method in _STATE_CHANGING_METHODS:
-        origin = request.headers.get("origin")
-        # Sec-Fetch-Site is set by the browser and cannot be forged by page
-        # script, so it stands on its own when present.
-        cross_site = request.headers.get("sec-fetch-site") == "cross-site"
-        if origin is not None or cross_site:
-            same_origin = origin is not None and (
-                _origin_matches_host(origin, request.headers.get("host"))
-            )
-            if cross_site or not same_origin:
-                logger.warning(
-                    "Blocked cross-origin %s %s (origin=%r)",
-                    request.method, request.url.path, origin,
-                )
-                return JSONResponse(
-                    status_code=403,
-                    content={"detail": "Cross-origin state-changing request rejected."},
-                )
+    origin = request.headers.get("origin")
+    if is_cross_site_state_change(request.method, origin, request.headers.get("host"),
+                                  request.headers.get("sec-fetch-site")):
+        logger.warning(
+            "Blocked cross-origin %s %s (origin=%r)",
+            request.method, request.url.path, origin,
+        )
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Cross-origin state-changing request rejected."},
+        )
     return await call_next(request)
 
 # --- Include Routers ---
@@ -1273,6 +1267,29 @@ app.include_router(pixel_advice_runtime.router)
 app.include_router(pixel_sharing.router)
 app.include_router(pixel_model_failure.router)
 app.include_router(opencode_app.router)
+
+
+# --- Native runtime front door ---
+# ODS_RUNTIME=native has no nginx: this outermost layer serves the dashboard
+# build and applies nginx's sign-in gate, key injection and headers.
+_DEFAULT_DASHBOARD_DIST = Path(__file__).resolve().parent.parent / "dashboard" / "dist"
+
+
+def _native_gateway_options() -> dict[str, Any]:
+    port = os.environ.get("PIXEL_PREVIEW_PORT", "9437").strip()
+    if not port.isdigit():
+        raise ValueError("PIXEL_PREVIEW_PORT must be an integer from 1 to 65535")
+    return {
+        "dist_dir": os.environ.get("ODS_DASHBOARD_DIST") or _DEFAULT_DASHBOARD_DIST,
+        "api_key": security.DASHBOARD_API_KEY,
+        "session_is_valid": dashboard_session.session_is_valid,
+        "session_cookie_name": dashboard_session.SESSION_COOKIE_NAME,
+        "preview_port": int(port),
+    }
+
+
+if NATIVE:
+    app.add_middleware(NativeGateway, **_native_gateway_options())
 
 
 # ================================================================
@@ -1524,6 +1541,7 @@ async def api_status(api_key: str = Depends(verify_api_key)):
                           "inferenceActive": None,
                           "loadedModel": None, "contextSize": None},
             "manifest_errors": _public_manifest_errors(),
+            "runtime": runtime_summary(),
         }
         env_file_read_error = get_env_file_read_error()
         if env_file_read_error:
@@ -1546,11 +1564,13 @@ async def api_readiness(api_key: str = Depends(verify_api_key)):
         get_loaded_model(),
         get_llama_context_size(),
         asyncio.to_thread(get_bootstrap_status),
-        asyncio.to_thread(_probe_host_agent_health),
+        # A native install runs no host agent.
+        _no_host_agent() if NATIVE else asyncio.to_thread(_probe_host_agent_health),
         _check_stt_model_cached(),
     )
     stt_model_cached, stt_model_name = stt_result
     return _build_readiness_payload(
+        enabled_services=ENABLED_SERVICES,
         service_statuses=service_statuses,
         loaded_model=loaded_model,
         context_size=context_size,
@@ -1561,8 +1581,15 @@ async def api_readiness(api_key: str = Depends(verify_api_key)):
     )
 
 
+async def _no_host_agent() -> dict[str, Any]:
+    return {"available": False, "status_code": None, "latency_ms": None, "response": None,
+            "error": "no host agent in the native runtime"}
+
+
 async def _get_dashboard_remote_runtime() -> dict[str, object] | None:
     """Read the active provider without claiming remote model residency."""
+    if NATIVE:
+        return None  # remote providers run through the host agent and LiteLLM
     async def read_projection():
         # The host starts a background readback on a cold/expired cache.
         # Re-poll that transient gap within one absolute deadline.
@@ -1720,6 +1747,7 @@ async def _build_api_status() -> dict:
             "contextSize": context_size or (model_data["contextLength"] if model_data else None),
         },
         "manifest_errors": _public_manifest_errors(),
+        "runtime": runtime_summary(),
     }
     env_file_read_error = get_env_file_read_error()
     if env_file_read_error:
@@ -1733,10 +1761,18 @@ async def _build_api_status() -> dict:
 async def get_external_links(api_key: str = Depends(verify_api_key)):
     """Return sidebar-ready external links derived from service manifests."""
     links = []
+    if NATIVE and NATIVE_CHAT_PORT:
+        # llama-server needs its key on every API route; native_chat adds it.
+        links.append({
+            "id": "chat", "label": "Chat", "port": NATIVE_CHAT_PORT, "ui_path": "/",
+            "public_url": "", "icon": "MessageSquare", "healthNeedles": ["llama-server"],
+        })
     for sid, cfg in SERVICES.items():
         ext_port = cfg.get("external_port", cfg.get("port", 0))
         if not ext_port or sid == "dashboard-api" or cfg.get("external_link") is False:
             continue
+        if NATIVE and sid == "llama-server":
+            continue  # its own UI would ask the user for the API key
         links.append({
             "id": sid, "label": cfg.get("name", sid), "port": ext_port,
             "ui_path": cfg.get("ui_path", "/"),
@@ -2007,4 +2043,6 @@ async def _poll_service_health():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("DASHBOARD_API_PORT", "3002")))
+    # The native front door trusts loopback peers; it must never listen on the LAN.
+    uvicorn.run(app, host="127.0.0.1" if NATIVE else "0.0.0.0",
+                port=int(os.environ.get("DASHBOARD_API_PORT", "3002")))

@@ -43,8 +43,10 @@ from helpers import (
     get_llama_metrics,
     get_loaded_model,
     is_plausible_single_request_tps,
+    llama_auth_headers,
     record_model_performance,
 )
+from native_runtime import NATIVE
 from host_agent_client import (
     AgentClientError,
     AgentHTTPError,
@@ -2608,7 +2610,9 @@ async def _fetch_llama_loaded_model(host: str, port: int) -> str | None:
         LLM_BACKEND == "external"
         and os.environ.get("EXTERNAL_LLM_PROVIDER", "").strip().lower() == "openai-compatible"
     )
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    # The native llama-server's key goes only to that origin (empty otherwise).
+    auth = llama_auth_headers(base_url)
+    async with httpx.AsyncClient(timeout=10.0, **({"headers": auth} if auth else {})) as client:
         try:
             resp = await client.get(f"{base_url}/v1/models")
             resp.raise_for_status()
@@ -2706,8 +2710,9 @@ async def _run_current_model_benchmark(model_id: str, max_tokens: int) -> dict:
 
     # A Windows-hosted llama-server requires its key, which only LiteLLM
     # holds; every other runtime is measured directly.
-    url, headers = f"http://{host}:{port}/v1/chat/completions", None
-    if read_env_value("AMD_INFERENCE_LOCATION", INSTALL_DIR).strip().lower() == "host":
+    url = f"http://{host}:{port}/v1/chat/completions"
+    headers = llama_auth_headers(url) or None
+    if not NATIVE and read_env_value("AMD_INFERENCE_LOCATION", INSTALL_DIR).strip().lower() == "host":
         gateway_key = read_env_value("LITELLM_KEY", INSTALL_DIR) or read_env_value("LITELLM_MASTER_KEY", INSTALL_DIR)
         url = "http://litellm:4000/v1/chat/completions"
         headers = {"Authorization": f"Bearer {gateway_key}"} if gateway_key else None
@@ -2810,7 +2815,10 @@ def cancel_download(api_key: str = Depends(verify_api_key)):
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 json.dump({"generation": generation}, handle)
                 handle.flush()
-                os.fchmod(handle.fileno(), 0o644)
+                # Windows has no POSIX modes; the file inherits the data
+                # directory's ACL, which the native download worker can read.
+                if hasattr(os, "fchmod"):
+                    os.fchmod(handle.fileno(), 0o644)
                 os.fsync(handle.fileno())
             os.replace(temporary, request_path)
         except OSError:

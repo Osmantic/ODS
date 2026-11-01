@@ -2,6 +2,7 @@
 from urllib.parse import urlsplit, urlunsplit
 
 from config import read_live_env_values
+from native_runtime import NATIVE, bearer_for_origin, llama_server_api_key
 
 KEYS = (
     "LLM_API_URL", "OLLAMA_URL", "LLM_API_BASE_PATH", "LLM_MODEL", "LLM_BACKEND",
@@ -40,6 +41,10 @@ def resolve_chat_route(default_url: str) -> tuple[str, str, dict[str, str]]:
     env = {key: value.strip() for key, value in read_live_env_values(KEYS).items()}
     backend = env["LLM_BACKEND"].lower()
     raw = env["LLM_API_URL"] or env["OLLAMA_URL"] or default_url
+    if NATIVE and backend != "external":
+        # A native install has no gateway: chat goes to the llama-server it
+        # runs (default_url), with that server's own key.
+        return _native_llama_route(default_url, env)
     if (env["AMD_INFERENCE_LOCATION"].lower() == "host" and backend != "external"
             and urlsplit(raw).hostname not in ("litellm", "ods-litellm")):
         # A Windows-hosted llama-server requires its key, which only LiteLLM
@@ -69,4 +74,14 @@ def resolve_chat_route(default_url: str) -> tuple[str, str, dict[str, str]]:
     headers = {"Content-Type": "application/json"}
     if key:
         headers["Authorization"] = f"Bearer {key}"
+    return base + "/chat/completions", model, headers
+
+
+def _native_llama_route(default_url: str, env: dict[str, str]) -> tuple[str, str, dict[str, str]]:
+    base = api_base(default_url, env["LLM_API_BASE_PATH"] or "/v1")
+    origin = urlsplit(default_url)
+    headers = {"Content-Type": "application/json",
+               **bearer_for_origin(base, origin.hostname or "", origin.port or 80, llama_server_api_key())}
+    # Every managed llama-server serves its model as --alias <GGUF_FILE>.
+    model = env["GGUF_FILE"] or env["LLM_MODEL"] or "qwen3-coder-next"
     return base + "/chat/completions", model, headers

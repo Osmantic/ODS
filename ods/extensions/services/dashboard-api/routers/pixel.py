@@ -28,7 +28,7 @@ from runtime_projection import active_runtime_projection as _active_runtime_proj
 from pixel_runtime_state import begin_pixel_stream, end_pixel_stream, try_begin_pixel_stream
 from pixel_chat_results import ChatResultStore, ResultCapacity, ResultConflict, owner_namespace
 from security import verify_api_key
-from config import read_live_env_value
+from config import DATA_DIR, read_live_env_value
 from context_policy import PIXEL_MIN_CONTEXT
 from helpers import get_loaded_model, get_llama_context_size
 from pixel_chat_identity import messages_with_identity
@@ -228,7 +228,7 @@ _result_abort_ack: set[tuple[str, str, str]] = set()
 def _chat_results() -> ChatResultStore:
     global _result_store
     if _result_store is None:
-        _result_store = ChatResultStore(Path(os.environ.get("ODS_DATA_DIR", "/data")) / "pixel-chat-results")
+        _result_store = ChatResultStore(Path(os.environ.get("ODS_DATA_DIR", DATA_DIR)) / "pixel-chat-results")
     return _result_store
 
 

@@ -29,6 +29,7 @@ import CompactDashboard from '../components/CompactDashboard'
 import { serviceUrl } from '../lib/serviceUrls'
 import { openWithFreshSession, opensWithOdsSession } from '../lib/odsSession'
 import { getInferenceMode } from '../lib/inferenceMode'
+import { runtimeUnavailable } from '../lib/runtime'
 
 // Compute overall health from services (excludes not_deployed from counts)
 function computeHealth(services) {
@@ -724,7 +725,10 @@ export default function Dashboard({ status, loading, compact = false }) {
     }
   }, [])
 
+  // Per-container resources come from `docker stats`; a native install has none.
+  const resourcesAvailable = !runtimeUnavailable(status, 'resources')
   useEffect(() => {
+    if (!resourcesAvailable) return undefined
     let mounted = true
 
     const fetchServiceResources = async () => {
@@ -751,7 +755,7 @@ export default function Dashboard({ status, loading, compact = false }) {
       clearInterval(timer)
       document.removeEventListener('visibilitychange', onVisibility)
     }
-  }, [])
+  }, [resourcesAvailable])
 
   // All hooks must be called before any conditional returns (React rules of hooks)
   const features = useMemo(() => {

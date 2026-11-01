@@ -26,7 +26,9 @@ from env_values import parse_env_value
 from host_metrics import apple_host_metrics, linux_scope, windows_host_metrics
 from host_agent_client import AgentClientError, AgentHTTPError, async_request_json as request_agent_json
 from models import ServiceStatus, DiskUsage, ModelInfo, BootstrapStatus
+from native_runtime import NATIVE, bearer_for_origin, llama_server_api_key
 from service_health_dns import ServiceHealthResolver
+import windows_metrics
 
 
 class _DirSizeCache:
@@ -69,6 +71,24 @@ _dir_size_cache = _DirSizeCache()
 
 # Every managed runtime is upstream llama-server (OpenAI routes under /v1).
 _LLM_API_PREFIX = "/v1"
+
+
+def llama_auth_headers(url: str) -> dict[str, str]:
+    """The native llama-server's key, only for a request to that server.
+
+    Docker installs never hold it (empty); a native install runs llama-server
+    with ``--api-key-file``, which guards /props, /metrics, /slots and chat.
+    """
+    service = SERVICES.get("llama-server")
+    if not NATIVE or not service:
+        return {}
+    return bearer_for_origin(url, service["host"], service["port"], llama_server_api_key())
+
+
+def _llama_auth(url: str) -> dict:
+    """``headers=`` keyword for a llama-server request; none outside native mode."""
+    headers = llama_auth_headers(url)
+    return {"headers": headers} if headers else {}
 
 logger = logging.getLogger(__name__)
 
@@ -514,7 +534,7 @@ def _host_native_llm() -> bool:
     container never holds; the host agent reads them for the dashboard
     (``/v1/llm/status``), through the WSL bridge when the stack runs in WSL.
     """
-    return (LLM_BACKEND != "external"
+    return (not NATIVE and LLM_BACKEND != "external"
             and read_live_env_value("AMD_INFERENCE_LOCATION").strip().lower() == "host")
 
 
@@ -718,7 +738,7 @@ async def _fetch_llama_metrics(model_hint: Optional[str] = None, counter_id: Opt
             params = {"model": model_name} if model_name else {}
             slots_url = f"http://{host}:{metrics_port}/slots"
             client = await _get_httpx_client()
-            resp = await client.get(url, params=params)
+            resp = await client.get(url, params=params, **_llama_auth(url))
             resp.raise_for_status()
             metrics = _parse_llama_prometheus(resp.text)
 
@@ -758,7 +778,8 @@ async def _fetch_llama_metrics(model_hint: Optional[str] = None, counter_id: Opt
             _prev_tokens.pop("live_slots", None)
         if active is True and slots_url:
             try:
-                slots = await client.get(slots_url, params=params, timeout=2.0)
+                slots = await client.get(slots_url, params=params, timeout=2.0,
+                                         **_llama_auth(slots_url))
                 slots.raise_for_status()
                 live_rate = _observe_live_output_slots(slots.json(), _metrics_clock())
                 if live_rate is not None and live_rate > 0:
@@ -811,7 +832,8 @@ async def get_loaded_model() -> Optional[str]:
         )
 
         # llama.cpp: /v1/models returns the loaded model with status info.
-        resp = await client.get(f"http://{host}:{port}{_LLM_API_PREFIX}/models")
+        models_url = f"http://{host}:{port}{_LLM_API_PREFIX}/models"
+        resp = await client.get(models_url, **_llama_auth(models_url))
         models = resp.json().get("data", [])
         for m in models:
             status = m.get("status", {})
@@ -846,7 +868,7 @@ async def get_llama_context_size(model_hint: Optional[str] = None) -> Optional[i
         if loaded:
             url += f"?model={loaded}"
         client = await _get_httpx_client()
-        resp = await client.get(url)
+        resp = await client.get(url, **_llama_auth(url))
         n_ctx = resp.json().get("default_generation_settings", {}).get("n_ctx")
         return int(n_ctx) if n_ctx else None
     except (httpx.HTTPError, httpx.TimeoutException, ValueError, KeyError) as e:
@@ -873,7 +895,8 @@ async def get_llama_vision_support() -> Optional[bool]:
         host = SERVICES["llama-server"]["host"]
         port = SERVICES["llama-server"]["port"]
         client = await _get_httpx_client()
-        props = (await client.get(f"http://{host}:{port}/props")).json()
+        props_url = f"http://{host}:{port}/props"
+        props = (await client.get(props_url, **_llama_auth(props_url))).json()
     except (httpx.HTTPError, ValueError) as e:
         logger.debug("get_llama_vision_support failed: %s", e)
         return None
@@ -1122,6 +1145,22 @@ def _timeout_override_allowed(service_id: str, now: float) -> bool:
     return anchor is not None and now - anchor <= _TIMEOUT_OVERRIDE_GRACE_S
 
 
+async def _refresh_library_builtins(service_configs: dict) -> None:
+    try:
+        current_optional, _, _ = await asyncio.to_thread(
+            load_extension_manifests, EXTENSIONS_DIR, GPU_BACKEND,
+            only_service_ids=LIBRARY_MANAGEABLE_BUILTINS,
+        )
+    except OSError as exc:
+        logger.warning("Library built-in manifest refresh failed: %s", exc)
+        return
+    for service_id in LIBRARY_MANAGEABLE_BUILTINS:
+        if service_id in current_optional:
+            service_configs.setdefault(service_id, current_optional[service_id])
+        else:
+            service_configs.pop(service_id, None)
+
+
 async def get_all_services(*, only_service_ids: Optional[set[str]] = None) -> list[ServiceStatus]:
     """Get all service health statuses.
 
@@ -1133,19 +1172,10 @@ async def get_all_services(*, only_service_ids: Optional[set[str]] = None) -> li
     # omitted service becomes visible after Add, and disappears after Disable,
     # without changing the import-time registry or probing every omitted app.
     service_configs = dict(SERVICES)
-    try:
-        current_optional, _, _ = await asyncio.to_thread(
-            load_extension_manifests, EXTENSIONS_DIR, GPU_BACKEND,
-            only_service_ids=LIBRARY_MANAGEABLE_BUILTINS,
-        )
-    except OSError as exc:
-        logger.warning("Library built-in manifest refresh failed: %s", exc)
-    else:
-        for service_id in LIBRARY_MANAGEABLE_BUILTINS:
-            if service_id in current_optional:
-                service_configs.setdefault(service_id, current_optional[service_id])
-            else:
-                service_configs.pop(service_id, None)
+    # A native install (ODS_RUNTIME=native) runs exactly its enabled services:
+    # no Library built-ins come and go, and no host agent or Docker reconciles.
+    if not NATIVE:
+        await _refresh_library_builtins(service_configs)
     if only_service_ids is not None:
         service_configs = {sid: cfg for sid, cfg in service_configs.items() if sid in only_service_ids}
     tasks = [_switched_off_status(sid, cfg) or check_service_health(
@@ -1169,7 +1199,7 @@ async def get_all_services(*, only_service_ids: Optional[set[str]] = None) -> li
         _first_probe_seen.setdefault(status.id, now)
         if status.status == "healthy":
             _last_probe_success[status.id] = now
-    if not any(status.status in {"degraded", "down", "unhealthy"} for status in statuses):
+    if NATIVE or not any(status.status in {"degraded", "down", "unhealthy"} for status in statuses):
         return statuses
 
     try:
@@ -1557,6 +1587,11 @@ def get_cpu_metrics() -> dict:
         return {**_get_cpu_metrics_linux(), "scope": linux_scope(), "source": "linux-procfs"}
     elif _system == "Darwin":
         return {**_get_cpu_metrics_darwin(), "scope": "host", "source": "macos-top"}
+    elif _system == "Windows":
+        try:
+            return windows_metrics.cpu_metrics()
+        except OSError as e:
+            logger.warning("Windows CPU metrics unavailable: %s", e)
     return {"percent": None, "temp_c": None}
 
 
@@ -1641,6 +1676,11 @@ def get_ram_metrics() -> dict:
         return {**_get_ram_metrics_linux(), "scope": linux_scope(), "source": "linux-procfs"}
     elif _system == "Darwin":
         return {**_get_ram_metrics_sysctl(), "scope": "host", "source": "macos-vm-stat"}
+    elif _system == "Windows":
+        try:
+            return windows_metrics.ram_metrics()
+        except (OSError, ValueError) as e:
+            logger.warning("Windows RAM metrics unavailable: %s", e)
     return {"used_gb": None, "total_gb": None, "percent": None}
 
 

@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 import yaml
 
 from env_values import parse_env_value
+from native_runtime import ENABLED_SERVICES, LOOPBACK_HOST, NATIVE, native_port_override
 
 logger = logging.getLogger(__name__)
 
@@ -18,12 +19,12 @@ logger = logging.getLogger(__name__)
 
 INSTALL_DIR = os.environ.get("ODS_INSTALL_DIR", os.path.expanduser("~/ods"))
 DATA_DIR = os.environ.get("ODS_DATA_DIR", os.path.expanduser("~/.ods"))
-EXTENSIONS_DIR = Path(
-    os.environ.get(
-        "ODS_EXTENSIONS_DIR",
-        str(Path(INSTALL_DIR) / "extensions" / "services")
-    )
+# A native install keeps service manifests next to dashboard-api's own
+# directory (as the repository does); Docker mounts them under the install dir.
+_DEFAULT_EXTENSIONS_DIR = (
+    Path(__file__).resolve().parent.parent if NATIVE else Path(INSTALL_DIR) / "extensions" / "services"
 )
+EXTENSIONS_DIR = Path(os.environ.get("ODS_EXTENSIONS_DIR", str(_DEFAULT_EXTENSIONS_DIR)))
 
 DEFAULT_SERVICE_HOST = os.environ.get("SERVICE_HOST", "host.docker.internal")
 GPU_BACKEND = os.environ.get("GPU_BACKEND", "nvidia")
@@ -511,11 +512,17 @@ def _read_manifest_file(path: Path) -> dict[str, Any]:
 def load_extension_manifests(
     manifest_dir: Path, gpu_backend: str,
     *, only_service_ids: frozenset[str] | None = None,
+    native: bool = False,
 ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]], list[dict[str, str]]]:
     """Load service and feature definitions from extension manifests.
 
     Returns a 3-tuple: (services, features, errors) where *errors* is a list
     of ``{"file": ..., "error": ...}`` dicts for manifests that failed to load.
+
+    *native* describes a Windows-native install (``ODS_RUNTIME=native``):
+    the caller passes the enabled services as *only_service_ids*, each runs as
+    a host process on 127.0.0.1 at its published port, and Compose files and
+    image GPU variants do not apply.
     """
     services: dict[str, dict[str, Any]] = {}
     features: list[dict[str, Any]] = []
@@ -561,7 +568,7 @@ def load_extension_manifests(
                 if not service_id:
                     raise ValueError("service.id is required")
                 compose_file = str(service.get("compose_file") or "").strip()
-                if service.get("type") == "docker" and compose_file:
+                if service.get("type") == "docker" and compose_file and not native:
                     compose_path = ext_dir / compose_file
                     if not compose_path.exists():
                         logger.debug(
@@ -571,7 +578,9 @@ def load_extension_manifests(
                         )
                         continue
                 supported = service.get("gpu_backends", ["amd", "nvidia", "apple"])
-                if gpu_backend == "apple":
+                if native:
+                    pass  # the install chose these services; no image variant applies
+                elif gpu_backend == "apple":
                     if (
                         service.get("type") == "host-systemd"
                         and not service.get("macos_host_supported", False)
@@ -582,7 +591,7 @@ def load_extension_manifests(
                     continue
 
                 host_env = service.get("host_env")
-                default_host = service.get("default_host", "localhost")
+                default_host = LOOPBACK_HOST if native else service.get("default_host", "localhost")
                 host = os.environ.get(host_env, default_host) if host_env else default_host
 
                 ext_port_env = service.get("external_port_env")
@@ -593,10 +602,13 @@ def load_extension_manifests(
                 else:
                     external_port = int(ext_port_default)
 
+                if native:
+                    external_port = native_port_override(service_id, os.environ) or external_port
                 public_url = _resolve_public_service_url(service_id, service, ext_port_env, public_url_map)
                 service_config = {
                     "host": host,
-                    "port": int(service.get("port", 0)),
+                    # A native process listens where Docker would publish it.
+                    "port": external_port if native else int(service.get("port", 0)),
                     "external_port": external_port,
                     "health": service.get("health", "/health"),
                     "name": service.get("name", service_id),
@@ -645,13 +657,23 @@ def load_extension_manifests(
 
 # --- Service Registry ---
 
-MANIFEST_SERVICES, MANIFEST_FEATURES, MANIFEST_ERRORS = load_extension_manifests(EXTENSIONS_DIR, GPU_BACKEND)
+MANIFEST_SERVICES, MANIFEST_FEATURES, MANIFEST_ERRORS = load_extension_manifests(
+    EXTENSIONS_DIR, GPU_BACKEND, only_service_ids=ENABLED_SERVICES, native=NATIVE,
+)
 SERVICES = MANIFEST_SERVICES
 if not SERVICES:
     logger.error("No services loaded from manifests in %s — dashboard will have no services", EXTENSIONS_DIR)
+if NATIVE and ENABLED_SERVICES - SERVICES.keys():
+    raise RuntimeError(
+        f"ODS_NATIVE_SERVICES names services without a manifest in {EXTENSIONS_DIR}: "
+        f"{', '.join(sorted(ENABLED_SERVICES - SERVICES.keys()))}"
+    )
 
 LLM_BACKEND = normalize_llm_backend(os.environ.get("LLM_BACKEND", ""))
-_apply_host_native_llm_service_override(SERVICES, GPU_BACKEND)
+if not NATIVE:
+    # Docker reaches a Windows-hosted llama-server through host.docker.internal;
+    # a native install already probes the llama-server it runs on loopback.
+    _apply_host_native_llm_service_override(SERVICES, GPU_BACKEND)
 _apply_external_llm_service_override(SERVICES)
 
 # --- Features ---
@@ -880,6 +902,8 @@ def _resolve_agent_host() -> str:
     explicit = os.environ.get("ODS_AGENT_HOST", "").strip()
     if explicit:
         return explicit
+    if NATIVE:
+        return LOOPBACK_HOST
     if _running_inside_container():
         if _running_under_wsl():
             logger.info("Resolved ODS_AGENT_HOST=host.docker.internal for WSL")

@@ -8,12 +8,14 @@ from pathlib import Path
 from fastapi import HTTPException, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
+from config import DATA_DIR
+
 logger = logging.getLogger(__name__)
 
 DASHBOARD_API_KEY = os.environ.get("DASHBOARD_API_KEY")
 if not DASHBOARD_API_KEY:
     DASHBOARD_API_KEY = secrets.token_urlsafe(32)
-    key_file = Path("/data/dashboard-api-key.txt")
+    key_file = Path(DATA_DIR) / "dashboard-api-key.txt"
     key_file.parent.mkdir(parents=True, exist_ok=True)
     key_file.write_text(DASHBOARD_API_KEY)
     key_file.chmod(0o600)
