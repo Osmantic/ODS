@@ -467,6 +467,14 @@ source validation. Native macOS service implementation and release acceptance
 remain open. Coffee's announced richer task notifications, Paperless/Immich,
 page watching and daily news remain his next scope; they are not claimed here.
 
+At installed `25d4c3172`, fresh Chrome status-only Google and invented-note
+reads succeeded. The legacy-default prompt filter is confirmed active. In the
+original approval conversation, however, the unchanged second-append request
+still produced approval prose without a tool call or pending request. A private
+preparation-only tool candidate showed no improvement in a paired seeded local
+9B comparison and was not shipped. Reliable approval continuation remains open;
+successful service tests or CI do not certify that model behavior.
+
 Further native MCP design and exact remaining wiring are documented in
 [Portal native apps](PORTAL-NATIVE-APPS.md). Keep this consolidation in draft
 until those acceptance boundaries and maintainer review are resolved.

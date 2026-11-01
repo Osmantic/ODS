@@ -4,6 +4,41 @@ Development composition of [#8324](https://github.com/Osmantic/ODS/pull/8324)
 with [#8293](https://github.com/Osmantic/ODS/pull/8293). This document does not
 mark either PR merged or establish release acceptance.
 
+## Current acceptance checkpoint — November 1
+
+The installed code is `25d4c3172`, after six ordinary Windows/WSL/Docker
+updates. The latest update retained the original Google read-only grant,
+Full Access, integration state and previous backups. Independent postflight
+matched the selected service/plugin/runtime bytes and found the selected
+product services healthy, with no temporary QA authority left in that scope.
+Documentation-only commits after this checkpoint are not another installed
+code qualification.
+
+- **Working on the latest installation:** a fresh Chrome conversation called
+  connection status without reading emails or events, then read the invented
+  Obsidian note and returned its actual meeting time. Its native prompt report
+  confirms that the repaired legacy-default filter is active.
+- **Still failing:** the eighth turn of the original approval conversation,
+  with the unchanged request for a second append, described a new approval but
+  made no tool call and created no pending request. The note, configuration and
+  prior used approval stayed unchanged. The legacy-default repair is therefore
+  not a cure for this model counterexample.
+- **Rejected private candidate:** a preparation-only `request_write` action was
+  compared with the published code in a predeclared four-seed paired 9B test.
+  Both versions succeeded on three seeds and failed on the same fourth seed;
+  the candidate never selected the new action. There was no demonstrated
+  improvement. No preparation API, transcript reader or approval-status API
+  from these experiments is shipped. All eight private runs terminated and
+  their owned processes and temporary worlds were removed; evidence remains.
+- **Release gates:** reliable approval continuation, native macOS service
+  implementation and real acceptance, official Google client provisioning,
+  provider recovery/withdrawal and broader model/platform qualification remain
+  open. Keep the PR in draft.
+
+The seeded comparison controls the forwarded seed field; it does not establish
+bitwise determinism or a success rate for ordinary users. Earlier successful
+installed journeys below remain scoped to their recorded source and requests.
+
 ## Sources and ownership
 
 - Coffee's reviewed starting point is `09a570d9814494d99faf270b59f0af0c0107c97f`.
@@ -287,13 +322,18 @@ the four owned test containers, two networks and two volumes were removed. Notes
 private logs and backups were preserved; the four one-time test jobs remain
 archived with their results. The cleanup driver's initial missing-object parser
 failure was retained; a follow-up confirmed all exact QA resources absent.
-The separate November 1 invented notes connection remains enabled while the
-approval continuation is investigated; its file and receipts are preserved.
+After the November 1 qualification, the separate invented notes connection was
+disabled and its vault path cleared through the normal owner Save, guarded by
+the exact QA configuration/revision and sole used approval. No pending or
+approved owner requests were present. Other settings and opaque credential bytes
+were retained; the invented note, transcript, receipts and backups were preserved.
+Product services remain running.
 
-The published `f16e39be3` checkpoint completed its hosted checks without failures
-(the advisory tracking job intentionally skipped). Later code needs its own
-checks and installed qualification. This remains a
-development draft, not a request to merge or a completed release qualification.
+The published `25d4c3172` code checkpoint completed its hosted checks without
+failures (the advisory tracking job intentionally skipped). Passing checks do
+not resolve the installed model counterexample. Later code needs its own checks
+and installed qualification. This remains a development draft, not a request
+to merge or a completed release qualification.
 
 ## Protocol and platform limits
 
