@@ -851,6 +851,16 @@ class AppTests(unittest.TestCase):
         self.service.check_watches()
         self.assertEqual(FakeNtfy.sent, [])
 
+    def test_asking_again_for_a_watched_page_needs_no_approval(self):
+        self.save(self.settings(changes="allow"))
+        self.app("watch", "add", url="https://shop.example/kettle", title="Kettle", below=50)
+        self.save(self.settings(changes="ask"))
+        again = self.app("watch", "add", url="https://shop.example/kettle", title="Kettle", below=50)
+        self.assertEqual((again["done"], self.owner("get")["approvals"]), ("Kettle is already watched", []))
+        # A new limit is a change, so it still asks first.
+        self.assertEqual(self.app("watch", "add", url="https://shop.example/kettle", below=30)["status"], "approval-required")
+        self.assertEqual(self.store.watch_state()["w1"]["below"], 50.0)
+
     def test_an_odd_watch_list_is_an_explained_error(self):
         self.save(self.settings())
         FakeChanges.watches = {"w1": "not a watch"}
