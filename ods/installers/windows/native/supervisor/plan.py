@@ -42,10 +42,11 @@ SECRET_FILES = {
 
 _TOP_KEYS = {"schema_version", "install_root", "state_root", "host", "services", "restart", "logs"}
 _SERVICE_KEYS = {
-    "llama-server": {"enabled", "port", "model_path", "ctx_size", "exe", "extra_args", "health_timeout_seconds"},
+    "llama-server": {"enabled", "port", "model_path", "ctx_size", "exe", "webui", "extra_args", "health_timeout_seconds"},
     "dashboard-api": {"enabled", "port", "python_exe", "app_dir", "env", "health_timeout_seconds"},
 }
-_LLAMA_MANAGED_ARGS = {"--host", "--port", "--api-key", "--api-key-file", "-m", "--model", "-c", "--ctx-size"}
+_LLAMA_MANAGED_ARGS = {"--host", "--port", "--api-key", "--api-key-file", "-m", "--model", "-c", "--ctx-size",
+                       "--webui", "--no-webui"}
 _DASHBOARD_MANAGED_ENV = {
     "DASHBOARD_API_KEY", "LLAMA_SERVER_API_KEY", "DASHBOARD_API_PORT", "ODS_INSTALL_DIR", "ODS_DATA_DIR",
 }
@@ -156,9 +157,14 @@ def _llama_plan(svc, ctx):
              "services.llama-server.extra_args must be a list of strings")
     managed = sorted({a.split("=", 1)[0] for a in extra} & _LLAMA_MANAGED_ARGS)
     _require(not managed, f"services.llama-server.extra_args may not set {', '.join(managed)}; the supervisor sets them")
+    webui = svc.get("webui", False)
+    _require(isinstance(webui, bool), "services.llama-server.webui must be true or false")
     key_file = flavor.join(secrets_dir, SECRET_FILES["llama-server"])
+    # The native app serves llama-server's chat UI through dashboard-api,
+    # which adds the API key; the API stays keyed either way.
+    webui_args = () if webui else ("--no-webui",)
     argv = (exe, "--model", model, "--host", LOOPBACK_HOST, "--port", str(port),
-            "--ctx-size", str(ctx_size), "--api-key-file", key_file, "--no-webui", *extra)
+            "--ctx-size", str(ctx_size), "--api-key-file", key_file, *webui_args, *extra)
     return ServicePlan(
         name="llama-server", argv=argv, cwd=flavor.dirname(exe), port=port,
         health_url=_health_url(port),

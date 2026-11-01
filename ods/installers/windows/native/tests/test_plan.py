@@ -52,6 +52,30 @@ def test_windows_config_builds_ordered_loopback_plan():
     assert plan.restart == RestartPolicy()
 
 
+def test_webui_option_drops_no_webui_and_keeps_the_key_file():
+    cfg = config()
+    cfg["services"]["llama-server"]["webui"] = True
+    llama = build_plan(cfg).services[0]
+    assert "--no-webui" not in llama.argv
+    assert "--api-key-file" in llama.argv
+
+
+@pytest.mark.parametrize("value", ["yes", 1, None])
+def test_webui_option_must_be_boolean(value):
+    cfg = config()
+    cfg["services"]["llama-server"]["webui"] = value
+    with pytest.raises(ConfigError, match="webui"):
+        build_plan(cfg)
+
+
+@pytest.mark.parametrize("flag", ["--webui", "--no-webui"])
+def test_extra_args_cannot_toggle_the_webui(flag):
+    cfg = config()
+    cfg["services"]["llama-server"]["extra_args"] = [flag]
+    with pytest.raises(ConfigError, match="may not set"):
+        build_plan(cfg)
+
+
 def test_posix_roots_build_a_plan_for_linux_tests():
     plan = build_plan(config(install_root="/opt/ods", state_root="/var/ods", services={
         "llama-server": {"port": 8080, "model_path": "/var/ods/models/m.gguf"}}))
