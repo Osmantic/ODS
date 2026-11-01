@@ -177,7 +177,9 @@ function Assert-ODSNativeLlamaArchivePin($Pin) {
         if (-not $entries.Count) { $problem = 'cuda_archs_by_compute as compute capability -> CUDA arch names' }
     }
     if (-not $problem) {
-        foreach ($id in @($Pin.model_ladder) + @($Pin.fallback_models)) {
+        # CPU pins name no model ladder (the CPU tier rule picks the model);
+        # an absent list adds nothing to check.
+        foreach ($id in @(@($Pin.model_ladder) + @($Pin.fallback_models) | Where-Object { $null -ne $_ })) {
             if ([string]$id -cnotmatch '^[a-z0-9][a-z0-9._-]{0,127}$') { $problem = 'catalog ids in model_ladder and fallback_models'; break }
         }
     }

@@ -140,4 +140,7 @@ def test_closing_job_kills_member_process():
     job.assign(child.pid)
     assert job.contains(child.pid)
     job.close()
-    assert child.wait(timeout=15) != 0
+    # The child would sleep for two minutes; it is gone within seconds only
+    # because closing the job killed it. Windows reports exit code 0 for a
+    # kill-on-job-close, so the exit code proves nothing either way.
+    child.wait(timeout=15)
