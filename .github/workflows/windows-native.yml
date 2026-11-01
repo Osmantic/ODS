@@ -1,0 +1,123 @@
+name: Windows native
+
+# ODS as a native Windows app: no Docker, no WSL. See ods/docs/WINDOWS-NATIVE-PLAN.md.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/windows-native.yml'
+      - 'ods/installers/windows/native/**'
+      - 'ods/installers/windows/lib/native-llama-runtime.ps1'
+      - 'ods/config/backends/cpu.json'
+      - 'ods/tests/contracts/test-windows-native-llama-runtime.ps1'
+  push:
+    branches:
+      - 'feat/windows-native'
+      - 'wn/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-native-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  supervisor:
+    name: Supervisor tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.12'
+      - name: Install pytest
+        run: python -m pip install 'pytest==9.1.1'
+      - name: Run the supervisor tests
+        working-directory: ods/installers/windows/native
+        run: python -m pytest -q tests
+
+  powershell:
+    name: Native PowerShell (lint and contracts)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: ods
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Install PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          if (-not (Get-PackageProvider -Name NuGet -ListAvailable -ErrorAction SilentlyContinue)) {
+            Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Scope CurrentUser -Force -ForceBootstrap
+          }
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+            Register-PSRepository -Default
+          }
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module -Name PSScriptAnalyzer -Repository PSGallery -Scope CurrentUser -Force -AllowClobber
+          Import-Module PSScriptAnalyzer -ErrorAction Stop
+      - name: Analyze the native scripts
+        shell: pwsh
+        run: |
+          $scripts = @(Get-ChildItem -Path installers/windows/native -Filter *.ps1 -Recurse) +
+                     @(Get-Item installers/windows/lib/native-llama-runtime.ps1)
+          $failed = $false
+          foreach ($script in $scripts) {
+            $results = Invoke-ScriptAnalyzer -Path $script.FullName -Settings ./PSScriptAnalyzerSettings.psd1 -Severity Error,Warning
+            if ($results) { $results | Format-Table -AutoSize | Out-String | Write-Host; $failed = $true }
+          }
+          if ($failed) { exit 1 }
+      - name: Native runtime contracts (PowerShell 7)
+        shell: pwsh
+        run: ./tests/contracts/test-windows-native-llama-runtime.ps1
+      - name: Native runtime contracts (Windows PowerShell)
+        shell: powershell
+        run: ./tests/contracts/test-windows-native-llama-runtime.ps1
+
+  runtime-smoke:
+    name: llama-server.exe starts and answers (CPU)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      MODEL_URL: https://huggingface.co/ggml-org/test-model-stories260K/resolve/479896ec924af6d40fd419ab8f4d1eb2101de00d/stories260K-f32.gguf
+      MODEL_SHA256: 270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Download the pinned test model
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $model = Join-Path $env:RUNNER_TEMP 'stories260K-f32.gguf'
+          curl.exe --fail --location --silent --show-error --output $model $env:MODEL_URL
+          $actual = (Get-FileHash -Algorithm SHA256 $model).Hash.ToLowerInvariant()
+          if ($actual -ne $env:MODEL_SHA256) { throw "Model hash $actual, expected $env:MODEL_SHA256" }
+      - name: Install, verify and smoke-start the CPU runtime (native-app profile)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $state = Join-Path $env:RUNNER_TEMP 'ods-state'
+          $result = ./ods/installers/windows/native/fetch-runtime.ps1 `
+            -StateRoot $state `
+            -Destination (Join-Path $env:RUNNER_TEMP 'ods-app\llama') `
+            -ModelPath (Join-Path $env:RUNNER_TEMP 'stories260K-f32.gguf') `
+            -NativeApp -StopAfterProof
+          $result | Write-Host
+          $proof = $result | Select-Object -Last 1 | ConvertFrom-Json
+          if (-not (Test-Path -LiteralPath $proof.ExecutablePath)) { throw "No llama-server.exe at $($proof.ExecutablePath)" }
+          if ($proof.Running) { throw 'llama-server was still running after -StopAfterProof' }
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: windows-native-runtime-logs
+          path: ${{ runner.temp }}/ods-state/native-runtime
+          if-no-files-found: ignore
