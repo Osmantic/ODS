@@ -121,3 +121,86 @@ jobs:
           name: windows-native-runtime-logs
           path: ${{ runner.temp }}/ods-state/native-runtime
           if-no-files-found: ignore
+
+  installer:
+    name: Installer round trip (build, silent install, start, uninstall)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      MODEL_URL: https://huggingface.co/ggml-org/test-model-stories260K/resolve/479896ec924af6d40fd419ab8f4d1eb2101de00d/stories260K-f32.gguf
+      MODEL_SHA256: 270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: '22'
+      - name: Pester tests for the native helpers
+        shell: pwsh
+        run: Invoke-Pester -Path ods/installers/windows/native/tests -CI
+      - name: Build the bundle
+        shell: pwsh
+        run: ./ods/installers/windows/native/build-bundle.ps1 -OutputDir (Join-Path $env:RUNNER_TEMP 'bundle')
+      - name: Compile the installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          & $iscc "/DBundleDir=$(Join-Path $env:RUNNER_TEMP 'bundle')" '/DAppVersion=0.0.0-ci' "/O$(Join-Path $env:RUNNER_TEMP 'out')" ods\installers\windows\native\installer\ODS.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC exited $LASTEXITCODE" }
+      - name: Install silently, per-user
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = Get-ChildItem (Join-Path $env:RUNNER_TEMP 'out') -Filter 'ODS-Setup-*.exe' | Select-Object -First 1
+          $p = Start-Process $setup.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/CURRENTUSER','/NORESTART',"/LOG=$(Join-Path $env:RUNNER_TEMP 'setup.log')" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Setup exited $($p.ExitCode)" }
+          if (-not (Test-Path "$env:LOCALAPPDATA\Programs\ODS\ods-native.ps1")) { throw 'App files missing after install' }
+      - name: Start with a small model and check the dashboard answers on loopback
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $model = Join-Path $env:RUNNER_TEMP 'stories260K-f32.gguf'
+          curl.exe --fail --location --silent --show-error --output $model $env:MODEL_URL
+          if ((Get-FileHash -Algorithm SHA256 $model).Hash.ToLowerInvariant() -ne $env:MODEL_SHA256) { throw 'Model hash mismatch' }
+          $ctl = "$env:LOCALAPPDATA\Programs\ODS\ods-native.ps1"
+          powershell -NoProfile -ExecutionPolicy Bypass -File $ctl stop
+          if ($LASTEXITCODE -ne 0) { throw "stop exited $LASTEXITCODE" }
+          powershell -NoProfile -ExecutionPolicy Bypass -File $ctl install-state -ModelPath $model -CtxSize 2048
+          if ($LASTEXITCODE -ne 0) { throw "install-state exited $LASTEXITCODE" }
+          powershell -NoProfile -ExecutionPolicy Bypass -File $ctl start
+          if ($LASTEXITCODE -ne 0) { throw "start exited $LASTEXITCODE" }
+          powershell -NoProfile -ExecutionPolicy Bypass -File $ctl open -NoBrowser
+          if ($LASTEXITCODE -ne 0) { throw "open exited $LASTEXITCODE" }
+          powershell -NoProfile -ExecutionPolicy Bypass -File $ctl status
+          $health = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:3002/health
+          if ($health.StatusCode -ne 200) { throw "dashboard-api /health answered $($health.StatusCode)" }
+          $llama = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8080/health
+          if ($llama.StatusCode -ne 200) { throw "llama-server /health answered $($llama.StatusCode)" }
+          # Every ODS listener is loopback-only.
+          $ods = Get-NetTCPConnection -State Listen | Where-Object { $_.LocalPort -in 3002, 8080 }
+          $ods | Format-Table LocalAddress, LocalPort, OwningProcess | Out-String | Write-Host
+          if ($ods | Where-Object { $_.LocalAddress -notin '127.0.0.1', '::1' }) { throw 'An ODS service listens beyond loopback' }
+      - name: Uninstall silently and check nothing is left
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $p = Start-Process "$env:LOCALAPPDATA\Programs\ODS\unins000.exe" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/REMOVEDATA' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Uninstall exited $($p.ExitCode)" }
+          Start-Sleep -Seconds 5
+          $left = @()
+          foreach ($path in "$env:LOCALAPPDATA\Programs\ODS", "$env:LOCALAPPDATA\ODS\Native",
+                            "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\ods-native.vbs") {
+            if (Test-Path -LiteralPath $path) { $left += $path }
+          }
+          if (Get-ScheduledTask -TaskName 'ODS' -ErrorAction SilentlyContinue) { $left += 'scheduled task ODS' }
+          if (Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -in 3002, 8080 }) { $left += 'listener on 3002/8080' }
+          if ($left) { throw "Left behind after uninstall: $($left -join ', ')" }
+      - name: Upload install logs
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: windows-native-installer-logs
+          path: |
+            ${{ runner.temp }}/setup.log
+            ~/AppData/Local/ODS/Native/logs
+          if-no-files-found: ignore

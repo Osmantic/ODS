@@ -50,7 +50,7 @@ Describe 'New-ODSNativeSupervisorConfig' {
         $config = New-ODSNativeSupervisorConfig -Paths $paths -ModelPath 'D:\m.gguf'
         (@($config.Keys) -join ',') | Should -Be 'schema_version,install_root,state_root,host,services,restart,logs'
         foreach ($key in $config.services['llama-server'].Keys) {
-            $key | Should -BeIn @('enabled', 'port', 'model_path', 'ctx_size', 'exe', 'extra_args', 'health_timeout_seconds')
+            $key | Should -BeIn @('enabled', 'port', 'model_path', 'ctx_size', 'exe', 'webui', 'extra_args', 'health_timeout_seconds')
         }
         foreach ($key in $config.services['dashboard-api'].Keys) {
             $key | Should -BeIn @('enabled', 'port', 'python_exe', 'app_dir', 'env', 'health_timeout_seconds')

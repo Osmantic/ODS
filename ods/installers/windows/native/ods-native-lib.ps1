@@ -130,6 +130,8 @@ function New-ODSNativeSupervisorConfig {
             model_path = $ModelPath
             ctx_size = $CtxSize
             exe = $Paths.LlamaServer
+            # Built-in chat UI on; dashboard-api serves it and adds the key.
+            webui = $true
             extra_args = @()
         }
     }
