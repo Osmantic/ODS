@@ -15,6 +15,18 @@
 #                           Use a long (not 8.3) absolute path such as
 #                           $env:RUNNER_TEMP: the listener proof compares it
 #                           with the running process's path.
+#   -Destination <dir>      Optional. Also publish the verified runtime here
+#                           (the bundle builder passes <staging>\llama, so the
+#                           supervisor finds <install_root>\llama\
+#                           llama-server.exe). The copy carries pin.json and
+#                           is re-verified; an existing verified copy of the
+#                           same pin is kept, any other is replaced. The smoke
+#                           start then runs this copy.
+#   -ApiKeyPath <file>      Key file for the smoke start (default
+#                           <StateRoot>\native-runtime\api-key; the supervisor
+#                           uses <state>\secrets\llama-server-api-key). An
+#                           existing file must hold a valid key and is reused;
+#                           otherwise a new owner-only key file is written.
 #   -Architecture x64|arm64 Defaults to this Windows' processor architecture.
 #   -SourceRoot <dir>       The ODS tree holding config/backends/cpu.json.
 #                           Defaults to the tree this script is in.
@@ -34,7 +46,8 @@
 # key answers 401, and POST /completion with the key generates. With
 # -NativeApp, GET / must serve the web UI; without it, GET / must not.
 #
-# Output: one JSON line on stdout: ExecutablePath, ReleaseTag, Flavor, Build,
+# Output: one JSON line on stdout: ExecutablePath (the -Destination copy when
+# given), RuntimeDirectory, ReleaseTag, Flavor, Build,
 # and with -ModelPath also Port, ProcessId, ApiKeyPath, LogPath, Running.
 # Any failure throws (exit code 1) with the cause.
 #
@@ -46,6 +59,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$StateRoot,
+    [string]$Destination = '',
+    [string]$ApiKeyPath = '',
     [ValidateSet('x64', 'arm64', IgnoreCase = $false)][string]$Architecture = '',
     [string]$SourceRoot = '',
     [string]$ModelPath = '',
@@ -66,7 +81,9 @@ if (-not $Architecture) {
         throw "Unsupported Windows processor architecture '$processor'; pass -Architecture x64 or arm64."
     }
 }
-if (-not [IO.Path]::IsPathRooted($StateRoot)) { throw "-StateRoot must be an absolute path: $StateRoot" }
+foreach ($path in @($StateRoot, $Destination, $ApiKeyPath)) {
+    if ($path -and -not [IO.Path]::IsPathRooted($path)) { throw "-StateRoot, -Destination and -ApiKeyPath must be absolute paths: $path" }
+}
 
 function Assert-ODSFetchHttp($Response, [int]$Expected, [string]$What) {
     if ($Response.StatusCode -ne $Expected) {
@@ -78,8 +95,17 @@ $pin = Get-ODSNativeLlamaPin -SourceRoot $SourceRoot -Backend cpu -Architecture 
 $runtime = Install-ODSNativeLlamaRuntime -Pin $pin -Root (Join-Path $StateRoot 'llama.cpp')
 $qualification = Test-ODSNativeLlamaQualification -ExecutablePath $runtime.ExecutablePath -ExpectedBuild $pin.Build `
     -Backend cpu -Architecture $Architecture
+$executablePath = $runtime.ExecutablePath
+$runtimeDirectory = $runtime.Directory
+if ($Destination) {
+    # Copies, then re-verifies the copy against its pin.json before publishing.
+    $published = Publish-ODSNativeLlamaRuntimeCopy -Runtime $runtime -Destination $Destination
+    $executablePath = $published.ExecutablePath
+    $runtimeDirectory = $published.Directory
+}
 $result = [ordered]@{
-    ExecutablePath = $runtime.ExecutablePath
+    ExecutablePath = $executablePath
+    RuntimeDirectory = $runtimeDirectory
     ReleaseTag = $runtime.ReleaseTag
     Flavor = $runtime.Flavor
     Build = $qualification.Build
@@ -93,11 +119,16 @@ if (-not (Test-Path -LiteralPath $ModelPath -PathType Leaf)) { throw "-ModelPath
 $model = (Resolve-Path -LiteralPath $ModelPath).Path
 $runtimeDir = Join-Path $StateRoot 'native-runtime'
 New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
-$apiKeyPath = Join-Path $runtimeDir 'api-key'
-$apiKey = New-ODSNativeLlamaApiKey
-Write-ODSNativeLlamaApiKeyFile -Path $apiKeyPath -Key $apiKey
+$keyFile = if ($ApiKeyPath) { $ApiKeyPath } else { Join-Path $runtimeDir 'api-key' }
+if (Test-Path -LiteralPath $keyFile -PathType Leaf) {
+    $apiKey = Read-ODSNativeLlamaApiKey $keyFile
+} else {
+    New-Item -ItemType Directory -Path (Split-Path -Parent $keyFile) -Force | Out-Null
+    $apiKey = New-ODSNativeLlamaApiKey
+    Write-ODSNativeLlamaApiKeyFile -Path $keyFile -Key $apiKey
+}
 $plan = [pscustomobject]@{
-    ExecutablePath = $runtime.ExecutablePath
+    ExecutablePath = $executablePath
     ModelsDir = Split-Path -Parent $model
     GgufFile = Split-Path -Leaf $model
     ContextSize = $ContextSize
@@ -110,7 +141,7 @@ $options = [pscustomobject]@{
     Architecture = $Architecture
     Device = 'none'
     NGpuLayers = '0'
-    ApiKeyPath = $apiKeyPath
+    ApiKeyPath = $keyFile
     LogPath = (Join-Path $runtimeDir 'llama-server.log')
     ReleaseTag = $runtime.ReleaseTag
     ZipSha256 = $runtime.ZipSha256
@@ -119,10 +150,10 @@ $options = [pscustomobject]@{
     ExtraArguments = @()
 }
 # The same pin.json re-check the Portal launcher runs before every start.
-$null = Test-ODSNativeLlamaInstall -Directory $runtime.Directory -ExpectedZipSha256 $runtime.ZipSha256 -ExpectedReleaseTag $runtime.ReleaseTag
+$null = Test-ODSNativeLlamaInstall -Directory $runtimeDirectory -ExpectedZipSha256 $runtime.ZipSha256 -ExpectedReleaseTag $runtime.ReleaseTag
 $arguments = New-ODSNativeLlamaLaunchArguments $plan $options
 $child = Start-Process -FilePath $plan.ExecutablePath -ArgumentList (ConvertTo-ODSNativeLlamaArgumentString $arguments) `
-    -WorkingDirectory $runtime.Directory -WindowStyle Hidden -PassThru
+    -WorkingDirectory $runtimeDirectory -WindowStyle Hidden -PassThru
 $null = $child.Handle
 [IO.File]::WriteAllText((Join-Path $runtimeDir 'llama-server.pid'), [string]$child.Id)
 $stopped = $false
@@ -153,7 +184,7 @@ try {
 }
 $result['Port'] = $Port
 $result['ProcessId'] = $child.Id
-$result['ApiKeyPath'] = $apiKeyPath
+$result['ApiKeyPath'] = $keyFile
 $result['LogPath'] = $options.LogPath
 $result['Running'] = -not $stopped
 Write-Output ($result | ConvertTo-Json -Compress)

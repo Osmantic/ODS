@@ -182,11 +182,13 @@ def test_fetch_runtime_documents_its_parameters_and_uses_the_library() -> None:
     header, _, body = text.partition("[CmdletBinding()]")
     params = re.findall(r"\]\[(?:string|int|switch)\]\$(\w+)", body.split("$ErrorActionPreference", 1)[0])
     params += re.findall(r"^\s+\[(?:string|int|switch)\]\$(\w+)", body.split("$ErrorActionPreference", 1)[0], re.M)
-    assert set(params) >= {"StateRoot", "Architecture", "SourceRoot", "ModelPath", "Port", "ContextSize",
+    assert set(params) >= {"StateRoot", "Destination", "ApiKeyPath", "Architecture", "SourceRoot", "ModelPath", "Port", "ContextSize",
                            "NativeApp", "StartupTimeoutSeconds", "StopAfterProof"}, params
     for name in set(params):
         assert f"-{name}" in header, f"fetch-runtime.ps1 does not document -{name}"
     assert "Get-ODSNativeLlamaPin -SourceRoot $SourceRoot -Backend cpu" in body
     assert "Install-ODSNativeLlamaRuntime" in body and "Test-ODSNativeLlamaQualification" in body
     assert "New-ODSNativeLlamaLaunchArguments $plan $options" in body
+    # The bundle builder's <staging>\llama copy goes through the verified publisher.
+    assert "Publish-ODSNativeLlamaRuntimeCopy -Runtime $runtime -Destination $Destination" in body
     assert "--ctx-size" not in body and "--host" not in body, "fetch-runtime.ps1 must not build its own llama-server argv"
