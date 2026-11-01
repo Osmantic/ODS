@@ -242,6 +242,9 @@ keywords nor creates or approves actions itself. Separate fresh-session controls
 also passed: an already approved exact request executed once and became used;
 an unrelated question made no integration calls or effects. The actual installed
 continuation remains a separate gate.
+These comparisons loaded the production plugin and native SDK/guards with the
+source-read catalog; optional research and project-build capabilities were
+unavailable in the private fixture. They do not qualify those services or a Mac.
 
 The October 30 invented QA configurations and credentials were cleared through
 the owner API, and only
