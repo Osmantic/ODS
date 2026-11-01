@@ -177,6 +177,9 @@ cannot wander off searching the web. If Portal did not read the news in that run
 or the run fails or takes more than 10 minutes, the owner gets the plain brief of
 new story titles instead, so the digest always arrives. **Send a digest now**
 in Settings sends that plain brief right away, and its stories count as sent.
+OpenClaw retries a failed digest run, so a run that finds nothing new within two
+hours of a digest sends nothing, and "Today's digest could not be made" (when
+FreshRSS cannot be reached) is sent once until a digest goes out again.
 Asked for the news in a chat, Portal reads all unread stories, sent or not.
 
 ## Setting up
@@ -220,7 +223,9 @@ can read any folder the owner can.
 - Notifications are plain text, up to 4,000 characters; the digest stays under
   3,900 bytes.
 - The service forgets which scheduled tasks were failing when it restarts, so a
-  task still failing then notifies once more.
+  task still failing then notifies once more. It also forgets when the last digest
+  went out (it keeps which stories it sent), so a retried digest run right after
+  a restart may say "No new stories" once.
 - MCP results passed to the model are clipped to 8,000 characters.
 - Up to 20 MCP servers, and up to 200 tools per server.
 - Scheduled tasks can also end by calling `pixel_ods_notify` with their own message.
