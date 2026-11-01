@@ -124,6 +124,16 @@ function New-ODSNativeLlamaFailure([string]$Message, [string]$Class) {
 
 # --- Pin ----------------------------------------------------------------------
 
+function Get-ODSNativePinIdList {
+    # A pin's model_ladder or fallback_models, or an empty list when the pin
+    # names none (CPU pins: the CPU tier rule picks the model). Safe under
+    # Set-StrictMode, which a caller such as build-bundle.ps1 may have on.
+    param([Parameter(Mandatory = $true)]$Pin, [Parameter(Mandatory = $true)][string]$Name)
+    $property = $Pin.PSObject.Properties[$Name]
+    if (-not $property -or $null -eq $property.Value) { return @() }
+    return @($property.Value | Where-Object { $null -ne $_ })
+}
+
 function Assert-ODSNativeLlamaArchivePin($Pin) {
     # A flavor shipped as release archives (config/backends/nvidia.json).
     $tag = [string]$Pin.release_tag
@@ -179,7 +189,7 @@ function Assert-ODSNativeLlamaArchivePin($Pin) {
     if (-not $problem) {
         # CPU pins name no model ladder (the CPU tier rule picks the model);
         # an absent list adds nothing to check.
-        foreach ($id in @(@($Pin.model_ladder) + @($Pin.fallback_models) | Where-Object { $null -ne $_ })) {
+        foreach ($id in @(Get-ODSNativePinIdList $Pin 'model_ladder') + @(Get-ODSNativePinIdList $Pin 'fallback_models')) {
             if ([string]$id -cnotmatch '^[a-z0-9][a-z0-9._-]{0,127}$') { $problem = 'catalog ids in model_ladder and fallback_models'; break }
         }
     }
@@ -283,8 +293,8 @@ function Get-ODSNativeLlamaArchivePin([string]$SourceRoot, [string]$ContractName
         RequiredFiles = @($pin.required_files | ForEach-Object { [string]$_ })
         RequiredCudaArchs = $archs
         MinDriverVersion = [string]$pin.min_driver_version
-        ModelLadder = @($pin.model_ladder | ForEach-Object { [string]$_ })
-        FallbackModels = @($pin.fallback_models | ForEach-Object { [string]$_ })
+        ModelLadder = @(Get-ODSNativePinIdList $pin 'model_ladder' | ForEach-Object { [string]$_ })
+        FallbackModels = @(Get-ODSNativePinIdList $pin 'fallback_models' | ForEach-Object { [string]$_ })
     }
 }
 
