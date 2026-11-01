@@ -30,6 +30,8 @@ $script:ODSNativeStartupFileName = 'ods-native.vbs'
 $script:ODSNativeStartupMarker = "' ODS native supervisor sign-in launcher"
 $script:ODSNativeLlamaPort = 8080
 $script:ODSNativeDashboardPort = 3002
+# llama-server's chat UI, proxied with the key added server-side (native_chat.py).
+$script:ODSNativeChatPort = 3004
 $script:ODSNativeDefaultCtxSize = 8192
 
 function Join-ODSNativePath {
@@ -130,7 +132,7 @@ function New-ODSNativeSupervisorConfig {
             model_path = $ModelPath
             ctx_size = $CtxSize
             exe = $Paths.LlamaServer
-            # Built-in chat UI on; dashboard-api serves it and adds the key.
+            # Built-in chat UI on; the chat proxy serves it and adds the key.
             webui = $true
             extra_args = @()
         }
@@ -145,6 +147,7 @@ function New-ODSNativeSupervisorConfig {
             'dashboard-api' = [ordered]@{
                 enabled = $true
                 port = $script:ODSNativeDashboardPort
+                chat_port = $script:ODSNativeChatPort
                 python_exe = $Paths.Python
                 app_dir = $Paths.DashboardApi
                 env = (Get-ODSNativeDashboardEnv)

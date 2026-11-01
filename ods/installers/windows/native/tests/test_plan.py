@@ -164,3 +164,47 @@ def test_restart_window_counts_only_recent_crashes():
     assert restart_allowed((10, 20), 30, policy)
     assert not restart_allowed((10, 20, 30), 30, policy)
     assert restart_allowed((10, 20, 30), 115, policy)
+
+
+def test_chat_port_adds_the_chat_proxy_after_dashboard_api():
+    cfg = config()
+    cfg["services"]["dashboard-api"]["chat_port"] = 3004
+    plan = build_plan(cfg)
+    assert [s.name for s in plan.services] == ["llama-server", "dashboard-api", "chat"]
+    dash, chat = plan.services[1:]
+    assert chat.argv == (r"C:\Users\u\AppData\Local\Programs\ODS\python\python.exe", "-m", "uvicorn",
+                         "native_chat:app", "--host", "127.0.0.1", "--port", "3004")
+    assert chat.cwd == dash.cwd
+    assert chat.health_url == "http://127.0.0.1:3004/health"
+    assert chat.log_path == r"C:\Users\u\AppData\Local\ODS\logs\chat.log"
+    # Both processes need the chat port: dashboard-api to link to it, the proxy to know it is native.
+    for svc in (dash, chat):
+        assert svc.env["ODS_NATIVE_CHAT_PORT"] == "3004"
+        assert svc.env["ODS_RUNTIME"] == "native"
+        assert svc.env["LLAMA_SERVER_PORT"] == "8080"
+        assert svc.secret_env == dash.secret_env
+
+
+def test_chat_proxy_is_skipped_without_llama_server():
+    cfg = config()
+    cfg["services"]["llama-server"] = {"enabled": False}
+    cfg["services"]["dashboard-api"]["chat_port"] = 3004
+    plan = build_plan(cfg)
+    assert [s.name for s in plan.services] == ["dashboard-api"]
+    assert "ODS_NATIVE_CHAT_PORT" not in plan.services[0].env
+    assert "LLAMA_SERVER_PORT" not in plan.services[0].env
+
+
+def test_chat_port_must_differ_from_the_other_ports():
+    cfg = config()
+    cfg["services"]["dashboard-api"]["chat_port"] = 8080
+    with pytest.raises(ConfigError, match="distinct"):
+        build_plan(cfg)
+
+
+def test_dashboard_env_may_not_override_the_native_switches():
+    for name in ("ODS_RUNTIME", "ODS_NATIVE_CHAT_PORT", "LLAMA_SERVER_PORT"):
+        cfg = config()
+        cfg["services"]["dashboard-api"]["env"] = {name: "x"}
+        with pytest.raises(ConfigError, match=name):
+            build_plan(cfg)

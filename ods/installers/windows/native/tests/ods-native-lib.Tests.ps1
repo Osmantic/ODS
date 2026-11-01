@@ -38,6 +38,7 @@ Describe 'New-ODSNativeSupervisorConfig' {
         $config.services['llama-server'].port | Should -Be 8080
         $config.services['dashboard-api'].port | Should -Be 3002
         $config.services['dashboard-api'].python_exe | Should -Be $paths.Python
+        $config.services['dashboard-api'].chat_port | Should -Be 3004
     }
 
     It 'disables llama-server without a model' {
@@ -53,7 +54,7 @@ Describe 'New-ODSNativeSupervisorConfig' {
             $key | Should -BeIn @('enabled', 'port', 'model_path', 'ctx_size', 'exe', 'webui', 'extra_args', 'health_timeout_seconds')
         }
         foreach ($key in $config.services['dashboard-api'].Keys) {
-            $key | Should -BeIn @('enabled', 'port', 'python_exe', 'app_dir', 'env', 'health_timeout_seconds')
+            $key | Should -BeIn @('enabled', 'port', 'chat_port', 'python_exe', 'app_dir', 'env', 'health_timeout_seconds')
         }
     }
 

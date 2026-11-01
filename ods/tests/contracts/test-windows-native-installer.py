@@ -153,7 +153,7 @@ def test_paths_agree_with_the_supervisor_plan():
     assert f"host = '{plan.LOOPBACK_HOST}'" in lib
     for key in ("enabled", "port", "model_path", "ctx_size", "exe", "webui", "extra_args"):
         assert key in plan._SERVICE_KEYS["llama-server"]
-    for key in ("enabled", "port", "python_exe", "app_dir", "env"):
+    for key in ("enabled", "port", "chat_port", "python_exe", "app_dir", "env"):
         assert key in plan._SERVICE_KEYS["dashboard-api"]
 
 
@@ -168,7 +168,7 @@ def test_supervisor_accepts_the_config_the_lib_writes():
             "llama-server": {"enabled": True, "port": 8080, "model_path": "D:\\m.gguf", "ctx_size": 8192,
                              "exe": root + "\\Programs\\ODS\\llama\\llama-server.exe", "webui": True,
                              "extra_args": []},
-            "dashboard-api": {"enabled": True, "port": 3002, "python_exe": root + "\\Programs\\ODS\\python\\python.exe",
+            "dashboard-api": {"enabled": True, "port": 3002, "chat_port": 3004, "python_exe": root + "\\Programs\\ODS\\python\\python.exe",
                               "app_dir": root + "\\Programs\\ODS\\dashboard-api",
                               "env": {"SERVICE_HOST": "127.0.0.1", "GPU_BACKEND": "cpu"}},
         },
@@ -177,7 +177,8 @@ def test_supervisor_accepts_the_config_the_lib_writes():
     }
     launch = plan.build_plan(config)
     assert launch.stop_file == root + "\\ODS\\Native\\run\\supervisor.stop"
-    assert [s.name for s in launch.services] == ["llama-server", "dashboard-api"]
+    assert [s.name for s in launch.services] == ["llama-server", "dashboard-api", "chat"]
+    assert "$script:ODSNativeChatPort = 3004" in LIB.read_text(encoding="utf-8")
     assert "--no-webui" not in launch.services[0].argv
     assert "webui = $true" in LIB.read_text(encoding="utf-8")
     config["services"]["llama-server"] = {"enabled": False}

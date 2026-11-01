@@ -43,12 +43,13 @@ SECRET_FILES = {
 _TOP_KEYS = {"schema_version", "install_root", "state_root", "host", "services", "restart", "logs"}
 _SERVICE_KEYS = {
     "llama-server": {"enabled", "port", "model_path", "ctx_size", "exe", "webui", "extra_args", "health_timeout_seconds"},
-    "dashboard-api": {"enabled", "port", "python_exe", "app_dir", "env", "health_timeout_seconds"},
+    "dashboard-api": {"enabled", "port", "chat_port", "python_exe", "app_dir", "env", "health_timeout_seconds"},
 }
 _LLAMA_MANAGED_ARGS = {"--host", "--port", "--api-key", "--api-key-file", "-m", "--model", "-c", "--ctx-size",
                        "--webui", "--no-webui"}
 _DASHBOARD_MANAGED_ENV = {
     "DASHBOARD_API_KEY", "LLAMA_SERVER_API_KEY", "DASHBOARD_API_PORT", "ODS_INSTALL_DIR", "ODS_DATA_DIR",
+    "ODS_RUNTIME", "ODS_NATIVE_CHAT_PORT", "LLAMA_SERVER_PORT",
 }
 _DEFAULT_HEALTH_TIMEOUT = {"llama-server": 600.0, "dashboard-api": 60.0}
 
@@ -175,7 +176,11 @@ def _llama_plan(svc, ctx):
     )
 
 
-def _dashboard_plan(svc, ctx, llama_enabled):
+def _dashboard_plans(svc, ctx, llama_port):
+    """dashboard-api, plus its chat proxy when llama-server runs and chat_port is set.
+
+    llama_port is None when llama-server is disabled.
+    """
     flavor, install_root, state_root = ctx["flavor"], ctx["install_root"], ctx["state_root"]
     port = _int(svc.get("port"), "services.dashboard-api.port", MIN_PORT, MAX_PORT)
     python_exe = _absolute(svc.get("python_exe", flavor.join(install_root, "python", "python.exe")),
@@ -187,24 +192,43 @@ def _dashboard_plan(svc, ctx, llama_enabled):
              "services.dashboard-api.env must map strings to strings")
     managed = sorted(set(extra_env) & _DASHBOARD_MANAGED_ENV)
     _require(not managed, f"services.dashboard-api.env may not set {', '.join(managed)}; the supervisor sets them")
+    chat_port = svc.get("chat_port")
+    if chat_port is not None:
+        chat_port = _int(chat_port, "services.dashboard-api.chat_port", MIN_PORT, MAX_PORT)
+    # Chat proxies llama-server's built-in UI; without llama-server it has nothing to serve.
+    run_chat = chat_port is not None and llama_port is not None
     env = dict(extra_env)
     env.update({
+        "ODS_RUNTIME": "native",
         "DASHBOARD_API_PORT": str(port),
         "ODS_INSTALL_DIR": install_root,
         "ODS_DATA_DIR": flavor.join(state_root, "data"),
         "PYTHONUNBUFFERED": "1",
     })
+    if llama_port is not None:
+        env["LLAMA_SERVER_PORT"] = str(llama_port)
+    if run_chat:
+        env["ODS_NATIVE_CHAT_PORT"] = str(chat_port)
     secret_env = {"DASHBOARD_API_KEY": flavor.join(ctx["secrets_dir"], SECRET_FILES["dashboard-api"])}
-    if llama_enabled:
+    if llama_port is not None:
         secret_env["LLAMA_SERVER_API_KEY"] = flavor.join(ctx["secrets_dir"], SECRET_FILES["llama-server"])
-    argv = (python_exe, "-m", "uvicorn", "main:app", "--host", LOOPBACK_HOST, "--port", str(port))
-    return ServicePlan(
-        name="dashboard-api", argv=argv, cwd=app_dir, port=port, health_url=_health_url(port),
-        health_timeout_seconds=_positive_number(
-            svc.get("health_timeout_seconds", _DEFAULT_HEALTH_TIMEOUT["dashboard-api"]),
-            "services.dashboard-api.health_timeout_seconds"),
-        log_path=flavor.join(ctx["log_dir"], "dashboard-api.log"), env=env, secret_env=secret_env,
-    )
+    health_timeout = _positive_number(
+        svc.get("health_timeout_seconds", _DEFAULT_HEALTH_TIMEOUT["dashboard-api"]),
+        "services.dashboard-api.health_timeout_seconds")
+
+    def uvicorn(name, app, svc_port):
+        argv = (python_exe, "-m", "uvicorn", app, "--host", LOOPBACK_HOST, "--port", str(svc_port))
+        return ServicePlan(
+            name=name, argv=argv, cwd=app_dir, port=svc_port, health_url=_health_url(svc_port),
+            health_timeout_seconds=health_timeout, log_path=flavor.join(ctx["log_dir"], f"{name}.log"),
+            env=dict(env), secret_env=dict(secret_env),
+        )
+
+    plans = [uvicorn("dashboard-api", "main:app", port)]
+    if run_chat:
+        # The chat proxy forwards /health to llama-server, which started first.
+        plans.append(uvicorn("chat", "native_chat:app", chat_port))
+    return plans
 
 
 def _restart_policy(raw):
@@ -242,11 +266,13 @@ def build_plan(config):
     _require(enabled, "services must enable at least one service")
 
     services = []
+    llama_port = None
     for name in enabled:
         if name == "llama-server":
             services.append(_llama_plan(services_raw[name], ctx))
+            llama_port = services[-1].port
         else:
-            services.append(_dashboard_plan(services_raw[name], ctx, "llama-server" in enabled))
+            services.extend(_dashboard_plans(services_raw[name], ctx, llama_port))
     ports = [s.port for s in services]
     _require(len(ports) == len(set(ports)), f"service ports must be distinct, got {ports}")
 

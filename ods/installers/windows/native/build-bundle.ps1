@@ -158,7 +158,7 @@ function Test-Bundle {
     param([Parameter(Mandatory = $true)][string]$Bundle, [Parameter(Mandatory = $true)][string]$Work)
     $probe = 'import supervisor, fastapi, uvicorn, aiohttp, httpx, PIL, yaml, jsonschema, qrcode, httptools, watchfiles, websockets'
     Invoke-Checked -FilePath (Join-Path $Bundle 'python\python.exe') -ArgumentList @('-c', $probe) -WorkingDirectory $Work
-    foreach ($required in @('python\pythonw.exe', 'native\supervisor\__main__.py', 'dashboard-api\main.py',
+    foreach ($required in @('python\pythonw.exe', 'native\supervisor\__main__.py', 'dashboard-api\main.py', 'dashboard-api\native_chat.py', 'llama-server\manifest.yaml',
             'dashboard\dist\index.html', 'llama\llama-server.exe', 'ods-native.ps1', 'launch-ods.vbs',
             'lib\ods-native-lib.ps1', 'lib\private-file.ps1', 'lib\backend-contract.ps1')) {
         if (-not (Test-Path -LiteralPath (Join-Path $Bundle $required) -PathType Leaf)) { throw "The bundle is missing $required." }
@@ -175,6 +175,9 @@ try {
     Install-BundledPython -Bundle $bundle -Work $work
     Copy-SourceTree -Source (Join-Path $native 'supervisor') -Destination (Join-Path $bundle 'native\supervisor')
     Copy-SourceTree -Source (Join-Path $RepoRoot 'ods\extensions\services\dashboard-api') -Destination (Join-Path $bundle 'dashboard-api')
+    # Native dashboard-api reads the manifests of the services it runs from its parent folder.
+    New-Item -ItemType Directory -Force -Path (Join-Path $bundle 'llama-server') | Out-Null
+    Copy-Item -LiteralPath (Join-Path $RepoRoot 'ods\extensions\services\llama-server\manifest.yaml') -Destination (Join-Path $bundle 'llama-server')
     Install-Dashboard -Bundle $bundle
     Install-LlamaRuntime -Bundle $bundle
     New-Item -ItemType Directory -Force -Path (Join-Path $bundle 'lib') | Out-Null

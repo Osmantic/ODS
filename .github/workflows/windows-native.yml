@@ -9,6 +9,8 @@ on:
       - 'ods/installers/windows/lib/native-llama-runtime.ps1'
       - 'ods/config/backends/cpu.json'
       - 'ods/tests/contracts/test-windows-native-llama-runtime.ps1'
+      - 'ods/extensions/services/dashboard-api/**'
+      - 'ods/extensions/services/dashboard/**'
   push:
     branches:
       - 'feat/windows-native'
@@ -41,6 +43,27 @@ jobs:
       - name: Run the supervisor tests
         working-directory: ods/installers/windows/native
         run: python -m pytest -q tests
+
+  dashboard-e2e:
+    name: Native dashboard and chat proxy end to end (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: '22'
+      - name: Install the locked dashboard-api dependencies
+        run: python -m pip install --require-hashes -r ods/extensions/services/dashboard-api/requirements.lock
+      - name: Build the dashboard, run dashboard-api and the chat proxy natively, check the gate
+        run: python ods/installers/windows/native/tests/e2e_dashboard_native.py
 
   powershell:
     name: Native PowerShell (lint and contracts)
@@ -177,9 +200,47 @@ jobs:
           $llama = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8080/health
           if ($llama.StatusCode -ne 200) { throw "llama-server /health answered $($llama.StatusCode)" }
           # Every ODS listener is loopback-only.
-          $ods = Get-NetTCPConnection -State Listen | Where-Object { $_.LocalPort -in 3002, 8080 }
+          $ods = Get-NetTCPConnection -State Listen | Where-Object { $_.LocalPort -in 3002, 3004, 8080 }
           $ods | Format-Table LocalAddress, LocalPort, OwningProcess | Out-String | Write-Host
           if ($ods | Where-Object { $_.LocalAddress -notin '127.0.0.1', '::1' }) { throw 'An ODS service listens beyond loopback' }
+      - name: Chat works through the proxy and the key stays on the server
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $key = (Get-Content -Raw "$env:LOCALAPPDATA\ODS\Native\secrets\llama-server-api-key").Trim()
+          # llama-server itself refuses a request without its key.
+          $direct = curl.exe --silent --output NUL --write-out '%{http_code}' http://127.0.0.1:8080/v1/models
+          if ($direct -ne '401') { throw "llama-server answered $direct without its key" }
+          $page = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:3004/
+          if ($page.StatusCode -ne 200) { throw "chat UI answered $($page.StatusCode)" }
+          $body = '{"messages":[{"role":"user","content":"Once upon a time"}],"max_tokens":8}'
+          $chat = Invoke-WebRequest -UseBasicParsing -Method Post -ContentType 'application/json' -Body $body http://127.0.0.1:3004/v1/chat/completions
+          $reply = ($chat.Content | ConvertFrom-Json).choices[0].message.content
+          Write-Host "Chat reply: $reply"
+          if ($null -eq $reply) { throw 'No chat reply through the proxy' }
+          $dash = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:3002/
+          foreach ($served in $page.Content, $chat.Content, $dash.Content) {
+            if ($served.Contains($key)) { throw 'The llama-server key reached the browser' }
+          }
+      - name: A killed service is restarted by the supervisor
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $owner = (Get-NetTCPConnection -State Listen -LocalPort 8080 | Select-Object -First 1).OwningProcess
+          Stop-Process -Id $owner -Force
+          $deadline = (Get-Date).AddSeconds(120)
+          do {
+            Start-Sleep -Seconds 2
+            $now = Get-NetTCPConnection -State Listen -LocalPort 8080 -ErrorAction SilentlyContinue | Select-Object -First 1
+          } until (($now -and $now.OwningProcess -ne $owner) -or (Get-Date) -ge $deadline)
+          if (-not $now -or $now.OwningProcess -eq $owner) { throw 'llama-server was not restarted' }
+          # /health answers 503 while the model loads.
+          do {
+            $code = curl.exe --silent --output NUL --write-out '%{http_code}' http://127.0.0.1:8080/health
+            if ($code -ne '200') { Start-Sleep -Seconds 1 }
+          } until ($code -eq '200' -or (Get-Date) -ge $deadline)
+          if ($code -ne '200') { throw "restarted llama-server answered $code" }
+          Write-Host "llama-server restarted as PID $($now.OwningProcess)"
       - name: Uninstall silently and check nothing is left
         shell: pwsh
         run: |
@@ -193,7 +254,7 @@ jobs:
             if (Test-Path -LiteralPath $path) { $left += $path }
           }
           if (Get-ScheduledTask -TaskName 'ODS' -ErrorAction SilentlyContinue) { $left += 'scheduled task ODS' }
-          if (Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -in 3002, 8080 }) { $left += 'listener on 3002/8080' }
+          if (Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -in 3002, 3004, 8080 }) { $left += 'listener on 3002/3004/8080' }
           if ($left) { throw "Left behind after uninstall: $($left -join ', ')" }
       - name: Upload install logs
         if: always()
