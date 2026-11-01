@@ -208,12 +208,13 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $key = (Get-Content -Raw "$env:LOCALAPPDATA\ODS\Native\secrets\llama-server-api-key").Trim()
-          # llama-server itself refuses a request without its key.
-          $direct = curl.exe --silent --output NUL --write-out '%{http_code}' http://127.0.0.1:8080/v1/models
+          # llama-server itself refuses a chat without its key (/health and
+          # /v1/models are public by llama.cpp's design, so probe a chat).
+          $body = '{"messages":[{"role":"user","content":"Once upon a time"}],"max_tokens":8}'
+          $direct = $body | curl.exe --silent --output NUL --write-out '%{http_code}' -H 'Content-Type: application/json' --data-binary '@-' http://127.0.0.1:8080/v1/chat/completions
           if ($direct -ne '401') { throw "llama-server answered $direct without its key" }
           $page = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:3004/
           if ($page.StatusCode -ne 200) { throw "chat UI answered $($page.StatusCode)" }
-          $body = '{"messages":[{"role":"user","content":"Once upon a time"}],"max_tokens":8}'
           $chat = Invoke-WebRequest -UseBasicParsing -Method Post -ContentType 'application/json' -Body $body http://127.0.0.1:3004/v1/chat/completions
           $reply = ($chat.Content | ConvertFrom-Json).choices[0].message.content
           Write-Host "Chat reply: $reply"
