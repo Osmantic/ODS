@@ -230,26 +230,26 @@ def photos_search(settings, key, *, query="", place="", after="", before=""):
         filters["takenAfter"] = f"{after}T00:00:00.000Z"
     if before:
         filters["takenBefore"] = f"{before}T23:59:59.999Z"
-    note = ""
+    narrowed = bool(place or after or before)
+    reply, mode, note = None, "description", ""
     if query and describes_photos(settings, key):
         try:
             reply = _immich(settings, key, "/api/search/smart", {"query": query, **filters})
         except IntegrationError as error:
+            # Turned on, but Immich could not reach its machine learning: where and when may still answer.
             if error.code != "app-failed":
                 raise
-            # Turned on, but Immich could not reach its machine learning.
-            raise IntegrationError("photos-no-description", "Immich could not search by what is in a photo; its machine "
-                                   "learning may not be running. Search by place or date instead.") from None
-        mode = "description"
-    elif query and not (place or after or before):
+            if not narrowed:
+                raise IntegrationError("photos-no-description", "Immich could not search by what is in a photo; its machine "
+                                       "learning may not be running. Search by place or date instead.") from None
+    elif query and not narrowed:
         raise IntegrationError("photos-no-description", "Immich cannot search by what is in a photo until its machine "
                                "learning is running. Search by place or date instead.")
-    else:
+    if reply is None:
         if query:
             note = (f"Searched by place and date only, not for \"{query}\": searching by what is in a photo needs "
-                    "Immich's machine learning.")
-        reply = _immich(settings, key, "/api/search/metadata", {**filters, "order": "desc"})
-        mode = "details"
+                    "Immich's machine learning, which is not running.")
+        reply, mode = _immich(settings, key, "/api/search/metadata", {**filters, "order": "desc"}), "details"
     _shape("photos", isinstance(reply, dict) and isinstance(reply.get("assets"), dict) and _records(reply["assets"].get("items"), "id"))
     found = reply["assets"]["items"]
     # Immich gives the next page's number while more photos match.

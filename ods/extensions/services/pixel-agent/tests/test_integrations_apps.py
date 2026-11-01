@@ -291,8 +291,16 @@ class AppTests(unittest.TestCase):
         self.assertIn('not for "dog"', found["note"])
         text = self.agent("mcp-call", server="photos", tool="search", arguments={"query": "dog", "place": "Lisbon"})["text"]
         self.assertIn("beach.jpg", text)
-        self.assertIn("Searched by place and date only, not for \"dog\": searching by what is in a photo needs Immich's machine learning.", text)
+        self.assertIn("Searched by place and date only, not for \"dog\": searching by what is in a photo needs Immich's machine learning, "
+                      "which is not running.", text)
         self.assertNotIn("note", self.app("photos", "search", place="Lisbon"))
+        # Turned on in Immich, but its machine learning is down (as in the ODS catalog): the place still answers.
+        FakeImmich.smart, FakeImmich.smart_fails = True, True
+        self.addCleanup(setattr, FakeImmich, "smart_fails", False)
+        found = self.app("photos", "search", query="dog", place="Lisbon")
+        self.assertEqual(([photo["file"] for photo in found["results"]], found["mode"]), (["beach.jpg"], "details"))
+        self.assertIn('not for "dog"', found["note"])
+        self.assertEqual([path for path, _body in FakeImmich.searches[-2:]], ["/api/search/smart", "/api/search/metadata"])
 
     def test_photos_by_description_when_immich_can(self):
         FakeImmich.smart = True
