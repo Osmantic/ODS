@@ -24,6 +24,7 @@ tests/contracts/test-remote-provider-ssh-tunnel-service.py
 tests/contracts/test-windows-hermes-config-patching.sh
 tests/contracts/test-windows-lifecycle-command-policy.sh
 tests/contracts/test-windows-llm-model-readiness.sh
+tests/contracts/test-windows-native-installer.py
 tests/contracts/test-whisper-model-ttl.py
 tests/contracts/test-windows-strix-tier-map.sh
 tests/contracts/test-wsl-lifecycle.sh
