@@ -7,12 +7,19 @@
 #          installer. WSL2 cannot drive an AMD GPU, so the model runs here.
 #
 # Flavors: a runtime is one llama.cpp release build, chosen by GPU backend
-# and Windows architecture. win-vulkan-x64 (AMD) is the only routed flavor and
-# keeps every behaviour below. win-cuda-<version>-arm64 (NVIDIA GPUs on
-# Windows on Arm, config/backends/nvidia.json) ships as two archives, writes
-# pin.json schemaVersion 2 with its own required-file list, launches with
-# --fit off and is qualified by a short generation check. Nothing routes to it
-# yet.
+# and Windows architecture. win-vulkan-x64 (AMD) is the routed flavor of the
+# WSL Portal and the legacy installer and keeps every behaviour below.
+# win-cuda-<version>-arm64 (NVIDIA GPUs on Windows on Arm,
+# config/backends/nvidia.json) ships as two archives, writes pin.json
+# schemaVersion 2 with its own required-file list, launches with --fit off and
+# is qualified by a short generation check. win-cpu-x64 and win-cpu-arm64
+# (config/backends/cpu.json) ship as one archive in the same schemaVersion 2
+# form and launch with --device none and zero GPU layers.
+#
+# Native app (no Docker, no WSL): Get-ODSNativeLlamaPin -NativeApp also gives
+# NVIDIA and Intel GPUs on x64 the Vulkan build, and launch options with
+# Profile 'native-app' keep llama-server's built-in web UI on (still loopback,
+# still behind the API key file). Every other caller keeps --no-webui.
 #
 # Contract (Round F, section 5):
 #   - Binary: %LOCALAPPDATA%\ODS\llama.cpp\<tag>-win-vulkan-x64\ with pin.json
@@ -23,8 +30,8 @@
 #     fallback, because the launch always names --device (VulkanN, or none
 #     with zero GPU layers for the legacy installer's explicit CPU route).
 #   - Launch: loopback only, --alias <GGUF>, --parallel 1, --metrics,
-#     --no-webui and --api-key-file <owner-only file>. The key is never on
-#     the command line.
+#     --no-webui (except the native-app profile) and --api-key-file
+#     <owner-only file>. The key is never on the command line.
 #   - Proof: GET /health, then /v1/models (id equals the GGUF), then /props
 #     (model_path and n_ctx, allowing llama.cpp's 256-cell alignment).
 #   - Memory (CUDA only): Windows charges every GPU allocation against its
@@ -47,6 +54,15 @@ $script:ODSNativeLlamaExecutableExtensions = @('.exe', '.dll', '.sys', '.com', '
 $script:ODSNativeLlamaStartupSeconds = 900
 $script:ODSNativeLlamaContextAlignment = 256
 $script:ODSNativeLlamaVulkanFlavor = 'win-vulkan-x64'
+# Launch profiles: 'api' (every existing caller; --no-webui) and 'native-app'
+# (the Windows-native app's built-in chat; the web UI stays on).
+$script:ODSNativeLlamaLaunchProfiles = @('api', 'native-app')
+# Vulkan device names per GPU vendor. AMD keeps its original rule in
+# Select-ODSNativeLlamaDevice; NVIDIA and Intel are native-app only.
+$script:ODSNativeLlamaVulkanVendorPatterns = @{
+    nvidia = '(?i)nvidia|geforce|quadro|\brtx\b|\btesla\b'
+    intel = '(?i)intel|\barc\b|iris|uhd graphics'
+}
 # The generation check: a question whose only right answer is one token.
 $script:ODSNativeLlamaProbeQuestion = 'What is 2+2? Answer with the number only.'
 $script:ODSNativeLlamaProbeContext = 4096
@@ -78,6 +94,10 @@ function ConvertFrom-ODSNativeLlamaFlavor([string]$Flavor) {
     if ($match.Success) {
         return [pscustomobject]@{ Flavor = $Flavor; Backend = 'cuda'; Architecture = $match.Groups['arch'].Value
             CudaVersion = $match.Groups['cuda'].Value }
+    }
+    $match = [regex]::Match($Flavor, '^win-cpu-(?<arch>x64|arm64)$')
+    if ($match.Success) {
+        return [pscustomobject]@{ Flavor = $Flavor; Backend = 'cpu'; Architecture = $match.Groups['arch'].Value; CudaVersion = '' }
     }
     return $null
 }
@@ -113,14 +133,15 @@ function Assert-ODSNativeLlamaArchivePin($Pin) {
     $problem = ''
     if ($tag -cnotmatch '^b[0-9]{3,6}$') { $problem = 'a bNNNN release_tag' }
     elseif (-not $flavor -or $flavor.Backend -ceq 'vulkan' -or [string]$Pin.backend -cne $flavor.Backend) {
-        $problem = 'a known flavor (win-cuda-<version>-arm64) and its backend'
+        $problem = 'a known flavor (win-cuda-<version>-arm64 or win-cpu-<x64|arm64>) and its backend'
     }
     elseif ([string]$Pin.policy_key -cnotmatch '^windows-native(-[a-z0-9]{1,16})?$') { $problem = 'a windows-native policy_key' }
     elseif ($archives.Count -lt 1 -or $archives.Count -gt 2) { $problem = 'one or two release archives' }
+    elseif ($flavor.Backend -ceq 'cpu' -and $archives.Count -ne 1) { $problem = 'exactly one release archive for a CPU build' }
     elseif (-not $required.Count -or $required.Count -gt 64 -or @($required | Where-Object { [string]$_ -ceq 'llama-server.exe' }).Count -ne 1) {
         $problem = 'required_files including llama-server.exe'
     }
-    elseif ([string]$Pin.min_driver_version -cnotmatch '^[0-9]{2,4}\.[0-9]{1,3}$') { $problem = 'a min_driver_version such as 616.41' }
+    elseif ($flavor.Backend -ceq 'cuda' -and [string]$Pin.min_driver_version -cnotmatch '^[0-9]{2,4}\.[0-9]{1,3}$') { $problem = 'a min_driver_version such as 616.41' }
     if (-not $problem) {
         $names = @("llama-$tag-bin-$($flavor.Flavor).zip", "cudart-llama-bin-$($flavor.Flavor).zip")
         for ($index = 0; $index -lt $archives.Count; $index++) {
@@ -143,7 +164,7 @@ function Assert-ODSNativeLlamaArchivePin($Pin) {
             $seen[([string]$name).ToLowerInvariant()] = $true
         }
     }
-    if (-not $problem) {
+    if (-not $problem -and $flavor.Backend -ceq 'cuda') {
         $map = $Pin.cuda_archs_by_compute
         $entries = if ($map) { @($map.PSObject.Properties) } else { @() }
         foreach ($entry in $entries) {
@@ -239,7 +260,9 @@ function Get-ODSNativeLlamaArchivePin([string]$SourceRoot, [string]$ContractName
             Url = "https://github.com/ggml-org/llama.cpp/releases/download/$tag/$([string]$_.asset)" }
     })
     $archs = @{}
-    foreach ($entry in @($pin.cuda_archs_by_compute.PSObject.Properties)) { $archs[$entry.Name] = @($entry.Value | ForEach-Object { [string]$_ }) }
+    if ($pin.cuda_archs_by_compute) {
+        foreach ($entry in @($pin.cuda_archs_by_compute.PSObject.Properties)) { $archs[$entry.Name] = @($entry.Value | ForEach-Object { [string]$_ }) }
+    }
     return [pscustomobject]@{
         ReleaseTag = $tag
         Build = [int]$tag.Substring(1)
@@ -273,21 +296,40 @@ function Get-ODSNativeLlamaPin {
         runtime.llama_server.windows, or constants.ps1 until amd.json has it.
         NVIDIA (arm64): the CUDA build from config/backends/nvidia.json
         runtime.llama_server.windows_arm64, never a fallback.
+        CPU (x64 or arm64): the CPU build from config/backends/cpu.json
+        runtime.llama_server.windows (x64) or windows_arm64, never a fallback.
+        -NativeApp (the Windows-native app, no WSL): NVIDIA and Intel GPUs on
+        x64 get the same Vulkan build as AMD. Without it they keep their
+        container route and are refused here, as before.
         Asset, Sha256, Size and Url always describe the primary archive;
         Archives lists every archive of the flavor.
     #>
     param(
         [string]$SourceRoot = '',
-        [ValidateSet('amd', 'nvidia', IgnoreCase = $false)][string]$Backend = 'amd',
-        [ValidateSet('x64', 'arm64', IgnoreCase = $false)][string]$Architecture = 'x64'
+        [ValidateSet('amd', 'nvidia', 'intel', 'cpu', IgnoreCase = $false)][string]$Backend = 'amd',
+        [ValidateSet('x64', 'arm64', IgnoreCase = $false)][string]$Architecture = 'x64',
+        [switch]$NativeApp
     )
 
-    if ($Backend -ceq 'nvidia') {
-        if ($Architecture -cne 'arm64') { throw 'ODS has no Windows llama.cpp build for NVIDIA GPUs on x64 Windows; they run the model in a container in Ubuntu.' }
+    if ($Backend -ceq 'cpu') {
+        $key = if ($Architecture -ceq 'arm64') { 'windows_arm64' } else { 'windows' }
+        return (Get-ODSNativeLlamaArchivePin -SourceRoot $SourceRoot -ContractName 'cpu.json' -Key $key `
+            -Platform "the CPU on $Architecture Windows")
+    }
+    if ($Backend -ceq 'nvidia' -and $Architecture -ceq 'arm64') {
         return (Get-ODSNativeLlamaArchivePin -SourceRoot $SourceRoot -ContractName 'nvidia.json' -Key 'windows_arm64' `
             -Platform 'NVIDIA GPUs on Windows on Arm')
     }
-    if ($Architecture -cne 'x64') { throw 'ODS has no pinned llama.cpp build for AMD GPUs on Windows on Arm.' }
+    if ($Backend -ceq 'nvidia' -and -not $NativeApp) {
+        throw 'ODS has no Windows llama.cpp build for NVIDIA GPUs on x64 Windows; they run the model in a container in Ubuntu.'
+    }
+    if ($Backend -ceq 'intel' -and -not $NativeApp) {
+        throw 'ODS has no Windows llama.cpp build for Intel GPUs outside the Windows-native app.'
+    }
+    if ($Architecture -cne 'x64') {
+        if ($Backend -ceq 'intel') { throw 'ODS has no pinned llama.cpp build for Intel GPUs on Windows on Arm.' }
+        throw 'ODS has no pinned llama.cpp build for AMD GPUs on Windows on Arm.'
+    }
     $pin = $null
     $source = ''
     if ($SourceRoot) {
@@ -530,6 +572,7 @@ function Get-ODSNativeLlamaRecordRequiredFiles($Record, [string]$PinPath) {
         $required -ccontains 'llama-server.exe' -and
         @($required | Where-Object { $_ -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$' }).Count -eq 0
     if ($archives.Count -eq 2 -and [string]$archives[1].asset -cne "cudart-llama-bin-$($flavor.Flavor).zip") { $valid = $false }
+    if ($flavor -and $flavor.Backend -ceq 'cpu' -and $archives.Count -ne 1) { $valid = $false }
     if (-not $valid) { throw "The llama.cpp pin.json is invalid: $PinPath" }
     return $required
 }
@@ -765,7 +808,7 @@ function Remove-ODSNativeLlamaOldRuntimes {
     if (-not (Test-Path -LiteralPath $Root -PathType Container)) { return }
     $keep = @($KeepDirectory, $PreviousDirectory) | Where-Object { $_ } | ForEach-Object { [IO.Path]::GetFullPath($_).TrimEnd('\') }
     foreach ($child in @(Get-ChildItem -LiteralPath $Root -Directory -Force)) {
-        if ($child.Name -notmatch '^(b[0-9]{3,6}-win-vulkan-x64|b[0-9]{3,6}-win-cuda-[0-9.]+-arm64|\.staging-[0-9a-f]{32}|\.damaged-b[0-9]{3,6}-[0-9a-f]{32})$') { continue }
+        if ($child.Name -notmatch '^(b[0-9]{3,6}-win-vulkan-x64|b[0-9]{3,6}-win-cuda-[0-9.]+-arm64|b[0-9]{3,6}-win-cpu-(x64|arm64)|\.staging-[0-9a-f]{32}|\.damaged-b[0-9]{3,6}-[0-9a-f]{32})$') { continue }
         if ([IO.Path]::GetFullPath($child.FullName).TrimEnd('\') -in $keep) { continue }
         Remove-Item -LiteralPath $child.FullName -Recurse -Force
     }
@@ -818,6 +861,7 @@ function Get-ODSNativeLlamaExitHint([int]$ExitCode, [string]$Backend = 'vulkan',
     # wording the GPU backend; Vulkan on x64 keeps its original text.
     $arm64 = $Architecture -ceq 'arm64'
     $nvidia = $Backend -ceq 'cuda'
+    $cpu = $Backend -ceq 'cpu'
     if ($ExitCode -eq -1073741515) {
         if ($arm64) { return 'A DLL it needs is missing (0xC0000135), most likely the Microsoft Visual C++ 2015-2022 Redistributable for Arm64. Install it from https://aka.ms/vs/17/release/vc_redist.arm64.exe or with: winget install Microsoft.VCRedist.2015+.arm64' }
         return 'A DLL it needs is missing (0xC0000135), most likely the Microsoft Visual C++ 2015-2022 Redistributable (x64). Install it from https://aka.ms/vs/17/release/vc_redist.x64.exe or with: winget install Microsoft.VCRedist.2015+.x64'
@@ -828,10 +872,12 @@ function Get-ODSNativeLlamaExitHint([int]$ExitCode, [string]$Backend = 'vulkan',
         return 'Windows reports a bad image (0xC000007B): the download is damaged or not built for x64.'
     }
     if ($ExitCode -eq -1073741502) {
+        if ($cpu) { return 'A DLL failed to initialize (0xC0000142). Restart Windows, then rerun setup.' }
         if ($nvidia) { return 'A DLL failed to initialize (0xC0000142). Restart Windows, update the NVIDIA graphics driver with the NVIDIA App or from nvidia.com, then rerun setup.' }
         return 'A DLL failed to initialize (0xC0000142). Restart Windows, update the AMD graphics driver, then rerun setup.'
     }
     if ($ExitCode -eq -1073741819) {
+        if ($cpu) { return 'It crashed (0xC0000005). Rerun setup to restore the llama.cpp files; if it crashes again, ask for help with the log.' }
         if ($nvidia) { return 'It crashed (0xC0000005), usually inside the graphics driver. Update the NVIDIA graphics driver with the NVIDIA App or from nvidia.com, then rerun setup.' }
         return 'It crashed (0xC0000005), usually inside the graphics driver. Update the AMD Adrenalin driver from amd.com/support, then rerun setup.'
     }
@@ -931,10 +977,15 @@ function Select-ODSNativeLlamaDevice {
     .DESCRIPTION
         Software rasterizers and other vendors' GPUs are never chosen. With no
         name match, a single AMD-looking Vulkan device is accepted. -Backend
-        cuda picks among CUDA devices instead (Select-ODSNativeLlamaCudaDevice).
+        cuda picks among CUDA devices instead (Select-ODSNativeLlamaCudaDevice);
+        -Backend cpu has no device. -GpuVendor nvidia or intel (native app
+        only) picks that vendor's Vulkan device by the same rules.
     #>
-    param([object[]]$Devices, [string]$AdapterName, [ValidateSet('vulkan', 'cuda', IgnoreCase = $false)][string]$Backend = 'vulkan')
+    param([object[]]$Devices, [string]$AdapterName, [ValidateSet('vulkan', 'cuda', 'cpu', IgnoreCase = $false)][string]$Backend = 'vulkan',
+        [ValidateSet('amd', 'nvidia', 'intel', IgnoreCase = $false)][string]$GpuVendor = 'amd')
     if ($Backend -ceq 'cuda') { return (Select-ODSNativeLlamaCudaDevice -Devices $Devices -AdapterName $AdapterName) }
+    if ($Backend -ceq 'cpu') { return $null }
+    if ($GpuVendor -cne 'amd') { return (Select-ODSNativeLlamaVendorVulkanDevice -Devices $Devices -AdapterName $AdapterName -GpuVendor $GpuVendor) }
     $vulkan = @($Devices | Where-Object {
         $_.Name -cmatch '^Vulkan[0-9]{1,2}$' -and
         $_.Description -notmatch '(?i)llvmpipe|swiftshader|lavapipe|software|basic render|microsoft' -and
@@ -953,6 +1004,38 @@ function Select-ODSNativeLlamaDevice {
     }
     $amd = @($vulkan | Where-Object { $_.Description -match '(?i)\bamd\b|radeon' })
     if ($amd.Count -eq 1) { return $amd[0] }
+    return $null
+}
+
+function Select-ODSNativeLlamaVendorVulkanDevice {
+    <#
+    .SYNOPSIS
+        Choose the NVIDIA or Intel Vulkan device for the detected adapter, or
+        $null (the native app's Vulkan route for those GPUs).
+    .DESCRIPTION
+        Only that vendor's VulkanN devices count; software rasterizers never
+        do. A name match wins; with no match a single device of the vendor is
+        accepted, never one of several.
+    #>
+    param([object[]]$Devices, [string]$AdapterName, [ValidateSet('nvidia', 'intel', IgnoreCase = $false)][string]$GpuVendor)
+    $pattern = $script:ODSNativeLlamaVulkanVendorPatterns[$GpuVendor]
+    $vulkan = @($Devices | Where-Object {
+        $_.Name -cmatch '^Vulkan[0-9]{1,2}$' -and
+        $_.Description -notmatch '(?i)llvmpipe|swiftshader|lavapipe|software|basic render|microsoft' -and
+        $_.Description -match $pattern
+    })
+    if ($vulkan.Count -eq 0) { return $null }
+    $target = ConvertTo-ODSNativeLlamaAdapterKey $AdapterName
+    if ($target) {
+        $exact = @($vulkan | Where-Object { (ConvertTo-ODSNativeLlamaAdapterKey $_.Description) -eq $target })
+        if ($exact.Count -ge 1) { return $exact[0] }
+        $partial = @($vulkan | Where-Object {
+            $key = ConvertTo-ODSNativeLlamaAdapterKey $_.Description
+            $key -and ($key.Contains($target) -or $target.Contains($key))
+        })
+        if ($partial.Count -ge 1) { return $partial[0] }
+    }
+    if ($vulkan.Count -eq 1) { return $vulkan[0] }
     return $null
 }
 
@@ -1006,8 +1089,10 @@ function Test-ODSNativeLlamaQualification {
         [Parameter(Mandatory = $true)][int]$ExpectedBuild,
         [string]$AdapterName = '',
         $CodeIntegrity = $null,
-        [ValidateSet('vulkan', 'cuda', IgnoreCase = $false)][string]$Backend = 'vulkan',
-        [ValidateSet('x64', 'arm64', IgnoreCase = $false)][string]$Architecture = 'x64'
+        [ValidateSet('vulkan', 'cuda', 'cpu', IgnoreCase = $false)][string]$Backend = 'vulkan',
+        [ValidateSet('x64', 'arm64', IgnoreCase = $false)][string]$Architecture = 'x64',
+        # The GPU vendor a Vulkan device must belong to (nvidia and intel: native app only).
+        [ValidateSet('amd', 'nvidia', 'intel', IgnoreCase = $false)][string]$GpuVendor = 'amd'
     )
     if ($null -eq $CodeIntegrity) { $CodeIntegrity = Get-ODSNativeLlamaCodeIntegrityState }
     $policyHint = Format-ODSNativeLlamaPolicyHint $CodeIntegrity
@@ -1032,7 +1117,7 @@ function Test-ODSNativeLlamaQualification {
             (Get-ODSNativeLlamaFailureClass $list $CodeIntegrity))
     }
     $devices = @(ConvertFrom-ODSNativeLlamaDeviceList ([string]$list.Output))
-    $device = Select-ODSNativeLlamaDevice -Devices $devices -AdapterName $AdapterName -Backend $Backend
+    $device = Select-ODSNativeLlamaDevice -Devices $devices -AdapterName $AdapterName -Backend $Backend -GpuVendor $GpuVendor
     return [pscustomobject]@{
         Build = $build
         Commit = $parsed.Commit
@@ -1382,18 +1467,30 @@ function Get-ODSNativeLlamaOptionsArchitecture($Options) {
     return [string]$Options.Architecture
 }
 
+function Get-ODSNativeLlamaOptionsProfile($Options) {
+    # Options written before the native app name no profile: 'api'.
+    if ($null -eq $Options.Profile) { return 'api' }
+    return [string]$Options.Profile
+}
+
 function Assert-ODSNativeLlamaOptions($Options) {
     # Device 'none' is the explicit CPU route (no usable Vulkan device), and
     # only with zero GPU layers; never a silent fallback. NGpuLayers takes
     # every N_GPU_LAYERS value .env.schema.json allows: auto, all or a layer
-    # count, which llama.cpp range-checks itself. Backend (vulkan or cuda)
-    # and Architecture (x64 or arm64) are optional; the device name follows
-    # the backend, and only Vulkan has the CPU route.
+    # count, which llama.cpp range-checks itself. Backend (vulkan, cuda or
+    # cpu) and Architecture (x64 or arm64) are optional; the device name
+    # follows the backend. Vulkan has the CPU route; the cpu build always
+    # runs it. Profile ('api' or 'native-app') is optional, and only
+    # native-app may name WebUiConfigPath (--webui-config-file).
     $backend = Get-ODSNativeLlamaOptionsBackend $Options
     $architecture = Get-ODSNativeLlamaOptionsArchitecture $Options
-    $devicePattern = if ($backend -ceq 'cuda') { '^CUDA[0-9]{1,2}$' } else { '^Vulkan[0-9]{1,2}$' }
-    $cpuRoute = $backend -ceq 'vulkan' -and [string]$Options.Device -ceq 'none'
-    if ($Options.schemaVersion -ne 1 -or $backend -cnotin @('vulkan', 'cuda') -or $architecture -cnotin @('x64', 'arm64') -or
+    $launchProfile = Get-ODSNativeLlamaOptionsProfile $Options
+    $devicePattern = if ($backend -ceq 'cuda') { '^CUDA[0-9]{1,2}$' } elseif ($backend -ceq 'cpu') { '^none$' } else { '^Vulkan[0-9]{1,2}$' }
+    $cpuRoute = $backend -cin @('vulkan', 'cpu') -and [string]$Options.Device -ceq 'none'
+    $webUiConfig = $Options.WebUiConfigPath
+    if ($Options.schemaVersion -ne 1 -or $backend -cnotin @('vulkan', 'cuda', 'cpu') -or $architecture -cnotin @('x64', 'arm64') -or
+        $launchProfile -cnotin $script:ODSNativeLlamaLaunchProfiles -or
+        ($null -ne $webUiConfig -and ($launchProfile -cne 'native-app' -or -not [IO.Path]::IsPathRooted([string]$webUiConfig))) -or
         ([string]$Options.Device -cnotmatch $devicePattern -and -not $cpuRoute) -or
         ($cpuRoute -and [string]$Options.NGpuLayers -cne '0') -or
         [string]$Options.NGpuLayers -cnotmatch '^(auto|all|[0-9]{1,10})$' -or
@@ -1442,11 +1539,22 @@ function New-ODSNativeLlamaLaunchArguments($Plan, $Options) {
         # Naming the device fails closed when Vulkan is unusable, instead of
         # llama.cpp's silent CPU fallback.
         '--device', [string]$Options.Device,
-        '--metrics',
-        '--no-webui',
+        '--metrics'
+    )
+    $launchProfile = Get-ODSNativeLlamaOptionsProfile $Options
+    if ($launchProfile -ceq 'api') {
+        $arguments += '--no-webui'
+    }
+    $arguments += @(
         '--api-key-file', (ConvertTo-ODSNativeLlamaArgumentPath $Options.ApiKeyPath),
         '--log-file', (ConvertTo-ODSNativeLlamaArgumentPath $Options.LogPath)
     )
+    if ($launchProfile -ceq 'native-app' -and $null -ne $Options.WebUiConfigPath) {
+        # The built-in chat's default settings; never the API key, which the
+        # owner enters in the chat's settings (static pages are public on
+        # loopback, every API route still needs the key).
+        $arguments += @('--webui-config-file', (ConvertTo-ODSNativeLlamaArgumentPath ([string]$Options.WebUiConfigPath)))
+    }
     if ((Get-ODSNativeLlamaOptionsBackend $Options) -ceq 'cuda') {
         # llama.cpp defaults to --fit on, which shrinks unset settings to fit
         # device memory. Under WDDM that memory is this process's budget, so

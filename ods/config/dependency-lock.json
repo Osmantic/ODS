@@ -86,6 +86,18 @@
       "value": "642dcde8805b3e3165ca710a5443b3b4044b27d96bd3ee3132473988c9bcb774"
     },
     {
+      "id": "cpu.llama-server-windows-cpu-x64",
+      "type": "archive",
+      "path": "config/backends/cpu.json",
+      "value": "3503cc30154266ac0fbedd38e39e35a313a13412415738ae8f9e23e4fcb44da2"
+    },
+    {
+      "id": "cpu.llama-server-windows-cpu-arm64",
+      "type": "archive",
+      "path": "config/backends/cpu.json",
+      "value": "e4c4efea06adf317ceb3f09f2f42b99580ccd6cf37eb8b31c474d4817e57a502"
+    },
+    {
       "id": "ape.python",
       "type": "image",
       "path": "extensions/services/ape/Dockerfile",
