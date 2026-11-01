@@ -127,6 +127,12 @@ class Store:
     def save_watch_state(self, value):
         self._write("watch-state.json", value)
 
+    def digest_sent(self):
+        return self._read("digest-sent.json", [])
+
+    def save_digest_sent(self, value):
+        self._write("digest-sent.json", value)
+
     def log(self, action, target, outcome):
         path = self.root / "activity.jsonl"
         entry = json.dumps({"at": now(), "action": action, "target": target[:200], "outcome": outcome[:200]})

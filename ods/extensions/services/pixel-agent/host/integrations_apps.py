@@ -25,6 +25,8 @@ MAX_HITS = 10
 MAX_DOCUMENT_CHARS = 12000
 MAX_NEWS_ITEMS = 40
 MAX_BRIEF_STORIES = 15
+# Stories already sent in a digest; more than a digest fetches, so an unread story is never sent twice.
+MAX_SENT_STORIES = 10 * MAX_NEWS_ITEMS
 MAX_WATCHES = 100
 # ntfy turns a longer message into a file attachment (4,096 bytes); stay under it.
 MAX_NOTICE_BYTES = 3900
@@ -35,6 +37,7 @@ DIGEST_PROMPT = ('Use tool_call with id "pixel_ods_mcp" and args {"action": "cal
                  '"arguments": {}}. From its result, write the '
                  f"owner's news brief for today: one short line per story, grouped by topic, at most {MAX_BRIEF_STORIES} "
                  "stories, without links. Do not search the web. Reply with the brief only.")
+NO_NEW_STORIES = "No new stories since the last digest."
 # A run that takes longer ends as an error, and the owner gets the plain list of stories instead.
 DIGEST_SECONDS = 600
 # The run may only read the news: with web search at hand the small model wandered off for minutes.
@@ -427,9 +430,27 @@ def unread_news(settings, password, limit=MAX_NEWS_ITEMS):
     items = []
     for item in reply["items"][:limit]:
         links = item.get("canonical") or item.get("alternate") or [{}]
-        items.append({"feed": str((item.get("origin") or {}).get("title", ""))[:100], "title": plain(item.get("title"), 200),
-                      "link": str(links[0].get("href", ""))[:500], "summary": plain((item.get("summary") or {}).get("content"), 240)})
+        items.append({"id": str(item.get("id") or "")[:300], "feed": str((item.get("origin") or {}).get("title", ""))[:100],
+                      "title": plain(item.get("title"), 200), "link": str(links[0].get("href", ""))[:500],
+                      "summary": plain((item.get("summary") or {}).get("content"), 240)})
     return items
+
+
+def story_key(item):
+    return item["id"] or item["link"] or item["title"]
+
+
+def unsent(items, sent):
+    """The stories no earlier digest sent: each story goes to the owner once."""
+    seen = set(sent)
+    return [item for item in items if story_key(item) not in seen]
+
+
+def with_sent(sent, items):
+    """The sent-story memory after a digest with these stories, newest last."""
+    added = [story_key(item) for item in items]
+    kept = [key for key in sent if key not in set(added)]
+    return (kept + added)[-MAX_SENT_STORIES:]
 
 
 def by_feed(items):
@@ -454,7 +475,7 @@ def digest_brief(items, capped=False):
     capped means FreshRSS had more unread stories than Portal fetched.
     """
     if not items:
-        return "No unread news."
+        return NO_NEW_STORIES
     shown = items[:MAX_BRIEF_STORIES]
     brief = "\n\n".join(f"{feed}:\n" + "\n".join(f"- {item['title']}" for item in stories)
                          for feed, stories in by_feed(shown).items())

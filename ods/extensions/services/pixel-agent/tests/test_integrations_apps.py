@@ -462,13 +462,13 @@ class AppTests(unittest.TestCase):
     # News and the digest.
     def test_news_digest_groups_unread_stories_by_feed(self):
         self.save(self.settings())
-        reply = self.app("news", "digest")
+        reply = self.app("news", "unread")
         self.assertEqual(reply["text"], "Weather:\n- Rain & wind tomorrow (https://news.example/rain)\n\n"
                                         "City:\n- New library opens (https://news.example/library)")
         self.assertEqual(reply["items"][0]["summary"], "Bring a coat.")
         self.save(self.settings(), secrets={"apps": {"news": "wrong"}})
         with self.assertRaisesRegex(service.IntegrationError, "FreshRSS refused"):
-            self.app("news", "digest")
+            self.app("news", "unread")
 
     def test_digest_plan_follows_the_owner_settings(self):
         self.save(self.settings(digest=True))
@@ -525,15 +525,17 @@ class AppTests(unittest.TestCase):
 
     def test_the_digest_task_sends_portal_s_summary_or_the_plain_list(self):
         self.save(self.settings(digest=True, tasks="off"))
-        self.app("news", "digest")  # Portal asked for the stories in this run.
+        self.assertEqual(self.app("news", "digest")["text"], "Weather:\n- Rain & wind tomorrow (https://news.example/rain)\n\n"
+                                                              "City:\n- New library opens (https://news.example/library)")
         self.assertTrue(self.agent("task-finished", name="Daily news digest", description=apps.DIGEST_MARKER, status="ok", summary="Rain tomorrow; a library opens.",
                                    runAtMs=1000)["notified"])
         self.assertEqual(FakeNtfy.sent[-1]["message"], "Rain tomorrow; a library opens.")
-        # A run where Portal never called the news tool still delivers the stories.
+        # A run where Portal never called the news tool still delivers the stories, but only new ones.
+        FakeReader.items = self.stories(1) + FakeReader.items
         self.agent("task-finished", name="Daily news digest", description=apps.DIGEST_MARKER, status="ok", summary="I could not find any news.", runAtMs=9_999_999_999_999)
-        self.assertIn("Rain & wind tomorrow", FakeNtfy.sent[-1]["message"])
+        self.assertEqual(FakeNtfy.sent[-1]["message"], "Weather:\n- Story 0")
         self.agent("task-finished", name="Daily news digest", description=apps.DIGEST_MARKER, status="error", error="model failed", runAtMs=1)
-        self.assertIn("New library opens", FakeNtfy.sent[-1]["message"])
+        self.assertEqual(FakeNtfy.sent[-1]["message"], "No new stories since the last digest.")
         self.assertEqual({note["title"] for note in FakeNtfy.sent}, {"Daily news digest"})
         # The owner's own task that happens to have the same name is an ordinary task.
         self.agent("task-finished", name="Daily news digest", status="ok", summary="Mine.", runAtMs=1)
@@ -679,7 +681,7 @@ class AppTests(unittest.TestCase):
 
     # The digest as a brief.
     def stories(self, number, feeds=("Weather", "City")):
-        return [{"title": f"Story {n}", "canonical": [{"href": f"https://news.example/{n}"}],
+        return [{"id": f"tag:story/{n}", "title": f"Story {n}", "canonical": [{"href": f"https://news.example/{n}"}],
                  "origin": {"title": feeds[n % len(feeds)]}, "summary": {"content": ""}} for n in range(number)]
 
     def test_the_brief_groups_feeds_and_says_how_many_more(self):
@@ -692,7 +694,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(brief.count("\n- "), apps.MAX_BRIEF_STORIES)
         self.assertTrue(brief.endswith("\n\n…and 5 more in FreshRSS."))
         self.assertTrue(apps.digest_brief(many * 2, capped=True).endswith("…and 25+ more in FreshRSS."))
-        self.assertEqual(apps.digest_brief([]), "No unread news.")
+        self.assertEqual(apps.digest_brief([]), "No new stories since the last digest.")
 
     def test_a_long_brief_fits_one_ntfy_message(self):
         items = [{"feed": "Ünïcödé feed", "title": "é" * 300 + f" {n}", "link": "", "summary": ""} for n in range(15)]
@@ -723,9 +725,10 @@ class AppTests(unittest.TestCase):
         self.assertEqual((FakeNtfy.sent[-1]["title"], FakeNtfy.sent[-1]["message"]),
                          ("Daily news digest", "Weather:\n- Rain & wind tomorrow\n\nCity:\n- New library opens"))
         FakeReader.items = []
-        self.assertEqual(self.owner("send-digest")["notice"], "Digest sent: there is no unread news.")
+        self.assertEqual(self.owner("send-digest")["notice"], "Digest sent: there are no new stories since the last digest.")
         FakeReader.items = self.stories(1)
         self.assertEqual(self.owner("send-digest")["notice"], "Digest sent with 1 story.")
+        self.assertEqual(self.owner("send-digest")["notice"], "Digest sent: there are no new stories since the last digest.")
         self.save(self.settings(notify=False))
         with self.assertRaisesRegex(service.IntegrationError, "Turn notifications on"):
             self.owner("send-digest")
@@ -734,6 +737,58 @@ class AppTests(unittest.TestCase):
             self.owner("send-digest")
         with self.assertRaisesRegex(service.IntegrationError, "Only the owner"):
             self.agent("send-digest")
+
+    # Each story in one digest only.
+    def finish_digest(self, runAtMs=1, **event):
+        return self.agent("task-finished", jobId="d", name="Daily news digest", description=apps.DIGEST_MARKER, runAtMs=runAtMs, **event)
+
+    def test_a_story_goes_out_in_one_digest_only(self):
+        FakeReader.items = self.stories(3)
+        self.save(self.settings(digest=True, tasks="off"))
+        self.finish_digest(status="error", error="slow")
+        self.assertEqual(FakeNtfy.sent[-1]["message"].count("\n- "), 3)
+        FakeReader.items = self.stories(5)  # Two new stories; the owner read none.
+        self.finish_digest(status="error", error="slow")
+        self.assertEqual(FakeNtfy.sent[-1]["message"], "City:\n- Story 3\n\nWeather:\n- Story 4")
+        # Portal's own run gets only the new stories, and a chat still reads every unread one.
+        FakeReader.items = self.stories(6)
+        self.assertEqual([item["title"] for item in self.app("news", "digest")["items"]], ["Story 5"])
+        self.assertEqual(len(self.app("news", "unread")["items"]), 6)
+        self.finish_digest(status="ok", summary="Story five.", runAtMs=0)
+        self.assertEqual(self.app("news", "digest")["text"], "No new stories since the last digest.")
+        # The service remembers what it sent across restarts.
+        restarted = service.Integrations(self.store)
+        self.assertEqual(restarted.use_app(self.store.config(), "news", "digest", {})[1]["items"], [])
+
+    def test_a_story_counts_as_sent_only_once_its_digest_went_out(self):
+        FakeReader.items = self.stories(2)
+        self.save(self.settings(digest=True, tasks="off", notify=False))
+        self.app("news", "digest")
+        self.assertFalse(self.finish_digest(status="ok", summary="Two stories.", runAtMs=0)["notified"])
+        self.save(self.settings(digest=True, tasks="off"))
+        self.assertEqual(len(self.app("news", "digest")["items"]), 2)  # Not sent, so still new.
+        # A run whose ntfy refused the message does not count either.
+        settings = self.settings(digest=True, tasks="off")
+        settings["notifications"]["url"] = "http://127.0.0.1:9"
+        self.save(settings)
+        self.assertFalse(self.finish_digest(status="error", error="slow")["notified"])
+        self.save(self.settings(digest=True, tasks="off"))
+        self.assertEqual(self.owner("send-digest")["notice"], "Digest sent with 2 stories.")
+
+    def test_stories_without_an_id_are_told_apart_by_link_then_title(self):
+        stories = [{"id": "", "link": "https://x/1", "title": "A"}, {"id": "", "link": "", "title": "B"}, {"id": "i3", "link": "https://x/1", "title": "A"}]
+        sent = apps.with_sent([], stories[:2])
+        self.assertEqual(sent, ["https://x/1", "B"])
+        self.assertEqual(apps.unsent(stories, sent), stories[2:])
+
+    def test_the_sent_story_memory_is_bounded_and_keeps_the_newest(self):
+        old = [f"old{n}" for n in range(apps.MAX_SENT_STORIES)]
+        fresh = [{"id": f"new{n}", "link": "", "title": ""} for n in range(3)]
+        sent = apps.with_sent(old, fresh)
+        self.assertEqual(len(sent), apps.MAX_SENT_STORIES)
+        self.assertEqual((sent[0], sent[-3:]), ("old3", ["new0", "new1", "new2"]))
+        self.assertEqual(apps.with_sent(["new1", "x"], fresh), ["x", "new0", "new1", "new2"])  # A story sent again moves to the end.
+        self.assertEqual(apps.with_sent(old, []), old)
 
     # Watched pages in Settings, and fewer price reads.
     def test_settings_lists_the_watches_with_their_last_price(self):

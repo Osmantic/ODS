@@ -168,13 +168,16 @@ failures.
 The daily news digest is one more scheduled task, named *Daily news digest*. The
 plugin keeps it in step with the owner's setting about once a minute: it adds the
 task, changes its time, or removes it. At the chosen time Portal reads the unread
-stories and writes a short brief: one line per story, grouped by topic, at most 15
-stories, without links. It is sent through ntfy, cut to fit one message (ntfy
+stories that no earlier digest sent and writes a short brief: one line per story,
+grouped by topic, at most 15 stories, without links. Each story goes out in one
+digest only, whether or not the owner read it; the service remembers the last 400
+stories it sent, and a story is remembered only once its digest was sent. It is sent through ntfy, cut to fit one message (ntfy
 sends a longer one as a file). The digest run may use only `pixel_ods_mcp`, so it
 cannot wander off searching the web. If Portal did not read the news in that run,
 or the run fails or takes more than 10 minutes, the owner gets the plain brief of
-unread story titles instead, so the digest always arrives. **Send a digest now**
-in Settings sends that plain brief right away.
+new story titles instead, so the digest always arrives. **Send a digest now**
+in Settings sends that plain brief right away, and its stories count as sent.
+Asked for the news in a chat, Portal reads all unread stories, sent or not.
 
 ## Setting up
 

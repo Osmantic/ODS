@@ -44,7 +44,7 @@ const ACTIVITY_LABELS = {
   'notes-write': 'Changed a note', 'mcp-call': 'Used an MCP tool', 'mcp-discover': 'Checked MCP tools', 'mcp-test': 'Tested an MCP server',
   'mcp-restart': 'Restarted an MCP server', approval: 'Approval', 'app-test': 'Tested an app',
   'documents-search': 'Searched documents', 'documents-read': 'Read a document', 'photos-search': 'Searched photos',
-  'news-digest': 'Read the news', 'watch-add': 'Watched a page', 'watch-remove': 'Stopped watching a page',
+  'news-unread': 'Read the news', 'news-digest': 'Read the news for the digest', 'watch-add': 'Watched a page', 'watch-remove': 'Stopped watching a page',
   'watch-check': 'Checked watched pages',
 }
 

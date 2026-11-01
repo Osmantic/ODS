@@ -167,6 +167,7 @@ class Integrations(AppActions):
         self.store = store
         self.local = local_servers or LocalServers()
         self.digest_called_at = 0  # When Portal last asked for the news digest, to tell its runs apart.
+        self.digest_items = []  # The stories it got then, remembered as sent once that digest goes out.
         self.failing_tasks = set()  # Scheduled tasks whose last run failed, so a retry does not notify again.
 
     def handle(self, role, request):

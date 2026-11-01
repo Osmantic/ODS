@@ -1,6 +1,6 @@
 """The owner's apps for the integrations service: what Portal asks of them, page watching,
 and notifications for finished scheduled tasks. Mixed into the service's Integrations class,
-which provides store, _approval, digest_called_at and failing_tasks.
+which provides store, _approval, digest_called_at, digest_items and failing_tasks.
 
 Portal reaches the apps through its MCP tool, where each app the owner turned on is listed as
 a built-in server (documents, photos, watch, news) next to the owner's MCP servers. The
@@ -13,7 +13,7 @@ from integrations_common import IntegrationError, digest
 from integrations_ntfy import send_notification
 
 APP_ACTIONS = {"documents-search": "documents", "documents-read": "documents", "photos-search": "photos",
-               "watch-list": "watch", "watch-add": "watch", "watch-remove": "watch", "news-digest": "news"}
+               "watch-list": "watch", "watch-add": "watch", "watch-remove": "watch", "news-unread": "news", "news-digest": "news"}
 TEXT = {"type": "string"}
 # Each app as a built-in server: its tools, what they do, and the action and arguments behind them.
 APP_TOOLS = {
@@ -35,7 +35,8 @@ APP_TOOLS = {
         "remove": ("watch-remove", "Stop watching a page; id comes from list.", {"id": TEXT}),
     },
     "news": {
-        "digest": ("news-digest", "The owner's unread news stories, grouped by feed, with links.", {}),
+        "unread": ("news-unread", "The owner's unread news stories, grouped by feed, with links.", {}),
+        "digest": ("news-digest", "For the daily digest: the unread stories no earlier digest sent.", {}),
     },
 }
 APP_SERVER_NAMES = {"documents": "Documents (Paperless-ngx)", "photos": "Photos (Immich)",
@@ -138,11 +139,16 @@ class AppActions:
             self.store.log("photos-search", str(request.get("query") or request.get("place") or "dates")[:80],
                            f"{len(reply['results'])} photos")
             return reply
-        if action == "news-digest":
+        if action == "news-unread":
             items = apps.unread_news(settings, key)
-            self.digest_called_at = time.time()
-            self.store.log("news-digest", "unread news", f"{len(items)} stories")
+            self.store.log("news-unread", "unread news", f"{len(items)} stories")
             return {"items": items, "text": apps.digest_text(items)}
+        if action == "news-digest":
+            items = self._new_stories(settings, key)
+            # The stories are remembered as sent only when this run's digest goes out.
+            self.digest_items, self.digest_called_at = items, time.time()
+            self.store.log("news-digest", "new stories", f"{len(items)} stories")
+            return {"items": items, "text": apps.digest_text(items) if items else apps.NO_NEW_STORIES}
         if action == "watch-list":
             return self._watch_list(settings, key)
         return self._watch_change(config, settings, key, action, request)
@@ -169,14 +175,25 @@ class AppActions:
         settings = apps.app_settings(config, "news")
         if not config["notifications"]["enabled"]:
             raise IntegrationError("notifications-off", "Turn notifications on and save before sending a digest.")
-        items = apps.unread_news(settings, self._key("news"))
-        send_notification(config, self.store.secrets(), apps.DIGEST_NAME,
-                          apps.digest_brief(items, len(items) >= apps.MAX_NEWS_ITEMS))
+        items, capped = self._new_stories(settings, self._key("news"), with_cap=True)
+        send_notification(config, self.store.secrets(), apps.DIGEST_NAME, apps.digest_brief(items, capped))
+        self._remember_sent(items)
         self.store.log("notify", apps.DIGEST_NAME, "sent")
         shown = min(len(items), apps.MAX_BRIEF_STORIES)
         if not shown:
-            return "Digest sent: there is no unread news."
+            return "Digest sent: there are no new stories since the last digest."
         return f"Digest sent with {shown} {'story' if shown == 1 else 'stories'}."
+
+    def _new_stories(self, settings, key, with_cap=False):
+        """The unread stories no earlier digest sent; with_cap also says whether FreshRSS had more than Portal fetched."""
+        unread = apps.unread_news(settings, key)
+        with self.store.lock:
+            items = apps.unsent(unread, self.store.digest_sent())
+        return (items, len(unread) >= apps.MAX_NEWS_ITEMS) if with_cap else items
+
+    def _remember_sent(self, items):
+        with self.store.lock:
+            self.store.save_digest_sent(apps.with_sent(self.store.digest_sent(), items))
 
     def _watch_change(self, config, settings, key, action, request):
         if action == "watch-add":
@@ -301,15 +318,18 @@ class AppActions:
         started = (event.get("runAtMs") or 0) / 1000
         summary = str(event.get("summary") or "").strip()
         if event.get("status") == "ok" and summary and self.digest_called_at >= started:
-            text = apps.fit_notice(summary)
+            items, text = self.digest_items, apps.fit_notice(summary)
         else:
             try:
-                items = apps.unread_news(config["apps"]["news"], self._key("news"))
+                items, capped = self._new_stories(config["apps"]["news"], self._key("news"), with_cap=True)
             except IntegrationError as error:
                 # The owner expects the digest at this time; say why it did not come instead of staying silent.
                 return self._tell(config, apps.DIGEST_NAME, f"Today's digest could not be made. {error.message}", "high")
-            text = apps.digest_brief(items, len(items) >= apps.MAX_NEWS_ITEMS)
-        return self._tell(config, apps.DIGEST_NAME, text)
+            text = apps.digest_brief(items, capped)
+        sent = self._tell(config, apps.DIGEST_NAME, text)
+        if sent:
+            self._remember_sent(items)
+        return sent
 
     def _tell(self, config, title, message, priority="default", link=""):
         """Send the owner a notification; a failure is logged, since nobody is waiting for it."""
