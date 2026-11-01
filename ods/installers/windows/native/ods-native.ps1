@@ -55,6 +55,12 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
+# Windows PowerShell started from PowerShell 7 (Setup launched from a pwsh
+# prompt, for one) inherits pwsh's PSModulePath and then fails to load its own
+# built-in modules (Get-Acl: "module could not be loaded"). Use only this edition's
+# own built-in modules (as portal-model-control.ps1 does).
+if ($PSVersionTable.PSEdition -eq 'Desktop') { $env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules') }
+
 # The command's options, read by the functions below. Copied once so each
 # function names where its input comes from (and the analyzer sees them used).
 $script:Options = [pscustomobject]@{
