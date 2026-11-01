@@ -140,15 +140,18 @@ function Install-Dashboard {
 function Install-LlamaRuntime {
     # Hook: the model-runtime workstream's fetch-runtime.ps1 downloads and
     # verifies its own pinned llama.cpp build into -Destination.
-    param([Parameter(Mandatory = $true)][string]$Bundle)
-    if (-not (Test-Path -LiteralPath $FetchRuntimeScript -PathType Leaf)) {
-        throw "The llama.cpp runtime script was not found at $FetchRuntimeScript. Pass -FetchRuntimeScript <path to fetch-runtime.ps1>."
+    param([Parameter(Mandatory = $true)][string]$Bundle, [Parameter(Mandatory = $true)][string]$Work,
+        [Parameter(Mandatory = $true)][string]$Script)
+    if (-not (Test-Path -LiteralPath $Script -PathType Leaf)) {
+        throw "The llama.cpp runtime script was not found at $Script. Pass -FetchRuntimeScript <path to fetch-runtime.ps1>."
     }
     $llama = Join-Path $Bundle 'llama'
-    New-Item -ItemType Directory -Force -Path $llama | Out-Null
-    & $FetchRuntimeScript -Destination $llama
+    # The bundled Python is x64, so the bundle is x64 whatever machine builds it.
+    # Download records go to the build's scratch folder, not the bundle.
+    $result = & $Script -StateRoot (Join-Path $Work 'llama-state') -Destination $llama -Architecture x64 -NativeApp
+    Write-Host "llama.cpp runtime: $result"
     if (-not (Test-Path -LiteralPath (Join-Path $llama 'llama-server.exe') -PathType Leaf)) {
-        throw "$FetchRuntimeScript did not leave llama-server.exe in $llama."
+        throw "$Script did not leave llama-server.exe in $llama."
     }
 }
 
@@ -179,7 +182,7 @@ try {
     New-Item -ItemType Directory -Force -Path (Join-Path $bundle 'llama-server') | Out-Null
     Copy-Item -LiteralPath (Join-Path $RepoRoot 'ods\extensions\services\llama-server\manifest.yaml') -Destination (Join-Path $bundle 'llama-server')
     Install-Dashboard -Bundle $bundle
-    Install-LlamaRuntime -Bundle $bundle
+    Install-LlamaRuntime -Bundle $bundle -Work $work -Script $FetchRuntimeScript
     New-Item -ItemType Directory -Force -Path (Join-Path $bundle 'lib') | Out-Null
     Copy-Item -LiteralPath (Join-Path $native 'ods-native.ps1'), (Join-Path $native 'launch-ods.vbs') -Destination $bundle
     Copy-Item -LiteralPath (Join-Path $native 'ods-native-lib.ps1'), (Join-Path $windowsLib 'private-file.ps1'),
