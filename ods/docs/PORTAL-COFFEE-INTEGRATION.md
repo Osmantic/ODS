@@ -82,7 +82,7 @@ catalog surface. Neither test establishes live local-model acceptance.
 
 ## Installed Windows/WSL qualification
 
-Two ordinary updates, first at `8d71df83d` and then `674d4bd40`, completed on
+Three ordinary updates, at `8d71df83d`, `674d4bd40` and finally `d0a722794`, completed on
 the owner's Windows/WSL/Docker installation with the actual RTX 5090 and local
 Qwen3.5 9B. Independent selected-file inspection matched the installed plugin,
 integration service and pinned SDK to the reviewed source. Full Access, the
@@ -107,7 +107,11 @@ were invented QA resources:
   idle retirement without a test signal or timeout change.
 - The actual ntfy server received the UI test notification. Invalid ntfy and
   Home Assistant credentials produced explicit errors; the original QA settings
-  were restored. This does not qualify delivery to a physical phone.
+  were restored. After the last update, the unchanged natural chat request
+  used the direct notification tool and delivered the exact message once to
+  ntfy. A fresh conversation using different wording, without naming ntfy or a
+  tool, also delivered its intended test message. This does not qualify delivery
+  to a physical phone.
 - Real browser save/discard, dirty navigation, partial-save failure and saved
   secret fields were exercised. Desktop and 390px phone views were inspected;
   the phone draft was discarded without changing saved settings.
@@ -126,10 +130,40 @@ those distinctions without classifying the owner's wording. The existing
 native catalog also offers the three integration schemas directly at qualified
 32K or larger contexts, retaining policy filtering, ambiguous-name deferral,
 canonical discovery IDs and the smaller-context limits. These are the same
-implementations and dispatcher, not a second execution path. The unchanged
-natural requests still need repeating on the updated installed runtime. Do not
-count the failed requests as successful chat notification or cron approval
-qualification.
+implementations and dispatcher, not a second execution path.
+
+On the installed repair, the unchanged notification request and unchanged cron
+payload followed their native integration tools directly. The cron call
+returned `approval-required`, finished without a file effect and retained its
+waiting explanation. After owner approval, another one-time cron job with the
+identical payload consumed that exact approval and created the intended note
+inside the configured vault. The body matched the requested text with the
+service's documented final newline; no copy appeared in the workspace. These
+are two distinct one-time jobs, not automatic resumption of the first job.
+
+A further native cron run read that note and sent its visible text through the
+notification tool; the independent ntfy sink received it once. This did not
+preserve the file's exact bytes: the final LF was absent from the notify
+argument, and the notification service also applies `message.strip()`. The raw
+byte-equality check remains negative rather than being normalized into a pass.
+It qualifies this read/notification seam, not a byte-for-byte file transfer or
+Coffee's forthcoming first-class scheduled-notification UI. All four owned
+one-time test schedules were archived through normal owner controls, and the
+saved result of the last archived task was reopened successfully.
+
+The final update also preserved the three integration state files byte for
+byte, the existing read-only Google choice/credential bytes and Full Access.
+Independent inspection matched the running installation's selected program,
+plugin and native `d20d8071...` SDK bytes/custody to the reviewed source. All
+ten selected product containers were healthy and the temporary QA authorities
+were absent from the inspected service/container scope. The temporary Edge
+unavailable observation during bootstrap did not establish an update failure;
+the normal installer completed without intervention. No circular dependency
+was proved, and no readiness gate was bypassed.
+
+The earlier failed requests stay negative evidence; they are not counted as
+successful acceptance. The later observations establish these scoped 9B flows,
+not arbitrary-model reliability or full release acceptance.
 
 ## Protocol and platform limits
 
