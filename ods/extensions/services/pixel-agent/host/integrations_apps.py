@@ -36,7 +36,7 @@ DIGEST_MARKER = "Created by Portal integrations for the daily news digest."
 DIGEST_PROMPT = ('Use tool_call with id "pixel_ods_mcp" and args {"action": "call", "server": "news", "tool": "digest", '
                  '"arguments": {}}. From its result, write the '
                  f"owner's news brief for today: one short line per story, grouped by topic, at most {MAX_BRIEF_STORIES} "
-                 "stories, without links. Do not search the web. Reply with the brief only.")
+                 "stories, without links, in plain text without Markdown. Do not search the web. Reply with the brief only.")
 NO_NEW_STORIES = "No new stories since the last digest."
 # A run that takes longer ends as an error, and the owner gets the plain list of stories instead.
 DIGEST_SECONDS = 600
@@ -49,6 +49,11 @@ TIME = re.compile(r"^([01][0-9]|2[0-3]):([0-5][0-9])$")
 TIMEZONE = re.compile(r"^[A-Za-z][A-Za-z0-9_+/-]{0,63}$")
 DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 TAG = re.compile(r"<[^>]+>")
+MARKDOWN_HEADING = re.compile(r"^\s{0,3}#{1,6}\s+")
+MARKDOWN_EMPHASIS = re.compile(r"\*\*|__")
+MARKDOWN_BULLET = re.compile(r"^(\s*)[*+]\s+")
+MARKDOWN_RULE = re.compile(r"^\s*([-*_])(\s*\1){2,}\s*$")
+MANY_BLANK_LINES = re.compile(r"\n{3,}")
 PRICE = re.compile(r"Price:\s*([0-9]+(?:\.[0-9]+)?)")
 
 
@@ -60,6 +65,13 @@ def plain(value, limit=300):
 
 def count(number, thing):
     return f"{number} {thing}" + ("" if number == 1 else "s")
+
+
+def plain_brief(text):
+    """Portal's brief as plain text: ntfy shows Markdown marks (#, **, ---) as they are."""
+    lines = [MARKDOWN_BULLET.sub(r"\1- ", MARKDOWN_EMPHASIS.sub("", MARKDOWN_HEADING.sub("", line))).rstrip()
+             for line in text.splitlines() if not MARKDOWN_RULE.match(line)]
+    return MANY_BLANK_LINES.sub("\n\n", "\n".join(lines)).strip()
 
 
 def fit_notice(text, limit=MAX_NOTICE_BYTES):

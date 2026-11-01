@@ -860,6 +860,18 @@ class AppTests(unittest.TestCase):
         self.assertTrue(self.agent("task-finished", jobId="d", name="Daily news digest", description=apps.DIGEST_MARKER,
                                    status="error", error="model failed", runAtMs=1)["notified"])
 
+    def test_portal_s_brief_reaches_the_phone_as_plain_text(self):
+        written = ("**Owner's News Brief for Sunday**\n\n---\n\n### Weather/Harbour\n- **Storm** warning\n* Night market\n\n\n\n"
+                   "## __News__\n  + FreshRSS 1.30.4\n***\nA - B - C stays.")
+        self.assertEqual(apps.plain_brief(written), "Owner's News Brief for Sunday\n\nWeather/Harbour\n- Storm warning\n- Night market\n\n"
+                                                    "News\n  - FreshRSS 1.30.4\nA - B - C stays.")
+        self.assertEqual(apps.plain_brief("Plain brief.\n- one"), "Plain brief.\n- one")
+        self.save(self.settings(digest=True, tasks="off"))
+        self.app("news", "digest")
+        self.finish_digest(status="ok", summary="### City\n- **Library** opens", runAtMs=0)
+        self.assertEqual(FakeNtfy.sent[-1]["message"], "City\n- Library opens")
+        self.assertIn("in plain text without Markdown", apps.DIGEST_PROMPT)
+
     def test_a_retried_digest_with_nothing_new_stays_quiet(self):
         self.save(self.settings(digest=True, tasks="off"))
         self.assertTrue(self.finish_digest(status="error", error="slow")["notified"])

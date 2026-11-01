@@ -326,7 +326,7 @@ class AppActions:
         started = (event.get("runAtMs") or 0) / 1000
         summary = str(event.get("summary") or "").strip()
         if event.get("status") == "ok" and summary and self.digest_called_at >= started:
-            items, text = self.digest_items, apps.fit_notice(summary)
+            items, text = self.digest_items, apps.fit_notice(apps.plain_brief(summary))
         else:
             try:
                 items, capped = self._new_stories(config["apps"]["news"], self._key("news"), with_cap=True)
