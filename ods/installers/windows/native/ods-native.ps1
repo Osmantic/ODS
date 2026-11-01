@@ -55,6 +55,16 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
+# The command's options, read by the functions below. Copied once so each
+# function names where its input comes from (and the analyzer sees them used).
+$script:Options = [pscustomobject]@{
+    ModelPath      = $ModelPath
+    CtxSize        = $CtxSize
+    TimeoutSeconds = $TimeoutSeconds
+    RemoveData     = [bool]$RemoveData
+    NoBrowser      = [bool]$NoBrowser
+}
+
 . (Join-Path $PSScriptRoot 'lib\ods-native-lib.ps1')
 . (Join-Path $PSScriptRoot 'lib\private-file.ps1')
 . (Join-Path $PSScriptRoot 'lib\backend-contract.ps1')
@@ -164,8 +174,8 @@ function New-ODSNativeSecretFile {
 }
 
 function Resolve-ODSNativeModelPath {
-    if ($ModelPath) {
-        $full = [IO.Path]::GetFullPath($ModelPath)
+    if ($script:Options.ModelPath) {
+        $full = [IO.Path]::GetFullPath($script:Options.ModelPath)
         if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { throw "Model file not found: $full" }
         return $full
     }
@@ -226,7 +236,7 @@ function Invoke-ODSNativeInstallState {
     New-ODSNativeSecretFile -Path $script:Paths.LlamaKey
     New-ODSNativeSecretFile -Path $script:Paths.DashboardKey
     $model = Resolve-ODSNativeModelPath
-    $config = New-ODSNativeSupervisorConfig -Paths $script:Paths -ModelPath $model -CtxSize $CtxSize
+    $config = New-ODSNativeSupervisorConfig -Paths $script:Paths -ModelPath $model -CtxSize $script:Options.CtxSize
     Write-ODSPrivateEnvFile -Path $script:Paths.ConfigPath -Content (ConvertTo-ODSNativeConfigJson -Config $config)
     $signIn = Register-ODSNativeSignIn
     if ($model) { $modelNote = "model $model" } else { $modelNote = 'no model yet (dashboard only)' }
@@ -284,7 +294,7 @@ function Stop-ODSNativeSupervisor {
     }
     New-Item -ItemType Directory -Force -Path $script:Paths.RunDir | Out-Null
     [IO.File]::WriteAllText($script:Paths.StopFile, 'stop')
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $deadline = (Get-Date).AddSeconds($script:Options.TimeoutSeconds)
     while ((Get-Date) -lt $deadline -and @(Get-ODSNativeSupervisorProcessId).Count) { Start-Sleep -Milliseconds 500 }
     $left = @(Get-ODSNativeSupervisorProcessId)
     if ($left.Count) {
@@ -299,15 +309,15 @@ function Stop-ODSNativeSupervisor {
 
 function Open-ODSNative {
     Start-ODSNativeSupervisor
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $deadline = (Get-Date).AddSeconds($script:Options.TimeoutSeconds)
     while (-not (Test-ODSNativeHealth -Port $script:ODSNativeDashboardPort)) {
         if ((Get-Date) -ge $deadline) {
-            throw "The ODS dashboard did not answer within $TimeoutSeconds seconds. See $($script:Paths.LogsDir)\supervisor.log."
+            throw "The ODS dashboard did not answer within $($script:Options.TimeoutSeconds) seconds. See $($script:Paths.LogsDir)\supervisor.log."
         }
         Start-Sleep -Seconds 1
     }
     $url = 'http://127.0.0.1:{0}/' -f $script:ODSNativeDashboardPort
-    if (-not $NoBrowser) { Start-Process -FilePath $url }
+    if (-not $script:Options.NoBrowser) { Start-Process -FilePath $url }
     Write-ODSNativeLog "ODS is ready at $url"
 }
 
@@ -349,7 +359,7 @@ function Invoke-ODSNativeUninstallState {
         Unregister-ScheduledTask -TaskName $script:ODSNativeTaskName -TaskPath '\' -Confirm:$false
     }
     Remove-ODSNativeStartupScript
-    foreach ($path in @(Get-ODSNativeRemovalPlan -Paths $script:Paths -RemoveData:$RemoveData)) {
+    foreach ($path in @(Get-ODSNativeRemovalPlan -Paths $script:Paths -RemoveData:$script:Options.RemoveData)) {
         if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
     }
     Remove-ODSNativeEmptyFolder -Path $script:Paths.StateRoot

@@ -128,7 +128,7 @@ function Install-BundledPython {
 function Install-Dashboard {
     param([Parameter(Mandatory = $true)][string]$Bundle)
     $source = Join-Path $RepoRoot 'ods\extensions\services\dashboard'
-    $npm = (Get-Command -Name 'npm.cmd' -CommandType Application -ErrorAction Stop).Source
+    $npm = @(Get-Command -Name 'npm.cmd' -CommandType Application -ErrorAction Stop)[0].Source
     Invoke-Checked -FilePath $npm -ArgumentList @('ci', '--no-audit', '--no-fund') -WorkingDirectory $source
     Invoke-Checked -FilePath $npm -ArgumentList @('run', 'build') -WorkingDirectory $source
     $dist = Join-Path $source 'dist'
