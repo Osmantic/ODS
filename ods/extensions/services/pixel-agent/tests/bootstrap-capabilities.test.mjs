@@ -39,6 +39,9 @@ function withoutCountNotes(files) {
 }
 const preCountOriginals = withoutCountNotes(originals);
 const preCountMigrated = withoutCountNotes(migrated);
+// A retained pre-count workspace passes through the current migration on an
+// upgrade. Removing count notes after migration is a different historical path.
+const remigratedPreCount = migrateWorkspace(preCountOriginals);
 
 // workspace-template/AGENTS.md as shipped through Pixel 4.3.28. It is read from
 // Git history by blob id, so this file never reproduces its retired text; a
@@ -213,6 +216,42 @@ test('exact pre-count defaults remain recognized and disconnected bytes stay unc
   }
 });
 
+test('retained pre-count defaults upgraded by the current migration are capability-scoped', () => {
+  const expected = {
+    'AGENTS.md': 'd5e15593589b9609fa5ef4f9c07cab59fb3b1034140eff5f3116d8c3a74c1fd6',
+    'TOOLS.md': 'c0191a62af0819994e787396d7ed5d15599e5caafcc55b4f9e9b69bf93475efa',
+  };
+  for (const [name, content] of Object.entries(remigratedPreCount)) assert.equal(sha256(content), expected[name], name);
+  assert.deepEqual(migrateWorkspace(preCountMigrated), remigratedPreCount, 'both historical default paths converge');
+  assert.deepEqual(migrateWorkspace(remigratedPreCount), remigratedPreCount, 'the public migration is idempotent');
+
+  const event = fixture([...CALENDAR_PROPOSE_TOOLS, ...FRONTIER_TOOLS], remigratedPreCount);
+  event.context.cfg.plugins.entries['pixel-source-broker'] = {enabled: true};
+  const before = structuredClone(event.context.bootstrapFiles);
+  const priorObjects = [...event.context.bootstrapFiles];
+  assert.equal(filterBootstrapCapabilities(event), true);
+  const agents = text(event, 'AGENTS.md'), tools = text(event, 'TOOLS.md');
+  for (const content of [agents, tools]) assert.doesNotMatch(content, /pixel_calendar_propose_|copy its exact `etag`|If-Match|sanitizedPreview/);
+  assert.match(agents, /## Calendar: read-only/);
+  assert.match(agents, /pixel_calendar_list.*pixel_calendar_get/);
+  assert.match(tools, /## Gmail source projection/);
+  assert.match(tools, /## Google Calendar source projection/);
+  assert.match(tools, /Calendar changes are not enabled/);
+  assert.doesNotMatch(tools, /## Frontier limb/);
+  assert.deepEqual(priorObjects, before, 'the caller-owned bootstrap file objects keep their original bytes');
+  for (const [name, content] of Object.entries(remigratedPreCount)) assert.equal(sha256(content), expected[name], name);
+
+  for (const deny of [[], [...CALENDAR_PROPOSE_TOOLS.slice(0, 2), FRONTIER_TOOLS[0]]]) {
+    const available = fixture(deny, remigratedPreCount), unchanged = structuredClone(available.context.bootstrapFiles);
+    assert.equal(filterBootstrapCapabilities(available), false, 'enabled or partially denied families remain available');
+    assert.deepEqual(available.context.bootstrapFiles, unchanged);
+  }
+
+  const disconnected = fixture([...SOURCE_TOOLS, ...FRONTIER_TOOLS], remigratedPreCount);
+  assert.equal(filterBootstrapCapabilities(disconnected), true);
+  for (const name of ['AGENTS.md', 'TOOLS.md']) assert.doesNotMatch(text(disconnected, name), /pixel_(?:gmail|calendar|social)_|pixel_limb_status|Gmail/);
+});
+
 test('count-only availability belongs to the same source family and never implies a write grant', () => {
   for (const tool of ['pixel_gmail_count', 'pixel_calendar_count']) {
     const event = fixture(SOURCE_TOOLS.filter(name => name !== tool), migrated);
@@ -339,10 +378,11 @@ for (const [name, alter] of Object.entries({
 });
 
 test('owner edits, wrong file paths and unknown default revisions remain byte-exact', () => {
-  for (const files of [originals, migrated, preCountOriginals, preCountMigrated]) for (const change of ['owner', 'line-endings', 'path', 'missing']) {
+  for (const files of [originals, migrated, preCountOriginals, preCountMigrated, remigratedPreCount]) for (const change of ['owner', 'one-byte', 'line-endings', 'path', 'missing']) {
     const event = fixture([...SOURCE_TOOLS, ...FRONTIER_TOOLS], files);
     for (const file of event.context.bootstrapFiles) {
       if (change === 'owner') file.content += '\nOwner instruction.\n';
+      if (change === 'one-byte') file.content = (file.content[0] === '#' ? '!' : '#') + file.content.slice(1);
       if (change === 'line-endings') file.content = file.content.replace(/\n/g, '\r\n');
       if (change === 'path') file.path += '.other';
       if (change === 'missing') file.missing = true;

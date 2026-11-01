@@ -16,15 +16,18 @@ export const DEFAULT_DIGESTS = Object.freeze({
     migrated: '00c6c7690f9f4e226473c8f3f4f3781944f8bd17b556e8e6462172925f42e3f2',
   }),
 });
-// Exact pre-count templates remain reviewed; owner edits still match neither table.
+// Exact pre-count templates remain reviewed, including their output after the
+// current public migration. Owner edits still match none of these whole files.
 const PRE_COUNT_DEFAULT_DIGESTS = Object.freeze({
   'AGENTS.md': Object.freeze({
     shipped: 'f7ddef498b75de545361298b837722e0d53da982c8f7451664dd879935dbb21f',
     migrated: '4c60cc483860f404556e30f581f5717b13c54e847dcbe3ef2e53d09ba00d21d9',
+    remigrated: 'd5e15593589b9609fa5ef4f9c07cab59fb3b1034140eff5f3116d8c3a74c1fd6',
   }),
   'TOOLS.md': Object.freeze({
     shipped: '1c575473578d8db98838c1587ce27e0be6ee6d51e2dab2539304f68f7dd8ea53',
     migrated: '71461da997ee9ef37a28e4724062d044945b9033116c92df60f178d23baaf209',
+    remigrated: 'c0191a62af0819994e787396d7ed5d15599e5caafcc55b4f9e9b69bf93475efa',
   }),
 });
 // The section Pixel 4.3.29 ships in place of a retired one. It is byte-identical
@@ -177,7 +180,7 @@ export function filterBootstrapCapabilities(event) {
     // A workspace still holding the exact 4.3.28 default sees the 4.3.29 one.
     let content = currentDefault(file.name, file.content);
     const digest = sha256(content), variants = [digests, PRE_COUNT_DEFAULT_DIGESTS[file.name]];
-    const migrated = variants.some(entry => digest === entry.migrated);
+    const migrated = variants.some(entry => digest === entry.migrated || digest === entry.remigrated);
     if (!migrated && !variants.some(entry => digest === entry.shipped)) continue;
     if (file.name === 'AGENTS.md') {
       if (emailDisabled) content = section(content, 'Email tool pages are bounded,', 'Installed tools are capabilities, not a discovery API.', EMAIL_UNAVAILABLE);

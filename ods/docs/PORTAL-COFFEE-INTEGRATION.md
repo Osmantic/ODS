@@ -246,6 +246,41 @@ These comparisons loaded the production plugin and native SDK/guards with the
 source-read catalog; optional research and project-build capabilities were
 unavailable in the private fixture. They do not qualify those services or a Mac.
 
+The fifth ordinary update installed `cb0ec4231`. Independent postflight matched
+the selected source and native SDK bytes/custody; services and the ten selected
+containers were healthy. Full Access, the original read-only Google choice and
+all three integration state files were preserved, and the temporary QA
+authorities were absent. All eleven earlier backup snapshots were retained.
+Nevertheless, the exact next request in the original Chrome conversation made
+no tool call or new approval. The note still contained only the original append
+and the store held only its used approval. This installed negative is not a
+successful recovery and takes precedence over the private comparison for
+product acceptance.
+
+The private fixture initially selected the compact prompt, unlike the installed
+configuration. A separate full-prompt comparison also passed privately, so that
+configuration difference alone does not explain the installed failure. The
+installed gateway restarted after the new module files, and the inspected SDK
+and configured hook permissions match the private route. HTTP prompt delivery
+and environment-dependent behavior remain under investigation; do not mark
+this approval continuation resolved or request a merge on the private results.
+
+Further fixture review found omitted Edge delivery context, bundled skills that
+the ordinary renderer disables, and different bootstrap guidance. Correcting the
+first two still passed privately, so neither alone explains the installed
+negative. The public migration of reviewed pre-count AGENTS/TOOLS defaults
+reproduced the installed file hashes without copying owner content. Those
+canonical migration outputs were missing from the bootstrap capability filter's
+exact-hash table. It therefore preserved guidance for disabled Calendar writes
+and Frontier tools as though the defaults had been customized.
+
+The filter now recognizes exactly those two publicly derived whole-file hashes;
+unknown revisions and even one-byte owner edits remain unchanged. Regression
+tests derive both upgrade paths with the actual migration and cover idempotence,
+partial permissions, read-only projection and caller/disk immutability. This is
+a demonstrated upgrade defect; its effect on the installed approval
+counterexample is being qualified separately.
+
 The October 30 invented QA configurations and credentials were cleared through
 the owner API, and only
 the four owned test containers, two networks and two volumes were removed. Notes,
