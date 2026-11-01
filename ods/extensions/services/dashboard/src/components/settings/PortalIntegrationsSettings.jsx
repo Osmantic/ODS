@@ -37,7 +37,7 @@ function Approvals({ approvals, busy, onDecide }) {
             <button className={buttonStyle} disabled={busy} onClick={() => onDecide(item.id, 'decline')}>Decline</button>
           </div>
         </li>)}</ul>}
-    <p className="text-xs text-theme-text-muted">An approval allows that exact action once, within 24 hours. Portal then repeats it; a scheduled task goes ahead on its next run.</p>
+    <p className="text-xs text-theme-text-muted">An approval allows that exact action once, within 24 hours. Approving here does not resume a finished chat: ask Portal to try the same action again. A scheduled task can use the approval on a later run.</p>
   </section>
 }
 

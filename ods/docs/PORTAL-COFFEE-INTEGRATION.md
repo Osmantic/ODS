@@ -11,8 +11,10 @@ updates. The latest update retained the original Google read-only grant,
 Full Access, integration state and previous backups. Independent postflight
 matched the selected service/plugin/runtime bytes and found the selected
 product services healthy, with no temporary QA authority left in that scope.
-Documentation-only commits after this checkpoint are not another installed
-code qualification.
+Later documentation and approval-screen wording are not another installed
+code qualification. The wording now explains that approval does not resume a
+finished chat and the owner must ask Portal to try the same action again;
+this clarification does not repair the model counterexample below.
 
 - **Working on the latest installation:** a fresh Chrome conversation called
   connection status without reading emails or events, then read the invented
