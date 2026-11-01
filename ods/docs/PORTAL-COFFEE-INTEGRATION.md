@@ -15,8 +15,9 @@ mark either PR merged or establish release acceptance.
   `8ae5af7b33fd4e86513427e19838149b903e1472`, with current main
   `a1073a2adf8f6e8944172ba7005bd9cbb549465e` merged separately.
 - The November 1 source checkpoint additionally merges main through
-  `82ed80df72dbb596aac52a1104e9a319ca3bb86a`. Installed evidence below remains
-  bound to its October 30 source; it is not retroactively assigned to this merge.
+  `82ed80df72dbb596aac52a1104e9a319ca3bb86a`. Each installed checkpoint below
+  remains bound to its own source; earlier evidence is not retroactively
+  assigned to this merge.
 - The design experiment is a different worktree. Its visual changes are not
   part of this integration branch.
 
@@ -88,7 +89,7 @@ catalog surface. Neither test establishes live local-model acceptance.
 
 ## Installed Windows/WSL qualification
 
-Three ordinary updates, at `8d71df83d`, `674d4bd40` and finally `d0a722794`, completed on
+Four ordinary updates, at `8d71df83d`, `674d4bd40`, `d0a722794` and `f16e39be3`, completed on
 the owner's Windows/WSL/Docker installation with the actual RTX 5090 and local
 Qwen3.5 9B. Independent selected-file inspection matched the installed plugin,
 integration service and pinned SDK to the reviewed source. Full Access, the
@@ -203,18 +204,57 @@ stat-clock controls and Windows/WSL tests cover the repair. The pre-existing
 baseline size/mtime filter is unchanged: this does not claim detection of every
 possible rewrite that deliberately restores the baseline metadata.
 
-The actual installation still matches `d0a722794` in the selected installed-byte
-inspection. The newer merge has separate source/fixture validation, not another
-claimed live installation. Full Access and the original read-only Google record,
-credential bytes and observed scope remain unchanged in the November 1 passive
-inspection. All ten product containers were healthy after cleanup. The invented
-QA configurations and credentials were cleared through the owner API, and only
+The subsequent ordinary November 1 update installed `f16e39be3`. Independent
+Git/archive expectations matched the five installed integration programs, ten
+selected plugin files, rendered unit, native ToolSearch `d20d8071...` and main's
+reviewed projection `88c7ec12...`. Both native custody receipts and original
+canonical backups matched. Full Access and the original read-only Google record,
+credential bytes and observed scope were retained. All ten product containers
+were healthy, and the scoped postflight found no temporary QA authority references.
+The private update backup retained all ten earlier general snapshots using the
+normal backup command's temporary `MAX_BACKUPS=11` setting.
+
+On that installed source, a fresh 9B chat used the status tool without message or
+event reads, read the invented note correctly, and appended its exact line once
+after owner approval and an explicit "already approved" follow-up. Two other
+turns only narrated a need for approval without calling a tool: repeating the
+original request after approval and asking for a second identical write. These
+are model-behavior negatives, not an approval-service binding failure. No second
+write or new pending request occurred. Approval does not automatically restart
+the chat; a new owner turn is required. Do not count the no-call turns as
+successful retry/replay tests.
+
+A real-model comparison first exercised the request/approve/retry/new-request
+sequence with reduced history. Both the published source and a candidate with
+four clearer tool/result descriptions passed, so that experiment did not
+establish a fix. Repeating the comparison with the exact six-turn invented QA
+history reproduced the negative on both versions: zero new tool calls, no new
+pending request and no second write. The original transcript remained intact;
+the SDK changed only the private execution copy's header working directory.
+The four description changes alone do not resolve this counterexample. A
+separate per-turn contract then passed the same full-history continuation through
+the actual prompt hook: the original source again made no call, while the
+candidate submitted the exact write, received a new pending ID and preserved
+the used approval and note bytes. This is one bounded comparison on the local
+9B model, not a guarantee across models. The contract sits beside each current
+owner turn, outside the cached system prompt; it neither routes requests by
+keywords nor creates or approves actions itself. Separate fresh-session controls
+also passed: an already approved exact request executed once and became used;
+an unrelated question made no integration calls or effects. The actual installed
+continuation remains a separate gate.
+
+The October 30 invented QA configurations and credentials were cleared through
+the owner API, and only
 the four owned test containers, two networks and two volumes were removed. Notes,
 private logs and backups were preserved; the four one-time test jobs remain
 archived with their results. The cleanup driver's initial missing-object parser
 failure was retained; a follow-up confirmed all exact QA resources absent.
+The separate November 1 invented notes connection remains enabled while the
+approval continuation is investigated; its file and receipts are preserved.
 
-Current-head hosted checks are separate from these local results. This remains a
+The published `f16e39be3` checkpoint completed its hosted checks without failures
+(the advisory tracking job intentionally skipped). Later code needs its own
+checks and installed qualification. This remains a
 development draft, not a request to merge or a completed release qualification.
 
 ## Protocol and platform limits

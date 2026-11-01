@@ -9,7 +9,7 @@ import vm from 'node:vm';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import * as responseLanguage from '../plugin/response-language.mjs';
 import {managedTeamRole} from '../plugin/tool-loop-guard.mjs';
-import {longTaskContract, promptContractForAgent} from '../plugin/prompt-contract.mjs';
+import {longTaskContract, promptContractForAgent, PORTAL_INTEGRATION_TURN_CONTEXT} from '../plugin/prompt-contract.mjs';
 import {ACTIVITY_CONTRACT} from '../plugin/activity-display.mjs';
 import {GOAL_CONTRACT} from '../plugin/goal-progress.mjs';
 import {executionContext} from '../plugin/completion-assurance.mjs';
@@ -163,7 +163,7 @@ export async function realPromptBuild(t, {stateFiles = {}} = {}) {
 // everything beside the owner turn can be checked for turns the real flow
 // rarely combines.
 export async function promptHookAlone({language, goal = false, clarificationNote,
-  prompt = 'Quais são três dicas para manter o foco?'} = {}) {
+  prompt = 'Quais são três dicas para manter o foco?', agentId = 'pixel', probe = false, messages = []} = {}) {
   const source = fs.readFileSync(new URL('../plugin/index.js', import.meta.url), 'utf8');
   const begin = source.indexOf('    api.on("before_prompt_build",');
   const finish = source.indexOf('    api.on("model_call_started",', begin);
@@ -172,7 +172,7 @@ export async function promptHookAlone({language, goal = false, clarificationNote
   vm.runInNewContext(source.slice(begin, finish), {
     ...responseLanguage,
     api: {config: {}, on: (_name, fn) => { callback = fn; }}, AGENT_ID: 'pixel',
-    accessRuntime: {isProbe: () => false},
+    accessRuntime: {isProbe: () => probe},
     delegationDelivery: {admission: () => undefined, observe() {}, promptContext: () => undefined, ownerRunFor: () => undefined},
     privateBrowserAccessForAgent: () => false, executionHostForAgent: () => 'sandbox',
     toolLoopGuard: {observeRun() {}, ownerIntentEventForRun: (_id, event) => event, verificationStatus: () => undefined,
@@ -180,9 +180,10 @@ export async function promptHookAlone({language, goal = false, clarificationNote
       observeExampleRun() {}, exampleContextForRun: () => undefined,
       clarificationContextForRun: id => (id === 'run' ? clarificationNote : undefined), longTaskEligible: () => true},
     goalProgress: {begin() {}, active: () => goal}, taskActivity: {begin() {}},
-    promptContractForAgent, longTaskContract, configuredContextWindow: 131072, configuredLeanPrompt: false, configuredResponseLanguage: language,
+    promptContractForAgent, longTaskContract, PORTAL_INTEGRATION_TURN_CONTEXT,
+    configuredContextWindow: 131072, configuredLeanPrompt: false, configuredResponseLanguage: language,
     extensionRepositoryContext: async () => '', managedTeamRole, ACTIVITY_CONTRACT, GOAL_CONTRACT,
     executionLocationContext: () => '', executionContext,
   });
-  return callback({prompt}, {agentId: 'pixel', runId: 'run'});
+  return callback({prompt, messages}, {agentId, runId: 'run'});
 }

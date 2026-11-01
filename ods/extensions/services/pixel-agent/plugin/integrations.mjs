@@ -8,7 +8,7 @@ import net from 'node:net';
 const SOCKET = '/run/ods-pixel-integrations/control.sock';
 const MAX_REPLY = 512 * 1024;
 const TIMEOUT_MS = 130000;
-const APPROVAL_TEXT = 'Waiting for the owner. Tell the owner this needs their approval in Settings → Portal integrations (they may also get a notification). After they approve, call this tool again with exactly the same arguments; do not change them. In a scheduled task, do not wait: say it needs approval and finish; once approved, the next run within 24 hours with the same arguments goes ahead.';
+const APPROVAL_TEXT = 'This call created or found a pending request; the action has not run. Tell the owner it needs approval in Settings → Portal integrations (they may also get a notification). After they approve, call this tool again with exactly the same arguments so the service can check and use the approval; do not just repeat this notice. Approval is for one use. For any later requested action, including an identical one, call the tool again to submit that new request. In a scheduled task, do not wait: report this returned status and finish; a later run within 24 hours can check the approval with exactly the same arguments.';
 
 export function submitIntegration(payload, {connect = net.createConnection, platform = process.platform, signal} = {}) {
   return new Promise((resolve, reject) => {
@@ -107,7 +107,7 @@ export function createIntegrationTools({submit = submitIntegration} = {}) {
   return [
     {
       name: 'pixel_ods_notes',
-      description: "The owner's Obsidian notes. action search: find notes holding words (query). action read: read a note (path from a search, such as Home/Lease.md). action write: add text to a note (mode append) or create a new note (mode create), only when the owner asks to save something; the owner may need to approve it first.",
+      description: "The owner's Obsidian notes. action search: find notes holding words (query). action read: read a note (path from a search, such as Home/Lease.md). action write: add text (mode append) or create a note (mode create), only when the owner asks to save something. Call action write for every new save request, even if you expect approval or the text is identical. The service creates a request or performs the permitted write. Only its returned status approval-required means a request is pending; describing the need for approval creates nothing.",
       parameters: {type: 'object', additionalProperties: false, required: ['action'],
         properties: {action: {type: 'string', enum: ['search', 'read', 'write']},
           query: {type: 'string', description: 'For search: words to look for, such as "lease deposit".'},
@@ -122,7 +122,7 @@ export function createIntegrationTools({submit = submitIntegration} = {}) {
     },
     {
       name: 'pixel_ods_notify',
-      description: "Send a notification to the owner's phone or computer through ntfy configured in Settings → Portal integrations. This is a native notification connection, separate from custom MCP servers; it does not require an ntfy MCP server. Use when the owner asks to be notified, or at the end of a scheduled task that should tell them its result. The result confirms delivery to the configured ntfy server, not receipt on a physical device.",
+      description: "Send a notification to the owner's phone or computer through ntfy configured in Settings → Portal integrations. This is a native notification connection, separate from custom MCP servers; it does not require an ntfy MCP server. Use when the owner asks to be notified, or at the end of a scheduled task that should tell them its result. Call for each new requested notification; describing it does not send it. Only a successful result confirms delivery to the configured ntfy server, not receipt on a physical device.",
       parameters: {type: 'object', additionalProperties: false, required: ['message'],
         properties: {title: {type: 'string'}, message: {type: 'string'},
           priority: {type: 'string', enum: ['low', 'default', 'high']}}},
@@ -131,7 +131,7 @@ export function createIntegrationTools({submit = submitIntegration} = {}) {
     },
     {
       name: 'pixel_ods_mcp',
-      description: "Only the owner's custom MCP servers, such as Home Assistant; not the native Obsidian, ntfy or Google connections. action list: show each server id and the tools Portal may use, with their arguments; always list before the first call. action call: run one tool with server, tool and arguments. Some tools need the owner's approval first. Use pixel_ods_notes for notes and pixel_ods_notify for notifications.",
+      description: "Only the owner's custom MCP servers, such as Home Assistant; not the native Obsidian, ntfy or Google connections. action list: show server ids and permitted tools with their arguments; always list before the first call. action call: submit the requested action with server, tool and arguments. Call for every new action, including an identical later one, even when the catalog says needsApproval. That flag creates no request; only the call's returned status approval-required confirms a pending request. Use pixel_ods_notes for notes and pixel_ods_notify for notifications.",
       parameters: {type: 'object', additionalProperties: false, required: ['action'],
         properties: {action: {type: 'string', enum: ['list', 'call']},
           server: {type: 'string', description: 'For call: the server id from list, such as home.'},

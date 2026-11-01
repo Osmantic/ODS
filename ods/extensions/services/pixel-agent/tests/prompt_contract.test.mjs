@@ -6,6 +6,7 @@ import vm from "node:vm";
 import {
   CONNECTED_RECORDS_CONTRACT,
   PORTAL_INTEGRATIONS_CONTRACT,
+  PORTAL_INTEGRATION_TURN_CONTEXT,
   ODS_COMPACT_CONVERSATION_CONTRACT,
   ODS_TINY_CONVERSATION_CONTRACT,
   ODS_CONVERSATION_CONTRACT,
@@ -38,6 +39,32 @@ import { AGENT_SKILLS, PREVIEW_RUNTIME_CONTRACT } from "../plugin/agent-skills.m
 import { workspacePreviewMode,
   userMessageOperationsRequirements } from "../plugin/tool-loop-guard.mjs";
 import { RESPONSE_LANGUAGE_CONTRACT } from '../plugin/response-language.mjs';
+import {promptHookAlone} from './prompt-build-harness.mjs';
+
+test('the actual prompt hook appends integration turn context independently of request words and history', async () => {
+  const histories = [[], Object.freeze([
+    Object.freeze({role:'assistant', content:'A previous action needs approval.'}),
+    Object.freeze({role:'toolResult', toolName:'pixel_ods_notes', details:Object.freeze({status:'done'})}),
+  ])];
+  for (const prompt of ['Quanto é 14 + 8?', 'Add the same invented line to my note again.']) {
+    for (const messages of histories) {
+      const original = JSON.stringify(messages);
+      const context = await promptHookAlone({prompt, messages});
+      assert.equal(context.appendContext, PORTAL_INTEGRATION_TURN_CONTEXT);
+      assert.ok(!context.appendSystemContext.includes(PORTAL_INTEGRATION_TURN_CONTEXT), 'not in cached system context');
+      assert.ok(!context.prependContext?.includes(PORTAL_INTEGRATION_TURN_CONTEXT), 'keep it beside the owner turn');
+      assert.equal(JSON.stringify(messages), original, 'history and typed receipts stay intact');
+    }
+  }
+});
+
+test('integration turn context is absent for runtime probes and agents with no Portal contract', async () => {
+  const probe = await promptHookAlone({probe:true});
+  assert.ok(probe.appendSystemContext, 'the existing probe prompt contract remains');
+  assert.ok(!probe.appendContext?.includes(PORTAL_INTEGRATION_TURN_CONTEXT));
+  const other = await promptHookAlone({agentId:'unrelated'});
+  assert.equal(other, undefined);
+});
 import { createAskUserTool } from '../plugin/ask-user.mjs';
 
 test('connected capabilities are a stable model contract, independent of request wording',()=>{
