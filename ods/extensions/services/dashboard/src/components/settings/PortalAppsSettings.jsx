@@ -65,7 +65,7 @@ function NewsOptions({ app, busy, onChange }) {
       <Toggle checked={app.digest.enabled} disabled={busy} onChange={enabled => setDigest({ enabled })}>Send me a daily news digest</Toggle>
       <label className="block text-sm">Digest time ({app.digest.timezone})
         <input className={inputStyle} type="time" value={app.digest.time} disabled={busy || !app.digest.enabled} onChange={event => setDigest({ time: event.target.value })} /></label>
-      <p className="text-xs text-theme-text-muted">Each day at this time Portal sends a short brief of your unread stories through ntfy, up to 15 of them, grouped by feed. It is a scheduled task, kept in step with this setting.</p>
+      <p className="text-xs text-theme-text-muted">Each day at this time Portal sends a short brief of your new unread stories through ntfy, up to 15 of them, grouped by feed. Each story comes in one digest only. It is a scheduled task, kept in step with this setting.</p>
       {app.digest.enabled && !app.enabled && <p role="note" className="text-xs text-amber-300">The digest starts once you turn on “Let Portal read my news feeds”.</p>}
     </div>
   </>
