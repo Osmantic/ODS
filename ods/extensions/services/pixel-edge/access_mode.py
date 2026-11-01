@@ -108,16 +108,30 @@ def _connection_plugins(value):
                     and type(flag) is bool for key, flag in value.items()))
 
 
+def _connection_plugin_change(value):
+    if type(value) is not dict or set(value) != {'plugin', 'enabled', 'error'}:
+        return False
+    plugin, enabled, error = value['plugin'], value['enabled'], value['error']
+    if plugin is None and enabled is None:
+        return type(error) is str and _TOKEN.fullmatch(error) is not None
+    # The same reviewed IDs as pixel_connections.plugins; no configuration or
+    # private journal metadata is part of this projection.
+    return (type(plugin) is str and plugin in {'memory-wiki'}
+            and type(enabled) is bool and _maybe(error, _TOKEN))
+
+
 def public_connections(value):
     keys = {'schemaVersion', 'available', 'surface', 'reason', 'ownerTimeZone', 'connectors', 'plugins'}
     if (type(value) is not dict
-            or not keys <= set(value) <= keys | {'googleAuth'}
+            or not keys <= set(value) <= keys | {'googleAuth', 'pluginChange'}
             or value['schemaVersion'] != 1 or type(value['available']) is not bool
             or value['surface'] not in ('linux-systemd', 'wsl-systemd', 'linux', 'darwin', 'windows')
             or not _maybe(value['reason'], _TOKEN) or not _maybe(value['ownerTimeZone'], _ZONE)
             or type(value['connectors']) is not dict or set(value['connectors']) != {'google'}
             or not _connection_plugins(value['plugins'])
             or not _connection_google(value['connectors']['google'])):
+        raise ValueError('invalid-connection-status')
+    if 'pluginChange' in value and not _connection_plugin_change(value['pluginChange']):
         raise ValueError('invalid-connection-status')
     if 'googleAuth' in value:
         auth = value['googleAuth']

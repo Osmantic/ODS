@@ -106,6 +106,21 @@ class ConnectionsRelayTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status, 503)
             self.assertNotIn('private-sentinel', await response.text())
 
+    async def test_pending_plugin_recovery_reaches_the_owner_without_private_journal_fields(self):
+        for change in (
+                dict(plugin='memory-wiki', enabled=True, error=None),
+                dict(plugin='memory-wiki', enabled=False, error='connection-runtime-proof-failed'),
+                dict(plugin=None, enabled=None, error='connection-transition-unavailable')):
+            self.reply = dict(CONNECTED, pluginChange=change)
+            async with self.client.get(self.url, headers=OWNER) as response:
+                self.assertEqual(response.status, 200)
+                self.assertEqual(await response.json(), self.reply)
+                self.assertEqual(response.headers['Cache-Control'], 'no-store')
+        self.reply['pluginChange']['token'] = 'private-sentinel'
+        async with self.client.get(self.url, headers=OWNER) as response:
+            self.assertEqual(response.status, 503)
+            self.assertEqual(await response.json(), {'error': 'connections-unavailable'})
+
     async def test_queries_and_bodies_never_reach_the_controller(self):
         async with self.client.get(self.url + '?account=other', headers={'Authorization': 'Bearer ' + 'o' * 64}) as response:
             self.assertEqual(response.status, 400)

@@ -430,6 +430,48 @@ class ActionWireTests(unittest.TestCase):
 
 
 class WireContractTests(unittest.TestCase):
+    def test_reviewed_plugin_change_crosses_root_host_and_edge_without_private_metadata(self):
+        import pixel_access_client
+        import pixel_access_relay as relay
+        from pixel_connections import plugins
+
+        original = status.unavailable('wsl-systemd')
+        changes = [dict(plugin=plugin, enabled=enabled, error=error)
+                   for plugin in plugins.IDS for enabled in (True, False)
+                   for error in (None, 'connection-runtime-proof-failed')]
+        changes.append(dict(plugin=None, enabled=None, error='connection-transition-unavailable'))
+        for change in changes:
+            value = dict(copy.deepcopy(original), pluginChange=change)
+            with self.subTest(change=change):
+                self.assertEqual(status.validate_public(copy.deepcopy(value)), value)
+                self.assertEqual(edge.public_connections(copy.deepcopy(value)), value)
+                with patch.object(relay.platform, 'system', return_value='Linux'), \
+                        patch.object(pixel_access_client, 'request_access', return_value=(200, value)):
+                    self.assertEqual(relay.request_runtime_connections(config={}), (200, value))
+        self.assertNotIn('pluginChange', edge.public_connections(original))
+
+    def test_malformed_plugin_change_is_withheld_by_root_and_edge(self):
+        valid = dict(plugin='memory-wiki', enabled=True, error=None)
+        changes = [None, [], 'pending', {},
+                   {key: value for key, value in valid.items() if key != 'error'},
+                   dict(valid, token='private-sentinel'),
+                   dict(valid, beforeRecordSha='a' * 64),
+                   dict(valid, plugin='unknown-plugin'), dict(valid, plugin=True),
+                   dict(valid, plugin=None), dict(valid, enabled=None),
+                   dict(valid, enabled=0), dict(valid, enabled=1), dict(valid, enabled='true'),
+                   dict(valid, error='private path or credential'), dict(valid, error='a' * 65),
+                   dict(valid, error='connection-failed\n'), dict(valid, error=True),
+                   dict(plugin=None, enabled=None, error=None),
+                   dict(plugin=None, enabled=None, error=''),
+                   dict(plugin=None, enabled=None, error='a' * 65)]
+        for change in changes:
+            value = dict(status.unavailable('wsl-systemd'), pluginChange=change)
+            with self.subTest(change=change):
+                with self.assertRaises(status.StatusError):
+                    status.validate_public(copy.deepcopy(value))
+                with self.assertRaisesRegex(ValueError, '^invalid-connection-status$'):
+                    edge.public_connections(copy.deepcopy(value))
+
     def test_legacy_account_mode_absence_is_preserved_and_managed_mode_is_independent_of_catalog(self):
         value = next(item for item in samples() if item['connectors']['google']['state'] == 'connected')
         legacy = copy.deepcopy(value)
