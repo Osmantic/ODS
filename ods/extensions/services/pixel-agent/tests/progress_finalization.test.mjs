@@ -5,7 +5,7 @@ import {createToolLoopGuard, DEFAULT_WEB_TOOL_LIMITS, FREE_CORRECTIONS_PER_KIND,
   PROGRESS_STOP_HELP, PROGRESS_STOPPED_DELIVERY_PREFIX, WEB_LOOP_ABORT_REASON, WEB_LOOP_DELIVERY_REASON,
   WEB_SEARCH_BUDGET_EXHAUSTED_REASON, WORKSPACE_PREVIEW_NOT_CREATED_DELIVERY_PREFIX} from '../plugin/tool-loop-guard.mjs';
 import {PREVIEW_INCOMPLETE_NOTE} from '../plugin/preview-explanation.mjs';
-import {RUN_PROGRESS_LIMITS, RUN_PROGRESS_STOP_REASON} from '../plugin/run-progress-budget.mjs';
+import {RUN_PROGRESS_LIMITS, RUN_PROGRESS_STOP_REASON, RUN_PROGRESS_WARNING, RUN_PROGRESS_WARNING_TEXT} from '../plugin/run-progress-budget.mjs';
 import {composeProgressFinalization, createProgressFinalization, progressFinalizationAnswer,
   PROGRESS_FINALIZATION_INSTRUCTION, PROGRESS_FINALIZATION_NOTE, PROGRESS_READ_PAGES_HEADING} from '../plugin/progress-finalization.mjs';
 
@@ -307,7 +307,8 @@ test('visual stops never gain an unverified preview or localhost claim', () => {
   const receipt = recorded.slice(recorded.indexOf('Your preview is ready.'));
   assert.ok(receipt.startsWith(`Your preview is ready.\n\n[Open preview](${details.url})\n\n`), receipt);
   // Failed fetches, not a preview check, stopped it: the page may be unfinished.
-  assert.equal(delivery.text, `${answer}\n\n${PREVIEW_INCOMPLETE_NOTE}\n\n${receipt}`);
+  assert.equal(delivery.text, `${answer}\n\n${PREVIEW_INCOMPLETE_NOTE}\n\n` +
+    `Files changed in this response: \`night-garden/index.html\`.\n\n${receipt}`);
   assert.doesNotMatch(delivery.text, /not proof|not completed|stopped after|tool limit|Open last published preview/);
   assert.equal(delivery.preview.sha256, details.sha256);
 });
@@ -365,7 +366,10 @@ test('no change when the budget is not hit', () => {
   const {guard, aborts} = guardFixture();
   Object.values(PAGES).forEach((url, index) => readPage(guard, url, `read-${index}`));
   for (let i = 0; i < RUN_PROGRESS_LIMITS.consecutiveFailures - 1; i++) {
-    assert.doesNotMatch(JSON.stringify(persistFailure(guard, `failed-${i}`) ?? {}), /tool limit|stopped after repeated/);
+    const persisted = JSON.stringify(persistFailure(guard, `failed-${i}`) ?? {});
+    // Never the stop; only the one warning that comes before it, on the third failure in a row.
+    assert.doesNotMatch(persisted, /tool limit|stopped after repeated/);
+    assert.equal(persisted.includes(RUN_PROGRESS_WARNING_TEXT), i === RUN_PROGRESS_WARNING.consecutiveFailures - 1);
   }
   guard.observeModelCall({}, context);
   guard.observeModelEnd({}, context);

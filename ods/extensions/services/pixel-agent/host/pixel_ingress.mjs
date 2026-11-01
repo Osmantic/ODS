@@ -42,6 +42,8 @@ const MAX_VERIFICATION_TEXT = 32 * 1024;
 // One host line for the owner after the delivered reply (the plugin's
 // shipped-example guard, plugin/example-guard.mjs).
 const MAX_VERIFICATION_NOTICE = 1024;
+// The limits that may stop a failed response (verification `stop`).
+const VERIFICATION_STOPS = new Set(['tool-limit', 'run-deadline']);
 const MAX_VERIFICATION_RESPONSE = 1024 * 1024;
 const OPENAI_RUN_ID = /^chatcmpl_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const EMPTY_ASSISTANT_RESPONSE = "⚠️ Agent couldn't generate a response. Please try again.";
@@ -846,6 +848,10 @@ export function parseVerificationResponse(value, runId) {
   // A pending question card carries no notice.
   const hasNotice = status !== 'pending' && Object.hasOwn(value, 'notice');
   if (hasNotice) expectedKeys.push('notice');
+  // Which limit stopped a failed response (tool-loop-guard.mjs), for goal
+  // mode's controller: it continues a goal after these stops.
+  const hasStop = status === 'failed' && Object.hasOwn(value, 'stop');
+  if (hasStop) expectedKeys.push('stop');
   if (status === "passed" && carriesAuthoritativeText && value.deliveryMode === "append") {
     expectedKeys.push("deliveryMode");
   }
@@ -904,7 +910,8 @@ export function parseVerificationResponse(value, runId) {
     !previewValid || (hasTask && !parseTaskActivity(value.task, runId)) ||
     (hasQuestions && (status !== 'pending' || !parseQuestions(value.questions))) ||
     (hasNotice && (typeof value.notice !== 'string' || !value.notice.trim() ||
-      value.notice.length > MAX_VERIFICATION_NOTICE || /[\u0000-\u001f\u007f]/.test(value.notice)))
+      value.notice.length > MAX_VERIFICATION_NOTICE || /[\u0000-\u001f\u007f]/.test(value.notice))) ||
+    (hasStop && !VERIFICATION_STOPS.has(value.stop))
   ) {
     throw new HttpError(502, "verification state unavailable");
   }
@@ -1155,7 +1162,8 @@ function completionSse(completion, verification) {
     ...(terminal && verification?.artifacts?.length ? {pixel_artifacts:{schemaVersion:1,artifacts:verification.artifacts}} : {}),
     ...(terminal && verification?.task ? { pixel_task: verification.task } : {}),
     ...(terminal && verification?.questions ? { pixel_questions: {schemaVersion:1,questions:verification.questions} } : {}),
-    ...(terminal ? {pixel_outcome: {schemaVersion:1,status:verification?.status ?? 'none'}} : {}),
+    ...(terminal ? {pixel_outcome: {schemaVersion:1,status:verification?.status ?? 'none',
+      ...(verification?.stop ? {stop:verification.stop} : {})}} : {}),
   });
   return Buffer.from(
     `data: ${envelope({ role: "assistant" }, null)}\n\n` +

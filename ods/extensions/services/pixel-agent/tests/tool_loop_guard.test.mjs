@@ -345,10 +345,10 @@ test('malformed dispatch failures stop only their active run and retain its veri
   assert.equal(delivery.status,'failed');
   assert.equal(delivery.preview.sha256,details.sha256);
   // The owner reads Portal's plain line, that the build stopped unfinished,
-  // and the receipt that becomes the preview card, not the stop facts
-  // (progressStopPresentation).
-  assert.ok(delivery.text.startsWith(`${PREVIEW_INCOMPLETE_NOTE}\n\nYour preview is ready.\n\n[Open preview](${details.url})`),
-    delivery.text);
+  // the files it changed, and the receipt that becomes the preview card, not
+  // the stop facts (progressStopPresentation).
+  assert.ok(delivery.text.startsWith(`${PREVIEW_INCOMPLETE_NOTE}\n\nFiles changed in this response: \`log-viewer-lab/index.html\`.` +
+    `\n\nYour preview is ready.\n\n[Open preview](${details.url})`), delivery.text);
   assert.doesNotMatch(delivery.text,/not completed|not proof|stopped after/);
   const other = {agentId:'pixel',runId:'run-2',sessionId:'session-2'};
   guard.observeRun(other,'pixel',{prompt:'hello'});

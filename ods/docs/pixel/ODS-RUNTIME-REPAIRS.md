@@ -261,6 +261,26 @@ projection (`truncateOversizedToolResultsInMessages`):
 - The choice depends only on transcript order. Calls between reductions and the
   next attempt re-send identical history bytes, so the prompt prefix changes
   about once per half-budget of new output instead of at every owner turn.
+- While a response is under way, a model with a context of 131k tokens or more
+  keeps twice the aggregate (128k characters) in view, reduced to half of that
+  in one step. On the laptop (2026-10-30), one 227-call elf-of-doom response
+  read all of the 1,929-line `ui.js` about nine times after its earlier reads
+  were reduced, while its prompt never went above 55k of 131k tokens.
+- A request gets the wider view only when it fits the tool-loop guard below at
+  every message of the transcript. The guard measures this projection and
+  counts tool text twice against window × 4 × 0.9 characters. The newest batch
+  is counted before it is reduced, and dense scripts are counted as OpenClaw's
+  own estimate counts them (about one token per character). Otherwise the
+  request sends exactly the base projection, so the guard trips at the same
+  request as without the wider view. The provider stream's input can shrink
+  between its requests (old images are pruned, prompt context is dropped), so
+  once an attempt has declined the wider view it keeps the base projection
+  until the attempt ends. The next owner turn decides afresh, which can restore
+  results sent as notices once and rewrite that much of the cached prefix.
+- A transcript that ends with a final reply, as the pre-prompt compaction check
+  sees it, is measured at the base aggregate. The first request of the next turn
+  can send the wider view when it fits the guard, so its room for the reply
+  rests on the loop guard rather than on the pre-prompt check's reserve.
 
 The session transcript, the pre-prompt compaction check and the recovery
 rewrite path are unchanged. `toolResultMaxChars` stays at 16k: doubling it on

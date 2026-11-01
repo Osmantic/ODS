@@ -151,7 +151,12 @@ test('the loop guard measures the projected prompt and leaves a small real promp
   assert.ok(fs.readFileSync(path.join(workspace, 'ui.js'), 'utf8').length * ROUNDS * 2 > WINDOW * 4 * 0.9);
   assert.equal(result.meta?.error, undefined, trace);
   assert.equal(result.payloads?.map(payload => payload.text ?? '').join(''), 'Done.', trace);
-  assert.ok(turns.every(body => transportTokens(body) < 40000), 'the provider prompts stayed small\n' + trace);
+  // A response keeps up to twice the 64k base aggregate of tool output in view
+  // (openclaw-tool-result-projection.json): at most 128k characters plus the
+  // newest result and the turn's own text, about 47k transport tokens.
+  assert.ok(turns.every(body => transportTokens(body) < 48000), 'the provider prompts stayed small\n' + trace);
+  // The base aggregate alone stays near 25k (64k plus the newest result).
+  assert.ok(turns.some(body => transportTokens(body) > 30000), 'the wider view was in use\n' + trace);
 });
 
 // Positive control. The projection caps tool results only; tool-call arguments

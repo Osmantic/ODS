@@ -148,6 +148,29 @@ export function composeReadPages(pages) {
   return `${PROGRESS_READ_PAGES_HEADING}\n\n${lines.join('\n')}`;
 }
 
+// Host-built from this response's successful write, edit and apply_patch
+// receipts (tool-loop-guard.mjs), so a stopped response says which files it
+// left changed without relying on the model's memory of them. On the laptop
+// (2026-10-30) a stop came in the middle of a chars.js change, and the stop
+// answer before it described files as "verified" from reads the model could no
+// longer see. Shell commands and deleted files are not listed, so nothing is
+// said when the list is empty. Paths are workspace-relative; a name with
+// characters that would break the line is counted, not printed.
+// Names are bounded so a long tool-limit answer with unread links still fits
+// the ingress text limit with the list (stop_changed_files.test.mjs).
+export const MAX_CHANGED_FILES_LISTED = 8;
+export const MAX_LISTED_PATH_CHARS = 120;
+const LISTABLE_PATH = /^[\w@+,.() /-]+$/;
+export function changedFilesNote(files) {
+  const changed = (Array.isArray(files) ? files : []).filter(file => typeof file === 'string' && file);
+  if (!changed.length) return '';
+  const listed = changed.filter(file => file.length <= MAX_LISTED_PATH_CHARS && LISTABLE_PATH.test(file))
+    .slice(0, MAX_CHANGED_FILES_LISTED);
+  if (!listed.length) return `${changed.length} ${changed.length === 1 ? 'file was' : 'files were'} changed in this response.`;
+  const more = changed.length - listed.length;
+  return `Files changed in this response: ${listed.map(file => `\`${file}\``).join(', ')}${more ? `, and ${more} more` : ''}.`;
+}
+
 // The answer as composed ahead of the host facts: an open code fence closed.
 export function progressFinalizationHead(answer) {
   const fences = [...answer.matchAll(/^[ \t]{0,3}(`{3,}|~{3,})/gm)].map(match => match[1]);
@@ -166,9 +189,11 @@ export function unverifiedLinksNote(unverifiedLinks = []) {
 // pages it was given, listed last.
 export function composeProgressFinalization(answer, {preview, previewExpected = false,
   verificationStatus, researchLimit = false, unverifiedLinks = [], refusedToolCalls = false,
-  requestedTextMissing, synthesis} = {}) {
+  requestedTextMissing, synthesis, changedFiles = []} = {}) {
   const facts = [PROGRESS_FINALIZATION_NOTE];
   if (refusedToolCalls) facts.push(PROGRESS_FINALIZATION_REFUSED_CALLS_NOTE);
+  const changed = changedFilesNote(changedFiles);
+  if (changed) facts.push(changed);
   if (typeof synthesis?.note === 'string' && synthesis.note) facts.push(synthesis.note);
   if (researchLimit) facts.push("This response's web research allowance was used up, so no further sources could be read.");
   if (verificationStatus === 'failed') facts.push('The latest recognized test or verification command failed.');

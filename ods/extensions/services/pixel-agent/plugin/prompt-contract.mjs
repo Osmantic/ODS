@@ -384,6 +384,37 @@ export function needsLoopRecovery(messages) {
 // status-only contract before the ODS conversation boundary was widened.
 export const ODS_TOOL_REPLY_CONTRACT = ODS_CONVERSATION_CONTRACT;
 
+// Which conversation contract a run gets: 'tiny' at 8K or less, 'compact' at
+// 32K or less or when the install pinned a lean prompt, otherwise 'full'. A
+// 32K runtime also needs the compact core: fixed instructions otherwise
+// exhaust its reserved input budget even after conversation compaction.
+export function contractSize(context, { configuredContextWindow, configuredLeanPrompt } = {}) {
+  const contextWindows = [
+    configuredContextWindow,
+    context?.contextTokenBudget,
+    context?.contextWindowReferenceTokens,
+  ].filter(value => Number.isInteger(value) && value > 0);
+  const smallest = contextWindows.length > 0 ? Math.min(...contextWindows) : undefined;
+  if (smallest !== undefined && smallest <= 8192) return 'tiny';
+  return configuredLeanPrompt === true || (smallest !== undefined && smallest <= 32768) ? 'compact' : 'full';
+}
+
+// What stays in view during a long task, and how to work with it. On the
+// laptop (2026-10-30) a 227-call elf-of-doom run re-read all of ui.js about
+// nine times and changed nothing: the tool-result projection had already
+// replaced its earlier reads with a notice. Full-size contracts only, and
+// beside the conversation contract rather than in it: the compact and tiny
+// contracts repeat the full contract's supplement under fixed size caps.
+export const ODS_LONG_TASK_CONTRACT =
+  "Long tasks: in a long response Portal replaces older tool output with a short notice, so a file you read early may be gone later. Read narrowly (search for the names you need, then read short ranges, not whole large files), keep the facts you will need later (file, line numbers, names) in the explanation of update_plan, and make the first change as soon as you know enough for it.";
+
+// The long-task line for this run, or '' for small contracts and for team
+// roles that plan or review instead of changing files.
+export function longTaskContract(context, event = undefined, options = {}) {
+  const teamRole = managedTeamRole(event);
+  return contractSize(context, options) === 'full' && (!teamRole || teamRole === 'Builder') ? ODS_LONG_TASK_CONTRACT : '';
+}
+
 export function promptContractForAgent(
   context,
   agentId,
@@ -393,18 +424,9 @@ export function promptContractForAgent(
 ) {
   if (!context || context.agentId !== agentId) return undefined;
   const languageContract = responseLanguageContract(configuredResponseLanguage);
-  // A 32K runtime also needs the compact core: fixed instructions otherwise
-  // exhaust its reserved input budget even after conversation compaction.
-  const contextWindows = [
-    configuredContextWindow,
-    context.contextTokenBudget,
-    context.contextWindowReferenceTokens,
-  ].filter(value => Number.isInteger(value) && value > 0);
-  const leanPrompt = configuredLeanPrompt === true ||
-    (contextWindows.length > 0 && Math.min(...contextWindows) <= 32768);
-  const tinyPrompt = contextWindows.length > 0 && Math.min(...contextWindows) <= 8192;
-  const conversationContract = conversationContractForExecution(tinyPrompt
-    ? ODS_TINY_CONVERSATION_CONTRACT : leanPrompt
+  const size = contractSize(context, {configuredContextWindow, configuredLeanPrompt});
+  const conversationContract = conversationContractForExecution(size === 'tiny'
+    ? ODS_TINY_CONVERSATION_CONTRACT : size === 'compact'
     ? ODS_COMPACT_CONVERSATION_CONTRACT : ODS_CONVERSATION_CONTRACT, executionHost)
     .replace(RESPONSE_LANGUAGE_CONTRACT, () => languageContract);
   const teamRole=managedTeamRole(event);

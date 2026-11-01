@@ -6,6 +6,7 @@ import path from 'node:path';
 import http from 'node:http';
 import {register} from 'node:module';
 import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
+import {RUN_PROGRESS_LIMITS} from '../plugin/run-progress-budget.mjs';
 import {createConnectionsStatusTool} from '../plugin/connections-status.mjs';
 import {withPiToolErrorContract} from '../plugin/pi-tool-result.mjs';
 import {applyVerificationToCompletion,parseVerificationResponse,createIngressServer,computeSessionUser} from '../host/pixel_ingress.mjs';
@@ -283,3 +284,60 @@ test('canonical wrapped real Source retries preserve normal JSON, SSE and retain
     assert.equal(f.calls.filter(call=>call.path==='/v1/chat/completions').length,2,'history replays neither failed nor repaired tools');
   }
 });
+
+// The connected-source delivery boundary and native goal continuation are
+// independent: a genuine limit may continue a goal, while its failed lookup
+// must still replace unsupported account claims in every delivered/replayed reply.
+for (const goal of [false, true]) for (const stop of [undefined, 'tool-limit', 'run-deadline']) {
+  test(`unresolved Google evidence survives ${goal ? 'goal' : 'ordinary'} ${stop ?? 'lookup-only'} delivery`, async t => {
+    let clock = 0;
+    const guard = createToolLoopGuard({now: () => clock, abortRun: () => true,
+      goalRun: runId => goal && runId === RUN});
+    const prompt = `${goal ? '/goal ' : ''}Check the saved Google connection and fix the enemy drawing in Playground/game.`
+      + (goal ? '\n\nContinue this goal from the saved work. Do only unfinished work.' : '');
+    guard.observeRun(context, 'pixel', {prompt},
+      {runTimeoutSeconds: 1800, executionHost: 'sandbox', workspaceRoot: '/workspace'});
+    receipt(guard, context, 'pixel_ods_connections_status', await unknownResult());
+    if (stop === 'tool-limit') {
+      for (let i = 0; i <= RUN_PROGRESS_LIMITS.consecutiveFailures; i++) {
+        const toolName = 'read', toolCallId = `goal-lookup-failure-${i}`;
+        const params = {path: `Playground/game/missing-${i}.js`};
+        const scope = {...context, toolName, toolCallId};
+        const event = {toolName, toolCallId, params};
+        guard.observeModelCall({}, context);
+        if (guard.beforeToolCall(event, scope)?.block) break;
+        const result = {isError: true, content: [{type: 'text', text: 'ENOENT'}], details: {status: 'error'}};
+        guard.afterToolCall({...event, result, error: 'ENOENT'}, scope);
+        guard.toolResultPersist({...event, message: {role: 'toolResult', toolName, toolCallId, ...result}}, scope);
+      }
+    } else if (stop === 'run-deadline') {
+      clock = 30 * 60000;
+      guard.observeAgentEnd({success: false, durationMs: clock, messages: [
+        {role: 'user', content: [{type: 'text', text: prompt}]},
+        {role: 'assistant', stopReason: 'aborted', content: []},
+      ]}, context);
+    }
+    const verification = finalize(guard);
+    assert.equal(verification.status, 'failed');
+    assert.match(verification.text, /Could not verify the requested Google lookup/);
+    assert.doesNotMatch(verification.text, /No Google account is configured/);
+    assert.equal(Object.hasOwn(verification, 'deliveryMode'), false);
+    assert.equal(verification.stop, goal ? stop : undefined,
+      'only a genuine eligible goal limit may request another round');
+    const parsed = parseVerificationResponse(JSON.parse(JSON.stringify(verification)), RUN);
+    assert.equal(applyVerificationToCompletion(completion(), parsed).choices[0].message.content, verification.text);
+    if (goal && stop) {
+      const fixture = await transport(t, verification);
+      const messages = [{role: 'user', content: prompt}];
+      const first = await fixture.chat(`connection-${stop}`, messages);
+      assert.equal(first.status, 200);
+      assert.equal(first.value.choices[0].message.content, verification.text);
+      const replay = await fixture.chat(`connection-${stop}`, messages, true);
+      assert.equal(replay.status, 200);
+      const frames = replay.text.split('\n').filter(line => line.startsWith('data: {')).map(line => JSON.parse(line.slice(6)));
+      assert.equal(frames.map(frame => frame.choices[0].delta.content ?? '').join(''), verification.text);
+      assert.deepEqual(frames.at(-1).pixel_outcome, {schemaVersion: 1, status: 'failed', stop});
+      assert.deepEqual(fixture.ledger.read(computeSessionUser({user: USER})).lastResult.verification, verification);
+    }
+  });
+}

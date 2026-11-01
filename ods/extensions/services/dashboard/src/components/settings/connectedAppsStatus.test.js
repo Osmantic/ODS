@@ -180,3 +180,26 @@ it('polls only while a step runs or the first sync is underway', () => {
   expect(refreshDelay(statusFor({state: 'connected'}), NOW)).toBeNull()
   expect(refreshDelay({...statusFor(), available: false}, NOW)).toBeNull()
 })
+
+
+describe('refreshDelay with a pending plugin change', () => {
+  it('polls every 3 seconds for a known pending change with no error', () => {
+    const status = statusFor({}, {pluginChange: {plugin: 'memory-wiki', enabled: true, error: null}})
+    expect(refreshDelay(status, NOW)).toBe(3000)
+  })
+
+  it('does not poll for an errored pending change', () => {
+    const status = statusFor({}, {pluginChange: {plugin: 'memory-wiki', enabled: true, error: 'runtime-busy'}})
+    expect(refreshDelay(status, NOW)).toBeNull()
+  })
+
+  it('does not poll for an unknown pending change', () => {
+    const status = statusFor({}, {pluginChange: {plugin: null, enabled: null, error: 'journal-unreadable'}})
+    expect(refreshDelay(status, NOW)).toBeNull()
+  })
+
+  it('preserves Google polling when no plugin change is pending', () => {
+    const status = statusFor({state: 'first-sync'})
+    expect(refreshDelay(status, NOW)).toBe(5000)
+  })
+})

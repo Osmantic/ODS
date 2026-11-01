@@ -95,7 +95,7 @@ const ran = text => text.split('\n')[0] === 'ok';
 const stopped = text => [RUN_PROGRESS_STOP_REASON, PROGRESS_FINALIZATION_INSTRUCTION].includes(text);
 
 test('mac-mini d4a61f33 replay: refusals name the exact next path and the unchanged fuse still stops at call 4', () => {
-  assert.deepEqual({...RUN_PROGRESS_LIMITS}, {consecutiveFailures:4, totalFailures:12, roundsWithoutProgress:8, identicalSuccesses:2});
+  assert.deepEqual({...RUN_PROGRESS_LIMITS}, {consecutiveFailures:4, recentFailures:12, recentResults:40, roundsWithoutProgress:8, identicalSuccesses:2});
   assert.equal(FREE_CORRECTIONS_PER_KIND, 2);
   assert.equal(MACMINI.sessionFileSha256.slice(0, 8), '9e3eef73');
   const [recordedWrite, mkdirTouch, touch, list, listLong] = MACMINI.calls;

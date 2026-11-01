@@ -1516,7 +1516,8 @@ test('the per-call notes stay bounded: a call whose result was never persisted d
   }
   const persist = ctx => guard.toolResultPersist({toolName: 'read', toolCallId: ctx.toolCallId,
     message: {role: 'toolResult', toolName: 'read', toolCallId: ctx.toolCallId, content: [{type: 'text', text: 'ok'}]}}, ctx, 'pixel');
-  assert.equal(persist(unpersisted[0]), undefined, 'the oldest note was dropped');
+  // 300 reads with no file change also bring the edit-early notice (EDIT_EARLY_NOTICE).
+  assert.ok(!JSON.stringify(persist(unpersisted[0]) ?? {}).includes(RESTORED.model), 'the oldest note was dropped');
   assert.ok(persist(unpersisted.at(-1)).message.content.at(-1).text.endsWith(RESTORED.model));
   run.finish();
 });
