@@ -27,7 +27,12 @@ COMPACTION_CHUNK = "embedded-agent-subscribe.handlers.compaction.runtime-BcFOW95
 COMPACTION_IDLE_MODULE = "sessions-KE_Xmzwf.js"
 COMPACTION_RESUME_MODULE = "sessions-CZbwb3_c.js"
 COMPACTION_BUDGET_MODULE = "selection-BEwSQKM-.js"
-COMPACTION_BUDGET_DEPENDENCIES = frozenset({"tool-split-C61cf48Y.js", "tools-D5HS8Q_I.js"})
+COMPACTION_BUDGET_DEPENDENCIES = frozenset({
+    "tool-split-C61cf48Y.js", "tools-D5HS8Q_I.js",
+    "attempt.model-diagnostic-events-DqqiPQPY.js", "provider-stream-BXiTMl1u.js",
+    "openai-transport-stream-P3cLoEh2.js", "openai-prompt-cache-Ki7_LdG-.js",
+    "provider-stream-shared-DwdPV7LM.js", "session-write-lock-qJaTPAUi.js",
+    "file-lock-D6zEe-ZP.js", "sidecar-lock-Bv7C32CP.js"})
 READ_RANGE_MODULE = "openclaw-tools-iHHy99PD.js"
 SANDBOX_MKDIR_MODULES = {"bridge": "browser-bridges-D-At-KLc.js", "secure": "secure-temp-dir-XAWcZnE2.js"}
 TOOL_RESULT_PROJECTION_MODULE = "tool-result-truncation-CbxVHy2D.js"

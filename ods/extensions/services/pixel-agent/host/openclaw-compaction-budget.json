@@ -1,7 +1,7 @@
 {
   "version": "2026.6.33",
   "sourceSha256": "ae83457af1947f3eaf3e08f8fbde869a1c023a80acfbf0f27d3db887af1d36d3",
-  "patchedSha256": "c02ccde8f1bade8c014ae08c6592bda049fb4ff7cde4b04b2b02832d755ebddc",
+  "patchedSha256": "4eea7b3f5d3aab6d534f4b3916638ac3e9684a001a09c56fe80f153f79394227",
   "replacements": [
     [
       "const COMPACTION_RETRY_AGGREGATE_TIMEOUT_MS = 6e4;",
@@ -85,7 +85,7 @@
     ],
     [
       "import { i as runAgentHarnessBeforeAgentFinalizeHook } from \"./lifecycle-hook-helpers-Ck-WCTzd.js\";",
-      "import { i as runAgentHarnessBeforeAgentFinalizeHook, odsCaptureRetryToolOrigins, odsAcceptRetryToolsAllow, odsAuthorizeRetryTool, odsFilterRetryToolScope, odsRetryToolScopeVersion, odsRetryToolScopeState, odsTransferRetryToolDefinitions, odsRejectRetryToolScope } from \"./lifecycle-hook-helpers-Ck-WCTzd.js\";"
+      "import { i as runAgentHarnessBeforeAgentFinalizeHook, odsCaptureRetryToolOrigins, odsAcceptRetryToolsAllow, odsAuthorizeRetryTool, odsFilterRetryToolScope, odsRetryToolScopeVersion, odsRetryToolScopeState, odsTransferRetryToolDefinitions, odsRejectRetryToolScope, odsRetryToolChoiceVersion, odsAcceptRetryToolChoice, odsRetryToolChoiceState, odsWrapRetryToolChoiceStream } from \"./lifecycle-hook-helpers-Ck-WCTzd.js\";"
     ],
     [
       "\t\tconst clientTools = toolsEnabled && !isRawModelRun ? params.clientTools : void 0;",
@@ -108,20 +108,24 @@
       "\t\t\todsTransferRetryToolDefinitions(params.odsRetryToolScope, effectiveTools, customTools, getPluginToolMeta, copyPluginToolMeta);\n\t\t\tconst clientToolCallSlots = [];"
     ],
     [
+      "\t\t\tlet diagnosticModelCallSeq = 0;",
+      "\t\t\tconst odsNativeRetryToolChoiceSupport = odsRetryToolChoiceVersion(params.odsRetryToolScope, params.model, streamStrategy);\n\t\t\tactiveSession.agent.streamFn = odsWrapRetryToolChoiceStream(params.odsRetryToolScope, activeSession.agent.streamFn, odsNativeRetryToolChoiceSupport, allCustomTools, getPluginToolMeta, params.model);\n\t\t\tlet diagnosticModelCallSeq = 0;"
+    ],
+    [
       "\t\t\tlet beforeAgentFinalizeRevisionReason;",
-      "\t\t\tlet beforeAgentFinalizeRevisionReason;\n\t\t\tlet beforeAgentFinalizeRevisionToolsAllow;"
+      "\t\t\tlet beforeAgentFinalizeRevisionReason;\n\t\t\tlet beforeAgentFinalizeRevisionToolsAllow;\n\t\t\tlet beforeAgentFinalizeRevisionToolChoice;"
     ],
     [
       "\t\t\t\t\t\tstopHookActive: false,",
-      "\t\t\t\t\t\tstopHookActive: false,\n\t\t\t\t\t\t...(odsRetryToolScopeVersion(params.odsRetryToolScope) === 1 ? {nativeRetryToolsAllowVersion:1} : {}),"
+      "\t\t\t\t\t\tstopHookActive: false,\n\t\t\t\t\t\t...(odsRetryToolScopeVersion(params.odsRetryToolScope) === 1 ? {nativeRetryToolsAllowVersion:1} : {}),\n\t\t\t\t\t\t...(odsNativeRetryToolChoiceSupport === 1 && odsRetryToolChoiceVersion(params.odsRetryToolScope, params.model, streamStrategy) === 1 ? {nativeRetryToolChoiceVersion:1} : {}),"
     ],
     [
       "\t\t\t\tif (outcome.action !== \"revise\") return;",
-      "\t\t\t\tif (outcome.revisionToolsInvalid === true) odsRejectRetryToolScope(params.odsRetryToolScope);\n\t\t\t\tif (outcome.revisionToolsAllow !== void 0) beforeAgentFinalizeRevisionToolsAllow = odsAcceptRetryToolsAllow(params.odsRetryToolScope, outcome.revisionToolsAllow);\n\t\t\t\tif (outcome.action !== \"revise\") return;"
+      "\t\t\t\tif (outcome.revisionToolsInvalid === true) odsRejectRetryToolScope(params.odsRetryToolScope);\n\t\t\t\tif (outcome.revisionToolsAllow !== void 0) beforeAgentFinalizeRevisionToolsAllow = odsAcceptRetryToolsAllow(params.odsRetryToolScope, outcome.revisionToolsAllow);\n\t\t\t\tif (outcome.revisionToolChoiceRequired === true) {\n\t\t\t\t if (odsNativeRetryToolChoiceSupport !== 1) odsRejectRetryToolScope(params.odsRetryToolScope);\n\t\t\t\t odsAcceptRetryToolChoice(params.odsRetryToolScope, \"required\"); beforeAgentFinalizeRevisionToolChoice = true;\n\t\t\t\t}\n\t\t\t\tif (outcome.action !== \"revise\") return;"
     ],
     [
       "\t\t\t\t\t\t\tbeforeRunResult = await hookRunner.runBeforeAgentRun({",
-      "\t\t\t\t\t\t\tbeforeRunResult = await hookRunner.runBeforeAgentRun({\n\t\t\t\t\t\t\t\tnativeRetryToolsAllowState: odsRetryToolScopeState(params.odsRetryToolScope, allCustomTools, getPluginToolMeta),"
+      "\t\t\t\t\t\t\tbeforeRunResult = await hookRunner.runBeforeAgentRun({\n\t\t\t\t\t\t\t\tnativeRetryToolsAllowState: odsRetryToolScopeState(params.odsRetryToolScope, allCustomTools, getPluginToolMeta),\n\t\t\t\t\t\t\t\tnativeRetryToolChoiceState: odsRetryToolChoiceState(params.odsRetryToolScope, odsNativeRetryToolChoiceSupport),"
     ],
     [
       "\t\t\ttoolSearchCatalogExecutor = async (toolParams) => {\n\t\t\t\ttry {",
@@ -129,7 +133,15 @@
     ],
     [
       "\t\t\t\t...beforeAgentFinalizeRevisionReason ? { beforeAgentFinalizeRevisionReason } : {},",
-      "\t\t\t\t...beforeAgentFinalizeRevisionReason ? { beforeAgentFinalizeRevisionReason, ...(beforeAgentFinalizeRevisionToolsAllow !== void 0 ? {beforeAgentFinalizeRevisionToolsAllow} : {}) } : {},"
+      "\t\t\t\t...beforeAgentFinalizeRevisionReason ? { beforeAgentFinalizeRevisionReason, ...(beforeAgentFinalizeRevisionToolsAllow !== void 0 ? {beforeAgentFinalizeRevisionToolsAllow} : {}), ...(beforeAgentFinalizeRevisionToolChoice === true ? {beforeAgentFinalizeRevisionToolChoice:true} : {}) } : {},"
+    ],
+    [
+      "async function acquireWriteLock() {\n\t\tawait waitForHeldLockDrain();\n\t\tif (heldLock) return {",
+      "async function acquireWriteLock() {\n\t\tawait waitForHeldLockDrain();\n\t\tif (!heldLock && promptLockReacquisition) {\n\t\t\tawait promptLockReacquisition;\n\t\t\tawait waitForHeldLockDrain();\n\t\t}\n\t\tif (heldLock) return {"
+    ],
+    [
+      "async function refreshSessionFileFence(beforeWrite) {\n\t\tif (takeoverDetected) return;\n\t\tconst snapshot = await readSessionFileFenceSnapshot(params.lockOptions.sessionFile);\n\t\tif (!sameSessionFileFingerprint(beforeWrite, snapshot.fingerprint) && fenceActive) {\n\t\t\tfenceFingerprint = snapshot.fingerprint;\n\t\t\tfenceSnapshot = snapshot;\n\t\t}\n\t}",
+      "async function refreshSessionFileFence(beforeWrite) {\n\t\tif (takeoverDetected) return;\n\t\tconst expectedGeneration = fenceGeneration;\n\t\tconst expectedFence = fenceFingerprint;\n\t\tconst snapshot = await readSessionFileFenceSnapshot(params.lockOptions.sessionFile);\n\t\tif (takeoverDetected || !fenceActive || fenceGeneration !== expectedGeneration || fenceFingerprint !== expectedFence) return;\n\t\tif (!sameSessionFileFingerprint(beforeWrite, snapshot.fingerprint)) {\n\t\t\tfenceFingerprint = snapshot.fingerprint;\n\t\t\tfenceSnapshot = snapshot;\n\t\t}\n\t}"
     ]
   ],
   "previousReplacements": {
@@ -696,6 +708,14 @@
   },
   "reviewedDependencies": {
     "tool-split-C61cf48Y.js": "059d5c70a73bc0b16e3cc634ec355c1f39e477dbc1c999b9742145ee58a477b6",
-    "tools-D5HS8Q_I.js": "a8e2d7ee4e69b6a3ee491e68a5b841a8e7920d96d5d895c949cce7cda55a9563"
+    "tools-D5HS8Q_I.js": "a8e2d7ee4e69b6a3ee491e68a5b841a8e7920d96d5d895c949cce7cda55a9563",
+    "attempt.model-diagnostic-events-DqqiPQPY.js": "efeb0c2cf6936ebbb3104e155a92495b529092f21b1211efe3e24b3695ae590b",
+    "provider-stream-BXiTMl1u.js": "391a1245821d07fdf51a42f109f35ee6353b531979cdfc9bfd63535fb92a8e15",
+    "openai-transport-stream-P3cLoEh2.js": "3518e7a4cbcd178eaca8c8f1f3a1d552602a2a05349249f150520871aadea3d6",
+    "openai-prompt-cache-Ki7_LdG-.js": "9f34caed1cee6d161e2ed00a6b025852b413bc8a7259cad2f21d85e7dee81b26",
+    "provider-stream-shared-DwdPV7LM.js": "bd3995d7fcfe613ccc355ee64468795825ae1b8fdb5973e2f18179065bc4335a",
+    "session-write-lock-qJaTPAUi.js": "1a1d85debdfd25a0eab194b7264f2522bc84ba44437f9b1338e83c474c4ddfc0",
+    "file-lock-D6zEe-ZP.js": "a1d01df1fe41ea1bb750359c3b14576f7ce4997e2f85da3becc2a6cdc39a9a28",
+    "sidecar-lock-Bv7C32CP.js": "5303cdd5d3d31e2a912e33f5a7805914d9a980345af09cb9369956c988a7a0ba"
   }
 }

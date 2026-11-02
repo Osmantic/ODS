@@ -247,10 +247,18 @@ def shared_repairs(artifacts, monkeypatch):
             manifest['reviewedDependencies'] = {dependency: hashlib.sha256(raw).hexdigest()}
         elif name == 'openclaw-compaction-budget.json':
             manifest['reviewedDependencies'] = {}
-            for dependency in ('tool-split-C61cf48Y.js', 'tools-D5HS8Q_I.js'):
-                raw = ('reviewed fixture dependency ' + dependency).encode()
-                (dist / dependency).write_bytes(raw)
-                manifest['reviewedDependencies'][dependency] = hashlib.sha256(raw).hexdigest()
+            reviewed = json.loads((bundle.REPAIR_ROOT / name).read_bytes())['reviewedDependencies']
+            by_module = {module: filename for filename, module in bundle.SHARED_REPAIRS}
+            for dependency in reviewed:
+                if dependency in by_module:
+                    # The diagnostic module is itself an earlier managed
+                    # repair. Bind its final bytes; never overwrite its source.
+                    upstream = json.loads((manifests / by_module[dependency]).read_bytes())
+                    manifest['reviewedDependencies'][dependency] = upstream['patchedSha256']
+                else:
+                    raw = ('reviewed fixture dependency ' + dependency).encode()
+                    (dist / dependency).write_bytes(raw)
+                    manifest['reviewedDependencies'][dependency] = hashlib.sha256(raw).hexdigest()
         (manifests / name).write_text(json.dumps(manifest))
     monkeypatch.setattr(bundle, 'REPAIR_ROOT', manifests)
     return manifests
@@ -294,6 +302,10 @@ def test_shared_repairs_compose_deterministically_only_in_staging(artifacts, sha
 
 
 @pytest.mark.parametrize('dependency', ['tool-split-C61cf48Y.js', 'tools-D5HS8Q_I.js',
+                                      'provider-stream-BXiTMl1u.js', 'openai-transport-stream-P3cLoEh2.js',
+                                      'openai-prompt-cache-Ki7_LdG-.js', 'provider-stream-shared-DwdPV7LM.js',
+                                      'session-write-lock-qJaTPAUi.js', 'file-lock-D6zEe-ZP.js',
+                                      'sidecar-lock-Bv7C32CP.js',
                                       'hook-runner-global-mWFYlTIy.js'])
 def test_scope_dependency_failure_never_publishes_or_changes_runtime_input(
         artifacts, shared_repairs, dependency):
@@ -305,6 +317,34 @@ def test_scope_dependency_failure_never_publishes_or_changes_runtime_input(
     assert not artifacts['destination'].exists()
     assert bundle.inventory(artifacts['runtime'], normalize_modes=False) == before
     assert not list(artifacts['destination'].parent.glob('.ods-shared-repairs-*'))
+
+
+def test_required_first_dependency_graph_binds_final_upstream_bytes_without_cycles():
+    contracts = [bundle._shared_repair_contract(*pair) for pair in bundle.SHARED_REPAIRS]
+    by_module = {row['module']: (index, row) for index, row in enumerate(contracts)}
+    edges = set()
+    for index, row in enumerate(contracts):
+        for name, digest in row['reviewedDependencies'].items():
+            if name in by_module:
+                upstream_index, upstream = by_module[name]
+                assert upstream_index < index
+                assert digest == upstream['patchedSha256']
+                edges.add((row['module'], name))
+    assert edges == {('selection-BEwSQKM-.js', 'attempt.model-diagnostic-events-DqqiPQPY.js')}
+
+
+def test_required_first_refuses_pristine_diagnostic_dependency_after_its_repair(
+        artifacts, shared_repairs):
+    selected = shared_repairs / 'openclaw-compaction-budget.json'
+    value = json.loads(selected.read_bytes())
+    upstream = json.loads((shared_repairs / 'openclaw-diagnostic-stream-writes.json').read_bytes())
+    value['reviewedDependencies']['attempt.model-diagnostic-events-DqqiPQPY.js'] = upstream['sourceSha256']
+    selected.write_text(json.dumps(value))
+    before = bundle.inventory(artifacts['runtime'], normalize_modes=False)
+    with pytest.raises(ValueError, match='dependency differs'):
+        bundle.build(**artifacts, shared_runtime_repairs=True, stream_progress_fix=True)
+    assert not artifacts['destination'].exists()
+    assert bundle.inventory(artifacts['runtime'], normalize_modes=False) == before
 
 
 @pytest.mark.parametrize('module', [module for _, module in bundle.SHARED_REPAIRS])

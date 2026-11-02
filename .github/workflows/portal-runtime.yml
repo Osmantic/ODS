@@ -84,6 +84,11 @@ jobs:
       - name: Install pinned read-tool runtime for integration
         shell: bash
         run: npm install --prefix "$RUNNER_TEMP/read-runtime" --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org openclaw@2026.6.33
+      - name: Verify native revision scope and required-first controls from production repairs
+        if: runner.os == 'Linux'
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: python3 ods/extensions/services/pixel-agent/tests/test_native_runtime_revision_scope.py
       - name: Verify real file reads and range failures
         shell: bash
         env:

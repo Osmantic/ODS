@@ -1,7 +1,7 @@
 {
   "version": "2026.6.33",
   "sourceSha256": "0c9ce1028d7716ee14b091d790ee44f1cab952119bfca3d2963b5779877ebc96",
-  "patchedSha256": "fd309e519b3d415267b009c2830df04f967ebf98bdf65a9787083d1526d4e382",
+  "patchedSha256": "a40a5d6d34cbd11421fa0e2b56d33c7a818ef1f8ef5f4f1bb02c5d19202ca714",
   "replacements": [
     [
       "const lastAssistantUsage = normalizeUsage(sessionLastAssistant?.usage);",
@@ -41,7 +41,7 @@
     ],
     [
       "import { t as getGlobalHookRunner } from \"./hook-runner-global-mWFYlTIy.js\";",
-      "import { t as getGlobalHookRunner } from \"./hook-runner-global-mWFYlTIy.js\";\nimport { odsAcquireRetryToolScope, odsAcceptRetryToolsAllow, odsCloseRetryToolScope } from \"./lifecycle-hook-helpers-Ck-WCTzd.js\";"
+      "import { t as getGlobalHookRunner } from \"./hook-runner-global-mWFYlTIy.js\";\nimport { odsAcquireRetryToolScope, odsAcceptRetryToolsAllow, odsAcceptRetryToolChoice, odsCloseRetryToolScope } from \"./lifecycle-hook-helpers-Ck-WCTzd.js\";"
     ],
     [
       "\t\tsessionFile: runSessionTarget.sessionFile\n\t};\n\tconst sessionLane =",
@@ -57,7 +57,7 @@
     ],
     [
       "\t\t\t\t\tif (beforeAgentFinalizeRevisionReason && shouldHonorBeforeAgentFinalizeRevision) {",
-      "\t\t\t\t\tif (beforeAgentFinalizeRevisionReason && shouldHonorBeforeAgentFinalizeRevision) {\n\t\t\t\t\t\tif (attempt.beforeAgentFinalizeRevisionToolsAllow !== void 0) odsAcceptRetryToolsAllow(odsRetryToolScope, attempt.beforeAgentFinalizeRevisionToolsAllow);"
+      "\t\t\t\t\tif (beforeAgentFinalizeRevisionReason && shouldHonorBeforeAgentFinalizeRevision) {\n\t\t\t\t\t\tif (attempt.beforeAgentFinalizeRevisionToolsAllow !== void 0) odsAcceptRetryToolsAllow(odsRetryToolScope, attempt.beforeAgentFinalizeRevisionToolsAllow);\n\t\t\t\t\t\tif (attempt.beforeAgentFinalizeRevisionToolChoice === true) odsAcceptRetryToolChoice(odsRetryToolScope, \"required\");"
     ],
     [
       "\t\t\t\tif (params.isFinalFallbackAttempt !== false) await maybeEmitFastModeAutoResetBestEffort();",
