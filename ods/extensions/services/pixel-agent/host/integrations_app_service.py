@@ -8,7 +8,7 @@ gateway's plugin may declare only a few tools, so the apps add none of their own
 """
 import re
 import time
-import uuid
+import uuid as uuid_module
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -356,7 +356,7 @@ class AppActions:
             resolved = item["claimedBy"] is not None or item["state"] == "sent" and all(key in recorded for key in item["stories"])
             if not resolved:
                 retained.append(item)
-        item = {"id": uuid.uuid4().hex, "at": int(time.time() * 1000), "binding": binding,
+        item = {"id": uuid_module.uuid4().hex, "at": int(time.time() * 1000), "binding": binding,
                 "stories": list(identities), "message": text, "state": "admitted", "claimedBy": None,
                 "retryOf": original["id"] if original else None, "outcome": ""}
         if original:
@@ -551,7 +551,7 @@ class AppActions:
             if action == "digest-plan":
                 plan = apps.digest_plan(config)
                 if record is None and plan["enabled"]:
-                    record = {"schemaVersion": 1, "nonce": uuid.uuid4().hex, "jobId": None}
+                    record = {"schemaVersion": 1, "nonce": uuid_module.uuid4().hex, "jobId": None}
                     self.store._write("digest-job.json", record)
                 plan["management"] = {key: record[key] for key in ("nonce", "jobId")} if record else None
                 if record:
