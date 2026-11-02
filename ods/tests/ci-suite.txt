@@ -151,7 +151,10 @@ tests/test-model-library-coverage.py
 tests/test-model-library-verdicts.py
 tests/test-model-library-vllm.py
 tests/test_select_model_vllm.py
+tests/test_vllm_gpu_admission.py
+tests/test_hf_manifest_hardening.py
 tests/test_host_agent_vllm.py
+tests/test_host_agent_vllm_download_http.py
 tests/test_preserve_active_model_vllm.py
 tests/test_doctor_vllm_route.py
 tests/test-native-llm-phase02.sh

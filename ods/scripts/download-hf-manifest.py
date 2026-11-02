@@ -42,7 +42,7 @@ import urllib.error
 import urllib.request
 from http.client import HTTPException
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "extensions/services/dashboard-api"))
@@ -53,6 +53,10 @@ from model_vllm import (  # noqa: E402
     model_dir_name,
     require_valid,
 )
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from model_snapshot_files import Snapshot, SnapshotFile, UnsafePath  # noqa: E402
 
 
 DEFAULT_BASE_URL = "https://huggingface.co"
@@ -81,6 +85,10 @@ class DownloadStopped(Exception):
     """The server ended a file early or answered unexpectedly; bytes so far stay."""
 
 
+class DownloadCancelled(Exception):
+    """The caller asked to stop; verified files and partial bytes stay for a resume."""
+
+
 class HubRefused(Exception):
     """Hugging Face answered a file request with an HTTP error status."""
 
@@ -88,7 +96,8 @@ class HubRefused(Exception):
 class Progress:
     """A stdout line each time the whole download passes another percent."""
 
-    def __init__(self, total: int):
+    def __init__(self, total: int, callback: Callable[[int, int], None] | None = None):
+        self.callback = callback
         self.total = max(total, 1)
         self.completed = 0
         self.current = 0
@@ -108,6 +117,8 @@ class Progress:
 
     def _show(self) -> None:
         done = self.completed + self.current
+        if self.callback is not None:
+            self.callback(done, self.total)
         percent = done * 100 // self.total
         if percent > self.shown:
             self.shown = percent
@@ -143,19 +154,23 @@ def expected_digest(item: dict[str, Any]) -> str:
     return item["sha256"] if "sha256" in item else item["git_blob_sha1"]
 
 
-def hash_into(digest: Any, path: Path, progress: Progress) -> None:
+def hash_into(digest: Any, path: Path | SnapshotFile, progress: Progress,
+              cancelled: Callable[[], bool] | None = None) -> None:
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(CHUNK_BYTES), b""):
+            if cancelled is not None and cancelled():
+                raise DownloadCancelled("cancelled while hashing")
             digest.update(chunk)
             progress.advance(len(chunk))
 
 
-def verified_in_place(final: Path, item: dict[str, Any], progress: Progress) -> bool:
+def verified_in_place(final: Path | SnapshotFile, item: dict[str, Any], progress: Progress,
+                      cancelled: Callable[[], bool] | None = None) -> bool:
     """True when ``final`` already holds exactly the catalog file."""
     if not final.is_file() or final.stat().st_size != item["size"]:
         return False
     digest = new_digest(item)
-    hash_into(digest, final, progress)
+    hash_into(digest, final, progress, cancelled)
     if digest.hexdigest() == expected_digest(item):
         return True
     progress.restart_file()
@@ -170,8 +185,8 @@ def _check_content_range(response: Any, offset: int, size: int) -> None:
         )
 
 
-def fetch(url: str, partial: Path, offset: int, item: dict[str, Any], digest: Any,
-          progress: Progress) -> Any:
+def fetch(url: str, partial: Path | SnapshotFile, offset: int, item: dict[str, Any], digest: Any,
+          progress: Progress, cancelled: Callable[[], bool] | None = None) -> Any:
     """Append bytes ``offset``.. of ``url`` to ``partial``; return the running digest."""
     headers = {"User-Agent": USER_AGENT}
     if offset:
@@ -194,6 +209,10 @@ def fetch(url: str, partial: Path, offset: int, item: dict[str, Any], digest: An
         remaining = item["size"] - offset
         with partial.open("ab" if offset else "wb") as handle:
             while remaining > 0:
+                if cancelled is not None and cancelled():
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                    raise DownloadCancelled(f"cancelled while fetching {item['path']}")
                 chunk = response.read(min(CHUNK_BYTES, remaining))
                 if not chunk:
                     break
@@ -208,7 +227,8 @@ def fetch(url: str, partial: Path, offset: int, item: dict[str, Any], digest: An
     return digest
 
 
-def download(url: str, partial: Path, item: dict[str, Any], progress: Progress) -> None:
+def download(url: str, partial: Path | SnapshotFile, item: dict[str, Any], progress: Progress,
+             cancelled: Callable[[], bool] | None = None) -> None:
     """Complete ``partial`` (resuming what is there) and verify it, or delete it."""
     offset = partial.stat().st_size if partial.is_file() else 0
     if offset > item["size"]:
@@ -216,9 +236,9 @@ def download(url: str, partial: Path, item: dict[str, Any], progress: Progress) 
         offset = 0
     digest = new_digest(item)
     if offset:
-        hash_into(digest, partial, progress)
+        hash_into(digest, partial, progress, cancelled)
     if offset < item["size"] or not partial.exists():
-        digest = fetch(url, partial, offset, item, digest, progress)
+        digest = fetch(url, partial, offset, item, digest, progress, cancelled)
     actual = digest.hexdigest()
     if partial.stat().st_size != item["size"] or actual != expected_digest(item):
         partial.unlink()
@@ -229,12 +249,17 @@ def download(url: str, partial: Path, item: dict[str, Any], progress: Progress) 
         )
 
 
-def bytes_to_download(target: Path, files: list[dict[str, Any]]) -> int:
-    """Bytes still to fetch; a file in place at the right size counts as done."""
+def bytes_to_download(target: Path, files: list[dict[str, Any]],
+                      replacements: frozenset[str] = frozenset()) -> int:
+    """Lower bound on remaining bytes; known corrupt finals need replacement.
+
+    fetch_manifest verifies each final before admitting that file's download,
+    and explicitly includes it in replacements when verification fails.
+    """
     needed = 0
     for item in files:
         final = target / item["path"]
-        if final.is_file() and final.stat().st_size == item["size"]:
+        if item["path"] not in replacements and final.is_file() and final.stat().st_size == item["size"]:
             continue
         partial = final.with_name(final.name + PARTIAL_SUFFIX)
         have = partial.stat().st_size if partial.is_file() else 0
@@ -242,8 +267,9 @@ def bytes_to_download(target: Path, files: list[dict[str, Any]]) -> int:
     return needed
 
 
-def check_space(target: Path, files: list[dict[str, Any]]) -> None:
-    needed = bytes_to_download(target, files)
+def check_space(target: Path, files: list[dict[str, Any]],
+                replacements: frozenset[str] = frozenset()) -> None:
+    needed = bytes_to_download(target, files, replacements)
     if not needed:
         return
     usage = shutil.disk_usage(target)
@@ -256,40 +282,60 @@ def check_space(target: Path, files: list[dict[str, Any]]) -> None:
         )
 
 
-def _safe_destination(final: Path) -> Path:
+def _safe_destination(final: SnapshotFile) -> SnapshotFile:
     partial = final.with_name(final.name + PARTIAL_SUFFIX)
     for path in (final, partial):
         if path.is_symlink():
-            raise DownloadStopped(f"refusing to write through the symbolic link {path}")
+            raise UnsafePath(f"refusing to write through the symbolic link {path}")
     return partial
 
 
-def fetch_manifest(model: dict[str, Any], models_dir: Path, base_url: str) -> Path:
-    """Download and verify every manifest file; return the model folder."""
-    target = models_dir / model_dir_name(model)
-    target.mkdir(parents=True, exist_ok=True)
-    files = model["files"]
-    check_space(target, files)
-    print(f"plan: {model['hf_repo']}@{model['revision'][:8]}, {len(files)} files, "
-          f"{manifest_bytes(model) / GB:.1f} GB, into {target}", flush=True)
-    progress = Progress(manifest_bytes(model))
-    for index, item in enumerate(files, 1):
-        final = target / item["path"]
-        final.parent.mkdir(parents=True, exist_ok=True)
-        partial = _safe_destination(final)
-        if verified_in_place(final, item, progress):
-            progress.finish_file()
-            print(f"verified [{index}/{len(files)}] {item['path']} (already downloaded)", flush=True)
-            continue
-        if final.exists():
-            print(f"replacing {item['path']}: it does not match the catalog", flush=True)
-            final.unlink()
-        download(file_url(base_url, model, item["path"]), partial, item, progress)
-        os.replace(partial, final)
-        progress.finish_file()
-        print(f"verified [{index}/{len(files)}] {item['path']}", flush=True)
-    print(f"done: {len(files)} files verified in {target}", flush=True)
-    return target
+def fetch_manifest(model: dict[str, Any], models_dir: Path, base_url: str, *,
+                   cancelled: Callable[[], bool] | None = None,
+                   on_progress: Callable[[int, int], None] | None = None) -> Path:
+    """Fetch one pinned snapshot, optionally reporting progress and cancellation."""
+    require_valid(model)
+    with Snapshot(models_dir, model_dir_name(model)) as snapshot:
+        files = model["files"]
+        print(f"plan: {model['hf_repo']}@{model['revision'][:8]}, {len(files)} files, "
+              f"{manifest_bytes(model) / GB:.1f} GB, into {snapshot.path}", flush=True)
+        progress = Progress(manifest_bytes(model), on_progress)
+        verified: dict[str, tuple[int, int]] = {}
+        for index, item in enumerate(files, 1):
+            if cancelled is not None and cancelled():
+                raise DownloadCancelled("cancelled between files")
+            with snapshot.file(item["path"]) as final:
+                partial = _safe_destination(final)
+                if verified_in_place(final, item, progress, cancelled):
+                    info = final.stat()
+                    verified[item["path"]] = (info.st_dev, info.st_ino)
+                    progress.finish_file()
+                    print(f"verified [{index}/{len(files)}] {item['path']} (already downloaded)", flush=True)
+                    continue
+                # A same-sized but corrupt final needs replacement space too.
+                # Keep it intact until the complete replacement is verified.
+                if final.exists():
+                    print(f"replacing {item['path']}: it does not match the catalog", flush=True)
+                check_space(snapshot.path, files[index - 1:], frozenset({item["path"]}))
+                download(file_url(base_url, model, item["path"]), partial, item, progress, cancelled)
+                info = partial.stat()
+                identity = (info.st_dev, info.st_ino)
+                if cancelled is not None and cancelled():
+                    raise DownloadCancelled("cancelled before publishing")
+                partial.publish(final, identity)
+                verified[item["path"]] = identity
+                progress.finish_file()
+                print(f"verified [{index}/{len(files)}] {item['path']}", flush=True)
+        snapshot.check_current()
+        for item in files:
+            with snapshot.file(item["path"], create=False) as final:
+                info = final.stat()
+                if (info.st_dev, info.st_ino) != verified[item["path"]]:
+                    raise UnsafePath("verified snapshot file changed during download")
+        if cancelled is not None and cancelled():
+            raise DownloadCancelled("cancelled before completing snapshot")
+        print(f"done: {len(files)} files verified in {snapshot.path}", flush=True)
+        return snapshot.path
 
 
 def _fail(message: str, code: int) -> int:
@@ -319,6 +365,10 @@ def main(argv: list[str] | None = None) -> int:
         return _fail(str(exc), EXIT_MISMATCH)
     except HubRefused as exc:
         return _fail(f"{exc}. Files verified so far are kept.", EXIT_FAILED)
+    except (UnsafePath, OSError) as exc:
+        return _fail(str(exc), EXIT_FAILED)
+    except DownloadCancelled as exc:
+        return _fail(f"the download was cancelled: {exc}. Its bytes are kept: run this again to resume.", EXIT_FAILED)
     except (DownloadStopped, urllib.error.URLError, HTTPException, ConnectionError, TimeoutError,
             socket.timeout) as exc:
         return _fail(f"the download stopped: {exc}. Its bytes are kept: run this again to resume.", EXIT_FAILED)

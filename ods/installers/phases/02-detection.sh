@@ -644,15 +644,33 @@ _phase02_choose_llm_backend() {
     fi
     # vLLM refuses to start unless its share of the GPU is free. A fresh
     # install's GPUs hold no ODS engine yet, so their free memory is what vLLM
-    # can claim; on a rerun this installation's own engine may hold it.
-    query="uuid,compute_cap,memory.total"
-    [[ "$existing" == true ]] || query+=",memory.free"
+    # can claim. On a rerun this installation's own engine may hold it: the
+    # helper scripts/vllm-gpu-admission.py credits only memory held by this
+    # installation's own verified engine container, and only when the process
+    # holding it is provably that container's. Every other holder stays
+    # counted against free memory.
+    query="uuid,compute_cap,memory.total,memory.free"
     if ! rows="$(nvidia-smi --query-gpu="$query" --format=csv,noheader,nounits 2>>"$LOG_FILE")"; then
         [[ "$required" != true ]] || _phase02_vllm_refused "nvidia-smi could not list this host's GPUs (details in $LOG_FILE)"
         log "Model server: llama.cpp (nvidia-smi could not list the GPUs for the vLLM engine)"
         return 0
     fi
     mapfile -t gpu_rows < <(printf '%s\n' "$rows" | sed '/^[[:space:]]*$/d')
+    if [[ "$existing" == true ]]; then
+        # Existing installs only: adjust each row's free memory by the memory
+        # this installation's own engine container holds. The helper fails
+        # closed: an unreadable free field, an unreadable process, or an
+        # ambiguous owner yields no credit, and a missing free field stops
+        # the run rather than silently hardware-fitting an unknown.
+        local admission_status=0 admission_rows=""
+        admission_rows="$(printf '%s\n' "${gpu_rows[@]}" | \
+            "$python" "$SCRIPT_DIR/scripts/vllm-gpu-admission.py" --install-dir "$INSTALL_DIR" 2>>"$LOG_FILE")" \
+            || admission_status=$?
+        if [[ "$admission_status" -ne 0 ]]; then
+            _phase02_vllm_refused "the GPU admission helper could not read this installation's engine memory (details in $LOG_FILE)"
+        fi
+        mapfile -t gpu_rows < <(printf '%s\n' "$admission_rows" | sed '/^[[:space:]]*$/d')
+    fi
     error_file="$(mktemp "${TMPDIR:-/tmp}/ods-vllm-selector.XXXXXX")"
     env_text="$(ods_run_vllm_selector "$python" ${gpu_rows[@]+"${gpu_rows[@]}"} 2>"$error_file")" || status=$?
     error_text="$(cat "$error_file")"
@@ -897,6 +915,17 @@ _phase02_keep_vllm_model() {
         || -z "${VLLM_ARGS:-}" || -z "${VLLM_GPU_UUID:-}" ]]; then
         log "The saved vLLM model contract is incomplete after loading: $(printf '%s' "$contract" | tr '\n' ' ')"
         _phase02_vllm_keep_refused "0 with an incomplete contract"
+    fi
+    # The selector admitted its recommendation. Validate the actual retained
+    # model, selected GPU and owner-configured memory share before any changes.
+    local rows
+    if ! rows="$(nvidia-smi --query-gpu=uuid,compute_cap,memory.total,memory.free --format=csv,noheader,nounits 2>>"$LOG_FILE")"; then
+        _phase02_vllm_refused "nvidia-smi could not verify the preserved vLLM model's GPU memory (details in $LOG_FILE)"
+    fi
+    if ! printf '%s\n' "$rows" | "$python" "$SCRIPT_DIR/scripts/vllm-gpu-admission.py" \
+        --install-dir "$INSTALL_DIR" --model-id "$LLM_MODEL" --gpu-uuid "$VLLM_GPU_UUID" \
+        --memory-share "${VLLM_GPU_MEMORY_UTILIZATION:-}" --catalog "$SCRIPT_DIR/config/model-library.json" 2>>"$LOG_FILE"; then
+        _phase02_vllm_refused "the preserved vLLM model does not fit its selected GPU's available memory at its configured share (details in $LOG_FILE)"
     fi
     log "Kept this installation's vLLM model across installer rerun: ${LLM_MODEL} (${VLLM_MODEL_DIR}) on GPU ${VLLM_GPU_UUID}, selected by ${MODEL_SELECTION_SOURCE}"
 }

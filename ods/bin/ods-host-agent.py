@@ -2524,6 +2524,26 @@ def _model_management_snapshot() -> tuple[int, dict]:
         _model_management_lock.release()
 
 
+def _load_vllm_downloader():
+    path = INSTALL_DIR / "scripts" / "download-hf-manifest.py"
+    spec = importlib.util.spec_from_file_location("_ods_download_hf_manifest", path)
+    if spec is None or spec.loader is None:
+        raise ImportError("vLLM download helper is missing")
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    return helper
+
+
+def _vllm_snapshot_is_active(env: dict, entry: dict, models_dir: Path) -> bool:
+    if not _vllm_engine(env):
+        return False
+    if env.get("LLM_MODEL") in {entry.get("id"), entry.get("llm_model_name")}:
+        return True
+    active_folder = str(env.get("VLLM_MODEL_DIR") or "").strip()
+    return bool(active_folder and (models_dir / active_folder).resolve()
+                == (models_dir / _model_vllm.model_dir_name(entry)).resolve())
+
+
 def _normalize_model_download_status(status_path: Path, data: dict) -> dict:
     """Schedule single-flight verification for status left by a dead worker."""
     global _model_status_verify_thread
@@ -2532,6 +2552,19 @@ def _normalize_model_download_status(status_path: Path, data: dict) -> dict:
         return data
     if _model_download_thread_alive():
         return data
+    if data.get("runtime") == "vllm":
+        # Serialize against worker admission. A dead worker cannot establish
+        # completion; keep verified files/partials available for explicit resume.
+        with _model_download_lock:
+            current = _read_model_status(status_path)
+            if _model_download_thread_alive() or current != data:
+                return current
+            counts = [data.get("bytesDownloaded"), data.get("bytesTotal")]
+            done, total = [n if type(n) is int and n >= 0 else 0 for n in counts]
+            _write_model_status(status_path, "failed", str(data.get("model") or ""), done, total,
+                                "Download interrupted; start it again to resume the saved snapshot.",
+                                runtime="vllm", strict=True)
+            return _read_model_status(status_path)
 
     model = _download_status_model_token(data.get("model"))
     manifest, manifest_error = _catalog_manifest_for_status(model)
@@ -14213,6 +14246,13 @@ class AgentHandler(BaseHTTPRequestHandler):
         if body is None:
             return
 
+        # A vLLM catalog model is downloaded by its pinned Hugging Face
+        # manifest, not by a caller-supplied URL. Dispatch before the GGUF
+        # validation below so the body is never re-read or re-authenticated.
+        if "model_id" in body:
+            self._handle_model_download_vllm(body)
+            return
+
         gguf_file = body.get("gguf_file", "")
         gguf_url = body.get("gguf_url", "")
         gguf_parts = body.get("gguf_parts", [])
@@ -14692,6 +14732,107 @@ class AgentHandler(BaseHTTPRequestHandler):
                 raise
 
         json_response(self, 200, {"status": "started"})
+
+    def _handle_model_download_vllm(self, body: dict):
+        """Download a trusted snapshot under the shared model lifecycle lock."""
+        global _model_download_cancelable, _model_download_thread
+        model_id = body.get("model_id")
+        if not isinstance(model_id, str) or not model_id.strip() or set(body) != {"model_id"}:
+            json_response(self, 400, {"error": "Only a catalog model_id is accepted"})
+            return
+        model_id = model_id.strip()
+        try:
+            entry = next((m for m in _load_model_library_records() if m.get("id") == model_id), None)
+            if entry is None:
+                json_response(self, 404, {"error": "Model not in library catalog"})
+                return
+            if not _model_vllm.is_vllm_entry(entry):
+                json_response(self, 409, {"error": "This model requires a GGUF download request"})
+                return
+            _model_vllm.require_valid(entry)
+        except (RuntimeError, ValueError) as exc:
+            json_response(self, 500, {"error": f"Model catalog unavailable: {exc}"})
+            return
+
+        acquired, active = _begin_model_lifecycle("model_download", model_id)
+        if not acquired:
+            json_response(self, 409, _model_lifecycle_conflict("model download", active))
+            return
+        worker_started = False
+        try:
+            # Resolve the store and reread active identity only after admission.
+            models_dir = _model_download_directory()
+            env = load_env(INSTALL_DIR / ".env")
+            if _vllm_snapshot_is_active(env, entry, models_dir):
+                json_response(self, 409, {
+                    "error": "The active vLLM snapshot cannot be replaced while selected",
+                    "code": "vllm_active_snapshot",
+                })
+                return
+            helper = _load_vllm_downloader()
+            total = _model_vllm.manifest_bytes(entry)
+            status_path = INSTALL_DIR / "data" / "model-download-status.json"
+            progress = {"done": 0}
+
+            def _download():
+                global _model_download_cancelable
+                try:
+                    def report(done: int, total_bytes: int) -> None:
+                        progress["done"] = done
+                        _write_model_status(status_path, "downloading", model_id, done, total_bytes,
+                                            runtime="vllm", strict=True)
+
+                    helper.fetch_manifest(entry, models_dir, helper.DEFAULT_BASE_URL,
+                                          cancelled=_model_download_cancel.is_set, on_progress=report)
+                    if _model_download_cancel.is_set():
+                        raise helper.DownloadCancelled("Download cancelled by user")
+                    _write_model_status(status_path, "complete", model_id, total, total,
+                                        runtime="vllm", strict=True)
+                except helper.DownloadCancelled as exc:
+                    _write_model_status(status_path, "cancelled", model_id, progress["done"], total,
+                                        str(exc), runtime="vllm")
+                except (OSError, ValueError, helper.NoSpace, helper.Mismatch, helper.HubRefused,
+                        helper.DownloadStopped, helper.HTTPException) as exc:
+                    _write_model_status(status_path, "failed", model_id, progress["done"], total,
+                                        str(exc), runtime="vllm")
+                except Exception as exc:
+                    # A background worker has no request boundary to report an
+                    # unexpected failure; retain the traceback and release admission.
+                    logger.exception("vLLM manifest download failed")
+                    _write_model_status(status_path, "failed", model_id, progress["done"], total,
+                                        str(exc), runtime="vllm")
+                finally:
+                    with _model_download_lock:
+                        _model_download_cancelable = False
+                    _end_model_lifecycle("model_download")
+
+            with _model_download_lock:
+                if _model_download_thread_alive():
+                    json_response(self, 409, {"error": "Another download is in progress"})
+                    return
+                _model_download_cancel.clear()
+                _write_model_status(status_path, "downloading", model_id, 0, total,
+                                    runtime="vllm", strict=True)
+                _model_download_cancelable = True
+                try:
+                    _model_download_thread = threading.Thread(target=_download, daemon=True)
+                    _model_download_thread.start()
+                    worker_started = True
+                except RuntimeError:
+                    _model_download_cancelable = False
+                    _model_download_thread = None
+                    _write_model_status(status_path, "failed", model_id, 0, total,
+                                        "Could not start the download worker", runtime="vllm")
+                    raise
+        except (ImportError, OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
+            logger.warning("Cannot start vLLM download: %s", exc)
+            json_response(self, 500, {"error": f"Could not start download: {exc}"})
+            return
+        finally:
+            if not worker_started:
+                _end_model_lifecycle("model_download")
+        json_response(self, 200, {"status": "started", "model_id": model_id})
+
 
     def _handle_model_download_cancel(self):
         """Cancel an in-progress model download."""
@@ -22182,7 +22323,7 @@ def _recreate_llama_server(env: dict, override_image: str = ""):
 
 
 def _write_model_status(path: Path, status: str, model: str, downloaded: int, total: int, error: str = "",
-                        *, strict: bool = False):
+                        *, strict: bool = False, runtime: str | None = None):
     """Write status atomically; strict callers must report publication failure."""
     data = {
         "status": status,
@@ -22191,6 +22332,8 @@ def _write_model_status(path: Path, status: str, model: str, downloaded: int, to
         "bytesTotal": total,
         "updatedAt": _iso_now(),
     }
+    if runtime:
+        data["runtime"] = runtime
     if error:
         data["error"] = error
     tmp = path.with_name(f"{path.name}.{threading.get_ident()}.tmp")
