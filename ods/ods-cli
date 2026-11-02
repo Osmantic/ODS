@@ -2086,11 +2086,13 @@ _ods_cli_maybe_resume_bootstrap_upgrade() {
     fi
 
     mkdir -p "$INSTALL_DIR/logs"
-    nohup bash "$INSTALL_DIR/scripts/bootstrap-upgrade.sh" \
+    (
+        _ods_cli_detach_lifecycle_lock
+        exec nohup bash "$INSTALL_DIR/scripts/bootstrap-upgrade.sh" \
         "$INSTALL_DIR" "$full_gguf_file" "$full_gguf_url" \
         "$full_gguf_sha256" "$full_llm_model" "$full_max_context" \
-        "$bootstrap_gguf_file" \
-        > "$INSTALL_DIR/logs/model-upgrade.log" 2>&1 &
+        "$bootstrap_gguf_file"
+    ) > "$INSTALL_DIR/logs/model-upgrade.log" 2>&1 &
 
     log "  Model Upgrade: $retry_reason; retrying in background ($full_llm_model)"
     log "  Check progress: tail -f $INSTALL_DIR/logs/model-upgrade.log"
@@ -2545,6 +2547,29 @@ cmd_update() {
     # Portal access check: either would be left half-applied.
     _ods_cli_refuse_under_model_lifecycle update
 
+    # Bootstrap may be waiting for this same lease before promotion. Let it
+    # finish before acquiring ownership, then recheck recovery under the lease.
+    _ods_cli_wait_for_bootstrap_compose_safe "update"
+    _ods_cli_run_update_locked "$rebuild_images"
+}
+
+_ods_cli_run_update_locked() (
+    if [[ "$(uname -s)" == Linux ]]; then
+        local lock_lib="$SCRIPT_DIR/installers/lib/model-lifecycle-lock.sh"
+        [[ -f "$lock_lib" ]] || error "Model lifecycle lock helper is missing; restore the ODS installation before updating."
+        # shellcheck source=installers/lib/model-lifecycle-lock.sh
+        . "$lock_lib"
+        ods_model_lifecycle_lock_acquire "$INSTALL_DIR" "CLI update" \
+            || error "Could not acquire the model lifecycle lock."
+        trap ods_model_lifecycle_lock_release EXIT
+    fi
+    _ods_cli_refuse_under_model_lifecycle update
+    load_env
+    _ods_cli_do_update "$1"
+)
+
+_ods_cli_do_update() {
+    local rebuild_images="$1"
     # Require the configuration snapshot that `ods rollback` can restore,
     # before changing configuration, Compose selection, images or containers.
     local _snap_label="pre-update-$(date +%Y%m%d-%H%M%S)"
@@ -2582,7 +2607,6 @@ cmd_update() {
         error "Failed to pull latest images"
     fi
 
-    _ods_cli_wait_for_bootstrap_compose_safe "update"
     load_env
     ensure_llama_cpu_budget
     flags_str=$(get_compose_flags)
@@ -5902,6 +5926,14 @@ _agent_refresh_mode() {
     return 1
 }
 
+_ods_cli_detach_lifecycle_lock() {
+    local fd="${ODS_MODEL_LIFECYCLE_LOCK_FD:-}"
+    if [[ "$fd" =~ ^[0-9]+$ ]] && (( fd >= 3 )); then
+        { exec {fd}<&-; } 2>/dev/null || true
+    fi
+    unset ODS_MODEL_LIFECYCLE_LOCK_FD ODS_MODEL_LIFECYCLE_LOCK_FILE
+}
+
 cmd_agent() {
     check_install
     load_env 2>/dev/null || true
@@ -6011,8 +6043,10 @@ cmd_agent() {
                         log_error "ODS host agent script not found: $agent_script"
                         return 1
                     fi
-                    nohup python3 "$agent_script" --pid-file "$pid_file" \
-                        >> "$log_file" 2>&1 &
+                    (
+                        _ods_cli_detach_lifecycle_lock
+                        exec nohup python3 "$agent_script" --pid-file "$pid_file"
+                    ) >> "$log_file" 2>&1 &
                     local agent_pid=$!
                     disown "$agent_pid" 2>/dev/null || true
                     local attempt

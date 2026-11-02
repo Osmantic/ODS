@@ -25,6 +25,9 @@ FIXTURE="$(mktemp -d "${TMPDIR:-/tmp}/ods-update-version.XXXXXX")"
 trap 'rm -rf "$FIXTURE"' EXIT
 # INSTALL_DIR is the script's own directory, so copy it into the fixture.
 cp "$ROOT_DIR/ods-update.sh" "$FIXTURE/ods-update.sh"
+mkdir -p "$FIXTURE/installers/lib" "$FIXTURE/bin"
+cp "$ROOT_DIR/installers/lib/model-lifecycle-lock.sh" "$FIXTURE/installers/lib/"
+cp "$ROOT_DIR/bin/model_lifecycle_lock.py" "$FIXTURE/bin/"
 mkdir -p "$FIXTURE/home"
 
 reported_version() {

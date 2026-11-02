@@ -155,6 +155,8 @@ tests/test_select_model_vllm.py
 tests/test_vllm_gpu_admission.py
 tests/test_hf_manifest_hardening.py
 tests/test_hf_manifest_verify.py
+tests/test_model_lifecycle_lock.py
+tests/test_model_lifecycle_handoff.py
 tests/test_model_snapshot_delete.py
 tests/test_vllm_snapshot_presence.py
 tests/test_host_agent_vllm.py
@@ -357,6 +359,7 @@ tests/test-cli-chat-error-exit.py
 tests/test-cli-compose-cache-model-store.sh
 tests/test-update-compose-cache-owner-overlays.sh
 tests/test-cli-update-model-lifecycle.sh
+tests/test-cli-update-process-lock.sh
 tests/test-summary-quick-commands.sh
 tests/test_dashboard_env_custody.py
 tests/test_cli_preset_name_validation.py

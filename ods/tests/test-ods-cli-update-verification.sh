@@ -26,7 +26,10 @@ trap 'rm -rf "$tmp_dir"' EXIT
 mkdir -p "$install_dir/data" "$bin_dir"
 cp "$root_dir/docker-compose.base.yml" "$install_dir/docker-compose.base.yml"
 cp "$root_dir/manifest.json" "$install_dir/manifest.json"
-mkdir -p "$install_dir/installers/lib"
+mkdir -p "$install_dir/installers/lib" "$install_dir/bin"
+cp "$root_dir/installers/lib/model-lifecycle-lock.sh" "$install_dir/installers/lib/"
+cp "$root_dir/bin/model_lifecycle_lock.py" "$install_dir/bin/"
+export ODS_MODEL_LIFECYCLE_LOCK_ROOT="$tmp_dir/locks"
 cp "$root_dir/installers/lib/compose-images.sh" "$install_dir/installers/lib/compose-images.sh"
 printf '%s\n' '-f docker-compose.base.yml' > "$install_dir/.compose-flags"
 

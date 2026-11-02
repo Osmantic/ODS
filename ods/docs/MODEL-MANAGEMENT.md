@@ -62,6 +62,15 @@ healthcheck before reporting success, allowing up to 60 minutes of polling for a
 cold load. A failed health check leaves the pre-update snapshot available through
 `ods rollback`. Container health alone does not qualify Portal or model behavior.
 
+On Linux, the host agent, installer, bootstrap promotion, CLI update, and source
+update/backup/rollback share a process lock for the same installation. Updates
+retain ownership while their child scripts run. A timed-out host-agent update
+terminates its process group; detached host agents and downloads discard the
+inherited lock before starting. Bootstrap downloads may continue independently,
+but their activation waits for ownership. Do not delete lock files to clear a
+busy operation: the live file descriptor, rather than the file's presence, owns
+the lock. This serialization requires the participating components to be updated.
+
 The configured vLLM snapshot is protected from download replacement and deletion.
 Deletion also refuses unexpected files, links, and snapshots that change while
 being removed. The host agent serializes these actions with other model lifecycle

@@ -40,6 +40,10 @@ trap 'rm -rf "$FIXTURE"' EXIT
 # ---------------------------------------------------------------------------
 mkdir -p "$FIXTURE/lib" "$FIXTURE/extensions/services/bsvc" "$FIXTURE/extensions/services/oneshot" "$FIXTURE/bin"
 cp "$ROOT_DIR/ods-cli" "$FIXTURE/ods-cli"
+mkdir -p "$FIXTURE/installers/lib"
+cp "$ROOT_DIR/installers/lib/model-lifecycle-lock.sh" "$FIXTURE/installers/lib/"
+cp "$ROOT_DIR/bin/model_lifecycle_lock.py" "$FIXTURE/bin/"
+export ODS_MODEL_LIFECYCLE_LOCK_ROOT="$FIXTURE/locks"
 cp "$ROOT_DIR"/lib/*.sh "$FIXTURE/lib/"
 : > "$FIXTURE/docker-compose.base.yml"
 cp "$ROOT_DIR/docker-compose.vllm.yml" "$FIXTURE/docker-compose.vllm.yml"

@@ -56,6 +56,7 @@ from model_switchboard import wsl_runtime as _wsl_runtime
 # Model packs (extensions/services/<id>/model-packs.json): files an extension's
 # container reads beside its image, fetched by the prepare step after images.
 import extension_assets as _extension_assets
+import model_lifecycle_lock as _process_model_lock
 # Model profiles (WP3): measured capabilities per GGUF x llama.cpp build x host.
 # Fail-open like the switchboard: without the package a switch runs as before.
 try:
@@ -606,7 +607,55 @@ _MODEL_ARTIFACT_FULL_SAMPLE_BYTES = 1024 * 1024
 # Model lifecycle ownership serializes operations that read or mutate model
 # artifacts, active routing, or the runtime containers. Keep the historical
 # activation-lock name as an alias because env updates use the same boundary.
-_model_lifecycle_lock = threading.Lock()
+class _ModelLifecycleMutex:
+    """Keep the thread guard and, on Linux, the installation's process lease."""
+
+    def __init__(self):
+        self._thread_lock = threading.Lock()
+        self._lease = None
+
+    def acquire(self, blocking=True):
+        if not self._thread_lock.acquire(blocking=blocking):
+            return False
+        try:
+            if sys.platform.startswith("linux"):
+                self._lease = _process_model_lock.acquire(INSTALL_DIR, blocking=blocking)
+        except BlockingIOError:
+            self._thread_lock.release()
+            return False
+        except (RuntimeError, OSError) as exc:
+            self._thread_lock.release()
+            logger.error("Model lifecycle lock could not be verified: %s", exc)
+            if not blocking:
+                return False
+            raise RuntimeError("Model lifecycle lock could not be verified") from exc
+        return True
+
+    def release(self):
+        lease, self._lease = self._lease, None
+        try:
+            if lease is not None:
+                lease.close()
+        finally:
+            self._thread_lock.release()
+
+    def locked(self):
+        return self._thread_lock.locked()
+
+    @property
+    def lease_fd(self):
+        return self._lease.fd if self._lease is not None else None
+
+    def __enter__(self):
+        if not self.acquire():
+            raise RuntimeError("Model lifecycle lock is busy")
+        return self
+
+    def __exit__(self, *_exc):
+        self.release()
+
+
+_model_lifecycle_lock = _ModelLifecycleMutex()
 _model_activate_lock = _model_lifecycle_lock
 _model_lifecycle_state_lock = threading.Lock()
 _model_lifecycle_operation: str | None = None
@@ -10406,18 +10455,72 @@ def _update_command(script_path: Path, *args: str) -> list[str]:
     return [bash, _to_bash_path(script_path), *args]
 
 
-def _run_update_script(action: str, *args: str, timeout: int | None) -> subprocess.CompletedProcess:
+def _run_update_script(action: str, *args: str, timeout: int | None, lifecycle_fd: int | None = None) -> subprocess.CompletedProcess:
     script = _find_update_script()
     if script is None:
         raise FileNotFoundError("ods-update.sh not found")
-    return subprocess.run(
-        _update_command(script, action, *args),
+    cmd = _update_command(script, action, *args)
+    fd = lifecycle_fd
+    if not sys.platform.startswith("linux"):
+        return subprocess.run(
+            cmd,
+            cwd=str(INSTALL_DIR),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    env = os.environ.copy()
+    env.pop("ODS_MODEL_LIFECYCLE_LOCK_FD", None)
+    env.pop("ODS_MODEL_LIFECYCLE_LOCK_FILE", None)
+    pass_fds = ()
+    if fd is not None:
+        _process_model_lock.validate_fd(INSTALL_DIR, fd)
+        env["ODS_MODEL_LIFECYCLE_LOCK_FD"] = str(fd)
+        env["ODS_MODEL_LIFECYCLE_LOCK_FILE"] = str(_process_model_lock.lock_path(INSTALL_DIR))
+        pass_fds = (fd,)
+    proc = subprocess.Popen(
+        cmd,
         cwd=str(INSTALL_DIR),
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=timeout,
+        env=env,
+        pass_fds=pass_fds,
+        start_new_session=True,
     )
-
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        finally:
+            # Kill the whole group even if the shell already exited: children
+            # may have closed their output while retaining the lifecycle lease.
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                # A detached descendant can keep pipes open. Bound cleanup;
+                # any inherited lease stays held until that descendant exits.
+                if proc.stdout:
+                    proc.stdout.close()
+                if proc.stderr:
+                    proc.stderr.close()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    logger.error("Update process did not exit after SIGKILL: pid=%s", proc.pid)
+        raise
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
 
 # This is fixed read-only sensor code, never interpolated with request input.
 _WSL_SENSOR_POWERSHELL = r"""$ErrorActionPreference = 'Stop'
@@ -12341,7 +12444,10 @@ class AgentHandler(BaseHTTPRequestHandler):
             def _run_background_update():
                 try:
                     _write_update_status("running", "update", started_at=_iso_now())
-                    result = _run_update_script("update", timeout=3600)
+                    result = _run_update_script(
+                        "update", timeout=3600,
+                        lifecycle_fd=getattr(_model_lifecycle_lock, "lease_fd", None),
+                    )
                     output = ((result.stdout or "") + (result.stderr or ""))[-8000:]
                     _write_update_status(
                         "succeeded" if result.returncode == 0 else "failed",
