@@ -319,11 +319,16 @@ def test_setup_chat_reaches_the_vllm_engine(monkeypatch, tmp_path, values, url, 
 ])
 def test_snapshot_actions_forward_only_catalog_identity(test_client, monkeypatch, tmp_path, method, path):
     router, _install, _data = _vllm_install(monkeypatch, tmp_path, VLLM_ENV)
-    requests = []
+    requests: list[dict] = []
+    def download(body):
+        requests.append(body)
+        return {"status": "downloading"}
+    def delete(endpoint, body, *args, **kwargs):
+        requests.append(body)
+        return {"status": "deleted"}
     monkeypatch.setattr(router, "_bootstrap_upgrade_download_conflict", lambda: None)
-    monkeypatch.setattr(router, "_request_agent_download", lambda body: requests.append(body) or {"status": "downloading"})
-    monkeypatch.setattr(router, "_request_agent_waiting_short_holds", lambda endpoint, body, *a, **kw:
-                        requests.append(body) or {"status": "deleted"})
+    monkeypatch.setattr(router, "_request_agent_download", download)
+    monkeypatch.setattr(router, "_request_agent_waiting_short_holds", delete)
     response = getattr(test_client, method)(path, headers=test_client.auth_headers)
     assert response.status_code == 200
     assert requests == [{"model_id": "glm-5.3-flash-nvfp4-vllm"}]

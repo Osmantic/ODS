@@ -4958,6 +4958,14 @@ def _begin_pixel_model_transaction(config: dict):
 
 
 def _pixel_local_identity_matches(config: dict, identity: str, expected: str) -> bool:
+    if _vllm_engine(config):
+        served = str(config.get('VLLM_SERVED_MODEL') or '').strip()
+        logical = str(config.get('LLM_MODEL') or '').strip()
+        if not served or not logical:
+            return False
+        if identity != served:
+            return False
+        return expected in (served, logical)
     if identity == expected:
         return True
     gguf = str(config.get('GGUF_FILE') or '')
@@ -4996,6 +5004,27 @@ def _prove_pixel_model_contract(config: dict, contract: dict) -> bool:
             # A provider outage is an unproven route. Callers retain the hold
             # and can report an eligible explicit recovery without replaying it.
             logger.warning("Portal model contract proof failed: the saved remote route did not pass its live completion check")
+            return False
+        return True
+    if _vllm_engine(config):
+        served = str(config.get('VLLM_SERVED_MODEL') or '').strip()
+        logical = str(config.get('LLM_MODEL') or '').strip()
+        if not served or not logical:
+            logger.warning("Portal model contract proof failed: VLLM_SERVED_MODEL and LLM_MODEL must both be set")
+            return False
+        proof = _wait_for_model_readiness(config,model_id=served,
+            gguf_file="",llm_model_name=served,
+            attempts=1,initial_delay=0,interval=0,return_proof=True,require_exact_context=True)
+        if not isinstance(proof, dict) or not proof:
+            logger.warning("Portal model contract proof failed: %s did not pass the readiness check", served)
+            return False
+        if not _pixel_local_identity_matches(config, proof.get('identity'), contract['model']):
+            logger.warning("Portal model contract proof failed: the runtime serves %s, the contract names %s",
+                           proof.get('identity'), contract['model'])
+            return False
+        if proof.get('contextVerified') is not True or proof.get('contextLength') != contract['contextLength']:
+            logger.warning("Portal model contract proof failed: the runtime context is %s, the contract needs %s",
+                           proof.get('contextLength'), contract['contextLength'])
             return False
         return True
     gguf = str(config.get('GGUF_FILE') or '')
