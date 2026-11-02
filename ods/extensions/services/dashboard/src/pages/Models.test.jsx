@@ -1194,6 +1194,137 @@ test('allows models with failed direct-chat qualification to run adaptively', ()
   expect(deleteButton).toBeEnabled()
 })
 
+function vllmModel(overrides = {}) {
+  return model({
+    id: 'vllm-qwen3-8b',
+    name: 'vLLM Qwen3 8B',
+    status: 'available',
+    fitsVram: null,
+    tokensPerSec: null,
+    metadata: {
+      source: 'ods',
+      runtime: 'vllm',
+      snapshotState: 'missing',
+      canDownload: true,
+      canDelete: false,
+      configured: false,
+    },
+    ...overrides,
+  })
+}
+
+test('vLLM row offers Download on a llama backend without context controls', () => {
+  const downloadModel = vi.fn()
+  useModelsMock.mockReturnValue(baseState({
+    llmBackend: 'llama-server',
+    downloadModel,
+    models: [vllmModel()],
+  }))
+  renderModels()
+  const download = screen.getByRole('button', { name: 'Download' })
+  expect(download).toBeEnabled()
+  fireEvent.click(download)
+  expect(downloadModel).toHaveBeenCalledWith('vllm-qwen3-8b')
+  expect(screen.queryByRole('button', { name: /Configure context/ })).toBeNull()
+  expect(screen.getByText('Fit unknown')).toBeInTheDocument()
+  expect(screen.getByText('Requires NVIDIA GPU on Linux')).toBeInTheDocument()
+  expect(screen.queryByText('Too large')).toBeNull()
+})
+
+test('vLLM partial snapshot offers Resume and Delete', () => {
+  const downloadModel = vi.fn()
+  const deleteModel = vi.fn()
+  useModelsMock.mockReturnValue(baseState({
+    downloadModel,
+    deleteModel,
+    models: [vllmModel({
+      status: 'available',
+      metadata: {
+        source: 'ods',
+        runtime: 'vllm',
+        snapshotState: 'partial',
+        canDownload: true,
+        canDelete: true,
+        configured: false,
+      },
+    })],
+  }))
+  renderModels()
+  const resume = screen.getByRole('button', { name: 'Resume' })
+  expect(resume).toBeEnabled()
+  const del = screen.getByRole('button', { name: 'Delete vLLM Qwen3 8B' })
+  expect(del).toBeEnabled()
+  fireEvent.click(del)
+  fireEvent.click(screen.getByRole('button', { name: 'Delete model' }))
+  expect(deleteModel).toHaveBeenCalledWith('vllm-qwen3-8b')
+})
+
+test('vLLM unsafe snapshot disables Download', () => {
+  useModelsMock.mockReturnValue(baseState({
+    models: [vllmModel({
+      metadata: {
+        source: 'ods',
+        runtime: 'vllm',
+        snapshotState: 'unsafe',
+        canDownload: false,
+        canDelete: false,
+        configured: false,
+      },
+    })],
+  }))
+  renderModels()
+  const download = screen.getByRole('button', { name: 'Download' })
+  expect(download).toBeDisabled()
+  expect(download).toHaveAttribute('title', 'This model snapshot cannot be downloaded safely.')
+})
+
+test('vLLM configured row shows Configured and protects Delete', () => {
+  useModelsMock.mockReturnValue(baseState({
+    models: [vllmModel({
+      status: 'downloaded',
+      configured: true,
+      metadata: {
+        source: 'ods',
+        runtime: 'vllm',
+        snapshotState: 'complete',
+        canDownload: false,
+        canDelete: false,
+      },
+    })],
+  }))
+  renderModels()
+  expect(screen.getByRole('button', { name: 'Configured' })).toBeDisabled()
+  expect(screen.queryByRole('button', { name: 'Benchmark' })).toBeNull()
+  const del = screen.getByRole('button', { name: 'Delete vLLM Qwen3 8B unavailable' })
+  expect(del).toBeDisabled()
+  expect(del).toHaveAttribute('title', 'The configured model cannot be deleted. Choose another model first.')
+})
+
+test('vLLM downloaded row refuses Run until installer activation', () => {
+  const loadModel = vi.fn()
+  useModelsMock.mockReturnValue(baseState({
+    loadModel,
+    models: [vllmModel({
+      status: 'downloaded',
+      metadata: {
+        source: 'ods',
+        runtime: 'vllm',
+        snapshotState: 'complete',
+        canDownload: true,
+        canDelete: true,
+        configured: false,
+      },
+    })],
+  }))
+  renderModels()
+  const run = screen.getByRole('button', { name: 'Run' })
+  expect(run).toBeDisabled()
+  expect(run).toHaveAttribute('title', 'Use the installer to activate this vLLM model.')
+  fireEvent.click(run)
+  expect(loadModel).not.toHaveBeenCalled()
+  expect(screen.queryByRole('dialog')).toBeNull()
+})
+
 test('keeps Download available in cloud mode', () => {
   const downloadModel = vi.fn()
   useModelsMock.mockReturnValue(baseState({

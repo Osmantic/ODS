@@ -2934,7 +2934,6 @@ def download_model(model_id: str, api_key: str = Depends(verify_api_key)):
     model = _find_model_in_library(model_id)
     if model is None:
         raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found in library")
-    _refuse_vllm_entry(model, "The ODS installer downloads it when it sets that engine up.")
 
     bootstrap_conflict = _bootstrap_upgrade_download_conflict()
     if bootstrap_conflict is not None:
@@ -2942,6 +2941,9 @@ def download_model(model_id: str, api_key: str = Depends(verify_api_key)):
             status_code=409,
             detail={**bootstrap_conflict, "requestedModelId": model_id},
         )
+
+    if is_vllm_entry(model):
+        return _request_agent_download({"model_id": model["id"]})
 
     # Split-file models provide gguf_parts; imports may carry a vision projector.
     return _request_agent_download(_hf_download_payload(model))
@@ -3327,7 +3329,9 @@ def delete_model(model_id: str, api_key: str = Depends(verify_api_key)):
     model = _find_model_in_library(model_id) or _find_local_gguf_model(model_id)
     if model is None:
         raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found in library or local GGUF files")
-    _refuse_vllm_entry(model, "The ODS installer manages its files.")
+    if is_vllm_entry(model):
+        return _request_agent_waiting_short_holds("/v1/model/delete", {"model_id": model["id"]},
+                                                  "this model cannot be deleted yet", grace_seconds=20.0)
 
     payload = {
         "gguf_file": model["gguf_file"],

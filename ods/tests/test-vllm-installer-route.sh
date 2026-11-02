@@ -43,7 +43,7 @@ extract() {
     printf '%s\n' "$text"
 }
 
-# ── 1. install-core parses --llm-backend ───────────────────────────────────
+# â”€â”€ 1. install-core parses --llm-backend â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 if only 1; then
 parser="$(extract '/^while \[\[ \$# -gt 0 \]\]; do$/,/^done$/p' "$CORE")"
 grep -q '^LLM_BACKEND_REQUESTED=""$' "$CORE" || fail "install-core must default to the automatic choice"
@@ -96,7 +96,7 @@ pass "the Secure Boot resume command keeps the --llm-backend choice"
 
 fi
 
-# ── 2. The route rule ───────────────────────────────────────────────────────
+# â”€â”€ 2. The route rule â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 if only 2; then
 blocker() { ods_vllm_route_blocker "$@"; }
 [[ -z "$(blocker Linux false nvidia local "" "" false)" ]] || fail "Linux NVIDIA local must allow vLLM"
@@ -135,7 +135,7 @@ pass "VLLM_IMAGE comes from the dependency lock's digest pin, the compose defaul
 
 fi
 
-# ── 3. Phase 02's decision with the real selector and catalog ───────────────
+# â”€â”€ 3. Phase 02's decision with the real selector and catalog â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 if only 3; then
 refused_fn="$(extract '/^_phase02_vllm_refused() {$/,/^}$/p' "$PHASE02")"
 kept_fn="$(extract '/^_phase02_vllm_kept() {$/,/^}$/p' "$PHASE02")"
@@ -177,13 +177,35 @@ if [[ "${1:-}" == */scripts/preserve-active-model.py ]]; then
     [[ -z "${FAKE_PRESERVE_OUT:-}" ]] || printf '%b' "$FAKE_PRESERVE_OUT"
     exit "${FAKE_PRESERVE_STATUS:-0}"
 fi
+if [[ "${1:-}" == */scripts/vllm-gpu-admission.py ]]; then
+    printf '%s\n' "$*" >> "$FAKE_ADMISSION_CALLS"
+    [[ -z "${FAKE_ADMISSION_STDERR:-}" ]] || printf '%s\n' "$FAKE_ADMISSION_STDERR" >&2
+    if [[ " $* " == *" --model-id "* ]]; then
+        # Only the memory collector is mocked; validate the actual retained
+        # model/GPU/share with the real helper and catalog.
+        rows="${FAKE_FINAL_ADMISSION_OUT:-${FAKE_ADMISSION_OUT:-}}"
+        if [[ -n "$rows" ]]; then
+            printf '%b' "$rows" | "$FAKE_REAL_PYTHON" "$@"
+            exit "$?"
+        fi
+        exec "$FAKE_REAL_PYTHON" "$@"
+    fi
+    if [[ -n "${FAKE_ADMISSION_OUT:-}" ]]; then
+        printf '%b' "$FAKE_ADMISSION_OUT"
+        exit "${FAKE_ADMISSION_STATUS:-0}"
+    fi
+    if [[ "${FAKE_ADMISSION_STATUS:-0}" != 0 ]]; then
+        exit "$FAKE_ADMISSION_STATUS"
+    fi
+fi
 exec "$FAKE_REAL_PYTHON" "$@"
 EOF
-chmod +x "$fakebin/nvidia-smi" "$fakebin/python-shim"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$fakebin/docker"
+chmod +x "$fakebin/nvidia-smi" "$fakebin/python-shim" "$fakebin/docker"
 real_python="$(SCRIPT_DIR="$ROOT_DIR"; source "$ROOT_DIR/installers/lib/model-selector.sh"; ods_model_selector_python)"
 [[ -n "$real_python" ]] || fail "the real model selector needs Python"
-DGX_ROWS='GPU-aaaaaaaa-gb300, 10.3, 256703\nGPU-bbbbbbbb-rtx6000, 12.0, 97887\n'
-RTX_ROWS='GPU-cccccccc-4090, 8.9, 24564\n'
+DGX_ROWS='GPU-aaaaaaaa-gb300, 10.3, 256703, 256703\nGPU-bbbbbbbb-rtx6000, 12.0, 97887, 97887\n'
+RTX_ROWS='GPU-cccccccc-4090, 8.9, 24564, 24564\n'
 
 # decide NAME [VAR=value...]: run phase 02's decision, active-model
 # preservation and the report in a fresh shell with the given inputs;
@@ -194,12 +216,14 @@ decide() {
     mkdir -p "$dir/install"
     : > "$dir/calls"
     : > "$dir/preserve-calls"
+    : > "$dir/admission-calls"
     {
         printf '%s\n' 'set -euo pipefail'
         printf 'SCRIPT_DIR=%q\nINSTALL_DIR=%q\nLOG_FILE=%q\n' "$ROOT_DIR" "$dir/install" "$dir/install.log"
         printf 'export FAKE_NVIDIA_SMI_CALLS=%q PATH=%q\n' "$dir/calls" "$fakebin:$PATH"
         printf 'export FAKE_PRESERVE_CALLS=%q FAKE_REAL_PYTHON=%q FAKE_PYTHON_SHIM=%q\n' \
             "$dir/preserve-calls" "$real_python" "$fakebin/python-shim"
+        printf 'export FAKE_ADMISSION_CALLS=%q\n' "$dir/admission-calls"
         cat <<'EOF'
 source "$SCRIPT_DIR/lib/safe-env.sh"
 source "$SCRIPT_DIR/installers/lib/external-services.sh"
@@ -224,7 +248,7 @@ ODS_RESELECT_MODEL=false
 LLM_BACKEND_REQUESTED=""
 # The llama.cpp selector block (not run here) leaves its Python for preservation.
 _selector_python="$FAKE_PYTHON_SHIM"
-export FAKE_GPU_ROWS='GPU-aaaaaaaa-gb300, 10.3, 256703\nGPU-bbbbbbbb-rtx6000, 12.0, 97887\n'
+export FAKE_GPU_ROWS='GPU-aaaaaaaa-gb300, 10.3, 256703, 256703\nGPU-bbbbbbbb-rtx6000, 12.0, 97887, 97887\n'
 EOF
         printf '%s\n' "$@"
         printf '%s\n' 'LLM_BACKEND=llama-server'
@@ -439,6 +463,8 @@ pass "a llama.cpp install's rerun keeps llama.cpp unless asked; --llm-backend vl
 
 # A rerun of a vLLM install keeps its installed model: GLM-5.3 here, while
 # the fresh pick for the GB300 is Qwen 3.8, which stays the recommendation.
+# The admission helper is faked to credit the installation's own engine, so
+# the rerun's free memory is what the selector sees.
 GLM_DIR='nvidia--GLM-5.3-Flash-NVFP4@da920bb0'
 vllm_install() {
     retained 'LLM_BACKEND=vllm' 'LLM_MODEL=glm-5.3-flash-nvfp4' "VLLM_MODEL_DIR=$GLM_DIR" \
@@ -448,7 +474,8 @@ vllm_install() {
 # in its order, as its shell_value() quotes them.
 GLM_CONTRACT='LLM_BACKEND="vllm"\nLLM_MODEL="glm-5.3-flash-nvfp4"\nGGUF_FILE=""\nGGUF_URL=""\nGGUF_SHA256=""\nMAX_CONTEXT="131072"\nLLM_MODEL_SIZE_MB="204476"\nMODEL_SELECTION_SOURCE="dashboard"\nVLLM_MODEL_DIR="'"$GLM_DIR"'"\nVLLM_SERVED_MODEL="GLM-5.3-Flash-NVFP4"\nVLLM_ARGS="--max-model-len 131072 --kv-cache-dtype fp8"\nVLLM_GPU_UUID="GPU-aaaaaaaa-gb300"\nVLLM_GPU_MEMORY_UTILIZATION="0.85"\n'
 name=rerun-vllm; mkdir -p "$tmp/$name/install"; vllm_install
-decide rerun-vllm "export FAKE_PRESERVE_OUT='$GLM_CONTRACT'"
+decide rerun-vllm "export FAKE_PRESERVE_OUT='$GLM_CONTRACT'" \
+    "export FAKE_ADMISSION_OUT='GPU-aaaaaaaa-gb300, 10.3, 256703, 256703\n'"
 [[ "$(rc_of rerun-vllm)" == 0 ]] || fail "a rerun of a vLLM install failed: $(cat "$tmp/rerun-vllm/err")"
 [[ "$(value rerun-vllm BACKEND)" == vllm && "$(value rerun-vllm EXPORTED)" == vllm ]] \
     || fail "a rerun of a vLLM install must stay on vLLM: $(cat "$tmp/rerun-vllm/out")"
@@ -472,18 +499,41 @@ grep -qF "LOG Kept this installation's vLLM model across installer rerun: glm-5.
     "$tmp/rerun-vllm/install.log" || fail "keeping the vLLM model must reach the install log"
 pass "a rerun of a vLLM install keeps its model, folder, GPU and memory share; the fresh pick stays the recommendation"
 
-# The installation's own engine holds its share of the GPU, so a rerun asks
-# for total memory only and keeps vLLM however little of the GPU is free.
-grep -q -- '--query-gpu=uuid,compute_cap,memory.total --format' "$tmp/rerun-vllm/calls" \
-    && ! grep -q 'memory.free' "$tmp/rerun-vllm/calls" \
-    || fail "a rerun must not judge its GPUs by free memory: $(cat "$tmp/rerun-vllm/calls")"
+# The installation's own engine holds its share of the GPU. A rerun asks for
+# free memory too, and the admission helper credits only memory held by this
+# installation's own verified engine container. The fake helper here proves
+# the wiring: phase 02 passes the rows through it and uses its adjusted free
+# memory. The helper's own behavior is tested in test_vllm_gpu_admission.py.
+grep -q -- '--query-gpu=uuid,compute_cap,memory.total,memory.free --format' "$tmp/rerun-vllm/calls" \
+    || fail "a rerun must ask nvidia-smi for free memory: $(cat "$tmp/rerun-vllm/calls")"
 name=rerun-vllm-busy; mkdir -p "$tmp/$name/install"; vllm_install
 decide rerun-vllm-busy "export FAKE_PRESERVE_OUT='$GLM_CONTRACT'" \
-    "export FAKE_GPU_ROWS='GPU-aaaaaaaa-gb300, 10.3, 256703, 30000\n'"
+    "export FAKE_GPU_ROWS='GPU-aaaaaaaa-gb300, 10.3, 256703, 30000\n'" \
+    "export FAKE_ADMISSION_OUT='GPU-aaaaaaaa-gb300, 10.3, 256703, 256703\n'"
 [[ "$(rc_of rerun-vllm-busy)" == 0 && "$(value rerun-vllm-busy BACKEND)" == vllm \
     && "$(value rerun-vllm-busy VLLM_GPU_UUID)" == GPU-aaaaaaaa-gb300 ]] \
     || fail "a rerun whose own engine holds the GPU must keep vLLM: $(cat "$tmp/rerun-vllm-busy/out" "$tmp/rerun-vllm-busy/err")"
-pass "a rerun of a vLLM install is never judged by the GPU memory its own engine holds"
+grep -qF -- "--install-dir $tmp/rerun-vllm-busy/install" "$tmp/rerun-vllm-busy/admission-calls" \
+    || fail "the admission helper must be called with the install dir: $(cat "$tmp/rerun-vllm-busy/admission-calls")"
+pass "a rerun of a vLLM install credits its own engine's memory through the admission helper"
+
+# A rerun whose own engine holds the GPU but whose helper credits nothing
+# (another program holds the memory) must refuse vLLM: the helper's adjusted
+# free memory is what the selector sees.
+name=rerun-vllm-other-busy; mkdir -p "$tmp/$name/install"; vllm_install
+decide rerun-vllm-other-busy "export FAKE_PRESERVE_OUT='$GLM_CONTRACT'" \
+    "export FAKE_GPU_ROWS='GPU-aaaaaaaa-gb300, 10.3, 256703, 30000\n'" \
+    "export FAKE_ADMISSION_OUT='GPU-aaaaaaaa-gb300, 10.3, 256703, 30000\n'"
+expect_kept_refused rerun-vllm-other-busy 'other programs use the GPU memory the vLLM engine needs'
+pass "a rerun whose own engine's memory is not credited refuses vLLM"
+
+# A helper failure stops the run before any download, with a clear diagnostic.
+name=rerun-vllm-helper-fail; mkdir -p "$tmp/$name/install"; vllm_install
+decide rerun-vllm-helper-fail "export FAKE_PRESERVE_OUT='$GLM_CONTRACT'" \
+    "export FAKE_GPU_ROWS='GPU-aaaaaaaa-gb300, 10.3, 256703, 30000\n'" \
+    'export FAKE_ADMISSION_STATUS=1'
+expect_kept_refused rerun-vllm-helper-fail 'the GPU admission helper could not read this installation'
+pass "a helper failure stops a vLLM rerun before any download"
 
 # The kept model never takes the fresh pick's memory share: kept without a
 # share of its own, it stays on compose's default even where the fresh pick
@@ -495,16 +545,47 @@ name=rerun-vllm-own-share; mkdir -p "$tmp/$name/install"
 retained 'LLM_BACKEND=vllm' 'LLM_MODEL=glm-5.3-flash-nvfp4' "VLLM_MODEL_DIR=$GLM_DIR" \
     'VLLM_SERVED_MODEL=GLM-5.3-Flash-NVFP4' 'VLLM_GPU_UUID=GPU-aaaaaaaa-gb300'
 decide rerun-vllm-own-share "export FAKE_GPU_ROWS='GPU-ffffffff-rtx6000, 12.0, 97887\n'" \
-    "export FAKE_PRESERVE_OUT='$GLM_CONTRACT_NO_SHARE'"
+    "export FAKE_PRESERVE_OUT='$GLM_CONTRACT_NO_SHARE'" \
+    "export FAKE_ADMISSION_OUT='GPU-ffffffff-rtx6000, 12.0, 97887, 97887\n'" \
+    "export FAKE_FINAL_ADMISSION_OUT='GPU-aaaaaaaa-gb300, 10.3, 256703, 256703\n'"
 [[ "$(rc_of rerun-vllm-own-share)" == 0 && "$(value rerun-vllm-own-share MODEL)" == glm-5.3-flash-nvfp4 \
     && -z "$(value rerun-vllm-own-share VLLM_SHARE)" \
     && "$(value rerun-vllm-own-share RECOMMENDED)" == "$p6k_model" ]] \
     || fail "a kept vLLM model must not take the fresh pick's memory share: $(cat "$tmp/rerun-vllm-own-share/out" "$tmp/rerun-vllm-own-share/err")"
 pass "a kept vLLM model keeps only its own memory share, never the fresh pick's"
 
+# A fresh recommendation on an idle card must not validate the retained
+# contract on another, occupied card, or at a higher owner-configured share.
+name=rerun-preserved-busy; mkdir -p "$tmp/$name/install"; vllm_install
+decide rerun-preserved-busy "export FAKE_PRESERVE_OUT='$GLM_CONTRACT'" \
+    "export FAKE_ADMISSION_OUT='GPU-ffffffff-rtx6000, 12.0, 97887, 97887\nGPU-aaaaaaaa-gb300, 10.3, 256703, 30000\n'"
+[[ "$(rc_of rerun-preserved-busy)" != 0 ]] && grep -qF 'preserved vLLM model does not fit' "$tmp/rerun-preserved-busy/err" \
+    || fail "rerun-preserved-busy: the actual retained contract must be refused"
+[[ "$(preserve_calls rerun-preserved-busy)" == 1 ]] || fail "rerun-preserved-busy: check must run after preservation"
+
+name=rerun-preserved-share; mkdir -p "$tmp/$name/install"; vllm_install
+decide rerun-preserved-share "export FAKE_PRESERVE_OUT='$GLM_CONTRACT'" \
+    "export FAKE_ADMISSION_OUT='GPU-ffffffff-rtx6000, 12.0, 97887, 97887\nGPU-aaaaaaaa-gb300, 10.3, 256703, 150000\n'"
+[[ "$(rc_of rerun-preserved-share)" != 0 ]] && grep -qF 'preserved vLLM model does not fit' "$tmp/rerun-preserved-share/err" \
+    || fail "rerun-preserved-share: the actual retained contract must be refused"
+[[ "$(preserve_calls rerun-preserved-share)" == 1 ]] || fail "rerun-preserved-share: check must run after preservation"
+
+name=rerun-migration-busy; mkdir -p "$tmp/$name/install"; retained 'LLM_BACKEND=llama-server'
+decide rerun-migration-busy 'LLM_BACKEND_REQUESTED=vllm' "export FAKE_GPU_ROWS='$BUSY_ROWS'"
+expect_refused rerun-migration-busy 'other programs use the GPU memory'
+
+name=rerun-unknown-free; mkdir -p "$tmp/$name/install"; retained 'LLM_BACKEND=llama-server'
+decide rerun-unknown-free 'ODS_RESELECT_MODEL=true' \
+    "export FAKE_GPU_ROWS='GPU-ffffffff-rtx6000, 12.0, 97887, [N/A]\n'"
+[[ "$(rc_of rerun-unknown-free)" != 0 ]] && grep -qF 'GPU admission helper could not read' "$tmp/rerun-unknown-free/err" \
+    || fail "unknown free memory must fail closed on migration"
+pass "retained GPU/share, busy migration and unknown free memory are checked before changes"
+
+
 name=rerun-vllm-incomplete; mkdir -p "$tmp/$name/install"; vllm_install
 decide rerun-vllm-incomplete 'export FAKE_PRESERVE_STATUS=2' \
-    "export FAKE_PRESERVE_STDERR='This installation runs its model on the vLLM engine, but its saved model is not a complete vLLM catalog snapshot for the GPU it names; refusing to replace it.'"
+    "export FAKE_PRESERVE_STDERR='This installation runs its model on the vLLM engine, but its saved model is not a complete vLLM catalog snapshot for the GPU it names; refusing to replace it.'" \
+    "export FAKE_ADMISSION_OUT='GPU-aaaaaaaa-gb300, 10.3, 256703, 256703\n'"
 [[ "$(rc_of rerun-vllm-incomplete)" != 0 ]] \
     || fail "exit 2 from the model helper must stop the rerun: $(cat "$tmp/rerun-vllm-incomplete/out")"
 grep -qF "ERROR This installation runs glm-5.3-flash-nvfp4 on the vLLM engine, but its saved vLLM model is incomplete or is no longer this release's catalog model" \
@@ -517,18 +598,21 @@ grep -qF 'refusing to replace it' "$tmp/rerun-vllm-incomplete/install.log" \
     || fail "the helper's own reason must reach the install log"
 ! grep -q '^OK Model server' "$tmp/rerun-vllm-incomplete/out" || fail "a stopped rerun must not report a model server"
 name=rerun-vllm-old-helper; mkdir -p "$tmp/$name/install"; vllm_install
-decide rerun-vllm-old-helper
+decide rerun-vllm-old-helper \
+    "export FAKE_ADMISSION_OUT='GPU-aaaaaaaa-gb300, 10.3, 256703, 256703\n'"
 [[ "$(rc_of rerun-vllm-old-helper)" != 0 ]] \
     && grep -qF 'but ODS could not read its saved vLLM model (scripts/preserve-active-model.py exit 0;' "$tmp/rerun-vllm-old-helper/err" \
     || fail "a helper without a vLLM contract must stop the rerun: $(cat "$tmp/rerun-vllm-old-helper/out" "$tmp/rerun-vllm-old-helper/err")"
 name=rerun-vllm-partial; mkdir -p "$tmp/$name/install"; vllm_install
-decide rerun-vllm-partial "export FAKE_PRESERVE_OUT='${GLM_CONTRACT%VLLM_GPU_UUID=*}'"
+decide rerun-vllm-partial "export FAKE_PRESERVE_OUT='${GLM_CONTRACT%VLLM_GPU_UUID=*}'" \
+    "export FAKE_ADMISSION_OUT='GPU-aaaaaaaa-gb300, 10.3, 256703, 256703\n'"
 [[ "$(rc_of rerun-vllm-partial)" != 0 ]] && grep -qF 'exit 0 with an incomplete contract' "$tmp/rerun-vllm-partial/err" \
     || fail "a contract without VLLM_GPU_UUID must stop, not keep the pick's GPU: $(cat "$tmp/rerun-vllm-partial/out" "$tmp/rerun-vllm-partial/err")"
 pass "a vLLM model that cannot be kept (helper exit 2, no contract, a missing key) stops the rerun with the cause and how to recover"
 
 name=rerun-vllm-gone; mkdir -p "$tmp/$name/install"; vllm_install
-decide rerun-vllm-gone "export FAKE_GPU_ROWS='$RTX_ROWS'"
+decide rerun-vllm-gone "export FAKE_GPU_ROWS='$RTX_ROWS'" \
+    "export FAKE_ADMISSION_OUT='GPU-cccccccc-4090, 8.9, 24564, 24564\n'"
 expect_kept_refused rerun-vllm-gone 'no vLLM catalog model fits this host'
 name=rerun-vllm-cpu; mkdir -p "$tmp/$name/install"; vllm_install
 decide rerun-vllm-cpu 'GPU_BACKEND=cpu'
@@ -550,12 +634,14 @@ expect_llama rerun-vllm-forced-off llama-server
 [[ "$(preserve_calls rerun-vllm-forced-off)" == 0 ]] || fail "leaving vLLM must not load the vLLM model's contract"
 grep -qF 'LOG Leaving the vLLM engine' "$tmp/rerun-vllm-forced-off/install.log" || fail "leaving vLLM must be logged"
 name=rerun-vllm-reselect; mkdir -p "$tmp/$name/install"; vllm_install
-decide rerun-vllm-reselect 'ODS_RESELECT_MODEL=true' "export FAKE_PRESERVE_OUT='$GLM_CONTRACT'"
+decide rerun-vllm-reselect 'ODS_RESELECT_MODEL=true' "export FAKE_PRESERVE_OUT='$GLM_CONTRACT'" \
+    "export FAKE_ADMISSION_OUT='GPU-aaaaaaaa-gb300, 10.3, 256703, 256703\n'"
 [[ "$(value rerun-vllm-reselect BACKEND)" == vllm && "$(value rerun-vllm-reselect MODEL)" == "$want_model" \
     && "$(preserve_calls rerun-vllm-reselect)" == 0 ]] \
     || fail "--reselect-model must replace the installed vLLM model with the fresh pick: $(cat "$tmp/rerun-vllm-reselect/out")"
 name=rerun-vllm-reselect-gone; mkdir -p "$tmp/$name/install"; vllm_install
-decide rerun-vllm-reselect-gone 'ODS_RESELECT_MODEL=true' "export FAKE_GPU_ROWS='$RTX_ROWS'"
+decide rerun-vllm-reselect-gone 'ODS_RESELECT_MODEL=true' "export FAKE_GPU_ROWS='$RTX_ROWS'" \
+    "export FAKE_ADMISSION_OUT='GPU-cccccccc-4090, 8.9, 24564, 24564\n'"
 expect_llama rerun-vllm-reselect-gone llama-server
 pass "--llm-backend llama-server or --reselect-model chooses again without the vLLM model's contract; leaving vLLM exports llama-server"
 
@@ -621,7 +707,7 @@ pass "a failed GPU query keeps llama.cpp (or refuses --llm-backend vllm); a sele
 
 fi
 
-# ── 4. The loader keeps the vLLM contract ──────────────────────────────────
+# â”€â”€ 4. The loader keeps the vLLM contract â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 if only 4; then
 (
     # shellcheck source=../lib/safe-env.sh
@@ -638,7 +724,7 @@ pass "the selector env loader carries a vLLM contract: LLM_BACKEND and the five 
 
 fi
 
-# ── 5. Exporting this run's LLM_BACKEND leaves other selections unchanged ──
+# â”€â”€ 5. Exporting this run's LLM_BACKEND leaves other selections unchanged â”€â”€
 if only 5; then
 # A run that leaves vLLM exports llama-server (phase 02), and phase 06 then
 # exports external for an API: the resolver must select exactly the same files
@@ -682,7 +768,7 @@ pass "an exported llama-server or external LLM_BACKEND leaves $compared resolver
 
 fi
 
-# ── 6. No fast-start GGUF on the vLLM route ────────────────────────────────
+# â”€â”€ 6. No fast-start GGUF on the vLLM route â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 if only 6; then
 (
     # shellcheck source=../installers/lib/bootstrap-model.sh
