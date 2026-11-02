@@ -155,8 +155,8 @@ export function createIntegrationReviewRecovery({complete,eligible=()=>false,rea
       if(!states.length)return;
       const state=states[0];
       const deny=()=>{state.cancelled=true;state.controller?.abort();return ADMISSION_BLOCK;};
-      if(states.some(value=>value!==state) || !same(state,identity(context))
-          || event?.runId!==undefined && event.runId!==state.runId || stopped || state.ended || state.cancelled)return deny();
+      if(states.some(value=>value!==state) || !same(state,identity(context)) || !live(state)
+          || event?.runId!==undefined && event.runId!==state.runId)return deny();
       let valid=false;
       try {
         const native=event?.nativeRetryToolsAllowState;

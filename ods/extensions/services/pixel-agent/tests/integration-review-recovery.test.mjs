@@ -62,6 +62,20 @@ test('conflicting exact native IDs fail closed without using session-only admiss
   assert.equal(recovery.admit({runId:'unrelated'},{agentId:'pixel',runId:'unrelated',sessionId:CONTEXT.sessionId,sessionKey:SESSION}),undefined);
 });
 
+test('native proof cannot override conflict, supersession or revoked current readiness/admission',async()=>{
+  for(const change of ['provider','superseded','eligible','ready']) {
+    let eligible=true,ready=true;
+    const {recovery}=world({eligible:()=>eligible,ready:()=>ready});
+    await recovery.finalize(event(),CONTEXT);
+    if(change==='provider')recovery.observe({prompt:OWNER},{...CONTEXT,modelProviderId:'changed-provider'},CONTEXT.runId);
+    if(change==='superseded')recovery.observe({prompt:'A fresh owner request'}, {...CONTEXT,runId:'replacement-owner'},'replacement-owner');
+    if(change==='eligible')eligible=false;
+    if(change==='ready')ready=false;
+    assert.equal(recovery.admit({...event(),nativeRetryToolsAllowState:nativeScope()},CONTEXT).outcome,'block',change);
+    assert.equal(recovery.floor(tool('pixel_ods_notes'),CONTEXT).block,true,change);
+  }
+});
+
 test('review latches synchronously before ONE stock native revise; only six supported native params',async()=>{
   const {recovery,calls}=world();
   const result=await recovery.finalize(event(),CONTEXT);
