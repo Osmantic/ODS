@@ -697,16 +697,17 @@ export function createChangedFileChecks({queue, checkModule = nodeModuleCheck, r
       entries: new Set(walked.entries.keys())};
   }
 
-  // A changed file's analysis, once per version (size, times, inode) and
-  // kind; DEFERRED past this scan's bytes, undefined when it cannot be read.
+  // A changed file's analysis, once per content digest and loading kind.
+  // Stat clocks can collide: safely read and charge this scan's bytes before
+  // reusing an analysis. DEFERRED past the budget, undefined if unreadable.
   function analysis(baseline, folder, key, stat, budget, kind) {
-    const version = [stat.size, stat.mtimeMs, stat.ctimeMs, stat.ino, kind].join(':');
-    const known = baseline.analyzed.get(key);
-    if (known?.version === version) return known;
     if (stat.size > budget.bytes) return DEFERRED;
     const bytes = readExact(folder, key, stat, limits);
     if (!bytes) return undefined;
     budget.bytes -= bytes.length;
+    const version = `${digestOf(bytes)}:${kind}`;
+    const known = baseline.analyzed.get(key);
+    if (known?.version === version) return known;
     const entry = {version, ...analyze(key, bytes.toString('utf8'), kind)};
     baseline.analyzed.set(key, entry);
     return entry;

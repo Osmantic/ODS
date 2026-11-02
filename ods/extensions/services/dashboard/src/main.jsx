@@ -1,6 +1,6 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import { BrowserRouter } from 'react-router-dom'
+import { createBrowserRouter, RouterProvider } from 'react-router-dom'
 import App from './App'
 import DashboardSignInGate from './components/DashboardSignInGate'
 import { ThemeProvider } from './contexts/ThemeContext'
@@ -70,15 +70,17 @@ globalThis.addEventListener?.('vite:preloadError', (event) => {
   if (recoverFromStaleAsset(event.payload)) event.preventDefault()
 })
 
+// A data router enables the official form navigation blocker. Existing App
+// routes stay declarative; its error UI and stale-asset recovery stay intact.
+const router = createBrowserRouter([{ path: '*', element:
+  <ErrorBoundary><DashboardSignInGate><App /></DashboardSignInGate></ErrorBoundary>,
+}])
+
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <ErrorBoundary>
       <ThemeProvider>
-        <BrowserRouter>
-          <DashboardSignInGate>
-            <App />
-          </DashboardSignInGate>
-        </BrowserRouter>
+        <RouterProvider router={router} />
       </ThemeProvider>
     </ErrorBoundary>
   </React.StrictMode>

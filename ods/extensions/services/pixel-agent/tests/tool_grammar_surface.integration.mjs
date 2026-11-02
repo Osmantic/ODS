@@ -79,6 +79,25 @@ test('actual catalog offers the reviewed general-purpose surface', () => {
   assert.deepEqual(names(offered), directNames);
 });
 test('actual directly offered tools compile together as JSON and Qwen3.5 template grammar', () => compile(offered));
+
+test('qualified32K and provider-only64K compile the actual Coffee schemas without widening the8K cap',()=>{
+  let qualified;
+  for(const modelContextWindowTokens of [32768,65536]) {
+    qualified=applyCatalog({tools:allTools,config,agentId:'pixel',modelContextWindowTokens,
+      runId:randomUUID(),catalogRef:createCatalogRef()}).tools;
+    assert.deepEqual(names(qualified),[...directNames,'pixel_ods_connections_status',
+      'pixel_ods_notes','pixel_ods_notify','pixel_ods_mcp'].sort());
+    for(const name of ['pixel_ods_notes','pixel_ods_notify','pixel_ods_mcp']) {
+      assert.equal(qualified.find(tool=>tool.name===name),allTools.find(tool=>tool.name===name),
+        'preserve the actual normalized schema/factory, not a smaller substitute');
+    }
+  }
+  compile(qualified);
+  const capped={...config,agents:{list:[{id:'pixel',contextTokens:8192}]}};
+  const small=applyCatalog({tools:allTools,config:capped,agentId:'pixel',modelContextWindowTokens:65536,
+    runId:randomUUID(),catalogRef:createCatalogRef()}).tools;
+  assert.deepEqual(names(small),['tool_call','tool_describe','tool_search']);
+});
 test('workspace preview is present exactly once in the compiled ordinary surface', () => {
   assert.equal(offered.length, 18);
   assert.equal(offered.filter(tool => tool.name === 'pixel_ods_workspace_preview').length, 1);

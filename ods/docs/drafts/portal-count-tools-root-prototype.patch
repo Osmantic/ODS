@@ -1,0 +1,213 @@
+diff --git a/ods/bin/pixel_connections/catalog.py b/ods/bin/pixel_connections/catalog.py
+index b5c9445a1..6ed475f88 100644
+--- a/ods/bin/pixel_connections/catalog.py
++++ b/ods/bin/pixel_connections/catalog.py
+@@ -26,7 +26,7 @@ GOOGLE: dict[str, Any] = {
+     "capabilities": [
+         {
+             "id": "calendar.read", "label": "Read your calendar", "effect": "read",
+-            "scopes": [CALENDAR_READ_SCOPE], "tools": ["pixel_calendar_list", "pixel_calendar_get"],
++            "scopes": [CALENDAR_READ_SCOPE], "tools": ["pixel_calendar_list", "pixel_calendar_get", "pixel_calendar_count"],
+             "default": True, "available": True, "requires": [],
+         },
+         {
+@@ -44,7 +44,7 @@ GOOGLE: dict[str, Any] = {
+             "id": "gmail.read", "label": "Read email summaries", "effect": "read",
+             "scopes": [GMAIL_READ_SCOPE],
+             "tools": ["pixel_gmail_inbox", "pixel_gmail_sent", "pixel_gmail_search", "pixel_gmail_read",
+-                      "pixel_gmail_thread"],
++                      "pixel_gmail_thread", "pixel_gmail_count"],
+             "default": True, "available": True, "requires": [],
+         },
+         {
+diff --git a/ods/bin/pixel_connections/planner.py b/ods/bin/pixel_connections/planner.py
+index d24a38725..2cad1b2b0 100644
+--- a/ods/bin/pixel_connections/planner.py
++++ b/ods/bin/pixel_connections/planner.py
+@@ -20,20 +20,21 @@ from . import native_apps
+ PLUGIN_ID = "pixel-source-broker"
+ # render-config.mjs allSourceTools, in its order: newly inactive tools are appended
+ # to the agent's deny list in this order.
+-SOURCE_TOOLS = (
+-    "pixel_limb_status",
++GMAIL_TOOLS = (
+     "pixel_gmail_inbox", "pixel_gmail_sent", "pixel_gmail_search", "pixel_gmail_read", "pixel_gmail_thread",
+-    "pixel_gmail_draft_propose",
+-    "pixel_calendar_list", "pixel_calendar_get", "pixel_calendar_propose_create",
+-    "pixel_calendar_propose_update", "pixel_calendar_propose_delete",
+-    "pixel_social_feed", "pixel_social_search", "pixel_web_browse",
++    "pixel_gmail_count",
++)
++GMAIL_DRAFT_TOOLS = ("pixel_gmail_draft_propose",)
++CALENDAR_READ_TOOLS = ("pixel_calendar_list", "pixel_calendar_get", "pixel_calendar_count")
++CALENDAR_WRITE_TOOLS = (
++    "pixel_calendar_propose_create", "pixel_calendar_propose_update", "pixel_calendar_propose_delete",
++)
++SOCIAL_TOOLS = ("pixel_social_feed", "pixel_social_search")
++WEB_TOOLS = ("pixel_web_browse",)
++SOURCE_TOOLS = (
++    "pixel_limb_status", *GMAIL_TOOLS, *GMAIL_DRAFT_TOOLS, *CALENDAR_READ_TOOLS, *CALENDAR_WRITE_TOOLS,
++    *SOCIAL_TOOLS, *WEB_TOOLS,
+ )
+-GMAIL_TOOLS = SOURCE_TOOLS[1:6]
+-GMAIL_DRAFT_TOOLS = SOURCE_TOOLS[6:7]
+-CALENDAR_READ_TOOLS = SOURCE_TOOLS[7:9]
+-CALENDAR_WRITE_TOOLS = SOURCE_TOOLS[9:12]
+-SOCIAL_TOOLS = SOURCE_TOOLS[12:14]
+-WEB_TOOLS = SOURCE_TOOLS[14:]
+ LIMB_KEYS = {
+     "email": "PIXEL_LIMB_EMAIL_ENABLED",
+     "emailDrafts": "PIXEL_LIMB_EMAIL_DRAFTS_ENABLED",
+diff --git a/ods/extensions/services/pixel-agent/plugin/bootstrap-capabilities.mjs b/ods/extensions/services/pixel-agent/plugin/bootstrap-capabilities.mjs
+index b2ba1746c..c5d9b5db3 100644
+--- a/ods/extensions/services/pixel-agent/plugin/bootstrap-capabilities.mjs
++++ b/ods/extensions/services/pixel-agent/plugin/bootstrap-capabilities.mjs
+@@ -44,10 +44,10 @@ export const RETIRED_DEFAULTS = Object.freeze({
+   }),
+ });
+ export const EMAIL_TOOLS = Object.freeze(['pixel_gmail_inbox', 'pixel_gmail_sent', 'pixel_gmail_search',
+-  'pixel_gmail_read', 'pixel_gmail_thread', 'pixel_gmail_draft_propose']);
++  'pixel_gmail_read', 'pixel_gmail_thread', 'pixel_gmail_count', 'pixel_gmail_draft_propose']);
+ export const CALENDAR_PROPOSE_TOOLS = Object.freeze(['pixel_calendar_propose_create', 'pixel_calendar_propose_update',
+   'pixel_calendar_propose_delete']);
+-export const CALENDAR_TOOLS = Object.freeze(['pixel_calendar_list', 'pixel_calendar_get', ...CALENDAR_PROPOSE_TOOLS]);
++export const CALENDAR_TOOLS = Object.freeze(['pixel_calendar_list', 'pixel_calendar_get', 'pixel_calendar_count', ...CALENDAR_PROPOSE_TOOLS]);
+ // Every tool the Pixel Source Broker plugin registers (vendor/pixel/plugin/openclaw.plugin.json).
+ // TOOLS.md documents them in one section, which goes only when all of them are unavailable.
+ export const SOURCE_TOOLS = Object.freeze(['pixel_limb_status', ...EMAIL_TOOLS, ...CALENDAR_TOOLS,
+diff --git a/ods/tests/test_pixel_connection_planner.py b/ods/tests/test_pixel_connection_planner.py
+index c4f0407e0..630e403b4 100644
+--- a/ods/tests/test_pixel_connection_planner.py
++++ b/ods/tests/test_pixel_connection_planner.py
+@@ -42,6 +42,51 @@ def disconnected_config():
+
+
+ class PlannerTests(unittest.TestCase):
++    def test_count_tools_extend_only_their_read_groups_and_keep_legacy_order(self):
++        legacy = {
++            "GMAIL_TOOLS": ("pixel_gmail_inbox", "pixel_gmail_sent", "pixel_gmail_search",
++                            "pixel_gmail_read", "pixel_gmail_thread"),
++            "GMAIL_DRAFT_TOOLS": ("pixel_gmail_draft_propose",),
++            "CALENDAR_READ_TOOLS": ("pixel_calendar_list", "pixel_calendar_get"),
++            "CALENDAR_WRITE_TOOLS": ("pixel_calendar_propose_create", "pixel_calendar_propose_update",
++                                     "pixel_calendar_propose_delete"),
++            "SOCIAL_TOOLS": ("pixel_social_feed", "pixel_social_search"),
++            "WEB_TOOLS": ("pixel_web_browse",),
++        }
++        added = {"pixel_gmail_count", "pixel_calendar_count"}
++        for name, expected in legacy.items():
++            actual = getattr(planner, name)
++            self.assertEqual(tuple(tool for tool in actual if tool not in added), expected, name)
++        self.assertEqual(set(planner.GMAIL_TOOLS) & added, {"pixel_gmail_count"})
++        self.assertEqual(set(planner.CALENDAR_READ_TOOLS) & added, {"pixel_calendar_count"})
++        self.assertEqual(tuple(tool for tool in planner.SOURCE_TOOLS if tool not in added),
++                         ("pixel_limb_status", *(tool for group in legacy.values() for tool in group)))
++        self.assertEqual(len(planner.SOURCE_TOOLS), len(set(planner.SOURCE_TOOLS)))
++
++    def test_email_and_calendar_count_grants_remain_independent_of_other_limbs(self):
++        for email in (False, True):
++            for calendar in (False, True):
++                for social in (False, True):
++                    for web in (False, True):
++                        with self.subTest(email=email, calendar=calendar, social=social, web=web):
++                            config = disconnected_config()
++                            retained = ((planner.SOCIAL_TOOLS if social else ()) +
++                                        (planner.WEB_TOOLS if web else ()))
++                            config["tools"]["alsoAllow"] += retained
++                            target = gateway({"gmail.read": email, "calendar.read": calendar})
++                            after = planner.plan_config(config, target, install_dir=INSTALL)
++                            for names in (after["tools"]["alsoAllow"],
++                                          after["tools"]["sandbox"]["tools"]["allow"]):
++                                self.assertEqual("pixel_gmail_count" in names, email)
++                                self.assertEqual("pixel_calendar_count" in names, calendar)
++                                self.assertTrue(set(retained) <= set(names))
++                                self.assertFalse(set(planner.GMAIL_DRAFT_TOOLS +
++                                                     planner.CALENDAR_WRITE_TOOLS) & set(names))
++                            deny = after["agents"]["list"][0]["tools"]["deny"]
++                            self.assertEqual("pixel_gmail_count" in deny, not email)
++                            self.assertEqual("pixel_calendar_count" in deny, not calendar)
++                            self.assertEqual(after["tools"]["profile"], config["tools"]["profile"])
++
+     def test_capabilities_map_to_the_five_limb_flags(self):
+         off = dict(email=False, emailDrafts=False, calendar=False, calendarWrite=False, calendarDirect=False)
+         self.assertEqual(planner.limbs(None), off)
+@@ -363,11 +408,13 @@ class RenderCrossCheckTests(unittest.TestCase):
+         writes = dict(READ_ONLY, **{"calendar.write": True})
+         drafts = dict(writes, **{"gmail.drafts": True})
+         calendar_only = dict(READ_ONLY, **{"gmail.read": False})
++        gmail_only = dict(READ_ONLY, **{"calendar.read": False})
+         wiki = ["memory-wiki"]
+         disconnected = self.render(None)
+         steps = [(READ_ONLY, "America/Chicago", ()), (writes, "America/Chicago", ()),
+                  (drafts, "America/Chicago", ()), (drafts, "America/Chicago", wiki), (writes, "America/Chicago", wiki),
+-                 (None, "America/Chicago", wiki), (calendar_only, "Europe/Berlin", ()), (None, "Europe/Berlin", ())]
++                 (None, "America/Chicago", wiki), (calendar_only, "Europe/Berlin", ()),
++                 (gmail_only, "Europe/Berlin", ()), (None, "Europe/Berlin", ())]
+         previous = disconnected
+         for capabilities, zone, chosen in steps:
+             with self.subTest(capabilities=capabilities, zone=zone, chosen=chosen):
+@@ -377,6 +424,11 @@ class RenderCrossCheckTests(unittest.TestCase):
+                 self.assertEqual(planner.gateway_limbs(current[1]), planner.limbs(capabilities))
+                 self.assertEqual(current[0]["agents"]["defaults"]["userTimezone"], zone)
+                 self.assertEqual(plugins.enabled_in(current[0]), list(chosen))
++                for tool, cap in (("pixel_gmail_count", "gmail.read"), ("pixel_calendar_count", "calendar.read")):
++                    expected = bool(capabilities and capabilities.get(cap))
++                    self.assertEqual(tool in current[0]["tools"]["alsoAllow"], expected)
++                    self.assertEqual(tool in current[0]["tools"]["sandbox"]["tools"]["allow"], expected)
++                    self.assertEqual(tool in current[0]["agents"]["list"][0]["tools"]["deny"], not expected)
+                 self.assert_planned(previous, current, capabilities, zone, chosen)
+                 previous = current
+
+diff --git a/ods/tests/test_pixel_connection_status.py b/ods/tests/test_pixel_connection_status.py
+index ac15344af..8bed568ee 100644
+--- a/ods/tests/test_pixel_connection_status.py
++++ b/ods/tests/test_pixel_connection_status.py
+@@ -278,6 +278,17 @@ class CatalogTests(unittest.TestCase):
+         self.assertEqual(catalog.scopes_for("google", {"calendar.read": True}), [CALENDAR_READ])
+         self.assertEqual(catalog.scopes_for("google", {}), [])
+
++    def test_metadata_only_counts_use_only_the_existing_read_capabilities(self):
++        capabilities = {item["id"]: item for item in catalog.GOOGLE["capabilities"]}
++        self.assertIn("pixel_gmail_count", capabilities["gmail.read"]["tools"])
++        self.assertIn("pixel_calendar_count", capabilities["calendar.read"]["tools"])
++        for capability in capabilities.values():
++            for tool, expected in (("pixel_gmail_count", "gmail.read"), ("pixel_calendar_count", "calendar.read")):
++                self.assertEqual(tool in capability["tools"], capability["id"] == expected)
++        self.assertEqual(catalog.scopes_for("google", {"gmail.read": True}), [GMAIL_READ])
++        self.assertEqual(catalog.scopes_for("google", {"calendar.read": True}), [CALENDAR_READ])
++        self.assertEqual(catalog.scopes_for("google", {"gmail.read": False, "calendar.read": False}), [])
++
+     def test_the_public_catalog_is_a_copy(self):
+         copied = catalog.public_catalog()
+         copied[0]["capabilities"].clear()
+diff --git a/ods/vendor/pixel/scripts/migrate-source-broker-config.mjs b/ods/vendor/pixel/scripts/migrate-source-broker-config.mjs
+index 6c8e6a2d4..0d1f91f60 100644
+--- a/ods/vendor/pixel/scripts/migrate-source-broker-config.mjs
++++ b/ods/vendor/pixel/scripts/migrate-source-broker-config.mjs
+@@ -18,8 +18,8 @@ config.plugins.entries ??= {};
+ const legacyPluginIds = new Set(["pixel-google-workspace", "pixel-gmail-readonly"]);
+ const sourceTools = [
+   "pixel_limb_status",
+-  "pixel_gmail_inbox", "pixel_gmail_sent", "pixel_gmail_search", "pixel_gmail_read", "pixel_gmail_thread",
+-  "pixel_calendar_list", "pixel_calendar_get", "pixel_calendar_propose_create",
++  "pixel_gmail_inbox", "pixel_gmail_sent", "pixel_gmail_search", "pixel_gmail_read", "pixel_gmail_thread", "pixel_gmail_count",
++  "pixel_calendar_list", "pixel_calendar_get", "pixel_calendar_count", "pixel_calendar_propose_create",
+   "pixel_calendar_propose_update", "pixel_calendar_propose_delete",
+   "pixel_social_feed", "pixel_social_search",
+ ];
+diff --git a/ods/vendor/pixel/scripts/render-config.mjs b/ods/vendor/pixel/scripts/render-config.mjs
+index 3d5037424..4555436bf 100644
+--- a/ods/vendor/pixel/scripts/render-config.mjs
++++ b/ods/vendor/pixel/scripts/render-config.mjs
+@@ -116,9 +116,9 @@ const opsPluginId = "pixel-operations-broker";
+ const frontierPluginId = "pixel-frontier-broker";
+ const allSourceTools = [
+   "pixel_limb_status",
+-  "pixel_gmail_inbox", "pixel_gmail_sent", "pixel_gmail_search", "pixel_gmail_read", "pixel_gmail_thread",
++  "pixel_gmail_inbox", "pixel_gmail_sent", "pixel_gmail_search", "pixel_gmail_read", "pixel_gmail_thread", "pixel_gmail_count",
+   "pixel_gmail_draft_propose",
+-  "pixel_calendar_list", "pixel_calendar_get", "pixel_calendar_propose_create",
++  "pixel_calendar_list", "pixel_calendar_get", "pixel_calendar_count", "pixel_calendar_propose_create",
+   "pixel_calendar_propose_update", "pixel_calendar_propose_delete",
+   "pixel_social_feed", "pixel_social_search", "pixel_web_browse",
+ ];

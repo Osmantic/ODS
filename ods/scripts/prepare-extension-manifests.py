@@ -203,22 +203,19 @@ def _build_plan(install_dir: Path, *, preserve_file_modes: bool = False) -> _Pla
         for name in names:
             leaf = parent / name
             try:
-                leaf_stat = _require_regular_manifest(leaf)
+                _require_regular_manifest(leaf)
             except ManifestPermissionError as exc:
                 if isinstance(exc.__cause__, FileNotFoundError):
                     continue
                 raise
-            mode = stat.S_IMODE(leaf_stat.st_mode)
-            if preserve_file_modes:
-                if mode & 0o444 != 0o444 or mode & 0o022:
-                    raise ManifestPermissionError(
-                        f"public Dashboard file is unreadable under a protected source "
-                        f"transaction: {leaf}; preserve the pending upgrade "
-                        "and resolve its source permissions before retrying"
-                    )
-            else:
-                mode = 0o644
-            plan.add(leaf, mode)
+            # config/ and templates/ are outside Pixel's protected source
+            # roots. The ordinary source copy retains an owner's umask-077
+            # permissions here, unlike the staged manifest modes above. Make
+            # only these named public catalogs readable even during a held
+            # upgrade; never change a transaction-owned manifest or private
+            # configuration. The source-inventory regression checks this
+            # ownership boundary against Pixel's actual ROOTS.
+            plan.add(leaf, 0o644)
 
     return plan
 

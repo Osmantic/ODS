@@ -30,17 +30,17 @@ function compileSchema(schema) {
 }
 
 test('grammar inventory captures every actual Pixel registration', () => {
-  assert.equal(registered.length, 28);
+  assert.equal(registered.length, 32);
   for (const name of ['pixel_ods_image_read', 'pixel_ods_workspace_preview', 'pixel_ods_workspace_bundle', 'pixel_ods_workspace_artifact', 'pixel_ods_source_proposal',
     'pixel_ods_python_library_proposal', 'pixel_ods_extension_request_retry', 'pixel_ods_workspace_preview_inspect',
-    'pixel_ods_project_build']) {
+    'pixel_ods_project_build', 'pixel_ods_connections_status', 'pixel_ods_notes', 'pixel_ods_notify', 'pixel_ods_mcp']) {
     assert.ok(registered.some(tool => tool.name === name), name);
   }
 });
 
 test('legacy configuration does not expose an unavailable inspector', async () => {
   const legacy = await registeredPixelTools({inspection:false, project:false});
-  assert.equal(legacy.length,26);
+  assert.equal(legacy.length,30);
   assert.equal(legacy.some(tool => tool.name === 'pixel_ods_workspace_preview_inspect'),false);
   assert.equal(legacy.some(tool => tool.name === 'pixel_ods_project_build'),false);
 });
@@ -50,6 +50,17 @@ for (const tool of registered) {
 }
 test('all registered Pixel schemas compile together, including deferred specialists', nativeOnly,
   () => compileSchema(combinedToolSchema(registered)));
+
+test('connection status grammar accepts no arguments and rejects extra fields or arrays',nativeOnly,()=>{
+  const tool=registered.find(tool=>tool.name==='pixel_ods_connections_status');
+  for(const [args,expected] of [[{},0],[{operation:'connect'},2],[[],2]]) {
+    const result=spawnSync(nativeGrammar,[],{
+      input:JSON.stringify({schema:tool.parameters,arguments:args}),encoding:'utf8',timeout:30000,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status,expected,result.stderr);
+  }
+});
 
 for (const [tool, samples] of [
   [registered.find(tool => tool.name === 'pixel_ods_workspace_artifact'),

@@ -26,6 +26,7 @@ import { captureNativeWebSearchResult, projectNativeWebSearchResult, projectWebR
 import { SEARCH_PACING_STREAK, SEARCH_PACING_REASON, searchTerms, nearDuplicateSearch, searchLeadUrls,
   duplicateSearchReason, ownerResearchDate, staleSearchDate, staleSearchDateGuidance } from "./research-pacing.mjs";
 import { createCompletionAssurance } from "./completion-assurance.mjs";
+import {createConnectionEvidence,GOOGLE_LOOKUP_UNVERIFIED} from './connection-evidence.mjs';
 import { englishOnly, inResponseLanguage, managedTurnOwnerWords } from "./response-language.mjs";
 import { researchRequestProblem } from "./perplexica-research.mjs";
 import { HOST_CITATION_LIMITS } from './citation-verification.mjs';
@@ -8628,6 +8629,7 @@ export function createToolLoopGuard({
       pruneRuns();
       state = {
         completionAssurance: createCompletionAssurance({englishOnly: englishOnly(responseLanguage), now}),
+        connectionEvidence: createConnectionEvidence(),
         extensionCompletionGate: undefined,
         workspaceLaneRequested: false,
         workspaceExtensionIsolated: false,
@@ -9140,6 +9142,8 @@ export function createToolLoopGuard({
       if (pending) pending.refused = true;
     }
     const state = context?.agentId === agentId && runId ? runs.get(runId) : undefined;
+    const connectionCall = connectionCallBinding({...event,params:decision?.params ?? event?.params},context,state);
+    if (state && connectionCall) state.connectionEvidence.prepare(connectionCall);
     // A tool now running, which the deadline stop may end (responseDeadlineDue).
     if (state?.responseDeadline && decision?.block !== true && typeof callId === 'string' && callId) {
       state.responseDeadline.tools.add(callId);
@@ -9161,6 +9165,18 @@ export function createToolLoopGuard({
       state.previewRevalidationCandidate = undefined;
     }
     return decision;
+  }
+
+  function connectionCallBinding(event,context,state) {
+    const runId = context?.runId ?? event?.runId;
+    if (!state || event?.runId && event.runId !== runId
+        || event?.toolCallId && context?.toolCallId && event.toolCallId !== context.toolCallId
+        || event?.toolName && context?.toolName && event.toolName !== context.toolName
+        || context?.sessionId && state.currentSessionId && context.sessionId !== state.currentSessionId
+        || context?.sessionKey && state.currentSessionKey && context.sessionKey !== state.currentSessionKey) return undefined;
+    return {runId,callId:context?.toolCallId ?? event?.toolCallId,
+      toolName:context?.toolName ?? event?.toolName,params:event?.params,
+      sessionId:context?.sessionId ?? state.currentSessionId,sessionKey:context?.sessionKey ?? state.currentSessionKey};
   }
 
   function decideToolCall(event, context, agentId) {
@@ -11939,6 +11955,8 @@ export function createToolLoopGuard({
     if (typeof runId !== "string" || !runId) return;
     recordExampleOutcome({...context, runId}, examples.check(runId), context?.toolCallId ?? event?.toolCallId);
     const state = stateFor(runId);
+    const connectionCall = connectionCallBinding(event,context,state);
+    if (connectionCall) state.connectionEvidence.observe(connectionCall,event?.result,event?.error);
     state.responseDeadline?.tools.delete(context?.toolCallId ?? event?.toolCallId);
     state.completionAssurance.observe(toolName, event);
     if (state.extensionCompletionGate && !state.workspaceExtensionIsolated && !state.extensionMutationExcluded) {
@@ -15266,6 +15284,16 @@ export function createToolLoopGuard({
       : fileCheckFacts(checked, 1024 - head.length - (head ? 1 : 0), carried, checksOff);
     const notice = result.status === 'pending' ? undefined : [head, facts].filter(Boolean).join(' ');
     if (notice) result = {...result, notice};
+    // A failed account/source observation is not proof of absence. Do not let
+    // preview/progress composition reintroduce unverified model prose after
+    // this final evidence decision. Independent tools continue; their typed
+    // preview/artifact receipts remain deliverable, not their arbitrary prose.
+    if (state?.connectionEvidence.unresolved() && !state.clientCancelled && result.status !== 'pending') {
+      result = {...result,status:'failed',text:GOOGLE_LOOKUP_UNVERIFIED};
+      delete result.deliveryMode;
+      delete result.code;
+      delete result.suppressStaleExecWarning;
+    }
     // Joined with what an earlier pending response left there untaken.
     if (result.status === 'pending' && checkedLine && typeof state?.currentSessionKey === 'string') {
       const left = sessionFileChecks.get(state.currentSessionKey)?.checks ?? [];

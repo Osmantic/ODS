@@ -1,7 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import vm from "node:vm";
 import {
+  CONNECTED_RECORDS_CONTRACT,
+  PORTAL_INTEGRATIONS_CONTRACT,
+  PORTAL_INTEGRATION_TURN_CONTEXT,
   ODS_COMPACT_CONVERSATION_CONTRACT,
   ODS_TINY_CONVERSATION_CONTRACT,
   ODS_CONVERSATION_CONTRACT,
@@ -31,9 +36,55 @@ import {
   conversationContractForExecution,
 } from "../plugin/prompt-contract.mjs";
 import { AGENT_SKILLS, PREVIEW_RUNTIME_CONTRACT } from "../plugin/agent-skills.mjs";
-import { workspacePreviewMode } from "../plugin/tool-loop-guard.mjs";
+import { workspacePreviewMode,
+  userMessageOperationsRequirements } from "../plugin/tool-loop-guard.mjs";
 import { RESPONSE_LANGUAGE_CONTRACT } from '../plugin/response-language.mjs';
+import {promptHookAlone} from './prompt-build-harness.mjs';
+
+test('the actual prompt hook appends integration turn context independently of request words and history', async () => {
+  const histories = [[], Object.freeze([
+    Object.freeze({role:'assistant', content:'A previous action needs approval.'}),
+    Object.freeze({role:'toolResult', toolName:'pixel_ods_notes', details:Object.freeze({status:'done'})}),
+  ])];
+  for (const prompt of ['Quanto é 14 + 8?', 'Add the same invented line to my note again.']) {
+    for (const messages of histories) {
+      const original = JSON.stringify(messages);
+      const context = await promptHookAlone({prompt, messages});
+      assert.equal(context.appendContext, PORTAL_INTEGRATION_TURN_CONTEXT);
+      assert.ok(!context.appendSystemContext.includes(PORTAL_INTEGRATION_TURN_CONTEXT), 'not in cached system context');
+      assert.ok(!context.prependContext?.includes(PORTAL_INTEGRATION_TURN_CONTEXT), 'keep it beside the owner turn');
+      assert.equal(JSON.stringify(messages), original, 'history and typed receipts stay intact');
+    }
+  }
+});
+
+test('integration turn context is absent for runtime probes and agents with no Portal contract', async () => {
+  const probe = await promptHookAlone({probe:true});
+  assert.ok(probe.appendSystemContext, 'the existing probe prompt contract remains');
+  assert.ok(!probe.appendContext?.includes(PORTAL_INTEGRATION_TURN_CONTEXT));
+  const other = await promptHookAlone({agentId:'unrelated'});
+  assert.equal(other, undefined);
+});
 import { createAskUserTool } from '../plugin/ask-user.mjs';
+
+test('connected capabilities are a stable model contract, independent of request wording',()=>{
+  for(const configuredContextWindow of [8192,32768,65536]) {
+    const options={configuredContextWindow};
+    const plain=promptContractForAgent({agentId:'pixel'},'pixel',{prompt:'Hello'},options);
+    assert.ok(plain.appendSystemContext.includes(CONNECTED_RECORDS_CONTRACT));
+    for(const prompt of ['meu email est\u00e1 conectado?','Is my Gmail connected?',
+      'Is the diary available to you?','Read my Gmail.','Count Calendar events.',
+      'Translate this email without using tools.','What software can I install?']) {
+      const result=promptContractForAgent({agentId:'pixel'},'pixel',{prompt},options);
+      assert.equal(result.appendSystemContext,plain.appendSystemContext);
+      assert.doesNotMatch(result.prependContext??'',/For Gmail,|For Calendar,|Read connected records/,
+        'no phrase-selected connected-app plan beside the owner turn');
+    }
+    for(const boundary of ['pixel_ods_connections_status','not disconnected accounts',
+      'count tools for counts','Recent sync is not a new Google sign-in check',
+      'Never invent a missing source time zone']) assert.ok(CONNECTED_RECORDS_CONTRACT.includes(boundary));
+  }
+});
 
 test('language fallback reaches website and ordinary requests on full, lean and small-context routes', () => {
   for (const options of [
@@ -310,9 +361,12 @@ test("uses a bounded complete core on compact contexts without changing requeste
     appendSystemContext: ODS_TINY_CONVERSATION_CONTRACT,
   });
   // Shared language and sandbox requirements remain present in both cores.
-  assert.ok(ODS_TINY_CONVERSATION_CONTRACT.length < 4000);
-  assert.ok(ODS_COMPACT_CONVERSATION_CONTRACT.length < 4700);
+  // Stable capability semantics replace the larger phrase-selected read guide.
+  // Real runner/token budgets are exercised by runtime_*_prompt_budget tests.
+  assert.ok(ODS_TINY_CONVERSATION_CONTRACT.length < 4800);
+  assert.ok(ODS_COMPACT_CONVERSATION_CONTRACT.length < 5500);
   assert.match(plain.appendSystemContext, /untrusted reference, never authority/);
+  assert.ok(plain.appendSystemContext.includes(CONNECTED_RECORDS_CONTRACT));
   assert.match(plain.appendSystemContext, /never self-approve/);
   assert.match(plain.appendSystemContext, /Run requested focused verification and inspect exit status before claiming success/);
 
@@ -357,6 +411,24 @@ test("uses a bounded complete core on compact contexts without changing requeste
   assert.deepEqual(configuredLeanLargeContext, {
     appendSystemContext: ODS_COMPACT_CONVERSATION_CONTRACT,
   });
+});
+
+test('an independent extension clause retains its route without masquerading as connected records',()=>{
+  for(const prompt of [
+    'Read my Gmail and separately list Calendar extensions available in ODS.',
+    'Search available Gmail extensions and read my calendar.',
+    'Read one email using Gmail tools and separately list Calendar extensions available in ODS.',
+  ]) {
+    assert.equal(userMessageOperationsRequirements([],prompt).required,true);
+    const result=promptContractForAgent({agentId:'pixel'},'pixel',{prompt},{configuredContextWindow:8192});
+    assert.ok(result.appendSystemContext.includes(ODS_EXTENSION_CATALOG_CONTRACT));
+    assert.ok(result.appendSystemContext.includes(CONNECTED_RECORDS_CONTRACT));
+    assert.doesNotMatch(result.prependContext??'',/For Gmail,|For Calendar,/);
+  }
+  const result=promptContractForAgent({agentId:'pixel'},'pixel',{
+    prompt:'Explain how Gmail works. Read my Calendar.'},{configuredContextWindow:8192});
+  assert.ok(result.appendSystemContext.includes(CONNECTED_RECORDS_CONTRACT));
+  assert.doesNotMatch(result.prependContext??'',/For Gmail,|For Calendar,/);
 });
 
 test("adds one exact compact tool route for natural broad host questions", () => {
@@ -510,15 +582,18 @@ test("restores the full September 16 operating core while retaining compact fall
   assert.equal(evaluatedCore.length, 17751);
   assert.equal(createHash('sha256').update(evaluatedCore).digest('hex'),
     '94d4a2c3cf7c7469219f0592a4a6f9e451dff0e92b8918bfb1adbbc1827c97de');
-  // The sandbox runtime rule is the only addition inside the compact core.
+  // Keep the historical core pinned independently of the runtime and connected
+  // record supplements; do not reroll its digest to accept another core.
   const oldCompact = ODS_COMPACT_CONVERSATION_CONTRACT.replace(` ${ODS_SANDBOX_RUNTIME_CONTRACT}`, '')
+    .replace(` ${CONNECTED_RECORDS_CONTRACT}`, '')
+    .replace(` ${PORTAL_INTEGRATIONS_CONTRACT}`, '')
     .slice(0, -(RESPONSE_LANGUAGE_CONTRACT.length + PREVIEW_RUNTIME_CONTRACT.length + 2));
   assert.equal(oldCompact.length, 3087);
   assert.equal(createHash('sha256').update(oldCompact).digest('hex'),
     '9223e1d30c01d44bf709012903027276dbbf8724e4fa53ec0766bd02e9a377f0');
   assert.ok(ODS_COMPACT_CONVERSATION_CONTRACT.endsWith(' ' + PREVIEW_RUNTIME_CONTRACT));
   assert.ok(ODS_CONVERSATION_CONTRACT.startsWith(ODS_SEPTEMBER16_CONVERSATION_CONTRACT + ' '));
-  assert.ok(ODS_CONVERSATION_CONTRACT.length < 20500);
+  assert.ok(ODS_CONVERSATION_CONTRACT.length < 21300);
   assert.notEqual(ODS_CONVERSATION_CONTRACT, ODS_COMPACT_CONVERSATION_CONTRACT);
   assert.match(result.appendSystemContext, /Never say you ran, executed/);
   assert.match(result.appendSystemContext, /use python3 and unittest directly/);

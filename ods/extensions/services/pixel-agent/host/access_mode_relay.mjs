@@ -1,7 +1,7 @@
 // Owner-only HTTP-to-UDS relay. Chat/socket membership is not mode authority.
 import fs from 'node:fs';
 import net from 'node:net';
-import {timingSafeEqual} from 'node:crypto';
+import {timingSafeEqual, createHash} from 'node:crypto';
 
 export const ACCESS_SOCKET_PATH = process.platform === 'darwin'
   ? '/private/var/run/ods-pixel-access/control.sock'
@@ -113,7 +113,7 @@ export function requestAccessController(payload, {socketPath = ACCESS_SOCKET_PAT
     socket.once('error', () => finish(new Error('access-service-unavailable')));
     socket.on('data', chunk => {
       bytes += chunk.length;
-      if (bytes > 65536) return finish(new Error('invalid-access-response'));
+      if (bytes > (payload?.operation === 'schedules' ? 525312 : 65536)) return finish(new Error('invalid-access-response'));
       chunks.push(chunk);
       const raw = Buffer.concat(chunks);
       if (!raw.includes(10)) return;
@@ -128,6 +128,99 @@ export function requestAccessController(payload, {socketPath = ACCESS_SOCKET_PAT
     });
     socket.once('end', () => {if (!settled) finish(new Error('invalid-access-response'));});
   });
+}
+
+export async function handleSchedules(req, res, {ownerKey, request = requestAccessController} = {}) {
+  const reply = (status, body) => {res.writeHead(status, {'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(body));};
+  if (!ownerKey) return reply(503,{error:'access-owner-auth-unavailable'});
+  const expected=Buffer.from(`Bearer ${ownerKey}`), supplied=Buffer.from(typeof req.headers.authorization === 'string' ? req.headers.authorization : '');
+  if (expected.length !== supplied.length || !timingSafeEqual(expected,supplied)) return reply(403,{error:'owner-required'});
+  if (req.url !== '/v1/schedules') return reply(400,{error:'invalid-request'});
+  if (req.method !== 'POST') return reply(405,{error:'method-not-allowed'});
+  if (String(req.headers['content-type'] || '').split(';')[0].trim() !== 'application/json') return reply(415,{error:'invalid-content-type'});
+  const timer=setTimeout(()=>req.destroy(),15000);
+  let payload;
+  try {
+    const chunks=[]; let bytes=0;
+    for await (const chunk of req) {
+      bytes+=chunk.length;
+      if (bytes>16384) return reply(413,{error:'request-too-large'});
+      chunks.push(chunk);
+    }
+    payload=JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)
+        || !['list','archived','create','set-enabled','remove','runs','check-create','dismiss-create'].includes(payload.action)) {
+      return reply(400,{error:'invalid-request'});
+    }
+  } catch {return reply(400,{error:'invalid-request'});}
+  finally {clearTimeout(timer);}
+  try {
+    const result=await request({operation:'schedules',request:payload,
+      source:{kind:'owner-key',identity:createHash('sha256').update(ownerKey).digest('hex')}},{timeout:185000});
+    if (result.status === 200 && ['tasks','change','runs'].includes(result.body?.kind)) return reply(200,result.body);
+    const code=typeof result.body?.error === 'string' && /^[a-z][a-z0-9-]{0,95}$/.test(result.body.error)
+      ? result.body.error : 'scheduler-unavailable';
+    return reply([400,403,409,503].includes(result.status) ? result.status : 503,{error:code});
+  } catch {return reply(503,{error:'scheduler-unavailable'});}
+}
+
+// Each custodian action's controller budget, in milliseconds.
+const CONNECTION_ACTIONS = {
+  'connection-begin': 65000, 'connection-complete': 155000, 'connection-activate': 305000,
+  'connection-cancel': 25000, 'connection-disconnect': 155000, 'connection-sync': 25000,
+  'connection-proposals': 25000, 'connection-approve': 155000, 'connection-decline': 25000,
+  'connection-reconcile': 155000, 'connection-activity': 25000, 'connection-undo': 155000,
+  'connection-drafts': 25000, 'connection-plugin': 305000,
+  'connection-app-status': 22000, 'connection-app-begin': 305000,
+  'connection-app-complete': 75000, 'connection-app-finish': 305000,
+  'connection-app-cancel': 305000, 'connection-app-disconnect': 305000,
+  'connection-app-check': 75000,
+};
+
+// Connected-apps status (GET, no body) or one custodian action (POST). The
+// controller builds every body and validates every request; this hop only
+// authenticates the owner, bounds the body and names the action.
+export async function handleConnections(req, res, {ownerKey, request = requestAccessController} = {}) {
+  const reply = (status, body) => {res.writeHead(status, {'Content-Type':'application/json', 'Cache-Control':'no-store'});res.end(JSON.stringify(body));};
+  if (!ownerKey) return reply(503, {error:'access-owner-auth-unavailable'});
+  const expected = Buffer.from(`Bearer ${ownerKey}`), supplied = Buffer.from(typeof req.headers.authorization === 'string' ? req.headers.authorization : '');
+  if (expected.length !== supplied.length || !timingSafeEqual(expected, supplied)) return reply(403, {error:'owner-required'});
+  if (req.url !== '/v1/connections') return reply(400, {error:'invalid-request'});
+  if (req.method === 'POST') return handleConnectionAction(req, reply, request);
+  if (req.method !== 'GET') return reply(405, {error:'method-not-allowed'});
+  if (req.headers['transfer-encoding'] !== undefined
+      || (req.headers['content-length'] !== undefined && req.headers['content-length'] !== '0')) {
+    return reply(400, {error:'invalid-request'});
+  }
+  try {
+    const result = await request({operation:'connection-status'}, {timeout:20000});
+    reply(result.status, result.body);
+  } catch {reply(503, {error:'connections-unavailable'});}
+}
+
+async function handleConnectionAction(req, reply, request) {
+  if (String(req.headers['content-type'] || '').split(';')[0].trim() !== 'application/json') return reply(415, {error:'invalid-content-type'});
+  try {
+    const chunks = []; let bytes = 0;
+    for await (const chunk of req) {
+      bytes += chunk.length;
+      if (bytes > 16384) return reply(413, {error:'request-too-large'});
+      chunks.push(chunk);
+    }
+    let payload;
+    try {payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));} catch {return reply(400, {error:'invalid-request'});}
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)
+        || Object.keys(payload).sort().join() !== 'operation,request'
+        || !Object.hasOwn(CONNECTION_ACTIONS, payload.operation)
+        || !payload.request || typeof payload.request !== 'object' || Array.isArray(payload.request)) {
+      return reply(400, {error:'invalid-request'});
+    }
+    if (payload.operation !== 'connection-app-complete' && bytes > 2048) return reply(413, {error:'request-too-large'});
+    const result = await request({operation:payload.operation, request:payload.request}, {timeout:CONNECTION_ACTIONS[payload.operation]});
+    if (result.status === 200) return reply(200, result.body);
+    const code = typeof result.body?.error === 'string' && /^[a-z0-9][a-z0-9-]{0,63}$/.test(result.body.error) ? result.body.error : null;
+    return reply(result.status, {error:code ?? 'connection-change-unconfirmed'});
+  } catch {return reply(503, {error:'connections-unavailable'});}
 }
 
 export async function handleAccessMode(req, res, {ownerKey, request = requestAccessController} = {}) {

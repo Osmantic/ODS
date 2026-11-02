@@ -3948,7 +3948,7 @@ def _reconcile_ods_managed_pixel_model(
     owner, home = identity
     env_values = load_env(INSTALL_DIR / ".env")
     configured_ref = str(env_values.get("PIXEL_SOURCE_REF") or "")
-    bundled_ref = "3d2acd8f22a53d28b36b7e6ee017bb3143dc428b"
+    bundled_ref = "fb48263c80ed86ddbfafad14cd688bec97f21704"
     source_url = str(env_values.get("PIXEL_SOURCE_URL") or "bundled")
     if any(character in source_url for character in "\r\n\x00"):
         raise RuntimeError("The configured Pixel source URL is invalid")
@@ -9021,6 +9021,32 @@ def _start_enable_retry(handler, service_id: str, lock: threading.Lock) -> None:
         raise
 
 
+# The owner socket sits in the owner's state folder, which the gateway sandbox cannot see.
+PIXEL_INTEGRATIONS_SOCKET = str(Path.home() / ".config/ods/pixel-integrations/owner.sock")
+PIXEL_INTEGRATIONS_ACTIONS = ("save", "test-notification", "discover", "test", "restart", "decide", "clear-activity")
+
+
+def _pixel_integrations_request(payload: dict) -> dict:
+    """One owner request to the Portal integrations service (one JSON line each way)."""
+    connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    connection.settimeout(130)
+    try:
+        connection.connect(PIXEL_INTEGRATIONS_SOCKET)
+        connection.sendall((json.dumps({"schemaVersion": 1, **payload}) + "\n").encode())
+        data = bytearray()
+        while not data.endswith(b"\n") and len(data) <= 512 * 1024:
+            piece = connection.recv(65536)
+            if not piece:
+                break
+            data.extend(piece)
+    finally:
+        connection.close()
+    reply = json.loads(data)
+    if not isinstance(reply, dict):
+        raise ValueError("integrations reply is not an object")
+    return reply
+
+
 def json_response(handler, code: int, body: dict, *, no_store=False):
     payload = json.dumps(body).encode("utf-8")
     handler.send_response(code)
@@ -10802,8 +10828,14 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_pixel_advice_runtime()
         elif path == "/v1/pixel/inference-sharing":
             self._handle_pixel_sharing()
+        elif path == "/v1/pixel/integrations" and not parsed.query:
+            self._handle_pixel_integrations()
         elif path == "/v1/pixel/access-mode" and not parsed.query:
             self._handle_pixel_access_mode(False)
+        elif path == "/v1/pixel/connections" and not parsed.query:
+            self._handle_pixel_connections()
+        elif path == "/v1/pixel/connections/apps" and not parsed.query:
+            self._handle_pixel_native_apps()
         elif path == "/v1/host/port":
             self._handle_host_port_status(parse_qs(parsed.query))
         elif path == "/v1/opencode/status" and not parsed.query:
@@ -10812,6 +10844,41 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_setup_state()
         else:
             json_response(self, 404, {"error": "Not found"})
+
+    def _handle_pixel_schedules(self):
+        if not check_auth(self):
+            return
+        from pixel_schedules import MAX_REQUEST, ScheduleError, parse_request
+        from pixel_access_relay import AccessRelayError, request_runtime_schedules
+        try:
+            lengths = self.headers.get_all('Content-Length', [])
+            if (len(lengths) != 1 or not re.fullmatch(r'[0-9]{1,6}', lengths[0])
+                    or self.headers.get('Transfer-Encoding')
+                    or self.headers.get_content_type() != 'application/json'):
+                raise ScheduleError('invalid-task')
+            length = int(lengths[0])
+            if not 1 <= length <= MAX_REQUEST:
+                raise ScheduleError('task-too-large')
+            raw = _read_request_body_bytes(self, length)
+            if len(raw) != length:
+                raise ScheduleError('invalid-task')
+            request = parse_request(raw)
+        except (ValueError, RecursionError):
+            json_response(self, 400, {'error': 'invalid-task'}, no_store=True)
+            return
+        except (OSError, TimeoutError):
+            json_response(self, 408, {'error': 'invalid-task'}, no_store=True)
+            return
+        try:
+            status, body = request_runtime_schedules(request, config=load_env(INSTALL_DIR / '.env'), data_dir=DATA_DIR)
+            if status != 200:
+                code = body.get('error') if type(body) is dict else None
+                if type(code) is not str or not re.fullmatch(r'[a-z][a-z0-9-]{0,95}', code):
+                    code = 'scheduler-unavailable'
+                body = {'error': code}
+            json_response(self, status, body, no_store=True)
+        except (AccessRelayError, OSError, ValueError, RecursionError):
+            json_response(self, 503, {'error': 'scheduler-unavailable'}, no_store=True)
 
     def _handle_pixel_access_mode(self, change: bool):
         if not check_auth(self):
@@ -10845,6 +10912,71 @@ class AgentHandler(BaseHTTPRequestHandler):
             json_response(self, 503, {"error": "access-transition-unavailable"})
         finally:
             _end_model_lifecycle("pixel_access_mode")
+
+    def _handle_pixel_connections(self):
+        """Content-free connected-apps status, plus the connector and plugin catalogs ODS ships."""
+        if not check_auth(self):
+            return
+        from pixel_access_relay import AccessRelayError, request_runtime_connections
+        from pixel_connections import catalog as connection_catalog
+        from pixel_connections import plugins as connection_plugins
+        from pixel_connections import status as connection_status
+        try:
+            status, body = request_runtime_connections(config=load_env(INSTALL_DIR / '.env'))
+            if status == 200:
+                checked = dict(connection_status.validate_public(body))
+                # This is Root-supplied metadata. Do not read the protected
+                # Google deployment client under the Windows/host identity.
+                google_auth = checked.pop('googleAuth', None)
+                body = dict(checked, catalog=connection_catalog.public_catalog(google_auth=google_auth),
+                            pluginCatalog=connection_plugins.public_catalog())
+        except (AccessRelayError, connection_status.StatusError, OSError, ValueError):
+            json_response(self, 503, {"error": "connections-unavailable"})
+            return
+        json_response(self, status, body)
+
+    def _handle_pixel_connection_action(self, action: str):
+        """The owner's connected-apps actions; root's custodian decides and records each one."""
+        if not check_auth(self):
+            return
+        from pixel_access_relay import AccessRelayError, request_runtime_connection_action
+        from pixel_connections import host_api as connection_host_api
+        handler = connection_host_api.ACTIONS.get(action)
+        if handler is None:
+            json_response(self, 404, {"error": "Not found"})
+            return
+        body = read_json_body(self)
+        if body is None:
+            return
+        try:
+            status, reply = handler(body, config=load_env(INSTALL_DIR / '.env'),
+                                    relay=request_runtime_connection_action, log=logger.warning)
+        except (AccessRelayError, OSError, ValueError):
+            # A lost reply never means the step was undone; status shows where it stands.
+            json_response(self, 503, {"error": "connections-unavailable"})
+            return
+        json_response(self, status, reply)
+
+    def _handle_pixel_native_apps(self, app=None, action=None):
+        """Fixed reviewed apps; no caller-selected MCP settings or endpoints."""
+        if not check_auth(self):
+            return
+        from pixel_access_relay import AccessRelayError, request_runtime_connection_action
+        from pixel_connections import native_host_api
+        if app is not None and (app != 'notion' or action not in ('connect', 'complete', 'finish', 'cancel', 'disconnect', 'check')):
+            json_response(self, 404, {'error': 'Not found'})
+            return
+        body = None if app is None else read_json_body(self)
+        if app is not None and body is None:
+            return
+        try:
+            options = {'config': load_env(INSTALL_DIR / '.env'), 'relay': request_runtime_connection_action}
+            status, reply = (native_host_api.status(**options) if app is None else
+                             native_host_api.action(app, action, body, **options, log=logger.warning))
+        except (AccessRelayError, OSError, ValueError):
+            json_response(self, 503, {'error': 'native-app-status-unavailable'})
+            return
+        json_response(self, status, reply)
 
     def _handle_pixel_open_app(self):
         if not check_auth(self):
@@ -11403,6 +11535,17 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_pixel_approval_terminal()
         elif self.path == "/v1/pixel/access-mode":
             self._handle_pixel_access_mode(True)
+        elif self.path == "/v1/pixel/schedules":
+            self._handle_pixel_schedules()
+        elif self.path.startswith("/v1/pixel/connections/google/"):
+            action = self.path.removeprefix("/v1/pixel/connections/google/")
+            # The reviewed plugins have their own address; the Google one never reaches them.
+            self._handle_pixel_connection_action("" if action == "plugin" else action)
+        elif self.path == "/v1/pixel/connections/plugin":
+            self._handle_pixel_connection_action("plugin")
+        elif self.path.startswith('/v1/pixel/connections/apps/'):
+            parts = self.path.removeprefix('/v1/pixel/connections/apps/').split('/')
+            self._handle_pixel_native_apps(*(parts if len(parts) == 2 else ('', '')))
         elif self.path == "/v1/pixel/apps/open":
             self._handle_pixel_open_app()
         elif self.path in ("/v1/opencode/start", "/v1/opencode/setup"):
@@ -11476,6 +11619,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_pixel_scopes(self.path.rsplit('/', 1)[1])
         elif self.path in {"/v1/pixel/advice-runtime/prepare", "/v1/pixel/advice-runtime/status", "/v1/pixel/advice-runtime/cancel"}:
             self._handle_pixel_advice_runtime(self.path.rsplit('/', 1)[1])
+        elif self.path.startswith("/v1/pixel/integrations/") and self.path.rsplit("/", 1)[1] in PIXEL_INTEGRATIONS_ACTIONS and self.path.count("/") == 4:
+            self._handle_pixel_integrations(self.path.rsplit("/", 1)[1])
         elif self.path in {"/v1/pixel/inference-sharing/issue", "/v1/pixel/inference-sharing/enable", "/v1/pixel/inference-sharing/revoke", "/v1/pixel/inference-sharing/start", "/v1/pixel/inference-sharing/stop"}:
             self._handle_pixel_sharing(self.path.rsplit('/', 1)[1])
         elif self.path == "/v1/runtime/lemonade/ensure":
@@ -11502,6 +11647,35 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_network_wifi_forget()
         else:
             json_response(self, 404, {"error": "Not found"})
+
+    def _handle_pixel_integrations(self, action=None):
+        """The owner's Portal integrations: settings, tests, tool discovery and approvals.
+
+        The integrations service holds the settings and secrets; this relays the owner's
+        request and returns its answer, or its refusal with the sentence to show.
+        """
+        if not check_auth(self):
+            return
+        if sys.platform == "darwin":
+            json_response(self, 400, {"error": "unsupported", "message": "Portal integrations aren't available on macOS yet."}, no_store=True)
+            return
+        payload = {"action": action or "get"}
+        if action is not None:
+            body = read_json_body(self)
+            if body is None:
+                return
+            payload = {**body, "action": action}
+        try:
+            reply = _pixel_integrations_request(payload)
+        except (OSError, ValueError):
+            json_response(self, 503, {"error": "unavailable", "message": "The integrations service is not running."}, no_store=True)
+            return
+        if reply.get("ok") is True:
+            json_response(self, 200, {key: value for key, value in reply.items() if key != "ok"}, no_store=True)
+            return
+        status = 409 if reply.get("error") == "stale-revision" else 400
+        json_response(self, status, {"error": reply.get("error", "failed"),
+                                     "message": str(reply.get("message", "The request failed."))[:500]}, no_store=True)
 
     def _handle_pixel_sharing(self, action=None):
         if not check_auth(self):

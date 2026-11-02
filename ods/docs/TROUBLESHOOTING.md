@@ -323,6 +323,82 @@ ods status
 
 ---
 
+## Connected apps (Google Calendar and Gmail)
+
+The card in **Settings, Connected apps** names the problem and its fix; these
+are the questions it doesn't answer. The full guide is
+[Connected apps](pixel/CONNECTED-APPS.md).
+
+### Connected apps aren't in Settings
+
+**Cause:** `PORTAL_CONNECTED_APPS_ENABLED=false` in ODS's `.env`.
+
+**Fix:** set it to `true`, or remove the line, then reload the dashboard.
+
+### Google says the app isn't verified
+
+**Cause:** the sign-in app is your own, and Google hasn't reviewed it. That's expected.
+
+**Fix:** choose **Advanced**, then continue to your app.
+
+### The Google tab ends on a page that can't be reached
+
+**Cause:** your browser is on a different computer from the one running ODS, and Google sent it back to `127.0.0.1` on that computer.
+
+**Fix:** copy the whole address from that tab, paste it into the wizard, and press **Finish connecting**.
+
+### Google signs Portal out every week
+
+**Cause:** your Google app is still in Testing, and Google ends Testing sign-ins after 7 days.
+
+**Fix:** open your app's **Audience** page in Google Cloud, press **Publish app**, then **Reconnect** in Settings.
+
+### Portal says it can't read my calendar or email
+
+**Cause:** Google isn't connected, needs reconnecting, or you didn't turn that part on.
+
+**Fix:** open **Settings, Connected apps**. The card says which, and offers the button that fixes it. Portal's chat also shows **Open Connected apps** when the connection needs you.
+
+### Portal says a calendar change waits, but I can't find it
+
+**Cause:** Portal only suggests calendar changes; you approve each one in Settings.
+
+**Fix:** open **Settings, Connected apps**. **Calendar changes from Portal** under the Google card lists every change that waits, with **Approve** and **Decline**. If Portal says it can't change your calendar at all, press **Change access** and connect again with **Suggest calendar changes you approve** checked.
+
+### Portal asks me to approve a change it used to make by itself
+
+**Cause:** Portal has Full Access. While it does, ODS pauses the private calendar changes Portal may make without asking, so each one waits for your approval.
+
+**Fix:** approve it in **Settings, Connected apps**, or switch Portal back to Sandbox in **Portal permissions** to let it make them by itself again. If they still wait after switching back, press **Finish** on the Google card.
+
+### A calendar change says Google hasn't confirmed it
+
+**Cause:** the change was sent, but Google's answer didn't arrive. ODS never sends a change twice, so it can't simply try again.
+
+**Fix:** for a new event, press **Check again**. For a move or a deletion, look at your calendar to see whether it happened, then press **Dismiss**; ask Portal again if it didn't.
+
+### Portal says it wrote a Gmail draft, but it isn't in Gmail
+
+**Cause:** Portal writes drafts for your approval. Gmail gets one only after you press **Create draft** in Settings, and Portal never sends email.
+
+**Fix:** open **Settings, Connected apps**. **Gmail drafts from Portal** under the Google card lists every draft that waits. Press **Create draft**, then open your Gmail Drafts to send it. If Portal says it can't write drafts at all, press **Change access** and connect again with **Write Gmail drafts you send yourself** checked.
+
+### A Gmail draft says Gmail hasn't confirmed it
+
+**Cause:** the draft was sent to Gmail, but Gmail's answer didn't arrive. ODS never creates a draft twice, so it can't simply try again.
+
+**Fix:** press **Check again**. If Gmail still doesn't show it, look in your Gmail Drafts, then press **Dismiss** and ask Portal again if it isn't there.
+
+### A Portal plugin won't turn on
+
+**Cause:** turning a plugin on restarts Portal with it. If Portal is busy, nothing changes. If Portal can't start with the plugin, ODS puts Portal back as it was, and the plugin stays off.
+
+**Fix:** wait until Portal has finished, then press **Turn on** again under **Portal plugins** in **Settings, Connected apps**. If the card says Portal couldn't start with the change, try once more, then ask on Discord.
+
+Still stuck? Ask on the ODS Discord: <https://discord.gg/4ntNp9MAwC>.
+
+---
+
 ## Getting Help
 
 1. **Check logs:**

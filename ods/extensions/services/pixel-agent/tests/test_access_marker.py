@@ -77,6 +77,22 @@ def assert_bound(runtime):
     assert runtime.marker.stat().st_mode & 0o777 == 0o600
 
 
+def root_state_owner(runtime, monkeypatch):
+    # These installer tests model Root, while ordinary CI owns the directory.
+    # Change only that directory's UID; retain real modes, types and link checks.
+    original = Path.lstat
+
+    def lstat(path, *args, **kwargs):
+        value = original(path, *args, **kwargs)
+        if path == runtime.state:
+            fields = list(value)
+            fields[4] = 0
+            return os.stat_result(fields)
+        return value
+
+    monkeypatch.setattr(Path, 'lstat', lstat)
+
+
 def test_enable_and_restore_keep_installer_marker_bound(runtime):
     before = runtime.config_digest()
     previous = json.loads(runtime.path.read_text())
@@ -268,6 +284,7 @@ def test_root_installer_reproof_preserves_installing_state_and_existing_mode(run
     access.atomic_json(runtime.marker, marker)
     with pytest.raises(access.AccessError, match='model-marker-invalid'):
         runtime.change(runtime.request())
+    root_state_owner(runtime, monkeypatch)
     monkeypatch.setattr(access.os, 'geteuid', lambda: 0)
     assert runtime.reprove_installer_access() == {'result': 'reproved', 'mode': 'full-access'}
     after = json.loads(runtime.marker.read_text())
@@ -282,6 +299,7 @@ def test_installer_reproof_refuses_nonroot_and_pending_transactions(runtime, mon
     monkeypatch.setattr(access.os, 'geteuid', lambda: 1000)
     with pytest.raises(access.AccessError, match='root-installer-required'):
         runtime.reprove_installer_access()
+    root_state_owner(runtime, monkeypatch)
     monkeypatch.setattr(access.os, 'geteuid', lambda: 0)
     runtime.fail = 'probe'
     with pytest.raises(access.AccessError):

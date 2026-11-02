@@ -1,4 +1,7 @@
 # Gitleaks ignore file
+# Historical loopback-only Node relay fixture: a literal synthetic key, never
+# issued or used outside this disposable test. Current test generates its key.
+9bdb0ca65e831b61b00f86d667a6fd4ddc4e1e14:ods/extensions/services/pixel-agent/tests/native_apps_relay.test.mjs:generic-api-key:27
 # Add fingerprints of known false positives here (one per line)
 # Get fingerprints from gitleaks output when a false positive is detected
 #

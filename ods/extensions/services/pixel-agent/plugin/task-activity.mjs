@@ -1,4 +1,4 @@
-import {displayForActivity} from './activity-display.mjs';
+import {activityToolName,displayForActivity} from './activity-display.mjs';
 // Bounded public host observations for the Pixel workbench. Only explicitly
 // selected/filtered metadata and excerpts enter this projection. Token counts are
 // optional numeric measurements from the final model response, never estimates.
@@ -12,7 +12,8 @@ const KINDS = new Map([
   ...['task', 'hub', 'sessions_spawn', 'sessions_send'].map(name => [name, 'agent']),
   ...['browser', 'web_search', 'web_fetch', 'pixel_ods_web_extract', 'pixel_ods_research'].map(name => [name, 'browser']),
   ['pixel_ods_workspace_preview', 'preview'],
-  ...['pixel_ods_status', 'pixel_ods_apps_list', 'pixel_ods_host_observe', 'pixel_ods_extensions'].map(name => [name, 'read']),
+  ...['pixel_ods_status', 'pixel_ods_connections_status', 'pixel_ods_skill', 'pixel_ods_apps_list', 'pixel_ods_host_observe', 'pixel_ods_extensions'].map(name => [name, 'read']),
+  ['pixel_ods_notify', 'action'],
   ...['pixel_ops_run', 'pixel_ops_workflow_submit', 'pixel_ods_download_promote'].map(name => [name, 'action']),
 ]);
 
@@ -24,6 +25,9 @@ function kindFor(event, context) {
     // Extension IDs may be fully qualified; use only the closed name map.
     if (!KINDS.has(name) && /^[a-z0-9_-]+:[a-z0-9_-]+:[a-z0-9_-]+$/i.test(id)) name = id.split(':').at(-1);
   }
+  const args=(context?.toolName ?? event?.toolName)==='tool_call'?event?.params?.args:event?.params;
+  if(name==='pixel_ods_notes')return ['search','read'].includes(args?.action)?'read':args?.action==='write'?'edit':'unknown';
+  if(name==='pixel_ods_mcp')return args?.action==='list'?'read':args?.action==='call'?'action':'unknown';
   return KINDS.get(name) ?? 'unknown';
 }
 
@@ -98,7 +102,12 @@ export function createTaskActivity({agentId = 'pixel', now = () => new Date().to
     // or timing, so one invocation is not displayed as two calls.
     if (callId.startsWith('tool_search_code:') && typeof toolName === 'string') {
       const parents = [...run.calls].filter(([parentId, call]) => {
-        if (!call.wrapped || call.kind !== kindFor(event, context)) return false;
+        const kind=kindFor(event,context);
+        // Completion can omit params; reuse only this exact parent's already
+        // observed action kind for the same integration tool, not another call.
+        const omittedAction=event?.params?.action===undefined
+          && ['pixel_ods_notes','pixel_ods_mcp'].includes(toolName) && call.toolName===toolName;
+        if (!call.wrapped || (call.kind !== kind && !(kind==='unknown' && omittedAction))) return false;
         const parent = parentId.trim().replace(/[^A-Za-z0-9_.:-]+/g, '_').slice(0,120) || 'call';
         const prefix = `tool_search_code:${parent}:${toolName}:`;
         return callId.startsWith(prefix) && /^[1-9][0-9]*$/.test(callId.slice(prefix.length));
@@ -116,7 +125,10 @@ export function createTaskActivity({agentId = 'pixel', now = () => new Date().to
     const observedAt=now();
     const startedAt=existing?.startedAt ?? noEarlierThan(observedAt,run.startedAt);
     const finishedAt=outcome==='running' ? null : existing?.finishedAt ?? noEarlierThan(observedAt,startedAt);
-    run.calls.set(callId, {kind:existing?.kind ?? kindFor(event, context), outcome, display, startedAt, finishedAt, wrapped:existing?.wrapped ?? toolName === 'tool_call'});
+    const selectedToolName=activityToolName(event,context);
+    run.calls.set(callId, {kind:existing?.kind ?? kindFor(event, context), outcome, display, startedAt, finishedAt,
+      wrapped:existing?.wrapped ?? toolName === 'tool_call',
+      toolName:existing?.toolName ?? (['pixel_ods_notes','pixel_ods_mcp'].includes(selectedToolName)?selectedToolName:null)});
   }
   return {
     begin,

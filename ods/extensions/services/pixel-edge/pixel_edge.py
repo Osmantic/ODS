@@ -28,7 +28,9 @@ from runtime_identity import project_runtime_identity, unknown_runtime_identity
 from chat_context import project_context, valid_history_snapshot
 from image_admission import ImageWorkBudget
 from access_mode import (public_status as public_access_status, valid_change as valid_access_change,
-                         valid_model_control, public_model_control)
+                         valid_model_control, public_model_control, public_connections,
+                         valid_connection_action, public_connection_action)
+from schedule_contract import parse_request as parse_schedule_request, validate_reply as schedule_reply
 
 
 def valid_live_task_event(event):
@@ -238,8 +240,7 @@ _RESERVED_ASSISTANT_REPLIES = frozenset({
     "No response from OpenClaw.",
 })
 _SHORT_TEST_MESSAGE = re.compile(
-    r"^\s*(?:(?:just\s+)?test(?:ing)?(?:\s+[\w.-]+){0,4}|ping|hello|hi|hey)"
-    r"\s*[.!?]*\s*$",
+    r"(?:(?:just\s+)?test(?:ing)?(?:\s+[\w.-]+){0,4}|ping|hello|hi|hey)",
     re.IGNORECASE,
 )
 _SHORT_TEST_REPLY = (
@@ -446,9 +447,19 @@ def _latest_user_text(data: dict) -> str:
     return ""
 
 
+def _is_short_test_message(text: str) -> bool:
+    if len(text) > 160:
+        return False
+    # Consume the one contiguous punctuation suffix outside the grammar.
+    # Keeping it in the regex overlaps with dots inside a test word; spaces
+    # between punctuation blocks must still fail (for example "hi! !").
+    body = text.strip().rstrip(".!?").rstrip()
+    return _SHORT_TEST_MESSAGE.fullmatch(body) is not None
+
+
 def _empty_reply_fallback(data: dict) -> str:
     text = _latest_user_text(data)
-    if len(text) <= 160 and _SHORT_TEST_MESSAGE.fullmatch(text):
+    if len(text) <= 160 and _is_short_test_message(text):
         return _SHORT_TEST_REPLY
     return _EMPTY_REPLY
 
@@ -491,9 +502,10 @@ def _workspace_mutation_positions(text: str) -> set[int]:
     # A backslash escapes any character, a line break included, and an open
     # quote may end in one. Every quote can then match to the end of the
     # text, which keeps the scan linear (a failed match per quote made it
-    # quadratic in the length of the owner text).
+    # quadratic in the length of the owner text). Quote-line indentation
+    # excludes newlines so blank lines cannot rescan each later blank line.
     instructions = re.sub(
-        r"```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)|(?m:^\s*>[^\n]*)|"
+        r"```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)|(?m:^[^\S\n]*>[^\n]*)|"
         r"`[^`\n]*`|\"(?:\\[\s\S]|[^\"\\])*(?:\"|\\?\Z)|"
         r"(?<!\w)'(?:\\[\s\S]|[^'\\])*(?:'|\\?\Z)|"
         r"\u201c[^\u201d]*(?:\u201d|$)|(?<!\w)\u2018[^\u2019]*(?:\u2019|$)",
@@ -510,17 +522,28 @@ def _workspace_mutation_positions(text: str) -> set[int]:
         r"(?P<verb>" + _WORKSPACE_MUTATION_INTENT.pattern + r")", re.IGNORECASE,
     )
     positions = set()
-    for clause in re.finditer(
-        r"(?:^|[.!?;\n]|\b(?:but|however|instead|then)\b)\s*"
-        r"(?P<clause>.*?)(?=$|[.!?;\n]|\b(?:but|however|instead|then)\b)",
+    # Scan non-overlapping delimiters, then trim each disjoint span once.
+    # This avoids asking overlapping whitespace and clause quantifiers to
+    # divide the same owner-controlled run of tabs.
+    start = 0
+    for boundary in re.finditer(
+        r"[.!?;\n]|\b(?:but|however|instead|then)\b|$",
         instructions, re.IGNORECASE,
     ):
-        value = clause.group("clause")
+        # The previous leading-^ alternative treated a non-whitespace
+        # delimiter at offset zero as part of the first clause. Keep that
+        # classification and its verb offsets rather than broaden coaching.
+        if boundary.start() == 0 and boundary.end() > 0 and not instructions[0].isspace():
+            continue
+        raw = instructions[start:boundary.start()]
+        value = raw.lstrip()
+        clause_start = start + len(raw) - len(value)
         # A file mentioned in an earlier read-only clause does not turn a
         # later "write the answer" directive into a workspace mutation.
         if _WORKSPACE_MUTATION_SCOPE.search(value) and not negated.search(value):
-            positions.update(clause.start("clause") + match.start("verb")
+            positions.update(clause_start + match.start("verb")
                              for match in directive.finditer(value))
+        start = boundary.end()
     return positions
 
 
@@ -1406,6 +1429,75 @@ async def handle_access_mode(request: web.Request):
         return web.json_response({'error':'access-service-unavailable'}, status=503)
 
 
+_CONNECTION_TIMEOUTS = {'connection-begin': 70, 'connection-complete': 160, 'connection-activate': 308,
+                        'connection-cancel': 30, 'connection-disconnect': 160, 'connection-sync': 30,
+                        'connection-proposals': 30, 'connection-approve': 160, 'connection-decline': 30,
+                        'connection-reconcile': 160, 'connection-activity': 30, 'connection-undo': 160,
+                        'connection-drafts': 30, 'connection-plugin': 308}
+from native_app_contract import TIMEOUTS as _NATIVE_APP_TIMEOUTS
+_CONNECTION_TIMEOUTS.update({name: timeout - 2 for name, timeout in _NATIVE_APP_TIMEOUTS.items()})
+
+
+async def handle_connection_action(request: web.Request):
+    """One custodian action (sign-in, activation, disconnect): owner-authenticated, exact shapes only."""
+    if request.content_type != 'application/json':
+        return web.json_response({'error': 'invalid-content-type'}, status=415)
+    try:
+        raw_request = await _read_bounded(request.content, 16384)
+        data = strict_json(raw_request)
+        if not valid_connection_action(data):
+            raise ValueError()
+        if data['operation'] != 'connection-app-complete' and len(raw_request) > 2048:
+            raise ValueError()
+    except (ValueError, OSError, RecursionError):
+        return web.json_response({'error': 'invalid-request'}, status=400)
+    try:
+        connector, origin = _access_transport()
+        timeout = ClientTimeout(total=_CONNECTION_TIMEOUTS[data['operation']], sock_connect=3)
+        async with ClientSession(connector=connector, timeout=timeout, trust_env=False) as session:
+            async with session.post(origin + '/v1/connections', json=data, allow_redirects=False,
+                    headers={'Authorization': 'Bearer ' + preview_proxy_token}) as response:
+                raw = await _read_bounded(response.content, 65536)
+                if response.status != 200:
+                    status = response.status if response.status in (400, 403, 409, 503) else 503
+                    return web.json_response({'error': _controller_reason(raw) or 'connection-change-unconfirmed'},
+                                             status=status)
+                value = public_connection_action(data['operation'], strict_json(raw))
+        return web.json_response(value, headers={'Cache-Control': 'no-store'})
+    except Exception:
+        # A lost reply does not undo the custodian's journaled step; status shows it.
+        return web.json_response({'error': 'connections-unavailable'}, status=503)
+
+
+async def handle_connections(request: web.Request):
+    """Connected-apps status (GET, no body) or one custodian action (POST)."""
+    fail = _check_preview_auth(request)
+    if fail is not None:
+        return fail
+    if _constant_time_compare(config_token, preview_proxy_token):
+        return web.json_response({'error': 'owner-auth-unavailable'}, status=503)
+    if request.query_string:
+        return web.json_response({'error': 'invalid-request'}, status=400)
+    if request.method == 'POST':
+        return await handle_connection_action(request)
+    if request.can_read_body:
+        return web.json_response({'error': 'invalid-request'}, status=400)
+    try:
+        connector, origin = _access_transport()
+        timeout = ClientTimeout(total=21, sock_connect=3)
+        async with ClientSession(connector=connector, timeout=timeout, trust_env=False) as session:
+            async with session.get(origin + '/v1/connections', allow_redirects=False,
+                    headers={'Authorization': 'Bearer ' + preview_proxy_token}) as response:
+                raw = await _read_bounded(response.content, 65536)
+                if response.status != 200:
+                    status = response.status if response.status in (400, 403, 409, 503) else 503
+                    return web.json_response({'error': 'connections-unavailable'}, status=status)
+                value = public_connections(strict_json(raw))
+        return web.json_response(value, headers={'Cache-Control': 'no-store'})
+    except Exception:
+        return web.json_response({'error': 'connections-unavailable'}, status=503)
+
+
 _CONTROLLER_REASON = re.compile(r'[a-z0-9][a-z0-9-]{0,63}')
 
 
@@ -1457,6 +1549,37 @@ async def handle_model_control(request: web.Request):
         # A lost reply does not cancel the controller's durable transaction.
         # Status reconciliation belongs to the caller; mutations are never retried here.
         return web.json_response({'error': 'model-control-unavailable'}, status=503)
+
+
+async def handle_schedules(request: web.Request):
+    """Owner-only fixed task operations; neither chat credentials nor arbitrary RPCs."""
+    headers = {'Cache-Control': 'no-store'}
+    fail = _check_preview_auth(request)
+    if fail is not None:
+        fail.headers.update(headers)
+        return fail
+    if _constant_time_compare(config_token, preview_proxy_token):
+        return web.json_response({'error': 'owner-auth-unavailable'}, status=503, headers=headers)
+    if request.query_string or request.content_type != 'application/json':
+        return web.json_response({'error': 'invalid-task'}, status=400, headers=headers)
+    try:
+        data = parse_schedule_request(await _read_bounded(request.content, 16384))
+    except (ValueError, OSError, RecursionError):
+        return web.json_response({'error': 'invalid-task'}, status=400, headers=headers)
+    try:
+        connector, origin = _access_transport()
+        async with ClientSession(connector=connector, timeout=ClientTimeout(total=188, sock_connect=3), trust_env=False) as session:
+            async with session.post(origin + '/v1/schedules', json=data, allow_redirects=False,
+                    headers={'Authorization': 'Bearer ' + preview_proxy_token}) as response:
+                raw = await _read_bounded(response.content, 525312)
+                if response.status != 200:
+                    status = response.status if response.status in (400, 403, 409, 503) else 503
+                    return web.json_response({'error': _controller_reason(raw) or 'scheduler-unavailable'}, status=status, headers=headers)
+                value = schedule_reply(data, strict_json(raw))
+        return web.json_response(value, headers=headers)
+    except (ClientError, asyncio.TimeoutError, OSError, ValueError, RecursionError):
+        # An uncertain write is reconciled through the owner's ledger, never retried here.
+        return web.json_response({'error': 'scheduler-unavailable'}, status=503, headers=headers)
 
 
 async def handle_transition(request: web.Request):
@@ -2168,6 +2291,9 @@ def create_app() -> web.Application:
     app.router.add_get('/v1/access-mode', handle_access_mode, allow_head=False)
     app.router.add_post('/v1/access-mode', handle_access_mode)
     app.router.add_post('/v1/model-control', handle_model_control)
+    app.router.add_post('/v1/schedules', handle_schedules)
+    app.router.add_get('/v1/connections', handle_connections, allow_head=False)
+    app.router.add_post('/v1/connections', handle_connections)
     app.router.add_get("/v1/transition", handle_transition)
     app.router.add_post("/v1/transition/{operation:acquire|drain|release|recover}", handle_transition)
     app.router.add_post("/v1/chat/completions", handle_chat_completions)

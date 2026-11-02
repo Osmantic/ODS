@@ -359,7 +359,22 @@ def _prove_provision(bridge, manager, plan, kind):
     return dict(files=evidence, unit=status, socket=[info.st_dev, info.st_ino], images=images)
 
 
-def _render_overlay(renderer, anchor, home, uid, gid, *, provision=None, thinking_control=None):
+def _owner_app_answers():
+    """Reviewed plugin/native choices from Root, as the installer loads them.
+
+    They come from root's own record, never the owner's answers file.
+    """
+    from pixel_connections import native_apps, plugins, state
+    try:
+        record = state.read(state.PATH, owners=(SYSTEM_UID,))
+    except state.StateError:
+        record = None  # The installer loads none from an unusable record either.
+    return {'portalPlugins': plugins.answers(state.enabled_plugins(record)),
+            'nativeMcpApps': native_apps.answers(state.native_app_choices(record))}
+
+
+def _render_overlay(renderer, anchor, home, uid, gid, *, provision=None, thinking_control=None,
+                    portal_plugins=None, native_mcp_apps=None):
     config = _overlay_json(anchor)
     args = config['plugins']['entries']['pixel-ods']['config']
     port = args['perplexicaPort']
@@ -379,16 +394,26 @@ def _render_overlay(renderer, anchor, home, uid, gid, *, provision=None, thinkin
     if (type(port) is not int or not 1 <= port <= 65535 or transport != 'unix'
             or socket not in ('', '/var/lib/ods-pixel-project/control.sock')
             or image_policy not in ('unknown', 'supported', 'unsupported')
-            or provider == 'ods-gateway' and (type(args.get('modelRouteFingerprint')) is not str
-                or not HEX.fullmatch(args['modelRouteFingerprint']))
+            or provider == 'ods-gateway' and 'modelRouteFingerprint' in args
+                and (type(args['modelRouteFingerprint']) is not str
+                     or not HEX.fullmatch(args['modelRouteFingerprint']))
             or provider == 'ods-local' and 'modelRouteFingerprint' in args):
         raise UpgradeError('source-overlay-contract-unavailable')
     answers = dict(modelProvider=provider, modelId=model['id'], modelName=model['name'],
                    modelImageInput=image_policy)
-    if provider == 'ods-gateway':
+    # Existing local routes also use ods-gateway, and valid older onboarding
+    # contracts have no remote route fingerprint. Reconstruct that exact absence
+    # from the authenticated release; never invent one from current answers.
+    # Present fingerprints remain strict, and whole-document derivation below
+    # still refuses any changed endpoint, model, image policy or new fingerprint.
+    if provider == 'ods-gateway' and 'modelRouteFingerprint' in args:
         answers['modelRouteFingerprint'] = args['modelRouteFingerprint']
     if thinking_control is not None:
         answers['modelThinkingControl'] = thinking_control
+    if portal_plugins:
+        answers['portalPlugins'] = portal_plugins
+    if native_mcp_apps:
+        answers['nativeMcpApps'] = native_mcp_apps
     payload = dict(renderer=renderer.decode('utf-8'), config=anchor.decode('utf-8'),
                    port=port, transport=transport, socket=socket, home=str(home / '.openclaw'),
                    answers=answers)
@@ -498,7 +523,9 @@ def prove_runtime_overlay(bridge, transaction, config_sha, outcome):
     # answers file (a plugin-config key would break rollback), so the release
     # cannot name it. It selects one of the renderer's fixed thinking policies:
     # accept any of them, with every other input still derived from the release.
+    chosen = _owner_app_answers()
     derived = (_render_overlay(renderer, anchor, home, uid, gid, **render_args,
+                               portal_plugins=chosen['portalPlugins'], native_mcp_apps=chosen['nativeMcpApps'],
                                **({'thinking_control': control} if control else {}))
                for control in (None, 'enable_thinking', 'always', 'none'))
     if len(renderer) > 256 * 1024 or config_sha not in derived:
@@ -509,6 +536,7 @@ def prove_runtime_overlay(bridge, transaction, config_sha, outcome):
     # or process restart during that interval invalidates the entire evidence.
     release_guard(bridge.state, bridge.install, uid, transaction, outcome)
     if (manager.journal() != plan or manager._blob(renderer_item['sha256']) != renderer
+            or _owner_app_answers() != chosen
             or bridge.model_journal(transaction) != pending
             or os.path.lexists(owner_root / 'access-release-journal.json')
             or _overlay_private(home, '.openclaw/openclaw.json', uid) != current
@@ -1425,6 +1453,50 @@ def begin_plan(state, install, owner, *, installer=False):
     return manager
 
 
+def reserved_begin_plan(manager, owner):
+    """Prove bind-before-Root-journal recovery under the admission lock."""
+    value = manager.journal()
+    if value['phase'] != 'held' or value['hold'] is None:
+        return False
+    current = owner_baseline(owner.pw_dir, owner.pw_uid)
+    _, marker_sha = _protected_json(Path(owner.pw_dir) / '.config/ods/pixel-managed.json', owner.pw_uid)
+    if (current != {key: value['identity'][key] for key in current}
+            or marker_sha != value['identity']['markerSha256']
+            or inventory(manager.install, owner.pw_uid) != value['before']):
+        raise UpgradeError('source-owner-state-changed')
+    return True
+
+
+def guard_fresh_admission(bridge):
+    """Refuse new app admission across a source reservation; caller holds Root.
+
+    Source bind precedes transition.json, so absence of the latter cannot prove
+    that no source transaction was admitted. This reads only fixed protected
+    paths and never creates a manager directory, journal, hold or snapshot.
+    """
+    try:
+        directory(bridge.state, os.geteuid(), private=True)
+        child = bridge.state / 'source-upgrade'
+        try:
+            child.lstat()
+        except FileNotFoundError:
+            return
+        manager = SourceUpgrade(child, bridge.install, bridge.owner.pw_uid, state_uid=os.geteuid())
+        value = manager.journal()
+        if value is None:
+            raise UpgradeError('source-transition-unavailable')
+        # An unheld staged plan may be rebased only after this new app flow
+        # finishes. Source begin/stage checks that app intent under the same lock.
+        if value['phase'] == 'staged' and value['hold'] is None:
+            return
+        if (value['phase'] == 'complete' and value['hold'] is not None
+                and value['outcome'] in ('applied', 'rolled-back')):
+            return
+    except (OSError, ValueError, KeyError, TypeError, UpgradeError):
+        raise UpgradeError('source-transition-unavailable') from None
+    raise UpgradeError('source-transition-in-progress')
+
+
 def _pending(state, transaction):
     pending, _ = _protected_json(state / "transition.json")
     if (pending.get("kind") != "model" or pending.get("transaction_id") != transaction
@@ -1462,6 +1534,21 @@ def _manager(install, owner, *, create=False):
     return SourceUpgrade(child, install, account.pw_uid), account, state
 
 
+def _source_pending(state, existing):
+    """Keep the recovery instruction tied to the actual Root journal kind."""
+    path = state / 'transition.json'
+    if not os.path.lexists(path):
+        return None
+    pending, _ = _protected_json(path)
+    # Missing kind is the legacy access journal; model recovery cannot settle it.
+    if pending.get('kind', 'access') == 'access':
+        raise UpgradeError('source-access-journal-pending')
+    if (existing is None or existing['hold'] is None
+            or pending.get('kind') != 'model' or pending.get('transaction_id') != existing['hold']):
+        raise UpgradeError('source-previous-hold-pending')
+    return pending
+
+
 def _stage(manager, account, source, requested_ref):
     # Caller holds the same root admission lock used by all coordinator writes.
     existing = manager.journal()
@@ -1472,15 +1559,7 @@ def _stage(manager, account, source, requested_ref):
         item, _ = read_file(Path(source), f'extensions/services/{name}/compose.yaml', account.pw_uid, candidate=True)
         if item is None:
             raise UpgradeError('source-pixel-services-required')
-    if os.path.lexists(manager.state.parent / 'transition.json'):
-        pending, _ = _protected_json(manager.state.parent / 'transition.json')
-        # Missing kind is the legacy access journal, as in the permissions
-        # coordinator; model recovery cannot settle either form.
-        if pending.get('kind', 'access') == 'access':
-            raise UpgradeError('source-access-journal-pending')
-        if (existing is None or existing['hold'] is None
-                or pending.get('kind') != 'model' or pending.get('transaction_id') != existing['hold']):
-            raise UpgradeError('source-previous-hold-pending')
+    _source_pending(manager.state.parent, existing)
     marker, marker_sha = _protected_json(Path(account.pw_dir) / ".config/ods/pixel-managed.json", account.pw_uid)
     if (marker.get("schema_version") != 2 or marker.get("manager") != "ods"
             or marker.get("install_dir") != str(manager.install) or marker.get("initial_active_state") != "absent"
@@ -1591,6 +1670,45 @@ def admission_lock(state):
         os.close(fd)
 
 
+def _guard_native_stage(manager, account, state):
+    # The installer invokes this file with -I. Import only this fixed sibling
+    # package, never the cwd, candidate path or any request-selected directory.
+    sibling = str(Path(__file__).resolve().parent)
+    if sibling not in sys.path:
+        sys.path.insert(0, sibling)
+    from types import SimpleNamespace
+    try:
+        from pixel_access_bridge import AccessError, SystemdAccessBridge, guard_native_enrollment
+    except ImportError:
+        raise UpgradeError('native-app-transition-unavailable') from None
+
+    existing = manager.journal() if manager is not None else None
+    # Explain an unrelated pending Root operation before inspecting a source
+    # reservation. A new admission guard must not send an access-mode recovery
+    # to the model page or hide it behind a generic source-state error.
+    pending = _source_pending(state, existing)
+    pending_path = state / 'transition.json'
+    if (existing is not None and existing['phase'] != 'staged' and existing['hold'] is not None
+            and pending is not None):
+        bridge = SimpleNamespace(state=state, pending=lambda: pending)
+        try:
+            exact = SystemdAccessBridge.model_journal(bridge, existing['hold'])
+        except AccessError as error:
+            raise UpgradeError(str(error)) from None
+        if exact['start_config_sha256'] != existing['identity']['configSha256']:
+            raise UpgradeError('source-owner-state-changed')
+        # Existing stage/publish validation still checks the retained candidate,
+        # marker and owner. This exemption cannot adopt a new admission lease.
+        return
+    if existing is not None and not os.path.lexists(pending_path) and reserved_begin_plan(manager, account):
+        return
+    try:
+        guard_native_enrollment(SimpleNamespace(state=state, install=manager.install if manager is not None else None,
+                                                owner=account))
+    except AccessError as error:
+        raise UpgradeError(str(error)) from None
+
+
 def main(argv):
     """Installer-only local entry point; deliberately no HTTP or tool surface."""
     if len(argv) < 3 or argv[0] not in ("stage", "hold", "copy", "status", "finish", "rollback", "downstream"):
@@ -1598,16 +1716,22 @@ def main(argv):
     action, install, owner, *rest = argv
     if len(rest) != (2 if action == "stage" else 0):
         raise UpgradeError("source-command-invalid")
-    manager, account, state = _manager(install, owner, create=action == 'stage')
+    manager, account, state = _manager(install, owner, create=False)
+    if action == "stage":
+        with admission_lock(state):
+            # Rebind protected installation identity under the same admission
+            # lock before either the first source directory or a plan is made.
+            manager, account, state = _manager(install, owner, create=False)
+            _guard_native_stage(manager, account, state)
+            if manager is None:
+                manager, account, state = _manager(install, owner, create=True)
+            _stage(manager, account, *rest)
+        return
     if manager is None:
         if action == 'status':
             print(json.dumps({'pending': False}))
             return
         raise UpgradeError('source-stage-required')
-    if action == "stage":
-        with admission_lock(state):
-            _stage(manager, account, *rest)
-        return
     value = manager.journal()
     if value is None:
         if action == "status":

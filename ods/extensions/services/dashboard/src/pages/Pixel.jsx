@@ -36,6 +36,7 @@ import {compactCommand,CONTEXT_REQUEST_ID,CONTINUE_FAILED,historySnapshot,STOP_U
 import PortalModelSelector from '../components/PortalModelSelector'
 import PortalRuntimeIdentity from '../components/PortalRuntimeIdentity'
 import PortalReadiness from '../components/PortalReadiness'
+import ConnectedAppsNotice from '../components/ConnectedAppsNotice'
 import PortalRecovery, { PORTAL_RECOVERY_ACTIONS, portalRecoveryAction } from '../components/PortalRecovery'
 import { pixelReadinessView, PIXEL_RECOVERY_REQUIRED } from '../lib/pixelReadiness'
 import PortalAgentActivity from '../components/PortalAgentActivity'
@@ -73,6 +74,7 @@ import {
   CheckCircle2,
   Code2,
   Copy,
+  Clock3,
   Loader2,
   Plus,
   PanelRightOpen,
@@ -726,6 +728,7 @@ export default function Pixel({ systemStatus = null }) {
   const [modelSupport, setModelSupport] = useState(null)
   const [runtimeIdentity, setRuntimeIdentity] = useState(null)
   const [runtimeReadiness, setRuntimeReadiness] = useState(null)
+  const [connectedApps, setConnectedApps] = useState(null)
   const [modelActivation, setModelActivation] = useState(null)
   const [modelSwitching,setModelSwitching]=useState(false)
   const [modelStatusRefresh,setModelStatusRefresh]=useState(0)
@@ -1100,6 +1103,7 @@ export default function Pixel({ systemStatus = null }) {
         if (stopped) return
         setRuntimeIdentity(data?.runtimeIdentity ?? null)
         setRuntimeReadiness(data?.readiness ?? null)
+        setConnectedApps(data?.connectedApps ?? null)
         const runtime = data?.runtime
         const runtimeKeys = runtime && typeof runtime === 'object' && !Array.isArray(runtime)
           ? Object.keys(runtime).sort().join('\n')
@@ -2229,6 +2233,9 @@ export default function Pixel({ systemStatus = null }) {
               <PixelProviderScopes chatId={chatIdRef.current} sending={sending} />
             </div></details>
           </div></details>
+          <button type="button" aria-label="Scheduled tasks" onClick={() => { setWorkspaceOpen(true); setPreviewCollapsed(false); setWorkspaceRequest({chatId:chatIdRef.current,kind:'schedules'}) }} className="inline-flex items-center gap-1.5 bg-transparent px-2.5 py-1.5 text-xs text-theme-text-secondary hover:text-theme-text">
+            <Clock3 size={14}/><span className="hidden sm:inline">Scheduled tasks</span>
+          </button>
           <button type="button" aria-label="Workspace" aria-expanded={workspaceOpen} onClick={() => { setWorkspaceOpen(value => !value); setPreviewCollapsed(false) }} className="inline-flex items-center gap-1.5 bg-transparent px-2.5 py-1.5 text-xs text-theme-text-secondary hover:text-theme-text">
             <PanelRightOpen size={14}/><span>Workspace</span>
           </button>
@@ -2281,6 +2288,7 @@ export default function Pixel({ systemStatus = null }) {
           </>}
         </p>
       )}
+      {status === 'available' && <ConnectedAppsNotice value={connectedApps} />}
       <div role="region" aria-label="Conversation messages" tabIndex={-1} onScroll={chatScroll.onScroll} className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-5 sm:px-6">
         {conversationDeleted && <div role="status" className="mx-auto w-full max-w-5xl rounded-xl border border-theme-border px-4 py-3 text-sm">
           This conversation is being deleted or was deleted. No task was started. Your draft and saved history are preserved.

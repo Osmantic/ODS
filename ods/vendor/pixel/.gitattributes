@@ -15,3 +15,6 @@ deploy/ops-runner/run-test text eol=lf
 *.md text eol=lf
 *.example text eol=lf
 Dockerfile text eol=lf
+
+# This reviewed comparison prompt has a pinned digest, including its spacing.
+deploy/agent-comparison/codex-0.147.0-prompt.md -whitespace

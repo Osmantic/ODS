@@ -5,7 +5,7 @@ import os
 import stat
 import tempfile
 import time
-from pixel_access_bridge import AccessError, atomic_json, private_json, digest, remaining, runtime_config_path
+from pixel_access_bridge import AccessError, atomic_json, private_json, digest, remaining, runtime_config_path, guard_native_enrollment
 from pixel_settings.coordinator import _read, _identity, _valid_identity
 from pixel_model_contract import ModelError as ModelError, checksum, target, plan, projection
 
@@ -281,6 +281,8 @@ def control(bridge, operation, request=None):
             _journal(journal)
             if journal["transactionId"] != request["transactionId"]: raise AccessError("model-transaction-conflict")
         else:
+            if operation == "model-begin":
+                guard_native_enrollment(bridge)
             snapshot = _status(bridge)
             if snapshot["transactionId"] == request["transactionId"]:
                 if operation == "model-finish" and snapshot["outcome"] == request["outcome"]: return snapshot

@@ -9,9 +9,17 @@ import stat
 import sys
 import tempfile
 
+arguments = sys.argv[1:]
+if len(arguments) not in (18, 20):
+    raise SystemExit("usage: pixel-onboarding.py <18 contract arguments> [connections-record present|absent]")
 (out, openclaw_bin, home, model, context, max_tokens, reasoning,
  gateway_alias, gateway_label, model_gateway_port, pixel_gateway_port, gateway_key_path,
- search_port, plugin_path, plugin_digest, web_search_provider, parallel_path, parallel_digest) = sys.argv[1:]
+ search_port, plugin_path, plugin_digest, web_search_provider, parallel_path, parallel_digest) = arguments[:18]
+# The owner's connected-apps record (/etc/ods/portal-connections.json) and whether
+# the Source Broker holds the Google sign-in, which only root can see.
+connections_path, google_custody = arguments[18:] if len(arguments) == 20 else ("", "absent")
+if google_custody not in {"present", "absent"}:
+    raise SystemExit("invalid Source Broker custody state")
 if (not context.isdigit() or not 4096 <= int(context) <= 10_000_000
         or not max_tokens.isdigit() or not 1 <= int(max_tokens) <= int(context)
         or reasoning not in {"true", "false", "default", "bootstrap"}
@@ -149,7 +157,7 @@ payload = {
         "id": "pixel-ods",
         "path": plugin_path,
         "sha256": plugin_digest,
-        "tools": ["pixel_ods_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose", "pixel_ods_evidence_report", "pixel_ods_evidence_readback", "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_project_build", "pixel_ods_workspace_artifact", "pixel_ods_workspace_bundle", "pixel_ods_workspace_preview_inspect", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"],
+        "tools": ["pixel_ods_status", "pixel_ods_connections_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose", "pixel_ods_evidence_report", "pixel_ods_evidence_readback", "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_project_build", "pixel_ods_workspace_artifact", "pixel_ods_workspace_bundle", "pixel_ods_workspace_preview_inspect", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry", "pixel_ods_notes", "pixel_ods_notify", "pixel_ods_mcp"],
     }],
     "localCapabilityPacks": [],
     "agentSkills": [],
@@ -174,6 +182,32 @@ if route_fingerprint is not None:
     payload["modelRouteFingerprint"] = route_fingerprint
 if thinking_control is not None:
     payload["modelThinkingControl"] = thinking_control
+
+
+def connection_overrides():
+    """Onboarding answers implied by the owner's connected apps; none when there are none.
+
+    An unusable record never fails an install: connected apps stay off and the
+    Connected apps status explains why.
+    """
+    if not connections_path:
+        return {}
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "bin"))
+    from pixel_connections import state
+    try:
+        record = state.read(pathlib.Path(connections_path), owners=(0, os.getuid()))
+    except state.StateError as error:
+        print(f"Portal connected apps stay off for now: the saved connections could not be used ({error}). "
+              "Reconnect them in Settings, Connected apps. Get help: https://discord.gg/4ntNp9MAwC",
+              file=sys.stderr)
+        return {}
+    if record and "google" in record["connectors"] and google_custody != "present":
+        print("Google is connected in Settings, but its sign-in is not stored on this machine "
+              "(for example after a restore). Reconnect Google in Settings, Connected apps.", file=sys.stderr)
+    return state.onboarding_overrides(record, google_custody=google_custody == "present")
+
+
+payload.update(connection_overrides())
 if web_search_provider == "parallel-free":
     payload["gatewayExtensions"].append({"id": "parallel", "path": parallel_path, "sha256": parallel_digest})
 path.parent.mkdir(parents=True, exist_ok=True)

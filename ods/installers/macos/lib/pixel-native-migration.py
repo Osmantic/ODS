@@ -62,6 +62,8 @@ def verify_state_preservation(previous, candidate_bytes, record, *, state_dir):
                    old.get('model', old_defaults.get('model'))
                 or candidate['gateway']['auth'] != previous['gateway']['auth']
                 or candidate['gateway']['port'] != previous['gateway']['port']
+                or ('mcp' in candidate) != ('mcp' in previous)
+                or candidate.get('mcp') != previous.get('mcp')
                 or candidate.get('session', {}).get('store') != previous.get('session', {}).get('store')):
             raise ValueError()
         for name, value in previous['models']['providers'].items():

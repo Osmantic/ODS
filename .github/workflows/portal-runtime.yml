@@ -62,7 +62,7 @@ jobs:
       - name: Verify the output-limit stop the owner sees
         run: node --test ods/extensions/services/pixel-agent/tests/output_limit_delivery.test.mjs
       - name: Verify repository handoff and bounded host intent
-        run: node --test ods/extensions/services/pixel-agent/tests/repository_acquisition_routing.test.mjs ods/extensions/services/pixel-agent/tests/prompt_contract.test.mjs ods/extensions/services/pixel-agent/tests/english_default.test.mjs ods/extensions/services/pixel-agent/tests/response_language.test.mjs ods/extensions/services/pixel-agent/tests/operations_composition.test.mjs ods/extensions/services/pixel-agent/tests/download_promote.test.mjs ods/extensions/services/pixel-agent/tests/network_interface_intent.test.mjs ods/extensions/services/pixel-agent/tests/host_service_constraint_intent.test.mjs ods/extensions/services/pixel-agent/tests/download_terminal_receipt.test.mjs
+        run: node --test ods/extensions/services/pixel-agent/tests/repository_acquisition_routing.test.mjs ods/extensions/services/pixel-agent/tests/prompt_contract.test.mjs ods/extensions/services/pixel-agent/tests/connections_status.test.mjs ods/extensions/services/pixel-agent/tests/english_default.test.mjs ods/extensions/services/pixel-agent/tests/response_language.test.mjs ods/extensions/services/pixel-agent/tests/operations_composition.test.mjs ods/extensions/services/pixel-agent/tests/download_promote.test.mjs ods/extensions/services/pixel-agent/tests/network_interface_intent.test.mjs ods/extensions/services/pixel-agent/tests/host_service_constraint_intent.test.mjs ods/extensions/services/pixel-agent/tests/download_terminal_receipt.test.mjs
       - name: Verify host report download continuation across platforms
         run: node --test ods/extensions/services/pixel-agent/tests/host_workspace_artifact_continuation.test.mjs
       - name: Verify activity and downloads across native attempts
@@ -89,6 +89,44 @@ jobs:
         env:
           OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node --test ods/extensions/services/pixel-agent/tests/runtime_read_range.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_edit_redaction.integration.mjs
+      - name: Verify connected-app plugin imports and real wiki tools
+        if: runner.os == 'Linux'
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+          PIXEL_SOURCE_PLUGIN_DIR: ${{ runner.temp }}/connected-source/plugin
+          PIXEL_TEST_TYPEBOX_DIR: ${{ runner.temp }}/connected-source/plugin/node_modules/typebox
+        run: |
+          mkdir -p "$PIXEL_SOURCE_PLUGIN_DIR"
+          cp -R ods/vendor/pixel/plugin/. "$PIXEL_SOURCE_PLUGIN_DIR/"
+          npm ci --prefix "$PIXEL_SOURCE_PLUGIN_DIR" --ignore-scripts --no-audit --no-fund
+          python3 ods/extensions/services/pixel-agent/tests/test_connection_plugin_runtime.py
+          node --test ods/vendor/pixel/tests/source-broker-plugin.test.mjs \
+            ods/vendor/pixel/tests/source-count-plugin.test.mjs \
+            ods/vendor/pixel/tests/source-count-query.test.mjs
+          node --test ods/extensions/services/pixel-agent/tests/connection_evidence.test.mjs \
+            ods/extensions/services/pixel-agent/tests/connection_evidence_delivery.test.mjs
+      - name: Verify native MCP isolates server grants and delivers an allowed read through Pixel
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: python3 ods/extensions/services/pixel-agent/tests/test_native_mcp_runtime.py
+      - name: Verify native MCP OAuth through the ODS callback and private token store
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: python3 ods/extensions/services/pixel-agent/tests/test_native_mcp_oauth.py
+      - name: Verify direct native tools complete admission across success, errors and overlapping IDs
+        if: runner.os == 'Linux'
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: python3 ods/extensions/services/pixel-agent/tests/test_native_direct_tool_completion.py
+      - name: Verify cancelled native integration calls finish admission after the service settles
+        if: runner.os == 'Linux'
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: python3 ods/extensions/services/pixel-agent/tests/test_native_integrations_completion.py
       - name: Verify concurrent workspace creation and no-follow boundaries
         if: runner.os != 'Windows'
         env:
@@ -115,6 +153,25 @@ jobs:
         env:
           OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node --test ods/extensions/services/pixel-agent/tests/runtime_8k_prompt_budget.integration.mjs
+      - name: Verify native scheduled tasks survive restart and retain real run history
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: python3 ods/extensions/services/pixel-agent/tests/test_scheduled_tasks_runtime.py
+      - name: Verify connection tools use the resolved native model window
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_connections_context.integration.mjs
+      - name: Verify protected native schedule owner transport
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: |
+          export ODS_SCHEDULE_NODE="$(command -v node)"
+          sudo --preserve-env=OPENCLAW_PACKAGE_DIR,ODS_SCHEDULE_NODE python3 ods/extensions/services/pixel-agent/tests/test_scheduled_tasks_root.py
       - name: Verify deferred delegation through the real gateway and Portal ingress
         shell: bash
         env:
@@ -148,7 +205,9 @@ jobs:
         shell: bash
         env:
           OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
-        run: node --test ods/extensions/services/pixel-agent/tests/runtime_exec_completion.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_exec_guidance_history.integration.mjs
+        # Both files create cold native gateways; run them in sequence so the
+        # macOS runner's startup budget measures the runtime without contention.
+        run: node --test --test-concurrency=1 ods/extensions/services/pixel-agent/tests/runtime_exec_completion.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_exec_guidance_history.integration.mjs
       - name: Verify every Pixel chat reaches the real provider with one system prompt
         if: runner.os != 'Windows'
         shell: bash
@@ -262,7 +321,7 @@ jobs:
       - name: Install focused test dependencies
         run: python -m pip install pytest pyyaml
       - name: Verify source custody and model hold regressions
-        run: python -m pytest -q ods/extensions/services/pixel-agent/tests/test_source_edge_restart.py ods/tests/test_pixel_source_upgrade.py ods/tests/test_pixel_model_transition.py
+        run: python -m pytest -q ods/extensions/services/pixel-agent/tests/test_source_edge_restart.py ods/tests/test_pixel_source_upgrade.py ods/tests/test_pixel_model_transition.py ods/tests/test_native_enrollment_admission.py
       - name: Qualify retained Edge restart with the real image and private volume
         # This runner is isolated. The test refuses any pre-existing Edge,
         # starts no daemon, and removes only its own generated Compose project.

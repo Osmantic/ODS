@@ -1027,6 +1027,27 @@ describe('Pixel', () => {
     }
   )
 
+  it('points to Connected apps when the Google connection needs the owner, from Portal status alone', async () => {
+    globalThis.fetch.mockResolvedValue(response({ available: true, model: 'pixel/default', detail: 'Owner agent ready',
+      connectedApps: { state: 'needs-reconnect', reason: 'invalid-grant', step: null } }))
+    render(<Pixel />)
+    await waitFor(() => expect(screen.getByText('Available')).toBeInTheDocument())
+    const notice = screen.getByRole('status', { name: 'Connected apps' })
+    expect(notice).toHaveTextContent('Google needs reconnecting.')
+    expect(within(notice).getByRole('link', { name: 'Open Connected apps' })).toHaveAttribute('href', '/settings?section=apps')
+    expect(screen.getByPlaceholderText('Message Portal...')).toBeEnabled()
+    expect(globalThis.fetch.mock.calls.some(([url]) => String(url).startsWith('/api/pixel/connections'))).toBe(false)
+  })
+
+  it.each([undefined, null, { state: 'connected', reason: null, step: null }, { state: 'made-up' }, 'needs-reconnect'])(
+    'shows no Connected apps notice for %j', async connectedApps => {
+      globalThis.fetch.mockResolvedValue(response({ available: true, model: 'pixel/default', connectedApps }))
+      render(<Pixel />)
+      await waitFor(() => expect(screen.getByText('Available')).toBeInTheDocument())
+      expect(screen.queryByRole('status', { name: 'Connected apps' })).not.toBeInTheDocument()
+    }
+  )
+
   const MODEL_ADVISORY_TEXT = {
     'context-too-small': 'This model runs with less than 16K tokens of context, too small for Portal tasks. Set its context to 16K or more in Models, or switch model.',
     'tools-unavailable': 'This model failed the tool-call check, so Portal tasks that use tools will likely fail. Chat still works.',

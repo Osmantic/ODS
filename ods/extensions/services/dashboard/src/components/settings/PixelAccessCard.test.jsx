@@ -235,3 +235,15 @@ describe('Pixel access confirmation and effective status', () => {
     expect(fetch.mock.calls.filter(call => call[1]?.method === 'POST')).toHaveLength(1)
   })
 })
+
+it('names connected apps in the Full Access confirmation', async () => {
+  const verified = {available: true, surface: 'linux-systemd', configured_mode: 'sandboxed', effective_mode: 'sandboxed',
+    runtime_verified: true, revision: 'a'.repeat(64), busy: false, pending: false, reason: null, scope: 'owner-host'}
+  vi.stubGlobal('fetch', vi.fn(async () => ({ok: true, json: async () => verified})))
+  render(<PixelAccessCard />)
+  await waitFor(() => expect(screen.getByRole('button', {name: 'Enable Full Access'})).toBeEnabled())
+  fireEvent.click(screen.getByRole('button', {name: 'Enable Full Access'}))
+  const dialog = screen.getByRole('dialog', {name: 'Confirm Full Access'})
+  expect(dialog).toHaveTextContent('Connected apps keep working. If Google is connected, Portal could also read the Google sign-in')
+  expect(dialog).toHaveTextContent('Calendar changes Portal makes by itself wait for your approval until you switch back to Sandbox.')
+})

@@ -1,0 +1,21 @@
+{
+  "version": "2026.6.33",
+  "sourceSha256": "db573699dd4c4b6307ed20f9d072cfb32ece2dbe53252493d3e9a2b4eb6e790c",
+  "patchedSha256": "b6c49fb6f6d74afe2bb492a33f82acf447e33a60cd6885bf8e6dec21e4ca0072",
+  "previousReplacements": {},
+  "replacements": [
+    [
+      "//#region src/gateway/tools-invoke-shared.ts",
+      "import { t as runAgentHarnessAfterToolCallHook } from \"./hook-helpers-CZ2oRHhZ.js\";\n//#region src/gateway/tools-invoke-shared.ts"
+    ],
+    [
+      "\t\treturn {\n\t\t\tok: true,\n\t\t\tstatus: 200,\n\t\t\ttoolName,\n\t\t\tsource: resolveToolSource(gatewayTool),\n\t\t\tresult: await gatewayTool.execute?.(toolCallId, hookResult.params)\n\t\t};",
+      "\t\t// ODS: every executed direct call must finish its native admission.\n\t\tconst startedAt = Date.now();\n\t\tlet result, completionError;\n\t\ttry {\n\t\t\tresult = await gatewayTool.execute?.(toolCallId, hookResult.params);\n\t\t\treturn {ok: true, status: 200, toolName, source: resolveToolSource(gatewayTool), result};\n\t\t} catch (error) {\n\t\t\tcompletionError = \"tool execution failed\";\n\t\t\tthrow error;\n\t\t} finally {\n\t\t\tawait runAgentHarnessAfterToolCallHook({toolName, toolCallId, agentId, sessionKey,\n\t\t\t\tstartArgs: hookResult.params, startedAt, result, error: completionError});\n\t\t}"
+    ]
+  ],
+  "reviewedDependencies": {
+    "hook-helpers-CZ2oRHhZ.js": "f16fd413feda196c45f7b522085ba6ee31af44cafd6806f59ea1395b504a13b5",
+    "hook-runner-global-mWFYlTIy.js": "f0ad7f2085e0c9c3f69fbf5bc845033d589ea8b571bc2f4f8aa2f7c9813892fe",
+    "agent-tools.before-tool-call-bDDdy3YD.js": "50874da0de7d04d229ffe82522266c1822ae093f63ac98867c9996d262c822f3"
+  }
+}

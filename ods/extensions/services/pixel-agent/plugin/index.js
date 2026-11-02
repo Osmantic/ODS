@@ -45,9 +45,10 @@ import {
   statusFileFromEnv,
   statusPayload,
 } from "./projection.mjs";
-import { longTaskContract, promptContractForAgent } from "./prompt-contract.mjs";
+import { longTaskContract, promptContractForAgent, PORTAL_INTEGRATION_TURN_CONTEXT } from "./prompt-contract.mjs";
 import { executionContext } from "./completion-assurance.mjs";
 import { createAskUserTool } from "./ask-user.mjs";
+import { createIntegrationTools } from "./integrations.mjs";
 import { createPendingClarifications } from "./pending-clarification.mjs";
 import {
   appsToolText,
@@ -93,6 +94,7 @@ import { createTaskActivity } from "./task-activity.mjs";
 import { createWorkspaceProjects } from "./workspace-projects.mjs";
 import { createProjectRestoreRoute, createProjectSnapshots } from "./project-snapshots.mjs";
 import { createAccessRuntime, executionHostForAgent } from "./access-runtime.mjs";
+import { createConnectionsStatusTool } from './connections-status.mjs';
 import { createManagedRuntimeRegistry } from "./managed-runtime-lifecycle.mjs";
 import {createContextCompaction, readContextRequest, prepareStableContextModel} from './context-compaction.mjs';
 import {registerHistoryIntegration} from './history-context.mjs';
@@ -487,9 +489,11 @@ export default definePluginEntry({
       const languageNote = responseLanguageTurnContext(configuredResponseLanguage,
         {goal: goalProgress.active(context?.runId ?? event?.runId), teamRole: managedTeamRole(ownerEvent)});
       const goalContract = inResponseLanguage(GOAL_CONTRACT, configuredResponseLanguage);
+      const integrationTurnContext = contract && !accessRuntime.isProbe(context) ? PORTAL_INTEGRATION_TURN_CONTEXT : '';
       const appendContext = [goalProgress.active(context?.runId ?? event?.runId) ? goalContract : '', languageNote,
         toolLoopGuard.clarificationContextForRun(context?.runId ?? event?.runId) ??
-          toolLoopGuard.clarificationContextForRun(delegationDelivery.ownerRunFor(context))].filter(Boolean).join('\n\n');
+          toolLoopGuard.clarificationContextForRun(delegationDelivery.ownerRunFor(context)),
+        integrationTurnContext].filter(Boolean).join('\n\n');
       // Ordinary workspace work only: Operations, exact downloads and managed
       // extension requests refuse update_plan, and read-only roles cannot edit.
       const longTask = toolLoopGuard.longTaskEligible(context?.runId ?? event?.runId)
@@ -861,6 +865,8 @@ export default definePluginEntry({
       { names: ["pixel_ods_status"] }
     );
 
+    registerTool(api, createConnectionsStatusTool(), {names:['pixel_ods_connections_status']});
+
     registerTool(api, createHostObserveTool({
       readOdsStatus: async () => statusPayload(await readProjection(statusFile)),
     }), {
@@ -951,6 +957,8 @@ export default definePluginEntry({
     })), {names:['pixel_ods_workspace_artifact']});
     registerTool(api, createAgentSkillTool(), {names:['pixel_ods_skill']});
     registerTool(api, createAskUserTool({responseLanguage: configuredResponseLanguage}), {names:['pixel_ods_ask_user']});
+    // The owner's notes, notifications and MCP servers, all through the host integrations service.
+    for (const tool of createIntegrationTools()) registerTool(api, tool, {names: [tool.name]});
     registerTool(api, createGoalProgressTool(), {names:['pixel_ods_goal']});
     registerTool(api, createActivityTool(), {names:['pixel_ods_activity']});
     registerProjectBuild(api, onlyPixel, projectRunControl);
