@@ -2700,7 +2700,7 @@ for service in (data.get("services") or {}).values():
         raw="${raw//$'\r'/}"
         raw="${raw//$'\n'/}"
         raw="${raw//[[:space:]]/}"
-        raw="${raw,,}"
+        raw="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
         raw="${raw#\"}"
         raw="${raw%\"}"
         raw="${raw#\'}"

@@ -116,6 +116,9 @@ assert_normalized '"linux/arm64/v8"' "linux/arm64"
 if _macos_normalize_image_platform "linux/arm/v7" >/dev/null 2>&1; then
     fail "unsupported architecture unexpectedly normalized"
 fi
+if grep -E -q '\$\{[a-zA-Z_0-9]+,,|\$\{[a-zA-Z_0-9]+\^\^' "$INSTALLER"; then
+    fail "Bash 3.2 compatibility: install-macos.sh contains non-portable Bash 4 case expansion"
+fi
 pass "platform aliases and inspect output variants normalize safely"
 
 MOCK_COMPOSE_JSON='{
