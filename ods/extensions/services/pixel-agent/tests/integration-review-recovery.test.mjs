@@ -171,6 +171,16 @@ test('end/stop refuse later dispatch and stop drains pending check without late 
   assert.equal(other.recovery.isReviewOnly(CONTEXT),false);
 });
 
+test('terminal native event ends its latched run even when context names an older normal run',async()=>{
+  const {recovery}=world();
+  const current={...CONTEXT,runId:'latched-current'};
+  recovery.observe({prompt:OWNER},current,current.runId);
+  await recovery.finalize({...event(),runId:current.runId},current);
+  recovery.end({runId:current.runId},CONTEXT);
+  assert.equal(recovery.floor(tool('pixel_ods_notes'),current).block,true);
+  assert.equal(recovery.floor(tool('pixel_ods_mcp'),current).block,true);
+});
+
 test('closed labels and honest/nonaction controls cannot request review',async()=>{
   for(const text of ['not JSON','{"request":"action","answer":"done","extra":true}',
     '{"request":"action","answer":"unknown"}',JSON.stringify({request:'draft',answer:'content'}),

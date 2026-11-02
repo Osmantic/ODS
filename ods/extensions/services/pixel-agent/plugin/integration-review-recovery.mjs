@@ -195,8 +195,10 @@ export function createIntegrationReviewRecovery({complete,eligible=()=>false,rea
       for(const state of runs.values())if(state.sessionKey===sessionKey){state.cancelled=true;state.controller?.abort();}
     },
     end(_event,context) {
-      const state=stateFor(context) ?? runs.get(_event?.runId);
-      if(state){state.ended=true;state.controller?.abort();}
+      // A conflicting stale context must not leave the event's exact native
+      // run dispatchable. Ending either identity only reduces permission.
+      for(const state of new Set([stateFor(context),runs.get(_event?.runId)]))
+        if(state){state.ended=true;state.controller?.abort();}
     },
     async stop() {
       stopped=true;
