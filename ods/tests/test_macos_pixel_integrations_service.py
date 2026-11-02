@@ -225,6 +225,7 @@ def test_managed_upgrade_plan_then_provision_prepares_missing_launchd_logs(publi
     """
     args, _ = publication
     with tempfile.TemporaryDirectory(prefix='ods-ni-') as home:
+        home = str(Path(home).resolve())
         world.pw_uid, world.pw_gid, world.pw_dir = os.getuid(), os.getgid(), home
         if world.pw_uid == 0:
             pytest.skip('Disposable owner fixture requires a nonroot test user')
