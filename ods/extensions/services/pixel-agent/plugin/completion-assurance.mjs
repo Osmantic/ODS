@@ -223,12 +223,16 @@ export const UNREAD_SOURCE_NOTE = '**Source check:** Pixel could not confirm a s
   `Links without a confirmed read were replaced with ${UNREAD_SOURCE_MARKER}; the claims marked that way lack a verified source.`;
 export const UNREAD_SOURCES_REVISION_INSTRUCTION = [
   'The owner requested source reads. These cited URLs were not read successfully in this response: ',
-  '. Revise your answer: replace each listed URL with a page you actually read successfully in this response that supports the same claim, ' +
-  'or remove that URL and mark the claim as unverified. Do not guess a replacement URL, and keep the rest of your answer. ' +
-  'If a necessary page can still be read within existing permissions and allowances, use the normal web tools; do not repeat failed or denied calls or expand any budget. ' +
+  '. Before writing the revised answer, complete the missing permitted page reads with web_fetch or pixel_ods_web_extract, using the normal tool discovery if needed. ' +
+  'This revision explicitly requires those missing reads within existing permissions and allowances; do not redo completed reads, repeat failed or denied calls, or expand any budget. ' +
+  'Then revise your answer: keep a listed URL only if its page was read successfully in this response and the returned evidence supports the claim. ' +
+  'Otherwise replace it with a page you actually read successfully that supports the same claim, or remove the URL and mark the claim as unverified. Do not guess a replacement URL; preserve supported content. ' +
   'When each item needs its own source, such as one page per event, prefer that item\'s own page over a shared listing page. ' +
   'A search snippet, failed fetch or HTTP error is not a successful page read. A successful read alone does not verify every claim: check the actual returned evidence. ' +
-  'State the remaining limitation honestly.',
+  'Return the completed answer in the owner\'s original requested language and format, including any length, sentence-count or output-only constraint. ' +
+  'Include source links within that format: for a sentence-count constraint, put citations inside those sentences instead of appending a separate sources block. ' +
+  'Do not add a revision preface or narrate your source-check process. Keep any necessary honest limitation in the requested format; ' +
+  'never hide a limitation or claim verification merely to satisfy the format.',
 ];
 
 // Verification text must pass the ingress control-character check (32 KiB).
