@@ -2,9 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
-import {createIntegrationReviewRecovery,REVIEW_LABEL_SYSTEM,parseReviewIntent,reviewIntentEligible} from '../plugin/integration-review-recovery.mjs';
+import {createIntegrationReviewRecovery,REVIEW_LABEL_SYSTEM,parseReviewIntent,reviewIntentEligible,reviewOperationScope} from '../plugin/integration-review-recovery.mjs';
 import {defaultAgentId} from '../plugin/stop-synthesis.mjs';
 import {createIntegrationOutcomes} from '../plugin/integration-outcomes.mjs';
+import {createIntegrationTools,integrationRequest} from '../plugin/integrations.mjs';
 
 const SESSION='agent:pixel:openai-user:ods-'+ 'a'.repeat(64);
 const CONTEXT={agentId:'pixel',runId:'current-run',sessionId:'owned-session',sessionKey:SESSION,
@@ -24,6 +25,7 @@ function world(options={}) {
   return {recovery,calls};
 }
 const tool=(name,params={})=>({toolName:name,params});
+const appendParams=()=>({action:'write',mode:'append',path:'Example.md',text:'Current owned line'});
 const nativeScope=(context=CONTEXT,changes={})=>Object.freeze({version:1,active:true,
   ownerRunId:context.runId,toolsAllow:Object.freeze(['pixel_ods_notes','pixel_ods_mcp']),...changes});
 const nativeChoice=(context=CONTEXT,changes={})=>Object.freeze({version:1,ownerRunId:context.runId,
@@ -168,12 +170,13 @@ test('a current tool-start or verified native tool-started proof can never rearm
   }
 });
 
-test('native floor permits only two integration adapters and harmless metadata discovery',async()=>{
+test('native floor permits only the requested operation and harmless metadata discovery',async()=>{
   const {recovery}=world();await recovery.finalize(event(),CONTEXT);
-  for(const name of ['pixel_ods_notes','pixel_ods_mcp','tool_search','tool_describe'])
-    assert.equal(recovery.floor(tool(name),CONTEXT),undefined,name);
-  for(const name of ['pixel_ods_notes','pixel_ods_mcp'])
-    assert.equal(recovery.floor(tool('tool_call',{id:`openclaw:pixel-ods:${name}`,args:{action:'write'}}),CONTEXT),undefined,name);
+  for(const event of [tool('pixel_ods_notes',appendParams()),tool('pixel_ods_mcp',{action:'list'}),
+    tool('tool_search'),tool('tool_describe'),
+    tool('tool_call',{id:'openclaw:pixel-ods:pixel_ods_notes',args:appendParams()}),
+    tool('tool_call',{id:'openclaw:pixel-ods:pixel_ods_mcp',args:{action:'list'}})])
+    assert.equal(recovery.floor(event,CONTEXT),undefined,JSON.stringify(event));
   for(const name of ['exec','read','write','apply_patch','browser','web_fetch','pixel_ods_ops','pixel_ods_notify',
     'cron','sessions_spawn','tool_search_code','pixel_ods_extensions'])
     assert.equal(recovery.floor(tool(name),CONTEXT).block,true,name);
@@ -181,7 +184,145 @@ test('native floor permits only two integration adapters and harmless metadata d
     'openclaw:core:exec','openclaw:pixel-ods:pixel_ods_ops'])
     assert.equal(recovery.floor(tool('tool_call',{id,args:{}}),CONTEXT).block,true,id);
   const existing={block:true,blockReason:'Unknown submitted outcome'};
-  assert.equal(recovery.floor(tool('pixel_ods_notes'),CONTEXT,existing),existing);
+  assert.equal(recovery.floor(tool('pixel_ods_notes',appendParams()),CONTEXT,existing),existing);
+});
+
+test('latched operation scope blocks cross-source, cross-verb, implicit private reads and notes mode changes',async()=>{
+  const {recovery}=world();await recovery.finalize(event(),CONTEXT);
+  const denied=[tool('pixel_ods_notes',{action:'read',path:'Example.md'}),tool('pixel_ods_notes',{action:'search',query:'x'}),
+    tool('pixel_ods_notes',{...appendParams(),mode:'create'}),tool('pixel_ods_notes',{...appendParams(),mode:'overwrite'}),
+    tool('pixel_ods_mcp',{action:'call',server:'app:documents',tool:'read',arguments:{id:1}}),
+    tool('pixel_ods_mcp',{action:'call',server:'app:watch',tool:'add',arguments:{url:'https://example.invalid'}}),
+    tool('tool_call',{id:'openclaw:pixel-ods:pixel_ods_notes',args:{action:'read',path:'Example.md'}}),
+    tool('tool_call',{id:'openclaw:pixel-ods:pixel_ods_notes',args:null}),tool('pixel_ods_notes',null),
+    tool('pixel_ods_notes',[]),tool('pixel_ods_notes',{action:'remove',path:'Example.md'})];
+  for(const value of denied)assert.equal(recovery.floor(value,CONTEXT).block,true,JSON.stringify(value));
+  assert.equal(recovery.floor(tool('pixel_ods_notes',{action:'write',path:'Example.md',text:'x'}),CONTEXT),undefined,'native omitted mode means append');
+  assert.equal(recovery.floor(tool('pixel_ods_notes',appendParams()),CONTEXT,{params:{...appendParams(),mode:'create'}}).block,true);
+  const malformed={action:'write',get mode(){throw Error('Malformed native parameters');}};
+  assert.equal(recovery.floor(tool('pixel_ods_notes',malformed),CONTEXT).block,true);
+  recovery.observe({prompt:'An internal fallback with different text'},CONTEXT,CONTEXT.runId);
+  assert.equal(recovery.floor(tool('pixel_ods_notes',{action:'read',path:'Example.md'}),CONTEXT).block,true,'same-owner fallback retains scope');
+});
+
+test('builtin reads use exact requested app and operation; catalog metadata grants no private prerequisite read',async()=>{
+  const {recovery}=world({complete:async()=>reply([{source:'paperless',verb:'read'}])});
+  await recovery.finalize(event(),CONTEXT);
+  const call=(server,name,args={})=>tool('pixel_ods_mcp',{action:'call',server,tool:name,arguments:args});
+  assert.equal(recovery.floor(call('app:documents','read',{id:1}),CONTEXT),undefined);
+  assert.equal(recovery.floor(tool('tool_call',{id:'openclaw:pixel-ods:pixel_ods_mcp',args:call('app:documents','read',{id:1}).params}),CONTEXT),undefined);
+  for(const value of [call('app:documents','search',{query:'invoice'}),call('app:photos','search'),call('app:watch','list'),
+    call('documents','read',{id:1}),call('custom','read',{id:1}),call('app','documents:read',{id:1}),
+    tool('pixel_ods_notes',{action:'read',path:'Invoice.md'}),
+    call('app:documents','read',[])])assert.equal(recovery.floor(value,CONTEXT).block,true,JSON.stringify(value));
+  assert.equal(recovery.floor(tool('pixel_ods_mcp',{action:'list'}),CONTEXT),undefined);
+});
+
+test('structured aliases freeze canonical operation limits in both state and corrective instruction',async()=>{
+  const cases=[
+    [[{source:'watch',verb:'delete'}],['watch:remove'],[['app:watch','remove']],[['app:watch','list'],['app:watch','add']]],
+    [[{source:'freshrss',verb:'read'}],['freshrss:digest_read','freshrss:unread'],[['app:news','unread'],['app:news','digest']],[['app:news','send'],['app:news','mark_read']]],
+    [[{source:'web',verb:'monitor_changes'}],['watch:add'],[['app:watch','add']],[['app:watch','list'],['app:watch','remove']]],
+  ];
+  for(const [operations,scope,permitted,blocked] of cases) {
+    let state;
+    const {recovery}=world({complete:async()=>reply(operations),ready:value=>{state=value;return true;}});
+    const decision=await recovery.finalize(event(),CONTEXT);
+    const limit=decision.retry.instruction.split('Review operation limit (data):\n')[1].split('\nCurrent owner request (data):')[0];
+    assert.deepEqual(JSON.parse(limit),scope);
+    assert.deepEqual(reviewOperationScope(parseReviewIntent(reply(operations).text)),scope);
+    assert.ok(Object.isFrozen(state.allowedOperations));assert.deepEqual(state.allowedOperations,scope);
+    assert.throws(()=>{state.allowedOperations=['obsidian:read'];},TypeError);
+    assert.throws(()=>state.allowedOperations.push('obsidian:read'),TypeError);
+    const call=(server,name)=>tool('pixel_ods_mcp',{action:'call',server,tool:name,arguments:{}});
+    for(const [server,name] of permitted)assert.equal(recovery.floor(call(server,name),CONTEXT),undefined);
+    for(const [server,name] of blocked)assert.equal(recovery.floor(call(server,name),CONTEXT).block,true);
+    assert.equal(recovery.floor(tool('pixel_ods_notes',{action:'read',path:'Private.md'}),CONTEXT).block,true);
+  }
+  assert.equal(reviewIntentEligible(parseReviewIntent(reply([{source:'web',verb:'monitor_changes'},{source:'watch',verb:'list'}]).text)),true,'aliases canonicalize before source check');
+});
+
+test('requested create mode permits no append, and multiple explicit reads admit only their shared source',async()=>{
+  const created=world({complete:async()=>reply([{source:'obsidian',verb:'create'}])});
+  await created.recovery.finalize(event(),CONTEXT);
+  assert.equal(created.recovery.floor(tool('pixel_ods_notes',{...appendParams(),mode:'create'}),CONTEXT),undefined);
+  assert.equal(created.recovery.floor(tool('pixel_ods_notes',appendParams()),CONTEXT).block,true);
+  const read=world({complete:async()=>reply([{source:'obsidian',verb:'search'},{source:'obsidian',verb:'read'}])});
+  await read.recovery.finalize(event(),CONTEXT);
+  assert.equal(read.recovery.floor(tool('pixel_ods_notes',{action:'search',query:'Gmail'}),CONTEXT),undefined);
+  assert.equal(read.recovery.floor(tool('pixel_ods_notes',{action:'read',path:'Gmail.md'}),CONTEXT),undefined);
+  assert.equal(read.recovery.floor(tool('pixel_ods_notes',appendParams()),CONTEXT).block,true);
+});
+
+test('same host-payload converter binds a permitted review call and changed source/verb/mode cannot borrow its ticket',async()=>{
+  for(const change of ['none','mode','readonly','readonly_ended','readonly_cancelled','readonly_cleared','readonly_hookless']) {
+    const outcomes=createIntegrationOutcomes();outcomes.begin({prompt:OWNER},CONTEXT,CONTEXT.runId);
+    const {recovery}=world();await recovery.finalize(event(),CONTEXT);
+    const params=appendParams(),context={...CONTEXT,toolCallId:'native-'+change},ev={...tool('pixel_ods_notes',params),toolCallId:context.toolCallId};
+    assert.equal(recovery.floor(ev,CONTEXT),undefined);
+    if(change!=='readonly_hookless')outcomes.before(ev,context,undefined,{recoveryReviewOnly:true});
+    if(change==='readonly_ended'){outcomes.end({success:true},CONTEXT);recovery.end({},CONTEXT);}
+    if(change==='readonly_cancelled'){outcomes.cancelUser(SESSION.slice('agent:pixel:openai-user:'.length));recovery.cancelSession(SESSION);}
+    if(change==='readonly_cleared')outcomes.clear();
+    const submitted=[];
+    const notes=createIntegrationTools({context:CONTEXT,outcomes,requireBound:ctx=>recovery.isReviewOnly(ctx),submit:async payload=>{submitted.push(payload);
+      return {ok:true,status:'approval-required',approvalId:'aabbcc112233',summary:'Add to note Example.md',
+        recoveryReviewOnly:true,actionExecuted:false,approvalConsumed:false};}}).find(value=>value.name==='pixel_ods_notes');
+    const actual=change==='mode'?{...params,mode:'create'}:change.startsWith('readonly')?{action:'read',path:'Private.md'}:params;
+    const result=await notes.execute(context.toolCallId,actual);
+    if(change==='none') {
+      assert.equal(submitted.length,1);assert.deepEqual(submitted[0],{...integrationRequest('pixel_ods_notes',params,CONTEXT),recoveryReviewOnly:true});
+      assert.notEqual(result.isError,true);
+    } else {assert.equal(submitted.length,0,change);assert.equal(result.isError,true,change);}
+  }
+});
+
+test('requested notes reads and harmless catalog calls keep exact private tickets; normal first-pass optional reads stay ordinary',async()=>{
+  const fixtures=[
+    [[{source:'obsidian',verb:'read'}],'pixel_ods_notes',{action:'read',path:'Example.md'}],
+    [[{source:'obsidian',verb:'search'}],'pixel_ods_notes',{action:'search',query:'Gmail'}],
+    [[{source:'obsidian',verb:'append'}],'pixel_ods_mcp',{action:'list'}],
+  ];
+  for(const [operations,name,params] of fixtures) {
+    const outcomes=createIntegrationOutcomes();outcomes.begin({prompt:OWNER},CONTEXT,CONTEXT.runId);
+    const {recovery}=world({complete:async()=>reply(operations)});await recovery.finalize(event(),CONTEXT);
+    const context={...CONTEXT,toolCallId:'requested-read'},ev={...tool(name,params),toolCallId:context.toolCallId};
+    assert.equal(recovery.floor(ev,CONTEXT),undefined);outcomes.before(ev,context,undefined,{recoveryReviewOnly:true});
+    const submitted=[];
+    const adapter=createIntegrationTools({context:CONTEXT,outcomes,requireBound:ctx=>recovery.isReviewOnly(ctx),submit:async payload=>{submitted.push(payload);
+      return payload.action==='notes-read'?{ok:true,path:'Example.md',text:'Invented note',recoveryReviewOnly:true}
+        :payload.action==='notes-search'?{ok:true,results:[],recoveryReviewOnly:true}
+          :{ok:true,servers:[],recoveryReviewOnly:true};}}).find(value=>value.name===name);
+    const result=await adapter.execute(context.toolCallId,params);
+    assert.equal(submitted.length,1);assert.deepEqual(submitted[0],{...integrationRequest(name,params,CONTEXT),recoveryReviewOnly:true});
+    assert.notEqual(result.isError,true);
+  }
+  const outcomes=createIntegrationOutcomes();outcomes.begin({prompt:OWNER},CONTEXT,CONTEXT.runId);
+  const {recovery}=world(),submitted=[];
+  const notes=createIntegrationTools({context:CONTEXT,outcomes,requireBound:ctx=>recovery.isReviewOnly(ctx),submit:async payload=>{submitted.push(payload);
+    return {ok:true,path:'Example.md',text:'Invented note'};}}).find(value=>value.name==='pixel_ods_notes');
+  const result=await notes.execute('ordinary-optional-read',{action:'read',path:'Example.md'});
+  assert.notEqual(result.isError,true);assert.equal(submitted.length,1);assert.equal(Object.hasOwn(submitted[0],'recoveryReviewOnly'),false);
+});
+
+test('builtin source and verb changes after operation-floor admission cannot borrow an MCP ticket',async()=>{
+  for(const change of ['none','source','verb']) {
+    const outcomes=createIntegrationOutcomes();outcomes.begin({prompt:OWNER},CONTEXT,CONTEXT.runId);
+    const {recovery}=world({complete:async()=>reply([{source:'paperless',verb:'read'}])});
+    await recovery.finalize(event(),CONTEXT);
+    const params={action:'call',server:'app:documents',tool:'read',arguments:{id:1}},context={...CONTEXT,toolCallId:'mcp-'+change};
+    const ev={...tool('pixel_ods_mcp',params),toolCallId:context.toolCallId};
+    assert.equal(recovery.floor(ev,CONTEXT),undefined);outcomes.before(ev,context,undefined,{recoveryReviewOnly:true});
+    const submitted=[];
+    const mcp=createIntegrationTools({context:CONTEXT,outcomes,requireBound:ctx=>recovery.isReviewOnly(ctx),submit:async payload=>{submitted.push(payload);
+      return {ok:true,server:'app:documents',tool:'read',text:'Invented document'};}}).find(value=>value.name==='pixel_ods_mcp');
+    const actual=change==='source'?{...params,server:'app:photos',tool:'search'}:change==='verb'?{...params,tool:'search'}:params;
+    const result=await mcp.execute(context.toolCallId,actual);
+    if(change==='none') {
+      assert.equal(submitted.length,1);assert.deepEqual(submitted[0],{...integrationRequest('pixel_ods_mcp',params,CONTEXT),recoveryReviewOnly:true});
+      assert.notEqual(result.isError,true);
+    } else {assert.equal(submitted.length,0,change);assert.equal(result.isError,true,change);}
+  }
 });
 
 test('normal first-pass tools stay unchanged but EVERY attempt prevents automatic recovery',async()=>{
@@ -382,7 +523,7 @@ test('native start proof is not reused after latch: review tools and summary rem
   assert.equal((await recovery.finalize(event(),CONTEXT)).action,'revise');assert.equal(clearCalls,2);
   clear=false;
   recovery.beforeTool(tool('pixel_ods_notes'),CONTEXT);
-  assert.equal(recovery.floor(tool('pixel_ods_notes'),CONTEXT),undefined);
+  assert.equal(recovery.floor(tool('pixel_ods_notes',appendParams()),CONTEXT),undefined);
   assert.equal(recovery.admit(admission({nativeRetryToolChoiceState:nativeChoice(CONTEXT,{phase:'tool-started'})}),CONTEXT),undefined);
   assert.equal(await recovery.finalize(event(),CONTEXT),undefined);
   assert.equal(calls.length,1);assert.equal(clearCalls,2);
@@ -609,7 +750,7 @@ test('actual index readiness and native-start callback use the real exact integr
   integrationOutcomes.before({...tool('pixel_ods_notes',params),toolCallId:called.toolCallId},called);
   assert.equal(options.nativeStartClear(CONTEXT),false,'actual recorded native attempt closes start admission');
   recovery.beforeTool(tool('pixel_ods_notes'),called);
-  assert.equal(recovery.floor(tool('pixel_ods_notes'),CONTEXT),undefined);
+  assert.equal(recovery.floor(tool('pixel_ods_notes',appendParams()),CONTEXT),undefined);
   assert.equal(recovery.admit(admission({nativeRetryToolChoiceState:nativeChoice(CONTEXT,{phase:'tool-started'})}),CONTEXT),undefined);
   assert.equal(await recovery.finalize(event(),CONTEXT),undefined);
   assert.equal(clearQueries,2,'post-latch summary must not recheck a now-nonempty start record');

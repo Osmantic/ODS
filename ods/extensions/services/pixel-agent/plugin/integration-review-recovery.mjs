@@ -2,6 +2,7 @@
 // only suggest a review; native custody and the host's Ask-only path decide
 // what is possible. This module never executes a tool or grants permission.
 import {createHash} from 'node:crypto';
+import {integrationRequest} from './integrations.mjs';
 
 export const REVIEW_LABEL_SYSTEM = `Extract the external operations currently requested in ownerRequest. Return only JSON with exactly one key: operations. Its value is an array of objects with exactly source and verb.
 Include every distinct requested operation, including additional notifications, delivery and scheduling. Describe each operation even if unavailable or disallowed; do not decide policy, select tools or grant permission. List each distinct source/verb pair once, in any order, with at most four pairs. If more than four are needed or the request cannot be resolved, return one pair with source unknown and verb unknown rather than a partial list.
@@ -32,13 +33,18 @@ const ADMISSION_BLOCK = Object.freeze({outcome:'block',reason:'ods-review-native
 // the readonly unread/digest family. Explicit webpage-change monitoring means
 // the existing add proposal. These aliases execute no plan and admit no video,
 // browser automation, note overwrite/delete, notification or delivery action.
-const reviewOperations = new Map([
-  ['obsidian',new Set(['search','read','create','append'])],
-  ['paperless',new Set(['search','read'])],
-  ['immich',new Set(['search'])],
-  ['watch',new Set(['list','add','remove','delete'])],
-  ['freshrss',new Set(['unread','digest_read','read'])],
-  ['web',new Set(['monitor_changes'])],
+const canonicalOperations = new Set(['obsidian:search','obsidian:read','obsidian:create','obsidian:append',
+  'paperless:search','paperless:read','immich:search','watch:list','watch:add','watch:remove',
+  'freshrss:unread','freshrss:digest_read']);
+const operationAliases = new Map([
+  ['watch:delete',['watch:remove']],['freshrss:read',['freshrss:unread','freshrss:digest_read']],
+  ['web:monitor_changes',['watch:add']],
+]);
+const builtinPayloadOperations = new Map([
+  ['app:documents',new Map([['search','paperless:search'],['read','paperless:read']])],
+  ['app:photos',new Map([['search','immich:search']])],
+  ['app:watch',new Map([['list','watch:list'],['add','watch:add'],['remove','watch:remove']])],
+  ['app:news',new Map([['unread','freshrss:unread'],['digest','freshrss:digest_read']])],
 ]);
 const integrations = new Set(['pixel_ods_notes','pixel_ods_mcp']);
 const canonicalIntegrations = new Set([...integrations].map(name=>`openclaw:pixel-ods:${name}`));
@@ -78,11 +84,51 @@ export function parseReviewIntent(value) {
   }
   return Object.freeze({operations:Object.freeze(operations)});
 }
-export function reviewIntentEligible(parsed) {
-  return Array.isArray(parsed?.operations)
-    && parsed.operations.length>0 && parsed.operations.length<=4 && parsed.operations.every(operation=>operation && typeof operation==='object')
-    && new Set(parsed.operations.map(operation=>operation.source)).size===1
-    && parsed.operations.every(operation=>reviewOperations.get(operation.source)?.has(operation.verb)===true);
+export function reviewOperationScope(parsed) {
+  if(!Array.isArray(parsed?.operations)||!parsed.operations.length||parsed.operations.length>4)return undefined;
+  const scope=new Set();
+  for(const operation of parsed.operations) {
+    if(!operation||typeof operation!=='object')return undefined;
+    const key=operation.source+':'+operation.verb;
+    const canonical=canonicalOperations.has(key)?[key]:operationAliases.get(key);
+    if(!canonical)return undefined;
+    for(const pair of canonical)scope.add(pair);
+  }
+  if(new Set([...scope].map(pair=>pair.split(':')[0])).size!==1)return undefined;
+  return Object.freeze([...scope].sort());
+}
+export function reviewIntentEligible(parsed) {return Boolean(reviewOperationScope(parsed));}
+function validOperationScope(scope) {
+  return Array.isArray(scope)&&Object.isFrozen(scope)&&scope.length>0&&scope.length<=4
+    &&scope.every(pair=>canonicalOperations.has(pair))&&new Set(scope).size===scope.length
+    &&new Set(scope.map(pair=>pair.split(':')[0])).size===1;
+}
+function payloadOperation(payload) {
+  if(payload?.action==='notes-search')return 'obsidian:search';
+  if(payload?.action==='notes-read')return 'obsidian:read';
+  if(payload?.action==='notes-write'&&['append','create'].includes(payload.mode))return 'obsidian:'+payload.mode;
+  if(payload?.action==='mcp-call')return builtinPayloadOperations.get(payload.server)?.get(payload.tool);
+  return undefined;
+}
+function operationAllowed(state,event,context,priorDecision) {
+  if(!validOperationScope(state.allowedOperations))return false;
+  let name=event?.toolName,params=priorDecision?.params??event?.params;
+  if(name==='tool_search'||name==='tool_describe')return true;
+  if(name==='tool_call') {
+    if(!canonicalIntegrations.has(params?.id))return false;
+    name=params.id.slice('openclaw:pixel-ods:'.length);params=params.args;
+  }
+  if(!integrations.has(name)||!params||typeof params!=='object'||Array.isArray(params))return false;
+  if(name==='pixel_ods_notes'&&params.action==='write'&&params.mode!==undefined&&!['append','create'].includes(params.mode))return false;
+  if(name==='pixel_ods_mcp'&&params.action==='call'&&params.arguments!==undefined
+      &&(!params.arguments||typeof params.arguments!=='object'||Array.isArray(params.arguments)))return false;
+  try {
+    // Use the SAME converter as native admission/factory dispatch. Tickets bind
+    // this complete host payload; a later changed payload cannot borrow it.
+    const payload=integrationRequest(name,params,context);
+    if(payload?.action==='mcp-tools')return true; // Metadata, not private records.
+    return state.allowedOperations.includes(payloadOperation(payload));
+  }catch{return false;}
 }
 function abortable(work,signal) {
   if(signal.aborted)return Promise.reject(new Error('Cancelled'));
@@ -160,12 +206,15 @@ export function createIntegrationReviewRecovery({complete,eligible=()=>false,rea
     const parsed=parseReviewIntent(result?.text);
     try {record({phase:'review-labels',runId:id.runId,
       inputSha256:createHash('sha256').update(JSON.stringify(input)).digest('hex'),labels:parsed??null});}catch { /* Observation is not authority. */ }
-    if(!parsed || !reviewIntentEligible(parsed))return priorDecision;
+    const allowedOperations=parsed&&reviewOperationScope(parsed);
+    if(!allowedOperations)return priorDecision;
     // Synchronous, monotonic permission reduction BEFORE returning native revise.
     // The factory's separate exact ticket carries this field to host admission.
+    Object.defineProperty(state,'allowedOperations',{value:allowedOperations,writable:false,configurable:false});
     state.reviewOnly=true;
     return {action:'revise',reason:'This response needs an integration review; no action has run.',retry:{
-      instruction:REVIEW_INSTRUCTION+'\nCurrent owner request (data):\n'+JSON.stringify({ownerRequest:state.owner}),
+      instruction:REVIEW_INSTRUCTION+'\nReview operation limit (data):\n'+JSON.stringify(allowedOperations)
+        +'\nCurrent owner request (data):\n'+JSON.stringify({ownerRequest:state.owner}),
       // This literal subset reduces the native working menu for this review
       // only. The independent hook/factory/host floor remains authoritative.
       toolsAllow:['pixel_ods_notes','pixel_ods_mcp'],
@@ -240,9 +289,7 @@ export function createIntegrationReviewRecovery({complete,eligible=()=>false,rea
       const state=knownLatch(context,event);
       if(!state)return priorDecision;
       if(!same(state,identity(context)) || !live(state))return BLOCK;
-      const name=event?.toolName;
-      if(integrations.has(name) || name==='tool_search' || name==='tool_describe')return priorDecision;
-      if(name==='tool_call' && canonicalIntegrations.has(event?.params?.id))return priorDecision;
+      try{if(operationAllowed(state,event,context,priorDecision))return priorDecision;}catch{ /* Malformed native payloads stay closed. */ }
       // tool_search_code can invoke tools internally, so it is not discovery.
       return BLOCK;
     },
