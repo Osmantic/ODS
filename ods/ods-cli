@@ -1494,6 +1494,47 @@ _ods_cli_vllm_health() {
     fi
 }
 
+# Container health is a required update gate, not an identity/context proof.
+# Match the vLLM compose healthcheck's 60-minute cold-start allowance.
+_ods_cli_wait_for_vllm_ready() {
+    local timeout="${1-3600}" elapsed=0 health step
+    case "$timeout" in
+        ''|*[!0-9]*) warn "Invalid timeout for vLLM health wait"; return 1 ;;
+    esac
+    if [[ ${#timeout} -gt 5 ]]; then
+        warn "Timeout for vLLM health wait exceeds maximum of 86400 seconds"
+        return 1
+    fi
+    timeout=$((10#$timeout))
+    if [[ $timeout -gt 86400 ]]; then
+        warn "Timeout for vLLM health wait exceeds maximum of 86400 seconds"
+        return 1
+    fi
+    while :; do
+        if ! health="$(_ods_cli_vllm_health)"; then
+            warn "Unable to determine vLLM health; check 'ods status' and 'ods logs vllm-server'"
+            return 1
+        fi
+        case "$health" in
+            healthy) return 0 ;;
+            starting)
+                if [[ $elapsed -eq 0 ]]; then
+                    log "vLLM is starting; waiting up to ${timeout}s for container health..."
+                fi
+                ;;
+            *) warn "vLLM is not healthy; check 'ods status' and 'ods logs vllm-server'"; return 1 ;;
+        esac
+        if [[ $elapsed -ge $timeout ]]; then
+            warn "Timed out waiting for vLLM health; check 'ods status' and 'ods logs vllm-server'"
+            return 1
+        fi
+        step=5
+        [[ $((timeout - elapsed)) -ge $step ]] || step=$((timeout - elapsed))
+        sleep "$step" || return 1
+        elapsed=$((elapsed + step))
+    done
+}
+
 cmd_status() {
     local json_mode="false"
     while [[ $# -gt 0 ]]; do
@@ -2621,6 +2662,12 @@ cmd_update() {
         log_error "Run 'ods rollback' to restore previous state"
         log_error "Or run 'ods status' to check service health"
         exit 1
+    fi
+
+    # Running alone includes a vLLM engine still loading weights/compiling
+    # kernels. Do not publish update success until its healthcheck passes.
+    if grep -Fxq vllm-server <<< "$active_services" && ! _ods_cli_wait_for_vllm_ready; then
+        error "Update verification failed: vLLM did not become healthy. Check 'ods status' or run 'ods rollback' to restore the pre-update snapshot."
     fi
 
     # Persist the new installed version in .env so future runs know what's installed

@@ -57,6 +57,11 @@ This leaves missing files and partial downloads untouched and does not contact
 Hugging Face. A successful check prints a JSON receipt after the progress lines.
 It verifies the cached bytes, not GPU fit, model behavior, or cold-start recovery.
 
+On a vLLM installation, `ods update` also waits for the engine's Docker
+healthcheck before reporting success, allowing up to 60 minutes of polling for a
+cold load. A failed health check leaves the pre-update snapshot available through
+`ods rollback`. Container health alone does not qualify Portal or model behavior.
+
 The configured vLLM snapshot is protected from download replacement and deletion.
 Deletion also refuses unexpected files, links, and snapshots that change while
 being removed. The host agent serializes these actions with other model lifecycle

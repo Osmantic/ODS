@@ -60,6 +60,7 @@ tests/test-cli-status-json-state.sh
 tests/test-cli-status-optional-webui.sh
 tests/test-cli-stt-env.py
 tests/test-cli-update-verification.sh
+tests/test-cli-vllm-update-health.sh
 tests/test-comfyui-user-dir-persisted.sh
 tests/test-comfyui-cuda-cache-persisted.sh
 tests/test-llama-cuda-cache-persisted.sh
