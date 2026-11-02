@@ -350,11 +350,26 @@ Coffee's current service is Linux/WSL only. Native macOS needs its own service
 and owner/agent isolation implementation; a passing simulated or runner contract
 does not make that product journey available.
 
-## Next Coffee PR
+## Additional Coffee apps — #8352
 
-First-class scheduled-task notification options, Paperless, Immich, page-change
-watching and daily-news workflows were announced for a later PR. They are not
-implemented or qualified here. A test task invoking the existing notify tool
-only proves the current cron/tool seam and does not replace that future work.
+[Coffee's #8352](https://github.com/Osmantic/ODS/pull/8352), through
+`964a01a843a431267abde6e3b0640ccde420ad3e`, adds Paperless documents, Immich
+photos, changedetection page/price watches, FreshRSS news/digests and native
+scheduled-task notices. Its integration is being qualified separately from
+the earlier #8324 installation. Historical notify-tool/cron tests above do not
+qualify these new features.
+
+The composed catalog keeps built-in `app:` IDs separate from existing custom
+MCP servers. App HTTP uses the same bounded, redirect-refusing transport, with
+an explicit larger response allowance for app payloads. Watch approvals bind
+the selected provider, credentials, configuration generation and current target;
+provider-specific price history is preserved separately. Frontend app drafts,
+secret acknowledgement and watch-list polling retain the existing concurrent
+save protections. Digest scheduling uses native cron with a persistent creation
+journal and returned job ID; matching names/descriptions alone grant no custody.
+
+Current source/fixture results are development evidence. Real app, native model,
+ordinary update and browser acceptance for this additional source remain open;
+they must be recorded before presenting #8352 as installed and complete.
 
 Keep the composition in draft until the evidence above has been reviewed.

@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import McpServerCard from './McpServerCard'
 import UnsavedIntegrationsNavigation from './UnsavedIntegrationsNavigation'
-import { HOME_ASSISTANT, NO_SECRETS, POLICY_LABELS, acknowledgeSecrets, approvalLinkFor, draftFrom, idsForSave, newServerId, rebaseDraft, renameServers, sameDraft, secretsFrom, settingsFrom, typedForDraft } from './portalIntegrationsForm'
+import PortalAppsSettings from './PortalAppsSettings'
+import { HOME_ASSISTANT, NO_SECRETS, POLICY_LABELS, TASK_NOTICES, acknowledgeSecrets, approvalLinkFor, draftFrom, idsForSave, newServerId, rebaseDraft, renameServers, sameDraft, secretsFrom, settingsFrom, typedForDraft } from './portalIntegrationsForm'
 
 const inputStyle = 'w-full rounded border border-theme-border bg-theme-bg px-3 py-2 text-theme-text focus:outline-none focus:ring-2 focus:ring-theme-accent'
 const buttonStyle = 'rounded border border-theme-border px-3 py-2 text-sm hover:bg-white/5 disabled:opacity-40 focus:outline-none focus:ring-2 focus:ring-theme-accent'
@@ -44,7 +45,10 @@ function Approvals({ approvals, busy, onDecide }) {
 const ACTIVITY_LABELS = {
   settings: 'Settings', notify: 'Notification', 'notes-search': 'Searched notes', 'notes-read': 'Read a note',
   'notes-write': 'Changed a note', 'mcp-call': 'Used an MCP tool', 'mcp-discover': 'Checked MCP tools', 'mcp-test': 'Tested an MCP server',
-  'mcp-restart': 'Restarted an MCP server', approval: 'Approval',
+  'mcp-restart': 'Restarted an MCP server', approval: 'Approval', 'app-test': 'Tested an app',
+  'documents-search': 'Searched documents', 'documents-read': 'Read a document', 'photos-search': 'Searched photos',
+  'news-unread': 'Read the news', 'news-digest': 'Read the news for the digest', 'watch-add': 'Watched a page', 'watch-remove': 'Stopped watching a page',
+  'watch-check': 'Checked watched pages',
 }
 
 function Activity({ entries, busy, onClear }) {
@@ -67,6 +71,7 @@ export default function PortalIntegrationsSettings() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [appResult, setAppResult] = useState(null)
   const typedSecrets = draft ? secretsFrom(typedForDraft(typed, draft)) : {}
   const dirty = Boolean(view && draft) && (!sameDraft(draft, draftFrom(view.settings)) || Object.keys(typedSecrets).length > 0)
   const editor = useRef({ view: null, draft: null, typed: NO_SECRETS })
@@ -84,7 +89,8 @@ export default function PortalIntegrationsSettings() {
     return true
   }, [])
 
-  const run = useCallback(async (steps, done) => {
+  // Return the result as well so app cards can show it beside their button.
+  const run = useCallback(async (steps, done, { refreshOnFailure = false } = {}) => {
     const state = requests.current
     if (state.busy) return
     state.busy = true; state.reads += 1
@@ -101,14 +107,33 @@ export default function PortalIntegrationsSettings() {
         // when the following discovery/test fails.
         show(result, action === 'save' ? submitted : undefined)
       }
-      if (current() && (result.notice || done)) setNotice(result.notice || done)
+      if (current()) {
+        if (result.notice || done) setNotice(result.notice || done)
+        return { ok: true, message: result.notice || done || '' }
+      }
     } catch (failure) {
-      if (current() && failure.name !== 'AbortError') setError(failure.message)
+      if (current() && failure.name !== 'AbortError') {
+        // An uncertain delivery may have created a recovery record. Read its
+        // current state without repeating the action or clearing the error.
+        if (refreshOnFailure) {
+          try {
+            const latest = await call(null, undefined, controller.signal)
+            if (!current()) return
+            show(latest)
+          } catch { /* The original delivery error remains the visible result. */ }
+        }
+        if (!current()) return
+        setError(failure.message)
+        return { ok: false, message: failure.message }
+      }
     } finally {
       state.controllers.delete(controller)
       if (current()) { state.busy = false; setBusy(false) }
     }
   }, [show])
+
+  // A watch-list read never reconciles settings or disturbs unsaved edits.
+  const loadWatches = useCallback(async signal => (await call('watch-list', undefined, signal)).watches, [])
 
   useEffect(() => {
     const state = requests.current
@@ -187,6 +212,14 @@ export default function PortalIntegrationsSettings() {
     editTyped(previous => ({ ...previous, mcpEnv: { ...previous.mcpEnv, [id]: { ...previous.mcpEnv[id], [name]: value } } }))
     if (value) setServer(id, { enabled: false })
   }
+  const setApp = (id, patch) => {
+    setAppResult(previous => previous?.app === id ? null : previous)
+    editDraft(previous => ({ ...previous, apps: { ...previous.apps, [id]: { ...previous.apps[id], ...patch } } }))
+  }
+  const setAppSecret = (id, value) => {
+    setAppResult(previous => previous?.app === id ? null : previous)
+    editTyped(previous => ({ ...previous, apps: { ...previous.apps, [id]: value } }))
+  }
   const notifications = draft.notifications
   // Turning notifications on suggests this page for the "Open approvals" button.
   const turnNotifications = enabled => setNotifications(enabled && !notifications.approvalLink
@@ -197,13 +230,14 @@ export default function PortalIntegrationsSettings() {
     <section className={cardStyle} aria-labelledby="portal-integrations-title">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0"><h2 id="portal-integrations-title" className="text-lg font-semibold">Portal integrations</h2>
-          <p className="text-sm text-theme-text-muted">Let Portal read your notes, send you notifications and use MCP servers such as Home Assistant. Credentials are stored by the local integration service and used for the services you configure.</p></div>
+          <p className="text-sm text-theme-text-muted">Let Portal read your notes, send you notifications, use MCP servers such as Home Assistant, and work with your documents, photos, watched pages and news. Credentials are stored by the local integration service and used for the services you configure.</p></div>
         <div className="flex gap-2">
           <button className={buttonStyle} disabled={busy} onClick={() => run([[null]])}>Reload</button>
           <button className={buttonStyle} disabled={busy || !dirty} onClick={save}>Save changes</button>
         </div>
       </div>
-      {error && <p role="alert" className="text-sm text-red-400 whitespace-pre-wrap break-words">{error}</p>}
+      {/* With unsaved changes the error shows in the bar, where the owner pressed Save. */}
+      {error && !dirty && <p role="alert" className="text-sm text-red-400 whitespace-pre-wrap break-words">{error}</p>}
       {notice && <p role="status" className="text-sm text-theme-text-muted">{notice}</p>}
       <p role="note" className="text-xs text-theme-text-muted">Off, Ask first and Allowed apply to these integration tools. Full Access also lets Portal use your account’s files and commands, which can reach locally stored settings and secrets. Review <Link to="/settings?section=access" className="underline">Portal access</Link> before adding credentials.</p>
     </section>
@@ -225,6 +259,11 @@ export default function PortalIntegrationsSettings() {
       <label className="block text-sm">“Open approvals” button opens (optional)<input className={inputStyle} value={notifications.approvalLink} disabled={busy} spellCheck={false}
         placeholder={approvalLinkFor(window.location.origin)} onChange={event => setNotifications({ approvalLink: event.target.value })} /></label>
       <p className="text-xs text-theme-text-muted">Use an address your phone can open. The button only opens this page; you still sign in to approve.</p>
+      <label className="block text-sm">Notify me when a scheduled task
+        <select className={inputStyle} value={notifications.scheduledTasks} disabled={busy} onChange={event => setNotifications({ scheduledTasks: event.target.value })}>
+          {Object.entries(TASK_NOTICES).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+        </select>
+      </label>
       <button className={buttonStyle} disabled={busy || !notifications.enabled} onClick={() => run(withSave([['test-notification']]), 'Test notification sent.')}>Send test notification</button>
     </section>
 
@@ -262,11 +301,25 @@ export default function PortalIntegrationsSettings() {
       </ul>
     </section>
 
+    <PortalAppsSettings apps={draft.apps} saved={view.settings.apps} typed={typed.apps} busy={busy} dirty={dirty} onChange={setApp} onSecret={setAppSecret}
+      revision={view.settings.revision} notifications={notifications.enabled} onLoadWatches={loadWatches} result={appResult}
+      digestRecovery={view.digestRecovery}
+      onTest={async app => { setAppResult(null); const result = await run(withSave([['test-app', { app }]])); if (result) setAppResult({ app, ...result }) }}
+      onSendDigest={async () => { setAppResult(null); const result = await run(withSave([['send-digest']]), undefined, { refreshOnFailure: true }); if (result) setAppResult({ app: 'news', ...result }) }}
+      onRetryDigest={async attemptId => {
+        if (dirty || busy) return
+        setAppResult(null)
+        const result = await run([['retry-digest', { attemptId, expectedRevision: view.settings.revision }]], undefined, { refreshOnFailure: true })
+        if (result) setAppResult({ app: 'news', ...result })
+      }} />
+
     <Activity entries={view.activity} busy={busy} onClear={() => run([['clear-activity']], 'Activity cleared.')} />
 
     {/* Always in reach, wherever the change was made on this long page. */}
     {dirty && <div role="region" aria-label="Unsaved changes" className="sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-theme-accent bg-theme-card p-3 shadow-lg">
-      <p className="text-sm">You have unsaved changes.</p>
+      {error
+        ? <p role="alert" className="min-w-0 text-sm text-red-400 whitespace-pre-wrap break-words">{error}</p>
+        : <p className="text-sm">You have unsaved changes.</p>}
       <div className="flex gap-2">
         <button className={buttonStyle} disabled={busy} onClick={discard}>Discard</button>
         <button className="rounded bg-theme-accent px-3 py-2 text-sm font-medium text-white disabled:opacity-40 focus:outline-none focus:ring-2 focus:ring-theme-accent" disabled={busy} onClick={save}>Save</button>

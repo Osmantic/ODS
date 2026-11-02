@@ -464,8 +464,10 @@ The [composition record](PORTAL-COFFEE-INTEGRATION.md) documents the shared
 Settings navigation, combined native tool inventory, preserved Google grant and
 real 9B notes/notification/cron observations. Later main/Mike changes have separate
 source validation. Native macOS service implementation and release acceptance
-remain open. Coffee's announced richer task notifications, Paperless/Immich,
-page watching and daily news remain his next scope; they are not claimed here.
+remain open. Coffee's subsequent [#8352](https://github.com/Osmantic/ODS/pull/8352)
+is now being composed for scheduled-task notices, Paperless/Immich, page watching
+and daily news. Its new installed qualification is separate from the earlier
+notes/ntfy/MCP results; see the composition record for current evidence.
 
 At installed `25d4c3172`, fresh Chrome status-only Google and invented-note
 reads succeeded. The legacy-default prompt filter is confirmed active. In the

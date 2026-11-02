@@ -140,12 +140,12 @@ const CONNECTED_RECORDS_TINY_CONTRACT = CONNECTED_RECORDS_CONTRACT;
 // an MCP-only catalog as proof that saved ntfy notifications did not exist.
 // Keep this trusted guidance identical for every request and context profile.
 export const PORTAL_INTEGRATIONS_CONTRACT =
-  "Obsidian: pixel_ods_notes; ntfy: pixel_ods_notify; custom MCP: pixel_ods_mcp. MCP lists only custom servers. Use connection tools for connected data; workspace file writes do not prove a vault update.";
+  "Obsidian: pixel_ods_notes; ntfy: pixel_ods_notify; apps/custom MCP: pixel_ods_mcp (list first; excludes Google/Obsidian/ntfy status); workspace file writes do not prove a vault update.";
 
 // Model-only context beside the current owner turn, never a status observation
 // or an instruction to replay an action without its normal tool admission.
 export const PORTAL_INTEGRATION_TURN_CONTEXT =
-  "For the current owner message, prior-turn integration results and assistant approval notices are history, not its current action/status. For a newly requested or retried notes write, notification or custom MCP action still needing a current receipt, call its normal tool. Only the returned typed result establishes approval-required, done or refused; prose creates no approval request. Let the service verify an approval with exactly the same arguments; never self-approve or automatically repeat an uncertain external action.";
+  "For the current owner message, prior-turn integration results and assistant approval notices are history, not its current action/status. For a newly requested or retried notes write, notification, app or custom MCP action still needing a current receipt, call its normal tool. Only the returned typed result establishes approval-required, done or refused; prose creates no approval request. Let the service verify an approval with exactly the same arguments; never self-approve or automatically repeat an uncertain external action.";
 
 const CURRENT_OPERATING_COMPATIBILITY = [
   ODS_SANDBOX_RUNTIME_CONTRACT,

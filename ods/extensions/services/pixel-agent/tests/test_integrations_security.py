@@ -41,7 +41,7 @@ def world(tmp_path):
 
 def incoming(store):
     config = store.config()
-    return {key: copy.deepcopy(config[key]) for key in ("notes", "notifications", "mcp")}
+    return {key: copy.deepcopy(config[key]) for key in ("notes", "notifications", "mcp", "apps")}
 
 
 def save(service, store, value=None, secrets=None):

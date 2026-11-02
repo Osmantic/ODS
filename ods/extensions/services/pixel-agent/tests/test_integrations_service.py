@@ -16,7 +16,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "host"))
 import integrations_service as service  # noqa: E402
-from integrations_common import Store  # noqa: E402
+from integrations_common import Store, default_apps  # noqa: E402
 
 TOOLS = [
     {"name": "get_state", "description": "Read a device state", "annotations": {"readOnlyHint": True},
@@ -147,9 +147,10 @@ class IntegrationsTests(unittest.TestCase):
 
     def settings(self, *, notes=True, write="ask", servers=(), notify=True, link=""):
         return {"notifications": {"enabled": notify, "url": f"http://127.0.0.1:{self.ntfy.server_address[1]}",
-                                  "topic": "portal-test", "username": "portal", "notifyApprovals": True, "approvalLink": link},
+                                  "topic": "portal-test", "username": "portal", "notifyApprovals": True, "approvalLink": link,
+                                  "scheduledTasks": "all"},
                 "notes": {"enabled": notes, "vaultPath": str(self.vault), "write": write},
-                "mcp": {"servers": list(servers)}}
+                "mcp": {"servers": list(servers)}, "apps": default_apps()}
 
     def save(self, settings, secrets=None):
         revision = self.owner("get")["settings"]["revision"]
@@ -277,7 +278,7 @@ class IntegrationsTests(unittest.TestCase):
         link = "http://192.168.1.5:3001/settings?section=portal-integrations"
         self.save(self.settings(link=link), secrets={"ntfyPassword": "pw"})
         self.agent("notes-write", path="Groceries.md", text="bread", mode="append")
-        self.assertEqual(FakeNtfy.headers[-1], {"click": link, "actions": f"view, Open approvals, {link}"})
+        self.assertEqual(FakeNtfy.headers[-1], {"click": link, "actions": f'view, Open approvals, "{link}"'})
         self.assertIn("once, within 24 hours; a scheduled task goes ahead on its next run", FakeNtfy.sent[-1]["message"])
         # The link opens Settings and grants nothing: the approval id is not in it.
         self.assertNotIn(self.owner("get")["approvals"][0]["id"], FakeNtfy.headers[-1]["actions"])
@@ -325,6 +326,9 @@ class IntegrationsTests(unittest.TestCase):
         (self.store.root / "secrets.json").write_text(json.dumps({"ntfyPassword": "pw", "mcp": {"home": "secret-token"}}))
         view = self.owner("get")["settings"]
         self.assertEqual(view["notifications"]["approvalLink"], "")
+        self.assertEqual(view["notifications"]["scheduledTasks"], "off")
+        self.assertEqual(view["apps"]["news"]["digest"], {"enabled": False, "time": "07:00", "timezone": "UTC"})
+        self.assertFalse(view["apps"]["documents"]["hasKey"])
         self.assertEqual((view["mcp"]["servers"][0]["envNames"], view["mcp"]["servers"][0]["tools"][0]["new"]), ([], False))
         self.assertTrue(view["mcp"]["servers"][0]["hasToken"])
 

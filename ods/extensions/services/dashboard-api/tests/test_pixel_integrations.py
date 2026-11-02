@@ -81,9 +81,43 @@ def test_server_tests_restarts_and_clearing_activity_relay(client, agent):
     assert client.post('/api/pixel/integrations/clear-activity', headers=AUTH, json={'all': True}).status_code == 400
 
 
+def test_app_tests_relay_with_the_app_name(client, agent):
+    agent.return_value = {'settings': {'revision': 3}, 'approvals': [], 'activity': [], 'notice': 'FreshRSS answered: 2 feeds.'}
+    reply = client.post('/api/pixel/integrations/test-app', headers=AUTH, json={'app': 'news'})
+    assert reply.json()['notice'] == 'FreshRSS answered: 2 feeds.'
+    agent.assert_awaited_with('POST', '/v1/pixel/integrations/test-app', payload={'app': 'news'}, timeout=140)
+    assert client.post('/api/pixel/integrations/test-app', headers=AUTH, json={}).status_code == 400
+    assert client.post('/api/pixel/integrations/test-app', headers=AUTH, json={'app': 'news', 'key': 'x'}).status_code == 400
+
+
+def test_watch_list_and_send_digest_relay_without_fields(client, agent):
+    agent.return_value = {'settings': {'revision': 3}, 'approvals': [], 'activity': [], 'watches': {'watches': [], 'total': 0}}
+    assert client.post('/api/pixel/integrations/watch-list', headers=AUTH, json={}).json()['watches'] == {'watches': [], 'total': 0}
+    agent.assert_awaited_with('POST', '/v1/pixel/integrations/watch-list', payload={}, timeout=140)
+    agent.return_value = {'settings': {'revision': 3}, 'approvals': [], 'activity': [], 'notice': 'Digest sent with 2 stories.'}
+    assert client.post('/api/pixel/integrations/send-digest', headers=AUTH, json={}).json()['notice'] == 'Digest sent with 2 stories.'
+    agent.assert_awaited_with('POST', '/v1/pixel/integrations/send-digest', payload={}, timeout=140)
+    for action in ('watch-list', 'send-digest'):
+        assert client.post(f'/api/pixel/integrations/{action}', headers=AUTH, json={'app': 'news'}).status_code == 400
+
+
 def test_macos_says_integrations_are_not_available_yet(client, agent):
     refusal = json.dumps({'error': 'unsupported', 'message': "Portal integrations aren't available on macOS yet."})
     agent.side_effect = AgentHTTPError(400, 'unsupported', refusal)
     response = client.get('/api/pixel/integrations', headers=AUTH)
     assert response.status_code == 400
     assert response.json()['detail'] == "Portal integrations aren't available on macOS yet."
+
+
+def test_digest_recovery_is_an_exact_owner_request_not_an_automatic_replay(client, agent):
+    payload = {'attemptId': 'a' * 32, 'expectedRevision': 17}
+    agent.return_value = {'notice': 'Digest sent.', 'digestRecovery': []}
+    response = client.post('/api/pixel/integrations/retry-digest', headers=AUTH, json=payload)
+    assert response.status_code == 200
+    assert response.headers['cache-control'] == 'no-store'
+    agent.assert_awaited_once_with('POST', '/v1/pixel/integrations/retry-digest', payload=payload, timeout=140)
+    agent.reset_mock()
+    for invalid in ({}, {'attemptId': 'a' * 32}, {'expectedRevision': 17}, {**payload, 'message': 'changed'}):
+        assert client.post('/api/pixel/integrations/retry-digest', headers=AUTH, json=invalid).status_code == 400
+    assert client.post('/api/pixel/integrations/retry-digest', json=payload).status_code == 401
+    agent.assert_not_awaited()

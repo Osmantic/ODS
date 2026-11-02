@@ -1,13 +1,16 @@
 import net from 'node:net';
 
-// Portal tools for the owner's integrations: an Obsidian vault, ntfy notifications and MCP
-// servers. Their tool payloads contain no configuration token or vault root: calls
-// go to the host integrations service, which checks the owner's settings and keeps "ask first"
+// Portal tools for the owner's integrations: Obsidian, ntfy, configured apps and MCP
+// servers. Tool payloads contain no configuration token or vault root: calls go to
+// the host service, which checks the owner's settings and keeps "ask first"
 // actions waiting for the owner's approval. Results are the owner's own data or a server's
 // answer and are passed on as untrusted text.
 const SOCKET = '/run/ods-pixel-integrations/control.sock';
 const MAX_REPLY = 512 * 1024;
 const TIMEOUT_MS = 130000;
+const MCP_USAGE = 'Give the arguments too. To see the servers and their tools: {"action": "list"}. To run a tool: '
+  + '{"action": "call", "server": "<server id>", "tool": "<tool name>", "arguments": {...}}, for example '
+  + '{"action": "call", "server": "app:photos", "tool": "search", "arguments": {"place": "Lisbon"}}.';
 const APPROVAL_TEXT = 'This call created or found a pending request; the action has not run. Tell the owner it needs approval in Settings → Portal integrations (they may also get a notification). After they approve, call this tool again with exactly the same arguments so the service can check and use the approval; do not just repeat this notice. Approval is for one use. For any later requested action, including an identical one, call the tool again to submit that new request. In a scheduled task, do not wait: report this returned status and finish; a later run within 24 hours can check the approval with exactly the same arguments.';
 
 export function submitIntegration(payload, {connect = net.createConnection, platform = process.platform, signal} = {}) {
@@ -81,12 +84,12 @@ const searchText = reply => reply.results.length
     + '\n\nRead a note (pixel_ods_notes action read) before quoting it.'
   : 'No note holds those words. Try other words.';
 
-const MCP_CATALOG_SCOPE = 'This catalog covers only custom MCP servers. Obsidian notes use pixel_ods_notes; ntfy notifications use pixel_ods_notify. Their connection state is not reported here.';
+const MCP_CATALOG_SCOPE = 'This catalog covers configured Documents, Photos, Watched pages and News apps, plus custom MCP servers. Obsidian notes use pixel_ods_notes; ntfy notifications use pixel_ods_notify; Google uses the connected-app tools. Their connection state is not reported here.';
 const toolsText = reply => MCP_CATALOG_SCOPE + '\n\n' + (reply.servers.length
   ? reply.servers.map(server => `Server "${server.id}" (${server.name}):\n` + (server.tools.length
     ? server.tools.map(tool => `- ${tool.name}${tool.needsApproval ? ' [needs owner approval]' : ''}: ${tool.description || 'no description'}\n  arguments: ${JSON.stringify(tool.inputSchema ?? {type: 'object'})}`).join('\n')
     : '- no tools are allowed')).join('\n\n')
-  : 'No MCP servers are turned on. The owner can add one in Settings → Portal integrations.');
+  : 'No apps or custom MCP servers are turned on. The owner can configure them in Settings → Portal integrations.');
 
 const str = value => (typeof value === 'string' ? value : '');
 
@@ -103,7 +106,15 @@ const notesText = reply => reply.results ? searchText(reply)
   : reply.text !== undefined ? `${reply.path}:\n\n${reply.text}`
     : `${reply.mode === 'create' ? 'Created' : 'Added to'} ${reply.written}.`;
 
-export function createIntegrationTools({submit = submitIntegration} = {}) {
+export function createIntegrationTools({submit = submitIntegration, context} = {}) {
+  // Factory context comes from the native runtime, never model arguments. Each
+  // isolated cron run has its own session identity; keep its read snapshot apart
+  // from an interactive digest or another task. This metadata grants no action.
+  const identityString = value => typeof value === 'string' && value.length > 0
+    && value.length <= 512 && !/[\x00-\x20\x7f]/.test(value);
+  const runContext = context?.agentId === 'pixel' && identityString(context.sessionId)
+    && identityString(context.sessionKey) && context.sessionKey.startsWith('agent:pixel:')
+    ? Object.freeze({sessionId: context.sessionId, sessionKey: context.sessionKey}) : undefined;
   return [
     {
       name: 'pixel_ods_notes',
@@ -131,7 +142,7 @@ export function createIntegrationTools({submit = submitIntegration} = {}) {
     },
     {
       name: 'pixel_ods_mcp',
-      description: "Only the owner's custom MCP servers, such as Home Assistant; not the native Obsidian, ntfy or Google connections. action list: show server ids and permitted tools with their arguments; always list before the first call. action call: submit the requested action with server, tool and arguments. Call for every new action, including an identical later one, even when the catalog says needsApproval. That flag creates no request; only the call's returned status approval-required confirms a pending request. Use pixel_ods_notes for notes and pixel_ods_notify for notifications.",
+      description: "The owner's configured apps and custom MCP servers: documents (Paperless-ngx), photos (Immich), watched web pages and price alerts, news (FreshRSS), Home Assistant and others. This catalog does not include native Obsidian, ntfy or Google connections. action list: show server ids and permitted tools with their arguments; always list before the first call. action call: submit the requested action with server, tool and arguments. Call for every new action, including an identical later one, even when the catalog says needsApproval. That flag creates no request; only the call's returned status approval-required confirms a pending request. Use pixel_ods_notes for notes and pixel_ods_notify for notifications.",
       parameters: {type: 'object', additionalProperties: false, required: ['action'],
         properties: {action: {type: 'string', enum: ['list', 'call']},
           server: {type: 'string', description: 'For call: the server id from list, such as home.'},
@@ -139,9 +150,12 @@ export function createIntegrationTools({submit = submitIntegration} = {}) {
           arguments: {type: 'object', description: 'For call: the tool arguments as an object.'}}},
       execute: (_id, params, signal) => {
         if (params?.action === 'list') return run(submit, {action: 'mcp-tools'}, signal, toolsText);
-        if (params?.action !== 'call') return Promise.resolve(text('Use action list or call.', {status: 'invalid'}, true));
+        // A small model sometimes sends no arguments at all; show it the exact shape to retry with.
+        if (params?.action !== 'call') return Promise.resolve(text(MCP_USAGE, {status: 'invalid'}, true));
         const args = params?.arguments && typeof params.arguments === 'object' && !Array.isArray(params.arguments) ? params.arguments : {};
-        return run(submit, {action: 'mcp-call', server: str(params?.server), tool: str(params?.tool), arguments: args}, signal,
+        const server = str(params?.server), name = str(params?.tool);
+        return run(submit, {action: 'mcp-call', server, tool: name, arguments: args,
+          ...(server === 'app:news' && name === 'digest' && runContext ? {runContext} : {})}, signal,
           reply => `${reply.isError ? 'The tool reported an error:\n' : ''}${reply.text}`);
       },
     },
