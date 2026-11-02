@@ -40,6 +40,7 @@ from model_memory import (
     MemoryEstimate,
     authored_profile_estimate,
     context_candidates,
+    cpu_model_capacity_gib,
     estimate_for_runtime,
     estimate_model_memory,
     fit_margin_gib,
@@ -121,7 +122,7 @@ def usable_memory_gb(backend: Any, memory_type: Any, vram_mb: Any, ram_gb: Any) 
         # Macs/APUs are not handed a model that technically fits but thrashes.
         return max(ram * 0.55, 2.0), "unified system memory"
     if mclass == "cpu":
-        return min(max(ram * 0.35, 3.0), 8.0), "system RAM"
+        return cpu_model_capacity_gib(ram), "system RAM"
     return float(vram_mb) / 1024.0, "GPU VRAM"
 
 

@@ -135,7 +135,7 @@ def test_only_actual_native_memory_configuration_qualifies():
     assert fit['runtimeMode'] == 'native'
     assert fit['gpuLayers'] == 'auto'
     for change in ('missing-projector','changed-hardware','failed','text-only','other-offload','missing-drafts',
-                   'shared-runtime'):
+                   'shared-runtime', 'context', 'cache', 'signature', 'artifact'):
         invalid = deepcopy(measured)
         if change == 'missing-projector': invalid['execution']['visionProjectorSha256'] = None
         if change == 'changed-hardware': invalid['hardware']['name'] = 'Unrelated GPU'
@@ -144,6 +144,10 @@ def test_only_actual_native_memory_configuration_qualifies():
         if change == 'other-offload': invalid['execution']['gpuLayers'] = '99'
         if change == 'missing-drafts': invalid['mtp'][0]['acceptedDraftTokens'] = 0
         if change == 'shared-runtime': invalid['conditions']['isolatedFromRuntime'] = False
+        if change == 'context': invalid['execution']['context'] = 8192
+        if change == 'cache': invalid['execution']['cacheType'] = 'f16'
+        if change == 'signature': invalid['signature'] = 'd' * 64
+        if change == 'artifact': invalid['profile']['modelSha256'] = 'd' * 64
         with pytest.raises(ValueError):
             qualify_memory_fit(invalid, qualified)
 
@@ -158,6 +162,10 @@ def test_memory_evidence_from_the_lemonade_launch_never_qualifies():
 def test_verified_profile_exposes_separate_availability_without_claiming_gpu_fit(tmp_path, monkeypatch):
     from performance_oracle import build_models_payload
     from models import GPUInfo, ModelLibraryResponse
+    import model_stores
+    # These paths belong to the fixture host even when pytest itself is in Docker.
+    original_stores = model_stores.registered_stores
+    monkeypatch.setattr(model_stores, 'registered_stores', lambda root, **_: original_stores(root, container=False))
     qualified, measured = memory_evidence()
     fit = qualify_memory_fit(measured, qualified)
     data, external = tmp_path/'data', tmp_path/'external'
@@ -186,6 +194,15 @@ def test_verified_profile_exposes_separate_availability_without_claiming_gpu_fit
     assert value['fitsVram'] is False
     assert value['activationSupport']['available'] is True
     assert value['activationSupport']['contextLength'] == value['contextLength'] == 16384
+    registry_path = data / 'model-stores.json'
+    original = registry_path.read_text()
+    for cache, available in (('q4_0', True), ('f16', False), (None, False), ('f16;extra', False)):
+        document = json.loads(original)
+        document['stores'][0]['profiles']['model.gguf']['cacheType'] = cache
+        registry_path.write_text(json.dumps(document))
+        assert bool(result()['activationSupport']) is available
+        assert json.loads(registry_path.read_text())['stores'][0]['profiles']['model.gguf']['memoryQualification'] == fit
+    registry_path.write_text(original)
     (tmp_path/'.env').write_text(env.replace('SYSTEM_RAM_GB=61','SYSTEM_RAM_GB=16'))
     assert result()['activationSupport'] is None
     (tmp_path/'.env').write_text(env.replace('windows-native-llama-server','linux-container'))
