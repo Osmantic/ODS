@@ -1,12 +1,19 @@
 {
   "version": "2026.6.33",
   "sourceSha256": "5aa867278d7e072ae656250e1dc6b2bcd670c02e2bf8960012f70c9e05e99223",
-  "patchedSha256": "026b1f330b210aa931143733a518d73408422036e2ee95164132a565c298a21f",
+  "patchedSha256": "1b2079176647eb4accb0de4392751cb4f204162726ca72ef51c71da593f27fcc",
   "replacements": [
     [
       "\t\t\tconst warningText = `⚠️ ${formatToolAggregate(params.lastToolError.toolName, params.lastToolError.meta ? [params.lastToolError.meta] : void 0, { markdown: useMarkdown })} failed${warningPolicy.includeDetails && params.lastToolError.error ? `: ${params.lastToolError.error}` : \"\"}`;",
-      "\t\t\t// ODS: a pending command failure describes an attempt, not the final deliverable.\n\t\t\t// Keep the original error policy, details and mutation recovery checks.\n\t\t\tconst earlierCommandAttempt = hasUserFacingAssistantReply && isExecLikeToolName(params.lastToolError.toolName);\n\t\t\tconst warningText = `⚠️ ${earlierCommandAttempt ? \"Earlier command attempt failed: \" : \"\"}${formatToolAggregate(params.lastToolError.toolName, params.lastToolError.meta ? [params.lastToolError.meta] : void 0, { markdown: useMarkdown })}${earlierCommandAttempt ? \"\" : \" failed\"}${warningPolicy.includeDetails && params.lastToolError.error ? `: ${params.lastToolError.error}` : \"\"}`;"
+      "\t\t\t// ODS: a nonzero command status is evidence, not a verdict on the task.\n\t\t\t// Preserve warning policy, details, error flags and mutation recovery.\n\t\t\tconst earlierCommandAttempt = hasUserFacingAssistantReply && isExecLikeToolName(params.lastToolError.toolName);\n\t\t\tconst commandExitCode = Number.isSafeInteger(params.lastToolError.exitCode) && params.lastToolError.exitCode !== 0\n\t\t\t\t? params.lastToolError.exitCode : void 0;\n\t\t\tconst commandStatus = commandExitCode !== void 0 ? `Command exit status ${commandExitCode}: ` : \"Command attempt reported an error: \";\n\t\t\tconst warningMeta = earlierCommandAttempt ? params.lastToolError.failureMeta ?? params.lastToolError.meta : params.lastToolError.meta;\n\t\t\tconst warningText = `⚠️ ${earlierCommandAttempt ? commandStatus : \"\"}${formatToolAggregate(params.lastToolError.toolName, warningMeta ? [warningMeta] : void 0, { markdown: useMarkdown })}${earlierCommandAttempt ? \"\" : \" failed\"}${warningPolicy.includeDetails && params.lastToolError.error ? `: ${params.lastToolError.error}` : \"\"}`;"
     ]
   ],
-  "previousReplacements": {}
+  "previousReplacements": {
+    "026b1f330b210aa931143733a518d73408422036e2ee95164132a565c298a21f": [
+      [
+        "\t\t\tconst warningText = `⚠️ ${formatToolAggregate(params.lastToolError.toolName, params.lastToolError.meta ? [params.lastToolError.meta] : void 0, { markdown: useMarkdown })} failed${warningPolicy.includeDetails && params.lastToolError.error ? `: ${params.lastToolError.error}` : \"\"}`;",
+        "\t\t\t// ODS: a pending command failure describes an attempt, not the final deliverable.\n\t\t\t// Keep the original error policy, details and mutation recovery checks.\n\t\t\tconst earlierCommandAttempt = hasUserFacingAssistantReply && isExecLikeToolName(params.lastToolError.toolName);\n\t\t\tconst warningText = `⚠️ ${earlierCommandAttempt ? \"Earlier command attempt failed: \" : \"\"}${formatToolAggregate(params.lastToolError.toolName, params.lastToolError.meta ? [params.lastToolError.meta] : void 0, { markdown: useMarkdown })}${earlierCommandAttempt ? \"\" : \" failed\"}${warningPolicy.includeDetails && params.lastToolError.error ? `: ${params.lastToolError.error}` : \"\"}`;"
+      ]
+    ]
+  }
 }
