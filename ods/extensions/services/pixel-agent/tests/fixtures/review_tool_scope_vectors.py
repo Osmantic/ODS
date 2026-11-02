@@ -140,6 +140,19 @@ function odsRetryToolScopeVersion(scope) {
  try { odsAssertRetryToolScope(scope); return scope.origin !== null ? 1 : void 0; }
  catch { return; }
 }
+function odsRetryToolScopeState(scope, tools, metadata) {
+ try {
+  if (odsRetryToolScopeVersion(scope) !== 1) return;
+  if (scope.cap === null) return Object.freeze({version:1, ownerRunId:scope.identity.runId, active:false, toolsAllow:null});
+  if (!Array.isArray(tools) || tools.length !== scope.cap.length) odsRejectRetryToolScope(scope);
+  const names = tools.map(tool => {
+   odsAuthorizeRetryTool(scope, tool, metadata, () => true);
+   return tool.name;
+  });
+  if (new Set(names).size !== names.length || scope.cap.some(name => !names.includes(name))) odsRejectRetryToolScope(scope);
+  return Object.freeze({version:1, ownerRunId:scope.identity.runId, active:true, toolsAllow:Object.freeze([...names])});
+ } catch { return; }
+}
 function odsTransferRetryToolDefinitions(scope, source, definitions, metadata, copyMetadata) {
  if (!scope || !scope.restricted && scope.cap === null) return;
  odsAssertRetryToolScope(scope);
@@ -160,7 +173,7 @@ function odsCloseRetryToolScope(scope) { if (scope && odsRetryScopeTokens.has(sc
 
 
 def vectors():
-    helper_exports = ", odsAcquireRetryToolScope, odsCaptureRetryToolOrigins, odsAcceptRetryToolsAllow, odsAuthorizeRetryTool, odsFilterRetryToolScope, odsRetryToolScopeVersion, odsTransferRetryToolDefinitions, odsRejectRetryToolScope, odsCloseRetryToolScope"
+    helper_exports = ", odsAcquireRetryToolScope, odsCaptureRetryToolOrigins, odsAcceptRetryToolsAllow, odsAuthorizeRetryTool, odsFilterRetryToolScope, odsRetryToolScopeVersion, odsRetryToolScopeState, odsTransferRetryToolDefinitions, odsRejectRetryToolScope, odsCloseRetryToolScope"
     return {
         "lifecycle-hook-helpers-Ck-WCTzd.js": {
             "sourceSha256": "ac3a1c2a03baace2a75de470f67d4c6337ad50c3d64fa9f69394be87bb8b3ec3",
@@ -187,7 +200,7 @@ def vectors():
             "sourceSha256": "07661b95137eceb301ad23bd4391c01ded07d3de0f7fb30741dde5a6c35df2e6",
             "replacements": [
                 ['import { i as getPluginToolMeta } from "./tools-D5HS8Q_I.js";', 'import { i as getPluginToolMeta, n as copyPluginToolMeta } from "./tools-D5HS8Q_I.js";'],
-                ['import { i as runAgentHarnessBeforeAgentFinalizeHook } from "./lifecycle-hook-helpers-Ck-WCTzd.js";', 'import { i as runAgentHarnessBeforeAgentFinalizeHook, odsCaptureRetryToolOrigins, odsAcceptRetryToolsAllow, odsAuthorizeRetryTool, odsFilterRetryToolScope, odsRetryToolScopeVersion, odsTransferRetryToolDefinitions, odsRejectRetryToolScope } from "./lifecycle-hook-helpers-Ck-WCTzd.js";'],
+                ['import { i as runAgentHarnessBeforeAgentFinalizeHook } from "./lifecycle-hook-helpers-Ck-WCTzd.js";', 'import { i as runAgentHarnessBeforeAgentFinalizeHook, odsCaptureRetryToolOrigins, odsAcceptRetryToolsAllow, odsAuthorizeRetryTool, odsFilterRetryToolScope, odsRetryToolScopeVersion, odsRetryToolScopeState, odsTransferRetryToolDefinitions, odsRejectRetryToolScope } from "./lifecycle-hook-helpers-Ck-WCTzd.js";'],
                 ['\t\tconst clientTools = toolsEnabled && !isRawModelRun ? params.clientTools : void 0;', '\t\tconst clientTools = params.odsRetryToolScope?.cap !== null && params.odsRetryToolScope?.cap !== void 0 ? void 0 : toolsEnabled && !isRawModelRun ? params.clientTools : void 0;'],
                 ['\t\tconst uncompactedEffectiveTools = [...uncompactedToolSchemaProjection.tools];', '\t\todsCaptureRetryToolOrigins(params.odsRetryToolScope, uncompactedToolSchemaProjection.tools, getPluginToolMeta);\n\t\tconst uncompactedEffectiveTools = odsFilterRetryToolScope(params.odsRetryToolScope, [...uncompactedToolSchemaProjection.tools], getPluginToolMeta, copyPluginToolMeta, () => !runAbortController.signal.aborted && params.abortSignal?.aborted !== true);'],
                 ['\t\tconst toolSearch = codeModeControlsEnabledForRun ? applyCodeModeCatalog({', '\t\tconst odsScopedRetry = params.odsRetryToolScope?.cap !== null && params.odsRetryToolScope?.cap !== void 0;\n\t\tif (odsScopedRetry) clearToolSearchCatalog({sessionId:params.sessionId,sessionKey:sandboxSessionKey,agentId:sessionAgentId,runId:params.runId,catalogRef:toolSearchCatalogRef});\n\t\tconst toolSearch = odsScopedRetry ? {tools:effectiveTools,compacted:false,catalogToolCount:0,catalogRegistered:false,catalogReused:false} : codeModeControlsEnabledForRun ? applyCodeModeCatalog({'],
@@ -196,6 +209,7 @@ def vectors():
                 ['\t\t\tlet beforeAgentFinalizeRevisionReason;', '\t\t\tlet beforeAgentFinalizeRevisionReason;\n\t\t\tlet beforeAgentFinalizeRevisionToolsAllow;'],
                 ['\t\t\t\t\t\tstopHookActive: false,', '\t\t\t\t\t\tstopHookActive: false,\n\t\t\t\t\t\t...(odsRetryToolScopeVersion(params.odsRetryToolScope) === 1 ? {nativeRetryToolsAllowVersion:1} : {}),'],
                 ['\t\t\t\tif (outcome.action !== "revise") return;', '\t\t\t\tif (outcome.revisionToolsInvalid === true) odsRejectRetryToolScope(params.odsRetryToolScope);\n\t\t\t\tif (outcome.revisionToolsAllow !== void 0) beforeAgentFinalizeRevisionToolsAllow = odsAcceptRetryToolsAllow(params.odsRetryToolScope, outcome.revisionToolsAllow);\n\t\t\t\tif (outcome.action !== "revise") return;'],
+                ['\t\t\t\t\t\t\tbeforeRunResult = await hookRunner.runBeforeAgentRun({', '\t\t\t\t\t\t\tbeforeRunResult = await hookRunner.runBeforeAgentRun({\n\t\t\t\t\t\t\t\tnativeRetryToolsAllowState: odsRetryToolScopeState(params.odsRetryToolScope, allCustomTools, getPluginToolMeta),'],
                 ['\t\t\ttoolSearchCatalogExecutor = async (toolParams) => {\n\t\t\t\ttry {', '\t\t\ttoolSearchCatalogExecutor = async (toolParams) => {\n\t\t\t\ttry {\n\t\t\t\t\todsAuthorizeRetryTool(params.odsRetryToolScope, toolParams.tool, getPluginToolMeta, () => !runAbortController.signal.aborted && params.abortSignal?.aborted !== true);'],
                 ['\t\t\t\t...beforeAgentFinalizeRevisionReason ? { beforeAgentFinalizeRevisionReason } : {},', '\t\t\t\t...beforeAgentFinalizeRevisionReason ? { beforeAgentFinalizeRevisionReason, ...(beforeAgentFinalizeRevisionToolsAllow !== void 0 ? {beforeAgentFinalizeRevisionToolsAllow} : {}) } : {},'],
             ],

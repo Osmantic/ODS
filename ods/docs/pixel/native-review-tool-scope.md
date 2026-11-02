@@ -64,6 +64,17 @@ claim. Real macOS launchd, ACL, Seatbelt and reboot gates also remain pending.
 An ordinary provider fallback retains the existing native run-context object.
 Explicit clearance rejects already captured closures. A wholly new invocation
 after an un-signaled context deletion can, however, create a new native object;
-the WeakMap alone cannot prove that this is the old restricted execution. That
-reentry requires an independently verified continuity gate before activation.
-Do not treat a successful direct 22-to-2 fixture as proof of that missing case.
+the WeakMap alone cannot prove that this is the old restricted execution.
+The ODS layer therefore also gates the exact already-latched run at the existing
+`before_agent_run` boundary. It requires immutable native
+`nativeRetryToolsAllowState` v1 metadata reporting an active cap and exactly the
+two actual final adapters. Missing, reset, invalid or inconsistent scope blocks
+before inference. A fresh owner with a new native run id keeps the ordinary
+path; a previous conversation's latch is not sufficient to block that new run.
+This is layered ODS enforcement, not a claim that the stock SDK remembers a
+deleted record.
+
+In the pinned runtime, tool construction and `before_prompt_build` already
+precede `before_agent_run`; the latter remains before prompt submission. The
+extension adds metadata to that existing admission event and does not move
+admission, add earlier I/O, alter model context or create another executor.

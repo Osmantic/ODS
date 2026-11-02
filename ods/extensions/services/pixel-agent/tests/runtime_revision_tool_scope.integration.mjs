@@ -22,6 +22,7 @@ const scopeApi=await import(pathToFileURL(path.join(sdk,'dist/lifecycle-hook-hel
 const {odsAcquireRetryToolScope:acquire,odsCaptureRetryToolOrigins:capture,
   odsAcceptRetryToolsAllow:accept,odsAuthorizeRetryTool:authorize,
   odsFilterRetryToolScope:filter,odsRetryToolScopeVersion:version,
+  odsRetryToolScopeState:scopeState,
   odsTransferRetryToolDefinitions:transfer,odsRejectRetryToolScope:reject,
   odsCloseRetryToolScope:close}=scopeApi;
 const {t:splitSdkTools}=await import(pathToFileURL(path.join(sdk,'dist/tool-split-C61cf48Y.js')));
@@ -207,6 +208,52 @@ test('actual selection clear path retires a broad ToolSearch catalog before dire
   assert.equal(catalogApi.v(context,'exec'),undefined);
   assert.equal(catalogApi.v(context,'pixel_ods_notify'),undefined);
   assert.deepEqual(w.narrowed().map(value=>value.name),['pixel_ods_notes','pixel_ods_mcp']);
+});
+
+test('native admission metadata is immutable, owner-bound and truthful about active final tools',()=>{
+  const w=world();
+  assert.deepEqual(scopeState(w.scope,w.tools,w.getMeta),{version:1,ownerRunId:identity.runId,active:false,toolsAllow:null});
+  accept(w.scope,['pixel_ods_notes','pixel_ods_mcp']);
+  const scoped=w.narrowed();
+  const proof=scopeState(w.scope,scoped,w.getMeta);
+  assert.equal(proof.ownerRunId,identity.runId);
+  assert.equal(proof.active,true);
+  assert.deepEqual(proof.toolsAllow,['pixel_ods_notes','pixel_ods_mcp']);
+  assert.equal(Object.isFrozen(proof),true);
+  assert.equal(Object.isFrozen(proof.toolsAllow),true);
+  assert.throws(()=>proof.toolsAllow.push('exec'));
+  assert.equal(scopeState(w.scope,[...scoped,w.tool('exec',null)],w.getMeta),undefined);
+  assert.throws(()=>w.narrowed());
+});
+
+test('cleared custody exposes no old proof; a fresh native object reports inactive instead of pretending to retain a cap',()=>{
+  const old=world();accept(old.scope,['pixel_ods_notes','pixel_ods_mcp']);old.revoke();
+  assert.equal(scopeState(old.scope,old.tools,old.getMeta),undefined);
+  const fresh=world();
+  assert.equal(scopeState(fresh.scope,fresh.tools,fresh.getMeta).active,false);
+});
+
+test('actual SDK admission receives native scope metadata without moving admission or altering model inputs',async()=>{
+  const w=world();accept(w.scope,['pixel_ods_notes','pixel_ods_mcp']);
+  const source=readFileSync(path.join(sdk,'dist/selection-BEwSQKM-.js'),'utf8');
+  const from=source.indexOf('beforeRunResult = await hookRunner.runBeforeAgentRun({');
+  const to=source.indexOf('}, hookCtx);',from)+'}, hookCtx);'.length;
+  const promptHook=source.indexOf('await resolvePromptBuildHookResult(');
+  const submission=source.indexOf('await promptActiveSession(',from);
+  assert.ok(promptHook>0 && promptHook<from && from<submission);
+  const history=[{role:'user',content:'Exact current request'}];
+  let captured;
+  const execute=vm.runInNewContext('(async function(){let beforeRunResult;'+source.slice(from,to)+'})',{
+    hookRunner:{runBeforeAgentRun:async event=>{captured=event;return {decision:{outcome:'pass'}};}},
+    odsRetryToolScopeState:scopeState,params:{odsRetryToolScope:w.scope},allCustomTools:w.narrowed(),getPluginToolMeta:w.getMeta,
+    promptForModel:'Exact current prompt',systemPromptForHook:'Exact original bootstrap',beforeRunMessages:history,hookCtx:{...identity},
+  });
+  await execute();
+  assert.equal(captured.prompt,'Exact current prompt');
+  assert.equal(captured.systemPrompt,'Exact original bootstrap');
+  assert.equal(captured.messages,history);
+  assert.equal(captured.nativeRetryToolsAllowState.active,true);
+  assert.deepEqual(captured.nativeRetryToolsAllowState.toolsAllow,['pixel_ods_notes','pixel_ods_mcp']);
 });
 
 async function normalized(result,runId) {

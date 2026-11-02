@@ -8,6 +8,16 @@ export interface OdsNativeRetryToolScopeEventV1 {
   readonly nativeRetryToolsAllowVersion?: 1;
 }
 
+/** Trusted before_agent_run metadata, projected from live native custody. */
+export interface OdsNativeRetryToolScopeAdmissionEventV1 {
+  readonly nativeRetryToolsAllowState?: Readonly<{
+    version: 1;
+    ownerRunId: string;
+    active: boolean;
+    toolsAllow: readonly string[] | null;
+  }>;
+}
+
 /**
  * Runtime validation requires 1–32 unique literal leaf names, each matching
  * /^[A-Za-z][A-Za-z0-9_.-]{0,127}$/. Wildcards, groups and unknown/ambiguous
