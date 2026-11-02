@@ -27,6 +27,7 @@ COMPACTION_CHUNK = "embedded-agent-subscribe.handlers.compaction.runtime-BcFOW95
 COMPACTION_IDLE_MODULE = "sessions-KE_Xmzwf.js"
 COMPACTION_RESUME_MODULE = "sessions-CZbwb3_c.js"
 COMPACTION_BUDGET_MODULE = "selection-BEwSQKM-.js"
+COMPACTION_BUDGET_DEPENDENCIES = frozenset({"tool-split-C61cf48Y.js", "tools-D5HS8Q_I.js"})
 READ_RANGE_MODULE = "openclaw-tools-iHHy99PD.js"
 SANDBOX_MKDIR_MODULES = {"bridge": "browser-bridges-D-At-KLc.js", "secure": "secure-temp-dir-XAWcZnE2.js"}
 TOOL_RESULT_PROJECTION_MODULE = "tool-result-truncation-CbxVHy2D.js"
@@ -37,6 +38,8 @@ RUN_ID_REDACTION_MODULE = "redact-cvFSPoXf.js"
 CONTEXT_USAGE_MODULE = "attempt-execution-DnVHak5f.js"
 NO_TOOLS_INGRESS_MODULE = "openai-http-DkesJHcp.js"
 YIELD_USAGE_MODULE = "embedded-agent-CJx-nG3W.js"
+FINALIZE_TOOL_SCOPE_MODULE = "lifecycle-hook-helpers-Ck-WCTzd.js"
+FINALIZE_TOOL_SCOPE_DEPENDENCIES = frozenset({"hook-runner-global-mWFYlTIy.js"})
 COMPACTION_EMPTY_MODULE = "proxy-Bsfwfsp-.js"
 COMPACTION_NO_WORK_MODULE = "compact-DuWIsaq_.js"
 DIAGNOSTIC_STREAM_MODULE = "attempt.model-diagnostic-events-DqqiPQPY.js"
@@ -88,7 +91,9 @@ def verify_dependencies(runtime_root, manifest, module_name):
     """A facade repair is valid only with its reviewed implementation chunk."""
     expected = manifest.get("reviewedDependencies", {})
     allowed = ({COMPACTION_CHUNK} if module_name == COMPACTION_MODULE else
+               COMPACTION_BUDGET_DEPENDENCIES if module_name == COMPACTION_BUDGET_MODULE else
                DIRECT_TOOL_DEPENDENCIES if module_name == DIRECT_TOOL_MODULE else
+               FINALIZE_TOOL_SCOPE_DEPENDENCIES if module_name == FINALIZE_TOOL_SCOPE_MODULE else
                IMAGE_DEPENDENCIES if module_name == IMAGE_MODULE else set())
     if not isinstance(expected, dict) or set(expected) != allowed:
         raise ValueError("runtime repair dependency contract mismatch")
@@ -144,7 +149,7 @@ def repair(runtime_root, state_dir, *, restore=False, manifest_path=MANIFEST,
     if module_name not in {MODULE, COMPLETION_MODULE, IMAGE_MODULE, COMPACTION_MODULE, COMPACTION_IDLE_MODULE,
                            COMPACTION_RESUME_MODULE, COMPACTION_BUDGET_MODULE, READ_RANGE_MODULE,
                            TOOL_RESULT_PROJECTION_MODULE, DIAGNOSTIC_STREAM_MODULE, COMMAND_ATTEMPT_MODULE, UTF8_OUTPUT_MODULE, DIRECT_TOOL_MODULE, CONTEXT_USAGE_MODULE, YIELD_USAGE_MODULE,
-                           COMPACTION_EMPTY_MODULE, COMPACTION_NO_WORK_MODULE, SUBAGENT_ADMISSION_MODULE, SUBAGENT_SESSION_MODULE, HOOK_PROVENANCE_MODULE, RUN_ID_REDACTION_MODULE, NO_TOOLS_INGRESS_MODULE, *SANDBOX_MKDIR_MODULES.values()}:
+                           COMPACTION_EMPTY_MODULE, COMPACTION_NO_WORK_MODULE, SUBAGENT_ADMISSION_MODULE, SUBAGENT_SESSION_MODULE, HOOK_PROVENANCE_MODULE, RUN_ID_REDACTION_MODULE, NO_TOOLS_INGRESS_MODULE, FINALIZE_TOOL_SCOPE_MODULE, *SANDBOX_MKDIR_MODULES.values()}:
         raise ValueError("unsupported runtime repair module")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     package = json.loads((runtime_root / "package.json").read_text(encoding="utf-8"))
@@ -357,6 +362,7 @@ def main():
     selection.add_argument("--context-usage", action="store_true")
     selection.add_argument("--no-tools-ingress", action="store_true")
     selection.add_argument("--yield-usage", action="store_true")
+    selection.add_argument("--finalize-tool-scope", action="store_true")
     selection.add_argument("--compaction-empty", action="store_true")
     selection.add_argument("--compaction-no-work", action="store_true")
     selection.add_argument("--read-range", action="store_true")
@@ -412,6 +418,9 @@ def main():
     elif args.yield_usage:
         options = {"module_name": YIELD_USAGE_MODULE,
                    "manifest_path": MANIFEST.with_name("openclaw-yield-usage.json")}
+    elif args.finalize_tool_scope:
+        options = {"module_name": FINALIZE_TOOL_SCOPE_MODULE,
+                   "manifest_path": MANIFEST.with_name("openclaw-finalize-tool-scope.json")}
     elif args.compaction_empty:
         options = {"module_name": COMPACTION_EMPTY_MODULE,
                    "manifest_path": MANIFEST.with_name("openclaw-compaction-empty.json")}

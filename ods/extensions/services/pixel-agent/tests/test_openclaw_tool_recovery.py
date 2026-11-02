@@ -55,10 +55,12 @@ def test_additional_module_has_separate_exact_byte_custody(installation, module_
     runtime, state, manifest, module, original, patched = installation
     completion = module.with_name(module_name)
     module.rename(completion)
-    if module_name == repair_module.IMAGE_MODULE:
+    dependency_sets = {repair_module.IMAGE_MODULE: repair_module.IMAGE_DEPENDENCIES,
+                       repair_module.COMPACTION_BUDGET_MODULE: repair_module.COMPACTION_BUDGET_DEPENDENCIES}
+    if module_name in dependency_sets:
         value = json.loads(manifest.read_text())
         value['reviewedDependencies'] = {}
-        for name in repair_module.IMAGE_DEPENDENCIES:
+        for name in dependency_sets[module_name]:
             dependency = runtime / 'dist' / name
             dependency.write_bytes(('reviewed native dependency ' + name).encode())
             value['reviewedDependencies'][name] = hashlib.sha256(dependency.read_bytes()).hexdigest()
@@ -151,6 +153,115 @@ def test_direct_completion_unreviewed_dependency_never_publishes(direct_installa
         run(direct_installation, module_name=repair_module.DIRECT_TOOL_MODULE)
     assert module.with_name(repair_module.DIRECT_TOOL_MODULE).read_bytes() == original
     assert not (state / 'receipt.json').exists()
+
+
+@pytest.fixture
+def finalize_scope_installation(installation):
+    runtime, _, manifest, module, *_ = installation
+    module.rename(module.with_name(repair_module.FINALIZE_TOOL_SCOPE_MODULE))
+    value = json.loads(manifest.read_text())
+    value['reviewedDependencies'] = {}
+    for name in repair_module.FINALIZE_TOOL_SCOPE_DEPENDENCIES:
+        raw = ('reviewed native finalizer merge ' + name).encode()
+        (runtime / 'dist' / name).write_bytes(raw)
+        value['reviewedDependencies'][name] = hashlib.sha256(raw).hexdigest()
+    manifest.write_text(json.dumps(value))
+    return installation
+
+
+def test_finalize_scope_has_separate_custody_and_binds_native_candidate_merge(finalize_scope_installation):
+    runtime, state, _, module, original, patched = finalize_scope_installation
+    module = module.with_name(repair_module.FINALIZE_TOOL_SCOPE_MODULE)
+    options = {'module_name': repair_module.FINALIZE_TOOL_SCOPE_MODULE}
+    assert run(finalize_scope_installation, **options)['status'] == 'changed'
+    assert module.read_bytes() == patched
+    receipt = json.loads((state / 'receipt.json').read_bytes())
+    assert set(receipt['reviewedDependencies']) == repair_module.FINALIZE_TOOL_SCOPE_DEPENDENCIES
+    assert next(state.glob('*.js')).read_bytes() == original
+    assert run(finalize_scope_installation, **options)['status'] == 'unchanged'
+    dependency = runtime / 'dist' / next(iter(repair_module.FINALIZE_TOOL_SCOPE_DEPENDENCIES))
+    reviewed = dependency.read_bytes()
+    dependency.write_bytes(b'unreviewed candidate merge')
+    with pytest.raises(ValueError, match='dependency differs'):
+        run(finalize_scope_installation, restore=True, **options)
+    assert module.read_bytes() == patched
+    dependency.write_bytes(reviewed)
+    assert run(finalize_scope_installation, restore=True, **options)['status'] == 'changed'
+    assert module.read_bytes() == original
+
+
+@pytest.mark.parametrize('fault', ['missing', 'changed', 'extra-contract'])
+def test_finalize_scope_unknown_merge_never_publishes(finalize_scope_installation, fault):
+    runtime, state, manifest, module, original, _ = finalize_scope_installation
+    dependency = runtime / 'dist' / next(iter(repair_module.FINALIZE_TOOL_SCOPE_DEPENDENCIES))
+    if fault == 'missing':
+        dependency.unlink()
+    elif fault == 'changed':
+        dependency.write_bytes(b'unreviewed native candidate merge')
+    else:
+        value = json.loads(manifest.read_text())
+        value['reviewedDependencies']['other.js'] = 'a' * 64
+        manifest.write_text(json.dumps(value))
+    with pytest.raises((ValueError, FileNotFoundError)):
+        run(finalize_scope_installation, module_name=repair_module.FINALIZE_TOOL_SCOPE_MODULE)
+    assert module.with_name(repair_module.FINALIZE_TOOL_SCOPE_MODULE).read_bytes() == original
+    assert not (state / 'receipt.json').exists()
+
+
+def test_finalize_scope_installer_cli_selects_only_its_custodied_module(finalize_scope_installation, tmp_path):
+    runtime, state, manifest, module, original, patched = finalize_scope_installation
+    module = module.with_name(repair_module.FINALIZE_TOOL_SCOPE_MODULE)
+    (runtime / 'openclaw.mjs').write_text('// fixture entrypoint; never executed\n')
+    helper = tmp_path / 'cli' / 'openclaw_tool_recovery.py'
+    helper.parent.mkdir()
+    shutil.copyfile(ROOT / 'host/openclaw_tool_recovery.py', helper)
+    shutil.copyfile(manifest, helper.with_name('openclaw-finalize-tool-scope.json'))
+    command = [sys.executable, str(helper), '--openclaw-bin', str(runtime / 'openclaw.mjs'),
+               '--finalize-tool-scope', '--state-dir', str(state)]
+    for extra, expected, status in [([], patched, 'changed'), ([], patched, 'unchanged'),
+                                    (['--restore'], original, 'changed')]:
+        completed = subprocess.run(command + extra, capture_output=True, text=True, timeout=20)
+        assert completed.returncode == 0, completed.stderr
+        receipt = json.loads(completed.stdout)
+        assert receipt['module'] == repair_module.FINALIZE_TOOL_SCOPE_MODULE
+        assert receipt['status'] == status
+        assert module.read_bytes() == expected
+    assert not module.with_name(repair_module.YIELD_USAGE_MODULE).exists()
+    assert not module.with_name(repair_module.COMPACTION_BUDGET_MODULE).exists()
+
+
+@pytest.mark.parametrize('fault', ['missing', 'changed', 'extra-contract', 'changed-after-custody'])
+def test_selection_scope_unknown_definition_lineage_never_publishes(installation, fault):
+    runtime, state, manifest, module, original, patched = installation
+    module = module.rename(module.with_name(repair_module.COMPACTION_BUDGET_MODULE))
+    value = json.loads(manifest.read_text())
+    value['reviewedDependencies'] = {}
+    for name in repair_module.COMPACTION_BUDGET_DEPENDENCIES:
+        raw = ('reviewed native definition lineage ' + name).encode()
+        (runtime / 'dist' / name).write_bytes(raw)
+        value['reviewedDependencies'][name] = hashlib.sha256(raw).hexdigest()
+    manifest.write_text(json.dumps(value))
+    dependency = runtime / 'dist' / sorted(repair_module.COMPACTION_BUDGET_DEPENDENCIES)[0]
+    expected, receipt_before = original, None
+    if fault == 'changed-after-custody':
+        assert run(installation, module_name=repair_module.COMPACTION_BUDGET_MODULE)['status'] == 'changed'
+        expected = patched
+        receipt_before = (state / 'receipt.json').read_bytes()
+    if fault == 'missing':
+        dependency.unlink()
+    elif fault in ('changed', 'changed-after-custody'):
+        dependency.write_bytes(b'unreviewed native definition adapter')
+    else:
+        value['reviewedDependencies']['other.js'] = 'a' * 64
+        manifest.write_text(json.dumps(value))
+    with pytest.raises((ValueError, FileNotFoundError)):
+        run(installation, module_name=repair_module.COMPACTION_BUDGET_MODULE)
+    assert module.read_bytes() == expected
+    if receipt_before is None:
+        assert not (state / 'receipt.json').exists()
+    else:
+        assert (state / 'receipt.json').read_bytes() == receipt_before
+        assert next(state.glob('*.js')).read_bytes() == original
 
 
 def test_apply_reapply_restore_preserve_bytes_permissions_and_backup(installation):
@@ -597,6 +708,7 @@ def test_unchanged_compaction_repair_checks_its_dependency(compaction_installati
     ('OPENCLAW_ATTEMPT_EXECUTION_MODULE', 'openclaw-context-usage.json', repair_module.CONTEXT_USAGE_MODULE),
     ('OPENCLAW_OPENAI_HTTP_MODULE', 'openclaw-no-tools-ingress.json', repair_module.NO_TOOLS_INGRESS_MODULE),
     ('OPENCLAW_EMBEDDED_AGENT_MODULE', 'openclaw-yield-usage.json', repair_module.YIELD_USAGE_MODULE),
+    ('OPENCLAW_FINALIZE_LIFECYCLE_MODULE', 'openclaw-finalize-tool-scope.json', repair_module.FINALIZE_TOOL_SCOPE_MODULE),
     ('OPENCLAW_CORE_PROXY_MODULE', 'openclaw-compaction-empty.json', repair_module.COMPACTION_EMPTY_MODULE),
     ('OPENCLAW_COMPACT_MODULE', 'openclaw-compaction-no-work.json', repair_module.COMPACTION_NO_WORK_MODULE),
     ('OPENCLAW_READ_MODULE', 'openclaw-read-range.json', repair_module.READ_RANGE_MODULE),
@@ -656,6 +768,179 @@ def test_reviewed_runtime_migrations_round_trip(tmp_path, environment, manifest_
         assert repair_module.repair(runtime, runtime / "state", **options)["status"] == "unchanged"
         repair_module.repair(runtime, runtime / "state", restore=True, **options)
         assert module.read_bytes() == original.encode()
+
+
+@pytest.mark.parametrize('environment,manifest_name,module_name,prior_hash', [
+    ('OPENCLAW_SELECTION_MODULE', 'openclaw-compaction-budget.json', repair_module.COMPACTION_BUDGET_MODULE,
+     '07661b95137eceb301ad23bd4391c01ded07d3de0f7fb30741dde5a6c35df2e6'),
+    ('OPENCLAW_EMBEDDED_AGENT_MODULE', 'openclaw-yield-usage.json', repair_module.YIELD_USAGE_MODULE,
+     'd00804f960d617b6b3e2ae6b1691f3aa9866029c8da8772f236a35a6033b37f8'),
+])
+def test_composed_finalize_scope_recipes_keep_prior_build_custody(
+        tmp_path, environment, manifest_name, module_name, prior_hash):
+    candidate_path = os.environ.get(environment)
+    if not candidate_path:
+        pytest.skip('requires the exact reviewed OpenClaw candidate')
+    manifest_path = ROOT / 'host' / manifest_name
+    manifest = json.loads(manifest_path.read_text())
+    candidate = Path(candidate_path).read_text()
+    current_hash = hashlib.sha256(candidate.encode()).hexdigest()
+    reverse = ([] if current_hash == manifest['sourceSha256'] else
+               manifest['replacements'] if current_hash == manifest['patchedSha256'] else
+               manifest['previousReplacements'][current_hash])
+    for before, after in reversed(reverse):
+        assert candidate.count(after) == 1
+        candidate = candidate.replace(after, before)
+    original = candidate.encode()
+    assert hashlib.sha256(original).hexdigest() == manifest['sourceSha256']
+    previous = dict(manifest, patchedSha256=prior_hash,
+                    replacements=manifest['previousReplacements'][prior_hash])
+    previous_path = tmp_path / 'previous.json'
+    previous_path.write_text(json.dumps(previous))
+    runtime = tmp_path / 'runtime'
+    (runtime / 'dist').mkdir(parents=True)
+    (runtime / 'package.json').write_text(json.dumps({'name': 'openclaw', 'version': repair_module.VERSION}))
+    module = runtime / 'dist' / module_name
+    module.write_bytes(original)
+    for name, expected_sha in manifest.get('reviewedDependencies', {}).items():
+        dependency = Path(candidate_path).with_name(name).read_bytes()
+        assert hashlib.sha256(dependency).hexdigest() == expected_sha
+        (runtime / 'dist' / name).write_bytes(dependency)
+    state = tmp_path / 'state'
+
+    def apply(path, **extra):
+        return repair_module.repair(runtime, state, manifest_path=path, module_name=module_name, **extra)
+
+    assert apply(previous_path)['status'] == 'changed'
+    assert hashlib.sha256(module.read_bytes()).hexdigest() == prior_hash
+    assert apply(manifest_path)['status'] == 'changed'
+    assert hashlib.sha256(module.read_bytes()).hexdigest() == manifest['patchedSha256']
+    # A previous ODS build can only rebuild the newer exact bytes from this
+    # same private receipt and original backup; arbitrary bytes stay refused.
+    assert apply(previous_path)['recoveredFrom'] == 'verified-backup'
+    assert hashlib.sha256(module.read_bytes()).hexdigest() == prior_hash
+    assert apply(manifest_path)['status'] == 'changed'
+    assert apply(manifest_path, restore=True)['status'] == 'changed'
+    assert module.read_bytes() == original
+    assert list(state.glob('*.js')) == [state / (manifest['sourceSha256'] + '.js')]
+    assert next(state.glob('*.js')).read_bytes() == original
+
+
+@pytest.mark.skipif(not os.environ.get('ODS_TEST_OPENCLAW_RUNTIME'),
+                    reason='explicit closed, read-only native SDK input required')
+def test_scope_repair_prefixes_import_and_keep_ordinary_tools_after_admission_failures(tmp_path):
+    """Load real SDK graphs and use a native read; never run a model/provider."""
+    source = Path(os.environ['ODS_TEST_OPENCLAW_RUNTIME']).resolve(strict=True)
+    runtime = tmp_path / 'runtime'
+    shutil.copytree(source, runtime, symlinks=True)
+    stages = [
+        ('openclaw-finalize-tool-scope.json', repair_module.FINALIZE_TOOL_SCOPE_MODULE, None),
+        ('openclaw-yield-usage.json', repair_module.YIELD_USAGE_MODULE,
+         'd00804f960d617b6b3e2ae6b1691f3aa9866029c8da8772f236a35a6033b37f8'),
+        ('openclaw-compaction-budget.json', repair_module.COMPACTION_BUDGET_MODULE,
+         '07661b95137eceb301ad23bd4391c01ded07d3de0f7fb30741dde5a6c35df2e6'),
+    ]
+    for manifest_name, module_name, prior_hash in stages:
+        manifest = json.loads((ROOT / 'host' / manifest_name).read_text())
+        body = (runtime / 'dist' / module_name).read_text()
+        assert hashlib.sha256(body.encode()).hexdigest() == manifest['patchedSha256']
+        for before, after in reversed(manifest['replacements']):
+            assert body.count(after) == 1
+            body = body.replace(after, before)
+        assert hashlib.sha256(body.encode()).hexdigest() == manifest['sourceSha256']
+        for before, after in manifest['previousReplacements'].get(prior_hash, []):
+            assert body.count(before) == 1
+            body = body.replace(before, after)
+        assert hashlib.sha256(body.encode()).hexdigest() == (prior_hash or manifest['sourceSha256'])
+        (runtime / 'dist' / module_name).write_text(body)
+
+    workspace = tmp_path / 'workspace'
+    workspace.mkdir()
+    marker = 'ODS ordinary uncapped native read fixture'
+    (workspace / 'ordinary.txt').write_text(marker)
+    state = tmp_path / 'isolated-sdk-state'
+    state.mkdir()
+    config = state / 'config.json'
+    config.write_text('{}')
+    environment = {**os.environ, 'OPENCLAW_STATE_DIR': str(state),
+                   'OPENCLAW_CONFIG_PATH': str(config)}
+    script = r'''
+import { pathToFileURL } from 'node:url';
+const root=process.argv[1], workspace=process.argv[2];
+const native=await import(pathToFileURL(root+'/dist/plugin-sdk/agent-harness.js'));
+await import(pathToFileURL(root+'/dist/embedded-agent-CJx-nG3W.js'));
+await import(pathToFileURL(root+'/dist/selection-BEwSQKM-.js'));
+const tools=native.createOpenClawCodingTools({agentId:'ordinary-fixture',
+ sessionId:'ordinary-session',sessionKey:'agent:ordinary-fixture:main',runId:'ordinary-run',
+ cwd:workspace,workspaceDir:workspace,
+ config:{agents:{defaults:{workspace}},tools:{profile:'coding',fs:{workspaceOnly:true}},plugins:{enabled:false}},
+ includeToolSearchControls:false,toolConstructionPlan:{includeBaseCodingTools:true,
+ includeShellTools:false,includeOpenClawTools:false,includePluginTools:false,includeChannelTools:false}});
+const allowed=native.applyEmbeddedAttemptToolsAllow(tools,undefined);
+const read=allowed.find(tool=>tool.name==='read');
+if(!read)throw Error('ordinary native read was removed');
+const result=await read.execute('ordinary-read',{path:workspace+'/ordinary.txt'});
+const text=(result.content??[]).filter(item=>item.type==='text').map(item=>item.text).join('\n');
+if(!text.includes('ODS ordinary uncapped native read fixture'))throw Error('ordinary read did not execute');
+console.log('ODS_PREFIX_ORDINARY='+JSON.stringify({loaded:true,read:true,names:allowed.map(tool=>tool.name)}));
+'''
+
+    def ordinary():
+        completed = subprocess.run(['node', '--input-type=module', '-e', script, str(runtime), str(workspace)],
+                                   capture_output=True, text=True, env=environment, timeout=45)
+        assert completed.returncode == 0, completed.stderr
+        result = json.loads(completed.stdout.split('ODS_PREFIX_ORDINARY=')[-1])
+        assert result['loaded'] is True and result['read'] is True
+        assert 'read' in result['names'] and not {'exec', 'message', 'tool_call'} & set(result['names'])
+
+    def module_bytes():
+        return {module: (runtime / 'dist' / module).read_bytes() for _, module, _ in stages}
+
+    completed_states = []
+
+    def custody_bytes():
+        return {str(path): path.read_bytes() for directory in completed_states
+                for path in directory.iterdir() if path.name != 'lock'}
+
+    ordinary()
+    for index, (manifest_name, module_name, _) in enumerate(stages):
+        actual_manifest = ROOT / 'host' / manifest_name
+        manifest = json.loads(actual_manifest.read_text())
+        faults = ['source', 'custody'] + (['dependency'] if manifest.get('reviewedDependencies') else [])
+        for fault in faults:
+            before, custody_before = module_bytes(), custody_bytes()
+            fault_state = tmp_path / f'fault-{index}-{fault}'
+            fault_state.mkdir(mode=0o700)
+            selected_manifest = actual_manifest
+            dependency = saved_dependency = None
+            if fault == 'source':
+                selected_manifest = tmp_path / f'fault-{index}-manifest.json'
+                selected_manifest.write_text(json.dumps({**manifest, 'sourceSha256': '0' * 64}))
+            elif fault == 'custody':
+                backup = fault_state / (manifest['sourceSha256'] + '.js')
+                backup.write_bytes(b'tampered fixture custody')
+                backup.chmod(0o600)
+            else:
+                dependency = runtime / 'dist' / sorted(manifest['reviewedDependencies'])[0]
+                saved_dependency = dependency.read_bytes()
+                # A loadable but unreviewed dependency must still be refused.
+                dependency.write_bytes(saved_dependency + b'\n// fixture dependency drift\n')
+            try:
+                with pytest.raises(ValueError):
+                    repair_module.repair(runtime, fault_state, module_name=module_name,
+                                         manifest_path=selected_manifest)
+                assert module_bytes() == before and custody_bytes() == custody_before
+                assert not (fault_state / 'receipt.json').exists()
+                ordinary()
+            finally:
+                if dependency is not None:
+                    dependency.write_bytes(saved_dependency)
+        selected_state = tmp_path / f'applied-{index}'
+        assert repair_module.repair(runtime, selected_state, module_name=module_name,
+                                    manifest_path=actual_manifest)['status'] == 'changed'
+        completed_states.append(selected_state)
+        assert hashlib.sha256((runtime / 'dist' / module_name).read_bytes()).hexdigest() == manifest['patchedSha256']
+        ordinary()
 
 
 def test_utf8_output_cli_refuses_unreviewed_decoder_bytes(installation):

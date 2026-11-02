@@ -240,6 +240,17 @@ def shared_repairs(artifacts, monkeypatch):
                 raw = ('reviewed fixture dependency ' + dependency).encode()
                 (dist / dependency).write_bytes(raw)
                 manifest['reviewedDependencies'][dependency] = hashlib.sha256(raw).hexdigest()
+        elif name == 'openclaw-finalize-tool-scope.json':
+            dependency = 'hook-runner-global-mWFYlTIy.js'
+            raw = ('reviewed fixture dependency ' + dependency).encode()
+            (dist / dependency).write_bytes(raw)
+            manifest['reviewedDependencies'] = {dependency: hashlib.sha256(raw).hexdigest()}
+        elif name == 'openclaw-compaction-budget.json':
+            manifest['reviewedDependencies'] = {}
+            for dependency in ('tool-split-C61cf48Y.js', 'tools-D5HS8Q_I.js'):
+                raw = ('reviewed fixture dependency ' + dependency).encode()
+                (dist / dependency).write_bytes(raw)
+                manifest['reviewedDependencies'][dependency] = hashlib.sha256(raw).hexdigest()
         (manifests / name).write_text(json.dumps(manifest))
     monkeypatch.setattr(bundle, 'REPAIR_ROOT', manifests)
     return manifests
@@ -255,9 +266,11 @@ def test_shared_repairs_compose_deterministically_only_in_staging(artifacts, sha
     manifest, _ = bundle.verify(root, expected_digest=digest)
     repairs = json.loads((root / 'ods-runtime-repairs.json').read_bytes())
     stream = json.loads((root / 'ods-runtime-patches.json').read_bytes())[0]
-    assert len(repairs) == 24
+    assert len(repairs) == 25
+    assert repairs[-1]['module'] == 'selection-BEwSQKM-.js'
+    assert len({item['module'] for item in repairs}) == len(repairs)
     assert {item["manifest"] for item in repairs}.issuperset({
-        "openclaw-context-usage.json", "openclaw-no-tools-ingress.json", "openclaw-yield-usage.json", "openclaw-compaction-empty.json", "openclaw-compaction-no-work.json", "openclaw-hook-provenance.json", "openclaw-run-id-redaction.json", "openclaw-subagent-admission.json"})
+        "openclaw-context-usage.json", "openclaw-no-tools-ingress.json", "openclaw-yield-usage.json", "openclaw-finalize-tool-scope.json", "openclaw-compaction-empty.json", "openclaw-compaction-no-work.json", "openclaw-hook-provenance.json", "openclaw-run-id-redaction.json", "openclaw-subagent-admission.json"})
     assert any(item['module'] == 'windows-command-C7mWWxtt.js'
                and item['manifest'] == 'openclaw-utf8-output.json' for item in repairs)
     assert any(item['module'] == 'payloads-CC0zlj7W.js'
@@ -278,6 +291,20 @@ def test_shared_repairs_compose_deterministically_only_in_staging(artifacts, sha
     (root / 'ods-runtime-repairs.json').write_text('[]')
     with pytest.raises(bundle.BundleError, match='content-changed'):
         bundle.verify(root, expected_digest=digest)
+
+
+@pytest.mark.parametrize('dependency', ['tool-split-C61cf48Y.js', 'tools-D5HS8Q_I.js',
+                                      'hook-runner-global-mWFYlTIy.js'])
+def test_scope_dependency_failure_never_publishes_or_changes_runtime_input(
+        artifacts, shared_repairs, dependency):
+    target = artifacts['runtime'] / 'dist' / dependency
+    target.write_bytes(b'unreviewed native scope implementation')
+    before = bundle.inventory(artifacts['runtime'], normalize_modes=False)
+    with pytest.raises(ValueError, match='dependency differs'):
+        bundle.build(**artifacts, shared_runtime_repairs=True, stream_progress_fix=True)
+    assert not artifacts['destination'].exists()
+    assert bundle.inventory(artifacts['runtime'], normalize_modes=False) == before
+    assert not list(artifacts['destination'].parent.glob('.ods-shared-repairs-*'))
 
 
 @pytest.mark.parametrize('module', [module for _, module in bundle.SHARED_REPAIRS])
@@ -362,7 +389,8 @@ def test_stream_progress_patch_precedes_buffers_and_is_manifest_bound(artifacts,
         bundle.verify(artifacts['destination'], expected_digest=checksum)
 
 
-@pytest.mark.parametrize('mutation', [None, 'node', 'plugin', 'injected-code', 'receipt'])
+@pytest.mark.parametrize('mutation', [None, 'node', 'plugin', 'injected-code', 'receipt',
+                                    'finalizer-tool-scope', 'outer-tool-scope'])
 def test_upgrade_checks_actual_patch_not_only_candidate_manifest(artifacts, monkeypatch, mutation):
     original = ('\t\t\tconst innerStreamFn = activeSession.agent.streamFn;\n'
                 '\t\t\tconst configuredRunTimeoutMs = resolveAgentTimeoutMs({ cfg: params.config });\n'
@@ -377,9 +405,11 @@ def test_upgrade_checks_actual_patch_not_only_candidate_manifest(artifacts, monk
     if mutation:
         paths = {'node': 'node', 'plugin': 'plugins/0/index.mjs',
                  'injected-code': 'runtime/' + bundle.STREAM_PROGRESS_FILE,
-                 'receipt': 'ods-runtime-patches.json'}
+                 'receipt': 'ods-runtime-patches.json',
+                 'finalizer-tool-scope': 'runtime/dist/lifecycle-hook-helpers-Ck-WCTzd.js',
+                 'outer-tool-scope': 'runtime/dist/embedded-agent-CJx-nG3W.js'}
         path = candidate / paths[mutation]
-        path.write_bytes(path.read_bytes() + b'\nextra')
+        path.write_bytes((path.read_bytes() if path.exists() else b'') + b'\nextra')
         manifest = json.loads((candidate / bundle.MANIFEST).read_bytes())
         manifest['entries'] = bundle.inventory(candidate, exclude_manifest=True)
         body = bundle._encode(manifest)

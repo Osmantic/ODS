@@ -36,7 +36,7 @@ ai() { :; }
 
 # Exercise the real file admission before plugin publication. All earlier
 # platform/state observations are fixture-only; publication itself is a trap.
-for recovery_prereq in present missing; do
+for recovery_prereq in present missing-plugin missing-manifest; do
     if (
         export ENABLE_PIXEL_RUNTIME=true PIXEL_SERVICE_USER="$owner"
         export PIXEL_SOURCE_REF=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -44,8 +44,10 @@ for recovery_prereq in present missing; do
         export INSTALL_DIR="$TEST_ROOT/recovery-prereq-$recovery_prereq"
         mkdir -p "$INSTALL_DIR/extensions/services" "$INSTALL_DIR/home" "$INSTALL_DIR/source"
         cp -R "$ROOT/extensions/services/pixel-agent" "$INSTALL_DIR/extensions/services/"
-        if [[ "$recovery_prereq" == missing ]]; then
+        if [[ "$recovery_prereq" == missing-plugin ]]; then
             rm -- "$INSTALL_DIR/extensions/services/pixel-agent/plugin/integration-review-recovery.mjs"
+        elif [[ "$recovery_prereq" == missing-manifest ]]; then
+            rm -- "$INSTALL_DIR/extensions/services/pixel-agent/host/openclaw-finalize-tool-scope.json"
         fi
         ods_pixel_owner_home() { printf '%s\n' "$INSTALL_DIR/home"; }
         _ods_pixel_gateway_port() { printf '%s\n' 18789; }
@@ -3614,7 +3616,15 @@ assert "--state-dir \"$home/.openclaw/ods-runtime-patches/sandbox-mkdir-$mkdir_m
 managed.extend(["sandbox-mkdir-bridge", "sandbox-mkdir-secure"])
 known = installer[foreign_restore:own_repair].split("--known", 1)[1].split(">>", 1)[0]
 assert sorted(known.replace("\\", " ").split()) == sorted(managed)
-assert len(set(managed)) == len(managed) == 24
+assert len(set(managed)) == len(managed) == 25
+assert "finalize-tool-scope" in managed
+assert "host/openclaw-finalize-tool-scope.json" in installer
+scope_helper = installer.index("--state-dir \"$home/.openclaw/ods-runtime-patches/finalize-tool-scope\"")
+scope_embedded = installer.index("--state-dir \"$home/.openclaw/ods-runtime-patches/yield-usage\"")
+scope_selection = installer.index("--state-dir \"$home/.openclaw/ods-runtime-patches/compaction-budget\"")
+assert scope_helper < scope_embedded < scope_selection
+assert scope_selection == max(installer.index("--state-dir \"$home/.openclaw/ods-runtime-patches/" + name + "\"")
+                              for name in managed if not name.startswith("sandbox-mkdir-"))
 assert "direct-tool-completion" in managed
 assert "host/openclaw-direct-tool-completion.json" in installer
 assert "no-tools-ingress" in managed
