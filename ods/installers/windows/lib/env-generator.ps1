@@ -309,8 +309,8 @@ function New-ODSEnv {
     $existingEnv = @{}
     $previousEnvLines = @()
     $envPath = Join-Path $InstallDir ".env"
-    if (Test-Path $envPath) {
-        $previousEnvLines = @(Get-Content $envPath)
+    if (Test-Path -LiteralPath $envPath -PathType Leaf) {
+        $previousEnvLines = @(Get-Content -LiteralPath $envPath -Encoding UTF8)
         $previousEnvLines | ForEach-Object {
             if ($_ -match "^([A-Za-z_][A-Za-z0-9_]*)=(.*)$") {
                 $existingEnv[$Matches[1]] = $Matches[2]
@@ -382,8 +382,8 @@ function New-ODSEnv {
 
     function Get-ExistingTokenSpyApiKey {
         $tokenSpyKeyFile = Join-Path $InstallDir "data\token-spy\token-spy-api-key.txt"
-        if (Test-Path $tokenSpyKeyFile) {
-            $value = (Get-Content -Raw -Path $tokenSpyKeyFile -ErrorAction SilentlyContinue)
+        if (Test-Path -LiteralPath $tokenSpyKeyFile -PathType Leaf) {
+            $value = (Get-Content -Raw -LiteralPath $tokenSpyKeyFile -ErrorAction SilentlyContinue)
             if (-not [string]::IsNullOrWhiteSpace($value)) {
                 return $value.Trim()
             }

@@ -407,8 +407,8 @@ Write-AISuccess "Generated .env with secure secrets"
 $_envPath = Join-Path $installDir ".env"
 $_requiredKeys = @("WEBUI_SECRET", "N8N_PASS", "LITELLM_KEY", "DASHBOARD_API_KEY")
 $_envLines = @{}
-if (Test-Path $_envPath) {
-    Get-Content $_envPath | ForEach-Object {
+if (Test-Path -LiteralPath $_envPath -PathType Leaf) {
+    Get-Content -LiteralPath $_envPath -Encoding UTF8 | ForEach-Object {
         if ($_ -match "^([A-Za-z_][A-Za-z0-9_]*)=(.*)$") {
             $_envLines[$Matches[1]] = $Matches[2]
         }
