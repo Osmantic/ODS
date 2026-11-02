@@ -216,6 +216,36 @@ try {
     $single = @(ConvertFrom-ODSNativeLlamaDeviceList "  Vulkan0: AMD Radeon Graphics (16384 MiB, 16000 MiB free)")
     Check ((Select-ODSNativeLlamaDevice -Devices $single -AdapterName 'AMD Radeon(TM) 890M').Name -eq 'Vulkan0') 'a single AMD Vulkan device is used when the driver names it differently'
 
+    # Explicit NVIDIA CUDA qualification must not change the default AMD
+    # selector, guess between adapters, or accept a software implementation.
+    $mixed = @(ConvertFrom-ODSNativeLlamaDeviceList ("  Vulkan0: AMD Radeon RX 7900 XTX (24560 MiB, 24000 MiB free)`n" +
+        "  CUDA1: NVIDIA GeForce RTX 3060 (12288 MiB, 11000 MiB free)`n" +
+        "  Vulkan2: Intel Arc A770 (16384 MiB, 15000 MiB free)"))
+    Check ((Select-ODSNativeLlamaDevice -Devices $mixed -AdapterName 'NVIDIA GeForce RTX 3060' -Backend cuda -GpuVendor nvidia).Name -ceq 'CUDA1') 'explicit NVIDIA CUDA selects the detected physical adapter on a mixed-vendor host'
+    Check ((Select-ODSNativeLlamaDevice -Devices $mixed -AdapterName 'NVIDIA GeForce RTX 3060').Name -ceq 'Vulkan0') 'the default selector retains its existing AMD-only behavior'
+    foreach ($name in @('Tesla P40', 'Tesla V100-SXM2-16GB')) {
+        $tesla = @(ConvertFrom-ODSNativeLlamaDeviceList "  CUDA0: $name (16384 MiB, 15000 MiB free)")
+        Check ((Select-ODSNativeLlamaDevice -Devices $tesla -AdapterName $name -Backend cuda -GpuVendor nvidia).Name -ceq 'CUDA0') "CUDA qualification uses the exact $name name without a marketing-prefix requirement"
+    }
+    Check ($null -eq (Select-ODSNativeLlamaDevice -Devices $mixed -AdapterName 'NVIDIA GeForce RTX 4090' -Backend cuda -GpuVendor nvidia)) 'NVIDIA CUDA does not substitute an unrelated adapter'
+    $duplicate = @($mixed[1], $mixed[1])
+    Check ($null -eq (Select-ODSNativeLlamaDevice -Devices $duplicate -AdapterName 'NVIDIA GeForce RTX 3060' -Backend cuda -GpuVendor nvidia)) 'duplicate NVIDIA adapter names are refused instead of guessed'
+    $ambiguous = @(ConvertFrom-ODSNativeLlamaDeviceList ("  CUDA0: NVIDIA GeForce RTX 3060 (12288 MiB, 11000 MiB free)`n" +
+        "  CUDA1: NVIDIA GeForce RTX 3060 Ti (8192 MiB, 7000 MiB free)"))
+    Check ($null -eq (Select-ODSNativeLlamaDevice -Devices $ambiguous -AdapterName 'NVIDIA GeForce RTX' -Backend cuda -GpuVendor nvidia)) 'ambiguous NVIDIA partial matches are refused'
+    Check ((Select-ODSNativeLlamaDevice -Devices $ambiguous -AdapterName 'NVIDIA GeForce RTX 3060' -Backend cuda -GpuVendor nvidia).Name -ceq 'CUDA0') 'a unique exact NVIDIA match wins over a partial match'
+    Check ($null -eq (Select-ODSNativeLlamaDevice -Devices @($ambiguous[1]) -AdapterName 'NVIDIA GeForce RTX 3060' -Backend cuda -GpuVendor nvidia)) 'a single RTX 3060 Ti does not qualify as the detected RTX 3060'
+    Check ($null -eq (Select-ODSNativeLlamaDevice -Devices @($ambiguous[0]) -AdapterName 'NVIDIA GeForce RTX 3060 Ti' -Backend cuda -GpuVendor nvidia)) 'a single RTX 3060 does not qualify as the detected RTX 3060 Ti'
+    Check ($null -eq (Select-ODSNativeLlamaDevice -Devices @($ambiguous[0]) -AdapterName 'NVIDIA GeForce RTX 3060 Laptop GPU' -Backend cuda -GpuVendor nvidia)) 'desktop and laptop NVIDIA adapter identities are not interchangeable'
+    foreach ($description in @('llvmpipe NVIDIA', 'NVIDIA SwiftShader', 'NVIDIA software rasterizer', 'Microsoft NVIDIA Basic Render')) {
+        $fake = @(ConvertFrom-ODSNativeLlamaDeviceList "  CUDA0: $description (12288 MiB, 11000 MiB free)")
+        Check ($null -eq (Select-ODSNativeLlamaDevice -Devices $fake -AdapterName $description -Backend cuda -GpuVendor nvidia)) "NVIDIA qualification refuses software device $description"
+    }
+    $script:probe['--list-devices'] = New-ProbeResult 0 "  CUDA1: NVIDIA GeForce RTX 3060 (12288 MiB, 11000 MiB free)"
+    $qualifiedNvidia = Test-ODSNativeLlamaQualification -ExecutablePath 'C:\fixture\llama-server.exe' -ExpectedBuild 9014 `
+        -AdapterName 'NVIDIA GeForce RTX 3060' -CodeIntegrity $noPolicy -Backend cuda -GpuVendor nvidia
+    Check ($qualifiedNvidia.Device.Name -ceq 'CUDA1' -and $qualifiedNvidia.Backend -ceq 'cuda') 'the public qualification boundary propagates the explicit GPU vendor'
+
     # --- API key file: owner-only, exactly 64 hex characters, no BOM/newline ---
     $key = New-ODSNativeLlamaApiKey
     Check ($key -cmatch '^[0-9a-f]{64}$' -and $key -ne (New-ODSNativeLlamaApiKey)) 'each generated API key is 32 random bytes in lowercase hex'
@@ -250,6 +280,22 @@ try {
         '--device', 'Vulkan1', '--metrics', '--no-webui', '--api-key-file', $keyPath, '--log-file', $options.LogPath,
         '--reasoning', 'off')
     Check (($arguments -join '|') -ceq ($expected -join '|')) 'launch arguments follow the contract: alias, loopback, one slot, named device, metrics, no web UI, key file and log'
+    $nvidiaOptions = $options | Select-Object *
+    $nvidiaOptions | Add-Member -NotePropertyName GpuVendor -NotePropertyValue 'nvidia'
+    $nvidiaOptions | Add-Member -NotePropertyName Backend -NotePropertyValue 'cuda'
+    $nvidiaOptions | Add-Member -NotePropertyName Architecture -NotePropertyValue 'x64'
+    $nvidiaOptions.Device = 'CUDA1'; $nvidiaOptions.NGpuLayers = 'all'
+    $nvidiaArgs = @(New-ODSNativeLlamaLaunchArguments $plan $nvidiaOptions) -join '|'
+    Check ($nvidiaArgs -match '\|--device\|CUDA1\|' -and $nvidiaArgs -match '\|--n-gpu-layers\|all\|' -and $nvidiaArgs -match '\|--fit\|off(\||$)') 'NVIDIA x64 metadata preserves explicit CUDA offload and the authenticated launch contract'
+    foreach ($vendor in @('intel', 'NVIDIA', '', $null)) {
+        $nvidiaOptions.GpuVendor = $vendor
+        Check ((Get-Failure { $null = New-ODSNativeLlamaLaunchArguments $plan $nvidiaOptions }) -match 'GPU vendor') "invalid saved GPU vendor '$vendor' is refused"
+    }
+    $nvidiaOptions.GpuVendor = 'nvidia'
+    $nvidiaOptions.Device = 'none'; $nvidiaOptions.NGpuLayers = '0'
+    Check ((Get-Failure { $null = New-ODSNativeLlamaLaunchArguments $plan $nvidiaOptions }) -match 'GPU vendor') 'a saved NVIDIA opt-in cannot become a CPU route'
+    $nvidiaOptions.Device = 'CUDA1'; $nvidiaOptions.NGpuLayers = 'all'; $nvidiaOptions.Architecture = 'arm64'
+    Check ((Get-Failure { $null = New-ODSNativeLlamaLaunchArguments $plan $nvidiaOptions }) -match 'GPU vendor') 'desktop NVIDIA metadata cannot select the Spark runtime'
     $commandLine = ConvertTo-ODSNativeLlamaArgumentString $arguments
     Check (-not $commandLine.Contains($key) -and $commandLine -notmatch '--api-key "' -and $commandLine.Contains('"' + (Join-Path $modelsDir 'Qwen3.6-35B-A3B-Q4_K_M.gguf') + '"')) 'the key never appears on the command line, and paths with spaces stay one argument'
     Check ((ConvertTo-ODSNativeLlamaArgumentString @('C:\dir\', 'a"b')) -ceq '"C:\dir\\" "a\"b"') 'arguments use the Windows CRT quoting rules'
@@ -526,6 +572,11 @@ try {
         $script:events.Clear()
         Check ((Get-Refusal { Invoke-ODSNativeLlamaRuntime $plan $vulkan $readyPath }).Message -match 'stop after the start' -and
             ($script:events -join ',') -ceq 'pin,start') 'a Vulkan (AMD) start never runs the memory check'
+        $script:events.Clear()
+        $desktopCuda = $cuda | Select-Object *
+        $desktopCuda.Architecture = 'x64'
+        Check ((Get-Refusal { Invoke-ODSNativeLlamaRuntime $plan $desktopCuda $readyPath }).Message -match 'stop after the start' -and
+            ($script:events -join ',') -ceq 'pin,start') 'x64 CUDA does not apply the Spark unified-memory startup policy'
     }
 } finally {
     $resolved = [IO.Path]::GetFullPath($memoryFixture)

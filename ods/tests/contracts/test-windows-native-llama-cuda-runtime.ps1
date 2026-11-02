@@ -1,8 +1,8 @@
-# Native llama.cpp CUDA runtime for NVIDIA GPUs on Windows on Arm (RTX Spark):
+# Native llama.cpp CUDA runtime for NVIDIA GPUs on x64 Windows and Arm (RTX Spark):
 # the pin, the two-archive install, the CUDA device pick, launch options,
 # exit hints, classified qualification failures and the GPU generation check.
-# Nothing routes to this runtime yet; the AMD (Vulkan) behaviour it shares is
-# pinned here with golden strings as well. Downloads, llama-server.exe, HTTP,
+# The AMD (Vulkan) behavior it shares is pinned with golden strings as well.
+# Downloads, llama-server.exe, HTTP,
 # ports, tasks and processes are fixtures and only temporary files are written.
 # Real-hardware outputs come from tests/fixtures/rtx-spark/llama-cpp-b11429.
 $ErrorActionPreference = 'Stop'
@@ -82,7 +82,15 @@ try {
         (Get-ODSNativeLlamaInstallDirectory $pin) -ceq (Join-Path $runtimeRoot 'b11429-win-cuda-13.4-arm64') -and
         (Get-ODSNativeLlamaInstallDirectory ([pscustomobject]@{ ReleaseTag = 'b9014' })) -ceq (Join-Path $runtimeRoot 'b9014-win-vulkan-x64')) 'runtime folders are <tag>-<flavor>; a pin without a flavor is still the Vulkan folder'
     Check ((Get-Failure { $null = Get-ODSNativeLlamaPin -SourceRoot $root -Backend amd -Architecture arm64 }) -match 'no pinned llama\.cpp build for AMD GPUs on Windows on Arm') 'there is no AMD pin for Windows on Arm'
-    Check ((Get-Failure { $null = Get-ODSNativeLlamaPin -SourceRoot $root -Backend nvidia }) -match 'container in Ubuntu') 'x64 NVIDIA has no Windows llama.cpp pin (it keeps the container route)'
+    $desktop = Get-ODSNativeLlamaPin -SourceRoot $root -Backend nvidia -Architecture x64
+    Check ($desktop.ReleaseTag -ceq 'b9014' -and $desktop.Flavor -ceq 'win-cuda-12.4-x64' -and $desktop.Architecture -ceq 'x64' -and $desktop.Backend -ceq 'cuda' -and $desktop.PolicyKey -ceq 'windows-native') 'x64 NVIDIA has an explicitly selected native CUDA pin independent of the ARM pin'
+    Check ($desktop.Archives.Count -eq 2 -and $desktop.Archives[0].Asset -ceq 'llama-b9014-bin-win-cuda-12.4-x64.zip' -and
+        $desktop.Archives[0].Sha256 -ceq 'bef10c5cca99c6c53a4f996fc60763237f68c3ba4f5b0de6a12c870d30c70441' -and $desktop.Archives[0].Size -eq 214361213 -and
+        $desktop.Archives[1].Asset -ceq 'cudart-llama-bin-win-cuda-12.4-x64.zip' -and
+        $desktop.Archives[1].Sha256 -ceq '8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6' -and $desktop.Archives[1].Size -eq 391443627) 'both CUDA x64 archives match the verified official b9014 release bytes'
+    Check ($desktop.MinDriverVersion -ceq '551.78' -and $desktop.RequiredCudaArchs.ContainsKey('8.6') -and -not $desktop.RequiredCudaArchs.ContainsKey('12.0')) 'the CUDA x64 pin names its driver floor and compiled compute targets without guessing Blackwell support'
+    Check ($desktop.RequiredFiles -contains 'ggml-cuda.dll' -and $desktop.RequiredFiles -contains 'cudart64_12.dll' -and
+        $desktop.RequiredFiles -contains 'cublas64_12.dll' -and $desktop.RequiredFiles -contains 'cublasLt64_12.dll') 'the CUDA x64 runtime requires its bundled CUDA dependencies'
     Check ((Get-Failure { $null = Get-ODSNativeLlamaPin -SourceRoot $root -Backend NVIDIA -Architecture arm64 }) -ne '') 'the vendor name is case-sensitive'
 
     $sourceRoot = Join-Path $fixture 'source'
@@ -257,6 +265,17 @@ try {
     Check ((Get-Failure { $null = Test-ODSNativeLlamaInstall -Directory $vulkan.Directory -ExpectedArchives $cudaPin.Archives }) -match 'different archives') 'a v1 runtime never satisfies a multi-archive pin'
 
     $old = Join-Path $runtimeRoot 'b11000-win-cuda-13.4-arm64'
+    $desktopOldPin = New-CudaPin
+    $desktopOldPin.ReleaseTag = 'b11300'; $desktopOldPin.Build = 11300
+    $desktopOldPin.Flavor = 'win-cuda-13.4-x64'; $desktopOldPin.Architecture = 'x64'
+    foreach ($archive in $desktopOldPin.Archives) {
+        $fixtureZip = $script:sources[$archive.Url]
+        $archive.Asset = $archive.Asset.Replace('b11429', 'b11300').Replace('arm64', 'x64')
+        $archive.Url = "https://github.com/ggml-org/llama.cpp/releases/download/b11300/$($archive.Asset)"
+        $script:sources[$archive.Url] = $fixtureZip
+    }
+    $desktopOldPin.Asset = $desktopOldPin.Archives[0].Asset; $desktopOldPin.Url = $desktopOldPin.Archives[0].Url
+    $desktopOld = Install-ODSNativeLlamaRuntime -Pin $desktopOldPin
     $previous = Join-Path $runtimeRoot 'b11200-win-cuda-13.4-arm64'
     $foreign = Join-Path $runtimeRoot 'b11429-win-cuda-13.4-x64'
     $notes = Join-Path $runtimeRoot 'user-notes'
@@ -265,6 +284,7 @@ try {
     Check ((Test-Path -LiteralPath $cudaDirectory) -and (Test-Path -LiteralPath $previous) -and -not (Test-Path -LiteralPath $old) -and
         -not (Test-Path -LiteralPath $vulkan.Directory) -and (Test-Path -LiteralPath $foreign) -and (Test-Path -LiteralPath $notes) -and
         @(Get-RootEntries | Where-Object { $_.Name -like '.damaged-*' }).Count -eq 0) 'cleanup keeps the active and previous runtime, removes older CUDA and Vulkan copies and never unknown folders'
+    Check (-not (Test-Path -LiteralPath $desktopOld.Directory) -and (Test-Path -LiteralPath $foreign)) 'cleanup retires a verified old x64 CUDA install and preserves an unverified x64 folder'
 
     # --- Qualification: the b11429 version line, CUDA devices, classified throws -
     $script:probe = @{}

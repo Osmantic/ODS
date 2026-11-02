@@ -401,12 +401,61 @@ function Initialize-ODSPortalDocker([string]$Distro, [System.Collections.IDictio
     return $null
 }
 
-function Add-ODSPortalAmdArguments([string[]]$LinuxArgs, [System.Collections.IDictionary]$Options, [string]$SourceRoot, [bool]$NonInteractive, [string]$WslDistro = '') {
+function Get-ODSPortalWindowsArchitecture {
+    $facts = Get-ODSSparkArchitectureFacts
+    if (Test-ODSSparkArm64Facts $facts) { return 'arm64' }
+    if ([string]$facts.MachineArchitecture -ieq 'AMD64' -or @($facts.ProcessorArchitectures) -contains 9) { return 'x64' }
+    return 'unknown'
+}
+
+function Resolve-ODSPortalWindowsLlmRoute([System.Collections.IDictionary]$Options) {
+    # Only an owned runtime can establish a durable backend choice. An
+    # orphaned NVIDIA options file is evidence to repair, not permission to
+    # replace a task or silently move its Linux binding.
+    $path = Join-Path (Get-ODSPortalRuntimeDir) 'runtime-options.json'
+    $saved = $null
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+        $saved = Read-ODSNativeLlamaJson $path
+        if ($null -ne $saved.PSObject.Properties['GpuVendor']) { Assert-ODSNativeLlamaOptions $saved }
+    }
+    $persisted = $saved -and [string]$saved.GpuVendor -ceq 'nvidia'
+    if (-not $persisted) {
+        $task = Get-ODSPortalRuntimeTask
+        if ($task -and [string]$task.Description -ceq $script:ODSPortalRuntimeTaskDescriptions['nvidia-cuda-x64']) {
+            throw 'The saved runtime task has missing NVIDIA CUDA metadata. Restore its saved runtime-options.json before rerunning; the task and model binding were not changed.'
+        }
+    }
+    $requested = [string]$Options['WindowsLlmBackend'] -eq 'cuda'
+    if (-not $persisted -and -not $requested) { return '' }
+    if ($persisted) {
+        $existing = Get-ODSPortalExistingRuntime
+        if ($existing.Kind -ne 'llama-server') { throw 'The saved NVIDIA CUDA route has no owned runtime task. Restore the saved ODS runtime/task before rerunning; setup will not replace its binding.' }
+        Assert-ODSNativeLlamaPlan $existing.Launch.Plan
+        $modelPath = Join-Path ([string]$existing.Launch.Plan.ModelsDir) ([string]$existing.Launch.Plan.GgufFile)
+        if (-not (Test-Path -LiteralPath $modelPath -PathType Leaf)) { throw 'The saved NVIDIA CUDA model is missing. Restore the saved model before rerunning; the existing route was not changed.' }
+        $null = Test-ODSNativeLlamaInstall -Directory (Split-Path -Parent ([string]$existing.Launch.Plan.ExecutablePath)) `
+            -ExpectedZipSha256 ([string]$saved.ZipSha256) -ExpectedReleaseTag ([string]$saved.ReleaseTag)
+        if ($Options.Contains('WindowsLlmBackend') -and [string]$Options['WindowsLlmBackend'] -eq 'auto') {
+            throw 'Changing an installed NVIDIA CUDA route to auto is not supported. Omit -WindowsLlmBackend or rerun with -WindowsLlmBackend cuda to preserve it. Do not delete its task or runtime files to switch routes.'
+        }
+    }
+    if ($Options['Cloud'] -or $Options['ExternalLlmUrl'] -or $Options['NoExternalLlm']) {
+        throw 'NVIDIA CUDA cannot be combined with Cloud, ExternalLlmUrl or NoExternalLlm. Keep the existing route and rerun without conflicting options.'
+    }
+    if ((Get-ODSPortalWindowsArchitecture) -cne 'x64') { throw 'The NVIDIA CUDA option requires x64 Windows; Windows on Arm keeps its existing route.' }
+    $gpu = Get-GpuInfo
+    if ($gpu.Backend -ne 'nvidia') { throw 'The NVIDIA CUDA option requires a detected NVIDIA GPU. The existing route was not changed.' }
+    return 'nvidia'
+}
+
+function Add-ODSPortalAmdArguments([string[]]$LinuxArgs, [System.Collections.IDictionary]$Options, [string]$SourceRoot, [bool]$NonInteractive, [string]$WslDistro = '',
+    [ValidateSet('amd', 'nvidia')][string]$GpuVendor = 'amd', [bool]$PreparationConfirmed = $false) {
     # An AMD GPU runs the model through llama.cpp (llama-server.exe, Vulkan)
     # on Windows; everything else keeps the in-WSL route. An explicit -Tier
     # stays the user's choice. Returns the Linux arguments and the environment
     # (the API key) forwarded to the Linux installer.
-    $plan = Get-ODSPortalAmdPlan $SourceRoot
+    $plan = Get-ODSPortalAmdPlan $SourceRoot -GpuVendor $GpuVendor
+    if ($null -eq $plan -and $GpuVendor -eq 'nvidia') { throw 'No verified local model fits this NVIDIA GPU. NVIDIA CUDA was not activated; the existing route was not changed.' }
     if ($null -eq $plan) { return [pscustomobject]@{ Arguments = @($LinuxArgs); Environment = @{} } }
     $wslInstallDir = [string]$Options['InstallDir']
     if ($WslDistro) {
@@ -421,8 +470,12 @@ function Add-ODSPortalAmdArguments([string[]]$LinuxArgs, [System.Collections.IDi
         # Pin the same directory into windows.ps1 and the Linux installer.
         $Options['InstallDir'] = $wslInstallDir
     }
-    Write-ODSPortalStage 3 'AMD GPU' "$($plan.GpuName) ($([math]::Round($plan.VramMB / 1024)) GB): model $($plan.Model) runs through llama.cpp (Vulkan) on Windows."
-    $route = Initialize-ODSPortalAmdRuntime $plan $SourceRoot $NonInteractive $WslDistro $wslInstallDir
+    $vendorName = if ($GpuVendor -eq 'nvidia') { 'NVIDIA' } else { 'AMD' }
+    $backendName = if ($GpuVendor -eq 'nvidia') { 'CUDA' } else { 'Vulkan' }
+    Write-ODSPortalStage 3 "$vendorName GPU" "$($plan.GpuName) ($([math]::Round($plan.VramMB / 1024)) GB): model $($plan.Model) runs through llama.cpp ($backendName) on Windows."
+    $preparationArgs = @{}
+    if ($GpuVendor -eq 'nvidia') { $preparationArgs = @{GpuVendor=$GpuVendor; PreparationConfirmed=$PreparationConfirmed} }
+    $route = Initialize-ODSPortalAmdRuntime $plan $SourceRoot $NonInteractive $WslDistro $wslInstallDir @preparationArgs
     if ($null -eq $route) { return [pscustomobject]@{ Arguments = @($LinuxArgs); Environment = @{} } }
     $amdArgs = @($route.Arguments)
     if (-not $Options['Tier']) { $amdArgs += @('--tier', $plan.LinuxTier) }
@@ -457,12 +510,28 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
         Write-Host 'Dry run: no features, distributions, tasks, services or files will be changed.'
         Write-Host 'Plan: check disk space and virtualization; prepare WSL2, Ubuntu and Docker Desktop when missing (continuing after a restart); verify the Ubuntu user, systemd, Docker integration and, with an NVIDIA driver, GPU access; with an AMD GPU, download the pinned llama.cpp Vulkan server to Windows and load the model on the GPU; run the Linux installer; verify Pixel ingress and Portal readiness; open Portal.'
         Write-Host ('Linux flags: ' + ($linuxArgs -join ' '))
+        if ($Options['WindowsLlmBackend'] -eq 'cuda') {
+            Write-Host 'NVIDIA option: x64 NVIDIA CUDA model inference on Windows; Ubuntu and Docker Desktop still run Portal services. Setup will validate the GPU/model fit and ask for consent before preparing prerequisites.'
+        }
         Write-Host ('A new installation also gets: ' + ($script:ODSPortalNewInstallationArguments -join ' ') + '. A rerun keeps the installed Hermes selection.')
         return 0
     }
     if ($env:OS -ne 'Windows_NT') { throw 'Run install.ps1 in Windows PowerShell. Inside Ubuntu use bash install.sh --pixel --no-hermes.' }
     if (Test-ODSPortalAdministrator) { throw 'This window is running as Administrator. Setup requires a non-elevated user session. Open PowerShell without "Run as administrator" and rerun. If every window is elevated because UAC is disabled or this is the built-in Administrator account, use a standard Windows account or enable UAC and sign in again. UAC-disabled elevated sessions are not supported. Setup requests elevation separately only for Windows prerequisites.' }
     if (Test-ODSNativeWindowsInstall) { throw 'An existing native Windows ODS installation was found. It is not automatically migrated or deleted. Stop and migrate/remove that installation before creating a WSL stack, to avoid shared ports and Compose project conflicts. See ods/docs/WINDOWS-QUICKSTART.md.' }
+    $windowsLlmVendor = Resolve-ODSPortalWindowsLlmRoute $Options
+    $nativeConsent = $false
+    if ($windowsLlmVendor) {
+        $null = Assert-ODSPortalNvidiaCudaHost (Split-Path -Parent $InstallerRoot)
+        # Check model fit before prerequisite installation or runtime mutation.
+        if ($null -eq (Get-ODSPortalAmdPlan (Split-Path -Parent $InstallerRoot) -GpuVendor $windowsLlmVendor)) {
+            throw 'No verified local model fits this NVIDIA GPU. Nothing was changed.'
+        }
+        if ((Get-ODSPortalExistingRuntime).Kind -eq 'none') {
+            $nativeConsent = Confirm-ODSPortalPreparation 'Use the pinned llama.cpp CUDA server on your NVIDIA GPU on Windows? ODS will download its verified runtime and catalog model, and register a private model task. The Portal stack still runs in Ubuntu.' $nonInteractive
+            if (-not $nativeConsent) { throw 'NVIDIA CUDA preparation was cancelled. Nothing was changed.' }
+        }
+    }
     Write-ODSPortalStage 1 'WINDOWS FOUNDATION' 'Checking disk space, virtualization and WSL.'
     $stop = Initialize-ODSPortalWindowsFoundation $Options $InstallerRoot $nonInteractive
     if ($null -ne $stop) { return $stop }
@@ -511,9 +580,17 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
     }
     # An API-mode or cloud install runs no model on this computer.
     if (-not $Options['Cloud'] -and -not $Options['ExternalLlmUrl']) {
-        $nvidiaDriver = Get-ODSPortalWindowsNvidiaDriver
-        Assert-ODSPortalNvidiaReady $distro $nvidiaDriver
-        if ($null -eq $nvidiaDriver) {
+        $nvidiaDriver = $null
+        if (-not $windowsLlmVendor) {
+            $nvidiaDriver = Get-ODSPortalWindowsNvidiaDriver
+            Assert-ODSPortalNvidiaReady $distro $nvidiaDriver
+        }
+        if ($windowsLlmVendor) {
+            $route = Add-ODSPortalAmdArguments $linuxArgs $Options (Split-Path -Parent $InstallerRoot) $nonInteractive $distro -GpuVendor $windowsLlmVendor -PreparationConfirmed $nativeConsent
+            $linuxArgs = @($route.Arguments)
+            $forwardEnvironment = $route.Environment
+            $windowsModelRoute = $true
+        } elseif ($null -eq $nvidiaDriver) {
             $route = Add-ODSPortalAmdArguments $linuxArgs $Options (Split-Path -Parent $InstallerRoot) $nonInteractive $distro
             $linuxArgs = @($route.Arguments)
             $forwardEnvironment = $route.Environment
