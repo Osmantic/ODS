@@ -3269,9 +3269,8 @@ fi
 
 # Compose publishes the Dashboard on DASHBOARD_PORT (docker-compose.base.yml);
 # reruns keep an owner-set value in .env.
-_dashboard_port="$(read_env_value "$INSTALL_DIR/.env" "DASHBOARD_PORT")"
-_dashboard_port="${_dashboard_port//\"/}"
-_dashboard_port="${_dashboard_port//\'/}"
+# Decode it as Compose does (quotes, inline "# comment").
+_dashboard_port="$(safe_env_decode_value "$(read_env_value "$INSTALL_DIR/.env" "DASHBOARD_PORT")")"
 [[ "$_dashboard_port" =~ ^[0-9]+$ ]] || _dashboard_port=3001
 
 {

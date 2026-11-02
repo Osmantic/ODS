@@ -16,7 +16,10 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 
+# shellcheck source=../lib/safe-env.sh
+. "$ROOT_DIR/lib/safe-env.sh"
 eval "$(sed -n '/^read_env_value()/,/^}/p' "$CLI")"
+eval "$(sed -n '/^read_ods_env()/,/^}/p' "$CLI")"
 readiness_src="$(awk '
     /^# Compose publishes the Dashboard on DASHBOARD_PORT/ { emit = 1 }
     emit { print }
@@ -76,7 +79,11 @@ check_port() {
 
 check_port 'DASHBOARD_PORT=3101' 3101
 check_port 'DASHBOARD_PORT="3102"' 3102
+check_port 'DASHBOARD_PORT=3103 # owner override' 3103
+check_port 'DASHBOARD_PORT="3104" # owner override' 3104
+check_port "DASHBOARD_PORT='3105' # owner override" 3105
 check_port 'WEBUI_PORT=3000' 3001
 check_port 'DASHBOARD_PORT=not-a-port' 3001
+check_port 'DASHBOARD_PORT=3106#x' 3001
 
 echo "[PASS] macOS readiness, success card and status use the configured Dashboard port"
