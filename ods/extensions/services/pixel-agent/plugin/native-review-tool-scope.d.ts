@@ -6,6 +6,8 @@
  */
 export interface OdsNativeRetryToolScopeEventV1 {
   readonly nativeRetryToolsAllowVersion?: 1;
+  /** Only the reviewed local native completions stream can acknowledge this. */
+  readonly nativeRetryToolChoiceVersion?: 1;
 }
 
 /** Trusted before_agent_run metadata, projected from live native custody. */
@@ -15,6 +17,12 @@ export interface OdsNativeRetryToolScopeAdmissionEventV1 {
     ownerRunId: string;
     active: boolean;
     toolsAllow: readonly string[] | null;
+  }>;
+  readonly nativeRetryToolChoiceState?: Readonly<{
+    version: 1;
+    ownerRunId: string;
+    mode: 'required-first';
+    phase: 'armed' | 'tool-started';
   }>;
 }
 
@@ -30,6 +38,8 @@ export interface OdsNativeFinalizeRetryV1 {
   idempotencyKey?: string;
   maxAttempts?: number;
   toolsAllow?: OdsNativeRetryToolsAllowV1;
+  /** Requires the exact two native Portal integration adapters and choice v1. */
+  toolChoice?: 'required';
 }
 
 export interface OdsNativeFinalizeResultV1 {
