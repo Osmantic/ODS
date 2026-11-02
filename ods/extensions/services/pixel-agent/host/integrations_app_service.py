@@ -590,6 +590,60 @@ class AppActions:
             self.store._write("digest-job.json", None)
             return {"cleared": True}
 
+    def _review_watch_change(self, tool, request):
+        """Prepare the normal exact watch digest; never call a watch actuator."""
+        with self._watch_lock:
+            with self.store.lock:
+                config, secrets = self.store.config(), self.store.secrets()
+                if not config["apps"]["watch"]["enabled"]:
+                    raise IntegrationError("app-off", "Watched pages are not connected.")
+                self._require_review_ask(config["apps"]["watch"]["changes"])
+                config, settings, key = self._verified_app_snapshot(config, secrets, "watch")
+                epoch = self._review_binding(config, "apps", "watch")
+                context = self._watch_context(config, key)
+                state = self.store.watch_state(context)
+            # Provider READ is outside Settings admission. An owner save can
+            # revoke/change policy here; the exact current admission is rechecked.
+            listing = apps.watches(settings, key)
+            action = "watch-add" if tool == "add" else "watch-remove"
+            already_matches = False
+            if tool == "add":
+                url = apps.valid_watch_url(request.get("url"))
+                title = str(request.get("title") or "").strip()[:200]
+                below = None if request.get("below") in (None, "") else apps.price_limit(request.get("below"))
+                watch_id = next((identity for identity, watch in listing.items() if watch.get("url") == url), None)
+                target = listing.get(watch_id) if watch_id else None
+                if watch_id is not None:
+                    limit = (state.get(watch_id) or {}).get("below")
+                    name = title or target.get("title") or url
+                    if below is not None and limit is None:
+                        raise self._page_watched(name)
+                    already_matches = below is None or limit == below
+                name = f"{title} ({url})" if title else url
+                summary = f"Watch {name}" + (f" for a price at or under {below:g}" if below is not None else "")
+                details = (action, url, title, below, watch_id, target)
+            else:
+                watch_id = str(request.get("id", ""))
+                target = listing.get(watch_id)
+                if target is None:
+                    raise IntegrationError("watch-missing", "No watch has that id. List the watches first.")
+                title, url = target.get("title"), target.get("url")
+                summary = f"Stop watching {title} ({url})" if title else f"Stop watching {url}"
+                details = (action, watch_id, target)
+            with self.store.lock:
+                current, current_secrets = self.store.config(), self.store.secrets()
+                self._require_review_ask(current["apps"]["watch"]["changes"])
+                self._assert_watch_context(config, key)
+                self._verified_app_snapshot(current, current_secrets, "watch")
+                if self._review_binding(current, "apps", "watch") != epoch:
+                    raise IntegrationError("stale-revision", "The watched pages review identity changed. Nothing was done.")
+                if already_matches:
+                    raise IntegrationError("review-only-no-change", "The page already has those watch settings. "
+                                           "This recovery made no change or approval request.")
+                summary = redact_secrets(summary, {"admittedAppKey": key})
+                return self._review_approval("watch", summary,
+                                             digest("watch-v2", epoch, context, settings, *details))
+
     def _watch_change(self, config, settings, key, action, request):
         # Serialise mutations of this provider, not unrelated owner Settings.
         with self._watch_lock:
