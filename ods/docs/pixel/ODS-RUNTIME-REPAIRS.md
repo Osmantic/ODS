@@ -179,6 +179,22 @@ again. Physical locking, external-owner exclusion, takeover detection and
 configured timeouts remain unchanged. The prior reviewed budget repair can
 migrate through the original hash, with the existing backup/restore contract.
 
+The November 2 source also fixes a cancellation overlap: an outer session writer
+could start a second physical acquisition while prompt reacquisition was pending,
+then wait on the same attempt's retained lock. A writer without a retained lock
+now joins that controller's pending reacquisition before rechecking ownership.
+The existing retained-lock fast path and exclusion of other controllers remain.
+
+Another observed cancellation race concerned transcript fencing. An asynchronous
+post-write refresh could return an older snapshot after the native guarded
+SessionManager had synchronously published a newer owned fence. Assigning the old
+snapshot then falsely reported takeover. Refresh now captures the controller's
+generation and fence reference before awaiting its snapshot and discards the
+result if either changed, the fence ended or takeover was already detected.
+It does not adopt foreign state, weaken takeover classification or force Portal
+activity to idle. Actual-controller regressions retain foreign append/replace
+refusals and cover failed reads, overlapping refreshes, lock release and disposal.
+
 This shared repair is consumed by Linux/Windows-WSL host installation and by
 the macOS native runtime bundle. It contains no inference-backend or GPU
 selection changes. JavaScript concurrency tests run on Linux, macOS and Windows

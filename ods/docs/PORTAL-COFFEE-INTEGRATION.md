@@ -1,10 +1,56 @@
 # Coffee integrations: composition and qualification
 
 Development composition of [#8324](https://github.com/Osmantic/ODS/pull/8324)
-with [#8293](https://github.com/Osmantic/ODS/pull/8293). This document does not
-mark either PR merged or establish release acceptance.
+and [#8352](https://github.com/Osmantic/ODS/pull/8352) with
+[#8293](https://github.com/Osmantic/ODS/pull/8293). This document does not mark
+those PRs merged or establish release acceptance.
 
-## Current acceptance checkpoint — November 2
+## Current development checkpoint — November 2
+
+The installed, published and newly composed code have different evidence:
+
+| State | Recorded code | What it establishes |
+| --- | --- | --- |
+| Latest installed qualification | `60534c7b2` | The ordinary Windows/WSL update and scoped app/model/browser journeys below. |
+| Independently advanced PR branch | `c7f7aded7` | Remote scheduler/CI follow-ups; earlier published `55e7` is historical. |
+| New local composition reviewed here | `0c1d43a96` | Source composition and the SDK12 cold controls below; not another installed qualification. |
+
+The remote follow-ups still need normal composition with this local source and
+focused qualification of their scheduling-lock change before the final source
+freeze. Neither branch's earlier checks certify the unassembled combination.
+
+The current source retains 32 native tools and source-bound OpenClaw 2026.6.33
+repairs. Its production CI entrypoint applies all 25 recipes in a private SDK
+copy, verifies 39 code/dependency files and runs the native wire controls without
+changing the shared package. Integrated source hashes match the qualified inputs.
+
+Two actual cancellation defects were reproduced and repaired. An outer writer
+could acquire physically while the same controller's prompt reacquisition was
+pending, then wait on its own retained lock. An older asynchronous post-write
+snapshot could also overwrite a newer owned fence and falsely report a transcript
+takeover. The repairs join the pending acquisition and discard superseded
+snapshots. Physical exclusion and genuine foreign-write refusals remain intact.
+
+The identical old-source cancellation fixture passed after changing only to
+SDK12: Stop acknowledged drainage, Portal returned to idle, and a fresh follow-up
+worked without actions. A separate 15-case native cold matrix also passed.
+These no-model fixtures do not establish better model decisions or physical Mac
+behavior; they do not install the newer source on the owner's machine.
+
+The scope3 semantic classifier failed its declared gate: 144 classifier-only
+completions included 50 mismatches, including 14 false-eligible negative cells.
+No tools or actions ran in that corpus. A simpler semantic experiment is separate
+and unqualified; passing native transport and permission controls does not turn
+that failed classifier result into a model-benefit pass.
+
+Still required: qualify the final ordinary Windows/WSL installation with retained
+grants/backups and exact SDK custody; demonstrate real-model safety and useful
+approval continuation; complete the physical Mac matrix; and provision/verify
+the official Google client through the maintainer release process. Keep the
+composition in draft. No source freeze, installed update or completion of these
+gates is implied by this documentation checkpoint.
+
+## Earlier installed acceptance checkpoint — November 2
 
 Coffee's #8352 is now composed with the earlier notes/MCP work. The seventh
 ordinary Windows/WSL/Docker/RTX 5090 update installed `60534c7b2`, preserving
@@ -49,8 +95,8 @@ Keep this PR in draft and qualify the final assembled source before release.
 
 ## Historical acceptance checkpoint — November 1
 
-The installed code is `25d4c3172`, after six ordinary Windows/WSL/Docker
-updates. The latest update retained the original Google read-only grant,
+The installed code at this checkpoint was `25d4c3172`, after six ordinary
+Windows/WSL/Docker updates. The latest update retained the original Google read-only grant,
 Full Access, integration state and previous backups. Independent postflight
 matched the selected service/plugin/runtime bytes and found the selected
 product services healthy, with no temporary QA authority left in that scope.
@@ -75,7 +121,7 @@ this clarification does not repair the model counterexample below.
   improvement. No preparation API, transcript reader or approval-status API
   from these experiments is shipped. All eight private runs terminated and
   their owned processes and temporary worlds were removed; evidence remains.
-- **Release gates:** reliable approval continuation, native macOS service
+- **Release gates at that checkpoint:** reliable approval continuation, native macOS
   implementation and real acceptance, official Google client provisioning,
   provider recovery/withdrawal and broader model/platform qualification remain
   open. Keep the PR in draft.
@@ -84,7 +130,7 @@ The seeded comparison controls the forwarded seed field; it does not establish
 bitwise determinism or a success rate for ordinary users. Earlier successful
 installed journeys below remain scoped to their recorded source and requests.
 
-## Sources and ownership
+## Initial composition sources and ownership
 
 - Coffee's reviewed starting point is `09a570d9814494d99faf270b59f0af0c0107c97f`.
   Its three commits retain their author and history in the composition merge.
@@ -92,7 +138,7 @@ installed journeys below remain scoped to their recorded source and requests.
   through `775fc0a0a8a076796bd82a66e2d1e03697a72f2a` and the existing draft's
   recovery changes through `b89d464a5d0a4887eeabc726c6754cec190dee39`.
 - The existing Portal foundation starts at
-  `8ae5af7b33fd4e86513427e19838149b903e1472`, with current main
+  `8ae5af7b33fd4e86513427e19838149b903e1472`, with the then-current main
   `a1073a2adf8f6e8944172ba7005bd9cbb549465e` merged separately.
 - The November 1 source checkpoint additionally merges main through
   `82ed80df72dbb596aac52a1104e9a319ca3bb86a`. Each installed checkpoint below
@@ -372,7 +418,7 @@ disabled and its vault path cleared through the normal owner Save, guarded by
 the exact QA configuration/revision and sole used approval. No pending or
 approved owner requests were present. Other settings and opaque credential bytes
 were retained; the invented note, transcript, receipts and backups were preserved.
-Product services remain running.
+Product services were running at that checkpoint.
 
 The published `25d4c3172` code checkpoint completed its hosted checks without
 failures (the advisory tracking job intentionally skipped). Passing checks do
@@ -389,9 +435,10 @@ An external server or owner-selected program receives its configured credential
 and can deliberately encode or transmit it. Literal redaction is not a general
 data-loss-prevention boundary.
 
-Coffee's current service is Linux/WSL only. Native macOS needs its own service
-and owner/agent isolation implementation; a passing simulated or runner contract
-does not make that product journey available.
+Linux/WSL and native macOS now have service implementations. The native Mac
+owner/agent protocol and lifecycle have offline coverage; the
+[physical Apple Silicon matrix](pixel/native-integrations-macos-qualification.md)
+remains pending. A passing Linux fixture does not establish Darwin enforcement.
 
 ## Additional Coffee apps — #8352
 
@@ -411,8 +458,10 @@ secret acknowledgement and watch-list polling retain the existing concurrent
 save protections. Digest scheduling uses native cron with a persistent creation
 journal and returned job ID; matching names/descriptions alone grant no custody.
 
-Current source/fixture results are development evidence. Real app, native model,
-ordinary update and browser acceptance for this additional source remain open;
-they must be recorded before presenting #8352 as installed and complete.
+The earlier November 2 installed checkpoint records the scoped real app,
+model/browser and ordinary-update observations for #8352. Those results belong
+to installed `60534c7b2`; the newer local composition and SDK12 still need their
+own final installed and model/platform qualification. Neither checkpoint
+establishes completion of the whole composition.
 
 Keep the composition in draft until the evidence above has been reviewed.

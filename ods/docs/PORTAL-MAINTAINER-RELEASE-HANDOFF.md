@@ -41,6 +41,7 @@ and [restricted-scope review](https://developers.google.com/identity/protocols/o
 ## Integration and release coordination
 
 - Review Coffee's actual [#8324](https://github.com/Osmantic/ODS/pull/8324) with
+  [#8352](https://github.com/Osmantic/ODS/pull/8352) and
   the [composition acceptance record](PORTAL-COFFEE-INTEGRATION.md), including
   shared Settings navigation, native tool IDs, grants and pending transitions.
   The local composition is not automatically merge or release acceptance.
@@ -52,6 +53,17 @@ and [restricted-scope review](https://developers.google.com/identity/protocols/o
 - Review the remaining limitations in the [integration status](PORTAL-INTEGRATIONS-STATUS.md),
   especially real-provider recovery, connected-data/model behavior and installed
   withdrawal/update/rollback. Scope or release acceptance must be explicit.
+
+The November 2 local code checkpoint `0c1d43a96` is newer than installed
+`60534c7b2`. The remote PR branch independently advanced to `c7f7aded7`; compose
+its scheduler/CI follow-ups and qualify that change before freezing the final
+candidate. This checkpoint's SDK12 cancellation repairs passed the native cold
+controls; they do not establish real-model benefit. The scope3
+classifier gate failed, and its simplified replacement is a separate experiment.
+Before landing the final stack, complete the new ordinary Windows/WSL update,
+real-model safety/continuation checks and physical Mac matrix. The Google project,
+verified domain, published data notice and official client work above remain
+maintainer publication tasks; the local QA connection does not fulfill them.
 
 No password, account token, DNS credential or OAuth grant needs to be posted in
 the PR or chat to coordinate this work.

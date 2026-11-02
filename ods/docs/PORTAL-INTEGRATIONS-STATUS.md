@@ -15,6 +15,17 @@ reliable approval-continuation repair remain open. See the
 [composition and acceptance record](PORTAL-COFFEE-INTEGRATION.md) for the actual
 Windows/WSL model/browser evidence, later source-only checks and remaining limits.
 
+At the current November 2 checkpoint, installed qualification remains bound to
+`60534c7b2`; the PR branch independently advanced from `55e7` to `c7f7aded7`.
+Those remote scheduler/CI follow-ups still need composition and focused checks.
+The newer local source `0c1d43a96` includes the SDK12 cancellation lock/fence
+repairs and passed the
+source-derived native controls, including the integrated production CI entrypoint.
+It has not completed another ordinary installation or real-model qualification.
+The 144-completion scope3 classifier corpus failed its declared gate; the simpler
+semantic experiment remains separate and unqualified. See the composition record
+for the preserved negatives and exact limits of the no-model native results.
+
 Work resumed on October 29. [Count tools](PORTAL-COUNT-TOOLS.md) now have a Source,
 permission and guide implementation. The ordinary installed 4.3.41 update
 completed on Windows/WSL with the original read-only Google grant and 9B/64K
@@ -429,6 +440,13 @@ earlier checks on #8226 do not certify this branch.
 
 ## Still required
 
+- Qualify the final assembled source through an ordinary Windows/WSL update,
+  preserving existing Google read-only choices, opaque credential bytes,
+  Full Access and every retained backup, with the full 25-recipe/39-file SDK
+  postflight. Earlier installed evidence does not certify this new code.
+- Demonstrate reliable real-model approval continuation with the current harness,
+  including safety controls. The failed classifier corpus and earlier no-call
+  turns remain negative evidence; a cold native pass is not a benefit result.
 - Qualify the installed reviewed-app journey with an explicitly authorized real
   provider, including Windows callbacks, existing connections and update/rollback.
   The authenticated public wiring and controlled HTTP/Root lanes are implemented;
@@ -440,8 +458,9 @@ earlier checks on #8226 do not certify this branch.
   honest distinctions between saved, signed in, reachable and usable by Portal.
   Token presence alone is insufficient. Read-only consent and the scoped reads
   above do not establish these other lifecycles.
-- Native macOS execution and the applicable release/fleet lanes. The exact
-  reviewed Codex comparison spacing/checksum is restored without changing its
+- Physical qualification of the implemented native macOS service and the
+  applicable release/fleet lanes. The exact reviewed Codex comparison
+  spacing/checksum is restored without changing its
   expected pin. The full upstream release contract still requires historical
   audit documents deliberately excluded from the public export; it is not a
   passing public-release qualification.
@@ -466,11 +485,11 @@ service. The Knowledge wiki's local Markdown storage is distinct from Obsidian.
 The [composition record](PORTAL-COFFEE-INTEGRATION.md) documents the shared
 Settings navigation, combined native tool inventory, preserved Google grant and
 real 9B notes/notification/cron observations. Later main/Mike changes have separate
-source validation. Native macOS service implementation and release acceptance
-remain open. Coffee's subsequent [#8352](https://github.com/Osmantic/ODS/pull/8352)
-is now being composed for scheduled-task notices, Paperless/Immich, page watching
-and daily news. Its new installed qualification is separate from the earlier
-notes/ntfy/MCP results; see the composition record for current evidence.
+source validation. The native Mac service is implemented, with physical and
+release acceptance still pending. Coffee's [#8352](https://github.com/Osmantic/ODS/pull/8352)
+is composed for scheduled-task notices, Paperless/Immich, page watching and daily
+news. Its installed observations and the newer source-only repairs remain bound
+to their own checkpoints; see the composition record for current evidence.
 
 At installed `25d4c3172`, fresh Chrome status-only Google and invented-note
 reads succeeded. The legacy-default prompt filter is confirmed active. In the
