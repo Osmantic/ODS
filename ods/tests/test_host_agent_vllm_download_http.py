@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shutil
 import sys
 import threading
@@ -258,6 +259,8 @@ def test_lock_held_while_fetch_gated(install, server, hub, monkeypatch):
                           body={"model_id": MODEL_ID})
     assert code == 409
     assert data["code"] == "model_lifecycle_busy"
+    code, data = _request(server, "/v1/model/delete", method="POST", body={"model_id": MODEL_ID})
+    assert code == 409 and data["code"] == "model_lifecycle_busy"
     gate.set()
     final = _wait_terminal(server)
     assert final["status"] == "complete"
@@ -357,3 +360,175 @@ def test_status_idle_when_no_status_file(install, server):
     code, data = _status(server)
     assert code == 200
     assert data["status"] == "idle"
+
+
+# --- vLLM snapshot deletion (POST /v1/model/delete) -------------------------
+
+
+
+def _delete(url, body):
+    return _request(url, "/v1/model/delete", method="POST", body=body)
+
+
+def _install_snapshot_helper(install, monkeypatch):
+    """Copy the real snapshot helper into INSTALL_DIR/scripts and load it."""
+    scripts = install / "scripts"
+    scripts.mkdir(exist_ok=True)
+    src = ROOT / "scripts" / "model_snapshot_files.py"
+    dst = scripts / "model_snapshot_files.py"
+    shutil.copyfile(src, dst)
+
+
+
+def _download_complete(server):
+    code, data = _request(server, "/v1/model/download", method="POST",
+                          body={"model_id": MODEL_ID})
+    assert code == 200, data
+    final = _wait_terminal(server)
+    assert final["status"] == "complete", final
+    thread = agent._model_download_thread
+    if thread is not None:
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+    return final
+
+
+def _posix_delete_supported():
+    return (os.name == "posix"
+            and all(fn in os.supports_dir_fd for fn in (os.open, os.mkdir, os.stat, os.unlink))
+            and os.rmdir in os.supports_dir_fd
+            and os.listdir in os.supports_fd
+            and bool(getattr(os, "O_NOFOLLOW", 0)))
+
+
+@pytest.mark.skipif(not _posix_delete_supported(),
+                    reason="snapshot deletion requires POSIX directory descriptors")
+def test_delete_removes_downloaded_snapshot(install, server, hub, monkeypatch):
+    _install_snapshot_helper(install, monkeypatch)
+    final = _download_complete(server)
+    total = final["bytesTotal"]
+    assert _files(install) == base.FILES
+    code, data = _delete(server, {"model_id": MODEL_ID})
+    assert code == 200, data
+    assert data["status"] == "deleted"
+    assert data["model_id"] == MODEL_ID
+    assert data["bytesRemoved"] == total
+    assert not _model_dir(install).exists()
+
+
+@pytest.mark.skipif(not _posix_delete_supported(),
+                    reason="snapshot deletion requires POSIX directory descriptors")
+def test_delete_removes_partials_after_cancel(install, server, hub, monkeypatch):
+    helper = agent._load_vllm_downloader()
+    real_fetch = helper.fetch_manifest
+    entered, release = threading.Event(), threading.Event()
+
+    def gated_fetch(model, models_dir, base_url, *, cancelled=None, on_progress=None):
+        def wrapped_progress(done, total):
+            if on_progress is not None:
+                on_progress(done, total)
+            if done > 0:
+                entered.set()
+                assert release.wait(5)
+        return real_fetch(model, models_dir, base_url,
+                          cancelled=cancelled, on_progress=wrapped_progress)
+
+    monkeypatch.setattr(helper, "fetch_manifest", gated_fetch)
+    code, data = _request(server, "/v1/model/download", method="POST",
+                          body={"model_id": MODEL_ID})
+    assert code == 200, data
+    try:
+        assert entered.wait(5)
+        code, cancel = _request(server, "/v1/model/download/cancel", method="POST", body={})
+        assert code == 200 and cancel["status"] == "cancelling"
+    finally:
+        release.set()
+    final = _wait_terminal(server)
+    assert final["status"] == "cancelled", final
+    agent._model_download_thread.join(5)
+    assert not agent._model_download_thread.is_alive()
+    root = _model_dir(install)
+    assert list(root.rglob("*.partial"))
+    _install_snapshot_helper(install, monkeypatch)
+    code, data = _delete(server, {"model_id": MODEL_ID})
+    assert code == 200, data
+    assert data["status"] == "deleted"
+    assert not root.exists()
+
+
+def test_delete_active_snapshot_refused_before_helper(install, server, hub, monkeypatch):
+    (install / ".env").write_text(
+        "ODS_MODE=local\nLLM_BACKEND=vllm\nLLM_MODEL=test-model-nvfp4\n"
+        f"VLLM_MODEL_DIR={base.MODEL_DIR}\n", encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(agent, "_load_model_script",
+                        lambda name: calls.append(name) or pytest.fail("helper loaded"))
+    code, data = _delete(server, {"model_id": MODEL_ID})
+    assert code == 409
+    assert data["code"] == "vllm_active_snapshot"
+    assert calls == []
+
+
+def test_delete_unknown_file_aborts_and_preserves_all(install, server, hub, monkeypatch):
+    if not _posix_delete_supported():
+        pytest.skip("snapshot deletion requires POSIX directory descriptors")
+    _install_snapshot_helper(install, monkeypatch)
+    _download_complete(server)
+    root = _model_dir(install)
+    stray = root / "unexpected.bin"
+    stray.write_bytes(b"stray")
+    before = _files(install)
+    code, data = _delete(server, {"model_id": MODEL_ID})
+    assert code == 409, data
+    assert data["code"] == "vllm_snapshot_delete_incomplete"
+    assert _files(install) == before
+    assert stray.exists()
+
+
+def test_delete_malformed_payload_forbidden_field(install, server, hub, monkeypatch):
+    calls = []
+    monkeypatch.setattr(agent, "_load_model_script",
+                        lambda name: calls.append(name) or pytest.fail("helper loaded"))
+    code, data = _delete(server, {"model_id": MODEL_ID, "path": "/etc"})
+    assert code == 400
+    assert calls == []
+    code, data = _delete(server, {"model_id": ""})
+    assert code == 400
+    code, data = _delete(server, {})
+    assert code == 400
+    assert calls == []
+
+
+def test_delete_missing_model_id_404(install, server, hub, monkeypatch):
+    calls = []
+    monkeypatch.setattr(agent, "_load_model_script",
+                        lambda name: calls.append(name) or pytest.fail("helper loaded"))
+    code, data = _delete(server, {"model_id": "no-such-model"})
+    assert code == 404
+    assert calls == []
+
+
+def test_delete_lifecycle_busy_409_no_helper(install, server, hub, monkeypatch):
+    calls = []
+    monkeypatch.setattr(agent, "_load_model_script",
+                        lambda name: calls.append(name) or pytest.fail("helper loaded"))
+    assert agent._model_lifecycle_lock.acquire(blocking=False)
+    try:
+        code, data = _delete(server, {"model_id": MODEL_ID})
+        assert code == 409
+        assert data["code"] == "model_lifecycle_busy"
+        assert calls == []
+    finally:
+        agent._model_lifecycle_lock.release()
+
+
+@pytest.mark.skipif(os.name == "posix",
+                    reason="POSIX deletion is supported; this covers non-POSIX refusal")
+def test_delete_unsupported_platform_409_no_files_deleted(install, server, hub, monkeypatch):
+    _install_snapshot_helper(install, monkeypatch)
+    _download_complete(server)
+    before = _files(install)
+    code, data = _delete(server, {"model_id": MODEL_ID})
+    assert code == 409, data
+    assert data["code"] == "vllm_snapshot_delete_incomplete"
+    assert _files(install) == before

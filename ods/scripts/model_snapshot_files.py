@@ -19,6 +19,8 @@ class UnsafePath(OSError):
 
 _DIR_FD = all(fn in os.supports_dir_fd for fn in (os.open, os.mkdir, os.stat, os.unlink))
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_DELETE_DIR_FD = (_DIR_FD and os.rmdir in os.supports_dir_fd
+                  and os.listdir in os.supports_fd and bool(_NOFOLLOW))
 
 
 def _directory(path: Path, parent_fd: int | None = None, name: str | None = None) -> int:
@@ -181,10 +183,7 @@ class Snapshot:
 
     @contextmanager
     def file(self, relative: str, *, create: bool = True):
-        parts = relative.split("/")
-        if (not parts or any(p in ("", ".", "..") or "\\" in p or ":" in p for p in parts)
-                or Path(relative).is_absolute()):
-            raise UnsafePath("invalid snapshot file path")
+        parts = _split_relative(relative)
         path = self.path
         parent_fd = os.dup(self.fd) if self.fd is not None else None
         try:
@@ -210,3 +209,91 @@ class Snapshot:
         finally:
             if parent_fd is not None:
                 os.close(parent_fd)
+
+
+def _split_relative(relative: str) -> list[str]:
+    parts = relative.split("/")
+    if (not parts or any(p in ("", ".", "..") or "\\" in p or ":" in p for p in parts)
+            or Path(relative).is_absolute()):
+        raise UnsafePath("invalid snapshot file path")
+    return parts
+
+
+def _same_directory(parent_fd: int, name: str, held_fd: int) -> None:
+    current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    held = os.fstat(held_fd)
+    if (not stat.S_ISDIR(current.st_mode)
+            or (current.st_dev, current.st_ino) != (held.st_dev, held.st_ino)):
+        raise UnsafePath("snapshot directory changed during deletion")
+
+
+def delete_snapshot(models_dir: Path, folder: str, files: list[dict]) -> int:
+    """Remove only catalog files/partials after inspecting the whole snapshot.
+
+    The caller owns lifecycle admission and active-snapshot protection. Held
+    directory descriptors confine unlinks even if names are replaced. External
+    concurrent changes can cause partial removal and an error, never success
+    inferred from a best-effort recursive delete.
+    """
+    if not _DELETE_DIR_FD:
+        raise UnsafePath("snapshot deletion requires POSIX directory descriptors")
+    if Path(folder).name != folder or folder in ("", ".", ".."):
+        raise UnsafePath("invalid snapshot directory")
+    allowed_files: set[str] = set()
+    allowed_dirs: set[str] = set()
+    for item in files:
+        parts = _split_relative(item["path"])
+        relative = "/".join(parts)
+        allowed_files.update((relative, relative + ".partial"))
+        allowed_dirs.update("/".join(parts[:n]) for n in range(1, len(parts)))
+    if allowed_files & allowed_dirs:
+        raise UnsafePath("catalog file and directory paths overlap")
+    store = models_dir.resolve(strict=True)
+    store_fd = _directory(store)
+    held: dict[str, int] = {}
+    witnesses: list[tuple[str, str, int, int]] = []
+    try:
+        held[""] = _directory(store / folder, store_fd, folder)
+
+        def inspect(relative: str) -> None:
+            fd = held[relative]
+            for name in sorted(os.listdir(fd)):
+                child = f"{relative}/{name}" if relative else name
+                if child in allowed_dirs:
+                    held[child] = _directory(store / folder / child, fd, name)
+                    inspect(child)
+                elif child in allowed_files:
+                    info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                        raise UnsafePath(f"refusing linked or non-regular snapshot file {child}")
+                    witnesses.append((relative, name, info.st_dev, info.st_ino))
+                else:
+                    raise UnsafePath(f"unexpected file in snapshot: {child}")
+
+        inspect("")
+        _same_directory(store_fd, folder, held[""])
+        for relative, fd in held.items():
+            if relative:
+                parent, _, name = relative.rpartition("/")
+                _same_directory(held[parent], name, fd)
+        removed = 0
+        for relative, name, device, inode in witnesses:
+            fd = held[relative]
+            info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                    or (info.st_dev, info.st_ino) != (device, inode)):
+                raise UnsafePath("snapshot file changed during deletion")
+            os.unlink(name, dir_fd=fd)
+            removed += info.st_size
+        for relative in sorted(held, key=lambda r: (r.count("/"), r), reverse=True):
+            if relative:
+                parent, _, name = relative.rpartition("/")
+                _same_directory(held[parent], name, held[relative])
+                os.rmdir(name, dir_fd=held[parent])
+        _same_directory(store_fd, folder, held[""])
+        os.rmdir(folder, dir_fd=store_fd)
+        return removed
+    finally:
+        for fd in held.values():
+            os.close(fd)
+        os.close(store_fd)

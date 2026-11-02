@@ -153,6 +153,8 @@ tests/test-model-library-vllm.py
 tests/test_select_model_vllm.py
 tests/test_vllm_gpu_admission.py
 tests/test_hf_manifest_hardening.py
+tests/test_model_snapshot_delete.py
+tests/test_vllm_snapshot_presence.py
 tests/test_host_agent_vllm.py
 tests/test_host_agent_vllm_download_http.py
 tests/test_preserve_active_model_vllm.py

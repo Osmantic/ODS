@@ -1,7 +1,7 @@
 # Model Management
 
-ODS runs local language models as GGUF files from `data/models/` or an
-installer-registered model store. Windows AMD with Portal in WSL uses the
+ODS runs local language models as GGUF files or pinned vLLM snapshots from
+`data/models/` or an installer-registered model store. Windows AMD with Portal in WSL uses the
 Windows model store described below.
 The recommended path is the Dashboard Models page. Manual model swaps are also
 available for headless maintenance and advanced operator workflows.
@@ -36,6 +36,24 @@ declares a context floor such as `65536`, models below that floor should be
 shown as gated or warned before the swap. Badges should distinguish downloaded,
 loaded, swap-safe, not-swap-safe, gated, and probe-failed states so a model
 cannot look ready while an enabled app is known to be incompatible.
+
+### vLLM snapshots on Linux NVIDIA installations
+
+The Models page lists the curated vLLM snapshots alongside GGUF models. You can
+download an inactive snapshot, cancel and resume its download, or delete its
+files. Downloads check the pinned manifest and file digests before completing.
+The catalog's presence indicator checks file sizes; it is not a new checksum
+verification on every refresh.
+
+The configured vLLM snapshot is protected from download replacement and deletion.
+Deletion also refuses unexpected files, links, and snapshots that change while
+being removed. The host agent serializes these actions with other model lifecycle
+operations.
+
+Activating a vLLM model and changing its context still require the installer.
+Downloading a snapshot does not establish that it fits this machine or that
+Portal has been qualified with it. The Models page keeps those distinctions
+visible and disables Run for these entries.
 
 ### Windows AMD with Portal in WSL
 

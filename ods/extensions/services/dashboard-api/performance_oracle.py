@@ -30,7 +30,7 @@ from helpers import (
     is_plausible_single_request_tps,
 )
 from model_memory import memory_metadata, required_model_memory_gb, vllm_memory_estimate
-from model_vllm import is_vllm_entry
+from model_vllm import is_vllm_entry, manifest_bytes, model_dir_name, snapshot_presence, entry_problems
 from model_selection import (
     POLICY as _SHARED_SELECTOR_POLICY,
     family_allowed as _shared_family_allowed,
@@ -800,22 +800,23 @@ def _agent_viability_entry(
     }
 
 
-def load_model_catalog(install_dir: str | Path) -> list[dict[str, Any]]:
+def _raw_model_catalog(install_dir: str | Path) -> list[dict[str, Any]]:
     path = Path(install_dir) / "config" / "model-library.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return []
 
-    raw_models = data.get("models", [])
+    raw_models = data.get("models", []) if isinstance(data, dict) else []
     if not isinstance(raw_models, list):
         return []
 
-    return [
-        model
-        for model in (normalize_catalog_entry(raw) for raw in raw_models)
-        if model is not None
-    ]
+    return [raw for raw in raw_models if isinstance(raw, dict)]
+
+
+def load_model_catalog(install_dir: str | Path) -> list[dict[str, Any]]:
+    return [model for model in (normalize_catalog_entry(raw) for raw in _raw_model_catalog(install_dir))
+            if model is not None]
 
 
 def collect_runtime_flags(install_dir: str | Path) -> dict[str, str]:
@@ -1618,19 +1619,43 @@ def _measured_native_activation(model, path, data_root, install_dir, gpu_info, s
     return None
 
 
-def vllm_model_row(raw: dict[str, Any], loaded_model: Optional[str],
-                   context_length: Optional[int]) -> dict[str, Any]:
-    """The Models page row of the vLLM catalog entry a vLLM install serves.
+_VLLM_ACTIVATION_MESSAGE = "vLLM models are activated by the installer; use the installer to change the served model."
 
-    LLM_BACKEND=vllm runs one installer-set snapshot (model_vllm.py): the
-    page shows its catalog name, size, context and GPU need, marks it
-    loaded once vLLM serves it (``served_model_name``) and otherwise
-    installed, and labels it managed by the engine (``source: runtime``,
-    ``runtime: vllm``) so it offers no download, switch or context change.
+
+def _vllm_configured(raw: dict[str, Any], runtime: str | None, llm_model: str | None) -> bool:
+    if normalize_key(runtime) != "vllm" or not llm_model:
+        return False
+    configured = normalize_key(llm_model)
+    return configured in {
+        normalize_key(raw.get("id")),
+        normalize_key(raw.get("llm_model_name")),
+    }
+
+
+def vllm_model_row(raw: dict[str, Any], loaded_model: Optional[str],
+                   context_length: Optional[int],
+                   models_dir: str | Path | None = None,
+                   runtime: str | None = None,
+                   llm_model: str | None = None) -> dict[str, Any]:
+    """The Models page row of one trusted vLLM catalog entry.
+
+    Presence comes from ``model_vllm.snapshot_presence`` against the actual
+    ``model_dir_name`` folder: missing/partial snapshots are ``available``,
+    complete ones ``downloaded``, and the configured entry is ``loaded`` only
+    when the runtime reports it. Size is the manifest's exact byte total.
     """
+    state = snapshot_presence(raw, str(models_dir)) if models_dir is not None else "missing"
+    configured = _vllm_configured(raw, runtime, llm_model)
     served = {normalize_key(raw.get(key)) for key in ("served_model_name", "llm_model_name", "id")}
-    is_loaded = bool(loaded_model) and normalize_key(loaded_model) in served
-    size_mb = float(raw.get("size_mb") or 0)
+    is_loaded = configured and bool(loaded_model) and normalize_key(loaded_model) in served
+    if is_loaded:
+        status = "loaded"
+    elif state == "complete":
+        status = "downloaded"
+    else:
+        status = "available"
+    total_bytes = manifest_bytes(raw)
+    size_mb = total_bytes / (1024 * 1024)
     context = context_length if is_loaded and context_length else int(raw["context_length"])
     return {
         "id": raw["id"],
@@ -1652,7 +1677,7 @@ def vllm_model_row(raw: dict[str, Any], loaded_model: Optional[str],
         "quantization": raw.get("quantization"),
         "publisher": model_publisher({**raw, "source_repo": raw.get("hf_repo")}),
         "metadata": {
-            "source": "runtime",
+            "source": "ods",
             "runtime": "vllm",
             "catalogSource": raw.get("source") or "ods",
             "servedModelName": raw.get("served_model_name"),
@@ -1660,14 +1685,22 @@ def vllm_model_row(raw: dict[str, Any], loaded_model: Optional[str],
             "sourceRevision": raw.get("revision"),
             "sourceUrl": raw.get("source_url"),
             "license": raw.get("license"),
+            "snapshotState": state,
+            "canDownload": (not configured) and state != "unsafe",
+            "canDelete": (not configured) and state in {"complete", "partial"},
+            "modelDirName": model_dir_name(raw),
+            "manifestBytes": total_bytes,
             "readable": False,
         },
         "appCompatibility": {},
-        "status": "loaded" if is_loaded else "downloaded",
+        "status": status,
         "recommended": False,
-        "configured": True,
-        "fitsVram": True,
-        "activationSupport": None,
+        "configured": configured,
+        "fitsVram": None,
+        "activationSupport": {
+            "available": False,
+            "message": _VLLM_ACTIVATION_MESSAGE,
+        },
         "fitsCurrentVram": None,
         "performance": None,
     }
@@ -1679,7 +1712,7 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
                          catalog: list[dict[str, Any]] | None = None,
                          evidence: list[dict[str, Any]] | None = None,
                          downloaded_files_override: dict[str, Any] | None = None) -> dict[str, Any]:
-    source_catalog = catalog or load_model_catalog(install_dir)
+    source_catalog = catalog if catalog is not None else _raw_model_catalog(install_dir)
     catalog = [
         model
         for model in (normalize_catalog_entry(raw) for raw in source_catalog)
@@ -1935,18 +1968,24 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
         }
         append_model(fallback, path, "downloaded")
 
-    if normalize_key(runtime) == "vllm":
-        # A vLLM install serves its LLM_MODEL catalog entry; normalization
-        # (GGUF only) leaves vLLM entries out of the list above.
-        llm_model = read_env_value("LLM_MODEL", install_dir)
-        vllm_entry = next((raw for raw in source_catalog if is_vllm_entry(raw)
-                           and llm_model in {raw.get("llm_model_name"), raw.get("id")}), None)
-        if vllm_entry is not None:
-            row = vllm_model_row(vllm_entry, loaded_model, context_length)
-            response_models.append(row)
+    # Every trusted vLLM catalog entry is listed exactly once, on every
+    # runtime; normalization (GGUF only) leaves them out of the loop above.
+    llm_model = read_env_value("LLM_MODEL", install_dir)
+    seen_vllm_ids: set[str] = set()
+    for raw in source_catalog:
+        if not is_vllm_entry(raw) or entry_problems(raw) or raw["id"] in seen_vllm_ids:
+            continue
+        row = vllm_model_row(
+            raw, loaded_model, context_length,
+            models_dir=models_dir, runtime=runtime, llm_model=llm_model,
+        )
+        seen_vllm_ids.add(raw["id"])
+        response_models.append(row)
+        if row["configured"]:
             configured_model_id = row["id"]
-            if row["status"] == "loaded":
-                current_model_id = row["id"]
+        if row["status"] == "loaded":
+            current_model_id = row["id"]
+
 
     if isinstance(loaded_model, str) and loaded_model.strip() and current_model_id is None:
         # An external runtime can report a model that is neither in our catalog

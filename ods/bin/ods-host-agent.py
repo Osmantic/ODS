@@ -2524,14 +2524,18 @@ def _model_management_snapshot() -> tuple[int, dict]:
         _model_management_lock.release()
 
 
-def _load_vllm_downloader():
-    path = INSTALL_DIR / "scripts" / "download-hf-manifest.py"
-    spec = importlib.util.spec_from_file_location("_ods_download_hf_manifest", path)
+def _load_model_script(filename: str):
+    path = INSTALL_DIR / "scripts" / filename
+    spec = importlib.util.spec_from_file_location("_ods_" + path.stem.replace("-", "_"), path)
     if spec is None or spec.loader is None:
         raise ImportError("vLLM download helper is missing")
     helper = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(helper)
     return helper
+
+
+def _load_vllm_downloader():
+    return _load_model_script("download-hf-manifest.py")
 
 
 def _vllm_snapshot_is_active(env: dict, entry: dict, models_dir: Path) -> bool:
@@ -16672,12 +16676,52 @@ class AgentHandler(BaseHTTPRequestHandler):
                 payload["failure_detail"] = switchboard_run.get("detail")
             json_response(self, 500, payload)
 
+    def _handle_model_delete_vllm(self, body: dict):
+        """Remove an inactive catalog snapshot under model lifecycle admission."""
+        model_id = body.get("model_id")
+        if not isinstance(model_id, str) or not model_id.strip() or set(body) != {"model_id"}:
+            json_response(self, 400, {"error": "Only a catalog model_id is accepted"})
+            return
+        model_id = model_id.strip()
+        acquired, active = _begin_model_lifecycle("model_delete", model_id)
+        if not acquired:
+            json_response(self, 409, _model_lifecycle_conflict("model deletion", active))
+            return
+        try:
+            entry = next((m for m in _load_model_library_records() if m.get("id") == model_id), None)
+            if entry is None or not _model_vllm.is_vllm_entry(entry):
+                json_response(self, 404, {"error": "Model not in vLLM catalog"})
+                return
+            _model_vllm.require_valid(entry)
+            models_dir = _model_download_directory()
+            env = load_env(INSTALL_DIR / ".env")
+            if _vllm_snapshot_is_active(env, entry, models_dir):
+                json_response(self, 409, {"error": "The selected vLLM snapshot cannot be deleted",
+                                          "code": "vllm_active_snapshot"})
+                return
+            helper = _load_model_script("model_snapshot_files.py")
+            removed = helper.delete_snapshot(models_dir, _model_vllm.model_dir_name(entry), entry["files"])
+            json_response(self, 200, {"status": "deleted", "model_id": model_id, "bytesRemoved": removed})
+        except FileNotFoundError:
+            json_response(self, 404, {"error": "Snapshot is missing or changed during deletion"})
+        except (ImportError, OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
+            logger.warning("vLLM snapshot deletion refused or incomplete: %s", exc)
+            json_response(self, 409, {"error": f"Snapshot deletion refused or incomplete: {exc}",
+                                      "code": "vllm_snapshot_delete_incomplete"})
+        finally:
+            _end_model_lifecycle("model_delete")
+
+
     def _handle_model_delete(self):
         """Delete a downloaded GGUF model file."""
         if not check_auth(self):
             return
         body = read_json_body(self)
         if body is None:
+            return
+
+        if "model_id" in body:
+            self._handle_model_delete_vllm(body)
             return
 
         gguf_file = body.get("gguf_file", "")
