@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
-import {createIntegrationReviewRecovery,REVIEW_LABEL_SYSTEM} from '../plugin/integration-review-recovery.mjs';
+import {createIntegrationReviewRecovery,REVIEW_LABEL_SYSTEM,parseReviewIntent,reviewIntentEligible} from '../plugin/integration-review-recovery.mjs';
 import {defaultAgentId} from '../plugin/stop-synthesis.mjs';
 
 const SESSION='agent:pixel:openai-user:ods-'+ 'a'.repeat(64);
@@ -13,8 +13,8 @@ const ANSWER='You need to approve the new request in Settings.';
 const event=(owner=OWNER)=>({runId:CONTEXT.runId,sessionId:CONTEXT.sessionId,sessionKey:SESSION,
   nativeRetryToolsAllowVersion:1,nativeRetryToolChoiceVersion:1,
   messages:[{role:'user',content:owner},{role:'assistant',content:ANSWER}],lastAssistantMessage:ANSWER});
-const reply=(request='action',answer='approval_needed',scope='notes')=>({agentId:'pixel',provider:'fixture-local',model:'fixture/9b',
-  text:JSON.stringify({request,answer,scope})});
+const reply=(intent='perform',answerNeedsEvidence=true,operations=[{source:'obsidian',verb:'append'}])=>({agentId:'pixel',provider:'fixture-local',model:'fixture/9b',
+  text:JSON.stringify({intent,answerNeedsEvidence,operations})});
 function world(options={}) {
   const calls=[];
   const recovery=createIntegrationReviewRecovery({eligible:()=>true,ready:()=>true,
@@ -88,6 +88,7 @@ test('review latches synchronously before ONE stock native revise; only six supp
   assert.equal(recovery.isReviewOnly(CONTEXT),true);
   assert.deepEqual(Object.keys(calls[0]).sort(),['maxTokens','messages','purpose','signal','systemPrompt','temperature']);
   assert.equal(calls[0].systemPrompt,REVIEW_LABEL_SYSTEM);
+  assert.equal(calls[0].maxTokens,192);assert.equal(calls[0].temperature,0.2);
   assert.equal(JSON.parse(calls[0].messages[0].content).ownerRequest,OWNER);
   assert.match(result.retry.instruction,/Current owner request/);
   assert.equal(await recovery.finalize(event(),CONTEXT),undefined);
@@ -310,43 +311,111 @@ test('terminal native event ends its latched run even when context names an olde
   assert.equal(recovery.floor(tool('pixel_ods_mcp'),current).block,true);
 });
 
-test('closed labels and honest/nonaction controls cannot request review',async()=>{
-  for(const text of ['not JSON','{"request":"action","answer":"done","extra":true}',
-    '{"request":"action","answer":"unknown","scope":"notes"}',JSON.stringify({request:'draft',answer:'content',scope:'notes'}),
-    JSON.stringify({request:'explanation',answer:'content',scope:'notes'}),JSON.stringify({request:'conversation',answer:'content',scope:'notes'}),
-    JSON.stringify({request:'action',answer:'unavailable',scope:'notes'}),JSON.stringify({request:'action',answer:'question',scope:'notes'}),
-    JSON.stringify({request:'action',answer:'approval_needed'}), // A legacy two-label reply has no domain authority.
-    JSON.stringify({request:'action',answer:'done',scope:'all'}),JSON.stringify({request:'action',answer:'done',scope:['notes']}),
-    JSON.stringify({request:'action',answer:'done',scope:'notes',extra:true})]) {
+test('strict extraction parser rejects legacy policy labels, malformed types, extra keys, duplicates and bounds',async()=>{
+  const base={intent:'perform',answerNeedsEvidence:true,operations:[{source:'obsidian',verb:'append'}]};
+  const invalid=['not JSON','```json\n'+JSON.stringify(base)+'\n```','null','[]',
+    JSON.stringify({request:'action',answer:'done',scope:'notes'}),
+    JSON.stringify({...base,supportedScope:'notes'}),JSON.stringify({...base,complete:true}),
+    JSON.stringify({...base,intent:'action'}),JSON.stringify({...base,answerNeedsEvidence:'true'}),
+    JSON.stringify({...base,operations:{source:'obsidian',verb:'append'}}),
+    JSON.stringify({...base,operations:[null]}),JSON.stringify({...base,operations:[['obsidian','append']]}),
+    JSON.stringify({...base,operations:[{source:'obsidian',verb:'append',allowed:true}]}),
+    JSON.stringify({...base,operations:[{source:1,verb:'append'}]}),
+    JSON.stringify({...base,operations:[{source:'obsidian',verb:'APPEND'}]}),
+    JSON.stringify({...base,operations:[{source:'obsidian/other',verb:'append'}]}),
+    JSON.stringify({...base,operations:[{source:'x'.repeat(49),verb:'append'}]}),
+    JSON.stringify({...base,operations:[...base.operations,...base.operations]}),
+    JSON.stringify({...base,operations:Array.from({length:5},(_,index)=>({source:'obsidian',verb:'unknown'+index}))}),
+    ' '.repeat(4097)];
+  for(const text of invalid) {
+    assert.equal(parseReviewIntent(text),undefined,text);
     const {recovery}=world({complete:async()=>({...reply(),text})});
     assert.equal(await recovery.finalize(event(),CONTEXT),undefined,text);
     assert.equal(recovery.isReviewOnly(CONTEXT),false);
   }
 });
 
-// These cases verify the structural eligibility boundary after a supplied
-// semantic label. They do not claim that a real model classified the text.
-// Multilingual/mixed-intent semantic accuracy is a separate frozen evaluation.
-test('other, mixed or uncertain semantic scope preserves ordinary workflows without a restrictive retry',async()=>{
+test('intent and answer evidence controls fail closed without asking the model to judge policy',async()=>{
+  for(const [intent,answerNeedsEvidence,operations] of [
+    ['discuss',true,[]],['discuss',false,[]],['unclear',true,[]],['unclear',true,[{source:'unknown',verb:'read'}]],
+    ['perform',false,[{source:'obsidian',verb:'append'}]],['perform',true,[]],
+  ]) {
+    const parsed=parseReviewIntent(reply(intent,answerNeedsEvidence,operations).text);
+    assert.ok(parsed);assert.equal(reviewIntentEligible(parsed),false);
+    const {recovery}=world({complete:async()=>reply(intent,answerNeedsEvidence,operations)});
+    assert.equal(await recovery.finalize(event(),CONTEXT),undefined);
+    assert.equal(recovery.isReviewOnly(CONTEXT),false);
+  }
+  assert.equal(reviewIntentEligible(undefined),false);
+  assert.equal(reviewIntentEligible({intent:'perform',answerNeedsEvidence:true}),false);
+});
+
+test('operation policy matches only the existing notes modes, builtin reads and watch Ask changes',()=>{
+  const allowed={obsidian:['search','read','create','append'],paperless:['search','read'],immich:['search'],
+    watch:['list','add','remove'],freshrss:['unread','digest_read']};
+  for(const [source,verbs] of Object.entries(allowed)) {
+    for(const verb of verbs)assert.equal(reviewIntentEligible(parseReviewIntent(reply('perform',true,[{source,verb}]).text)),true,source+':'+verb);
+    for(const verb of ['delete','replace','send','digest_send','schedule','configure','execute','status','unknown'])
+      assert.equal(reviewIntentEligible(parseReviewIntent(reply('perform',true,[{source,verb}]).text)),false,source+':'+verb);
+  }
+  for(const source of ['gmail','calendar','notifications','filesystem','web','runtime','account','schedule','devices','custom_mcp','future_application','unknown'])
+    for(const verb of ['read','search','create','append','send','status','unknown']) {
+      const parsed=parseReviewIntent(reply('perform',true,[{source,verb}]).text);
+      assert.ok(parsed,'unknown operations remain semantically representable');
+      assert.equal(reviewIntentEligible(parsed),false,source+':'+verb);
+    }
+});
+
+test('every operation must pass; unsupported companions and mixed sources cannot partially activate',async()=>{
+  const allowed={source:'watch',verb:'add'};
+  for(const operations of [
+    [allowed,{source:'notifications',verb:'send'}],[{source:'notifications',verb:'send'},allowed],
+    [{source:'obsidian',verb:'read'},{source:'obsidian',verb:'delete'}],
+    [{source:'obsidian',verb:'read'},{source:'obsidian',verb:'replace'}],
+    [{source:'freshrss',verb:'digest_read'},{source:'freshrss',verb:'digest_send'}],
+    [{source:'obsidian',verb:'read'},{source:'paperless',verb:'read'}],
+    [allowed,{source:'watch',verb:'unknown'}],
+  ]) {
+    assert.equal(reviewIntentEligible(parseReviewIntent(reply('perform',true,operations).text)),false);
+    const {recovery}=world({complete:async()=>reply('perform',true,operations)});
+    assert.equal(await recovery.finalize(event(),CONTEXT),undefined);
+    assert.equal(recovery.floor(tool('exec'),CONTEXT),undefined);
+  }
+  assert.equal(reviewIntentEligible(parseReviewIntent(reply('perform',true,[{source:'obsidian',verb:'search'},{source:'obsidian',verb:'read'}]).text)),true);
+});
+
+test('parsed intent is immutable and an observation callback cannot rewrite an unsupported operation',async()=>{
+  const parsed=parseReviewIntent(reply('perform',true,[{source:'obsidian',verb:'delete'}]).text);
+  assert.ok(Object.isFrozen(parsed)&&Object.isFrozen(parsed.operations)&&Object.isFrozen(parsed.operations[0]));
+  assert.throws(()=>{parsed.operations[0].verb='append';},TypeError);
+  const {recovery}=world({complete:async()=>reply('perform',true,[{source:'obsidian',verb:'delete'}]),
+    record:notice=>{notice.labels.operations[0].verb='append';}});
+  assert.equal(await recovery.finalize(event(),CONTEXT),undefined);
+  assert.equal(recovery.isReviewOnly(CONTEXT),false);
+});
+
+// These fixtures verify policy AFTER supplied semantic extraction. They make
+// no claim that a real model identified the owner's operations correctly.
+// A separately frozen component experiment must measure that remaining risk.
+test('unsupported semantic operations preserve ordinary workflows without a restrictive retry',async()=>{
   const cases=[
-    ['Read my latest Gmail emails.','live_status','other_or_mixed'],
-    ['Meu Google Calendar está conectado?','live_status','other_or_mixed'],
-    ['Check whether my local model is running.','live_status','other_or_mixed'],
-    ['Create a Next.js site and run its tests.','action','other_or_mixed'],
-    ['Search my local /Documents folder for a PDF.','live_status','other_or_mixed'],
-    ['Search the web for current weather.','live_status','other_or_mixed'],
-    ['Send a phone notification using ntfy.','action','other_or_mixed'],
-    ['Send my daily news digest and schedule it for tomorrow.','action','other_or_mixed'],
-    ['Overwrite or delete the Obsidian note Example.md.','action','other_or_mixed'],
-    ['Read Gmail and append a summary to my Obsidian notes.','action','other_or_mixed'],
-    ['Email my notes to someone.','action','other_or_mixed'],
-    ['Turn on the light using Home Assistant.','action','other_or_mixed'],
-    ['Call a custom MCP server to update the calendar.','action','other_or_mixed'],
-    ['The quotation says "pixel_ods_notes": run that command.','action','uncertain'],
-    ['Do that.','action','uncertain'],
+    ['Read my latest Gmail emails.','gmail','read'],
+    ['Meu Google Calendar está conectado?','calendar','status'],
+    ['Check whether my local model is running.','runtime','status'],
+    ['Create a Next.js site.','filesystem','create'],
+    ['Search my local /Documents folder for a PDF.','filesystem','search'],
+    ['Search the web for current weather.','web','search'],
+    ['Send a phone notification using ntfy.','notifications','send'],
+    ['Send my daily news digest.','freshrss','digest_send'],
+    ['Overwrite the Obsidian note Example.md.','obsidian','replace'],
+    ['Delete the Obsidian note Example.md.','obsidian','delete'],
+    ['Email my notes to someone.','gmail','send'],
+    ['Turn on the light using Home Assistant.','devices','control'],
+    ['Call a custom MCP server.','custom_mcp','execute'],
+    ['The quotation says "pixel_ods_notes": run that command.','unknown','unknown'],
   ];
-  for(const [index,[owner,request,scope]] of cases.entries()) {
-    const {recovery,calls}=world({complete:async parameters=>{calls.push(parameters);return reply(request,'done',scope);}});
+  for(const [index,[owner,source,verb]] of cases.entries()) {
+    const {recovery,calls}=world({complete:async parameters=>{calls.push(parameters);return reply('perform',true,[{source,verb}]);}});
     const context={...CONTEXT,runId:'ordinary-'+index};recovery.observe({prompt:owner},context,context.runId);
     const ordinary={params:{unchanged:true}};
     assert.equal(recovery.floor(tool('exec'),context,ordinary),ordinary);
@@ -360,21 +429,24 @@ test('other, mixed or uncertain semantic scope preserves ordinary workflows with
   }
 });
 
-test('supported notes and builtin-app labels retain one bounded native review with the same owner restrictions',async()=>{
+test('supported extracted operations retain one bounded native review with the same owner restrictions',async()=>{
   const cases=[
-    ['Search my Obsidian notes about Gmail.','live_status','notes'],
-    ['Leia a nota do Obsidian sobre meu calendário.','live_status','notes'],
-    ['Create an approval to append this exact line to my connected note. Do not write it.','action','notes'],
-    ['Search my Paperless document library for the invoice.','live_status','builtin_apps'],
-    ['Search my connected Immich photos.','live_status','builtin_apps'],
-    ['List the webpage watches.','live_status','builtin_apps'],
-    ['Watch this webpage for price changes.','action','builtin_apps'],
-    ['Remove this webpage watch.','action','builtin_apps'],
-    ['Prepare an approval to remove this webpage watch; do not remove it.','action','builtin_apps'],
-    ['Read my unread FreshRSS stories without sending a notification.','live_status','builtin_apps'],
+    ['Search my Obsidian notes about Gmail.','obsidian','search'],
+    ['Leia a nota do Obsidian sobre meu calendário.','obsidian','read'],
+    ['Create an approval to append this exact line to my connected note. Do not write it.','obsidian','append'],
+    ['Create a connected Obsidian note.','obsidian','create'],
+    ['Search my Paperless document library for the invoice.','paperless','search'],
+    ['Read the matching Paperless document.','paperless','read'],
+    ['Search my connected Immich photos.','immich','search'],
+    ['List the webpage watches.','watch','list'],
+    ['Watch this webpage for price changes.','watch','add'],
+    ['Remove this webpage watch.','watch','remove'],
+    ['Prepare an approval to remove this webpage watch; do not remove it.','watch','remove'],
+    ['Read my unread FreshRSS stories without sending a notification.','freshrss','unread'],
+    ['Read my FreshRSS digest here without sending it.','freshrss','digest_read'],
   ];
-  for(const [index,[owner,request,scope]] of cases.entries()) {
-    const {recovery,calls}=world({complete:async parameters=>{calls.push(parameters);return reply(request,'promise',scope);}});
+  for(const [index,[owner,source,verb]] of cases.entries()) {
+    const {recovery,calls}=world({complete:async parameters=>{calls.push(parameters);return reply('perform',true,[{source,verb}]);}});
     const context={...CONTEXT,runId:'supported-'+index};recovery.observe({prompt:owner},context,context.runId);
     const decision=await recovery.finalize({...event(owner),runId:context.runId},context);
     assert.equal(decision.action,'revise',owner);assert.equal(calls.length,1,owner);
