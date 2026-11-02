@@ -2924,14 +2924,14 @@ function Invoke-Agent {
             }
             $_dockerPathLiteral = & $_psQuote "$_dockerBin;"
             $_pythonLiteral = & $_psQuote $_python3.FilePath
-            $_pythonPrefixArgsLiteral = "@(" + (($_python3.PrefixArgs | ForEach-Object { & $_psQuote $_ }) -join ", ") + ")"
-            $_agentScriptLiteral = & $_psQuote $agentScript
-            $_pidFileLiteral = & $_psQuote $pidFile
+            $_agentArgLine = ConvertTo-ODSHostAgentArgumentLine -PrefixArgs @($_python3.PrefixArgs) `
+                -AgentScript $agentScript -Port $port -PidFile $pidFile -InstallDir $InstallDir
+            $_agentArgsLiteral = & $_psQuote $_agentArgLine
             $_installDirLiteral = & $_psQuote $InstallDir
             $_logFileLiteral = & $_psQuote $logFile
             $_agentCommand = @"
 `$env:PATH = $_dockerPathLiteral + `$env:PATH
-`$agentArgs = $_pythonPrefixArgsLiteral + @($_agentScriptLiteral, '--port', '$port', '--pid-file', $_pidFileLiteral, '--install-dir', $_installDirLiteral)
+`$agentArgs = $_agentArgsLiteral
 Set-Location $_installDirLiteral
 Start-Process -FilePath $_pythonLiteral -ArgumentList `$agentArgs -WorkingDirectory $_installDirLiteral -WindowStyle Hidden -RedirectStandardError $_logFileLiteral
 "@
@@ -2979,7 +2979,7 @@ WshShell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hid
                 } catch {
                     Write-AIError "Failed to set up alternative startup persistence: $_"
                     Write-AIWarn "Starting host agent directly for this session..."
-                    Start-Process -FilePath $_python3.FilePath -ArgumentList @($agentScript, '--port', $port, '--pid-file', $pidFile, '--install-dir', $InstallDir) -WorkingDirectory $InstallDir -WindowStyle Hidden -RedirectStandardError $logFile
+                    Start-Process -FilePath $_python3.FilePath -ArgumentList $_agentArgLine -WorkingDirectory $InstallDir -WindowStyle Hidden -RedirectStandardError $logFile
                 }
             }
 

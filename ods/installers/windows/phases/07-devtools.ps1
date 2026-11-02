@@ -451,14 +451,15 @@ if (Test-Path $_agentScript) {
         }
         $_dockerPathLiteral = & $_psQuote "$_dockerBin;"
         $_pythonLiteral = & $_psQuote $_python3.FilePath
-        $_pythonPrefixArgsLiteral = "@(" + (($_python3.PrefixArgs | ForEach-Object { & $_psQuote $_ }) -join ", ") + ")"
-        $_agentScriptLiteral = & $_psQuote $_agentScript
-        $_pidFileLiteral = & $_psQuote $script:ODS_AGENT_PID_FILE
+        $_agentArgLine = ConvertTo-ODSHostAgentArgumentLine -PrefixArgs @($_python3.PrefixArgs) `
+            -AgentScript $_agentScript -Port $script:ODS_AGENT_PORT `
+            -PidFile $script:ODS_AGENT_PID_FILE -InstallDir $installDir
+        $_agentArgsLiteral = & $_psQuote $_agentArgLine
         $_installDirLiteral = & $_psQuote $installDir
         $_logFileLiteral = & $_psQuote $script:ODS_AGENT_LOG_FILE
         $_agentCommand = @"
 `$env:PATH = $_dockerPathLiteral + `$env:PATH
-`$agentArgs = $_pythonPrefixArgsLiteral + @($_agentScriptLiteral, '--port', '$($script:ODS_AGENT_PORT)', '--pid-file', $_pidFileLiteral, '--install-dir', $_installDirLiteral)
+`$agentArgs = $_agentArgsLiteral
 Set-Location $_installDirLiteral
 Start-Process -FilePath $_pythonLiteral -ArgumentList `$agentArgs -WorkingDirectory $_installDirLiteral -WindowStyle Hidden -RedirectStandardError $_logFileLiteral -Wait
 "@
