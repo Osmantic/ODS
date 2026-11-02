@@ -15,6 +15,7 @@ Modules:
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -96,7 +97,7 @@ from routers import (
     opencode_app,
 )
 from settings import (
-    _ENV_ASSIGNMENT_RE, _ENV_COMMENTED_ASSIGNMENT_RE, _SETTINGS_APPLY_ALLOWED_SERVICES, _parse_env_text, _read_env_map_from_path,
+    _ENV_ASSIGNMENT_RE, _ENV_COMMENTED_ASSIGNMENT_RE, _SETTINGS_APPLY_ALLOWED_SERVICES, _parse_env_text,
     _slugify,
     _build_env_fields, _validate_env_values, _serialize_form_values,
     _empty_value_unsets_env_key,
@@ -959,12 +960,15 @@ def _call_agent_core_recreate(
     )
 
 
-def _call_agent_env_update(raw_text: str) -> dict[str, Any]:
-    """Route .env writes through the host agent (filesystem is :ro in container)."""
+def _call_agent_env_update(raw_text: str, expected_sha256: str) -> dict[str, Any]:
+    """Route .env writes through the host agent (filesystem is :ro in container).
+
+    expected_sha256 is the hash of the .env bytes the save was rendered from;
+    the agent refuses the write with 409 when .env changed since then."""
     return request_agent_json(
         "POST",
         "/v1/env/update",
-        payload={"raw_text": raw_text, "backup": True},
+        payload={"raw_text": raw_text, "backup": True, "expected_sha256": expected_sha256},
         timeout=60,
     )
 
@@ -1021,10 +1025,22 @@ def _relative_install_path(path: Path) -> str:
         return str(path).replace("\\", "/")
 
 
-def _prepare_env_save(payload: dict[str, Any]) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+def _read_env_snapshot(env_path: Path) -> tuple[dict[str, str], str]:
+    """Return parsed values and the sha256 of the exact bytes they came from."""
+    try:
+        raw_bytes = env_path.read_bytes()
+    except FileNotFoundError:
+        raw_bytes = b""
+    values, _ = _parse_env_text(raw_bytes.decode("utf-8"))
+    return values, hashlib.sha256(raw_bytes).hexdigest()
+
+
+def _prepare_env_save(
+    payload: dict[str, Any],
+) -> tuple[str, list[dict[str, Any]], dict[str, Any], str]:
     mode = payload.get("mode", "form")
     env_path = _resolve_runtime_env_path()
-    current_values, _ = _read_env_map_from_path(env_path)
+    current_values, env_sha256 = _read_env_snapshot(env_path)
     schema_properties, required_keys = _load_env_schema()
 
     if mode != "form":
@@ -1065,7 +1081,7 @@ def _prepare_env_save(payload: dict[str, Any]) -> tuple[str, list[dict[str, Any]
             current_values,
             current_values,
             active_services=_active_settings_apply_services(),
-        )
+        ), env_sha256
     invalid_keys = sorted(set(submitted_values.keys()) - set(base_fields.keys()))
     if invalid_keys:
         return _render_env_from_values(current_values), [
@@ -1078,7 +1094,7 @@ def _prepare_env_save(payload: dict[str, Any]) -> tuple[str, list[dict[str, Any]
             current_values,
             current_values,
             active_services=_active_settings_apply_services(),
-        )
+        ), env_sha256
 
     read_only_changes = []
     for key, submitted_value in submitted_values.items():
@@ -1100,6 +1116,7 @@ def _prepare_env_save(payload: dict[str, Any]) -> tuple[str, list[dict[str, Any]
                 current_values,
                 active_services=_active_settings_apply_services(),
             ),
+            env_sha256,
         )
 
     normalized_values = _serialize_form_values(submitted_values, base_fields, current_values)
@@ -1116,7 +1133,7 @@ def _prepare_env_save(payload: dict[str, Any]) -> tuple[str, list[dict[str, Any]
         merged_values,
         active_services=_active_settings_apply_services(),
     )
-    return _render_env_from_values(merged_values), issues, apply_plan
+    return _render_env_from_values(merged_values), issues, apply_plan, env_sha256
 
 # --- App ---
 
@@ -1870,7 +1887,7 @@ async def api_settings_env_save(
     payload: dict[str, Any] = Body(...),
     api_key: str = Depends(verify_api_key),
 ):
-    raw_text, issues, apply_plan = await asyncio.to_thread(_prepare_env_save, payload)
+    raw_text, issues, apply_plan, env_sha256 = await asyncio.to_thread(_prepare_env_save, payload)
     if issues:
         raise HTTPException(
             status_code=400,
@@ -1881,9 +1898,19 @@ async def api_settings_env_save(
         )
 
     try:
-        agent_resp = await asyncio.to_thread(_call_agent_env_update, raw_text)
+        agent_resp = await asyncio.to_thread(_call_agent_env_update, raw_text, env_sha256)
     except AgentHTTPError as exc:
         detail = exc.detail
+        if exc.status_code == 409:
+            _clear_settings_caches()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "Settings changed on disk since they were loaded "
+                               "(for example a model switch). Reload and try saving again.",
+                    "retryable": True,
+                },
+            ) from exc
         raise HTTPException(status_code=503, detail={"message": detail}) from exc
     except AgentUnavailable as exc:
         raise HTTPException(
