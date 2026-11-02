@@ -598,12 +598,12 @@ unset _whisper_port_for_check
 PORTS_TO_CHECK=""
 [[ "${ENABLE_OPEN_WEBUI:-true}" != "true" ]] || PORTS_TO_CHECK="${SERVICE_PORTS[open-webui]:-3000}"
 # The required local inference port was admitted above and cannot be waived.
-if [[ "$ENABLE_VOICE" == "true" ]]; then
+if [[ "${ENABLE_LOCAL_STT:-$ENABLE_VOICE}" == "true" ]]; then
     # A rerun's running Whisper holds its own port; that is not a conflict.
     _phase04_own_whisper_publishes "${SERVICE_PORTS[whisper]:-9000}" \
         || PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[whisper]:-9000}"
-    PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[tts]:-8880}"
 fi
+[[ "$ENABLE_VOICE" != "true" ]] || PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[tts]:-8880}"
 [[ "$ENABLE_WORKFLOWS" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[n8n]:-5678}"
 [[ "${ENABLE_QDRANT:-${ENABLE_RAG:-false}}" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[qdrant]:-6333}"
 [[ "$ENABLE_COMFYUI" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[comfyui]:-8188}"

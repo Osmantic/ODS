@@ -12,13 +12,16 @@
 #           GPU_TOPOLOGY_JSON, LLM_MODEL_SIZE_MB, SCRIPT_DIR, VERBOSE, DEBUG,
 #           GPU_INDICES, GPU_UUIDS (arrays from topology),
 #           LLM_BACKEND and VLLM_GPU_UUID (phase 02; vllm pins the LLM GPU),
+#           EXTERNAL_STT_URL, EXTERNAL_STT_MODEL, EXTERNAL_STT_DISABLE (flags),
 #           show_phase(), show_install_menu(), chapter(), bootline(),
 #           success(), log(), warn(), error(), signal()
 # Provides: ENABLE_VOICE, ENABLE_WORKFLOWS, ENABLE_RAG, ENABLE_EMBEDDINGS,
 #           ENABLE_QDRANT, ENABLE_HERMES, ENABLE_SEARXNG,
 #           ENABLE_WEB_SEARCH, GPU_ASSIGNMENT_JSON,
 #           LLAMA_SERVER_GPU_UUIDS, WHISPER_GPU_UUID, COMFYUI_GPU_UUID,
-#           EMBEDDINGS_GPU_UUID, LLAMA_ARG_SPLIT_MODE, LLAMA_ARG_TENSOR_SPLIT
+#           EMBEDDINGS_GPU_UUID, LLAMA_ARG_SPLIT_MODE, LLAMA_ARG_TENSOR_SPLIT,
+#           ENABLE_LOCAL_STT, EXTERNAL_STT_URL, EXTERNAL_STT_CONTAINER_URL,
+#           EXTERNAL_STT_MODELS
 #
 # Modder notes:
 #   Add new optional features to the Custom menu here.
@@ -44,6 +47,12 @@ if ! declare -F ods_pixel_resolve_enablement >/dev/null 2>&1; then
     # shellcheck source=../lib/pixel-integration.sh
     _phase03_source_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     source "$_phase03_source_dir/../lib/pixel-integration.sh"
+    unset _phase03_source_dir
+fi
+if ! declare -F external_stt_models >/dev/null 2>&1; then
+    # shellcheck source=../lib/external-services.sh
+    _phase03_source_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    source "$_phase03_source_dir/../lib/external-services.sh"
     unset _phase03_source_dir
 fi
 
@@ -320,6 +329,49 @@ fi
 unset -f _ods_model_is_current_pick
 export HERMES_CONTEXT_BELOW_FLOOR
 
+# Resolve a speech-to-text server on another machine: --external-stt-url for
+# this run, else the saved EXTERNAL_STT_URL, unless --no-external-stt. The
+# server must list models before the local Whisper is retired.
+_phase03_resolve_external_stt() {
+    local url="${EXTERNAL_STT_URL:-}" model="${EXTERNAL_STT_MODEL:-}" models="" listed
+    if [[ "${EXTERNAL_STT_DISABLE:-false}" == "true" ]]; then
+        url=""
+        [[ -z "$model" ]] || { ai_bad "--external-stt-model cannot be combined with --no-external-stt."; return 1; }
+    elif [[ -z "$url" && -f "${INSTALL_DIR:-}/.env" ]]; then
+        url="$(external_llm_env_value "$INSTALL_DIR/.env" EXTERNAL_STT_URL || true)"
+        [[ -z "$url" ]] || log "Reusing the speech-to-text server from the existing installation: ${url}"
+    fi
+    EXTERNAL_STT_URL=""
+    EXTERNAL_STT_CONTAINER_URL=""
+    EXTERNAL_STT_MODELS=""
+    export EXTERNAL_STT_URL EXTERNAL_STT_CONTAINER_URL EXTERNAL_STT_MODELS
+    if [[ -z "$url" ]]; then
+        [[ -z "$model" ]] || { ai_bad "--external-stt-model requires --external-stt-url."; return 1; }
+        return 0
+    fi
+    if ! external_stt_validate_url "$url"; then
+        ai_bad "Invalid speech-to-text server URL: ${url}"
+        ai "Use an http(s) base URL such as http://192.168.1.20:8000, without credentials, query parameters, or fragments."
+        return 1
+    fi
+    url="$(external_stt_strip_url "$url")"
+    if ! models="$(external_stt_models "$url")"; then
+        ai_bad "The speech-to-text server at ${url} did not answer ${url}/v1/models with a model list."
+        ai "Check that it is running and reachable from this computer, or rerun with --no-external-stt to use the local Whisper service."
+        return 1
+    fi
+    if [[ -n "$model" && -n "$models" ]] && ! grep -Fqx -- "$model" <<<"$models"; then
+        listed="$(head -n 8 <<<"$models" | paste -sd, - | sed 's/,/, /g')"
+        ai_bad "${url} does not serve the speech-to-text model ${model}."
+        ai "Models it lists include: ${listed}"
+        return 1
+    fi
+    EXTERNAL_STT_URL="$url"
+    EXTERNAL_STT_CONTAINER_URL="$(external_llm_container_url "$url")"
+    EXTERNAL_STT_MODELS="$models"
+    ai_ok "Speech-to-text runs on ${EXTERNAL_STT_URL}; the local Whisper service stays off"
+}
+
 # Sync optional-extension compose state with the ENABLE_* flags — the
 # resolver uses the .disabled convention to exclude services from the compose
 # stack. These mv calls are skipped during --dry-run so the source tree is
@@ -561,7 +613,13 @@ if ! $DRY_RUN; then
     _sync_extension_compose "${ENABLE_SEARXNG:-}"     searxng    "SearXNG"       "web search backend not required" || return 1
     _sync_extension_compose "${ENABLE_RECOMMENDED:-}" token-spy  "Token Spy"     "recommended services not enabled" || return 1
     unset _pixel_support_services
-    _sync_extension_compose "${ENABLE_VOICE:-}"      whisper    "Whisper (STT)" "voice not enabled" || return 1
+    # A speech-to-text server on another machine replaces the local Whisper;
+    # Kokoro TTS still follows ENABLE_VOICE.
+    _phase03_resolve_external_stt || return 1
+    ENABLE_LOCAL_STT="${ENABLE_VOICE:-false}"
+    [[ -z "$EXTERNAL_STT_URL" ]] || ENABLE_LOCAL_STT=false
+    export ENABLE_LOCAL_STT
+    _sync_extension_compose "$ENABLE_LOCAL_STT"      whisper    "Whisper (STT)" "voice not enabled or speech-to-text runs on another machine" || return 1
     _sync_extension_compose "${ENABLE_VOICE:-}"      tts        "Kokoro (TTS)"  "voice not enabled" || return 1
     _sync_extension_compose "${ENABLE_WORKFLOWS:-}"  n8n        "n8n"           "workflows not enabled" || return 1
     # RAG = qdrant (vector store) + embeddings (TEI). Both default from

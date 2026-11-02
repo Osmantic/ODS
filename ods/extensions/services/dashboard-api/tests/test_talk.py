@@ -2174,3 +2174,22 @@ async def test_talk_reads_no_manifest_for_a_service_outside_the_library(monkeypa
     monkeypatch.setattr(talk, "load_extension_manifests", unexpected)
 
     assert await talk._service_state("livekit") == {"configured": False, "status": "not_configured"}
+
+
+@pytest.mark.asyncio
+async def test_whisper_state_reports_an_external_stt_server(monkeypatch):
+    """install.sh --external-stt-url: Talk checks the server on the other machine."""
+    from routers import talk
+
+    async def check_external_stt(base_url):
+        assert base_url == "http://192.168.1.20:8000"
+        return "healthy"
+
+    async def no_local_config(service_id):
+        raise AssertionError("the local Whisper must not be consulted")
+
+    monkeypatch.setattr("routers.talk.external_stt_base_url", lambda: "http://192.168.1.20:8000")
+    monkeypatch.setattr("routers.talk.check_external_stt", check_external_stt)
+    monkeypatch.setattr("routers.talk._service_config", no_local_config)
+
+    assert await talk._service_state("whisper") == {"configured": True, "status": "healthy", "external": True}

@@ -347,6 +347,11 @@ run_phase06_env_cycle() (
     export EXTERNAL_LLM_PROVIDER=ollama
     export EXTERNAL_LLM_MODEL=qwen3.5:9b
     export NATIVE_LLM_BASE_URL=
+    # Phase 03's --external-stt-url result for a server on this host.
+    export EXTERNAL_STT_URL=http://127.0.0.1:8000
+    export EXTERNAL_STT_CONTAINER_URL=http://host.docker.internal:8000
+    export EXTERNAL_STT_MODELS=Systran/faster-whisper-small
+    export EXTERNAL_STT_MODEL=Systran/faster-whisper-small
 
     # This fixture exercises ONLY external routing/.env generation. The copied
     # tree still contains the real APE compose with its ./data/ape:/data/ape:z
@@ -417,6 +422,15 @@ run_phase06_env_cycle() (
     grep -qx 'EXTERNAL_LLM_PROVIDER=ollama' "$install_dir/.env"
     grep -qx 'SKIP_MODEL_DOWNLOAD=true' "$install_dir/.env"
     grep -qx 'MODEL_RECOMMENDED_MODEL=qwen3-1.7b' "$install_dir/.env"
+    # Both speech-to-text consumers get the same server, as containers reach
+    # it. set -e does not apply inside this if-tested function, so each
+    # check exits on its own.
+    env_line() { grep -qx -- "$1" "$install_dir/.env" || { echo ".env lacks $1" >&2; exit 1; }; }
+    env_line 'EXTERNAL_STT_URL=http://127.0.0.1:8000'
+    env_line 'WHISPER_URL=http://host.docker.internal:8000'
+    env_line 'AUDIO_STT_OPENAI_API_BASE_URL=http://host.docker.internal:8000/v1'
+    env_line 'AUDIO_STT_MODEL=Systran/faster-whisper-small'
+    bash "$install_dir/scripts/validate-env.sh" "$install_dir/.env" "$install_dir/.env.schema.json" >/dev/null         || { echo "the speech-to-text .env does not validate" >&2; exit 1; }
 
     printf 'test-secret-123\n' >"$TEMP_DIR/operator-key"
     chmod 600 "$TEMP_DIR/operator-key"
@@ -441,6 +455,11 @@ run_phase06_env_cycle() (
     export EXTERNAL_LLM_PROVIDER=
     export EXTERNAL_LLM_MODEL=
     export EXTERNAL_LLM_RESET=true
+    # --no-external-stt: back to the local Whisper's compose defaults.
+    export EXTERNAL_STT_URL=''
+    export EXTERNAL_STT_CONTAINER_URL=''
+    export EXTERNAL_STT_MODELS=''
+    export EXTERNAL_STT_MODEL=''
     # Turning API mode off forgets the stored key (fleet row 25).
     printf 'stored-secret\n' >"$install_dir/config/litellm/external-upstream.key"
 
@@ -455,6 +474,9 @@ run_phase06_env_cycle() (
     grep -qx 'EXTERNAL_LLM_URL=' "$install_dir/.env"
     grep -qx 'EXTERNAL_LLM_PROVIDER=' "$install_dir/.env"
     grep -qx 'SKIP_MODEL_DOWNLOAD=false' "$install_dir/.env"
+    env_line 'EXTERNAL_STT_URL='
+    env_line 'WHISPER_URL='
+    env_line 'AUDIO_STT_OPENAI_API_BASE_URL='
     grep -q 'api_base: http://llama-server:8080/v1' "$install_dir/config/litellm/local.yaml"
     ! grep -q 'host.docker.internal:11434\|openai/qwen3.5:9b' "$install_dir/config/litellm/local.yaml"
 
@@ -492,7 +514,7 @@ run_phase06_env_cycle() (
 )
 
 if run_phase06_env_cycle; then
-    pass "phase 06 preserves external routing, restores managed inference, and repairs stale host-native routes"
+    pass "phase 06 preserves external LLM and speech-to-text routing, restores managed services, and repairs stale host-native routes"
 else
     fail "phase 06 external routing/reset/host-native cycle"
 fi

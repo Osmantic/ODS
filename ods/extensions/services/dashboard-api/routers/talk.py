@@ -29,10 +29,11 @@ from config import (
     INSTALL_DIR,
     LIBRARY_MANAGEABLE_BUILTINS,
     SERVICES,
+    external_stt_base_url,
     load_extension_manifests,
     read_live_env_value,
 )
-from helpers import check_service_health, get_llama_context_size, get_llama_vision_support, get_loaded_model
+from helpers import check_external_stt, check_service_health, get_llama_context_size, get_llama_vision_support, get_loaded_model
 from host_agent_client import AgentClientError, async_request_json as request_agent_json
 from performance_oracle import (
     find_catalog_model,
@@ -445,6 +446,11 @@ async def _service_config(service_id: str) -> dict[str, Any] | None:
 
 
 async def _service_state(service_id: str) -> dict[str, Any]:
+    if service_id == "whisper":
+        external = external_stt_base_url()
+        if external:
+            # Speech-to-text runs on another machine (install.sh --external-stt-url).
+            return {"configured": True, "status": await check_external_stt(external), "external": True}
     cfg = await _service_config(service_id)
     if not cfg:
         return {"configured": False, "status": "not_configured"}

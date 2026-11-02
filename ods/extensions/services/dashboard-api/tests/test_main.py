@@ -576,6 +576,85 @@ class TestReadinessPayload:
         assert result["canUseVoice"] is False
         assert "ods repair voice" in result["repairHints"]
 
+    def test_external_stt_counts_as_voice_without_local_whisper(self):
+        # install.sh --external-stt-url turns the local Whisper off; the
+        # server on the other machine serving the model is what matters.
+        from models import BootstrapStatus, ServiceStatus
+
+        statuses = [
+            ServiceStatus(id="llama-server", name="LLM", port=8080, external_port=8080, status="healthy"),
+            ServiceStatus(id="open-webui", name="Open WebUI", port=3000, external_port=3000, status="healthy"),
+            ServiceStatus(id="tts", name="TTS", port=8880, external_port=8880, status="healthy"),
+        ]
+
+        result = _build_readiness_payload(
+            service_statuses=statuses,
+            loaded_model="Test-32B",
+            context_size=32768,
+            bootstrap_info=BootstrapStatus(active=False),
+            host_agent={"available": True},
+            stt_model_cached=True,
+            stt_model_name="Systran/faster-whisper-small",
+            stt_external=True,
+        )
+
+        voice = next(check for check in result["checks"] if check["id"] == "voice")
+        assert result["status"] == "ready"
+        assert result["canUseVoice"] is True
+        assert voice["ready"] is True
+
+    def test_unreachable_external_stt_needs_repair_without_local_hint(self):
+        from models import BootstrapStatus, ServiceStatus
+
+        statuses = [
+            ServiceStatus(id="llama-server", name="LLM", port=8080, external_port=8080, status="healthy"),
+            ServiceStatus(id="open-webui", name="Open WebUI", port=3000, external_port=3000, status="healthy"),
+            ServiceStatus(id="tts", name="TTS", port=8880, external_port=8880, status="healthy"),
+        ]
+
+        result = _build_readiness_payload(
+            service_statuses=statuses,
+            loaded_model="Test-32B",
+            context_size=32768,
+            bootstrap_info=BootstrapStatus(active=False),
+            host_agent={"available": True},
+            stt_model_cached=False,
+            stt_model_name="Systran/faster-whisper-small",
+            stt_external=True,
+        )
+
+        voice = next(check for check in result["checks"] if check["id"] == "voice")
+        assert result["status"] == "degraded"
+        assert voice["status"] == "needs_repair"
+        assert "speech-to-text server" in voice["detail"]
+        assert "Systran/faster-whisper-small" in voice["detail"]
+        # ods repair voice restarts local services; it cannot fix the other machine.
+        assert voice.get("repair") is None
+        assert "ods repair voice" not in result["repairHints"]
+
+    @pytest.mark.asyncio
+    async def test_stt_model_check_asks_the_external_server(self, monkeypatch):
+        import httpx
+        import main
+
+        seen = []
+
+        def handler(request):
+            seen.append(str(request.url))
+            return httpx.Response(200, json={"id": "Systran/faster-whisper-small"})
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        monkeypatch.setattr("main.external_stt_base_url", lambda: "http://host.docker.internal:8000")
+        monkeypatch.setattr("main._get_httpx_client", AsyncMock(return_value=client))
+        monkeypatch.setenv("AUDIO_STT_MODEL", "Systran/faster-whisper-small")
+        monkeypatch.setattr("main.SERVICES", {})
+
+        cached, name = await main._check_stt_model_cached()
+        await client.aclose()
+
+        assert (cached, name) == (True, "Systran/faster-whisper-small")
+        assert seen == ["http://host.docker.internal:8000/v1/models/Systran%2Ffaster-whisper-small"]
+
     def test_api_readiness_endpoint(self, test_client, monkeypatch):
         from models import BootstrapStatus, ServiceStatus
 
