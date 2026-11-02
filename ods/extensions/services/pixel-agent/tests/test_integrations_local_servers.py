@@ -164,12 +164,14 @@ class LocalServerTests(unittest.TestCase):
     def test_a_hung_server_times_out_is_stopped_and_starts_again(self):
         self.ready("hang")
         started = time.time()
-        with self.assertRaisesRegex(service.IntegrationError, "did not answer in time"):
+        with self.assertRaisesRegex(service.IntegrationError, "result could not be verified") as refused:
             self.call()
+        self.assertEqual(refused.exception.code, 'mcp-outcome-unknown')
         self.assertLess(time.time() - started, 6)
         self.assertFalse(self.owner("get")["processes"]["local"]["running"])
-        with self.assertRaisesRegex(service.IntegrationError, "did not answer in time"):
+        with self.assertRaisesRegex(service.IntegrationError, "result could not be verified") as refused:
             self.call()  # A fresh process, which hangs again; the service itself never blocks.
+        self.assertEqual(refused.exception.code, 'mcp-outcome-unknown')
 
     def test_junk_lines_and_stray_replies_are_ignored(self):
         self.ready("junk")
@@ -179,7 +181,7 @@ class LocalServerTests(unittest.TestCase):
         self.ready("exit-mid-call")
         with self.assertRaises(service.IntegrationError) as refused:
             self.call()
-        self.assertEqual(refused.exception.code, "mcp-unavailable")
+        self.assertEqual(refused.exception.code, "mcp-outcome-unknown")
         self.assertNotIn("database", refused.exception.message)
         self.assertTrue(wait_until(lambda: "lost the database" in self.owner("get")["processes"]["local"]["lastError"]))
 
@@ -253,8 +255,9 @@ class LocalServerTests(unittest.TestCase):
 
     def test_huge_output_is_refused_and_the_server_stopped(self):
         self.ready("huge")
-        with self.assertRaisesRegex(service.IntegrationError, "stopped"):
+        with self.assertRaisesRegex(service.IntegrationError, "result could not be verified") as refused:
             self.call()
+        self.assertEqual(refused.exception.code, 'mcp-outcome-unknown')
         self.assertIn("too much data", self.local.running["local"].stopped_because)
 
     def test_secret_variables_reach_only_the_server_and_never_the_screens(self):

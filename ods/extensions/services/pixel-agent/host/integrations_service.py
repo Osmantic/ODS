@@ -5,6 +5,10 @@ separate owner and agent Unix endpoints; the listener determines the role, not r
 fields. The owner endpoint changes settings and decides approvals. The agent endpoint
 enforces enabled resources and exact, single-use approvals for "ask first" actions.
 
+Native macOS additionally authenticates each owner request with a fresh challenge
+and a root-provisioned owner-readable key excluded from gateway filesystem policies.
+Physical Seatbelt/alias qualification is separate from this protocol and peer check.
+
 These endpoints share the owner's Unix identity. Their permissions exclude other users,
 but do not isolate arbitrary owner-account code. In particular Full Access can read owner
 files and reach the owner endpoint outside this tool path. Mount hiding alone is not an
@@ -12,10 +16,12 @@ absolute same-UID security boundary. Off/ask/allow are policies of the integrati
 not a claim that broader owner-account access cannot bypass them.
 """
 import json
+import hmac
 import os
 import pathlib
 import re
 import shlex
+import signal
 import socket
 import socketserver
 import stat
@@ -31,7 +37,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import integrations_apps as apps  # noqa: E402
 import integrations_notes as notes  # noqa: E402
 from integrations_common import (IntegrationError, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES,  # noqa: E402
-                                 SCHEMA_VERSION, Store, digest, now, redact_secrets, clip, app_context, notification_context)
+                                 SCHEMA_VERSION, Store, digest, now, redact_secrets, clip, app_context, notification_context,
+                                 native_owner_key, native_owner_request, owner_proof, owner_auth_binding, owner_reply_proof, read_owner_frame, OWNER_AUTH_SECONDS,
+                                 stop_http_workers, validate_native_state)
 from integrations_app_service import APP_SERVER_IDS, AppActions, app_text  # noqa: E402
 from integrations_recovery import RecoveryReviewOnly, review_only_request  # noqa: E402
 from integrations_ntfy import send_notification  # noqa: E402
@@ -48,6 +56,7 @@ OWNER_ACTIONS = {"get", "save", "test-notification", "discover", "test", "test-a
                  "decide", "clear-activity"}
 TASK_MODES = ("off", "failures", "all")
 WATCH_SECONDS = 120
+REQUEST_SECONDS = 130
 OWNER_SOCKET = "owner.sock"
 APPROVAL_HELP = ("Approve or decline it in Settings → Portal integrations. An approval is for this exact action, "
                  "once, within 24 hours; a scheduled task goes ahead on its next run.")
@@ -681,10 +690,35 @@ def handle_line(service, role, line):
 class _Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     daemon_threads = True
 
+    def __init__(self, *args, bounded=False, **kwargs):
+        self.slots = threading.BoundedSemaphore(32) if bounded else None
+        if bounded:
+            self.daemon_threads = False
+        super().__init__(*args, **kwargs)
 
-def _listener(service, socket_path, role):
+    def process_request(self, request, client_address):
+        if self.slots is not None and not self.slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            if self.slots is not None:
+                self.slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            if self.slots is not None:
+                self.slots.release()
+
+
+def _listener(service, socket_path, role, *, owner_key=None, stop=None):
     """A socket for one role that answers only processes of this service's own user."""
     from unix_peer import peer_ids
+    native = sys.platform == 'darwin'
     socket_path = pathlib.Path(socket_path)
     if socket_path.exists() or socket_path.is_symlink():
         if not stat.S_ISSOCK(socket_path.lstat().st_mode):
@@ -693,18 +727,52 @@ def _listener(service, socket_path, role):
 
     class Handler(socketserver.StreamRequestHandler):
         def handle(self):
+            authenticated_request = None
             uid, _gid = peer_ids(self.request)
-            self.request.settimeout(130)
-            line = self.rfile.readline(MAX_REQUEST_BYTES + 1)
             if uid != os.getuid():
                 reply = {"ok": False, "error": "forbidden", "message": "This caller may not use integrations."}
-            elif len(line) > MAX_REQUEST_BYTES:
-                reply = {"ok": False, "error": "too-large", "message": "The request is too large."}
             else:
-                reply = handle_line(service, role, line)
+                self.request.settimeout(OWNER_AUTH_SECONDS if owner_key is not None else REQUEST_SECONDS)
+                authentication_deadline = time.monotonic() + OWNER_AUTH_SECONDS
+                nonce = os.urandom(32).hex() if owner_key is not None else None
+                if nonce is not None:
+                    self.wfile.write((json.dumps({"schemaVersion": 1, "challenge": nonce}) + "\n").encode())
+                    self.wfile.flush()
+                try:
+                    if nonce:
+                        line = read_owner_frame(self.request, MAX_REQUEST_BYTES + 1024, authentication_deadline)
+                    elif native:
+                        line = read_owner_frame(self.request, MAX_REQUEST_BYTES, time.monotonic() + REQUEST_SECONDS)
+                    else:
+                        line = self.rfile.readline(MAX_REQUEST_BYTES + 1)
+                    if nonce is not None:
+                        envelope = json.loads(line)
+                        if (type(envelope) is not dict or set(envelope) != {"schemaVersion", "clientNonce", "request", "proof"}
+                                or type(envelope["schemaVersion"]) is not int or envelope["schemaVersion"] != 1
+                                or type(envelope["proof"]) is not str
+                                or not hmac.compare_digest(envelope["proof"], owner_proof(owner_key,
+                                    owner_auth_binding(nonce, envelope['clientNonce']), envelope["request"]))):
+                            raise ValueError()
+                        line = json.dumps(envelope["request"], separators=(",", ":")).encode()
+                        authenticated_request = envelope['request']
+                        binding = owner_auth_binding(nonce, envelope['clientNonce'])
+                except (ValueError, TypeError, KeyError, OSError):
+                    reply = ({"ok": False, "error": "forbidden", "message": "Owner authentication failed."}
+                             if owner_key is not None else {"ok": False, "error": "invalid-request", "message": "The request was incomplete."})
+                else:
+                    if len(line) > MAX_REQUEST_BYTES:
+                        reply = {"ok": False, "error": "too-large", "message": "The request is too large."}
+                    elif stop is not None and stop.is_set():
+                        reply = {"ok": False, "error": "stopping", "message": "The integrations service is stopping."}
+                    else:
+                        self.request.settimeout(REQUEST_SECONDS)
+                        reply = handle_line(service, role, line)
+            if authenticated_request is not None:
+                reply = {'schemaVersion': 1, 'reply': reply,
+                         'proof': owner_reply_proof(owner_key, binding, authenticated_request, reply)}
             self.wfile.write((json.dumps(reply, separators=(",", ":")) + "\n").encode())
 
-    server = _Server(str(socket_path), Handler)
+    server = _Server(str(socket_path), Handler, bounded=owner_key is not None or native)
     os.chmod(socket_path, 0o600)
     return server
 
@@ -731,19 +799,76 @@ def watch_or_exit(service, stop, seconds=WATCH_SECONDS, exit=os._exit):
         exit(1)
 
 
+class RunningIntegrations(list):
+    """Listeners and their shutdown custody; list-compatible with Linux callers."""
+
+    def close(self):
+        self.stop.set()
+        errors = []
+        if self.native:
+            try:
+                stop_http_workers()
+            except Exception as error:
+                errors.append(error)
+        for server in self:
+            try:
+                server.shutdown()
+                server.server_close()
+            except Exception as error:
+                errors.append(error)
+        try:
+            self.service.local.close()
+        except Exception as error:
+            errors.append(error)
+        if self.native:
+            self.watcher.join(5)
+            if self.watcher.is_alive():
+                errors.append(RuntimeError('native-integrations-watcher-stop-unconfirmed'))
+        if errors:
+            raise RuntimeError('integrations-stop-unconfirmed') from errors[0]
+
+
 def start(agent_socket, state_dir):
     """Both listeners and the page watcher, in background threads; the owner socket is STATE_DIR/owner.sock."""
+    if sys.platform == 'darwin':
+        validate_native_state(state_dir)
     service = Integrations(Store(state_dir))
-    servers = [_listener(service, agent_socket, "agent"), _listener(service, pathlib.Path(state_dir) / OWNER_SOCKET, "owner")]
+    stop = threading.Event()
+    servers = RunningIntegrations()
+    servers.service, servers.stop, servers.failed, servers.native = service, stop, False, sys.platform == 'darwin'
+    key = native_owner_key() if sys.platform == "darwin" else None
+    try:
+        servers.append(_listener(service, agent_socket, "agent", stop=stop))
+        servers.append(_listener(service, pathlib.Path(state_dir) / OWNER_SOCKET, "owner", owner_key=key, stop=stop))
+    except BaseException:
+        for server in servers:
+            server.server_close()
+        raise
     for server in servers:
         threading.Thread(target=server.serve_forever, daemon=True).start()
-    threading.Thread(target=watch_or_exit, args=(service, threading.Event()), daemon=True).start()
+    def failed(_code):
+        servers.failed = True
+        stop.set()
+    servers.watcher = threading.Thread(target=watch_or_exit, args=(service, stop), kwargs={"exit": failed}, daemon=True)
+    servers.watcher.start()
     return servers
 
 
 def serve(agent_socket, state_dir):
-    start(agent_socket, state_dir)
-    threading.Event().wait()
+    servers = start(agent_socket, state_dir)
+    previous = {}
+    try:
+        for number in (signal.SIGTERM, signal.SIGINT):
+            previous[number] = signal.signal(number, lambda _number, _frame: servers.stop.set())
+        servers.stop.wait()
+    finally:
+        try:
+            servers.close()
+        finally:
+            for number, handler in previous.items():
+                signal.signal(number, handler)
+    if servers.failed:
+        raise SystemExit(1)
 
 
 def client(socket_path, request, timeout=130):
@@ -765,6 +890,15 @@ def client(socket_path, request, timeout=130):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 4 or sys.argv[1] != "serve":
-        raise SystemExit("usage: integrations_service.py serve AGENT_SOCKET STATE_DIR")
-    serve(sys.argv[2], sys.argv[3])
+    if len(sys.argv) != 4 or sys.argv[1] not in ("serve", "health"):
+        raise SystemExit("usage: integrations_service.py serve|health AGENT_SOCKET STATE_DIR")
+    if sys.argv[1] == "health":
+        request = {"schemaVersion": 1, "action": "get"}
+        owner = (native_owner_request(pathlib.Path(sys.argv[3]) / OWNER_SOCKET, request, timeout=5)
+                 if sys.platform == "darwin" else client(pathlib.Path(sys.argv[3]) / OWNER_SOCKET, request, timeout=5))
+        agent = client(sys.argv[2], {"action": "mcp-tools"}, timeout=5)
+        if owner.get("ok") is not True or agent.get("ok") is not True or type(agent.get("servers")) is not list:
+            raise SystemExit("native integrations are not ready")
+        print(json.dumps({"schemaVersion": 1, "status": "ready", "owner": True, "agent": True}))
+    else:
+        serve(sys.argv[2], sys.argv[3])

@@ -42,6 +42,7 @@ const MAX_VERIFICATION_TEXT = 32 * 1024;
 // One host line for the owner after the delivered reply (the plugin's
 // shipped-example guard, plugin/example-guard.mjs).
 const MAX_VERIFICATION_NOTICE = 1024;
+const MAX_INTEGRATION_NOTICE = 2048;
 // The limits that may stop a failed response (verification `stop`).
 const VERIFICATION_STOPS = new Set(['tool-limit', 'run-deadline']);
 const MAX_VERIFICATION_RESPONSE = 1024 * 1024;
@@ -848,6 +849,8 @@ export function parseVerificationResponse(value, runId) {
   // A pending question card carries no notice.
   const hasNotice = status !== 'pending' && Object.hasOwn(value, 'notice');
   if (hasNotice) expectedKeys.push('notice');
+  const hasIntegrationNotice = Object.hasOwn(value, 'integrationNotice');
+  if (hasIntegrationNotice) expectedKeys.push('integrationNotice');
   // Which limit stopped a failed response (tool-loop-guard.mjs), for goal
   // mode's controller: it continues a goal after these stops.
   const hasStop = status === 'failed' && Object.hasOwn(value, 'stop');
@@ -911,6 +914,8 @@ export function parseVerificationResponse(value, runId) {
     (hasQuestions && (status !== 'pending' || !parseQuestions(value.questions))) ||
     (hasNotice && (typeof value.notice !== 'string' || !value.notice.trim() ||
       value.notice.length > MAX_VERIFICATION_NOTICE || /[\u0000-\u001f\u007f]/.test(value.notice))) ||
+    (hasIntegrationNotice && (typeof value.integrationNotice !== 'string' || !value.integrationNotice.trim() ||
+      value.integrationNotice.length > MAX_INTEGRATION_NOTICE || /[\u0000-\u0009\u000b-\u001f\u007f]/.test(value.integrationNotice))) ||
     (hasStop && !VERIFICATION_STOPS.has(value.stop))
   ) {
     throw new HttpError(502, "verification state unavailable");
@@ -1054,10 +1059,17 @@ function deliveryVerification(completion, verification) {
 
 // Exported for tests of the exact delivery path.
 export function applyVerificationToCompletion(completion, verification) {
-  const result=withNotice(baseApplyVerificationToCompletion(completion,verification),verification.notice);
+  const result=withIntegrationNotice(withNotice(baseApplyVerificationToCompletion(completion,verification),verification.notice),verification.integrationNotice);
   const {pixel_artifacts: _untrustedArtifacts, ...clean}=result;
   return verification.artifacts?.length
     ? {...clean,pixel_artifacts:{schemaVersion:1,artifacts:verification.artifacts}} : clean;
+}
+
+function withIntegrationNotice(completion, notice) {
+  const choice = completion?.choices?.[0], content = choice?.message?.content;
+  if (!notice || typeof content !== 'string' || content.endsWith(notice)) return completion;
+  return {...completion, choices:[{...choice, message:{...choice.message,
+    content:`${content}${content.trim() ? '\n\n' : ''}${notice}`}}, ...completion.choices.slice(1)]};
 }
 
 // The host's one owner line follows the reply as delivered (kept, appended

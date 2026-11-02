@@ -41,7 +41,7 @@ class Recovery:
                     raise ValueError('native-retirement-foreign-plist-archive')
 
     def path(self, original):
-        """Resolve only the six fixed plists; their logical hash keys stay stable."""
+        """Resolve only the selected fixed plists; logical hash keys stay stable."""
         if original not in self.plists or self.document is None:
             return original
         archived = self.archive / original.name

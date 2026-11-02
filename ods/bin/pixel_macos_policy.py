@@ -163,7 +163,7 @@ def system_python_readable_paths():
     raise PolicyError('unsupported-system-python-developer-runtime')
 
 
-def render_policy(*, mode, writable, protected, readable=(), sockets=(), probe):
+def render_policy(*, mode, writable, protected, readable=(), sockets=(), sealed=(), probe):
     """Only filesystem reach changes with mode; no allow-default escape.
 
     Inputs are installer-selected canonical paths, never chat/request values.
@@ -174,6 +174,7 @@ def render_policy(*, mode, writable, protected, readable=(), sockets=(), probe):
     writable, protected = _paths(writable), _paths(protected)
     readable = _paths(readable) if readable else ()
     sockets = _paths(sockets) if sockets else ()
+    sealed = _paths(sealed) if sealed else ()
     probe = _path(probe)
     for mutable in (*writable, probe):
         for fixed in protected:
@@ -199,9 +200,16 @@ def render_policy(*, mode, writable, protected, readable=(), sockets=(), probe):
         '(literal ' + _quoted(p) + ')' for p in (*devices, *sockets)) + ')')
     lines.append('(deny file-write* ' + ' '.join(
         '(subpath ' + _quoted(p) + ')' for p in protected) + ')')
+    # Owner-channel authentication and integration state are never a gateway
+    # filesystem capability, including in Full Access. These explicit denies
+    # also override broad readable deployment roots. Native alias/Seatbelt
+    # behavior still requires the physical Mac qualification gate.
+    if sealed:
+        lines.append('(deny file-read* file-write* ' + ' '.join(
+            '(subpath ' + _quoted(p) + ')' for p in sealed) + ')')
     # Replacing an ancestor can otherwise substitute an entirely new runtime
     # without issuing a write against the old protected files themselves.
-    ancestors = sorted({str(parent) for p in protected for parent in PurePosixPath(p).parents
+    ancestors = sorted({str(parent) for p in (*protected, *sealed) for parent in PurePosixPath(p).parents
                         if str(parent) != '/'})
     lines.append('(deny file-write-unlink ' + ' '.join(
         '(literal ' + _quoted(p) + ')' for p in ancestors) + ')')

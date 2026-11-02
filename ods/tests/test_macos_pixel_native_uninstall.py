@@ -525,7 +525,7 @@ class RetirementRebootIntegration(unittest.TestCase):
                     st_uid=501 if path.name == 'ods-pixel-manager' else 0, st_gid=0)
         def mapped(value):
             value = str(value)
-            if value.startswith(('/private/var/lib/', '/private/var/run/',
+            if value.startswith(('/private/var/lib/', '/private/var/run/', '/private/var/log/',
                                  '/private/etc/ods', '/usr/local/libexec/', '/Library/LaunchDaemons')):
                 return FixturePath(self.root / 'host' / value.lstrip('/'))
             return FixturePath(value)
@@ -551,8 +551,9 @@ class RetirementRebootIntegration(unittest.TestCase):
             definition = {'Label': path.stem, 'UserName': user,
                 'ProgramArguments': ['/usr/bin/env', '-i', 'HOME=' + str(self.install / 'data/pixel-native/home')]}
             path.write_bytes(plistlib.dumps(definition))
-            definitions[label.removeprefix('native-')] = {'path': str(path),
-                'body': base64.b64encode(path.read_bytes()).decode()}
+            if label in ('native-manager', 'native-promoter', 'native-operations'):
+                definitions[label.removeprefix('native-')] = {'path': str(path),
+                    'body': base64.b64encode(path.read_bytes()).decode()}
         self.settings.write_text(json.dumps({'owner': 'owner', 'install_dir': str(self.install),
             'settings_data_dir': str(self.install / 'data'), 'state_dir': str(self.state),
             'gateway_binding': {'definition': 'fixture'}}))
@@ -572,6 +573,7 @@ class RetirementRebootIntegration(unittest.TestCase):
         def gone(pid): raise ProcessError('gone')
         custody = SimpleNamespace(protected_directory=self.directory,
             protected_bytes=lambda path, **kw: path.read_bytes(),
+            protected_inspection_bytes=lambda path, **kw: path.read_bytes() if os.path.lexists(path) else None,
             protected_tree_metadata=lambda path: None, _verify_fd=lambda *a, **kw: None,
             verify_loaded_launchd_definition=lambda *a: None)
         modules = {'pixel_macos_custody': custody,
@@ -617,6 +619,8 @@ class RetirementRebootIntegration(unittest.TestCase):
             pid = self.loaded.get(args[2])
             body = '\tstate = waiting\n' if pid is None else '\tstate = running\n\tpid = ' + str(pid) + '\n'
             return SimpleNamespace(returncode=0 if args[2] in self.loaded else 113, stdout=body)
+        if args == ['/bin/launchctl', 'print-disabled', 'system']:
+            return SimpleNamespace(returncode=0, stdout='disabled services = {\n}\n')
         if args[:2] == ['/bin/launchctl', 'bootout']:
             del self.loaded[args[2]]
             return SimpleNamespace(returncode=0, stdout='')
@@ -624,6 +628,145 @@ class RetirementRebootIntegration(unittest.TestCase):
 
     def run_retire(self, **kwargs):
         return retirement.retire(str(self.install), 'owner', **kwargs)
+
+    def test_new_seventh_service_reboot_retirement_preserves_owner_state_and_private_authority(self):
+        import base64
+        path = self.path('/Library/LaunchDaemons/com.ods.pixel-native-integrations.plist')
+        document = dict(Label=path.stem, UserName='owner', ProgramArguments=['/usr/bin/env', '-i', '/fixture/python'])
+        path.write_bytes(plistlib.dumps(document))
+        self.plists.append(path)
+        self.loaded['system/' + path.stem] = 1007
+        journal = self.state / 'service-installation.json'
+        value = json.loads(journal.read_text())
+        value['recovery']['definitions']['integrations'] = dict(path=str(path), body=base64.b64encode(path.read_bytes()).decode())
+        journal.write_text(json.dumps(value))
+        for name in retirement.INTEGRATION_DIRECTORIES: self.path(name).mkdir(parents=True)
+        auth = self.path('/private/var/lib/ods-pixel-integrations-auth/501')
+        auth.mkdir()
+        (auth / 'owner.key').write_bytes(b'private retained authority')
+        owner_state = self.root / 'home/.config/ods/pixel-integrations'
+        owner_state.mkdir(parents=True)
+        (owner_state / 'config.json').write_bytes(b'owner settings remain')
+        previous_helper = retirement.helper
+        validations = []
+        with patch.object(retirement, 'helper', side_effect=lambda name:
+                SimpleNamespace(validate_retirement=lambda owner: validations.append(owner))
+                if name == 'pixel-native-integrations-service' else previous_helper(name)):
+            prepared = self.run_retire(prepare_stopped_recovery=True)
+            self.assertEqual(prepared['status'], 'reboot-required')
+            self.assertEqual(self.loaded, {})
+            self.boot = '22222222-2222-4222-8222-222222222222'
+            self.assertEqual(self.run_retire(validate_only=True)['status'], 'validated')
+            result = self.run_retire(resume_stopped_recovery=True)
+        receipt = json.loads((Path(result['archive']) / 'receipt.json').read_text())
+        for name in retirement.INTEGRATION_DIRECTORIES:
+            self.assertTrue(any(move['source'] == str(self.path(name)) for move in receipt['moves']))
+        auth_move = next(move for move in receipt['moves'] if move['source'] == str(auth.parent))
+        self.assertEqual((Path(auth_move['archive']) / '501/owner.key').read_bytes(), b'private retained authority')
+        self.assertEqual((owner_state / 'config.json').read_bytes(), b'owner settings remain')
+        self.assertEqual(validations, ['owner'] * 4)
+
+    def test_restored_legacy_can_retire_retained_partial_private_preparation_without_reinstall(self):
+        preservation = retirement.helper('pixel-native-integrations-preservation')
+        owner = retirement.pwd.getpwnam('owner')
+        common = b'VERIFIED_COMMON = True\n'
+        value = preservation.make(owner=owner, install_dir=self.install,
+            settings=self.settings.read_bytes(), services=(self.state / 'service-installation.json').read_bytes(),
+            installation=(self.state / 'installation.json').read_bytes(), current_digest='a' * 64,
+            candidate_digest='b' * 64, common_body=common)
+        marker = self.state / preservation.NAME
+        marker.write_bytes(preservation._body(value))
+        marker.chmod(0o600)
+        # A failure between fixed provisioning steps may leave auth/root only.
+        auth = self.path('/private/var/lib/ods-pixel-integrations-auth')
+        auth.mkdir(parents=True)
+        (auth / '501').mkdir()
+        owner_state = self.root / 'home/.config/ods/pixel-integrations'
+        owner_state.mkdir(parents=True)
+        (owner_state / 'notes-kept.txt').write_bytes(b'owner data preserved')
+        previous_helper = retirement.helper
+        checks = []
+        def verify(owner_name, **kwargs):
+            self.assertEqual(owner_name, 'owner')
+            self.assertEqual(kwargs, {'common_body': common, 'allow_partial': True})
+            checks.append(True)
+        with patch.object(retirement, 'helper', side_effect=lambda name:
+                SimpleNamespace(validate_preserved=verify) if name == 'pixel-native-integrations-service' else previous_helper(name)):
+            self.assertEqual(self.run_retire(prepare_stopped_recovery=True)['status'], 'reboot-required')
+            self.boot = '22222222-2222-4222-8222-222222222222'
+            result = self.run_retire(resume_stopped_recovery=True)
+        receipt = json.loads((Path(result['archive']) / 'receipt.json').read_text())
+        auth_move = next(move for move in receipt['moves'] if move['source'] == str(auth))
+        self.assertTrue((Path(auth_move['archive']) / '501').is_dir())
+        marker_move = next(move for move in receipt['moves'] if move['source'] == str(marker))
+        self.assertEqual(Path(marker_move['archive']).read_bytes(), preservation._body(value))
+        self.assertEqual((owner_state / 'notes-kept.txt').read_bytes(), b'owner data preserved')
+        self.assertEqual(checks, [True] * 3)
+
+    def test_interrupted_preservation_publication_is_archived_without_becoming_authority(self):
+        self.loaded['system/' + self.plists[0].stem] = 1000
+        pending = self.state / '.integrations-preservation.pending'
+        pending.write_bytes(b'{"schemaVersion":')
+        pending.chmod(0o600)
+        result = self.run_retire()
+        receipt = json.loads((Path(result['archive']) / 'receipt.json').read_text())
+        moved = next(move for move in receipt['moves'] if move['source'] == str(pending))
+        self.assertEqual(Path(moved['archive']).read_bytes(), b'{"schemaVersion":')
+
+    def test_preservation_never_adopts_a_different_owner_or_unknown_private_residue(self):
+        preservation = retirement.helper('pixel-native-integrations-preservation')
+        value = preservation.make(owner=retirement.pwd.getpwnam('owner'), install_dir=self.install,
+            settings=self.settings.read_bytes(), services=(self.state / 'service-installation.json').read_bytes(),
+            installation=(self.state / 'installation.json').read_bytes(), current_digest='a' * 64,
+            candidate_digest='b' * 64, common_body=b'VERIFIED = True\n')
+        value['owner'] = 502
+        marker = self.state / preservation.NAME
+        marker.write_bytes(preservation._body(value))
+        marker.chmod(0o600)
+        with self.assertRaisesRegex(ValueError, 'authority-mismatch'):
+            self.run_retire(prepare_stopped_recovery=True)
+        self.assertFalse(any(args[1] == 'bootout' for args in self.calls))
+
+    def test_restored_legacy_private_quarantine_can_resume_without_losing_prior_archive(self):
+        preservation = retirement.helper('pixel-native-integrations-preservation')
+        value = preservation.make(owner=retirement.pwd.getpwnam('owner'), install_dir=self.install,
+            settings=self.settings.read_bytes(), services=(self.state / 'service-installation.json').read_bytes(),
+            installation=(self.state / 'installation.json').read_bytes(), current_digest='a' * 64,
+            candidate_digest='b' * 64, common_body=b'VERIFIED = True\n')
+        marker = self.state / preservation.NAME
+        marker.write_bytes(preservation._body(value))
+        marker.chmod(0o600)
+        roots = [self.path(name) for name in retirement.INTEGRATION_DIRECTORIES]
+        for path in roots: path.mkdir(parents=True)
+        self.loaded['system/' + self.plists[0].stem] = 1000
+        previous_helper, real_rename = retirement.helper, os.rename
+        def fail_auth(source, target):
+            if source == roots[1]: raise OSError('interrupted private quarantine')
+            return real_rename(source, target)
+        with patch.object(retirement, 'helper', side_effect=lambda name:
+                SimpleNamespace(validate_preserved=lambda *a, **k: True)
+                if name == 'pixel-native-integrations-service' else previous_helper(name)):
+            with patch.object(retirement.os, 'rename', side_effect=fail_auth):
+                with self.assertRaisesRegex(OSError, 'private quarantine'): self.run_retire()
+            self.assertTrue(self.settings.exists())
+            self.assertTrue((self.state / 'service-installation.json').exists())
+            self.assertFalse(roots[0].exists())
+            first = list(self.path('/private/var/lib/ods-pixel-retired').iterdir())
+            self.assertEqual(len(first), 1)
+            prior = json.loads((first[0] / 'receipt.json').read_text())
+            self.assertEqual(prior['status'], 'retiring')
+            moved = next(item for item in prior['moves'] if item['source'] == str(roots[0]))
+            self.assertTrue(Path(moved['archive']).is_dir())
+            result = self.run_retire()
+        self.assertEqual(result['status'], 'retired')
+        self.assertTrue(first[0].exists())
+        self.assertTrue(Path(moved['archive']).is_dir())
+
+    def test_legacy_retirement_refuses_unbound_new_integrations_before_stopping(self):
+        self.loaded['system/com.ods.pixel-native-integrations'] = 1007
+        with self.assertRaisesRegex(ValueError, 'unbound-integrations'):
+            self.run_retire(prepare_stopped_recovery=True)
+        self.assertFalse(any(args[1] == 'bootout' for args in self.calls))
 
     def test_reporter_state_to_preparation_reboot_and_retirement(self):
         self.assertFalse((self.install / 'data/pixel-native/preparation').exists())

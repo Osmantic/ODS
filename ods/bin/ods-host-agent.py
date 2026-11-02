@@ -9021,7 +9021,7 @@ def _start_enable_retry(handler, service_id: str, lock: threading.Lock) -> None:
         raise
 
 
-# The owner socket sits in the owner's state folder, which the gateway sandbox cannot see.
+# Private owner folder; native macOS also authenticates each exact owner request.
 PIXEL_INTEGRATIONS_SOCKET = str(Path.home() / ".config/ods/pixel-integrations/owner.sock")
 PIXEL_INTEGRATIONS_ACTIONS = ("save", "test-notification", "discover", "test", "test-app", "watch-list", "send-digest", "retry-digest",
                               "restart", "decide", "clear-activity")
@@ -9029,6 +9029,17 @@ PIXEL_INTEGRATIONS_ACTIONS = ("save", "test-notification", "discover", "test", "
 
 def _pixel_integrations_request(payload: dict) -> dict:
     """One owner request to the Portal integrations service (one JSON line each way)."""
+    if sys.platform == "darwin":
+        # Only the root-published native helper may supply the owner protocol.
+        # Its credential never enters the HTTP response, argv or environment.
+        from pixel_macos_custody import protected_bytes
+        import types
+        path = "/usr/local/libexec/ods-pixel-services/integrations/integrations_common.py"
+        body = protected_bytes(path, limit=1024 * 1024)
+        helper = types.ModuleType("ods_native_integrations_owner")
+        helper.__file__ = path
+        exec(compile(body, path, "exec"), helper.__dict__)
+        return helper.native_owner_request(PIXEL_INTEGRATIONS_SOCKET, {"schemaVersion": 1, **payload})
     connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     connection.settimeout(130)
     try:
@@ -11656,9 +11667,6 @@ class AgentHandler(BaseHTTPRequestHandler):
         request and returns its answer, or its refusal with the sentence to show.
         """
         if not check_auth(self):
-            return
-        if sys.platform == "darwin":
-            json_response(self, 400, {"error": "unsupported", "message": "Portal integrations aren't available on macOS yet."}, no_store=True)
             return
         payload = {"action": action or "get"}
         if action is not None:

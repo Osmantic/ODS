@@ -27,6 +27,7 @@ SPEC.loader.exec_module(installer)
 @pytest.mark.parametrize('fault', [None, 'pending', 'phase', 'operation', 'owner', 'source', 'hold',
     'settings', 'bundle', 'disabled', 'access', 'mode', 'services', 'stops', 'admission', 'process', 'journal-change'])
 def test_initial_completion_proof_requires_unchanged_protected_state_without_mutations(tmp_path, monkeypatch, fault):
+    monkeypatch.setattr(installer, '_managed_service_order', lambda selection: installer._native_services.LEGACY_ORDER)
     import copy
     import pixel_access_bridge
     import pixel_macos_custody
@@ -45,7 +46,7 @@ def test_initial_completion_proof_requires_unchanged_protected_state_without_mut
         journal[fault] = {'phase': 'staging', 'operation': 'migration', 'owner': 502, 'source': '/other'}[fault]
     records = {'installation.json': journal,
         'installation-edge.json': {'phase': 'held' if fault == 'hold' else 'released', 'container': 'e' * 64},
-        'service-installation.json': {'attempted': ['manager', 'promoter', 'operations'],
+        'service-installation.json': {'selection': plan['native_services'], 'attempted': ['manager', 'promoter', 'operations'],
                                      'stopWitnesses': {'manager': {}} if fault == 'stops' else {}}}
     events = []
     reads = []
@@ -298,7 +299,7 @@ def test_upgrade_activation_connects_hold_files_services_and_readiness(monkeypat
             verify()
             events.append('journal-finished')
 
-    roles = installer._upgrade.NATIVE_ROLES if migration == 'managed' else installer._upgrade.CORE_ROLES
+    roles = installer._upgrade.LEGACY_NATIVE_ROLES if migration == 'managed' else installer._upgrade.CORE_ROLES
     previous, candidate = ({role: Service(role, version) for role in roles}
                            for version in ('previous', 'candidate'))
     monkeypatch.setattr(installer, '_upgrade_services', lambda *args: (previous, candidate))
@@ -569,7 +570,8 @@ def managed_service_fixture(plan, monkeypatch):
     getpwnam = installer.pwd.getpwnam
     monkeypatch.setattr(installer.pwd, 'getpwnam', lambda name:
         SimpleNamespace(pw_uid=61000, pw_gid=61000) if name == '_ods_pixel_ops' else getpwnam(name))
-    contract = installer._managed_service_contract()
+    contract = {path: metadata for path, metadata in installer._managed_service_contract().items()
+                if path not in installer._upgrade.INTEGRATION_ADDITIONS}
     journal = str(installer._launchd.ACCESS_STATE / 'service-installation.json')
     versions = []
     for version in ('before', 'after'):
@@ -600,6 +602,7 @@ def managed_service_fixture(plan, monkeypatch):
 @pytest.mark.parametrize('legacy', [False, True, 'partial', 'selection-mismatch'])
 @pytest.mark.parametrize('fault', [None, 'pending', 'owner', 'phase', 'incomplete', 'foreign', 'drift', 'metadata'])
 def test_managed_service_snapshots_preserve_existing_state_before_any_write(monkeypatch, fault, legacy):
+    monkeypatch.setattr(installer, '_managed_service_order', lambda selection: installer._native_services.LEGACY_ORDER)
     import pixel_macos_custody as custody
     plan = dict(owner=SimpleNamespace(pw_name='fixture', pw_uid=501, pw_gid=20),
         native_services={'expected_digest': 'b' * 64}, native_manager_port=3002,
@@ -680,7 +683,7 @@ def test_upgrade_services_pin_files_processes_and_separate_stop_witnesses(bundle
         assert not list(tmp_path.glob('runtime-upgrade-stop-*.json'))
         return
     previous, candidate = installer._upgrade_services(plan, records)
-    roles = installer._upgrade.NATIVE_ROLES if managed else installer._upgrade.CORE_ROLES
+    roles = installer._upgrade.LEGACY_NATIVE_ROLES if managed else installer._upgrade.CORE_ROLES
     assert set(previous) == set(candidate) == set(roles)
     for role in previous:
         assert previous[role].target == candidate[role].target
@@ -2001,7 +2004,7 @@ def test_native_service_selection_binds_exact_gateway_configuration(bundled_depl
     seen = []
     helper = installer._native_services.helper
     monkeypatch.setattr(installer._native_services, 'helper', lambda name: SimpleNamespace(
-        verified_services=lambda path, **kw: seen.append((path, kw))) if name == 'config' else helper(name))
+        verified_services=lambda path, **kw: seen.append((path, kw)) or {}) if name == 'config' else helper(name))
     installer.bind_initial_services(plan, bundle=tmp_path, digest='a' * 64, source_ref='b' * 40)
     assert seen[0][1] == {'expected_digest': 'a' * 64, 'expected_ref': 'b' * 40,
         'expected_config_digest': hashlib.sha256(plan['runtime_bundle']['source_config_bytes']).hexdigest()}
@@ -2019,6 +2022,22 @@ def test_native_service_selection_binds_exact_gateway_configuration(bundled_depl
     plan['initial_install'] = False
     with pytest.raises(installer.InstallError, match='require-initial-install'):
         installer.bind_initial_services(plan, bundle=tmp_path, digest='a' * 64, source_ref='b' * 40)
+
+
+def test_new_integrations_policy_seals_private_state_auth_and_logs_in_both_modes(bundled_deployment, monkeypatch, tmp_path):
+    plan = installer.make_plan(**bundled_deployment, initial_install=True)
+    original = installer._native_services.helper
+    snapshots = dict.fromkeys(installer._bundle.INTEGRATION_SERVICE_ARTIFACTS, b'VALUE = 1\n')
+    monkeypatch.setattr(installer._native_services, 'helper', lambda name:
+        SimpleNamespace(verified_services=lambda *a, **k: snapshots) if name == 'config' else original(name))
+    installer.bind_initial_services(plan, bundle=tmp_path, digest='a' * 64, source_ref='b' * 40)
+    integration = original('integrations-service')
+    state = integration.state_directory(installer.pwd.getpwnam(plan['owner'].pw_name))
+    for policy in plan['policies'].values():
+        sealed_line = next(line for line in policy.splitlines() if line.startswith(b'(deny file-read* file-write*'))
+        for path in (state, integration.AUTH_ROOT, integration.LOGS):
+            assert ('(subpath "' + str(path) + '")').encode() in sealed_line
+        assert ('(literal "' + str(integration.RUNTIME / 'control.sock') + '")').encode() in policy
 
 
 @pytest.mark.parametrize('stop_fails', [False, True])
@@ -2087,6 +2106,7 @@ def test_initial_service_journal_preserves_failure_and_refuses_automatic_replay(
 
 @pytest.mark.parametrize('fault', [None, 'missing', 'not-started', 'owner', 'selection', 'attempts', 'drift', 'stop'])
 def test_new_service_recovery_uses_protected_journal_and_rechecks_before_stop(tmp_path, monkeypatch, fault):
+    monkeypatch.setattr(installer, '_managed_service_order', lambda selection: installer._native_services.LEGACY_ORDER)
     import pixel_access_bridge as bridge
     monkeypatch.setattr(installer.sys, 'platform', 'darwin')
     monkeypatch.setattr(installer.os, 'geteuid', lambda: 0)
@@ -2142,6 +2162,7 @@ def test_new_service_recovery_uses_protected_journal_and_rechecks_before_stop(tm
 
 @pytest.mark.parametrize('fault', [None, 'not-migration', 'pending', 'phase', 'attempts', 'health', 'drift'])
 def test_rollback_retains_verified_prior_services_when_candidate_never_started(tmp_path, monkeypatch, fault):
+    monkeypatch.setattr(installer, '_managed_service_order', lambda selection: installer._native_services.LEGACY_ORDER)
     import pixel_access_bridge as bridge
     monkeypatch.setattr(installer.sys, 'platform', 'darwin')
     monkeypatch.setattr(installer.os, 'geteuid', lambda: 0)
@@ -2203,6 +2224,7 @@ def test_unqualified_existing_native_services_fail_before_gateway_mutation(tmp_p
 
 @pytest.mark.parametrize('fault', [None, 'phase', 'selection', 'identity', 'readiness', 'drift'])
 def test_candidate_health_includes_all_native_services_and_stable_journal(monkeypatch, fault):
+    monkeypatch.setattr(installer, '_managed_service_order', lambda selection: installer._native_services.LEGACY_ORDER)
     import pixel_access_bridge as bridge
     selection = {'approved': True}
     plan = {'owner': SimpleNamespace(pw_uid=501, pw_name='owner'), 'native_services': selection}
@@ -3309,3 +3331,139 @@ def test_candidate_config_is_private_and_does_not_overwrite_old(bundled_deployme
         with pytest.raises(installer.InstallError, match='candidate-config-changed'):
             installer._runtime_config(plan, write=True)
         assert target.read_bytes() == b'changed candidate'
+
+
+@pytest.mark.parametrize('fault', [None, 'partial-before', 'disabled', 'loaded', 'reboot', 'started', 'clear-interrupted'])
+def test_legacy_adds_integrations_with_real_bound_absence_adapter(bundled_deployment, monkeypatch, tmp_path, fault):
+    import base64
+    import pixel_access_bridge as bridge
+    import pixel_macos_custody as custody
+    from pixel_gateway_service import launchd_definition_digest
+    plan = installer.make_plan(**bundled_deployment)
+    plan['upgrade_qualification'] = {'candidateDigest': plan['runtime_bundle']['digest']}
+    plan['native_services'] = {'expected_digest': 'b' * 64}
+    monkeypatch.setattr(installer._launchd, 'ACCESS_STATE', tmp_path)
+    records = [dict(path=str(path), before=body, after=body, mode=attrs['mode'], gid=attrs['gid'])
+               for path, body, attrs in installer._deployment_files(ROOT, plan)]
+    records.extend(managed_service_fixture(plan, monkeypatch))
+    integration_plist = '/Library/LaunchDaemons/com.ods.pixel-native-integrations.plist'
+    definition = plistlib.dumps(dict(Label='com.ods.pixel-native-integrations', UserName=plan['owner'].pw_name,
+        ProgramArguments=['/usr/bin/env', '-i', '/usr/bin/python3', '-I', '-B',
+            '/usr/local/libexec/ods-pixel-services/integrations/integrations_service.py']))
+    for path in sorted(installer._upgrade.INTEGRATION_ADDITIONS):
+        records.append(dict(path=path, before=None, after=definition if path == integration_plist else b'candidate', mode=0o644, gid=0))
+    record = next(item for item in records if item['path'] == str(tmp_path / 'service-installation.json'))
+    active = json.loads(record['after'])
+    active['recovery']['definitions']['integrations'] = dict(path=integration_plist,
+        body=base64.b64encode(definition).decode('ascii'))
+    active['attempted'].append('integrations')
+    record['after'] = json.dumps(active).encode()
+    disk = {item['path']: item['before'] for item in records}
+    disk['/usr/bin/python3'] = b'protected-python'
+    monkeypatch.setattr(custody, 'protected_bytes', lambda path, **kw: disk[str(path)])
+    real_read = bridge.private_json
+    monkeypatch.setattr(bridge, 'private_json', lambda path, uid, maximum: real_read(path, os.getuid(), maximum))
+    if fault == 'partial-before':
+        records[-1]['before'] = b'foreign'
+        with pytest.raises(installer.InstallError, match='additions-incomplete'):
+            installer._upgrade_services(plan, records)
+        return
+    previous, candidate = installer._upgrade_services(plan, records)
+    assert set(previous) == set(candidate) == set(installer._upgrade.NATIVE_ROLES)
+    old, new = previous['integrations'], candidate['integrations']
+    assert old.prior_absent and new.process['uid'] == plan['owner'].pw_uid
+    boot = ['11111111-1111-4111-8111-111111111111']
+    loaded = [fault == 'loaded']
+    def command(arguments, **kwargs):
+        if arguments[0] == '/usr/sbin/sysctl': return boot[0]
+        if arguments[1] == 'print':
+            if loaded[0]: return 'loaded'
+            raise installer.InstallError('host-command-failed', returncode=113)
+        raise AssertionError(arguments)
+    monkeypatch.setattr(installer, '_command', command)
+    new.command = command
+    monkeypatch.setattr(installer, '_job_disabled', lambda target: fault == 'disabled')
+    for role in installer._upgrade.LEGACY_NATIVE_ROLES:
+        path = previous[role].plist
+        body = next(item['before'] for item in records if item['path'] == str(path))
+        digest = launchd_definition_digest(plistlib.loads(body), installer.InstallError)
+        witness = dict(target=previous[role].target, boot=boot[0], definition=digest, processes=[[123, 456, 0]])
+        previous[role] = SimpleNamespace(target=previous[role].target, plist=path,
+            verify_definition=lambda: None, assert_stopped=lambda: None,
+            load_stop=lambda w=witness: w, definition=lambda d=digest: d,
+            _boot_identity=lambda: boot[0])
+    if fault in ('loaded', 'disabled'):
+        with pytest.raises(installer.InstallError): installer._prepare_candidate_stop_witnesses(previous, candidate, records)
+        assert not list(tmp_path.glob('*candidate*.json'))
+        return
+    installer._prepare_candidate_stop_witnesses(previous, candidate, records)
+    proof = new.load_stop()
+    assert proof == dict(target=new.target, boot=boot[0],
+        definition=launchd_definition_digest(plistlib.loads(definition), installer.InstallError), neverStarted=True)
+    # An interruption during replacement may leave any approved file prefix.
+    # This proof remains valid because no bootstrap intent has cleared it.
+    for item in records:
+        if item['path'] in installer._upgrade.INTEGRATION_ADDITIONS and item['path'] != integration_plist:
+            disk[item['path']] = item['after']
+    installer._assert_upgrade_absent(old, new)
+    if fault == 'reboot':
+        boot[0] = '22222222-2222-4222-8222-222222222222'
+        with pytest.raises(installer.InstallError, match='witness-unavailable'): installer._assert_upgrade_absent(old, new)
+    elif fault == 'started':
+        new.save_stop(None)
+        disk[integration_plist] = definition
+        with pytest.raises(installer.InstallError, match='witness-unavailable'): installer._assert_upgrade_absent(old, new)
+    elif fault == 'clear-interrupted':
+        disk[integration_plist] = definition
+        def fail_clear(value): raise OSError('before bootstrap')
+        new.save_stop = fail_clear
+        monkeypatch.setattr(new, 'verify_definition', lambda: None)
+        with pytest.raises(OSError): installer._start_upgrade_service(new)
+        assert new.load_stop() == proof
+    else:
+        for item in records:
+            if item['path'] in installer._upgrade.INTEGRATION_ADDITIONS: disk[item['path']] = None
+        old.verify_definition()
+        installer._start_upgrade_service(old)
+        assert not loaded[0]
+
+
+@pytest.mark.parametrize('fault', [None, 'foreign-file', 'partial-source', 'loaded', 'disabled', 'unknown'])
+def test_new_integration_snapshot_preflight_never_adopts_foreign_state_or_mutates(monkeypatch, fault):
+    import pixel_macos_custody as custody
+    plan = dict(owner=SimpleNamespace(pw_name='fixture', pw_uid=501, pw_gid=20),
+        native_services={'expected_digest': 'b' * 64}, native_manager_port=3002,
+        access_settings={'install_dir': '/Users/fixture/ods'},
+        runtime_bundle={'source_config_bytes': b'{"agents":{"list":[{"id":"pixel","workspace":"/workspace"}]}}'})
+    records = managed_service_fixture(plan, monkeypatch)
+    journal = str(installer._launchd.ACCESS_STATE / 'service-installation.json')
+    disk = {item['path']: item['before'] for item in records}
+    files = [(Path(item['path']), item['after'], item['mode'], item['gid']) for item in records if item['path'] != journal]
+    for path in sorted(installer._upgrade.INTEGRATION_ADDITIONS):
+        disk[path] = b'foreign' if fault == 'foreign-file' else None
+        files.append((Path(path), b'approved integration source', 0o644, 0))
+    if fault == 'partial-source': files.pop()
+    original = dict(disk)
+    monkeypatch.setattr(installer, '_managed_service_order', lambda selection:
+        installer._native_services.INTEGRATIONS_ORDER if selection == plan['native_services'] else installer._native_services.LEGACY_ORDER)
+    monkeypatch.setattr(installer, '_managed_inspection_required', lambda _: True)
+    monkeypatch.setattr(installer, '_verify_new_services', lambda _: None)
+    monkeypatch.setattr(installer._native_services, 'publication_files', lambda **k: list(files))
+    monkeypatch.setattr(custody, 'protected_inspection_bytes', lambda path, **k: disk[str(path)])
+    monkeypatch.setattr(installer, '_check_existing', lambda *a, **k: None)
+    monkeypatch.setattr(installer, '_job_disabled', lambda _: fault == 'disabled')
+    def command(arguments):
+        assert arguments == ['/bin/launchctl', 'print', 'system/com.ods.pixel-native-integrations']
+        if fault == 'loaded': return 'loaded'
+        raise installer.InstallError('host-command-failed', returncode=1 if fault == 'unknown' else 113)
+    monkeypatch.setattr(installer, '_command', command)
+    monkeypatch.setattr(installer, '_write_exact', lambda *a, **k: pytest.fail('snapshot preflight wrote files'))
+    if fault:
+        with pytest.raises(installer.InstallError): installer._managed_service_snapshots(plan)
+    else:
+        snapshots = installer._managed_service_snapshots(plan)
+        assert {item['path'] for item in snapshots if item['before'] is None} == installer._upgrade.INTEGRATION_ADDITIONS
+        active = installer._managed_service_record(snapshots, 'after')
+        assert set(active['recovery']['definitions']) == set(installer._native_services.INTEGRATIONS_ORDER)
+        assert active['attempted'] == list(installer._native_services.INTEGRATIONS_ORDER)
+    assert disk == original

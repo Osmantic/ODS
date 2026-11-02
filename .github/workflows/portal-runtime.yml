@@ -127,6 +127,11 @@ jobs:
         env:
           OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: python3 ods/extensions/services/pixel-agent/tests/test_native_integrations_completion.py
+      - name: Verify typed integration uncertainty blocks repeats through native admission and factory dispatch
+        if: runner.os == 'Linux'
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: python3 ods/extensions/services/pixel-agent/tests/test_native_integration_outcomes.py
       - name: Verify concurrent workspace creation and no-follow boundaries
         if: runner.os != 'Windows'
         env:
