@@ -56,11 +56,11 @@ if (-not $_psVer.Sufficient) {
 Write-AISuccess "PowerShell $($_psVer.Version) OK"
 
 # ── Windows version ──────────────────────────────────────────────────────────
-# WSL2 requires Windows 10 build 18362 (version 1903) or later.
+# The supported ODS automated installer requires Windows build 19041 or newer.
 try {
     $_build = [System.Environment]::OSVersion.Version.Build
-    if ($_build -lt 18362) {
-        Write-AIError "Windows 10 build 18362 (version 1903) or later is required for WSL2."
+    if ($_build -lt 19041) {
+        Write-AIError "This version of ODS requires Windows build 19041 or newer."
         Write-AI "  Your build: $_build. Update Windows and re-run."
         throw "ODS_INSTALL_ABORTED"
     }

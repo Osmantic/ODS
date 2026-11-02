@@ -11,7 +11,8 @@
 # Expects: SCRIPT_DIR, GPU_BACKEND, GPU_MEMORY_TYPE, GPU_VRAM, RAM_GB, TIER,
 #          HOST_ARCH, MODEL_PROFILE_EFFECTIVE (or MODEL_PROFILE)
 # Provides: ODS_HERMES_MIN_CONTEXT, ods_model_selector_python,
-#           ods_run_catalog_selector, ods_catalog_fit_check
+#           ods_run_catalog_selector, ods_run_vllm_selector,
+#           ods_catalog_fit_check
 #
 # This file is sourced; it must not change the caller's shell options.
 # ============================================================================
@@ -55,6 +56,33 @@ ods_run_catalog_selector() {
         --host-arch "${HOST_ARCH:-unknown}" \
         --installable-only \
         "$@" \
+        --env
+}
+
+# ods_run_vllm_selector PYTHON [GPU_ROW...]
+# The vLLM engine's pick: one GPU_ROW per line of `nvidia-smi
+# --query-gpu=uuid,compute_cap,memory.total[,memory.free]
+# --format=csv,noheader,nounits`. Chooses among the catalog's vLLM entries
+# only, never a GGUF, and prints shell assignments with the VLLM_* keys. Exit
+# 2: no vLLM model fits; exit 4: one fits the hardware, but other programs
+# hold the free memory vLLM needs at start (rows with memory.free only). The
+# fit comes from the GPU rows alone, so the llama.cpp memory inputs are not
+# passed.
+ods_run_vllm_selector() {
+    local python="$1" row
+    shift
+    local -a gpu_args=()
+    for row in "$@"; do
+        gpu_args+=(--gpu "$row")
+    done
+    "$python" "$SCRIPT_DIR/scripts/select-model.py" \
+        --catalog "$SCRIPT_DIR/config/model-library.json" \
+        --llm-runtime vllm \
+        --backend "${GPU_BACKEND:-unknown}" \
+        --host-arch "${HOST_ARCH:-unknown}" \
+        --min-context "$ODS_HERMES_MIN_CONTEXT" \
+        --installable-only \
+        ${gpu_args[@]+"${gpu_args[@]}"} \
         --env
 }
 

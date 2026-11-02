@@ -41,6 +41,7 @@
 @media (prefers-reduced-motion:reduce) { .portal-stream-reveal { animation:none; } }
 .portal-streaming-text { min-width:0; overflow-wrap:anywhere; }
 .portal-streaming-text .portal-embed-note { color:rgb(var(--theme-text-muted)); }
+.portal-streaming-text .portal-delivery-note { color:rgb(var(--theme-text-muted)); font-size:12px; line-height:18px; }
 .portal-stream-cursor { display:inline-block; width:5px; height:13px; margin:4px 3px 0; border-radius:3px; background:currentColor; animation:portal-silver-pulse 1.3s ease-in-out infinite; }
 .portal-citation { position:relative; }
 .portal-citation > a { color:rgb(var(--theme-text)); text-decoration:underline; text-decoration-color:rgb(var(--theme-text-muted) / .5); text-underline-offset:3px; }
@@ -112,3 +113,7 @@
 .portal-context-status > span { flex:1; min-width:180px; }
 .portal-context-status > button { padding:3px 5px; background:transparent; color:rgb(var(--theme-text-secondary)); text-decoration:underline; text-underline-offset:3px; }
 .portal-context-status > button:focus-visible { outline:1px solid currentColor; outline-offset:2px; }
+/* The one action that settles a held chat reads as a button, not a link. */
+.portal-context-status > button.portal-context-action { display:inline-flex; align-items:center; min-height:30px; padding:5px 11px; border:1px solid rgb(var(--theme-text) / .16); border-radius:8px; color:rgb(var(--theme-text)); background:rgb(var(--theme-text) / .06); font-weight:500; text-decoration:none; }
+.portal-context-status > button.portal-context-action:hover:not(:disabled) { background:rgb(var(--theme-text) / .11); }
+.portal-context-status > button.portal-context-action:disabled { opacity:.5; cursor:not-allowed; }

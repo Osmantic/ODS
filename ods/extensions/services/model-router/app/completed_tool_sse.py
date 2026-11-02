@@ -10,6 +10,22 @@ from typing import Any
 _MAX_BYTES = 16 * 1024 * 1024
 
 
+def response_reports_failure(payload: dict[str, Any]) -> bool:
+    """Shared diagnostic verdict for parsed Chat/Responses JSON and SSE.
+
+    A null error is normal on successful Responses objects. An explicit failure
+    wins over a completion marker; this verdict does not change forwarding.
+    """
+    for value in (payload, payload.get("response")):
+        if isinstance(value, dict) and (
+            value.get("error") is not None
+            or value.get("status") in ("failed", "incomplete", "cancelled")
+            or value.get("type") in ("error", "response.failed", "response.incomplete", "response.cancelled")
+        ):
+            return True
+    return False
+
+
 # Only source-authored reasons may reach logs or the response. Never derive a
 # diagnostic from str(exc), backend fields, prompts, tool names or arguments.
 _REJECTION_CODES = {
@@ -169,6 +185,7 @@ def assemble_chat_completion_sse(
     expected_model: str,
     *,
     max_bytes: int = _MAX_BYTES,
+    response_metadata: dict[str, bool] | None = None,
 ) -> dict:
     if not isinstance(raw, (bytes, bytearray)):
         raise _err("raw must be bytes")
@@ -207,6 +224,10 @@ def assemble_chat_completion_sse(
             raise _err("malformed json") from e
         if not isinstance(obj, dict):
             raise _err("event not object")
+        if response_metadata is not None:
+            # Reuse this parse before assembly discards non-Chat fields. Only a
+            # constant-size verdict escapes; neither payload nor output changes.
+            response_metadata["failed"] = response_metadata.get("failed", False) or response_reports_failure(obj)
         if "error" in obj and obj["error"] is not None:
             raise _err("top-level error")
         saw_any = True

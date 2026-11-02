@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { cleanup, render, act } from '@testing-library/react'
 import ODSLogo from './ODSLogo'
+import mark from '../assets/ods-mark.png'
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
@@ -12,11 +13,16 @@ function loadedImage() {
   })
 }
 
+it('loads the mark as a bundled asset, never the year-cached public path', () => {
+  expect(mark).toMatch(/\/assets\/ods-mark/)
+  expect(mark).not.toBe('/ods-mark.png')
+})
+
 it('keeps the supplied logo available when 2D canvas is unavailable', () => {
   loadedImage()
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null)
   const {container} = render(<ODSLogo />)
-  expect(container.querySelector('img')).toHaveAttribute('src', '/osmantic-isolated-os.png')
+  expect(container.querySelector('img')).toHaveAttribute('src', mark)
   expect(container.firstChild).not.toHaveAttribute('data-mask-ready')
 })
 
@@ -27,7 +33,7 @@ it.each(['context','readback'])('retains the original silhouette when canvas %s 
     return {drawImage:vi.fn(),getImageData:() => {throw new Error('Readback denied')}}
   })
   const {container} = render(<ODSLogo />)
-  expect(container.querySelector('img')).toHaveAttribute('src', '/osmantic-isolated-os.png')
+  expect(container.querySelector('img')).toHaveAttribute('src', mark)
   expect(container.firstChild).not.toHaveAttribute('data-mask-ready')
 })
 

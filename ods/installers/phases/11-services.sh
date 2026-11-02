@@ -3,11 +3,12 @@
 # ODS Installer — Phase 11: Start Services
 # ============================================================================
 # Part of: installers/phases/
-# Purpose: Download GGUF model, SDXL Lightning model, generate models.ini, launch
-#          Docker Compose stack
+# Purpose: Download the GGUF model (or the vLLM engine's model snapshot),
+#          SDXL Lightning model, generate models.ini, launch Docker Compose stack
 #
 # Expects: DRY_RUN, INSTALL_DIR, LOG_FILE, GPU_BACKEND,
 #           GGUF_FILE, GGUF_URL, LLM_MODEL, MAX_CONTEXT,
+#           LLM_BACKEND (vllm: VLLM_MODEL_DIR, VLLM_SERVED_MODEL, LLM_MODEL_SIZE_MB),
 #           DOCKER_COMPOSE_CMD, COMPOSE_FLAGS, BGRN, RED, AMB, NC,
 #           show_phase(), bootline(), signal(), ai(), ai_ok(), ai_bad(),
 #           ai_warn(), log(), spin_task(), ui_status_line()
@@ -94,6 +95,18 @@ _phase11_refresh_litellm() {
         ai_bad "Could not reload the model gateway. See $LOG_FILE."
         return 1
     fi
+}
+
+_phase11_refresh_hermes_mounts() {
+    [[ "${ENABLE_HERMES:-false}" == true ]] || return 0
+    local python_cmd flag
+    local -a args=()
+    python_cmd="${ODS_PYTHON_CMD:-$(command -v python3 2>/dev/null || true)}"
+    [[ -n "$python_cmd" ]] || return 1
+    for flag in "${COMPOSE_FLAGS_ARR[@]}"; do args+=("--compose-arg=$flag"); done
+    "$python_cmd" "$INSTALL_DIR/scripts/refresh-hermes-mounts.py" \
+        --install-dir "$INSTALL_DIR" --docker-command "$DOCKER_CMD" \
+        --compose-command "$DOCKER_COMPOSE_CMD" "${args[@]}" >>"$LOG_FILE" 2>&1
 }
 
 _phase11_build_local_images() {
@@ -520,6 +533,89 @@ else
         model="${EXTERNAL_LLM_MODEL:-$(_phase11_env_get EXTERNAL_LLM_MODEL "")}"
         skip="${SKIP_MODEL_DOWNLOAD:-$(_phase11_env_get SKIP_MODEL_DOWNLOAD false)}"
         [[ -n "$url" && -n "$model" && "${skip,,}" == "true" ]]
+    }
+
+    # The vLLM engine (vllm-server) serves the model instead of llama-server.
+    _phase11_vllm_engine() {
+        [[ "${LLM_BACKEND:-$(_phase11_env_get LLM_BACKEND "")}" == "vllm" ]]
+    }
+
+    # The llama-server container ids Compose still knows for this project, in
+    # any state: the vLLM overlay keeps the service behind its local-inference
+    # profile, where `up --remove-orphans` never removes it.
+    _phase11_old_llama_containers() {
+        $DOCKER_COMPOSE_CMD --profile local-inference "${COMPOSE_FLAGS_ARR[@]}" \
+            ps -a -q llama-server 2>>"$LOG_FILE"
+    }
+
+    _phase11_old_llama_stuck() {
+        ai_bad "The previous llama-server container could not be removed, and it would hold GPU memory the vLLM engine needs (details in $LOG_FILE)."
+        ai "Remove it with: docker rm -f ods-llama-server, then run the same install command again. Its models stay in data/models."
+        ai "Need help? Ask on the ODS Discord: ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
+        exit 1
+    }
+
+    # spin_task's live status for the vLLM model download: the downloader's
+    # latest "progress: N% x of y GB" line.
+    _phase11_vllm_download_status() {
+        awk '/^progress: / { line = substr($0, 11) } END { print (line == "" ? "checking files" : line) }' \
+            "$ODS_VLLM_DOWNLOAD_LOG"
+    }
+
+    # The vLLM engine's model is a whole pinned Hugging Face snapshot: every
+    # file goes to data/models/<VLLM_MODEL_DIR>/ and is verified against the
+    # catalog by scripts/download-hf-manifest.py, which keeps verified files
+    # and partial bytes when it stops, so another run resumes. A stop (exit 1)
+    # resumes up to twice here; a checksum mismatch (3) or a full disk (4)
+    # needs the owner and ends the install with what to do.
+    _phase11_download_vllm_model() {
+        local python_cmd="${ODS_PYTHON_CMD:-python3}" name size_gb attempt pid status=0 detail
+        name="${VLLM_SERVED_MODEL:-$LLM_MODEL}"
+        size_gb=$(( (${LLM_MODEL_SIZE_MB:-0} + 999) / 1000 ))
+        ODS_VLLM_DOWNLOAD_LOG="$INSTALL_DIR/logs/vllm-model-download.log"
+        mkdir -p "$INSTALL_DIR/logs"
+        : >> "$ODS_VLLM_DOWNLOAD_LOG"
+        ai "Getting ${name} for the vLLM engine (about ${size_gb} GB into data/models/${VLLM_MODEL_DIR}). Files already here are checked, not downloaded again."
+        for attempt in 1 2 3; do
+            printf '=== %s attempt %s of 3\n' "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" "$attempt" >> "$ODS_VLLM_DOWNLOAD_LOG"
+            "$python_cmd" "$INSTALL_DIR/scripts/download-hf-manifest.py" \
+                --catalog "$INSTALL_DIR/config/model-library.json" \
+                --model-id "$LLM_MODEL" \
+                --models-dir "$INSTALL_DIR/data/models" >> "$ODS_VLLM_DOWNLOAD_LOG" 2>&1 &
+            pid=$!
+            ODS_ACTIVE_DOWNLOAD_PID="$pid"
+            status=0
+            spin_task "$pid" "Downloading ${name}" "" 0 _phase11_vllm_download_status || status=$?
+            ODS_ACTIVE_DOWNLOAD_PID=""
+            if [[ "$status" -eq 0 ]]; then
+                ui_status_line ok "Model downloaded and verified: ${name}"
+                return 0
+            fi
+            [[ "$status" -eq 1 && "$attempt" -lt 3 ]] || break
+            ai "The download paused (network or Hugging Face); resuming from the files kept so far (attempt $((attempt + 1)) of 3)."
+            sleep "${ODS_VLLM_DOWNLOAD_RETRY_DELAY_SECONDS:-5}"
+        done
+        detail="$(awk '/^error: / { line = substr($0, 8) } END { print line }' "$ODS_VLLM_DOWNLOAD_LOG")"
+        case "$status" in
+            1)
+                ai_bad "The download of ${name} stopped before it finished${detail:+: $detail}"
+                ai "Run the same install command again: it keeps the verified files and resumes. Details: $ODS_VLLM_DOWNLOAD_LOG"
+                ;;
+            3)
+                ai_bad "A downloaded file of ${name} did not match the catalog checksum, so it was deleted${detail:+: $detail}"
+                ai "Run the same install command again to fetch that file again. Details: $ODS_VLLM_DOWNLOAD_LOG"
+                ;;
+            4)
+                ai_bad "There is not enough free disk space for ${name}${detail:+: $detail}"
+                ai "Free up space on that disk, then run the same install command again (files already downloaded are kept). Or install with --llm-backend llama-server, which uses a smaller model."
+                ;;
+            *)
+                ai_bad "The download of ${name} ended unexpectedly (exit ${status})${detail:+: $detail}"
+                ai "Run the same install command again; files already verified are kept. Details: $ODS_VLLM_DOWNLOAD_LOG"
+                ;;
+        esac
+        ai "Need help? Ask on the ODS Discord: ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
+        return 1
     }
 
     _phase11_close_inherited_fds_for_daemon() {
@@ -1096,6 +1192,14 @@ else
         fi
     fi
 
+    # The vLLM engine's model (GGUF_URL is empty on that route, so the block
+    # above did nothing). vllm-server mounts the folder read-only, so it must
+    # be complete before the stack starts.
+    if _phase11_vllm_engine; then
+        ods_progress 77 "services" "Downloading AI model"
+        _phase11_download_vllm_model || exit 1
+    fi
+
     # ── SDXL Lightning model download (ComfyUI image generation) ──
     ods_progress 79 "services" "Checking image generation models"
     if [[ "$ENABLE_COMFYUI" != "true" ]]; then
@@ -1126,19 +1230,19 @@ else
         fi
         # NVIDIA ComfyUI also needs output/input/workflows bind-mount dirs
         if [[ "$GPU_BACKEND" == "nvidia" ]]; then
-            mkdir -p "$INSTALL_DIR/data/comfyui"/{output,input,workflows,user}
+            mkdir -p "$INSTALL_DIR/data/comfyui"/{output,input,workflows,user,cuda-cache}
             if ! _phase11_prepare_uid1000_bind_data \
-                "$INSTALL_DIR/data/comfyui" models output input user; then
+                "$INSTALL_DIR/data/comfyui" models output input user cuda-cache; then
                 ai_bad "Could not prepare NVIDIA ComfyUI data for its container user."
                 exit 1
             fi
         fi
 
+        # The checkpoint ComfyUI's default image pack (comfyui/model-packs.json) pins.
         SDXL_MODEL="sdxl_lightning_4step.safetensors"
-        SDXL_URL="https://huggingface.co/ByteDance/SDXL-Lightning/resolve/main/sdxl_lightning_4step.safetensors"
 
         if [[ ! -f "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL" ]]; then
-            ai "Downloading SDXL Lightning 4-step (~6.5GB) for image generation..."
+            ai "Downloading SDXL Lightning 4-step (6.9 GB) for image generation..."
 
             # Source background task tracking
             if [[ -f "$SCRIPT_DIR/installers/lib/background-tasks.sh" ]]; then
@@ -1146,27 +1250,26 @@ else
             fi
 
             # This daemon must not inherit the installer model lifecycle lock;
-            # otherwise full-model activation waits for an unrelated 6.5 GB
+            # otherwise full-model activation waits for an unrelated 6.9 GB
             # image download after the installer itself releases the lock.
+            # It runs the downloader the Extensions page uses, from the install
+            # directory (which outlives the installer's source): the pinned URL,
+            # size and SHA-256 come from model-packs.json, a dropped connection
+            # resumes (six tries, as curl --retry 5 did), and a file that fails
+            # its checksum is deleted. The summary reads this log for ERROR, so
+            # any non-zero exit, even one the downloader did not foresee, ends
+            # with an ERROR line.
             (
                 _phase11_close_inherited_fds_for_daemon
                 exec nohup env \
-                    SDXL_CHECKPOINT_DIR="$SDXL_CHECKPOINT_DIR" \
-                    SDXL_MODEL="$SDXL_MODEL" \
-                    SDXL_URL="$SDXL_URL" \
+                    ODS_ASSETS_PYTHON="${ODS_PYTHON_CMD:-python3}" \
+                    ODS_ASSETS="$INSTALL_DIR/bin/extension_assets.py" \
+                    COMFYUI_EXT_DIR="$INSTALL_DIR/extensions/services/comfyui" \
+                    INSTALL_DIR="$INSTALL_DIR" \
+                    GPU_BACKEND="$GPU_BACKEND" \
                     bash -c '
-                        echo "[SDXL] Starting SDXL Lightning model download..."
-                        if [[ ! -f "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL" ]]; then
-                            echo "[SDXL] Downloading $SDXL_MODEL (~6.5GB)..."
-                            curl -fSL -C - --connect-timeout 30 --max-time 3600 \
-                                --retry 5 --retry-delay 10 --retry-all-errors \
-                                -o "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL.part" \
-                                "$SDXL_URL" 2>&1 && \
-                                mv "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL.part" "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL" && \
-                                echo "[SDXL] $SDXL_MODEL complete" || \
-                                echo "[SDXL] ERROR: Failed to download $SDXL_MODEL"
-                        fi
-                        echo "[SDXL] SDXL Lightning model download finished."
+                        "$ODS_ASSETS_PYTHON" "$ODS_ASSETS" --attempts 6 "$COMFYUI_EXT_DIR" "$INSTALL_DIR" "$GPU_BACKEND" \
+                            || echo "[SDXL] ERROR: the model download exited with status $?; see the lines above"
                     ' > "$INSTALL_DIR/logs/sdxl-download.log" 2>&1
             ) &
 
@@ -1178,7 +1281,7 @@ else
             fi
 
             log "Background SDXL download started (PID: $sdxl_pid). Check: tail -f $INSTALL_DIR/logs/sdxl-download.log"
-            ai "SDXL Lightning downloading in background (~6.5GB). ComfyUI will be ready once complete."
+            ai "SDXL Lightning downloading in background (6.9 GB). ComfyUI will be ready once complete."
         else
             ai_ok "SDXL Lightning model already present"
         fi
@@ -1194,10 +1297,12 @@ else
         fi
     fi
 
-    # Generate models.ini for llama-server (skip in cloud mode)
+    # Generate models.ini for llama-server (skip in cloud mode, and where the
+    # model runs outside the stack or in the vLLM engine)
     if [[ "${ODS_MODE:-local}" != "cloud" ]] \
         && ! _phase11_host_native_llm \
-        && ! _phase11_external_llm; then
+        && ! _phase11_external_llm \
+        && ! _phase11_vllm_engine; then
         mkdir -p "$INSTALL_DIR/config/llama-server"
         cat > "$INSTALL_DIR/config/llama-server/models.ini" << MODELS_INI_EOF
 [${LLM_MODEL}]
@@ -1402,6 +1507,29 @@ MODELS_INI_EOF
        ! ods_host_native_assert_no_managed_llama "${COMPOSE_FLAGS_ARR[@]}" 2>>"$LOG_FILE"; then
         ai_bad "Host-native llama-server Compose could start the in-stack llama-server; inspect $LOG_FILE and clear COMPOSE_PROFILES."
         exit 1
+    fi
+
+    if _phase11_vllm_engine &&
+       ! ods_vllm_assert_engine_stack "${COMPOSE_FLAGS_ARR[@]}" 2>>"$LOG_FILE"; then
+        ai_bad "The vLLM engine's Compose stack is not the expected one (details in $LOG_FILE); clear COMPOSE_PROFILES and rerun the installer."
+        exit 1
+    fi
+
+    if _phase11_vllm_engine; then
+        # A rerun that moves a llama.cpp installation to the vLLM engine leaves
+        # the old llama-server container, which would hold GPU memory vLLM
+        # needs: stop and remove it before the launch.
+        _vllm_old_llama="$(_phase11_old_llama_containers)" || _phase11_old_llama_stuck
+        if [[ -n "$_vllm_old_llama" ]]; then
+            if ! $DOCKER_COMPOSE_CMD --profile local-inference "${COMPOSE_FLAGS_ARR[@]}" \
+                rm --stop --force llama-server >>"$LOG_FILE" 2>&1; then
+                _phase11_old_llama_stuck
+            fi
+            _vllm_old_llama="$(_phase11_old_llama_containers)" || _phase11_old_llama_stuck
+            [[ -z "$_vllm_old_llama" ]] || _phase11_old_llama_stuck
+            ai_ok "Removed the previous llama-server container; its models stay in data/models"
+        fi
+        unset _vllm_old_llama
     fi
 
     if [[ "${ENABLE_OPEN_WEBUI:-true}" != true ]] &&
@@ -1620,6 +1748,8 @@ MODELS_INI_EOF
             echo ""
             if [[ -n "${EXTERNAL_LLM_URL:-}" ]]; then
                 ai_ok "Services started (external model through LiteLLM)"
+            elif _phase11_vllm_engine; then
+                ai_ok "Services started (vLLM engine; it loads the model next)"
             else
                 ai_ok "Services started (llama-server)"
             fi
@@ -1636,6 +1766,15 @@ MODELS_INI_EOF
         if [[ -n "${_python_cmd:-}" ]] && [[ -f "$INSTALL_DIR/scripts/build-installation-context.py" ]]; then
             "$_python_cmd" "$INSTALL_DIR/scripts/build-installation-context.py" >>"$LOG_FILE" 2>&1 || \
                 warn "Installation-context SOUL.md regen failed post-launch (non-fatal — earlier static SOUL.md is in place)"
+        fi
+        # Source publication replaces file inodes while an unchanged running
+        # Hermes can retain old binds. Check after the final SOUL render, before
+        # copying that mounted persona; preserve the existing live config.
+        if ! _phase11_refresh_hermes_mounts; then
+            ai_bad "Could not verify Hermes mounted files. See $LOG_FILE."
+            exit 1
+        fi
+        if [[ -n "${_python_cmd:-}" ]] && [[ -f "$INSTALL_DIR/scripts/build-installation-context.py" ]]; then
             if $DOCKER_CMD ps --format '{{.Names}}' 2>/dev/null | grep -qx 'ods-hermes'; then
                 $DOCKER_CMD exec ods-hermes cp /opt/hermes/docker/SOUL.md /opt/data/SOUL.md \
                     >>"$LOG_FILE" 2>&1 || \

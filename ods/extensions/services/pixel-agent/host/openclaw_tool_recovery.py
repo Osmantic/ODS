@@ -33,6 +33,7 @@ SUBAGENT_SESSION_MODULE = "agent-Dme3RrGI.js"
 HOOK_PROVENANCE_MODULE = "hook-agent-context-ugCMMoT5.js"
 RUN_ID_REDACTION_MODULE = "redact-cvFSPoXf.js"
 CONTEXT_USAGE_MODULE = "attempt-execution-DnVHak5f.js"
+NO_TOOLS_INGRESS_MODULE = "openai-http-DkesJHcp.js"
 YIELD_USAGE_MODULE = "embedded-agent-CJx-nG3W.js"
 COMPACTION_EMPTY_MODULE = "proxy-Bsfwfsp-.js"
 COMPACTION_NO_WORK_MODULE = "compact-DuWIsaq_.js"
@@ -136,7 +137,7 @@ def repair(runtime_root, state_dir, *, restore=False, manifest_path=MANIFEST,
     if module_name not in {MODULE, COMPLETION_MODULE, IMAGE_MODULE, COMPACTION_MODULE, COMPACTION_IDLE_MODULE,
                            COMPACTION_RESUME_MODULE, COMPACTION_BUDGET_MODULE, READ_RANGE_MODULE,
                            TOOL_RESULT_PROJECTION_MODULE, DIAGNOSTIC_STREAM_MODULE, COMMAND_ATTEMPT_MODULE, UTF8_OUTPUT_MODULE, CONTEXT_USAGE_MODULE, YIELD_USAGE_MODULE,
-                           COMPACTION_EMPTY_MODULE, COMPACTION_NO_WORK_MODULE, SUBAGENT_ADMISSION_MODULE, SUBAGENT_SESSION_MODULE, HOOK_PROVENANCE_MODULE, RUN_ID_REDACTION_MODULE, *SANDBOX_MKDIR_MODULES.values()}:
+                           COMPACTION_EMPTY_MODULE, COMPACTION_NO_WORK_MODULE, SUBAGENT_ADMISSION_MODULE, SUBAGENT_SESSION_MODULE, HOOK_PROVENANCE_MODULE, RUN_ID_REDACTION_MODULE, NO_TOOLS_INGRESS_MODULE, *SANDBOX_MKDIR_MODULES.values()}:
         raise ValueError("unsupported runtime repair module")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     package = json.loads((runtime_root / "package.json").read_text(encoding="utf-8"))
@@ -347,6 +348,7 @@ def main():
     selection.add_argument("--hook-provenance", action="store_true")
     selection.add_argument("--run-id-redaction", action="store_true")
     selection.add_argument("--context-usage", action="store_true")
+    selection.add_argument("--no-tools-ingress", action="store_true")
     selection.add_argument("--yield-usage", action="store_true")
     selection.add_argument("--compaction-empty", action="store_true")
     selection.add_argument("--compaction-no-work", action="store_true")
@@ -396,6 +398,9 @@ def main():
     elif args.context_usage:
         options = {"module_name": CONTEXT_USAGE_MODULE,
                    "manifest_path": MANIFEST.with_name("openclaw-context-usage.json")}
+    elif args.no_tools_ingress:
+        options = {"module_name": NO_TOOLS_INGRESS_MODULE,
+                   "manifest_path": MANIFEST.with_name("openclaw-no-tools-ingress.json")}
     elif args.yield_usage:
         options = {"module_name": YIELD_USAGE_MODULE,
                    "manifest_path": MANIFEST.with_name("openclaw-yield-usage.json")}

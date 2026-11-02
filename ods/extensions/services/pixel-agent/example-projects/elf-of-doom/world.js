@@ -89,6 +89,27 @@ const XP_REQUIREMENT_SCALE = 1.5;
 // exactly once, at the point of assignment, so this value must stay unscaled: pre-scaling it
 // would apply the +50% twice at level 1.
 const XP_BASE = 26;
+// First tier of the flat late-game gate. Once the hero reaches XP_FLAT_FROM_LEVEL, gates stop
+// following the ×1.45 curve, which by level ~11 demanded 30k+ XP per level and stalled leveling
+// in the deeper realms. A fixed cost keeps picks coming at a steady pace. Curve value at level
+// 11 was 3233 (×1.5 = gate shown in HUD), so 2500 is slightly below that — a deliberate easing,
+// not a nerf of an already-climbable hill. Used as the first tier cost below; later tiers rise.
+const XP_FLAT = 2500;
+const XP_FLAT_FROM_LEVEL = 11; // the first flat tier starts here
+// Tiered late-game gates. A single flat 2500 kept picks coming too fast deep into the run — at
+// circuit 10 the hero was level 257 and the boon panels never stopped. So the flat gate steps up
+// in tiers: 2500 from level 11, then 5000 after level 25, 10000 after 50 and 15000 after 75.
+// Each entry is {fromLevel, cost}, and gainXp looks it up with the level the hero JUST REACHED
+// (P.lvl is incremented before the lookup), so fromLevel is the level reached whose reward gate
+// — i.e. the step from fromLevel to fromLevel+1 — first costs `cost`.
+// So the step after 25 costs 5000, after 50 costs 10000, after 75 costs 15000. Read by
+// xpGateFor() in engine.js; below the first fromLevel the ×1.45 curve still runs unchanged.
+const XP_TIERED = [
+  { fromLevel: XP_FLAT_FROM_LEVEL, cost: XP_FLAT }, // reaching 11..24 pays 2500 for the next level
+  { fromLevel: 25, cost: 5000 },                    // reaching 25..49 pays 5000
+  { fromLevel: 50, cost: 10000 },                   // reaching 50..74 pays 10000
+  { fromLevel: 75, cost: 15000 },                   // reaching 75+ pays 15000
+];
 // Spider web slow. A web bolt that lands on the hero cuts movement speed to WEB_SLOW of normal
 // for WEB_SLOW_T seconds. Kept as dials here because both the projectile hit (ui.js) and the
 // movement step (ui.js) read them.
@@ -98,7 +119,7 @@ const WEB_SLOW_T = 2.2;
 // everything the lights do not reach.
 //
 // Tuned back toward the old look after the mask overshot. A 330px pool in a ~1100x700 hall left a
-// small lit disc around Faelar and murky edges everywhere else, i.e. a fog-of-war instead of a
+// small lit disc around Gabriel and murky edges everywhere else, i.e. a fog-of-war instead of a
 // torchlit hall. Three dials, all deliberately weaker than they were:
 //   HERO_GLOW_R  - reach of his light. Wider than a screen would lift the whole arena flat; a
 //                  little over half the viewport width reads as one torch in a room.
@@ -124,7 +145,7 @@ const LIGHT_DARK = .40;      // opacity of the shadow over unlit floor
 // alpha is (LIGHT_DARK - LIGHT_AMB). It is kept above 0 only so a huge hall never goes fully
 // black where no torch can ever reach.
 const LIGHT_AMB = .03;       // ceiling on that shadow: the darkest unlit floor keeps this much
-// 1.0 in the very centre is what bleached Faelar and his immediate surroundings: the mask fully
+// 1.0 in the very centre is what bleached Gabriel and his immediate surroundings: the mask fully
 // erased the shadow there, so the additive warm pass landed on unshadowed stone. .74 leaves about
 // a quarter of the veil under him, which is what keeps his cloak, hair and the floor under his
 // boots deep while still reading as "the light is coming from him".
@@ -135,6 +156,43 @@ const LIGHT_FIRE_A = .93;
 const BOSS_REINFRESH_S = 60;
 const FINAL_BOSS_REINFRESH_S = 30;
 const FINAL_BOSS_KIND = "hollowcrown";
+
+/* ---------- endless quest: the six realms repeat forever ----------
+   Clearing realm 6 no longer ends the run. The quest-victory panel still appears, its button
+   now reads Continue, and the next realm is realm 1 again with:
+     · +50% more enemies at every spawn (wave, boss escort, boss reinforcements),
+     · +50% more boss health,
+     · boss reinforcements already on the realm-6 cadence from the first boss of the loop.
+   Realm 6's interval is the ceiling forever: deeper loops raise crowd size and boss bulk only,
+   never the clock. Enemy damage and ordinary wave-enemy HP stay at their loop values, so no
+   loop becomes instantly lethal — the pressure is numbers and a 1.5x-bulk boss, not a one-hit
+   wall.
+   Loop 1 multiplies by exactly 1, so a first pass plays as it always did. */
+const REALM_COUNT = 6;                                    // realms per loop: always 1..6
+const LOOP_ENEMY_SCALE = 1.5;                             // x1.5 foes per completed loop
+const LOOP_BOSS_HP_SCALE = 1.5;                           // x1.5 boss HP per completed loop
+// G.zone keeps counting upward (0, 1, 2 ...) and is never wrapped, so one value encodes both the
+// layout played and how deep the loop is. realmIndex() picks the ZONES entry; loopNumber() is 1
+// on the first pass, 2 after the first full circuit, and so on.
+function realmIndex(zone) { return ((zone | 0) % REALM_COUNT); }
+function loopNumber(zone) { return Math.floor((zone | 0) / REALM_COUNT) + 1; }
+function loopEnemyMul(loop) { return Math.pow(LOOP_ENEMY_SCALE, Math.max(0, (loop | 0) - 1)); }
+function loopBossHpMul(loop) { return Math.pow(LOOP_BOSS_HP_SCALE, Math.max(0, (loop | 0) - 1)); }
+// Boss-reinforcement cadence for a realm/loop pair. From loop 2 on every boss — not just the
+// Hollow Crown — uses the fast realm-6 interval, and that interval is never shortened further.
+function bossReinIntervalS(kind, loop) {
+  return (kind === FINAL_BOSS_KIND || (loop | 0) > 1) ? FINAL_BOSS_REINFRESH_S : BOSS_REINFRESH_S;
+}
+// Quest-victory panel tier, one step per completed circuit: as-shipped bronze, then silver, then
+// gold. Deeper loops keep the gold treatment rather than inventing new metals.
+const VICTORY_TIERS = [
+  { name: "Bronze", cls: "victory-bronze" },
+  { name: "Silver", cls: "victory-silver" },
+  { name: "Gold",   cls: "victory-gold" },
+];
+function victoryTierIndex(completedLoops) {
+  return clamp((completedLoops | 0) - 1, 0, VICTORY_TIERS.length - 1);
+}
 
 // ---------- loot rarity ----------
 const RARITY = {

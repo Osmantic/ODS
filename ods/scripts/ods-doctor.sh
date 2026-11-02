@@ -445,11 +445,57 @@ _doctor_check_llama_server() {
     fi
 }
 
+# LLM_BACKEND=vllm (docker-compose.vllm.yml): vllm-server serves the model on
+# the ODS network without a host port, and the in-stack llama-server is off.
+# Docker's healthcheck asks vLLM's /health, which answers only once the model
+# is loaded, so its state is the engine's status. A cold start loads the
+# weights and compiles kernels for up to 15 minutes: that is starting, not a
+# fault. A llama-server container left by an earlier install still running
+# would compete for the GPU.
+_doctor_check_vllm_engine() {
+    local inspect="" state="" health=""
+    LLM_PROVIDER="vLLM"
+    LLM_URL="http://vllm-server:8000 (ODS network only)"
+    LLM_MODEL="${VLLM_SERVED_MODEL:-}"
+    LLM_RECOVERY=""
+    LLM_LOCAL_WARNING="false"
+    if [[ "$DOCKER_DAEMON" == "true" ]] && inspect=$(docker inspect --format \
+        '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+        ods-vllm-server 2>&1); then
+        read -r state health <<<"$inspect"
+    fi
+    if [[ "$state" == "running" && "$health" == "healthy" ]]; then
+        LLM_STATUS="ok"
+        log_ok "LLM backend: vLLM (local) — responding"
+        [[ -z "$LLM_MODEL" ]] || log_ok "  Model    : $LLM_MODEL"
+    elif [[ "$state" == "running" && "$health" == "starting" ]]; then
+        LLM_STATUS="starting"
+        log_info "LLM backend: vLLM (local) — starting: a first start loads the model and compiles kernels, which can take 15 minutes"
+        log_info "  Follow   : ods logs llm"
+    else
+        LLM_STATUS="fail"
+        if [[ "$state" == "running" ]]; then
+            LLM_RECOVERY="ods restart vllm-server"
+            log_fail "LLM backend: vLLM (local) — container running but not healthy"
+        else
+            LLM_RECOVERY="ods start vllm-server"
+            log_fail "LLM backend: vLLM (local) — container not running"
+        fi
+        log_info "  Recovery : $LLM_RECOVERY (see why with: ods logs llm)"
+    fi
+    if [[ "$DOCKER_DAEMON" == "true" ]] && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'ods-llama-server'; then
+        LLM_LOCAL_WARNING="true"
+        log_warn "  Note     : A llama-server container from an earlier install is running beside vLLM; stop it with: docker stop ods-llama-server"
+    fi
+}
+
 _doctor_check_llm_backend() {
     local ext_url="${EXTERNAL_LLM_URL:-}"
     local ext_provider="${EXTERNAL_LLM_PROVIDER:-}"
     local ext_model="${EXTERNAL_LLM_MODEL:-}"
     local mode="${ODS_MODE:-local}"
+    local backend
+    backend=$(printf '%s' "${LLM_BACKEND:-}" | tr '[:upper:]' '[:lower:]')
 
     if [ -n "$ext_url" ]; then
         # External LLM mode — skip llama-server check
@@ -457,6 +503,8 @@ _doctor_check_llm_backend() {
             "$ROOT_DIR/config/litellm/external-upstream.key"
     elif [[ -n "${NATIVE_LLM_BASE_URL:-}" ]]; then
         _doctor_check_host_native_llm
+    elif [[ "$backend" == "vllm" && "$mode" != "cloud" ]]; then
+        _doctor_check_vllm_engine
     elif [[ "$mode" == "cloud" ]]; then
         local cloud_url="${LLM_API_URL:-}"
         if [ -n "$cloud_url" ]; then
@@ -1114,6 +1162,14 @@ def _looks_like_local_llama_route(value):
     }
 
 
+def _url_hostname(value):
+    """The lower-case host of a URL, or "" when it names none."""
+    try:
+        return (parse.urlsplit(value.strip()).hostname or "").lower() if "://" in value else ""
+    except ValueError:
+        return ""
+
+
 def _source(path):
     try:
         return path.relative_to(root_dir).as_posix()
@@ -1194,8 +1250,12 @@ def _collect_inference_contract():
 
     generic_external = bool(external_llm_url.strip()) or llm_backend.strip().lower() == "external"
     external_inference = ods_mode == "cloud" or generic_external
+    # LLM_BACKEND=vllm: vllm-server serves the model behind model-router;
+    # llama-server is off and clients use the LiteLLM gateway.
+    vllm_engine = llm_backend.strip().lower() == "vllm" and not external_inference
+    vllm_overlay = _has_compose_file(compose_files, "docker-compose.vllm.yml")
     expected_owner = "external" if external_inference else "ods"
-    expected_gateway = "litellm" if external_inference or host_native else "llama-server"
+    expected_gateway = "litellm" if external_inference or host_native or vllm_engine else "llama-server"
 
     issues = []
     if lemonade_era:
@@ -1293,7 +1353,27 @@ def _collect_inference_contract():
                 )
             )
 
-    if ods_mode == "local" and not host_native and not generic_external and not lemonade_era:
+    if vllm_engine:
+        if compose_flags_exists and not vllm_overlay:
+            issues.append(
+                _inference_issue(
+                    "ODS-RUNTIME-VLLM-OVERLAY-MISSING",
+                    "blocker",
+                    ".compose-flags",
+                    "LLM_BACKEND=vllm but docker-compose.vllm.yml is not in the resolved compose stack.",
+                )
+            )
+        if _url_hostname(llm_api_url) in {"llama-server", "ods-llama-server"}:
+            issues.append(
+                _inference_issue(
+                    "ODS-RUNTIME-VLLM-LLAMA-ROUTE",
+                    "blocker",
+                    ".env",
+                    f"The vLLM engine serves the model, but LLM_API_URL points at the in-stack llama-server ({llm_api_url}), which is off.",
+                )
+            )
+
+    if ods_mode == "local" and not host_native and not generic_external and not lemonade_era and not vllm_engine:
         if compose_flags_exists and cloud_overlay:
             issues.append(
                 _inference_issue(
@@ -1327,6 +1407,8 @@ def _collect_inference_contract():
         "ODS-RUNTIME-HOST-NATIVE-KEY-MISSING": "The Windows llama-server route has no API key",
         "ODS-RUNTIME-LOCAL-CLOUD-OVERLAY": "Local mode still has the cloud compose overlay",
         "ODS-RUNTIME-LOCAL-LITELLM-ROUTE": "Local mode routes through LiteLLM unexpectedly",
+        "ODS-RUNTIME-VLLM-OVERLAY-MISSING": "The vLLM route is missing its compose overlay",
+        "ODS-RUNTIME-VLLM-LLAMA-ROUTE": "The vLLM route still sends clients to the in-stack llama-server",
     }
     next_steps = {
         "ODS-RUNTIME-CLOUD-OVERLAY-MISSING": [
@@ -1368,6 +1450,12 @@ def _collect_inference_contract():
         "ODS-RUNTIME-MODE-UNKNOWN": [
             "Set ODS_MODE to local, cloud, or hybrid.",
         ],
+        "ODS-RUNTIME-VLLM-OVERLAY-MISSING": [
+            "Run `ods restart`: the CLI resolves the compose stack again from LLM_BACKEND=vllm.",
+        ],
+        "ODS-RUNTIME-VLLM-LLAMA-ROUTE": [
+            "Run `ods mode local` to point LLM_API_URL at the LiteLLM gateway, then `ods restart`.",
+        ],
     }
     for issue in issues:
         diagnoses.append(
@@ -1398,6 +1486,8 @@ def _collect_inference_contract():
             "host_native_overlay": host_native_overlay,
             "local_inference_overlay": local_inference_overlay,
             "native_key_configured": native_key_configured,
+            "vllm_engine": vllm_engine,
+            "vllm_overlay": vllm_overlay,
         },
         "issues": issues,
         "issue_counts": {
@@ -1778,14 +1868,20 @@ llm_local_warn = os.environ.get("LLM_LOCAL_WARNING", "false") == "true"
 llm_failure = os.environ.get("LLM_FAILURE", "")
 
 if llm_status == "fail" and llm_recovery:
-    if llm_provider != "llama-server" and llm_failure in ("key-refused", "key-required"):
+    if llm_provider == "vLLM":
+        fix_hints.append(f"The vLLM engine (vllm-server) is not serving the model. Hint: {llm_recovery}")
+    elif llm_provider != "llama-server" and llm_failure in ("key-refused", "key-required"):
         fix_hints.append(f"External LLM backend ({llm_provider}) answered but did not accept a stored API key. Hint: {llm_recovery}")
     elif llm_provider != "llama-server":
         fix_hints.append(f"External LLM backend ({llm_provider}) is unreachable. Hint: {llm_recovery}")
     else:
         fix_hints.append(f"Local llama-server is unreachable. Hint: {llm_recovery}")
 
-if llm_local_warn:
+if llm_local_warn and llm_provider == "vLLM":
+    # `ods stop llama-server` names vllm-server on this route; stop the container itself.
+    fix_hints.append("A llama-server container from an earlier install is running beside the vLLM engine "
+                     "and competes for its GPU. Stop it with: docker stop ods-llama-server")
+elif llm_local_warn:
     fix_hints.append("External LLM is configured but the local llama-server container is still running. Stop it with: ods stop llama-server")
 # Rootless daemon without (enough) subordinate IDs: images fail to extract
 # with "uid/gid map out of range" long after doctor reports healthy Docker.

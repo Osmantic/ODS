@@ -72,4 +72,28 @@ assert_image "$plan" 'COMFYUI' absent 'host-native CPU stack'
 plan="$(image_plan amd local '' '' false true)"
 assert_image "$plan" 'COMFYUI' present 'separately selected AMD ComfyUI'
 
+# TEI's release tags are amd64 only. Each architecture pre-pulls the image its
+# Compose files run: compose.yaml, or compose.arm64.yaml on arm64.
+tei_plan() (
+    export SCRIPT_DIR="$ROOT_DIR" LOG_FILE=/dev/null DRY_RUN=true COMPOSE_FLAGS=''
+    export GPU_BACKEND=cpu ODS_MODE=local EXTERNAL_LLM_URL='' NATIVE_LLM_BASE_URL=''
+    export ENABLE_PERPLEXICA=false ENABLE_COMFYUI=false ENABLE_OPEN_WEBUI=false
+    export ENABLE_VOICE=false ENABLE_WORKFLOWS=false ENABLE_RAG=false
+    export ENABLE_QDRANT=false ENABLE_EMBEDDINGS=true ENABLE_HERMES=false HOST_ARCH="$1"
+    ods_progress() { :; }; show_phase() { :; }; ai() { :; }
+    ai_ok() { :; }; ai_warn() { :; }; bootline() { :; }; signal() { :; }
+    source "$ROOT_DIR/installers/phases/08-images.sh"
+    for entry in "${PULL_LIST[@]}"; do
+        if [[ "$entry" == *"|TEI — "* ]]; then printf '%s\n' "$entry"; fi
+    done
+)
+for arch_file in "amd64 compose.yaml" "x86_64 compose.yaml" "arm64 compose.arm64.yaml" "aarch64 compose.arm64.yaml"; do
+    read -r arch file <<<"$arch_file"
+    expected="$(sed -nE 's/^[[:space:]]*image:[[:space:]]*([^[:space:]]+).*/\1/p' "$ROOT_DIR/extensions/services/embeddings/$file")"
+    [[ -n "$expected" ]] || { echo "FAIL: no image in embeddings/$file" >&2; exit 1; }
+    tei="$(tei_plan "$arch")"
+    [[ "$tei" == "$expected|TEI — embedding engine" ]] \
+        || { echo "FAIL: $arch pre-pulls '$tei', but embeddings/$file runs $expected" >&2; exit 1; }
+done
+
 echo 'PASS: Phase 08 image plans follow the selected route and services'

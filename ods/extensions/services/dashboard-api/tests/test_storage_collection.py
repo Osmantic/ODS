@@ -1,6 +1,8 @@
 """Settings reads share one real disk traversal even after browser timeouts."""
 
 import asyncio
+import subprocess
+import sys
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
@@ -18,6 +20,21 @@ HEADERS = {"Authorization": "Bearer test-key-12345"}
 URL = "/api/storage"
 
 
+def _sparse_file(path: Path, size: int) -> None:
+    """Create a file of `size` bytes that takes no disk space.
+
+    NTFS allocates every byte a file grows by, through truncate() too, unless
+    the file is marked sparse first: each use of this fixture took 4 GiB on
+    Windows, and one full suite run 16 GiB, which filled a contributor's disk.
+    """
+    path.touch()
+    if sys.platform == "win32":
+        subprocess.run(["fsutil", "sparse", "setflag", str(path)], check=True, capture_output=True)
+    with path.open("r+b") as stream:
+        stream.seek(size - 1)
+        stream.write(b"\0")
+
+
 @pytest.fixture
 def storage_source(tmp_path, monkeypatch):
     main._cache.invalidate("storage")
@@ -25,8 +42,7 @@ def storage_source(tmp_path, monkeypatch):
     for directory, gib in [("models", 2), ("qdrant", 1), ("n8n", 1)]:
         child = tmp_path / directory
         child.mkdir()
-        with (child / "data.bin").open("wb") as stream:
-            stream.truncate(gib * 1024**3)
+        _sparse_file(child / "data.bin", gib * 1024**3)
     monkeypatch.setattr(main, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(main, "get_disk_usage", lambda: SimpleNamespace(
         used_gb=6, total_gb=10, percent=60,

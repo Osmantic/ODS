@@ -148,8 +148,13 @@ load_env_from_output_allowlist() {
 }
 
 # Model contracts from scripts/select-model.py and scripts/preserve-active-model.py.
-# Only the preserved contract of the same active model carries the last three
-# keys (its vision projector and fixed chat template; model activation owns them).
+# Only the preserved contract of the same active model carries its vision
+# projector and fixed chat template (LLAMA_ARG_MMPROJ through
+# LLAMA_ARG_CHAT_TEMPLATE_FILE; model activation owns them). Only a vLLM pick
+# (select-model.py --llm-runtime vllm) and a vLLM installation's preserved
+# contract carry the VLLM_* keys; only that contract carries LLM_BACKEND
+# (always vllm). VLLM_GPU_MEMORY_UTILIZATION is the pick's own share, or on
+# a rerun that keeps its model, the share that installation was given.
 load_model_selector_env_from_output() {
     load_env_from_output_allowlist \
         LLM_MODEL \
@@ -189,5 +194,11 @@ load_model_selector_env_from_output() {
         LLAMA_ARG_TENSOR_SPLIT \
         LLAMA_ARG_MMPROJ \
         MODEL_CHAT_TEMPLATE_OVERRIDE \
-        LLAMA_ARG_CHAT_TEMPLATE_FILE
+        LLAMA_ARG_CHAT_TEMPLATE_FILE \
+        LLM_BACKEND \
+        VLLM_MODEL_DIR \
+        VLLM_SERVED_MODEL \
+        VLLM_ARGS \
+        VLLM_GPU_UUID \
+        VLLM_GPU_MEMORY_UTILIZATION
 }

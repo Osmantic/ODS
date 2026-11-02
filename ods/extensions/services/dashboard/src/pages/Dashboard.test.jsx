@@ -134,12 +134,37 @@ describe('Dashboard system overview', () => {
     expect(screen.getByText('Accumulated Output')).toBeInTheDocument()
   })
 
-  it.each([[8.25, '8.3 tok/s'], [0, '0.0 tok/s'], [null, '—'], [undefined, '—']])('shows a real compact throughput reading for %s', async (tokensPerSecond, expected) => {
+  it.each([[8.25, '8.3 tok/s'], [0, '0.0 tok/s']])('shows a real compact throughput reading for %s', async (tokensPerSecond, expected) => {
     render(<Dashboard compact status={{...baseStatus, inference:{...baseStatus.inference, tokensPerSecond}}} loading={false}/>)
     const row = screen.getByText('Tokens / second').closest('.dashboard-metric-row')
     expect(within(row).getByText(expected)).toBeVisible()
-    expect(within(row).getByText(tokensPerSecond == null ? 'Telemetry unavailable' : 'Runtime reading')).toBeVisible()
+    expect(within(row).getByText('Runtime reading')).toBeVisible()
     await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/features'))
+  })
+
+  it.each([null, undefined])('leaves out Tokens / second while the runtime has reported no rate (%s)', async tokensPerSecond => {
+    // A native engine that never reports throughput: nothing reads as a fault.
+    render(<Dashboard compact status={{...baseStatus,
+      inference:{...baseStatus.inference, tokensPerSecond, throughputState:'unavailable', throughputMode:'unavailable', throughputSampledAt:null},
+      cpu:{percent:12,scope:'host'},
+      gpu:{name:'NVIDIA GeForce RTX 4090',memoryType:'discrete',utilization:3,vramUsed:10,vramTotal:24,temperature:41,powerDraw:4}}} loading={false}/>)
+    expect(screen.queryByText('Tokens / second')).toBeNull()
+    expect(screen.queryByText(/telemetry unavailable/i)).toBeNull()
+    expect(within(screen.getByText('Context').closest('.dashboard-metric-row')).getByText('32k')).toBeVisible()
+    expect(within(screen.getByText('Model').closest('.dashboard-metric-row')).getByText('qwen')).toBeVisible()
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/features'))
+  })
+
+  it('names a missing reading neutrally in the full overview charts', async () => {
+    await renderDashboard({...baseStatus,
+      inference:{...baseStatus.inference, tokensPerSecond:null, lifetimeTokens:null, tokenCountMode:'unavailable', throughputState:'unavailable'}})
+    const overview = screen.getByText('System Overview').closest('section')
+    const throughput = screen.getByRole('img', {name:'TOKENS PER SECOND chart'}).parentElement
+    expect(within(throughput).getByText('Not reported')).toBeVisible()
+    expect(within(throughput).getByText('—')).toBeVisible()
+    expect(within(overview).getAllByText('No data')).toHaveLength(2)
+    expect(within(overview).queryByText(/telemetry/i)).toBeNull()
+    expect(screen.queryByText('Tokens / second')).toBeNull()
   })
 
   it.each([[0, '0.0'], [null, '—'], [undefined, '—']])('keeps full throughput reading %s distinct from unavailable history', async (tokensPerSecond, expected) => {
@@ -289,12 +314,47 @@ describe('Dashboard system overview', () => {
     expect(history[0]).toMatchObject({model:'new-owner',tokensPerSecond:24.8})
   })
 
-  it.each([[73,'73°C'],[0,'0°C'],[null,'—'],[undefined,'—']])('shows CPU thermal reading %s without substituting GPU or system temperature', async (temp_c,expected) => {
+  it.each([[73,'73°C'],[0,'0°C']])('shows CPU thermal reading %s without substituting GPU or system temperature', async (temp_c,expected) => {
     render(<Dashboard compact status={{...baseStatus,cpu:{percent:38,temp_c},gpu:{name:'GPU',temperature:55,memoryType:'discrete'}}} loading={false}/>)
     const thermal=screen.getByText('CPU Temp').closest('.dashboard-metric-row')
     expect(within(thermal).getByText(expected)).toBeVisible()
-    expect(within(thermal).getByText(temp_c == null ? 'telemetry unavailable' : 'sensor reading')).toBeVisible()
+    expect(within(thermal).getByText('sensor reading')).toBeVisible()
     expect(within(thermal).queryByText('55°C')).toBeNull()
+    await waitFor(()=>expect(fetch).toHaveBeenCalledWith('/api/features'))
+  })
+
+  it.each([null,undefined])('leaves out CPU Temp when the platform reports no CPU temperature (%s) and keeps the GPU and RAM readings', async temp_c => {
+    // Windows host readings carry CPU use but never a CPU temperature.
+    render(<Dashboard compact status={{...baseStatus,
+      cpu:{percent:12,temp_c,scope:'host',source:'windows-cim'},
+      ram:{used_gb:21.4,total_gb:128,percent:17,scope:'host'},
+      gpu:{name:'NVIDIA GeForce RTX 4090',memoryType:'discrete',utilization:3,vramUsed:10,vramTotal:24,temperature:41,powerDraw:4}}} loading={false}/>)
+    expect(screen.queryByText('CPU Temp')).toBeNull()
+    expect(screen.queryByText('telemetry unavailable')).toBeNull()
+    expect(within(screen.getByText('CPU').closest('.dashboard-metric-row')).getByText('12%')).toBeVisible()
+    const gpuTemp=screen.getByText('GPU Temp').closest('.dashboard-metric-row')
+    expect(within(gpuTemp).getByText('41°C')).toBeVisible()
+    expect(within(gpuTemp).getByText('normal')).toBeVisible()
+    const power=screen.getByText('GPU Power').closest('.dashboard-metric-row')
+    expect(within(power).getByText('4W')).toBeVisible()
+    expect(within(power).getByText('live')).toBeVisible()
+    expect(within(screen.getByText('RAM').closest('.dashboard-metric-row')).getByText('21.4 GB')).toBeVisible()
+    await waitFor(()=>expect(fetch).toHaveBeenCalledWith('/api/features'))
+  })
+
+  it.each([
+    [{loadedModel:'Qwen3.8-27B-UD-IQ4_XS.gguf',loadedModelDisplayName:'Qwen 3.8 27B'},'Qwen 3.8 27B'],
+    [{loadedModel:'Example-Chat-12B-NVFP4-6c01ac37.pack'},'Example-Chat-12B-NVFP4'],
+    [{loadedModel:'/models/Example-Chat-12B-Q4_K_M-00001-of-00003.gguf'},'Example-Chat-12B-Q4_K_M'],
+    [{loadedModel:'Qwen2.5-1.5B'},'Qwen2.5-1.5B'],
+    [{loadedModel:'example-chat-20250131'},'example-chat-20250131'],
+    [{loadedModel:null},'—'],
+  ])('names the loaded model %j by its display name, never its file name', async (inference,expected) => {
+    render(<Dashboard compact status={{...baseStatus,inference:{...baseStatus.inference,...inference}}} loading={false}/>)
+    const model=screen.getByText('Model').closest('.dashboard-metric-row')
+    expect(within(model).getByText(expected)).toBeVisible()
+    expect(within(model).getByText('loaded')).toBeVisible()
+    if(inference.loadedModel && inference.loadedModel !== expected) expect(within(model).queryByText(inference.loadedModel)).toBeNull()
     await waitFor(()=>expect(fetch).toHaveBeenCalledWith('/api/features'))
   })
 

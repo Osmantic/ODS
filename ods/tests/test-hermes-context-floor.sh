@@ -87,6 +87,7 @@ cp config/model-library.json "$fixture_dir/config/"
 cp installers/lib/model-selector.sh "$fixture_dir/installers/lib/"
 cp extensions/services/dashboard-api/model_memory.py \
     extensions/services/dashboard-api/model_selection.py \
+    extensions/services/dashboard-api/model_vllm.py \
     "$fixture_dir/extensions/services/dashboard-api/"
 cp lib/python-cmd.sh "$fixture_dir/lib/"
 

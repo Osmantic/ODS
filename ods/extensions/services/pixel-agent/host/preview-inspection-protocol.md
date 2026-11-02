@@ -8,7 +8,9 @@ socket or browser authority.
 ## Request
 
 The plugin sends one JSON object with `schemaVersion: 1`, `action: "inspect"`,
-`siteId`, the full snapshot `sha256`, `viewport: {width, height}`, and `steps`.
+`siteId`, the full snapshot `sha256`, `viewport: {width, height}`, and `steps`,
+plus an optional `page` that names the page of the same snapshot to start on
+instead of its entry page (see "Page" below).
 Each step has `action` (`assert-visible`, `assert-hidden`, `assert-text`,
 `click`, `select-option`, `fill`, `download`, `press`, or `assert-painted`)
 and `locator`. `assert-text` adds `expectedText`; `select-option` and `fill`
@@ -16,7 +18,9 @@ add `value`; `download` adds `path`, `expectedBytes` and `expectedSha256`;
 `press` adds `key` and an optional `holdMs`; `assert-painted` adds nothing
 (see the sections below). A locator is either
 `{selector: "CSS"}` or `{role: "button", name: "Show items", exact: true}`.
-Semantic roles are
+The tool also accepts a role/name locator without `exact` and a selector with
+`exact: true`, which match the same element, and always sends these two forms
+(`workspace-preview-inspect.mjs`); `exact: false` stays invalid. Semantic roles are
 allowlisted. There are no URLs, executable expressions, shell commands, image
 names, host paths, or Docker arguments in this protocol.
 
@@ -146,14 +150,14 @@ visible. Publication is byte-only and renders nothing, so the capsule reports
 the painted palette with every receipt it builds.
 
 After the step context is closed and its receipt is final, the capsule loads
-the same snapshot once more in a separate context of the same browser: a fixed
-1280x720 desktop viewport, default (light) color scheme, device scale 0.25.
-It uses the same loopback server, request guard, navigation limit, and popup,
-download and websocket blocking, and registers no page-error listener. It
-waits 100 ms after `load`, takes a 320x180 PNG screenshot of the viewport (one
-device pixel per 4x4 CSS pixels) and decodes it with the standard library. The
-page as first loaded is captured, never the state left by the inspected
-clicks, and never hover or focus styles.
+the same page of the snapshot once more in a separate context of the same
+browser: a fixed 1280x720 desktop viewport, default (light) color scheme,
+device scale 0.25. It uses the same loopback server, request guard, navigation
+limit, and popup, download and websocket blocking, and registers no page-error
+listener. It waits 100 ms after `load`, takes a 320x180 PNG screenshot of the
+viewport (one device pixel per 4x4 CSS pixels) and decodes it with the
+standard library. The page as first loaded is captured, never the state left
+by the inspected clicks, and never hover or focus styles.
 
 Each pixel's exact color goes to one fixed bucket. A color with chroma under
 26/255 is neutral and named by HSL lightness: `black` (<0.13), `dark gray`
@@ -234,7 +238,8 @@ quoted evidence copy; when an exact role/name locator matched nothing and a
 control of that role shows the locator's name as its text (or differs only in
 letter case), the locator feedback states the actual name and what supplied it.
 The plugin checks owner-requested control names against them (see
-`COMPLETION-RELIABILITY.md`). A host keeps producing receipts without
+`COMPLETION-RELIABILITY.md`), from entry-page receipts only: a `page` receipt
+lists another page's controls. A host keeps producing receipts without
 `controls` until the installer rebuilds the inspection image.
 
 ## Host custody and isolation
@@ -258,6 +263,9 @@ socket, never ambient Docker context/environment.
 CLI: `serve` accepts authenticated local requests; `request` runs the fixed
 native helper request; `health` verifies the installed image identity without
 executing a site; `export` reads only `/previews` in the publisher container.
+`request`, `health` and `export` print one JSON result and exit 0, also on
+failure. `serve` prints its failure receipt and exits non-zero when it cannot
+start or stops with an error, so the unit's `Restart=on-failure` retries it.
 Native export uses fixed `docker exec` argv and actual container UID ownership.
 Export grants the publisher no Docker authority. Snapshots are reopened with
 the publisher's stable no-symlink file checks and rehashed, then rehashed again
@@ -270,8 +278,12 @@ read-only root, UID/GID 65534, all capabilities dropped, no-new-privileges,
 256 MiB temporary filesystem. No host mounts, sockets, credentials, or host
 URLs enter it. The only stdin is the validated plan and base64 immutable file
 map. The loopback server reproduces production iframe sandbox, CSP, MIME/UTF-8,
-and CORS/security headers. Foreign requests, extra navigation, popups, and
-downloads are blocked; service workers are disabled.
+and CORS/security headers. The request guard admits at most two navigations,
+the fixed wrapper document and the one page it frames: the site entry
+(`/<siteId>/`) or the requested `page`. Only an explicit download step adds
+one, to its own snapshot file. Foreign requests, any other navigation (a link
+to another page of the same snapshot included), popups, and downloads are
+blocked; service workers are disabled.
 
 The runner permits at most 45 seconds and 32 KiB of receipt output, plus one
 bounded JPEG when the request directs a viewport screenshot (see "Viewport
@@ -601,6 +613,73 @@ schema, the Python/JavaScript scope, bounds and plan hash, capsule summaries as
 receipts, forged paint evidence, feedback, the unchanged-fingerprint note and
 the evidence policy.
 
+## Page
+
+An inspection loads one page: without `page`, the snapshot's entry page,
+exactly as before. A multi-page site ("a three-page bakery site: home, menu and
+contact") needs its other pages checked too, so a request may name one. `page`
+is the path of a published `.html` file relative to the site root, such as
+`menu.html` or `about/team.html`, or a folder ending in `/` for that folder's
+`index.html` (`blog/` is `blog/index.html`), the rule by which the capsule's
+loopback server resolves URL paths (`snapshot_file`).
+
+`page`, with a trailing `/` read as `/index.html`, must be a name the snapshot's
+file map can hold (`snapshot_name`, shared with `validate_bundle`): at most 512
+characters and 12 segments of at most 128 ASCII letters, digits, `.`, `_`, `-`,
+`[` and `]`, ending in `.html`. That excludes a leading `/`, `\`, NUL and other
+control characters, `.` and `..` segments, empty segments, a scheme, query or
+fragment, percent-encoding, hidden names (a leading `.`, which the publisher
+skips) and the reserved `__ods_` and `__pycache__` names. The plugin applies
+the same rules (`workspace-preview-inspect.mjs`), but only the immutable file
+map shows whether that file exists. The broker binds `page` to it after reading
+the snapshot and before any browser runs; a page that names no file of it
+returns a bound `page_not_found` failure. The capsule checks it again in
+`validate_bundle`. The publisher-side export never sees `page`, since it reads
+the whole snapshot either way, so an older export helper keeps working.
+
+`page` changes only where the inspection starts. The wrapper document frames
+`/<siteId>/` plus the URL-quoted page instead of `/<siteId>/`, and the request
+guard admits that page as the one entry navigation in place of the site entry,
+which is then refused like any other navigation. Links between pages are not
+followed: a click or key that navigates to another page is blocked, recorded in
+`blockedRequests` and fails the receipt, exactly as before. Asset requests,
+popups, downloads, the CSP, the iframe sandbox and every capsule isolation
+property above are unchanged. A download step's `path` stays relative to the
+site root, and the rendered palette is captured from the same page.
+
+`page` is part of the plan, so `planSha256` binds it; a request without it
+validates and hashes exactly as before, and `schemaVersion` stays 1. Every
+receipt of a page plan, passed or failed, carries the same `page`, and its
+scope ends `Only the requested page of this snapshot was loaded; links between
+pages were not followed.` Receipts of plans without `page` carry neither. The
+broker and the plugin reject a receipt whose `page` differs from the
+request's, and the tool names the page in its result (`Preview inspection of
+page "menu.html" passed.`). A passing page plan counts as browser evidence for
+its snapshot like any other inspection, while owner-requested control names are
+checked against entry-page receipts only (see "Load-time control names"). An
+untested show/hide change gets corrective steps on the same page, without the
+entry page's outline.
+
+The immutable capsule must advertise
+`org.osmantic.ods.inspection.page=snapshot-page-v1`. The broker checks it
+before reading the snapshot, and the installer requires it, as for paint. An
+older image returns a bound `unsupported_capability` failure without executing
+the plan, and the tool asks to inspect the entry page without `page` until the
+inspector is updated; deploy plugin, broker and rebuilt capsule together.
+
+`test_preview_inspection_page.py` covers the page rules, unchanged legacy
+hashes and scope, the file-map binding, the broker's label check, its
+`page_not_found` refusal before any capsule runs, the export without `page` on
+both transports and the receipt binding; through a scripted browser it loads
+the wrapper from the capsule's loopback server and checks its `src`, the
+guard's one entry navigation, a blocked click-through to a sibling page, the
+receipt and the palette. With the opt-in Chromium or image settings above it
+also checks every page of a small multi-page site and a link that is not
+followed. `inspection_page.test.mjs` checks the plugin rules, hash, scope and
+failure receipt against Python's, the schema and description, receipt binding,
+the not-found, unsupported, passing and blocked results, the evidence policy
+and the corrective steps.
+
 ## Viewport screenshot
 
 A model that ODS declares able to read images can look at its own published
@@ -638,7 +717,58 @@ switch computed before (the curated record's `vision` boolean, else
 `unknown`), and `ODS_MODEL_PROFILES=enabled` with a measured vision probe
 still decides last. The value is computed for each switch's model alone, so
 the next switch to a model without a projector gets its own value back.
-Remote routes are written as `unknown` and never read a local report.
+A remote model API route (`ods remote-provider`) never reads a local report;
+it gets one vision probe of its own at each proof of the route (configure,
+enable, and the egress proof behind the Dashboard's connection check and
+`ods remote-provider test`), once LiteLLM serves that route as `ods/current`
+(`bin/ods-host-agent.py` `_remote_provider_vision_probe`,
+`bin/model_profile/probes.py` `probe_remote_vision`). The probe sends one
+image of two squares in two colours drawn for that proof from six (red,
+green, blue, yellow, black, white) through `ods/current`, so it crosses
+LiteLLM and the egress as Portal's images do, and asks for both colours, left
+first. It sends no thinking switch, allows at most 1,024 answer tokens (the
+route's output limit when that is lower) and has one 30-second budget, which
+the single second request to a busy route (after a 502 or 503) shares. The
+answer counts from the end of any reasoning (the last `</think>` or
+`[/THINK]`, also one whose opening tag the provider dropped). Only an answer
+with no hedge or refusal word, at most three words besides framing ones
+(left, right, square, and, the, is, colour and the like), that names both
+colours as whole words in that order records `supported`; a guess matches 1
+time in 30. `unsupported` is recorded only for an unambiguous miss: an answer
+naming two palette colours, one of them not in the image (a third may be a
+background, and one alone may describe a single square); one that names no
+colour and says the model cannot see images; or a refused request (4xx
+other than 408 and 429) whose error names image input apart from the
+model's own id, when the same request without the image is then answered.
+Anything else (a swapped order, one or three colours, a longer or hedged
+answer, a cut-off one, an error, a timeout) is inconclusive. The receipt is kept in the route state
+(`data/remote-provider/routing-state.json`, `status.vision`) with the route
+fingerprint (transport, base URL, model, context, output limit, reasoning),
+and the route's Pixel contract (`_remote_provider_runtime_contract`)
+declares only what a receipt for the same fingerprint says: a new route, or
+one whose probes were all inconclusive, is `unknown`. Only a conclusive
+verdict replaces a receipt; an inconclusive probe keeps it, also through
+`ods remote-provider enable` (the Dashboard's **Reconcile route**), which
+carries the receipt of the same route into the state it rewrites. When a
+check of the route already in use measures a verdict that changes the
+contract, Pixel alone takes it through a model transaction, without
+recreating LiteLLM or the relay; without a managed Pixel only the activation
+record changes. If that transaction fails, an uncertain `model-apply`
+included, the rebind does what a local switch's rollback does: it proves
+that the controller still holds the transaction, on the previous contract or
+on the target it may already have taken, and rolls back to the previous
+contract after proving only the route's identity, since nothing on the
+inference side changed. When the controller cannot prove its hold, the
+transaction stays held for recovery, and the journal keeps the target so
+that recovery can still complete it. When the controller refuses to begin
+because Portal is busy (`runtime-busy`, `model-inspection-changed`,
+`transition-busy`, `active-run` or the `native-transition-busy` family), the
+receipt stays as it was, the check says that its result applies at the next
+check once Portal is idle (`imageCheck`), and the next check applies it; any
+other refusal fails the check with its reason.
+`ods remote-provider status` and `test` print the verdict as image input
+"seen the test image", "text only" or "not measured"; the Dashboard does not
+show it yet.
 An installation that already runs a vision model gets the readback on its
 next model switch. Every installer run, including an update, writes
 `unknown` over a `supported` declaration (`installers/lib/pixel-onboarding.py`):
@@ -646,7 +776,12 @@ the installer keeps the active model and keeps `LLAMA_ARG_MMPROJ` only while
 that model's projector file still checks out (`scripts/preserve-active-model.py`),
 so the model may now run without its projector, and the renderer cannot see
 which happened. `unsupported` and `unknown` carry over for the same route; the
-next switch reads the projector back.
+next switch reads the projector back. The renderer writes a remote route as
+`unknown` too: it cannot tell which route LiteLLM serves after the rerun (a
+local install's update pauses the remote route). The route's next proof
+(`ods remote-provider enable`, or the Dashboard's **Reconcile route**)
+measures it again and binds Pixel to the route's receipt, which an
+inconclusive probe there keeps.
 
 **The directive.** When the gate is open and the run guard grants one of the
 run's at most three screenshots (`tool-loop-guard.mjs`
@@ -749,10 +884,32 @@ the current run keeps its own, and owner images keep the three-turn rule.
 `vision_readback.test.mjs` renders Pixel's config with the coordinator's
 `pixel_model_contract.plan` from the install default through a readback
 `supported` target to a text-only one and checks the gate and the owner-image
-route check on each. The host agent's `test_host_agent_image_input.py` and
-`test_model_activate.py` (`TestPixelVisionReadback`) cover the `/props`
-report on every local route, the readback rule, switches with a reported,
-false, missing and unreadable vision state, a vision-to-text switch on both
-reconcile paths, and a remote activation that never reads it.
+route check on each, and renders a remote route's probed `supported` target,
+whose inspection result carries the image block, beside another route and an
+unanswered probe that stay text-only. The host agent's
+`test_host_agent_image_input.py` and `test_model_activate.py`
+(`TestPixelVisionReadback`) cover the `/props` report on every local route,
+the readback rule, switches with a reported, false, missing and unreadable
+vision state, a vision-to-text switch on both reconcile paths, and a remote
+activation that never reads it and binds Pixel to its own probe's answer;
+they also cover the remote receipt (its route fingerprint, a changed route
+and malformed receipts read `unknown`), the probe's request and answer rules
+(words that only contain a colour, such as "shared", never pass; framing
+words and reasoning without its opening tag do not hide a reading; a refusal
+counts only when the same request without the image is answered), the drawn
+colours, an inconclusive probe that keeps the receipt, and a changed verdict
+without a managed Pixel. `test_model_profile_probes.py` covers the image, the
+answer judge, the refusal confirmation and the shared budget, and
+`test_model_transaction.py` a refused `model-apply` that stays uncertain with
+its target recorded, so that a rollback or recovery still resolves it after
+the gateway took the target. `test_remote_model_transaction.py`
+checks one probe per proof, after LiteLLM serves the route and before Pixel
+is bound, a rebind of Pixel alone only when the answer changed, a busy
+Portal (each busy code above) that keeps the receipt until the next check
+while any other refusal fails the check, a failed rebind (a refused or lost
+`model-apply`, a failed receipt write) that rolls back to the previous
+receipt without a live completion, an enable that
+keeps the route's receipt through an inconclusive probe, the status a proof
+reports, and an enable of the active route that stays a no-op.
 `tests/test_pixel_onboarding.py` checks that an installer rerun after a
 `supported` switch renders `unknown` and keeps the rest of the route.

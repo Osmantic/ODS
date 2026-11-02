@@ -95,9 +95,10 @@ def test_candidate_uses_upstream_policy_without_activating_services(tmp_path, mo
             Path(args[2]).write_text(json.dumps({'gateway': {'http': {'endpoints': {}}},
                 'plugins': {'allow': ['searxng', 'pixel-operations-broker'], 'load': {'paths': []}},
                 'tools': {'alsoAllow': ['pixel_ops_run', 'write', 'edit']}}))
-        elif args[2:4] == ['plugins', 'list']:
-            return json.dumps({'plugins': [{'id': key, 'rootDir': path, 'status': 'error' if fault == 'plugin-load' else 'loaded'}
-                for key, path in paths.items()]})
+        elif args[2:] == ['plugins', 'inspect', '--all', '--runtime', '--json']:
+            return json.dumps([{'plugin': {'id': key, 'rootDir': path, 'imported': True,
+                'status': 'error' if fault == 'plugin-load' else 'loaded'}}
+                for key, path in paths.items()])
         elif args[0] == str(node):
             assert args[2:] == ['config', 'validate']
             if fault == 'schema': raise ValueError('invalid configuration')
@@ -124,6 +125,55 @@ def test_candidate_uses_upstream_policy_without_activating_services(tmp_path, mo
         assert not list(destination.glob('*.service'))
     assert not list(tmp_path.glob('.pixel-config-*'))
     if fault in ('root', 'existing-config'): assert not calls
+
+
+@pytest.mark.parametrize('fault', [None, 'schema', 'command', 'malformed-json', 'manifest-only',
+    'malformed-report', 'missing', 'failed', 'duplicate-failed', 'not-imported',
+    'missing-imported', 'string-imported', 'wrong-path'])
+def test_candidate_runtime_proof_preserves_config_and_isolation(tmp_path, monkeypatch, fault):
+    candidate = tmp_path / 'openclaw.json'
+    candidate.write_text('{"candidate":true}')
+    home = tmp_path / 'home'
+    expected = {'searxng': str(tmp_path / 'relocated/plugins/0')}
+    calls = []
+    def command(args, **kwargs):
+        calls.append(args[2:])
+        assert kwargs['cwd'] == tmp_path
+        assert kwargs['env'] == {'HOME': str(home), 'PATH': '/bin',
+            'OPENCLAW_CONFIG_PATH': str(candidate),
+            'OPENCLAW_STATE_DIR': str(home / 'validation-state'), 'OPENCLAW_SKIP_CHANNELS': '1'}
+        if args[2:] == ['config', 'validate']:
+            if fault == 'schema': raise config.bootstrap.BootstrapError('schema-refused')
+            return ''
+        assert args[2:] == ['plugins', 'inspect', '--all', '--runtime', '--json']
+        if fault == 'command': raise config.bootstrap.BootstrapError('command-refused')
+        if fault == 'malformed-json': return 'not JSON'
+        good = {'id': 'searxng', 'rootDir': expected['searxng'], 'status': 'loaded', 'imported': True}
+        if fault == 'failed': good['status'] = 'error'
+        if fault == 'wrong-path': good['rootDir'] = '/other'
+        if fault == 'not-imported': good['imported'] = False
+        if fault == 'missing-imported': del good['imported']
+        if fault == 'string-imported': good['imported'] = 'true'
+        result = [{'plugin': good}]
+        if fault == 'missing': result = []
+        if fault == 'malformed-report': result = [None]
+        if fault == 'manifest-only': return json.dumps({'plugins': [good]})
+        if fault == 'duplicate-failed': result.append({'plugin': {**good, 'status': 'error'}})
+        return json.dumps(result)
+    monkeypatch.setattr(config.bootstrap, 'command', command)
+    def run():
+        config.validate_candidate(candidate, node=tmp_path / 'node', entrypoint=tmp_path / 'openclaw.mjs',
+            expected=expected, env={'HOME': str(home), 'PATH': '/bin'}, cwd=tmp_path)
+    if fault in ('schema', 'command'):
+        with pytest.raises(config.bootstrap.BootstrapError, match=fault + '-refused'): run()
+    elif fault:
+        with pytest.raises(ValueError, match='native-config-plugin-not-loaded'): run()
+    else:
+        run()
+    assert calls == [['config', 'validate']] + ([] if fault == 'schema' else [
+        ['plugins', 'inspect', '--all', '--runtime', '--json']])
+    assert candidate.read_text() == '{"candidate":true}'
+    assert not home.exists()
 
 
 @pytest.mark.parametrize('migrating', [False, True])

@@ -55,7 +55,8 @@ jobs:
           bash tests/test-backup-restore-roundtrip.sh
 
   pixel-advice-host-stdlib:
-    runs-on: ubuntu-latest
+    # setup-python does not provide Python 3.9 builds for Ubuntu 26.04.
+    runs-on: ${{ matrix.python == '3.9' && 'ubuntu-24.04' || 'ubuntu-latest' }}
     strategy:
       matrix:
         python: ['3.9', '3.11', '3.12']
@@ -441,6 +442,11 @@ jobs:
       - name: Installer Created Container Ownership Tests
         run: bash tests/test-phase11-created-container-ownership.sh
 
+      - name: Installer Public Manifests and Containerd Device Policy
+        run: |
+          python3 tests/test_containerd_console_policy.py
+          sudo -n env ODS_MIXED_UID_TEST=1 python3 tests/test_public_extension_manifest_permissions.py
+
       - name: Dotenv Serializer Tests
         run: bash tests/test-dotenv-serializer.sh
 
@@ -513,6 +519,9 @@ jobs:
 
       - name: CPU-Only Path Tests
         run: bash tests/test-cpu-only-path.sh
+
+      - name: Docker Reasoning Mode Entrypoint
+        run: python3 -m unittest discover -s tests -p 'test_llama_reasoning_*.py' -v
 
       - name: Hermes Default and Opt-in Owner-card Access
         run: |

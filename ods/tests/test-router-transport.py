@@ -64,6 +64,20 @@ class OwnershipTests(unittest.TestCase):
         self.assertEqual(calls[2].kwargs["timeout"], 15)
         self.assertNotIn(".Config.Env", calls[1].args[0][5])
 
+    def test_the_vllm_endpoint_is_named_and_no_other_is_accepted(self):
+        # LLM_BACKEND=vllm: vllm-server has no host port; the router container
+        # reaches it at the vllm-default endpoint's origin.
+        result, calls = self.run_request(endpoint_id="vllm-default", response=b"")
+        self.assertEqual(result, "")
+        self.assertEqual(json.loads(calls[2].kwargs["input"])["endpoint_id"], "vllm-default")
+        for endpoint_id in ("lemonade-default", "keyed", ""):
+            with self.subTest(endpoint_id=endpoint_id), \
+                    patch.object(transport.subprocess, "run", side_effect=AssertionError("docker ran")):
+                with self.assertRaises(ValueError):
+                    transport.request(self.root, ORIGIN, "/health", endpoint_id=endpoint_id)
+                with self.assertRaises(ValueError):
+                    transport.exchange(self.root, ORIGIN, "/health", endpoint_id=endpoint_id)
+
     def test_exchange_asks_for_an_envelope_and_returns_status_and_text(self):
         envelope = json.dumps({"status": 400, "body": "Unable to generate parser for this template."}).encode()
         results = [self.process((CONTAINER_ID + "\n").encode()), self.process(json.dumps(self.info).encode()),

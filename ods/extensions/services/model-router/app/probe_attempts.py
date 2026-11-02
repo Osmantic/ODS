@@ -63,7 +63,7 @@ class ProbeAttempts:
         row = {"requestId": request_id, "attempt": attempt,
                "sequence": len(scope["records"]) + 1,
                "startedMonotonic": self.clock(), "elapsedMs": None,
-               "status": "pending", "httpStatus": None,
+               "status": "pending", "httpStatus": None, "responseModel": None,
                "boundary": "actual-router-upstream-send-not-tool-execution",
                "encoding": "hmac-sha256;components=json-sort-keys-ascii-v1",
                "routeSeq": route["routeSeq"], "routedModel": route["runtimeModelId"],
@@ -126,3 +126,19 @@ class ProbeAttempts:
         return {"schemaVersion": 1, "maxAttempts": scope["limit"],
                 "limitReached": len(scope["records"]) >= scope["limit"],
                 "attempts": json.loads(json.dumps(scope["records"]))}
+
+    def observe_response_model(self, handle, model):
+        """Attach a parsed backend identity, never a selected route or alias.
+
+        Completion and parsing are separate in the forwarding paths. A null
+        identity remains unknown, including while parsing has not yet finished.
+        The caller must supply only a complete, consistent response's identity.
+        """
+        if handle is None or not isinstance(model, str) or not 0 < len(model) <= 256:
+            return
+        probe_id, scope, row = handle
+        if self._scope(probe_id) is not scope or row not in scope["records"]:
+            return
+        if (row["status"] == "complete" and row["httpStatus"] is not None
+                and 200 <= row["httpStatus"] < 300 and row["responseModel"] is None):
+            row["responseModel"] = model

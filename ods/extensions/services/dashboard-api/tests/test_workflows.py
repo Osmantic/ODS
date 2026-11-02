@@ -76,6 +76,78 @@ def test_workflow_executions_authenticated(test_client):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("canonical_state", ["present", "missing", "denied"])
+def test_resolve_workflow_dir_keeps_denied_canonical_path(monkeypatch, tmp_path, canonical_state):
+    import config
+
+    canonical = tmp_path / "config" / "n8n"
+    monkeypatch.setattr(config, "INSTALL_DIR", str(tmp_path))
+    monkeypatch.delenv("WORKFLOW_DIR", raising=False)
+    original_exists = Path.exists
+
+    def exists(path):
+        if path == canonical:
+            if canonical_state == "denied":
+                raise PermissionError("private configuration directory")
+            return canonical_state == "present"
+        return original_exists(path)
+
+    monkeypatch.setattr(Path, "exists", exists)
+    expected = tmp_path / "workflows" if canonical_state == "missing" else canonical
+    assert config.resolve_workflow_dir() == expected
+
+
+def test_resolve_workflow_dir_preserves_explicit_override(monkeypatch, tmp_path):
+    import config
+
+    override = tmp_path / "custom-workflows"
+    monkeypatch.setenv("WORKFLOW_DIR", str(override))
+
+    def unexpected_probe(_path):
+        raise AssertionError("explicit workflow paths must not be probed at startup")
+
+    monkeypatch.setattr(Path, "exists", unexpected_probe)
+    assert config.resolve_workflow_dir() == override
+
+
+@pytest.mark.parametrize("failure", ["stat", "open"])
+@pytest.mark.parametrize("method,path", [
+    ("get", "/api/workflows"),
+    ("get", "/api/workflows/categories"),
+    ("post", "/api/workflows/example/enable"),
+    ("post", "/api/workflows/example/disable"),
+    ("delete", "/api/workflows/example"),
+    ("get", "/api/workflows/example/executions"),
+])
+def test_workflow_catalog_denied_is_unavailable(test_client, monkeypatch, tmp_path, failure, method, path):
+    import builtins
+    import routers.workflows as workflows
+
+    catalog = tmp_path / "private-catalog.json"
+    catalog.write_text('{"workflows": [], "categories": {}}')
+    monkeypatch.setattr(workflows, "WORKFLOW_CATALOG_FILE", catalog)
+    original_exists = Path.exists
+    original_open = builtins.open
+
+    def exists(candidate):
+        if candidate == catalog and failure == "stat":
+            raise PermissionError(str(catalog))
+        return original_exists(candidate)
+
+    def open_file(candidate, *args, **kwargs):
+        if candidate == catalog and failure == "open":
+            raise PermissionError(str(catalog))
+        return original_open(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "exists", exists)
+    monkeypatch.setattr(builtins, "open", open_file)
+    response = getattr(test_client, method)(path, headers=test_client.auth_headers)
+    assert response.status_code == 503
+    assert "unavailable" in response.json()["detail"]
+    assert str(catalog) not in response.text
+    assert "workflows" not in response.json()
+
+
 def test_load_workflow_catalog_missing_file(monkeypatch):
     """load_workflow_catalog returns DEFAULT_WORKFLOW_CATALOG when file does not exist."""
     import routers.workflows as wf_mod

@@ -67,13 +67,13 @@ for (const wrapped of [false, true]) {
       run.grep(i % 2 ? `cd Playground/elf-of-doom && grep -n "function drawEnemyEnt${i}" -A 12 chars.js`
         : `rg -n "hitSet${i}" Playground/elf-of-doom`);
     }
-    assert.ok(FREE_EMPTY_LOOKUPS_PER_RUN >= RUN_PROGRESS_LIMITS.totalFailures);
+    assert.ok(FREE_EMPTY_LOOKUPS_PER_RUN >= RUN_PROGRESS_LIMITS.recentFailures);
     assert.equal(run.exhausted(), false);
   });
 
   test(`${transport}: chained searches whose last search came up empty are answers too`, () => {
     const run = harness({wrapped});
-    for (let i = 0; i < RUN_PROGRESS_LIMITS.totalFailures; i++) {
+    for (let i = 0; i < RUN_PROGRESS_LIMITS.recentFailures; i++) {
       run.edit(i);
       run.grep(`cd Playground/elf-of-doom && sed -n '860,900p' ui.js; echo ===; grep -n "function showScreen${i}" -A 15 ui.js`,
         completed(1, '  updateHud();\n==='));

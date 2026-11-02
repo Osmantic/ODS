@@ -3,6 +3,18 @@
 . (Join-Path $PSScriptRoot 'wsl-portal-amd.ps1')
 . (Join-Path $PSScriptRoot 'wsl-portal-spark.ps1')
 
+function Get-ODSPortalWindowsBuild {
+    return [Environment]::OSVersion.Version.Build
+}
+
+function Assert-ODSPortalWindowsBuild {
+    # Match the supported installer minimum in enable-wsl-features.ps1.
+    $build = Get-ODSPortalWindowsBuild
+    if ($build -lt 19041) {
+        throw "This version of ODS requires Windows build 19041 or newer. This computer reports build $build. Update Windows, then run the installer again."
+    }
+}
+
 function Write-ODSPortalStage([int]$Step, [string]$Title, [string]$Detail) {
     Write-Host ''
     $style = @{}
@@ -307,6 +319,7 @@ function Install-ODSPortalDockerBeforeRestart([bool]$NonInteractive) {
 
 function Initialize-ODSPortalWindowsFoundation([System.Collections.IDictionary]$Options, [string]$InstallerRoot, [bool]$NonInteractive) {
     # Returns $null when WSL is ready, otherwise the exit code to stop with.
+    Assert-ODSPortalWindowsBuild
     $present = [bool](Get-Command wsl.exe -ErrorAction SilentlyContinue)
     $ready = $present -and ((Invoke-ODSPortalWsl -Arguments @('--status')).Code -eq 0)
     Assert-ODSPortalHostCapacity $ready

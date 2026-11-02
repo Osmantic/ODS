@@ -265,6 +265,8 @@ def _apply_host_native_llm_service_override(
 
     service["host"] = parsed.hostname
     service["port"] = port
+    # The in-stack container is off on this route; its sidebar link (OLLAMA_PORT, 11434) opened an error page.
+    service["external_link"] = False
     logger.info("Host-native llama-server detected; routing LLM probes to %s:%d", parsed.hostname, port)
 
 
@@ -318,6 +320,40 @@ def _apply_external_llm_service_override(
         port,
         service["health"],
     )
+
+
+VLLM_SERVICE_HOST = "vllm-server"
+VLLM_SERVICE_PORT = 8000
+VLLM_CONTAINER = "ods-vllm-server"
+
+
+def _apply_vllm_service_override(
+    services: dict[str, dict[str, Any]],
+    environment: Mapping[str, str] | None = None,
+) -> None:
+    """Route the LLM row's probes to the vLLM engine (LLM_BACKEND=vllm).
+
+    docker-compose.vllm.yml profiles the in-stack llama-server out and runs
+    vllm-server on the ODS network: /health answers 200 with an empty body once
+    the model is loaded, /v1/models lists the served id. As for a host-native
+    or external route, the row keeps the llama-server id that chat, readiness
+    and features key on; its container is ods-vllm-server, which the host
+    agent's Docker health snapshot reports (a cold start reads as starting),
+    and it publishes no host port to link to.
+    """
+    env = environment if environment is not None else os.environ
+    if str(env.get("LLM_BACKEND", "")).strip().lower() != "vllm":
+        return
+    service = services.get("llama-server")
+    if not service:
+        return
+    service["host"] = VLLM_SERVICE_HOST
+    service["port"] = VLLM_SERVICE_PORT
+    service["health"] = "/health"
+    service["container_name"] = VLLM_CONTAINER
+    service["name"] = "vLLM (LLM Inference)"
+    service["external_link"] = False
+    logger.info("vLLM engine selected; routing LLM probes to %s:%d", VLLM_SERVICE_HOST, VLLM_SERVICE_PORT)
 
 
 def _read_env_value(key: str) -> str:
@@ -675,6 +711,7 @@ if not NATIVE:
     # a native install already probes the llama-server it runs on loopback.
     _apply_host_native_llm_service_override(SERVICES, GPU_BACKEND)
 _apply_external_llm_service_override(SERVICES)
+_apply_vllm_service_override(SERVICES)
 
 # --- Features ---
 
@@ -691,7 +728,13 @@ def resolve_workflow_dir() -> Path:
     if env_dir:
         return Path(env_dir)
     canonical = Path(INSTALL_DIR) / "config" / "n8n"
-    if canonical.exists():
+    try:
+        if canonical.exists():
+            return canonical
+    except PermissionError:
+        # Optional host configuration may belong to a different UID. Keep
+        # the canonical path so the workflow endpoint can report unavailable
+        # access, rather than crashing startup or selecting an empty fallback.
         return canonical
     return Path(INSTALL_DIR) / "workflows"
 

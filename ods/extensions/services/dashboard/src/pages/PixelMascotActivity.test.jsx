@@ -46,3 +46,32 @@ it('drives both mascots from validated live task activity counters', async () =>
   expect(screen.getAllByTitle('Portal · idle').length).toBeGreaterThan(0)
   expect(screen.queryAllByTitle('Portal · working')).toHaveLength(0)
 })
+
+it('greets a delivered answer calmly even when its receipt recorded a failed run', async () => {
+  localStorage.clear()
+  let stream
+  const body = new globalThis.ReadableStream({start(controller) {stream = controller}})
+  vi.stubGlobal('fetch', vi.fn(async url => String(url).endsWith('/chat/stream')
+    ? {ok:true,headers:new Map([['content-type','text/event-stream']]),body}
+    : {ok:true,json:async () => ({available:true})}))
+  render(<Pixel/>)
+  await screen.findByText('Available')
+  fireEvent.change(screen.getByPlaceholderText('Message Portal...'),{target:{value:'Build the page'}})
+  fireEvent.click(screen.getByTitle('Send'))
+  const runId = 'chatcmpl_11111111-2222-4333-8444-555555555555'
+  const emit = frame => act(async () => {
+    stream.enqueue(new TextEncoder().encode('data: ' + JSON.stringify(frame) + '\n\n'))
+  })
+  await emit({choices:[{delta:{content:'The page is ready.'}}]})
+  // One command did not work along the way, and the receipt says the run failed.
+  await emit({id:runId,choices:[{delta:{},finish_reason:'stop'}],pixel_task:{
+    schemaVersion:1,runId,startedAt:'2026-09-12T02:00:00.000Z',finishedAt:'2026-09-12T02:00:03.000Z',state:'failed',
+    calls:2,failures:1,blocked:0,truncated:false,activities:[{kind:'run',calls:2,failures:1,blocked:0}],
+  }})
+  await act(async () => {
+    stream.enqueue(new TextEncoder().encode('data: [DONE]\n\n'))
+    stream.close()
+  })
+  expect(await screen.findByTitle('Portal · done')).toBeInTheDocument()
+  expect(screen.queryAllByTitle('Portal · blocked')).toHaveLength(0)
+})

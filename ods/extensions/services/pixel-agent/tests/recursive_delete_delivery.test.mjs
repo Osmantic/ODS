@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {
   createToolLoopGuard,
+  RECURSIVE_DELETE_BUILD_NEXT_STEP,
   RECURSIVE_DELETE_REQUIRES_OWNER_REASON,
   WORKSPACE_PREVIEW_UNVERIFIED_DELIVERY_PREFIX,
   WORKSPACE_PREVIEW_NOT_CREATED_DELIVERY_PREFIX,
@@ -135,6 +136,28 @@ test('no preview reports saved workspace files only when tracked, no URL', () =>
   assert.doesNotMatch(delivery.text, /site was created/i);
   assert.doesNotMatch(delivery.text, /Do not retry/);
   assert.doesNotMatch(delivery.text, /\bPixel\b/);
+});
+
+test('a build blocked after listing folders ends with a next step, not raw excerpts', () => {
+  // DGX Station: "Build me a tip calculator ... Make it a new project." listed the
+  // existing tip-splitter folders, then tried rm -rf on them. The reply showed the
+  // listing as a JSON block and no way forward.
+  const guard = createToolLoopGuard({abortRun: () => true});
+  const context = {agentId: 'pixel', runId: 'run-ls', sessionId: 'session-ls'};
+  guard.observeRun(context, 'pixel', {prompt: 'Build a tip calculator website where friends can split the bill. Make it a new project.'});
+  const params = {command: 'ls -d /workspace/Playground/tip-splitter*'};
+  const call = {...context, toolCallId: 'ls', toolName: 'exec'};
+  guard.beforeToolCall({toolName: 'exec', params}, call);
+  guard.afterToolCall({toolName: 'exec', params, result: {details: {status: 'completed', exitCode: 0,
+    aggregated: '/workspace/Playground/tip-splitter\n/workspace/Playground/tip-splitter-2'},
+    content: [{type: 'text', text: '/workspace/Playground/tip-splitter'}]}}, call);
+  denyRecursiveDelete(guard, context);
+  const delivery = guard.deliveryVerificationForRun('run-ls');
+  assert.equal(delivery.status, 'failed');
+  assert.match(delivery.text, /command did not run/i);
+  assert.doesNotMatch(delivery.text, /Earlier received results/);
+  assert.doesNotMatch(delivery.text, /```json/);
+  assert.ok(delivery.text.endsWith(RECURSIVE_DELETE_BUILD_NEXT_STEP), delivery.text);
 });
 
 test('no preview and no tracked files avoids claiming a site was created', () => {

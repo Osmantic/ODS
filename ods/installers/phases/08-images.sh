@@ -35,6 +35,22 @@ if [[ "${DRY_RUN:-false}" != true ]] && ods_native_llm_requested; then
     fi
     unset _host_native_compose_flags
 fi
+if [[ "${DRY_RUN:-false}" != true && "${LLM_BACKEND:-}" == "vllm" ]]; then
+    # Inherited profiles (COMPOSE_PROFILES=local-inference) could start the
+    # in-stack llama-server beside the vLLM engine on the same GPU. Phase 11
+    # rechecks before container launch.
+    [[ -n "${COMPOSE_FLAGS:-}" ]] || {
+        ai_bad "The vLLM engine's Compose selection is unavailable before image pulls."
+        exit 1
+    }
+    read -ra _vllm_compose_flags <<< "$COMPOSE_FLAGS"
+    if ! ods_vllm_assert_engine_stack_before_pixel_identity "${_vllm_compose_flags[@]}" \
+        2>>"$LOG_FILE"; then
+        ai_bad "The vLLM engine's Compose stack is not the expected one (details in $LOG_FILE); clear COMPOSE_PROFILES and rerun the installer."
+        exit 1
+    fi
+    unset _vllm_compose_flags
+fi
 if [[ "${ODS_GATEWAY_ONLY:-false}" == true && "${DRY_RUN:-false}" != true ]]; then
     # Compose merges profile lists from overlays. A caller's inherited
     # COMPOSE_PROFILES=local-inference can therefore re-enable a managed model
@@ -78,7 +94,12 @@ if [[ "${ODS_MODE:-local}" != "cloud" && -z "${EXTERNAL_LLM_URL:-}" ]] && ! ods_
     # In WSL the Linux capability probe can report CPU while Windows owns the
     # model, so selecting this image from GPU_BACKEND alone wastes time and
     # disk.
-    if [[ "$GPU_BACKEND" == "amd" ]]; then
+    if [[ "${LLM_BACKEND:-}" == "vllm" ]]; then
+        # The vLLM engine serves the model: no llama.cpp image (and no
+        # bootstrap GGUF) runs on this route. Phase 02 read the pin from
+        # config/dependency-lock.json.
+        PULL_LIST+=("${VLLM_IMAGE}|VLLM — downloading the vLLM engine (NVIDIA)")
+    elif [[ "$GPU_BACKEND" == "amd" ]]; then
         # The AMD overlays pin their images and ignore LLAMA_SERVER_IMAGE,
         # which a model profile can set to another backend's image.
         if [[ "${AMD_INFERENCE_BACKEND:-vulkan}" == "rocm" ]]; then
@@ -117,7 +138,15 @@ if [[ "$ENABLE_HERMES" == "true" ]]; then
     PULL_LIST+=("${HERMES_AGENT_IMAGE:-nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7}|HERMES — default agent (Nous Research)")
     PULL_LIST+=("caddy:2.11.3-alpine@sha256:86deaf5e3d3408a6ccec08fbb79989783dd26e206ae10bcf78a801dc8c9ab794|HERMES PROXY — magic-link auth gate (Caddy)")
 fi
-[[ "${ENABLE_EMBEDDINGS:-${ENABLE_RAG:-false}}" == "true" ]] && PULL_LIST+=("ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.1@sha256:b7772cdd9dcbced147b16a7dff17d4aed1ab36333f8d3e686c50d2175e1d2126|TEI — embedding engine")
+if [[ "${ENABLE_EMBEDDINGS:-${ENABLE_RAG:-false}}" == "true" ]]; then
+    # TEI's release tags are amd64 only; arm64 hosts run the pin in
+    # extensions/services/embeddings/compose.arm64.yaml.
+    if [[ "${HOST_ARCH:-$(uname -m)}" == "arm64" || "${HOST_ARCH:-$(uname -m)}" == "aarch64" ]]; then
+        PULL_LIST+=("ghcr.io/huggingface/text-embeddings-inference:cpu-arm64-sha-e80ef22@sha256:798cd7615e060a72ccbdf19aa0ada52289c6a0147490195bafaece6ce04d70f1|TEI — embedding engine")
+    else
+        PULL_LIST+=("ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.1@sha256:b7772cdd9dcbced147b16a7dff17d4aed1ab36333f8d3e686c50d2175e1d2126|TEI — embedding engine")
+    fi
+fi
 
 if command -v ods_compose_external_images >/dev/null 2>&1 && [[ -n "${COMPOSE_FLAGS:-}" ]]; then
     read -ra _phase08_compose_flags_arr <<< "$COMPOSE_FLAGS"

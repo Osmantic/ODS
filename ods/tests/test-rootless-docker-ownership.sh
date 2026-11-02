@@ -271,6 +271,64 @@ pass "a rootful APE refusal names the stop-and-retry remedy"
     || fail "rootless APE add-back did not keep its namespace repair, or another service was accepted: $(cat "$CALLS")"
 pass "rootless APE add-back keeps its namespace repair; other services are refused"
 
+# Workstation06 (2026-10-26): the install owner is UID 1001 and ComfyUI was
+# added from the Dashboard, so Phase 11 never prepared its UID 1000 folders.
+mkdir -p "$INSTALL_DIR/data/comfyui"/{models,output,input,user,cuda-cache}
+: > "$CALLS"
+(
+    source "$LIB"
+    ods_docker_rootless_state() { return 1; }
+    uname() { printf 'Linux\n'; }
+    id() { case "$1" in -u) printf '1001\n' ;; -g) printf '4242\n' ;; esac; }
+    stat() { printf '1001:4242\n'; }
+    _ods_rootless_ensure_helper_image() { :; }
+    _ods_rootless_resolve_target() { printf '%s/%s\n' "$1" "$2"; }
+    _ods_rootless_fix_directory() { printf 'fix %s|%s|%s|%s\n' "$2" "$3" "$4" "$5" >> "$CALLS"; }
+    docker() { printf 'docker %s\n' "$*" >> "$CALLS"; }
+    ods_prepare_comfyui_data_ownership "$INSTALL_DIR" nvidia
+) || fail "rootful ComfyUI add-back preparation failed: $(cat "$CALLS")"
+for path in models output input user cuda-cache; do
+    grep -qx "fix data/comfyui/$path|1000:4242|ods-comfyui|775" "$CALLS" \
+        || fail "rootful ComfyUI add-back did not prepare data/comfyui/$path for UID 1000: $(cat "$CALLS")"
+    grep -q "^docker run .* -v $INSTALL_DIR/data/comfyui/$path:/data .* chmod -R ug+rwX /data\$" "$CALLS" \
+        || fail "rootful ComfyUI add-back left data/comfyui/$path without the install group's write access: $(cat "$CALLS")"
+done
+pass "rootful ComfyUI add-back prepares its UID 1000 folders and keeps the owner group's write access"
+
+: > "$CALLS"
+(
+    source "$LIB"
+    ods_docker_rootless_state() { return 1; }
+    uname() { printf 'Linux\n'; }
+    _ods_rootless_ensure_helper_image() { printf 'helper\n' >> "$CALLS"; }
+    _ods_rootless_fix_directory() { printf 'fix %s\n' "$2" >> "$CALLS"; }
+    docker() { printf 'docker %s\n' "$*" >> "$CALLS"; }
+    # Already prepared for this owner's group.
+    id() { case "$1" in -u) printf '1001\n' ;; -g) printf '4242\n' ;; esac; }
+    stat() { printf '1000:4242\n'; }
+    ods_prepare_comfyui_data_ownership "$INSTALL_DIR" nvidia
+    # The AMD image keeps its own layout.
+    stat() { printf '1001:4242\n'; }
+    ods_prepare_comfyui_data_ownership "$INSTALL_DIR" amd
+    # An install owner that is UID 1000 already matches the container.
+    id() { case "$1" in -u) printf '1000\n' ;; -g) printf '1000\n' ;; esac; }
+    ods_prepare_comfyui_data_ownership "$INSTALL_DIR" nvidia
+) || fail "a ComfyUI add-back with nothing to prepare was refused"
+[[ ! -s "$CALLS" ]] || fail "a ComfyUI add-back with nothing to prepare ran Docker: $(cat "$CALLS")"
+pass "ComfyUI folders that match, the AMD image and a UID 1000 owner need no repair"
+
+: > "$CALLS"
+(
+    source "$LIB"
+    ods_docker_rootless_state() { return 0; }
+    uname() { printf 'Linux\n'; }
+    ods_fix_rootless_ownership() { printf '%s|%s|%s\n' "$1" "$2" "${GPU_BACKEND:-}" >> "$CALLS"; }
+    ods_prepare_comfyui_data_ownership "$INSTALL_DIR" nvidia
+)
+[[ "$(cat "$CALLS")" == "$INSTALL_DIR|comfyui|nvidia" ]] \
+    || fail "rootless ComfyUI add-back did not keep its namespace repair for the NVIDIA image: $(cat "$CALLS")"
+pass "rootless ComfyUI add-back keeps its namespace repair and passes the GPU backend"
+
 : > "$CALLS"
 (
     source "$LIB"

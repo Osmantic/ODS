@@ -2996,9 +2996,12 @@ def test_candidate_stop_witness_cleanup_is_exact_and_idempotent(tmp_path, monkey
     monkeypatch.setattr(custody, 'protected_directory', directory)
     real_stat = os.fstat
     def root_stat(fd):
+        # Keep every real field and fake only the owner: os.fstat is replaced
+        # process-wide, and on some macOS runner images Python itself reads
+        # st_size through it while this test runs.
         value = real_stat(fd)
-        return SimpleNamespace(st_mode=value.st_mode, st_nlink=value.st_nlink,
-                               st_uid=501 if fault == 'owner' else 0)
+        fields = {name: getattr(value, name) for name in dir(value) if name.startswith('st_')}
+        return SimpleNamespace(**{**fields, 'st_uid': 501 if fault == 'owner' else 0})
     monkeypatch.setattr(os, 'fstat', root_stat)
     monkeypatch.setattr(custody, '_require_no_acl', Mock(side_effect=
         custody.CustodyError('acl') if fault == 'acl' else None))

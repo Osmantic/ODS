@@ -36,8 +36,19 @@ it('maps waiting, actual work, errors and historical replies coherently', () => 
   expect(pixelReplyPose({status:'streaming'},true)).toBe('thinking')
   expect(pixelReplyPose({status:'streaming',task:{state:'running',calls:1}},true)).toBe('working')
   expect(pixelReplyPose({content:'Done'})).toBe('done')
-  expect(pixelReplyPose({content:'Error',task:{state:'failed'}})).toBe('blocked')
   expect(pixelReplyPose({status:'stopped'})).toBe('idle')
+})
+
+it('lets only a reply that really failed end early, never a delivered answer', () => {
+  // The run's receipt can record a failed attempt beside a delivered answer.
+  expect(pixelReplyPose({status:'done',content:'Here is the page.',task:{state:'failed',calls:3}})).toBe('done')
+  expect(pixelReplyPose({content:'Here is the page.',task:{state:'failed'}})).toBe('done')
+  expect(pixelReplyPose({status:'error',content:'Portal could not complete the response.',task:{state:'running',calls:2}})).toBe('blocked')
+  expect(pixelReplyPose({status:'error',content:'Request failed'})).toBe('blocked')
+  // A goal reply's outcome is its team's state, whatever the receipt says.
+  expect(pixelReplyPose({status:'done',content:'No result was produced.',goalMode:true,goalState:'failed',task:{state:'completed'}})).toBe('blocked')
+  expect(pixelReplyPose({status:'done',content:'Partial page',goalMode:true,goalState:'cancelled',task:{state:'failed'}})).toBe('idle')
+  expect(pixelReplyPose({status:'done',content:'Built and checked.',goalMode:true,goalState:'completed',task:{state:'failed'}})).toBe('done')
 })
 
 function loadRenderer(reduced = false) {

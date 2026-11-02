@@ -28,12 +28,13 @@ it.each(['completed','failed','runtime-restarted'])('automatic compaction read f
   render(<Pixel/>);await act(async()=>{})
   const field=screen.getByPlaceholderText('Message Portal...')
   expect(screen.getByText('Compacting conversation context…')).toBeVisible()
-  expect(field).toBeDisabled();expect(field).toHaveValue('Keep my next request')
+  // The draft stays editable while compacting; only sending waits.
+  expect(field).toBeEnabled();expect(screen.getByTitle('Send')).toBeDisabled();expect(field).toHaveValue('Keep my next request')
   expect(screen.getByRole('button',{name:ring(1200)})).toBeVisible()
   phase='503';await tick(2000)
   expect(screen.getByText('Waiting for compaction confirmation…')).toBeVisible()
   expect(screen.getByText('Checking context')).toBeVisible()
-  expect(field).toBeDisabled()
+  expect(screen.getByTitle('Send')).toBeDisabled()
   phase=terminal;await tick(5000)
   const expected=terminal==='completed'?'Context compacted. Your full conversation is preserved.':terminal==='failed'?'Context compaction failed. Your conversation is preserved. The runtime could not complete the operation.':'Runtime restarted before compaction could be confirmed. Your conversation is preserved; you can continue.'
   expect(screen.getByText(expected)).toBeVisible()

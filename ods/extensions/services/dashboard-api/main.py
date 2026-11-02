@@ -42,7 +42,7 @@ from config import (
     _detect_container_default_gateway, _running_inside_container,
     _read_env_from_file,
     get_env_file_read_error,
-    normalize_ods_mode, read_live_env_value,
+    normalize_ods_mode, read_live_env_value, LLM_BACKEND,
 )
 from models import (
     GPUInfo, ServiceStatus, DiskUsage, ModelInfo, BootstrapStatus,
@@ -333,12 +333,21 @@ def _build_readiness_payload(
 
     llama_healthy = _service_is_healthy(service_statuses, "llama-server")
     chat_ready = bool(llama_healthy and loaded_model and context_size)
+    # LLM_BACKEND=vllm: the row probes vllm-server (config.py). A cold start
+    # loads the model and compiles kernels for up to 15 minutes; a restart
+    # would only start that over, so none is suggested while it starts.
+    engine = "vllm-server" if LLM_BACKEND == "vllm" else "llama-server"
+    llm_row = _service_by_id(service_statuses, "llama-server")
+    engine_starting = engine == "vllm-server" and bool(llm_row and llm_row.startup_pending)
     if chat_ready:
         chat_detail = f"{loaded_model} loaded with {context_size} context"
     elif bootstrap_info.active:
         chat_detail = f"Full model is {_bootstrap_activity(bootstrap_info.phase)}; bootstrap mode may be limited"
+    elif engine_starting:
+        chat_detail = ("The vLLM engine is starting: a first start loads the model and compiles "
+                       "kernels, which can take 15 minutes")
     elif not llama_healthy:
-        chat_detail = "llama-server is not healthy"
+        chat_detail = f"{engine} is not healthy"
     elif not loaded_model:
         chat_detail = "No loaded model reported by the inference server"
     else:
@@ -350,19 +359,34 @@ def _build_readiness_payload(
         ready=chat_ready,
         status="ready" if chat_ready else "blocked",
         detail=chat_detail,
-        repair="ods restart llama-server" if not chat_ready and not bootstrap_info.active else None,
+        repair=(f"ods restart {engine}"
+                if not chat_ready and not bootstrap_info.active and not engine_starting else None),
     ))
 
-    webui_ready = _service_is_healthy(service_statuses, "open-webui")
-    checks.append(_readiness_check(
-        check_id="open-webui",
-        name="Open WebUI",
-        required=True,
-        ready=webui_ready,
-        status="ready" if webui_ready else "blocked",
-        detail="Open WebUI is reachable" if webui_ready else "Open WebUI is not healthy",
-        repair="ods restart open-webui" if not webui_ready else None,
-    ))
+    webui = _service_by_id(service_statuses, "open-webui")
+    if webui is not None and webui.status == "not_deployed":
+        # The install switched Open WebUI off (ENABLE_OPEN_WEBUI; Portal is
+        # the chat app on fresh Pixel installs): nothing waits for it, and
+        # restarting a service the install leaves out repairs nothing.
+        checks.append(_readiness_check(
+            check_id="open-webui",
+            name="Open WebUI",
+            required=False,
+            ready=False,
+            status="disabled",
+            detail="Open WebUI is switched off in this install",
+        ))
+    else:
+        webui_ready = _service_is_healthy(service_statuses, "open-webui")
+        checks.append(_readiness_check(
+            check_id="open-webui",
+            name="Open WebUI",
+            required=True,
+            ready=webui_ready,
+            status="ready" if webui_ready else "blocked",
+            detail="Open WebUI is reachable" if webui_ready else "Open WebUI is not healthy",
+            repair="ods restart open-webui" if not webui_ready else None,
+        ))
 
     checks.append(_readiness_check(
         check_id="dashboard-api",
@@ -1539,7 +1563,7 @@ async def api_status(api_key: str = Depends(verify_api_key)):
                           "throughputSampledAt": last_inference.get("throughput_sampled_at"),
                           "throughputModel": last_inference.get("throughput_model"),
                           "inferenceActive": None,
-                          "loadedModel": None, "contextSize": None},
+                          "loadedModel": None, "loadedModelDisplayName": None, "contextSize": None},
             "manifest_errors": _public_manifest_errors(),
             "runtime": runtime_summary(),
         }
@@ -1719,6 +1743,11 @@ async def _build_api_status() -> dict:
         }
 
     loaded_model_name = None if remote_runtime or cloud_mode else loaded_model or (model_data["name"] if model_data else None)
+    # The served id is a file name; the dashboard shows the Models page's name.
+    loaded_model_display_name = (
+        await asyncio.to_thread(models_router.loaded_model_display_name, loaded_model_name)
+        if loaded_model_name else None
+    )
     current_model_name = remote_runtime["model"] if remote_runtime else loaded_model_name
     configured_model_name = model_data["configuredModel"] if model_data else model_info.name if model_info else None
 
@@ -1744,6 +1773,7 @@ async def _build_api_status() -> dict:
             "throughputModel": llama_metrics_data.get("throughput_model"),
             "inferenceActive": llama_metrics_data.get("inference_active"),
             "loadedModel": loaded_model_name,
+            "loadedModelDisplayName": loaded_model_display_name,
             "contextSize": context_size or (model_data["contextLength"] if model_data else None),
         },
         "manifest_errors": _public_manifest_errors(),
@@ -1756,6 +1786,11 @@ async def _build_api_status() -> dict:
 
 
 # --- Settings ---
+
+# Sidebar names where the manifest name describes plumbing rather than the
+# application the link opens. Health matching keeps the manifest name.
+_SIDEBAR_LABELS = {"hermes-proxy": "Hermes"}
+
 
 @app.get("/api/external-links")
 async def get_external_links(api_key: str = Depends(verify_api_key)):
@@ -1774,7 +1809,7 @@ async def get_external_links(api_key: str = Depends(verify_api_key)):
         if NATIVE and sid == "llama-server":
             continue  # its own UI would ask the user for the API key
         links.append({
-            "id": sid, "label": cfg.get("name", sid), "port": ext_port,
+            "id": sid, "label": _SIDEBAR_LABELS.get(sid, cfg.get("name", sid)), "port": ext_port,
             "ui_path": cfg.get("ui_path", "/"),
             "public_url": cfg.get("public_url", ""),
             "icon": SIDEBAR_ICONS.get(sid, "ExternalLink"),

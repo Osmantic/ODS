@@ -544,3 +544,85 @@ class TestArchitectureEstimator:
         assert sliding_window_kv_bytes_per_cell(ARCH["qwen3.5-9b"]) == 0
         assert sliding_window_cells(ARCH["qwen3.5-9b"], 65536) == 0
         assert estimate_model_memory(ARCH["qwen3.5-9b"], context_length=65536).swa_kv_gib == 0
+
+
+# ---------------------------------------------------------------------------
+# vLLM entries ("runtime": "vllm"): weights = manifest total, device need =
+# weights / VLLM_GPU_MEMORY_UTILIZATION, no llama.cpp KV or checkpoint maths.
+# ---------------------------------------------------------------------------
+
+from model_memory import VLLM_GPU_MEMORY_UTILIZATION, memory_metadata  # noqa: E402
+
+VLLM_ENTRY = {
+    "id": "test-vllm", "runtime": "vllm", "context_length": 131072,
+    "files": [
+        {"path": "config.json", "size": 30 * 1024 ** 2, "git_blob_sha1": "0" * 40},
+        {"path": "model-00001-of-00002.safetensors", "size": 60 * 1024 ** 3, "sha256": "0" * 64},
+        {"path": "model-00002-of-00002.safetensors", "size": 30 * 1024 ** 3, "sha256": "0" * 64},
+    ],
+    "vllm_args": ["--max-model-len", "131072", "--kv-cache-dtype", "fp8"],
+    # llama.cpp metadata a vLLM entry would never carry; it must be ignored.
+    "block_count": 48, "attention_head_count_kv": 4, "attention_key_length": 128,
+    "attention_value_length": 128, "recurrent_state_bytes": 0, "vram_required_gb": 500,
+}
+
+
+class TestVllmEstimate:
+
+    def test_device_need_is_the_weights_over_the_utilisation_share(self):
+        estimate = estimate_model_memory(VLLM_ENTRY)
+        weights = 90 + 30 / 1024
+        assert VLLM_GPU_MEMORY_UTILIZATION == 0.90
+        assert estimate.method == "vllm"
+        assert estimate.weights_gib == round(weights, 3)
+        assert estimate.device_gib == estimate.total_gib == round(weights / 0.90, 2) == 100.03
+        assert (estimate.kv_gib, estimate.recurrent_state_gib, estimate.compute_overhead_gib,
+                estimate.host_checkpoint_gib, estimate.swa_kv_gib) == (0, 0, 0, 0, 0)
+        assert (estimate.cache_type_k, estimate.cache_type_v) == ("fp8", "fp8")
+        assert estimate.kv_bytes_per_token is None
+
+    def test_context_and_llama_cache_settings_do_not_change_it(self):
+        base = estimate_model_memory(VLLM_ENTRY).device_gib
+        for context in (8192, 65536, 262144):
+            assert estimate_model_memory(VLLM_ENTRY, context_length=context, cache_type_k="q4_0",
+                                         cache_type_v="q4_0", parallel=4, ctx_checkpoints=32).device_gib == base
+        assert estimated_context_kv_gb(VLLM_ENTRY, 262144) == 0.0
+        profile = {"env": {"LLAMA_ARG_CACHE_TYPE_K": "q8_0", "LLAMA_PARALLEL": "2"}}
+        assert required_model_memory_gb(VLLM_ENTRY, runtime_profile=profile) == base
+        assert required_model_memory_gb(VLLM_ENTRY, include_host_state=True) == base
+
+    def test_measured_weights_override_the_manifest(self):
+        assert estimate_model_memory(VLLM_ENTRY, weight_size_mb=92160).device_gib == 100.0
+
+    def test_an_entry_share_sets_the_device_need(self):
+        # The RTX PRO 6000-class entry takes half its GPU, so it needs a GPU twice its weights.
+        entry = {**VLLM_ENTRY, "gpu_memory_utilization": 0.5}
+        weights = 90 + 30 / 1024
+        assert estimate_model_memory(entry).device_gib == round(weights / 0.5, 2) == 180.06
+        assert estimate_model_memory(VLLM_ENTRY).device_gib == round(weights / 0.90, 2)
+
+    def test_kv_cache_dtype_defaults_to_auto(self):
+        entry = {**VLLM_ENTRY, "vllm_args": ["--max-model-len", "131072"]}
+        assert estimate_model_memory(entry).cache_type_k == "auto"
+        entry = {**VLLM_ENTRY, "vllm_args": ["--kv-cache-dtype=fp8_e4m3"]}
+        assert estimate_model_memory(entry).cache_type_v == "fp8_e4m3"
+
+    def test_normalized_records_keep_what_the_estimate_reads(self):
+        entry = {**VLLM_ENTRY, "gpu_memory_utilization": 0.5}
+        kept = memory_metadata(entry)
+        keys = ("runtime", "files", "vllm_args", "gpu_memory_utilization")
+        assert {key: kept[key] for key in keys} == {key: entry[key] for key in keys}
+        assert estimate_model_memory(kept).device_gib == estimate_model_memory(entry).device_gib == 180.06
+
+    def test_catalog_vllm_entries_get_a_sane_number_below_their_gpu_minimum(self):
+        entries = [raw for raw in _catalog_entries() if raw.get("runtime") == "vllm"]
+        assert len(entries) == 3
+        select_model = _load_select_model()
+        for raw in entries:
+            weights = sum(item["size"] for item in raw["files"]) / 1024 ** 3
+            estimate = estimate_model_memory(raw)
+            assert estimate.method == "vllm"
+            assert estimate.weights_gib == round(weights, 3)
+            assert estimate.device_gib == round(weights / raw.get("gpu_memory_utilization", 0.90), 2)
+            assert estimate.device_gib * 1024 < raw["min_gpu_mib"]
+            assert select_model.selector_required_memory_gb(raw) == estimate.device_gib

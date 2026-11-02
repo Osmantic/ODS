@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from security import verify_api_key
 
+from helpers import get_cached_services
 from gpu import (
     aggregate_gpu_details,
     decode_gpu_assignment,
@@ -282,6 +283,26 @@ async def gpu_detailed():
         return result
 
 
+def _drop_services_off_the_gpu(gpus: list[IndividualGPU]) -> None:
+    """Keep a GPU's assigned services only when they run on a GPU here.
+
+    The installer assigns a GPU to every GPU-capable service, enabled or not,
+    and Whisper on the CPU image keeps its assignment. Before the first status
+    poll the assignment is all there is.
+    """
+    statuses = get_cached_services()
+    if statuses is None:
+        return
+    deployed = {status.id for status in statuses if status.status != "not_deployed"}
+    whisper_on_cpu = _live_env_value("WHISPER_ACCELERATION").strip().lower() == "cpu"
+    for gpu in gpus:
+        # Assignment names use underscores (llama_server); service IDs use hyphens.
+        gpu.assigned_services = [
+            name for name in gpu.assigned_services
+            if name.replace("_", "-") in deployed and not (name == "whisper" and whisper_on_cpu)
+        ]
+
+
 async def _read_detailed_gpu_status() -> MultiGPUStatus:
     """Discover one complete GPU snapshot without publishing partial results."""
     gpu_backend = os.environ.get("GPU_BACKEND", "").lower() or "nvidia"
@@ -295,6 +316,8 @@ async def _read_detailed_gpu_status() -> MultiGPUStatus:
 
     assignment_full = decode_gpu_assignment()
     assignment_data = assignment_full.get("gpu_assignment") if assignment_full else None
+    if assignment_full:
+        _drop_services_off_the_gpu(gpus)
 
     return MultiGPUStatus(
         gpu_count=len(gpus),

@@ -35,6 +35,7 @@ const {
   validateConfig,
   dockerApps,
   dockerRuntime,
+  dockerVllmRuntime,
   dockerRouterRuntime,
   writeStatus,
   start,
@@ -1955,6 +1956,77 @@ test("runtime projection rejects paths, malformed contexts, and non-JSON output"
     };
     assert.equal(await dockerRuntime({ execFile: fakeDocker }), null);
   }
+});
+
+// LLM_BACKEND=vllm (docker-compose.vllm.yml): the command Compose builds
+// for ods-vllm-server, catalog VLLM_ARGS included.
+const VLLM_COMMAND = [
+  "--model", "/model", "--served-model-name", "GLM-5.3-Flash-NVFP4", "--host", "0.0.0.0",
+  "--port", "8000", "--gpu-memory-utilization", "0.90", "--max-model-len", "131072",
+  "--kv-cache-dtype", "fp8", "--speculative-config.method=mtp",
+];
+
+test("vLLM runtime projection reads the served name and context from ods-vllm-server", async () => {
+  const fakeDocker = (cmd, args, opts, callback) => {
+    assert.equal(cmd, "docker");
+    assert.deepEqual(args, ["inspect", "ods-vllm-server", "--format", "{{json .Config.Cmd}}"]);
+    assert.ok(opts.timeout > 0, "must have explicit timeout");
+    callback(null, JSON.stringify(VLLM_COMMAND), "");
+  };
+  assert.deepEqual(await dockerVllmRuntime({ execFile: fakeDocker }), {
+    model: "GLM-5.3-Flash-NVFP4",
+    context_length: 131072,
+  });
+  for (const command of [
+    VLLM_COMMAND.filter((item) => item !== "--max-model-len" && item !== "131072"),
+    VLLM_COMMAND.map((item) => (item === "131072" ? "2048" : item)),
+    VLLM_COMMAND.map((item) => (item === "GLM-5.3-Flash-NVFP4" ? "../secret" : item)),
+    ["--model", "/model", "--served-model-name=Joined-Name", "--max-model-len=65536"],
+    "not-json",
+  ]) {
+    const reply = (_cmd, _args, _opts, callback) => {
+      callback(null, command === "not-json" ? command : JSON.stringify(command), "");
+    };
+    const expected = Array.isArray(command) && command.includes("--max-model-len=65536")
+      ? { model: "Joined-Name", context_length: 65536 }
+      : null;
+    assert.deepEqual(await dockerVllmRuntime({ execFile: reply }), expected);
+  }
+});
+
+test("status on a vLLM install lists the engine and reads its runtime, not a stale llama-server", async () => {
+  const statusFile = path.join(DIR, "vllm-runtime-status.json");
+  const inspected = [];
+  const fakeDocker = (_cmd, args, _opts, callback) => {
+    if (args[0] === "ps") {
+      callback(null, [
+        JSON.stringify({ Names: "ods-vllm-server", Status: "Up 4 minutes (health: starting)" }),
+        // An earlier llama-server install left its container behind, stopped.
+        JSON.stringify({ Names: "ods-llama-server", State: "exited", Status: "Exited (0) 2 days ago" }),
+        "",
+      ].join("\n"), "");
+      return;
+    }
+    if (args[0] === "exec") {
+      callback(new Error("model-router state unavailable"));
+      return;
+    }
+    inspected.push(args[1]);
+    callback(null, JSON.stringify(args[1] === "ods-vllm-server" ? VLLM_COMMAND
+      : ["--model", "/models/Stale.gguf", "--ctx-size", "32768"]), "");
+  };
+  const projection = await writeStatus(true, 18999, statusFile, "2.6.0", {
+    fetch: async () => ({ status: 200, body: { cancel: async () => {} } }),
+    execFile: fakeDocker,
+    setTimeout,
+    clearTimeout,
+  });
+  assert.deepEqual(projection.apps, [
+    { name: "ods-llama-server", status: "stopped" },
+    { name: "ods-vllm-server", status: "starting" },
+  ]);
+  assert.deepEqual(projection.runtime, { model: "GLM-5.3-Flash-NVFP4", context_length: 131072 });
+  assert.deepEqual(inspected, ["ods-vllm-server"]);
 });
 
 test("router runtime projection returns the exact active stable-alias target", async () => {

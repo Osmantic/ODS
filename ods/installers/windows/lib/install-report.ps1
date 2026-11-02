@@ -150,13 +150,13 @@ function Write-ODSInstallReport {
     )
 
     $artifactsDir = Join-Path (Join-Path $InstallDir "artifacts") "windows-report"
-    New-Item -ItemType Directory -Path $artifactsDir -Force | Out-Null
+    [System.IO.Directory]::CreateDirectory($artifactsDir) | Out-Null
 
     $jsonPath = Join-Path $artifactsDir "report.json"
     $txtPath = Join-Path $artifactsDir "report.txt"
 
     $report = New-ODSInstallReport -InstallDir $InstallDir -ComposeFlags $ComposeFlags
-    ($report | ConvertTo-Json -Depth 8) | Set-Content -Path $jsonPath -Encoding UTF8
+    ($report | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $jsonPath -Encoding UTF8
 
     $lines = @()
     $lines += "ODS Windows Report"
@@ -200,7 +200,7 @@ function Write-ODSInstallReport {
     $lines += ""
     $lines += "Raw command snippets are available in report.json."
 
-    $lines | Set-Content -Path $txtPath -Encoding UTF8
+    $lines | Set-Content -LiteralPath $txtPath -Encoding UTF8
 
     Write-Host ""
     Write-Chapter "INSTALL REPORT"

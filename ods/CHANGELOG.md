@@ -307,6 +307,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a long line of spaces.
 
 ### Changed
+- Elf of Doom stays fast in big fights and long sessions, and leveling slows
+  down deep into the endless loop. Enemies and floor pickups are drawn from
+  pictures baked once instead of being redrawn shape by shape every frame, so
+  150 enemies on screen while you move and shoot hold about 120 fps instead of
+  dropping to 26. The hero's drawing saved the canvas state twice per frame and
+  restored it once, so every game got slower the longer it ran; it now
+  restores what it saves. Every level after level 25 costs 5,000 XP, after
+  level 50 10,000 and after level 75 15,000; levels 12 to 25 still cost 2,500.
+  Portal made the changes, running Qwen3.8-Flash-Next on local hardware; the
+  game files are exactly the ones https://odsspark.com/game/ serves. An install
+  that already has `Playground/elf-of-doom` keeps its own copy.
+- Elf of Doom keeps its HUD on screen when you continue past the quest panel.
+  The panel hid it and nothing showed it again, so every loop after the first
+  was played without the portrait, health bar, level, realm name or arrow
+  count. Every level after level 11 now costs a flat 2,500 XP instead of about
+  46% more than the one before, so boons keep coming in the later loops; the
+  first eleven levels cost what they did. The elf is now Shasan, with a
+  rougher, face-only portrait. Portal made the changes from the owner's
+  prompts, running Qwen3.8-Flash-Next on local hardware; the game files are
+  exactly the ones https://odsspark.com/game/ serves. An install that already
+  has `Playground/elf-of-doom` keeps its own copy.
+- Elf of Doom no longer ends after realm 6: the six realms loop for as long
+  as you survive, each circuit with 50% more enemies and 50% more boss
+  health, every boss on realm 6's reinforcement timer from the second circuit
+  on, and a victory panel that continues the run and turns bronze, silver,
+  then gold. The Swift Draw boon is replaced by Hunter's Blessing, which
+  doubles every arrow drop from then on (2x, 4x, 8x as it stacks), and the
+  elf is now Gabriel with a new portrait. Portal made the changes from the
+  owner's prompts, running Qwen3.8-Flash-Next on local hardware; the game
+  files are exactly the ones https://odsspark.com/game/ serves. An install
+  that already has `Playground/elf-of-doom` keeps its own copy.
 - Elf of Doom gives more arrows: slain enemies drop a 6-arrow quiver 20% of
   the time (was 18% for 3), and the timed supply drop gives 12 arrows every
   20 seconds (was 6), so boss-fight reinforcements no longer outrun the arrow

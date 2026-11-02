@@ -2,9 +2,13 @@
 """Behavioral tests for the durable Pixel model transition."""
 import contextlib
 import json
+import os
 import pathlib
+import select
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -21,6 +25,145 @@ from pixel_model_transition import execute, main  # noqa: E402
 HEX_A = "a" * 64
 HEX_B = "b" * 64
 HEX_C = "c" * 64
+
+
+@unittest.skipUnless(sys.platform == 'linux', 'Linux coordinator flock contract')
+class SourceLockWaitTests(unittest.TestCase):
+    @contextlib.contextmanager
+    def bridge(self):
+        # Only root ownership is modelled for unprivileged CI. Lock modes,
+        # links, file types and flock contention use the real filesystem.
+        with tempfile.TemporaryDirectory() as root:
+            state = pathlib.Path(root)
+            bridge = object.__new__(SystemdAccessBridge)
+            bridge.state = state
+            real_lstat, real_fstat = pathlib.Path.lstat, os.fstat
+
+            def root_stat(value):
+                fields = list(value)
+                fields[4] = 0
+                return os.stat_result(fields)
+
+            def lstat(path, *args, **kwargs):
+                value = real_lstat(path, *args, **kwargs)
+                return root_stat(value) if path == state else value
+
+            with patch.object(pathlib.Path, 'lstat', lstat), patch(
+                    'os.fstat', side_effect=lambda fd: root_stat(real_fstat(fd))):
+                yield bridge
+
+    @contextlib.contextmanager
+    def holder(self, state):
+        program = (
+            'import fcntl,os,sys\n'
+            'fd=os.open(sys.argv[1],os.O_CREAT|os.O_RDWR,0o600)\n'
+            'fcntl.flock(fd,fcntl.LOCK_EX)\n'
+            'print("held",flush=True)\n'
+            'sys.stdin.readline()\n'
+        )
+        with subprocess.Popen([sys.executable, '-c', program, str(state / 'lock')],
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True) as child:
+            try:
+                self.assertTrue(select.select([child.stdout], [], [], 5)[0])
+                self.assertEqual(child.stdout.readline(), 'held\n')
+                yield child
+            finally:
+                if child.poll() is None:
+                    child.stdin.write('\n')
+                    child.stdin.flush()
+                child.wait(timeout=5)
+
+    def test_source_begin_waits_for_real_competing_lock_before_inspection(self):
+        with self.bridge() as bridge, self.holder(bridge.state) as child:
+            real_sleep = time.sleep
+            def release(_delay):
+                child.stdin.write('\n')
+                child.stdin.flush()
+                with patch('pixel_access_bridge.time.sleep', real_sleep):
+                    child.wait(timeout=5)
+
+            with patch('pixel_access_bridge.time.sleep', side_effect=release) as sleep, patch.object(
+                    bridge, 'inspect', side_effect=AccessError('inspection-reached')) as inspect:
+                with self.assertRaisesRegex(AccessError, '^inspection-reached$'):
+                    bridge.model_begin(installer_source=True)
+                inspect.assert_called_once_with(allow_installing=True)
+                sleep.assert_called_once()
+            self.assertFalse((bridge.state / 'transition.json').exists())
+
+    def test_normal_model_begin_remains_immediate_under_contention(self):
+        with self.bridge() as bridge, self.holder(bridge.state), patch(
+                'pixel_access_bridge.time.sleep') as sleep, patch.object(bridge, 'inspect') as inspect:
+            with self.assertRaisesRegex(AccessError, '^transition-busy$'):
+                bridge.model_begin()
+            sleep.assert_not_called()
+            inspect.assert_not_called()
+            self.assertFalse((bridge.state / 'transition.json').exists())
+
+    def test_wait_is_bounded_by_own_and_outer_deadlines(self):
+        for outer, requested, expected in [(10, 0.5, 0.5), (0.4, 120, 0.4)]:
+            with self.subTest(outer=outer), self.bridge() as bridge:
+                clock = [0.0]
+                def advance(seconds):
+                    clock[0] += seconds
+                with patch('pixel_access_bridge.time.monotonic', side_effect=lambda: clock[0]), patch(
+                        'pixel_access_bridge.time.sleep', side_effect=advance), patch(
+                        'fcntl.flock', side_effect=BlockingIOError):
+                    with self.assertRaisesRegex(AccessError, '^transition-busy$'):
+                        with bridge.bounded(outer), bridge.locked(wait_seconds=requested):
+                            self.fail('contended lock entered its protected body')
+                self.assertAlmostEqual(clock[0], expected)
+                self.assertFalse((bridge.state / 'transition.json').exists())
+
+    def test_unsafe_lock_and_state_are_rejected_without_waiting(self):
+        for unsafe in ('lock-mode', 'lock-hardlink', 'state-mode'):
+            with self.subTest(unsafe=unsafe), self.bridge() as bridge:
+                lock = bridge.state / 'lock'
+                lock.touch(mode=0o600)
+                if unsafe == 'lock-mode':
+                    lock.chmod(0o644)
+                elif unsafe == 'lock-hardlink':
+                    os.link(lock, bridge.state / 'other')
+                else:
+                    bridge.state.chmod(0o755)
+                with patch('pixel_access_bridge.time.sleep') as sleep:
+                    with self.assertRaisesRegex(AccessError, '^unsafe-host-(lock|state)$'):
+                        with bridge.locked(wait_seconds=120):
+                            self.fail('unsafe custody was admitted')
+                    sleep.assert_not_called()
+
+    def test_protected_body_error_is_never_retried(self):
+        for error in (AccessError('transition-busy'), BlockingIOError('body')):
+            with self.subTest(error=type(error).__name__), self.bridge() as bridge:
+                count = 0
+                with patch('pixel_access_bridge.time.sleep') as sleep:
+                    with self.assertRaises(type(error)) as caught:
+                        with bridge.locked(wait_seconds=120):
+                            count += 1
+                            raise error
+                    self.assertIs(caught.exception, error)
+                    self.assertEqual(count, 1)
+                    sleep.assert_not_called()
+                with bridge.locked():
+                    pass  # The failed body's descriptor released the lock.
+
+    def test_existing_source_journal_still_uses_validated_resume(self):
+        with self.bridge() as bridge, patch.object(bridge, 'pending', return_value={'pending': True}), patch.object(
+                bridge, 'resume_source_begin', side_effect=AccessError('source-plan-mismatch')) as resume:
+            with self.assertRaisesRegex(AccessError, '^source-plan-mismatch$'):
+                bridge.model_begin(installer_source=True)
+            resume.assert_called_once_with()
+
+    def test_darwin_override_keeps_no_argument_lock_contract(self):
+        with self.bridge() as bridge, patch('pixel_access_bridge.platform.system', return_value='Darwin'):
+            original = bridge.locked
+            @contextlib.contextmanager
+            def no_argument_lock():
+                with original():
+                    yield
+            with patch.object(bridge, 'locked', no_argument_lock), patch.object(
+                    bridge, 'inspect', side_effect=AccessError('inspection-reached')):
+                with self.assertRaisesRegex(AccessError, '^inspection-reached$'):
+                    bridge.model_begin()
 
 
 class FakeBridge(SystemdAccessBridge):
@@ -47,7 +190,7 @@ class FakeBridge(SystemdAccessBridge):
         self.reason = None
 
     @contextlib.contextmanager
-    def locked(self):
+    def locked(self, *, wait_seconds=0):
         self.calls.append("lock")
         yield
 

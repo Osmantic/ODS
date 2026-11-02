@@ -19,6 +19,8 @@
 
 # shellcheck source=installers/lib/podman-registries.sh
 source "$SCRIPT_DIR/installers/lib/podman-registries.sh"
+# shellcheck source=installers/lib/containerd-console.sh
+source "$SCRIPT_DIR/installers/lib/containerd-console.sh"
 
 ods_progress 30 "docker" "Setting up Docker"
 show_phase 3 6 "Docker Setup" "~2 minutes"
@@ -672,3 +674,8 @@ fi
 if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true && "$DRY_RUN" != true ]]; then
     ods_pixel_check_owner_docker || return 1
 fi
+
+ods_prepare_containerd_console || {
+    error "Could not verify containerd image-unpack permissions; review the device-policy diagnostic above."
+    return 1
+}

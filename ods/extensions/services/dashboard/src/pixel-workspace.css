@@ -34,11 +34,11 @@ select option, select optgroup { background-color:rgb(var(--theme-card)); color:
 .pixel-brand button { color:#858991; padding:5px; border-radius:6px; }
 .ods-brand { position:relative; justify-content:center; padding:0 0 18px; }
 .ods-brand > button { position:absolute; right:0; top:0; }
-.ods-metal-logo { width:164px; height:104px; pointer-events:none; }
+.ods-metal-logo { width:184px; height:104px; pointer-events:none; }
 .ods-metal-logo img { width:100%; height:100%; object-fit:contain; }
 .pixel-sidebar.is-collapsed .ods-brand { padding:26px 0 14px; }
-.pixel-sidebar.is-collapsed .ods-metal-logo { width:40px; height:30px; }
-@media(max-width:639px) { .pixel-sidebar .ods-brand { padding:26px 0 14px; } .pixel-sidebar .ods-metal-logo { width:40px; height:30px; } }
+.pixel-sidebar.is-collapsed .ods-metal-logo { width:44px; height:30px; }
+@media(max-width:639px) { .pixel-sidebar .ods-brand { padding:26px 0 14px; } .pixel-sidebar .ods-metal-logo { width:44px; height:30px; } }
 .pixel-mark { display:grid; place-items:center; width:30px; height:30px; color:#dbdce0; background:#232426; border:1px solid #343638; border-radius:9px; }
 .pixel-mark svg { width:23px; height:23px; }
 .pixel-nav { flex:1; overflow:auto; min-height:0; }
@@ -496,6 +496,13 @@ select option, select optgroup { background-color:rgb(var(--theme-card)); color:
 .pixel-conversation-navigation { margin-top: 16px; }
 .pixel-conversation-navigation .pixel-nav-item { width: 100%; min-width: 0; text-align: left; }
 .pixel-conversation-navigation .pixel-nav-item span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* New task waits while Portal finishes a task; its reason sits right below it.
+   A click still reaches Portal, which repeats the reason beside the composer. */
+.pixel-nav-item.rail-new-task[aria-disabled=true],
+:root .pixel-sidebar .pixel-nav-item.rail-new-task[aria-disabled=true]:hover { cursor: not-allowed; opacity: .55; color: #a7aab0; background: transparent; }
+.pixel-conversation-navigation .rail-new-task-reason { margin: 0 0 6px; padding: 0 12px 0 39px; color: #8b9097; font-size: 11px; line-height: 1.45; }
+.pixel-sidebar.is-collapsed .rail-new-task-reason { display: none; }
+@media(max-width:639px) { .pixel-sidebar .rail-new-task-reason { display: none; } }
 .pixel-original-sections { padding:.6rem 0 .75rem; }
 .pixel-original-sections .rail-section,.pixel-original-sections .rail-project { margin:0; padding:0; border:0; border-radius:0; background:transparent; box-shadow:none; }
 .pixel-original-sections .rail-section + .rail-section { margin-top:22px; }

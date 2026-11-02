@@ -6,6 +6,7 @@ import uuid
 import pytest
 
 from test_router import router as router, _set_stream_upstream, _signed_marker
+from test_probe_attempts import arm
 
 
 def event(model, kind="response.completed"):
@@ -24,6 +25,7 @@ def test_rewrites_nested_response_identity_and_records_concrete_model(router, al
     mod, client, write_state, _ = router
     write_state()
     probe = str(uuid.uuid4())
+    assert arm(client, probe).status_code == 201
     raw = event("Concrete.gguf", "response.created") + event("Concrete.gguf")
     _set_stream_upstream(mod, [raw[:63], raw[63:117], raw[117:]])
     response = client.post("/v1/responses", json={
@@ -38,6 +40,9 @@ def test_rewrites_nested_response_identity_and_records_concrete_model(router, al
     })
     assert evidence.status_code == 200
     assert evidence.json()["responseModel"] == "Concrete.gguf"
+    row, = evidence.json()["upstreamAttempts"]["attempts"]
+    assert row["responseModel"] == "Concrete.gguf"
+    assert row["requestId"] == response.headers["X-ODS-Request-Id"]
     assert mod._inflight == 0
 
 

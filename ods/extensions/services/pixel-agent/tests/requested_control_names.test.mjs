@@ -20,6 +20,7 @@ import {extractRequestedControlNames, extractRequestedLiterals, requestedControl
   requestedControlNameInstruction, requestedControlNameRevisionInstruction, requestedTextDeliveryNote,
   REQUESTED_CONTROL_NAME_REVISION_INSTRUCTION, MAX_REQUESTED_CONTROL_NAMES} from '../plugin/requested-literals.mjs';
 import {PREVIEW_INSPECTION_TOOL, boundInspectionControls} from '../plugin/preview-interaction-assurance.mjs';
+import {PREVIEW_MISSING_NOTE} from '../plugin/preview-explanation.mjs';
 import {createWorkspacePreviewInspectTool, normalizeWorkspacePreviewInspectionParams, inspectionPlanHash}
   from '../plugin/workspace-preview-inspect.mjs';
 
@@ -307,7 +308,8 @@ function fixture(t, {inspectionAvailable = true} = {}) {
   };
   const finalize = answer => guard.beforeAgentFinalize({lastAssistantMessage: answer}, context);
   const delivered = () => guard.deliveryVerificationForRun(context.runId);
-  return {write, publish, inspect, finalize, delivered};
+  const recorded = () => guard.verificationForRun(context.runId);
+  return {write, publish, inspect, finalize, delivered, recorded};
 }
 
 async function round100(t) {
@@ -341,7 +343,10 @@ test('tower2 round 100: both inspections of the replaced-name snapshot carry the
     {action: 'finalize', reason: 'Owner-requested control names are still not met after the bounded revision.'});
   const outcome = f.delivered();
   assert.equal(outcome.status, 'failed');
-  assert.ok(outcome.text.startsWith(`${FAILURE_NOTE}\n\nBrowser inspection passed for the submitted show/hide checks only;`), outcome.text);
+  // The record names the control; the owner reads Portal's line about it.
+  assert.ok(f.recorded().text.startsWith(`${FAILURE_NOTE}\n\nBrowser inspection passed for the submitted show/hide checks only;`),
+    f.recorded().text);
+  assert.ok(outcome.text.startsWith(`${PREVIEW_MISSING_NOTE}\n\nYour preview is ready.`), outcome.text);
   assert.equal(outcome.preview.sha256, RECEIPT.sha256);
 });
 
@@ -358,7 +363,7 @@ test('tower2 round 100: removing the script override, republishing and inspectin
   assert.equal(f.finalize('Removed the aria-label override and republished.'), undefined);
   const outcome = f.delivered();
   assert.equal(outcome.status, 'passed', outcome.text);
-  assert.doesNotMatch(outcome.text, /has no button named/);
+  assert.doesNotMatch(f.recorded().text, /has no button named/);
   assert.equal(outcome.preview.sha256, republished.receipt.sha256);
 });
 

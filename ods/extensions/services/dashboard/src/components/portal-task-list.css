@@ -22,8 +22,6 @@
 .portal-task-list li[data-state=completed] .portal-task-list-icon { color:var(--portal-plan-complete,#65bda0); }
 .portal-task-list li[data-state=completed] .portal-task-list-label { text-decoration:line-through; text-decoration-color:rgb(var(--theme-text-muted) / .45); }
 .portal-task-list li[data-state=running] { color:rgb(var(--theme-text)); }
-.portal-task-list li[data-state=blocked] { color:rgb(var(--theme-text-secondary)); }
-.portal-task-list li[data-state=blocked] .portal-task-list-icon { color:var(--portal-plan-attention,#d4b078); }
 .portal-task-list-item-state { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
 .portal-task-list-empty { margin:6px 0 10px 25px; color:rgb(var(--theme-text-muted)); }
 .portal-task-list-footer { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-top:8px; }

@@ -11,10 +11,11 @@ config = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(config)
 
 
-@pytest.mark.parametrize('fault', [None, 'duplicate', 'wrong-root', 'error', 'missing'])
+@pytest.mark.parametrize('fault', [None, 'duplicate', 'wrong-root', 'error', 'missing', 'not-imported'])
 def test_relocated_probe_requires_unique_loaded_identity(tmp_path, monkeypatch, fault):
     path = str(tmp_path / 'bundle/plugins/0')
     item = {'id': 'pixel-ods', 'status': 'error' if fault == 'error' else 'loaded',
+            'imported': fault != 'not-imported',
             'rootDir': '/ambient/plugin' if fault == 'wrong-root' else path}
     loaded = [] if fault == 'missing' else [item]
     if fault == 'duplicate': loaded.append(dict(item, rootDir='/ambient/plugin', status='error'))
@@ -23,7 +24,7 @@ def test_relocated_probe_requires_unique_loaded_identity(tmp_path, monkeypatch, 
         calls.append(args[2:])
         assert kwargs['env']['OPENCLAW_SKIP_CHANNELS'] == '1'
         assert kwargs['env']['OPENCLAW_CONFIG_PATH'] == str(tmp_path / 'config.json')
-        return json.dumps({'plugins': loaded}) if args[2:4] == ['plugins', 'list'] else ''
+        return json.dumps([{'plugin': item} for item in loaded]) if args[2:4] == ['plugins', 'inspect'] else ''
     monkeypatch.setattr(config.bootstrap, 'command', command)
     def run():
         config.validate_candidate(tmp_path / 'config.json', node=tmp_path / 'node',
@@ -33,7 +34,7 @@ def test_relocated_probe_requires_unique_loaded_identity(tmp_path, monkeypatch, 
         with pytest.raises(ValueError, match='native-config-plugin-not-loaded'): run()
     else:
         run()
-    assert calls == [['config', 'validate'], ['plugins', 'list', '--json']]
+    assert calls == [['config', 'validate'], ['plugins', 'inspect', '--all', '--runtime', '--json']]
 
 
 @pytest.mark.parametrize('fault', [None, 'root', 'duplicate', 'missing', 'foreign',

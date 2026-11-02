@@ -62,6 +62,28 @@ test('owner-named items keep their names: one constant sentence, the same bytes 
   }
 });
 
+// Workstation06 round 8 (10-27): checking a stopwatch bug report, the model wrote
+// verify.html, auto-verify.html and direct-test.html into the project and
+// published them with the site; three test pages from earlier turns were still
+// there. Publication skips hidden entries (host/workspace_preview.py), so scratch
+// work belongs in a hidden folder in the project.
+test('verification guide keeps scratch work in a hidden project folder that never publishes', () => {
+  const guide = AGENT_SKILLS.verification;
+  assert.match(guide, /Put scratch files and test harnesses in a hidden project folder \(mktemp -d \.scratch-XXXXXX\)/);
+  assert.match(guide, /publication skips hidden entries, so they never ship/);
+  assert.match(guide, /Preserve them unless cleanup is authorized\. Never delete a fixed shared path\./);
+  assert.doesNotMatch(guide, /mktemp -d or tempfile\.mkdtemp in the project;/);
+});
+
+// A multi-page site ("home, menu and contact") needs its other pages checked:
+// the inspector's page opens one, and still never navigates or reloads.
+test('guides point to the inspector page field for other pages without promising navigation', () => {
+  assert.match(AGENT_SKILLS.workspace, /Verify nested routes too \(inspector page\)\./);
+  assert.match(AGENT_SKILLS.verification, /The inspector opens the entry page \(or page\) with no navigation\/reload; report cross-reload persistence unverified\./);
+  assert.match(AGENT_SKILLS.verification, /Simulated reloads and sibling pages are not persistence evidence\./);
+  assert.doesNotMatch(AGENT_SKILLS.verification, /starts at the entry page/);
+});
+
 // Elf of Doom on the RTX Spark: without a runtime the model could only read its
 // canvas game, so a save() leak and a per-hit freeze survived many turns.
 test('verification guide shows offline node checks for browser JavaScript, scoped to the sandbox', () => {

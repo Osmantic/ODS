@@ -24,14 +24,16 @@ service:
 features:
   - id: images
     name: Image Generation
-    description: Generate images with FLUX.1 via ComfyUI
+    description: Generate images with SDXL Lightning via ComfyUI
     icon: Image
     category: creative
     requirements:
       services: [comfyui]
-      vram_gb: 0
+      # SDXL Lightning at 1024x1024 used about 7 GB of GPU memory (RTX 5090,
+      # 2026-10-25), on top of whatever the chat model holds.
+      vram_gb: 8
     enabled_services_all: [comfyui]
-    setup_time: Ready
+    setup_time: Image build or download and a 6.9 GB model; see README
     priority: 5
     launch:
       type: service

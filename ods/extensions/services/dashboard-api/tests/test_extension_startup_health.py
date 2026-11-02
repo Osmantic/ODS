@@ -1,5 +1,6 @@
 """Follow real health reconciliation through the cache and Library endpoints."""
 import asyncio
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
 import pytest
@@ -93,6 +94,47 @@ def test_startup_requires_unambiguous_evidence_and_never_hides_failure(startup_f
     for row in read_library(test_client):
         assert row["status"] == expected
         assert row["runtime_starting"] is False
+
+
+@pytest.mark.parametrize("row", [
+    {"service_id": "n8n", "container_name": "ods-n8n", "state": "restarting", "health": "starting", "restart_count": 4},
+    {"service_id": "n8n", "container_name": "ods-n8n", "state": "running", "health": "starting", "restart_count": 3},
+])
+def test_a_crash_loop_is_unhealthy_not_installing(startup_fixture, test_client, monkeypatch, row):
+    """Workstation06 (2026-10-27): Qdrant and TEI crash-looped on ARM64 while
+    their cards said "installing" for as long as anyone watched."""
+    sample, _ = startup_fixture
+    status = sample("down", rows=[row])
+    assert (status.status, status.startup_pending, status.crash_looping) == ("unhealthy", False, True)
+    assert "crash_looping" not in status.model_dump()  # Internal provenance, like startup_pending.
+    for library_row in read_library(test_client):
+        assert library_row["status"] == "unhealthy"
+        assert library_row["runtime_starting"] is False
+    # A fresh start receipt does not hide it either.
+    now = datetime.now(timezone.utc).isoformat()
+    monkeypatch.setattr(extensions, "_read_progress", lambda _: {"status": "started", "updated_at": now})
+    for library_row in read_library(test_client):
+        assert library_row["status"] == "unhealthy"
+
+
+@pytest.mark.parametrize("row,looping", [
+    ({"state": "restarting", "restart_count": 1}, False),  # One crash can be a start-up race.
+    ({"state": "restarting", "restart_count": 3}, True),
+    ({"state": "running", "health": "starting", "restart_count": "3"}, False),
+    ({"state": "running", "health": "healthy", "restart_count": 9}, False),  # Recovered.
+    ({"state": "running", "health": "starting"}, False),  # An older host agent sends no count.
+])
+def test_crash_loop_needs_repeated_restarts(row, looping):
+    assert helpers.container_crash_looping(row) is looping
+
+
+def test_a_few_restarts_while_starting_are_still_a_start(startup_fixture, test_client):
+    sample, _ = startup_fixture
+    status = sample("down", rows=[{"service_id": "n8n", "container_name": "ods-n8n",
+                                   "state": "running", "health": "starting", "restart_count": 2}])
+    assert (status.startup_pending, status.crash_looping) == (True, False)
+    for row in read_library(test_client):
+        assert row["status"] == "installing"
 
 
 def test_disabled_selection_and_explicit_install_error_override_startup(startup_fixture, test_client, monkeypatch):

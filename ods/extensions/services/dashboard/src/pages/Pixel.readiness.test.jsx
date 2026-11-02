@@ -2,6 +2,7 @@ import {act, fireEvent, screen, within} from '@testing-library/react'
 import {render} from '../test/test-utils'
 import Pixel from './Pixel'
 import PixelAccessCard from '../components/settings/PixelAccessCard'
+import {VERIFY_HINT_DELAY_MS} from '../components/PortalRecovery'
 
 const json = data => ({ok:true, json:async()=>data})
 const failed = () => ({schemaVersion:1, state:'attention', routeAvailable:true,
@@ -79,6 +80,128 @@ it('refreshes already-open verified Permissions when Portal discovers recovery w
  expect(screen.getByPlaceholderText('Message Portal...')).toBeEnabled()
  expect(screen.getByPlaceholderText('Message Portal...')).toHaveValue('Keep the unsent recovery draft')
  expect(transport.mock.calls.some(([url])=>url==='/api/pixel/chat/stream')).toBe(false)
+})
+
+it('recovers a held chat from Portal itself with the same Verify Sandbox request',async()=>{
+ const sandbox={available:true,surface:'wsl-systemd',configured_mode:'sandboxed',effective_mode:'sandboxed',runtime_verified:true,revision:'a'.repeat(64),busy:false,pending:false,reason:null,scope:'owner-host'}
+ let held=true
+ const transport=vi.fn(async(url,options)=>{
+  if(url==='/api/pixel/status')return json(held?{available:false,state:'chat_recovery_required',recovery:'verify-sandbox',
+   detail:'Portal stopped during an earlier turn, so new messages are held until its permissions are checked again.'}:{available:true})
+  if(url==='/api/pixel/access-mode'){
+   if(options?.method==='POST'){held=false;return json(sandbox)}
+   return json({...sandbox,reason:'chat-recovery-required'})
+  }
+  if(url==='/api/pixel/chat/context')return json({schemaVersion:1,status:'missing',sessionRevision:null,
+   context:null,model:null,compaction:{status:'idle',count:0},history:{revision:null,acknowledgedMessages:0}})
+  return json({})
+ })
+ vi.stubGlobal('fetch',transport);vi.useFakeTimers()
+ render(<Pixel/>);await act(async()=>{})
+ fireEvent.change(screen.getByPlaceholderText('Messages are held until Portal recovery'),{target:{value:'Keep this draft'}})
+ expect(screen.getByText('Recovery required')).toBeVisible()
+ const recovery=within(screen.getByRole('region',{name:'Portal recovery'}))
+ expect(recovery.getByRole('alert')).toHaveTextContent('new messages are held')
+ expect(screen.queryByRole('link',{name:'Portal permissions'})).toBeNull()
+ // Recovery waits for the owner; polling alone never sends it.
+ await act(async()=>{await vi.advanceTimersByTimeAsync(9000)})
+ expect(transport.mock.calls.some(([url,options])=>options?.method==='POST'&&url!=='/api/pixel/chat/context')).toBe(false)
+ fireEvent.click(recovery.getByRole('button',{name:'Verify now'}));await act(async()=>{})
+ const posts=transport.mock.calls.filter(([url,options])=>url==='/api/pixel/access-mode'&&options?.method==='POST')
+ expect(posts.map(([,options])=>JSON.parse(options.body))).toEqual([{mode:'sandboxed',revision:'a'.repeat(64),confirmed:false}])
+ await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
+ expect(screen.queryByRole('region',{name:'Portal recovery'})).toBeNull()
+ expect(screen.getByPlaceholderText('Message Portal...')).toHaveValue('Keep this draft')
+ expect(screen.getByPlaceholderText('Message Portal...')).toBeEnabled()
+ expect(transport.mock.calls.some(([url])=>url==='/api/pixel/chat/stream')).toBe(false)
+})
+
+it('offers Verify now for a stale Sandbox proof instead of a settings link',async()=>{
+ const unverified={...failed(),state:'unverified',accessState:'unverified',reasonCode:'access-proof-unverified'}
+ let status={available:true,readiness:unverified,recovery:'verify-sandbox'}
+ transport(()=>status)
+ vi.useFakeTimers()
+ render(<Pixel/>);await act(async()=>{})
+ // The host usually re-checks it within seconds, so the notice waits rather
+ // than flashing after every reply (laptop, 2026-10-31).
+ expect(screen.queryByRole('region',{name:'Portal recovery'})).toBeNull()
+ await act(async()=>{await vi.advanceTimersByTimeAsync(VERIFY_HINT_DELAY_MS)})
+ const recovery=within(screen.getByRole('region',{name:'Portal recovery'}))
+ expect(recovery.getByRole('status')).toHaveTextContent('ODS usually re-checks it on its own; if this message stays, you can check it now.')
+ expect(recovery.getByRole('button',{name:'Verify now'})).toBeEnabled()
+ expect(screen.queryByLabelText('Runtime readiness')).toBeNull()
+ // Chat stays usable meanwhile; the notice is not a hold.
+ expect(screen.getByPlaceholderText('Message Portal...')).toBeEnabled()
+ // The host monitor re-proves it on its own; the notice then goes away.
+ status={available:true,readiness:{...unverified,accessState:'verified',effectiveMode:'sandboxed',reasonCode:'release-binding-unavailable'}}
+ await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
+ expect(screen.queryByRole('region',{name:'Portal recovery'})).toBeNull()
+ expect(fetch.mock.calls.some(([url])=>url==='/api/pixel/access-mode')).toBe(false)
+})
+
+it('ends a refused Verify at the next status poll once a reply has withdrawn the hint',async()=>{
+ const stale={available:true,surface:'wsl-systemd',configured_mode:'sandboxed',effective_mode:'unknown',runtime_verified:false,
+  revision:'a'.repeat(64),busy:true,pending:false,reason:'runtime-proof-required',scope:'owner-host'}
+ let hint=true,answer
+ const read=new Promise(done=>{answer=done})
+ const transport=vi.fn(async url=>{
+  if(url==='/api/pixel/status')return json({available:true,...(hint?{recovery:'verify-sandbox'}:{})})
+  if(url==='/api/pixel/access-mode')return read
+  if(url==='/api/pixel/chat/context')return json({schemaVersion:1,status:'missing',sessionRevision:null,
+   context:null,model:null,compaction:{status:'idle',count:0},history:{revision:null,acknowledgedMessages:0}})
+  return json({})
+ })
+ vi.stubGlobal('fetch',transport);vi.useFakeTimers()
+ render(<Pixel/>);await act(async()=>{})
+ await act(async()=>{await vi.advanceTimersByTimeAsync(VERIFY_HINT_DELAY_MS)})
+ fireEvent.click(within(screen.getByRole('region',{name:'Portal recovery'})).getByRole('button',{name:'Verify now'}))
+ await act(async()=>{})
+ // A reply starts while the check is in flight, so the status stops naming it.
+ hint=false
+ await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
+ await act(async()=>{answer(json(stale))})
+ expect(within(screen.getByRole('region',{name:'Portal recovery'})).getByRole('alert'))
+  .toHaveTextContent('Portal is still finishing earlier work')
+ // The next poll changes nothing else, and still ends it.
+ await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
+ expect(screen.queryByRole('region',{name:'Portal recovery'})).toBeNull()
+ expect(transport.mock.calls.some(([url,options])=>url==='/api/pixel/access-mode'&&options?.method==='POST')).toBe(false)
+})
+
+it('keeps the changed-files alert up while a stale Sandbox hint comes and goes with each reply',async()=>{
+ // Two separate problems: an out-of-date sandbox check and changed runtime files.
+ const mismatch=()=>({...failed(),accessState:'unverified',releaseState:'mismatch',
+  reasonCode:'runtime-files-changed',observedAt:new Date().toISOString()})
+ let recovery='verify-sandbox'
+ transport(()=>({available:true,readiness:mismatch(),...(recovery?{recovery}:{})}))
+ vi.useFakeTimers()
+ render(<Pixel/>);await act(async()=>{})
+ const alert=()=>screen.getByRole('alert',{name:'Runtime readiness'})
+ const notice=()=>screen.queryByRole('region',{name:'Portal recovery'})
+ expect(alert()).toHaveTextContent('Runtime files changed')
+ await act(async()=>{await vi.advanceTimersByTimeAsync(VERIFY_HINT_DELAY_MS)})
+ expect(notice()).not.toBeNull()
+ expect(alert()).toHaveTextContent('Runtime files changed')
+ // A reply runs, so the hint goes; the alert stays. Before, the two swapped.
+ recovery=null
+ await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
+ expect(notice()).toBeNull()
+ expect(alert()).toHaveTextContent('Runtime files changed')
+ // Idle again: the alert is unchanged, and the hint waits its time again.
+ recovery='verify-sandbox'
+ await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
+ expect(alert()).toHaveTextContent('Runtime files changed')
+ expect(notice()).toBeNull()
+})
+
+it('lets Restore Sandbox stand in for the alert about the same unfinished change',async()=>{
+ const transitioning={...failed(),accessState:'transitioning',reasonCode:'access-transition-pending'}
+ transport(()=>({available:true,readiness:transitioning,recovery:'restore-sandbox'}))
+ render(<Pixel/>)
+ const recovery=within(await screen.findByRole('region',{name:'Portal recovery'}))
+ expect(recovery.getByRole('button',{name:'Restore Sandbox'})).toBeEnabled()
+ expect(screen.queryByLabelText('Runtime readiness')).toBeNull()
+ expect(screen.getByText('Needs attention')).toBeVisible()
 })
 
 it('retains only a diagnostic cloud label during an available access transition and recovers on polling',async()=>{

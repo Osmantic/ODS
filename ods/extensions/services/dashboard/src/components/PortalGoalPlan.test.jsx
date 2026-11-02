@@ -60,11 +60,46 @@ it('distinguishes waiting and blocked plans and invents no initial steps',()=>{
   const {rerender}=render(<PortalGoalPlan task={{...planned,goal:{...planned.goal,status:'waiting'}}} active/>)
   expect(screen.getByText('Build the page').closest('li')).toHaveAttribute('data-state','waiting')
   rerender(<PortalGoalPlan task={{...planned,goal:{...planned.goal,status:'blocked',steps:[{id:'build',title:'Build the page',status:'blocked'}]}}}/>)
-  expect(screen.getByText('Needs attention')).toBeVisible()
-  expect(screen.getByText('Build the page').closest('li')).toHaveAttribute('data-state','blocked')
+  expect(screen.getByText('Paused')).toBeVisible()
+  expect(screen.getByText('Build the page').closest('li')).toHaveAttribute('data-state','paused')
   rerender(<PortalGoalPlan task={{...planned,goal:{...planned.goal,steps:[]}}} active/>)
   expect(screen.getByRole('status')).toHaveTextContent('Planning')
   expect(screen.queryAllByRole('listitem')).toHaveLength(0)
+})
+
+it('pauses a step the agent reports as blocked while the run keeps working',()=>{
+  const goal={summary:'Improve the project',status:'active',steps:[steps[0],{id:'build',title:'Build the page',status:'blocked'},steps[2]]}
+  const {container,rerender}=render(<PortalGoalPlan task={{...planned,goal}} active onResume={vi.fn()}/>)
+  const row=()=>screen.getByText('Build the page').closest('li')
+  expect(row()).toHaveAttribute('data-state','paused')
+  expect(row()).toHaveTextContent('Status: Paused')
+  expect(row().querySelector('.lucide-circle-pause')).not.toBeNull()
+  // A goal the agent reports blocked is still being worked on until its run ends.
+  rerender(<PortalGoalPlan task={{...planned,goal:{...goal,status:'blocked'}}} active onResume={vi.fn()}/>)
+  expect(row()).toHaveAttribute('data-state','paused')
+  expect(screen.queryByText(/Needs attention|Waiting for you|Blocked/)).toBeNull()
+  expect(screen.queryByRole('button',{name:'Continue goal'})).toBeNull()
+  expect(container.querySelector('.lucide-circle-alert')).toBeNull()
+})
+
+it('asks for the owner only where the goal waits, next to the action that continues it',()=>{
+  const resume=vi.fn()
+  const blocked={...planned,goal:{summary:'Needs an API key to fetch the forecast',status:'blocked',steps:[steps[0],{id:'build',title:'Build the page',status:'blocked'}]}}
+  const {rerender}=render(<PortalGoalPlan task={blocked} onResume={resume}/>)
+  expect(screen.getByText('Waiting for you')).toBeVisible()
+  expect(screen.getByText('Build the page').closest('li')).toHaveAttribute('data-state','paused')
+  fireEvent.click(screen.getByRole('button',{name:'Continue goal'}))
+  expect(resume).toHaveBeenCalledOnce()
+  // Portal holding the goal for an answer or approval is a real wait as well.
+  rerender(<PortalGoalPlan task={{...planned,goal:{...planned.goal,status:'waiting'}}} onResume={resume}/>)
+  expect(screen.getByText('Waiting for you',{selector:'.portal-task-list-state'})).toBeVisible()
+  expect(screen.getByText('Build the page').closest('li')).toHaveAttribute('data-state','waiting')
+  expect(screen.getByRole('button',{name:'Continue goal'})).toBeEnabled()
+  // With no action on this card (an earlier reply, a subagent) a stopped goal reads as paused.
+  rerender(<PortalGoalPlan task={blocked}/>)
+  expect(screen.getByText('Paused')).toBeVisible()
+  expect(screen.queryByText('Waiting for you')).toBeNull()
+  expect(screen.queryByRole('button',{name:'Continue goal'})).toBeNull()
 })
 
 it('uses only successful public steps without inventing a resumable goal',()=>{

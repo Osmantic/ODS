@@ -72,8 +72,34 @@ _OPS_STATUSES = frozenset(
 )
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _MODEL_SWITCH_DETAIL = "Model switch in progress; Portal will be ready when activation completes"
+_MODEL_UNLOADED_DETAIL = "The model is unloaded, so Portal is paused. Choose Resume model to load it again."
+_MODEL_RECOVERY_DETAIL = ("A model switch stopped before it finished, so new messages are held. "
+                          "Choose Recover model switch to finish or undo it.")
+_RUNTIME_STOPPED_DETAIL = "The local model runtime is not running, so Portal is paused. Choose Resume model to start it."
+# The Windows runtime ownership proof starts host processes and takes seconds.
+# Bound it inside the Portal page's 15 s status deadline, and let one answer
+# serve its 3 s polls while an unattended hold lasts.
+_RUNTIME_PROOF_SECONDS = 10.0
+_RUNTIME_PROOF_TTL_SECONDS = 30.0
+# An unavailable runtime is found only after the edge and telemetry reads, so
+# its optional Resume hint gets less of that deadline.
+_RUNTIME_HINT_SECONDS = 6.0
 _MODEL_HOLD_DETAIL = "A model transition is holding new messages. Check model update progress. If it has stopped, restore Sandbox in Portal permissions."
-_CHAT_RECOVERY_DETAIL = "Portal stopped during an earlier turn and new messages are held. Open Portal permissions and use Verify Sandbox or Restore Sandbox before continuing."
+_CHAT_RECOVERY_DETAIL = ("Portal stopped during an earlier turn, so new messages are held "
+                         "until its permissions are checked again.")
+# Host lifecycle operations that never own or change the Portal model
+# transaction. They take the lifecycle only to serialize with model work (the
+# access monitor's reproof runs every 30 s), so a hold they overlap is still
+# unattended. Mirrors _MODEL_RUNTIME_NEUTRAL_OPERATIONS in ods-host-agent.py.
+_MODEL_NEUTRAL_OPERATIONS = frozenset({
+    "pixel_startup_reproof", "pixel_access_mode", "pixel_open_app",
+    "pixel_providers", "pixel_settings", "model_profile_recheck",
+})
+# The one-click fix Portal offers for a held state ("recovery" in status).
+# Each names an existing API: the Sandbox actions POST /api/pixel/access-mode
+# with {"mode": "sandboxed"} exactly as Portal permissions does; resume-model
+# is Models' Resume model; recover-model is Models' Recover model switch.
+_STATE_RECOVERY = {"model_unloaded": "resume-model", "model_recovery_required": "recover-model"}
 _MODEL_CAPABILITY_DETAIL = (
     "The active model is recorded as not agent-qualified. Tool-driven tasks "
     "may be unreliable; chat and experiments remain available."
@@ -222,6 +248,9 @@ _result_store: ChatResultStore | None = None
 _result_tasks: dict[tuple[str, str, str], asyncio.Task] = {}
 _result_preflights: set[tuple[str, str, str]] = set()
 _result_stops: set[tuple[str, str]] = set()
+# Chats whose last turn an activity check is settling right now. Kept apart
+# from Stop's fence, so neither can remove the other's.
+_result_settles: set[tuple[str, str]] = set()
 _result_abort_ack: set[tuple[str, str, str]] = set()
 
 
@@ -340,7 +369,7 @@ async def pixel_chat_result(body: ChatResultRequest, owner: str = Depends(verify
         # the request identity while its exact cancellation is still pending.
         return {"state": "active", "events": ""}
     if row["state"] == "unresolved":
-        activity = await pixel_chat_activity(ChatCancelRequest(chat_id=body.chat_id))
+        activity = await pixel_chat_activity(ChatCancelRequest(chat_id=body.chat_id), owner)
         if activity["state"] == "terminal":
             store.finish(key, "interrupted")
             row = store.get(key)
@@ -381,6 +410,35 @@ def _access_projection(value):
         return status.model_dump()
     except (ValueError, TypeError):
         raise HTTPException(status_code=502, detail="Portal access status could not be verified") from None
+
+
+def _access_recovery(access, *, model_hold_possible=True) -> str | None:
+    """The Portal permissions action that recovers this access state, if any.
+
+    Both actions send {"mode": "sandboxed", "confirmed": false}, exactly like
+    Verify Sandbox and Restore Sandbox; the host re-checks the revision and
+    refuses a busy runtime first. Nothing here can select Full Access, and an
+    unverified Full Access is left to the host's own same-mode reproof.
+    """
+    if not access or not access["available"]:
+        return None
+    reason, mode = access["reason"], access["configured_mode"]
+    if reason == "chat-recovery-required":
+        # Settings offers only this while a chat is held: Enable Full Access waits.
+        return {"sandboxed": "verify-sandbox", "full-access": "restore-sandbox"}.get(mode)
+    # The host's own re-proof and Verify Sandbox both refuse a busy runtime
+    # rather than wait for it, so offer Verify only while Portal is idle.
+    if not access["pending"] and not access["busy"] and reason == "runtime-proof-required" and mode == "sandboxed":
+        return "verify-sandbox"
+    # An unfinished access change resumes only by restoring Sandbox. A held
+    # model transaction reads the same way but has its own recovery.
+    if access["pending"] and reason == "transition-recovery-required" and not model_hold_possible:
+        return "restore-sandbox"
+    return None
+
+
+def _recovery_field(action: str | None) -> dict[str, str]:
+    return {"recovery": action} if action else {}
 
 
 @router.get("/access-mode", dependencies=[Depends(verify_api_key)])
@@ -443,7 +501,29 @@ async def _local_inference_issue(host_status: object) -> str | None:
     return "The local model runtime is unavailable. Restore it in Models before sending another task."
 
 
-def _model_readiness_issue_from_status(status: object) -> tuple[str, str] | None:
+def _unattended_model_hold(status: object) -> bool:
+    """A held Portal model transaction that no host lifecycle operation owns.
+
+    A model switch owns the host's model_activation lifecycle until it ends,
+    so a hold without any operation will not finish by itself. Access checks
+    and settings saves also take the lifecycle, but never own a hold.
+    """
+    if not isinstance(status, dict) or status.get("modelTransactionPending") is not True:
+        return False
+    operation = status.get("activeOperation")
+    return (not status.get("lifecycleActive") and not operation) or operation in _MODEL_NEUTRAL_OPERATIONS
+
+
+def _model_readiness_issue_from_status(status: object, *, runtime_stopped: bool = False,
+                                       unload_ruled_out: bool = False) -> tuple[str, str] | None:
+    # Unload model keeps the Portal hold until Resume model. An unattended
+    # hold on a runtime the host proves stopped is that, not a switch.
+    if runtime_stopped and _unattended_model_hold(status):
+        return "model_unloaded", _MODEL_UNLOADED_DETAIL
+    # The host proves it is not an unload either: an interrupted switch that
+    # nothing will finish by itself. Recover model switch completes or undoes it.
+    if unload_ruled_out and _unattended_model_hold(status):
+        return "model_recovery_required", _MODEL_RECOVERY_DETAIL
     if isinstance(status, dict) and status.get("modelTransactionPending") is True:
         return "model_switching", _MODEL_SWITCH_DETAIL
     switching = (
@@ -500,7 +580,7 @@ def _model_support_from_status(status: object) -> dict[str, str] | None:
 
 
 async def _model_readiness_issue() -> tuple[str, str] | None:
-    """Return a host-proven model transition, if one is under way.
+    """Return a host-proven model transition or unload hold, if one holds Portal.
 
     A failed host lifecycle probe alone does not take down the Pixel edge.
     llama-server serves the one model it was started with, and the router
@@ -547,8 +627,62 @@ async def _verified_external_host_runtime(host_status: object) -> dict[str, obje
     return _active_runtime_projection({"activeRuntime": runtime})
 
 
+_runtime_proof: tuple[float, bool | None] | None = None
+
+
+def _runtime_unloaded(value: object) -> bool | None:
+    """Whether a host runtime projection proves the model is unloaded.
+
+    True: the owned runtime is stopped, exactly the proof for which the Models
+    page offers Resume model. False: the host runs the model it owns, or owns
+    no runtime it could have unloaded. Anything else is unknown (None).
+    """
+    if not isinstance(value, dict):
+        return None
+    fields = tuple(value.get(key) for key in ("managed", "canUnload", "running", "canActivate"))
+    if any(type(field) is not bool for field in fields):
+        return None
+    return {(True, True, False, False): True, (True, True, True, True): False,
+            (False, False, False, False): False}.get(fields)
+
+
+async def _owned_runtime_unloaded(seconds: float | None = None) -> bool | None:
+    """The host's _runtime_unloaded proof for the Windows runtime it owns.
+
+    A stopped runtime under a switch that did not reach its held phase is not
+    an unload. A failed, slow or invalid proof is unknown. It is remembered
+    too, so a slow host is not asked again on every poll.
+    """
+    global _runtime_proof
+    if _runtime_proof is not None and time.monotonic() - _runtime_proof[0] < _RUNTIME_PROOF_TTL_SECONDS:
+        return _runtime_proof[1]
+    seconds = _RUNTIME_PROOF_SECONDS if seconds is None else seconds
+    try:
+        async with async_timeout(seconds):
+            unloaded = _runtime_unloaded(await request_agent_json(
+                "GET", "/v1/model/management", timeout=seconds))
+            if unloaded is True:
+                # Resume model restarts only an unload's held transaction. The
+                # host refuses it for a switch that stopped part-way and asks
+                # for recovery first, so that hold is not an unload.
+                try:
+                    journal = await request_agent_json("GET", "/v1/model/recovery", timeout=seconds)
+                except AgentClientError:
+                    journal = None
+                if isinstance(journal, dict) and journal.get("pending") is True and journal.get("phase") != "held":
+                    unloaded = False
+    except (asyncio.TimeoutError, AgentClientError):
+        unloaded = None
+    _runtime_proof = (time.monotonic(), unloaded)
+    return unloaded
+
+
 async def _model_readiness_issue_for_status(status: object) -> tuple[str, str] | None:
-    return _model_readiness_issue_from_status(status)
+    # Only an unattended hold needs the runtime proof; a switch in progress
+    # owns a host lifecycle operation.
+    unloaded = await _owned_runtime_unloaded() if _unattended_model_hold(status) else None
+    return _model_readiness_issue_from_status(status, runtime_stopped=unloaded is True,
+                                              unload_ruled_out=unloaded is False)
 
 
 async def _model_activation_in_progress() -> bool:
@@ -597,16 +731,37 @@ async def _current_runtime_identity(edge_url, key):
     return unknown_runtime_identity()
 
 
+# The gateway can answer its model list late while it works through a large
+# step. On the RTX Spark (2026-10-25) a status poll waited about 10 s while a
+# 27 KB page was being written, its edge call failed, and the composer flashed
+# "Portal is unavailable" mid-build. Within this grace a transient edge failure
+# repeats the last available answer; definitive states (unloaded, switching,
+# recovery, a missing model) answer at once and clear it.
+_STATUS_GRACE_SECONDS = 20.0
+_last_available_status: tuple[float, dict[str, object]] | None = None
+
+
 @router.get("/status", dependencies=[Depends(verify_api_key)])
 async def pixel_status(http_response: Response = None) -> dict[str, object]:
     """Return a fixed, nonsecret Pixel availability projection."""
+    global _last_available_status
     # The browser-facing response is newly constructed, so upstream no-store
     # headers do not survive automatically. Never cache a live identity check.
     if http_response is not None:
         http_response.headers["Cache-Control"] = "no-store"
+    result, transient = await _status_projection()
+    remembered = _last_available_status
+    if transient and remembered is not None and time.monotonic() - remembered[0] <= _STATUS_GRACE_SECONDS:
+        return dict(remembered[1])
+    _last_available_status = (time.monotonic(), dict(result)) if result.get("available") is True else None
+    return result
+
+
+async def _status_projection() -> tuple[dict[str, object], bool]:
+    """The status answer, and whether it is only a transient edge failure."""
     config = _pixel_config()
     if config is None:
-        return {"available": False, "model": None, "detail": "Portal is not enabled"}
+        return {"available": False, "model": None, "detail": "Portal is not enabled"}, False
     host_status, (access, access_issue) = await asyncio.gather(
         _host_model_status(), _current_access_readiness())
     activation = model_activation_status(host_status)
@@ -616,10 +771,10 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
     # probing the backend that the coordinator may currently be restarting.
     if access and access["available"] and access["pending"] and access["reason"] == "model-transition-pending":
         return {**activation_metadata, "available": False, "model": None, "state": "model_transition_pending",
-                "detail": _MODEL_HOLD_DETAIL}
+                "detail": _MODEL_HOLD_DETAIL}, False
     if access and access["available"] and access["reason"] == "chat-recovery-required":
         return {**activation_metadata, "available": False, "model": None, "state": "chat_recovery_required",
-                "detail": _CHAT_RECOVERY_DETAIL}
+                "detail": _CHAT_RECOVERY_DETAIL, **_recovery_field(_access_recovery(access))}, False
     readiness_issue = await _model_readiness_issue_for_status(host_status)
     if readiness_issue is not None:
         state, detail = readiness_issue
@@ -629,7 +784,8 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
             "model": None,
             "state": state,
             "detail": detail,
-        }
+            **_recovery_field(_STATE_RECOVERY.get(state)),
+        }, False
     edge_url, key = config
     try:
         timeout = httpx.Timeout(connect=5.0, read=5.0, write=5.0, pool=5.0)
@@ -641,9 +797,9 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
             timeout=timeout,
         ) as response:
             if response.status_code != 200:
-                return {**activation_metadata, "available": False, "model": None, "detail": "Portal service is unavailable"}
+                return {**activation_metadata, "available": False, "model": None, "detail": "Portal service is unavailable"}, True
             if not response.headers.get("content-type", "").lower().startswith("application/json"):
-                return {**activation_metadata, "available": False, "model": None, "detail": "Portal service returned an invalid response"}
+                return {**activation_metadata, "available": False, "model": None, "detail": "Portal service returned an invalid response"}, True
             raw = await _bounded_response_bytes(response, _MAX_STATUS_BYTES)
         payload = json.loads(raw)
         models = payload.get("data") if isinstance(payload, dict) else None
@@ -658,7 +814,14 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
         if available:
             inference_issue = await _local_inference_issue(host_status)
             if inference_issue:
-                return {**activation_metadata, "available": False, "model": None, "state": "model_unavailable", "detail": inference_issue}
+                # A stopped runtime the host owns gets Models' Resume model.
+                stopped = await _owned_runtime_unloaded(_RUNTIME_HINT_SECONDS) is True
+                # A health probe that misses its 3 s while the runtime generates
+                # a large step (RTX Spark, 2026-10-25) is not proof it stopped:
+                # only a runtime the host proves stopped answers at once.
+                return {**activation_metadata, "available": False, "model": None, "state": "model_unavailable",
+                        "detail": _RUNTIME_STOPPED_DETAIL if stopped else inference_issue,
+                        **_recovery_field("resume-model" if stopped else None)}, not stopped
         runtime = _active_runtime_projection(host_status)
         if available and runtime is None:
             runtime = await _verified_external_host_runtime(host_status)
@@ -678,6 +841,10 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
         readiness = project_readiness(available, access, identity, access_issue)
         result["readiness"] = readiness
         if available:
+            # Only a host that reports no open model transaction lets a held
+            # access transition be offered Restore Sandbox.
+            settled = isinstance(host_status, dict) and host_status.get("modelTransactionPending") is False
+            result.update(_recovery_field(_access_recovery(access, model_hold_possible=not settled)))
             result["detail"] = "Owner agent available; " + ("runtime files changed since initialization" if identity["state"] == "mismatch"
                                                          else "release identity is not fully verified")
             if readiness["accessState"] == "failed":
@@ -686,14 +853,14 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
                 result["detail"] = ("Owner agent available; model transition needs recovery; release readiness is unverified"
                                     if readiness["reasonCode"] == "model-transition-recovery-required" else
                                     "Owner agent available; access transition is unfinished; release readiness is unverified")
-        return result
+        return result, False
     except (httpx.HTTPError, asyncio.TimeoutError) as exc:
         # Exception text and request objects can contain upstream credentials.
         # Retain the failure phase/type without logging those sensitive values.
         logger.warning("Pixel edge status request failed (%s)", type(exc).__name__)
-        return {**activation_metadata, "available": False, "model": None, "detail": "Portal service is unavailable"}
+        return {**activation_metadata, "available": False, "model": None, "detail": "Portal service is unavailable"}, True
     except (json.JSONDecodeError, UnicodeDecodeError, ValueError, TypeError):
-        return {**activation_metadata, "available": False, "model": None, "detail": "Portal service returned an invalid response"}
+        return {**activation_metadata, "available": False, "model": None, "detail": "Portal service returned an invalid response"}, True
 
 
 @router.get("/ops/{job_id}", dependencies=[Depends(verify_api_key)])
@@ -839,34 +1006,129 @@ async def pixel_chat_cancel(body: ChatCancelRequest, owner: str = Depends(verify
         finally:
             _result_abort_ack.discard(identity)
             _result_stops.discard(identity[:2])
-    if isinstance(owner, str) and _result_store is not None and _result_store.has_pending((owner_namespace(owner), body.chat_id)):
-        return {"aborted": False}
+    if isinstance(owner, str):
+        conversation = (owner_namespace(owner), body.chat_id)
+        # A restarted API process has not opened the store yet, but receipts
+        # its predecessor left unfinished still hold this chat.
+        pending = _chat_results().pending_attempts(conversation)
+        if pending:
+            # A chat-level request ("Continue in this chat") never stops a turn
+            # this process is still streaming; that turn's own Stop names it.
+            # An attempt no producer owns any more is resolved by its exact ID.
+            if _owns_live_work(conversation):
+                return {"aborted": False}
+            return await pixel_chat_cancel(ChatCancelRequest(chat_id=body.chat_id, request_id=pending[0][2]), owner)
     return {"aborted": await _cancel_edge_run(edge_url, key, body.chat_id)}
 
 
-@router.post("/chat/activity", dependencies=[Depends(verify_api_key)])
-async def pixel_chat_activity(body: ChatCancelRequest) -> dict[str, str]:
-    """One authenticated chat lookup; global activity never supplies its state."""
-    config = _pixel_config()
-    if config is None:
-        return {"state": "unknown"}
-    edge_url, key = config
+def _owns_live_work(conversation) -> bool:
+    """True while this process streams, prepares or stops a turn of this chat."""
+    return (conversation in _result_stops
+            or any(identity[:2] == conversation for identity in _result_preflights)
+            or any(identity[:2] == conversation and not task.done() for identity, task in _result_tasks.items()))
+
+
+async def _edge_chat_activity(edge_url: str, key: str, chat_id: str) -> str | None:
+    """The edge's exact view of one chat, or None when it could not be read."""
     try:
         timeout = httpx.Timeout(connect=2.0, read=5.0, write=2.0, pool=2.0)
         async with httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=False) as client:
             async with client.stream("POST", f"{edge_url}/v1/chat/activity",
-                                     json={"user": body.chat_id},
+                                     json={"user": chat_id},
                                      headers=_edge_headers(key, accept="application/json")) as response:
                 if response.status_code != 200 or not response.headers.get("content-type", "").lower().startswith("application/json"):
-                    return {"state": "unknown"}
+                    return None
                 raw = await _bounded_response_bytes(response, 1024)
         parsed = json.loads(raw)
         if (isinstance(parsed, dict) and set(parsed) == {"state"}
                 and isinstance(parsed["state"], str) and parsed["state"] in {"active", "terminal", "unknown"}):
-            return {"state": parsed["state"]}
+            return parsed["state"]
     except (httpx.HTTPError, asyncio.TimeoutError, ValueError, TypeError):
         pass
-    return {"state": "unknown"}
+    return None
+
+
+async def _settle_edge_chat(edge_url: str, key: str, chat_id: str) -> str | None:
+    """Ask the ingress, through the edge, to settle a chat it proves idle.
+
+    "settled" means no run of this chat can still be alive and any turn a
+    restart cut off is recorded as interrupted; "active" means work may still
+    run. Nothing is ever stopped. None means it could not be confirmed, for
+    example while Portal is still restarting or on an older edge or ingress.
+    """
+    try:
+        timeout = httpx.Timeout(connect=2.0, read=10.0, write=2.0, pool=2.0)
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=False) as client:
+            async with client.stream("POST", f"{edge_url}/v1/chat/settle",
+                                     json={"user": chat_id},
+                                     headers=_edge_headers(key, accept="application/json")) as response:
+                if response.status_code != 200 or not response.headers.get("content-type", "").lower().startswith("application/json"):
+                    return None
+                raw = await _bounded_response_bytes(response, 1024)
+        parsed = json.loads(raw)
+        if (isinstance(parsed, dict) and set(parsed) == {"state"}
+                and isinstance(parsed["state"], str) and parsed["state"] in {"settled", "active"}):
+            return parsed["state"]
+    except (httpx.HTTPError, asyncio.TimeoutError, ValueError, TypeError):
+        pass
+    return None
+
+
+@router.post("/chat/activity")
+async def pixel_chat_activity(body: ChatCancelRequest, owner: str = Depends(verify_api_key)) -> dict[str, str]:
+    """One authenticated chat lookup; global activity never supplies its state.
+
+    A turn this process still streams is active. Otherwise, when no stream of
+    this chat passes through the edge, the host ingress is asked to settle the
+    chat: under its history lock it proves the native session idle before it
+    records a turn that a restart cut off as interrupted, and it never stops a
+    run. Only that proof turns the chat terminal here, and it also releases
+    receipts no producer owns any more, so the chat can take its next message.
+    """
+    config = _pixel_config()
+    if config is None:
+        return {"state": "unknown"}
+    edge_url, key = config
+    conversation = (owner_namespace(owner), body.chat_id) if isinstance(owner, str) else None
+    if conversation is not None and _owns_live_work(conversation):
+        return {"state": "active"}
+    state = await _edge_chat_activity(edge_url, key, body.chat_id)
+    if state is None:
+        return {"state": "unknown"}
+    if state == "active" or conversation is None:
+        return {"state": state}
+    # A Stop, a turn or another check may have started here during that read.
+    # It owns the chat now; settling beside it could race its outcome.
+    if _owns_live_work(conversation) or conversation in _result_settles:
+        return {"state": "active"}
+    # Fence this process's own next attempt so it cannot race the history
+    # lock. A Stop keeps its own fence; only this check removes this one.
+    _result_settles.add(conversation)
+    try:
+        settled = await _settle_edge_chat(edge_url, key, body.chat_id)
+        if settled == "settled" and _owns_live_work(conversation):
+            # A Stop that started meanwhile settles its own receipt.
+            settled = "active"
+        if settled == "settled":
+            store = _chat_results()
+            for identity in store.pending_attempts(conversation):
+                row = _result_state(store, identity)
+                if row is not None and row["state"] == "unresolved":
+                    # No producer owns this receipt and the ingress proved the
+                    # chat idle. Keep every saved chunk; never call it complete.
+                    store.finish(identity, "interrupted")
+    finally:
+        _result_settles.discard(conversation)
+    if settled == "settled":
+        return {"state": "terminal"}
+    if settled == "active":
+        return {"state": "active"}
+    # An older edge or ingress cannot settle. Its own memory that the chat
+    # ended does not free a chat that a receipt still holds: the next message
+    # would only be refused.
+    if state == "terminal" and _chat_results().pending_attempts(conversation):
+        return {"state": "unknown"}
+    return {"state": state}
 
 
 _EXAMPLE_PROJECT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -978,6 +1240,222 @@ async def pixel_example_project_open(body: ExampleProjectOpenRequest) -> dict[st
         raise HTTPException(status_code=503, detail="Portal could not publish the example project's preview.") from exc
 
 
+_RESTORE_PROJECT = re.compile(r"Playground/([A-Za-z0-9][A-Za-z0-9._-]{0,63})")
+_RESERVED_PROJECT = re.compile(r"(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?", re.IGNORECASE)
+_RESTORE_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+_RESTORE_RUN = re.compile(rf"chatcmpl_{_RESTORE_UUID}", re.IGNORECASE)
+_RESTORE_SNAPSHOT = re.compile(rf"(?:chatcmpl|restore)_{_RESTORE_UUID}", re.IGNORECASE)
+_RESTORE_UNDO = re.compile(rf"restore_{_RESTORE_UUID}")
+_RESTORE_TOKEN = re.compile(r"[a-f0-9]{64}")
+_RESTORE_KEYS = ("schemaVersion", "status", "project", "snapshot", "written", "removed", "left", "leftCount", "failed",
+                 "failedCount", "failure", "late", "undo", "confirm")
+_RESTORE_CONFIRM_KEYS = ("token", "overwrite", "overwriteCount", "remove", "removeCount")
+_RESTORE_FAILURES = ("permission", "in-use", "changed", "other")
+_PROJECT_RESTORE_SECONDS = 42.0
+# The host's refusals by status. Nothing changed in any of them; the UI words
+# each code for the owner. Any other answer leaves the outcome unknown.
+_RESTORE_REFUSALS = {
+    409: {"project-restore-busy": "Portal is still working on a reply or a command it started, in this chat or another. "
+                                  "Nothing was changed; put the files back once it finishes."},
+    404: {"project-snapshot-unavailable": "ODS no longer keeps a copy of this project from before that turn, so nothing was changed.",
+          "project-snapshot-pruned": "ODS no longer keeps that copy of this project, so nothing was changed."},
+    422: {"project-snapshot-damaged": "The copy ODS kept of this project is damaged, so nothing was changed.",
+          "project-folder-unusable": "The project is not a folder ODS can use, so nothing was changed."},
+    503: {"project-copies-unusable": "ODS cannot use the folder where it keeps project copies, so nothing was changed.",
+          "project-restore-unsupported": "This ODS install cannot put project files back, so nothing was changed."},
+}
+_RESTORE_UNKNOWN = {"code": "project-restore-unavailable",
+                    "message": "Portal could not confirm whether the project's files were put back."}
+
+
+def _restore_refusal(status: int, code: str) -> HTTPException:
+    return HTTPException(status_code=status, detail={"code": code, "message": _RESTORE_REFUSALS[status][code]})
+
+
+class ProjectRestoreRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    chat_id: str
+    project: str = Field(max_length=75)
+    snapshot: str = Field(max_length=45)
+    # The owner's yes to overwriting or removing what changed since the turn:
+    # the token of the answer that named those files.
+    confirm: str | None = Field(default=None, max_length=64)
+
+    @field_validator("chat_id")
+    @classmethod
+    def _chat_id(cls, value: str) -> str:
+        if not _SAFE_CHAT_ID.fullmatch(value):
+            raise ValueError("invalid chat_id")
+        return value
+
+    @field_validator("project")
+    @classmethod
+    def _project(cls, value: str) -> str:
+        # Exactly one Playground project folder: never a nested, absolute,
+        # traversing or reserved path.
+        match = _RESTORE_PROJECT.fullmatch(value)
+        if match is None or match.group(1).endswith(".") or _RESERVED_PROJECT.fullmatch(match.group(1)):
+            raise ValueError("invalid project")
+        return value
+
+    @field_validator("snapshot")
+    @classmethod
+    def _snapshot(cls, value: str) -> str:
+        if not _RESTORE_SNAPSHOT.fullmatch(value):
+            raise ValueError("invalid snapshot")
+        return value
+
+    @field_validator("confirm")
+    @classmethod
+    def _confirm(cls, value: str | None) -> str | None:
+        if value is not None and not _RESTORE_TOKEN.fullmatch(value):
+            raise ValueError("invalid confirm")
+        return value
+
+
+class ProjectRestoreOptionsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    runs: list[str] = Field(max_length=64)
+
+    @field_validator("runs")
+    @classmethod
+    def _runs(cls, value: list[str]) -> list[str]:
+        if not all(_RESTORE_RUN.fullmatch(run) for run in value):
+            raise ValueError("invalid runs")
+        return value
+
+
+def _restore_count(item) -> bool:
+    return type(item) is int and 0 <= item <= 65536
+
+
+def _restore_listed(items, total) -> bool:
+    return (isinstance(items, list) and len(items) <= 8 and len(items) <= total
+            and all(isinstance(item, str) and 1 <= len(item) <= 512 and not _CONTROL.search(item) for item in items))
+
+
+def _project_restore_receipt(value, body: ProjectRestoreRequest) -> dict[str, object]:
+    confirm = value.get("confirm") if isinstance(value, dict) else None
+    if (not isinstance(value, dict) or set(value) != set(_RESTORE_KEYS)
+            or type(value["schemaVersion"]) is not int or value["schemaVersion"] != 2
+            or value["status"] not in ("restored", "unchanged", "confirm")
+            or value["project"] != body.project or value["snapshot"] != body.snapshot
+            or not all(_restore_count(value[key]) for key in ("written", "removed", "leftCount", "failedCount"))
+            or not _restore_listed(value["left"], value["leftCount"])
+            or not _restore_listed(value["failed"], value["failedCount"])
+            or not (value["failure"] is None or value["failure"] in _RESTORE_FAILURES)
+            or type(value["late"]) is not bool
+            or not (isinstance(value["undo"], str) and _RESTORE_UNDO.fullmatch(value["undo"]) is not None
+                    if value["status"] == "restored" else value["undo"] is None)
+            or not (isinstance(confirm, dict) and set(confirm) == set(_RESTORE_CONFIRM_KEYS)
+                    and isinstance(confirm["token"], str) and _RESTORE_TOKEN.fullmatch(confirm["token"]) is not None
+                    and _restore_count(confirm["overwriteCount"]) and _restore_count(confirm["removeCount"])
+                    and _restore_listed(confirm["overwrite"], confirm["overwriteCount"])
+                    and _restore_listed(confirm["remove"], confirm["removeCount"])
+                    if value["status"] == "confirm" else confirm is None)):
+        raise ValueError("invalid project restore receipt")
+    return {key: value[key] for key in _RESTORE_KEYS}
+
+
+def _project_restore_options(value, runs: list[str]) -> dict[str, object]:
+    entries = value.get("projects") if isinstance(value, dict) else None
+    if (not isinstance(value, dict) or set(value) != {"schemaVersion", "projects"}
+            or type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1
+            or not isinstance(entries, list) or len(entries) > 32
+            or not all(isinstance(entry, dict) and set(entry) == {"project", "snapshot", "late", "restore"}
+                       and isinstance(entry["project"], str) and _RESTORE_PROJECT.fullmatch(entry["project"])
+                       and entry["snapshot"] in runs and type(entry["late"]) is bool
+                       and (entry["restore"] is None
+                            or isinstance(entry["restore"], dict) and set(entry["restore"]) == {"undo", "side"}
+                            and isinstance(entry["restore"]["undo"], str)
+                            and _RESTORE_UNDO.fullmatch(entry["restore"]["undo"]) is not None
+                            and entry["restore"]["side"] in ("before", "after"))
+                       for entry in entries)):
+        raise ValueError("invalid project restore options")
+    return {"schemaVersion": 1, "projects": [{key: entry[key] for key in ("project", "snapshot", "late", "restore")}
+                                             for entry in entries]}
+
+
+async def _restore_refusal_code(response: httpx.Response) -> str | None:
+    """The host's refusal code when it is one of the fixed codes for this status, else None."""
+    if not response.headers.get("content-type", "").lower().startswith("application/json"):
+        return None
+    try:
+        value = json.loads(await _bounded_response_bytes(response, 1024))
+    except (ValueError, TypeError, RecursionError):
+        return None
+    code = value.get("error") if isinstance(value, dict) else None
+    return code if isinstance(code, str) and code in _RESTORE_REFUSALS[response.status_code] else None
+
+
+@router.post("/projects/restore")
+async def pixel_project_restore(body: ProjectRestoreRequest, owner: str = Depends(verify_api_key)) -> dict[str, object]:
+    """Put one Playground project back to the copy ODS kept before a Portal turn touched it.
+
+    Portal's "Put back files". When files changed after the turn, the first
+    answer is status "confirm" naming what the restore would overwrite or
+    remove, and changes nothing; the owner's yes sends its token back as
+    confirm. A restore first keeps a copy of the files as they are, so the
+    receipt's undo names a copy that reverses it. It is refused while any
+    Portal run, tool or background command is alive, and it changes nothing
+    outside that project folder. A refusal's detail has a fixed code; any
+    other failure leaves the outcome unknown.
+    """
+    config = _pixel_config()
+    if config is None:
+        raise _restore_refusal(503, "project-restore-unsupported")
+    edge_url, key = config
+    if isinstance(owner, str) and _owns_live_work((owner_namespace(owner), body.chat_id)):
+        raise _restore_refusal(409, "project-restore-busy")
+    payload = {"user": body.chat_id, "project": body.project, "snapshot": body.snapshot}
+    if body.confirm is not None:
+        payload["confirm"] = body.confirm
+    try:
+        timeout = httpx.Timeout(connect=2.0, read=_PROJECT_RESTORE_SECONDS, write=2.0, pool=2.0)
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=False) as client:
+            async with client.stream("POST", f"{edge_url}/v1/project-restore", json=payload,
+                                     headers=_edge_headers(key, accept="application/json")) as response:
+                if response.status_code in _RESTORE_REFUSALS:
+                    code = await _restore_refusal_code(response)
+                    if code is not None:
+                        raise _restore_refusal(response.status_code, code)
+                    raise ValueError("unknown project restore refusal")
+                if response.status_code != 200 or not response.headers.get("content-type", "").lower().startswith("application/json"):
+                    raise ValueError("project restore unavailable")
+                raw = await _bounded_response_bytes(response, 16384)
+        return _project_restore_receipt(json.loads(raw), body)
+    except (httpx.HTTPError, asyncio.TimeoutError, ValueError, TypeError, RecursionError) as exc:
+        raise HTTPException(status_code=503, detail=_RESTORE_UNKNOWN) from exc
+
+
+@router.post("/projects/restore-options", dependencies=[Depends(verify_api_key)])
+async def pixel_project_restore_options(body: ProjectRestoreOptionsRequest) -> dict[str, object]:
+    """Which of these Portal turns offer "Put back files".
+
+    For each Playground project whose latest turn that changed it is one of
+    runs: that turn, whether its copy was taken after the project had
+    already changed (late), and the undo of the latest restore of that turn,
+    with the version the project now holds. An undo that would overwrite
+    files changed since asks first.
+    """
+    config = _pixel_config()
+    if config is None or not body.runs:
+        return {"schemaVersion": 1, "projects": []}
+    edge_url, key = config
+    try:
+        timeout = httpx.Timeout(connect=2.0, read=_PROJECT_RESTORE_SECONDS, write=2.0, pool=2.0)
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=False) as client:
+            async with client.stream("POST", f"{edge_url}/v1/project-restore-options", json={"runs": body.runs},
+                                     headers=_edge_headers(key, accept="application/json")) as response:
+                if response.status_code != 200 or not response.headers.get("content-type", "").lower().startswith("application/json"):
+                    raise ValueError("project restore options unavailable")
+                raw = await _bounded_response_bytes(response, 16384)
+        return _project_restore_options(json.loads(raw), body.runs)
+    except (httpx.HTTPError, asyncio.TimeoutError, ValueError, TypeError, RecursionError) as exc:
+        raise HTTPException(status_code=503, detail={"code": "project-restore-unavailable",
+                                                     "message": "Portal could not read which turns can be put back."}) from exc
+
+
 class _ClientDisconnected(Exception):
     """The dashboard consumer left while Pixel was still producing a turn."""
 
@@ -995,6 +1473,8 @@ async def _retained_chat_stream(request, body, owner):
     try:
         if identity[:2] in _result_stops:
             raise ResultConflict("Stop is still being confirmed")
+        if identity[:2] in _result_settles:
+            raise ResultConflict("The last turn of this chat is still being checked")
         created = store.reserve(identity, fingerprint)
     except ResultConflict as exc:
         raise HTTPException(status_code=423, detail=str(exc)) from None
@@ -1104,6 +1584,17 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
                         try:
                             raw = await _bounded_response_bytes(upstream, 1024)
                             admission_rejected = json.loads(raw) == {"error": "pixel_transition_in_progress"}
+                        except (ValueError, UnicodeDecodeError):
+                            pass
+                    elif upstream.status_code == 429:
+                        # Edge has one image slot. It refuses another image turn
+                        # with this exact body before admitting it, so nothing
+                        # ran: tell the owner Portal was busy, not that it failed.
+                        try:
+                            raw = await _bounded_response_bytes(upstream, 1024)
+                            if json.loads(raw) == {"error": "image processing busy; retry shortly"}:
+                                admission_rejected = True
+                                admission_code = "image_turn_busy"
                         except (ValueError, UnicodeDecodeError):
                             pass
                     if upstream.status_code != 200 or not upstream.headers.get("content-type", "").lower().startswith("text/event-stream"):

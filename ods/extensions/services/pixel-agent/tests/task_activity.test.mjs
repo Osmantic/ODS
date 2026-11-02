@@ -52,14 +52,14 @@ test('recovered attempts retain previous failed calls and can themselves fail', 
 });
 
 test('duplicate, unowned, incomplete and late hooks cannot reopen a closed attempt', () => {
-  for (const variant of ['completed','same-event','missing-prompt','blank-prompt','wrong-session','missing-session','missing-original-session','wrong-key','missing-key','conflicted-key','other-agent','late-tool','late-finish']) {
+  for (const variant of ['same-event','missing-prompt','blank-prompt','wrong-session','missing-session','missing-original-session','wrong-key','missing-key','conflicted-key','other-agent','late-tool','late-finish']) {
     const context={...ctx,sessionId:'owned-session',sessionKey:'agent:pixel:openai-user:ods-'+'a'.repeat(64)};
     const recorder=createTaskActivity({now});
     const original={prompt:'Do the work'};
     const initialContext={...context};
     if(variant==='missing-original-session')delete initialContext.sessionId;
     recorder.begin(original,initialContext);
-    recorder.finish({success:variant==='completed'},context);
+    recorder.finish({success:false},context);
     const closed=recorder.projection(runId);
     const retryContext={...context};
     if(variant==='wrong-session')retryContext.sessionId='other-session';

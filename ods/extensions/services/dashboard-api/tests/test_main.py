@@ -2,6 +2,7 @@
 
 import json
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -299,6 +300,44 @@ class TestBuildApiStatus:
         assert result["model"]["contextLength"] == 20480
         assert result["inference"]["contextSize"] == 20480
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("served,display_name", [
+        ("Qwen3.8-27B-UD-IQ4_XS.gguf", "Qwen 3.8 27B"),
+        ("community-Q4_K_M.gguf", "community-model · Q4_K_M"),
+        ("Uncatalogued-12B-NVFP4-6c01ac37.pack", None),
+    ], ids=["catalog", "hub-import", "uncatalogued"])
+    async def test_names_the_served_model_as_the_models_page_does(self, monkeypatch, tmp_path, served, display_name):
+        import routers.models as models_router
+        from models import BootstrapStatus, ModelInfo
+
+        # The runtime serves the file name; the Models page shows the catalog name.
+        library = tmp_path / "model-library.json"
+        library.write_text(json.dumps({"models": [
+            {"id": "qwen3.8-27b-iq4-xs", "name": "Qwen 3.8 27B", "gguf_file": "Qwen3.8-27B-UD-IQ4_XS.gguf"},
+        ]}), encoding="utf-8")
+        (tmp_path / "model-imports.json").write_text(json.dumps({"models": [
+            {"id": "hf-community", "name": "community-model · Q4_K_M", "gguf_file": "community-Q4_K_M.gguf",
+             "source": "huggingface"},
+        ]}), encoding="utf-8")
+        monkeypatch.setattr(models_router, "_LIBRARY_PATH", library)
+        monkeypatch.setattr(models_router, "DATA_DIR", str(tmp_path))
+        monkeypatch.setattr("main.get_gpu_info", lambda: None)
+        monkeypatch.setattr("main.get_all_services", AsyncMock(return_value=[]))
+        monkeypatch.setattr("main.get_model_info", lambda: ModelInfo(name="qwen3.8-27b-iq4-xs", size_gb=14.0, context_length=65536))
+        monkeypatch.setattr("main.get_bootstrap_status", lambda: BootstrapStatus(active=False))
+        monkeypatch.setattr("main.get_loaded_model", AsyncMock(return_value=served))
+        monkeypatch.setattr("main.get_llama_metrics", AsyncMock(return_value={"tokens_per_second": 0, "lifetime_tokens": 0}))
+        monkeypatch.setattr("main.get_llama_context_size", AsyncMock(return_value=65536))
+        monkeypatch.setattr("main.get_uptime", lambda: 0)
+        monkeypatch.setattr("main.get_cpu_metrics", lambda: {"percent": 0, "temp_c": None})
+        monkeypatch.setattr("main.get_ram_metrics", lambda: {"used_gb": 0, "total_gb": 0, "percent": 0})
+
+        result = await _build_api_status()
+
+        # Identity stays the served id; only the display name is added.
+        assert result["loadedModel"] == result["inference"]["loadedModel"] == served
+        assert result["inference"]["loadedModelDisplayName"] == display_name
+
     def test_detected_gpu_count_overrides_stale_compose_default(self, monkeypatch):
         from main import _serialize_gpu
         from models import GPUInfo
@@ -416,6 +455,55 @@ class TestReadinessPayload:
         assert result["canChat"] is True
         assert result["canUseVoice"] is False
         assert any(check["id"] == "voice" and check["status"] == "disabled" for check in result["checks"])
+
+    def test_switched_off_open_webui_is_disabled_not_blocking(self):
+        # Workstation06 (10-27): a fresh Pixel install leaves Open WebUI out
+        # (ENABLE_OPEN_WEBUI=false), and readiness read "blocked" with the
+        # repair "ods restart open-webui" while chat was ready.
+        from models import BootstrapStatus, ServiceStatus
+
+        statuses = [
+            ServiceStatus(id="llama-server", name="LLM", port=8080, external_port=8080, status="healthy"),
+            ServiceStatus(id="open-webui", name="Open WebUI", port=3000, external_port=3000, status="not_deployed"),
+        ]
+
+        result = _build_readiness_payload(
+            service_statuses=statuses,
+            loaded_model="Test-32B",
+            context_size=32768,
+            bootstrap_info=BootstrapStatus(active=False),
+            host_agent={"available": True},
+            stt_model_cached=None,
+            stt_model_name="Systran/faster-whisper-base",
+        )
+
+        webui = next(check for check in result["checks"] if check["id"] == "open-webui")
+        assert result["ready"] is True and result["status"] == "ready"
+        assert webui["status"] == "disabled" and webui["required"] is False
+        assert webui.get("repair") is None
+        assert "ods restart open-webui" not in result.get("repairHints", [])
+
+    def test_unhealthy_deployed_open_webui_still_blocks(self):
+        from models import BootstrapStatus, ServiceStatus
+
+        statuses = [
+            ServiceStatus(id="llama-server", name="LLM", port=8080, external_port=8080, status="healthy"),
+            ServiceStatus(id="open-webui", name="Open WebUI", port=3000, external_port=3000, status="unhealthy"),
+        ]
+
+        result = _build_readiness_payload(
+            service_statuses=statuses,
+            loaded_model="Test-32B",
+            context_size=32768,
+            bootstrap_info=BootstrapStatus(active=False),
+            host_agent={"available": True},
+            stt_model_cached=None,
+            stt_model_name="Systran/faster-whisper-base",
+        )
+
+        webui = next(check for check in result["checks"] if check["id"] == "open-webui")
+        assert result["ready"] is False
+        assert webui["status"] == "blocked" and webui["required"] is True
 
     def test_missing_model_blocks_chat(self):
         from models import BootstrapStatus, ServiceStatus
@@ -591,6 +679,44 @@ class TestExternalLinks:
         link_ids = [link["id"] for link in data]
         assert "open-webui" in link_ids
         assert "litellm" not in link_ids
+
+    def test_hermes_proxy_link_is_labelled_hermes(self, test_client, monkeypatch):
+        """The proxy's manifest name describes plumbing; the link opens Hermes."""
+        monkeypatch.setattr("main.SERVICES", {
+            "hermes-proxy": {
+                "name": "Hermes Auth Proxy",
+                "port": 9120,
+                "external_port": 9120,
+                "health": "/health",
+                "host": "hermes-proxy",
+                "ui_path": "/auth/ods",
+            },
+        })
+
+        resp = test_client.get("/api/external-links", headers=test_client.auth_headers)
+
+        assert resp.status_code == 200
+        [link] = resp.json()
+        assert link["label"] == "Hermes"
+        assert link["ui_path"] == "/auth/ods"
+        # Health still matches the proxy's own status row, never Hermes Agent's.
+        assert link["healthNeedles"] == ["hermes-proxy", "hermes auth proxy"]
+
+    def test_shipped_token_spy_manifest_has_no_sidebar_link(self, test_client, monkeypatch):
+        """Its page asks for Token Spy's own API key; the Usage page reads it server-side."""
+        import config
+        shipped, _, errors = config.load_extension_manifests(
+            Path(__file__).resolve().parents[2], "nvidia",
+            only_service_ids=frozenset({"token-spy"}),
+        )
+        assert errors == []
+        assert shipped["token-spy"]["external_link"] is False
+        monkeypatch.setattr("main.SERVICES", shipped)
+
+        resp = test_client.get("/api/external-links", headers=test_client.auth_headers)
+
+        assert resp.status_code == 200
+        assert resp.json() == []
 
 
 # --- /api/storage ---

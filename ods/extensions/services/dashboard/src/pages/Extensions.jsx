@@ -1244,10 +1244,11 @@ function ExtensionCard({ ext, hermesProxy, gpuBackend, agentAvailable, onDetails
                   if (opensWithOdsSession(launchService.id)) openWithFreshSession(e)
                 }}
                 className="flex items-center gap-1 px-2 py-1.5 text-[10px] font-mono text-theme-text-secondary hover:text-theme-text hover:bg-theme-surface-hover/40 rounded-lg transition-colors"
-                title={launchPort ? "Open on port " + launchPort : "Open service"}
+                aria-label={`Open ${ext.name}`}
+                title={launchPort ? `Open ${ext.name} on port ${launchPort}` : `Open ${ext.name}`}
               >
                 <ExternalLink size={11} />
-                {launchPort ? ":" + launchPort : "Open service"}
+                Open
               </a>
             )
           ) : null}

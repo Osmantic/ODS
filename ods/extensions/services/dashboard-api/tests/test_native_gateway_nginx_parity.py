@@ -25,6 +25,7 @@ LOCATION_SAMPLES = {
     "~ ^/api/templates/[a-z0-9-]+/apply$": "/api/templates/coding/apply",
     "~ ^/api/models/.+/load$": "/api/models/qwen/load",
     "= /api/remote-provider/apply": "/api/remote-provider/apply",
+    "= /api/remote-provider/probe": "/api/remote-provider/probe",
     "= /api/pixel/chat/stream": "/api/pixel/chat/stream",
     '~ "^/api/pixel/images/[A-Za-z0-9_-]{1,128}(?:/img-[a-f0-9]{32})?$"': "/api/pixel/images/abc",
     "= /api/pixel/access-mode": "/api/pixel/access-mode",

@@ -1,5 +1,6 @@
 import { RUN_PROGRESS_STOP_REASON } from "../plugin/run-progress-budget.mjs";
 import { PROGRESS_FINALIZATION_INSTRUCTION } from "../plugin/progress-finalization.mjs";
+import { PREVIEW_EARLIER_NOTE, PREVIEW_INCOMPLETE_NOTE, PREVIEW_STOPPED_NOTE } from "../plugin/preview-explanation.mjs";
 import test from "node:test";
 import vm from 'node:vm';
 
@@ -343,8 +344,12 @@ test('malformed dispatch failures stop only their active run and retain its veri
   const delivery = guard.deliveryVerificationForRun('run-1');
   assert.equal(delivery.status,'failed');
   assert.equal(delivery.preview.sha256,details.sha256);
-  assert.match(delivery.text,/Open last published preview/);
-  assert.match(delivery.text,/not completed/);
+  // The owner reads Portal's plain line, that the build stopped unfinished,
+  // the files it changed, and the receipt that becomes the preview card, not
+  // the stop facts (progressStopPresentation).
+  assert.ok(delivery.text.startsWith(`${PREVIEW_INCOMPLETE_NOTE}\n\nFiles changed in this response: \`log-viewer-lab/index.html\`.` +
+    `\n\nYour preview is ready.\n\n[Open preview](${details.url})`), delivery.text);
+  assert.doesNotMatch(delivery.text,/not completed|not proof|stopped after/);
   const other = {agentId:'pixel',runId:'run-2',sessionId:'session-2'};
   guard.observeRun(other,'pixel',{prompt:'hello'});
   assert.equal(guard.deliveryVerificationForRun('run-2').status,'none');
@@ -636,6 +641,45 @@ for (const prompt of [
     assert.equal(guard.verificationForRun(context.runId).status, "passed");
   });
 }
+
+test("a bug description does not block a named publication request", () => {
+  // "the error rows never show" describes the page, so the publication is
+  // allowed. It is optional rather than required, as for any outweighed
+  // "don't show".
+  // A repair of the session's verified page is optional too, not required.
+  for (const [prompt, status] of [
+    ["Make the error rows red in the existing log-viewer-lab and check it in the preview.", "failed"],
+    ["In log-viewer-lab the error rows never show. Make the error rows red in the existing log-viewer-lab and check it in the preview.", "none"]]) {
+    const guard = createToolLoopGuard();
+    seedNamedPreview(guard);
+    const context = { agentId: "pixel", runId: "run-named-repair", sessionId: "session-1" };
+    guard.observeRun(context, "pixel", { prompt });
+    assert.equal(guard.verificationForRun(context.runId).status, status, prompt);
+  }
+  for (const [prompt, status] of [["Publish log-viewer-lab.", "failed"],
+    ["In log-viewer-lab, the error rows never show. Publish log-viewer-lab.", "none"]]) {
+    const guard = createToolLoopGuard();
+    const { write, params } = seedNamedPreview(guard);
+    const context = { agentId: "pixel", runId: "run-named-report", sessionId: "session-1" };
+    guard.observeRun(context, "pixel", { prompt });
+    assert.equal(guard.verificationForRun(context.runId).status, status, prompt);
+    const read = { path: write.path };
+    call(guard, "read", { context, event: { runId: context.runId, params: read } });
+    afterCall(guard, "read", { context, event: {
+      runId: context.runId, params: read, result: { content: [{ type: "text", text: write.content }] },
+    } });
+    assert.notEqual(call(guard, "pixel_ods_workspace_preview", {
+      context, event: { runId: context.runId, params },
+    })?.block, true, prompt);
+  }
+  // A later negation is the owner's later word, even for a named project.
+  const guard = createToolLoopGuard();
+  const { params } = seedNamedPreview(guard);
+  const context = { agentId: "pixel", runId: "run-named-retracted", sessionId: "session-1" };
+  guard.observeRun(context, "pixel", { prompt: "Publish log-viewer-lab. Actually, don't show it yet." });
+  assert.equal(guard.verificationForRun(context.runId).status, "none");
+  assert.equal(call(guard, "pixel_ods_workspace_preview", { context, event: { runId: context.runId, params } })?.block, true);
+});
 
 for (const [prompt, sessionId] of [
   ["Publish another-lab.", "session-1"],
@@ -7039,6 +7083,67 @@ test("space-bearing process names do not admit markup or control characters", ()
       } },
     } });
     assert.equal(guard.verificationForRun("run-1").status, "failed");
+  }
+});
+
+// Workstation06, 2026-10-27: asked how much GPU memory was free, the agent got
+// only totals from host.gpu, tried nine sandbox commands, and could not answer.
+// Each host line also repeated its label ("- Memory: Memory: ...").
+function hostGpuMemoryReply(devices) {
+  const guard = createToolLoopGuard();
+  const jobId = "ops-1234567890123-abcdef123456";
+  guard.observeRun({agentId:"pixel",runId:"run-1",sessionId:"session-1"}, "pixel",
+    {prompt:"How much free memory do the GPUs in this machine have right now?"});
+  afterCall(guard, "pixel_ops_workflow_submit", {event:{
+    params:{steps:[{id:"gpu",target:"ods-host",action:"host.gpu"},{id:"memory",target:"ods-host",action:"host.memory"}]},
+    result:{details:{jobId,status:"submitted",kind:"workflow"}},
+  }});
+  const step = (stepId, action, stdout) => ({stepId,target:"ods-host",action,exitCode:0,stderr:"",
+    outputTruncated:{stdout:false,stderr:false},riskSignals:[],stdout});
+  afterCall(guard, "pixel_ops_job_wait", {event:{params:{jobId},result:{details:{
+    jobId,status:"succeeded",waitTimedOut:false,
+    steps:[
+      step("gpu", "host.gpu", JSON.stringify({schemaVersion:1,kind:"ods-host-gpu",available:true,backend:"nvidia",devices})),
+      step("memory", "host.memory", "total used free shared buff/cache available\nMem: 17179869184 8589934592 1073741824 0 7516192768 8589934592\nSwap: 4294967296 0 4294967296\n"),
+    ],
+  }}}});
+  return reply(guard)?.payload?.text;
+}
+
+test("NVIDIA host evidence names each GPU's free and in-use memory, once per line", () => {
+  const text = hostGpuMemoryReply([
+    {name:"NVIDIA RTX PRO 6000 Blackwell Workstation Edition",memoryMiB:97887,memoryUsedMiB:13247,memoryFreeMiB:84018,driver:"610.57.04"},
+    {name:"NVIDIA GB300",memoryMiB:256703,memoryUsedMiB:12837,memoryFreeMiB:242945,driver:"610.57.04"},
+  ]);
+  assert.match(text, new RegExp("\\n- GPU: NVIDIA RTX PRO 6000 Blackwell Workstation Edition \\(97887 MiB total, 84018 MiB free, " +
+    "13247 MiB in use; driver 610\\.57\\.04\\); NVIDIA GB300 \\(256703 MiB total, 242945 MiB free, 12837 MiB in use; " +
+    "driver 610\\.57\\.04\\)\\. Together: 326963 MiB free of 354590 MiB \\(319\\.3 GiB free of 346\\.3 GiB\\)\\. " +
+    "Free and in-use memory are as of this check\\. Device identifiers"));
+  assert.match(text, /\n- Memory: 8\.00 GiB used of 16\.0 GiB/);
+  assert.doesNotMatch(text, /GPU: GPU:|Memory: Memory:/);
+});
+
+test("NVIDIA host evidence without live use keeps the totals; impossible live figures fail closed", () => {
+  const total = {name:"NVIDIA GeForce RTX 5070 Laptop GPU",memoryMiB:8151,driver:"573.22"};
+  const text = hostGpuMemoryReply([total]);
+  assert.match(text, /\n- GPU: NVIDIA GeForce RTX 5070 Laptop GPU \(8151 MiB; driver 573\.22\)\. Device identifiers/);
+  assert.doesNotMatch(text, /as of this check|Together/);
+  // One GPU is its own total; a GPU without live figures leaves no sum to give.
+  assert.doesNotMatch(hostGpuMemoryReply([{...total, memoryUsedMiB:1203, memoryFreeMiB:6687}]), /Together/);
+  assert.doesNotMatch(hostGpuMemoryReply([{...total, memoryUsedMiB:1203, memoryFreeMiB:6687}, total]), /Together/);
+  for (const live of [{memoryUsedMiB:1203,memoryFreeMiB:9000}, {memoryUsedMiB:-1,memoryFreeMiB:6687},
+    {memoryUsedMiB:1203.5,memoryFreeMiB:6687}, {memoryUsedMiB:1203}]) {
+    assert.doesNotMatch(hostGpuMemoryReply([{...total, ...live}]) ?? "", /MiB free|8151 MiB/, JSON.stringify(live));
+  }
+});
+
+test("a unified-memory NVIDIA GPU is named as sharing system RAM", () => {
+  const text = hostGpuMemoryReply([{name:"NVIDIA GB10",unifiedMemory:true,driver:"580.95.05"}]);
+  assert.match(text, /\n- GPU: NVIDIA GB10 \(unified memory shared with system RAM; driver 580\.95\.05\)\. Device identifiers/);
+  assert.match(text, /\n- Memory: 8\.00 GiB used of 16\.0 GiB/);
+  for (const device of [{name:"NVIDIA GB10",unifiedMemory:"yes",driver:"580.95.05"},
+    {name:"NVIDIA GB10",unifiedMemory:true,memoryMiB:8151,driver:"580.95.05"}]) {
+    assert.doesNotMatch(hostGpuMemoryReply([device]) ?? "", /NVIDIA GB10/, JSON.stringify(device));
   }
 });
 
@@ -16491,7 +16596,10 @@ test('progress stops scope historical preview delivery to the current owner requ
     }
     const delivery = guard.deliveryVerificationForRun(context.runId);
     assert.equal(delivery.status, 'failed', prompt);
-    assert.ok(delivery.text.startsWith(RUN_PROGRESS_STOP_REASON), prompt);
+    // A website request reads the stop in the owner's wording: Portal's line
+    // and the preview it can show (progressStopPresentation).
+    assert.ok(expectPreview ? delivery.text.startsWith(`${PREVIEW_STOPPED_NOTE}\n\n[Open last published preview](`)
+      : delivery.text.startsWith(RUN_PROGRESS_STOP_REASON), `${prompt}\n${delivery.text}`);
     assert.equal(Boolean(delivery.preview), expectPreview, prompt);
     assert.equal(delivery.text.includes(details.url), expectPreview, prompt);
     if (expectPreview) assert.equal(delivery.preview.sha256, details.sha256);
@@ -16526,13 +16634,14 @@ test("historical preview cannot hide a later coding stop from the final reply", 
       result: deferred ? wrappedCoreResult("exec", result) : result,
     }, context, "pixel");
     assert.equal(invoke("exec", params).blockReason, CODING_RETRY_EXHAUSTED_REASON);
+    // The record keeps the stop and the failed check; the owner reads one line.
+    const verification = guard.verificationForRun("coding-run");
+    assert.equal(verification.status, "failed");
+    assert.match(verification.text, /stopped before the requested work was complete/);
+    assert.ok(verification.text.includes(VERIFICATION_FAILED_DELIVERY_PREFIX));
+    assert.doesNotMatch(verification.text, /publish again to verify/);
     const delivered = reply(guard, {event: {runId: "coding-run", payload: {text: ""}}});
-    assert.match(delivered.payload.text, /stopped before the requested work was complete/);
-    assert.ok(delivered.payload.text.includes(VERIFICATION_FAILED_DELIVERY_PREFIX));
-    assert.ok(delivered.payload.text.includes(details.url));
-    assert.match(delivered.payload.text, /last published preview/);
-    assert.doesNotMatch(delivered.payload.text, /publish again to verify/);
-    assert.equal(guard.verificationForRun("coding-run").status, "failed");
+    assert.equal(delivered.payload.text, `${PREVIEW_STOPPED_NOTE}\n\n[Open last published preview](${details.url})`);
   }
 });
 
@@ -16544,12 +16653,13 @@ test("historical publication preserves failed and pending verification truth", (
     call(guard, "exec", {event: {params}});
     afterCall(guard, "exec", {event: {params, result: {details: status === "pending"
       ? {status: "running", sessionId: "pending-check"} : {status: "completed", exitCode: 1}}}});
-    const result = reply(guard);
-    assert.ok(result.payload.text.includes(status === "pending"
+    const verification = guard.verificationForRun("run-1");
+    assert.equal(verification.status, "failed");
+    assert.ok(verification.text.includes(status === "pending"
       ? VERIFICATION_PENDING_DELIVERY_PREFIX : VERIFICATION_FAILED_DELIVERY_PREFIX));
-    assert.ok(result.payload.text.includes(details.url));
-    assert.match(result.payload.text, /last published preview/);
-    assert.equal(guard.verificationForRun("run-1").status, "failed");
+    // The owner reads that the preview is an earlier version, with its link.
+    const result = reply(guard);
+    assert.equal(result.payload.text, `${PREVIEW_EARLIER_NOTE}\n\n[Open last published preview](${details.url})`);
   }
 });
 
@@ -16740,7 +16850,7 @@ test('invalid JSON publication stays failed until repaired files are republished
   invoke('write',{path:'export-site/export.json',content:'{"source":"""broken"""}'},written);
   invoke('pixel_ods_workspace_preview',{relativeDirectory:'export-site'},{isError:true,content:[{type:'text',text:'Invalid JSON at export.json line 1 column 13'}],details:{schemaVersion:1,kind:'ods-pixel-workspace-preview',status:'failed',errorCode:'invalid_json_artifact'}});
   assert.equal(guard.verificationForRun(context.runId).status,'failed');
-  assert.match(guard.verificationForRun(context.runId).text,/did not verify a browser-accessible preview/i);
+  assert.equal(guard.verificationForRun(context.runId).text,WORKSPACE_PREVIEW_UNVERIFIED_DELIVERY_PREFIX);
   const repaired={path:'export-site/export.json',content:JSON.stringify({source:'"""valid source text"""\n'})};
   invoke('write',repaired,written);
   assert.equal(guard.verificationForRun(context.runId).status,'failed','a repair alone cannot publish a preview');

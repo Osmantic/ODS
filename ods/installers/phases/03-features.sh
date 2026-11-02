@@ -11,6 +11,7 @@
 #           HOST_ARCH, HOST_PAGE_SIZE,
 #           GPU_TOPOLOGY_JSON, LLM_MODEL_SIZE_MB, SCRIPT_DIR, VERBOSE, DEBUG,
 #           GPU_INDICES, GPU_UUIDS (arrays from topology),
+#           LLM_BACKEND and VLLM_GPU_UUID (phase 02; vllm pins the LLM GPU),
 #           show_phase(), show_install_menu(), chapter(), bootline(),
 #           success(), log(), warn(), error(), signal()
 # Provides: ENABLE_VOICE, ENABLE_WORKFLOWS, ENABLE_RAG, ENABLE_EMBEDDINGS,
@@ -229,9 +230,11 @@ if [[ "${ENABLE_HERMES:-false}" == "true" && "${ODS_MODE:-local}" != "cloud" ]];
             && [[ -f "$SCRIPT_DIR/scripts/select-model.py" && -f "$SCRIPT_DIR/config/model-library.json" ]]; then
             _hermes_python="$(ods_model_selector_python)"
         fi
-        if ods_native_llm_requested; then
+        if ods_native_llm_requested || [[ "${LLM_BACKEND:-}" == "vllm" ]]; then
             # llama-server on the Windows host loaded this model at this
-            # context; this run can neither pick another model nor resize it.
+            # context, and a vLLM model serves the context its --max-model-len
+            # (VLLM_ARGS) fixes; this run can neither pick another model nor
+            # resize it (the llama.cpp fit check does not apply).
             _hermes_floor_action="cap"
             _hermes_python=""
         fi
@@ -493,11 +496,8 @@ if ! $DRY_RUN; then
                 ENABLE_QDRANT=false
             fi
         fi
-
-        if [[ "${ENABLE_EMBEDDINGS:-${ENABLE_RAG:-false}}" == "true" ]]; then
-            ai_warn "Embeddings (TEI): upstream image is amd64-only - disabled on aarch64."
-            ENABLE_EMBEDDINGS=false
-        fi
+        # Embeddings (TEI) runs here from its arm64 pin in
+        # extensions/services/embeddings/compose.arm64.yaml.
     fi
     unset _host_arch _host_page_size
 
@@ -507,6 +507,9 @@ if ! $DRY_RUN; then
     _pixel_support_services="${ENABLE_RECOMMENDED:-false}"
     [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && _pixel_support_services=true
     [[ -n "${EXTERNAL_LLM_URL:-}" ]] && _pixel_support_services=true
+    # Services reach the vLLM engine through LiteLLM and model-router, as on
+    # the host-native route (phase 06 sets LLM_API_URL to the gateway).
+    [[ "${LLM_BACKEND:-}" == "vllm" ]] && _pixel_support_services=true
     # With the default ODS_MODEL_SWITCHBOARD=enabled, phase 06 routes Open WebUI
     # through the gateway (OPEN_WEBUI_LLM_BASE_URL=http://litellm:4000), so it
     # must run even when recommended services are off. Resolve the mode as
@@ -646,6 +649,11 @@ fi
 if [[ "$GPU_COUNT" -le 1 ]]; then
     if [[ "${GPU_BACKEND:-}" == "nvidia" ]]; then
         _single_gpu_uuid=$(nvidia-smi --query-gpu=uuid --format=csv,noheader,nounits 2>/dev/null | sed -n '1p' || true)
+        # The vLLM engine owns the GPU its selector sized the model for.
+        if [[ "${LLM_BACKEND:-}" == "vllm" && "$_single_gpu_uuid" != "${VLLM_GPU_UUID:-}" ]]; then
+            error "The vLLM engine was planned for GPU ${VLLM_GPU_UUID:-unknown}, but nvidia-smi lists ${_single_gpu_uuid:-no GPU}. Rerun the installer; if it happens again, rerun with --llm-backend llama-server. Need help? Ask on the ODS Discord: ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
+            return 1
+        fi
         if [[ -n "$_single_gpu_uuid" ]]; then
             GPU_ASSIGNMENT_JSON=$(jq -n \
                 --arg uuid "$_single_gpu_uuid" \
@@ -727,8 +735,13 @@ run_automatic() {
   echo ""
 
   local result
+  # The vLLM engine owns exactly the GPU its selector sized the model for
+  # (VLLM_GPU_UUID): a model that fits one GPU is never split across GPUs,
+  # and the other services take the remaining GPUs.
+  local -a pin_args=()
+  [[ "${LLM_BACKEND:-}" != "vllm" ]] || pin_args=(--pin-llm-gpu "$VLLM_GPU_UUID")
   result=$(python3 "$ASSIGN_GPUS_SCRIPT" \
-    --topology "$TOPOLOGY_FILE" --model-size "$LLM_MODEL_SIZE_MB" 2>&1) || {
+    --topology "$TOPOLOGY_FILE" --model-size "$LLM_MODEL_SIZE_MB" ${pin_args[@]+"${pin_args[@]}"} 2>&1) || {
     echo -e "  ${RED}Assignment failed:${NC}\n  $result"
     error "GPU assignment failed: $result"
   }
@@ -938,8 +951,20 @@ _load_existing_gpu_assignment_json() {
 # --- Multi-GPU Config TUI ---
 GPU_ASSIGNMENT_JSON=""
 
+if [[ "${LLM_BACKEND:-}" == "vllm" ]]; then
+    # The vLLM engine's GPU is fixed, so there is nothing to choose. A saved
+    # assignment is reused only when it gives the LLM exactly that GPU.
+    if _existing_assignment=$(_load_existing_gpu_assignment_json) \
+        && jq -e --arg uuid "$VLLM_GPU_UUID" '.gpu_assignment.services.llama_server.gpus == [$uuid]' \
+            <<< "$_existing_assignment" >/dev/null; then
+        GPU_ASSIGNMENT_JSON="$_existing_assignment"
+        success "Reusing existing GPU assignment from .env"
+    else
+        log "vLLM runs on GPU ${VLLM_GPU_UUID}; the other services take the remaining GPUs."
+        run_automatic
+    fi
 # If it is not an interactive session, run automatic assignment with default values
-if ! $INTERACTIVE || $DRY_RUN; then
+elif ! $INTERACTIVE || $DRY_RUN; then
     if _existing_assignment=$(_load_existing_gpu_assignment_json); then
         GPU_ASSIGNMENT_JSON="$_existing_assignment"
         success "Reusing existing GPU assignment from .env"
@@ -976,6 +1001,13 @@ if [[ "$VENDOR" == "nvidia" ]]; then
     LLAMA_SERVER_GPU_UUIDS=$(echo "$GPU_ASSIGNMENT_JSON" | jq -r '.gpu_assignment.services.llama_server.gpus // [] | join(",")')
     if [[ -z "$LLAMA_SERVER_GPU_UUIDS" ]]; then
         error "GPU assignment did not select any NVIDIA device for llama-server"
+    fi
+    # On the vLLM route the LLM role is the vLLM engine's one GPU. The
+    # multi-GPU overlay still needs LLAMA_SERVER_GPU_UUIDS for the profiled-out
+    # llama-server (Compose interpolates disabled services), so it names the
+    # same GPU.
+    if [[ "${LLM_BACKEND:-}" == "vllm" && "$LLAMA_SERVER_GPU_UUIDS" != "${VLLM_GPU_UUID:-}" ]]; then
+        error "GPU assignment gave the LLM ${LLAMA_SERVER_GPU_UUIDS}, but the vLLM engine owns GPU ${VLLM_GPU_UUID:-unknown}"
     fi
     WHISPER_GPU_UUID=$(echo "$GPU_ASSIGNMENT_JSON" | jq -r '.gpu_assignment.services.whisper.gpus[0]?')
     COMFYUI_GPU_UUID=$(echo "$GPU_ASSIGNMENT_JSON" | jq -r '.gpu_assignment.services.comfyui.gpus[0]?')

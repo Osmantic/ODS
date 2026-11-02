@@ -3,7 +3,9 @@
 import contextlib
 import hashlib
 import json
+import logging
 import os
+import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -365,6 +367,57 @@ class TestExtensionsCatalog:
         assert by_id["aider"]["status"] == "not_installed"
         assert by_id["aider"]["installable"] is True
         assert by_id["gpu-only"]["status"] == "incompatible"
+
+    @pytest.mark.parametrize("requirements,arch,page,backend,reason", [
+        ({"max_page_size": 4096}, "arm64", 65536, "nvidia",
+         "Vector DB's image cannot run with this machine's 64 KB memory pages."),
+        ({"architectures": ["amd64"]}, "arm64", 4096, "nvidia",
+         "Vector DB's image is built for amd64 only; this machine is arm64."),
+        ({"max_page_size": 4096}, "arm64", 4096, "nvidia", None),
+        ({"architectures": ["amd64"]}, "amd64", 4096, "nvidia", None),
+        # Docker Desktop on macOS runs amd64 images under Rosetta 2.
+        ({"architectures": ["amd64"]}, "arm64", 4096, "apple", None),
+    ])
+    def test_an_image_this_host_cannot_run_is_incompatible(
+        self, test_client, monkeypatch, tmp_path, requirements, arch, page, backend, reason,
+    ):
+        """Workstation06 (arm64, 64 KB pages, 2026-10-27): Qdrant aborted on its
+        page size and Fooocus has no arm64 image, yet both were offered."""
+        from routers import extensions as ext_mod
+
+        entry = {**_make_catalog_ext("vector-db", "Vector DB", gpu_backends=["all"]),
+                 "host_requirements": requirements}
+        _patch_extensions_config(monkeypatch, [entry], gpu_backend=backend, tmp_path=tmp_path)
+        monkeypatch.setattr(ext_mod, "_HOST_ARCH", arch)
+        monkeypatch.setattr(ext_mod, "_HOST_PAGE_SIZE", page)
+
+        with patch("helpers.get_all_services", new_callable=AsyncMock, return_value=[]):
+            row = test_client.get("/api/extensions/catalog", headers=test_client.auth_headers).json()["extensions"][0]
+            detail = test_client.get("/api/extensions/vector-db", headers=test_client.auth_headers).json()
+
+        assert (row["status"] == "incompatible") is (reason is not None)
+        assert row.get("incompatible_reason") == reason
+        assert detail["incompatible_reason"] == reason
+
+    def test_enable_refuses_an_image_this_host_cannot_run(self, test_client, monkeypatch, tmp_path):
+        from routers import extensions as ext_mod
+
+        builtin_root = tmp_path / "builtin"
+        (builtin_root / "fooocus").mkdir(parents=True)
+        (builtin_root / "fooocus" / "compose.yaml.disabled").write_text(_SAFE_COMPOSE)
+        _patch_mutation_config(monkeypatch, tmp_path)
+        monkeypatch.setattr(ext_mod, "EXTENSIONS_DIR", builtin_root)
+        monkeypatch.setattr(ext_mod, "EXTENSION_CATALOG", [{
+            "id": "fooocus", "name": "Fooocus", "gpu_backends": ["nvidia"],
+            "host_requirements": {"architectures": ["amd64"]},
+        }])
+        monkeypatch.setattr(ext_mod, "_HOST_ARCH", "arm64")
+
+        resp = test_client.post("/api/extensions/fooocus/enable", headers=test_client.auth_headers)
+
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == "Fooocus's image is built for amd64 only; this machine is arm64."
+        assert (builtin_root / "fooocus" / "compose.yaml.disabled").exists()
 
     def test_catalog_summary_counts(self, test_client, monkeypatch, tmp_path):
         """Summary counts correctly reflect extension statuses."""
@@ -1216,6 +1269,41 @@ class TestEnableExtension:
         # compose.yaml still exists (no rename happened)
         assert (user_dir / "my-ext" / "compose.yaml").exists()
 
+    def test_enable_stopped_survives_an_unwritable_progress_record(
+        self, test_client, monkeypatch, tmp_path, caplog,
+    ):
+        """Retry answered HTTP 500 on Workstation06 (2026-10-26): the install
+        owner is UID 1001, so this API (UID 1000) could not write the owner's
+        progress record. The host agent records the start there itself."""
+        user_dir = _setup_user_ext(tmp_path, "my-ext", enabled=True)
+        _patch_mutation_config(monkeypatch, tmp_path, user_dir=user_dir)
+        starts = []
+
+        def start(action, sid):
+            starts.append((action, sid))
+            return True
+
+        monkeypatch.setattr("routers.extensions._call_agent", start)
+        progress_dir = tmp_path / "extension-progress"
+        real_mkstemp = tempfile.mkstemp
+
+        def refuse_progress(*args, **kwargs):
+            if Path(kwargs.get("dir", "")) == progress_dir:
+                raise PermissionError(13, "Permission denied", str(progress_dir))
+            return real_mkstemp(*args, **kwargs)
+
+        monkeypatch.setattr(tempfile, "mkstemp", refuse_progress)
+
+        with caplog.at_level(logging.WARNING, logger="routers.extensions"):
+            resp = test_client.post(
+                "/api/extensions/my-ext/enable",
+                headers=test_client.auth_headers,
+            )
+
+        assert resp.status_code == 200
+        assert ("start", "my-ext") in starts
+        assert "Progress record for my-ext was not written" in caplog.text
+
     def test_enable_allows_core_service_dependency(self, test_client, monkeypatch, tmp_path):
         """Enable succeeds when depends_on includes a core service."""
         manifest = {"service": {"depends_on": ["open-webui"]}}
@@ -1649,6 +1737,36 @@ class TestDisableExtension:
 
         assert resp.status_code == 200
         assert not progress_file.exists()
+
+    def test_disable_completes_when_the_owner_record_cannot_be_removed(
+        self, test_client, monkeypatch, tmp_path, caplog,
+    ):
+        """Workstation06 (2026-10-27): the host agent writes start records as the
+        install owner, UID 1001. This API runs as UID 1000 and could not remove
+        them, so a disable that had already stopped the service answered 500."""
+        user_dir = _setup_user_ext(tmp_path, "my-ext", enabled=True)
+        _patch_mutation_config(monkeypatch, tmp_path, user_dir=user_dir)
+        progress_file = tmp_path / "extension-progress" / "my-ext.json"
+        progress_file.parent.mkdir(parents=True, exist_ok=True)
+        progress_file.write_text('{"status": "started", "updated_at": "2026-10-27T08:26:00+00:00"}')
+        real_unlink = Path.unlink
+
+        def owner_only(path, *args, **kwargs):
+            if path == progress_file:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", owner_only)
+        with caplog.at_level(logging.WARNING):
+            resp = test_client.post(
+                "/api/extensions/my-ext/disable",
+                headers=test_client.auth_headers,
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["action"] == "disabled"
+        assert (user_dir / "my-ext" / "compose.yaml.disabled").exists()
+        assert "Failed to clear progress file for my-ext" in caplog.text
 
     def test_disable_already_disabled_409(self, test_client, monkeypatch, tmp_path):
         """409 when extension is already disabled."""
@@ -4793,6 +4911,57 @@ class TestWriteErrorProgress:
         assert data["status"] == "error"
         assert data["error"] == "Agent unreachable"
         assert "phase_label" in data
+
+    def test_records_are_replaced_whole_and_leave_no_temporary_file(self, monkeypatch, tmp_path):
+        """The host agent and the Extensions page read these records while
+        they change, so a record is replaced, never truncated in place."""
+        from routers.extensions import _write_error_progress, _write_initial_progress
+
+        monkeypatch.setattr("routers.extensions.DATA_DIR", str(tmp_path))
+        directory = tmp_path / "extension-progress"
+        replaced = []
+        real_replace = os.replace
+
+        def record_replace(source, target):
+            replaced.append((Path(source).parent, Path(target)))
+            real_replace(source, target)
+
+        monkeypatch.setattr(os, "replace", record_replace)
+
+        _write_initial_progress("my-ext")
+        _write_error_progress("my-ext", "Host agent failed")
+
+        assert replaced == [(directory, directory / "my-ext.json")] * 2
+        assert [path.name for path in directory.iterdir()] == ["my-ext.json"]
+        assert json.loads((directory / "my-ext.json").read_text())["error"] == "Host agent failed"
+        if os.name == "posix":
+            # The host agent reads the record as the install owner.
+            assert (directory / "my-ext.json").stat().st_mode & 0o777 == 0o644
+
+    @pytest.mark.parametrize("refused", ["mkstemp", "replace"])
+    def test_a_refused_write_is_logged_and_keeps_the_owner_record(self, monkeypatch, tmp_path, caplog, refused):
+        """An install owner other than UID 1000 keeps this API out of its
+        progress directory; the host agent's own record must stay intact."""
+        from routers.extensions import _write_error_progress
+
+        monkeypatch.setattr("routers.extensions.DATA_DIR", str(tmp_path))
+        directory = tmp_path / "extension-progress"
+        directory.mkdir()
+        owner_record = {"service_id": "comfyui", "status": "error", "phase_label": "Start failed",
+                        "error": "Docker compose operation timed out (600s)"}
+        (directory / "comfyui.json").write_text(json.dumps(owner_record))
+
+        def refuse(*args, **kwargs):
+            raise PermissionError(13, "Permission denied", str(directory))
+
+        monkeypatch.setattr(tempfile if refused == "mkstemp" else os, refused, refuse)
+
+        with caplog.at_level(logging.WARNING, logger="routers.extensions"):
+            _write_error_progress("comfyui", "Host agent failed to start extension.")
+
+        assert json.loads((directory / "comfyui.json").read_text()) == owner_record
+        assert [path.name for path in directory.iterdir()] == ["comfyui.json"]
+        assert "Progress record for comfyui was not written" in caplog.text
 
 # --- _activate_service: built-in (EXTENSIONS_DIR) branch ---
 

@@ -17,6 +17,15 @@ services:
       # Saved workflows and UI settings. Without this they live only in the
       # container layer and are lost on every recreate (e.g. `ods update`).
       - ./data/comfyui/user:/user:z
+      # The CUDA driver's kernel cache. On a GPU this PyTorch build has no
+      # kernels for (GB300, sm_103) the driver compiles ~850 MB of them for the
+      # first image. In the container layer that work was lost on every
+      # recreate, so the first image after an update took 52 s instead of 7 s.
+      - ./data/comfyui/cuda-cache:/cuda-cache:z
+    environment:
+      CUDA_CACHE_PATH: /cuda-cache
+      # The 1 GiB default barely holds one sm_103 set; 4 GiB is the maximum.
+      CUDA_CACHE_MAXSIZE: "4294967296"
     shm_size: '8g'
     deploy:
       resources:

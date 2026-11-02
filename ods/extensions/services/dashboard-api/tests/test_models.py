@@ -37,6 +37,32 @@ def test_active_model_reader_preserves_unmatched_quote(monkeypatch, tmp_path):
     assert models_router._read_active_model() == "model-v2.gguf'"
 
 
+@pytest.mark.parametrize(("owner", "expected"), [
+    ({"llmModel": "qwen3.6-35b-a3b", "ggufFile": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf", "contextSize": 131072},
+     "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"),
+    (None, None),
+])
+def test_active_model_reader_asks_the_owner_agent_for_a_private_env(monkeypatch, tmp_path, owner, expected):
+    """An install owner other than UID 1000 keeps .env from this API's UID."""
+    from pathlib import Path
+    import routers.models as models_router
+
+    env_path = tmp_path / ".env"
+    env_path.write_text("GGUF_FILE=stale.gguf\n", encoding="utf-8")
+    monkeypatch.setattr(models_router, "_ENV_PATH", env_path)
+    original = Path.read_text
+
+    def read_text(path, *args, **kwargs):
+        if path == env_path:
+            raise PermissionError(13, "Permission denied", str(path))
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    monkeypatch.setattr(models_router, "owner_model_config", lambda: owner)
+
+    assert models_router._read_active_model() == expected
+
+
 def test_huggingface_artifacts_group_complete_shards_and_require_integrity():
     import routers.models as models_router
 

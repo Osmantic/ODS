@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import Models from './Models'
+import { forgetLastCatalog } from '../hooks/useModels'
 
 // Keep the production inventory/activation hook and page together. Downloads
 // are a separate transport and are not involved in these navigation cases.
@@ -38,6 +39,7 @@ async function startActivation() {
 }
 
 beforeEach(() => {
+  forgetLastCatalog()
   vi.useFakeTimers()
   Object.defineProperty(document, 'hidden', { configurable: true, value: false })
   vi.stubGlobal('fetch', vi.fn((url, options) => {
@@ -195,4 +197,31 @@ it('reads backend activation on return without replaying the POST', async () => 
   const atNavigation = reads().length
   await act(async () => { await vi.advanceTimersByTimeAsync(620000) })
   expect(reads()).toHaveLength(atNavigation)
+})
+
+it('offers recovery from a remembered catalog only after its own read confirms it', async () => {
+  const held = { ok: true, json: async () => ({ pending: true, phase: 'held', transactionId: 'a'.repeat(64) }) }
+  const pendingCatalog = async () => {
+    const payload = await response(false).json()
+    return { ok: true, json: async () => ({ ...payload, modelRecoveryPending: true,
+      modelActivation: { active: false, outcome: 'rollback_unconfirmed', failureCode: 'rollback_unconfirmed' } }) }
+  }
+  vi.stubGlobal('fetch', vi.fn(async url => (url === '/api/models/recovery' ? held : pendingCatalog())))
+  const first = await openModels()
+  expect(screen.getByRole('button', { name: 'Recover model switch' })).toBeEnabled()
+  first.unmount()
+
+  let release
+  fetch.mockImplementation(url => (url === '/api/models/recovery'
+    ? Promise.resolve(held)
+    : new Promise(resolve => { release = () => resolve(pendingCatalog()) })))
+  render(<StrictMode><MemoryRouter><Models compact /></MemoryRouter></StrictMode>)
+  await act(async () => {})
+  expect(screen.queryByRole('button', { name: 'Recover model switch' })).toBeNull()
+  expect(screen.getByRole('button', { name: 'Run' })).toBeDisabled()
+
+  await act(async () => { release() })
+  await act(async () => {})
+  expect(screen.getByRole('button', { name: 'Recover model switch' })).toBeEnabled()
+  expect(posts()).toHaveLength(0)
 })

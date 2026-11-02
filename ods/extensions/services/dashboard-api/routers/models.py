@@ -44,6 +44,7 @@ from helpers import (
     get_loaded_model,
     is_plausible_single_request_tps,
     llama_auth_headers,
+    owner_model_config,
     record_model_performance,
 )
 from native_runtime import NATIVE
@@ -55,6 +56,7 @@ from host_agent_client import (
     request_json as request_agent_json,
 )
 from models import ModelLibraryGpu, ModelLibraryResponse
+from model_vllm import is_vllm_entry
 from pixel_runtime_state import pixel_stream_active
 from runtime_projection import active_runtime_projection
 from context_policy import HERMES_MIN_CONTEXT
@@ -66,6 +68,7 @@ from performance_oracle import (
     find_catalog_model,
     load_model_catalog,
     model_files_dir as model_files_dir,
+    normalize_catalog_entry,
     planned_model_context,
     read_env_file_value,
     read_env_value,
@@ -228,6 +231,16 @@ def _model_activation_mode_denial(
             "Local model activation is unavailable while ODS uses your own "
             "model server. Change the model in that server, or rerun the "
             "installer with an ODS-managed backend to activate downloaded models."
+        )
+    elif normalized_backend == "vllm":
+        # The vLLM engine serves one installer-set snapshot; activation swaps
+        # llama-server GGUFs (the host agent refuses it as well).
+        code = "vllm_runtime_installer_managed"
+        reason = "vllm_backend_selected"
+        message = (
+            "This install runs its model on the vLLM engine, and models cannot "
+            "be switched here. To use another model, run the ODS installer "
+            "again and choose it."
         )
     elif "unknown" in {effective_mode, configured_mode}:
         code = "ods_mode_unknown"
@@ -395,6 +408,10 @@ def _read_active_model() -> Optional[str]:
         for line in _ENV_PATH.read_text(encoding="utf-8").splitlines():
             if line.startswith("GGUF_FILE="):
                 return parse_env_value(line.split("=", 1)[1])
+    except PermissionError:
+        # The install owner's private .env (an owner other than UID 1000):
+        # its host agent reads the active file for this API.
+        return (owner_model_config() or {}).get("ggufFile")
     except OSError:
         pass
     return None
@@ -1513,6 +1530,22 @@ def _hf_requested_projector(details: dict[str, Any], body: dict[str, Any]) -> di
     return projector
 
 
+def _refuse_vllm_entry(model: dict[str, Any], action: str) -> None:
+    """409 for a vLLM catalog entry: the installer downloads and runs it.
+
+    Its snapshot is a model folder, not a GGUF the model lifecycle can
+    download, switch to or delete (scripts/download-hf-manifest.py and
+    LLM_BACKEND=vllm).
+    """
+    if not is_vllm_entry(model):
+        return
+    raise HTTPException(status_code=409, detail={
+        "error": f"{model.get('name') or model.get('id')} runs only on the vLLM engine. {action}",
+        "code": "vllm_model_installer_managed",
+        "requestedModelId": model.get("id"),
+    })
+
+
 def _hf_download_payload(record: dict[str, Any]) -> dict[str, Any]:
     """The host-agent download request for a model record, projector included."""
     payload: dict[str, Any] = {
@@ -1929,6 +1962,104 @@ def _model_management() -> dict:
     return {key: value for key, value in proof.items() if key != "vision"}
 
 
+# The ownership proof runs a controller on the Windows host and takes seconds,
+# more under load: on an RTX Spark it took 3.6-5.4 s during a Portal build and
+# was the slowest part of every GET /api/models. The catalog reuses the last
+# conclusive proof while the live runtime agrees with it and refreshes it in
+# the background. A runtime change made here forgets it, an owned lifecycle
+# operation always gets a fresh one, and the host proves ownership again
+# before any control acts.
+_MODEL_MANAGEMENT_REFRESH_SECONDS = 15.0
+_MODEL_MANAGEMENT_MAX_AGE_SECONDS = 6 * 3600.0
+_model_management_lock = threading.Lock()
+_model_management_remembered: tuple[float, dict] | None = None
+_model_management_generation = 0
+_model_management_proof_future: asyncio.Future | None = None
+_model_management_missed = False
+
+
+def _forget_model_management() -> None:
+    """Drop the remembered proof, and any proof still running from before a runtime change."""
+    global _model_management_remembered, _model_management_generation, _model_management_proof_future
+    global _model_management_missed
+    with _model_management_lock:
+        _model_management_remembered = None
+        _model_management_generation += 1
+        _model_management_proof_future = None
+        _model_management_missed = False
+
+
+async def _prove_model_management(generation: int) -> tuple[int, dict]:
+    global _model_management_remembered, _model_management_missed
+    value = await asyncio.to_thread(_model_management)
+    with _model_management_lock:
+        if generation == _model_management_generation:
+            if value.get("managed") is not None:
+                _model_management_remembered = (time.monotonic(), dict(value))
+                _model_management_missed = False
+            elif _model_management_missed:
+                # Two unverified proofs in a row: the host keeps failing, so the
+                # catalog stops showing the last good one. A single interop
+                # timeout leaves it in place.
+                _model_management_remembered = None
+            else:
+                _model_management_missed = True
+    return generation, value
+
+
+def _log_model_management_crash(done: asyncio.Future) -> None:
+    # A background refresh has no reader, so its crash is logged here.
+    if not done.cancelled() and done.exception() is not None:
+        logger.error("Model management proof crashed", exc_info=done.exception())
+
+
+def _model_management_in_flight() -> asyncio.Future:
+    """The proof already running, or a new one; concurrent catalog reads share it."""
+    global _model_management_proof_future
+    with _model_management_lock:
+        future = _model_management_proof_future
+        if future is None or future.done():
+            future = asyncio.ensure_future(_prove_model_management(_model_management_generation))
+            future.add_done_callback(_log_model_management_crash)
+            _model_management_proof_future = future
+    return future
+
+
+def _remembered_model_management() -> tuple[float, dict] | None:
+    with _model_management_lock:
+        remembered = _model_management_remembered
+    if remembered is None or time.monotonic() - remembered[0] > _MODEL_MANAGEMENT_MAX_AGE_SECONDS:
+        return None
+    return remembered
+
+
+async def _fresh_model_management(future: asyncio.Future) -> dict:
+    """The proof ``future`` yields, taken again if a runtime change landed meanwhile."""
+    generation, value = await asyncio.shield(future)
+    if generation != _model_management_generation:
+        _generation, value = await asyncio.shield(_model_management_in_flight())
+    return dict(value)
+
+
+async def _catalog_model_management(prefetch: asyncio.Future | None, agent_status: object,
+                                    loaded_model: str | None) -> dict:
+    """A fresh proof, or the remembered one when the live runtime agrees with it."""
+    if prefetch is not None:
+        return await _fresh_model_management(prefetch)
+    remembered = _remembered_model_management()
+    lifecycle = isinstance(agent_status, dict) and (
+        agent_status.get("lifecycleActive") is True or agent_status.get("modelTransactionPending") is True)
+    if remembered is not None and not lifecycle:
+        taken_at, value = remembered
+        # An owned runtime runs exactly when its model answers, so a crash or
+        # a stop made elsewhere never keeps the earlier controls on screen.
+        if value.get("managed") is not True or value.get("running") is (loaded_model is not None):
+            if time.monotonic() - taken_at > _MODEL_MANAGEMENT_REFRESH_SECONDS:
+                _model_management_in_flight()
+            return dict(value)
+    return await _fresh_model_management(_model_management_in_flight())
+
+
 # Docker Desktop installs whose host agent launches llama-server.exe on
 # Windows itself (the host agent's _WINDOWS_NATIVE_RUNTIME_MODES); that
 # launch takes no projector.
@@ -1966,6 +2097,10 @@ async def _discover_loaded_model() -> str | None:
 async def list_models(api_key: str = Depends(verify_api_key)):
     """List model catalog entries with source-labelled performance metadata."""
     global _last_recorded_throughput_sample
+    host_runtime = _windows_hosted_runtime()
+    # With no proof to reuse, the slow ownership proof runs alongside these reads.
+    management_prefetch = (_model_management_in_flight()
+                           if host_runtime and _remembered_model_management() is None else None)
     gpu_info, loaded_model, agent_status = await asyncio.gather(
         asyncio.to_thread(get_gpu_info),
         _await_or_default(
@@ -2044,9 +2179,10 @@ async def list_models(api_key: str = Depends(verify_api_key)):
         # what serves chat. The installer refuses URLs with credentials.
         payload["externalModel"] = read_env_value("EXTERNAL_LLM_MODEL", INSTALL_DIR).strip() or None
         payload["externalHost"] = _external_api_host(read_env_value("EXTERNAL_LLM_URL", INSTALL_DIR))
-    payload["hostRuntime"] = _windows_hosted_runtime()
-    if payload["hostRuntime"]:
-        payload["modelManagement"] = await asyncio.to_thread(_model_management)
+    payload["hostRuntime"] = host_runtime
+    if host_runtime:
+        payload["modelManagement"] = await _catalog_model_management(
+            management_prefetch, agent_status, loaded_model)
     # A held transition does not establish which route currently serves chat.
     payload["activeRuntime"] = (
         None if payload.get("modelRecoveryPending") or (payload.get("modelLifecycle") or {}).get("active")
@@ -2589,6 +2725,26 @@ def _find_normalized_model(model_id: str) -> Optional[dict]:
     return find_catalog_model(load_model_catalog(INSTALL_DIR), model_id, None)
 
 
+def loaded_model_display_name(loaded_model: str | None) -> str | None:
+    """The name the Models page shows for the model a runtime serves.
+
+    A runtime serves the model file name as its id (llama-server --alias), so
+    a status reader would show a file name. The first catalog entry matching
+    it is the one the Models page shows as loaded; None when none matches.
+    """
+    if not loaded_model:
+        return None
+    library = _load_library()
+    if LLM_BACKEND == "vllm":
+        # vLLM serves --served-model-name; its entry has no GGUF to match.
+        entry = next((raw for raw in library if is_vllm_entry(raw)
+                      and raw.get("served_model_name") == loaded_model), None)
+        return entry.get("name") if entry else None
+    catalog = [entry for entry in map(normalize_catalog_entry, library) if entry is not None]
+    entry = find_catalog_model(catalog, loaded_model, loaded_model)
+    return entry["name"] if entry else None
+
+
 def _external_api_host(url: str) -> str | None:
     """The host (and port) of the API URL, without anything else."""
     try:
@@ -2783,6 +2939,7 @@ def download_model(model_id: str, api_key: str = Depends(verify_api_key)):
     model = _find_model_in_library(model_id)
     if model is None:
         raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found in library")
+    _refuse_vllm_entry(model, "The ODS installer downloads it when it sets that engine up.")
 
     bootstrap_conflict = _bootstrap_upgrade_download_conflict()
     if bootstrap_conflict is not None:
@@ -2898,7 +3055,11 @@ def recover_model_switch(body: dict | None = Body(default=None), api_key: str = 
     if body is None or not any(body == allowed and all(type(body[key]) is type(value) for key, value in allowed.items())
                                for allowed in _RECOVERY_REQUESTS):
         raise HTTPException(status_code=400, detail='Recovery accepts {} or {"releaseUnverified": true} only.')
-    value = _model_recovery_request('POST', dict(body))
+    try:
+        value = _model_recovery_request('POST', dict(body))
+    finally:
+        # Recovery can restore the earlier runtime.
+        _forget_model_management()
     return value if isinstance(value, JSONResponse) else JSONResponse(value, headers={'Cache-Control': 'no-store'})
 
 
@@ -2933,6 +3094,7 @@ def manage_model_runtime(operation: str, body: dict | None = Body(default=None),
         value = _call_agent_model(f"/v1/model/runtime/{operation}", {}, timeout=1200)
     finally:
         _invalidate_agent_model_status_cache()
+        _forget_model_management()
     expected = "started" if operation == "start" else "stopped"
     if not isinstance(value, dict) or value.get("status") != expected:
         raise HTTPException(status_code=502, detail="The runtime operation was not confirmed; refresh its status")
@@ -2979,6 +3141,7 @@ def _activate_model(model_id: str, body: dict[str, Any] | None, *, chat_template
     model = _find_loadable_model(model_id)
     if model is None:
         raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found in library or local GGUF files")
+    _refuse_vllm_entry(model, "Only the ODS installer sets that engine up and runs it.")
 
     requested_context = _requested_activation_context(body)
     already_active, loaded_model = _already_active_model(model_id, model)
@@ -3077,6 +3240,7 @@ def _activate_model(model_id: str, body: dict[str, Any] | None, *, chat_template
         # lifecycle as active. Drop it so the dashboard's confirming poll,
         # sent as soon as this response lands, sees the settled state.
         _invalidate_agent_model_status_cache()
+        _forget_model_management()
     return result
 
 
@@ -3171,6 +3335,7 @@ def delete_model(model_id: str, api_key: str = Depends(verify_api_key)):
     model = _find_model_in_library(model_id) or _find_local_gguf_model(model_id)
     if model is None:
         raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found in library or local GGUF files")
+    _refuse_vllm_entry(model, "The ODS installer manages its files.")
 
     payload = {
         "gguf_file": model["gguf_file"],

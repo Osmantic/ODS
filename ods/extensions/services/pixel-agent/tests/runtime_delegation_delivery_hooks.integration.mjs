@@ -12,6 +12,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {pathToFileURL} from 'node:url';
+import {readCompleteJsonl} from './fixtures/complete-jsonl.mjs';
 import {createIngressServer} from '../host/pixel_ingress.mjs';
 import {createChatHistoryLedger} from '../host/chat_history_ledger.mjs';
 import {setTimeout as delay} from 'node:timers/promises';
@@ -261,7 +262,7 @@ test(`real gateway deferred delegation waits for two children and a verified rev
         // actually ended. This reproduces the live partial-completion ordering.
         let firstEnded=false;
         for(let i=0;i<250;i++) {
-          const events=existsSync(eventsFile)?readFileSync(eventsFile,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse):[];
+          const events=readCompleteJsonl(eventsFile);
           firstEnded=events.some(e=>e.hook==='end'&&e.runId?.startsWith('announce:'));
           if(firstEnded)break;await delay(50);
         }
@@ -271,7 +272,7 @@ test(`real gateway deferred delegation waits for two children and a verified rev
         if(interim==='daily-reset'){
           let yielded=false;
           for(let i=0;i<250;i++){
-            const events=readFileSync(eventsFile,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
+            const events=readCompleteJsonl(eventsFile);
             yielded=events.some(e=>e.hook==='tool'&&e.toolName==='sessions_yield')
               && events.some(e=>e.hook==='end'&&e.runId?.startsWith('chatcmpl_'));
             if(yielded)break;await delay(20);
@@ -286,7 +287,7 @@ test(`real gateway deferred delegation waits for two children and a verified rev
       delta={role:'assistant',content:childTexts[userMessages.includes('CHILD_FIXTURE_TASK 1')?1:0]};
     } else if(userMessages.includes('Internal task completion event') || userMessages.includes('CONSOLIDATED_REVIEW') || revision) {
       trace.branch='parent-announcement';
-      const observed=readFileSync(eventsFile,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
+      const observed=readCompleteJsonl(eventsFile);
       const finished=observed.filter(e=>e.hook==='end'&&e.sessionKey?.includes(':subagent:')&&childTexts.includes(e.lastText)).length;
       const announced=new Set(observed.filter(e=>e.hook==='prompt'&&e.provenance?.sourceTool==='subagent_announce').map(e=>e.provenance.sourceSessionKey)).size;
       if(finished<2||announced<2)delta={role:'assistant',content:interim==='silent'?'NO_REPLY':'One review arrived; waiting for the second.'};
@@ -339,7 +340,7 @@ test(`real gateway deferred delegation waits for two children and a verified rev
     const responsePromise=fetch(`http://127.0.0.1:${ingressPort}/v1/chat/completions`,{method:'POST',headers:{Authorization:'Bearer fixture-only-0123456789abcdef','Content-Type':'application/json'},body:JSON.stringify({model:'openclaw:pixel',stream:true,user:'delegation-fixture',messages:[{role:'user',content:'Delegate two read-only reviews, yield, and consolidate the result.'}],...interim==='cancel'?{request_id:'cancel-original',history_snapshot:{schemaVersion:1,messages:[...prior,{role:'user',content:'Delegate two read-only reviews, yield, and consolidate the result.'}]}}:{}}),signal:AbortSignal.timeout(45000)});
     if(interim==='reset'){
       const initialBody=responsePromise.then(response=>response.text()).catch(error=>{assert.ok(['terminated','AbortError'].includes(error.message)||error.name==='AbortError');return '';});
-      const readEvents=()=>existsSync(eventsFile)?readFileSync(eventsFile,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse):[];
+      const readEvents=()=>readCompleteJsonl(eventsFile);
       let events=[];
       for(let i=0;i<250;i++){
         events=readEvents();
@@ -385,7 +386,7 @@ test(`real gateway deferred delegation waits for two children and a verified rev
     }
     if(interim==='cancel') {
       const initialBody=responsePromise.then(response=>response.text()).catch(error=>{assert.ok(['terminated','AbortError'].includes(error.message)||error.name==='AbortError');return '';});
-      const readEvents=()=>existsSync(eventsFile)?readFileSync(eventsFile,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse):[];
+      const readEvents=()=>readCompleteJsonl(eventsFile);
       let events=[];
       for(let i=0;i<250;i++){
         events=readEvents();
@@ -450,7 +451,7 @@ test(`real gateway deferred delegation waits for two children and a verified rev
     if(interim==='overflow-failure'){
       let events=[];
       for(let i=0;i<350;i++){
-        events=existsSync(eventsFile)?readFileSync(eventsFile,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse):[];
+        events=readCompleteJsonl(eventsFile);
         if(events.some(e=>e.hook==='admission'&&e.runId?.startsWith('announce:')&&e.decision?.outcome==='block'))break;
         await delay(100);
       }
@@ -467,7 +468,7 @@ test(`real gateway deferred delegation waits for two children and a verified rev
     assert.ok(body.includes('CONSOLIDATED_VERIFIED'),body);assert.ok(!body.includes('Waiting for the review.'),body);assert.ok(!body.includes('CONSOLIDATED_REVIEW'),body);
     let events=[];
     for(let i=0;i<250;i++) {
-      events=existsSync(eventsFile)?readFileSync(eventsFile,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse):[];
+      events=readCompleteJsonl(eventsFile);
       if(events.some(e=>e.hook==='end'&&e.lastText==='CONSOLIDATED_VERIFIED'))break;
       await delay(100);
     }
@@ -526,7 +527,7 @@ test(`real gateway deferred delegation waits for two children and a verified rev
       const reply=await fetch(`http://127.0.0.1:${ingressPort}/v1/chat/completions`,{method:'POST',headers:{Authorization:'Bearer fixture-only-0123456789abcdef','Content-Type':'application/json'},body:JSON.stringify({model:'openclaw:pixel',stream:true,user,messages:[{role:'user',content:prompt}]}),signal:AbortSignal.timeout(30000)});
       const visible=await reply.text();
       for(let i=0;i<100;i++) {
-        events=readFileSync(eventsFile,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
+        events=readCompleteJsonl(eventsFile);
         if(events.some(e=>e.hook==='end'&&e.sessionKey===`agent:pixel:openai-user:ods-${sha(user)}`))break;
         await delay(50);
       }
@@ -555,7 +556,7 @@ test(`real gateway deferred delegation waits for two children and a verified rev
         headers:{Authorization:'Bearer fixture-only-0123456789abcdef','Content-Type':'application/json'},
         body:JSON.stringify({model:'openclaw:pixel',stream:true,user:'delegation-fixture',messages:[{role:'user',content:'HELLO_FIXTURE: a new ordinary owner request after the reset boundary.'}]}),signal:AbortSignal.timeout(30000)});
       const visible=await next.text();assert.ok(visible.includes('HELLO_VERIFIED'),visible);
-      events=readFileSync(eventsFile,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
+      events=readCompleteJsonl(eventsFile);
       const newOwner=events.filter(e=>e.hook==='prompt'&&e.runId?.startsWith('chatcmpl_')&&e.sessionKey===original.sessionKey).at(-1);
       assert.notEqual(newOwner.sessionId,original.sessionId,'an ordinary new owner request retains the native daily-reset policy');
     }

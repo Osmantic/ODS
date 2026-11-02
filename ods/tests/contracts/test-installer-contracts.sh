@@ -566,10 +566,13 @@ echo "$guard_4k" | grep -q '^ENABLE_QDRANT=true$' \
   || { echo "[FAIL] 4K-page aarch64 must keep ENABLE_QDRANT enabled"; echo "$guard_4k"; exit 1; }
 echo "$guard_4k" | grep -q '^QDRANT_COMPOSE=enabled$' \
   || { echo "[FAIL] 4K-page aarch64 must keep Qdrant compose enabled"; echo "$guard_4k"; exit 1; }
-echo "$guard_4k" | grep -q '^ENABLE_EMBEDDINGS=false$' \
-  || { echo "[FAIL] aarch64 must still disable amd64-only embeddings"; echo "$guard_4k"; exit 1; }
-echo "$guard_4k" | grep -q '^EMBEDDINGS_COMPOSE=disabled$' \
-  || { echo "[FAIL] aarch64 must still disable embeddings compose"; echo "$guard_4k"; exit 1; }
+# TEI runs on arm64 from compose.arm64.yaml, with 4K and 64K pages alike.
+for guard in "$guard_4k" "$guard_64k"; do
+  echo "$guard" | grep -q '^ENABLE_EMBEDDINGS=true$' \
+    || { echo "[FAIL] aarch64 must keep embeddings enabled (arm64 TEI pin)"; echo "$guard"; exit 1; }
+  echo "$guard" | grep -q '^EMBEDDINGS_COMPOSE=enabled$' \
+    || { echo "[FAIL] aarch64 must keep embeddings compose enabled"; echo "$guard"; exit 1; }
+done
 
 echo "[contract] non-interactive reinstall reuses valid GPU assignment"
 grep -q '_load_existing_gpu_assignment_json' "$features_phase" \

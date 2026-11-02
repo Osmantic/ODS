@@ -121,6 +121,29 @@ test.each([false, true])('shows the live model API instead of the loaded local e
   expect(screen.getByRole('button', {name: 'Configure context for Qwen 3.5 9B'})).toBeDisabled()
 })
 
+test('lists the catalog picks for this hardware right after the recommended model', () => {
+  // Workstation06 (346 GB of GPU memory): every model fits, and catalog order
+  // alone put the smallest models right after the recommended one.
+  useModelsMock.mockReturnValue(baseState({
+    gpu: { vramUsed: 26, vramTotal: 346, vramFree: 320 },
+    recommendationAlternatives: [{ id: 'catalog-fit-2', name: 'Second Fit Pick' }, { id: 'catalog-fit-1', name: 'First Fit Pick' }],
+    models: [
+      model({ id: 'tiny-1', name: 'Tiny One', sizeGb: 1.3, vramRequired: 3 }),
+      model({ id: 'catalog-fit-1', name: 'First Fit Pick', sizeGb: 49, vramRequired: 52 }),
+      model({ id: 'tiny-2', name: 'Tiny Two', sizeGb: 1.9, vramRequired: 3 }),
+      model({ id: 'catalog-fit-2', name: 'Second Fit Pick', sizeGb: 62, vramRequired: 70 }),
+      model({ id: 'too-big', name: 'Too Big', sizeGb: 400, vramRequired: 420, fitsVram: false }),
+      model({ id: 'recommended', name: 'Recommended Pick', sizeGb: 22, vramRequired: 26, recommended: true }),
+    ],
+  }))
+  renderModels()
+  const order = ['Recommended Pick', 'Second Fit Pick', 'First Fit Pick', 'Tiny One', 'Tiny Two', 'Too Big']
+  const rows = order.map(name => screen.getAllByText(name)[0])
+  for (let index = 1; index < rows.length; index += 1) {
+    expect(rows[index - 1].compareDocumentPosition(rows[index]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  }
+})
+
 test('keeps the local Active state when no active remote route is verified', () => {
   useModelsMock.mockReturnValue(baseState({
     currentModel: 'qwen3.5-9b-q4',
@@ -300,9 +323,48 @@ test.each([true, false])('only managed runtimes expose unload/resume and hide ad
   renderModels()
   const button = screen.getByRole('button', { name: running ? 'Unload model' : 'Resume model' })
   fireEvent.click(button)
+  // Unloading asks first; Resume starts at once.
+  if (running) fireEvent.click(within(screen.getByRole('dialog', { name: 'Unload the model?' })).getByRole('button', { name: 'Unload model' }))
+  else expect(screen.queryByRole('dialog')).toBeNull()
   expect(running ? state.stopRuntime : state.startRuntime).toHaveBeenCalledOnce()
   expect(screen.queryByRole('button', { name: 'Adopt loaded model in ODS' })).toBeNull()
   if (!running) expect(screen.queryByText('Local model runtime unavailable')).toBeNull()
+})
+
+test('an open unload question closes for good when the model stops or another operation starts', () => {
+  const state = baseState({
+    models: [model({ status: 'loaded' })],
+    odsMode: 'local', configuredMode: 'local', llmBackend: 'llama-server', hostRuntime: true,
+    modelManagement: { managed: true, canActivate: true, canUnload: true, running: true },
+    stopRuntime: vi.fn(), startRuntime: vi.fn(),
+  })
+  useModelsMock.mockReturnValue(state)
+  const view = renderModels()
+  const show = (next, download = baseDownloadState()) => {
+    useModelsMock.mockReturnValue(next)
+    useDownloadProgressMock.mockReturnValue(download)
+    view.rerender(createElement(MemoryRouter, null, createElement(Models)))
+  }
+  const ask = () => {
+    fireEvent.click(within(screen.getByRole('region', { name: 'Model runtime controls' })).getByRole('button', { name: 'Unload model' }))
+    expect(screen.getByRole('dialog', { name: 'Unload the model?' })).toBeVisible()
+  }
+
+  // The model stopped elsewhere: nothing is left to unload.
+  ask()
+  show({ ...state, modelManagement: { ...state.modelManagement, canActivate: false, running: false } })
+  expect(screen.queryByRole('dialog')).toBeNull()
+  show(state)
+  expect(screen.queryByRole('dialog')).toBeNull()
+
+  // A download started elsewhere: the runtime controls wait for it.
+  ask()
+  show(state, baseDownloadState({ isDownloading: true }))
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(screen.getByRole('button', { name: 'Unload model' })).toBeDisabled()
+  show(state)
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(state.stopRuntime).not.toHaveBeenCalled()
 })
 
 test('a stopped runtime shows the launcher error, and a memory refusal turns Resume into Start anyway', () => {

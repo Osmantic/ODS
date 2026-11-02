@@ -135,7 +135,7 @@ function aiDue(i) { return (i % AI_SLICE) === _aiCursor; }
 // but the crowd's inward drive from enemyAI runs every single frame while the push that answers it
 // ran on the same 1-in-6 stagger: attraction 6x/6, repulsion 1x/6. Under a swarm the brutes and hounds
 // therefore converge on a shared overlap at the hero and never recover, which is the "they melt into
-// one stacked heap around Faelar" report. The per-entity work in the separation pass is a bucket
+// one stacked heap around Gabriel" report. The per-entity work in the separation pass is a bucket
 // lookup plus a handful of cheap comparisons -- far cheaper than the LOS and path work the AI slice
 // exists to ration -- so the crowd pass now runs against every enemy every frame. Only the expensive
 // AI passes stay sliced.
@@ -365,7 +365,7 @@ const SEP_NEAR = [];
 function enemySeparation() {
   const list = G.enemies;
   SEP.reset();
-  // Hero body radius for separation, in the same units as e.r. Faelar's drawn body is about 11 px
+  // Hero body radius for separation, in the same units as e.r. Gabriel's drawn body is about 11 px
   // wide, plus the hero art's 2 px stroke half-width, so ~13 px is his real footprint - the same
   // 12-16 px the rest of the codebase treats him as (hurtHero knocks him back with moveEnt(P, 12, …)
   // and spawns clear him with a 16 px radius). The pack used to push only against each other, which
@@ -668,7 +668,7 @@ function update(dt) {
     if (G.waveTimer > 2.2) {
       G.waveTimer = 0;
       if ((G.waveNum || 0) < 2) spawnWave();
-      else { G.wave = "preboss"; G.waveTimer = 2.2; announce("A presence stirs…", ZONES[G.zone].boss.name + " approaches"); }
+      else { G.wave = "preboss"; G.waveTimer = 2.2; announce("A presence stirs…", ZONES[realmIndex(G.zone)].boss.name + " approaches"); }
     }
   } else if (G.wave === "fight") { G.waveTimer = 0; } else if (G.wave === "preboss") {
     G.waveTimer -= dt; if (G.waveTimer <= 0) spawnBoss();
@@ -679,17 +679,23 @@ function update(dt) {
     // Guarded on the boss being alive, so a boss killed on the same frame as a timer expiry
     // cannot spawn a wave into the "cleared" celebration.
     if (G.boss) {
-      G.bossReinT = (G.bossReinT === undefined ? BOSS_REINFRESH_S : G.bossReinT) - dt;
+      // The fallback on a missing clock also honours the loop rule, so a boss that somehow starts
+      // without an explicit timer still gets realm-6 pacing in loop 2+ instead of the slow one.
+      const reinLoop = loopNumber(G.zone);
+      G.bossReinT = (G.bossReinT === undefined ? bossReinIntervalS(G.boss.kind, reinLoop) : G.bossReinT) - dt;
       if (G.bossReinT <= 0) {
         const final = G.boss.kind === FINAL_BOSS_KIND;
-        G.bossReinT = final ? FINAL_BOSS_REINFRESH_S : BOSS_REINFRESH_S;
+        G.bossReinT = bossReinIntervalS(G.boss.kind, reinLoop);
         spawnReinforceWave(final);
       }
     }
   } else if (G.wave === "cleared") {
     G.waveTimer += dt;
     if (G.waveTimer > 3.4) {
-      if (G.zone >= ZONES.length - 1) { gameOver(true); }
+      // Finishing realm 6 completes a circuit: the quest panel opens as it always did, but its
+      // button now continues into the next, harder loop instead of restarting the game. The run
+      // only ever truly ends when Gabriel falls, so the endless game is "how far can you go".
+      if (realmIndex(G.zone) >= REALM_COUNT - 1) { questVictory(); }
       else { continueJourney(); }
     }
   }
@@ -768,6 +774,9 @@ function update(dt) {
     if (dr < 26) {
       pk.t = 0;
       if (pk.kind === "gold") { G.gold += pk.val; AudioSys.coin(); popText(P.x, P.y - 66, "+" + pk.val + " 🪙", "#ffd76b"); }
+      // pk.val is already blessing-scaled — every arrow source resolves its value through
+      // arrowDrop() at drop time — so the pickup adds it as-is. Multiplying here too would apply
+      // the blessing twice, which is exactly the bug class this comment exists to prevent.
       else if (pk.kind === "arrows") { P.arrows += pk.val; AudioSys.loot(); popText(P.x, P.y - 66, "+" + pk.val + " arrows", "#dfe9ff"); }
       else { P.hp = Math.min(P.maxHp, P.hp + pk.val); AudioSys.potion(); popText(P.x, P.y - 66, "+" + pk.val + " HP", "#7dff8a"); }
       updateHud();
@@ -842,7 +851,7 @@ function hexToRgb(h) {
 // It used to be 2R+4 wide with the gradient at (R+2, R+2). Those two agree with each other, so
 // the gradient was still dead-centre in its own canvas, but every caller subtracted only R+2,
 // leaving the centre 4px right and 4px below the point it was supposed to light - the uniform
-// "lights lined up by their top-left corner" offset on Faelar and every fire pit alike. The
+// "lights lined up by their top-left corner" offset on Gabriel and every fire pit alike. The
 // magnitude was constant because it came from the sprite padding, not from any per-light position,
 // which is why nothing was fixed by nudging the hero/brazier anchor values earlier.
 // The +4 pad was never load-bearing: the gradient reaches alpha 0 at radius R and the arc is
@@ -950,7 +959,7 @@ try {
   // The warm torch wash is keyed "__warm" at its build site, and the cache lookup there is by that
   // same key, so the prewarm has to use it too. It used to prewarm under key "255,168,74", which no
   // caller ever reads: the expensive 800px rasterisation still landed on the first frame that showed
-  // Faelar, which is the hitch this block exists to prevent.
+  // Gabriel, which is the hitch this block exists to prevent.
   if (!GLOW_hero.__warm) GLOW_hero.__warm = glowSpritePair(WARM_TORCH, HERO_GLOW_R, .13, [[.2, "rgba(" + WARM_TORCH + ",.1)"], [.5, "rgba(" + WARM_TORCH + ",.05)"], [.78, "rgba(" + WARM_TORCH + ",.017)"], [1, "rgba(" + WARM_TORCH + ",0)"]], .038);
 } catch (ePrewarm) { /* falls back to lazy build */ }
 // The hit-flash sprite cache that used to live here is gone with the flash. glowSpriteWhite had no
@@ -982,7 +991,7 @@ function vignetteSprite(w, h) {
     const x = c.getContext("2d");
     if (!x) return _VIG = null;
     const rg = x.createRadialGradient(w * .5, h * .5, 0, w * .5, h * .5, Math.max(w, h) * .72);
-    // Fully clear core, so nothing films over the middle where Faelar and the fires are doing the
+    // Fully clear core, so nothing films over the middle where Gabriel and the fires are doing the
     // work. Stops are explicit because a default 0-alpha start and a 1-alpha end would darken the
     // entire viewport, which is the haze this is meant to replace.
     // Clear core, so nothing washes the middle where the hero and the fires are doing the work.
@@ -996,15 +1005,30 @@ function vignetteSprite(w, h) {
   return _VIG;
 }
 
+// Fixed font strings for the floating world numbers, so the per-frame text pass assigns a
+// constant instead of concatenating size + family per number. Identical to the strings the old
+// per-number expression built; hoisted so the canvas font changes at most twice per frame.
+const TEXT_FONT_SMALL = "bold 15px 'Trebuchet MS', sans-serif";
+const TEXT_FONT_BIG = "bold 22px 'Trebuchet MS', sans-serif";
+// Scratch buckets for the per-size text grouping in renderWorld. Reused across frames and always
+// truncated back to empty at the end of the same synchronous pass, so they hold nothing between
+// frames and allocate nothing per frame.
+const _nSmall = [];
+const _nBig = [];
+
 function renderBase() {
   const g = CX;
   g.setTransform(1, 0, 0, 1, 0, 0);
-  g.globalAlpha = 1; g.globalCompositeOperation = "source-over"; g.filter = "none";
+  // No g.filter here: the game never assigns a canvas filter, and writing "none" every frame
+  // still invalidates the engine's cached filter state (garbage that climbs over a long session).
+  g.globalAlpha = 1; g.globalCompositeOperation = "source-over";
   g.shadowBlur = 0; g.shadowColor = "transparent";
   g.lineCap = "butt"; g.lineJoin = "miter"; g.lineWidth = 1;
   g.imageSmoothingEnabled = true;
   if (G.shake > 0) g.translate(G.shX || 0, G.shY || 0);
-  const zc = (ZONES[clamp(G.zone | 0, 0, ZONES.length - 1)] || ZONES[0]).wall;
+  // clamp() kept the old six-realm game in range; with the endless loop the zone index has to be
+  // wrapped with realmIndex() or every circuit past the first picks the last realm's palette.
+  const zc = (ZONES[realmIndex(G.zone)] || ZONES[0]).wall;
   // solid backdrop: if a draw call throws mid-frame, the screen shows stone, never a
   // canvas-wide gradient fill (the old "whole screen turns one solid colour" bug)
   g.fillStyle = typeof zc === "string" ? zc : "#241f24"; g.fillRect(0, 0, W, H);
@@ -1092,7 +1116,7 @@ function _lightPass(g) {
   // Corner falloff over the light mask. The veil is a per-light mask, and in a large hall it can
   // leave the far corners only veil-dark, which reads as a flat evenly-lit plane instead of a
   // torchlit room. This is a blit of the cached offscreen gradient, not a coloured fillRect on the
-  // visible canvas, and it is fully transparent across the middle, so it cannot film over Faelar
+  // visible canvas, and it is fully transparent across the middle, so it cannot film over Gabriel
   // or the fires the way a screen-wide ambient lift does.
   try {
     const vig = vignetteSprite(W, H);
@@ -1100,7 +1124,7 @@ function _lightPass(g) {
   } catch (eVig2) { /* decorative falloff only */ }
   g.restore();
   g.setTransform(1, 0, 0, 1, 0, 0);
-  g.globalAlpha = 1; g.globalCompositeOperation = "source-over"; g.filter = "none";
+  g.globalAlpha = 1; g.globalCompositeOperation = "source-over";
 }
 
 function renderWorld(g) {
@@ -1109,7 +1133,7 @@ function renderWorld(g) {
 
   // arena backdrop (fallback fill if nothing is baked)
   if (D) {
-    g.fillStyle = ZONES[clamp(G.zone | 0, 0, ZONES.length - 1)].floor;
+    g.fillStyle = ZONES[realmIndex(G.zone)].floor;
     g.fillRect(0, 0, D.wpx, D.hpx);
   }
 
@@ -1144,7 +1168,7 @@ function renderWorld(g) {
   // Sorting on the raw floor line is right for entities of comparable height and wrong for a
   // 200 px boss: Skarnax's feet sit at his own y, while the elf standing "just above" him has a
   // slightly smaller y and therefore painted *last*, i.e. on top of the boss's whole body. What
-  // the owner saw was Faelar completely hidden behind Skarnax's flank even though he is standing
+  // the owner saw was Gabriel completely hidden behind Skarnax's flank even though he is standing
   // north of him. The comparison has to use the feet line of whatever is actually being painted:
   // a tall sprite whose visible mass is well above its origin should not occlude a smaller entity
   // that is genuinely further from the camera. So each entity sorts on its own baseline (y), and
@@ -1184,19 +1208,47 @@ function renderWorld(g) {
   }
   g.globalAlpha = 1;
   // texts
+  // Two fixed font strings, set once before each group instead of a rebuilt font per number.
+  // The old line concatenated "bold 22px"/"bold 15px" with the family and assigned it for every
+  // text in every frame, which churned the 2D engine's font/glyph state (another source of the
+  // long-session garbage). The sizes are constants and the pool is small, so the texts are bucketed
+  // first and drawn big-group then small-group: the font changes at most twice per frame instead of
+  // once per number. Same strings, sizes, stroke-then-fill order and alpha as before; the only
+  // difference is that a big number now draws over a small one when they overlap, instead of in
+  // spawn order.
   g.textAlign = "center";
-  for (const tx of G.texts) {
-    g.globalAlpha = clamp(tx.t / .9, 0, 1);
-    g.font = (tx.big ? "bold 22px" : "bold 15px") + " 'Trebuchet MS', sans-serif";
-    g.lineWidth = 3; g.strokeStyle = "rgba(0,0,0,.7)"; g.strokeText(tx.str, tx.x, tx.y);
-    g.fillStyle = tx.color; g.fillText(tx.str, tx.x, tx.y);
+  g.lineWidth = 3; g.strokeStyle = "rgba(0,0,0,.7)";
+  // Bucket by size first, then draw each group under its one font. Both arrays are module-level
+  // scratch, truncated back to length 0 at the end of this pass, so nothing accumulates.
+  _nSmall.length = 0; _nBig.length = 0;
+  for (const tx of G.texts) { if (tx.big) _nBig.push(tx); else _nSmall.push(tx); }
+  if (_nBig.length) {
+    g.font = TEXT_FONT_BIG;
+    for (const tx of _nBig) {
+      g.globalAlpha = clamp(tx.t / .9, 0, 1);
+      g.strokeText(tx.str, tx.x, tx.y);
+      g.fillStyle = tx.color; g.fillText(tx.str, tx.x, tx.y);
+    }
   }
+  if (_nSmall.length) {
+    g.font = TEXT_FONT_SMALL;
+    for (const tx of _nSmall) {
+      g.globalAlpha = clamp(tx.t / .9, 0, 1);
+      g.strokeText(tx.str, tx.x, tx.y);
+      g.fillStyle = tx.color; g.fillText(tx.str, tx.x, tx.y);
+    }
+  }
+  _nSmall.length = 0; _nBig.length = 0;
   g.globalAlpha = 1;
   g.restore();
   // end of world transform: nothing inside it may leak state into the overlays
   g.setTransform(1, 0, 0, 1, 0, 0);
-  g.globalAlpha = 1; g.globalCompositeOperation = "source-over"; g.filter = "none";
-  g.shadowBlur = 0; g.shadowColor = "transparent";
+  // No filter reset here or at the other render-pass boundaries: nothing in the game assigns a
+  // canvas filter any more (the hit-flash brightness filter was replaced by the ring in
+  // drawEnemyHitRing), and every write to that property — even writing "none" back — drops the
+  // engine's cached filter state on the floor, which is where the long-session memory climb came
+  // from. State that could leak into the overlays is handled by the save/restore inside the world
+  // transform and by the explicit resets each pass already makes for alpha and composite.
 }
 
 function renderOverlay(g) {
@@ -1205,12 +1257,12 @@ function renderOverlay(g) {
   // drawn from the feet up (body near -24, head near -45), so a halo centred on P.y hung
   // below him and read as a glow off to the bottom-right. Shake is applied by the world
   // pass, so re-add it here or the light detaches from him while the screen shakes.
-  // Anchor on Faelar's visual centre. drawFaelar is drawn feet-up from P.y: body ellipse centred
+  // Anchor on Gabriel's visual centre. drawElf is drawn feet-up from P.y: body ellipse centred
   // about -10 (spanning -30..10) and head about -28, so the sprite occupies roughly y-38..y+10
   // and its centre is ~-14. The old -26/-27 put the bright core on his chest while his sprite
   // centre sat lower, so the glow looked detached from him.
   const hx = P.x - G.camX + (G.shX || 0), hy = P.y - G.camY - 14 + (G.shY || 0);
-  const warm = (ZONES[clamp(G.zone | 0, 0, ZONES.length - 1)].accent) || "#ffaa50";
+  const warm = (ZONES[realmIndex(G.zone)].accent) || "#ffaa50";
   // halo pass: cached sprite blits only. No createRadialGradient and no full-viewport
   // fill here - a gradient built and rasterised every frame was a large part of the cost
   // in big fights, and "lighter" combined with any screen-covering fill is what made the
@@ -1258,9 +1310,10 @@ function renderOverlay(g) {
   // drifting dust motes / embers (screen-space, purely decorative). Decorative, so it stays under
   // the veil - it is part of the hall's air, not a message.
   try { drawMotes(g); } catch (err) { /* decorative only */ }
-  // every decorative pass is isolated: nothing below may inherit leaked composite/alpha/filter state
+  // every decorative pass is isolated: nothing below may inherit leaked composite/alpha state
+  // (no filter line: the game never sets a canvas filter; see renderBase).
   g.setTransform(1, 0, 0, 1, 0, 0);
-  g.globalAlpha = 1; g.globalCompositeOperation = "source-over"; g.filter = "none";
+  g.globalAlpha = 1; g.globalCompositeOperation = "source-over";
   g.shadowBlur = 0; g.shadowColor = "transparent";
 
   // objective arrow and announcements moved to renderBanners(), which runs after the shadow veil
@@ -1276,7 +1329,7 @@ function renderOverlay(g) {
 // lifting them off it. Messages are not part of the hall, so they are not veiled with it.
 function renderBanners(g) {
   g.setTransform(1, 0, 0, 1, 0, 0);
-  g.globalAlpha = 1; g.globalCompositeOperation = "source-over"; g.filter = "none";
+  g.globalAlpha = 1; g.globalCompositeOperation = "source-over";
   g.shadowBlur = 0; g.shadowColor = "transparent";
 
   // objective arrow when path clear
@@ -1294,13 +1347,19 @@ function renderBanners(g) {
     }
     const pulse2 = .6 + Math.sin(G.t * 5) * .3;
     g.fillStyle = `rgba(255,205,84,${pulse2})`; g.font = "bold 15px 'Trebuchet MS'"; g.textAlign = "center";
-    g.fillText("➡ Onward to " + (G.zone >= ZONES.length - 1 ? "the Cinderfall" : ZONES[Math.min(G.zone + 1, ZONES.length - 1)].name), W / 2, H - 26);
+    // Past realm 6 the next realm wraps to the start of the circuit, so the sign points at realm 1
+    // (or names the crossing when this is the last realm before the quest panel).
+    const nextIdx = realmIndex(G.zone) + 1;
+    const onward = nextIdx >= REALM_COUNT
+      ? "the next circuit of " + REALM_COUNT + " realms"
+      : ZONES[nextIdx].name;
+    g.fillText("➡ Onward to " + onward, W / 2, H - 26);
   }
 
-  // aim reticle showing where Faelar is shooting
+  // aim reticle showing where Gabriel is shooting
   if (G.state === "play") {
     // `|| 0` here coerced a legitimate PI (aim-left) to 0 via string truthiness, snapping the
-    // reticle onto Faelar instead of to his left. Aim now defaults to the direction he is facing.
+    // reticle onto Gabriel instead of to his left. Aim now defaults to the direction he is facing.
     const sa = Number.isFinite(P.shootAng) ? P.shootAng : (P.face >= 0 ? 0 : Math.PI);
     const ax = P.x - G.camX + Math.cos(sa) * 110, ay = P.y - G.camY - 16 + Math.sin(sa) * 110;
     g.save(); g.globalAlpha = .5 + Math.sin(G.t * 6) * .15;
@@ -1544,7 +1603,7 @@ const MOTES = Array.from({ length: 46 }, (_, i) => ({
   sp: 6 + (i % 7) * 3.5, sway: 10 + (i % 9) * 4, ph: i * .7,
 }));
 function drawMotes(g) {
-  const z = ZONES[G.zone], c = z.accent || "#cbb89a";
+  const z = ZONES[realmIndex(G.zone)], c = z.accent || "#cbb89a";
   const hot = !!z.lava;
   g.save();
   g.globalCompositeOperation = "lighter";
@@ -1561,12 +1620,12 @@ function drawMotes(g) {
 
 function drawHeroEnt(g, time) {
   g.save();
-  g.globalAlpha = 1; g.globalCompositeOperation = "source-over"; g.filter = "none";
+  g.globalAlpha = 1; g.globalCompositeOperation = "source-over";
   g.shadowBlur = 0; g.shadowColor = "transparent";
   shadow(g, P.x, P.y, 16);
   // hero: always fully opaque (a stray globalAlpha anywhere must never be able to hide him)
   g.save(); g.globalAlpha = 1; g.translate(P.x, P.y);
-  try { drawFaelar(g, P, time); } catch (err) {
+  try { drawElf(g, P, time); } catch (err) {
     // visible emergency elf: the hero must never be invisible because of a draw fault
     g.globalAlpha = 1;
     g.fillStyle = "#5f9a52"; g.beginPath(); g.ellipse(0, -10, 14, 20, 0, 0, TAU); g.fill();
@@ -1574,6 +1633,9 @@ function drawHeroEnt(g, time) {
     // drawing continues with the fallback silhouette
   }
   // no flicker overlay while invulnerable — it read as a black flash and hid the elf
+  g.restore();
+  // outer save from the top of this function. It was never restored, so every frame left one
+  // canvas state on the context's stack and every drawing call got slower until the game froze.
   g.restore();
 }
 
@@ -1586,16 +1648,66 @@ function drawEnemyEnt(g, e, time) {
   if (G.shake > 0) g.translate(G.shX || 0, G.shY || 0);
   g.translate(-G.camX, -G.camY);
   g.globalAlpha = 1; g.globalCompositeOperation = "source-over";
-  // Only touch the canvas filter for the few enemies actually flashing from a hit. A
-  // crowded fight is precisely when a hit is landing somewhere, so assigning "none" here
-  // for every enemy on screen flipped the 2D filter pipeline on and off hundreds of times
-  // per frame — a big part of the "stutters then jumps" feeling. If it is already unset,
-  // assigning the same value is a no-op in most engines, so this is a cheap guard.
-  if (g.filter !== "none") g.filter = "none";
+  // No canvas filter reset per enemy: the game never sets a filter any more, and each write to
+  // that property — even writing back "none" — invalidates the 2D engine's cached filter state,
+  // which hundreds of enemies per frame turns into a steady climb over a long session.
   g.shadowBlur = 0; g.shadowColor = "transparent";
   g.save(); g.globalAlpha = 1;
   // Contact shadow, sized to the body that drawEnemyEnt is about to render: see shadowHalfWidth.
   shadow(g, e.x, e.y, shadowHalfWidth(e));
+  // Normal enemies go through the sprite cache instead of re-rasterising their art every frame.
+  // Consulted here, before the entity translate, because the blit does its own translate and
+  // mirror: a cache hit is one drawImage plus the overlays that were always drawn on top (hit
+  // ring, hp pip, boss bar), a miss is precisely the old code path. See "Enemy sprite cache" in
+  // chars.js for the key, the quantisation, the ceiling and the load-time warm-up; bosses are
+  // excluded there and stay procedural. Resolution is unchanged — cells are blitted 1:1.
+  //
+  // An archer never produces a whole-figure cell: its sprite is three separately keyed pieces
+  // (body per facing and walk frame, head per facing, bow arm per attack step, none keyed on aim),
+  // tried here first. A part-cache miss falls through to the procedural drawBruteArcher below, the
+  // same fallback every other kind has.
+  if (e.kind === "brutearcher" && !e.boss) {
+    const apose = SPRITE_pose(e, time);
+    const parts = apose && apose.parts ? archerSpriteFor(e, apose, time) : null;
+    if (parts) {
+      g.save(); g.translate(e.x, e.y);
+      if (SPRITE_blitArcherParts(g, parts, e, time)) {
+        drawEnemyHitRing(g, e);
+        g.restore();                          // entity transform
+        g.restore();                          // cull/bounds save, paired with the one above
+        if (e.hp < e.maxHp) {
+          const w = 30, hpw = w * clamp(e.hp / e.maxHp, 0, 1);
+          g.fillStyle = "rgba(0,0,0,.55)"; g.fillRect(e.x - w / 2, e.y - e.r - 38, w, 5);
+          g.fillStyle = "#8fce3a"; g.fillRect(e.x - w / 2, e.y - e.r - 38, hpw, 5);
+        }
+        g.globalAlpha = 1;
+        return;
+      }
+      g.restore();                            // entity transform, on the failed-stamp path
+    }
+  }
+  const cell = SPRITE_cell(e, time);
+  if (cell) {
+    // The cell is drawn in the entity's own transform, exactly as the procedural art is: translate
+    // to the feet first, then blit at the cell's anchor. Blitting at world (e.x, e.y) without that
+    // translate would put the sprite a body off, because the anchor is measured from the feet.
+    g.save(); g.translate(e.x, e.y);
+    SPRITE_blit(g, cell, e, time);
+    // The hit ring belongs here, inside the entity transform: it is drawn with multiply against
+    // the pixels the sprite just laid down, and it is centred on the body rather than the feet.
+    // Leaving it out is what made a shot at a cached enemy look like no shot at all.
+    drawEnemyHitRing(g, e);
+    g.restore();                            // entity transform
+    g.restore();                            // cull/bounds save, paired with the one above
+    if (!e.boss && e.hp < e.maxHp) {
+      const w = 30, hpw = w * clamp(e.hp / e.maxHp, 0, 1);
+      g.fillStyle = "rgba(0,0,0,.55)"; g.fillRect(e.x - w / 2, e.y - e.r - 38, w, 5);
+      g.fillStyle = "#8fce3a"; g.fillRect(e.x - w / 2, e.y - e.r - 38, hpw, 5);
+    }
+    if (e.boss) $("boss-fill").style.width = (clamp(e.hp / e.maxHp, 0, 1) * 100) + "%";
+    g.globalAlpha = 1;
+    return;
+  }
   g.save(); g.translate(e.x, e.y);
   // Hit flash history, kept because it explains the cost model, not the current code.
   // canvas.filter = "brightness(2.2)" is NOT cheap: it forces the 2D engine to allocate and run an
@@ -1647,34 +1759,7 @@ function drawEnemyEnt(g, e, time) {
     // body into an offscreen canvas sized to that one enemy's own box, at an identity transform the
     // art code is handed explicitly, and blit it to (e.x, e.y) in world space under the same
     // explicit transform, with the layer cleared at identity immediately before tracing.
-    const ha = clamp(e.hurtT / .18, 0, 1);
-    if (ha > 0) {
-      // The art is drawn above the origin (feet at y = 0, head near y = -2e.r), so the ring is
-      // centred on the body, not on the feet: centred at 0 it would ring the empty floor under him
-      // and miss him, which is a quieter version of the bug being fixed. Half-widths here are the
-      // drawn extents from SHADOW_HALF, the same source shadow() uses, so the ring follows the
-      // silhouette rather than the collision circle - and for a quadruped those differ a lot, since
-      // a hound is roughly 80 px long on a 17 px radius. Bosses carry e.scale in the renderer, and
-      // this ring is drawn in the same transform as the art, so multiplying the footprint by that
-      // scale is the whole story.
-      const s = e.boss ? (e.scale || 1) : 1;
-      const hw = Math.max(10, shadowHalfWidth(e));
-      const hh = Math.max(9, e.r * 1.15 * s);
-      g.save();
-      // "multiply", not "source-atop": source-atop composites against whatever the destination
-      // already holds, and on the visible canvas the destination is the baked floor, the walls and
-      // every enemy drawn before this one. multiply leaves those untouched and changes only the
-      // pixels the body painted, so the wolf darkens where the wolf is.
-      g.globalCompositeOperation = "multiply";
-      // .55 at peak is a firm but not blackout dip, and ha ramps it out over hurtT.
-      g.globalAlpha = ha * .55;
-      g.strokeStyle = "#4a3b36";
-      // Thick outline rather than a filled oval: the interior keeps its own shading, so the enemy
-      // reads as having taken a hit instead of having a stamp put on him.
-      g.lineWidth = Math.max(3.5, hw * .22);
-      g.beginPath(); g.ellipse(0, -hh * .92, hw * .82, hh * .9, 0, 0, TAU); g.stroke();
-      g.restore();
-    }
+    drawEnemyHitRing(g, e);
   }
   g.restore();          // entity transform, paired with translate(e.x, e.y)
   g.restore();          // cull/bounds save
@@ -1690,31 +1775,62 @@ function drawEnemyEnt(g, e, time) {
   if (e.boss) $("boss-fill").style.width = (clamp(e.hp / e.maxHp, 0, 1) * 100) + "%";
 }
 
+// The "took a hit" ring, drawn in the entity's own transform (origin at the feet, before the
+// restore of that transform). Extracted from drawEnemyEnt so the cached path and the procedural
+// path cannot drift apart: two copies of this geometry is exactly how "the ring works, except for
+// enemies that hit the sprite cache" gets written.
+//
+// The art is drawn above the origin (feet at y = 0, head near y = -2e.r), so the ring is centred
+// on the body, not on the feet: centred at 0 it would ring the empty floor under him and miss him.
+// Half-widths are the drawn extents from SHADOW_HALF, the same source shadow() uses, so the ring
+// follows the silhouette rather than the collision circle - and for a quadruped those differ a lot,
+// since a hound is roughly 80 px long on a 17 px radius. Bosses carry e.scale in the renderer, and
+// this ring is drawn in the same transform as the art, so multiplying the footprint by that scale
+// is the whole story.
+function drawEnemyHitRing(g, e) {
+  const ha = clamp(e.hurtT / .18, 0, 1);
+  if (ha <= 0) return;
+  const s = e.boss ? (e.scale || 1) : 1;
+  const hw = Math.max(10, shadowHalfWidth(e));
+  const hh = Math.max(9, e.r * 1.15 * s);
+  g.save();
+  // "multiply", not "source-atop": source-atop composites against whatever the destination already
+  // holds, and on the visible canvas the destination is the baked floor, the walls and every enemy
+  // drawn before this one. multiply leaves those untouched and changes only the pixels the body
+  // painted, so the wolf darkens where the wolf is.
+  g.globalCompositeOperation = "multiply";
+  // .55 at peak is a firm but not blackout dip, and ha ramps it out over hurtT.
+  g.globalAlpha = ha * .55;
+  g.strokeStyle = "#4a3b36";
+  // Thick outline rather than a filled oval: the interior keeps its own shading, so the enemy reads
+  // as having taken a hit instead of having a stamp put on him.
+  g.lineWidth = Math.max(3.5, hw * .22);
+  g.beginPath(); g.ellipse(0, -hh * .92, hw * .82, hh * .9, 0, 0, TAU); g.stroke();
+  g.restore();
+}
+
+// Pickups are blitted from the once-baked PICK_SPRITES (see legacy.js) instead of being redrawn
+// from paths every frame — the heart's glow in particular was a live shadowBlur, the most expensive
+// 2D call in Chromium, re-rasterized for every heart on the floor every frame. What stays live in
+// this function is motion only: the bob, and for arrows the pulsing sparkle, which drawArrowPickup
+// keeps animating on its own cached sprite. Behaviour is untouched: same positions, timers, values
+// and pickup radius as before.
 function drawPickup(g, pk, time) {
   const bob = Math.sin(time * .005 + pk.bob) * 3;
-  g.save(); g.translate(pk.x, pk.y + bob);
-  if (pk.kind === "gold") {
-    strokeCircle(g, 0, -6, 8, "#e8b62a", 2); strokeCircle(g, 0, -6, 4.5, "#ffd76b", 1.4);
-    g.fillStyle = "#7a5210"; g.font = "bold 8px sans-serif"; g.textAlign = "center"; g.fillText("S", 0, -3.4);
-  } else if (pk.kind === "arrows") {
-    g.restore();
+  if (pk.kind === "arrows") {
     drawArrowPickup(g, pk.x, pk.y + bob, time);
     return;
-  } else {
-    // glowing drawn heart (crisp at any zoom, unlike an emoji)
-    g.shadowColor = "rgba(255,70,70,.9)"; g.shadowBlur = 10;
-    g.fillStyle = "#d92c38"; g.strokeStyle = "#3a070c"; g.lineWidth = 1.6;
-    g.beginPath();
-    g.moveTo(0, 2);
-    g.bezierCurveTo(-9, -5, -6.5, -13, -1.5, -11.5);
-    g.bezierCurveTo(-.4, -11.2, -.4, -10.6, 0, -10.2);
-    g.bezierCurveTo(.4, -10.6, .4, -11.2, 1.5, -11.5);
-    g.bezierCurveTo(6.5, -13, 9, -5, 0, 2);
-    g.closePath(); g.fill(); g.stroke();
-    g.shadowBlur = 0;
-    g.fillStyle = "rgba(255,255,255,.55)";
-    g.beginPath(); g.ellipse(-3, -8.6, 1.8, 1.1, -.5, 0, TAU); g.fill();
   }
+  const sp = pk.kind === "gold" ? PICK_SPRITES.gold : PICK_SPRITES.heart;
+  g.save();
+  // The bob is a canvas translation, not part of the blit coordinates, for the same reason the bat's
+  // hover is applied at SPRITE_blit rather than baked: it is motion, not silhouette, and baking it
+  // would quantise a smooth glide. It also keeps this path pixel-faithful to the old one whenever a
+  // pickup sits on a fractional position — the transform carries that fraction exactly the way the
+  // old path's translate() did, so the art resamples in the same place instead of the sprite snapping
+  // to a different whole pixel. Same formula, same amplitude, same rate, same phase offset.
+  g.translate(pk.x, pk.y + bob);
+  g.drawImage(sp, -sp.ox, -sp.oy);
   g.restore();
 }
 
@@ -1753,8 +1869,10 @@ function updateHud() {
   const wl = HUDc.wl;
   const wt = G.boss ? "⚔ Boss battle!" : G.wave === "fight" ? "Foes: " + G.enemies.length : G.wave === "preboss" ? "Brace yourself…" : "Path clear — keep moving!";
   if (wl.__v !== wt) { wl.textContent = wt; wl.__v = wt; }
-  const zoneIdx = Math.min(G.zone + 1, ZONES.length);
-  const zl = HUDc.zl, zt = (G.zone + 1) + "/" + ZONES.length + " · " + ZONES[G.zone].name;
+  // Realm number is the position inside the circuit, so it reads 1..6 forever; the loop is only
+  // shown once the player has gone past the first six realms.
+  const lp = loopNumber(G.zone);
+  const zl = HUDc.zl, zt = (realmIndex(G.zone) + 1) + "/" + REALM_COUNT + " · " + ZONES[realmIndex(G.zone)].name + (lp > 1 ? " · Loop " + lp : "");
   if (zl.__v !== zt) { zl.textContent = zt; zl.__v = zt; }
 }
 
@@ -1814,11 +1932,71 @@ function continueJourney() {
   showScreen(null); G.state = "play";
 }
 
+/* The quest panel at the end of a circuit of six realms. It used to be a terminal "you win"
+   screen wired to Play Again; now it is a checkpoint. The same panel appears every time all six
+   realms fall, its button reads Continue and the run goes on into the next loop, so the only end
+   is dying. Each successive circuit gets a more precious metal for the panel and button: bronze
+   (as shipped), silver, gold, and gold from then on. */
+function questVictory() {
+  // "winstate" (not "win") so the Enter shortcut can tell a checkpoint apart from a real game
+  // over, and so nothing that treats "over" as "this run is finished" counts a checkpoint as one.
+  G.state = "winstate";
+  hud.classList.add("hidden"); bossWrap.classList.add("hidden");
+  const clearedLoops = loopNumber(G.zone);          // circuits completed, counting this one
+  const tier = VICTORY_TIERS[victoryTierIndex(clearedLoops)];
+  const mins = Math.floor(G.elapsed / 60), secs = Math.floor(G.elapsed % 60);
+  const winPanel = document.querySelector("#screen-win .panel");
+  if (winPanel) winPanel.classList.remove("victory-bronze", "victory-silver", "victory-gold");
+  if (winPanel) winPanel.classList.add(tier.cls);
+  const h = $("win-title");
+  if (h) {
+    h.textContent = clearedLoops <= 1
+      ? "🌋 The Quest is Done!"
+      : "🌋 The Quest is Done — Again!";
+  }
+  const sub = $("win-sub");
+  if (sub) {
+    sub.textContent = clearedLoops <= 1
+      ? "The Hollow Crown is broken, and the elven realms begin their long twilight."
+      : `${tier.name} proof of it: ${clearedLoops} circuits of the six realms cleared. The realms reshape themselves behind Shasan, and the shadow re-forms ahead — braver, bolder, and thicker than before.`;
+  }
+  $("win-stats").innerHTML =
+    `<span class="chip">🪙 Gold: ${G.gold}</span>` +
+    `<span class="chip">💀 Slain: ${G.kills}</span>` +
+    `<span class="chip">⭐ Level ${P.lvl}</span>` +
+    `<span class="chip">🗺️ ${REALM_COUNT}/${REALM_COUNT} realms · Circuit ${clearedLoops}</span>` +
+    `<span class="chip">⏱️ ${mins}m ${secs}s</span>`;
+  const btn = $("btn-again");
+  if (btn) btn.textContent = "➤ Continue — Circuit " + (clearedLoops + 1);
+  AudioSys.win();
+  showScreen("win");
+}
+
+// Continue from the quest panel: straight on into the next loop at realm 1. Everything the player
+// earned carries over — level, boons, gold, quiver — only the crowd and the bosses get tougher.
+function continueQuest() {
+  clearPendingShots();
+  if (typeof AI_GEN === "number") AI_GEN++;   // same bookkeeping startGame() does for pending shots
+  const winPanel = document.querySelector("#screen-win .panel");
+  if (winPanel) winPanel.classList.remove("victory-bronze", "victory-silver", "victory-gold");
+  G.zone++;                       // crosses into the next circuit; realmIndex() wraps to realm 1
+  G.enemies = []; G.projectiles = []; G.pickups = []; G.boss = null; G.escorts = [];
+  G.particles.length = 0; G.texts.length = 0;
+  bossWrap.classList.add("hidden");
+  // questVictory() hid the HUD when the panel came up, and this path - unlike startGame() in
+  // engine.js, which does hud.classList.remove("hidden") - never brought it back. The player spent
+  // the whole next circuit with no portrait, health bar, level, realm name or arrow count.
+  hud.classList.remove("hidden");
+  startZone(); updateHud();
+  showScreen(null); G.state = "play";
+}
+
 function gameOver(win) {
   G.state = "over";
   hud.classList.add("hidden"); bossWrap.classList.add("hidden");
   const mins = Math.floor(G.elapsed / 60), secs = Math.floor(G.elapsed % 60);
-  const stats = `<span class="chip">🪙 Gold: ${G.gold}</span><span class="chip">💀 Slain: ${G.kills}</span><span class="chip">⭐ Level ${P.lvl}</span><span class="chip">🗺️ Realm ${Math.min(G.zone + 1, ZONES.length)}/${ZONES.length}</span><span class="chip">⏱️ ${mins}m ${secs}s</span>`;
+  const lp = loopNumber(G.zone);
+  const stats = `<span class="chip">🪙 Gold: ${G.gold}</span><span class="chip">💀 Slain: ${G.kills}</span><span class="chip">⭐ Level ${P.lvl}</span><span class="chip">🗺️ Realm ${realmIndex(G.zone) + 1}/${REALM_COUNT}${lp > 1 ? " · Loop " + lp : ""}</span><span class="chip">⏱️ ${mins}m ${secs}s</span>`;
   if (win) {
     AudioSys.win();
     $("win-stats").innerHTML = stats;
@@ -1839,10 +2017,21 @@ function gameOver(win) {
 // ---------- buttons ----------
 $("btn-start").addEventListener("click", startGame);
 $("btn-retry").addEventListener("click", startGame);
-$("btn-again").addEventListener("click", startGame);
+// The victory button continues the endless run rather than restarting it. It is reached only from
+// the quest panel, which questVictory() raises, so Continue is always the right verb here.
+$("btn-again").addEventListener("click", continueQuest);
 $("btn-resume").addEventListener("click", togglePause);
 
 
 // idle title render needs a zone
 updateHud();
+
+// Bake the normal-enemy sprite set before the first frame runs, so no fight pays for baking and
+// nothing ever falls back to the slow procedural path. Safe to call more than once (cells already
+// present are skipped); it is load-time work, not per-level work, because the pose set is a set of
+// constants — the same sprites at every zone. Bosses are deliberately absent, see chars.js.
+// Guarded: if the cache module is missing or a bake throws, the game still starts and enemies are
+// drawn procedurally, which is the pre-cache behaviour.
+try { SPRITE_warm(); } catch (err) { if (typeof spriteCacheClear === "function") spriteCacheClear(); }
+
 requestAnimationFrame(frame);

@@ -8,6 +8,7 @@
 # --native-llm-gpu-vram-mb
 #   (the retired --use-existing-lemonade/--lemonade-* flags map onto these or
 #   onto --external-llm-* for one release)
+# --llm-backend vllm|llama-server (Linux; macOS accepts only llama-server)
 # --preflight-only (environment checks only; used by get-ods.sh --force through
 #   installers/reinstall-preflight.sh before an existing install is removed)
 

@@ -40,6 +40,7 @@ function pendingTurn() {
   }
 }
 
+// Two real turns typed key by key: a loaded full-suite run can pass 5 s.
 it.each(['keyboard', 'mouse'])('allows repeated type/send turns via %s without refocusing manually', async method => {
   const user = userEvent.setup()
   const turns = [pendingTurn(), pendingTurn()]
@@ -53,21 +54,19 @@ it.each(['keyboard', 'mouse'])('allows repeated type/send turns via %s without r
     await user.keyboard(`Question ${index + 1}`)
     if (method === 'keyboard') await user.keyboard('{Enter}')
     else await user.click(screen.getByRole('button', {name:'Send',exact:true}))
-    await waitFor(() => expect(field).toBeDisabled())
-    // jsdom keeps a disabled element focused; reproduce the browser's blur.
-    field.disabled = false
-    field.blur()
-    field.disabled = true
-    expect(field).not.toHaveFocus()
+    // The composer stays editable and focused while Portal answers.
+    await screen.findByTitle('Stop')
+    expect(field).toBeEnabled()
+    expect(field).toHaveFocus()
     await act(async () => { turns[index].finish() })
-    await waitFor(() => expect(field).toBeEnabled())
+    await screen.findByTitle('Send')
     expect(field).toHaveFocus()
     expect(field).toHaveValue('')
   }
   const requests = fetch.mock.calls.filter(([url]) => url === '/api/pixel/chat/stream')
   expect(requests).toHaveLength(2)
   expect(JSON.parse(requests[1][1].body).messages.at(-1).content).toBe('Question 2')
-})
+}, 15000)
 
 it('keeps a search field focused when a response finishes', async () => {
   const user = userEvent.setup()
@@ -77,16 +76,17 @@ it('keeps a search field focused when a response finishes', async () => {
   render(<><input aria-label="Workspace search"/><Pixel/></>)
   const field = await screen.findByPlaceholderText('Message Portal...')
   await user.keyboard('Question{Enter}')
-  await waitFor(() => expect(field).toBeDisabled())
+  await screen.findByTitle('Stop')
   const search = screen.getByRole('textbox', {name:'Workspace search'})
   await user.type(search, 'my file')
   await act(async () => { turn.finish() })
-  await waitFor(() => expect(field).toBeEnabled())
+  await screen.findByTitle('Send')
+  expect(field).toBeEnabled()
   expect(search).toHaveFocus()
   expect(search).toHaveValue('my file')
 })
 
-it('restores composer focus when a request fails so the next message can be typed', async () => {
+it('keeps composer focus when a request fails so the next message can be typed', async () => {
   const user = userEvent.setup()
   let reject
   const request = new Promise((_, rejectRequest) => { reject = rejectRequest })
@@ -95,12 +95,10 @@ it('restores composer focus when a request fails so the next message can be type
   render(<Pixel/>)
   const field = await screen.findByPlaceholderText('Message Portal...')
   await user.keyboard('Question{Enter}')
-  await waitFor(() => expect(field).toBeDisabled())
-  field.disabled = false
-  field.blur()
-  field.disabled = true
+  await screen.findByTitle('Stop')
+  expect(field).toBeEnabled()
   await act(async () => { reject(new Error('Network unavailable')) })
-  await waitFor(() => expect(field).toBeEnabled())
+  await screen.findByTitle('Send')
   expect(field).toHaveFocus()
   await user.keyboard('Try again')
   expect(field).toHaveValue('Try again')

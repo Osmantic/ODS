@@ -1,10 +1,13 @@
-"""Probe a host-native llama-server through this installation's router container.
+"""Probe a model server through this installation's router container.
 
 A WSL host agent cannot reach a Windows loopback-only listener: WSL localhost
 is not Windows localhost. Docker Desktop containers can, through
-``host.docker.internal``. This module runs one bounded stdlib request inside
-the owned, running model-router container, against exactly the
-``llama-server-default`` origin that the router itself serves inference from.
+``host.docker.internal``. The vLLM engine (``LLM_BACKEND=vllm``) publishes no
+host port at all; only containers on the ODS network reach it. This module
+runs one bounded stdlib request inside the owned, running model-router
+container, against exactly the origin of the router endpoint the caller names
+(``llama-server-default`` by default, ``vllm-default`` for vLLM), which is the
+origin the router itself serves inference from.
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ from urllib.parse import urlsplit
 
 
 ENDPOINT_ID = "llama-server-default"
+_ENDPOINT_IDS = frozenset({ENDPOINT_ID, "vllm-default"})
 _LIMIT = 65536
 _ANSWER_LIMIT = 2097152  # the worker's ANSWER_LIMIT for a probe exchange
 _PATHS = frozenset({"/health", "/props", "/v1/models", "/v1/chat/completions", "/metrics"})
@@ -159,19 +163,20 @@ def _owned_router(install_dir: Path, project: str) -> str:
 
 def request(install_dir: Path, origin: str, path: str,
             payload: dict | None = None, api_key: str = "", timeout: float = 5,
-            *, project: str = "ods") -> str:
+            *, project: str = "ods", endpoint_id: str = ENDPOINT_ID) -> str:
     """Return bounded HTTP text; never grant readiness or publish model state.
 
-    ``origin`` is the router's ``llama-server-default`` base URL without a
-    path; ``path`` is one of the proof and telemetry routes. An HTTP error
-    status fails the request.
+    ``origin`` is the base URL, without a path, of the router endpoint
+    ``endpoint_id``; ``path`` is one of the proof and telemetry routes. An HTTP
+    error status fails the request.
     """
-    return _send(install_dir, origin, path, payload, api_key, timeout, project, envelope=False)
+    return _send(install_dir, origin, path, payload, api_key, timeout, project,
+                 envelope=False, endpoint_id=endpoint_id)
 
 
 def exchange(install_dir: Path, origin: str, path: str,
              payload: dict | None = None, api_key: str = "", timeout: float = 5,
-             *, project: str = "ods") -> tuple[int, str]:
+             *, project: str = "ods", endpoint_id: str = ENDPOINT_ID) -> tuple[int, str]:
     """Return ``(http_status, text)``, error statuses included, for capability probes.
 
     Same ownership, route and size rules as ``request``. A model's own error
@@ -179,7 +184,8 @@ def exchange(install_dir: Path, origin: str, path: str,
     is evidence a probe classifies, so it comes back instead of failing.
     Redirects are still refused.
     """
-    raw = _send(install_dir, origin, path, payload, api_key, timeout, project, envelope=True)
+    raw = _send(install_dir, origin, path, payload, api_key, timeout, project,
+                envelope=True, endpoint_id=endpoint_id)
     try:
         envelope = json.loads(raw)
     except ValueError as exc:
@@ -192,7 +198,9 @@ def exchange(install_dir: Path, origin: str, path: str,
 
 
 def _send(install_dir: Path, origin: str, path: str, payload: dict | None, api_key: str,
-          timeout: float, project: str, *, envelope: bool) -> str:
+          timeout: float, project: str, *, envelope: bool, endpoint_id: str) -> str:
+    if endpoint_id not in _ENDPOINT_IDS:
+        raise ValueError("Unsupported runtime endpoint")
     parsed = urlsplit(origin)
     if (parsed.scheme not in {"http", "https"} or not parsed.hostname
             or parsed.username is not None or parsed.password is not None
@@ -210,7 +218,7 @@ def _send(install_dir: Path, origin: str, path: str, payload: dict | None, api_k
         raise ValueError("Runtime proof timeout must be between 0 and 900 seconds")
     if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", project):
         raise ValueError("Invalid Compose project")
-    message = dict(endpoint_id=ENDPOINT_ID, origin=origin, path=path, payload=payload,
+    message = dict(endpoint_id=endpoint_id, origin=origin, path=path, payload=payload,
                    api_key=api_key, timeout=timeout)
     if envelope:
         message["envelope"] = True

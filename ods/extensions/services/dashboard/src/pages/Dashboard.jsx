@@ -647,7 +647,7 @@ function buildChartPoints(values, maxValue) {
 }
 
 function throughputLabel(inference, stale = false) {
-  if (!Number.isFinite(inference?.tokensPerSecond)) return 'Telemetry unavailable'
+  if (!Number.isFinite(inference?.tokensPerSecond)) return 'Not reported'
   if (stale || inference?.throughputState === 'unavailable') return 'Last known rate · telemetry unavailable'
   if (inference?.throughputMode === 'cloud_request_average') return 'Last cloud request · includes latency'
   if (inference?.throughputState === 'retained') return 'Last run'
@@ -659,6 +659,16 @@ function throughputLabel(inference, stale = false) {
 
 function metricScopeLabel(scope) {
   return {host:'Host',wsl:'WSL',vm:'Virtual machine',container:'Container',unknown:'Scope unavailable'}[scope] || ''
+}
+
+// A runtime serves its model file name as the model id, sometimes with a
+// content hash. The API adds the name the Models page shows; without one,
+// show the id without its folder, file extension, shard number or hash.
+function loadedModelName(inference) {
+  if (inference?.loadedModelDisplayName) return inference.loadedModelDisplayName
+  const id = String(inference?.loadedModel || '').trim().split(/[\\/]/).pop()
+  return id.replace(/\.[a-z][a-z\d]{1,11}$/i, '').replace(/-\d{5}-of-\d{5}$/i, '')
+    .replace(/[-_.](?=[a-f\d]*[a-f])(?=[a-f\d]*\d)[a-f\d]{8,64}$/i, '') || id
 }
 
 function TelemetryNotice({telemetry}) {
@@ -858,12 +868,16 @@ export default function Dashboard({ status, loading, compact = false }) {
     })
   }
 
-  systemMetrics.push({
-    icon: Thermometer,
-    label: remoteInference ? 'Client CPU Temp' : 'CPU Temp',
-    value: Number.isFinite(status?.cpu?.temp_c) ? `${status.cpu.temp_c}°C` : '—',
-    subvalue: Number.isFinite(status?.cpu?.temp_c) ? 'sensor reading' : 'telemetry unavailable',
-  })
+  // Windows and macOS host readings never include a CPU temperature, so the
+  // tile appears only with a reading instead of always saying unavailable.
+  if (Number.isFinite(status?.cpu?.temp_c)) {
+    systemMetrics.push({
+      icon: Thermometer,
+      label: remoteInference ? 'Client CPU Temp' : 'CPU Temp',
+      value: `${status.cpu.temp_c}°C`,
+      subvalue: 'sensor reading',
+    })
+  }
 
   if (status?.ram && (remoteInference || status?.gpu?.memoryType !== 'unified')) {
     systemMetrics.push({
@@ -896,13 +910,18 @@ export default function Dashboard({ status, loading, compact = false }) {
     })
   }
 
-  systemMetrics.push(
-    {
+  // The API keeps a model's last measured rate. Until it has one (some native
+  // engines never report it), the tile is left out rather than "unavailable".
+  if (Number.isFinite(status?.inference?.tokensPerSecond)) {
+    systemMetrics.push({
       icon: Zap,
       label: 'Tokens / second',
-      value: Number.isFinite(status?.inference?.tokensPerSecond) ? `${status.inference.tokensPerSecond.toFixed(1)} tok/s` : '—',
-      subvalue: throughputLabel(status?.inference,status?.clientTelemetry?.stale),
-    },
+      value: `${status.inference.tokensPerSecond.toFixed(1)} tok/s`,
+      subvalue: throughputLabel(status.inference,status?.clientTelemetry?.stale),
+    })
+  }
+
+  systemMetrics.push(
     {
       icon: Brackets,
       label: 'Context',
@@ -918,7 +937,7 @@ export default function Dashboard({ status, loading, compact = false }) {
     {
       icon: Brain,
       label: 'Model',
-      value: (remoteInference ? status?.currentModel : status?.inference?.loadedModel) || '—',
+      value: (remoteInference ? status?.currentModel : loadedModelName(status?.inference)) || '—',
       subvalue: remoteInference ? (status?.currentModel ? 'selected API model' : 'not reported') : 'loaded',
     }
   )
@@ -1179,7 +1198,7 @@ const SystemOverviewPanel = memo(function SystemOverviewPanel({ tokensPerSecond,
             ? 'Latest Completion'
             : tokenCountMode === 'cumulative'
               ? 'Accumulated Output'
-              : 'Waiting for telemetry'}
+              : 'Not reported'}
           values={generated.values}
           timestamps={generated.timestamps}
           range={range}
@@ -1253,9 +1272,9 @@ const OverviewChart = memo(function OverviewChart({
           </div>
         </div>
 
-        {delta == null ? (
+        {delta == null ? currentDisplay !== '—' && (
           <div className="mb-2 whitespace-nowrap text-xs font-medium text-theme-text-muted">
-            {currentDisplay === '—' ? 'telemetry unavailable' : 'collecting samples'}
+            collecting samples
           </div>
         ) : (
           <div className={`mb-2 whitespace-nowrap text-xs font-semibold ${deltaTone}`}>
@@ -1334,7 +1353,7 @@ const OverviewChart = memo(function OverviewChart({
             fontSize="11"
             fontWeight="600"
           >
-            {currentDisplay === '—' ? 'telemetry unavailable' : 'collecting telemetry'}
+            {currentDisplay === '—' ? 'No data' : 'collecting telemetry'}
           </text>
         )}
 

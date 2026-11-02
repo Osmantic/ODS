@@ -36,7 +36,8 @@ $script:OPENCODE_EXE = Join-Path $script:OPENCODE_DIR 'opencode-fixture.ps1'
 $script:OPENCODE_TASK_NAME = 'ODSOpenCodePortFixture'
 $record = Join-Path $scratch 'arguments.json'
 $saved = @{}
-foreach ($key in @('OPENCODE_PORT', 'LOCALAPPDATA', 'ODS_HOME', 'ODS_OPENCODE_PORT_FIXTURE')) {
+foreach ($key in @('OPENCODE_PORT', 'LOCALAPPDATA', 'ODS_HOME', 'ODS_OPENCODE_PORT_FIXTURE',
+    'ODS_OPENCODE_ACTION', 'ODS_OPENCODE_EXE', 'ODS_OPENCODE_PORT', 'ODS_OPENCODE_FIXTURE_ROWS', 'ODS_OPENCODE_FIXTURE_EVENTS')) {
     $saved[$key] = [Environment]::GetEnvironmentVariable($key)
 }
 $gpuInfo = @{Backend='cpu'}; $tierConfig = @{GgufFile='fixture.gguf';LlmModel='fixture';MaxContext=4096}
@@ -45,6 +46,8 @@ $script:messages = [Collections.Generic.List[string]]::new()
 $script:probes = [Collections.Generic.List[int]]::new()
 $script:checks = 0; $script:failures = @()
 $script:stopped = [Collections.Generic.List[int]]::new()
+$script:processRows = $null
+$script:listenerPresent = $true
 function Check($condition, [string]$message) {
     $script:checks++
     if (-not $condition) { $script:failures += $message; Write-Host "FAIL $message" }
@@ -70,10 +73,11 @@ function Start-Sleep { param($Seconds) }
 function Get-NetTCPConnection {
     param($LocalPort,$State,$ErrorAction)
     $script:probes.Add([int]$LocalPort)
-    if ([int]$LocalPort -eq $script:expectedPort) { return [pscustomobject]@{OwningProcess=123} }
+    if ($script:listenerPresent -and [int]$LocalPort -eq $script:expectedPort) { return [pscustomobject]@{OwningProcess=123} }
 }
 function Get-CimInstance {
     param($ClassName,$Filter,$ErrorAction)
+    if ($null -ne $script:processRows) { return $script:processRows }
     return [pscustomobject]@{ExecutablePath=$script:listenerExe; ProcessId=123; ParentProcessId=0; CommandLine="opencode web --port $script:expectedPort --hostname 127.0.0.1"}
 }
 function Read-CliPort {
@@ -144,6 +148,93 @@ try {
     $script:listenerExe = $script:OPENCODE_EXE
     Stop-ODSOpenCodeRuntime
     Check ($script:stopped.Count -eq 1 -and $script:stopped[0] -eq 123) 'CLI stop selects the owned process on the configured port'
+    # The configured port must be the entire argument: 3003 is not 30030.
+    # With no listener, startup processes still need their exact argv match.
+    $script:OPENCODE_PORT = 3003; $script:expectedPort = 3003
+    $script:listenerPresent = $false
+    $script:processRows = @(
+        [pscustomobject]@{ProcessId=101; ParentProcessId=0; ExecutablePath=$script:OPENCODE_EXE; CommandLine='opencode web --port 30030 --hostname 127.0.0.1'},
+        [pscustomobject]@{ProcessId=102; ParentProcessId=0; ExecutablePath=$script:OPENCODE_EXE; CommandLine='opencode web --port 30031'},
+        [pscustomobject]@{ProcessId=103; ParentProcessId=0; ExecutablePath=$script:OPENCODE_EXE; CommandLine='opencode web --port 3003 --hostname 127.0.0.1'},
+        [pscustomobject]@{ProcessId=104; ParentProcessId=0; ExecutablePath=$script:OPENCODE_EXE; CommandLine='opencode web --port 3003'},
+        [pscustomobject]@{ProcessId=105; ParentProcessId=0; ExecutablePath=(Join-Path $scratch 'foreign.exe'); CommandLine='opencode web --port 3003'}
+    )
+    $script:stopped.Clear()
+    Stop-ODSOpenCodeRuntime
+    Check ($script:stopped.Count -eq 2 -and $script:stopped.Contains(103) -and $script:stopped.Contains(104)) 'CLI stop selects exact port arguments followed by whitespace or end of command'
+    Check (-not $script:stopped.Contains(101) -and -not $script:stopped.Contains(102)) 'CLI stop preserves other ports sharing the configured numeric prefix'
+    Check (-not $script:stopped.Contains(105)) 'an exact port argument never authorizes stopping a different executable'
+    # A quoted argument may be absent from argv matching; the actual listener
+    # still proves the configured port, with the same executable check.
+    $script:processRows += [pscustomobject]@{ProcessId=123; ParentProcessId=0; ExecutablePath=$script:OPENCODE_EXE; CommandLine='opencode web --port "3003"'}
+    $script:listenerPresent = $true
+    $script:stopped.Clear()
+    Stop-ODSOpenCodeRuntime
+    Check ($script:stopped.Count -eq 3 -and $script:stopped.Contains(123)) 'CLI stop retains exact listener ownership when the port argument is quoted'
+    # Execute the host agent's actual embedded PowerShell, not a second copy
+    # of its matcher. Only process/task operations are recording doubles.
+    $extractControl = @'
+import ast
+import sys
+from pathlib import Path
+tree = ast.parse(Path(sys.argv[1]).read_text(encoding="utf-8"))
+function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_run_windows_opencode_control")
+script = next(node.value for node in function.body if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "script" for target in node.targets))
+print(ast.literal_eval(script))
+'@
+    $agentPath = Join-Path $windows '../../bin/ods-host-agent.py'
+    $agentControl = @($extractControl | & python - $agentPath) -join "`n"
+    if ($LASTEXITCODE -ne 0 -or -not $agentControl) { throw 'Could not extract the host-agent OpenCode controller' }
+    $agentFixture = Join-Path $scratch 'host-agent-opencode.ps1'
+    $eventsPath = Join-Path $scratch 'host-agent-events.jsonl'
+    $recordingCommands = @'
+$parsedRows = $env:ODS_OPENCODE_FIXTURE_ROWS | ConvertFrom-Json
+$script:rows = @($parsedRows)
+function Write-FixtureEvent($Kind, $Value) {
+    Add-Content -LiteralPath $env:ODS_OPENCODE_FIXTURE_EVENTS -Encoding UTF8 -Value (@{kind=$Kind;value=$Value} | ConvertTo-Json -Compress)
+}
+function Get-CimInstance { param($ClassName,$ErrorAction) return $script:rows }
+function Stop-Process {
+    param($Id,[switch]$Force,$ErrorAction)
+    Write-FixtureEvent 'stop' ([int]$Id)
+    $script:rows = @($script:rows | Where-Object { $_.ProcessId -ne $Id })
+}
+function Start-Process { param($FilePath,$ArgumentList,$WindowStyle) Write-FixtureEvent 'start' @($ArgumentList) }
+function Start-ScheduledTask { param($TaskName,$ErrorAction) Write-FixtureEvent 'task' $TaskName }
+function Start-Sleep { param($Milliseconds) }
+'@
+    [IO.File]::WriteAllText($agentFixture, ($recordingCommands + "`n" + $agentControl), [Text.UTF8Encoding]::new($true))
+    $env:ODS_OPENCODE_EXE = $script:OPENCODE_EXE
+    $env:ODS_OPENCODE_PORT = '3003'
+    $env:ODS_OPENCODE_FIXTURE_EVENTS = $eventsPath
+    function Invoke-AgentControlFixture([string]$Action, [object[]]$Rows) {
+        [IO.File]::WriteAllText($eventsPath, '')
+        $env:ODS_OPENCODE_ACTION = $Action
+        $env:ODS_OPENCODE_FIXTURE_ROWS = ConvertTo-Json -InputObject @($Rows) -Compress
+        $shell = (Get-Process -Id $PID).Path
+        $output = @(& $shell -NoProfile -ExecutionPolicy Bypass -File $agentFixture)
+        Check ($LASTEXITCODE -eq 0) "host-agent $Action executes successfully"
+        $events = @(Get-Content -LiteralPath $eventsPath -Encoding UTF8 | Where-Object { $_ } | ForEach-Object { $_ | ConvertFrom-Json })
+        return [pscustomobject]@{State=($output -join '').Trim(); Events=$events}
+    }
+    $otherPorts = @($script:processRows | Where-Object { $_.ProcessId -in @(101,102) })
+    $result = Invoke-AgentControlFixture 'inspect' $otherPorts
+    Check ($result.State -ceq 'false' -and $result.Events.Count -eq 0) 'host-agent inspect never adopts a server on a prefix-matching port'
+    $result = Invoke-AgentControlFixture 'start' $otherPorts
+    Check ($result.State -ceq 'true' -and $result.Events.Count -eq 1 -and $result.Events[0].kind -eq 'task') 'another port does not suppress starting the configured host-agent service'
+    $result = Invoke-AgentControlFixture 'restart' $otherPorts
+    Check ($result.State -ceq 'false' -and $result.Events.Count -eq 0) 'host-agent restart without an exact owner leaves other servers untouched'
+    $agentRows = @($script:processRows | Where-Object { $_.ProcessId -ne 123 })
+    $agentRows[3].CommandLine = 'opencode serve --port 3003'
+    foreach ($action in @('inspect', 'start')) {
+        $result = Invoke-AgentControlFixture $action $agentRows
+        Check ($result.State -ceq 'true' -and $result.Events.Count -eq 0) "host-agent $action recognizes an existing exact-port service"
+    }
+    $result = Invoke-AgentControlFixture 'restart' $agentRows
+    $stopped = @($result.Events | Where-Object { $_.kind -eq 'stop' } | ForEach-Object { [int]$_.value })
+    $started = @($result.Events | Where-Object { $_.kind -eq 'start' })
+    Check ($result.State -ceq 'true' -and $stopped.Count -eq 2 -and $stopped -contains 103 -and $stopped -contains 104) 'host-agent restart selects only exact-port web and serve processes'
+    Check ($started.Count -eq 1 -and ($started[0].value -join ' ') -eq 'web --port 3003 --hostname 127.0.0.1') 'host-agent restart keeps the configured loopback launch arguments'
     if ($script:failures.Count) { throw "$($script:failures.Count)/$($script:checks) checks failed" }
     Write-Host "PASS $script:checks native OpenCode port checks"
 } finally {

@@ -144,7 +144,10 @@ class QualifiedArgumentTests(unittest.TestCase):
         # --reasoning left at auto) logged "thinking = 1" and returned a reasoning
         # trace as content; with --reasoning off it still put "<think>\n\n</think>\n\n"
         # in every content. --reasoning off with the default format matched b8210.
-        for value, expected in (("", "off"), ("off", "off"), ('"on"', "on"), ("auto", "auto")):
+        # Modes are case-insensitive, as the host agent reads them; llama-server
+        # only accepts lowercase.
+        for value, expected in (("", "off"), ("off", "off"), ('"on"', "on"), ("auto", "auto"),
+                                ("OFF", "off"), ('"On"', "on"), ("AUTO", "auto")):
             with self.subTest(value=value):
                 result, _ = run_with_help(HELP["b9014"], EMPTY, defaults=True, spec_default="none",
                                           reasoning=value, reasoning_format="none")
@@ -345,6 +348,13 @@ for arg in ${MACOS_NATIVE_CHECKPOINT_ARGS[@]+"${MACOS_NATIVE_CHECKPOINT_ARGS[@]}
                 argv = self.run_bash(script)
                 self.assertEqual(argv[argv.index("--model") + 1], str(self.install / "data/models/Qwen3.5-9B-Q4_K_M.gguf"))
                 self.assert_argv(argv, release)
+        # An uppercase mode used to become --reasoning-format OFF, which
+        # llama-server rejects at startup.
+        (self.install / ".env").write_text(self.ENV.replace("LLAMA_REASONING=off", "LLAMA_REASONING=OFF"))
+        for release in ("b8210", "b9014"):
+            with self.subTest(release=release, reasoning="OFF"):
+                self.use_runtime(release)
+                self.assert_argv(self.run_bash(script), release)
         (self.install / ".env").write_text(self.ENV + "LLAMA_SPEC_TYPE=none\n")
         self.assert_argv(self.run_bash(script), "b9014", spec=False)
 
@@ -366,6 +376,11 @@ for arg in ${MACOS_NATIVE_CHECKPOINT_ARGS[@]+"${MACOS_NATIVE_CHECKPOINT_ARGS[@]}
                 argv = self.run_bash(script)
                 self.assertEqual(argv[argv.index("--model") + 1], str(self.install / "data/models/model.gguf"))
                 self.assert_argv(argv, release)
+        (self.install / ".env").write_text(self.ENV.replace("LLAMA_REASONING=off", "LLAMA_REASONING=Off"))
+        for release in ("b8210", "b9014"):
+            with self.subTest(release=release, reasoning="Off"):
+                self.use_runtime(release)
+                self.assert_argv(self.run_bash(script), release)
 
     def test_bootstrap_full_model_swap(self):
         source = (ROOT / "scripts/bootstrap-upgrade.sh").read_text(encoding="utf-8")
@@ -385,6 +400,51 @@ for arg in ${MACOS_NATIVE_CHECKPOINT_ARGS[@]+"${MACOS_NATIVE_CHECKPOINT_ARGS[@]}
         # A rejected setting keeps the swap going with only the reasoning format.
         (self.install / ".env").write_text("LLAMA_ARG_SPEC_DRAFT_N_MAX=0\n")
         self.assertEqual(self.run_bash(script), ["--reasoning-format", "none"])
+
+    def test_bootstrap_reasoning_case_survives_fallback_and_rollback(self):
+        source = (ROOT / "scripts/bootstrap-upgrade.sh").read_text(encoding="utf-8")
+        block = section(source, "            # Read reasoning mode from .env", "            # Capture old model path")
+        rollback = section(source, '                if [[ -n "${_old_model_path:-}"',
+                           '                    _rollback_pid=')
+        rollback = rollback[rollback.index('                    bash "'):]
+        script = (
+            "set -uo pipefail\n"
+            'ENV_FILE="$INSTALL/.env"; INSTALL_DIR="$INSTALL"; LLAMA_SERVER_BIN="$RUNTIME"\n'
+            + self.STUBS +
+            "log() { echo \"$*\" >&2; }\n"
+            'read_env_value() { grep -E "^$1=" "$ENV_FILE" | head -1 | cut -d= -f2-; }\n'
+            + block
+        )
+        forward = '\nfor arg in ${_llama_tuning_args[@]+"${_llama_tuning_args[@]}"}; do printf "%s\\0" "$arg"; done\n'
+        rollback_setup = (
+            '\nLLAMA_SERVER_PID_FILE="$INSTALL/data/llama.pid"\n'
+            '_old_model_path="$INSTALL/data/models/old.gguf"; _bind=127.0.0.1\n'
+            '_native_port=9999; _ctx_size=4096; _gpu_layers=0\n'
+        )
+        for raw, mode, fmt in (("OFF", "off", "none"), ("Off", "off", "none"),
+                               ("ON", "on", "deepseek"), ("AUTO", "auto", "auto"),
+                               ("deepseek", "deepseek", "deepseek"),
+                               ("DeepSeek", "DeepSeek", "DeepSeek")):
+            for release in ("b8210", "b9014"):
+                with self.subTest(reasoning=raw, release=release):
+                    self.use_runtime(release)
+                    (self.install / ".env").write_text(f"LLAMA_REASONING={raw}\n")
+                    argv = self.run_bash(script + forward)
+                    if release == "b9014" and mode in {"off", "on", "auto"}:
+                        self.assertEqual(argv[argv.index("--reasoning") + 1], mode)
+                        self.assertNotIn("--reasoning-format", argv)
+                    else:
+                        self.assertEqual(argv[argv.index("--reasoning-format") + 1], fmt)
+                        self.assertNotIn("--reasoning", argv)
+                    # Exercise the real rollback launch through the existing
+                    # service stub; forward argv alone cannot prove this path.
+                    argv = self.run_bash(script + rollback_setup + rollback)
+                    self.assertEqual(argv[argv.index("--reasoning-format") + 1], fmt)
+                    self.assertNotIn("--reasoning", argv)
+                    # Refused tuning keeps the mapped format when qualification
+                    # falls back, rather than forwarding the raw mode spelling.
+                    (self.install / ".env").write_text(f"LLAMA_REASONING={raw}\nLLAMA_ARG_SPEC_DRAFT_N_MAX=0\n")
+                    self.assertEqual(self.run_bash(script + forward), ["--reasoning-format", fmt])
 
 
 class LauncherContractTests(unittest.TestCase):

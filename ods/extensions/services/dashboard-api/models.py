@@ -33,6 +33,8 @@ class ServiceStatus(BaseModel):
     response_time_ms: Optional[float] = None
     # Internal health provenance; a slow HTTP probe alone cannot establish startup.
     startup_pending: bool = Field(default=False, exclude=True)
+    # Internal: the restart policy keeps bringing a crashing container back up.
+    crash_looping: bool = Field(default=False, exclude=True)
 
 
 class NodeCapabilities(BaseModel):
@@ -111,6 +113,8 @@ class VersionInfo(BaseModel):
     changelog_url: Optional[str] = None
     checked_at: Optional[str] = None
     check_status: str = "unavailable"
+    # Why GitHub gave no release, while a failed check holds further requests.
+    check_error: Optional[str] = None
 
 
 class UpdateAction(BaseModel):

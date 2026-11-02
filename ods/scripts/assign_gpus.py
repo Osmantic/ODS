@@ -5,6 +5,12 @@ assign_gpus.py — GPU assignment algorithm for ODS
 Usage:
     python3 assign_gpus.py --topology topo.json --model-size 70000
     python3 assign_gpus.py --topology topo.json --model-size 70000 --enabled-services llama_server,whisper
+    python3 assign_gpus.py --topology topo.json --model-size 132735 --pin-llm-gpu GPU-<uuid>
+
+--pin-llm-gpu gives the LLM role (llama_server) exactly that GPU, as the vLLM
+engine needs: its model selector already sized the model for that one GPU, and
+a model that fits one GPU is never split across GPUs. The other services take
+the remaining GPUs.
 
 Output: gpu_assignment JSON to stdout
 Errors: to stderr, exit code 1
@@ -221,7 +227,20 @@ def span_subsets(all_gpus: list, rank_matrix: dict, model_size_mb: float, ordere
     )
 
 
-def assign_services(all_gpus: list, llama_gpus: list, rank_matrix: dict, enabled_services: list, model_size_mb: float, vendor: str = "nvidia") -> tuple:
+def pinned_llama_subset(gpus: list, rank_matrix: dict, uuid: str) -> Subset:
+    """The LLM role on exactly the GPU ``uuid`` names (``--pin-llm-gpu``).
+
+    The vLLM model selector already checked that the model fits this GPU's
+    total memory, and vLLM claims its share of that memory at start, so the
+    free-VRAM fit used for llama.cpp splits does not apply.
+    """
+    pinned = [g for g in gpus if g.uuid == uuid]
+    if len(pinned) != 1:
+        raise ValueError(f"--pin-llm-gpu {uuid} names {len(pinned)} GPUs in the topology, not one")
+    return compute_subset(pinned, rank_matrix)
+
+
+def assign_services(all_gpus: list, llama_gpus: list, rank_matrix: dict, enabled_services: list, model_size_mb: float, vendor: str = "nvidia", grow_llama: bool = True) -> tuple:
     """
     Assign remaining GPUs to non-llama services.
     Returns (service_assignments dict, final_llama_gpus list, strategy str).
@@ -232,6 +251,7 @@ def assign_services(all_gpus: list, llama_gpus: list, rank_matrix: dict, enabled
       remaining == 2  → whisper → [0], comfyui+embeddings → [1]    → colocated
       remaining >= 3  → whisper → [0], comfyui → [1], emb → [2]    → dedicated
                         remaining[3:] → back to llama if the expanded group fits
+                        (never with grow_llama=False, a pinned LLM GPU)
 
     AMD APU+dGPU hybrid: if mixed memory types (unified + discrete), prefer APU
     GPUs for auxiliary services (lower bandwidth but sufficient for whisper/embeddings).
@@ -284,7 +304,7 @@ def assign_services(all_gpus: list, llama_gpus: list, rank_matrix: dict, enabled
         if "embeddings" in enabled_services:
             assignments["embeddings"] = ServiceAssignment(gpus=[remaining[2]])
         # Return spare devices only when the expanded LLM group still fits.
-        if len(remaining) > 3:
+        if grow_llama and len(remaining) > 3:
             expanded = compute_subset(final_llama_gpus + remaining[3:], rank_matrix)
             # Adding a mostly occupied device can make an equal layer split fail
             # even though the originally selected LLM group comfortably fits.
@@ -450,6 +470,9 @@ def main():
     parser.add_argument("--model-size",       required=True,  type=float, help="Model size in MB")
     parser.add_argument("--enabled-services", default=",".join(DEFAULT_SERVICES),
                         help="Comma-separated list of enabled services")
+    parser.add_argument("--pin-llm-gpu", default="", metavar="UUID",
+                        help="Give the LLM role exactly this GPU (the vLLM engine's VLLM_GPU_UUID); "
+                             "the other services take the remaining GPUs")
     args = parser.parse_args()
 
     # Load topology
@@ -474,6 +497,24 @@ def main():
     if gpu_count == 0:
         print("ERROR: no GPUs found in topology", file=sys.stderr)
         sys.exit(1)
+
+    #  Pinned LLM GPU (the vLLM engine): no subset search, no split
+    if args.pin_llm_gpu:
+        gpus        = parse_gpus(topology)
+        rank_matrix = build_rank_matrix(parse_links(topology))
+        try:
+            llama_subset = pinned_llama_subset(gpus, rank_matrix, args.pin_llm_gpu)
+        except ValueError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
+        service_assignments, _, strategy = assign_services(
+            gpus, llama_subset.gpus, rank_matrix, enabled_services, model_size_mb,
+            vendor=topology.get("vendor", "nvidia"), grow_llama=False,
+        )
+        service_assignments["llama_server"].parallelism = select_parallelism(llama_subset)
+        result = AssignmentResult(strategy="single" if gpu_count == 1 else strategy, services=service_assignments)
+        print(json.dumps(build_output(result), indent=2))
+        return
 
     #  Early exit: single GPU
     if gpu_count == 1:

@@ -1,5 +1,5 @@
 /* global atob */
-import {act,fireEvent,screen,waitFor} from '@testing-library/react'
+import {act,fireEvent,screen,waitFor,within} from '@testing-library/react'
 import {render} from '../test/test-utils'
 import Pixel from './Pixel'
 import {sha256} from '../lib/pixelArtifacts'
@@ -218,11 +218,12 @@ it('waits for an observer image upload before adopting terminal request recovery
     return originalFetch(url,options)
   })
   render(<Pixel/>)
-  await screen.findByRole('button',{name:'Check activity again'})
+  await screen.findByRole('button',{name:'Continue in this chat'})
   fireEvent.change(screen.getByLabelText('Choose images'),{target:{files:[fixtureFile()]}})
   await waitFor(()=>expect(finishUpload).toBeTypeOf('function'))
+  // The next check finds the completed receipt by itself.
   terminal=true
-  fireEvent.click(screen.getByRole('button',{name:'Check activity again'}))
+  await waitFor(()=>expect(calls('/api/pixel/chat/result').length).toBeGreaterThan(1),{timeout:3000})
   await act(async()=>{})
   expect(signal.aborted).toBe(false)
   expect(screen.getByRole('list',{name:'Attached images'})).toBeVisible()
@@ -381,4 +382,28 @@ it('preserves the draft after preflight validation rejection without claiming a 
   expect(screen.queryByText(/private input/)).toBeNull()
   expect(screen.queryByRole('button',{name:'Resolve interrupted turn'})).toBeNull()
   expect(stored().requestId).toBeNull()
+})
+
+it('puts an image message that never reached Portal back once, pictures and all, and says so',async()=>{
+  // nginx answered 502 while the dashboard API was recreated: no receipt.
+  stream=async()=>response({detail:'Bad Gateway'},502)
+  const prior=fetchMock.getMockImplementation()
+  fetchMock.mockImplementation(async(url,options)=>url==='/api/pixel/chat/result'?response({state:'unknown',events:''})
+    :url==='/api/pixel/chat/activity'?response({state:'terminal'}):prior(url,options))
+  await ready();await choose()
+  fireEvent.change(screen.getByPlaceholderText('Message Portal...'),{target:{value:'What is in this picture?'}})
+  fireEvent.click(screen.getByTitle('Send'))
+  const note=await screen.findByRole('status',{name:'Message not started'})
+  expect(note).toHaveTextContent('Portal didn’t receive your last message. It’s back in the message box, ready to send again.')
+  expect(screen.queryByText(/Portal finished working/)).toBeNull()
+  expect(screen.getByPlaceholderText('Message Portal...')).toHaveValue('What is in this picture?')
+  expect(screen.getByText(/1 × 1 · Ready/)).toBeVisible()
+  await waitFor(()=>expect(stored().messages.some(message=>message.content==='What is in this picture?')).toBe(false))
+  // Sending it again adds the turn, with its picture, to the history once.
+  stream=async()=>completed('A single pixel.')
+  fireEvent.click(within(note).getByRole('button',{name:'Send again'}))
+  expect(await screen.findByText('A single pixel.')).toBeVisible()
+  const sent=JSON.parse(calls('/api/pixel/chat/stream').at(-1)[1].body)
+  expect(sent.history_snapshot.messages.filter(message=>message.role==='user')).toEqual([
+    {role:'user',content:'What is in this picture?',images:[{id:imageId,sha256:receipt.sha256}]}])
 })

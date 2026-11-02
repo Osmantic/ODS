@@ -146,6 +146,10 @@ def qualify(binary, values, draft=("", "", ""), *, spec_type="", spec_default=""
     default_checkpoints = defaults and _unquote(values[1] if len(values) > 1 else "") == ""
     handle_reasoning = defaults and reasoning is not None
     reasoning_mode = _unquote(reasoning or "") or "off"
+    # Modes are case-insensitive, as in ods-host-agent.py; llama-server only
+    # accepts the lowercase spelling.
+    if reasoning_mode.lower() in REASONING_CHOICES:
+        reasoning_mode = reasoning_mode.lower()
     fallback_format = _unquote(reasoning_format)
     if fallback_format and not re.fullmatch(r"[A-Za-z0-9_.,-]{1,64}", fallback_format):
         raise ValueError("--reasoning-format requires a llama.cpp format name")

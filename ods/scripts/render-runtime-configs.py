@@ -16,9 +16,9 @@ import stat
 import sys
 import tempfile
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 from urllib.parse import urlsplit
 
 
@@ -38,6 +38,14 @@ LEGACY_ODS_MODES = {"lemonade": "local"}
 PUBLIC_MODEL_ALIAS = "ods/current"
 REMOTE_PROVIDER_EGRESS_BASE_URL = "http://remote-provider-egress:8091/v1"
 REMOTE_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,255}$")
+# .env LLM_BACKEND values. vllm routes model-router to the vllm-server
+# container; every other value keeps today's llama-server routes (external
+# installs replace the router through their overlay, hipfire routes share the
+# llama-server endpoint, and lemonade and litellm are retired values still
+# accepted for upgrade compatibility).
+LLM_BACKEND_VALUES = ("llama-server", "vllm", "external", "hipfire", "lemonade", "litellm")
+VLLM_ENDPOINT_ID = "vllm-default"
+VLLM_SERVER_ORIGIN = "http://vllm-server:8000"
 
 
 def atomic_write_text(target: Path, content: str, *, file_mode: int | None = None) -> None:
@@ -126,6 +134,11 @@ class RenderInputs:
     llm_api_key_env: str = ""
     # Switchboard rollout mode: legacy | observe | enabled (plan section 8)
     switchboard_mode: str = "enabled"
+    # Model server behind model-router: llama-server | vllm (model_server()).
+    llm_backend: str = "llama-server"
+    # The vllm route's thinking map for model-router (vllm_thinking()):
+    # {"default": <level>, "templateKwargs": {<level>: chat_template_kwargs}}.
+    vllm_thinking: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -155,6 +168,35 @@ def normalize_openai_base_url(value: str) -> str:
 
 def remote_route_enabled(inputs: RenderInputs) -> bool:
     return inputs.remote_llm_enabled
+
+
+def model_server(llm_backend: str) -> str:
+    """The model server an .env LLM_BACKEND value routes to."""
+    return "vllm" if llm_backend == "vllm" else "llama-server"
+
+
+def vllm_thinking(model: str, catalog_path: Path = ROOT / "config" / "model-library.json") -> dict[str, Any]:
+    """The thinking map model-router applies on the vllm route for ``model``.
+
+    ``model`` is .env LLM_MODEL: the vLLM catalog entry's llm_model_name (or
+    its id). vLLM serves one model, so its endpoint carries that model's
+    default level (``reasoning``) and the chat-template arguments of each
+    level (``thinking_template_kwargs``); see model_vllm.py.
+    """
+    sys.path.insert(0, str(ROOT / "extensions" / "services" / "dashboard-api"))
+    import model_vllm
+
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    matches = [
+        entry for entry in catalog.get("models", [])
+        if model_vllm.is_vllm_entry(entry) and model in {entry.get("llm_model_name"), entry.get("id")}
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            f"LLM_BACKEND=vllm needs --model to name one vLLM catalog entry (its llm_model_name); got {model!r}"
+        )
+    entry = model_vllm.require_valid(matches[0])
+    return {"default": entry["reasoning"], "templateKwargs": entry["thinking_template_kwargs"]}
 
 
 def hermes_model_id(inputs: RenderInputs) -> str:
@@ -555,7 +597,7 @@ def render_env(inputs: RenderInputs) -> RenderedFile:
     lines = [
         f"ODS_MODE={inputs.ods_mode}",
         f"ODS_MODEL_SWITCHBOARD={inputs.switchboard_mode}",
-        "LLM_BACKEND=llama-server",
+        f"LLM_BACKEND={inputs.llm_backend}",
         f"LLM_MODEL={inputs.model}",
         f"GGUF_FILE={inputs.gguf_file}",
         f"GPU_BACKEND={inputs.gpu_backend}",
@@ -652,13 +694,23 @@ def render_model_router_endpoints(inputs: RenderInputs) -> RenderedFile:
             raise ValueError("model router endpoint origin must be an HTTP URL without embedded credentials")
         return base
 
-    # Every managed runtime is upstream llama-server; a host-native one is
-    # reached at http://host.docker.internal:<port> with its key, which the
-    # router reads from the named env var (never from this file).
-    endpoint = {"id": "llama-server-default",
-                "baseUrl": _origin_base(inputs.llm_base_url, "http://llama-server:8080")}
-    if inputs.llm_api_key_env:
-        endpoint["apiKeyEnv"] = inputs.llm_api_key_env
+    if inputs.llm_backend == "vllm":
+        # The in-stack vllm-server container on its internal port. It takes no
+        # key; the llama-server origin and key inputs do not describe it. The
+        # router translates a request's thinking level with the served
+        # model's own map, which only this endpoint knows.
+        if inputs.vllm_thinking is None:
+            raise ValueError("the vllm-server endpoint needs its model's thinking map (vllm_thinking)")
+        endpoint = {"id": VLLM_ENDPOINT_ID, "baseUrl": VLLM_SERVER_ORIGIN, "thinking": inputs.vllm_thinking}
+    else:
+        # Otherwise the model server is upstream llama-server: the in-stack
+        # container, or a host-native one reached at
+        # http://host.docker.internal:<port> with its key, which the router
+        # reads from the named env var (never from this file).
+        endpoint = {"id": "llama-server-default",
+                    "baseUrl": _origin_base(inputs.llm_base_url, "http://llama-server:8080")}
+        if inputs.llm_api_key_env:
+            endpoint["apiKeyEnv"] = inputs.llm_api_key_env
     content = json.dumps({"endpoints": [endpoint]}, indent=2) + "\n"
     return RenderedFile(
         "model-router-endpoints", "config/model-router/endpoints.json", content
@@ -737,6 +789,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--ods-mode", choices=["local", "cloud", "hybrid", *LEGACY_ODS_MODES], default="local",
     )
     parser.add_argument("--llm-base-url", default="http://llama-server:8080/v1")
+    llm_backend = parser.add_argument(
+        "--llm-backend",
+        choices=LLM_BACKEND_VALUES,
+        default=(os.environ.get("LLM_BACKEND") or "").strip().lower() or "llama-server",
+        help=(
+            "The .env LLM_BACKEND value. vllm points model-router at vllm-server; "
+            "every other value keeps the llama-server routes."
+        ),
+    )
     parser.add_argument(
         "--llm-api-key-env", default="",
         help=(
@@ -789,7 +850,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     # environment. A typo must not silently select a different routing mode
     # and overwrite working runtime configs. Validate effective values so an
     # explicit valid CLI override can still repair a bad environment default.
-    for action in (switchboard_mode, remote_enabled, remote_transport):
+    for action in (switchboard_mode, remote_enabled, remote_transport, llm_backend):
         value = getattr(args, action.dest)
         if value not in action.choices:
             parser.error(f"{action.option_strings[0]}: invalid choice {value!r}; choose from {action.choices}")
@@ -883,6 +944,7 @@ def render(args: argparse.Namespace) -> dict[str, object]:
         remote_llm_model=args.remote_llm_model,
         external_llm_authenticated=args.external_llm_authenticated,
         llm_api_key_env=getattr(args, "llm_api_key_env", ""),
+        llm_backend=model_server(getattr(args, "llm_backend", "llama-server")),
     )
     validate_render_inputs(inputs)
     if args.surface == "litellm-switchboard" and inputs.ods_mode == "cloud":
@@ -890,15 +952,15 @@ def render(args: argparse.Namespace) -> dict[str, object]:
             "litellm-switchboard is local-runtime-only and cannot be rendered "
             "for ODS_MODE=cloud"
         )
-    files = [
-        RENDERERS[name](inputs)
-        for name in select_surfaces(
-            args.surface,
-            inputs.ods_mode,
-            inputs.switchboard_mode,
-            inputs.remote_llm_enabled,
-        )
-    ]
+    surfaces = select_surfaces(
+        args.surface,
+        inputs.ods_mode,
+        inputs.switchboard_mode,
+        inputs.remote_llm_enabled,
+    )
+    if inputs.llm_backend == "vllm" and "model-router-endpoints" in surfaces:
+        inputs = replace(inputs, vllm_thinking=vllm_thinking(inputs.model))
+    files = [RENDERERS[name](inputs) for name in surfaces]
     written: list[str] = []
     if args.write:
         output_root = Path(args.output_root)

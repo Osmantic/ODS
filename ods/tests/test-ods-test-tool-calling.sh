@@ -105,7 +105,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
-        if self.path == "/health":
+        # /health/readiness: LiteLLM's, which a vLLM install's checks ask.
+        if self.path in ("/health", "/health/readiness"):
             self.reply(200, {"status": "ok"})
         elif self.path == "/v1/models":
             self.reply(200, {"object": "list", "data": [{"id": MODEL, "object": "model"}]})
@@ -122,7 +123,7 @@ class Handler(BaseHTTPRequestHandler):
             request = None
         if request is not None:
             with open(os.path.join(WORK, "requests.jsonl"), "a") as log:
-                log.write(json.dumps(request) + "\n")
+                log.write(json.dumps({**request, "_authorization": self.headers.get("Authorization")}) + "\n")
         elif mode in WORKING:
             self.reply(400, {"error": {"code": 400, "type": "invalid_request_error",
                                        "message": "Failed to parse the request body as JSON"}})
@@ -205,3 +206,19 @@ expect "Tool Calling reads the install's .env by default (empty HOME)" call tool
 expect "LLM Inference passes on an assistant answer" text llm "LLM Inference" pass
 expect "LLM Inference passes when a thinking model only reasoned" reasoning llm "LLM Inference" pass
 expect "LLM Inference fails on an error body" error llm "LLM Inference" fail
+
+# LLM_BACKEND=vllm: vllm-server publishes no host port, so the LLM checks go
+# through the LiteLLM gateway (its readiness, then ods/current with its key),
+# as ODS clients reach the engine.
+printf 'LLM_BACKEND=vllm\nLITELLM_PORT=%s\nLITELLM_KEY=sk-gateway-fixture\n' "$(cat "$TMP_DIR/port")" > "$INSTALL/.env"
+expect "Tool Calling on a vLLM install goes through the gateway" call tool-calling "Tool Calling" pass
+python3 - "$TMP_DIR/requests.jsonl" <<'PY' || fail "the vLLM check did not ask the gateway for ods/current with its key"
+import json, sys
+with open(sys.argv[1]) as stream:
+    requests = [json.loads(line) for line in stream if line.strip()]
+assert requests, "no parseable chat request reached the gateway"
+assert requests[-1]["model"] == "ods/current", requests[-1]["model"]
+assert requests[-1]["_authorization"] == "Bearer sk-gateway-fixture", requests[-1]["_authorization"]
+PY
+pass "the vLLM check names ods/current and sends the gateway key"
+expect "LLM Inference on a vLLM install passes through the gateway" text llm "LLM Inference" pass

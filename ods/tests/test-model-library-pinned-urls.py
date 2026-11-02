@@ -8,6 +8,11 @@ both catalog downloads failed with HTTP 404 until they were repointed.
 Pinning a 40-hex commit keeps ``gguf_url``, ``gguf_sha256`` and ``size_bytes``
 describing one exact file.
 
+vLLM entries (``"runtime": "vllm"``) have no download URL: they pin the
+whole snapshot by ``hf_repo`` and a 40-hex ``revision`` and give every file a
+sha256 (LFS) or git blob sha1 (small files). They are checked here for that
+pin; tests/test-model-library-vllm.py checks the rest of their schema.
+
 Network-free: this checks the catalog's shape, not Hugging Face. Verify a new
 pin against the Hub's LFS metadata (``lfs.oid`` / ``lfs.size``) before adding it.
 """
@@ -27,6 +32,8 @@ PINNED_URL = re.compile(
     r"(?P<repo>[^/\s]+/[^/\s]+)/resolve/(?P<revision>[0-9a-f]{40})/(?P<path>[^\s]+\.gguf)$"
 )
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+COMMIT = re.compile(r"^[0-9a-f]{40}$")
+HF_REPO = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 def _artifacts(model: dict) -> list[dict]:
@@ -43,8 +50,33 @@ def _artifacts(model: dict) -> list[dict]:
     }]
 
 
-def _models() -> list[dict]:
+def _catalog_models() -> list[dict]:
     return json.loads(CATALOG.read_text(encoding="utf-8"))["models"]
+
+
+def _models() -> list[dict]:
+    """The llama.cpp (GGUF) entries; vLLM entries pin a snapshot instead."""
+    return [model for model in _catalog_models() if model.get("runtime") != "vllm"]
+
+
+def test_every_vllm_snapshot_pins_a_commit_and_every_file_digest() -> None:
+    offenders = []
+    vllm = [model for model in _catalog_models() if model.get("runtime") == "vllm"]
+    for model in vllm:
+        if not HF_REPO.match(str(model.get("hf_repo") or "")) or not COMMIT.match(str(model.get("revision") or "")):
+            offenders.append(f"{model['id']}: hf_repo {model.get('hf_repo')!r} @ {model.get('revision')!r}")
+        for item in model.get("files") or [{}]:
+            digest_ok = (
+                SHA256.match(str(item.get("sha256") or "")) if "sha256" in item
+                else COMMIT.match(str(item.get("git_blob_sha1") or ""))
+            )
+            if not digest_ok or not isinstance(item.get("size"), int):
+                offenders.append(f"{model['id']}: {item.get('path') or '<missing path>'}")
+    assert vllm, "the catalog's vLLM entries went missing"
+    assert not offenders, (
+        "vLLM entries must pin <owner>/<repo> at a 40-hex commit and give every file a size and "
+        "a sha256 or git_blob_sha1:\n  " + "\n  ".join(offenders)
+    )
 
 
 def test_every_download_url_pins_a_commit() -> None:
@@ -115,6 +147,7 @@ def main() -> int:
     test_every_download_declares_a_sha256()
     test_split_parts_share_one_revision()
     test_declared_source_matches_download_url()
+    test_every_vllm_snapshot_pins_a_commit_and_every_file_digest()
     print("[PASS] Every catalog download pins a Hugging Face commit and declares a sha256")
     return 0
 

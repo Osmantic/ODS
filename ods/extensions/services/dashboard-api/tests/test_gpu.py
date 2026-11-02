@@ -68,8 +68,9 @@ class TestGetGpuTierUnified:
 
 class TestGetGpuInfoNvidia:
 
-    def test_parses_valid_output(self, monkeypatch):
-        csv = "NVIDIA GeForce RTX 4090, 2048, 24564, 35, 62, 285.5"
+    @pytest.mark.parametrize("temperature", ["62", "62.00", "62.60"])
+    def test_parses_valid_output(self, monkeypatch, temperature):
+        csv = f"NVIDIA GeForce RTX 4090, 2048, 24564, 35, {temperature}, 285.5"
         monkeypatch.setattr("gpu.run_command", lambda cmd, **kw: (True, csv))
 
         info = get_gpu_info_nvidia()
@@ -101,6 +102,13 @@ class TestGetGpuInfoNvidia:
         assert info.temperature_c == 0
         assert info.utilization_available is False
         assert info.temperature_available is False
+
+    @pytest.mark.parametrize("temperature", ["NaN", "inf", "-inf"])
+    def test_rejects_nonfinite_temperature(self, monkeypatch, temperature):
+        csv = f"NVIDIA GeForce RTX 4090, 2048, 24564, 35, {temperature}, 285.5"
+        monkeypatch.setattr("gpu.run_command", lambda cmd, **kw: (True, csv))
+
+        assert get_gpu_info_nvidia() is None
 
     def test_returns_none_on_command_failure(self, monkeypatch):
         monkeypatch.setattr("gpu.run_command", lambda cmd, **kw: (False, ""))

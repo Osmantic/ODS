@@ -46,6 +46,20 @@ fi
 LLM_HOST="${LLM_HOST:-localhost}"
 LLM_PORT="${LLM_PORT:-${SERVICE_PORTS[llama-server]:-11434}}"
 LLM_URL="http://${LLM_HOST}:${LLM_PORT}"
+LLM_HEALTH_PATH="/health"
+LLM_ENGINE="llama-server"
+LLM_GATEWAY_KEY=""
+# LLM_BACKEND=vllm: vllm-server publishes no host port. ODS clients reach it
+# through LiteLLM as ods/current (model-router adapts the request to vLLM), so
+# the LLM checks go there too, with the gateway key (_llm_chat).
+_ods_test_backend="$(printf '%s' "${LLM_BACKEND:-}" | tr '[:upper:]' '[:lower:]')"
+if [[ "$_ods_test_backend" == "vllm" ]]; then
+    LLM_URL="http://${LLM_HOST}:${LITELLM_PORT:-4000}"
+    LLM_HEALTH_PATH="/health/readiness"
+    LLM_ENGINE="vllm-server"
+    LLM_GATEWAY_KEY="${LITELLM_KEY:-${LITELLM_MASTER_KEY:-}}"
+fi
+unset _ods_test_backend
 WHISPER_HOST="${WHISPER_HOST:-localhost}"
 WHISPER_PORT="${WHISPER_PORT:-${SERVICE_PORTS[whisper]:-9000}}"
 TTS_HOST="${TTS_HOST:-localhost}"
@@ -108,9 +122,30 @@ _now_ms() {
 # /v1/models as test_llm always has; "local" when the listing fails, and the
 # request that follows then reports the fault.
 _llm_model_id() {
+    # The gateway serves the active model under its stable alias.
+    if [[ -n "$LLM_GATEWAY_KEY" ]]; then
+        echo "ods/current"
+        return 0
+    fi
     local model_id
     model_id=$(curl -s --max-time 10 "$LLM_URL/v1/models" 2>/dev/null | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4) || model_id=""
     echo "${model_id:-local}"
+}
+
+# POST one chat completion ($2) to the LLM route within $1 seconds. A gateway
+# key travels on curl's stdin (-H @-), never in argv.
+_llm_chat() {
+    local seconds="$1" payload="$2"
+    if [[ -n "$LLM_GATEWAY_KEY" ]]; then
+        printf 'Authorization: Bearer %s\n' "$LLM_GATEWAY_KEY" \
+            | curl -s --max-time "$seconds" -X POST "$LLM_URL/v1/chat/completions" \
+                -H "Content-Type: application/json" -H @- \
+                -d "$payload" 2>/dev/null
+    else
+        curl -s --max-time "$seconds" -X POST "$LLM_URL/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -d "$payload" 2>/dev/null
+    fi
 }
 
 # Judge a chat completion (read on stdin) by its JSON structure, not by
@@ -340,13 +375,16 @@ test_gpu() {
 }
 
 test_llm() {
-    print_section "LLM Inference (llama-server)"
+    print_section "LLM Inference ($LLM_ENGINE)"
 
     # A failed check is already recorded; return 0 so the short-circuit only
     # skips this section's dependent checks instead of aborting the whole run
     # under set -e (which lost the summary and the --json document).
-    test_http "LLM Health" "$LLM_URL/health" "200" || return 0
-    test_http "LLM Models API" "$LLM_URL/v1/models" "200" || log "LLM models API check failed"
+    test_http "LLM Health" "$LLM_URL$LLM_HEALTH_PATH" "200" || return 0
+    # The gateway lists only its aliases, and only with its key.
+    if [[ -z "$LLM_GATEWAY_KEY" ]]; then
+        test_http "LLM Models API" "$LLM_URL/v1/models" "200" || log "LLM models API check failed"
+    fi
 
     if [[ "$QUICK_MODE" == "true" ]]; then
         record_result "LLM Inference" "skip" "quick mode"
@@ -360,10 +398,7 @@ test_llm() {
     local payload="{\"model\": \"$model_id\", \"messages\": [{\"role\": \"user\", \"content\": \"Say hello\"}], \"max_tokens\": 10}"
     local response
 
-    response=$(curl -s --max-time 30 \
-        -X POST "$LLM_URL/v1/chat/completions" \
-        -H "Content-Type: application/json" \
-        -d "$payload" 2>/dev/null) || response=""
+    response=$(_llm_chat 30 "$payload") || response=""
 
     if printf '%s' "$response" | _completion_ok text; then
         local tokens_used
@@ -393,11 +428,8 @@ test_tool_calling() {
     local payload="{\"model\": \"$model_id\", \"messages\": [{\"role\": \"user\", \"content\": \"What is the weather in Tokyo?\"}], \"tools\": $tools, \"tool_choice\": \"auto\", \"max_tokens\": 100}"
     
     local response
-    response=$(curl -s --max-time 30 \
-        -X POST "$LLM_URL/v1/chat/completions" \
-        -H "Content-Type: application/json" \
-        -d "$payload" 2>/dev/null) || response=""
-    
+    response=$(_llm_chat 30 "$payload") || response=""
+
     if printf '%s' "$response" | _completion_ok tool; then
         record_result "Tool Calling" "pass" "function called"
         print_test "Tool Calling" "pass" "function called"
@@ -495,7 +527,7 @@ test_voice_roundtrip() {
     if curl -s --max-time 5 "http://${TTS_HOST}:${TTS_PORT}/v1/audio/voices" &>/dev/null; then
         tts_ready=true
     fi
-    if curl -s --max-time 5 "$LLM_URL/health" &>/dev/null; then
+    if curl -s --max-time 5 "$LLM_URL$LLM_HEALTH_PATH" &>/dev/null; then
         llm_ready=true
     fi
     
@@ -522,10 +554,7 @@ test_voice_roundtrip() {
     model_id=$(_llm_model_id)
     local llm_payload="{\"model\": \"$model_id\", \"messages\": [{\"role\": \"user\", \"content\": \"What is the weather today?\"}], \"max_tokens\": 50}"
     local llm_response
-    llm_response=$(curl -s --max-time 15 \
-        -X POST "$LLM_URL/v1/chat/completions" \
-        -H "Content-Type: application/json" \
-        -d "$llm_payload" 2>/dev/null) || llm_response=""
+    llm_response=$(_llm_chat 15 "$llm_payload") || llm_response=""
     
     if ! printf '%s' "$llm_response" | _completion_ok text; then
         record_result "Voice Round-Trip" "fail" "LLM step failed"
@@ -669,14 +698,14 @@ _print_text_summary() {
         echo "Actionable fixes:"
         
         if [[ "${RESULTS_STATUS[0]:-}" == "fail" ]] && [[ "${RESULTS_NAMES[0]:-}" == *"LLM"* ]]; then
-            echo "  - LLM not responding - check: docker logs ods-llama-server"
+            echo "  - LLM not responding - check: docker logs ods-${LLM_ENGINE}"
         fi
 
         local i
         for i in "${!RESULTS_NAMES[@]}"; do
             if [[ "${RESULTS_STATUS[$i]}" == "fail" ]]; then
                 case "${RESULTS_NAMES[$i]}" in
-                    "Tool Calling") echo "  - Tool calling failed - check llama-server tool support" ;;
+                    "Tool Calling") echo "  - Tool calling failed - check $LLM_ENGINE tool support" ;;
                     "Whisper Port") echo "  - Whisper not running - start: docker compose up whisper" ;;
                     "TTS Port") echo "  - TTS not running - start: docker compose up kokoro-tts" ;;
                 esac

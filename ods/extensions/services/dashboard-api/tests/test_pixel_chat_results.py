@@ -78,6 +78,31 @@ def test_admission_rejection_is_typed_terminal_and_replays_without_execution(sto
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("payload,expected", [
+    ({"error": "image processing busy; retry shortly"}, "rejected"),
+    ({"error": "image processing busy; retry shortly", "private": "secret"}, "interrupted"),
+    ({"error": "different_busy"}, "interrupted"),
+])
+def test_busy_image_slot_is_a_typed_refusal_that_never_ran(store, monkeypatch, payload, expected):
+    # Edge holds one image slot; a second picture gets its exact 429 before
+    # admission. Only that body may tell the owner "busy, send again".
+    async def run():
+        monkeypatch.setattr(pixel.httpx, "AsyncClient", lambda **kw: FakeClient(
+            FakeResponse(status=429, chunks=[json.dumps(payload).encode()])))
+        async def forbidden(*args):
+            raise AssertionError("A refused turn must not cancel or inspect an agent run")
+        monkeypatch.setattr(pixel, "_cancel_edge_run", forbidden)
+        monkeypatch.setattr(pixel, "pixel_chat_activity", forbidden)
+        response = await pixel.pixel_chat_stream(Request({"type": "http"}), body(), OWNER)
+        await asyncio.gather(*list(pixel._result_tasks.values()))
+        data = await stream_body(response)
+        assert store.get(IDENTITY)["state"] == expected
+        assert (b'"code": "image_turn_busy"' in data) == (expected == "rejected")
+        assert b"secret" not in data and b"retry shortly" not in data
+        assert not store.has_pending(IDENTITY[:2])
+    asyncio.run(run())
+
+
 def test_upstream_sse_cannot_forge_an_unstarted_admission_receipt(store, monkeypatch):
     async def run():
         frames = b'data: {"error":{"type":"pixel_dashboard_error","code":"transition_in_progress"}}\n\ndata: [DONE]\n\n'
