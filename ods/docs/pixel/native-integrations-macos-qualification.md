@@ -6,7 +6,7 @@ not a launchd, Darwin ACL, Seatbelt, reboot or native process-custody result.
 
 ## Deployment contract
 
-The new snapshot publishes eight integrations programs and one owner-run
+The new snapshot publishes nine integrations programs and one owner-run
 launchd definition. It adds no model tools and changes no Portal SDK, vendored
 runtime, container image or trust pins. The controller admits exactly the
 legacy three-role or new four-role native service sets, selected from verified
@@ -45,7 +45,7 @@ limit claim.
 ## Upgrade and preservation
 
 Legacy recovery schemas 1/2 remain exact. Schema 3 admits only the whole
-nine-file integrations addition, or that addition together with the five
+ten-file integrations addition, or that addition together with the five
 inspection additions. Rollback restores prior file absence and old policy
 bytes. A protected never-started witness is consumed before bootstrap;
 loaded jobs require normal PID/birth/descendant stop evidence.
@@ -60,7 +60,7 @@ the exact prior protected settings/service/installation authority, owner and
 install identity, complete three-root prior absence, and approved validator
 source. After rollback, the modern retirement reader can recognize that exact
 preserved state without first requiring a successful new-service update.
-All nine static additions must be absent and the integration job must be
+All ten static additions must be absent and the integration job must be
 absent and not intentionally disabled. Partial directories accept only known
 preparation prefixes; foreign data, links, ACL grants and altered authority
 are refused. Interrupted receipt publication never becomes authority.

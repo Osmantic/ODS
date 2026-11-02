@@ -81,11 +81,11 @@ def publication(world, monkeypatch):
     return args, verified
 
 
-def test_publication_plan_is_exact_complete_nine_files_and_does_not_provision(publication, monkeypatch):
+def test_publication_plan_is_exact_complete_ten_files_and_does_not_provision(publication, monkeypatch):
     args, verified = publication
     monkeypatch.setattr(native, 'provision', lambda *args, **kwargs: pytest.fail('read-only plan provisioned'))
     files = native.publication_files(**args)
-    assert len(files) == 9
+    assert len(files) == 10
     assert {p.name for p, _, _, _ in files} == native.SOURCES | {'com.ods.pixel-native-integrations.plist'}
     assert all(mode == 0o644 and gid == 0 for _, _, mode, gid in files)
     assert verified == ['/Library/Developer/Python']
@@ -259,7 +259,7 @@ def test_managed_upgrade_plan_then_provision_prepares_missing_launchd_logs(publi
         monkeypatch.setattr(native.subprocess, 'run', prepare_state)
         monkeypatch.setattr(native, 'publish', lambda **kwargs: pytest.fail('managed upgrade must not call initial publisher'))
         plan = native.publication_files(**args)
-        assert len(plan) == 9 and not logs.exists()
+        assert len(plan) == 10 and not logs.exists()
         native.provision('fixture', python='/Library/Developer/Python')
         assert prepared == [(logs, world.pw_uid, world.pw_gid)]
         assert (logs / 'stdout.log').is_file() and (logs / 'stderr.log').is_file()

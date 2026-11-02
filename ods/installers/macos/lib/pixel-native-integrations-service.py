@@ -20,7 +20,7 @@ import sys
 
 SOURCES = frozenset({"integrations_common.py", "integrations_mcp.py", "integrations_notes.py",
     "integrations_service.py", "unix_peer.py", "integrations_app_service.py",
-    "integrations_apps.py", "integrations_ntfy.py"})
+    "integrations_apps.py", "integrations_ntfy.py", "integrations_recovery.py"})
 RUNTIME = Path('/private/var/lib/ods-pixel-integrations')
 AUTH_ROOT = Path('/private/var/lib/ods-pixel-integrations-auth')
 LOGS = Path('/private/var/log/ods-pixel-integrations')

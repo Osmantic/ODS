@@ -27,7 +27,7 @@ services = load('pixel-native-services')
 @pytest.mark.parametrize('fault', [None, 'partial', 'mode', 'gid', 'foreign', 'after-null', 'schema'])
 def test_integrations_additions_require_complete_private_rollback_contract(inspection, fault):
     paths = upgrade.INTEGRATION_ADDITIONS | (upgrade.INSPECTION_ADDITIONS if inspection else set())
-    assert len(upgrade.INTEGRATION_ADDITIONS) == 9
+    assert len(upgrade.INTEGRATION_ADDITIONS) == 10
     records = [dict(path=path, before=None, after=b'new', mode=0o644, gid=0) for path in sorted(paths)]
     if fault == 'partial': records.pop()
     if fault == 'mode': records[0]['mode'] = 0o600
@@ -59,7 +59,7 @@ def test_new_capability_source_manifest_does_not_accept_partial_or_inspectionles
                    all_names - bundle.INTEGRATION_SERVICE_ARTIFACTS - bundle.INSPECTION_SERVICE_ARTIFACTS):
         bundle.validate_service_manifest_provenance(manifest(legacy))
     bundle.validate_service_manifest_provenance(manifest(all_names))
-    assert len(bundle.INTEGRATION_SERVICE_ARTIFACTS) == 8
+    assert len(bundle.INTEGRATION_SERVICE_ARTIFACTS) == 9
     for missing in bundle.INTEGRATION_SERVICE_ARTIFACTS:
         with pytest.raises(bundle.BundleError):
             bundle.validate_service_manifest_provenance(manifest(all_names - {missing}))
@@ -68,7 +68,30 @@ def test_new_capability_source_manifest_does_not_accept_partial_or_inspectionles
             bundle.validate_service_manifest_provenance(manifest(all_names - bundle.INSPECTION_SERVICE_ARTIFACTS))
 
 
-@pytest.mark.parametrize('failure_at', range(1, 15))
+def test_unreleased_eight_program_profile_is_not_an_admitted_legacy_capability():
+    names = set(bundle.ODS_SERVICE_SOURCES) | bundle.GENERATED_SERVICE_ARTIFACTS | {'operations/broker.py'}
+    removed = 'integrations/integrations_recovery.py'
+    assert removed in names
+    manifest = dict(schemaVersion=1, status='staged', requiresServiceQualification=True,
+        pixelSourceRef='a' * 40, candidateConfigSha256='b' * 64,
+        files={name: {'sha256': hashlib.sha256(name.encode()).hexdigest(), 'bytes': len(name)}
+               for name in names - {removed}})
+    with pytest.raises(bundle.BundleError):
+        bundle.validate_service_manifest_provenance(manifest)
+    with pytest.raises(ValueError, match='complete-native-integration-sources-required'):
+        services.snapshot_order({name: b'pass' for name in names - {removed}})
+
+
+def test_unreleased_nine_publication_recovery_cannot_omit_review_only_backend():
+    paths = upgrade.INTEGRATION_ADDITIONS - {
+        '/usr/local/libexec/ods-pixel-services/integrations/integrations_recovery.py'}
+    assert len(paths) == 9
+    records = [dict(path=path, before=None, after=b'new', mode=0o644, gid=0) for path in sorted(paths)]
+    with pytest.raises(upgrade.UpgradeError):
+        upgrade.encode_recovery(records, current_digest='a' * 64, candidate_digest='b' * 64, allowed_paths=paths)
+
+
+@pytest.mark.parametrize('failure_at', range(1, len(upgrade.INTEGRATION_ADDITIONS | upgrade.INSPECTION_ADDITIONS) + 1))
 def test_new_capability_partial_file_publication_restores_all_prior_absences(failure_at):
     paths = upgrade.INTEGRATION_ADDITIONS | upgrade.INSPECTION_ADDITIONS
     records = [dict(path=p, before=None, after=p.encode(), mode=0o644, gid=0) for p in sorted(paths)]
@@ -100,7 +123,7 @@ def test_legacy_and_new_joint_upgrade_sets_remain_exact():
 
 
 @pytest.mark.parametrize('partial', [False, True])
-def test_joint_publication_includes_exact_eight_sources_and_fourth_daemon_before_writes(monkeypatch, partial):
+def test_joint_publication_includes_exact_nine_sources_and_fourth_daemon_before_writes(monkeypatch, partial):
     monkeypatch.setattr(services.sys, 'platform', 'darwin')
     monkeypatch.setattr(services.os, 'geteuid', lambda: 0)
     snapshots = {name: b'VALUE = 1\n' for name in bundle.ODS_SERVICE_SOURCES}
@@ -171,7 +194,7 @@ def test_new_fourth_service_initial_activation_preserves_complete_checkpoint_and
 
 
 @pytest.mark.parametrize('failure', [None, *upgrade.NATIVE_ROLES, 'readiness'])
-def test_joint_upgrade_restores_legacy_six_jobs_and_all_nine_absences(failure):
+def test_joint_upgrade_restores_legacy_six_jobs_and_all_ten_absences(failure):
     """A failed new-capability bootstrap must never invent a previous daemon."""
     loaded = dict.fromkeys(upgrade.LEGACY_NATIVE_ROLES, 'previous')
     live = {}

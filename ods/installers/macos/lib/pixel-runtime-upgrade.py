@@ -179,7 +179,7 @@ INTEGRATION_ADDITIONS = frozenset({
     *('/usr/local/libexec/ods-pixel-services/integrations/' + name for name in (
         'integrations_common.py', 'integrations_mcp.py', 'integrations_notes.py',
         'integrations_service.py', 'unix_peer.py', 'integrations_app_service.py',
-        'integrations_apps.py', 'integrations_ntfy.py')),
+        'integrations_apps.py', 'integrations_ntfy.py', 'integrations_recovery.py')),
     '/Library/LaunchDaemons/com.ods.pixel-native-integrations.plist'})
 
 

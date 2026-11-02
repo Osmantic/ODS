@@ -32,7 +32,7 @@ UNKNOWN_SOURCE_REASONS = {'source-unavailable', 'source-dirty', 'source-ref-mism
 SOURCE_SCOPE = 'recorded-bindings-only'
 INTEGRATION_PROGRAMS = ('integrations_common.py', 'integrations_mcp.py', 'integrations_notes.py',
     'integrations_service.py', 'unix_peer.py', 'integrations_app_service.py',
-    'integrations_apps.py', 'integrations_ntfy.py')
+    'integrations_apps.py', 'integrations_ntfy.py', 'integrations_recovery.py')
 INTEGRATION_SERVICE_ARTIFACTS = frozenset('integrations/' + name for name in INTEGRATION_PROGRAMS)
 ODS_SERVICE_SOURCES = {
     'manager/extension_manager.py': 'extensions/services/pixel-agent/host/extension_manager.py',

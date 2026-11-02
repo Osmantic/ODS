@@ -1367,7 +1367,7 @@ class _PriorAbsentIntegrations:
     """Only the exact legacy-three → four service capability may be absent.
 
     This is a fixed prior deployment state, never a fabricated process witness.
-    The complete nine-path rollback image is validated before constructing it.
+    The complete ten-path rollback image is validated before constructing it.
     """
     prior_absent = True
 
