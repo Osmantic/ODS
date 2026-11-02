@@ -49,6 +49,7 @@ import { longTaskContract, promptContractForAgent, PORTAL_INTEGRATION_TURN_CONTE
 import { executionContext } from "./completion-assurance.mjs";
 import { createAskUserTool } from "./ask-user.mjs";
 import { createIntegrationTools } from "./integrations.mjs";
+import { createTaskHooks } from "./integration-tasks.mjs";
 import { createPendingClarifications } from "./pending-clarification.mjs";
 import {
   appsToolText,
@@ -957,8 +958,16 @@ export default definePluginEntry({
     })), {names:['pixel_ods_workspace_artifact']});
     registerTool(api, createAgentSkillTool(), {names:['pixel_ods_skill']});
     registerTool(api, createAskUserTool({responseLanguage: configuredResponseLanguage}), {names:['pixel_ods_ask_user']});
-    // The owner's notes, notifications and MCP servers, all through the host integrations service.
-    for (const tool of createIntegrationTools()) registerTool(api, tool, {names: [tool.name]});
+    // The owner's notes, notifications, MCP servers and apps, all through the host integrations service.
+    for (const {name} of createIntegrationTools()) {
+      api.registerTool(onlyPixel(context => createIntegrationTools({context})
+        .find(tool => tool.name === name)), {names: [name]});
+    }
+    // Finished scheduled tasks notify the owner; the daily news digest is kept as a cron job.
+    const taskHooks = createTaskHooks({warn: message => api.logger.warn(message)});
+    api.on("gateway_start", (event, context) => taskHooks.gatewayStart(event, context));
+    api.on("gateway_stop", () => taskHooks.gatewayStop());
+    api.on("cron_changed", (event, context) => taskHooks.cronChanged(event, context));
     registerTool(api, createGoalProgressTool(), {names:['pixel_ods_goal']});
     registerTool(api, createActivityTool(), {names:['pixel_ods_activity']});
     registerProjectBuild(api, onlyPixel, projectRunControl);

@@ -8,6 +8,7 @@ import math
 import json
 import os
 import pathlib
+import socket
 import subprocess
 import sys
 import threading
@@ -19,11 +20,15 @@ import urllib.request
 SCHEMA_VERSION = 1
 MAX_REQUEST_BYTES = 64 * 1024
 MAX_RESPONSE_BYTES = 256 * 1024
+MAX_HTTP_RESPONSE_BYTES = 4 * 1024 * 1024
 MAX_RESULT_CHARS = 8000
 NETWORK_TIMEOUT = 20
 # UTF8 agent JSON can expand3x as MCP ASCII escapes, then4/3 as private base64.
 MAX_HTTP_WORKER_INPUT = 8 * MAX_REQUEST_BYTES
 ACTIVITY_LINES = 500
+# The owner's apps and the local addresses the ODS extension catalog publishes them on.
+APP_URLS = {"documents": "http://127.0.0.1:7807", "photos": "http://127.0.0.1:2283",
+            "watch": "http://127.0.0.1:11039", "news": "http://127.0.0.1:11029"}
 
 
 class IntegrationError(Exception):
@@ -57,7 +62,7 @@ class _BufferedResponse(io.BytesIO):
         return self.status
 
 
-def safe_urlopen(request, *, timeout=NETWORK_TIMEOUT):
+def safe_urlopen(request, *, timeout=NETWORK_TIMEOUT, max_response_bytes=MAX_RESPONSE_BYTES):
     """One bounded HTTP operation, including DNS, headers and the full body.
 
     urllib's socket timeout only bounds inactivity. A private owned worker lets
@@ -66,11 +71,14 @@ def safe_urlopen(request, *, timeout=NETWORK_TIMEOUT):
     """
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise IntegrationError("integration-timeout", "The integration request timed out; its result could not be verified.")
+    if type(max_response_bytes) is not int or not 1 <= max_response_bytes <= MAX_HTTP_RESPONSE_BYTES:
+        raise IntegrationError("integration-response-limit", "Invalid integration response limit.")
     timeout = min(float(timeout), NETWORK_TIMEOUT)
     deadline = time.monotonic() + timeout
     payload = json.dumps({"url": request.full_url, "method": request.get_method(),
                           "headers": dict(request.header_items()),
-                          "body": base64.b64encode(request.data or b"").decode("ascii")}).encode()
+                          "body": base64.b64encode(request.data or b"").decode("ascii"),
+                          "responseLimit": max_response_bytes}).encode()
     if len(payload) > MAX_HTTP_WORKER_INPUT:
         raise IntegrationError("request-too-large", "The integration request is too large.")
     worker = subprocess.Popen([sys.executable, "-I", "-B", str(pathlib.Path(__file__).resolve()), "--http-worker"],
@@ -83,7 +91,7 @@ def safe_urlopen(request, *, timeout=NETWORK_TIMEOUT):
         worker.communicate()  # No terminal receipt until this exact owned worker is reaped.
         raise IntegrationError("integration-timeout", "The integration request timed out; its result could not be verified. "
                                "Check the service before trying again.") from None
-    if worker.returncode != 0 or len(output) > 2 * MAX_RESPONSE_BYTES:
+    if worker.returncode != 0 or len(output) > 2 * max_response_bytes + 128 * 1024:
         raise IntegrationError("integration-unavailable", "The integration request did not complete.")
     try:
         value = json.loads(output)
@@ -91,6 +99,10 @@ def safe_urlopen(request, *, timeout=NETWORK_TIMEOUT):
             raise urllib.error.HTTPError(request.full_url, value["status"], "Integration endpoint refused the request.", {}, None)
         if value.get("kind") == "network-error":
             raise urllib.error.URLError("Integration endpoint could not be reached.")
+        if value.get("kind") == "not-connected":
+            reason = (socket.gaierror("Integration endpoint name could not be resolved.")
+                      if value.get("reason") == "dns" else ConnectionRefusedError("Integration endpoint refused the connection."))
+            raise urllib.error.URLError(reason)
         if value.get("kind") == "timeout":
             raise IntegrationError("integration-timeout", "The integration request timed out; its result could not be verified. "
                                    "Check the service before trying again.")
@@ -101,7 +113,7 @@ def safe_urlopen(request, *, timeout=NETWORK_TIMEOUT):
         if value.get("kind") != "response":
             raise ValueError
         body = base64.b64decode(value["body"], validate=True)
-        if len(body) > MAX_RESPONSE_BYTES:
+        if len(body) > max_response_bytes:
             raise IntegrationError("integration-response-too-large", "The integration endpoint sent too much data.")
         return _BufferedResponse(body, value["status"], value["headers"])
     except (KeyError, TypeError, ValueError):
@@ -118,15 +130,18 @@ def _http_worker():
         if len(raw) > MAX_HTTP_WORKER_INPUT:
             raise ValueError
         value = json.loads(raw)
+        response_limit = value.get("responseLimit", MAX_RESPONSE_BYTES)
+        if type(response_limit) is not int or not 1 <= response_limit <= MAX_HTTP_RESPONSE_BYTES:
+            raise ValueError
         request = urllib.request.Request(value["url"], data=base64.b64decode(value["body"], validate=True),
                                          headers=value["headers"], method=value["method"])
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _RefuseRedirects())
         with opener.open(request, timeout=NETWORK_TIMEOUT) as response:
             if sum(len(key) + len(item) for key, item in response.headers.items()) > 16 * 1024:
                 raise ValueError
-            body = response.read(MAX_RESPONSE_BYTES + 1)
+            body = response.read(response_limit + 1)
             # Keep the size failure fixed; never echo remote content or URLs.
-            if len(body) > MAX_RESPONSE_BYTES:
+            if len(body) > response_limit:
                 result = {"kind": "too-large"}
             else:
                 headers = {key: response.headers[key] for key in ("Content-Type", "Mcp-Session-Id") if key in response.headers}
@@ -140,7 +155,10 @@ def _http_worker():
     except TimeoutError:
         result = {"kind": "timeout"}
     except urllib.error.URLError as error:
-        result = {"kind": "timeout" if isinstance(error.reason, TimeoutError) else "network-error"}
+        if isinstance(error.reason, (ConnectionRefusedError, socket.gaierror)):
+            result = {"kind": "not-connected", "reason": "dns" if isinstance(error.reason, socket.gaierror) else "refused"}
+        else:
+            result = {"kind": "timeout" if isinstance(error.reason, TimeoutError) else "network-error"}
     except OSError:
         result = {"kind": "network-error"}
     except Exception:
@@ -205,26 +223,61 @@ def clip(text, limit=MAX_RESULT_CHARS):
     return text if len(text) <= limit else text[:limit] + "\n[truncated]"
 
 
+def default_apps():
+    return {"documents": {"enabled": False, "url": APP_URLS["documents"]},
+            "photos": {"enabled": False, "url": APP_URLS["photos"]},
+            "watch": {"enabled": False, "url": APP_URLS["watch"], "changes": "ask"},
+            "news": {"enabled": False, "url": APP_URLS["news"], "username": "",
+                     "digest": {"enabled": False, "time": "07:00", "timezone": "UTC"}}}
+
+
 def default_config():
     return {
         "schemaVersion": SCHEMA_VERSION,
         "revision": 0,
         "notifications": {"enabled": False, "url": "http://127.0.0.1:8097", "topic": "portal",
-                          "username": "", "notifyApprovals": True, "approvalLink": ""},
+                          "username": "", "notifyApprovals": True, "approvalLink": "",
+                          "scheduledTasks": "off"},
         "notes": {"enabled": False, "vaultPath": "", "write": "ask"},
         "mcp": {"servers": []},
+        "apps": default_apps(),
     }
 
 
 def upgrade_config(config):
     """Settings saved by an earlier version, with the fields added since."""
     config["notifications"].setdefault("approvalLink", "")
+    config["notifications"].setdefault("scheduledTasks", "off")
+    config.setdefault("apps", default_apps())
     for server in config["mcp"]["servers"]:
         server.setdefault("workingFolder", "")
         server.setdefault("envNames", [])
         for tool in server["tools"]:
             tool.setdefault("new", False)
     return config
+
+
+def app_context(config, app, key):
+    """Private credential/destination pairing, committed with the public settings."""
+    return digest("app-admission-v1", app, config["apps"][app], key)
+
+
+def notification_context(config, secrets):
+    """Private cohesion marker for the ntfy destination/account and password."""
+    return digest("ntfy-admission-v1", config["notifications"], secrets.get("ntfyPassword", ""))
+
+
+def watch_context(config, key):
+    """Private history identity; never reuse another endpoint/account's watch IDs."""
+    epoch = config.get("approvalBindings", {}).get("apps", {}).get("watch")
+    return digest("watch-provider-v2", config["apps"]["watch"]["url"], key, epoch)
+
+
+def _finite_number(value):
+    try:
+        return type(value) in (int, float) and math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 class Store:
@@ -270,7 +323,7 @@ class Store:
         self._write("config.json", value)
 
     def secrets(self):
-        return {"ntfyPassword": "", "mcp": {}, "mcpEnv": {}, **self._read("secrets.json", {})}
+        return {"ntfyPassword": "", "mcp": {}, "mcpEnv": {}, "apps": {}, **self._read("secrets.json", {})}
 
     def save_secrets(self, value):
         self._write("secrets.json", value)
@@ -281,6 +334,52 @@ class Store:
 
     def save_approvals(self, value):
         self._write("approvals.json", value[-200:])
+
+    def _watch_document(self):
+        value = self._read("watch-state.json", {})
+        if value == {}:
+            return {"schemaVersion": 2, "providers": {}}
+        if (not isinstance(value, dict) or set(value) != {"schemaVersion", "providers"}
+                or value["schemaVersion"] != 2 or not isinstance(value["providers"], dict)
+                or len(value["providers"]) > 32
+                or any(not isinstance(key, str) or len(key) != 64
+                       or any(character not in "0123456789abcdef" for character in key)
+                       or not isinstance(state, dict)
+                       or any(not isinstance(identity, str) or not isinstance(entry, dict)
+                              or set(entry) != {"lastChanged", "below", "lastPrice"}
+                              or any(number is not None and not _finite_number(number) for number in entry.values())
+                              for identity, entry in state.items())
+                       for key, state in value["providers"].items())):
+            raise IntegrationError("watch-state-unbound", "Saved watch history has no verified provider identity. "
+                                   "Keep watch-state.json for diagnosis; it was not reset.")
+        return value
+
+    def _watch_context(self):
+        config = self.config()
+        return watch_context(config, self.secrets()["apps"].get("watch", ""))
+
+    def watch_state(self, context=None):
+        context = context or self._watch_context()
+        providers = self._watch_document()["providers"]
+        if context not in providers and len(providers) >= 32:
+            raise IntegrationError("watch-state-full", "Saved watch history contains too many provider identities. "
+                                   "Keep watch-state.json for diagnosis; no history was removed.")
+        return providers.get(context, {})
+
+    def save_watch_state(self, value, context=None):
+        context = context or self._watch_context()
+        document = self._watch_document()
+        if context not in document["providers"] and len(document["providers"]) >= 32:
+            raise IntegrationError("watch-state-full", "Saved watch history contains too many provider identities. "
+                                   "Keep watch-state.json for diagnosis; no history was removed.")
+        document["providers"][context] = value
+        self._write("watch-state.json", document)
+
+    def digest_sent(self):
+        return self._read("digest-sent.json", [])
+
+    def save_digest_sent(self, value):
+        self._write("digest-sent.json", value)
 
     def log(self, action, target, outcome):
         path = self.root / "activity.jsonl"

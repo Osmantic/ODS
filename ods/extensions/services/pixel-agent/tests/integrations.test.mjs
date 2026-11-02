@@ -31,6 +31,30 @@ function recording(replies) {
   return {sent, tools: createIntegrationTools({submit})};
 }
 
+test('digest snapshots carry only native run identity, never identities supplied by the model', async () => {
+  const sent = [], context = {agentId: 'pixel', sessionId: 'native-session', sessionKey: 'agent:pixel:cron:owned:run:1'};
+  const tools = createIntegrationTools({context, submit: async request => {
+    sent.push(request); return {ok:true, text:'Invented news'};
+  }});
+  const mcp = tool(tools, 'pixel_ods_mcp');
+  await mcp.execute('digest', {action:'call',server:'app:news',tool:'digest',arguments:{},
+    runContext:{sessionId:'model-forged',sessionKey:'forged'}});
+  assert.deepEqual(sent[0].runContext, {sessionId:'native-session',sessionKey:'agent:pixel:cron:owned:run:1'});
+  assert.deepEqual(sent[0].arguments, {});
+  for (const server of ['news','home','app:photos']) {
+    await mcp.execute(server, {action:'call',server,tool:'digest',arguments:{}});
+    assert.equal(Object.hasOwn(sent.at(-1),'runContext'), false);
+  }
+  for (const invalid of [undefined, {...context,agentId:'other'}, {...context,sessionId:''},
+    {...context,sessionKey:'agent:other:cron:1'}, {...context,sessionKey:'agent:pixel:cron:\nforged'}]) {
+    const items = createIntegrationTools({context:invalid,submit:async request=>{
+      assert.equal(Object.hasOwn(request,'runContext'), false);return {ok:true,text:'no identity'};
+    }});
+    await tool(items,'pixel_ods_mcp').execute('missing', {action:'call',server:'app:news',tool:'digest',arguments:{}});
+  }
+  assert.equal(Object.hasOwn(mcp.parameters.properties,'runContext'), false);
+});
+
 test('the tools match the declared names and keep schemas small enough for the model grammar', () => {
   const tools = createIntegrationTools();
   assert.deepEqual(tools.map(item => item.name).sort(), [...INTEGRATION_TOOL_NAMES]);
@@ -38,6 +62,8 @@ test('the tools match the declared names and keep schemas small enough for the m
     assert.equal(item.parameters.additionalProperties, false);
     assert.doesNotMatch(JSON.stringify(item.parameters), /maxLength|minLength/);
   }
+  // The owner's apps add no tools of their own; the model finds them in the MCP tool.
+  assert.match(tools.find(item => item.name === 'pixel_ods_mcp').description, /documents.*photos.*watched web pages.*news/);
 });
 
 test('notes actions become exact service requests and readable results', async () => {
@@ -69,6 +95,18 @@ test('an action waiting for approval tells the model to stop and repeat the same
   assert.match(result.content[0].text, /approval in Settings → Portal integrations/);
   assert.match(result.content[0].text, /scheduled task, do not wait/);
   assert.match(result.content[0].text, /exactly the same arguments/);
+});
+
+test('a call without arguments shows the model how to call again', async () => {
+  const {sent, tools} = recording([]);
+  for (const params of [undefined, {}, {action: 'delete'}]) {
+    const result = await tool(tools, 'pixel_ods_mcp').execute('1', params);
+    assert.equal(result.isError, true);
+    assert.equal(result.details.status, 'invalid');
+    assert.match(result.content[0].text, /\{"action": "list"\}/);
+    assert.match(result.content[0].text, /"action": "call", "server": "app:photos", "tool": "search", "arguments": \{"place": "Lisbon"\}/);
+  }
+  assert.deepEqual(sent, []);
 });
 
 test('refusals and an absent service are errors with the service message', async () => {
@@ -140,7 +178,7 @@ test('MCP catalogs never imply absence of the separate native notification conne
   for (const servers of [[], [{id:'fixture', name:'Fixture', tools:[]}]]) {
     const {tools} = recording([{ok:true, servers}]);
     const reply = await tool(tools, 'pixel_ods_mcp').execute('catalog', {action:'list'});
-    assert.match(reply.content[0].text, /only custom MCP servers/);
+    assert.match(reply.content[0].text, /configured Documents, Photos, Watched pages and News apps, plus custom MCP servers/);
     assert.match(reply.content[0].text, /ntfy notifications use pixel_ods_notify/);
     assert.match(reply.content[0].text, /connection state is not reported here/);
     assert.notEqual(reply.isError, true);
@@ -152,7 +190,8 @@ test('integration capability guidance is stable across requests and model contex
     for (const prompt of ['Send a test notification.', 'What can the connected house do?', 'Olá!']) {
       const rendered = promptContractForAgent({agentId:'pixel', contextTokenBudget}, 'pixel', {prompt}).appendSystemContext;
       assert.equal(rendered.split(PORTAL_INTEGRATIONS_CONTRACT).length, 2);
-      assert.match(rendered, /Obsidian: pixel_ods_notes; ntfy: pixel_ods_notify; custom MCP: pixel_ods_mcp/);
+      assert.match(rendered, /Obsidian: pixel_ods_notes; ntfy: pixel_ods_notify/);
+      assert.match(rendered, /apps\/custom MCP: pixel_ods_mcp \(list first; excludes Google\/Obsidian\/ntfy status\)/);
       assert.match(rendered, /workspace file writes do not prove a vault update/);
     }
   }

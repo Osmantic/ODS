@@ -9,8 +9,15 @@ const response = body => ({ ok: true, json: async () => globalThis.structuredClo
 
 function service() {
   let settings = { schemaVersion: 1, revision: 0,
-    notifications: { enabled: false, url: 'http://fixture.invalid', topic: 'fixture', username: '', notifyApprovals: true, approvalLink: '', hasPassword: false },
-    notes: { enabled: false, vaultPath: '', write: 'ask' }, mcp: { servers: [] } }
+    notifications: { enabled: false, url: 'http://fixture.invalid', topic: 'fixture', username: '', notifyApprovals: true, approvalLink: '', hasPassword: false, scheduledTasks: 'all' },
+    notes: { enabled: false, vaultPath: '', write: 'ask' }, mcp: { servers: [] },
+    apps: {
+      documents: { enabled: false, url: 'http://documents.fixture.invalid', hasKey: false },
+      photos: { enabled: false, url: 'http://photos.fixture.invalid', hasKey: false },
+      watch: { enabled: false, url: 'http://watch.fixture.invalid', changes: 'ask', hasKey: false },
+      news: { enabled: false, url: 'http://news.fixture.invalid', username: '', hasKey: false,
+        digest: { enabled: false, time: '07:00', timezone: 'UTC' } },
+    } }
   let release, hold = false
   const view = () => ({ settings, approvals: [], activity: [] })
   const fetchMock = vi.fn(async (_url, options) => {

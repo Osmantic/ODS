@@ -1,4 +1,4 @@
-"""Owner integrations for Portal: an Obsidian vault, ntfy notifications and MCP servers.
+"""Owner integrations for Portal: an Obsidian vault, ntfy notifications, MCP servers and apps.
 
 One local service holds integration settings and secrets. Requests are one JSON line over
 separate owner and agent Unix endpoints; the listener determines the role, not request
@@ -11,7 +11,6 @@ files and reach the owner endpoint outside this tool path. Mount hiding alone is
 absolute same-UID security boundary. Off/ask/allow are policies of the integration tools,
 not a claim that broader owner-account access cannot bypass them.
 """
-import base64
 import json
 import os
 import pathlib
@@ -23,16 +22,18 @@ import stat
 import sys
 import threading
 import time
-import urllib.error
+import traceback
 import urllib.parse
-import urllib.request
 import uuid
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
+import integrations_apps as apps  # noqa: E402
 import integrations_notes as notes  # noqa: E402
 from integrations_common import (IntegrationError, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES,  # noqa: E402
-                                 NETWORK_TIMEOUT, SCHEMA_VERSION, Store, digest, now, safe_urlopen, redact_secrets)
+                                 SCHEMA_VERSION, Store, digest, now, redact_secrets, clip, app_context, notification_context)
+from integrations_app_service import APP_SERVER_IDS, AppActions, app_text  # noqa: E402
+from integrations_ntfy import send_notification  # noqa: E402
 from integrations_mcp import LocalServer, LocalServers, McpSession, SESSION_TIMEOUT, describe_tool  # noqa: E402
 
 MAX_SERVERS = 20
@@ -42,7 +43,10 @@ POLICIES = ("off", "ask", "allow")
 SERVER_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 TOPIC = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
-OWNER_ACTIONS = {"get", "save", "test-notification", "discover", "test", "restart", "decide", "clear-activity"}
+OWNER_ACTIONS = {"get", "save", "test-notification", "discover", "test", "test-app", "watch-list", "send-digest", "retry-digest", "restart",
+                 "decide", "clear-activity"}
+TASK_MODES = ("off", "failures", "all")
+WATCH_SECONDS = 120
 OWNER_SOCKET = "owner.sock"
 APPROVAL_HELP = ("Approve or decline it in Settings → Portal integrations. An approval is for this exact action, "
                  "once, within 24 hours; a scheduled task goes ahead on its next run.")
@@ -59,14 +63,20 @@ def _text(value, field, limit, *, empty=True):
 
 def _http_url(value, field):
     value = _text(value, field, 500, empty=False)
-    parsed = urllib.parse.urlsplit(value)
-    if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        valid = parsed.scheme in ("http", "https") and parsed.hostname and not parsed.username and not parsed.password
+        parsed.port
+    except ValueError:
+        valid = False
+    if not valid:
         raise IntegrationError("invalid-settings", f"{field} must be an http or https address.")
     return value.rstrip("/")
 
 
 def _notifications(value):
-    if not isinstance(value, dict) or set(value) != {"enabled", "url", "topic", "username", "notifyApprovals", "approvalLink"}:
+    if (not isinstance(value, dict) or set(value) != {"enabled", "url", "topic", "username", "notifyApprovals", "approvalLink",
+                                                       "scheduledTasks"} or value["scheduledTasks"] not in TASK_MODES):
         raise IntegrationError("invalid-settings", "Check the notification settings.")
     topic = _text(value["topic"], "the topic", 64, empty=False)
     if not TOPIC.match(topic):
@@ -74,7 +84,7 @@ def _notifications(value):
     link = _text(value["approvalLink"], "the approvals link", 500)
     return {"enabled": value["enabled"] is True, "url": _http_url(value["url"], "The ntfy address"), "topic": topic,
             "username": _text(value["username"], "the ntfy user", 64), "notifyApprovals": value["notifyApprovals"] is True,
-            "approvalLink": _http_url(link, "The approvals link") if link else ""}
+            "approvalLink": _http_url(link, "The approvals link") if link else "", "scheduledTasks": value["scheduledTasks"]}
 
 
 def _notes(value):
@@ -131,7 +141,7 @@ def _server(value, previous):
 
 def validate_settings(current, incoming):
     """The owner's new settings, the next revision of the current ones."""
-    if not isinstance(incoming, dict) or set(incoming) != {"notifications", "notes", "mcp"} or not isinstance(incoming["mcp"], dict):
+    if not isinstance(incoming, dict) or set(incoming) != {"notifications", "notes", "mcp", "apps"} or not isinstance(incoming["mcp"], dict):
         raise IntegrationError("invalid-settings", "Settings are incomplete.")
     servers = incoming["mcp"].get("servers")
     if not isinstance(servers, list) or len(servers) > MAX_SERVERS:
@@ -142,7 +152,8 @@ def validate_settings(current, incoming):
     known = {server["id"]: server for server in current["mcp"]["servers"]}
     return {"schemaVersion": SCHEMA_VERSION, "revision": current["revision"] + 1,
             "notifications": _notifications(incoming["notifications"]), "notes": _notes(incoming["notes"]),
-            "mcp": {"servers": [_server(server, known.get(server["id"])) for server in servers]}}
+            "mcp": {"servers": [_server(server, known.get(server["id"])) for server in servers]},
+            "apps": apps.validate_apps(incoming["apps"], _text, _http_url)}
 
 
 def public_config(config, secrets):
@@ -155,6 +166,8 @@ def public_config(config, secrets):
         server["hasToken"] = bool(secrets["mcp"].get(server["id"]))
         saved = secrets["mcpEnv"].get(server["id"], {})
         server["hasEnv"] = {name: bool(saved.get(name)) for name in server["envNames"]}
+    for app, settings in value["apps"].items():
+        settings["hasKey"] = bool(secrets["apps"].get(app))
     return value
 
 
@@ -165,40 +178,6 @@ def server_context(server, secrets):
             'token': secrets['mcp'].get(server['id'], ''),
             'env': {name: secrets['mcpEnv'].get(server['id'], {}).get(name, '')
                     for name in server.get('envNames', [])}}
-
-
-# ---------------------------------------------------------------- notifications (ntfy)
-
-def send_notification(config, secrets, title, message, priority="default", link=""):
-    settings = config["notifications"]
-    if not settings["enabled"]:
-        raise IntegrationError("notifications-off", "Notifications are not set up. The owner can connect ntfy in Settings → Portal integrations.")
-    if not isinstance(message, str) or not message.strip() or len(message) > 4000:
-        raise IntegrationError("invalid-notification", "Give a message of up to 4,000 characters.")
-    title = (title if isinstance(title, str) and title.strip() else "Portal").strip()[:200]
-    request = urllib.request.Request(f"{settings['url']}/{settings['topic']}", data=message.strip().encode(), method="POST")
-    # ntfy reads non-ASCII header values only when RFC 2047 encoded; keep titles plain.
-    request.add_header("Title", title.encode("ascii", "replace").decode())
-    request.add_header("Priority", priority if priority in ("min", "low", "default", "high", "urgent") else "default")
-    request.add_header("Tags", "portal")
-    if link:
-        # Only opens the owner's Settings page, where they still sign in; the link grants nothing.
-        request.add_header("Click", link)
-        request.add_header("Actions", f"view, Open approvals, {link}")
-    password = secrets.get("ntfyPassword")
-    if password and settings["username"]:
-        request.add_header("Authorization", "Basic " + base64.b64encode(f"{settings['username']}:{password}".encode()).decode())
-    elif password:
-        request.add_header("Authorization", "Bearer " + password)
-    try:
-        with safe_urlopen(request, timeout=NETWORK_TIMEOUT):
-            pass
-    except urllib.error.HTTPError as error:
-        reason = "the user or password was refused" if error.code in (401, 403) else f"ntfy answered {error.code}"
-        raise IntegrationError("notification-failed", f"The notification was not sent: {reason}.") from None
-    except (urllib.error.URLError, OSError):
-        raise IntegrationError("notification-failed", f"The notification was not sent: ntfy at {settings['url']} could not be reached.") from None
-    return title
 
 
 # ---------------------------------------------------------------- the service
@@ -214,11 +193,21 @@ class _AdmittedLocalServers:
 
 
 
-class Integrations:
+class Integrations(AppActions):
     def __init__(self, store, local_servers=None):
         self.store = store
         self.local = local_servers or LocalServers()
         self._runtime_revision = 0
+        self._watch_lock = threading.RLock()
+        self.digest_lock = threading.RLock()
+        self.task_notice_lock = threading.RLock()
+        self.digest_snapshots = {}
+        self.active_digest_attempts = set()
+        self.digest_called_at = 0
+        self.digest_items = []
+        self.digest_sent_at = 0
+        self.digest_failing = False
+        self.failing_tasks = set()
 
     def handle(self, role, request):
         """role is "owner" or "agent", set by the socket the request came in on."""
@@ -252,6 +241,15 @@ class Integrations:
             self.discover(request.get("serverId"))
         elif action == "test":
             return {**self.view(), "notice": self.test(request.get("serverId"))}
+        elif action == "test-app":
+            return {**self.view(), "notice": self.test_app(request.get("app"))}
+        elif action == "watch-list":
+            return {**self.view(), "watches": self.watch_overview()}
+        elif action == "send-digest":
+            return {**self.view(), "notice": self.send_digest_now()}
+        elif action == "retry-digest":
+            notice = self.retry_digest(request)
+            return {**self.view(), "notice": notice}
         elif action == "restart":
             with self.store.lock:
                 server = self._server(self.store.config(), request.get("serverId"), enabled=False)
@@ -284,7 +282,8 @@ class Integrations:
             for field in ('target', 'outcome'):
                 item[field] = redact_secrets(item[field], secrets)
         return {"settings": public_config(config, secrets), "approvals": waiting,
-                "activity": activity, "processes": redact_secrets(processes, secrets)}
+                "activity": activity, "processes": redact_secrets(processes, secrets),
+                "digestRecovery": self.digest_recovery()}
 
     def _log(self, action, target, outcome):
         with self.store.lock:
@@ -303,7 +302,8 @@ class Integrations:
             if expected_revision != config["revision"]:
                 raise IntegrationError("stale-revision", "These settings changed in another window. Reload them and try again.")
             updated = validate_settings(config, settings)
-            if not isinstance(changes, dict) or not isinstance(changes.get("mcp", {}), dict):
+            if (not isinstance(changes, dict) or set(changes) - {"ntfyPassword", "mcp", "mcpEnv", "apps"}
+                    or not isinstance(changes.get("mcp", {}), dict)):
                 raise IntegrationError("invalid-settings", "Check the passwords and tokens.")
             if "ntfyPassword" in changes:
                 secrets["ntfyPassword"] = _text(changes["ntfyPassword"], "the ntfy password", 256)
@@ -325,7 +325,8 @@ class Integrations:
                     for key, values in secrets["mcpEnv"].items() if key in servers}
             secrets["mcpEnv"] = {key: values for key, values in kept.items() if values}
             bindings = config.get('approvalBindings', {})
-            updated['approvalBindings'] = {'notes': bindings.get('notes'), 'mcp': {}}
+            updated['approvalBindings'] = {'notes': bindings.get('notes'), 'mcp': {}, 'apps': dict(bindings.get('apps', {}))}
+            old_watch_key = original_secrets['apps'].get('watch', '')
             if updated['notes'] != config['notes'] or not updated['approvalBindings']['notes']:
                 updated['approvalBindings']['notes'] = uuid.uuid4().hex
             previous = {server['id']: server for server in config['mcp']['servers']}
@@ -339,6 +340,24 @@ class Integrations:
                 old_binding = bindings.get('mcp', {}).get(server['id'])
                 changed = changed or old.get('enabled') != server['enabled'] or old.get('tools') != server['tools']
                 updated['approvalBindings']['mcp'][server['id']] = uuid.uuid4().hex if changed or not old_binding else old_binding
+            app_changes = changes.get("apps", {})
+            if not isinstance(app_changes, dict) or set(app_changes) - set(apps.APPS):
+                raise IntegrationError("invalid-settings", "Check the app tokens.")
+            for app, value in app_changes.items():
+                secrets["apps"][app] = _text(value, f"the {apps.NAMES[app]} token", 4096)
+            secrets["apps"] = {app: value for app, value in secrets["apps"].items() if value}
+            missing = [apps.NAMES[app] for app in apps.APPS if updated["apps"][app]["enabled"] and not secrets["apps"].get(app)]
+            if missing:
+                raise IntegrationError("invalid-settings", f"Give the {missing[0]} key, or turn it off.")
+            if (updated['apps']['watch']['url'] != config['apps']['watch']['url']
+                    or secrets['apps'].get('watch', '') != old_watch_key
+                    or not updated['approvalBindings']['apps'].get('watch')):
+                updated['approvalBindings']['apps']['watch'] = uuid.uuid4().hex
+            updated['approvalBindings']['appContexts'] = {
+                app: app_context(updated, app, secrets['apps'].get(app, '')) for app in apps.APPS}
+            notification_binding = notification_context(updated, secrets)
+            updated['approvalBindings']['notificationContext'] = notification_binding
+            secrets['notificationContext'] = notification_binding
             # Revoke before state writes; interrupted saves fail closed.
             self.store.save_approvals([])
             self.store.save_secrets(secrets)
@@ -506,10 +525,15 @@ class Integrations:
             self._log("notify", title, "sent")
             return {"sent": True}
         if action == "mcp-tools":
-            return {"servers": self._agent_servers(config, secrets)}
+            return {"servers": self.app_servers(config) + self._agent_servers(config, secrets)}
         if action == "mcp-call":
             return self._mcp_call(config, request)
+        if action == "task-finished":
+            return self.task_finished(config, request)
+        if action in {"digest-plan", "digest-job-record", "digest-job-clear"}:
+            return self.digest_control(action, request)
         raise IntegrationError("invalid-request", "Unknown integration action.")
+
 
     def _notes_write(self, config, request):
         mode, relative = request.get("mode", "append"), str(request.get("path", ""))
@@ -546,6 +570,17 @@ class Integrations:
         name, arguments = request.get("tool"), request.get("arguments", {})
         if not isinstance(arguments, dict):
             raise IntegrationError("invalid-request", "Tool arguments must be an object.")
+        if request.get("server") in APP_SERVER_IDS:
+            with self.store.lock:
+                config, secrets = self.store.config(), self.store.secrets()
+                if APP_SERVER_IDS[request["server"]] == "watch":
+                    self._binding(config, "apps", "watch")
+            action, reply = self.use_app(config, APP_SERVER_IDS[request["server"]], name, arguments,
+                                         run_context=request.get("runContext"), secrets=secrets)
+            if reply.get("status") == "approval-required":
+                return reply
+            return {"server": request["server"], "tool": name,
+                    "text": clip(redact_secrets(app_text(action, reply), secrets)), "isError": False}
         waiting, notification = None, None
         with self.store.lock:
             config, secrets = self.store.config(), self.store.secrets()
@@ -574,7 +609,7 @@ class Integrations:
 
     def _binding(self, config, kind, server_id=None, *, rotate=False):
         bindings = config.setdefault('approvalBindings', {'notes': None, 'mcp': {}})
-        values = bindings if kind == 'notes' else bindings['mcp']
+        values = bindings if kind == 'notes' else bindings.setdefault(kind, {})
         key = 'notes' if kind == 'notes' else server_id
         if rotate or not values.get(key):
             values[key] = uuid.uuid4().hex
@@ -669,12 +704,35 @@ def _listener(service, socket_path, role):
     return server
 
 
+def watch_pages(service, stop, seconds=WATCH_SECONDS):
+    """Look at the owner's watched pages every few minutes until stop is set."""
+    while not stop.wait(seconds):
+        try:
+            service.check_watches()
+        except IntegrationError as error:
+            # changedetection.io may be stopped or restarting; the next look tries again.
+            service.store.log("watch-check", "watched pages", error.message)
+
+
+def watch_or_exit(service, stop, seconds=WATCH_SECONDS, exit=os._exit):
+    """Watch pages; any other error ends the whole service, which systemd restarts with watching.
+
+    Left to itself, a crash would end only this thread, and pages would go unwatched in silence.
+    """
+    try:
+        watch_pages(service, stop, seconds)
+    except BaseException:
+        traceback.print_exc()
+        exit(1)
+
+
 def start(agent_socket, state_dir):
-    """Both listeners, serving in background threads; the owner socket is STATE_DIR/owner.sock."""
+    """Both listeners and the page watcher, in background threads; the owner socket is STATE_DIR/owner.sock."""
     service = Integrations(Store(state_dir))
     servers = [_listener(service, agent_socket, "agent"), _listener(service, pathlib.Path(state_dir) / OWNER_SOCKET, "owner")]
     for server in servers:
         threading.Thread(target=server.serve_forever, daemon=True).start()
+    threading.Thread(target=watch_or_exit, args=(service, threading.Event()), daemon=True).start()
     return servers
 
 
