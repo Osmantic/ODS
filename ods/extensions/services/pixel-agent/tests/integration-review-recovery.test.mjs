@@ -368,6 +368,8 @@ test('supported notes and builtin-app labels retain one bounded native review wi
     ['Search my Paperless document library for the invoice.','live_status','builtin_apps'],
     ['Search my connected Immich photos.','live_status','builtin_apps'],
     ['List the webpage watches.','live_status','builtin_apps'],
+    ['Watch this webpage for price changes.','action','builtin_apps'],
+    ['Remove this webpage watch.','action','builtin_apps'],
     ['Prepare an approval to remove this webpage watch; do not remove it.','action','builtin_apps'],
     ['Read my unread FreshRSS stories without sending a notification.','live_status','builtin_apps'],
   ];
