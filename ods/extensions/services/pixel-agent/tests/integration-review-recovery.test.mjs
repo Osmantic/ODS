@@ -4,6 +4,7 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import {createIntegrationReviewRecovery,REVIEW_LABEL_SYSTEM,parseReviewIntent,reviewIntentEligible} from '../plugin/integration-review-recovery.mjs';
 import {defaultAgentId} from '../plugin/stop-synthesis.mjs';
+import {createIntegrationOutcomes} from '../plugin/integration-outcomes.mjs';
 
 const SESSION='agent:pixel:openai-user:ods-'+ 'a'.repeat(64);
 const CONTEXT={agentId:'pixel',runId:'current-run',sessionId:'owned-session',sessionKey:SESSION,
@@ -13,11 +14,11 @@ const ANSWER='You need to approve the new request in Settings.';
 const event=(owner=OWNER)=>({runId:CONTEXT.runId,sessionId:CONTEXT.sessionId,sessionKey:SESSION,
   nativeRetryToolsAllowVersion:1,nativeRetryToolChoiceVersion:1,
   messages:[{role:'user',content:owner},{role:'assistant',content:ANSWER}],lastAssistantMessage:ANSWER});
-const reply=(intent='perform',answerNeedsEvidence=true,operations=[{source:'obsidian',verb:'append'}])=>({agentId:'pixel',provider:'fixture-local',model:'fixture/9b',
-  text:JSON.stringify({intent,answerNeedsEvidence,operations})});
+const reply=(operations=[{source:'obsidian',verb:'append'}])=>({agentId:'pixel',provider:'fixture-local',model:'fixture/9b',
+  text:JSON.stringify({operations})});
 function world(options={}) {
   const calls=[];
-  const recovery=createIntegrationReviewRecovery({eligible:()=>true,ready:()=>true,
+  const recovery=createIntegrationReviewRecovery({eligible:()=>true,ready:()=>true,nativeStartClear:()=>true,
     complete:async params=>{calls.push(params);return reply();},...options});
   recovery.observe({prompt:OWNER},CONTEXT,CONTEXT.runId);
   return {recovery,calls};
@@ -90,6 +91,7 @@ test('review latches synchronously before ONE stock native revise; only six supp
   assert.equal(calls[0].systemPrompt,REVIEW_LABEL_SYSTEM);
   assert.equal(calls[0].maxTokens,192);assert.equal(calls[0].temperature,0.2);
   assert.equal(JSON.parse(calls[0].messages[0].content).ownerRequest,OWNER);
+  assert.deepEqual(Object.keys(JSON.parse(calls[0].messages[0].content)),['ownerRequest']);
   assert.match(result.retry.instruction,/Current owner request/);
   assert.equal(await recovery.finalize(event(),CONTEXT),undefined);
   assert.equal(calls.length,1);
@@ -210,7 +212,7 @@ test('only verified interactive native Portal owner runs qualify; cron/backgroun
     {agentId:'child'},{sessionKey:'agent:pixel:cron:owned'},
     {sessionKey:'agent:pixel:openai-user:arbitrary'},{modelId:undefined}]) {
     const calls=[],context={...CONTEXT,...change};
-    const recovery=createIntegrationReviewRecovery({eligible:()=>true,ready:()=>true,
+    const recovery=createIntegrationReviewRecovery({eligible:()=>true,ready:()=>true,nativeStartClear:()=>true,
       complete:async()=>{calls.push(true);return reply();}});
     recovery.observe({prompt:OWNER},context,context.runId);
     assert.equal(await recovery.finalize({...event(),sessionKey:context.sessionKey},context),undefined);
@@ -311,12 +313,12 @@ test('terminal native event ends its latched run even when context names an olde
   assert.equal(recovery.floor(tool('pixel_ods_mcp'),current).block,true);
 });
 
-test('strict extraction parser rejects legacy policy labels, malformed types, extra keys, duplicates and bounds',async()=>{
-  const base={intent:'perform',answerNeedsEvidence:true,operations:[{source:'obsidian',verb:'append'}]};
+test('strict operations-only parser rejects legacy labels, malformed types, extra keys, duplicates and bounds',async()=>{
+  const base={operations:[{source:'obsidian',verb:'append'}]};
   const invalid=['not JSON','```json\n'+JSON.stringify(base)+'\n```','null','[]',
     JSON.stringify({request:'action',answer:'done',scope:'notes'}),
     JSON.stringify({...base,supportedScope:'notes'}),JSON.stringify({...base,complete:true}),
-    JSON.stringify({...base,intent:'action'}),JSON.stringify({...base,answerNeedsEvidence:'true'}),
+    JSON.stringify({...base,intent:'perform'}),JSON.stringify({...base,answerNeedsEvidence:true}),
     JSON.stringify({...base,operations:{source:'obsidian',verb:'append'}}),
     JSON.stringify({...base,operations:[null]}),JSON.stringify({...base,operations:[['obsidian','append']]}),
     JSON.stringify({...base,operations:[{source:'obsidian',verb:'append',allowed:true}]}),
@@ -335,35 +337,85 @@ test('strict extraction parser rejects legacy policy labels, malformed types, ex
   }
 });
 
-test('intent and answer evidence controls fail closed without asking the model to judge policy',async()=>{
-  for(const [intent,answerNeedsEvidence,operations] of [
-    ['discuss',true,[]],['discuss',false,[]],['unclear',true,[]],['unclear',true,[{source:'unknown',verb:'read'}]],
-    ['perform',false,[{source:'obsidian',verb:'append'}]],['perform',true,[]],
-  ]) {
-    const parsed=parseReviewIntent(reply(intent,answerNeedsEvidence,operations).text);
+test('empty and unknown operations preserve discussion and unresolved intent without policy labels',async()=>{
+  for(const operations of [[],[{source:'unknown',verb:'unknown'}],[{source:'unknown',verb:'read'}],
+    [{source:'obsidian',verb:'unknown'}]]) {
+    const parsed=parseReviewIntent(reply(operations).text);
     assert.ok(parsed);assert.equal(reviewIntentEligible(parsed),false);
-    const {recovery}=world({complete:async()=>reply(intent,answerNeedsEvidence,operations)});
+    const {recovery}=world({complete:async()=>reply(operations)});
     assert.equal(await recovery.finalize(event(),CONTEXT),undefined);
     assert.equal(recovery.isReviewOnly(CONTEXT),false);
   }
   assert.equal(reviewIntentEligible(undefined),false);
-  assert.equal(reviewIntentEligible({intent:'perform',answerNeedsEvidence:true}),false);
+  assert.equal(reviewIntentEligible({}),false);
+});
+
+test('missing, false, nonboolean or throwing native start proof never spends a classifier call',async()=>{
+  for(const clear of [undefined,()=>false,()=>1,()=> 'true',()=>({}),()=>Promise.resolve(true),()=>{throw Error('Unavailable native record');}]) {
+    const calls=[];
+    const recovery=createIntegrationReviewRecovery({eligible:()=>true,ready:()=>true,nativeStartClear:clear,
+      complete:async value=>{calls.push(value);return reply();}});
+    recovery.observe({prompt:OWNER},CONTEXT,CONTEXT.runId);
+    assert.equal(await recovery.finalize(event(),CONTEXT),undefined);
+    assert.equal(calls.length,0);assert.equal(recovery.isReviewOnly(CONTEXT),false);
+    assert.equal(recovery.floor(tool('exec'),CONTEXT),undefined);
+  }
+});
+
+test('native start proof is rechecked after semantic await and cannot latch on false or exception',async()=>{
+  for(const fail of [()=>false,()=>{throw Error('Native state changed');}]) {
+    let release,clearCalls=0;
+    const held=new Promise(resolve=>{release=resolve;});
+    const {recovery,calls}=world({nativeStartClear:()=>++clearCalls===1?true:fail(),
+      complete:params=>{calls.push(params);return held;}});
+    const pending=recovery.finalize(event(),CONTEXT);
+    assert.equal(calls.length,1);release(reply());
+    assert.equal(await pending,undefined);assert.equal(clearCalls,2);
+    assert.equal(recovery.isReviewOnly(CONTEXT),false);
+    assert.equal(await recovery.finalize(event(),CONTEXT),undefined);assert.equal(calls.length,1);
+  }
+});
+
+test('native start proof is not reused after latch: review tools and summary remain available without rearming',async()=>{
+  let clear=true,clearCalls=0;
+  const {recovery,calls}=world({nativeStartClear:()=>{clearCalls++;return clear;}});
+  assert.equal((await recovery.finalize(event(),CONTEXT)).action,'revise');assert.equal(clearCalls,2);
+  clear=false;
+  recovery.beforeTool(tool('pixel_ods_notes'),CONTEXT);
+  assert.equal(recovery.floor(tool('pixel_ods_notes'),CONTEXT),undefined);
+  assert.equal(recovery.admit(admission({nativeRetryToolChoiceState:nativeChoice(CONTEXT,{phase:'tool-started'})}),CONTEXT),undefined);
+  assert.equal(await recovery.finalize(event(),CONTEXT),undefined);
+  assert.equal(calls.length,1);assert.equal(clearCalls,2);
+  assert.equal(recovery.floor(tool('exec'),CONTEXT).block,true);
+});
+
+test('classifier sees only ownerRequest: assistant prose cannot invent owner operations or native outcome facts',async()=>{
+  for(const answer of ['I will save that now.','Which note did you mean?',
+    'That connection is unavailable.','I cannot confirm whether an earlier submission changed the note.']) {
+    const {recovery,calls}=world();
+    const ev={...event(),lastAssistantMessage:answer,messages:[{role:'user',content:OWNER},{role:'assistant',content:answer}]};
+    assert.equal((await recovery.finalize(ev,CONTEXT)).action,'revise');
+    const input=JSON.parse(calls[0].messages[0].content);
+    assert.deepEqual(input,{ownerRequest:OWNER});assert.equal(Object.hasOwn(input,'proposedAnswer'),false);
+  }
 });
 
 test('operation policy matches only the existing notes modes, builtin reads and watch Ask changes',()=>{
   const allowed={obsidian:['search','read','create','append'],paperless:['search','read'],immich:['search'],
-    watch:['list','add','remove'],freshrss:['unread','digest_read']};
+    watch:['list','add','remove','delete'],freshrss:['unread','digest_read','read'],web:['monitor_changes']};
   for(const [source,verbs] of Object.entries(allowed)) {
-    for(const verb of verbs)assert.equal(reviewIntentEligible(parseReviewIntent(reply('perform',true,[{source,verb}]).text)),true,source+':'+verb);
-    for(const verb of ['delete','replace','send','digest_send','schedule','configure','execute','status','unknown'])
-      assert.equal(reviewIntentEligible(parseReviewIntent(reply('perform',true,[{source,verb}]).text)),false,source+':'+verb);
+    for(const verb of verbs)assert.equal(reviewIntentEligible(parseReviewIntent(reply([{source,verb}]).text)),true,source+':'+verb);
+    for(const verb of ['write','update','overwrite','replace','send','digest_send','schedule','configure','execute','status','unknown'])
+      assert.equal(reviewIntentEligible(parseReviewIntent(reply([{source,verb}]).text)),false,source+':'+verb);
   }
-  for(const source of ['gmail','calendar','notifications','filesystem','web','runtime','account','schedule','devices','custom_mcp','future_application','unknown'])
+  for(const source of ['gmail','calendar','notifications','filesystem','runtime','account','schedule','devices','custom_mcp','future_application','unknown'])
     for(const verb of ['read','search','create','append','send','status','unknown']) {
-      const parsed=parseReviewIntent(reply('perform',true,[{source,verb}]).text);
+      const parsed=parseReviewIntent(reply([{source,verb}]).text);
       assert.ok(parsed,'unknown operations remain semantically representable');
       assert.equal(reviewIntentEligible(parsed),false,source+':'+verb);
     }
+  for(const [source,verb] of [['web','watch'],['web','read'],['web','execute'],['obsidian','delete'],['notes','write'],['notes','update']])
+    assert.equal(reviewIntentEligible(parseReviewIntent(reply([{source,verb}]).text)),false,source+':'+verb);
 });
 
 test('every operation must pass; unsupported companions and mixed sources cannot partially activate',async()=>{
@@ -376,19 +428,19 @@ test('every operation must pass; unsupported companions and mixed sources cannot
     [{source:'obsidian',verb:'read'},{source:'paperless',verb:'read'}],
     [allowed,{source:'watch',verb:'unknown'}],
   ]) {
-    assert.equal(reviewIntentEligible(parseReviewIntent(reply('perform',true,operations).text)),false);
-    const {recovery}=world({complete:async()=>reply('perform',true,operations)});
+    assert.equal(reviewIntentEligible(parseReviewIntent(reply(operations).text)),false);
+    const {recovery}=world({complete:async()=>reply(operations)});
     assert.equal(await recovery.finalize(event(),CONTEXT),undefined);
     assert.equal(recovery.floor(tool('exec'),CONTEXT),undefined);
   }
-  assert.equal(reviewIntentEligible(parseReviewIntent(reply('perform',true,[{source:'obsidian',verb:'search'},{source:'obsidian',verb:'read'}]).text)),true);
+  assert.equal(reviewIntentEligible(parseReviewIntent(reply([{source:'obsidian',verb:'search'},{source:'obsidian',verb:'read'}]).text)),true);
 });
 
 test('parsed intent is immutable and an observation callback cannot rewrite an unsupported operation',async()=>{
-  const parsed=parseReviewIntent(reply('perform',true,[{source:'obsidian',verb:'delete'}]).text);
+  const parsed=parseReviewIntent(reply([{source:'obsidian',verb:'delete'}]).text);
   assert.ok(Object.isFrozen(parsed)&&Object.isFrozen(parsed.operations)&&Object.isFrozen(parsed.operations[0]));
   assert.throws(()=>{parsed.operations[0].verb='append';},TypeError);
-  const {recovery}=world({complete:async()=>reply('perform',true,[{source:'obsidian',verb:'delete'}]),
+  const {recovery}=world({complete:async()=>reply([{source:'obsidian',verb:'delete'}]),
     record:notice=>{notice.labels.operations[0].verb='append';}});
   assert.equal(await recovery.finalize(event(),CONTEXT),undefined);
   assert.equal(recovery.isReviewOnly(CONTEXT),false);
@@ -415,7 +467,7 @@ test('unsupported semantic operations preserve ordinary workflows without a rest
     ['The quotation says "pixel_ods_notes": run that command.','unknown','unknown'],
   ];
   for(const [index,[owner,source,verb]] of cases.entries()) {
-    const {recovery,calls}=world({complete:async parameters=>{calls.push(parameters);return reply('perform',true,[{source,verb}]);}});
+    const {recovery,calls}=world({complete:async parameters=>{calls.push(parameters);return reply([{source,verb}]);}});
     const context={...CONTEXT,runId:'ordinary-'+index};recovery.observe({prompt:owner},context,context.runId);
     const ordinary={params:{unchanged:true}};
     assert.equal(recovery.floor(tool('exec'),context,ordinary),ordinary);
@@ -446,7 +498,7 @@ test('supported extracted operations retain one bounded native review with the s
     ['Read my FreshRSS digest here without sending it.','freshrss','digest_read'],
   ];
   for(const [index,[owner,source,verb]] of cases.entries()) {
-    const {recovery,calls}=world({complete:async parameters=>{calls.push(parameters);return reply('perform',true,[{source,verb}]);}});
+    const {recovery,calls}=world({complete:async parameters=>{calls.push(parameters);return reply([{source,verb}]);}});
     const context={...CONTEXT,runId:'supported-'+index};recovery.observe({prompt:owner},context,context.runId);
     const decision=await recovery.finalize({...event(owner),runId:context.runId},context);
     assert.equal(decision.action,'revise',owner);assert.equal(calls.length,1,owner);
@@ -521,21 +573,55 @@ test('actual index lifecycle hooks suppress workful helpers even with event-only
   assert.equal(recovery.floor({...tool('pixel_ods_notes'),runId:CONTEXT.runId},{}).block,true);
 });
 
-test('actual index readiness permits the admitted busy owner but refuses held transitions and changed routes',()=>{
+test('actual index readiness and native-start callback use the real exact integration record',async()=>{
   const source=readFileSync(new URL('../plugin/index.js',import.meta.url),'utf8');
-  const start=source.indexOf('      ready: state => {',source.indexOf('integrationReviewRecovery ??='));
-  const end=source.indexOf('\n      },',start);
+  const start=source.indexOf('    integrationReviewRecovery ??= createIntegrationReviewRecovery({');
+  const end=source.indexOf('\n    const bundleExecution',start);
   assert.ok(start>=0 && end>start);
-  const expression=source.slice(start+'      ready: '.length,end)+'\n}';
   const config={agents:{defaults:{model:'fixture-local/fixture/9b'},list:[{id:'pixel',default:true}]}};
+  const integrationOutcomes=createIntegrationOutcomes();
+  integrationOutcomes.begin({prompt:OWNER},CONTEXT,CONTEXT.runId);
   let access={available:true,phase:'busy'};
-  const ready=vm.runInNewContext('('+expression+')',{
-    api:{config},AGENT_ID:'pixel',defaultAgentId,accessRuntime:{status:()=>access},
+  let options,clearQueries=0,modelCalls=0;
+  const recovery=vm.runInNewContext('let integrationReviewRecovery;\n'+source.slice(start,end)+'\nintegrationReviewRecovery;',{
+    api:{config,runtime:{llm:{complete:async()=>{modelCalls++;return reply();}}}},AGENT_ID:'pixel',defaultAgentId,
+    accessRuntime:{status:()=>access},integrationOutcomes,toolLoopGuard:{continuationAllowed:()=>true},
+    createIntegrationReviewRecovery:value=>{
+      options=value;assert.equal(typeof value.nativeStartClear,'function');
+      return createIntegrationReviewRecovery({...value,nativeStartClear:state=>{clearQueries++;return value.nativeStartClear(state);}});
+    },
   });
+  const ready=options.ready;
   assert.equal(ready(CONTEXT),true);
+  assert.equal(options.nativeStartClear(CONTEXT),true);
+  assert.equal(options.nativeStartClear({...CONTEXT,runId:'missing'}),false);
+  assert.equal(options.nativeStartClear({...CONTEXT,sessionId:'foreign'}),false);
   for(const phase of ['held','interrupted','unavailable']) {
     access={available:true,phase};assert.equal(ready(CONTEXT),false,phase);
   }
   access={available:false,phase:'busy'};assert.equal(ready(CONTEXT),false);
   access={available:true,phase:'busy'};assert.equal(ready({...CONTEXT,modelId:'other-model'}),false);
+  recovery.observe({prompt:OWNER},CONTEXT,CONTEXT.runId);
+  assert.equal((await recovery.finalize(event(),CONTEXT)).action,'revise');
+  assert.equal(clearQueries,2);assert.equal(modelCalls,1);
+  const called={...CONTEXT,toolCallId:'native-review-note'};
+  const params={action:'write',path:'Example.md',text:'Current owned line',mode:'append'};
+  integrationOutcomes.before({...tool('pixel_ods_notes',params),toolCallId:called.toolCallId},called);
+  assert.equal(options.nativeStartClear(CONTEXT),false,'actual recorded native attempt closes start admission');
+  recovery.beforeTool(tool('pixel_ods_notes'),called);
+  assert.equal(recovery.floor(tool('pixel_ods_notes'),CONTEXT),undefined);
+  assert.equal(recovery.admit(admission({nativeRetryToolChoiceState:nativeChoice(CONTEXT,{phase:'tool-started'})}),CONTEXT),undefined);
+  assert.equal(await recovery.finalize(event(),CONTEXT),undefined);
+  assert.equal(clearQueries,2,'post-latch summary must not recheck a now-nonempty start record');
+});
+
+test('a hook-refused attempt with zero admitted integration calls still blocks recovery independently',async()=>{
+  const outcomes=createIntegrationOutcomes();outcomes.begin({prompt:OWNER},CONTEXT,CONTEXT.runId);
+  const clear=state=>outcomes.reviewStartClear({agentId:'pixel',runId:state.runId,sessionId:state.sessionId,sessionKey:state.sessionKey});
+  const {recovery,calls}=world({nativeStartClear:clear});
+  const refused={...CONTEXT,toolCallId:'refused-before-admission'};
+  outcomes.before({...tool('pixel_ods_notes',{action:'write',path:'Example.md',text:'x'}),toolCallId:refused.toolCallId},refused,{block:true});
+  assert.equal(clear(CONTEXT),true,'no integration call was admitted by this blocked hook');
+  recovery.beforeTool(tool('pixel_ods_notes'),refused);
+  assert.equal(await recovery.finalize(event(),CONTEXT),undefined);assert.equal(calls.length,0);
 });
