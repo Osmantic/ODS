@@ -104,6 +104,9 @@ def test_preview_keeps_only_edge_csp_and_portal_policy_stays_strict(tmp_path, ng
     template = template.replace("listen [::]:3011;", "# no IPv6 network listener in fixture")
     # The fixture listener plays the loopback-published port 3001.
     template = template.replace("__ODS_LOCAL_LISTENER__", str(port))
+    # Render the entrypoint's no-gateway value (TEST-NET-1 trusts nobody); the
+    # fixture client still connects from 127.0.0.1, which the geo trusts.
+    template = template.replace("__ODS_LOOPBACK_PEER__", "192.0.2.1")
     template = template.replace("dashboard-api:3002", f"127.0.0.1:{gate.server_port}")
     template = template.replace("/usr/share/nginx/html", str(tmp_path))
     template = template.replace("pixel-edge:9595", f"127.0.0.1:{edge.server_port}")
