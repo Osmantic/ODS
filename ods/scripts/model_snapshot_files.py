@@ -137,30 +137,34 @@ class SnapshotFile:
 
 
 class Snapshot:
-    def __init__(self, models_dir: Path, folder: str):
+    def __init__(self, models_dir: Path, folder: str, *, create: bool = True):
         if Path(folder).name != folder or folder in ("", ".", ".."):
             raise UnsafePath("invalid snapshot directory")
         # The configured store itself may be a deliberate owner-managed symlink.
-        models_dir.mkdir(parents=True, exist_ok=True)
+        if create:
+            models_dir.mkdir(parents=True, exist_ok=True)
         self.store = models_dir.resolve(strict=True)
         self.path = self.store / folder
         self.fd: int | None = None
         self.folder = folder
+        self.create = create
 
     def __enter__(self) -> Snapshot:
         if not _DIR_FD:
             if self.path.is_symlink():
                 raise UnsafePath(f"refusing symbolic link directory {self.path}")
-            self.path.mkdir(exist_ok=True)
+            if self.create:
+                self.path.mkdir(exist_ok=True)
             if not self.path.is_dir():
                 raise UnsafePath(f"not a directory: {self.path}")
             return self
         root_fd = _directory(self.store)
         try:
-            try:
-                os.mkdir(self.folder, dir_fd=root_fd)
-            except FileExistsError:
-                pass
+            if self.create:
+                try:
+                    os.mkdir(self.folder, dir_fd=root_fd)
+                except FileExistsError:
+                    pass
             self.fd = _directory(self.path, root_fd, self.folder)
         finally:
             os.close(root_fd)

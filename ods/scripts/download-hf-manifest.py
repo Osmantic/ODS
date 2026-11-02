@@ -338,6 +338,106 @@ def fetch_manifest(model: dict[str, Any], models_dir: Path, base_url: str, *,
         return snapshot.path
 
 
+def _witness(info: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    # Windows path stat and descriptor stat can expose different ctime fields.
+    # Its fallback still compares identity/size/mtime, without the POSIX claim.
+    changed = info.st_ctime_ns if os.name != "nt" else 0
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, changed, info.st_nlink)
+
+
+def _verify_file(final: SnapshotFile, item: dict[str, Any], progress: Progress,
+                 cancelled: Callable[[], bool] | None) -> tuple[int, int, int, int, int, int]:
+    """Hash ``final`` through one descriptor and reject observed file changes.
+
+    Returns the witness of the verified file. Reads are bounded by the manifest
+    size, even if another process appends to the file while it is being hashed.
+    """
+    if not final.is_file():
+        raise Mismatch(f"{item['path']} is missing from the snapshot")
+    before = final.stat()
+    if before.st_size != item["size"]:
+        raise Mismatch(
+            f"{item['path']} is {before.st_size} bytes, expected {item['size']}"
+        )
+    digest = new_digest(item)
+    with final.open("rb") as handle:
+        fd = handle.fileno()
+        held = _witness(os.fstat(fd))
+        if held != _witness(before):
+            raise UnsafePath(f"snapshot file changed before hashing: {item['path']}")
+        remaining = item["size"]
+        while remaining:
+            if cancelled is not None and cancelled():
+                raise DownloadCancelled("cancelled while verifying")
+            chunk = handle.read(min(CHUNK_BYTES, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+            digest.update(chunk)
+            progress.advance(len(chunk))
+        after = _witness(os.fstat(fd))
+    if after != held:
+        raise UnsafePath(f"snapshot file changed while hashing: {item['path']}")
+    try:
+        named = _witness(final.stat())
+    except FileNotFoundError as exc:
+        raise UnsafePath(f"snapshot file vanished while hashing: {item['path']}") from exc
+    if named != held:
+        raise UnsafePath(f"snapshot file changed while hashing: {item['path']}")
+    actual = digest.hexdigest()
+    if remaining or actual != expected_digest(item):
+        kind = "sha256" if "sha256" in item else "git blob sha1"
+        raise Mismatch(
+            f"{item['path']} does not match the catalog ({kind} {actual}, expected "
+            f"{expected_digest(item)})"
+        )
+    return held
+
+
+def verify_snapshot(model: dict[str, Any], models_dir: Path, *,
+                    cancelled: Callable[[], bool] | None = None,
+                    on_progress: Callable[[int, int], None] | None = None) -> dict[str, Any]:
+    """Re-verify an existing snapshot against the catalog without writing anything.
+
+    The caller owns the lifecycle lock. This reads only: it never creates the
+    store, the snapshot directory, or any file, and never touches partials.
+    Progress reports bytes read; only a returned receipt establishes success.
+    Metadata checks detect observed mutations; they do not make the files
+    immutable or exclude owner writes within a filesystem timestamp's precision.
+    """
+    require_valid(model)
+    files = model["files"]
+    with Snapshot(models_dir, model_dir_name(model), create=False) as snapshot:
+        progress = Progress(manifest_bytes(model), on_progress)
+        witnesses: dict[str, tuple[int, int, int, int, int, int]] = {}
+        for index, item in enumerate(files, 1):
+            if cancelled is not None and cancelled():
+                raise DownloadCancelled("cancelled between files")
+            with snapshot.file(item["path"], create=False) as final:
+                witnesses[item["path"]] = _verify_file(
+                    final, item, progress, cancelled
+                )
+            progress.finish_file()
+            print(f"verified [{index}/{len(files)}] {item['path']}", flush=True)
+        if cancelled is not None and cancelled():
+            raise DownloadCancelled("cancelled before completing verification")
+        # All callbacks have run; now the final witnesses and root checks.
+        snapshot.check_current()
+        for item in files:
+            with snapshot.file(item["path"], create=False) as final:
+                if _witness(final.stat()) != witnesses[item["path"]]:
+                    raise UnsafePath(
+                        f"verified snapshot file changed during verification: {item['path']}"
+                    )
+        snapshot.check_current()
+        return {
+            "model_id": model["id"],
+            "revision": model["revision"],
+            "files_verified": len(files),
+            "bytes_verified": manifest_bytes(model),
+        }
+
+
 def _fail(message: str, code: int) -> int:
     print(f"error: {message}\nNeed help? Ask on the ODS Discord: {HELP_URL}", file=sys.stderr)
     return code
@@ -352,11 +452,24 @@ def main(argv: list[str] | None = None) -> int:
                         help="data/models; files land in <models-dir>/<VLLM_MODEL_DIR>/")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL,
                         help="Hugging Face endpoint (tests point it at a local server)")
+    parser.add_argument("--verify-only", action="store_true",
+                        help="re-verify an existing snapshot and print a JSON receipt; no downloads")
     args = parser.parse_args(argv)
     try:
         model = find_entry(args.catalog, args.model_id)
     except (OSError, ValueError, LookupError) as exc:
         return _fail(f"cannot download {args.model_id} from {args.catalog}: {exc}", EXIT_FAILED)
+    if args.verify_only:
+        try:
+            receipt = verify_snapshot(model, args.models_dir)
+        except Mismatch as exc:
+            return _fail(str(exc), EXIT_MISMATCH)
+        except (UnsafePath, OSError) as exc:
+            return _fail(str(exc), EXIT_FAILED)
+        except DownloadCancelled as exc:
+            return _fail(f"verification was cancelled: {exc}", EXIT_FAILED)
+        print(json.dumps(receipt, sort_keys=True))
+        return 0
     try:
         fetch_manifest(model, args.models_dir, args.base_url)
     except NoSpace as exc:

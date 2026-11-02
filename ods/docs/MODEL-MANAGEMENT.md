@@ -45,6 +45,18 @@ files. Downloads check the pinned manifest and file digests before completing.
 The catalog's presence indicator checks file sizes; it is not a new checksum
 verification on every refresh.
 
+For an explicit read-only checksum check, run this from the ODS install directory
+with the catalog model ID you want to verify:
+
+```bash
+python3 scripts/download-hf-manifest.py --catalog config/model-library.json \
+  --model-id qwen3.6-35b-a3b-nvfp4-vllm --models-dir data/models --verify-only
+```
+
+This leaves missing files and partial downloads untouched and does not contact
+Hugging Face. A successful check prints a JSON receipt after the progress lines.
+It verifies the cached bytes, not GPU fit, model behavior, or cold-start recovery.
+
 The configured vLLM snapshot is protected from download replacement and deletion.
 Deletion also refuses unexpected files, links, and snapshots that change while
 being removed. The host agent serializes these actions with other model lifecycle
