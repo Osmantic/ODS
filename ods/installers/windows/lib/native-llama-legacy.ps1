@@ -213,12 +213,14 @@ function New-ODSNativeLlamaLegacyLaunch {
         # A registered model-store profile keeps its own qualified runtime and
         # argument list (it already runs one slot); ODS adds its listener,
         # alias, key and log. The profile's runtime is hash-verified by the
-        # model-store resolver instead of pin.json, and is not probed here.
+        # model-store resolver instead of pin.json. Reasoning flags must be
+        # qualified against that runtime too: --reasoning-format none does
+        # not turn thinking off on newer llama.cpp builds.
         $executable = [string]$Selection.profile.executable
         if ($gguf -cnotmatch '^[\x20-\x7e]{1,240}$') {
             throw 'llama.cpp on Windows needs an ASCII .gguf file name for its model alias.'
         }
-        $reasoningFormat = (Get-ODSNativeLlamaLegacyReasoning $EnvMap).Format
+        $reasoning = Get-ODSNativeLlamaLegacyReasoning $EnvMap
         $arguments = @(
             '--model', (ConvertTo-ODSNativeLlamaArgumentPath $modelPath),
             '--alias', $gguf,
@@ -229,9 +231,9 @@ function New-ODSNativeLlamaLegacyLaunch {
             '--metrics',
             '--no-webui',
             '--api-key-file', (ConvertTo-ODSNativeLlamaArgumentPath ([string]$Options.ApiKeyPath)),
-            '--log-file', (ConvertTo-ODSNativeLlamaArgumentPath ([string]$Options.LogPath)),
-            '--reasoning-format', $reasoningFormat
+            '--log-file', (ConvertTo-ODSNativeLlamaArgumentPath ([string]$Options.LogPath))
         )
+        $arguments += @(Get-ODSNativeReasoningArgs -Executable $executable -Mode $reasoning.Mode -FallbackFormat $reasoning.Format)
         if ([string]$Selection.profile.backend -ceq 'vulkan') { $arguments += @('--device', [string]$Options.Device) }
         $arguments += @($Selection.profile.args | ForEach-Object { [string]$_ })
         return [pscustomobject]@{ ExecutablePath = $executable; Arguments = $arguments; GgufFile = $gguf

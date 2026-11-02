@@ -135,6 +135,7 @@ def run(command, **kwargs):
     Assert-True ($joined.Contains('"' + $modelFile + '"')) 'Native model path with spaces was not quoted'
     Assert-True ($joined.Contains('"--spec-type" "draft-mtp"')) 'Native MTP args missing'
     Assert-True ($joined.Contains('"--ctx-size" "8192"')) 'Native persisted context missing'
+    Assert-True ($joined.Contains('"--reasoning" "off"') -and -not $joined.Contains('"--reasoning-format"')) 'A registered runtime ignored LLAMA_REASONING=off'
     Assert-True ($joined.Contains('"--alias" "model.gguf"') -and $joined.Contains('"--host" "127.0.0.1"') -and $joined.Contains('"--no-webui"') -and
         $joined.Contains('"--api-key-file"') -and -not $joined.Contains('ab' * 32)) 'Native start lost the loopback listener, alias or key file, or put the key on argv'
     Assert-True ($script:Started[-1].Port -eq 18080 -and $script:Started[-1].ApiKey -eq ('ab' * 32) -and
