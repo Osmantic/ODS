@@ -2768,7 +2768,7 @@ async def _fetch_llama_loaded_model(host: str, port: int) -> str | None:
     )
     # The native llama-server's key goes only to that origin (empty otherwise).
     auth = llama_auth_headers(base_url)
-    async with httpx.AsyncClient(timeout=10.0, **({"headers": auth} if auth else {})) as client:
+    async with httpx.AsyncClient(timeout=10.0, headers=auth or None) as client:
         try:
             resp = await client.get(f"{base_url}/v1/models")
             resp.raise_for_status()
