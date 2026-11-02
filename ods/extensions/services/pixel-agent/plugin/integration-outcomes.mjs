@@ -90,6 +90,14 @@ export function createIntegrationOutcomes({maximumRuns = 64, maximumCalls = 64} 
     bySession.set(run.sessionId, run.id);
     if (run.sessionKey) byKey.set(run.sessionKey, run.id);
   }
+  function reviewStartClear(context) {
+    // A query cannot adopt a sparse context, rebind an owner, reopen a run or
+    // clear uncertainty. In particular, do not call the mutating bind().
+    if (context?.agentId !== 'pixel' || ![context.runId,context.sessionId,context.sessionKey].every(identity)) return false;
+    const run = runs.get(context.runId);
+    return Boolean(current(run) && !run.ended && !run.uncertain && !run.overflow
+      && run.sessionId === context.sessionId && run.sessionKey === context.sessionKey && run.calls.length === 0);
+  }
   function before(event, context, decision, trustedControl) {
     const run = runs.get(context?.runId), id = context?.toolCallId ?? event?.toolCallId;
     if (!run || !bind(run, context, true) || !run.sessionKey) return;
@@ -224,6 +232,6 @@ export function createIntegrationOutcomes({maximumRuns = 64, maximumCalls = 64} 
     return {...decision, payload:{...payload, text:appendIntegrationNotice(payload.text, notice)},
       reason:decision?.reason ?? 'Portal adds the recorded status of this integration call.'};
   }
-  return {begin, before, take, control, complete, after, end, cancelUser, projection, verification, channel, refusal, effectful,
+  return {begin, reviewStartClear, before, take, control, complete, after, end, cancelUser, projection, verification, channel, refusal, effectful,
     clear() {runs.clear(); bySession.clear(); byKey.clear();}};
 }

@@ -408,6 +408,8 @@ export default definePluginEntry({
     integrationReviewRecovery ??= createIntegrationReviewRecovery({
       complete: parameters => api.runtime.llm.complete(parameters),
       eligible: runId => toolLoopGuard.continuationAllowed(runId),
+      nativeStartClear: state => integrationOutcomes.reviewStartClear({agentId:AGENT_ID,
+        runId:state.runId,sessionId:state.sessionId,sessionKey:state.sessionKey}),
       ready: state => {
         const config = api.runtime?.config?.current?.() ?? api.config;
         const access = accessRuntime.status();

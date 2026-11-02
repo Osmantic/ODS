@@ -28,6 +28,90 @@ async function execute(outcomes, id, value=params, reply=pending, ctx=context, s
   return result;
 }
 
+test('review start is true only for an exact current known owner with zero admitted calls', () => {
+  const outcomes=setup();
+  assert.equal(outcomes.reviewStartClear({...context}),true);
+  for(const change of [{agentId:'other'},{runId:'missing'},{sessionId:'other'},
+    {sessionKey:'agent:pixel:other'},{runId:undefined},{sessionId:undefined},{sessionKey:undefined},
+    {runId:'bad\nrun'},{sessionKey:''}]) {
+    assert.equal(outcomes.reviewStartClear({...context,...change}),false);
+    assert.equal(outcomes.reviewStartClear(context),true,'a rejected query must not invalidate or rebind the current owner');
+  }
+});
+
+test('review-start queries never bind sparse records, reopen ended records or consume pending admission', () => {
+  const outcomes=createIntegrationOutcomes();
+  const {sessionKey:_key,...sparse}=context;
+  outcomes.begin({},sparse);
+  assert.equal(outcomes.reviewStartClear(context),false);
+  assert.equal(outcomes.reviewStartClear(context),false,'the first query must not fill the missing saved key');
+  outcomes.begin({},context); // Normal trusted observation may bind it.
+  assert.equal(outcomes.reviewStartClear(context),true);
+  outcomes.end({success:true},context);
+  assert.equal(outcomes.reviewStartClear(context),false);
+  assert.equal(outcomes.reviewStartClear(context),false,'a read cannot reopen an ended run');
+  outcomes.begin({},context); // Ordinary same-run prompt reentry remains supported.
+  assert.equal(outcomes.reviewStartClear(context),true);
+  outcomes.before(event('reserved'),{...context,toolCallId:'reserved'});
+  assert.equal(outcomes.reviewStartClear(context),false);
+  const token=outcomes.take('reserved',integrationRequest('pixel_ods_mcp',params,context),factory());
+  assert.ok(token,'the predicate must not consume or mutate the reservation');
+  outcomes.complete(token,'pending');
+  const notice=outcomes.projection(runId);
+  assert.equal(outcomes.reviewStartClear(context),false);
+  assert.equal(outcomes.projection(runId),notice);
+});
+
+test('actual pending, refusal, failure and unknown receipts cannot start an automatic review', async () => {
+  for(const [name,reply,submit] of [
+    ['pending',pending],
+    ['refused',{ok:false,error:'mcp-auth',message:'Definitely refused'}],
+    ['failed',{ok:true,text:'Failed',isError:true}],
+    ['unknown',{ok:false,error:'mcp-outcome-unknown'}],
+    ['transport',undefined,async()=>{throw Object.assign(new Error('private transport'),{code:'integration-outcome-unknown'});}]
+  ]) {
+    const outcomes=setup();
+    await execute(outcomes,name,params,reply,context,submit);
+    const before=outcomes.projection(runId);
+    assert.equal(outcomes.reviewStartClear(context),false,name);
+    assert.equal(outcomes.projection(runId),before,'no receipt is cleared by the predicate');
+  }
+});
+
+test('missing admission, cancellation, failure, supersession and overflow stay closed without query mutation', async () => {
+  const absent=createIntegrationOutcomes();let submissions=0;
+  const tools=createIntegrationTools({context:factory(),outcomes:absent,submit:async()=>{submissions++;return pending;}});
+  assert.equal((await tools.find(tool=>tool.name==='pixel_ods_mcp').execute('unbound',params)).details.code,'integration-call-unbound');
+  assert.equal(absent.reviewStartClear(context),false);assert.equal(submissions,0);
+  for(const reason of ['cancel','failed','superseded','invalid','clear']) {
+    const outcomes=setup();
+    if(reason==='cancel')outcomes.cancelUser('ods-'+'a'.repeat(64));
+    if(reason==='failed')outcomes.end({success:false},context);
+    if(reason==='superseded')outcomes.begin({}, {...context,runId:'next-owner'});
+    if(reason==='invalid')outcomes.begin({}, {...context,sessionKey:'agent:pixel:conflicting-key'});
+    if(reason==='clear')outcomes.clear();
+    assert.equal(outcomes.reviewStartClear(context),false,reason);
+    assert.equal(outcomes.reviewStartClear(context),false,reason);
+  }
+  const overflow=setup({maximumCalls:1});reserve(overflow,'first');overflow.before(event('second'),{...context,toolCallId:'second'});
+  assert.equal(overflow.reviewStartClear(context),false);
+});
+
+test('unknown inheritance blocks internal fallback but a positively observed fresh owner is not perpetually fenced', () => {
+  const outcomes=setup();outcomes.complete(reserve(outcomes,'unknown'),'unknown');
+  const inherited={...context,runId:'internal-fallback',trigger:'internal'};
+  outcomes.begin({},inherited,context.runId);
+  assert.equal(outcomes.reviewStartClear(inherited),false,'uncertainty alone blocks even with zero calls in this derived run');
+  outcomes.begin({prompt:'another internal wrapper'},inherited,context.runId);
+  assert.equal(outcomes.reviewStartClear(inherited),false);
+  const fresh={...context,runId:'explicit-new-owner',trigger:'user'};
+  outcomes.begin({},fresh);
+  assert.equal(outcomes.reviewStartClear(fresh),true);
+  assert.equal(outcomes.reviewStartClear(inherited),false);
+  outcomes.begin({prompt:'same owner native reentry'},fresh);
+  assert.equal(outcomes.reviewStartClear(fresh),true);
+});
+
 test('direct host pending adds friendly factual copy and preserves mixed unrelated reply parts', async () => {
   const outcomes = setup();
   await execute(outcomes,'watch-add');
@@ -444,4 +528,5 @@ test('index wires only native admissions/direct outcomes and both existing deliv
   assert.match(source,/integrationOutcomes\.channel\(event, toolLoopGuard\.replyPayloadSending\(event\)\)/);
   assert.match(source,/integrationOutcomes\.cancelUser\(parsed\.user\)/);
   assert.match(source,/integrationOutcomes\.end\(event, context\)/);
+  assert.match(source,/nativeStartClear:\s*state\s*=>\s*integrationOutcomes\.reviewStartClear\(\{agentId:AGENT_ID,\s*runId:state\.runId,sessionId:state\.sessionId,sessionKey:state\.sessionKey\}\)/);
 });
