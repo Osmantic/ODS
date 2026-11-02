@@ -5697,6 +5697,7 @@ ods_pixel_install_default_agent() {
         && -f "$plugin_root/plugin/model-runtime-readback.mjs" \
         && -f "$plugin_root/plugin/history-context.mjs" \
         && -f "$plugin_root/plugin/integration-outcomes.mjs" \
+        && -f "$plugin_root/plugin/integration-review-recovery.mjs" \
         && -f "$plugin_root/host/pixel_ingress.mjs" \
         && -f "$plugin_root/host/chat_history_ledger.mjs" \
         && -f "$plugin_root/host/chat_image_store.mjs" \

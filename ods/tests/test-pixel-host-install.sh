@@ -34,6 +34,42 @@ ai_bad() { :; }
 ai_ok() { :; }
 ai() { :; }
 
+# Exercise the real file admission before plugin publication. All earlier
+# platform/state observations are fixture-only; publication itself is a trap.
+for recovery_prereq in present missing; do
+    if (
+        export ENABLE_PIXEL_RUNTIME=true PIXEL_SERVICE_USER="$owner"
+        export PIXEL_SOURCE_REF=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        export ODS_PIXEL_SOURCE_TRANSACTION=''
+        export INSTALL_DIR="$TEST_ROOT/recovery-prereq-$recovery_prereq"
+        mkdir -p "$INSTALL_DIR/extensions/services" "$INSTALL_DIR/home" "$INSTALL_DIR/source"
+        cp -R "$ROOT/extensions/services/pixel-agent" "$INSTALL_DIR/extensions/services/"
+        if [[ "$recovery_prereq" == missing ]]; then
+            rm -- "$INSTALL_DIR/extensions/services/pixel-agent/plugin/integration-review-recovery.mjs"
+        fi
+        ods_pixel_owner_home() { printf '%s\n' "$INSTALL_DIR/home"; }
+        _ods_pixel_gateway_port() { printf '%s\n' 18789; }
+        _ods_pixel_assert_managed_state() { return 0; }
+        _ods_pixel_existing_gateway_port_matches() { return 0; }
+        _ods_pixel_prepare_attempt_log() { printf '%s\n' "$INSTALL_DIR/attempt.log"; }
+        _ods_pixel_source_checkout() { printf '%s\n' "$INSTALL_DIR/source"; }
+        _ods_pixel_secure_plugin_tree() {
+            printf '%s\n' publication-reached > "$INSTALL_DIR/publication-trap"
+            return 1  # Never publish or reach a real service/package operation.
+        }
+        if ods_pixel_install_default_agent; then exit 1; fi
+        if [[ "$recovery_prereq" == present ]]; then
+            [[ -f "$INSTALL_DIR/publication-trap" ]]
+        else
+            [[ ! -e "$INSTALL_DIR/publication-trap" ]]
+        fi
+    ); then
+        pass "review-only recovery prerequisite blocks publication: $recovery_prereq"
+    else
+        fail "review-only recovery prerequisite blocks publication: $recovery_prereq"
+    fi
+done
+
 # Dependency selection is isolated from the host package manager. The real
 # Ubuntu 26.04 package/group transition is also exercised in a clean container.
 for prereq_case in present ubuntu24 ubuntu26 debian12 python both unsupported \
