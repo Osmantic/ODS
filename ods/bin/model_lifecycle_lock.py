@@ -24,7 +24,6 @@ from __future__ import annotations
 import errno
 import os
 import stat
-import subprocess
 import sys
 from pathlib import Path
 
@@ -74,21 +73,20 @@ def _canonical_install(install_dir: Path) -> bytes:
 
 
 def _cksum(data: bytes) -> str:
-    try:
-        proc = subprocess.run(
-            ["cksum"],
-            input=data,
-            capture_output=True,
-            check=True,
-            timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise RuntimeError(f"cksum failed: {exc}") from exc
-    out = proc.stdout.split()
-    if len(out) != 2 or not out[0].isdigit() or out[1] != str(len(data)).encode("ascii"):
-        raise RuntimeError("cksum produced invalid output")
-    return out[0].decode("ascii")
-
+    # POSIX cksum: non-reflected CRC, then the little-endian byte length.
+    # Keep the original shell lock namespace without spawning a subprocess.
+    crc = 0
+    for b in data:
+        crc ^= b << 24
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x04C11DB7) & 0xFFFFFFFF if crc & 0x80000000 else (crc << 1) & 0xFFFFFFFF
+    n = len(data)
+    while n:
+        crc ^= (n & 0xFF) << 24
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x04C11DB7) & 0xFFFFFFFF if crc & 0x80000000 else (crc << 1) & 0xFFFFFFFF
+        n >>= 8
+    return str(~crc & 0xFFFFFFFF)
 
 def lock_path(install_dir: Path) -> Path:
     """Pure: compute canonical lock path. No filesystem creation."""

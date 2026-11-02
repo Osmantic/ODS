@@ -323,3 +323,22 @@ def test_unsafe_root_refused(mll, tmp_path, kind):
     assert list(root.iterdir()) == []
     if kind == "mode":
         assert stat.S_IMODE(root.stat().st_mode) == 0o777
+
+
+@pytest.mark.parametrize("payload", [
+    b"", b"hello world", b"\x00\x01\x02\x03", "héllo wörld".encode(), bytes(range(256)),
+])
+def test_native_cksum_matches_posix_vectors(mll, payload):
+    expected = subprocess.run(["cksum"], input=payload, capture_output=True,
+                              check=True, timeout=5).stdout.split()[0].decode()
+    assert mll._cksum(payload) == expected
+
+
+@pytest.mark.parametrize("length", [1, 2, 31, 255, 256, 257, 1024, 4096])
+def test_native_cksum_matches_posix_length_boundaries(mll, length):
+    import random
+    rng = random.Random(length)
+    payload = bytes(rng.getrandbits(8) for _ in range(length))
+    expected = subprocess.run(["cksum"], input=payload, capture_output=True,
+                              check=True, timeout=5).stdout.split()[0].decode()
+    assert mll._cksum(payload) == expected
