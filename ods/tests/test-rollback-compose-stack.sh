@@ -18,6 +18,7 @@ command -v jq >/dev/null 2>&1 || fail "jq is required"
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
+export ODS_MODEL_LIFECYCLE_LOCK_ROOT="$TMP_DIR/locks"
 
 BIN_DIR="$TMP_DIR/bin"
 mkdir -p "$BIN_DIR"
@@ -71,7 +72,9 @@ make_install() {
     mkdir -p "$dir/data/backups" "$dir/data"
     cp "$UPDATE_SCRIPT" "$dir/ods-update.sh"
     # Use the reviewed real guard; synthetic target remains separate from helper code.
-    mkdir -p "$dir/scripts"
+    mkdir -p "$dir/scripts" "$dir/installers/lib" "$dir/bin"
+    cp "$ROOT_DIR/installers/lib/model-lifecycle-lock.sh" "$dir/installers/lib/"
+    cp "$ROOT_DIR/bin/model_lifecycle_lock.py" "$dir/bin/"
     ln -s "$ROOT_DIR/scripts/source-update-preflight.py" "$dir/scripts/source-update-preflight.py"
     chmod +x "$dir/ods-update.sh"
 
