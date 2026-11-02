@@ -222,6 +222,11 @@ test('structured aliases freeze canonical operation limits in both state and cor
   const cases=[
     [[{source:'watch',verb:'delete'}],['watch:remove'],[['app:watch','remove']],[['app:watch','list'],['app:watch','add']]],
     [[{source:'freshrss',verb:'read'}],['freshrss:digest_read','freshrss:unread'],[['app:news','unread'],['app:news','digest']],[['app:news','send'],['app:news','mark_read']]],
+    [[{source:'freshrss',verb:'list'}],['freshrss:digest_read','freshrss:unread'],[['app:news','unread'],['app:news','digest']],[['app:news','send'],['app:news','mark_read']]],
+    [[{source:'webpage_monitor',verb:'list'}],['watch:list'],[['app:watch','list']],[['app:watch','add'],['app:watch','remove']]],
+    [[{source:'webpage_monitor',verb:'add'}],['watch:add'],[['app:watch','add']],[['app:watch','list'],['app:watch','remove']]],
+    [[{source:'webpage_monitor',verb:'remove'}],['watch:remove'],[['app:watch','remove']],[['app:watch','list'],['app:watch','add']]],
+    [[{source:'webpage_monitor',verb:'delete'}],['watch:remove'],[['app:watch','remove']],[['app:watch','list'],['app:watch','add']]],
     [[{source:'web',verb:'monitor_changes'}],['watch:add'],[['app:watch','add']],[['app:watch','list'],['app:watch','remove']]],
   ];
   for(const [operations,scope,permitted,blocked] of cases) {
@@ -240,6 +245,98 @@ test('structured aliases freeze canonical operation limits in both state and cor
     assert.equal(recovery.floor(tool('pixel_ods_notes',{action:'read',path:'Private.md'}),CONTEXT).block,true);
   }
   assert.equal(reviewIntentEligible(parseReviewIntent(reply([{source:'web',verb:'monitor_changes'},{source:'watch',verb:'list'}]).text)),true,'aliases canonicalize before source check');
+});
+
+test('generic web operations do not inherit website-monitor or builtin read authority',async()=>{
+  for(const verb of ['list','remove','delete','watch','read','search']) {
+    const operations=[{source:'web',verb}];
+    assert.equal(reviewOperationScope(parseReviewIntent(reply(operations).text)),undefined,verb);
+    const {recovery}=world({complete:async()=>reply(operations)});
+    assert.equal(await recovery.finalize(event(),CONTEXT),undefined,verb);
+    assert.equal(recovery.isReviewOnly(CONTEXT),false,verb);
+    assert.equal(recovery.floor(tool('browser'),CONTEXT),undefined,verb);
+  }
+});
+
+test('approval request metadata contributes no authority beyond one exact underlying proposal',async()=>{
+  const proposals=[
+    [{source:'obsidian',verb:'append'},'obsidian:append',tool('pixel_ods_notes',appendParams())],
+    [{source:'obsidian',verb:'create'},'obsidian:create',tool('pixel_ods_notes',{...appendParams(),mode:'create'})],
+    [{source:'webpage_monitor',verb:'add'},'watch:add',tool('pixel_ods_mcp',{action:'call',server:'app:watch',tool:'add',arguments:{}})],
+    [{source:'webpage_monitor',verb:'delete'},'watch:remove',tool('pixel_ods_mcp',{action:'call',server:'app:watch',tool:'remove',arguments:{}})],
+  ];
+  for(const verb of ['request','prepare','create'])for(const [underlying,canonical,allowed] of proposals) {
+    for(const operations of [[{source:'approval',verb},underlying],[underlying,{source:'approval',verb}]]) {
+      const parsed=parseReviewIntent(reply(operations).text);
+      assert.deepEqual(reviewOperationScope(parsed),[canonical]);
+      const {recovery}=world({complete:async()=>reply(operations)});
+      const decision=await recovery.finalize(event(),CONTEXT);
+      assert.equal(decision.action,'revise');
+      assert.ok(decision.retry.instruction.includes(JSON.stringify([canonical])));
+      assert.equal(recovery.floor(allowed,CONTEXT),undefined);
+      assert.equal(recovery.floor(tool('pixel_ods_mcp',{action:'list'}),CONTEXT),undefined,'catalog metadata remains available');
+      for(const denied of [tool('pixel_ods_notes',{action:'read',path:'Example.md'}),
+        tool('pixel_ods_notes',{action:'search',query:'x'}),tool('pixel_ods_notify',{message:'x'}),
+        tool('pixel_ods_mcp',{action:'call',server:'app:watch',tool:'list',arguments:{}})])
+        assert.equal(recovery.floor(denied,CONTEXT).block,true,canonical);
+    }
+  }
+});
+
+test('approval-only, approval-before-read and ambiguous approval workflows refuse atomically',async()=>{
+  const modifier={source:'approval',verb:'request'},append={source:'obsidian',verb:'append'};
+  const operationsCases=[
+    [modifier],[modifier,{source:'approval',verb:'prepare'}],
+    [modifier,{source:'obsidian',verb:'read'}],[modifier,{source:'obsidian',verb:'search'}],
+    [modifier,{source:'paperless',verb:'read'}],[modifier,{source:'immich',verb:'search'}],
+    [modifier,{source:'freshrss',verb:'list'}],[modifier,{source:'webpage_monitor',verb:'list'}],
+    [modifier,append,{source:'obsidian',verb:'read'}],
+    [modifier,append,{source:'obsidian',verb:'search'}],
+    [modifier,{source:'webpage_monitor',verb:'remove'},{source:'webpage_monitor',verb:'list'}],
+    [modifier,append,{source:'paperless',verb:'read'}],
+    [modifier,{source:'obsidian',verb:'delete'}],[modifier,{source:'notifications',verb:'send'}],
+    [modifier,append,{source:'notifications',verb:'send'}],
+    ...['approve','execute','cancel','status','read','unknown'].map(verb=>[{source:'approval',verb},append]),
+  ];
+  for(const operations of operationsCases) {
+    assert.equal(reviewOperationScope(parseReviewIntent(reply(operations).text)),undefined,JSON.stringify(operations));
+    const {recovery}=world({complete:async()=>reply(operations)});
+    assert.equal(await recovery.finalize(event(),CONTEXT),undefined,JSON.stringify(operations));
+    assert.equal(recovery.isReviewOnly(CONTEXT),false);
+    assert.equal(recovery.floor(tool('exec'),CONTEXT),undefined,'ordinary first pass is unchanged');
+  }
+});
+
+test('distinct proposal types never choose a winner or trim the owner workflow',async()=>{
+  const proposals=[{source:'obsidian',verb:'append'},{source:'obsidian',verb:'create'},
+    {source:'watch',verb:'add'},{source:'webpage_monitor',verb:'remove'}];
+  for(const first of proposals)for(const second of proposals) {
+    if(first===second)continue;
+    const operations=[first,second];
+    assert.equal(reviewOperationScope(parseReviewIntent(reply(operations).text)),undefined,JSON.stringify(operations));
+    const {recovery}=world({complete:async()=>reply(operations)});
+    assert.equal(await recovery.finalize(event(),CONTEXT),undefined);
+    assert.equal(recovery.isReviewOnly(CONTEXT),false);
+  }
+  assert.deepEqual(reviewOperationScope(parseReviewIntent(reply([{source:'watch',verb:'remove'},
+    {source:'webpage_monitor',verb:'delete'}]).text)),['watch:remove'],'synonymous labels add no second proposal type');
+  assert.deepEqual(reviewOperationScope(parseReviewIntent(reply([{source:'obsidian',verb:'search'},
+    {source:'obsidian',verb:'append'}]).text)),['obsidian:append','obsidian:search'],'without approval metadata explicit reads remain explicit operations');
+});
+
+test('native floor also rejects an invalid retained scope containing multiple proposal types',async()=>{
+  for(const scope of [['obsidian:append','obsidian:create'],['watch:add','watch:remove']]) {
+    let state,ready=false;
+    const {recovery}=world({ready:value=>{state=value;return ready;}});
+    assert.equal(await recovery.finalize(event(),CONTEXT),undefined);
+    // Trusted-state fault injection exercises the validator independently of
+    // scope construction. It makes no process-isolation claim.
+    state.allowedOperations=Object.freeze(scope);state.reviewOnly=true;ready=true;
+    for(const value of [tool('pixel_ods_notes',appendParams()),tool('pixel_ods_notes',{...appendParams(),mode:'create'}),
+      tool('pixel_ods_mcp',{action:'call',server:'app:watch',tool:'add',arguments:{}}),
+      tool('pixel_ods_mcp',{action:'list'}),tool('tool_search')])
+      assert.equal(recovery.floor(value,CONTEXT).block,true,JSON.stringify(scope));
+  }
 });
 
 test('requested create mode permits no append, and multiple explicit reads admit only their shared source',async()=>{
