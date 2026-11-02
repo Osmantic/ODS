@@ -11,6 +11,7 @@ const CONTEXT={agentId:'pixel',runId:'current-run',sessionId:'owned-session',ses
 const OWNER='Create an approval request to append Current owned line to Example.md. Do not write it.';
 const ANSWER='You need to approve the new request in Settings.';
 const event=(owner=OWNER)=>({runId:CONTEXT.runId,sessionId:CONTEXT.sessionId,sessionKey:SESSION,
+  nativeRetryToolsAllowVersion:1,
   messages:[{role:'user',content:owner},{role:'assistant',content:ANSWER}],lastAssistantMessage:ANSWER});
 const reply=(request='action',answer='approval_needed')=>({agentId:'pixel',provider:'fixture-local',model:'fixture/9b',
   text:JSON.stringify({request,answer})});
@@ -27,6 +28,7 @@ test('review latches synchronously before ONE stock native revise; only six supp
   const {recovery,calls}=world();
   const result=await recovery.finalize(event(),CONTEXT);
   assert.equal(result.action,'revise');assert.equal(result.retry.maxAttempts,1);
+  assert.deepEqual(result.retry.toolsAllow,['pixel_ods_notes','pixel_ods_mcp']);
   assert.equal(recovery.isReviewOnly(CONTEXT),true);
   assert.deepEqual(Object.keys(calls[0]).sort(),['maxTokens','messages','purpose','signal','systemPrompt','temperature']);
   assert.equal(calls[0].systemPrompt,REVIEW_LABEL_SYSTEM);
@@ -35,6 +37,28 @@ test('review latches synchronously before ONE stock native revise; only six supp
   assert.equal(await recovery.finalize(event(),CONTEXT),undefined);
   assert.equal(calls.length,1);
   assert.deepEqual(await recovery.finalize(event(),CONTEXT,{action:'revise'}),{action:'continue'});
+});
+
+test('old SDK or unrecognized native capability spends no semantic check and never requests an unfiltered retry',async()=>{
+  for(const version of [undefined,null,0,2,'1',true]) {
+    const {recovery,calls}=world();
+    const ev={...event(),nativeRetryToolsAllowVersion:version};
+    // A model/context claim cannot replace the native event acknowledgment.
+    assert.equal(await recovery.finalize(ev,{...CONTEXT,nativeRetryToolsAllowVersion:1}),undefined);
+    assert.equal(calls.length,0,String(version));
+    assert.equal(recovery.isReviewOnly(CONTEXT),false);
+  }
+});
+
+test('losing native tool-cap acknowledgment while the semantic check waits cannot latch a retry',async()=>{
+  let release;
+  const held=new Promise(resolve=>{release=resolve;});
+  const {recovery}=world({complete:()=>held});
+  const ev=event(),result=recovery.finalize(ev,CONTEXT);
+  delete ev.nativeRetryToolsAllowVersion;
+  release(reply());
+  assert.equal(await result,undefined);
+  assert.equal(recovery.isReviewOnly(CONTEXT),false);
 });
 
 test('native floor permits only two integration adapters and harmless metadata discovery',async()=>{

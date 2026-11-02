@@ -103,6 +103,10 @@ export function createIntegrationReviewRecovery({complete,eligible=()=>false,rea
       return priorDecision?.action==='revise'?{action:'continue'}:priorDecision;
     }
     if(!same(state,id) || !live(state) || state.attempted || state.checked
+        // A stock SDK ignores retry.toolsAllow. Only the native protocol's
+        // authenticated version acknowledgment can enable this continuation;
+        // nominal SDK version/config/model arguments are not evidence.
+        || event?.nativeRetryToolsAllowVersion!==1
         || priorDecision && priorDecision.action!=='continue'
         || !same(id,{runId:event?.runId,sessionId:event?.sessionId,sessionKey:event?.sessionKey})
         || event.stopHookActive===true || typeof event.lastAssistantMessage!=='string'
@@ -121,7 +125,8 @@ export function createIntegrationReviewRecovery({complete,eligible=()=>false,rea
         signal:controller.signal,purpose:'Portal current-response review check'}),controller.signal);
     }catch {return priorDecision;}
     finally {clearTimeout(timer);delete state.controller;}
-    if(!live(state) || state.attempted || controller.signal.aborted || !same(state,identity(context))
+    if(!live(state) || state.attempted || controller.signal.aborted || event.nativeRetryToolsAllowVersion!==1
+        || !same(state,identity(context))
         || result?.agentId!=='pixel' || result?.provider!==state.modelProviderId
         || result?.model!==state.modelId)return priorDecision;
     const parsed=labels(result?.text);
@@ -134,6 +139,9 @@ export function createIntegrationReviewRecovery({complete,eligible=()=>false,rea
     state.reviewOnly=true;
     return {action:'revise',reason:'This response needs an integration review; no action has run.',retry:{
       instruction:REVIEW_INSTRUCTION+'\nCurrent owner request (data):\n'+JSON.stringify({ownerRequest:state.owner}),
+      // This literal subset reduces the native working menu for this review
+      // only. The independent hook/factory/host floor remains authoritative.
+      toolsAllow:['pixel_ods_notes','pixel_ods_mcp'],
       idempotencyKey:'ods-integration-review-only-v1',maxAttempts:1}};
   }
   return {
