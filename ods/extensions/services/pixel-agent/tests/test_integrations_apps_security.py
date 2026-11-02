@@ -508,8 +508,11 @@ def test_apps_and_ntfy_refuse_redirects_without_forwarding_credentials():
             apps.documents_test({"url": url}, "synthetic-token")
         config = default_config()
         config["notifications"].update(enabled=True, url=url)
-        with pytest.raises(IntegrationError, match="redirected"):
+        with pytest.raises(IntegrationError) as notification:
             ntfy.send_notification(config, {"ntfyPassword": "synthetic-password"}, "Fixture", "body")
+        # The original destination received the POST; refusing its redirect
+        # prevents credential forwarding without proving no notification effect.
+        assert notification.value.code == "notification-outcome-unknown"
         assert leaked == []
     finally:
         for server in (source, sink):

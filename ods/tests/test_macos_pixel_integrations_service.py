@@ -152,6 +152,10 @@ def retirement(world, monkeypatch, tmp_path):
     sock.bind(str(runtime / 'control.sock'))
     (runtime / 'control.sock').chmod(0o600)
     sock.close()  # A stopped service's stale own socket is expected.
+    # These objects represent provisioned owner state, independent of the
+    # temporary parent's inherited group on Darwin.
+    for path in (runtime, runtime / 'control.sock', logs / 'stdout.log', logs / 'stderr.log'):
+        os.chown(path, world.pw_uid, world.pw_gid)
     @contextmanager
     def directory(path, **kwargs):
         fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -221,6 +225,7 @@ def test_managed_upgrade_plan_then_provision_prepares_missing_launchd_logs(publi
     """
     args, _ = publication
     with tempfile.TemporaryDirectory(prefix='ods-ni-') as home:
+        home = str(Path(home).resolve())
         world.pw_uid, world.pw_gid, world.pw_dir = os.getuid(), os.getgid(), home
         if world.pw_uid == 0:
             pytest.skip('Disposable owner fixture requires a nonroot test user')
@@ -246,8 +251,10 @@ def test_managed_upgrade_plan_then_provision_prepares_missing_launchd_logs(publi
             for name in ('stdout.log', 'stderr.log'):
                 (path / name).write_text('')
                 (path / name).chmod(0o600)
+                os.chown(path / name, uid, gid)
         monkeypatch.setattr(native, 'manager_helpers', lambda: SimpleNamespace(prepare_logs=logs_prepare))
-        monkeypatch.setattr(native.os, 'chown', lambda *args, **kwargs: None)
+        # Runtime chown remains real: it changes only this user's disposable
+        # directory to this user's existing primary group.
         monkeypatch.setattr(native, '_acl', lambda *args: None)
         monkeypatch.setattr(native, '_published_common', lambda: SimpleNamespace(native_owner_key=lambda uid: b'k' * 32,
             verify_native_no_acl=lambda _fd: None, validate_native_state=lambda *args, **kwargs: None))
