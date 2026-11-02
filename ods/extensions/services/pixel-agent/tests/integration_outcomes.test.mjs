@@ -32,7 +32,10 @@ async function execute(outcomes, id, value=params, reply=pending, ctx=context, s
 async function latchedReview() {
   const ctx={...context,modelProviderId:'ods-gateway',modelId:'ods/current'};
   const owner='Read the Obsidian note Example.md.';
+  const startOutcomeRecord=createIntegrationOutcomes();startOutcomeRecord.begin({},ctx);
   const recovery=createIntegrationReviewRecovery({eligible:()=>true,ready:()=>true,
+    nativeStartClear:state=>startOutcomeRecord.reviewStartClear({agentId:'pixel',
+      runId:state.runId,sessionId:state.sessionId,sessionKey:state.sessionKey}),
     complete:async()=>({agentId:'pixel',provider:'ods-gateway',model:'ods/current',text:JSON.stringify({
       operations:[{source:'obsidian',verb:'read'}]})})});
   recovery.observe({prompt:owner},ctx,ctx.runId);
