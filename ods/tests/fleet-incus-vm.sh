@@ -545,8 +545,9 @@ run_vm_check() {
     boot_id="$(vm_boot_id "$vm")"
     if incus exec "$vm" -- /tmp/fleet-incus-vm-check.sh "$lane" "${EXPECTED_PKG[$lane]}" "$installer_mode"; then
         return 0
+    else
+        rc=$?
     fi
-    rc=$?
     if [[ "$rc" -eq 75 ]]; then
         log "=== ${LABELS[$lane]} requested reboot after package updates ==="
         wait_for_reboot "$vm" "$boot_id"
