@@ -109,7 +109,7 @@ export function createIntegrationReviewRecovery({complete,eligible=()=>false,rea
         // A stock SDK ignores retry.toolsAllow. Only the native protocol's
         // authenticated version acknowledgment can enable this continuation;
         // nominal SDK version/config/model arguments are not evidence.
-        || event?.nativeRetryToolsAllowVersion!==1
+        || event?.nativeRetryToolsAllowVersion!==1 || event?.nativeRetryToolChoiceVersion!==1
         || priorDecision && priorDecision.action!=='continue'
         || !same(id,{runId:event?.runId,sessionId:event?.sessionId,sessionKey:event?.sessionKey})
         || event.stopHookActive===true || typeof event.lastAssistantMessage!=='string'
@@ -129,6 +129,7 @@ export function createIntegrationReviewRecovery({complete,eligible=()=>false,rea
     }catch {return priorDecision;}
     finally {clearTimeout(timer);delete state.controller;}
     if(!live(state) || state.attempted || controller.signal.aborted || event.nativeRetryToolsAllowVersion!==1
+        || event.nativeRetryToolChoiceVersion!==1
         || !same(state,identity(context))
         || result?.agentId!=='pixel' || result?.provider!==state.modelProviderId
         || result?.model!==state.modelId)return priorDecision;
@@ -145,6 +146,7 @@ export function createIntegrationReviewRecovery({complete,eligible=()=>false,rea
       // This literal subset reduces the native working menu for this review
       // only. The independent hook/factory/host floor remains authoritative.
       toolsAllow:['pixel_ods_notes','pixel_ods_mcp'],
+      toolChoice:'required',
       idempotencyKey:'ods-integration-review-only-v1',maxAttempts:1}};
   }
   return {
@@ -160,10 +162,15 @@ export function createIntegrationReviewRecovery({complete,eligible=()=>false,rea
       let valid=false;
       try {
         const native=event?.nativeRetryToolsAllowState;
-        valid=Object.isFrozen(native) && native.version===1 && native.active===true
+        const capValid=Object.isFrozen(native) && native.version===1 && native.active===true
           && native.ownerRunId===state.runId && Array.isArray(native.toolsAllow)
           && Object.isFrozen(native.toolsAllow) && native.toolsAllow.length===integrations.size
           && new Set(native.toolsAllow).size===integrations.size && native.toolsAllow.every(name=>integrations.has(name));
+        const choice=event?.nativeRetryToolChoiceState;
+        valid=capValid && Object.isFrozen(choice) && choice.version===1 && choice.ownerRunId===state.runId
+          && choice.mode==='required-first' && ['armed','tool-started'].includes(choice.phase)
+          && (!(state.attempted || state.requiredStarted) || choice.phase==='tool-started');
+        if(valid && choice.phase==='tool-started')state.requiredStarted=true;
       }catch { /* Malformed metadata cannot downgrade a known latched run. */ }
       return valid?undefined:deny();
     },

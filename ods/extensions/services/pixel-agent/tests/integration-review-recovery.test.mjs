@@ -11,7 +11,7 @@ const CONTEXT={agentId:'pixel',runId:'current-run',sessionId:'owned-session',ses
 const OWNER='Create an approval request to append Current owned line to Example.md. Do not write it.';
 const ANSWER='You need to approve the new request in Settings.';
 const event=(owner=OWNER)=>({runId:CONTEXT.runId,sessionId:CONTEXT.sessionId,sessionKey:SESSION,
-  nativeRetryToolsAllowVersion:1,
+  nativeRetryToolsAllowVersion:1,nativeRetryToolChoiceVersion:1,
   messages:[{role:'user',content:owner},{role:'assistant',content:ANSWER}],lastAssistantMessage:ANSWER});
 const reply=(request='action',answer='approval_needed')=>({agentId:'pixel',provider:'fixture-local',model:'fixture/9b',
   text:JSON.stringify({request,answer})});
@@ -25,11 +25,14 @@ function world(options={}) {
 const tool=(name,params={})=>({toolName:name,params});
 const nativeScope=(context=CONTEXT,changes={})=>Object.freeze({version:1,active:true,
   ownerRunId:context.runId,toolsAllow:Object.freeze(['pixel_ods_notes','pixel_ods_mcp']),...changes});
+const nativeChoice=(context=CONTEXT,changes={})=>Object.freeze({version:1,ownerRunId:context.runId,
+  mode:'required-first',phase:'armed',...changes});
+const admission=(changes={})=>({...event(),nativeRetryToolsAllowState:nativeScope(),nativeRetryToolChoiceState:nativeChoice(),...changes});
 
 test('exact latched run needs actual immutable active native scope before inference',async()=>{
   const {recovery}=world();await recovery.finalize(event(),CONTEXT);
-  assert.equal(recovery.admit({...event(),nativeRetryToolsAllowState:nativeScope()},CONTEXT),undefined);
-  assert.equal(recovery.admit({...event(),nativeRetryToolsAllowState:nativeScope(CONTEXT,{toolsAllow:Object.freeze(['pixel_ods_mcp','pixel_ods_notes'])})},CONTEXT),undefined);
+  assert.equal(recovery.admit(admission(),CONTEXT),undefined);
+  assert.equal(recovery.admit(admission({nativeRetryToolsAllowState:nativeScope(CONTEXT,{toolsAllow:Object.freeze(['pixel_ods_mcp','pixel_ods_notes'])})}),CONTEXT),undefined);
 });
 
 test('missing/reset/foreign/widened native scope blocks the same owner run and cannot be revived',async()=>{
@@ -81,6 +84,7 @@ test('review latches synchronously before ONE stock native revise; only six supp
   const result=await recovery.finalize(event(),CONTEXT);
   assert.equal(result.action,'revise');assert.equal(result.retry.maxAttempts,1);
   assert.deepEqual(result.retry.toolsAllow,['pixel_ods_notes','pixel_ods_mcp']);
+  assert.equal(result.retry.toolChoice,'required');
   assert.equal(recovery.isReviewOnly(CONTEXT),true);
   assert.deepEqual(Object.keys(calls[0]).sort(),['maxTokens','messages','purpose','signal','systemPrompt','temperature']);
   assert.equal(calls[0].systemPrompt,REVIEW_LABEL_SYSTEM);
@@ -111,6 +115,54 @@ test('losing native tool-cap acknowledgment while the semantic check waits canno
   release(reply());
   assert.equal(await result,undefined);
   assert.equal(recovery.isReviewOnly(CONTEXT),false);
+});
+
+test('cap-only SDK or unrecognized native required-first capability never spends the semantic check',async()=>{
+  for(const version of [undefined,null,0,2,'1',true]) {
+    const {recovery,calls}=world(),ev={...event(),nativeRetryToolChoiceVersion:version};
+    assert.equal(await recovery.finalize(ev,{...CONTEXT,nativeRetryToolChoiceVersion:1}),undefined);
+    assert.equal(calls.length,0,String(version));
+    assert.equal(recovery.isReviewOnly(CONTEXT),false);
+  }
+});
+
+test('losing required-first native acknowledgment while the semantic check waits cannot latch',async()=>{
+  let release;
+  const held=new Promise(resolve=>{release=resolve;});
+  const {recovery}=world({complete:()=>held}),ev=event();
+  const pending=recovery.finalize(ev,CONTEXT);
+  delete ev.nativeRetryToolChoiceVersion;
+  release(reply());
+  assert.equal(await pending,undefined);
+  assert.equal(recovery.isReviewOnly(CONTEXT),false);
+});
+
+test('latched native admission requires immutable exact required-first armed/tool-started proof',async()=>{
+  for(const invalid of [undefined,null,{}, {...nativeChoice()},nativeChoice(CONTEXT,{version:2}),
+    nativeChoice(CONTEXT,{ownerRunId:'foreign'}),nativeChoice(CONTEXT,{mode:'auto'}),
+    nativeChoice(CONTEXT,{phase:'issued'}),nativeChoice(CONTEXT,{phase:'closed'}),
+    nativeChoice(CONTEXT,{phase:'attempted'}),nativeChoice(CONTEXT,{phase:'unknown'})]) {
+    const {recovery}=world();await recovery.finalize(event(),CONTEXT);
+    assert.equal(recovery.admit(admission({nativeRetryToolChoiceState:invalid}),CONTEXT).outcome,'block');
+    assert.equal(recovery.admit(admission(),CONTEXT).outcome,'block');
+  }
+  const {recovery}=world();await recovery.finalize(event(),CONTEXT);
+  assert.equal(recovery.admit(admission(),CONTEXT),undefined);
+  assert.equal(recovery.admit(admission({nativeRetryToolChoiceState:nativeChoice(CONTEXT,{phase:'tool-started'})}),CONTEXT),undefined);
+});
+
+test('a current tool-start or verified native tool-started proof can never rearm a required request',async()=>{
+  for(const startedBy of ['native-proof','native-before-tool']) {
+    const {recovery}=world();await recovery.finalize(event(),CONTEXT);
+    assert.equal(recovery.admit(admission(),CONTEXT),undefined);
+    if(startedBy==='native-proof')assert.equal(recovery.admit(admission({nativeRetryToolChoiceState:nativeChoice(CONTEXT,{phase:'tool-started'})}),CONTEXT),undefined);
+    else {
+      recovery.beforeTool(tool('pixel_ods_notes'),CONTEXT);
+      assert.equal(recovery.admit(admission({nativeRetryToolChoiceState:nativeChoice(CONTEXT,{phase:'tool-started'})}),CONTEXT),undefined);
+    }
+    assert.equal(recovery.admit(admission(),CONTEXT).outcome,'block',startedBy);
+    assert.equal(recovery.floor(tool('pixel_ods_notes'),CONTEXT).block,true);
+  }
 });
 
 test('native floor permits only two integration adapters and harmless metadata discovery',async()=>{
