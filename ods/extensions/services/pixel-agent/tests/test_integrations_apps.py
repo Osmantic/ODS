@@ -351,7 +351,8 @@ class AppTests(unittest.TestCase):
         added = self.app("watch", "add", url="https://shop.example/page", title="Shop")
         self.assertEqual(added["id"], "w1")
         self.assertEqual(self.app("watch", "list"), {"watches": [{"id": "w1", "title": "Shop", "url": "https://shop.example/page",
-                                                                  "lastChanged": 0, "below": None, "lastPrice": None}], "total": 1})
+                                                                  "lastChanged": 0, "below": None, "lastPrice": None,
+                                                                  "lastChecked": 0, "paused": False, "error": ""}], "total": 1})
         FakeNtfy.sent.clear()
         FakeChanges.watches["w1"]["last_changed"] = 100  # Its first snapshot: only remembered.
         self.service.check_watches()
@@ -383,7 +384,7 @@ class AppTests(unittest.TestCase):
         for bad in (0, -3, "cheap", True):
             with self.assertRaisesRegex(service.IntegrationError, "price limit"):
                 self.app("watch", "add", url="https://shop.example/x", below=bad)
-        self.assertEqual(self.app("watch", "remove", id="w1")["done"], "Stop watching Kettle")
+        self.assertEqual(self.app("watch", "remove", id="w1")["done"], "Stop watching Kettle (https://shop.example/kettle)")
         self.assertEqual((FakeChanges.watches, self.store.watch_state()), ({}, {}))
 
     def test_any_page_title_and_address_reach_the_phone_intact(self):
@@ -685,7 +686,7 @@ class AppTests(unittest.TestCase):
                                for n in range(apps.MAX_WATCHES + 5)}
         listed = self.app("watch", "list")
         self.assertEqual((len(listed["watches"]), listed["total"]), (apps.MAX_WATCHES, apps.MAX_WATCHES + 5))
-        self.assertIn(f"Showing {apps.MAX_WATCHES} of {apps.MAX_WATCHES + 5} watched pages.",
+        self.assertIn(f"Showing up to {apps.MAX_WATCHES} of {apps.MAX_WATCHES + 5} watched pages;",
                       self.agent("mcp-call", server="app:watch", tool="list", arguments={})["text"])
 
     # Immich's test explains search by what is in a photo.

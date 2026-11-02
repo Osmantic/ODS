@@ -55,6 +55,11 @@ function WatchList({ ready, revision, onLoad }) {
           ? <a className="block truncate text-theme-text hover:underline" href={watch.url} target="_blank" rel="noreferrer">{watch.title || watch.url}</a>
           : <span className="block truncate text-theme-text">{watch.title || watch.url}</span>}
         <span className="block text-xs text-theme-text-muted">{watchDetail(watch)}</span>
+        {watch.error
+          ? <p role="status" className="mt-1 text-xs text-amber-300 break-words">Last check failed: {watch.error}</p>
+          : watch.paused
+            ? <p className="mt-1 text-xs text-theme-text-muted">Paused in changedetection.io.</p>
+            : watch.lastChecked === 0 && <p className="mt-1 text-xs text-theme-text-muted">Waiting for the first page check.</p>}
       </li>)}
     </ul>}
     {list && list.total > list.watches.length && <p className="text-xs text-theme-text-muted">Showing {list.watches.length} of {list.total}. See them all in changedetection.io.</p>}

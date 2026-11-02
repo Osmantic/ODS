@@ -71,7 +71,11 @@ async function run(submit, payload, signal, render) {
     }
     return text('The integrations service is unavailable.', {status: 'unavailable'}, true);
   }
-  if (!reply?.ok) return text(reply?.message || 'The integration request failed.', {status: 'refused', code: reply?.error}, true);
+  if (!reply?.ok) {
+    const scope = reply?.error === 'notes-off' && payload.action?.startsWith('notes-')
+      ? ' This result concerns only Obsidian notes, not the Paperless document connection. Paperless documents use pixel_ods_mcp action list. Respect the owner\'s requested source.' : '';
+    return text((reply?.message || 'The integration request failed.') + scope, {status: 'refused', code: reply?.error}, true);
+  }
   if (reply.status === 'approval-required') {
     return text(`${reply.summary}\n\n${APPROVAL_TEXT}`, {status: 'approval-required', approvalId: reply.approvalId});
   }
@@ -118,7 +122,7 @@ export function createIntegrationTools({submit = submitIntegration, context} = {
   return [
     {
       name: 'pixel_ods_notes',
-      description: "The owner's Obsidian notes. action search: find notes holding words (query). action read: read a note (path from a search, such as Home/Lease.md). action write: add text (mode append) or create a note (mode create), only when the owner asks to save something. Call action write for every new save request, even if you expect approval or the text is identical. The service creates a request or performs the permitted write. Only its returned status approval-required means a request is pending; describing the need for approval creates nothing.",
+      description: "Only Markdown notes in the owner's Obsidian vault. For Paperless documents, bills or PDFs, use pixel_ods_mcp action list instead. action search: find notes holding words (query). action read: read a note (path from a search, such as Home/Lease.md). action write: add text (mode append) or create a note (mode create), only when the owner asks to save something. Call action write for every new save request, even if you expect approval or the text is identical. The service creates a request or performs the permitted write. Only its returned status approval-required means a request is pending; describing the need for approval creates nothing.",
       parameters: {type: 'object', additionalProperties: false, required: ['action'],
         properties: {action: {type: 'string', enum: ['search', 'read', 'write']},
           query: {type: 'string', description: 'For search: words to look for, such as "lease deposit".'},

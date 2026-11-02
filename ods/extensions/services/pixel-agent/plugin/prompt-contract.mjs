@@ -140,7 +140,7 @@ const CONNECTED_RECORDS_TINY_CONTRACT = CONNECTED_RECORDS_CONTRACT;
 // an MCP-only catalog as proof that saved ntfy notifications did not exist.
 // Keep this trusted guidance identical for every request and context profile.
 export const PORTAL_INTEGRATIONS_CONTRACT =
-  "Obsidian: pixel_ods_notes; ntfy: pixel_ods_notify; apps/custom MCP: pixel_ods_mcp (list first; excludes Google/Obsidian/ntfy status); workspace file writes do not prove a vault update.";
+  "Obsidian: pixel_ods_notes. Paperless docs/PDFs, Immich photos, watches/news/MCP: pixel_ods_mcp (list first; no Google/notes/ntfy status). ntfy: pixel_ods_notify. Workspace writes aren't vault updates.";
 
 // Model-only context beside the current owner turn, never a status observation
 // or an instruction to replay an action without its normal tool admission.

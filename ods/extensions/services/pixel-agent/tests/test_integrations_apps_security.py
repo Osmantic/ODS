@@ -16,7 +16,7 @@ if sys.platform == "win32":
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host"))
 import integrations_apps as apps
 import integrations_ntfy as ntfy
-from integrations_common import Store, default_config, IntegrationError, safe_urlopen
+from integrations_common import Store, default_config, IntegrationError, safe_urlopen, MAX_RESULT_CHARS
 from integrations_service import Integrations, server_context
 from integrations_common import digest, app_context
 
@@ -49,6 +49,45 @@ def save(service, store, settings=None, secrets=None):
     config = store.config()
     service.save(config["revision"], settings or {key: config[key]
         for key in ("notes", "notifications", "mcp", "apps")}, secrets or {})
+
+
+def test_watch_health_is_visible_without_exposing_provider_credentials(world, monkeypatch):
+    service, _store = world
+    listing = {"owned": {"url": "https://page.example", "title": "Product watch-key",
+                         "last_checked": 123, "paused": False,
+                         "last_error": "x" * 395 + "watch-key" + " provider could not extract a price"}}
+    monkeypatch.setattr(apps, "watches", lambda *_: copy.deepcopy(listing))
+    reply = service.handle("owner", {"schemaVersion": 1, "action": "watch-list"})
+    watch = reply["watches"]["watches"][0]
+    assert watch["lastChecked"] == 123 and watch["paused"] is False
+    assert watch["error"] and len(watch["error"]) <= 400
+    assert "watch-key" not in json.dumps(reply)
+    native = call(service, "list")
+    assert "Last check failed:" in native["text"]
+    assert "watch-key" not in native["text"]
+
+
+def test_named_watch_approvals_show_the_exact_page_address(world, monkeypatch):
+    service, _store = world
+    monkeypatch.setattr(apps, "watches", lambda *_: {})
+    first = call(service, "add", url="https://first.example/product", title="Same title", below=70)
+    second = call(service, "add", url="https://second.example/product", title="Same title", below=70)
+    assert first["status"] == second["status"] == "approval-required"
+    assert "https://first.example/product" in first["summary"]
+    assert "https://second.example/product" in second["summary"]
+    assert first["approvalId"] != second["approvalId"]
+
+
+def test_watch_coverage_survives_long_provider_failures(world, monkeypatch):
+    service, _store = world
+    listing = {f"w{i}": {"url": f"https://page.example/{i}", "title": f"Product {i}",
+                         "last_error": "Provider could not read the page. " * 30}
+               for i in range(apps.MAX_WATCHES + 1)}
+    monkeypatch.setattr(apps, "watches", lambda *_: listing)
+    reply = call(service, "list")
+    assert len(reply["text"]) <= MAX_RESULT_CHARS + len("\n[truncated]")
+    assert reply["text"].startswith(f"Showing up to {apps.MAX_WATCHES} of {len(listing)} watched pages;")
+    assert "[truncated]" in reply["text"]
 
 
 @pytest.mark.parametrize("change", ["endpoint", "key", "target"])
