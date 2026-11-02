@@ -100,7 +100,7 @@ else
     if [[ -z "$_summary_chat_url" && "${ENABLE_PIXEL_RUNTIME:-false}" == true ]]; then
         _summary_chat_url="http://localhost:${SERVICE_PORTS[dashboard]:-3001}/pixel"
     fi
-    # Port 3001 is loopback-only. Other devices reach the Dashboard on the
+    # The Dashboard port is loopback-only. Other devices reach it on the
     # sign-in listener, and only when LAN access is enabled.
     _summary_lan_address=""
     _summary_bind="$(sed -n 's/^BIND_ADDRESS=//p' "$INSTALL_DIR/.env" 2>/dev/null | head -n 1 | tr -d '"\r' || true)"
@@ -109,7 +109,7 @@ else
         [[ "$_summary_remote_port" =~ ^[0-9]+$ ]] || _summary_remote_port=3011
         _summary_lan_address="${LOCAL_IP}:${_summary_remote_port}"
     fi
-    show_success_card "$_summary_chat_url" "http://localhost:3001" "$_summary_lan_address"
+    show_success_card "$_summary_chat_url" "http://localhost:${SERVICE_PORTS[dashboard]:-3001}" "$_summary_lan_address"
     unset _summary_chat_url _summary_lan_address _summary_bind _summary_remote_port
 fi
 if [[ "${ODS_REMOTE_ROUTE_PAUSED:-false}" == "true" ]]; then
@@ -377,7 +377,7 @@ Version=1.0
 Type=Application
 Name=ODS
 Comment=Local AI Dashboard
-Exec=xdg-open http://localhost:3001
+Exec=xdg-open http://localhost:${SERVICE_PORTS[dashboard]:-3001}
 Icon=applications-internet
 Terminal=false
 Categories=Development;
