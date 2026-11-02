@@ -10,6 +10,7 @@ import {cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} fro
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
+import {reviewedNativeRevisionDependencies} from './fixtures/native-revision-dependencies.mjs';
 
 const installed = process.env.OPENCLAW_PACKAGE;
 const red = process.env.ODS_TOOL_RESULT_PROJECTION_RED === '1';
@@ -29,6 +30,7 @@ if (installed) {
   runtimeCopy = mkdtempSync(join(tmpdir(), 'ods-tool-result-runtime-'));
   pkg = join(runtimeCopy, 'package');
   cpSync(installed, pkg, {recursive: true});
+  for(const [filename,source] of reviewedNativeRevisionDependencies(pkg))writeFileSync(filename,source);
   writeFileSync(join(pkg, 'dist/selection-BEwSQKM-.js'), reviewed('selection-BEwSQKM-.js', 'openclaw-compaction-budget.json'));
   const truncation = join(pkg, 'dist/tool-result-truncation-CbxVHy2D.js');
   const manifest = JSON.parse(readFileSync(new URL('../host/openclaw-tool-result-projection.json', import.meta.url)));

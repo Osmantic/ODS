@@ -13,6 +13,7 @@ import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {pathToFileURL} from 'node:url';
 import {readCompleteJsonl} from './fixtures/complete-jsonl.mjs';
+import {reviewedNativeRevisionDependencies} from './fixtures/native-revision-dependencies.mjs';
 import {createIngressServer} from '../host/pixel_ingress.mjs';
 import {createChatHistoryLedger} from '../host/chat_history_ledger.mjs';
 import {setTimeout as delay} from 'node:timers/promises';
@@ -47,6 +48,7 @@ test(`real gateway deferred delegation waits for two children and a verified rev
   const consolidatedRequests=[],providerTrace=[];
   cpSync(installed,pkg,{recursive:true});
   assert.equal(JSON.parse(readFileSync(join(pkg,'package.json'))).version,'2026.6.33');
+  for(const [filename,source] of reviewedNativeRevisionDependencies(pkg))writeFileSync(filename,source);
   for(const [name,module] of [['subagent-admission','subagent-announce-origin-XoBlouka.js'],['subagent-session','agent-Dme3RrGI.js'],['hook-provenance','hook-agent-context-ugCMMoT5.js'],['run-id-redaction','redact-cvFSPoXf.js'],
     ['context-usage','attempt-execution-DnVHak5f.js'],['compaction-budget','selection-BEwSQKM-.js'],['yield-usage','embedded-agent-CJx-nG3W.js'],['compaction-empty','proxy-Bsfwfsp-.js'],...(overflow?[['compaction-resume','sessions-CZbwb3_c.js'],['compaction-no-work','compact-DuWIsaq_.js']]:[])]) {
     const recipe=JSON.parse(readFileSync(new URL(`../host/openclaw-${name}.json`,import.meta.url)));

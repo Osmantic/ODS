@@ -10,6 +10,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 import {createLoopbackGatewayFetch} from '../host/pixel_ingress.mjs';
+import {reviewedNativeRevisionDependencies} from './fixtures/native-revision-dependencies.mjs';
 const installed=process.env.OPENCLAW_PACKAGE;
 const guardModule=process.env.ODS_PROJECT_DELIVERY_GUARD_MODULE ?? new URL('../plugin/tool-loop-guard.mjs',import.meta.url).href;
 let pkg=installed, runtimeCopy;
@@ -23,7 +24,9 @@ if(installed && process.env.ODS_EXEC_RECEIPT_RED!=='1') {
   for(const [before,value] of manifest.replacements){assert.equal(source.split(before).length,2);source=source.replace(before,value);}
   assert.equal(hash(source),manifest.patchedSha256);
   runtimeCopy=mkdtempSync(join(tmpdir(),'ods-exec-reviewed-runtime-'));pkg=join(runtimeCopy,'package');
-  cpSync(installed,pkg,{recursive:true});writeFileSync(join(pkg,'dist/selection-BEwSQKM-.js'),source);
+  cpSync(installed,pkg,{recursive:true});
+  for(const [filename,body] of reviewedNativeRevisionDependencies(pkg))writeFileSync(filename,body);
+  writeFileSync(join(pkg,'dist/selection-BEwSQKM-.js'),source);
 }
 after(()=>{if(runtimeCopy)rmSync(runtimeCopy,{recursive:true,force:true});});
 const image=process.env.OPENCLAW_TEST_SANDBOX_IMAGE;

@@ -14,6 +14,7 @@ import {once} from 'node:events';
 import {createHash} from 'node:crypto';
 import {registerHooks} from 'node:module';
 import {pathToFileURL} from 'node:url';
+import {reviewedNativeRevisionDependencies} from './fixtures/native-revision-dependencies.mjs';
 
 const pkg = process.env.OPENCLAW_PACKAGE_DIR;
 assert.ok(pkg, 'provide the pinned reviewed OpenClaw package');
@@ -64,6 +65,7 @@ const recipes = Object.fromEntries([
 ].map(([name, module]) => [name, reviewed(name, module)]));
 const sources = new Map(Object.values(recipes).map(recipe =>
   [pathToFileURL(recipe.filename).href, baseline && recipe.previous ? recipe.previous : recipe.patched]));
+for(const [filename,source] of reviewedNativeRevisionDependencies(pkg))sources.set(pathToFileURL(filename).href,source);
 const loader = registerHooks({load(url, context, next) {
   return sources.has(url) ? {format: 'module', source: sources.get(url), shortCircuit: true} : next(url, context);
 }});

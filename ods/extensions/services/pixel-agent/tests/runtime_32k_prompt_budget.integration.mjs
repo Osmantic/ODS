@@ -12,6 +12,7 @@ import {createHash} from 'node:crypto';
 import {registerHooks} from 'node:module';
 import {pathToFileURL} from 'node:url';
 import {promptContractForAgent, ODS_CONVERSATION_CONTRACT} from '../plugin/prompt-contract.mjs';
+import {reviewedNativeRevisionDependencies} from './fixtures/native-revision-dependencies.mjs';
 
 const pkg=process.env.OPENCLAW_PACKAGE_DIR;
 assert.ok(pkg,'provide the pinned reviewed OpenClaw package');
@@ -20,6 +21,7 @@ process.env.OPENCLAW_STATE_DIR=path.join(root,'state');
 process.env.OPENCLAW_CONFIG_PATH=path.join(root,'openclaw.json');
 const sha=value=>createHash('sha256').update(value).digest('hex');
 const sources=new Map();
+for(const [filename,source] of reviewedNativeRevisionDependencies(pkg))sources.set(pathToFileURL(filename).href,source);
 for(const [name,module] of [
   ['compaction-empty','proxy-Bsfwfsp-.js'],
   ['compaction-no-work','compact-DuWIsaq_.js'],

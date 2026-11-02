@@ -29,6 +29,7 @@ import {createConnectionsStatusTool} from '../plugin/connections-status.mjs';
 import {ACTIVITY_CONTRACT} from '../plugin/activity-display.mjs';
 import {executionContext} from '../plugin/completion-assurance.mjs';
 import {executionLocationContext} from '../plugin/execution-location.mjs';
+import {reviewedNativeRevisionDependencies} from './fixtures/native-revision-dependencies.mjs';
 
 const pkg=process.env.OPENCLAW_PACKAGE_DIR;
 assert.ok(pkg,'provide the pinned reviewed OpenClaw package');
@@ -38,6 +39,7 @@ process.env.OPENCLAW_STATE_DIR=path.join(root,'state');
 process.env.OPENCLAW_CONFIG_PATH=path.join(root,'openclaw.json');
 const sha=value=>createHash('sha256').update(value).digest('hex');
 const sources=new Map();
+for(const [filename,source] of reviewedNativeRevisionDependencies(pkg))sources.set(pathToFileURL(filename).href,source);
 for(const [name,module] of [
   ['compaction-empty','proxy-Bsfwfsp-.js'],
   ['compaction-no-work','compact-DuWIsaq_.js'],
