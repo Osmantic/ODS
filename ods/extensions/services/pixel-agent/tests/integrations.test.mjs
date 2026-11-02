@@ -185,14 +185,24 @@ test('MCP catalogs never imply absence of the separate native notification conne
   }
 });
 
+test('an unavailable notes connection does not diagnose documents or dispatch another action', async () => {
+  const {sent, tools} = recording([{ok:false, error:'notes-off', message:'Notes are not set up.'}]);
+  const reply = await tool(tools,'pixel_ods_notes').execute('read',{action:'read',path:'Example.md'});
+  assert.equal(reply.isError, true);
+  assert.deepEqual(reply.details, {status:'refused',code:'notes-off'});
+  assert.match(reply.content[0].text, /only Obsidian notes, not the Paperless document connection/);
+  assert.deepEqual(sent, [{action:'notes-read',path:'Example.md'}]);
+});
+
 test('integration capability guidance is stable across requests and model context profiles', () => {
   for (const contextTokenBudget of [8192, 16384, 65536]) {
     for (const prompt of ['Send a test notification.', 'What can the connected house do?', 'Olá!']) {
       const rendered = promptContractForAgent({agentId:'pixel', contextTokenBudget}, 'pixel', {prompt}).appendSystemContext;
       assert.equal(rendered.split(PORTAL_INTEGRATIONS_CONTRACT).length, 2);
-      assert.match(rendered, /Obsidian: pixel_ods_notes; ntfy: pixel_ods_notify/);
-      assert.match(rendered, /apps\/custom MCP: pixel_ods_mcp \(list first; excludes Google\/Obsidian\/ntfy status\)/);
-      assert.match(rendered, /workspace file writes do not prove a vault update/);
+      assert.match(rendered, /Obsidian: pixel_ods_notes/);
+      assert.match(rendered, /Paperless docs\/PDFs, Immich photos, watches\/news\/MCP: pixel_ods_mcp \(list first; no Google\/notes\/ntfy status\)/);
+      assert.match(rendered, /ntfy: pixel_ods_notify/);
+      assert.match(rendered, /Workspace writes aren't vault updates/);
     }
   }
   const other = promptContractForAgent({agentId:'unrelated'}, 'pixel', {prompt:'Send a notification.'});
@@ -200,7 +210,7 @@ test('integration capability guidance is stable across requests and model contex
 });
 
 test('unsupported native systems refuse before connecting', async () => {
-  for (const platform of ['win32', 'darwin']) {
+  for (const platform of ['win32', 'freebsd']) {
     let connected = false;
     await assert.rejects(submitIntegration({action: 'mcp-tools'}, {platform,
       connect: () => { connected = true; throw new Error('Unsupported transport opened'); },
@@ -289,11 +299,16 @@ test('the Unix socket client sends one JSON line and reads one reply',
   }));
   await new Promise(resolve => server.listen(path, resolve));
   try {
-    const reply = await submitIntegration({action: 'notify', message: 'hi'}, {
-      platform: 'linux', connect: () => net.createConnection({path})});
-    assert.deepEqual(reply, {ok: true, sent: true});
-    assert.deepEqual(received, {schemaVersion: 1, action: 'notify', message: 'hi'});
-    await assert.rejects(submitIntegration({action: 'mcp-tools'}, {platform: 'darwin'}), /aren't available on macOS yet/);
+    for (const platform of ['linux', 'darwin']) {
+      const reply = await submitIntegration({action: 'notify', message: 'hi'}, {
+        platform, connect: options => {
+          assert.equal(options.path, platform === 'darwin'
+            ? '/private/var/lib/ods-pixel-integrations/control.sock' : '/run/ods-pixel-integrations/control.sock');
+          return net.createConnection({path});
+        }});
+      assert.deepEqual(reply, {ok: true, sent: true});
+      assert.deepEqual(received, {schemaVersion: 1, action: 'notify', message: 'hi'});
+    }
   } finally {
     server.close();
     rmSync(directory, {recursive: true, force: true});

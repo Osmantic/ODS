@@ -17,8 +17,10 @@ import re
 import shlex
 import shutil
 import signal
+import socket
 import selectors
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -39,7 +41,15 @@ ERROR_LINES = 20
 # The service runs with a minimal PATH; these are where owners usually install npx, uvx and friends.
 SEARCH_PATH = ("~/.local/bin", "~/bin", "~/.npm-global/bin", "~/.cargo/bin", "/usr/local/bin", "/usr/bin", "/bin",
                "/snap/bin", "/home/linuxbrew/.linuxbrew/bin")
+DARWIN_SEARCH_PATH = ("/opt/homebrew/bin", "/opt/homebrew/opt/node@24/bin", "/usr/local/opt/node@24/bin")
 PASSED_ENV = ("HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TZ")
+AMBIGUOUS_HTTP_CODES = frozenset({"integration-timeout", "integration-unavailable", "integration-protocol",
+                                "integration-response-too-large", "redirect-refused"})
+
+
+def unknown_call():
+    return IntegrationError("mcp-outcome-unknown", "The MCP call's result could not be verified. "
+                            "Check the destination before trying again; do not repeat the action automatically.")
 
 
 def _result(name, reply, secrets=()):
@@ -81,23 +91,40 @@ class HttpSession:
         """The HTTP reply body and content type; a notification gets an empty 202."""
         request = urllib.request.Request(self.server["url"], data=json.dumps(message).encode(),
                                          headers=self._headers(), method="POST")
+        remaining = NETWORK_TIMEOUT if self.deadline is None else min(NETWORK_TIMEOUT, self.deadline - time.monotonic())
+        if remaining <= 0:
+            raise IntegrationError("mcp-timeout", f"{self.name} did not finish within the session deadline.")
+        call = message.get('method') == 'tools/call'
         try:
-            remaining = NETWORK_TIMEOUT if self.deadline is None else min(NETWORK_TIMEOUT, self.deadline - time.monotonic())
             with safe_urlopen(request, timeout=remaining) as response:
                 self.session_id = response.headers.get("Mcp-Session-Id") or self.session_id
                 return response.read(MAX_RESPONSE_BYTES + 1), response.headers.get("Content-Type", "")
         except urllib.error.HTTPError as error:
             if error.code in (401, 403):
                 raise IntegrationError("mcp-auth", f"{self.name} refused the access token.") from None
+            if call:
+                raise unknown_call() from None
             raise IntegrationError("mcp-unavailable", f"{self.name} answered {error.code}.") from None
-        except (urllib.error.URLError, OSError):
+        except urllib.error.URLError as error:
+            if call and not isinstance(error.reason, (ConnectionRefusedError, socket.gaierror)):
+                raise unknown_call() from None
             raise IntegrationError("mcp-unavailable", f"{self.name} could not be reached at {self.server['url']}.") from None
+        except OSError:
+            if call:
+                raise unknown_call() from None
+            raise IntegrationError("mcp-unavailable", f"{self.name} could not be reached at {self.server['url']}.") from None
+        except IntegrationError as error:
+            if call and error.code in AMBIGUOUS_HTTP_CODES:
+                raise unknown_call() from None
+            raise
 
     def request(self, method, params):
         self.counter += 1
         message = {"jsonrpc": "2.0", "id": self.counter, "method": method, "params": params}
         body, kind = self._post(message)
         if len(body) > MAX_RESPONSE_BYTES:
+            if method == 'tools/call':
+                raise unknown_call()
             raise IntegrationError("mcp-protocol", f"{self.name} sent too much data.")
         text = body.decode("utf-8", "replace")
         candidates = ([line[5:].strip() for line in text.splitlines() if line.startswith("data:")]
@@ -110,6 +137,8 @@ class HttpSession:
             for item in reply if isinstance(reply, list) else [reply]:
                 if isinstance(item, dict) and item.get("id") == message["id"]:
                     return _result(self.name, item, self.secret_values)
+        if method == 'tools/call':
+            raise unknown_call()
         raise IntegrationError("mcp-protocol", f"{self.name} did not answer as an MCP server.")
 
 
@@ -117,6 +146,8 @@ def command_env(server, values):
     """The environment a local server starts with: a usable PATH, the owner's basics and its own variables."""
     argv = shlex.split(server["command"])
     folders = [str(pathlib.Path(argv[0]).parent)] if os.path.isabs(argv[0]) else []
+    if sys.platform == "darwin":
+        folders += list(DARWIN_SEARCH_PATH)
     folders += [os.path.expanduser(folder) for folder in SEARCH_PATH]
     folders += sorted(glob.glob(os.path.expanduser("~/.nvm/versions/node/*/bin")), reverse=True)[:1]
     env = {key: os.environ[key] for key in PASSED_ENV if key in os.environ}
@@ -241,7 +272,7 @@ class LocalServer:
         return IntegrationError("mcp-timeout", f"{self.name} did not answer in time, so it was stopped. "
                                 "It starts again on the next use.")
 
-    def _write(self, message, *, deadline=None):
+    def _write(self, message, *, deadline=None, on_write=None):
         deadline = time.monotonic() + CALL_TIMEOUT if deadline is None else deadline
         remaining = deadline - time.monotonic()
         if remaining <= 0 or not self.write_lock.acquire(timeout=remaining):
@@ -259,6 +290,8 @@ class LocalServer:
                         written = os.write(descriptor, data)
                         if written <= 0:
                             raise OSError("pipe closed")
+                        if on_write is not None:
+                            on_write()
                         data = data[written:]
                     except BlockingIOError:
                         if not poller.select(remaining):
@@ -275,6 +308,10 @@ class LocalServer:
         deadline = time.monotonic() + timeout
         if not self.lock.acquire(timeout=max(0, deadline - time.monotonic())):
             raise IntegrationError("mcp-busy", f"{self.name} is still busy with another request. Try again shortly.")
+        submitted = False
+        def mark_submitted():
+            nonlocal submitted
+            submitted = True
         try:
             self.last_used = time.monotonic()
             if not self.alive():
@@ -282,16 +319,21 @@ class LocalServer:
             self.counter += 1
             waiting = self.replies[self.counter] = [threading.Event(), None]
             try:
-                self._write({"jsonrpc": "2.0", "id": self.counter, "method": method, "params": params}, deadline=deadline)
+                self._write({"jsonrpc": "2.0", "id": self.counter, "method": method, "params": params},
+                            deadline=deadline, on_write=mark_submitted)
                 remaining = deadline - time.monotonic()
                 if remaining <= 0 or not waiting[0].wait(remaining):
                     raise self._timeout()
-            except IntegrationError:
+            except IntegrationError as error:
                 self.stop(f"request did not complete within {timeout} seconds")
+                if method == 'tools/call' and submitted and error.code in {'mcp-timeout', 'mcp-unavailable', 'mcp-protocol'}:
+                    raise unknown_call() from None
                 raise
             finally:
                 del self.replies[self.counter]
             if waiting[1] is None:
+                if method == 'tools/call' and submitted:
+                    raise unknown_call()
                 raise IntegrationError("mcp-unavailable", f"{self.name} stopped: {self.stopped_because}.")
             return _result(self.name, waiting[1], self.secret_values)
         finally:
@@ -345,8 +387,11 @@ class LocalServers:
         self.failures = {}
         self.starting = collections.defaultdict(threading.Lock)
         self.reaper = None
+        self.closed = threading.Event()
 
     def get(self, server, values, *, deadline=None):
+        if self.closed.is_set():
+            raise IntegrationError("mcp-stopping", "The integrations service is stopping.")
         deadline = time.monotonic() + SESSION_TIMEOUT if deadline is None else deadline
         candidate = LocalServer(server, values)
         with self.lock:
@@ -368,6 +413,9 @@ class LocalServers:
                 candidate.stop("it failed to start")
                 raise
             with self.lock:
+                if self.closed.is_set():
+                    candidate.stop("the service is stopping")
+                    raise IntegrationError("mcp-stopping", "The integrations service is stopping.")
                 self.running[server["id"]] = candidate
                 self.failures.pop(server["id"], None)
                 if self.reaper is None:
@@ -410,9 +458,22 @@ class LocalServers:
             self.stop(server_id, "it was not used for a while")
 
     def _reap(self):
-        while True:
-            time.sleep(min(30, self.idle_seconds))
+        while not self.closed.wait(min(30, self.idle_seconds)):
             self.stop_idle()
+
+    def close(self):
+        """Refuse new starts and reap every owned process group on shutdown."""
+        self.closed.set()
+        with self.lock:
+            children, self.running = list(self.running.values()), {}
+        errors = []
+        for child in children:
+            try:
+                child.stop("the service is stopping")
+            except OSError as error:
+                errors.append(error)
+        if errors:
+            raise errors[0]
 
 
 class McpSession:
@@ -479,7 +540,9 @@ class McpSession:
         return display(tool)
 
     def call(self, name, arguments):
-        result = self.request("tools/call", {"name": name, "arguments": arguments}) or {}
+        result = self.request("tools/call", {"name": name, "arguments": arguments})
+        if not isinstance(result, dict) or not isinstance(result.get('content'), list):
+            raise unknown_call()
         parts = [str(item.get("text", "")) if item.get("type") == "text" else f"[{item.get('type', 'content')} not shown]"
                  for item in result.get("content", []) if isinstance(item, dict)]
         text = redact_secrets("\n".join(parts) or "(no output)", (self.token, self.env_values))

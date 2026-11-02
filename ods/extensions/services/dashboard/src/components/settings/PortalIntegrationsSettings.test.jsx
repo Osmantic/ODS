@@ -500,6 +500,18 @@ it('lists the watched pages with their price limits once watching is saved', asy
   await waitFor(() => expect(posts.filter(([action]) => action === 'watch-list')).toHaveLength(2))
 })
 
+it.each([
+  [{ error: 'The provider could not extract a price.' }, 'Last check failed: The provider could not extract a price.'],
+  [{ paused: true }, 'Paused in changedetection.io.'],
+  [{ lastChecked: 0 }, 'Waiting for the first page check.'],
+])('shows unavailable watch health instead of implying a successful page check', async (health, message) => {
+  const { posts } = fakeService(withApps({ watch: { ...APPS.watch, enabled: true } }, { watch: true }),
+    { watches: { total: 1, watches: [{ ...WATCHES.watches[0], ...health }] } })
+  const card = await screen.findByRole('listitem', { name: 'Watched pages' })
+  expect(await within(card).findByText(message)).toBeInTheDocument()
+  expect(posts.map(([action]) => action)).toEqual(['watch-list'])
+})
+
 it('keeps unsaved edits while the watched pages load', async () => {
   fakeService(withApps({ watch: { ...APPS.watch, enabled: true } }, { watch: true }))
   const card = await screen.findByRole('listitem', { name: 'Watched pages' })

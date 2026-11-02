@@ -11,6 +11,7 @@ import html
 import json
 import math
 import re
+import socket
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -100,7 +101,12 @@ def app_settings(config, app):
 
 # ---------------------------------------------------------------- HTTP
 
-def request(app, url, *, method="GET", headers=None, body=None, form=None, parse=True):
+def unknown_watch():
+    return IntegrationError("app-outcome-unknown", "The watched-page action's result could not be verified. "
+                            "Check the destination before trying again; do not repeat it automatically.")
+
+
+def request(app, url, *, method="GET", headers=None, body=None, form=None, parse=True, outcome_sensitive=False):
     """One request to an owner's app; its JSON answer (or text when parse is False)."""
     data = json.dumps(body).encode() if body is not None else urllib.parse.urlencode(form).encode() if form else None
     sent = {"Accept": "application/json", **(headers or {})}
@@ -113,12 +119,27 @@ def request(app, url, *, method="GET", headers=None, body=None, form=None, parse
     except urllib.error.HTTPError as error:
         if error.code in (401, 403):
             raise IntegrationError("app-refused", f"{NAMES[app]} refused the token or password. Check it in Settings → Portal integrations.") from None
+        if outcome_sensitive:
+            raise unknown_watch() from None
         if error.code == 404:
             raise IntegrationError("app-not-found", f"{NAMES[app]} has no such item, or this is not its address.") from None
         raise IntegrationError("app-failed", f"{NAMES[app]} answered {error.code}.") from None
-    except (urllib.error.URLError, OSError):
+    except urllib.error.URLError as error:
+        if outcome_sensitive and not isinstance(error.reason, (ConnectionRefusedError, socket.gaierror)):
+            raise unknown_watch() from None
         raise IntegrationError("app-unreachable", f"{NAMES[app]} at {url.split('/api')[0]} could not be reached.") from None
+    except OSError:
+        if outcome_sensitive:
+            raise unknown_watch() from None
+        raise IntegrationError("app-unreachable", f"{NAMES[app]} at {url.split('/api')[0]} could not be reached.") from None
+    except IntegrationError as error:
+        if outcome_sensitive and error.code in {"integration-timeout", "integration-unavailable", "integration-protocol",
+                                               "integration-response-too-large", "redirect-refused"}:
+            raise unknown_watch() from None
+        raise
     if len(raw) > MAX_APP_BYTES:
+        if outcome_sensitive:
+            raise unknown_watch()
         raise IntegrationError("app-too-large", f"{NAMES[app]} sent too much at once.")
     if not parse:
         return raw.decode("utf-8", "replace")
@@ -127,6 +148,8 @@ def request(app, url, *, method="GET", headers=None, body=None, form=None, parse
     try:
         return json.loads(raw)
     except (ValueError, RecursionError):
+        if outcome_sensitive:
+            raise unknown_watch() from None
         raise IntegrationError("app-protocol", f"{NAMES[app]} did not answer as expected. Check its address.") from None
 
 
@@ -319,7 +342,8 @@ def photos_test(settings, key):
 # ---------------------------------------------------------------- watched pages (changedetection.io)
 
 def _changes(settings, key, path, *, method="GET", body=None):
-    return request("watch", f"{settings['url']}/api/v1{path}", method=method, headers={"x-api-key": key}, body=body)
+    return request("watch", f"{settings['url']}/api/v1{path}", method=method, headers={"x-api-key": key}, body=body,
+                   outcome_sensitive=method in ('POST', 'DELETE'))
 
 
 def watches(settings, key):
@@ -386,8 +410,11 @@ def add_watch(settings, key, url, title, below):
     if below is not None:
         body["processor"] = "restock_diff"
     reply = _changes(settings, key, "/watch", method="POST", body=body)
-    _shape("watch", isinstance(reply, dict) and isinstance(reply.get("uuid"), str))
-    return _watch_id(reply["uuid"])
+    try:
+        _shape("watch", isinstance(reply, dict) and isinstance(reply.get("uuid"), str))
+        return _watch_id(reply["uuid"])
+    except IntegrationError:
+        raise unknown_watch() from None
 
 
 def _watch_id(value):

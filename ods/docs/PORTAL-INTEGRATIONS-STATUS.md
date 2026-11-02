@@ -6,9 +6,12 @@ combined branch includes the existing connected-apps stack (#8196 through
 integration work. The original PRs remain separate; this document does not
 mark them merged or replace their review.
 
-The November 1 composition now includes Coffee's #8324 and its Mike follow-ups,
-with notes, ntfy, HTTP/Home Assistant and local MCP, per-tool policy, approvals
-and Settings connected to the native Portal harness. See the
+The November 2 composition includes Coffee's #8324 and #8352 with Mike's
+follow-ups: notes, ntfy, HTTP/Home Assistant, local MCP, documents, photos,
+page/price watches, news and native scheduled-task notices. Actual installed
+Windows acceptance and newer source changes remain separately identified.
+The native Mac service is implemented; physical Mac acceptance and the
+reliable approval-continuation repair remain open. See the
 [composition and acceptance record](PORTAL-COFFEE-INTEGRATION.md) for the actual
 Windows/WSL model/browser evidence, later source-only checks and remaining limits.
 

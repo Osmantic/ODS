@@ -53,6 +53,12 @@ def _watch_line(watch):
     if watch["below"] is not None:
         seen = f"; last seen at {watch['lastPrice']:g}" if watch["lastPrice"] is not None else ""
         line += f" (notifies when the price is at or under {watch['below']:g}{seen})"
+    if watch.get("error"):
+        line += f"\n  Last check failed: {watch['error']}"
+    elif watch.get("paused"):
+        line += "\n  Paused in changedetection.io."
+    elif watch.get("lastChecked") == 0:
+        line += "\n  Waiting for the first page check."
     return f"{line}\n  {watch['url']}"
 
 
@@ -80,8 +86,10 @@ def app_text(action, reply):
     if action == "watch-list":
         if not reply["watches"]:
             return "No pages are watched."
-        more = (f"\n\nShowing {len(reply['watches'])} of {reply['total']} watched pages." if reply["total"] > len(reply["watches"]) else "")
-        return "\n".join(_watch_line(watch) for watch in reply["watches"]) + more
+        # Keep coverage before untrusted provider text: the final redaction and
+        # output bound may cut long errors/URLs, but must retain this limit.
+        coverage = f"Showing up to {len(reply['watches'])} of {reply['total']} watched pages; long results may be truncated.\n"
+        return coverage + "\n".join(_watch_line(watch) for watch in reply["watches"])
     if action == "watch-add":
         return f"Done: {reply['done']}. The owner gets a notification when it changes."
     if action == "watch-remove":
@@ -209,9 +217,18 @@ class AppActions:
         listing = apps.watches(settings, key)
         with self.store.lock:
             state = self.store.watch_state(context)
-        watches = [{"id": uuid, "title": str(watch.get("title") or "")[:200], "url": str(watch.get("url", ""))[:500],
+        def public_text(value, limit):
+            # Providers can echo their admitted credential, including across a
+            # display cutoff. Redact the complete value before clipping it.
+            return redact_secrets(str(value or ""), {"admittedAppKey": key}).strip()[:limit]
+
+        watches = [{"id": uuid, "title": public_text(watch.get("title"), 200), "url": public_text(watch.get("url"), 500),
                     "lastChanged": watch.get("last_changed") or 0, "below": state.get(uuid, {}).get("below"),
-                    "lastPrice": state.get(uuid, {}).get("lastPrice")}
+                    "lastPrice": state.get(uuid, {}).get("lastPrice"),
+                    "lastChecked": watch.get("last_checked") if type(watch.get("last_checked")) is int
+                    and watch["last_checked"] >= 0 else 0,
+                    "paused": watch.get("paused") is True,
+                    "error": public_text(watch.get("last_error"), 400)}
                    for uuid, watch in list(listing.items())[:apps.MAX_WATCHES]]
         return {"watches": watches, "total": len(listing)}
 
@@ -594,14 +611,16 @@ class AppActions:
                         raise self._page_watched(name)
                     if below is None or limit == below:
                         return {"done": f"{name} is already watched", "id": uuid}
-                summary = f"Watch {title or url}" + (f" for a price at or under {below:g}" if below is not None else "")
+                name = f"{title} ({url})" if title else url
+                summary = f"Watch {name}" + (f" for a price at or under {below:g}" if below is not None else "")
                 details = (action, url, title, below, uuid, target)
             else:
                 uuid = str(request.get("id", ""))
                 target = listing.get(uuid)
                 if target is None:
                     raise IntegrationError("watch-missing", "No watch has that id. List the watches first.")
-                summary = f"Stop watching {target.get('title') or target.get('url')}"
+                title, url = target.get("title"), target.get("url")
+                summary = f"Stop watching {title} ({url})" if title else f"Stop watching {url}"
                 details = (action, uuid, target)
             summary = redact_secrets(summary, {"admittedAppKey": key})
             waiting, notification = None, None

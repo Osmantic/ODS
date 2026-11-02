@@ -96,7 +96,7 @@ def service_snapshot(root, relative, *, private=False):
 
 
 def stage_services(*, source, ref, ods_source, candidate, destination, inspection_config):
-    """Prepare all three service snapshots together, without privileges/jobs.
+    """Prepare the complete service snapshots together, without privileges/jobs.
 
     The bundle manifest is an integrity record, not root authorization. The
     privileged installer must bind its approval to the returned manifest digest.

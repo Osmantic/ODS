@@ -25,6 +25,9 @@ NATIVE_RESIDUE_PATHS = tuple(Path(value) for value in (
     '/private/var/lib/ods-pixel-artifact-promoter',
     '/private/var/lib/pixel-ops-broker',
     '/private/var/run/ods-pixel-access',
+    '/private/var/lib/ods-pixel-integrations',
+    '/private/var/lib/ods-pixel-integrations-auth',
+    '/private/var/log/ods-pixel-integrations',
     '/usr/local/libexec/ods-pixel-access',
     '/usr/local/libexec/ods-pixel-services',
     '/usr/local/libexec/ods-pixel-runtimes',
@@ -34,7 +37,7 @@ NATIVE_RESIDUE_PATHS = tuple(Path(value) for value in (
         'pixel-access-relay.sb')),
     *(f'/Library/LaunchDaemons/com.ods.pixel-{name}.plist' for name in (
         'native-gateway', 'access', 'access-relay', 'native-manager',
-        'native-promoter', 'native-operations')),
+        'native-promoter', 'native-operations', 'native-integrations')),
 ))
 RETAINED_OPS_HOME = Path('/private/var/lib/pixel-ops-broker')
 ERROR_GUIDANCE = {

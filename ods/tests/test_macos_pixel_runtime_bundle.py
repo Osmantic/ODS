@@ -52,6 +52,64 @@ def test_service_only_change_has_distinct_deterministic_deployment_identity(arti
         bundle.verify_service_binding(third_args['destination'], 'a' * 64)
 
 
+def test_real_integration_outcome_module_is_packaged_published_and_content_bound(artifacts, monkeypatch):
+    """Real source closure/copy/locking, with root metadata explicitly simulated."""
+    plugin = ROOT / 'extensions/services/pixel-agent/plugin'
+    module = plugin / 'integration-outcomes.mjs'
+    assert module.is_file()
+    assert '"./integration-outcomes.mjs"' in (plugin / 'index.js').read_text()
+    assert "'./integrations.mjs'" in module.read_text()
+    assert len(json.loads((plugin / 'openclaw.plugin.json').read_text())['contracts']['tools']) == 32
+    options = dict(artifacts, plugins=[plugin])
+    digest = bundle.build(**options)
+    staged = options['destination'] / 'plugins/0/integration-outcomes.mjs'
+    assert staged.read_bytes() == module.read_bytes()
+    monkeypatch.setattr(bundle.os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(custody, '_verify_fd', lambda fd, **_: os.fstat(fd))
+    target = bundle.publish(options['destination'], expected_digest=digest,
+                            install_root=options['destination'].parent / 'protected')
+    published = target / 'plugins/0/integration-outcomes.mjs'
+    assert published.read_bytes() == module.read_bytes()
+    # Loading this exact new module resolves its local dependency from the
+    # published bundle, without loading a gateway or calling any provider.
+    result = subprocess.run(['node', '--input-type=module', '-e',
+        'const m=await import(process.argv[1]); if(typeof m.createIntegrationOutcomes!=="function")process.exit(2);',
+        published.as_uri()], capture_output=True, timeout=15)
+    assert result.returncode == 0, result.stderr.decode(errors='replace')
+    published.unlink()
+    with pytest.raises(bundle.BundleError): bundle.verify(target, expected_digest=digest)
+    with pytest.raises(bundle.BundleError):
+        bundle.publish(options['destination'], expected_digest=digest, install_root=target.parent)
+    assert not published.exists()  # Existing drift is never repaired in place.
+
+
+@pytest.mark.skipif(sys.platform != 'linux', reason='GNU Linux/WSL installer custody fixture')
+def test_linux_wsl_installer_copies_and_secures_the_new_module_without_root(tmp_path):
+    import pwd
+    installation = tmp_path / 'ods'
+    plugin = installation / 'extensions/services/pixel-agent/plugin'
+    source = ROOT / 'extensions/services/pixel-agent/plugin'
+    shutil.copytree(source, plugin)
+    module = plugin / 'integration-outcomes.mjs'
+    module.chmod(0o777)  # The supported Windows-to-WSL source-copy case.
+    script = r'''
+set -e
+source "$1"
+INSTALL_DIR="$2"
+ods_pixel_run_as_owner() { shift 2; "$@"; }
+_ods_pixel_secure_plugin_tree "$3" "$4" "$2/extensions/services/pixel-agent/plugin"
+'''
+    owner = pwd.getpwuid(os.getuid())
+    result = subprocess.run(['bash', '-c', script, 'fixture', str(ROOT / 'installers/lib/pixel-host-install.sh'),
+        str(installation), owner.pw_name, owner.pw_dir], capture_output=True, timeout=20)
+    assert result.returncode == 0, result.stderr.decode(errors='replace')
+    assert module.read_bytes() == (source / module.name).read_bytes()
+    assert stat.S_IMODE(module.stat().st_mode) == 0o644
+    assert stat.S_IMODE(module.parent.stat().st_mode) == 0o755
+    installer = (ROOT / 'installers/lib/pixel-host-install.sh').read_text()
+    assert '&& -f "$plugin_root/plugin/integration-outcomes.mjs"' in installer
+
+
 def test_exec_wrapper_is_content_bound_and_versions_are_preserved(artifacts):
     wrapper = artifacts['node'].with_name('wrapper.sh')
     wrapper.write_bytes(b'#!/bin/sh\nprintf old')

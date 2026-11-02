@@ -15,7 +15,8 @@ import stat
 
 JOURNAL_LIMIT = 32 * 1024 * 1024
 CORE_ROLES = ('gateway', 'access', 'relay')
-NATIVE_ROLES = ('operations', 'promoter', 'manager') + CORE_ROLES
+LEGACY_NATIVE_ROLES = ('operations', 'promoter', 'manager') + CORE_ROLES
+NATIVE_ROLES = ('integrations',) + LEGACY_NATIVE_ROLES
 PHASES = {'prepared', 'replacing-files', 'active', 'rolling-back', 'restored', 'recovery-required',
           *(action + '-' + role for action in ('stopping', 'starting')
             for role in NATIVE_ROLES)}
@@ -174,6 +175,12 @@ def retire_restored_attempt(*, current_digest, candidate_digest, snapshots,
 INSPECTION_ADDITIONS = frozenset('/usr/local/libexec/ods-pixel-services/helpers/' + name for name in (
     'preview_inspection.py', 'preview_inspection_protocol.py', 'workspace_preview.py',
     'unix_peer.py', 'preview-inspection.json'))
+INTEGRATION_ADDITIONS = frozenset({
+    *('/usr/local/libexec/ods-pixel-services/integrations/' + name for name in (
+        'integrations_common.py', 'integrations_mcp.py', 'integrations_notes.py',
+        'integrations_service.py', 'unix_peer.py', 'integrations_app_service.py',
+        'integrations_apps.py', 'integrations_ntfy.py')),
+    '/Library/LaunchDaemons/com.ods.pixel-native-integrations.plist'})
 
 
 def encode_recovery(records, *, current_digest, candidate_digest, allowed_paths):
@@ -197,7 +204,7 @@ def encode_recovery(records, *, current_digest, candidate_digest, allowed_paths)
         record = {key: item[key] for key in ('path', 'mode', 'gid')}
         for key in ('before', 'after'):
             body = item[key]
-            if key == 'before' and body is None and path in INSPECTION_ADDITIONS:
+            if key == 'before' and body is None and path in INSPECTION_ADDITIONS | INTEGRATION_ADDITIONS:
                 if item['mode'] != 0o644 or item['gid'] != 0:
                     raise UpgradeError('runtime-upgrade-record-invalid')
                 record[key] = record[key + 'Sha256'] = None
@@ -207,8 +214,10 @@ def encode_recovery(records, *, current_digest, candidate_digest, allowed_paths)
             record[key] = base64.b64encode(body).decode('ascii')
             record[key + 'Sha256'] = hashlib.sha256(body).hexdigest()
         encoded.append(record)
-    version = 2 if any(item['before'] is None for item in records) else 1
-    if version == 2 and {item['path'] for item in records if item['before'] is None} != INSPECTION_ADDITIONS:
+    absent = {item['path'] for item in records if item['before'] is None}
+    version = 3 if absent & INTEGRATION_ADDITIONS else 2 if absent else 1
+    if absent and absent not in (INSPECTION_ADDITIONS, INTEGRATION_ADDITIONS,
+                                INSPECTION_ADDITIONS | INTEGRATION_ADDITIONS):
         raise UpgradeError('runtime-upgrade-inspection-additions-incomplete')
     value = dict(schemaVersion=version, currentDigest=current_digest, candidateDigest=candidate_digest,
                  phase='prepared', files=encoded)
@@ -221,7 +230,7 @@ def decode_recovery(value, *, current_digest, candidate_digest, allowed_paths):
     try:
         if (type(value) is not dict or set(value) != {
                 'schemaVersion', 'currentDigest', 'candidateDigest', 'phase', 'files'}
-                or type(value['schemaVersion']) is not int or value['schemaVersion'] not in (1, 2)
+                or type(value['schemaVersion']) is not int or value['schemaVersion'] not in (1, 2, 3)
                 or value['currentDigest'] != current_digest or value['candidateDigest'] != candidate_digest
                 or value['phase'] not in PHASES or type(value['files']) is not list):
             raise ValueError()
@@ -231,7 +240,7 @@ def decode_recovery(value, *, current_digest, candidate_digest, allowed_paths):
                 raise ValueError()
             record = {key: item[key] for key in ('path', 'mode', 'gid')}
             for key in ('before', 'after'):
-                if key == 'before' and value['schemaVersion'] == 2 and item[key] is None:
+                if key == 'before' and value['schemaVersion'] in (2, 3) and item[key] is None:
                     if item[key + 'Sha256'] is not None:
                         raise ValueError()
                     record[key] = None
@@ -383,7 +392,7 @@ def service_roles(previous, candidate):
     Native helpers start before the gateway and stop after ingress closes.
     A partial native set cannot be treated as a successful joint update.
     """
-    for roles in (CORE_ROLES, NATIVE_ROLES):
+    for roles in (CORE_ROLES, LEGACY_NATIVE_ROLES, NATIVE_ROLES):
         if set(previous) == set(candidate) == set(roles):
             return roles
     raise UpgradeError('runtime-upgrade-services-incomplete')

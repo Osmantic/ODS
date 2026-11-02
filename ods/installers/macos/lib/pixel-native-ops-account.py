@@ -28,7 +28,8 @@ ROOT = Path('/private/var/lib/ods-pixel-access')
 PREFIX = 'dsAttrTypeStandard:'
 SYSTEM_JOBS = ('com.ods.pixel-native-gateway', 'com.ods.pixel-access',
     'com.ods.pixel-access-relay', 'com.ods.pixel-native-manager',
-    'com.ods.pixel-native-promoter', 'com.ods.pixel-native-operations')
+    'com.ods.pixel-native-promoter', 'com.ods.pixel-native-operations',
+    'com.ods.pixel-native-integrations')
 # Fixed reason codes the identity proofs raise. A rejection names only these,
 # never other exception text, so diagnostics cannot carry receipt contents.
 REPORTED_REJECTIONS = frozenset((

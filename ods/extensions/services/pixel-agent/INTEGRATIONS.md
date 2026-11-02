@@ -19,7 +19,7 @@ Portal can use the owner's own services. Each is off until the owner sets it up 
 
 Portal gets three tools: `pixel_ods_notes`, `pixel_ods_notify` and `pixel_ods_mcp`. The
 apps add no tools of their own: each app the owner turns on is listed in `pixel_ods_mcp`
-as a built-in server (`documents`, `photos`, `watch`, `news`) next to the owner's MCP
+as a built-in server (`app:documents`, `app:photos`, `app:watch`, `app:news`) next to the owner's MCP
 servers. The pinned gateway accepts at most 32 tools from the Portal plugin, so new
 integrations should not add tools either.
 
@@ -57,6 +57,19 @@ owner requests from agent requests. A uid check could not do that.
   This is not a different-user security boundary.
 
 Both sockets refuse any process that is not the owner's user.
+
+The native macOS deployment uses `com.ods.pixel-native-integrations` and the
+persistent agent socket `/private/var/lib/ods-pixel-integrations/control.sock`.
+The owner socket remains in the real account's private state folder, outside
+the gateway's separate HOME. Every native owner request must prove knowledge
+of a root-provisioned owner-only credential against a fresh per-connection
+challenge. The exact request and protocol domain are authenticated, with no
+bare-socket fallback or automatic retry. The credential, state and logs are
+explicitly excluded by the new native gateway profiles in both modes.
+
+These native mechanisms still require real Apple Silicon launchd, ACL and
+Seatbelt qualification; offline tests do not certify alias or broader owner
+process isolation. See the [native qualification gate](../../../docs/pixel/native-integrations-macos-qualification.md).
 
 **Full Access:** the gateway can use the owner's files and commands. It can
 therefore reach the owner's integration state and secrets outside the agent
@@ -261,9 +274,10 @@ can read any folder the owner can.
 - Linux, including Windows through WSL2, which runs the same installer code.
   Feature-specific installed qualification is recorded in the
   [composition acceptance record](../../../docs/PORTAL-COFFEE-INTEGRATION.md).
-- Not on macOS yet: Settings and the tools say "Portal integrations aren't
-  available on macOS yet". Porting needs a launchd job for the service and a
-  matching rule that keeps its state folder out of the native gateway's sandbox.
+- Native macOS deployment, exact legacy/new upgrade and recovery contracts,
+  owner-channel authentication and retirement are implemented. Physical Apple
+  Silicon qualification remains required; an older deployment without the
+  service reports unavailable until updated through the native installer.
 - Sign-in with OAuth is not supported; servers take a token.
 - The activity list keeps the latest 500 entries and can be cleared.
 - Notifications are plain text, up to 4,000 characters; the digest stays under

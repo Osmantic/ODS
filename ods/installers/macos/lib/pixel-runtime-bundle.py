@@ -30,6 +30,10 @@ UNKNOWN_SOURCE_REASONS = {'source-unavailable', 'source-dirty', 'source-ref-mism
     'source-inputs-unmapped', 'source-bytes-mismatch', 'legacy-bundle',
     'service-source-unavailable', 'source-phase-mismatch'}
 SOURCE_SCOPE = 'recorded-bindings-only'
+INTEGRATION_PROGRAMS = ('integrations_common.py', 'integrations_mcp.py', 'integrations_notes.py',
+    'integrations_service.py', 'unix_peer.py', 'integrations_app_service.py',
+    'integrations_apps.py', 'integrations_ntfy.py')
+INTEGRATION_SERVICE_ARTIFACTS = frozenset('integrations/' + name for name in INTEGRATION_PROGRAMS)
 ODS_SERVICE_SOURCES = {
     'manager/extension_manager.py': 'extensions/services/pixel-agent/host/extension_manager.py',
     'manager/unix_peer.py': 'extensions/services/pixel-agent/host/unix_peer.py',
@@ -42,6 +46,8 @@ ODS_SERVICE_SOURCES = {
     'helpers/preview_inspection_protocol.py': 'extensions/services/pixel-agent/host/preview_inspection_protocol.py',
     'helpers/workspace_preview.py': 'extensions/services/pixel-agent/host/workspace_preview.py',
     'helpers/unix_peer.py': 'extensions/services/pixel-agent/host/unix_peer.py',
+    **{'integrations/' + name: 'extensions/services/pixel-agent/host/' + name
+       for name in INTEGRATION_PROGRAMS},
 }
 GENERATED_SERVICE_ARTIFACTS = {'operations/policy.json', 'helpers/extension-catalog.json', 'helpers/preview-inspection.json'}
 INSPECTION_SERVICE_ARTIFACTS = {'helpers/preview_inspection.py', 'helpers/preview_inspection_protocol.py',
@@ -151,9 +157,11 @@ def validate_service_manifest_provenance(manifest):
     # Existing approved bundles remain readable for migration, rollback and
     # uninstall. New staging always emits the complete inspection capability;
     # partial inspection bundles are never an accepted legacy contract.
-    if isinstance(manifest, dict) and isinstance(manifest.get('files'), dict) \
-            and set(manifest['files']) == names - INSPECTION_SERVICE_ARTIFACTS:
-        names -= INSPECTION_SERVICE_ARTIFACTS
+    if isinstance(manifest, dict) and isinstance(manifest.get('files'), dict):
+        selected = set(manifest['files'])
+        legacy = names - INTEGRATION_SERVICE_ARTIFACTS
+        if selected in (legacy, legacy - INSPECTION_SERVICE_ARTIFACTS):
+            names = selected
     generated = GENERATED_SERVICE_ARTIFACTS & names
     mapped = set(ODS_SERVICE_SOURCES) & names
     if (type(manifest) is not dict or set(manifest) not in (keys, keys | {'sourceProvenance'})

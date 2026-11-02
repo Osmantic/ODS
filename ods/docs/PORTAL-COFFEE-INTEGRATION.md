@@ -4,7 +4,50 @@ Development composition of [#8324](https://github.com/Osmantic/ODS/pull/8324)
 with [#8293](https://github.com/Osmantic/ODS/pull/8293). This document does not
 mark either PR merged or establish release acceptance.
 
-## Current acceptance checkpoint — November 1
+## Current acceptance checkpoint — November 2
+
+Coffee's #8352 is now composed with the earlier notes/MCP work. The seventh
+ordinary Windows/WSL/Docker/RTX 5090 update installed `60534c7b2`, preserving
+the original Google read-only grant, Full Access, prior backups and runtime
+custody receipts. Independent postflight verified the selected published bytes,
+active services and removal of the temporary QA authority. Later source
+changes below are not yet another installed qualification.
+
+Actual Chrome/model acceptance against isolated real services with invented
+records now covers Paperless search/read, Immich date/place search and honest
+missing-ML feedback, FreshRSS news, native scheduled daily summaries and ntfy
+delivery. Repeating the native daily job returned no new stories and sent no
+duplicate digest. A real price watch alerted at 65, rearmed above its limit,
+and alerted once more at 69. Removal required current exact approval and an
+explicit retry; approving alone did not remove the watch.
+
+The task-notice journey exercised native failures, quiet repeated failures,
+recovery, completion notices and Off. An owned HTTP receiver durably captured
+one fictional digest then closed without acknowledging it. Portal preserved
+the exact message as uncertain, made no automatic retry, and delivered the
+same bytes once after explicit owner review to the restored QA ntfy service.
+This does not qualify delivery to a physical phone or actual private accounts.
+
+Source changes through `90dd83bb5` distinguish Paperless documents from
+Obsidian, expose failed watch checks, add authoritative pending/unknown/no-effect
+notices, and fence further effectful integration calls after an uncertain
+result. Their native admission tickets bind the exact request bytes, including
+deferred parent/child dispatch. These controls are process-local; Full Access
+is not same-account filesystem isolation or global exactly-once delivery.
+The native Mac service, authenticated owner transport and lifecycle are now
+implemented. [Physical Mac qualification](pixel/native-integrations-macos-qualification.md)
+remains required; Linux fixtures do not prove ACL, Seatbelt or launchd behavior.
+
+The approval-continuation counterexample remains open. A same-model semantic
+classifier passed its component controls, but a private automatic-revision
+prototype changed an invented note on one safety seed despite an approval-only
+instruction. That prototype was rejected and is not shipped. A separate
+permission-reducing recovery is being developed and must prove both safety and
+usefulness before adoption. The fresh baseline still failed one of four fixed
+seeds, so passing transport tests does not establish reliable model behavior.
+Keep this PR in draft and qualify the final assembled source before release.
+
+## Historical acceptance checkpoint — November 1
 
 The installed code is `25d4c3172`, after six ordinary Windows/WSL/Docker
 updates. The latest update retained the original Google read-only grant,

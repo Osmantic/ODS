@@ -1,7 +1,7 @@
 """Retire one receipt-bound native Pixel deployment without destroying its state.
 
 The protected access configuration binds the owner and ODS root. Retirement
-quarantines fixed native paths only after all six launchd jobs are absent and
+quarantines fixed native paths only after the selected six or seven jobs are absent and
 their observed process trees have exited, or an explicit preserved-plist reboot
 barrier proves the old processes cannot survive. Unknown or transitional state fails
 before stopping services. The dedicated Operations identity is retained.
@@ -31,6 +31,9 @@ SETTINGS = Path('/private/etc/ods/pixel-access.json')
 BROKER = Path('/private/var/lib/pixel-ops-broker')
 LABELS = ('native-gateway', 'access', 'access-relay', 'native-manager',
           'native-promoter', 'native-operations')
+INTEGRATION_LABEL = 'native-integrations'
+INTEGRATION_DIRECTORIES = ('/private/var/lib/ods-pixel-integrations',
+    '/private/var/lib/ods-pixel-integrations-auth', '/private/var/log/ods-pixel-integrations')
 RETAIN = {'ops-identity.json', 'ops-identity.lock'}
 PENDING = ('transition.json', 'policy-activation.json', 'runtime-upgrade.json')
 DIRECTORIES = ('/private/var/lib/ods-pixel-native-config',
@@ -75,10 +78,11 @@ def state_name_allowed(name):
              'model-before.json', 'model-completed.json',
              'model-route-completed.json', 'model-promotion-completed.json',
              'service-installation.json', 'service-baseline.json', 'verified.json', 'retirement.json',
-             'retirement-plists'}
+             'retirement-plists', 'integrations-preservation.json', '.integrations-preservation.pending'}
+        or re.fullmatch(r'integrations-preservation-interrupted-[a-f0-9]{64}\.json', name)
         or re.fullmatch(r'runtime-upgrade-[a-f0-9]{64}\.completed\.json', name)
         or re.fullmatch(r'runtime-upgrade-(?:context|edge)-[a-f0-9]{64}\.json', name)
-        or re.fullmatch(r'runtime-upgrade-stop-[a-f0-9]{64}-(?:candidate|previous)-(?:access|gateway|manager|operations|promoter|relay)\.json', name)
+        or re.fullmatch(r'runtime-upgrade-stop-[a-f0-9]{64}-(?:candidate|previous)-(?:access|gateway|integrations|manager|operations|promoter|relay)\.json', name)
         or re.fullmatch(r'runtime-controller-repair-[a-f0-9]{64}\.json', name))
 
 
@@ -97,6 +101,20 @@ def command(args):
 
 def prove_absent(target):
     return command(['/bin/launchctl', 'print', target]).returncode == 113
+
+
+def integration_disabled():
+    result = command(['/bin/launchctl', 'print-disabled', 'system'])
+    lines = result.stdout.strip().splitlines()
+    if result.returncode or not lines or lines[0].strip() != 'disabled services = {' or lines[-1].strip() != '}':
+        raise ValueError('native-retirement-disabled-state-unavailable')
+    entries = {}
+    for line in lines[1:-1]:
+        match = re.fullmatch(r'\s*"([^"\n]+)" => (enabled|disabled)\s*', line)
+        if not match or match[1] in entries:
+            raise ValueError('native-retirement-disabled-state-unavailable')
+        entries[match[1]] = match[2] == 'disabled'
+    return entries.get('com.ods.pixel-native-integrations', False)
 
 
 def sandbox_selection(value, *, owner, root):
@@ -292,9 +310,10 @@ def retire(install_dir, owner_name, *, validate_only=False,
     if (not root.is_absolute() or root == Path('/') or str(root) != str(root.resolve())
             or owner.pw_uid == 0 or root == Path(owner.pw_dir)):
         raise ValueError('native-retirement-install-root-invalid')
-    residues = [Path(p) for p in DIRECTORIES] + [BROKER, STATE]
+    residues = [Path(p) for p in (*DIRECTORIES, *INTEGRATION_DIRECTORIES)] + [BROKER, STATE]
     residues += [Path('/private/etc/ods') / n for n in CONFIG_NAMES]
-    plists = [Path('/Library/LaunchDaemons') / ('com.ods.pixel-' + n + '.plist') for n in LABELS]
+    plists = [Path('/Library/LaunchDaemons') / ('com.ods.pixel-' + n + '.plist')
+              for n in (*LABELS, INTEGRATION_LABEL)]
     if not os.path.lexists(SETTINGS):
         if any(os.path.lexists(p) for p in residues + plists):
             # A previous successful retirement may retain only the identity.
@@ -312,16 +331,47 @@ def retire(install_dir, owner_name, *, validate_only=False,
             validate_state_names(os.listdir(directory))
             def record(path):
                 return json.loads(custody.protected_bytes(path, limit=32 * 1024 * 1024))
+            settings = record(SETTINGS)
+            installation = record(STATE / 'installation.json')
+            services = record(STATE / 'service-installation.json')
+            selected(settings, installation, services, owner=owner, install_dir=root)
+            roles = set(services.get('recovery', {}).get('definitions', {}))
+            legacy = {'manager', 'promoter', 'operations'}
+            if roles not in (legacy, legacy | {'integrations'}):
+                raise ValueError('native-retirement-service-set-incomplete')
+            has_integrations = 'integrations' in roles
+            verify_integrations = lambda: None
+            retained = None
+            if not has_integrations:
+                preservation = helper('pixel-native-integrations-preservation')
+                retained = preservation.load(STATE, custody)
+                if (any(os.path.lexists(Path(p)) for p in helper('pixel-runtime-upgrade').INTEGRATION_ADDITIONS)
+                        or not prove_absent('system/com.ods.pixel-native-integrations')):
+                    raise ValueError('native-retirement-unbound-integrations')
+                if retained is not None:
+                    body = preservation.validate(retained, owner=owner, install_dir=root,
+                        settings=custody.protected_bytes(SETTINGS),
+                        services=custody.protected_bytes(STATE / 'service-installation.json'),
+                        installation=custody.protected_bytes(STATE / 'installation.json'))
+                    if integration_disabled():
+                        raise ValueError('native-retirement-unbound-integrations')
+                    verify_integrations = lambda: helper('pixel-native-integrations-service').validate_preserved(
+                        owner_name, common_body=body, allow_partial=True)
+                    verify_integrations()
+                elif any(os.path.lexists(Path(p)) for p in INTEGRATION_DIRECTORIES):
+                    raise ValueError('native-retirement-unbound-integrations')
+                plists = plists[:-1]
+                if retained is None:
+                    residues = [p for p in residues if str(p) not in INTEGRATION_DIRECTORIES]
+            else:
+                verify_integrations = lambda: helper('pixel-native-integrations-service').validate_retirement(owner_name)
+                verify_integrations()
             reboot = helper('pixel-native-retirement-reboot').Recovery(STATE, plists,
                 read=lambda path: custody.protected_bytes(path, limit=32 * 1024 * 1024),
                 directory=custody.protected_directory, save=atomic_json,
                 command=command, absent=prove_absent)
             if resume_stopped_recovery and reboot.document is None:
                 raise ValueError('native-retirement-reboot-preparation-required')
-            settings = record(SETTINGS)
-            installation = record(STATE / 'installation.json')
-            services = record(STATE / 'service-installation.json')
-            selected(settings, installation, services, owner=owner, install_dir=root)
             account = helper('pixel-native-ops-account')
             intent = account.validate_intent(record(STATE / 'ops-identity.json'))
             for kind in ('Groups', 'Users'):
@@ -373,7 +423,7 @@ def retire(install_dir, owner_name, *, validate_only=False,
                     if (launchd_definition_digest(definition, ValueError) != settings.get('gateway_binding', {}).get('definition')
                             or 'HOME=' + str(root / 'data/pixel-native/home') not in definition.get('ProgramArguments', [])):
                         raise ValueError('native-retirement-gateway-binding-mismatch')
-                if role in ('native-manager', 'native-promoter', 'native-operations'):
+                if role in ('native-manager', 'native-promoter', 'native-operations', INTEGRATION_LABEL):
                     expected = services.get('recovery', {}).get('definitions', {}).get(role.removeprefix('native-'), {})
                     if (expected.get('path') != str(path)
                             or base64.b64decode(expected.get('body', ''), validate=True) != snapshots[str(path)]):
@@ -448,10 +498,19 @@ def retire(install_dir, owner_name, *, validate_only=False,
             # stop its processes before moving any native or workspace paths.
             sandboxes.preserve(sandbox_plans)
             reboot.unchanged(snapshots, code='native-retirement-authority-changed-after-stop')
+            # The legacy gateway has now stopped too. It cannot alter these
+            # owner-writable private runtime/log paths between checks.
+            verify_integrations()
             archive = Path('/private/var/lib/ods-pixel-retired') / uuid.uuid4().hex
             with custody.protected_directory(archive, create=True): pass
             os.chmod(archive, 0o700)
             moves = []
+            # Preserve the newly declared private family first. An interruption
+            # anywhere within this prefix leaves all legacy deployment authority
+            # intact, so the next retirement can validate remaining fixed roots
+            # and keep the earlier interrupted archive for diagnosis.
+            private_moves = [Path(p) for p in INTEGRATION_DIRECTORIES] if retained is not None else []
+            moves.extend(p for p in private_moves if os.path.lexists(p))
             # The Operations account/home may be protected by macOS. Retain the
             # empty home and UUID-bound identity; preserve each former child.
             if os.path.lexists(BROKER):
@@ -459,7 +518,7 @@ def retire(install_dir, owner_name, *, validate_only=False,
                 if not stat.S_ISDIR(info.st_mode) or info.st_uid != intent['id'] or info.st_gid != intent['id']:
                     raise ValueError('native-retirement-broker-home-custody')
                 moves.extend(BROKER.iterdir())
-            moves += [p for p in residues + plists if p not in (STATE, BROKER) and os.path.lexists(p)]
+            moves += [p for p in residues + plists if p not in (STATE, BROKER, *private_moves) and os.path.lexists(p)]
             moves += [STATE / n for n in os.listdir(directory) if n not in RETAIN]
             receipt = {'schema': 1, 'owner': owner.pw_uid, 'installDir': str(root),
                        'status': 'retiring', 'moves': []}
