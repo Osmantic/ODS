@@ -29,6 +29,7 @@ function hooks(guardResult, managedRuntime = false, delivery = {}) {
     finish: () => { calls.push('run-finish'); },
   };
   vm.runInNewContext(source.slice(start, end), {
+    integrationOutcomes: {before() {}, after() {}, end() {}},
     api: {on: (name, callback) => { callbacks[name] = callback; }, logger: {warn: message => warnings.push(message)}},
     toolLoopGuard: {
       beforeToolCall: () => { calls.push('guard'); return guardResult; },

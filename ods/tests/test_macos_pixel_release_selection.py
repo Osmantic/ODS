@@ -80,10 +80,12 @@ def services(source):
         'sourceProvenance': bundle.service_source_provenance(selected, source.files)}
 
 
-def test_complete_legacy_service_bundle_remains_readable_but_partial_inspection_does_not(source):
+@pytest.mark.parametrize('removed', [bundle.INTEGRATION_SERVICE_ARTIFACTS,
+    bundle.INTEGRATION_SERVICE_ARTIFACTS | bundle.INSPECTION_SERVICE_ARTIFACTS])
+def test_complete_legacy_service_bundle_remains_readable_but_partial_inspection_does_not(source, removed):
     manifest = services(source)
     old = json.loads(json.dumps(manifest))
-    for name in bundle.INSPECTION_SERVICE_ARTIFACTS:
+    for name in removed:
         old['files'].pop(name)
         old['sourceProvenance']['sourceBindings'].pop(name, None)
         old['sourceProvenance']['generatedArtifacts'].pop(name, None)

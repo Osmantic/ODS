@@ -22,10 +22,10 @@ function abortHandler(compactor,delegated={tracked:false,aborted:false}) {
   const end=source.indexOf('    api.registerHttpRoute({',start+1);
   assert.ok(start>0 && end>start);
   let route;
-  new Function('api','readAbortUser','sendJson','delegationDelivery','contextCompaction','toolLoopGuard',source.slice(start,end))(
+  new Function('api','readAbortUser','sendJson','delegationDelivery','contextCompaction','toolLoopGuard','integrationOutcomes',source.slice(start,end))(
     {registerHttpRoute:value=>{route=value;}},async()=>({status:200,user}),
     (res,status,body)=>{res.statusCode=status;res.end(JSON.stringify(body));},
-    {cancel:async()=>delegated},compactor,{abortUserRun:async()=>false});
+    {cancel:async()=>delegated},compactor,{abortUserRun:async()=>false},{cancelUser(){}});
   return route.handler;
 }
 async function fixture(t,mode) {

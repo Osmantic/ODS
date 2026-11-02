@@ -17,7 +17,7 @@ function fixture(){
  const source=fs.readFileSync(new URL('../plugin/index.js',import.meta.url),'utf8');
  const start=source.indexOf('    api.on("before_tool_call", async (event, context) => {'),end=source.indexOf('    api.on("after_tool_call"',start);assert.ok(start>=0&&end>start);
  let before;
- vm.runInNewContext(source.slice(start,end),{api:{on:(_name,callback)=>{before=callback;},config:{}},AGENT_ID:'pixel',toolLoopGuard:guard,delegationDelivery:registry,
+ vm.runInNewContext(source.slice(start,end),{integrationOutcomes:{before(){}},api:{on:(_name,callback)=>{before=callback;},config:{}},AGENT_ID:'pixel',toolLoopGuard:guard,delegationDelivery:registry,
   accessRuntime:{isProbe:()=>false,beforeTool:()=>undefined},withPixelCronDeliveryDefault:decision=>decision,withPixelSubagentWorkspace:decision=>decision,withCronCommandPayloadBlock:decision=>decision,
   resolveUserPath:()=>{},resolveAgentWorkspaceDir:()=>{},
   goalProgress:{before:()=>undefined},bundleAdmission:{before:()=>{}},artifactAdmission:{before:()=>{}},projectRunControl:{before:()=>{}},taskActivity:{before:()=>{}},projectSnapshots:{before:()=>{},end:()=>{}}});

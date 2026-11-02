@@ -92,6 +92,7 @@ function entry(root) {
     verificationForRun: runId => links.toolLoopGuard.deliveryVerificationForRun(runId)});
   const quiet = {begin() {}, active() { return false; }, before() {}, update() {}, finish() {}, after() {}};
   vm.runInNewContext(HOOKS, {
+    integrationOutcomes: {begin() {}, before() {}, after() {}, end() {}, channel(_event, value) {return value;}},
     api: {on: (name, callback) => { callbacks[name] = callback; }, logger: {warn() {}},
       config: {agents: {list: [{id: 'pixel', workspace: root}]}}},
     AGENT_ID: 'pixel', toolLoopGuard: links.toolLoopGuard, delegationDelivery: links.delegationDelivery,

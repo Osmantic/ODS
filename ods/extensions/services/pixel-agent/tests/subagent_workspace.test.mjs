@@ -28,6 +28,7 @@ function fixture(t) {
   const callbacks={};let admitted=0;
   const runtime={isProbe:()=>false,beforeTool:()=>{admitted++;}};
   vm.runInNewContext(source.slice(start,end),{
+    integrationOutcomes:{before(){}},
     api:{config,on:(name,callback)=>{callbacks[name]=callback;}},
     AGENT_ID:'pixel',toolLoopGuard:guard,accessRuntime:runtime,
     goalProgress:{before(){}},bundleAdmission:{before(){}},taskActivity:{before(){}},

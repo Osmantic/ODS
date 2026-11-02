@@ -103,7 +103,11 @@ def full_layout(world):
     for name in ('stdout.log', 'stderr.log'):
         (world.logs / name).write_text('private fixture\n')
         (world.logs / name).chmod(0o600)
+        os.chown(world.logs / name, world.uid, world.gid)
     world.runtime.mkdir(mode=0o700)
+    # Darwin inherits the parent group, including wheel under /private/tmp.
+    # Reproduce the owner's runtime/log ownership established by provision().
+    os.chown(world.runtime, world.uid, world.gid)
     world.auth.mkdir(mode=0o755)
     world.roots.add(world.auth.stat().st_ino)
     folder = world.root(world.auth / str(world.uid), directory=True)
