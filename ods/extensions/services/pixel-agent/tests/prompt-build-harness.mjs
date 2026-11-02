@@ -179,6 +179,7 @@ export async function promptHookAlone({language, goal = false, clarificationNote
       observeRepositorySource() {}, promptContextForRun: () => undefined,
       observeExampleRun() {}, exampleContextForRun: () => undefined,
       clarificationContextForRun: id => (id === 'run' ? clarificationNote : undefined), longTaskEligible: () => true},
+    integrationOutcomes: {begin() {}},
     goalProgress: {begin() {}, active: () => goal}, taskActivity: {begin() {}},
     promptContractForAgent, longTaskContract, PORTAL_INTEGRATION_TURN_CONTEXT,
     configuredContextWindow: 131072, configuredLeanPrompt: false, configuredResponseLanguage: language,

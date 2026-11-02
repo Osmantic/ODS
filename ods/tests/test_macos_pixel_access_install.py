@@ -2026,6 +2026,9 @@ def test_native_service_selection_binds_exact_gateway_configuration(bundled_depl
 
 def test_new_integrations_policy_seals_private_state_auth_and_logs_in_both_modes(bundled_deployment, monkeypatch, tmp_path):
     plan = installer.make_plan(**bundled_deployment, initial_install=True)
+    # This checks policy text, not home-directory provisioning. Model a normal
+    # owner home independently of pytest's potentially long temporary path.
+    monkeypatch.setattr(plan['owner'], 'pw_dir', '/Users/pixel-owner')
     original = installer._native_services.helper
     snapshots = dict.fromkeys(installer._bundle.INTEGRATION_SERVICE_ARTIFACTS, b'VALUE = 1\n')
     monkeypatch.setattr(installer._native_services, 'helper', lambda name:
