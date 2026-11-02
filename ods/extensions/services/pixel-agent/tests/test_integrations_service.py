@@ -395,10 +395,11 @@ class IntegrationsTests(unittest.TestCase):
         self.save(self.settings(servers=[self.home_server()]), secrets={"mcp": {"home": "secret-token"}})
         self.owner("discover", serverId="home")
         self.save(self.settings(servers=[self.home_server(enabled=True, policies={"turn_on": "allow"})]))
-        for mode, sentence in (("500", "answered 500"), ("404", "answered 404"), ("huge", "too much data")):
+        for mode in ("500", "404", "huge"):
             FakeMcp.mode = mode
-            with self.assertRaisesRegex(service.IntegrationError, sentence):
+            with self.assertRaisesRegex(service.IntegrationError, "result could not be verified") as refused:
                 self.agent("mcp-call", server="home", tool="turn_on", arguments={})
+            self.assertEqual(refused.exception.code, 'mcp-outcome-unknown')
         FakeMcp.mode = "long"
         text = self.agent("mcp-call", server="home", tool="turn_on", arguments={})["text"]
         self.assertTrue(text.endswith("[truncated]"))

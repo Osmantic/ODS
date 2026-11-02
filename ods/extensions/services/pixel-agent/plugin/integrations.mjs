@@ -60,26 +60,55 @@ export function submitIntegration(payload, {connect = net.createConnection, plat
 
 const text = (value, details, isError = false) => ({content: [{type: 'text', text: value}], details, ...(isError ? {isError} : {})});
 
-async function run(submit, payload, signal, render) {
+async function run(submit, payload, signal, render, observed) {
+  const report = status => { try { observed?.(status); } catch { /* Observation grants no execution authority. */ } };
   let reply;
   try {
     reply = await submit(payload, {signal});
   } catch (error) {
     if (error?.code === 'integration-outcome-unknown') {
+      report('unknown');
       return text('The integration was submitted, but its result could not be verified. Check the service or destination before trying again; do not repeat the action automatically.',
         {status: 'outcome-unknown'}, true);
     }
     return text('The integrations service is unavailable.', {status: 'unavailable'}, true);
   }
   if (!reply?.ok) {
+    if (reply?.ok === false && ['notification-outcome-unknown', 'mcp-outcome-unknown', 'app-outcome-unknown'].includes(reply.error)) {
+      report('unknown');
+      return text('Its result could not be verified; check the destination before retrying. Do not repeat the action automatically.',
+        {status:'outcome-unknown', code:reply.error}, true);
+    }
     const scope = reply?.error === 'notes-off' && payload.action?.startsWith('notes-')
       ? ' This result concerns only Obsidian notes, not the Paperless document connection. Paperless documents use pixel_ods_mcp action list. Respect the owner\'s requested source.' : '';
     return text((reply?.message || 'The integration request failed.') + scope, {status: 'refused', code: reply?.error}, true);
   }
+  const approvalIdValid = typeof reply.approvalId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(reply.approvalId);
+  const reviewedNoEffect = payload.recoveryReviewOnly === true && reply.recoveryReviewOnly === true &&
+    reply.actionExecuted === false && reply.approvalConsumed === false && approvalIdValid;
+  if (reply.status === 'review-only-ready') {
+    if (!reviewedNoEffect) return text('The review-only action status could not be verified. No additional action was submitted.',
+      {status:'refused',code:'review-only-result-invalid'},true);
+    report('ready');
+    return text('This exact action already has owner approval, but this review-only recovery did not run it or use the approval. Send a new request to execute it.',
+      {status:'review-only-ready',approvalId:reply.approvalId});
+  }
   if (reply.status === 'approval-required') {
+    if (payload.recoveryReviewOnly === true) {
+      if (!reviewedNoEffect) return text('The review-only action status could not be verified. No additional action was submitted.',
+        {status:'refused',code:'review-only-result-invalid'},true);
+      report('pending');
+      return text('This review-only recovery requested approval; no action ran and no approval was used. Review Settings → Portal integrations, then send a new request for this exact action.',
+        {status:'approval-required',approvalId:reply.approvalId});
+    }
+    if (reply.ok === true && approvalIdValid) report('pending');
     return text(`${reply.summary}\n\n${APPROVAL_TEXT}`, {status: 'approval-required', approvalId: reply.approvalId});
   }
   const failed = reply.isError === true;
+  if (reply.ok === true && !failed && (
+    payload.action === 'notify' && reply.sent === true ||
+    payload.action === 'notes-write' && typeof reply.written === 'string' && reply.mode === payload.mode ||
+    payload.action === 'mcp-call' && typeof reply.text === 'string')) report('settled');
   return text(render(reply), {status: failed ? 'failed' : 'done'}, failed);
 }
 
@@ -97,6 +126,33 @@ const toolsText = reply => MCP_CATALOG_SCOPE + '\n\n' + (reply.servers.length
 
 const str = value => (typeof value === 'string' ? value : '');
 
+// A private bounded JSON snapshot is used for both admission identity and the
+// bytes later submitted after the asynchronous Unix socket connects.
+export function snapshotIntegrationRequest(payload) {
+  let nodes = 0, bytes = 0;
+  const textBound = value => {
+    bytes += Buffer.byteLength(value);
+    if (bytes > 65536) throw new Error('request-bound');
+    return value;
+  };
+  function copy(value, depth = 0) {
+    if (++nodes > 4096 || depth > 20) throw new Error('request-bound');
+    if (typeof value === 'string') return textBound(value);
+    if (value === null || typeof value === 'boolean') return value;
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (Array.isArray(value)) return value.map(item => copy(item, depth + 1));
+    if (value && typeof value === 'object' && [Object.prototype, null].includes(Object.getPrototypeOf(value))) {
+      const keys = Object.keys(value);
+      if (keys.length > 4096) throw new Error('request-bound');
+      return Object.fromEntries(keys.sort().map(key => [textBound(key), copy(value[key], depth + 1)]));
+    }
+    throw new Error('request-bound');
+  }
+  const snapshot = copy(payload);
+  if (Buffer.byteLength(JSON.stringify(snapshot)) > 65536) throw new Error('request-bound');
+  return snapshot;
+}
+
 function notesRequest(params) {
   const action = params?.action;
   if (action === 'search') return {action: 'notes-search', query: str(params?.query)};
@@ -110,15 +166,50 @@ const notesText = reply => reply.results ? searchText(reply)
   : reply.text !== undefined ? `${reply.path}:\n\n${reply.text}`
     : `${reply.mode === 'create' ? 'Created' : 'Added to'} ${reply.written}.`;
 
-export function createIntegrationTools({submit = submitIntegration, context} = {}) {
-  // Factory context comes from the native runtime, never model arguments. Each
-  // isolated cron run has its own session identity; keep its read snapshot apart
-  // from an interactive digest or another task. This metadata grants no action.
+export function integrationRequest(name, params, context) {
+  if (name === 'pixel_ods_notes') return notesRequest(params);
+  if (name === 'pixel_ods_notify') return {action: 'notify', title: str(params?.title) || 'Portal',
+    message: str(params?.message), priority: params?.priority ?? 'default'};
+  if (name !== 'pixel_ods_mcp') return null;
+  if (params?.action === 'list') return {action: 'mcp-tools'};
+  if (params?.action !== 'call') return null;
+  const args = params?.arguments && typeof params.arguments === 'object' && !Array.isArray(params.arguments) ? params.arguments : {};
+  const server = str(params?.server), tool = str(params?.tool);
   const identityString = value => typeof value === 'string' && value.length > 0
     && value.length <= 512 && !/[\x00-\x20\x7f]/.test(value);
   const runContext = context?.agentId === 'pixel' && identityString(context.sessionId)
     && identityString(context.sessionKey) && context.sessionKey.startsWith('agent:pixel:')
-    ? Object.freeze({sessionId: context.sessionId, sessionKey: context.sessionKey}) : undefined;
+    ? {sessionId: context.sessionId, sessionKey: context.sessionKey} : undefined;
+  return {action: 'mcp-call', server, tool, arguments: args,
+    ...(server === 'app:news' && tool === 'digest' && runContext ? {runContext} : {})};
+}
+
+export function createIntegrationTools({submit = submitIntegration, context, outcomes} = {}) {
+  // Factory context comes from the native runtime, never model arguments. Each
+  // isolated cron run has its own session identity; keep its read snapshot apart
+  // from an interactive digest or another task. This metadata grants no action.
+  const dispatch = (id, payload, signal, render) => {
+    let reservation;
+    try {
+      payload = snapshotIntegrationRequest(payload);
+      const refusal = outcomes?.refusal(payload, context);
+      if (refusal) return Promise.resolve(text(refusal, {status:'blocked',code:'integration-outcome-unresolved'}, true));
+      reservation = outcomes?.take(id, payload, context);
+      if (outcomes?.effectful(payload) && !reservation) {
+        return Promise.resolve(text('No integration action was submitted: this call has no matching current native admission.',
+          {status:'blocked',code:'integration-call-unbound'}, true));
+      }
+    } catch {
+      return Promise.resolve(text('No integration action was submitted: its native admission could not be verified.',
+        {status:'blocked',code:'integration-call-unbound'}, true));
+    }
+    const control = outcomes?.control?.(reservation);
+    if (reservation && !control) return text('This integration call is no longer admitted for this response.',
+      {status:'blocked',code:'integration-call-unbound'},true);
+    const reviewOnly = control?.recoveryReviewOnly === true;
+    return run(submit, reviewOnly ? {...payload,recoveryReviewOnly:true} : payload, signal, render,
+      status => outcomes?.complete(reservation, status));
+  };
   return [
     {
       name: 'pixel_ods_notes',
@@ -130,8 +221,8 @@ export function createIntegrationTools({submit = submitIntegration, context} = {
           text: {type: 'string', description: 'For write: Markdown text to add.'},
           mode: {type: 'string', enum: ['append', 'create'], description: 'For write: append to an existing note or create a new one.'}}},
       execute: (_id, params, signal) => {
-        const request = notesRequest(params);
-        return request ? run(submit, request, signal, notesText)
+        const request = integrationRequest('pixel_ods_notes', params, context);
+        return request ? dispatch(_id, request, signal, notesText)
           : Promise.resolve(text('Use action search, read or write.', {status: 'invalid'}, true));
       },
     },
@@ -141,8 +232,10 @@ export function createIntegrationTools({submit = submitIntegration, context} = {
       parameters: {type: 'object', additionalProperties: false, required: ['message'],
         properties: {title: {type: 'string'}, message: {type: 'string'},
           priority: {type: 'string', enum: ['low', 'default', 'high']}}},
-      execute: (_id, params, signal) => run(submit, {action: 'notify', title: str(params?.title) || 'Portal',
-        message: str(params?.message), priority: params?.priority ?? 'default'}, signal, () => 'Notification sent.'),
+      execute: (_id, params, signal) => {
+        const payload = integrationRequest('pixel_ods_notify', params, context);
+        return dispatch(_id, payload, signal, () => 'Notification sent.');
+      },
     },
     {
       name: 'pixel_ods_mcp',
@@ -153,13 +246,11 @@ export function createIntegrationTools({submit = submitIntegration, context} = {
           tool: {type: 'string', description: 'For call: the tool name from list.'},
           arguments: {type: 'object', description: 'For call: the tool arguments as an object.'}}},
       execute: (_id, params, signal) => {
-        if (params?.action === 'list') return run(submit, {action: 'mcp-tools'}, signal, toolsText);
+        if (params?.action === 'list') return dispatch(_id, {action: 'mcp-tools'}, signal, toolsText);
         // A small model sometimes sends no arguments at all; show it the exact shape to retry with.
         if (params?.action !== 'call') return Promise.resolve(text(MCP_USAGE, {status: 'invalid'}, true));
-        const args = params?.arguments && typeof params.arguments === 'object' && !Array.isArray(params.arguments) ? params.arguments : {};
-        const server = str(params?.server), name = str(params?.tool);
-        return run(submit, {action: 'mcp-call', server, tool: name, arguments: args,
-          ...(server === 'app:news' && name === 'digest' && runContext ? {runContext} : {})}, signal,
+        const payload = integrationRequest('pixel_ods_mcp', params, context);
+        return dispatch(_id, payload, signal,
           reply => `${reply.isError ? 'The tool reported an error:\n' : ''}${reply.text}`);
       },
     },

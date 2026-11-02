@@ -49,6 +49,7 @@ import { longTaskContract, promptContractForAgent, PORTAL_INTEGRATION_TURN_CONTE
 import { executionContext } from "./completion-assurance.mjs";
 import { createAskUserTool } from "./ask-user.mjs";
 import { createIntegrationTools } from "./integrations.mjs";
+import { createIntegrationOutcomes } from "./integration-outcomes.mjs";
 import { createTaskHooks } from "./integration-tasks.mjs";
 import { createPendingClarifications } from "./pending-clarification.mjs";
 import {
@@ -129,6 +130,7 @@ const evidenceArtifactWriter = createEvidenceArtifactWriter();
 let perplexicaAvailability;
 const bundleAdmission = createWorkspaceBundleAdmission();
 const artifactAdmission = createWorkspaceArtifactAdmission();
+const integrationOutcomes = createIntegrationOutcomes();
 
 // Restrict tool registration to the Pixel agent. Tools are only offered to the
 // agent id declared by this plugin (see openclaw.plugin.json); this guards the
@@ -462,6 +464,7 @@ export default definePluginEntry({
       // After delegation custody, which links a child or continuation to its
       // owner run: the shipped example's guard starts with the run.
       if (!accessRuntime.isProbe(context)) { delegationDelivery.observe(event,context); toolLoopGuard.observeExampleRun(context, AGENT_ID); }
+      if (!accessRuntime.isProbe(context)) integrationOutcomes.begin(event, context, delegationDelivery.ownerRunFor(context));
       const ownerEvent = toolLoopGuard.ownerIntentEventForRun(context?.runId ?? event?.runId, event);
       if (!accessRuntime.isProbe(context)) { goalProgress.begin(ownerEvent, context); taskActivity.begin(ownerEvent, {...context,workspaceRoot}); }
       const contract = promptContractForAgent(context, AGENT_ID, ownerEvent, {
@@ -532,6 +535,7 @@ export default definePluginEntry({
         accessRuntime.isProbe(context) ? undefined : delegationDelivery.admission(context));
     }
     api.on("agent_end", (event, context) => {
+      integrationOutcomes.end(event, context);
       delegationDelivery.end(event,context);
       try {conversationImageLifecycle.observe(context);}catch {api.logger.warn('Portal conversation image custody could not be updated.');}
       toolLoopGuard.endPreviewRevalidation(event, context);
@@ -555,7 +559,8 @@ export default definePluginEntry({
         scope => getSessionEntry({...scope,
           storePath: resolveStorePath(runtimeConfig?.session?.store, {agentId: AGENT_ID})}), {resolveUserPath, resolveAgentWorkspaceDir});
       guard = withCronCommandPayloadBlock(guard, event, context);
-      const decision = guard?.block ? guard : delegationDelivery.blocked(context,event) ?? goalProgress.before(event, context) ?? accessRuntime.beforeTool(event, context) ?? guard;
+      let decision = guard?.block ? guard : delegationDelivery.blocked(context,event) ?? goalProgress.before(event, context) ?? accessRuntime.beforeTool(event, context) ?? guard;
+      decision = integrationOutcomes.before(event, context, decision) ?? decision;
       delegationDelivery.before(event,context,decision);
       bundleAdmission.before(event, context, decision);
       artifactAdmission.before(event, context, decision);
@@ -568,6 +573,7 @@ export default definePluginEntry({
       delegationDelivery.after(event,context);
       bundleAdmission.after(event, context);
       artifactAdmission.after(event, context);
+      integrationOutcomes.after(event, context);
       projectRunControl.after(event, context);
       accessRuntime.afterTool(event, context);
       if (!accessRuntime.isProbe(context)) {
@@ -673,7 +679,7 @@ export default definePluginEntry({
     // seen at before_agent_finalize, ahead of Portal's one line about it
     // (preview-explanation.mjs).
     api.on("reply_payload_sending", (event) =>
-      toolLoopGuard.replyPayloadSending(event)
+      integrationOutcomes.channel(event, toolLoopGuard.replyPayloadSending(event))
     );
     api.registerHttpRoute({
       path: "/pixel-ods/abort",
@@ -688,6 +694,7 @@ export default definePluginEntry({
         // Both synchronous fences are installed before either native abort
         // awaits drainage; queued announcements cannot steal owner custody.
         const delegatedPending=delegationDelivery.cancel(parsed.user);
+        integrationOutcomes.cancelUser(parsed.user);
         const compactionPending=contextCompaction.cancelPending(parsed.user);
         const parentPending=toolLoopGuard.abortUserRun(parsed.user);
         const [delegated,parentAborted,compactionAborted]=await Promise.all([delegatedPending,parentPending,compactionPending]);
@@ -752,7 +759,8 @@ export default definePluginEntry({
         }
         await toolLoopGuard.settleDelivery(parsed.runId);
         const task = taskActivity.projection(parsed.runId);
-        sendJson(res, 200, {...toolLoopGuard.deliveryVerificationForRun(parsed.runId), ...(task ? {task} : {})});
+        sendJson(res, 200, integrationOutcomes.verification(
+          {...toolLoopGuard.deliveryVerificationForRun(parsed.runId), ...(task ? {task} : {})}, parsed.runId));
         return true;
       },
     });
@@ -960,13 +968,13 @@ export default definePluginEntry({
     registerTool(api, createAskUserTool({responseLanguage: configuredResponseLanguage}), {names:['pixel_ods_ask_user']});
     // The owner's notes, notifications, MCP servers and apps, all through the host integrations service.
     for (const {name} of createIntegrationTools()) {
-      api.registerTool(onlyPixel(context => createIntegrationTools({context})
+      api.registerTool(onlyPixel(context => createIntegrationTools({context, outcomes:integrationOutcomes})
         .find(tool => tool.name === name)), {names: [name]});
     }
     // Finished scheduled tasks notify the owner; the daily news digest is kept as a cron job.
     const taskHooks = createTaskHooks({warn: message => api.logger.warn(message)});
     api.on("gateway_start", (event, context) => taskHooks.gatewayStart(event, context));
-    api.on("gateway_stop", () => taskHooks.gatewayStop());
+    api.on("gateway_stop", () => {integrationOutcomes.clear(); return taskHooks.gatewayStop();});
     api.on("cron_changed", (event, context) => taskHooks.cronChanged(event, context));
     registerTool(api, createGoalProgressTool(), {names:['pixel_ods_goal']});
     registerTool(api, createActivityTool(), {names:['pixel_ods_activity']});

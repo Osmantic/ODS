@@ -57,13 +57,22 @@ def send_notification(config, secrets, title, message, priority="default", link=
         with safe_urlopen(request, timeout=NETWORK_TIMEOUT):
             pass
     except urllib.error.HTTPError as error:
-        reason = "the user or password was refused" if error.code in (401, 403) else f"ntfy answered {error.code}"
-        code = "notification-refused" if error.code in (401, 403) else "notification-failed"
-        raise IntegrationError(code, f"The notification was not sent: {reason}.") from None
+        if error.code in (401, 403):
+            raise IntegrationError("notification-refused", "The notification was not sent: the user or password was refused.") from None
+        raise IntegrationError("notification-outcome-unknown", "The notification's result could not be verified. "
+                               "Check the destination before trying again; do not repeat it automatically.") from None
     except urllib.error.URLError as error:
-        code = ("notification-not-connected" if isinstance(error.reason, (ConnectionRefusedError, socket.gaierror))
-                else "notification-failed")
-        raise IntegrationError(code, f"The notification was not sent: ntfy at {settings['url']} could not be reached.") from None
+        if isinstance(error.reason, (ConnectionRefusedError, socket.gaierror)):
+            raise IntegrationError("notification-not-connected", "The notification was not sent: ntfy could not be reached.") from None
+        raise IntegrationError("notification-outcome-unknown", "The notification's result could not be verified. "
+                               "Check the destination before trying again; do not repeat it automatically.") from None
     except OSError:
-        raise IntegrationError("notification-failed", f"The notification was not sent: ntfy at {settings['url']} could not be reached.") from None
+        raise IntegrationError("notification-outcome-unknown", "The notification's result could not be verified. "
+                               "Check the destination before trying again; do not repeat it automatically.") from None
+    except IntegrationError as error:
+        if error.code not in {"integration-timeout", "integration-unavailable", "integration-protocol",
+                              "integration-response-too-large", "redirect-refused"}:
+            raise
+        raise IntegrationError("notification-outcome-unknown", "The notification's result could not be verified. "
+                               "Check the destination before trying again; do not repeat it automatically.") from None
     return title
