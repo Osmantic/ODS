@@ -34,7 +34,7 @@ async function latchedReview() {
   const owner='Read the Obsidian note Example.md.';
   const recovery=createIntegrationReviewRecovery({eligible:()=>true,ready:()=>true,
     complete:async()=>({agentId:'pixel',provider:'ods-gateway',model:'ods/current',text:JSON.stringify({
-      intent:'perform',answerNeedsEvidence:true,operations:[{source:'obsidian',verb:'read'}]})})});
+      operations:[{source:'obsidian',verb:'read'}]})})});
   recovery.observe({prompt:owner},ctx,ctx.runId);
   const decision=await recovery.finalize({...ctx,nativeRetryToolsAllowVersion:1,nativeRetryToolChoiceVersion:1,
     lastAssistantMessage:'I read it.',messages:[{role:'user',content:owner},{role:'assistant',content:'I read it.'}]},ctx);
