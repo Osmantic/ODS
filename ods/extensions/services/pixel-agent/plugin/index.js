@@ -481,7 +481,7 @@ export default definePluginEntry({
       // owner run: the shipped example's guard starts with the run.
       if (!accessRuntime.isProbe(context)) {
         delegationDelivery.observe(event,context);
-        if (!integrationReviewRecovery.isReviewOnly(context)) toolLoopGuard.observeExampleRun(context, AGENT_ID);
+        if (!integrationReviewRecovery.isReviewOnly(context, event)) toolLoopGuard.observeExampleRun(context, AGENT_ID);
       }
       if (!accessRuntime.isProbe(context)) integrationOutcomes.begin(event, context, delegationDelivery.ownerRunFor(context));
       const ownerEvent = toolLoopGuard.ownerIntentEventForRun(context?.runId ?? event?.runId, event);
@@ -495,7 +495,7 @@ export default definePluginEntry({
         privateBrowserAccess,
         executionHost,
       });
-      const repositoryEvidence = contract && !integrationReviewRecovery.isReviewOnly(context) ? await extensionRepositoryContext(ownerEvent,
+      const repositoryEvidence = contract && !integrationReviewRecovery.isReviewOnly(context, event) ? await extensionRepositoryContext(ownerEvent,
         result => toolLoopGuard.observeRepositorySource(context?.runId ?? event?.runId, result)) : '';
       // Per-attempt, model-only context: not part of the cached system prompt.
       const cancelContext = toolLoopGuard.promptContextForRun(context?.runId ?? event?.runId);
@@ -563,7 +563,7 @@ export default definePluginEntry({
       toolLoopGuard.observeAgentEnd(event, context);
       if (!accessRuntime.isProbe(context)) {
         goalProgress.finish(event, context); taskActivity.finish(event, context);
-        if (!integrationReviewRecovery.isReviewOnly(context)) void projectSnapshots.end(event, context);
+        if (!integrationReviewRecovery.isReviewOnly(context, event)) void projectSnapshots.end(event, context);
       }
       if (!managedRuntime) return accessRuntime.finish({runId: event.runId}, context);
     });
@@ -576,7 +576,7 @@ export default definePluginEntry({
       // executor. The correction only reaches integration admission; a model
       // cannot escape through exec/Operations or nested Tool Search code.
       const reviewFloor = integrationReviewRecovery.floor(event, context);
-      if (reviewFloor || integrationReviewRecovery.isReviewOnly(context)) {
+      if (reviewFloor || integrationReviewRecovery.isReviewOnly(context, event)) {
         let decision = reviewFloor ?? accessRuntime.beforeTool(event, context);
         decision = integrationOutcomes.before(event, context, decision, {recoveryReviewOnly:true}) ?? decision;
         delegationDelivery.before(event, context, decision);
@@ -595,7 +595,7 @@ export default definePluginEntry({
       guard = withCronCommandPayloadBlock(guard, event, context);
       let decision = guard?.block ? guard : delegationDelivery.blocked(context,event) ?? goalProgress.before(event, context) ?? accessRuntime.beforeTool(event, context) ?? guard;
       decision = integrationOutcomes.before(event, context, decision,
-        {recoveryReviewOnly:integrationReviewRecovery.isReviewOnly(context)}) ?? decision;
+        {recoveryReviewOnly:integrationReviewRecovery.isReviewOnly(context, event)}) ?? decision;
       delegationDelivery.before(event,context,decision);
       bundleAdmission.before(event, context, decision);
       artifactAdmission.before(event, context, decision);
@@ -611,7 +611,7 @@ export default definePluginEntry({
       integrationOutcomes.after(event, context);
       projectRunControl.after(event, context);
       accessRuntime.afterTool(event, context);
-      if (integrationReviewRecovery.isReviewOnly(context)) {
+      if (integrationReviewRecovery.isReviewOnly(context, event)) {
         taskActivity.after(event, context);
         return;
       }
@@ -701,7 +701,7 @@ export default definePluginEntry({
       toolLoopGuard.observeReplyEnd(event, context, AGENT_ID);
     });
     api.on("before_agent_finalize", async (event, context) => {
-      if (integrationReviewRecovery.isReviewOnly(context)) {
+      if (integrationReviewRecovery.isReviewOnly(context, event)) {
         // No preview repair, citation fetch, goal continuation or second revise
         // can add effects after the bounded integration review.
         const decision = {action:'finalize',reason:'The review-only correction is complete; no automatic action may follow.'};
@@ -717,7 +717,7 @@ export default definePluginEntry({
         allowed:toolLoopGuard.continuationAllowed(context?.runId ?? event?.runId),
         waiting:verification?.status === 'pending'});
       decision = await integrationReviewRecovery.finalize(event, context, decision);
-      if (integrationReviewRecovery.isReviewOnly(context)) toolLoopGuard.discardExampleRun(context.runId);
+      if (integrationReviewRecovery.isReviewOnly(context, event)) toolLoopGuard.discardExampleRun(context?.runId ?? event?.runId);
       delegationDelivery.finalize(event,context,decision);
       return decision;
     });

@@ -79,9 +79,11 @@ export function createIntegrationReviewRecovery({complete,eligible=()=>false,rea
   const live=state=>!stopped && state && !state.ended && !state.cancelled && !state.conflict
     && latest.get(state.sessionKey)===state.runId && runs.get(state.runId)===state
     && eligible(state.runId)===true && ready(state)===true;
-  const knownLatch=context=>{
+  const knownLatch=(context,event)=>{
     const exact=stateFor(context);
     if(exact?.reviewOnly)return exact;
+    const nativeEvent=runs.get(event?.runId);
+    if(nativeEvent?.reviewOnly)return nativeEvent;
     // Missing/mismatched identity cannot turn an existing corrective pass into
     // normal execution. A new turn is normal only after trusted observation.
     if (context?.sessionKey) {
@@ -96,7 +98,7 @@ export function createIntegrationReviewRecovery({complete,eligible=()=>false,rea
   };
   async function check(event,context,priorDecision) {
     const id=identity(context),state=stateFor(context);
-    if(state?.reviewOnly) {
+    if(knownLatch(context,event)) {
       // Other finalizers must not create another corrective pass in this run.
       return priorDecision?.action==='revise'?{action:'continue'}:priorDecision;
     }
@@ -175,8 +177,7 @@ export function createIntegrationReviewRecovery({complete,eligible=()=>false,rea
     },
     floor(event,context,priorDecision) {
       if(priorDecision?.block)return priorDecision;
-      const eventState=runs.get(event?.runId);
-      const state=knownLatch(context) ?? (eventState?.reviewOnly ? eventState : undefined);
+      const state=knownLatch(context,event);
       if(!state)return priorDecision;
       if(!same(state,identity(context)) || !live(state))return BLOCK;
       const name=event?.toolName;
@@ -185,7 +186,7 @@ export function createIntegrationReviewRecovery({complete,eligible=()=>false,rea
       // tool_search_code can invoke tools internally, so it is not discovery.
       return BLOCK;
     },
-    isReviewOnly(context) {return Boolean(knownLatch(context));},
+    isReviewOnly(context,event) {return Boolean(knownLatch(context,event));},
     async finalize(event,context,priorDecision) {
       const work=check(event,context,priorDecision);checks.add(work);
       try{return await work;}finally{checks.delete(work);}
@@ -194,7 +195,7 @@ export function createIntegrationReviewRecovery({complete,eligible=()=>false,rea
       for(const state of runs.values())if(state.sessionKey===sessionKey){state.cancelled=true;state.controller?.abort();}
     },
     end(_event,context) {
-      const state=stateFor(context);
+      const state=stateFor(context) ?? runs.get(_event?.runId);
       if(state){state.ended=true;state.controller?.abort();}
     },
     async stop() {

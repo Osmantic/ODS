@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import vm from 'node:vm';
 import {createIntegrationReviewRecovery,REVIEW_LABEL_SYSTEM} from '../plugin/integration-review-recovery.mjs';
 
 const SESSION='agent:pixel:openai-user:ods-'+ 'a'.repeat(64);
@@ -108,6 +110,7 @@ test('fallback and prompt reentry cannot reset latch; mismatched or missing cust
     assert.equal(recovery.floor(tool('exec'),context).block,true);
   }
   assert.equal(recovery.floor({...tool('exec'),runId:CONTEXT.runId},{}).block,true);
+  assert.equal(recovery.isReviewOnly({}, {runId:CONTEXT.runId}),true);
   assert.equal(calls.length,1);
 });
 
@@ -196,4 +199,47 @@ test('capacity never evicts a latch into normal; a verified later owner still ha
   assert.equal(recovery.floor(tool('pixel_ods_notes'),CONTEXT).block,true);
   assert.equal(recovery.isReviewOnly(CONTEXT),true);
   assert.equal(recovery.isReviewOnly(next),false);
+});
+
+test('actual index lifecycle hooks suppress workful helpers even with event-only native run identity',async()=>{
+  const {recovery}=world();await recovery.finalize(event(),CONTEXT);
+  const source=readFileSync(new URL('../plugin/index.js',import.meta.url),'utf8');
+  const slice=(start,end)=>{
+    const from=source.indexOf(start),to=source.indexOf(end,from);
+    assert.ok(from>=0 && to>from);return source.slice(from,to);
+  };
+  const hooks=[slice('    api.on("before_prompt_build", async (event, context) => {','    api.on("model_call_started"'),
+    slice('    api.on("agent_end", (event, context) => {','    api.on("before_tool_call"'),
+    slice('    api.on("before_agent_finalize", async (event, context) => {','    // Delivery rewriting')].join('\n');
+  const callbacks={},effects=[];
+  const forbidden=name=>(()=>{effects.push(name);throw Error('Workful helper reached: '+name);});
+  const noop=()=>undefined;
+  const quiet={begin:noop,finish:noop,active:()=>false};
+  const guard={observeRun:noop,ownerIntentEventForRun:(_id,value)=>value,verificationStatus:noop,
+    observeExampleRun:forbidden('example-restore'),observeRepositorySource:noop,
+    promptContextForRun:noop,exampleContextForRun:noop,clarificationContextForRun:noop,
+    longTaskEligible:()=>false,endPreviewRevalidation:noop,observeAgentEnd:noop,
+    revalidateWorkspacePreview:forbidden('preview-revalidate'),recoverWorkspacePreview:forbidden('preview-publish'),
+    verifyCitedPages:forbidden('citation-fetch'),beforeAgentFinalize:forbidden('ordinary-finalize')};
+  vm.runInNewContext(hooks,{
+    api:{on:(name,callback)=>{callbacks[name]=callback;},config:{agents:{list:[{id:'pixel',workspace:'/invented'}]}}},
+    AGENT_ID:'pixel',integrationReviewRecovery:recovery,integrationOutcomes:{begin:noop,end:noop},
+    accessRuntime:{isProbe:()=>false,finish:noop},delegationDelivery:{admission:noop,observe:noop,
+      ownerRunFor:noop,ownerRunOf:noop,promptContext:noop,finalize:noop,end:noop},
+    toolLoopGuard:guard,goalProgress:quiet,taskActivity:quiet,projectSnapshots:{end:forbidden('workspace-snapshot-end')},
+    privateBrowserAccessForAgent:()=>false,executionHostForAgent:()=> 'gateway',
+    promptContractForAgent:()=>({prependContext:'fixture',appendSystemContext:'fixture'}),
+    extensionRepositoryContext:forbidden('repository-fetch'),responseLanguageTurnContext:noop,
+    configuredResponseLanguage:undefined,configuredContextWindow:65536,configuredLeanPrompt:false,
+    inResponseLanguage:value=>value,GOAL_CONTRACT:'',managedTeamRole:noop,PORTAL_INTEGRATION_TURN_CONTEXT:'fixture',
+    longTaskContract:noop,ACTIVITY_CONTRACT:'',executionLocationContext:noop,executionContext:noop,
+    conversationImageLifecycle:{observe:noop},managedRuntime:true,
+  });
+  const nativeEvent={...event(),prompt:OWNER};
+  await callbacks.before_prompt_build(nativeEvent,{});
+  const decision=await callbacks.before_agent_finalize(nativeEvent,{});
+  assert.equal(decision.action,'finalize');
+  callbacks.agent_end(nativeEvent,{});
+  assert.deepEqual(effects,[]);
+  assert.equal(recovery.floor({...tool('pixel_ods_notes'),runId:CONTEXT.runId},{}).block,true);
 });
