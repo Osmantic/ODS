@@ -332,7 +332,9 @@ export default definePluginEntry({
       forgetConversation:sessionKey=>pendingClarifications.forget(sessionKey),
     });
     conversationImageLifecycle.register(api);
-    api.on('before_agent_run',(_event,context)=>{
+    api.on('before_agent_run',(event,context)=>{
+      const review=integrationReviewRecovery?.admit(event,context);
+      if(review)return review;
       try {conversationImageLifecycle.observe(context);}
       catch {return {outcome:'block',reason:'conversation-image-custody-unavailable',message:'This conversation is deleted or its private image custody could not be confirmed. Start a new conversation or retry after checking storage.'};}
     });

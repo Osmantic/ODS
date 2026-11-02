@@ -23,6 +23,44 @@ function world(options={}) {
   return {recovery,calls};
 }
 const tool=(name,params={})=>({toolName:name,params});
+const nativeScope=(context=CONTEXT,changes={})=>Object.freeze({version:1,active:true,
+  ownerRunId:context.runId,toolsAllow:Object.freeze(['pixel_ods_notes','pixel_ods_mcp']),...changes});
+
+test('exact latched run needs actual immutable active native scope before inference',async()=>{
+  const {recovery}=world();await recovery.finalize(event(),CONTEXT);
+  assert.equal(recovery.admit({...event(),nativeRetryToolsAllowState:nativeScope()},CONTEXT),undefined);
+  assert.equal(recovery.admit({...event(),nativeRetryToolsAllowState:nativeScope(CONTEXT,{toolsAllow:Object.freeze(['pixel_ods_mcp','pixel_ods_notes'])})},CONTEXT),undefined);
+});
+
+test('missing/reset/foreign/widened native scope blocks the same owner run and cannot be revived',async()=>{
+  for(const value of [undefined,null,Object.freeze({version:1,active:false,ownerRunId:CONTEXT.runId,toolsAllow:null}),
+    nativeScope(CONTEXT,{version:2}),nativeScope(CONTEXT,{ownerRunId:'foreign-owner'}),
+    nativeScope(CONTEXT,{toolsAllow:Object.freeze(['pixel_ods_notes','exec'])}),
+    nativeScope(CONTEXT,{toolsAllow:Object.freeze(['pixel_ods_notes','pixel_ods_notes'])}),
+    nativeScope(CONTEXT,{toolsAllow:Object.freeze(['pixel_ods_notes','pixel_ods_mcp','tool_call'])}),
+    nativeScope(CONTEXT,{toolsAllow:['pixel_ods_notes','pixel_ods_mcp']}),{...nativeScope()}]) {
+    const {recovery}=world();await recovery.finalize(event(),CONTEXT);
+    assert.equal(recovery.admit({...event(),nativeRetryToolsAllowState:value},CONTEXT).outcome,'block');
+    assert.equal(recovery.floor(tool('pixel_ods_notes'),CONTEXT).block,true);
+    assert.equal(recovery.admit({...event(),nativeRetryToolsAllowState:nativeScope()},CONTEXT).outcome,'block');
+  }
+});
+
+test('fresh owner run ID in the same chat is ordinary even before prompt observation',async()=>{
+  const {recovery}=world();await recovery.finalize(event(),CONTEXT);
+  recovery.admit(event(),CONTEXT); // The earlier run lost its native scope.
+  const fresh={...CONTEXT,runId:'brand-new-owner'};
+  assert.equal(recovery.admit({runId:fresh.runId},fresh),undefined);
+  recovery.observe({prompt:'A fresh owner request'},fresh,fresh.runId);
+  assert.equal(recovery.admit({runId:fresh.runId},fresh),undefined);
+  assert.equal(recovery.floor(tool('exec'),fresh),undefined);
+});
+
+test('conflicting exact native IDs fail closed without using session-only admission',async()=>{
+  const {recovery}=world();await recovery.finalize(event(),CONTEXT);
+  assert.equal(recovery.admit({...event(),nativeRetryToolsAllowState:nativeScope()},{...CONTEXT,runId:'foreign'}).outcome,'block');
+  assert.equal(recovery.admit({runId:'unrelated'},{agentId:'pixel',runId:'unrelated',sessionId:CONTEXT.sessionId,sessionKey:SESSION}),undefined);
+});
 
 test('review latches synchronously before ONE stock native revise; only six supported native params',async()=>{
   const {recovery,calls}=world();

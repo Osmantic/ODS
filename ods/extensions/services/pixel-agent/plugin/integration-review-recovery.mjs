@@ -32,6 +32,9 @@ const REVIEW_INSTRUCTION = 'The current owner request has no native tool-attempt
   + 'without its exact returned status.';
 const BLOCK = Object.freeze({block:true,blockReason:'This recovery is review-only. Only builtin integration reads, '
   + 'native integration discovery and Ask-first approval preparation are available. No other tool may run.'});
+const ADMISSION_BLOCK = Object.freeze({outcome:'block',reason:'ods-review-native-scope-unavailable',
+  message:'Portal stopped this automatic review because its restricted native tool scope could not be verified. '
+    + 'Check the saved results and approvals before continuing.'});
 const requests = new Set(['action','live_status','explanation','draft','conversation']);
 const answers = new Set(['done','approval_needed','promise','unavailable','question','content']);
 const integrations = new Set(['pixel_ods_notes','pixel_ods_mcp']);
@@ -145,6 +148,25 @@ export function createIntegrationReviewRecovery({complete,eligible=()=>false,rea
       idempotencyKey:'ods-integration-review-only-v1',maxAttempts:1}};
   }
   return {
+    admit(event,context) {
+      // This gate runs before inference. Use exact native run IDs ONLY: a fresh
+      // owner turn in the same chat must not inherit an older review's latch.
+      const states=[stateFor(context),runs.get(event?.runId)].filter(state=>state?.reviewOnly);
+      if(!states.length)return;
+      const state=states[0];
+      const deny=()=>{state.cancelled=true;state.controller?.abort();return ADMISSION_BLOCK;};
+      if(states.some(value=>value!==state) || !same(state,identity(context))
+          || event?.runId!==undefined && event.runId!==state.runId || stopped || state.ended || state.cancelled)return deny();
+      let valid=false;
+      try {
+        const native=event?.nativeRetryToolsAllowState;
+        valid=Object.isFrozen(native) && native.version===1 && native.active===true
+          && native.ownerRunId===state.runId && Array.isArray(native.toolsAllow)
+          && Object.isFrozen(native.toolsAllow) && native.toolsAllow.length===integrations.size
+          && new Set(native.toolsAllow).size===integrations.size && native.toolsAllow.every(name=>integrations.has(name));
+      }catch { /* Malformed metadata cannot downgrade a known latched run. */ }
+      return valid?undefined:deny();
+    },
     observe(event,context,trustedOwnerRunId) {
       if(stopped)return;
       const id=identity(context),prior=stateFor(context);
