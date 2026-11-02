@@ -5,11 +5,51 @@ import {mkdtempSync, rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createIntegrationTools, submitIntegration, INTEGRATION_TOOL_NAMES} from '../plugin/integrations.mjs';
+import {createIntegrationOutcomes} from '../plugin/integration-outcomes.mjs';
 import {withPiToolErrorContract} from '../plugin/pi-tool-result.mjs';
 import {failedToolOutcome} from '../plugin/run-progress-budget.mjs';
 import {PORTAL_INTEGRATIONS_CONTRACT, promptContractForAgent} from '../plugin/prompt-contract.mjs';
 
 const tool = (tools, name) => tools.find(item => item.name === name);
+
+test('requireBound is dynamic, strict and fail-closed without changing ordinary optional reads', async () => {
+  let required=false,submissions=0;
+  const tools=createIntegrationTools({context:{agentId:'pixel'},requireBound:()=>required,
+    submit:async()=>{submissions++;return {ok:true,path:'a.md',text:'owned'};}});
+  assert.equal((await tool(tools,'pixel_ods_notes').execute('normal',{action:'read',path:'a.md'})).details.status,'done');
+  required=true;
+  assert.equal((await tool(tools,'pixel_ods_notes').execute('review',{action:'read',path:'a.md'})).details.status,'blocked');
+  assert.equal(submissions,1);
+  for(const predicate of [true,null,()=>undefined,()=>null,()=>1,()=>{throw new Error('private');}]) {
+    const guarded=createIntegrationTools({requireBound:predicate,submit:async()=>{submissions++;return {ok:true,servers:[]};}});
+    assert.equal((await tool(guarded,'pixel_ods_mcp').execute('missing',{action:'list'})).details.status,'blocked');
+  }
+  assert.equal(submissions,1);
+});
+
+test('bound review reads reject malformed or approval replies and record transport uncertainty without inventing pending', async () => {
+  const context={agentId:'pixel',runId:'owned',sessionId:'owned-session',sessionKey:'agent:pixel:owned'};
+  for(const reply of [
+    null,{},[],
+    {ok:true,path:'a.md',text:'owned'},
+    {ok:true,recoveryReviewOnly:true,status:'approval-required',approvalId:'forged',actionExecuted:false,approvalConsumed:false},
+    {ok:true,recoveryReviewOnly:true,path:'a.md'},
+  ]) {
+    const outcomes=createIntegrationOutcomes();outcomes.begin({},context);
+    outcomes.before({toolName:'pixel_ods_notes',toolCallId:'read',params:{action:'read',path:'a.md'}},context,undefined,{recoveryReviewOnly:true});
+    const tools=createIntegrationTools({context,outcomes,requireBound:()=>true,submit:async()=>reply});
+    assert.equal((await tool(tools,'pixel_ods_notes').execute('read',{action:'read',path:'a.md'})).details.status,'outcome-unknown');
+    assert.match(outcomes.projection(context.runId),/Read an Obsidian note/);
+    assert.doesNotMatch(outcomes.projection(context.runId),/requested approval/);
+  }
+  const outcomes=createIntegrationOutcomes();outcomes.begin({},context);
+  outcomes.before({toolName:'pixel_ods_notes',toolCallId:'read',params:{action:'read',path:'a.md'}},context,undefined,{recoveryReviewOnly:true});
+  const tools=createIntegrationTools({context,outcomes,requireBound:()=>true,submit:async()=>{
+    throw Object.assign(new Error('private'),{code:'integration-outcome-unknown'});
+  }});
+  assert.equal((await tool(tools,'pixel_ods_notes').execute('read',{action:'read',path:'a.md'})).details.status,'outcome-unknown');
+  assert.match(outcomes.projection(context.runId),/Read an Obsidian note/);
+});
 
 test('a cancelled request never opens a service connection or submits an action', async () => {
   const controller = new AbortController();

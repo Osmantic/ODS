@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {createIntegrationOutcomes, MAX_INTEGRATION_NOTICE} from '../plugin/integration-outcomes.mjs';
 import {createIntegrationTools, integrationRequest} from '../plugin/integrations.mjs';
+import {createIntegrationReviewRecovery} from '../plugin/integration-review-recovery.mjs';
 import {parseVerificationResponse, applyVerificationToCompletion} from '../host/pixel_ingress.mjs';
 
 const runId = 'chatcmpl_11111111-1111-4111-8111-111111111111';
@@ -27,6 +28,119 @@ async function execute(outcomes, id, value=params, reply=pending, ctx=context, s
   outcomes.after(event(id,value), {...ctx,toolCallId:id});
   return result;
 }
+
+async function latchedReview() {
+  const ctx={...context,modelProviderId:'ods-gateway',modelId:'ods/current'};
+  const owner='Read the Obsidian note Example.md.';
+  const recovery=createIntegrationReviewRecovery({eligible:()=>true,ready:()=>true,
+    complete:async()=>({agentId:'pixel',provider:'ods-gateway',model:'ods/current',text:JSON.stringify({
+      intent:'perform',answerNeedsEvidence:true,operations:[{source:'obsidian',verb:'read'}]})})});
+  recovery.observe({prompt:owner},ctx,ctx.runId);
+  const decision=await recovery.finalize({...ctx,nativeRetryToolsAllowVersion:1,nativeRetryToolChoiceVersion:1,
+    lastAssistantMessage:'I read it.',messages:[{role:'user',content:owner},{role:'assistant',content:'I read it.'}]},ctx);
+  assert.equal(decision.action,'revise');
+  return {ctx,recovery};
+}
+
+test('a dynamic native review latch closes hookless notes reads and catalogs, including missing outcome records', async () => {
+  const {ctx,recovery}=await latchedReview();let submissions=0;
+  const tools=createIntegrationTools({context:factory(ctx),outcomes:createIntegrationOutcomes(),
+    requireBound:scope=>recovery.isReviewOnly(scope),submit:async()=>{submissions++;return {ok:true,text:'never'};}});
+  for(const [name,value] of [['pixel_ods_notes',{action:'read',path:'Example.md'}],
+    ['pixel_ods_notes',{action:'search',query:'owned'}],['pixel_ods_mcp',{action:'list'}]]) {
+    assert.equal((await tools.find(t=>t.name===name).execute('hookless',value)).details.code,'integration-call-unbound');
+  }
+  assert.equal(submissions,0);
+});
+
+test('changed append/read/search/mode/source payloads cannot downgrade to optional normal reads', async () => {
+  const cases=[
+    ['pixel_ods_notes',{action:'write',path:'a.md',text:'owned',mode:'append'},'pixel_ods_notes',{action:'read',path:'a.md'}],
+    ['pixel_ods_notes',{action:'read',path:'a.md'},'pixel_ods_notes',{action:'read',path:'b.md'}],
+    ['pixel_ods_notes',{action:'search',query:'owned'},'pixel_ods_notes',{action:'search',query:'other'}],
+    ['pixel_ods_notes',{action:'write',path:'a.md',text:'owned',mode:'append'},'pixel_ods_notes',{action:'write',path:'a.md',text:'owned',mode:'create'}],
+    ['pixel_ods_notes',{action:'read',path:'a.md'},'pixel_ods_mcp',{action:'list'}],
+  ];
+  for(const [beforeName,beforeValue,afterName,afterValue] of cases) {
+    const outcomes=setup();let submissions=0;
+    outcomes.before(event('one',beforeValue,beforeName),{...context,toolCallId:'one'},undefined,{recoveryReviewOnly:true});
+    const tools=createIntegrationTools({context:factory(),outcomes,requireBound:()=>true,
+      submit:async()=>{submissions++;return {ok:true,text:'never'};}});
+    const result=await tools.find(t=>t.name===afterName).execute('one',afterValue);
+    assert.equal(result.details.code,'integration-call-unbound');assert.equal(submissions,0);
+  }
+});
+
+test('only exact bound review note reads/search/catalogs settle, carry the private host flag, and cannot replay', async () => {
+  for(const [name,value,reply] of [
+    ['pixel_ods_notes',{action:'read',path:'a.md'},{path:'a.md',text:'owned'}],
+    ['pixel_ods_notes',{action:'search',query:'owned'},{results:[]}],
+    ['pixel_ods_mcp',{action:'list'},{servers:[]}],
+  ]) {
+    const outcomes=setup(),submissions=[];
+    outcomes.before(event('one',value,name),{...context,toolCallId:'one'},undefined,{recoveryReviewOnly:true});
+    const tools=createIntegrationTools({context:factory(),outcomes,requireBound:()=>true,
+      submit:async payload=>{submissions.push(payload);return {ok:true,...reply,recoveryReviewOnly:true};}});
+    const tool=tools.find(t=>t.name===name),result=await tool.execute('one',value);
+    assert.equal(result.details.status,'done');assert.equal(result.isError,undefined);
+    assert.deepEqual(submissions,[{...integrationRequest(name,value,context),recoveryReviewOnly:true}]);
+    assert.equal(outcomes.projection(runId),undefined,'settled reads do not invent pending or approval notices');
+    assert.equal((await tool.execute('one',value)).details.code,'integration-call-unbound');
+    assert.equal(submissions.length,1);
+  }
+});
+
+test('native deferred review reads share one exact parent/child ticket and cannot change their arguments', async () => {
+  for(const changed of [false,true]) {
+    const outcomes=setup(),value={action:'read',path:'a.md'},child='tool_search_code:parent:pixel_ods_notes:1';
+    outcomes.before(event('parent',{id:'openclaw:pixel-ods:pixel_ods_notes',args:value},'tool_call'),
+      {...context,toolCallId:'parent'},undefined,{recoveryReviewOnly:true});
+    const concrete=changed?{...value,path:'b.md'}:value;
+    const decision=outcomes.before(event(child,concrete,'pixel_ods_notes'),{...context,toolCallId:child},undefined,{recoveryReviewOnly:true});
+    let submissions=0;
+    const tools=createIntegrationTools({context:factory(),outcomes,requireBound:()=>true,
+      submit:async()=>{submissions++;return {ok:true,path:'a.md',text:'owned',recoveryReviewOnly:true};}});
+    const result=await tools.find(t=>t.name==='pixel_ods_notes').execute(child,concrete);
+    assert.equal(submissions,changed?0:1);assert.equal(result.details.status,changed?'blocked':'done');
+    if(changed)assert.equal(decision.block,true);
+  }
+});
+
+test('known review lifetime remains restrictive for session-only factories after end/cancel/eviction and same-run fallback', async () => {
+  for(const terminal of ['end','cancel','evict','fallback']) {
+    const {ctx,recovery}=await latchedReview(),outcomes=createIntegrationOutcomes();outcomes.begin({},ctx);
+    const read={action:'read',path:'a.md'};let submissions=0;
+    const tools=createIntegrationTools({context:factory(ctx),outcomes,requireBound:scope=>recovery.isReviewOnly(scope),
+      submit:async()=>{submissions++;return {ok:true,path:'a.md',text:'owned',recoveryReviewOnly:true};}});
+    if(terminal==='end'){outcomes.end({success:true},ctx);recovery.end({runId:ctx.runId},ctx);}
+    if(terminal==='cancel'){outcomes.cancelUser('ods-'+'a'.repeat(64));recovery.cancelSession(ctx.sessionKey);}
+    if(terminal==='evict')outcomes.clear();
+    if(terminal==='fallback'){outcomes.begin({},ctx);recovery.observe({prompt:'wrapper'},ctx,ctx.runId);}
+    assert.equal(recovery.isReviewOnly(factory(ctx)),true,terminal);
+    assert.equal((await tools.find(t=>t.name==='pixel_ods_notes').execute('absent',read)).details.code,'integration-call-unbound');
+    assert.equal(submissions,0,terminal);
+  }
+});
+
+test('normal first-pass note reads/catalogs remain optional and a fresh owner cannot give an exact old run its new ticket', async () => {
+  const {ctx,recovery}=await latchedReview(),outcomes=createIntegrationOutcomes();outcomes.begin({},ctx);
+  const fresh={...ctx,runId:'chatcmpl_22222222-2222-4222-8222-222222222222'};
+  recovery.observe({prompt:'Read a note.'},fresh,fresh.runId);outcomes.begin({},fresh);
+  let submissions=0;const read={action:'read',path:'a.md'};
+  const old=createIntegrationTools({context:ctx,outcomes,requireBound:scope=>recovery.isReviewOnly(scope),
+    submit:async()=>{submissions++;return {ok:true,path:'a.md',text:'owned'};}});
+  outcomes.before(event('reused',read,'pixel_ods_notes'),{...fresh,toolCallId:'reused'},undefined,{recoveryReviewOnly:true});
+  assert.equal((await old.find(t=>t.name==='pixel_ods_notes').execute('reused',read)).details.code,'integration-call-unbound');
+  const ordinary=createIntegrationOutcomes();ordinary.begin({},fresh);
+  const tools=createIntegrationTools({context:factory(fresh),outcomes:ordinary,requireBound:scope=>recovery.isReviewOnly(scope),
+    submit:async payload=>{submissions++;return payload.action==='mcp-tools'?{ok:true,servers:[]}:{ok:true,path:'a.md',text:'owned'};}});
+  assert.equal((await tools.find(t=>t.name==='pixel_ods_notes').execute('read',read)).details.status,'done');
+  assert.equal((await tools.find(t=>t.name==='pixel_ods_mcp').execute('catalog',{action:'list'})).details.status,'done');
+  assert.equal(submissions,2);assert.equal(ordinary.reviewStartClear(fresh),true,'normal read tracking is unchanged');
+  // A captured session-only native definition cannot prove its old run after
+  // a new owner. The pinned SDK's definition lifecycle is the boundary for
+  // that unsupported direct invocation; no runId is fabricated here.
+});
 
 test('review start is true only for an exact current known owner with zero admitted calls', () => {
   const outcomes=setup();
@@ -523,7 +637,7 @@ test('index wires only native admissions/direct outcomes and both existing deliv
   assert.match(source,/integrationOutcomes\.before\(event, context, decision,\s*\{recoveryReviewOnly:/);
   assert.ok(source.indexOf('integrationReviewRecovery.floor(event, context)')
     < source.indexOf('await toolLoopGuard.beforeToolCall(event, context'));
-  assert.match(source,/createIntegrationTools\(\{context, outcomes:integrationOutcomes\}\)/);
+  assert.match(source,/createIntegrationTools\(\{context, outcomes:integrationOutcomes,\s*requireBound:factoryContext=>integrationReviewRecovery\.isReviewOnly\(factoryContext\)\}\)/);
   assert.match(source,/integrationOutcomes\.verification\(/);
   assert.match(source,/integrationOutcomes\.channel\(event, toolLoopGuard\.replyPayloadSending\(event\)\)/);
   assert.match(source,/integrationOutcomes\.cancelUser\(parsed\.user\)/);
