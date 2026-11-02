@@ -218,6 +218,14 @@ def test_lock_busy_is_refused(install, server, hub):
 
 def test_worker_launch_failure_releases_lifecycle(install, server, hub, monkeypatch):
     real_thread = threading.Thread
+    real_response = agent.json_response
+    response_state = []
+
+    def record_response(handler, status, payload):
+        if status == 500:
+            with agent._model_lifecycle_state_lock:
+                response_state.append((agent._model_lifecycle_lock.locked(), agent._model_lifecycle_operation))
+        return real_response(handler, status, payload)
 
     def failing_thread(*args, **kwargs):
         target = kwargs.get("target")
@@ -226,9 +234,11 @@ def test_worker_launch_failure_releases_lifecycle(install, server, hub, monkeypa
         return real_thread(*args, **kwargs)
 
     monkeypatch.setattr(agent.threading, "Thread", failing_thread)
+    monkeypatch.setattr(agent, "json_response", record_response)
     code, data = _request(server, "/v1/model/download", method="POST",
                           body={"model_id": MODEL_ID})
     assert code == 500, data
+    assert response_state == [(False, None)], "failure response must follow lifecycle cleanup"
     assert not agent._model_lifecycle_lock.locked()
     with agent._model_lifecycle_state_lock:
         assert agent._model_lifecycle_operation is None

@@ -158,6 +158,7 @@ tests/test_hf_manifest_verify.py
 tests/test_model_lifecycle_lock.py
 tests/test_model_lifecycle_handoff.py
 tests/test_model_transition_journal.py
+tests/test_compose_engine_transition.py
 tests/test_model_snapshot_delete.py
 tests/test_vllm_snapshot_presence.py
 tests/test_host_agent_vllm.py

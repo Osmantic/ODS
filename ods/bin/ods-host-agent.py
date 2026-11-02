@@ -4792,11 +4792,14 @@ def _publish_activation_route(env: dict, model_id: str, proof: dict, capabilitie
             or not isinstance(proof.get("contextLength"), int)
             or proof["contextLength"] <= 0):
         raise RuntimeError("Cannot publish an unverified model-router target")
+    backend_kind, endpoint_id, native_route = _initial_switchboard_backend(env)
+    if backend_kind == "vllm" and proof["identity"] != str(env.get("VLLM_SERVED_MODEL") or "").strip():
+        raise RuntimeError("Cannot publish a different vLLM served identity")
     return _switchboard_state.record_verified_route(
         INSTALL_DIR / "data" / "model-state.json", catalog_id=str(model_id),
         runtime_model_id=proof["identity"], proof_identity=proof["identity"],
-        backend_kind="llama-server", endpoint_id="llama-server-default",
-        native_route=None, context_length=proof["contextLength"],
+        backend_kind=backend_kind, endpoint_id=endpoint_id,
+        native_route=native_route, context_length=proof["contextLength"],
         capabilities=capabilities,
     )
 
@@ -10460,6 +10463,11 @@ def _run_update_script(action: str, *args: str, timeout: int | None, lifecycle_f
     if script is None:
         raise FileNotFoundError("ods-update.sh not found")
     cmd = _update_command(script, action, *args)
+    return _run_lifecycle_command(cmd, timeout=timeout, lifecycle_fd=lifecycle_fd)
+
+
+def _run_lifecycle_command(cmd: list[str], *, timeout: int | None, lifecycle_fd: int | None = None) -> subprocess.CompletedProcess:
+    """Bound a model/update child and keep its installation lease inherited."""
     fd = lifecycle_fd
     if not sys.platform.startswith("linux"):
         return subprocess.run(
@@ -10518,7 +10526,7 @@ def _run_update_script(action: str, *args: str, timeout: int | None, lifecycle_f
                 try:
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    logger.error("Update process did not exit after SIGKILL: pid=%s", proc.pid)
+                    logger.error("Lifecycle process did not exit after SIGKILL: pid=%s", proc.pid)
         raise
     return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
 
@@ -14898,6 +14906,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             json_response(self, 409, _model_lifecycle_conflict("model download", active))
             return
         worker_started = False
+        startup_error = None
         try:
             # Resolve the store and reread active identity only after admission.
             models_dir = _model_download_directory()
@@ -14965,11 +14974,15 @@ class AgentHandler(BaseHTTPRequestHandler):
                     raise
         except (ImportError, OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
             logger.warning("Cannot start vLLM download: %s", exc)
-            json_response(self, 500, {"error": f"Could not start download: {exc}"})
-            return
+            startup_error = {"error": f"Could not start download: {exc}"}
         finally:
             if not worker_started:
                 _end_model_lifecycle("model_download")
+        if startup_error is not None:
+            # A failed launch owns no worker. Release admission before the
+            # client sees failure and can immediately retry the operation.
+            json_response(self, 500, startup_error)
+            return
         json_response(self, 200, {"status": "started", "model_id": model_id})
 
 
@@ -21951,6 +21964,18 @@ def _failed_llama_server_log_excerpt(container: str = "ods-llama-server") -> str
         return ""
 
 
+def _compose_stage_engine(service: str, flags: list[str], *, expected: dict | None = None):
+    """Use the held model lease for owned, single-engine Compose staging."""
+    from model_switchboard import compose_runtime
+    fd = _model_lifecycle_lock.lease_fd
+    if fd is None:
+        raise RuntimeError("Compose engine staging requires the model lifecycle lease")
+    return compose_runtime.stage(
+        INSTALL_DIR, flags, service, lease_fd=fd, expected=expected,
+        run=lambda argv, timeout: _run_lifecycle_command(argv, timeout=timeout, lifecycle_fd=fd),
+    )
+
+
 def _compose_restart_llama_server(env: dict):
     """Restart llama-server via docker compose (host-native path).
 
@@ -21985,18 +22010,15 @@ def _compose_restart_llama_server(env: dict):
         # the transaction atomically replaces models.ini or other config files.
         # A strict stop followed by a non-forced up can make rollback fail on
         # an already-stopped candidate or reuse a stale bind mount.
-        _run(
-            ["docker", "compose"]
-            + compose_flags
-            + [
-                "up",
-                "-d",
-                "--force-recreate",
-                "--no-deps",
-                "llama-server",
-            ],
-            300,
-        )
+        if sys.platform.startswith("linux"):
+            _compose_stage_engine("llama-server", compose_flags)
+        else:
+            _run(
+                ["docker", "compose"]
+                + compose_flags
+                + ["up", "-d", "--force-recreate", "--no-deps", "llama-server"],
+                300,
+            )
     else:
         # No compose flags — cannot use compose. Fall back to the inspected
         # container recreation path, which applies the current model, context,

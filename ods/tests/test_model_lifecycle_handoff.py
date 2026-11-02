@@ -20,7 +20,7 @@ SHELL_LIB = REPO_ROOT / "installers" / "lib" / "model-lifecycle-lock.sh"
 
 def _extract_defs():
     tree = ast.parse(HOST_AGENT.read_text())
-    wanted = {"_ModelLifecycleMutex", "_run_update_script"}
+    wanted = {"_ModelLifecycleMutex", "_run_update_script", "_run_lifecycle_command", "_compose_stage_engine"}
     nodes = [n for n in tree.body if isinstance(n, (ast.ClassDef, ast.FunctionDef)) and n.name in wanted]
     assert {n.name for n in nodes} == wanted
     return nodes
@@ -28,11 +28,8 @@ def _extract_defs():
 
 @pytest.fixture
 def host_ns(tmp_path, monkeypatch):
-    sys.path.insert(0, str(REPO_ROOT / "bin"))
-    try:
-        import model_lifecycle_lock  # noqa: F401
-    finally:
-        sys.path.pop(0)
+    monkeypatch.syspath_prepend(str(REPO_ROOT / "bin"))
+    import model_lifecycle_lock
 
     lock_root = tmp_path / "locks"
     lock_root.mkdir(mode=0o700)
@@ -262,3 +259,29 @@ def test_shell_rejects_wrong_inherited_descriptor(host_ns, tmp_path):
         locks.acquire(install).close()
     finally:
         os.close(fd)
+
+
+def test_host_engine_runner_passes_held_lease_to_child(host_ns, monkeypatch):
+    from model_switchboard import compose_runtime
+    mutex = host_ns["_ModelLifecycleMutex"]()
+    host_ns["_model_lifecycle_lock"] = mutex
+    expected = {"captured": "source-generation"}
+
+    def stage(install, flags, service, *, lease_fd, run, expected):
+        assert install == host_ns["INSTALL_DIR"]
+        assert flags == ["-f", "fixture.yml"] and service == "vllm-server"
+        assert expected == {"captured": "source-generation"}
+        assert lease_fd == mutex.lease_fd
+        result = run([sys.executable, "-c",
+                      "import os,fcntl; fd=int(os.environ['ODS_MODEL_LIFECYCLE_LOCK_FD']); "
+                      "fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB); print('lease-owned')"], 5)
+        assert result.returncode == 0 and result.stdout.strip() == "lease-owned"
+        return {"staged": True}
+
+    monkeypatch.setattr(compose_runtime, "stage", stage)
+    with pytest.raises(RuntimeError, match="requires the model lifecycle lease"):
+        host_ns["_compose_stage_engine"]("vllm-server", ["-f", "fixture.yml"], expected=expected)
+    with mutex:
+        assert host_ns["_compose_stage_engine"]("vllm-server", ["-f", "fixture.yml"], expected=expected) == {"staged": True}
+        with pytest.raises(BlockingIOError):
+            host_ns["_process_model_lock"].acquire(host_ns["INSTALL_DIR"])
