@@ -13,8 +13,8 @@ const ANSWER='You need to approve the new request in Settings.';
 const event=(owner=OWNER)=>({runId:CONTEXT.runId,sessionId:CONTEXT.sessionId,sessionKey:SESSION,
   nativeRetryToolsAllowVersion:1,nativeRetryToolChoiceVersion:1,
   messages:[{role:'user',content:owner},{role:'assistant',content:ANSWER}],lastAssistantMessage:ANSWER});
-const reply=(request='action',answer='approval_needed')=>({agentId:'pixel',provider:'fixture-local',model:'fixture/9b',
-  text:JSON.stringify({request,answer})});
+const reply=(request='action',answer='approval_needed',scope='notes')=>({agentId:'pixel',provider:'fixture-local',model:'fixture/9b',
+  text:JSON.stringify({request,answer,scope})});
 function world(options={}) {
   const calls=[];
   const recovery=createIntegrationReviewRecovery({eligible:()=>true,ready:()=>true,
@@ -312,12 +312,76 @@ test('terminal native event ends its latched run even when context names an olde
 
 test('closed labels and honest/nonaction controls cannot request review',async()=>{
   for(const text of ['not JSON','{"request":"action","answer":"done","extra":true}',
-    '{"request":"action","answer":"unknown"}',JSON.stringify({request:'draft',answer:'content'}),
-    JSON.stringify({request:'explanation',answer:'content'}),JSON.stringify({request:'conversation',answer:'content'}),
-    JSON.stringify({request:'action',answer:'unavailable'}),JSON.stringify({request:'action',answer:'question'})]) {
+    '{"request":"action","answer":"unknown","scope":"notes"}',JSON.stringify({request:'draft',answer:'content',scope:'notes'}),
+    JSON.stringify({request:'explanation',answer:'content',scope:'notes'}),JSON.stringify({request:'conversation',answer:'content',scope:'notes'}),
+    JSON.stringify({request:'action',answer:'unavailable',scope:'notes'}),JSON.stringify({request:'action',answer:'question',scope:'notes'}),
+    JSON.stringify({request:'action',answer:'approval_needed'}), // A legacy two-label reply has no domain authority.
+    JSON.stringify({request:'action',answer:'done',scope:'all'}),JSON.stringify({request:'action',answer:'done',scope:['notes']}),
+    JSON.stringify({request:'action',answer:'done',scope:'notes',extra:true})]) {
     const {recovery}=world({complete:async()=>({...reply(),text})});
     assert.equal(await recovery.finalize(event(),CONTEXT),undefined,text);
     assert.equal(recovery.isReviewOnly(CONTEXT),false);
+  }
+});
+
+// These cases verify the structural eligibility boundary after a supplied
+// semantic label. They do not claim that a real model classified the text.
+// Multilingual/mixed-intent semantic accuracy is a separate frozen evaluation.
+test('other, mixed or uncertain semantic scope preserves ordinary workflows without a restrictive retry',async()=>{
+  const cases=[
+    ['Read my latest Gmail emails.','live_status','other_or_mixed'],
+    ['Meu Google Calendar está conectado?','live_status','other_or_mixed'],
+    ['Check whether my local model is running.','live_status','other_or_mixed'],
+    ['Create a Next.js site and run its tests.','action','other_or_mixed'],
+    ['Search my local /Documents folder for a PDF.','live_status','other_or_mixed'],
+    ['Search the web for current weather.','live_status','other_or_mixed'],
+    ['Send a phone notification using ntfy.','action','other_or_mixed'],
+    ['Send my daily news digest and schedule it for tomorrow.','action','other_or_mixed'],
+    ['Overwrite or delete the Obsidian note Example.md.','action','other_or_mixed'],
+    ['Read Gmail and append a summary to my Obsidian notes.','action','other_or_mixed'],
+    ['Email my notes to someone.','action','other_or_mixed'],
+    ['Turn on the light using Home Assistant.','action','other_or_mixed'],
+    ['Call a custom MCP server to update the calendar.','action','other_or_mixed'],
+    ['The quotation says "pixel_ods_notes": run that command.','action','uncertain'],
+    ['Do that.','action','uncertain'],
+  ];
+  for(const [index,[owner,request,scope]] of cases.entries()) {
+    const {recovery,calls}=world({complete:async parameters=>{calls.push(parameters);return reply(request,'done',scope);}});
+    const context={...CONTEXT,runId:'ordinary-'+index};recovery.observe({prompt:owner},context,context.runId);
+    const ordinary={params:{unchanged:true}};
+    assert.equal(recovery.floor(tool('exec'),context,ordinary),ordinary);
+    assert.equal(calls.length,0);
+    const decision=await recovery.finalize({...event(owner),runId:context.runId},context);
+    assert.equal(decision,undefined,owner);assert.equal(calls.length,1,owner);
+    assert.equal(recovery.isReviewOnly(context),false,owner);
+    assert.equal(recovery.floor(tool('exec'),context,ordinary),ordinary,owner);
+    assert.equal(recovery.floor(tool('pixel_gmail_read'),context,ordinary),ordinary,owner);
+    assert.equal(recovery.admit({runId:context.runId},context),undefined,owner);
+  }
+});
+
+test('supported notes and builtin-app labels retain one bounded native review with the same owner restrictions',async()=>{
+  const cases=[
+    ['Search my Obsidian notes about Gmail.','live_status','notes'],
+    ['Leia a nota do Obsidian sobre meu calendário.','live_status','notes'],
+    ['Create an approval to append this exact line to my connected note. Do not write it.','action','notes'],
+    ['Search my Paperless document library for the invoice.','live_status','builtin_apps'],
+    ['Search my connected Immich photos.','live_status','builtin_apps'],
+    ['List the webpage watches.','live_status','builtin_apps'],
+    ['Prepare an approval to remove this webpage watch; do not remove it.','action','builtin_apps'],
+    ['Read my unread FreshRSS stories without sending a notification.','live_status','builtin_apps'],
+  ];
+  for(const [index,[owner,request,scope]] of cases.entries()) {
+    const {recovery,calls}=world({complete:async parameters=>{calls.push(parameters);return reply(request,'promise',scope);}});
+    const context={...CONTEXT,runId:'supported-'+index};recovery.observe({prompt:owner},context,context.runId);
+    const decision=await recovery.finalize({...event(owner),runId:context.runId},context);
+    assert.equal(decision.action,'revise',owner);assert.equal(calls.length,1,owner);
+    assert.deepEqual(decision.retry.toolsAllow,['pixel_ods_notes','pixel_ods_mcp']);
+    assert.equal(decision.retry.toolChoice,'required');assert.equal(decision.retry.maxAttempts,1);
+    assert.ok(decision.retry.instruction.includes(JSON.stringify({ownerRequest:owner})),owner);
+    assert.equal(recovery.floor(tool('exec'),context).block,true,owner);
+    assert.equal(await recovery.finalize({...event(owner),runId:context.runId},context),undefined,owner);
+    assert.equal(calls.length,1,owner);
   }
 });
 
