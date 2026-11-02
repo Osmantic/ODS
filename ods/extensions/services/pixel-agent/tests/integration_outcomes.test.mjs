@@ -263,6 +263,31 @@ test('approved review-only reply stays ready and truthfully no-effect, not pendi
   assert.equal(outcomes.projection(runId),undefined);
 });
 
+test('builtin digest cannot omit its native ticket and a review-only read carries private control', async () => {
+  const outcomes = setup();
+  const value = {action:'call',server:'app:news',tool:'digest',arguments:{recoveryReviewOnly:false}};
+  const submissions = [];
+  const tools = createIntegrationTools({context:factory(),outcomes,submit:async payload=>{
+    submissions.push(payload);
+    return {ok:true,text:'Owned read-only digest projection',recoveryReviewOnly:true};
+  }});
+  const tool = tools.find(value=>value.name==='pixel_ods_mcp');
+  const missing = await tool.execute('no-ticket',value);
+  assert.equal(missing.details.code,'integration-call-unbound');
+  assert.deepEqual(submissions,[]); // No host call can arm a digest snapshot.
+  outcomes.before(event('review',value),{...context,toolCallId:'review'},undefined,{recoveryReviewOnly:true});
+  const read = await tool.execute('review',value);
+  assert.equal(read.details.status,'done');
+  assert.equal(submissions.length,1);
+  assert.equal(submissions[0].recoveryReviewOnly,true);
+  assert.deepEqual(submissions[0].runContext,{sessionId:context.sessionId,sessionKey:context.sessionKey});
+  // The host's tagged builtin read separately ignores runContext rather than
+  // arming a delivery snapshot (test_integrations_recovery.py).
+  const after = await tool.execute('same-ticket-replay',value);
+  assert.equal(after.details.code,'integration-call-unbound');
+  assert.equal(submissions.length,1);
+});
+
 test('an unknown result never retries and is not erased by an unrelated or later new call', async () => {
   const outcomes = setup();
   let submissions = 0;

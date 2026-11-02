@@ -195,7 +195,7 @@ export function createIntegrationTools({submit = submitIntegration, context, out
       const refusal = outcomes?.refusal(payload, context);
       if (refusal) return Promise.resolve(text(refusal, {status:'blocked',code:'integration-outcome-unresolved'}, true));
       reservation = outcomes?.take(id, payload, context);
-      if (outcomes?.effectful(payload) && !reservation) {
+      if (outcomes && (payload.action === 'mcp-call' || outcomes.effectful(payload)) && !reservation) {
         return Promise.resolve(text('No integration action was submitted: this call has no matching current native admission.',
           {status:'blocked',code:'integration-call-unbound'}, true));
       }
