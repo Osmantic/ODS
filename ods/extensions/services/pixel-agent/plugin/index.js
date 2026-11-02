@@ -50,6 +50,7 @@ import { executionContext } from "./completion-assurance.mjs";
 import { createAskUserTool } from "./ask-user.mjs";
 import { createIntegrationTools } from "./integrations.mjs";
 import { createIntegrationOutcomes } from "./integration-outcomes.mjs";
+import { createIntegrationReviewRecovery } from "./integration-review-recovery.mjs";
 import { createTaskHooks } from "./integration-tasks.mjs";
 import { createPendingClarifications } from "./pending-clarification.mjs";
 import {
@@ -69,7 +70,7 @@ import { withCronCommandPayloadBlock } from "./cron-command-payload-guard.mjs";
 import { withPixelSubagentWorkspace } from "./subagent-workspace.mjs";
 import { createPublicPageReader, createPublicWebExtractTool } from "./web-extract.mjs";
 import { citationPageReadsAllowed, createHostCitationVerifier } from "./citation-verification.mjs";
-import { createStopSynthesisClient } from "./stop-synthesis.mjs";
+import { createStopSynthesisClient, defaultAgentId } from "./stop-synthesis.mjs";
 import { createExtensionRepositoryContext } from './extension-repository-context.mjs';
 
 const extensionRepositoryContext = createExtensionRepositoryContext({
@@ -131,6 +132,7 @@ let perplexicaAvailability;
 const bundleAdmission = createWorkspaceBundleAdmission();
 const artifactAdmission = createWorkspaceArtifactAdmission();
 const integrationOutcomes = createIntegrationOutcomes();
+let integrationReviewRecovery;
 
 // Restrict tool registration to the Pixel agent. Tools are only offered to the
 // agent id declared by this plugin (see openclaw.plugin.json); this guards the
@@ -401,6 +403,20 @@ export default definePluginEntry({
       // The per-result cap a tool-limit stop's result must fit (4,000 when unset).
       toolResultMaxChars: () => projectCapabilityOutputLimit(api.runtime?.config?.current?.() ?? api.config, AGENT_ID),
     });
+    integrationReviewRecovery ??= createIntegrationReviewRecovery({
+      complete: parameters => api.runtime.llm.complete(parameters),
+      eligible: runId => toolLoopGuard.continuationAllowed(runId),
+      ready: state => {
+        const config = api.runtime?.config?.current?.() ?? api.config;
+        const access = accessRuntime.status();
+        if (defaultAgentId(config) !== AGENT_ID || !access.available || access.phase !== 'idle') return false;
+        const agent = config.agents?.list?.find(value => value.id === AGENT_ID);
+        const selected = agent?.model?.primary ?? agent?.model ?? config.agents?.defaults?.model?.primary ?? config.agents?.defaults?.model;
+        if (typeof selected !== 'string' || !selected.includes('/')) return false;
+        const divider = selected.indexOf('/');
+        return state.modelProviderId === selected.slice(0,divider) && state.modelId === selected.slice(divider+1);
+      },
+    });
     const bundleExecution = createWorkspaceBundleExecution({
       readConfig: () => api.runtime?.config?.current?.() ?? api.config,
       createTools: createOpenClawCodingTools, resolveSandbox: resolveSandboxContext,
@@ -463,9 +479,13 @@ export default definePluginEntry({
       toolLoopGuard.observeRun(context, AGENT_ID, event, { privateBrowserAccess, workspaceRoot, executionHost, runTimeoutSeconds });
       // After delegation custody, which links a child or continuation to its
       // owner run: the shipped example's guard starts with the run.
-      if (!accessRuntime.isProbe(context)) { delegationDelivery.observe(event,context); toolLoopGuard.observeExampleRun(context, AGENT_ID); }
+      if (!accessRuntime.isProbe(context)) {
+        delegationDelivery.observe(event,context);
+        if (!integrationReviewRecovery.isReviewOnly(context)) toolLoopGuard.observeExampleRun(context, AGENT_ID);
+      }
       if (!accessRuntime.isProbe(context)) integrationOutcomes.begin(event, context, delegationDelivery.ownerRunFor(context));
       const ownerEvent = toolLoopGuard.ownerIntentEventForRun(context?.runId ?? event?.runId, event);
+      if (!accessRuntime.isProbe(context)) integrationReviewRecovery.observe(ownerEvent, context, delegationDelivery.ownerRunOf(context));
       if (!accessRuntime.isProbe(context)) { goalProgress.begin(ownerEvent, context); taskActivity.begin(ownerEvent, {...context,workspaceRoot}); }
       const contract = promptContractForAgent(context, AGENT_ID, ownerEvent, {
         verificationStatus: toolLoopGuard.verificationStatus(context?.runId),
@@ -475,7 +495,7 @@ export default definePluginEntry({
         privateBrowserAccess,
         executionHost,
       });
-      const repositoryEvidence = contract ? await extensionRepositoryContext(ownerEvent,
+      const repositoryEvidence = contract && !integrationReviewRecovery.isReviewOnly(context) ? await extensionRepositoryContext(ownerEvent,
         result => toolLoopGuard.observeRepositorySource(context?.runId ?? event?.runId, result)) : '';
       // Per-attempt, model-only context: not part of the cached system prompt.
       const cancelContext = toolLoopGuard.promptContextForRun(context?.runId ?? event?.runId);
@@ -535,20 +555,34 @@ export default definePluginEntry({
         accessRuntime.isProbe(context) ? undefined : delegationDelivery.admission(context));
     }
     api.on("agent_end", (event, context) => {
+      integrationReviewRecovery.end(event, context);
       integrationOutcomes.end(event, context);
       delegationDelivery.end(event,context);
       try {conversationImageLifecycle.observe(context);}catch {api.logger.warn('Portal conversation image custody could not be updated.');}
       toolLoopGuard.endPreviewRevalidation(event, context);
       toolLoopGuard.observeAgentEnd(event, context);
       if (!accessRuntime.isProbe(context)) {
-        goalProgress.finish(event, context); taskActivity.finish(event, context); void projectSnapshots.end(event, context);
+        goalProgress.finish(event, context); taskActivity.finish(event, context);
+        if (!integrationReviewRecovery.isReviewOnly(context)) void projectSnapshots.end(event, context);
       }
       if (!managedRuntime) return accessRuntime.finish({runId: event.runId}, context);
     });
     api.on("before_tool_call", async (event, context) => {
       if (accessRuntime.isProbe(context)) return;
+      integrationReviewRecovery.beforeTool(event, context);
       const interrupted=delegationDelivery.blocked(context,event);
       if (interrupted) return interrupted;
+      // This floor precedes repair/adaptation helpers, snapshots and every
+      // executor. The correction only reaches integration admission; a model
+      // cannot escape through exec/Operations or nested Tool Search code.
+      const reviewFloor = integrationReviewRecovery.floor(event, context);
+      if (reviewFloor || integrationReviewRecovery.isReviewOnly(context)) {
+        let decision = reviewFloor ?? accessRuntime.beforeTool(event, context);
+        decision = integrationOutcomes.before(event, context, decision, {recoveryReviewOnly:true}) ?? decision;
+        delegationDelivery.before(event, context, decision);
+        taskActivity.before(event, context, decision?.block === true);
+        return decision;
+      }
       let guard = withPixelCronDeliveryDefault(
         await toolLoopGuard.beforeToolCall(event, context, AGENT_ID,
           delegationDelivery.hasPendingChildren(context)),
@@ -560,7 +594,8 @@ export default definePluginEntry({
           storePath: resolveStorePath(runtimeConfig?.session?.store, {agentId: AGENT_ID})}), {resolveUserPath, resolveAgentWorkspaceDir});
       guard = withCronCommandPayloadBlock(guard, event, context);
       let decision = guard?.block ? guard : delegationDelivery.blocked(context,event) ?? goalProgress.before(event, context) ?? accessRuntime.beforeTool(event, context) ?? guard;
-      decision = integrationOutcomes.before(event, context, decision) ?? decision;
+      decision = integrationOutcomes.before(event, context, decision,
+        {recoveryReviewOnly:integrationReviewRecovery.isReviewOnly(context)}) ?? decision;
       delegationDelivery.before(event,context,decision);
       bundleAdmission.before(event, context, decision);
       artifactAdmission.before(event, context, decision);
@@ -576,6 +611,10 @@ export default definePluginEntry({
       integrationOutcomes.after(event, context);
       projectRunControl.after(event, context);
       accessRuntime.afterTool(event, context);
+      if (integrationReviewRecovery.isReviewOnly(context)) {
+        taskActivity.after(event, context);
+        return;
+      }
       if (!accessRuntime.isProbe(context)) {
         goalProgress.update(event, context);
         taskActivity.after(event, context);
@@ -662,14 +701,23 @@ export default definePluginEntry({
       toolLoopGuard.observeReplyEnd(event, context, AGENT_ID);
     });
     api.on("before_agent_finalize", async (event, context) => {
+      if (integrationReviewRecovery.isReviewOnly(context)) {
+        // No preview repair, citation fetch, goal continuation or second revise
+        // can add effects after the bounded integration review.
+        const decision = {action:'finalize',reason:'The review-only correction is complete; no automatic action may follow.'};
+        delegationDelivery.finalize(event, context, decision);
+        return decision;
+      }
       await toolLoopGuard.revalidateWorkspacePreview(event, context, AGENT_ID);
       await toolLoopGuard.recoverWorkspacePreview(event, context, AGENT_ID);
       await toolLoopGuard.verifyCitedPages(event, context, AGENT_ID);
       const guardDecision = toolLoopGuard.beforeAgentFinalize(event, context, AGENT_ID);
       const verification = toolLoopGuard.deliveryVerificationForRun(context?.runId ?? event?.runId);
-      const decision = goalProgress.finalize(event, context, {guardDecision,
+      let decision = goalProgress.finalize(event, context, {guardDecision,
         allowed:toolLoopGuard.continuationAllowed(context?.runId ?? event?.runId),
         waiting:verification?.status === 'pending'});
+      decision = await integrationReviewRecovery.finalize(event, context, decision);
+      if (integrationReviewRecovery.isReviewOnly(context)) toolLoopGuard.discardExampleRun(context.runId);
       delegationDelivery.finalize(event,context,decision);
       return decision;
     });
@@ -694,6 +742,7 @@ export default definePluginEntry({
         // Both synchronous fences are installed before either native abort
         // awaits drainage; queued announcements cannot steal owner custody.
         const delegatedPending=delegationDelivery.cancel(parsed.user);
+        integrationReviewRecovery.cancelSession(`agent:${AGENT_ID}:openai-user:${parsed.user}`);
         integrationOutcomes.cancelUser(parsed.user);
         const compactionPending=contextCompaction.cancelPending(parsed.user);
         const parentPending=toolLoopGuard.abortUserRun(parsed.user);
@@ -974,7 +1023,11 @@ export default definePluginEntry({
     // Finished scheduled tasks notify the owner; the daily news digest is kept as a cron job.
     const taskHooks = createTaskHooks({warn: message => api.logger.warn(message)});
     api.on("gateway_start", (event, context) => taskHooks.gatewayStart(event, context));
-    api.on("gateway_stop", () => {integrationOutcomes.clear(); return taskHooks.gatewayStop();});
+    api.on("gateway_stop", async () => {
+      await integrationReviewRecovery.stop();
+      integrationOutcomes.clear();
+      await taskHooks.gatewayStop();
+    });
     api.on("cron_changed", (event, context) => taskHooks.cronChanged(event, context));
     registerTool(api, createGoalProgressTool(), {names:['pixel_ods_goal']});
     registerTool(api, createActivityTool(), {names:['pixel_ods_activity']});

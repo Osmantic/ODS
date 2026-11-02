@@ -436,7 +436,9 @@ test('ingress rejects malformed, excessive or control-bearing overlay fields', (
 test('index wires only native admissions/direct outcomes and both existing delivery paths', () => {
   const source = readFileSync(new URL('../plugin/index.js',import.meta.url),'utf8');
   assert.match(source,/integrationOutcomes\.begin\(event, context, delegationDelivery\.ownerRunFor\(context\)\)/);
-  assert.match(source,/integrationOutcomes\.before\(event, context, decision\)/);
+  assert.match(source,/integrationOutcomes\.before\(event, context, decision,\s*\{recoveryReviewOnly:/);
+  assert.ok(source.indexOf('integrationReviewRecovery.floor(event, context)')
+    < source.indexOf('await toolLoopGuard.beforeToolCall(event, context'));
   assert.match(source,/createIntegrationTools\(\{context, outcomes:integrationOutcomes\}\)/);
   assert.match(source,/integrationOutcomes\.verification\(/);
   assert.match(source,/integrationOutcomes\.channel\(event, toolLoopGuard\.replyPayloadSending\(event\)\)/);

@@ -169,13 +169,14 @@ export function createIntegrationReviewRecovery({complete,eligible=()=>false,rea
       if(previous && previous.runId!==id.runId)previous.controller?.abort();
       runs.set(id.runId,state);latest.set(id.sessionKey,id.runId);
     },
-    beforeTool(_event,context) {
-      const state=stateFor(context);
+    beforeTool(event,context) {
+      const state=stateFor(context) ?? runs.get(event?.runId);
       if(state)state.attempted=true; // Includes pending, failed, refused and unknown.
     },
     floor(event,context,priorDecision) {
       if(priorDecision?.block)return priorDecision;
-      const state=knownLatch(context);
+      const eventState=runs.get(event?.runId);
+      const state=knownLatch(context) ?? (eventState?.reviewOnly ? eventState : undefined);
       if(!state)return priorDecision;
       if(!same(state,identity(context)) || !live(state))return BLOCK;
       const name=event?.toolName;

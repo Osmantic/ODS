@@ -461,6 +461,9 @@ export function createExampleGuard({warn = () => {}, now = Date.now} = {}) {
       observe(run.root);
       return undefined;
     },
+    // A permission-reducing integration correction cannot restore workspace
+    // files. Forget only that run, without settle, observe or expiry callbacks.
+    discard(runId) { runs.delete(runId); },
   };
 }
 

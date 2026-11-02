@@ -107,6 +107,7 @@ test('fallback and prompt reentry cannot reset latch; mismatched or missing cust
     assert.equal(recovery.isReviewOnly(context),true);
     assert.equal(recovery.floor(tool('exec'),context).block,true);
   }
+  assert.equal(recovery.floor({...tool('exec'),runId:CONTEXT.runId},{}).block,true);
   assert.equal(calls.length,1);
 });
 
