@@ -210,7 +210,7 @@ test('integration capability guidance is stable across requests and model contex
 });
 
 test('unsupported native systems refuse before connecting', async () => {
-  for (const platform of ['win32', 'darwin']) {
+  for (const platform of ['win32', 'freebsd']) {
     let connected = false;
     await assert.rejects(submitIntegration({action: 'mcp-tools'}, {platform,
       connect: () => { connected = true; throw new Error('Unsupported transport opened'); },
@@ -299,11 +299,16 @@ test('the Unix socket client sends one JSON line and reads one reply',
   }));
   await new Promise(resolve => server.listen(path, resolve));
   try {
-    const reply = await submitIntegration({action: 'notify', message: 'hi'}, {
-      platform: 'linux', connect: () => net.createConnection({path})});
-    assert.deepEqual(reply, {ok: true, sent: true});
-    assert.deepEqual(received, {schemaVersion: 1, action: 'notify', message: 'hi'});
-    await assert.rejects(submitIntegration({action: 'mcp-tools'}, {platform: 'darwin'}), /aren't available on macOS yet/);
+    for (const platform of ['linux', 'darwin']) {
+      const reply = await submitIntegration({action: 'notify', message: 'hi'}, {
+        platform, connect: options => {
+          assert.equal(options.path, platform === 'darwin'
+            ? '/private/var/lib/ods-pixel-integrations/control.sock' : '/run/ods-pixel-integrations/control.sock');
+          return net.createConnection({path});
+        }});
+      assert.deepEqual(reply, {ok: true, sent: true});
+      assert.deepEqual(received, {schemaVersion: 1, action: 'notify', message: 'hi'});
+    }
   } finally {
     server.close();
     rmSync(directory, {recursive: true, force: true});

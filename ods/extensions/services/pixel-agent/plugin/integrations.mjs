@@ -15,9 +15,9 @@ const APPROVAL_TEXT = 'This call created or found a pending request; the action 
 
 export function submitIntegration(payload, {connect = net.createConnection, platform = process.platform, signal} = {}) {
   return new Promise((resolve, reject) => {
-    if (platform !== 'linux') return reject(new Error(platform === 'darwin' ? "Portal integrations aren't available on macOS yet." : 'Portal integrations are not available on this system yet.'));
+    if (platform !== 'linux' && platform !== 'darwin') return reject(new Error('Portal integrations are not available on this system yet.'));
     if (signal?.aborted) return reject(new Error('Cancelled.'));
-    const socket = connect({path: SOCKET});
+    const socket = connect({path: platform === 'darwin' ? '/private/var/lib/ods-pixel-integrations/control.sock' : SOCKET});
     let buffer = Buffer.alloc(0), finished = false, dispatched = false;
     const finish = (error, value) => {
       if (finished) return;

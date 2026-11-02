@@ -19,6 +19,7 @@ import shutil
 import signal
 import selectors
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -39,6 +40,7 @@ ERROR_LINES = 20
 # The service runs with a minimal PATH; these are where owners usually install npx, uvx and friends.
 SEARCH_PATH = ("~/.local/bin", "~/bin", "~/.npm-global/bin", "~/.cargo/bin", "/usr/local/bin", "/usr/bin", "/bin",
                "/snap/bin", "/home/linuxbrew/.linuxbrew/bin")
+DARWIN_SEARCH_PATH = ("/opt/homebrew/bin", "/opt/homebrew/opt/node@24/bin", "/usr/local/opt/node@24/bin")
 PASSED_ENV = ("HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TZ")
 
 
@@ -117,6 +119,8 @@ def command_env(server, values):
     """The environment a local server starts with: a usable PATH, the owner's basics and its own variables."""
     argv = shlex.split(server["command"])
     folders = [str(pathlib.Path(argv[0]).parent)] if os.path.isabs(argv[0]) else []
+    if sys.platform == "darwin":
+        folders += list(DARWIN_SEARCH_PATH)
     folders += [os.path.expanduser(folder) for folder in SEARCH_PATH]
     folders += sorted(glob.glob(os.path.expanduser("~/.nvm/versions/node/*/bin")), reverse=True)[:1]
     env = {key: os.environ[key] for key in PASSED_ENV if key in os.environ}
@@ -345,8 +349,11 @@ class LocalServers:
         self.failures = {}
         self.starting = collections.defaultdict(threading.Lock)
         self.reaper = None
+        self.closed = threading.Event()
 
     def get(self, server, values, *, deadline=None):
+        if self.closed.is_set():
+            raise IntegrationError("mcp-stopping", "The integrations service is stopping.")
         deadline = time.monotonic() + SESSION_TIMEOUT if deadline is None else deadline
         candidate = LocalServer(server, values)
         with self.lock:
@@ -368,6 +375,9 @@ class LocalServers:
                 candidate.stop("it failed to start")
                 raise
             with self.lock:
+                if self.closed.is_set():
+                    candidate.stop("the service is stopping")
+                    raise IntegrationError("mcp-stopping", "The integrations service is stopping.")
                 self.running[server["id"]] = candidate
                 self.failures.pop(server["id"], None)
                 if self.reaper is None:
@@ -410,9 +420,22 @@ class LocalServers:
             self.stop(server_id, "it was not used for a while")
 
     def _reap(self):
-        while True:
-            time.sleep(min(30, self.idle_seconds))
+        while not self.closed.wait(min(30, self.idle_seconds)):
             self.stop_idle()
+
+    def close(self):
+        """Refuse new starts and reap every owned process group on shutdown."""
+        self.closed.set()
+        with self.lock:
+            children, self.running = list(self.running.values()), {}
+        errors = []
+        for child in children:
+            try:
+                child.stop("the service is stopping")
+            except OSError as error:
+                errors.append(error)
+        if errors:
+            raise errors[0]
 
 
 class McpSession:

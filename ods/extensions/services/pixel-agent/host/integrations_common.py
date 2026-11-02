@@ -1,7 +1,10 @@
 """Shared pieces of Portal integrations: errors, limits and the owner-only state files."""
 import base64
+import ctypes
 import email.message
+import errno
 import hashlib
+import hmac
 import http.client
 import io
 import math
@@ -9,6 +12,7 @@ import json
 import os
 import pathlib
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -29,6 +33,324 @@ ACTIVITY_LINES = 500
 # The owner's apps and the local addresses the ODS extension catalog publishes them on.
 APP_URLS = {"documents": "http://127.0.0.1:7807", "photos": "http://127.0.0.1:2283",
             "watch": "http://127.0.0.1:11039", "news": "http://127.0.0.1:11029"}
+NATIVE_AGENT_SOCKET = "/private/var/lib/ods-pixel-integrations/control.sock"
+NATIVE_AUTH_ROOT = pathlib.Path("/private/var/lib/ods-pixel-integrations-auth")
+OWNER_AUTH_DOMAIN = b"ODS native integrations owner request v1\0"
+OWNER_REPLY_DOMAIN = b"ODS native integrations owner reply v1\0"
+OWNER_AUTH_SECONDS = 5
+_HTTP_LOCK = threading.Lock()
+_HTTP_STOP = threading.Event()
+_HTTP_WORKERS = set()
+
+
+def _native_acl_library():
+    if sys.platform != 'darwin':
+        raise ValueError('native-integrations-acl-platform-required')
+    lib = ctypes.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True)
+    pointer = ctypes.c_void_p
+    signatures = {
+        'acl_get_fd_np': ([ctypes.c_int, ctypes.c_int], pointer),
+        'acl_valid': ([pointer], ctypes.c_int),
+        'acl_get_entry': ([pointer, ctypes.c_int, ctypes.POINTER(pointer)], ctypes.c_int),
+        'acl_get_tag_type': ([pointer, ctypes.POINTER(ctypes.c_int)], ctypes.c_int),
+        'acl_get_permset_mask_np': ([pointer, ctypes.POINTER(ctypes.c_uint64)], ctypes.c_int),
+        'acl_get_flagset_np': ([pointer, ctypes.POINTER(pointer)], ctypes.c_int),
+        'acl_get_flag_np': ([pointer, ctypes.c_int], ctypes.c_int),
+        'acl_get_qualifier': ([pointer], pointer),
+        'acl_free': ([pointer], ctypes.c_int),
+        'mbr_uid_to_uuid': ([ctypes.c_uint32, pointer], ctypes.c_int),
+    }
+    for name, (arguments, result) in signatures.items():
+        try:
+            function = getattr(lib, name)
+        except AttributeError:
+            raise ValueError('native-integrations-acl-api-unavailable') from None
+        function.argtypes, function.restype = arguments, result
+    return lib
+
+
+def verify_native_no_acl(fd):
+    lib = _native_acl_library()
+    ctypes.set_errno(0)
+    acl = lib.acl_get_fd_np(fd, 0x100)
+    if not acl:
+        if ctypes.get_errno() == errno.ENOENT:
+            return
+        raise ValueError('native-integrations-auth-custody-required')
+    try:
+        entry = ctypes.c_void_p()
+        ctypes.set_errno(0)
+        if (lib.acl_valid(acl) != 0 or lib.acl_get_entry(acl, 0, ctypes.byref(entry)) != -1
+                or ctypes.get_errno() != errno.EINVAL):
+            raise ValueError('native-integrations-auth-custody-required')
+    finally:
+        lib.acl_free(acl)
+
+
+def verify_native_owner_acl(fd, uid, *, directory=False):
+    """Exactly one non-inheriting owner-read ACL, queried on the open inode.
+
+    Public ABI: Apple Libc include/sys/acl.h and Libinfo membership.h. No ls
+    text/name parsing, staff-group grant, inherited ACE or write permission.
+    This is a descriptor ACL check, not a Seatbelt or same-UID isolation proof.
+    """
+    lib = _native_acl_library()
+    pointer = ctypes.c_void_p
+    acl = lib.acl_get_fd_np(fd, 0x100)
+    if not acl:
+        raise ValueError('native-integrations-owner-acl-required')
+    try:
+        entry, tag, mask = pointer(), ctypes.c_int(), ctypes.c_uint64()
+        if (lib.acl_valid(acl) != 0 or lib.acl_get_entry(acl, 0, ctypes.byref(entry)) != 0
+                or lib.acl_get_tag_type(entry, ctypes.byref(tag)) != 0 or tag.value != 1
+                or lib.acl_get_permset_mask_np(entry, ctypes.byref(mask)) != 0):
+            raise ValueError('native-integrations-owner-acl-required')
+        expected = (1 << 1) | (1 << 7) | (1 << 11) | ((1 << 3) if directory else (1 << 9))
+        if mask.value != expected:
+            raise ValueError('native-integrations-owner-acl-required')
+        for item in (acl, entry):
+            flags = pointer()
+            if lib.acl_get_flagset_np(item, ctypes.byref(flags)) != 0:
+                raise ValueError('native-integrations-owner-acl-required')
+            for flag in (1, 1 << 4, 1 << 5, 1 << 6, 1 << 7, 1 << 8, 1 << 17):
+                if lib.acl_get_flag_np(flags, flag) != 0:
+                    raise ValueError('native-integrations-owner-acl-required')
+        qualifier = lib.acl_get_qualifier(entry)
+        if not qualifier:
+            raise ValueError('native-integrations-owner-acl-required')
+        try:
+            wanted = (ctypes.c_ubyte * 16)()
+            if lib.mbr_uid_to_uuid(uid, wanted) != 0 or ctypes.string_at(qualifier, 16) != bytes(wanted):
+                raise ValueError('native-integrations-owner-acl-required')
+        finally:
+            lib.acl_free(qualifier)
+        ctypes.set_errno(0)
+        if lib.acl_get_entry(acl, -1, ctypes.byref(entry)) != -1 or ctypes.get_errno() != errno.EINVAL:
+            raise ValueError('native-integrations-owner-acl-required')
+    finally:
+        lib.acl_free(acl)
+
+
+def _native_auth_directory():
+    if sys.platform != 'darwin':
+        return os.open(NATIVE_AUTH_ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    parent = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for part in NATIVE_AUTH_ROOT.parts[1:]:
+            info = os.fstat(parent)
+            if info.st_uid != 0 or info.st_mode & 0o022:
+                raise ValueError('native-integrations-auth-custody-required')
+            verify_native_no_acl(parent)
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            os.close(parent)
+            parent = child
+        verify_native_no_acl(parent)
+        return parent
+    except BaseException:
+        os.close(parent)
+        raise
+
+
+def native_owner_key(uid=None):
+    """Read the root-provisioned credential, never a request/env-selected path.
+
+    The root-owned directory/file grant only the selected owner search/read
+    through Darwin ACLs. They cannot be replaced by that account. The gateway
+    profile explicitly denies this entire tree; physical Seatbelt/alias
+    qualification is additional to these descriptor/custody checks.
+    """
+    uid = os.getuid() if uid is None else uid
+    if type(uid) is not int or not 0 < uid < 4294967295:
+        raise ValueError("native-integrations-owner-required")
+    parent = _native_auth_directory()
+    try:
+        info = os.fstat(parent)
+        if info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o755:
+            raise ValueError("native-integrations-auth-custody-required")
+        folder = os.open(str(uid), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        try:
+            info = os.fstat(folder)
+            if info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o700:
+                raise ValueError("native-integrations-auth-custody-required")
+            if sys.platform == 'darwin':
+                verify_native_owner_acl(folder, uid, directory=True)
+            fd = os.open("owner.key", os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=folder)
+            try:
+                info = os.fstat(fd)
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_nlink != 1
+                        or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size != 32):
+                    raise ValueError("native-integrations-auth-custody-required")
+                if sys.platform == 'darwin':
+                    verify_native_owner_acl(fd, uid)
+                value = os.read(fd, 33)
+                if len(value) != 32:
+                    raise ValueError("native-integrations-auth-custody-required")
+                return value
+            finally:
+                os.close(fd)
+        finally:
+            os.close(folder)
+    finally:
+        os.close(parent)
+
+
+def validate_native_state(path, *, uid=None):
+    """Reject exposed/aliased state rather than chmod or adopt it at startup."""
+    uid = os.getuid() if uid is None else uid
+    if sys.platform != 'darwin' or type(uid) is not int or uid <= 0:
+        raise ValueError('native-integrations-owner-state-required')
+    parent = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(parent)
+        if info.st_uid != uid or stat.S_IMODE(info.st_mode) != 0o700:
+            raise ValueError('native-integrations-private-state-required')
+        verify_native_no_acl(parent)
+        entries = os.listdir(parent)
+        if len(entries) > 512:
+            raise ValueError('native-integrations-state-inventory-too-large')
+        for name in entries:
+            info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            if name == 'owner.sock' and stat.S_ISSOCK(info.st_mode):
+                if info.st_uid != uid or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1:
+                    raise ValueError('native-integrations-private-state-required')
+                continue
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError('native-integrations-private-state-required')
+            fd = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=parent)
+            try:
+                current = os.fstat(fd)
+                if (current.st_dev != info.st_dev or current.st_ino != info.st_ino or current.st_uid != uid
+                        or stat.S_IMODE(current.st_mode) != 0o600 or current.st_nlink != 1):
+                    raise ValueError('native-integrations-private-state-required')
+                verify_native_no_acl(fd)
+            finally:
+                os.close(fd)
+    finally:
+        os.close(parent)
+
+
+def prepare_native_state(path):
+    """Create private config components as the owner, never mkdir then root chown."""
+    if sys.platform != 'darwin' or os.getuid() <= 0:
+        raise ValueError('native-integrations-owner-state-required')
+    path = pathlib.Path(path)
+    if not path.is_absolute() or path.parts[-3:] != ('.config', 'ods', 'pixel-integrations'):
+        raise ValueError('native-integrations-owner-state-required')
+    parent = os.open(path.parents[2], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        home = os.fstat(parent)
+        if home.st_uid != os.getuid() or home.st_mode & 0o022:
+            raise ValueError('native-integrations-private-state-required')
+        for index, name in enumerate(('.config', 'ods', 'pixel-integrations')):
+            try:
+                os.mkdir(name, 0o700, dir_fd=parent)
+            except FileExistsError:
+                pass
+            child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            try:
+                info = os.fstat(child)
+                if info.st_uid != os.getuid() or info.st_mode & (0o077 if index == 2 else 0o022):
+                    raise ValueError('native-integrations-private-state-required')
+                verify_native_no_acl(child)
+                os.fsync(child)
+                os.fsync(parent)
+            except BaseException:
+                os.close(child)
+                raise
+            os.close(parent)
+            parent = child
+        os.fsync(parent)
+    finally:
+        os.close(parent)
+    validate_native_state(path)
+
+
+def owner_proof(key, nonce, request):
+    if type(key) is not bytes or len(key) != 32 or type(nonce) is not str or len(nonce) != 64:
+        raise ValueError("invalid-owner-authentication")
+    try:
+        challenge = bytes.fromhex(nonce)
+    except ValueError:
+        raise ValueError("invalid-owner-authentication") from None
+    if (len(challenge) != 32 or challenge.hex() != nonce or type(request) is not dict
+            or type(request.get('schemaVersion')) is not int or request['schemaVersion'] != 1):
+        raise ValueError("invalid-owner-authentication")
+    body = json.dumps(request, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False).encode()
+    if len(body) > MAX_REQUEST_BYTES:
+        raise ValueError("invalid-owner-authentication")
+    return hmac.new(key, OWNER_AUTH_DOMAIN + challenge + body, hashlib.sha256).hexdigest()
+
+
+def owner_auth_binding(server_nonce, client_nonce):
+    values = []
+    for value in (server_nonce, client_nonce):
+        if type(value) is not str or len(value) != 64:
+            raise ValueError('invalid-owner-authentication')
+        raw = bytes.fromhex(value)
+        if len(raw) != 32 or raw.hex() != value:
+            raise ValueError('invalid-owner-authentication')
+        values.append(raw)
+    return hashlib.sha256(b'ODS native integrations connection v1\0' + b''.join(values)).hexdigest()
+
+
+def owner_reply_proof(key, nonce, request, reply):
+    binding = bytes.fromhex(owner_proof(key, nonce, request))
+    if type(reply) is not dict:
+        raise ValueError('invalid-owner-response')
+    body = json.dumps(reply, sort_keys=True, separators=(',', ':'), ensure_ascii=True, allow_nan=False).encode()
+    if len(body) > MAX_RESPONSE_BYTES:
+        raise ValueError('invalid-owner-response')
+    return hmac.new(key, OWNER_REPLY_DOMAIN + bytes.fromhex(nonce) + binding + body, hashlib.sha256).hexdigest()
+
+
+def read_owner_frame(connection, limit, deadline):
+    """One complete frame under a whole-operation deadline, including drips."""
+    data = bytearray()
+    while b"\n" not in data and len(data) <= limit:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("owner authentication timed out")
+        connection.settimeout(remaining)
+        piece = connection.recv(min(65536, limit + 1 - len(data)))
+        if not piece:
+            break
+        data.extend(piece)
+    if not data.endswith(b"\n") or data.count(b"\n") != 1 or len(data) > limit:
+        raise ValueError("invalid-owner-frame")
+    return bytes(data)
+
+
+def native_owner_request(socket_path, request, timeout=130):
+    """Authenticate one exact request; connection loss never triggers a retry."""
+    key = native_owner_key()
+    connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    connection.settimeout(OWNER_AUTH_SECONDS)
+    authentication_deadline = time.monotonic() + OWNER_AUTH_SECONDS
+    try:
+        connection.connect(str(socket_path))
+        challenge = json.loads(read_owner_frame(connection, 256, authentication_deadline))
+        if (type(challenge) is not dict or set(challenge) != {"schemaVersion", "challenge"}
+                or type(challenge["schemaVersion"]) is not int or challenge["schemaVersion"] != 1):
+            raise ValueError("invalid-owner-authentication")
+        client_nonce = os.urandom(32).hex()
+        binding = owner_auth_binding(challenge['challenge'], client_nonce)
+        envelope = {"schemaVersion": 1, "clientNonce": client_nonce, "request": request,
+                    "proof": owner_proof(key, binding, request)}
+        remaining = authentication_deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('owner authentication timed out')
+        connection.settimeout(remaining)
+        connection.sendall((json.dumps(envelope, separators=(",", ":"), allow_nan=False) + "\n").encode())
+        result = json.loads(read_owner_frame(connection, MAX_RESPONSE_BYTES + 512, time.monotonic() + timeout))
+        if (type(result) is not dict or set(result) != {'schemaVersion', 'reply', 'proof'}
+                or type(result['schemaVersion']) is not int or result['schemaVersion'] != 1
+                or type(result['proof']) is not str or len(result['proof']) != 64
+                or any(char not in '0123456789abcdef' for char in result['proof'])
+                or not hmac.compare_digest(result['proof'], owner_reply_proof(key, binding, request, result['reply']))):
+            raise ValueError("invalid-owner-response")
+        return result['reply']
+    finally:
+        connection.close()
 
 
 class IntegrationError(Exception):
@@ -62,6 +384,18 @@ class _BufferedResponse(io.BytesIO):
         return self.status
 
 
+def stop_http_workers():
+    """Native shutdown: close admission and reap only our own subprocess handles."""
+    with _HTTP_LOCK:
+        _HTTP_STOP.set()
+        workers = list(_HTTP_WORKERS)
+    for worker in workers:
+        if worker.poll() is None:
+            worker.kill()
+    for worker in workers:
+        worker.wait(timeout=3)
+
+
 def safe_urlopen(request, *, timeout=NETWORK_TIMEOUT, max_response_bytes=MAX_RESPONSE_BYTES):
     """One bounded HTTP operation, including DNS, headers and the full body.
 
@@ -81,9 +415,13 @@ def safe_urlopen(request, *, timeout=NETWORK_TIMEOUT, max_response_bytes=MAX_RES
                           "responseLimit": max_response_bytes}).encode()
     if len(payload) > MAX_HTTP_WORKER_INPUT:
         raise IntegrationError("request-too-large", "The integration request is too large.")
-    worker = subprocess.Popen([sys.executable, "-I", "-B", str(pathlib.Path(__file__).resolve()), "--http-worker"],
-                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                              env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"})
+    with _HTTP_LOCK:
+        if _HTTP_STOP.is_set():
+            raise IntegrationError('integration-stopping', 'The integrations service is stopping; no new request was started.')
+        worker = subprocess.Popen([sys.executable, "-I", "-B", str(pathlib.Path(__file__).resolve()), "--http-worker"],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                  env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"})
+        _HTTP_WORKERS.add(worker)
     try:
         output, _ = worker.communicate(payload, timeout=max(0, deadline - time.monotonic()))
     except subprocess.TimeoutExpired:
@@ -91,6 +429,9 @@ def safe_urlopen(request, *, timeout=NETWORK_TIMEOUT, max_response_bytes=MAX_RES
         worker.communicate()  # No terminal receipt until this exact owned worker is reaped.
         raise IntegrationError("integration-timeout", "The integration request timed out; its result could not be verified. "
                                "Check the service before trying again.") from None
+    finally:
+        with _HTTP_LOCK:
+            _HTTP_WORKERS.discard(worker)
     if worker.returncode != 0 or len(output) > 2 * max_response_bytes + 128 * 1024:
         raise IntegrationError("integration-unavailable", "The integration request did not complete.")
     try:
@@ -407,6 +748,10 @@ class Store:
 
 
 if __name__ == "__main__":
-    if sys.argv[1:] != ["--http-worker"]:
+    if sys.argv[1:] == ["--http-worker"]:
+        _http_worker()
+    elif len(sys.argv) == 3 and sys.argv[1] == '--prepare-native-state':
+        prepare_native_state(sys.argv[2])
+        print('{"schemaVersion":1,"status":"prepared"}')
+    else:
         raise SystemExit(2)
-    _http_worker()

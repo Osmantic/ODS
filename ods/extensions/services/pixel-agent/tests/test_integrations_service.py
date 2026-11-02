@@ -261,18 +261,29 @@ class IntegrationsTests(unittest.TestCase):
 
     def test_each_socket_serves_its_own_role(self):
         root = pathlib.Path(self.temporary.name)
+        if sys.platform == 'darwin':
+            # Disposable transport fixture: do not read the installed native
+            # credential or claim this simulates root custody/Seatbelt.
+            import integrations_common
+            for target in (service, integrations_common):
+                patcher = mock.patch.object(target, 'native_owner_key', return_value=b'k' * 32)
+                patcher.start()
+                self.addCleanup(patcher.stop)
+            self.addCleanup(integrations_common._HTTP_STOP.clear)
+        (root / 'served').mkdir(mode=0o700)
         servers = service.start(root / "agent.sock", root / "served")
-        for server in servers:
-            self.addCleanup(server.server_close)
-            self.addCleanup(server.shutdown)
+        self.addCleanup(servers.close)
         owner_socket = root / "served" / "owner.sock"
+        def owner(request):
+            return (service.native_owner_request(owner_socket, {"schemaVersion": 1, **request})
+                    if sys.platform == 'darwin' else service.client(owner_socket, request))
         self.assertEqual(stat.S_IMODE(os.stat(owner_socket).st_mode), 0o600)
-        self.assertEqual(service.client(owner_socket, {"action": "get"})["settings"]["revision"], 0)
+        self.assertEqual(owner({"action": "get"})["settings"]["revision"], 0)
         refused = service.client(root / "agent.sock", {"action": "get"})
         self.assertEqual((refused["ok"], refused["error"]), (False, "forbidden"))
         off = service.client(root / "agent.sock", {"action": "notify", "message": "hi"})
         self.assertEqual(off["error"], "notifications-off")
-        self.assertEqual(service.client(owner_socket, {"action": "notify", "message": "hi"})["error"], "invalid-request")
+        self.assertEqual(owner({"action": "notify", "message": "hi"})["error"], "invalid-request")
 
     def test_approval_pings_carry_an_open_approvals_button_and_how_approval_works(self):
         link = "http://192.168.1.5:3001/settings?section=portal-integrations"
