@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import {createIntegrationReviewRecovery,REVIEW_LABEL_SYSTEM} from '../plugin/integration-review-recovery.mjs';
+import {defaultAgentId} from '../plugin/stop-synthesis.mjs';
 
 const SESSION='agent:pixel:openai-user:ods-'+ 'a'.repeat(64);
 const CONTEXT={agentId:'pixel',runId:'current-run',sessionId:'owned-session',sessionKey:SESSION,
@@ -252,4 +253,23 @@ test('actual index lifecycle hooks suppress workful helpers even with event-only
   callbacks.agent_end(nativeEvent,{});
   assert.deepEqual(effects,[]);
   assert.equal(recovery.floor({...tool('pixel_ods_notes'),runId:CONTEXT.runId},{}).block,true);
+});
+
+test('actual index readiness permits the admitted busy owner but refuses held transitions and changed routes',()=>{
+  const source=readFileSync(new URL('../plugin/index.js',import.meta.url),'utf8');
+  const start=source.indexOf('      ready: state => {',source.indexOf('integrationReviewRecovery ??='));
+  const end=source.indexOf('\n      },',start);
+  assert.ok(start>=0 && end>start);
+  const expression=source.slice(start+'      ready: '.length,end)+'\n}';
+  const config={agents:{defaults:{model:'fixture-local/fixture/9b'},list:[{id:'pixel',default:true}]}};
+  let access={available:true,phase:'busy'};
+  const ready=vm.runInNewContext('('+expression+')',{
+    api:{config},AGENT_ID:'pixel',defaultAgentId,accessRuntime:{status:()=>access},
+  });
+  assert.equal(ready(CONTEXT),true);
+  for(const phase of ['held','interrupted','unavailable']) {
+    access={available:true,phase};assert.equal(ready(CONTEXT),false,phase);
+  }
+  access={available:false,phase:'busy'};assert.equal(ready(CONTEXT),false);
+  access={available:true,phase:'busy'};assert.equal(ready({...CONTEXT,modelId:'other-model'}),false);
 });

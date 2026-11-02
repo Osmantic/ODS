@@ -409,7 +409,9 @@ export default definePluginEntry({
       ready: state => {
         const config = api.runtime?.config?.current?.() ?? api.config;
         const access = accessRuntime.status();
-        if (defaultAgentId(config) !== AGENT_ID || !access.available || access.phase !== 'idle') return false;
+        // Native admission marks the currently running owner as busy. That is
+        // expected here; a held/interrupted/unavailable transition is refused.
+        if (defaultAgentId(config) !== AGENT_ID || !access.available || !['idle','busy'].includes(access.phase)) return false;
         const agent = config.agents?.list?.find(value => value.id === AGENT_ID);
         const selected = agent?.model?.primary ?? agent?.model ?? config.agents?.defaults?.model?.primary ?? config.agents?.defaults?.model;
         if (typeof selected !== 'string' || !selected.includes('/')) return false;
