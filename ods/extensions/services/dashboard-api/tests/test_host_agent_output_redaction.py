@@ -414,13 +414,20 @@ CONTAINER_LOG = (f"starting with HF_TOKEN={HF}\n"
                  "prompt processed: n_prompt_tokens = 13\n")
 
 
+def _docker_logs(returncode, output):
+    """Fake ``docker logs`` writing to the caller's spooled stdout buffer."""
+    def run(*_args, **kwargs):
+        kwargs["stdout"].write(output.encode("utf-8"))
+        return types.SimpleNamespace(returncode=returncode)
+    return run
+
+
 @pytest.mark.parametrize("handler_name", ["_handle_logs", "_handle_service_logs"])
 def test_log_viewer_redacts_container_output(monkeypatch, handler_name):
     monkeypatch.setattr(_mod, "AGENT_API_KEY", "agent-key")
     monkeypatch.setattr(_mod, "validate_service_id", lambda handler, body: body["service_id"])
     monkeypatch.setattr(_mod, "_resolve_container_name", lambda sid: f"ods-{sid}")
-    monkeypatch.setattr(_mod.subprocess, "run",
-                        lambda *args, **kwargs: types.SimpleNamespace(returncode=0, stdout=CONTAINER_LOG))
+    monkeypatch.setattr(_mod.subprocess, "run", _docker_logs(0, CONTAINER_LOG))
     handler = _Handler({"service_id": "demo", "tail": 50})
 
     getattr(_mod.AgentHandler, handler_name)(handler)
@@ -435,8 +442,7 @@ def test_log_viewer_redacts_container_output(monkeypatch, handler_name):
 def test_log_viewer_failure_message_is_redacted(monkeypatch):
     monkeypatch.setattr(_mod, "AGENT_API_KEY", "agent-key")
     monkeypatch.setattr(_mod, "_resolve_container_name", lambda sid: f"ods-{sid}")
-    monkeypatch.setattr(_mod.subprocess, "run", lambda *args, **kwargs: types.SimpleNamespace(
-        returncode=1, stdout=f"error from daemon: HF_TOKEN={HF}"))
+    monkeypatch.setattr(_mod.subprocess, "run", _docker_logs(1, f"error from daemon: HF_TOKEN={HF}"))
     handler = _Handler({"service_id": "demo"})
 
     _mod.AgentHandler._handle_service_logs(handler)

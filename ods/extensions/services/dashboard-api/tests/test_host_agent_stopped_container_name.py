@@ -23,10 +23,11 @@ def _fake_docker(calls):
             listed = _STOPPED if "-a" in cmd else ""
             return subprocess.CompletedProcess(cmd, 0, stdout=listed + "\n", stderr="")
         if cmd[:2] == ["docker", "logs"]:
-            if cmd[-1] == _STOPPED:
-                return subprocess.CompletedProcess(cmd, 0, stdout="Traceback: boom\n", stderr="")
-            return subprocess.CompletedProcess(
-                cmd, 1, stdout=f"Error: No such container: {cmd[-1]}\n", stderr="")
+            # The agent spools docker logs into a file it passes as stdout.
+            returncode, output = ((0, "Traceback: boom\n") if cmd[-1] == _STOPPED
+                                  else (1, f"Error: No such container: {cmd[-1]}\n"))
+            kwargs["stdout"].write(output.encode("utf-8"))
+            return subprocess.CompletedProcess(cmd, returncode)
         raise AssertionError(f"unexpected command {cmd}")
     return run
 
