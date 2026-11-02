@@ -431,11 +431,29 @@ except Exception:
                 # shellcheck source=../../lib/pixel-uninstall.sh
                 source "$SCRIPT_DIR/lib/pixel-uninstall.sh"
             fi
+            if [[ -L "$INSTALL_DIR" ]]; then
+                error "Refusing template staging for symlinked install directory: $INSTALL_DIR"
+                return 1
+            fi
             if [[ -d "$INSTALL_DIR" && ! -w "$INSTALL_DIR" ]] && ods_sudo_available; then
                 ods_sudo chown -R "$(id -u):$(id -g)" "$INSTALL_DIR" 2>/dev/null || true
             fi
+            for _phase06_tmpl_dir in bin lib extensions vendor; do
+                if [[ -L "$INSTALL_DIR/$_phase06_tmpl_dir" ]]; then
+                    error "Refusing template staging to linked destination: $INSTALL_DIR/$_phase06_tmpl_dir"
+                    return 1
+                fi
+                if [[ -d "$INSTALL_DIR/$_phase06_tmpl_dir" ]] && find "$INSTALL_DIR/$_phase06_tmpl_dir" -type l -print -quit 2>/dev/null | grep -q .; then
+                    error "Refusing template staging to symlinked contents under: $INSTALL_DIR/$_phase06_tmpl_dir"
+                    return 1
+                fi
+            done
             mkdir -p "$INSTALL_DIR"
             _phase06_pixel_recovery_receipt="$INSTALL_DIR/.ods-pixel-recovery"
+            if [[ -L "$_phase06_pixel_recovery_receipt" ]]; then
+                error "Refusing template staging for symlinked recovery receipt: $_phase06_pixel_recovery_receipt"
+                return 1
+            fi
             printf '{"manager":"ods","recovery":"pixel-orphan-state"}\n' > "$_phase06_pixel_recovery_receipt" 2>/dev/null || true
             chmod 0600 "$_phase06_pixel_recovery_receipt" 2>/dev/null || true
 
@@ -445,7 +463,10 @@ except Exception:
                 for _phase06_tmpl_dir in bin lib extensions vendor; do
                     if [[ -d "$SCRIPT_DIR/$_phase06_tmpl_dir" ]]; then
                         mkdir -p "$INSTALL_DIR/$_phase06_tmpl_dir"
-                        cp -r "$SCRIPT_DIR/$_phase06_tmpl_dir"/. "$INSTALL_DIR/$_phase06_tmpl_dir/" 2>>"$LOG_FILE" || true
+                        if ! cp -r "$SCRIPT_DIR/$_phase06_tmpl_dir"/. "$INSTALL_DIR/$_phase06_tmpl_dir/" 2>>"$LOG_FILE"; then
+                            error "Could not stage verified $_phase06_tmpl_dir templates for orphaned Pixel cleanup."
+                            return 1
+                        fi
                     fi
                 done
             fi

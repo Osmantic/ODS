@@ -334,6 +334,88 @@ source "$SCRIPT_DIR/installers/phases/06-directories.sh"
         self.assertFalse(self.marker.exists(), "Marker must be unlinked upon successful cleanup")
         self.assertFalse(access_unit.exists(), "Retained unit must be removed upon successful cleanup")
 
+    def test_cleanup_refusal_on_linked_destination_preserves_canary_and_marker(self):
+        """Refuses staging to linked destination directories, preserving outside canaries and marker."""
+        payload = {
+            "manager": "ods",
+            "schema_version": 2,
+            "state": "installing",
+            "initial_active_state": "absent",
+            "install_dir": str(self.installed),
+            "pixel_source_ref": "d2a2b6be552126f294fb30ee5fb46872acf82c89",
+        }
+        self._write_marker(payload)
+
+        # An otherwise empty install directory whose bin points to an outside folder
+        if self.installed.exists():
+            shutil.rmtree(self.installed)
+        self.installed.mkdir(parents=True)
+        outside_bin = self.base / "outside-bin"
+        outside_bin.mkdir(parents=True, exist_ok=True)
+        outside_canary = outside_bin / "ods-pixel-approve"
+        canary_bytes = b"CANARY_SECRET_ODS_PIXEL_APPROVE_12345\n"
+        outside_canary.write_bytes(canary_bytes)
+        (self.installed / "bin").symlink_to(outside_bin)
+
+        access_unit = self.systemd_dir / "ods-pixel-access.service"
+        access_unit.write_text("[Unit]\nDescription=Drifted\n", encoding="utf-8")
+        access_unit.chmod(0o644)
+        canary = self.installed / "source-canary.txt"
+
+        script = r'''
+set -euo pipefail
+SCRIPT_DIR="$1"; INSTALL_DIR="$2"; HOME="$3"; ODS_PYTHON_CMD="$4"; CANARY="$5"; LOG_FILE="$6"; MOCK_BIN="$7"
+export PATH="$MOCK_BIN:$PATH"
+export ODS_PIXEL_UNINSTALL_SYSTEMD_DIR="$8"
+export ODS_PIXEL_UNINSTALL_ETC_DIR="$9"
+export ODS_PIXEL_UNINSTALL_LIBEXEC_DIR="${10}"
+export ODS_PIXEL_UNINSTALL_OPS_ENV="${9}/pixel-ops-broker.env"
+export ODS_PIXEL_UNINSTALL_OPS_POLICY="${9}/pixel-ops-broker/policy.json"
+export ODS_PIXEL_UNINSTALL_OPS_INSTALL_DIR="${10}/pixel-ops-broker"
+export ODS_PIXEL_UNINSTALL_OPS_STATE_DIR="${9}/var/lib/pixel-ops-broker"
+export ODS_PIXEL_UNINSTALL_ACCESS_STATE_DIR="${9}/var/lib/ods-pixel-access"
+export ODS_PIXEL_UNINSTALL_ACCESS_PROBE_DIR="${9}/var/lib/ods-pixel-access-probes"
+export ODS_PIXEL_UNINSTALL_PREVIEW_STATE_DIR="${9}/var/lib/ods-pixel-preview"
+export ODS_PIXEL_UNINSTALL_ROOT_UID="$(id -u)"
+export ODS_PIXEL_UNINSTALL_ROOT_GID="$(id -g)"
+
+DRY_RUN=false; ENABLE_PIXEL_RUNTIME=true; ODS_SUDO_AVAILABLE=true; ODS_ASSUME_ROOTLESS=false
+source "$SCRIPT_DIR/installers/lib/pixel-integration.sh"
+source "$SCRIPT_DIR/lib/pixel-uninstall.sh"
+_ods_pixel_project_cleanup(){ :; }
+_ods_pixel_inspection_cleanup(){ :; }
+ods_progress(){ :; }; chapter(){ :; }; log(){ :; }
+ai(){
+    if [[ "$*" == *"Copying source files"* ]]; then
+        touch "$CANARY"
+        exit 42
+    fi
+}
+error(){ printf '%s\n' "$*" >&2; return 1; }
+ods_pixel_install_owner(){ id -un; }
+ods_pixel_owner_home(){ printf '%s\n' "$HOME"; }
+
+source "$SCRIPT_DIR/installers/phases/06-directories.sh"
+'''
+        result = subprocess.run(
+            ["bash", "-c", script, "phase-fixture",
+             str(self.source_dir), str(self.installed), str(self.home),
+             sys.executable, str(canary), str(self.log_file), str(self.mock_bin),
+             str(self.systemd_dir), str(self.etc_dir), str(self.libexec_dir)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        self.assertNotEqual(result.returncode, 0, f"Phase should fail when staging encounters linked destination: {result.stdout}\n{result.stderr}")
+        self.assertEqual(outside_canary.read_bytes(), canary_bytes, "Outside canary must be byte-for-byte unchanged")
+        self.assertTrue(self.marker.exists(), "Management marker must be preserved on refusal")
+        self.assertEqual(json.loads(self.marker.read_text(encoding="utf-8")), payload, "Marker content must remain intact")
+        self.assertTrue(access_unit.exists(), "Drifted access unit must remain untouched")
+        self.assertEqual(access_unit.read_text(encoding="utf-8"), "[Unit]\nDescription=Drifted\n")
+        self.assertFalse(canary.exists(), "Clean-install copying must never be reached")
+        self.assertIn("linked destination", result.stderr.lower())
+
     def test_normal_managed_upgrade_preserved(self):
         """When an installation directory is active, normal upgrade path is taken."""
         payload = {
