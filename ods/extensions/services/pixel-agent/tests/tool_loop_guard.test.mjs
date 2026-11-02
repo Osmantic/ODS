@@ -3,6 +3,7 @@ import { PROGRESS_FINALIZATION_INSTRUCTION } from "../plugin/progress-finalizati
 import { PREVIEW_EARLIER_NOTE, PREVIEW_INCOMPLETE_NOTE, PREVIEW_STOPPED_NOTE } from "../plugin/preview-explanation.mjs";
 import test from "node:test";
 import vm from 'node:vm';
+import {nativeIntegrationHookState} from './native-integration-hook-state.mjs';
 
 test('sandbox host workspace lookup failures give call-bound path guidance without rewriting commands', () => {
   const root='/home/owner/.openclaw/workspace-pixel';
@@ -16900,6 +16901,7 @@ test('actual registered finalize hook awaits trusted revalidation before goal an
   assert.ok(start>=0&&end>start);
   let finalize;
   vm.runInNewContext(source.slice(start,end),{
+    ...nativeIntegrationHookState(),
     api:{on:(_name,callback)=>{finalize=callback;}},toolLoopGuard:guard,AGENT_ID:'pixel',
     goalProgress:{finalize(_event,_context,decision){order.push('goal');return decision;}},
     delegationDelivery:{finalize(){order.push('delegation');}},
@@ -16944,6 +16946,7 @@ test('saved project gets one verified publication at finalization without replay
   const end=source.indexOf('    // Delivery rewriting',start);
   let finalize;
   vm.runInNewContext(source.slice(start,end),{
+    ...nativeIntegrationHookState(),
     api:{on:(_name,callback)=>{finalize=callback;}},toolLoopGuard:guard,AGENT_ID:'pixel',
     goalProgress:{finalize(_event,_context,decision){return decision;}},
     delegationDelivery:{finalize(){}},

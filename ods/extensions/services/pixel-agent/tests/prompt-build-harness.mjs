@@ -13,6 +13,7 @@ import {longTaskContract, promptContractForAgent, PORTAL_INTEGRATION_TURN_CONTEX
 import {ACTIVITY_CONTRACT} from '../plugin/activity-display.mjs';
 import {GOAL_CONTRACT} from '../plugin/goal-progress.mjs';
 import {executionContext} from '../plugin/completion-assurance.mjs';
+import {nativeIntegrationHookState} from './native-integration-hook-state.mjs';
 
 const PYTHON = process.platform === 'win32' ? 'python' : 'python3';
 export const PYTHON_AVAILABLE = spawnSync(PYTHON, ['--version'], {windowsHide: true}).status === 0;
@@ -170,10 +171,12 @@ export async function promptHookAlone({language, goal = false, clarificationNote
   assert.ok(begin >= 0 && finish > begin);
   let callback;
   vm.runInNewContext(source.slice(begin, finish), {
+    ...nativeIntegrationHookState(),
     ...responseLanguage,
     api: {config: {}, on: (_name, fn) => { callback = fn; }}, AGENT_ID: 'pixel',
     accessRuntime: {isProbe: () => probe},
-    delegationDelivery: {admission: () => undefined, observe() {}, promptContext: () => undefined, ownerRunFor: () => undefined},
+    delegationDelivery: {admission: () => undefined, observe() {}, promptContext: () => undefined,
+      ownerRunFor: () => undefined, ownerRunOf: () => undefined},
     privateBrowserAccessForAgent: () => false, executionHostForAgent: () => 'sandbox',
     toolLoopGuard: {observeRun() {}, ownerIntentEventForRun: (_id, event) => event, verificationStatus: () => undefined,
       observeRepositorySource() {}, promptContextForRun: () => undefined,

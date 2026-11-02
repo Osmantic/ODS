@@ -8,6 +8,7 @@ import {createProjectRunControl} from '../plugin/project-run-control.mjs';
 import {withPixelCronDeliveryDefault} from '../plugin/cron-delivery-default.mjs';
 import {withCronCommandPayloadBlock} from '../plugin/cron-command-payload-guard.mjs';
 import {withPixelSubagentWorkspace} from '../plugin/subagent-workspace.mjs';
+import {nativeIntegrationHookState} from './native-integration-hook-state.mjs';
 
 // Exercise the actual registration callbacks without importing the installed
 // OpenClaw SDK. This is a source composition fixture, not gateway qualification.
@@ -29,6 +30,7 @@ function hooks(guardResult, managedRuntime = false, delivery = {}) {
     finish: () => { calls.push('run-finish'); },
   };
   vm.runInNewContext(source.slice(start, end), {
+    ...nativeIntegrationHookState(),
     api: {on: (name, callback) => { callbacks[name] = callback; }, logger: {warn: message => warnings.push(message)}},
     toolLoopGuard: {
       beforeToolCall: () => { calls.push('guard'); return guardResult; },
@@ -150,6 +152,7 @@ test('cancelled announcement is fenced before actual prompt hook registers guard
   assert.ok(begin>=0 && finish>begin);
   let callback;const calls=[];
   vm.runInNewContext(source.slice(begin,finish),{
+    ...nativeIntegrationHookState(),
     api:{config:{},on:(_name,fn)=>{callback=fn;}},AGENT_ID:'pixel',
     privateBrowserAccessForAgent:()=>false,executionHostForAgent:()=> 'gateway',
     toolLoopGuard:{observeRun:()=>calls.push('guard'),ownerIntentEventForRun:(_id,e)=>e,promptContextForRun:()=>undefined,verificationStatus:()=>undefined},

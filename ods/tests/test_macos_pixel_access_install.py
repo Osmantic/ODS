@@ -2025,19 +2025,30 @@ def test_native_service_selection_binds_exact_gateway_configuration(bundled_depl
 
 
 def test_new_integrations_policy_seals_private_state_auth_and_logs_in_both_modes(bundled_deployment, monkeypatch, tmp_path):
-    plan = installer.make_plan(**bundled_deployment, initial_install=True)
-    original = installer._native_services.helper
-    snapshots = dict.fromkeys(installer._bundle.INTEGRATION_SERVICE_ARTIFACTS, b'VALUE = 1\n')
-    monkeypatch.setattr(installer._native_services, 'helper', lambda name:
-        SimpleNamespace(verified_services=lambda *a, **k: snapshots) if name == 'config' else original(name))
-    installer.bind_initial_services(plan, bundle=tmp_path, digest='a' * 64, source_ref='b' * 40)
-    integration = original('integrations-service')
-    state = integration.state_directory(installer.pwd.getpwnam(plan['owner'].pw_name))
-    for policy in plan['policies'].values():
-        sealed_line = next(line for line in policy.splitlines() if line.startswith(b'(deny file-read* file-write*'))
-        for path in (state, integration.AUTH_ROOT, integration.LOGS):
-            assert ('(subpath "' + str(path) + '")').encode() in sealed_line
-        assert ('(literal "' + str(integration.RUNTIME / 'control.sock') + '")').encode() in policy
+    # Hosted pytest paths may exceed Darwin's 104-byte Unix socket bound. Use
+    # a real short disposable home; retain the production bound unchanged.
+    with tempfile.TemporaryDirectory(prefix='ods-i-', dir='/tmp') as folder:
+        home = Path(folder).resolve()
+        assert home.is_dir() and not home.is_symlink()
+        assert home.stat().st_uid == os.getuid() and stat.S_IMODE(home.stat().st_mode) == 0o700
+        original_owner = installer.pwd.getpwnam(bundled_deployment['owner_name'])
+        owner = SimpleNamespace(**{**vars(original_owner), 'pw_dir': str(home)})
+        monkeypatch.setattr(installer.pwd, 'getpwnam', lambda _name: owner)
+        plan = installer.make_plan(**bundled_deployment, initial_install=True)
+        original = installer._native_services.helper
+        snapshots = dict.fromkeys(installer._bundle.INTEGRATION_SERVICE_ARTIFACTS, b'VALUE = 1\n')
+        monkeypatch.setattr(installer._native_services, 'helper', lambda name:
+            SimpleNamespace(verified_services=lambda *a, **k: snapshots) if name == 'config' else original(name))
+        installer.bind_initial_services(plan, bundle=tmp_path, digest='a' * 64, source_ref='b' * 40)
+        integration = original('integrations-service')
+        state = integration.state_directory(installer.pwd.getpwnam(plan['owner'].pw_name))
+        assert state == home / '.config/ods/pixel-integrations'
+        assert len(os.fsencode(state / 'owner.sock')) < 104
+        for policy in plan['policies'].values():
+            sealed_line = next(line for line in policy.splitlines() if line.startswith(b'(deny file-read* file-write*'))
+            for path in (state, integration.AUTH_ROOT, integration.LOGS):
+                assert ('(subpath "' + str(path) + '")').encode() in sealed_line
+            assert ('(literal "' + str(integration.RUNTIME / 'control.sock') + '")').encode() in policy
 
 
 @pytest.mark.parametrize('stop_fails', [False, True])
