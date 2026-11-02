@@ -3267,8 +3267,15 @@ if ! $ALL_HEALTHY; then
     echo ""
 fi
 
+# Compose publishes the Dashboard on DASHBOARD_PORT (docker-compose.base.yml);
+# reruns keep an owner-set value in .env.
+_dashboard_port="$(read_env_value "$INSTALL_DIR/.env" "DASHBOARD_PORT")"
+_dashboard_port="${_dashboard_port//\"/}"
+_dashboard_port="${_dashboard_port//\'/}"
+[[ "$_dashboard_port" =~ ^[0-9]+$ ]] || _dashboard_port=3001
+
 {
-    printf 'Dashboard|http://127.0.0.1:3001|ods-dashboard|http://localhost:3001\n'
+    printf 'Dashboard|http://127.0.0.1:%s|ods-dashboard|http://localhost:%s\n' "$_dashboard_port" "$_dashboard_port"
     $ENABLE_OPEN_WEBUI && printf 'Chat UI (Open WebUI)|http://127.0.0.1:3000|ods-webui|http://localhost:3000\n'
     if $CLOUD_MODE; then
         printf 'LiteLLM|http://127.0.0.1:4000/health/readiness|ods-litellm|http://localhost:4000\n'
@@ -3282,7 +3289,7 @@ fi
     if $ENABLE_OPENCODE && [[ -x "$OPENCODE_BIN" ]]; then
         printf 'OpenCode (IDE)|http://127.0.0.1:%s||http://localhost:%s\n' "$OPENCODE_PORT" "$OPENCODE_PORT"
     fi
-} | ods_readiness_summary "./ods-macos.sh status" "$ODS_LOG_FILE" "http://localhost:3001" "Dashboard"
+} | ods_readiness_summary "./ods-macos.sh status" "$ODS_LOG_FILE" "http://localhost:${_dashboard_port}" "Dashboard"
 
 # get-ods.sh --force exports this when the reinstall removed a saved one.
 if [[ "${ODS_REINSTALL_REMOTE_ROUTE_REMOVED:-false}" == "true" ]]; then
@@ -3290,4 +3297,4 @@ if [[ "${ODS_REINSTALL_REMOTE_ROUTE_REMOVED:-false}" == "true" ]]; then
     ai "To use the API again, connect it in Settings > Remote model."
 fi
 
-show_success_card
+show_success_card 3000 "$_dashboard_port"
