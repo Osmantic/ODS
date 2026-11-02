@@ -15508,6 +15508,7 @@ export function createToolLoopGuard({
       return typeof ownerIntent === 'string' ? {...event, prompt: ownerIntent, messages: []} : event;
     },
     observeExampleRun,
+    discardExampleRun: runId => examples.discard(runId),
     exampleContextForRun,
     exampleNoticeForRun,
     // The owner put a Playground project's files back (project-snapshots.mjs).
