@@ -4,7 +4,7 @@ if sys.platform == "win32":
     raise SkipTest("Requires process groups; run under Linux/WSL")
 
 import json
-import fcntl
+import errno
 import os
 import pathlib
 import tempfile
@@ -312,15 +312,23 @@ class LocalServerTests(unittest.TestCase):
         frame = {"schemaVersion": 1, "action": "mcp-call", "server": "local", "tool": "count", "arguments": {"value": ""}}
         frame["arguments"]["value"] = "x" * (service.MAX_REQUEST_BYTES - 1 - len(json.dumps(frame, separators=(",", ":")).encode()))
         self.assertEqual(len(json.dumps(frame, separators=(",", ":")).encode()) + 1, service.MAX_REQUEST_BYTES)
-        wire = (json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
-            "name": "count", "arguments": frame["arguments"]}}) + "\n").encode()
-        capacity = fcntl.fcntl(child.process.stdin.fileno(), fcntl.F_GETPIPE_SZ)
-        # A larger host pipe could absorb this fixture; reduce only this owned
-        # pipe when needed, without changing the valid64KiB request.
-        if capacity >= len(wire):
-            fcntl.fcntl(child.process.stdin.fileno(), fcntl.F_SETPIPE_SZ, 4096)
-            capacity = fcntl.fcntl(child.process.stdin.fileno(), fcntl.F_GETPIPE_SZ)
-        self.assertGreater(len(wire), capacity)
+        # Prefill only this owned never-reading pipe; the valid service frame is unchanged.
+        fd = child.process.stdin.fileno()
+        blocking = os.get_blocking(fd)
+        filled, blocked = 0, False
+        fill_deadline = time.monotonic() + 0.5
+        try:
+            os.set_blocking(fd, False)
+            while filled < 1024 * 1024 and time.monotonic() < fill_deadline:
+                try:
+                    filled += os.write(fd, b" " * 4096)
+                except BlockingIOError as error:
+                    self.assertIn(error.errno, (errno.EAGAIN, errno.EWOULDBLOCK))
+                    blocked = True
+                    break
+        finally:
+            os.set_blocking(fd, blocking)
+        self.assertTrue(blocked, "owned pipe did not reach EAGAIN within 1MiB/0.5s")
         errors = []
         def invoke():
             try:
