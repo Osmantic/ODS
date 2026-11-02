@@ -28,9 +28,9 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-ODS_CLI="$ROOT_DIR/ods-cli"
 TMP_DIR="$(mktemp -d)"
 INSTALL_DIR="$TMP_DIR/install"
+ODS_CLI="$INSTALL_DIR/ods-cli"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 PASS=0
@@ -42,18 +42,20 @@ run_ods() {
     # Through "$BASH", stdin closed: this is the non-interactive case.
     local output rc
     set +e
-    output=$(ODS_HOME="$INSTALL_DIR" NO_COLOR=1 "$BASH" "$ODS_CLI" "$@" </dev/null 2>&1)
+    output=$(env -u INSTALL_DIR -u ODS_SCRIPT_HINT -u ODS_INSTALL_DIR \
+        ODS_HOME="$INSTALL_DIR" NO_COLOR=1 "$BASH" "$ODS_CLI" "$@" </dev/null 2>&1)
     rc=$?
     set -e
     printf '%s\n' "$rc"
     printf '%s\n' "$output"
 }
 
-# Minimal install: compose base file for check_install, the real extension
-# manifests for sr_load, one saved preset.
-mkdir -p "$INSTALL_DIR/presets/keepme" "$INSTALL_DIR/extensions"
+# Minimal isolated install: cancellation must happen before any saved
+# extension selection or live update is applied.
+mkdir -p "$INSTALL_DIR/presets/keepme" "$INSTALL_DIR/extensions/services" "$INSTALL_DIR/lib"
+cp "$ROOT_DIR/ods-cli" "$ODS_CLI"
+cp "$ROOT_DIR/lib/service-registry.sh" "$INSTALL_DIR/lib/"
 cp "$ROOT_DIR/docker-compose.base.yml" "$INSTALL_DIR/docker-compose.base.yml"
-ln -s "$ROOT_DIR/extensions/services" "$INSTALL_DIR/extensions/services"
 printf 'ODS_MODE=local\nLLM_MODEL=current-model\n' > "$INSTALL_DIR/.env"
 printf 'ODS_MODE=local\nLLM_MODEL=preset-model\n' > "$INSTALL_DIR/presets/keepme/env"
 printf 'name=keepme\ncreated=2026-09-08T00:00:00Z\n' > "$INSTALL_DIR/presets/keepme/meta.txt"
@@ -79,7 +81,25 @@ else
     fail "preset load: rc=$rc, LLM_MODEL=$(grep '^LLM_MODEL=' "$INSTALL_DIR/.env"), output: $(printf '%s' "$output" | tail -n 2 | tr '\n' '|')"
 fi
 
-echo "Test 3: every confirmation prompt in ods-cli tolerates EOF"
+echo "Test 3: 'ods rollback' with stdin closed declines before invoking the updater"
+cat > "$INSTALL_DIR/ods-update.sh" <<'UPDATER'
+#!/usr/bin/env bash
+: > rollback-called
+UPDATER
+chmod +x "$INSTALL_DIR/ods-update.sh"
+env_before="$(cat "$INSTALL_DIR/.env")"
+result="$(run_ods rollback)"
+rc="${result%%$'\n'*}"
+output="${result#*$'\n'}"
+if [[ "$rc" -eq 0 && "$output" == *"Rollback cancelled"* \
+        && ! -e "$INSTALL_DIR/rollback-called" \
+        && "$(cat "$INSTALL_DIR/.env")" == "$env_before" ]]; then
+    pass "rollback: exit 0, cancellation visible, updater not called and .env untouched"
+else
+    fail "rollback: rc=$rc, updater called=$([[ -e "$INSTALL_DIR/rollback-called" ]] && echo yes || echo no), output: $(printf '%s' "$output" | tail -n 2 | tr '\n' '|')"
+fi
+
+echo "Test 4: every confirmation prompt in ods-cli tolerates EOF"
 # A `read` that returns 1 on EOF aborts the command under set -e before the
 # decline branch runs; each prompt must fall back to an empty reply.
 bare="$(grep -nE 'read -p ' "$ODS_CLI" | grep -vE '\|\| (REPLY|_confirm)=""' || true)"
