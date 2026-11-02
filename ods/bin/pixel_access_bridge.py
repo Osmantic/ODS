@@ -39,6 +39,7 @@ OWNER_EXIT_TIMEOUT = 5
 OWNER_TERMINATE_TIMEOUT = 10
 MODEL_DRAIN_TIMEOUT = 1800
 SOURCE_LOCK_WAIT_SECONDS = 120
+SCHEDULE_LOCK_WAIT_SECONDS = 5
 LOCK_WAIT_POLL_SECONDS = 0.25
 _DEADLINE = contextvars.ContextVar("pixel_access_operation_deadline", default=None)
 _INSTALLER_ACCESS_REPROOF = contextvars.ContextVar("pixel_installer_access_reproof", default=False)
@@ -346,7 +347,8 @@ class SystemdAccessBridge:
     def schedules(self, request, *, source):
         from pixel_schedules import validate_request
         validate_request(request)
-        with self.bounded(180), self.locked():
+        # Wait only for admission; execute the operation once under the lock.
+        with self.bounded(180), self.locked(wait_seconds=SCHEDULE_LOCK_WAIT_SECONDS):
             self.discover()
             # A Windows host and its WSL guest have different path namespaces.
             # The private ingress instead binds this request to its installed
@@ -2455,8 +2457,8 @@ class LaunchdAccessBridge(SystemdAccessBridge):
         self.dropin = Path('/private/var/empty/ods-pixel-no-systemd-dropin')
 
     @contextlib.contextmanager
-    def locked(self):
-        with super().locked():
+    def locked(self, *, wait_seconds=0):
+        with (super().locked(wait_seconds=wait_seconds) if wait_seconds else super().locked()):
             # Do not infer successful recovery from a journal phase alone.
             # The upgrader removes this marker only after live verification.
             if os.path.lexists(self.state / 'runtime-upgrade.json'):
