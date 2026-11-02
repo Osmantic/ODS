@@ -90,6 +90,11 @@ fi
 if [[ "${FAKE_CURL_TRANSPORT_FAIL:-false}" == "true" ]]; then
     exit 7
 fi
+if [[ -n "${FAKE_ACTIVATION_BODY:-}" ]]; then
+    printf '%s' "$FAKE_ACTIVATION_BODY" > "$output_file"
+    printf '409'
+    exit 0
+fi
 if [[ "${FAKE_ACTIVATION_FAIL:-false}" == "true" ]]; then
     printf '{"error":"simulated rollback receipt","rolled_back":true}\n' > "$output_file"
     printf '500'
@@ -167,7 +172,15 @@ else:
     with open(args[-1], encoding="utf-8") as handle:
         payload = json.load(handle)
     expression = " ".join(args)
-    if ".error" in expression:
+    if "activation_text" in expression:
+        def text(field):
+            value = payload.get(field)
+            return value if isinstance(value, str) and value.strip() else None
+        code = text("code") or text("error")
+        detail = text("message") or text("reason")
+        print(f"{code}: {detail}" if code and detail and code != detail else detail or code or "")
+        sys.exit(0)
+    elif ".error" in expression:
         field = "error"
     elif ".context_length" in expression:
         field = "context_length"
@@ -266,6 +279,38 @@ grep -q 'Model activation failed (HTTP 500): simulated rollback receipt' \
     <<< "$failure_output"
 grep -qx 'LLM_MODEL=old-model' "$INSTALL_DIR/.env"
 grep -qx 'GGUF_FILE=old-model.gguf' "$INSTALL_DIR/.env"
+
+# The legacy error remains generic for several distinct mode denials. Render
+# the specific host receipt without retrying the activation or changing .env.
+detail_env_before="$(cksum < "$INSTALL_DIR/.env")"
+while IFS=$'\t' read -r body expected; do
+    rm -f "$CAPTURE_DIR/urls"
+    set +e
+    detail_output="$({
+        ODS_HOME="$INSTALL_DIR" CAPTURE_DIR="$CAPTURE_DIR" \
+        FAKE_ACTIVATION_BODY="$body" HOST_ARCH=amd64 NO_COLOR=1 \
+        PATH="$FAKE_BIN:$PATH" "$ROOT_DIR/ods-cli" model swap T1
+    } 2>&1)"
+    detail_status=$?
+    set -e
+    [[ $detail_status -ne 0 ]]
+    grep -Fq "Model activation failed (HTTP 409): $expected" <<< "$detail_output"
+    [[ "$(grep -c '/v1/model/activate$' "$CAPTURE_DIR/urls")" == 1 ]]
+    [[ "$(cksum < "$INSTALL_DIR/.env")" == "$detail_env_before" ]]
+    grep -qx 'LLM_MODEL=old-model' "$INSTALL_DIR/.env"
+    grep -qx 'GGUF_FILE=old-model.gguf' "$INSTALL_DIR/.env"
+done <<'DETAIL_CASES'
+{"error":"local_mode_required","code":"ods_mode_mismatch","reason":"mode_mismatch","message":"Effective mode cloud does not match configured mode local."}	ods_mode_mismatch: Effective mode cloud does not match configured mode local.
+{"error":"local_mode_required","code":"ods_mode_unknown","reason":"mode_unknown","message":"The effective or configured ODS mode is unknown."}	ods_mode_unknown: The effective or configured ODS mode is unknown.
+{"error":"local_mode_required","code":"local_mode_required","reason":"effective_mode_not_local","message":"Effective ODS mode is cloud."}	local_mode_required: Effective ODS mode is cloud.
+{"error":"legacy error","message":"Actionable message"}	legacy error: Actionable message
+{"error":"legacy error","code":"specific_code","message":{},"reason":"specific_reason"}	specific_code: specific_reason
+{"code":"specific_code","message":"   ","reason":false}	specific_code
+{"message":"Message without code"}	Message without code
+{"reason":"Reason without code"}	Reason without code
+{"error":"legacy error"}	legacy error
+{"error":"same","code":"same","message":"same"}	same
+DETAIL_CASES
 
 set +e
 transport_output="$({
