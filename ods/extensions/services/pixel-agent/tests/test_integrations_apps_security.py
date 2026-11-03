@@ -67,6 +67,35 @@ def test_watch_health_is_visible_without_exposing_provider_credentials(world, mo
     assert "watch-key" not in native["text"]
 
 
+@pytest.mark.parametrize('policy', ['unknown', None, True, {}, 'missing'])
+def test_unrecognized_saved_watch_policy_keeps_reads_and_denies_mutations(world, monkeypatch, policy):
+    service, store = world
+    config = store.config()
+    settings = config['apps']['watch']
+    if policy == 'missing':
+        settings.pop('changes')
+    else:
+        settings['changes'] = policy
+    # Model a saved policy from another version with the same verified endpoint
+    # and credential. Destination custody alone cannot authorize mutations.
+    config['approvalBindings']['appContexts']['watch'] = app_context(config, 'watch', store.secrets()['apps']['watch'])
+    store.save_config(config)
+    listing = {'old': {'url': 'https://page.example/old', 'title': 'Old'}}
+    monkeypatch.setattr(apps, 'watches', lambda *_: listing)
+    mutations = []
+    monkeypatch.setattr(apps, 'add_watch', lambda *args: mutations.append('add') or 'new')
+    monkeypatch.setattr(apps, 'remove_watch', lambda *args: mutations.append('remove'))
+    catalog = service.handle('agent', {'schemaVersion':1, 'action':'mcp-tools'})['servers']
+    watch = next(s for s in catalog if s['id'] == 'app:watch')
+    assert {t['name'] for t in watch['tools']} == {'list'}
+    assert 'Old' in call(service, 'list')['text']
+    for name, arguments in [('add', {'url':'https://page.example/new'}), ('remove', {'id':'old'})]:
+        with pytest.raises(IntegrationError) as refused:
+            call(service, name, **arguments)
+        assert refused.value.code == 'watch-changes-not-allowed'
+    assert not mutations and not store.approvals()
+
+
 def test_named_watch_approvals_show_the_exact_page_address(world, monkeypatch):
     service, _store = world
     monkeypatch.setattr(apps, "watches", lambda *_: {})

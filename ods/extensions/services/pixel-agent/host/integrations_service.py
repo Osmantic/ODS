@@ -557,8 +557,8 @@ class Integrations(RecoveryReviewOnly, AppActions):
         waiting, notification = None, None
         with self.store.lock:
             config = self.store.config()
-            policy = config['notes']['write']
-            if policy == 'off':
+            policy = config['notes'].get('write')
+            if policy not in ('ask', 'allow'):
                 raise IntegrationError('notes-write-off', 'The owner has not allowed Portal to change notes.')
             relative, target = notes.write_binding(config, relative, mode)
             epoch = self._binding(config, 'notes')
@@ -579,7 +579,7 @@ class Integrations(RecoveryReviewOnly, AppActions):
         return [{"id": server["id"], "name": server["name"],
                  "tools": [{"name": tool["name"], "description": tool["description"], "inputSchema": tool["inputSchema"],
                             "needsApproval": tool["policy"] == "ask"} for tool in server["tools"]
-                           if tool['policy'] != 'off' and server.get('checkedBinding') == digest(server_context(server, secrets))]}
+                           if tool.get('policy') in ('ask', 'allow') and server.get('checkedBinding') == digest(server_context(server, secrets))]}
                 for server in config["mcp"]["servers"] if server["enabled"]]
 
     def _mcp_call(self, config, request):
@@ -606,7 +606,7 @@ class Integrations(RecoveryReviewOnly, AppActions):
             if server.get('checkedBinding') != context:
                 raise IntegrationError('mcp-check-required', 'The server context changed. Check its tools again before using it.')
             tool = next((item for item in server['tools'] if item['name'] == name), None)
-            if tool is None or tool['policy'] == 'off':
+            if tool is None or tool.get('policy') not in ('ask', 'allow'):
                 raise IntegrationError('tool-not-allowed', f"{server['name']} has no allowed tool named {name}. List its tools first.")
             epoch = self._binding(config, 'mcp', server['id'])
             if tool['policy'] == 'ask':
