@@ -237,7 +237,7 @@ const expectedReactivationArchiveBridge = {
   operation: "exact-terminal-no-live-mutation-reactivation-preservation-outside-bounded-staging",
   boundary: "terminal-no-live-mutation-reactivation-evidence-only-no-active-deployment-change",
 };
-if (!["4.3.27", "4.3.28", "4.3.29", "4.3.32", "4.3.33", "4.3.34", "4.3.35", "4.3.36", "4.3.37", "4.3.38", "4.3.39", "4.3.40", "4.3.41", "4.3.42"].includes(version) || JSON.stringify(manifest.releaseReactivationArchive) !== JSON.stringify(expectedReactivationArchiveBridge)) throw new Error("Release reactivation archive bridge contract is invalid");
+if (!["4.3.27", "4.3.28", "4.3.29", "4.3.32", "4.3.33", "4.3.34", "4.3.35", "4.3.36", "4.3.37", "4.3.38", "4.3.39", "4.3.40", "4.3.41", "4.3.42", "4.3.43"].includes(version) || JSON.stringify(manifest.releaseReactivationArchive) !== JSON.stringify(expectedReactivationArchiveBridge)) throw new Error("Release reactivation archive bridge contract is invalid");
 if (manifest.legacyCleanMigration?.schemaVersion !== 1 || manifest.legacyCleanMigration?.cli !== "./scripts/migrate-legacy-clean.py" || manifest.legacyCleanMigration?.evidenceSchema !== "./schemas/legacy-clean-migration-v1.schema.json" || manifest.legacyCleanMigration?.boundary !== "terminal-only-clean-migration-no-in-place-update" || manifest.legacyCleanMigration?.v1Contract?.sourcePixel !== "3.2.2" || manifest.legacyCleanMigration?.v1Contract?.targetPixel !== version || manifest.legacyCleanMigration?.activation !== "self-contained-migrate-legacy-clean-activate-transaction") throw new Error("Legacy clean-migration contract is invalid");
 if (manifest.customizationKit?.schemaVersion !== 1 || manifest.customizationKit?.defaultEnabled !== false || manifest.customizationKit?.signature !== "openssh-ed25519-detached") throw new Error("Customization kit trust contract is invalid");
 if (manifest.customizationKit?.clientOverlaySchema !== "./schemas/client-overlay-v1.schema.json" || manifest.customizationKit?.clientOverlayExample !== "./client-overlay.example.json" || manifest.customizationKit?.clientOverlayBoundary !== "private-client-state-outside-golden-core") throw new Error("Client overlay boundary is invalid");
@@ -323,7 +323,31 @@ const allowedGeneratedPins = new Set([
   "scripts/generated/release-constants.json",
   "scripts/generated/release.env",
 ]);
-const ignoredEvidence = new Set(["CHANGELOG.md", "LIVE-AUDIT.md"]);
+// Immutable ODS qualification records describe historical inputs, not authored
+// current release pins. Verify exact bytes before assigning that evidence role;
+// unknown names still undergo the ordinary pin scan below.
+const frozenOdsQualificationEvidence = {
+  "ODS-QUALIFICATION-4.3.28.md": "796dc8ebd160b05779db482c0d1344dc60a10f09936740fe977a750968d7d3f6",
+  "ODS-QUALIFICATION-4.3.29.md": "eb4fb1ba1d56ffa646167ca5e43b224294d33a32fb8b03b2b40948a478a5db26",
+  "ODS-QUALIFICATION-4.3.30.md": "53494472bcb64775eda91f739b42874763bf698a874c231fa7bfbae99c20416c",
+  "ODS-QUALIFICATION-4.3.31.md": "91a6d804c2020e2c73cc758341729383855abe396c87a760d19d7517b29950f1",
+  "ODS-QUALIFICATION-4.3.32.md": "abc0551d3fca1083a85eb268ab84f0ce53172f19a20c2977bd90bdfc06167540",
+  "ODS-QUALIFICATION-4.3.33.md": "e4716fbb72e94ccf7a4256be9e3d11505b7fa8fa3a3958f283a64e1fa6c97f16",
+  "ODS-QUALIFICATION-4.3.34.md": "62e9c6fd1b002eab83ad8968813a77a80796839844a366c0867fb00423da4ba8",
+  "ODS-QUALIFICATION-4.3.35.md": "de7e963d13c0d5690721c347ae0bda080493943a139f35a9d4e98a22d2614dc3",
+  "ODS-QUALIFICATION-4.3.36.md": "02d4e963ef9939db68f8b5876ba9e3c3c0b457530494cdb246ef024f58ffd9e6",
+  "ODS-QUALIFICATION-4.3.37.md": "df4bb780708c125bd582398a95b4bea92003b4d108b7910717c49bc1f4300fcf",
+  "ODS-QUALIFICATION-4.3.38.md": "432d26193ae2f207459a2156c1580e51f7ce2135548347367ab81dd4b28f485e",
+  "ODS-QUALIFICATION-4.3.39.md": "b46855c3a7d26a578a44e96375627f15205f7289738a0baed74b85c1b845b642",
+  "ODS-QUALIFICATION-4.3.40.md": "2a6e018ea4e4170399bc0361f67303b93adab9313cb1cd33c36a0b4a0e78c6c3",
+  "ODS-QUALIFICATION-4.3.41.md": "8361b899765e07d3de5c3aa9a477e4bbc5c065b99993935c7c7645fde204db7f",
+  "ODS-QUALIFICATION-4.3.42.md": "6bdd6926c6ab2677f13b456af9ef11d33f4bf88c894f8b90a87eb2cd6b86312c",
+  "ODS-QUALIFICATION-4.3.43.md": "1f792deb846cb0999eba426ed7e638c6839bd6ce1af68d58775b3fe342b736ee",
+};
+for (const [path, expected] of Object.entries(frozenOdsQualificationEvidence)) {
+  if (sha256(await read(path)) !== expected) throw new Error(`${path} frozen ODS qualification evidence changed`);
+}
+const ignoredEvidence = new Set(["CHANGELOG.md", "LIVE-AUDIT.md", ...Object.keys(frozenOdsQualificationEvidence)]);
 const pinValues = new Set([
   manifest.openclaw,
   manifest.nodeRuntime.version,
@@ -1421,10 +1445,10 @@ const contracts = [
   ["scripts/configure.mjs", "ID-only gatewayExtensions must be in Pixel's pinned extension catalog"],
   ["scripts/configure.mjs", "WantedBy=multi-user.target"],
   ["scripts/configure.mjs", `PIXEL_SOURCE_BROKER_USER: "${manifest.sourceBroker.systemUser}"`],
-  ["scripts/configure.mjs", 'PIXEL_SOURCE_GMAIL_QUERY: "in:inbox"'],
+  ["scripts/configure.mjs", 'PIXEL_SOURCE_GMAIL_QUERY: `in:inbox${gmailWindow}`'],
   ["scripts/configure.mjs", 'PIXEL_SOURCE_GMAIL_PAGE_SIZE: "100"'],
   ["scripts/configure.mjs", 'PIXEL_SOURCE_GMAIL_MAX_PAGES: "1000"'],
-  ["scripts/configure.mjs", 'PIXEL_SOURCE_GMAIL_SENT_QUERY: "in:sent"'],
+  ["scripts/configure.mjs", 'PIXEL_SOURCE_GMAIL_SENT_QUERY: `in:sent${gmailWindow}`'],
   ["scripts/configure.mjs", 'PIXEL_SOURCE_GMAIL_SENT_PAGE_SIZE: "100"'],
   ["scripts/configure.mjs", 'PIXEL_SOURCE_GMAIL_SENT_MAX_PAGES: "1000"'],
   ["scripts/configure.mjs", `PIXEL_OPS_BROKER_USER: "${manifest.operationsBroker.systemUser}"`],

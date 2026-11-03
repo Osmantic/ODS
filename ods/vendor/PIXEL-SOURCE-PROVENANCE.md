@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`acc5550888fe034a9a42e90307c9f7a664726315`, and its SHA-256 is
-`477f974f7d85c43b8e4e7a79ff3411da8ee938a9d597033c4f53323a5569d922`.
+`224ed399e38273db0f9d4834ceab55d493a99cf3`, and its SHA-256 is
+`2fec2c091b424b74f7109c18ef55310e5e78adad75b73e973e64a4b46613cf15`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -21,6 +21,67 @@ and the install/bootstrap scripts must retain executable Git modes.
 The repository owner authorized this source publication and the ODS-only
 Pixel grant. Third-party packages are not included in the Git bundle and
 retain their own notices and licenses.
+
+## ODS-maintained 4.3.43 release-contract candidate
+
+The current ODS-maintained candidate uses internal package version 4.3.43.
+Its functional checkpoint is `728c9a6e34341a4fa727c726acbbcdecef1fc8c3`;
+the version-qualified public Source checkpoint is
+`90ad43f8be862874b666c55125f1ebb6f723018e`. See
+[`pixel/ODS-QUALIFICATION-4.3.43.md`](pixel/ODS-QUALIFICATION-4.3.43.md).
+The checker now verifies exact historical ODS qualification bytes before
+classifying them as evidence, and its Gmail query expectations match the
+existing optional configure window. Release metadata includes the two count
+tools already implemented at `cc49a94b991b99e254e0b5555e6b21740a62dc09`.
+No tool implementation, argument schema or provider authority was added.
+
+The ordinary different-ref/same-version refusal is unchanged. The candidate
+advances to 4.3.43 with exact current migration targets and an explicitly
+qualified archive family; prior 4.3.42 and unknown 4.3.44 targets are refused.
+The new qualification note was frozen before its literal checker SHA authority
+was added. All fifteen prior notes, their hashes and compatibility rows,
+including the frozen 4.0/4.1 evidence, remain unchanged. No upstream or
+supported-release promotion is claimed.
+
+The public vendor tree is `4a84cdfeba5b4f71ee476ffb76b0e04d8841c953`.
+Two independent initially empty bare repositories reproduced byte-identical
+4,746,323-byte bundles using the retained synthetic public identity, timestamp,
+root message, read-only alternates procedure and `pack.threads=1`.
+All 1,341 public blobs and their Git modes match, including 96 executable
+entrypoints. Only one parentless root commit is advertised. The old 4.3.42
+tree reproduced its exact synthetic commit before the new builds. No private
+audit files, workflow files, private Git ancestry or signing material are
+bundled; current ref/digest pins appear above.
+
+The exact public bundle/source/Git-mode verifier, actual local acquisition and
+tamper control, 56 paired installer assertions, 93 prepared-client/pin/drift
+cases, 46 controlled native acquisition/install/update/candidate cases and
+three source-custody/overlay cases passed. Current and retained 4.3.42 prepared
+receipts remain byte-identical on loading, and all previously accepted client
+identities remain in the closed set. The 15 focused Node cases, 12 strict
+version cases, three affected generation cases and existing legacy shell,
+transaction and swap controls also passed. These are offline component
+fixtures; they do not qualify physical Darwin or ordinary installed adoption.
+
+The full release-contract checker passed once for this exact Source in an
+isolated full-repository-scope copy. That scope supplied exactly four
+legitimate immutable Git blobs omitted from the public export and regenerated
+only the two historical audit-link labels required by their presence. The
+private blobs and those derived labels are excluded from the public source
+and bundle. This scope-qualified result does not claim that the intentionally
+incomplete public export alone passes the full-repository check; all previous
+FAIL artifacts remain preserved. No gate, historical hash or release boundary
+was waived.
+
+The previous 4.3.42 artifact `acc5550888fe034a9a42e90307c9f7a664726315`,
+digest `477f974f7d85c43b8e4e7a79ff3411da8ee938a9d597033c4f53323a5569d922`,
+remains an exact readable prepared-client identity and immutable historical
+artifact. The Native Source authority table is not rebound by this packaging;
+an explicit separately reviewed 4.3.43 authority row is still required.
+OpenClaw, dependency and image versions/digests, signing trust and other
+runtime/provider policy are unchanged. No model, provider/account, installed
+configuration, physical Mac, fleet-readiness or publication claim is made.
+
 
 ## ODS-maintained Source 4.3.42 proposal publication candidate
 
