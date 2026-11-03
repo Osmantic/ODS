@@ -167,23 +167,23 @@ def test_unknown_source_ref_refuses_before_owner_git_or_root_component_validatio
     assert not called
 
 
-def test_exact_44_current_pin_keeps_only_the_reviewed_42_and_43_predecessors(package):
-    assert package[1] == '8afb55abf50633616cd759146366588717534afc'
+def test_current_pin_keeps_only_the_exact_reviewed_predecessors(package):
+    assert package[1] == '3fe50f1d75d13295bfbe964bfcd327a91df15814'
     assert set(component.SOURCE_AUTHORITIES) == {
         'acc5550888fe034a9a42e90307c9f7a664726315', '224ed399e38273db0f9d4834ceab55d493a99cf3',
-        '8afb55abf50633616cd759146366588717534afc'}
+        '8afb55abf50633616cd759146366588717534afc', '3fe50f1d75d13295bfbe964bfcd327a91df15814'}
 
 
-def test_unknown_45_coherently_resealed_component_cannot_expand_the_closed_table(package, monkeypatch):
+def test_unknown_coherently_resealed_component_cannot_expand_the_closed_table(package, monkeypatch):
     files = copy.deepcopy(package[2])
     forged = json.loads(files['component.json'])
     forged['sourceRef'] = '5'*40
     files['component.json'] = component.encoded(forged)
     with pytest.raises(ValueError, match='ref-unqualified'):
         component.validate_payloads(files, ref='5'*40, python='/usr/bin/python3')
-    monkeypatch.setattr(component.subprocess, 'run', lambda *args, **kwargs: pytest.fail('Unqualified 45 must refuse before Git'))
+    monkeypatch.setattr(component.subprocess, 'run', lambda *args, **kwargs: pytest.fail('Unqualified source must refuse before Git'))
     with pytest.raises(ValueError, match='ref-unqualified'):
-        component.source_payloads('/invented/unknown45', '5'*40, '/usr/bin/python3')
+        component.source_payloads('/invented/unknown-source', '5'*40, '/usr/bin/python3')
 
 
 @pytest.mark.parametrize('change', ['missing-profile', 'extra', 'broker', 'profile', 'ref', 'python', 'input-sha', 'duplicate'])

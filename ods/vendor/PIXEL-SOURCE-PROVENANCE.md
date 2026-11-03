@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`8afb55abf50633616cd759146366588717534afc`, and its SHA-256 is
-`988caa969858f457855e134d6e26d44ff2edb82263aeff08347d9dd8fc115b16`.
+`3fe50f1d75d13295bfbe964bfcd327a91df15814`, and its SHA-256 is
+`5e867c52522b14445d4ccc85974ed80a9f1237fa2c2a759359f8c978e00fa273`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -22,7 +22,46 @@ The repository owner authorized this source publication and the ODS-only
 Pixel grant. Third-party packages are not included in the Git bundle and
 retain their own notices and licenses.
 
-## ODS-maintained 4.3.44 civil-date candidate
+## ODS-maintained 4.3.45 Calendar read candidate
+
+List and count now share deterministic typed windows, timezone-aware event
+bounds, freshness and complete-coverage handling. Native list arguments must
+use `window`; old flat instant arguments are rejected before reading Source
+data. The pure helper retains a strictly validated legacy absolute adapter.
+The date schema uses an equivalent ASCII digit pattern supported by the pinned
+grammar compiler. See [the API contract](pixel/docs/calendar-read-api.md) and
+[the scoped qualification record](pixel/ODS-QUALIFICATION-4.3.45.md).
+
+Functional checkpoints `d8b369b797` and `d56daf9cdb` passed Source tests and one
+isolated actual Qwen3.5 9B candidate run. It made one Calendar count call with
+the correct owner civil date, fresh complete coverage and count three,
+returned no event records and made no unrelated or mutating calls. The
+complete converted 32-tool surface compiled against the pinned Qwen grammar.
+Earlier failed candidates and the accidental nonpaired baseline remain
+retained; this is not an error-rate or normal installed acceptance claim.
+
+The public bundle has 1,345 blobs and 96 executable entries, vendor tree
+`f20e9082102d5ba1002c3452f3a29fe4c7840bf5`, and 4,754,651 bytes. Two independent
+empty bare repositories reproduced byte-identical bundles after first
+reproducing the exact Source44 synthetic commit. Only one parentless root is
+advertised. Private history, audit inputs and workflow files stay excluded.
+The distinct Source45 native authority retains the exact Source42/43/44 rows;
+earlier prepared-client identities remain readable without rewriting them.
+
+The public Source44 and Source45 exports both stop the full upstream checker
+at the same intentionally omitted historical audit. A separate private
+Source45 validation copy reused exactly four previously verified immutable
+Git blobs, changed only two generated audit-link labels, and passed the
+unchanged full checker and all sixteen release-generation tests. Those blobs
+and labels are excluded from the public source and bundle. No gate, historical
+hash, signing trust or source boundary was waived.
+
+Source45 is an ODS candidate snapshot. Normal installed upgrade, the separate
+SDK rollout/context gates, native Mac execution and physical qualification
+remain distinct requirements. No signed upstream or supported-host promotion
+is claimed.
+
+## Retained ODS-maintained 4.3.44 civil-date candidate
 
 The new candidate adds a structured civil date to the existing Calendar count
 window and uses the configured owner timezone for exclusive midnight bounds.

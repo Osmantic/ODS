@@ -47,13 +47,13 @@ class ReleaseGenerationTests(unittest.TestCase):
             manifest_path = root / "RELEASE-MANIFEST.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             current = manifest["pixel"]
-            self.assertEqual(current, "4.3.44")
-            manifest["pixel"] = "4.3.45"
+            self.assertEqual(current, "4.3.45")
+            manifest["pixel"] = "4.3.46"
             manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
             matrix_path = root / "OPENCLAW-COMPATIBILITY.json"
             matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
             row = json.loads(json.dumps(next(item for item in matrix["combinations"] if item["pixel"] == current)))
-            row["pixel"] = "4.3.45"
+            row["pixel"] = "4.3.46"
             matrix["combinations"].append(row)
             matrix_path.write_text(json.dumps(matrix, indent=2) + "\n", encoding="utf-8")
             # Make the generated VERSION and ordinary metadata coherent. The
@@ -63,13 +63,13 @@ class ReleaseGenerationTests(unittest.TestCase):
             self.assertIn("Release reactivation archive bridge contract is invalid", failure.stderr)
             failure = self.run_node(
                 root, "scripts/generate-release-update.mjs",
-                "--artifact", str(root / "pixel-4.3.45.tar.gz"),
-                "--sbom", str(root / "pixel-4.3.45.cdx.json"),
-                "--provenance", str(root / "pixel-4.3.45.intoto.jsonl"),
-                "--output", str(root / "pixel-4.3.45.update.json"), success=False,
+                "--artifact", str(root / "pixel-4.3.46.tar.gz"),
+                "--sbom", str(root / "pixel-4.3.46.cdx.json"),
+                "--provenance", str(root / "pixel-4.3.46.intoto.jsonl"),
+                "--output", str(root / "pixel-4.3.46.update.json"), success=False,
             )
             self.assertIn("Release update policy and VERSION disagree", failure.stderr)
-            self.assertFalse((root / "pixel-4.3.45.update.json").exists())
+            self.assertFalse((root / "pixel-4.3.46.update.json").exists())
 
     def test_export_links_only_to_available_audit_evidence(self):
         with tempfile.TemporaryDirectory() as temporary:

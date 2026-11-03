@@ -7,11 +7,11 @@
     "OPENCLAW-COMPATIBILITY.json"
   ],
   "repository": {
-    "pixelVersion": "4.3.44",
+    "pixelVersion": "4.3.45",
     "compatibilityStatus": "candidate",
     "qualifiedAt": "2026-11-03",
-    "evidenceSourceCommit": "dc07fa669083e61f2e781452205099ab2a2ff735",
-    "evidenceDocument": "ODS-QUALIFICATION-4.3.44.md"
+    "evidenceSourceCommit": "d56daf9cdbc50a079f91ed945be3d3a93ca38788",
+    "evidenceDocument": "ODS-QUALIFICATION-4.3.45.md"
   },
   "latestSupportedCompatibility": {
     "pixelVersion": "4.3.26",

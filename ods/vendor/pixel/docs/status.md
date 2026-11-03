@@ -17,8 +17,8 @@ This page reports repository and release-contract facts. It does **not** report 
 
 | Surface | Source-derived status | Evidence boundary |
 |---|---|---|
-| Repository version | `4.3.44` | `VERSION` and `RELEASE-MANIFEST.json` agree |
-| Repository compatibility row | **candidate** | [ODS-QUALIFICATION-4.3.44.md](../ODS-QUALIFICATION-4.3.44.md) binds source `dc07fa669083e61f2e781452205099ab2a2ff735` |
+| Repository version | `4.3.45` | `VERSION` and `RELEASE-MANIFEST.json` agree |
+| Repository compatibility row | **candidate** | [ODS-QUALIFICATION-4.3.45.md](../ODS-QUALIFICATION-4.3.45.md) binds source `d56daf9cdbc50a079f91ed945be3d3a93ca38788` |
 | OpenClaw compatibility | Canonical release pin is maintained in [OPENCLAW-COMPATIBILITY.json](../OPENCLAW-COMPATIBILITY.json) | This page does not duplicate an authored release pin |
 | Latest Supported compatibility row | Pixel `4.3.26` | `LIVE-AUDIT-4.3.26.md` (not included in this source export) |
 | Deep Work runtime | **development-disabled** | `deepWorkCapability.runtimeEnabled` is `false`; source presence and admission do not imply runtime authority |

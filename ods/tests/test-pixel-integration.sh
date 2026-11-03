@@ -607,7 +607,7 @@ if (
         bundled "$ODS_PIXEL_BUNDLED_REF" ""
     python3 -c 'import os
 assert os.environ["PIXEL_SOURCE_URL"] == "bundled"
-assert os.environ["PIXEL_SOURCE_REF"] == "8afb55abf50633616cd759146366588717534afc"
+assert os.environ["PIXEL_SOURCE_REF"] == "3fe50f1d75d13295bfbe964bfcd327a91df15814"
 assert os.environ["PIXEL_SOURCE_DIR"] == ""'
 ); then
     pass "Validated Pixel source contract persists across installer phases"
