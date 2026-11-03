@@ -4,6 +4,69 @@ Status: implementation and offline regression coverage; **physical Apple
 Silicon qualification has not been completed**. A passing Linux/WSL test is
 not a launchd, Darwin ACL, Seatbelt, reboot or native process-custody result.
 
+## First physical run
+
+Start from the exact source commit named in the final PR qualification note,
+with the checkout outside the installed directory. Keep Docker Desktop running.
+Use an existing disposable ODS installation or a dedicated test account; retain
+its installation, model and private receipts. The source update below is the
+ordinary installer path. `ods-macos.sh update` uses the installed source and
+does not fetch the draft's installer/plugin source from GitHub.
+
+For a checkout at `~/src/ODS` and installation at `~/ods`, record the source and
+platform first:
+
+```sh
+git -C "$HOME/src/ODS" rev-parse HEAD
+git -C "$HOME/src/ODS" status --short
+sw_vers
+uname -m
+docker version --format 'client={{.Client.Version}} server={{.Server.Version}}'
+```
+
+Confirm that the commit matches the qualification note and the checkout is
+clean. Then run these separately, stopping at the first error:
+
+```sh
+ODS_HOME="$HOME/ods" bash "$HOME/src/ODS/ods/install.sh" --pixel --preflight-only
+```
+
+```sh
+ODS_HOME="$HOME/ods" bash "$HOME/src/ODS/ods/install.sh" --pixel
+```
+
+Keep the existing installation options and local model when prompted. The
+source checkout is already selected, so `ODS_REF` is unnecessary here. For a
+custom installed directory, replace `~/ods` consistently in `ODS_HOME` and the
+commands below; the checkout and installed directory must remain separate.
+
+After installation:
+
+```sh
+ODS_HOME="$HOME/ods" bash "$HOME/ods/ods-macos.sh" status
+```
+
+In Portal, first confirm chat and Settings load. Use only invented data for
+these acceptance journeys:
+
+1. Save a test integration, reload Settings and confirm the same choices.
+2. Under Ask first, request one exact test-note append. Confirm a pending
+   request and unchanged note; Approve must also leave the note unchanged.
+   A new explicit retry must append exactly once. Repeat with Decline and
+   confirm the refused action never changes the note.
+3. From ordinary chat, schedule a one-off calculation a few minutes ahead,
+   explicitly with no tools or external notifications. Close the browser,
+   let it run, reopen Portal and inspect its retained result. Create another
+   one-off task, pause it before it is due and confirm it remains Paused with
+   no run. Remove only those test tasks through the normal controls.
+4. Complete the apps, local MCP, isolation and lifecycle cases in the matrix
+   below. Restart the Mac, wait for Docker Desktop, rerun status, and confirm
+   chat, saved integrations and retained task results survive.
+
+Record the first failing step, exact error and source commit. Share sanitized
+results, never credentials, account content or private receipt files. Passing
+the initial UI journeys does not replace the remaining physical matrix.
+
 ## Deployment contract
 
 The new snapshot publishes nine integrations programs and one owner-run
