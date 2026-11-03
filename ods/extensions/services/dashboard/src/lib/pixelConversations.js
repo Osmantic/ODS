@@ -4,6 +4,9 @@ import {draftImageReceipts, messageImageRefs} from './pixelImages'
 import {sha256} from '@noble/hashes/sha2.js'
 
 export const CHAT_KEY = 'ods.pixel.chat.v1'
+export const TAB_CHAT_KEY = 'ods.pixel.active-chat.v1'
+const RECORD_PREFIX = 'ods.pixel.conversation.v2.'
+const TOMBSTONE_PREFIX = 'ods.pixel.deleted-conversation.v2.'
 const LIBRARY_KEY = 'ods.pixel.conversations.v1'
 export const LIBRARY_EVENT = 'ods:pixel-conversations-changed'
 export const SELECT_EVENT = 'ods:pixel-select-conversation'
@@ -15,7 +18,11 @@ function storedArray(key) {
   return value
 }
 const deletedIds = () => storedArray(DELETED_KEY)
-export const isConversationDeleted = chatId => deletedIds().includes(chatId)
+export const isConversationDeleted = chatId => {
+  const marker = localStorage.getItem(TOMBSTONE_PREFIX + chatId)
+  if (marker !== null && marker !== '1') throw new Error('Saved deletion marker could not be read. Existing browser data has been preserved.')
+  return deletedIds().includes(chatId) || marker === '1'
+}
 const valid = item => item?.schema === 1 && typeof item.chatId === 'string'
   && /^[A-Za-z0-9_-]{1,128}$/.test(item.chatId) && Array.isArray(item.messages)
   && item.messages.every(message => message && ['user', 'assistant'].includes(message.role) && typeof message.content === 'string')
@@ -30,6 +37,58 @@ function currentConversation() {
   }
 }
 
+export function rememberActiveConversation(chatId) {
+  // Selection is local to a browser tab. Shared legacy storage remains a
+  // compatibility mirror, never the identity to restore in another open tab.
+  try { globalThis.sessionStorage?.setItem(TAB_CHAT_KEY, chatId) } catch { /* Durable history is independent of selection. */ }
+}
+
+export function readActiveConversation() {
+  let chatId
+  try { chatId = globalThis.sessionStorage?.getItem(TAB_CHAT_KEY) } catch { /* Legacy fallback below. */ }
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(chatId || '')) return currentConversation()
+  if (isConversationDeleted(chatId)) return null
+  const visible = loadConversations().find(chat => chat.chatId === chatId)
+  if (visible) return visible
+  const stored = durableConversation(chatId)
+  const mirror = currentConversation()
+  if (legacyRelation(stored, mirror) === 'newer') return mirror
+  return stored || {schema:1, chatId, messages:[], draft:''}
+}
+
+function durableConversation(chatId) {
+  const raw = localStorage.getItem(RECORD_PREFIX + chatId)
+  if (raw === null) return null
+  const value = JSON.parse(raw)
+  if (!valid(value) || value.chatId !== chatId) throw new Error('Saved conversation could not be read. Existing browser data has been preserved.')
+  return value
+}
+
+function legacyRelation(record, current) {
+  // Parent snapshots distinguish a partial mirror commit from an unrelated
+  // legacy edit. No timestamp can authorize replacing a different transcript.
+  if (!valid(record) || !valid(current) || record.chatId !== current.chatId) return 'separate'
+  const own = conversationSnapshot(record), mirror = conversationSnapshot(current)
+  if (own === mirror) return 'same'
+  if (current.persistenceParent === snapshotHash(own)) return 'newer'
+  if (record.persistenceParent === snapshotHash(mirror)) return 'older'
+  return 'conflict'
+}
+
+function reconcileRecord(record, library, current) {
+  let value = record
+  for (const mirror of [library, current]) {
+    if (legacyRelation(value, mirror) === 'newer') value = mirror
+  }
+  return value
+}
+
+function conversationChanged() {
+  const error = new Error('This conversation changed in another tab. Download a recovery copy of your unsaved text, then reload this page to read the saved version.')
+  error.code = 'conversation-changed'
+  throw error
+}
+
 function loadConversations(preserveInvalid = false) {
   const stored = storedArray(LIBRARY_KEY)
   let entries = preserveInvalid ? stored : stored.filter(valid)
@@ -40,8 +99,20 @@ function loadConversations(preserveInvalid = false) {
     entries = entries.filter(item => !valid(item) || item.chatId !== current.chatId)
     if (current.messages.length || current.draft?.trim() || current.draftImages?.length) entries.push(current)
   }
-  const deleted = deletedIds()
-  return entries.filter(item => !valid(item) || !deleted.includes(item.chatId))
+  // Each conversation commits independently. A concurrent writer can replace
+  // the library index, but cannot erase another chat's durable record.
+  for (let index = 0; index < localStorage.length; index++) {
+    const key = localStorage.key(index)
+    if (!key?.startsWith(RECORD_PREFIX)) continue
+    const chatId = key.slice(RECORD_PREFIX.length)
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(chatId)) continue
+    const record = durableConversation(chatId)
+    if (!record) continue
+    const value = reconcileRecord(record, stored.find(item => valid(item) && item.chatId === chatId), current)
+    entries = entries.filter(item => !valid(item) || item.chatId !== chatId)
+    if (value.messages.length || value.draft?.trim() || value.draftImages?.length) entries.push(value)
+  }
+  return entries.filter(item => !valid(item) || !isConversationDeleted(item.chatId))
     .sort((a, b) => (Number.isFinite(b?.updatedAt) ? b.updatedAt : 0) - (Number.isFinite(a?.updatedAt) ? a.updatedAt : 0))
 }
 
@@ -56,7 +127,7 @@ function conversationSnapshot(chat) {
   if (!chat) return null
   // Save timestamps alone do not make identical content a conflicting edit.
   return JSON.stringify(Object.fromEntries(Object.entries(chat)
-    .filter(([key]) => !['updatedAt', 'persistenceVersion', 'persistenceRevision', 'recoverySource'].includes(key))
+    .filter(([key]) => !['updatedAt', 'persistenceVersion', 'persistenceRevision', 'persistenceParent', 'recoverySource'].includes(key))
     .sort(([left], [right]) => left.localeCompare(right))))
 }
 
@@ -76,7 +147,7 @@ const terminalOutcome = message => JSON.stringify({status:message?.status,
   content:message?.content || (message?.status === 'done' ? 'Completed without a text response.' : '')})
 
 const EMPTY_DRAFT_KEYS = new Set(['schema', 'chatId', 'messages', 'draft', 'requestId', 'inFlight',
-  'interrupted', 'contextStart', 'compactionRequestId', 'preview', 'workspaceOpen', 'updatedAt', 'persistenceVersion', 'persistenceRevision', 'draftImages'])
+  'interrupted', 'contextStart', 'compactionRequestId', 'preview', 'workspaceOpen', 'updatedAt', 'persistenceVersion', 'persistenceRevision', 'persistenceParent', 'draftImages'])
 function omittedEmptyBaseline(chat) {
   // The library omits an empty draft. Moving the shared active pointer does
   // not edit that draft, but pending operations and unknown metadata stay strict.
@@ -157,22 +228,22 @@ export function saveConversation(chat, checkpoint) {
   chat.messages.forEach(messageImageRefs)
   if (chat.messages.some(message=>message.projectTasks!==undefined
     && (message.role!=='assistant' || !parseProjectTasks(message.projectTasks)))) throw new Error('Invalid project metadata')
-  if (deletedIds().includes(chat.chatId)) throw new Error('This conversation was deleted in another tab. Start a new chat.')
+  if (isConversationDeleted(chat.chatId)) throw new Error('This conversation was deleted in another tab. Start a new chat.')
   // A read error is not an empty library. Never overwrite unreadable history.
   const entries = loadConversations(true)
   const previous = entries.find(item => valid(item) && item.chatId === chat.chatId)
   const current = currentConversation()
+  const record = durableConversation(chat.chatId)
   // Empty drafts are absent from the library but still have an active record.
-  const latest = valid(current) && current.chatId === chat.chatId && (current.persistenceVersion === 2 || !previous) ? current : previous
-  if (checkpoint && !checkpoint.matches(latest ?? null)) {
-    const error = new Error('This conversation changed in another tab. Download a recovery copy of your unsaved text, then reload this page to read the saved version.')
-    error.code = 'conversation-changed'
-    throw error
-  }
+  const reconciled = record && reconcileRecord(record, previous, current)
+  const durable = reconciled && (reconciled.messages.length || reconciled.draft?.trim() || reconciled.draftImages?.length || omittedEmptyBaseline(reconciled)) ? reconciled : null
+  const latest = durable || (valid(current) && current.chatId === chat.chatId && (current.persistenceVersion === 2 || !previous) ? current : previous)
+  if (legacyRelation(reconciled, current) === 'conflict' || checkpoint && !checkpoint.matches(latest ?? null)) conversationChanged()
   if (checkpoint?.skip?.(latest)) return latest
   const value = checkpoint?.activate
     ? {...latest, persistenceVersion:2, persistenceRevision:latest.persistenceRevision || persistenceRevision()}
     : { ...previous, ...chat, updatedAt: Date.now(), persistenceVersion: 2, persistenceRevision: persistenceRevision() }
+  if (!checkpoint?.activate) value.persistenceParent = latest ? snapshotHash(conversationSnapshot(latest)) : null
   // A normal edit (even one made by the recovery observer) ends the handoff.
   // Never carry a receipt forward through an object spread from saved data.
   if (!checkpoint?.activate) delete value.recoverySource
@@ -182,6 +253,16 @@ export function saveConversation(chat, checkpoint) {
   if (valid(current) && current.chatId !== value.chatId) {
     // Do not replace the only durable copy of a previous partial save when
     // switching tasks. Flush its reconciled library before moving the pointer.
+    const foreignRecord = durableConversation(current.chatId)
+    const foreign = foreignRecord ? reconcileRecord(foreignRecord,
+      entries.find(item => valid(item) && item.chatId === current.chatId), current)
+      : entries.find(item => valid(item) && item.chatId === current.chatId) || current
+    if (foreignRecord && legacyRelation(foreign, current) === 'conflict') conversationChanged()
+    // This also retains a partially committed *empty* draft, absent from the
+    // index. If quota still prevents its record, keep its pointer and refuse.
+    if (!foreignRecord || conversationSnapshot(foreignRecord) !== conversationSnapshot(foreign)) {
+      localStorage.setItem(RECORD_PREFIX + foreign.chatId, JSON.stringify(foreign))
+    }
     localStorage.setItem(LIBRARY_KEY, JSON.stringify(entries))
   }
   // Validate/read the library before either write. Commit the reload authority
@@ -190,6 +271,8 @@ export function saveConversation(chat, checkpoint) {
   // Advance as soon as the reload authority commits, even if the library
   // write fails afterward. A retry must recognize this editor's partial save.
   checkpoint?.committed(value)
+  localStorage.setItem(RECORD_PREFIX + value.chatId, JSON.stringify(value))
+  rememberActiveConversation(value.chatId)
   try {
     // Never silently evict an older conversation when browser storage fills up.
     localStorage.setItem(LIBRARY_KEY, JSON.stringify(next))
@@ -234,10 +317,12 @@ export function deleteConversation(chatId) {
   if (chat.inFlight || chat.interrupted) throw new Error('Stop or resume this task before deleting its conversation.')
   if (chat.compactionRequestId) throw new Error('Check the pending context compaction before deleting this conversation.')
   // Write the deletion marker first: stale open tabs must never resurrect a deleted chat.
+  localStorage.setItem(TOMBSTONE_PREFIX + chatId, '1')
   localStorage.setItem(DELETED_KEY, JSON.stringify([...new Set([...deletedIds(), chatId])]))
   localStorage.setItem(LIBRARY_KEY, JSON.stringify(entries.filter(item => !valid(item) || item.chatId !== chatId)))
   const current = currentConversation()
   if (current?.chatId === chatId) localStorage.removeItem(CHAT_KEY)
+  localStorage.removeItem(RECORD_PREFIX + chatId)
   deleteConversationLabels(chatId)
   window.dispatchEvent(new Event(LIBRARY_EVENT))
 }

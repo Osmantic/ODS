@@ -4,7 +4,7 @@ import PortalApprovalTerminal from '../components/PortalApprovalTerminal'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import PixelConversationRecovery from '../components/PixelConversationRecovery'
 import {validSourceReview} from '../lib/pixelSourceReview'
-import { readConversations, saveConversation, createConversationWriter, SELECT_EVENT, DELETE_EVENT, deleteConversation, purgeConversationImages, isConversationDeleted } from '../lib/pixelConversations'
+import { readConversations, readActiveConversation, rememberActiveConversation, saveConversation, createConversationWriter, SELECT_EVENT, DELETE_EVENT, deleteConversation, purgeConversationImages, isConversationDeleted } from '../lib/pixelConversations'
 import {usePixelAutoScroll} from '../lib/usePixelAutoScroll'
 import {EXAMPLE_OPEN_EVENT, EXAMPLE_REFRESH_EVENT, openExampleProject} from '../lib/exampleProjects'
 import { Link } from 'react-router-dom'
@@ -140,7 +140,6 @@ const MAX_TOTAL_MESSAGE_BYTES = 256 * 1024
 // Visible history is independent of the model's per-request context budget.
 const MAX_STORED_MESSAGES = 2000
 const MAX_STORED_MESSAGE_BYTES = 4 * 1024 * 1024
-const CHAT_STORAGE_KEY = 'ods.pixel.chat.v1'
 const SAFE_CHAT_ID = /^[A-Za-z0-9_-]{1,128}$/
 const STOPPED_NOTICE = 'Stopped by you. Workspace changes completed before cancellation were preserved.'
 const MODEL_SWITCH_DETAIL = 'Model switch in progress; Portal will be ready when activation completes'
@@ -580,7 +579,7 @@ function restoreRejectedDraft(source) {
 
 function loadStoredChat(selected) {
   try {
-    let stored = selected || JSON.parse(globalThis.localStorage?.getItem(CHAT_STORAGE_KEY) || 'null')
+    let stored = selected || readActiveConversation()
     if (!selected && stored?.schema === 1 && SAFE_CHAT_ID.test(stored.chatId || '') && stored.persistenceVersion !== 2) {
       // Older clients committed the library before the active pointer. Restore
       // that authority before autosave can migrate an older pointer over it.
@@ -1918,6 +1917,7 @@ export default function Pixel({ systemStatus = null }) {
     continueRequested.current = null
     setSendHint(false)
     chatIdRef.current = makeChatId()
+    rememberActiveConversation(chatIdRef.current)
     images.replace(chatIdRef.current)
     requestIdRef.current = null
     contextStartRef.current = 0
@@ -2043,6 +2043,7 @@ export default function Pixel({ systemStatus = null }) {
       hydrating.current = true; savedView.current = null; persistenceFailed.current = false
       hydrationAction.current = chat.interrupted || chat.persistenceSnapshot.recoverySource ? 'activate' : 'normalize'
       chatIdRef.current = chat.chatId
+      rememberActiveConversation(chat.chatId)
       images.replace(chat.chatId,chat.draftImages)
       shownTeamPublications.current = shownPublicationKeys(chat)
       requestIdRef.current = chat.requestId
