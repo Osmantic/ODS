@@ -166,7 +166,7 @@ silently replace that choice.
 
 1. If a lean installation omitted Open WebUI, choose **Add Open WebUI** in Dashboard → Extensions Library. Linux and macOS support this action; it downloads only the WebUI image and reuses retained chat data. On macOS, rerunning the installer with `--with-webui` also selects it.
 2. Open `http://localhost:3000` in your browser.
-3. Start chatting; a normal loopback-only ODS install does not require an account. On a LAN/network deployment, create the first admin account when prompted.
+3. Start chatting; a normal loopback-only ODS install does not require an account. On a LAN/network deployment, set `WEBUI_ADMIN_EMAIL` and `WEBUI_ADMIN_PASSWORD` in `.env` first; Open WebUI creates that administrator at start, and ODS refuses to publish an Open WebUI with no accounts because its first signup would become administrator.
 
 ## Troubleshooting
 

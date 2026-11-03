@@ -227,6 +227,13 @@ generate_ods_env() {
 
     # Idempotency: preserve existing .env (and secrets) unless --force was provided.
     if [[ -f "$env_path" ]] && [[ "$force_overwrite" != "true" ]]; then
+        # Open WebUI administrator for its first start; kept once set.
+        if [[ -z "$(read_env_value "$env_path" "WEBUI_ADMIN_EMAIL")" ]]; then
+            upsert_env_value "$env_path" "WEBUI_ADMIN_EMAIL" "admin@ods.local"
+        fi
+        if [[ -z "$(read_env_value "$env_path" "WEBUI_ADMIN_PASSWORD")" ]]; then
+            upsert_env_value "$env_path" "WEBUI_ADMIN_PASSWORD" "$(new_secure_hex 16)"
+        fi
         ENV_DASHBOARD_KEY="$(read_env_value "$env_path" "DASHBOARD_API_KEY")"
 
         # SearXNG secret: prefer .env, fall back to settings.yml, then generate.
@@ -402,6 +409,8 @@ generate_ods_env() {
     # Generate secrets
     local webui_secret
     webui_secret=$(new_secure_hex 32)
+    local webui_admin_password
+    webui_admin_password=$(new_secure_hex 16)
     local n8n_pass
     n8n_pass=$(new_secure_base64 16)
     local litellm_key
@@ -700,6 +709,8 @@ ODS_AUTH_UPSTREAM=ods-dashboard-api:3002
 
 #=== Security (auto-generated, keep secret!) ===
 WEBUI_SECRET=${webui_secret}
+WEBUI_ADMIN_EMAIL=admin@ods.local
+WEBUI_ADMIN_PASSWORD=${webui_admin_password}
 DASHBOARD_API_KEY=${dashboard_api_key}
 ODS_AGENT_KEY=${ods_agent_key}
 ODS_SESSION_SECRET=${ods_session_secret}

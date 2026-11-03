@@ -49,6 +49,14 @@ else
     python3 /opt/ods/openwebui-prepare.py
 fi
 
+# With sign-in off, Open WebUI signs everyone in as its built-in administrator
+# and refuses that once any other account exists. Hand it the administrator
+# from .env only while sign-in is on, or it would create that account at start
+# and lock the owner out of a local-only install.
+if [ "$(printf '%s' "${WEBUI_AUTH-true}" | tr '[:upper:]' '[:lower:]')" != true ]; then
+    unset WEBUI_ADMIN_EMAIL WEBUI_ADMIN_PASSWORD
+fi
+
 # List ods/current once instead of every LiteLLM alias for the same model
 # (openwebui-model-list.py). Nothing printed leaves the connections as they are.
 model_configs="$(python3 /opt/ods/openwebui-model-list.py)"

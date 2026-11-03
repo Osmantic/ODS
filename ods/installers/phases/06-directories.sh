@@ -16,7 +16,7 @@
 #           LLM_BACKEND (phase 02; with vllm also VLLM_IMAGE, VLLM_MODEL_DIR,
 #           VLLM_SERVED_MODEL, VLLM_ARGS, VLLM_GPU_UUID),
 #           chapter(), ai(), ai_ok(), ai_warn(), log(), warn(), error()
-# Provides: WEBUI_SECRET, N8N_PASS, LITELLM_KEY, LIVEKIT_SECRET,
+# Provides: WEBUI_SECRET, WEBUI_ADMIN_EMAIL, WEBUI_ADMIN_PASSWORD, N8N_PASS, LITELLM_KEY, LIVEKIT_SECRET,
 #           DASHBOARD_API_KEY, SHIELD_API_KEY, TOKEN_SPY_API_KEY,
 #           OPENCODE_SERVER_PASSWORD, GPU_ASSIGNMENT_JSON_B64 (in .env)
 #           PIXEL_SOURCE_URL, PIXEL_SOURCE_REF, PIXEL_SOURCE_DIR when Pixel is enabled
@@ -1001,6 +1001,10 @@ SERVICE_PORT_DEFAULTS
     # Secrets: reuse existing values, generate only if missing
     WEBUI_SECRET=$(_phase06_env_hex_secret WEBUI_SECRET 32)
     N8N_PASS=$(_env_get N8N_PASS "$(openssl rand -base64 16 2>/dev/null || head -c 16 /dev/urandom | base64)")
+    # Open WebUI creates this administrator at its first start (no accounts yet),
+    # so a LAN/proxy install is never claimed by the first device to sign up.
+    WEBUI_ADMIN_EMAIL=$(_env_get WEBUI_ADMIN_EMAIL "admin@ods.local")
+    WEBUI_ADMIN_PASSWORD=$(_phase06_env_hex_secret WEBUI_ADMIN_PASSWORD 16)
     LITELLM_KEY=$(_phase06_env_hex_secret LITELLM_KEY 16 "sk-ods-")
     ODS_WINDOWS_SYSTEM_DIRECTORY="$(_env_get_explicit_first ODS_WINDOWS_SYSTEM_DIRECTORY '')"
     ODS_WSL_STATE_ROOT="$(_env_get_explicit_first ODS_WSL_STATE_ROOT '')"
@@ -1868,6 +1872,8 @@ ODS_AUTH_UPSTREAM=${ODS_AUTH_UPSTREAM:-ods-dashboard-api:3002}
 
 #=== Security (auto-generated, keep secret!) ===
 WEBUI_SECRET=$(dotenv_value "${WEBUI_SECRET}")
+WEBUI_ADMIN_EMAIL=$(dotenv_value "${WEBUI_ADMIN_EMAIL}")
+WEBUI_ADMIN_PASSWORD=$(dotenv_value "${WEBUI_ADMIN_PASSWORD}")
 DASHBOARD_API_KEY=$(dotenv_value "${DASHBOARD_API_KEY}")
 ODS_AGENT_KEY=$(dotenv_value "${ODS_AGENT_KEY}")
 ODS_AGENT_BIND=$(dotenv_value "${ODS_AGENT_BIND_VALUE}")

@@ -294,6 +294,9 @@ show_success_card() {
     echo ""
     echo -e "       ${DGRN}${chat_label}${NC}    ${WHT}http://localhost:${chat_port}${NC}"
     echo -e "       ${DGRN}Dashboard:${NC}  ${WHT}http://localhost:${dashboard_port}${NC}"
+    if [[ "${ENABLE_OPEN_WEBUI:-true}" == true ]]; then
+        echo -e "       ${DGRN}Chat admin:${NC} ${WHT}WEBUI_ADMIN_EMAIL / WEBUI_ADMIN_PASSWORD in $ODS_INSTALL_DIR/.env${NC}"
+    fi
     local _bind
     _bind=$(grep "^BIND_ADDRESS=" "$ODS_INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2- | tr -d '"' || echo "127.0.0.1")
     [[ -z "$_bind" ]] && _bind="127.0.0.1"
