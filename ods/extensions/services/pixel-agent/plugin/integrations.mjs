@@ -439,7 +439,7 @@ export function createIntegrationTools({submit = submitIntegration, context, out
   return [
     {
       name: 'pixel_ods_notes',
-      description: "Markdown notes in the owner's Obsidian vault; Paperless docs/PDFs use pixel_ods_mcp action list. action search: find notes holding query words. action read: read a note by path from search. action write: append text or create a note with exact path/text/mode; may write or request approval under policy. action prepare: only prepare the same exact request, never write or use approval, even Allowed; Off refuses. Use prepare for preparation without execution. Call the normal tool for each new save/retry, including identical arguments; only its typed receipt establishes pending/done/refused. Portal approval IDs have no tool action.",
+      description: "Markdown notes in the owner's Obsidian vault; Paperless docs/PDFs use pixel_ods_mcp action list. action search: find notes holding query words. action read: read a note by path from search. action write: append text or create a note with exact path/text/mode, only when the owner asks to save; may write or request approval under policy. action prepare: only prepare the same exact request, never write or use approval, even Allowed; Off refuses. Use prepare for preparation without execution. Call the normal tool for each new save/retry, including identical arguments; only its typed receipt establishes pending/done/refused. Portal approval IDs have no tool action.",
       parameters: {type: 'object', additionalProperties: false, required: ['action'],
         properties: {action: {type: 'string', enum: ['search', 'read', 'write', 'prepare']},
           query: {type: 'string', description: 'For search: words to look for, such as "lease deposit".'},
