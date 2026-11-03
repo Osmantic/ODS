@@ -401,6 +401,15 @@ else
     _phase06_pixel_source_transition=0
     # Cleared below while an unfinished Pixel source plan is pending.
     _phase06_prune_ready=true
+    if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && declare -F _ods_pixel_write_install_transaction >/dev/null 2>&1; then
+        _phase06_tx_owner="$(ods_pixel_install_owner 2>/dev/null || true)"
+        if [[ -n "$_phase06_tx_owner" ]]; then
+            _phase06_tx_home="$(ods_pixel_owner_home "$_phase06_tx_owner" 2>/dev/null || true)"
+            if [[ -n "$_phase06_tx_home" && -d "$_phase06_tx_home" ]]; then
+                _ods_pixel_write_install_transaction "$_phase06_tx_owner" "$_phase06_tx_home" 2>/dev/null || true
+            fi
+        fi
+    fi
     if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" \
         && ( -e "$_phase06_pixel_marker" || -L "$_phase06_pixel_marker" ) ]]; then
         # Fail before source restoration, pruning or staging. Rootless fallback
