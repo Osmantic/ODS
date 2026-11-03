@@ -7,7 +7,7 @@ import {readFileSync} from 'node:fs';
 import {dirname, join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {spawnSync} from 'node:child_process';
-import {registeredPixelTools, combinedToolSchema} from './tool-grammar-registration.mjs';
+import {registeredPixelTools, registeredSourceReadTools, combinedToolSchema} from './tool-grammar-registration.mjs';
 
 const bridge = process.env.ODS_TEST_LLAMA_SCHEMA;
 const moduleFile = process.env.OPENCLAW_TOOL_SEARCH_MODULE;
@@ -20,8 +20,11 @@ assert.equal(JSON.parse(readFileSync(join(root, 'package.json'))).version, '2026
 const {u: applyCatalog, m: createCatalogRef} = await import(pathToFileURL(moduleFile));
 const {t: createCoreTools} = await import(pathToFileURL(join(root, 'dist/agent-tools-D1DOpg6D.js')));
 const {t: normalizeSchema} = await import(pathToFileURL(join(root, 'dist/agent-tools-parameter-schema-CnoL-cVw.js')));
+const {t: filterByPolicy} = await import(pathToFileURL(join(root, 'dist/agent-tools.policy-Dyn4VuLn.js')));
 const route = {modelProvider: 'ods-gateway', modelId: 'ods/current', modelApi: 'openai-completions'};
 const pluginTools = (await registeredPixelTools()).map(tool =>
+  ({...tool, parameters: normalizeSchema(tool.parameters, route)}));
+const sourceTools = (await registeredSourceReadTools()).map(tool =>
   ({...tool, parameters: normalizeSchema(tool.parameters, route)}));
 const config = {plugins: {enabled: false}, models: {providers: {
   'ods-gateway': {baseUrl: 'http://127.0.0.1:1/v1', api: 'openai-completions',
@@ -65,14 +68,17 @@ function run(input) {
 }
 function compile(tools) {
   assert.equal(new Set(names(tools)).size, tools.length, 'compile each offered tool exactly once');
+  const grammarBytes = [];
   for (const input of [
     {schema: combinedToolSchema(tools)},
     {chatTemplate: template, tools: tools.map(({name, description, parameters}) => ({name, description, parameters}))},
   ]) {
     const result = run(input);
     assert.equal(result.status, 0, `${names(tools).join(', ')}\n${result.stderr.slice(0, 2000)}`);
-    assert.ok(JSON.parse(result.stdout).grammarBytes > 0);
+    grammarBytes.push(JSON.parse(result.stdout).grammarBytes);
+    assert.ok(grammarBytes.at(-1) > 0);
   }
+  return grammarBytes;
 }
 
 test('actual catalog offers the reviewed general-purpose surface', () => {
@@ -97,6 +103,62 @@ test('qualified32K and provider-only64K compile the actual Coffee schemas withou
   const small=applyCatalog({tools:allTools,config:capped,agentId:'pixel',modelContextWindowTokens:65536,
     runId:randomUUID(),catalogRef:createCatalogRef()}).tools;
   assert.deepEqual(names(small),['tool_call','tool_describe','tool_search']);
+});
+
+function qualifiedSourceSurface() {
+  const qualified = applyCatalog({tools: allTools, config, agentId: 'pixel',
+    modelContextWindowTokens: 65536, runId: randomUUID(), catalogRef: createCatalogRef()}).tools;
+  assert.equal(qualified.length, 23);
+  assert.equal(sourceTools.length, 9);
+  // Grammar coverage of the combined capability family, not a change to native
+  // direct/deferred selection. Keep the complete normalized factory schemas.
+  return [...qualified, ...sourceTools];
+}
+
+test('all nine actual Source read factories compile with the qualified native/ODS32-tool surface', t => {
+  const combined = qualifiedSourceSurface();
+  assert.equal(combined.length, 32);
+  for (const original of sourceTools) assert.equal(combined.find(tool => tool.name === original.name), original);
+  const [schemaGrammarBytes, chatTemplateGrammarBytes] = compile(combined);
+  t.diagnostic(JSON.stringify({toolCount: combined.length, schemaGrammarBytes, chatTemplateGrammarBytes}));
+});
+
+test('Source grammar coverage preserves native deny filtering and the explicit8K context cap', () => {
+  const combined = qualifiedSourceSurface();
+  const permitted = filterByPolicy(combined, {deny: ['pixel_calendar_count', 'pixel_gmail_read']});
+  assert.equal(permitted.length, 30);
+  assert.ok(!permitted.some(tool => ['pixel_calendar_count', 'pixel_gmail_read'].includes(tool.name)));
+  const capped = {...config, agents: {list: [{id: 'pixel', contextTokens: 8192}]}};
+  const small = applyCatalog({tools: permitted, config: capped, agentId: 'pixel',
+    modelContextWindowTokens: 65536, runId: randomUUID(), catalogRef: createCatalogRef()}).tools;
+  // The reviewed8K recipe already exposes four bounded Source reads; the
+  // denied Gmail read must stay absent, and the32K/64K surface must not leak in.
+  assert.deepEqual(names(small), ['pixel_calendar_get', 'pixel_calendar_list',
+    'pixel_gmail_search', 'tool_call', 'tool_describe', 'tool_search']);
+});
+
+test('native Source gate reproduces the predecessor\\d civil-date grammar failure', () => {
+  // Reintroduce only the observed predecessor regex into a COPY of the actual
+  // combined schemas. Never shrink or sanitize the positive schemas to pass.
+  const predecessor = qualifiedSourceSurface().map(({name, description, parameters}) =>
+    ({name, description, parameters: structuredClone(parameters)}));
+  let changed = 0;
+  function restorePattern(value) {
+    if (!value || typeof value !== 'object') return;
+    if (value.pattern === '^[0-9]{4}-[0-9]{2}-[0-9]{2}$') {
+      value.pattern = '^\\d{4}-\\d{2}-\\d{2}$';
+      changed++;
+    }
+    for (const child of Object.values(value)) restorePattern(child);
+  }
+  for (const tool of predecessor.filter(tool => ['pixel_calendar_count', 'pixel_calendar_list'].includes(tool.name)))
+    restorePattern(tool.parameters);
+  assert.equal(changed, 2, 'the real list/count date schemas must both be covered');
+  for (const input of [{schema: combinedToolSchema(predecessor)}, {chatTemplate: template, tools: predecessor}]) {
+    const result = run(input);
+    assert.equal(result.status, 1, result.stderr.slice(0, 2000));
+    assert.match(result.stderr, /unknown (?:escape|char)/);
+  }
 });
 test('workspace preview is present exactly once in the compiled ordinary surface', () => {
   assert.equal(offered.length, 18);

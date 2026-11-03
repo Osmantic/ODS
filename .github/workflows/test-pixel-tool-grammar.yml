@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'ods/extensions/services/pixel-agent/plugin/**'
+      - 'ods/vendor/pixel/plugin/**'
       - 'ods/extensions/services/pixel-agent/tests/tool*grammar*'
       - 'ods/extensions/services/pixel-agent/tests/extension_proposal.test.mjs'
       - 'ods/extensions/services/pixel-agent/tests/runtime_tool_surface.integration.mjs'
@@ -56,6 +57,15 @@ jobs:
           echo "ODS_TEST_GRAMMAR_WORKSPACE=$runtime/workspace" >> "$GITHUB_ENV"
           mkdir -p "$runtime/state" "$runtime/workspace"
           python -m pip install pytest
+      - name: Install the locked Source schema dependency without lifecycle scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          schema_root="$RUNNER_TEMP/pixel-grammar-source"
+          mkdir -p "$schema_root"
+          cp ods/vendor/pixel/plugin/package.json ods/vendor/pixel/plugin/package-lock.json "$schema_root/"
+          npm ci --prefix "$schema_root" --omit=dev --ignore-scripts --no-audit --no-fund
+          echo "PIXEL_TEST_TYPEBOX_DIR=$schema_root/node_modules/typebox" >> "$GITHUB_ENV"
       - name: Fetch the default Compose runtime's exact source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
