@@ -59,7 +59,25 @@ def validate(value: Any) -> dict[str, Any]:
     return value
 
 
-def _private_value(path: Path, owners: tuple) -> Any:
+class _JournalReplaced(LifecycleError):
+    """Discard this descriptor; it is never accepted as a private snapshot."""
+
+
+def _private_metadata(info, owners):
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink not in (0, 1) or info.st_size > MAX_BYTES:
+        raise LifecycleError("unsafe connection journal")
+    if os.name != "nt" and (info.st_uid not in owners or info.st_mode & 0o077):
+        raise LifecycleError("unsafe connection journal")
+    if info.st_nlink == 0:
+        raise _JournalReplaced("connection journal replaced while reading")
+
+
+def _signature(info):
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid, info.st_nlink,
+            info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _private_snapshot(path: Path, owners: tuple) -> Any:
     try:
         descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     except FileNotFoundError:
@@ -69,15 +87,41 @@ def _private_value(path: Path, owners: tuple) -> Any:
         raise LifecycleError("connection journal cannot be opened safely") from error
     with os.fdopen(descriptor, "rb") as handle:
         info = os.fstat(handle.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > MAX_BYTES:
-            raise LifecycleError("unsafe connection journal")
-        if os.name != "nt" and (info.st_uid not in owners or info.st_mode & 0o077):
-            raise LifecycleError("unsafe connection journal")
+        _private_metadata(info, owners)
         raw = handle.read(MAX_BYTES + 1)
+        if len(raw) > MAX_BYTES:
+            raise LifecycleError("unsafe connection journal")
+        after = os.fstat(handle.fileno())
+        _private_metadata(after, owners)
+        try:
+            current = os.stat(path, follow_symlinks=False)
+        except FileNotFoundError:
+            raise _JournalReplaced("connection journal replaced while reading") from None
+        except OSError as error:
+            raise LifecycleError("connection journal cannot be opened safely") from error
+        if (current.st_dev, current.st_ino) != (after.st_dev, after.st_ino):
+            raise _JournalReplaced("connection journal replaced while reading")
+        if _signature(info) != _signature(after) or _signature(after) != _signature(current):
+            raise LifecycleError("connection journal changed while reading")
     try:
         return json.loads(raw.decode("utf-8"))
     except (UnicodeError, ValueError) as error:
         raise LifecycleError("invalid connection journal") from error
+
+
+def _private_value(path: Path, owners: tuple) -> Any:
+    # An atomic publisher can unlink a descriptor between open/fstat/read.
+    # Discard it and reopen at most once, repeating ALL custody/content checks.
+    # Never accept nlink=0, unsafe metadata, or a continuously changing path.
+    for attempt in range(2):
+        try:
+            value = _private_snapshot(path, owners)
+            if value is _MISSING and attempt:
+                raise LifecycleError("connection journal changed while reading")
+            return value
+        except _JournalReplaced:
+            if attempt:
+                raise LifecycleError("connection journal changed while reading") from None
 
 
 def read(path: Path = PATH, *, owners: tuple = (0,)) -> dict[str, Any] | None:
