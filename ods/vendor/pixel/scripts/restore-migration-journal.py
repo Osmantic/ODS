@@ -251,6 +251,8 @@ DEPLOYED_UNIT_ALLOWLIST = {
     "pixel-source-reconcile@.service",
     "pixel-source-direct.service",
     "pixel-source-direct.path",
+    "pixel-source-exchange@.service",
+    "pixel-source-revoke.service",
     "pixel-ops-broker.service",
     "pixel-frontier-broker.service",
 }

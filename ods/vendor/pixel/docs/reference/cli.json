@@ -76,7 +76,7 @@
     },
     {
       "command": "source-broker",
-      "description": "Install/refresh the isolated Source Broker (requires --confirm)",
+      "description": "Install/refresh the isolated Source Broker (requires --confirm; --prepare only prepares it)",
       "source": "scripts/install-source-broker.sh",
       "family": "sources",
       "effect": "state-changing or authority-affecting",

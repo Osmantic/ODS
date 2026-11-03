@@ -44,5 +44,13 @@ jobs:
         run: node scripts/generate-release-files.mjs --check
       - name: Operations inventory startup readiness
         run: python3 -m unittest discover -s tests -p test_ops_broker_readiness.py -v
+      - name: Source Broker, sign-in exchange and projection plugin
+        run: |
+          python3 scripts/lib/bundle-brokers.py --check
+          python3 -m unittest -v tests/test_source_broker.py tests/test_email_prompt_injection.py tests/test_source_pressure.py tests/test_restore_migration_journal_install.py tests/test_control_server.py tests/test_release_source_plugin.py
+          node --test plugin/oauth-security.test.mjs tests/source-broker-plugin.test.mjs
+          node plugin/email-query.test.mjs
+          bash tests/restore-private-state-source-status.test.sh
+          bash tests/source-broker-verify.test.sh
       - name: Pixel end-to-end suite (fake Docker and systemd)
         run: bash tests/e2e.sh
