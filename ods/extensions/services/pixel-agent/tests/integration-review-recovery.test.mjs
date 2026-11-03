@@ -570,7 +570,7 @@ test('builtin source and verb changes after operation-floor admission cannot bor
     assert.equal(recovery.floor(ev,CONTEXT),undefined);await admitConcrete(outcomes,recovery,ev,context);
     const submitted=[];
     const mcp=createIntegrationTools({context:CONTEXT,outcomes,requireBound:ctx=>recovery.isReviewOnly(ctx),submit:async payload=>{submitted.push(payload);
-      return {ok:true,server:'app:documents',tool:'read',text:'Invented document'};}}).find(value=>value.name==='pixel_ods_mcp');
+      return {ok:true,server:'app:documents',tool:'read',text:'Invented document',recoveryReviewOnly:true};}}).find(value=>value.name==='pixel_ods_mcp');
     const actual=change==='source'?{...params,server:'app:photos',tool:'search'}:change==='verb'?{...params,tool:'search'}:params;
     const result=await mcp.execute(context.toolCallId,actual);
     if(change==='none') {
