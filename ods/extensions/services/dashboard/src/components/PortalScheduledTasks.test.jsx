@@ -1,6 +1,9 @@
-import {act,fireEvent,render,screen,waitFor,within} from '@testing-library/react'
+import {act,fireEvent,render as renderComponent,screen,waitFor,within} from '@testing-library/react'
+import {Link,MemoryRouter,Route,Routes} from 'react-router-dom'
 import {webcrypto} from 'node:crypto'
 import PortalScheduledTasks from './PortalScheduledTasks'
+
+const render = element => renderComponent(element,{wrapper:MemoryRouter})
 
 const job=(id='task-a',name='Morning agenda')=>({id,name,task:'Summarize my upcoming day.',revision:'a'.repeat(64),enabled:true,
   schedule:{kind:'cron',expr:'0 9 * * *',tz:'UTC'},createdAt:1,updatedAt:1,nextRunAt:1900000000000,
@@ -49,7 +52,10 @@ it('keeps paused never-run and rescheduled one-offs paused; only terminal runs a
 })
 
 it('uses the native task flow: create, read result, pause, remove, return to saved result',async()=>{
-  render(<PortalScheduledTasks/>)
+  render(<><PortalScheduledTasks/><Routes>
+    <Route path="/" element={null}/>
+    <Route path="/settings" element={<Link to="/">Close settings</Link>}/>
+  </Routes></>)
   expect(await screen.findByText('No scheduled tasks yet')).toBeVisible()
   await fillForm()
   expect(screen.getByLabelText('Name')).toHaveFocus()
@@ -57,6 +63,9 @@ it('uses the native task flow: create, read result, pause, remove, return to sav
   fireEvent.click(await screen.findByRole('button',{name:/Morning agenda.*Daily/}))
   expect(await screen.findByText('One synthetic meeting at 09:00.')).toBeVisible()
   expect(screen.getByRole('link',{name:'review requests in ODS Settings'})).toHaveAttribute('href','/settings?section=portal-integrations')
+  fireEvent.click(screen.getByRole('link',{name:'review requests in ODS Settings'}))
+  fireEvent.click(await screen.findByRole('link',{name:'Close settings'}))
+  expect(screen.getByText('One synthetic meeting at 09:00.')).toBeVisible()
   fireEvent.click(screen.getByRole('button',{name:'Pause'}))
   fireEvent.click(await screen.findByRole('button',{name:/Morning agenda.*Paused/}))
   await screen.findByText('One synthetic meeting at 09:00.')

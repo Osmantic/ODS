@@ -1,4 +1,5 @@
 import {useEffect,useRef,useState} from 'react'
+import {Link} from 'react-router-dom'
 import {ArrowLeft,Check,Clock3,Pause,Play,Plus,RefreshCw,Trash2} from 'lucide-react'
 import {requestSchedules,scheduleError,scheduleLabel,newScheduleRequestId} from '../lib/portalSchedules'
 import {approvalLinkFor} from './settings/portalIntegrationsForm'
@@ -172,7 +173,7 @@ export default function PortalScheduledTasks({draftRequest,onDraftHandled,onDraf
       {confirmRemove && <div className="portal-schedules-pending" role="group" aria-label="Confirm schedule removal"><p>Stop future runs of “{selected.name}”? Its saved results will stay in Past tasks. A run already underway may finish.</p><div><button type="button" disabled={busy} onClick={()=>operate({action:'remove',id:selected.id,revision:selected.revision},result=>changed(result,'Task removed. Its results are kept in Past tasks.'))}>Remove schedule</button><button type="button" disabled={busy} onClick={()=>setConfirmRemove(false)}>Keep schedule</button></div></div>}
       <h4>Results</h4>
       {history?.items.length > 0 && <p className="portal-schedules-help">
-        If a run asks for integration approval, <a href={approvalLinkFor('')}>review requests in ODS Settings</a>.
+        If a run asks for integration approval, <Link className="text-theme-accent underline underline-offset-2" to={approvalLinkFor('')}>review requests in ODS Settings</Link>.
         {' '}Approving a note edit permits one matching write. Ask Portal to retry the edit, or let a recurring task retry while the approval is valid.
       </p>}
       {history?.items.length===0 && <p className="portal-schedules-help">No recorded results yet.</p>}
