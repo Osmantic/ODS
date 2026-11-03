@@ -230,6 +230,9 @@ def profiles(python):
         '(allow file-read* ' + ' '.join(subtree(v) for v in ('/System', '/usr', '/Library/Frameworks', '/Library/Developer'))
         + ' ' + subtree(KIT) + ' ' + literal(STATE + '/custody.json')
         + ' ' + literal(STATE + '/source-broker.env') + ')\n'
+        '(allow file-read* (literal "/private/etc/ods/pixel-provider-runtime.json") '
+        '(literal "/private/etc/ods/pixel-provider-runtime-manifest.json") '
+        '(literal (param "ODS_SOURCE_JOB_PLIST")))\n'
         '(allow file-read* (subpath "/private/etc/ssl") (literal "/private/etc/resolv.conf") '
         '(literal "/private/etc/hosts") (literal "/private/etc/services"))\n'
         '(allow file-read* file-write* (literal "/dev/null") (literal "/dev/urandom") (literal "/dev/random"))\n'
