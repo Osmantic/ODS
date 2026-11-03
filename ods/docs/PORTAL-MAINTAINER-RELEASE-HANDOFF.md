@@ -54,9 +54,9 @@ and [restricted-scope review](https://developers.google.com/identity/protocols/o
   especially real-provider recovery, connected-data/model behavior and installed
   withdrawal/update/rollback. Scope or release acceptance must be explicit.
 
-The November 2 assembled source `065dd29b5` already includes the `c7f7aded7`
-scheduler and Darwin fixture follow-ups. Public draft #8293 remains at
-`b36909f40`; Gabriel's physical Windows installation remains `60534c7b2`.
+The assembled source `69201e111` includes the `c7f7aded7` scheduler/Darwin fixes,
+native recovery controls and explicit future-task policy. Gabriel's physical
+Windows installation remains `60534c7b2`.
 The 93 passing hosted checks, one skipped check and disposable Linux
 upgrade/preservation evidence qualify their recorded `b36909f40` scopes only.
 
@@ -64,7 +64,11 @@ SDK12 cancellation repairs passed native cold controls, not real-model benefit.
 Previous semantic experiments remain failed evidence. The latest operations-only
 interface failed its 9B threshold: 48/56 valid cells qualified, with zero
 false-eligible negatives or extra canonical scopes. This is a conservative
-miss, not reliable continuation acceptance. Before landing, complete final ordinary
+miss, not reliable continuation acceptance. Later catalog and consistency
+prototypes also failed their frozen gates and were reverted. A real chat-created
+task exposed future-policy defaults and a never-run status error; source repairs
+are structurally qualified, with installed retakes still pending.
+Before landing, complete final ordinary
 Windows/WSL installation, real-model safety/continuation and the physical Mac
 matrix. The Google project, verified domain, published data notice and official
 client work above remain maintainer publication tasks; local QA consent does not

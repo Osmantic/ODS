@@ -15,11 +15,11 @@ reliable approval-continuation repair remain open. See the
 [composition and acceptance record](PORTAL-COFFEE-INTEGRATION.md) for the actual
 Windows/WSL model/browser evidence, later source-only checks and remaining limits.
 
-At the November 2 checkpoint, assembled source `065dd29b5` includes the
-`c7f7aded7` scheduler and Darwin fixture follow-ups. Public draft #8293 still
-points to `b36909f40`; Gabriel's physical Windows installation remains
-`60534c7b2`. The 93 passing hosted checks, one skipped check and disposable
-Linux upgrade/preservation evidence belong to `b36909f40`, not the newer source.
+The assembled source `69201e111` includes the `c7f7aded7` scheduler/Darwin fixes,
+native recovery controls and explicit future-task policy. Gabriel's physical
+Windows installation remains `60534c7b2`. The recorded 93 passing hosted checks,
+one skipped check and disposable Linux upgrade/preservation evidence belong
+to `b36909f40`, not the newer source. Current-head CI must be checked separately.
 
 The SDK12 cancellation lock/fence repairs passed native mechanical controls.
 Earlier semantic experiments, including the 144-completion scope3 corpus,
@@ -27,8 +27,12 @@ failed their declared gates; their negative evidence remains unchanged. The
 latest operations-only interface also failed its real 9B gate: it safely refused
 unsupported requests, but missed eight valid cells, chiefly connected news and
 photo observations. A subsequent finite-catalog prototype introduced seven
-false-eligible negative cells and was reverted without installation. Reliable
-approval continuation remains open. Final ordinary
+false-eligible negative cells and was reverted without installation. A separate
+whole-request consistency prototype rejected too many valid proposals and was
+also reverted. Reliable approval continuation remains open. Source now refuses
+implicit future-task tools/delivery and fixes the never-run one-off label; a
+real installed chat creation exposed those gaps, but its task was paused before
+execution. Final ordinary
 Windows/WSL installation, physical Mac acceptance and official Google provisioning
 remain required. See the composition record for each result's exact scope.
 

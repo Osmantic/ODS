@@ -12,8 +12,8 @@ The installed, published and newly composed code have different evidence:
 | State | Recorded code | What it establishes |
 | --- | --- | --- |
 | Latest installed qualification | `60534c7b2` | The ordinary Windows/WSL update and scoped app/model/browser journeys below. |
-| Published draft checkpoint | `b36909f40` | Composed scheduler/Darwin fixes, scoped disposable Linux upgrade and 93 passing hosted checks with one skip. |
-| New local runtime composition | `065dd29b5` | Native attempt and operation restrictions, exact bound review reads, and the mechanical controls below; not another installed qualification. |
+| Earlier hosted checkpoint | `b36909f40` | Composed scheduler/Darwin fixes, scoped disposable Linux upgrade and 93 passing hosted checks with one skip. |
+| Current code composition | `69201e111` | Runtime `065dd29b5` plus explicit future-task policy and truthful one-off status; not another installed qualification. |
 
 The `c7f7aded7` scheduler and Darwin follow-ups are already composed. Earlier
 installed and hosted evidence does not certify newer runtime source.
@@ -55,9 +55,35 @@ fixed throughout; this result remains a failure.
 A later finite-catalog prototype improved positive qualification to 66/68, but
 misclassified seven of 76 negative cells, including replacement/deletion,
 quoted text and approval intent. It failed the zero-false-eligibility gate and
-was reverted before publication or installation. All 144 component requests
+was reverted and is absent from the active implementation. All 144 component requests
 completed without tools or effects; its failed evidence is retained. Changing
 the semantic vocabulary is not sufficient to qualify automatic tool forcing.
+
+A separate proposal-plus-consistency prototype ran the actual finalizer with
+real outcome-start records and two native observation phases. It failed at
+51/80 positive cells, below the required 76, while admitting none of the 88
+negative cells. The consistency phase vetoed all eight incorrect proposals but
+also 27 compatible positives. All 168 cells completed without errors, tools or
+effects. Cached-output finalizer replay matched every decision and floor probe.
+This prototype was reverted too; same-model agreement is not independent proof.
+Abstract operation descriptions omit actual arguments and cannot establish
+full action compliance. No additional judge or semantic reroll was used.
+
+The ordinary installed 9B chat also created one real native one-off arithmetic
+task. Read-only inspection confirmed that it inherited 79 future tools and
+announce delivery without a channel or destination. It was paused before its
+due time and never ran; no delivery was observed. The UI later labeled it
+Finished solely because its scheduled time passed. Creation is demonstrated
+for that case; quiet execution and restriction adherence are not accepted.
+
+The source repair requires explicit future `payload.toolsAllow` and delivery
+for new detached Pixel agent tasks, with correctable refusal before native
+defaults. Empty tools and Portal-only delivery remain explicit; existing jobs,
+other agents, native validation and creator-tool intersection retain their
+paths. A paused one-off needs a terminal run at or after its current due time
+before showing Finished. Actual pinned factory/schema counter tests and UI
+component checks passed. No new tool, scheduler, module or pin was added. This
+is source/structural evidence; final installed model and scheduler retakes remain.
 
 Separately, seven scripted actual-native scenarios on `065dd29b5` passed:
 Ask preparation, Allowed refusal during review, lost-acknowledgement fencing,
