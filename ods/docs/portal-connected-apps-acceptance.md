@@ -35,6 +35,12 @@ conversation; the document and news native sessions remained separate. The
 dashboard correction requires its own completed acceptance before being reported
 as passed.
 
-Physical macOS validation remains a separate handoff. Production Google sign-in
-also depends on the project's official OAuth/domain verification; local account
-tests do not establish that public onboarding is complete.
+Coffee's native macOS MCP, notes, ntfy and app-provider service is implemented;
+its physical Apple Silicon qualification remains a separate handoff. Google,
+Calendar and fixed reviewed Connected-app routes still depend on the Linux/WSL
+Source Broker. Protected Mac Source staging exists, but its live execution,
+automatic triggers and connection activation remain an implementation gap,
+not only a physical test gate. See the
+[Mac qualification scope](pixel/native-integrations-macos-qualification.md).
+Production Google sign-in also depends on the project's official OAuth/domain
+verification; local account tests do not establish complete public onboarding.
