@@ -10,6 +10,8 @@ export const MAX_INTEGRATION_NOTICE = 2048;
 const identity = value => typeof value === 'string' && value.length > 0 && value.length <= 512 && !/[\x00-\x20\x7f]/.test(value);
 const names = new Set(INTEGRATION_TOOL_NAMES);
 const actions = new Set(['notes-write', 'notify', 'mcp-call']);
+const reviewReads = new Set(['notes-search', 'notes-read', 'mcp-tools']);
+const tracked = (payload, reviewOnly) => actions.has(payload?.action) || reviewOnly && reviewReads.has(payload?.action);
 const SAFE_APP_READS = Object.freeze({'app:documents':['search','read'], 'app:photos':['search'],
   'app:watch':['list'], 'app:news':['unread','digest']});
 const UNRESOLVED = 'An earlier integration call in this response has an unverified result. This additional action was not submitted. Check the destination, then send a new request before trying again. Known built-in reads and the catalog remain available.';
@@ -32,6 +34,9 @@ const effectiveKey = (baseKey, reviewOnly) => reviewOnly
 function label(payload) {
   if (payload.action === 'notify') return 'Notification';
   if (payload.action === 'notes-write') return payload.mode === 'create' ? 'Create an Obsidian note' : 'Add to an Obsidian note';
+  if (payload.action === 'notes-search') return 'Search Obsidian notes';
+  if (payload.action === 'notes-read') return 'Read an Obsidian note';
+  if (payload.action === 'mcp-tools') return 'Integration catalog';
   const apps = {'app:documents': 'Documents', 'app:photos': 'Photos', 'app:watch': 'Watched pages', 'app:news': 'News'};
   const app = Object.hasOwn(apps,payload.server) ? apps[payload.server] : undefined;
   // No free-form server/tool names, note paths, URLs, titles, messages or
@@ -121,7 +126,7 @@ export function createIntegrationOutcomes({maximumRuns = 64, maximumCalls = 64} 
     if (!names.has(name)) return;
     try {
       const payload = integrationRequest(name, deferred ? params.args : params, context);
-      if (!actions.has(payload?.action)) return;
+      if (!tracked(payload,run.reviewOnly === true)) return;
       if (run.uncertain && effectful(payload)) return {block:true, blockReason:UNRESOLVED};
       if (run.ended || run.cancelled) return;
       if (run.calls.some(call => call.id === id || call.nativeChild === id)) {run.invalid = true; return;}
@@ -151,12 +156,12 @@ export function createIntegrationOutcomes({maximumRuns = 64, maximumCalls = 64} 
     } catch { /* Malformed/unbounded inputs receive no observation, never new authority. */ }
   }
   function take(id, payload, context) {
-    if (!identity(id) || !actions.has(payload?.action)) return undefined;
+    if (!identity(id) || !tracked(payload,true)) return undefined;
     let key;
     try {key = requestKey(payload);} catch {return undefined;}
     const candidates = [];
     for (const run of runs.values()) {
-      if (!bind(run, context) || run.ended || !run.sessionKey) continue;
+      if (!bind(run, context) || run.ended || !run.sessionKey || !tracked(payload,run.reviewOnly === true)) continue;
       for (const call of run.calls) {
         if (!call.pending || call.taken || call.baseKey !== key) continue;
         if (call.nativeChild ? call.nativeChild === id : call.id === id || childOf(id,call)) candidates.push(call);

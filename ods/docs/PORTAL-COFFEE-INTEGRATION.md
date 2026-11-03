@@ -12,12 +12,11 @@ The installed, published and newly composed code have different evidence:
 | State | Recorded code | What it establishes |
 | --- | --- | --- |
 | Latest installed qualification | `60534c7b2` | The ordinary Windows/WSL update and scoped app/model/browser journeys below. |
-| Independently advanced PR branch | `c7f7aded7` | Remote scheduler/CI follow-ups; earlier published `55e7` is historical. |
-| New local composition reviewed here | `0c1d43a96` | Source composition and the SDK12 cold controls below; not another installed qualification. |
+| Published draft checkpoint | `b36909f40` | Composed scheduler/Darwin fixes, scoped disposable Linux upgrade and 93 passing hosted checks with one skip. |
+| New local runtime composition | `065dd29b5` | Native attempt and operation restrictions, exact bound review reads, and the mechanical controls below; not another installed qualification. |
 
-The remote follow-ups still need normal composition with this local source and
-focused qualification of their scheduling-lock change before the final source
-freeze. Neither branch's earlier checks certify the unassembled combination.
+The `c7f7aded7` scheduler and Darwin follow-ups are already composed. Earlier
+installed and hosted evidence does not certify newer runtime source.
 
 The current source retains 32 native tools and source-bound OpenClaw 2026.6.33
 repairs. Its production CI entrypoint applies all 25 recipes in a private SDK
@@ -39,9 +38,37 @@ behavior; they do not install the newer source on the owner's machine.
 
 The scope3 semantic classifier failed its declared gate: 144 classifier-only
 completions included 50 mismatches, including 14 false-eligible negative cells.
-No tools or actions ran in that corpus. A simpler semantic experiment is separate
-and unqualified; passing native transport and permission controls does not turn
-that failed classifier result into a model-benefit pass.
+No tools or actions ran in that corpus. Later semantic interfaces also failed
+their predeclared real-model gates; passing native transport and permission
+controls does not turn those results into model-benefit acceptance.
+
+The latest owner-request-only operation interface qualified 48/56 positive
+cells, below its required 54, across 120 actual native 9B completions. All 64
+negative cells stayed ineligible, no eligible scope gained an extra canonical
+permission, and there were no transport errors. Eight valid cells were missed:
+live news or photo lookup was omitted, a future-monitor request gained a
+separate notification label, or approval preparation lost its underlying removal
+operation. Invalid schema outputs were legal JSON, not truncation. A decoder
+repair would not resolve these semantic misses. The source and oracles stayed
+fixed throughout; this result remains a failure.
+
+A later finite-catalog prototype improved positive qualification to 66/68, but
+misclassified seven of 76 negative cells, including replacement/deletion,
+quoted text and approval intent. It failed the zero-false-eligibility gate and
+was reverted before publication or installation. All 144 component requests
+completed without tools or effects; its failed evidence is retained. Changing
+the semantic vocabulary is not sufficient to qualify automatic tool forcing.
+
+Separately, seven scripted actual-native scenarios on `065dd29b5` passed:
+Ask preparation, Allowed refusal during review, lost-acknowledgement fencing,
+late read/source changes and cancellation during classification or required
+tool selection. The lost-acknowledgement case made its one declared normal
+append and no repeat; all other invented note bytes were unchanged. These
+fixtures use the 32-tool public manifest, with 31 definitions instantiated
+because optional research is unavailable without Perplexica, and the unchanged
+22-tool ordinary projection. The restricted correction uses two adapters.
+This proves native mechanics under scripted responses, not model semantics or
+full installed Gateway authentication. All owned processes/worlds were cleaned.
 
 Still required: qualify the final ordinary Windows/WSL installation with retained
 grants/backups and exact SDK custody; demonstrate real-model safety and useful

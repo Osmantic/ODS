@@ -7,10 +7,12 @@ not a launchd, Darwin ACL, Seatbelt, reboot or native process-custody result.
 ## Deployment contract
 
 The new snapshot publishes nine integrations programs and one owner-run
-launchd definition. It adds no model tools and changes no Portal SDK, vendored
-runtime, container image or trust pins. The controller admits exactly the
-legacy three-role or new four-role native service sets, selected from verified
-complete source snapshots. A partial set is refused.
+launchd definition, with no new model tools. Dependency, vendor, image and trust
+pins remain unchanged. The composed PR separately carries 25 managed SDK
+compatibility repairs; their custody and runtime evidence do not replace the
+physical Mac checks below. The controller admits exactly the legacy three-role
+or new four-role native service sets, selected from verified complete source
+snapshots. A partial set is refused.
 
 The agent endpoint is `/private/var/lib/ods-pixel-integrations/control.sock`.
 This runtime is persistent so an owner daemon does not need to recreate a

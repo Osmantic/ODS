@@ -1023,7 +1023,8 @@ export default definePluginEntry({
     registerTool(api, createAskUserTool({responseLanguage: configuredResponseLanguage}), {names:['pixel_ods_ask_user']});
     // The owner's notes, notifications, MCP servers and apps, all through the host integrations service.
     for (const {name} of createIntegrationTools()) {
-      api.registerTool(onlyPixel(context => createIntegrationTools({context, outcomes:integrationOutcomes})
+      api.registerTool(onlyPixel(context => createIntegrationTools({context, outcomes:integrationOutcomes,
+        requireBound:factoryContext=>integrationReviewRecovery.isReviewOnly(factoryContext)})
         .find(tool => tool.name === name)), {names: [name]});
     }
     // Finished scheduled tasks notify the owner; the daily news digest is kept as a cron job.

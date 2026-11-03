@@ -8,6 +8,7 @@ import net from 'node:net';
 const SOCKET = '/run/ods-pixel-integrations/control.sock';
 const MAX_REPLY = 512 * 1024;
 const TIMEOUT_MS = 130000;
+const REVIEW_READS = new Set(['notes-search','notes-read','mcp-tools']);
 const MCP_USAGE = 'Give the arguments too. To see the servers and their tools: {"action": "list"}. To run a tool: '
   + '{"action": "call", "server": "<server id>", "tool": "<tool name>", "arguments": {...}}, for example '
   + '{"action": "call", "server": "app:photos", "tool": "search", "arguments": {"place": "Lisbon"}}.';
@@ -62,6 +63,7 @@ const text = (value, details, isError = false) => ({content: [{type: 'text', tex
 
 async function run(submit, payload, signal, render, observed) {
   const report = status => { try { observed?.(status); } catch { /* Observation grants no execution authority. */ } };
+  const reviewRead = payload.recoveryReviewOnly === true && REVIEW_READS.has(payload.action);
   let reply;
   try {
     reply = await submit(payload, {signal});
@@ -73,6 +75,11 @@ async function run(submit, payload, signal, render, observed) {
     }
     return text('The integrations service is unavailable.', {status: 'unavailable'}, true);
   }
+  if (reviewRead && (!reply || typeof reply !== 'object' || typeof reply.ok !== 'boolean')) {
+    report('unknown');
+    return text('The integration read result could not be verified. No approval request or action completion was confirmed.',
+      {status:'outcome-unknown',code:'review-only-read-result-invalid'},true);
+  }
   if (!reply?.ok) {
     if (reply?.ok === false && ['notification-outcome-unknown', 'mcp-outcome-unknown', 'app-outcome-unknown'].includes(reply.error)) {
       report('unknown');
@@ -81,7 +88,24 @@ async function run(submit, payload, signal, render, observed) {
     }
     const scope = reply?.error === 'notes-off' && payload.action?.startsWith('notes-')
       ? ' This result concerns only Obsidian notes, not the Paperless document connection. Paperless documents use pixel_ods_mcp action list. Respect the owner\'s requested source.' : '';
+    if (reviewRead && reply?.ok === false) report('settled');
     return text((reply?.message || 'The integration request failed.') + scope, {status: 'refused', code: reply?.error}, true);
+  }
+  if (reviewRead) {
+    const valid = reply.recoveryReviewOnly === true && reply.isError !== true
+      && !['approval-required','review-only-ready'].includes(reply.status)
+      && (payload.action === 'notes-read' ? typeof reply.path === 'string' && typeof reply.text === 'string'
+        : payload.action === 'notes-search' ? Array.isArray(reply.results) : Array.isArray(reply.servers));
+    if (valid) {
+      try {
+        const rendered = render(reply);
+        report('settled');
+        return text(rendered, {status:'done'});
+      } catch { /* A malformed read reply cannot claim a settled result. */ }
+    }
+    report('unknown');
+    return text('The integration read result could not be verified. No approval request or action completion was confirmed.',
+      {status:'outcome-unknown',code:'review-only-read-result-invalid'},true);
   }
   const approvalIdValid = typeof reply.approvalId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(reply.approvalId);
   const reviewedNoEffect = payload.recoveryReviewOnly === true && reply.recoveryReviewOnly === true &&
@@ -184,18 +208,24 @@ export function integrationRequest(name, params, context) {
     ...(server === 'app:news' && tool === 'digest' && runContext ? {runContext} : {})};
 }
 
-export function createIntegrationTools({submit = submitIntegration, context, outcomes} = {}) {
+export function createIntegrationTools({submit = submitIntegration, context, outcomes, requireBound} = {}) {
   // Factory context comes from the native runtime, never model arguments. Each
   // isolated cron run has its own session identity; keep its read snapshot apart
   // from an interactive digest or another task. This metadata grants no action.
   const dispatch = (id, payload, signal, render) => {
-    let reservation;
+    let reservation, boundRequired = false;
     try {
+      if (requireBound !== undefined) {
+        if (typeof requireBound !== 'function') throw new Error('Invalid native binding predicate');
+        const required = requireBound(context);
+        if (typeof required !== 'boolean') throw new Error('Invalid native binding result');
+        boundRequired = required;
+      }
       payload = snapshotIntegrationRequest(payload);
       const refusal = outcomes?.refusal(payload, context);
       if (refusal) return Promise.resolve(text(refusal, {status:'blocked',code:'integration-outcome-unresolved'}, true));
       reservation = outcomes?.take(id, payload, context);
-      if (outcomes && (payload.action === 'mcp-call' || outcomes.effectful(payload)) && !reservation) {
+      if ((boundRequired || outcomes && (payload.action === 'mcp-call' || outcomes.effectful(payload))) && !reservation) {
         return Promise.resolve(text('No integration action was submitted: this call has no matching current native admission.',
           {status:'blocked',code:'integration-call-unbound'}, true));
       }
@@ -204,7 +234,7 @@ export function createIntegrationTools({submit = submitIntegration, context, out
         {status:'blocked',code:'integration-call-unbound'}, true));
     }
     const control = outcomes?.control?.(reservation);
-    if (reservation && !control) return text('This integration call is no longer admitted for this response.',
+    if (reservation && !control || boundRequired && control?.recoveryReviewOnly !== true) return text('This integration call is no longer admitted for this response.',
       {status:'blocked',code:'integration-call-unbound'},true);
     const reviewOnly = control?.recoveryReviewOnly === true;
     return run(submit, reviewOnly ? {...payload,recoveryReviewOnly:true} : payload, signal, render,

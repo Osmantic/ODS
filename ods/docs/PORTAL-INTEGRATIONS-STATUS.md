@@ -15,16 +15,22 @@ reliable approval-continuation repair remain open. See the
 [composition and acceptance record](PORTAL-COFFEE-INTEGRATION.md) for the actual
 Windows/WSL model/browser evidence, later source-only checks and remaining limits.
 
-At the current November 2 checkpoint, installed qualification remains bound to
-`60534c7b2`; the PR branch independently advanced from `55e7` to `c7f7aded7`.
-Those remote scheduler/CI follow-ups still need composition and focused checks.
-The newer local source `0c1d43a96` includes the SDK12 cancellation lock/fence
-repairs and passed the
-source-derived native controls, including the integrated production CI entrypoint.
-It has not completed another ordinary installation or real-model qualification.
-The 144-completion scope3 classifier corpus failed its declared gate; the simpler
-semantic experiment remains separate and unqualified. See the composition record
-for the preserved negatives and exact limits of the no-model native results.
+At the November 2 checkpoint, assembled source `065dd29b5` includes the
+`c7f7aded7` scheduler and Darwin fixture follow-ups. Public draft #8293 still
+points to `b36909f40`; Gabriel's physical Windows installation remains
+`60534c7b2`. The 93 passing hosted checks, one skipped check and disposable
+Linux upgrade/preservation evidence belong to `b36909f40`, not the newer source.
+
+The SDK12 cancellation lock/fence repairs passed native mechanical controls.
+Earlier semantic experiments, including the 144-completion scope3 corpus,
+failed their declared gates; their negative evidence remains unchanged. The
+latest operations-only interface also failed its real 9B gate: it safely refused
+unsupported requests, but missed eight valid cells, chiefly connected news and
+photo observations. A subsequent finite-catalog prototype introduced seven
+false-eligible negative cells and was reverted without installation. Reliable
+approval continuation remains open. Final ordinary
+Windows/WSL installation, physical Mac acceptance and official Google provisioning
+remain required. See the composition record for each result's exact scope.
 
 Work resumed on October 29. [Count tools](PORTAL-COUNT-TOOLS.md) now have a Source,
 permission and guide implementation. The ordinary installed 4.3.41 update
