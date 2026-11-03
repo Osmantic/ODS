@@ -90,6 +90,51 @@ test('native permit object identity is bound to its exact candidate, route conte
   assert.equal(f.sent.length,0);
 });
 
+for(const shape of ['decorated-promise','hidden-then'])test('async-shaped native permits refuse before tickets: '+shape,async()=>{
+  const f=fixture(),candidate=await f.prepare('async-shape',note());
+  const fields={candidate:candidate.ref,admission:'native-review-policy-v1'};
+  const shaped=shape==='decorated-promise'?Object.assign(Promise.resolve(),fields)
+    :Object.defineProperty({...fields},'then',{value:()=>{},enumerable:false});
+  Object.freeze(shaped);
+  const permit=f.outcomes.checkNativeCandidate(candidate,()=>shaped);
+  assert.equal(permit,undefined);
+  assert.equal(f.outcomes.commitNativeCandidate(candidate,shaped).block,true);
+  assert.equal((await f.tool('pixel_ods_notes').execute('async-shape',note())).details.code,'integration-call-unbound');
+  assert.equal(f.sent.length,0);
+});
+
+test('only a frozen literal data permit is accepted; accessors, symbols, exotic prototypes and proxies fail closed',async()=>{
+  let getters=0;
+  const builders=[
+    fields=>Object.freeze(Object.defineProperty({...fields},'admission',{get:()=>{getters++;return fields.admission;},enumerable:true})),
+    fields=>Object.freeze(Object.defineProperty({...fields},Symbol('hidden'),{value:true})),
+    fields=>Object.freeze(Object.assign(Object.create({}),fields)),
+    fields=>Object.freeze(Object.assign(Object.create(null),fields)),
+    fields=>Object.freeze(Object.setPrototypeOf(Object.assign(Promise.resolve(),fields),Object.prototype)),
+    fields=>Object.freeze(Object.defineProperty({...fields},'then',{get:()=>{getters++;throw Error('must not read');}})),
+    fields=>new Proxy(Object.freeze(fields),{}),
+    fields=>new Proxy(Object.freeze(fields),{getPrototypeOf(){throw Error('prototype trap');}}),
+    fields=>new Proxy(Object.freeze(fields),{ownKeys(){throw Error('keys trap');}}),
+    fields=>new Proxy(Object.freeze(fields),{getOwnPropertyDescriptor(){throw Error('descriptor trap');}}),
+    fields=>{const proxy=Proxy.revocable(Object.freeze(fields),{});proxy.revoke();return proxy.proxy;},
+  ];
+  for(const build of builders) {
+    const f=fixture(),candidate=await f.prepare('literal-shape',note());
+    const shaped=build({candidate:candidate.ref,admission:'native-review-policy-v1'});
+    let permit;assert.doesNotThrow(()=>{permit=f.outcomes.checkNativeCandidate(candidate,()=>shaped);});
+    assert.equal(permit,undefined);assert.equal(f.outcomes.commitNativeCandidate(candidate,shaped).block,true);
+    assert.equal((await f.tool('pixel_ods_notes').execute('literal-shape',note())).details.code,'integration-call-unbound');
+    assert.equal(f.sent.length,0);
+  }
+  assert.equal(getters,0,'no getter or then accessor is invoked to validate authority');
+  const positive=fixture(),candidate=await positive.prepare('literal',note());
+  const literal=Object.freeze({candidate:candidate.ref,admission:'native-review-policy-v1'});
+  assert.equal(positive.outcomes.checkNativeCandidate(candidate,()=>literal),literal);
+  assert.equal(positive.outcomes.commitNativeCandidate(candidate,literal),undefined);
+  assert.equal((await positive.tool('pixel_ods_notes').execute('literal',note())).details.status,'done');
+  assert.equal(positive.sent.length,1);
+});
+
 test('the native budget spans sources, counts canonical operations not calls, and exempts bound metadata',async()=>{
   const f=fixture(payload=>({ok:true,recoveryReviewOnly:true,path:payload.path,text:'Bounded result',servers:[],results:[],
     ...(payload.action==='notes-search'?{reviewReferences:{...readRef('Example.md'),entries:[]}}:

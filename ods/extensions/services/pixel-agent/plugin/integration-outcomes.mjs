@@ -1,4 +1,5 @@
 import {createHash} from 'node:crypto';
+import {isPromise, isProxy} from 'node:util/types';
 import {integrationRequest, snapshotIntegrationRequest, reviewIntegrationCandidate, canonicalReviewNotePath,
   canonicalReviewDocumentId, INTEGRATION_TOOL_NAMES, NATIVE_REVIEW_ROLE, nativeReviewOperation} from './integrations.mjs';
 
@@ -29,6 +30,17 @@ const referenceSources = new Set(['obsidian','paperless','watch']);
 const hexBinding = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const exactKeys = (value,keys) => value && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).sort().join(',') === [...keys].sort().join(',');
+function literalNativePermit(permit,ref) {
+  try {
+    if (!permit || typeof permit!=='object' || isPromise(permit) || isProxy(permit)
+        || Object.getPrototypeOf(permit)!==Object.prototype || !Object.isFrozen(permit) || Reflect.has(permit,'then')) return false;
+    const keys=Reflect.ownKeys(permit);
+    if (keys.length!==2 || !keys.includes('candidate') || !keys.includes('admission')) return false;
+    const descriptors=Object.getOwnPropertyDescriptors(permit);
+    return keys.every(key=>Object.hasOwn(descriptors[key],'value') && descriptors[key].enumerable===true)
+      && descriptors.candidate.value===ref && descriptors.admission.value==='native-review-policy-v1';
+  } catch {return false;} // Exotic/reflection failures never become native authority.
+}
 function freezeJson(value) {
   if (value && typeof value === 'object') {for (const child of Object.values(value)) freezeJson(child);Object.freeze(value);}
   return value;
@@ -390,8 +402,7 @@ export function createIntegrationOutcomes({maximumRuns = 64, maximumCalls = 64} 
     let permit;try{permit=check(candidate);}catch{return undefined;}
     // The Source callback is native-only and synchronous. Neither a semantic
     // boolean, a thenable nor an equal-looking copied object grants a ticket.
-    if (!exactKeys(permit,['candidate','admission']) || !Object.isFrozen(permit)
-        || permit.candidate!==candidate.ref || permit.admission!=='native-review-policy-v1'
+    if (!literalNativePermit(permit,candidate.ref)
         || !reviewCurrent(call) || !unchanged(call) || call.run.reviewLease!==call) return undefined;
     nativePermits.set(permit,{call,candidate,run:call.run,generation:call.run.generation,rawKey:call.rawKey,baseKey:call.baseKey,
       contextKey:requestKey({agentId:'pixel',runId:call.run.id,sessionId:call.run.sessionId,sessionKey:call.run.sessionKey})});
