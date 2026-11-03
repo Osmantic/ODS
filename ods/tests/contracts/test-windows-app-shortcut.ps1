@@ -127,6 +127,18 @@ try {
                 $link.IconLocation -like '*\ODS\ods-app.ico,0' -and
                 (Get-FileHash -LiteralPath $copiedIcon).Hash -eq (Get-FileHash -LiteralPath $iconSource).Hash) 'the app shortcut opens the dashboard in an Edge app window with a private copy of the ODS icon'
         } finally { $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($shell) }
+
+        # LOCALAPPDATA containing square brackets must succeed
+        $bracketLocalAppData = Join-Path $fixture 'Local[App]Data'
+        $previousEnv = $env:LOCALAPPDATA
+        $env:LOCALAPPDATA = $bracketLocalAppData
+        try {
+            Reset-Folders
+            $bracketMade = @(New-ODSAppShortcut -Url 'http://localhost:3001/' -IconSource $iconSource -Folders @($desktop))
+            Check ($bracketMade.Count -eq 1 -and (Test-Path -LiteralPath (Join-Path $bracketLocalAppData 'ODS\ods-app.ico'))) 'the app shortcut state directory is created when LOCALAPPDATA contains square brackets'
+        } finally {
+            $env:LOCALAPPDATA = $previousEnv
+        }
         Reset-Folders
         $made = @(Publish-ODSPortalShortcut -PortalUrl $portal -IconSource $iconSource -DesktopFolder $desktop -ProgramsFolder $programs)
         Check ($made.Count -eq 2 -and (Test-Path -LiteralPath (Join-Path $desktop 'ODS.lnk')) -and (Test-Path -LiteralPath (Join-Path $programs 'ODS.lnk')) -and

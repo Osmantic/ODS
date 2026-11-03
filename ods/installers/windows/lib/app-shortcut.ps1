@@ -28,7 +28,7 @@ function New-ODSAppShortcut {
     $edge = Get-ODSEdgePath
     if (-not $edge) { return @() }
     $stateDir = Join-Path $env:LOCALAPPDATA 'ODS'
-    New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
+    [System.IO.Directory]::CreateDirectory($stateDir) | Out-Null
     # A copy outside the installer checkout, which may move or be deleted.
     $icon = Join-Path $stateDir 'ods-app.ico'
     if ($IconSource -and (Test-Path -LiteralPath $IconSource -PathType Leaf)) {
