@@ -5,7 +5,7 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { render } from '../test/test-utils'
 import { act } from '@testing-library/react'
 import {saveProfile} from '../lib/localProfile'
-import {saveConversation,readConversations,DELETE_EVENT} from '../lib/pixelConversations'
+import {saveConversation,readConversations,rememberActiveConversation,DELETE_EVENT} from '../lib/pixelConversations'
 import { StrictMode } from 'react'
 import {previewManifestResponse} from '../test/previewFixtures'
 
@@ -2322,6 +2322,7 @@ describe('Pixel', () => {
   it('rechecks the selected interrupted chat even when the previous interrupted chat is terminal', async () => {
     saveConversation({schema:1,chatId:'second_interrupted',interrupted:true,messages:[{role:'user',content:'Another task'}]})
     saveInterruptedChat()
+    rememberActiveConversation('restored_opaque_chat')
     globalThis.fetch.mockImplementation(async (url, options) => {
       if (url === '/api/pixel/status') return response({available:true})
       expect(url).toBe('/api/pixel/chat/activity')

@@ -85,7 +85,7 @@ test('qualified32K and provider-only64K compile the actual Coffee schemas withou
   for(const modelContextWindowTokens of [32768,65536]) {
     qualified=applyCatalog({tools:allTools,config,agentId:'pixel',modelContextWindowTokens,
       runId:randomUUID(),catalogRef:createCatalogRef()}).tools;
-    assert.deepEqual(names(qualified),[...directNames,'pixel_ods_connections_status',
+    assert.deepEqual(names(qualified),[...directNames,'cron','pixel_ods_connections_status',
       'pixel_ods_notes','pixel_ods_notify','pixel_ods_mcp'].sort());
     for(const name of ['pixel_ods_notes','pixel_ods_notify','pixel_ods_mcp']) {
       assert.equal(qualified.find(tool=>tool.name===name),allTools.find(tool=>tool.name===name),

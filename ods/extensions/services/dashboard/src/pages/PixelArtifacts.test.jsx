@@ -1,7 +1,7 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { createHash } from 'node:crypto'
 import { render } from '../test/test-utils'
-import { saveConversation, SELECT_EVENT } from '../lib/pixelConversations'
+import { saveConversation, SELECT_EVENT, TAB_CHAT_KEY } from '../lib/pixelConversations'
 import { EMBED_ONLY_NOTE } from '../lib/embedDisplay'
 import Pixel from './Pixel'
 
@@ -263,6 +263,8 @@ it.each(['hash','missing'])('never downloads a %s mismatch and permits a verifie
 it('aborts a pending file download when switching conversations and does not export late bytes',async()=>{
   saveConversation({schema:1,chatId:'other-chat',messages:[{role:'user',content:'Another conversation'}]})
   localStorage.removeItem('ods.pixel.chat.v1')
+  // Retain the other chat, but start this tab in a new conversation.
+  sessionStorage.removeItem(TAB_CHAT_KEY)
   let finish
   artifactResponse = () => new Promise(resolve=>{finish=resolve})
   render(<Pixel/>)
