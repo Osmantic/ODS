@@ -14,10 +14,11 @@ const FAMILY = [
 const sha = value => createHash('sha256').update(value).digest('hex');
 const recipe = name => JSON.parse(readFileSync(new URL(`../../host/openclaw-${name}.json`, import.meta.url)));
 
-export function reviewedNativeRevisionDependencies(packageRoot) {
+export function reviewedNativeRevisionDependencies(packageRoot, {withToolCatalog = false} = {}) {
   assert.equal(JSON.parse(readFileSync(path.join(packageRoot, 'package.json'))).version, '2026.6.33');
   const sources = new Map();
-  for (const [name, module] of FAMILY) {
+  const dependencies = withToolCatalog ? [...FAMILY, ['image-envelope', 'tool-search-BInRpkE3.js']] : FAMILY;
+  for (const [name, module] of dependencies) {
     const manifest = recipe(name);
     const filename = path.join(packageRoot, 'dist', module);
     let source = readFileSync(filename, 'utf8');

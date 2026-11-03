@@ -32,7 +32,9 @@ fs.promises.readFile=async function(filename,...args){
 syncBuiltinESMExports();
 const selection=path.join(pkg,'dist/selection-BEwSQKM-.js');
 const installedBefore=sha(fs.readFileSync(selection));
-const sources=new Map([...reviewedNativeRevisionDependencies(pkg)].map(([filename,source])=>[pathToFileURL(filename).href,source]));
+// ODS offers read directly in this qualified window. Exercise the shipped catalog
+// even when the fixture starts with the pristine npm package.
+const sources=new Map([...reviewedNativeRevisionDependencies(pkg,{withToolCatalog:true})].map(([filename,source])=>[pathToFileURL(filename).href,source]));
 const manifest=JSON.parse(fs.readFileSync(new URL('../host/openclaw-compaction-budget.json',import.meta.url)));
 let source=fs.readFileSync(selection,'utf8');
 const prior=installedBefore===manifest.patchedSha256?manifest.replacements:manifest.previousReplacements?.[installedBefore];
