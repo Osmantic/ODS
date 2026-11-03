@@ -245,3 +245,41 @@ def test_rollback_lost_acknowledgement_resumes_without_deleting_retained_data(ge
     assert helper.publish_disabled_generation(n.selected, SPECS[:1], rollback=True)['status'] == 'restored'
     assert (custody.NATIVE_STATE/'custody.json').stat().st_ino == n.before_gate_inode
     assert list(n.units.iterdir()) == []
+
+
+def test_actual_environment_context_reads_committed_v2_and_refuses_each_corrupt_input(generation):
+    n = generation
+    helper.publish_disabled_generation(n.selected, SPECS[:1])
+    _manifest, kit_sha = custody.native_verify_kit(n.selected, require_profiles=True, _publication=True)
+    def read_context():
+        metadata = os.open(n.metadata, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        gate = os.open(custody.NATIVE_STATE, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            return custody._native_environment_context(n.selected, metadata, gate, kit_sha, _publication=True)
+        finally:
+            os.close(gate)
+            os.close(metadata)
+    expected = read_context()
+    assert expected[0] == n.identity
+    paths = [custody.NATIVE_STATE/'custody.json', n.metadata/'native-source-jobs/manifest.json',
+        custody.NATIVE_ENV, next(n.units.iterdir())]
+    for path in paths:
+        original, inode = path.read_bytes(), path.stat().st_ino
+        try:
+            if path == custody.NATIVE_STATE/'custody.json':
+                forged = json.loads(original)
+                forged['phase'] = forged['launch']['phase'] = 'active'
+                path.write_bytes(helper.encoded(forged))
+            elif path.parent == n.units:
+                forged = plistlib.loads(original)
+                forged['Disabled'] = False
+                path.write_bytes(plistlib.dumps(forged, sort_keys=True))
+            else:
+                path.write_bytes(original + b'\n# invented corruption\n')
+            with pytest.raises(custody.CustodyError):
+                read_context()
+        finally:
+            path.write_bytes(original)
+        assert path.stat().st_ino == inode and read_context() == expected
+    assert saved(n)['phase'] == 'committed-inactive'
+    assert all(plistlib.loads(path.read_bytes())['Disabled'] is True for path in n.units.iterdir())
