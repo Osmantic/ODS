@@ -152,3 +152,14 @@ test('a reminder that cannot be sent is a warning, not a crash', async () => {
   await down.cronChanged({action: 'started', jobId: 'r3', job});
   assert.deepEqual(warnings, ['Portal integrations: reminder not sent: notifications off', 'Portal integrations: reminder failed: down']);
 });
+
+test('a scheduler that appears after gateway start is still found for a reminder', async () => {
+  const {submit} = recorder({'digest-plan': {ok: true, plan: {...PLAN, enabled: false}}});
+  const hooks = createTaskHooks({submit, timers: {setInterval: () => ({}), clearInterval() {}}});
+  let cron;
+  // At gateway start OpenClaw has not created its cron service yet.
+  await hooks.gatewayStart({}, {getCron: () => cron});
+  cron = fakeCron();
+  await hooks.scheduleReminder(REMINDER_PLAN);
+  assert.equal(cron.calls.filter(([kind]) => kind === 'add').length, 1);
+});

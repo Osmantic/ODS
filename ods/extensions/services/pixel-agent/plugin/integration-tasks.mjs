@@ -33,11 +33,14 @@ const sameSchedule = (job, plan) => job.schedule?.kind === 'cron' && job.schedul
 // Hooks for OpenClaw's cron: finished runs of Portal's tasks go to the integrations service,
 // and the digest job follows the owner's digest settings.
 export function createTaskHooks({submit = submitIntegration, agentId = 'pixel', warn = () => {}, timers = globalThis} = {}) {
-  let cron, timer;
+  // The gateway's cron service. At gateway start it may not exist yet, so the start context's
+  // getCron is kept and asked again when the service is needed, as OpenClaw's own plugins do.
+  let found, getCron, timer;
   const remember = context => {
-    const service = context?.getCron?.();
-    if (service) cron = service;
+    if (typeof context?.getCron === 'function') getCron = context.getCron;
+    found = context?.getCron?.() ?? found;
   };
+  const scheduler = () => (found ??= getCron?.());
 
   // One sync at a time: two that overlap could both find no digest job and both add one.
   let syncing;
@@ -47,6 +50,7 @@ export function createTaskHooks({submit = submitIntegration, agentId = 'pixel', 
   }
 
   async function syncOnce() {
+    const cron = scheduler();
     if (!cron) return 'no-cron';
     const reply = await submit({action: 'digest-plan'});
     if (!reply?.ok) throw new Error(reply?.message || 'The digest settings could not be read.');
@@ -69,6 +73,7 @@ export function createTaskHooks({submit = submitIntegration, agentId = 'pixel', 
 
   // Called by the notify tool with a plan the service checked.
   async function scheduleReminder(plan) {
+    const cron = scheduler();
     if (!cron) throw new Error('The scheduler is not ready yet. Try again in a minute.');
     await cron.add(reminderJob(plan, agentId));
   }
@@ -77,9 +82,9 @@ export function createTaskHooks({submit = submitIntegration, agentId = 'pixel', 
     if (event.action === 'started') {
       const reply = await submit({action: 'reminder-due', jobId: str(event.jobId), name: str(job.name), description: str(job.description)});
       if (!reply?.ok) warn(`Portal integrations: reminder not sent: ${reply?.message}`);
-    } else if (event.action === 'finished' && cron) {
+    } else if (event.action === 'finished' && scheduler()) {
       // The reminder went out when the job started; a failed run must not retry and send it again.
-      await cron.remove(str(event.jobId));
+      await scheduler().remove(str(event.jobId));
     }
   }
 
