@@ -69,14 +69,14 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 import session_signer
-from config import EXTENSIONS_DIR, GPU_BACKEND, SERVICES, _read_env_value, load_extension_manifests
+from config import DATA_DIR as CONFIG_DATA_DIR, EXTENSIONS_DIR, GPU_BACKEND, SERVICES, _read_env_value, load_extension_manifests
 from security import verify_api_key
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["magic-link"])
 
-DATA_DIR = Path(os.environ.get("ODS_DATA_DIR", "/data"))
+DATA_DIR = Path(os.environ.get("ODS_DATA_DIR", CONFIG_DATA_DIR))
 AUTH_DIR = DATA_DIR / "auth"
 TOKEN_STORE_PATH = AUTH_DIR / "magic-links.json"
 SESSION_COOKIE_NAME = "ods-session"

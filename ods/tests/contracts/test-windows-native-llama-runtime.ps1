@@ -168,6 +168,88 @@ try {
         -not (Test-Path -LiteralPath $older) -and
         @(Get-ChildItem -LiteralPath $runtimeRoot -Force | Where-Object { $_.Name -like '.damaged-*' }).Count -eq 0) 'cleanup keeps the active and previous runtime and never touches unknown folders'
 
+    # --- CPU build (config/backends/cpu.json): x64 and arm64, one archive each ---
+    $cpuX64 = Get-ODSNativeLlamaPin -SourceRoot $root -Backend cpu -Architecture x64
+    $cpuArm = Get-ODSNativeLlamaPin -SourceRoot $root -Backend cpu -Architecture arm64
+    Check ($cpuX64.ReleaseTag -ceq 'b9014' -and $cpuX64.Build -eq 9014 -and $cpuX64.Flavor -ceq 'win-cpu-x64' -and $cpuX64.Backend -ceq 'cpu' -and
+        $cpuX64.Architecture -ceq 'x64' -and $cpuX64.Asset -ceq 'llama-b9014-bin-win-cpu-x64.zip' -and $cpuX64.Size -eq 15917797 -and
+        $cpuX64.Sha256 -ceq '3503cc30154266ac0fbedd38e39e35a313a13412415738ae8f9e23e4fcb44da2' -and $cpuX64.Archives.Count -eq 1 -and
+        $cpuX64.Url -ceq 'https://github.com/ggml-org/llama.cpp/releases/download/b9014/llama-b9014-bin-win-cpu-x64.zip' -and
+        $cpuX64.Source -ceq 'config/backends/cpu.json runtime.llama_server.windows') 'cpu.json pins b9014 win-cpu-x64 with its measured size and SHA-256'
+    Check ($cpuArm.ReleaseTag -ceq 'b9014' -and $cpuArm.Flavor -ceq 'win-cpu-arm64' -and $cpuArm.Backend -ceq 'cpu' -and $cpuArm.Architecture -ceq 'arm64' -and
+        $cpuArm.Asset -ceq 'llama-b9014-bin-win-cpu-arm64.zip' -and $cpuArm.Size -eq 9638582 -and
+        $cpuArm.Sha256 -ceq 'e4c4efea06adf317ceb3f09f2f42b99580ccd6cf37eb8b31c474d4817e57a502' -and $cpuArm.Archives.Count -eq 1 -and
+        $cpuArm.Source -ceq 'config/backends/cpu.json runtime.llama_server.windows_arm64') 'cpu.json pins b9014 win-cpu-arm64 with its measured size and SHA-256'
+    Check ($cpuX64.RequiredFiles[0] -ceq 'llama-server.exe' -and $cpuX64.RequiredFiles -ccontains 'ggml-cpu-x64.dll' -and $cpuX64.RequiredFiles -ccontains 'libomp140.x86_64.dll' -and
+        $cpuArm.RequiredFiles[0] -ceq 'llama-server.exe' -and $cpuArm.RequiredFiles -ccontains 'ggml-cpu.dll' -and $cpuArm.RequiredFiles -ccontains 'libomp140.aarch64.dll' -and
+        $cpuX64.RequiredFiles -cnotcontains 'ggml-vulkan.dll' -and $cpuArm.RequiredFiles -cnotcontains 'ggml-vulkan.dll') 'each CPU flavor lists its own required files, never ggml-vulkan.dll'
+    $cpuContract = [IO.File]::ReadAllText((Join-Path $root 'config/backends/cpu.json'))
+    $badCpuPins = [ordered]@{
+        'two archives' = { param($p) $p.archives = @($p.archives[0], $p.archives[0]) }
+        'an unknown CPU flavor' = { param($p) $p.flavor = 'win-cpu-x86'; $p.archives[0].asset = 'llama-b9014-bin-win-cpu-x86.zip' }
+        'the Vulkan backend' = { param($p) $p.backend = 'vulkan' }
+        'the arm64 zip for x64' = { param($p) $p.archives[0].asset = 'llama-b9014-bin-win-cpu-arm64.zip' }
+        'a size in quotes' = { param($p) $p.archives[0].size = '15917797' }
+        'required files without llama-server.exe' = { param($p) $p.required_files = @($p.required_files | Where-Object { $_ -cne 'llama-server.exe' }) }
+    }
+    Check ((Get-Failure { $null = Get-ODSNativeLlamaPin -SourceRoot $sourceRoot -Backend cpu }) -match 'cpu\.json is missing') 'a missing cpu.json is refused, never replaced by a fallback'
+    foreach ($case in $badCpuPins.Keys) {
+        $contract = $cpuContract | ConvertFrom-Json
+        & $badCpuPins[$case] $contract.runtime.llama_server.windows
+        [IO.File]::WriteAllText((Join-Path $backends 'cpu.json'), ($contract | ConvertTo-Json -Depth 10))
+        Check ((Get-Failure { $null = Get-ODSNativeLlamaPin -SourceRoot $sourceRoot -Backend cpu }) -match 'pin must name') "a CPU pin with $case is refused"
+    }
+    Remove-Item -LiteralPath (Join-Path $backends 'cpu.json')
+
+    # Vulkan for NVIDIA and Intel GPUs is the native app's alone.
+    $amdVulkan = Get-ODSNativeLlamaPin -SourceRoot $root
+    foreach ($vendor in @('nvidia', 'intel')) {
+        $vendorPin = Get-ODSNativeLlamaPin -SourceRoot $root -Backend $vendor -NativeApp
+        Check ($vendorPin.Flavor -ceq 'win-vulkan-x64' -and $vendorPin.Backend -ceq 'vulkan' -and $vendorPin.Sha256 -ceq $amdVulkan.Sha256 -and
+            $vendorPin.Source -ceq 'config/backends/amd.json' -and ($vendorPin.RequiredFiles -join ',') -ceq 'llama-server.exe,ggml-vulkan.dll') "in the native app $vendor GPUs on x64 get the same Vulkan build as AMD"
+    }
+    Check ((Get-Failure { $null = Get-ODSNativeLlamaPin -SourceRoot $root -Backend nvidia }) -match 'container in Ubuntu') 'outside the native app x64 NVIDIA keeps its container route'
+    Check ((Get-Failure { $null = Get-ODSNativeLlamaPin -SourceRoot $root -Backend intel }) -match 'outside the Windows-native app') 'outside the native app Intel GPUs have no Windows llama.cpp build'
+    Check ((Get-ODSNativeLlamaPin -SourceRoot $root -Backend nvidia -Architecture arm64 -NativeApp).Flavor -ceq 'win-cuda-13.4-arm64') 'NVIDIA on Windows on Arm keeps its CUDA build in the native app'
+    Check ((Get-Failure { $null = Get-ODSNativeLlamaPin -SourceRoot $root -Backend amd -Architecture arm64 -NativeApp }) -match 'AMD GPUs on Windows on Arm') 'there is still no AMD build for Windows on Arm'
+    Check ((Get-Failure { $null = Get-ODSNativeLlamaPin -SourceRoot $root -Backend intel -Architecture arm64 -NativeApp }) -match 'Intel GPUs on Windows on Arm') 'there is no Intel build for Windows on Arm'
+
+    function New-CpuFixturePin($Base, [string]$Path) {
+        $sha = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+        $size = (Get-Item -LiteralPath $Path).Length
+        $copy = $Base.PSObject.Copy()
+        $copy.Sha256 = $sha
+        $copy.Size = $size
+        $copy.Archives = @([pscustomobject]@{ Asset = $Base.Asset; Sha256 = $sha; Size = $size; Url = $Base.Url })
+        return $copy
+    }
+    $cpuEntries = @{ 'LICENSE' = 'MIT'; 'ggml-cpu-haswell.dll' = 'haswell' }
+    foreach ($name in $cpuX64.RequiredFiles) { $cpuEntries[$name] = "fixture $name" }
+    $partialCpuZip = Join-Path $fixture 'cpu-partial.zip'
+    $partialEntries = $cpuEntries.Clone()
+    $partialEntries.Remove('ggml-cpu-x64.dll')
+    New-FixtureZip $partialCpuZip $partialEntries
+    $script:downloadSource = $partialCpuZip
+    Check ((Get-Failure { $null = Install-ODSNativeLlamaRuntime -Pin (New-CpuFixturePin $cpuX64 $partialCpuZip) }) -match 'have no ggml-cpu-x64\.dll') 'a CPU archive without its baseline backend DLL is refused'
+    $goodCpuZip = Join-Path $fixture 'cpu-good.zip'
+    New-FixtureZip $goodCpuZip $cpuEntries
+    $script:downloadSource = $goodCpuZip
+    $cpuFixturePin = New-CpuFixturePin $cpuX64 $goodCpuZip
+    $cpuRuntime = Install-ODSNativeLlamaRuntime -Pin $cpuFixturePin
+    $cpuDirectory = Join-Path $runtimeRoot 'b9014-win-cpu-x64'
+    $cpuRecord = Get-Content -LiteralPath (Join-Path $cpuDirectory 'pin.json') -Raw | ConvertFrom-Json
+    Check ($cpuRuntime.Directory -eq $cpuDirectory -and $cpuRuntime.Flavor -ceq 'win-cpu-x64' -and $cpuRecord.schemaVersion -eq 2 -and
+        $cpuRecord.backend -ceq 'cpu' -and $cpuRecord.flavor -ceq 'win-cpu-x64' -and @($cpuRecord.archives).Count -eq 1 -and
+        (@($cpuRecord.requiredFiles) -join ',') -ceq ($cpuX64.RequiredFiles -join ',') -and @($cpuRecord.files).Count -eq $cpuEntries.Count) 'a verified CPU archive is published as <tag>-win-cpu-x64 with a schemaVersion 2 pin.json'
+    $null = Test-ODSNativeLlamaInstall -Directory $cpuDirectory -ExpectedZipSha256 $cpuFixturePin.Sha256 -ExpectedReleaseTag 'b9014' -ExpectedArchives $cpuFixturePin.Archives
+    Check $true 'the CPU runtime re-verifies against its pin.json and its one archive'
+    Remove-Item -LiteralPath (Join-Path $cpuDirectory 'ggml-cpu-x64.dll')
+    Check ((Get-Failure { $null = Test-ODSNativeLlamaInstall -Directory $cpuDirectory }) -match 'missing \(antivirus quarantine') 'a quarantined CPU backend DLL is refused with guidance'
+    $olderCpu = Join-Path $runtimeRoot 'b8000-win-cpu-arm64'
+    $null = New-Item -ItemType Directory -Path $olderCpu
+    Remove-ODSNativeLlamaOldRuntimes -KeepDirectory $expectedDirectory -PreviousDirectory $previous
+    Check (-not (Test-Path -LiteralPath $olderCpu) -and -not (Test-Path -LiteralPath $cpuDirectory) -and (Test-Path -LiteralPath $expectedDirectory)) 'cleanup also removes CPU runtimes that are neither active nor previous'
+
     # --- Qualification: --version build, --list-devices, never silent CPU ---
     $script:probe = @{}
     function Invoke-ODSNativeLlamaProbe([string]$ExecutablePath, [string[]]$Arguments, [int]$TimeoutSeconds = 60) {
@@ -202,6 +284,18 @@ try {
     $script:probe['--list-devices'] = New-ProbeResult 0 "Available devices:"
     $cpuOnly = Test-ODSNativeLlamaQualification -ExecutablePath 'C:\fixture\llama-server.exe' -ExpectedBuild 9014 -AdapterName 'AMD Radeon RX 9070 XT' -CodeIntegrity $sacOn
     Check ($null -eq $cpuOnly.Device -and $cpuOnly.PolicyHint -match 'Smart App Control is on') 'no Vulkan device is reported as such (callers take the CPU route with guidance), never a silent CPU launch'
+    $cpuBuild = Test-ODSNativeLlamaQualification -ExecutablePath 'C:\fixture\llama-server.exe' -ExpectedBuild 9014 -Backend cpu -Architecture arm64 -CodeIntegrity $noPolicy
+    Check ($cpuBuild.Build -eq 9014 -and $null -eq $cpuBuild.Device -and $cpuBuild.Backend -ceq 'cpu') 'the CPU build qualifies on its build number and names no device'
+    $script:probe['--version'] = New-ProbeResult -1073741515 ''
+    $message = Get-Failure { $null = Test-ODSNativeLlamaQualification -ExecutablePath 'C:\fixture\llama-server.exe' -ExpectedBuild 9014 -Backend cpu -Architecture arm64 -CodeIntegrity $noPolicy }
+    Check ($message -match 'vc_redist\.arm64\.exe') 'a CPU build on Windows on Arm names the Arm64 Visual C++ runtime'
+    foreach ($code in @(-1073741502, -1073741819)) {
+        $script:probe['--version'] = New-ProbeResult $code ''
+        $message = Get-Failure { $null = Test-ODSNativeLlamaQualification -ExecutablePath 'C:\fixture\llama-server.exe' -ExpectedBuild 9014 -Backend cpu -CodeIntegrity $noPolicy }
+        Check ($message -match 'failed with exit code' -and $message -cnotmatch 'AMD|NVIDIA|driver') "a CPU build exit $code never blames a graphics driver"
+    }
+    $script:probe['--version'] = New-ProbeResult 0 $versionText
+    $script:probe['--list-devices'] = New-ProbeResult 0 $deviceText
 
     $devices = @(ConvertFrom-ODSNativeLlamaDeviceList ("Available devices:`n  Vulkan0: AMD Radeon(TM) 780M Graphics (512 MiB, 400 MiB free)`n" +
         "  Vulkan1: AMD Radeon RX 7900 XTX (24560 MiB, 24000 MiB free)`nggml_vulkan: noise line"))
@@ -215,6 +309,14 @@ try {
     Check ($null -eq (Select-ODSNativeLlamaDevice -Devices $software -AdapterName 'AMD Radeon RX 9070 XT')) 'a software Vulkan rasterizer is never treated as a GPU'
     $single = @(ConvertFrom-ODSNativeLlamaDeviceList "  Vulkan0: AMD Radeon Graphics (16384 MiB, 16000 MiB free)")
     Check ((Select-ODSNativeLlamaDevice -Devices $single -AdapterName 'AMD Radeon(TM) 890M').Name -eq 'Vulkan0') 'a single AMD Vulkan device is used when the driver names it differently'
+    $mixed = @(ConvertFrom-ODSNativeLlamaDeviceList ("  Vulkan0: Intel(R) Arc(TM) Graphics (16384 MiB, 16000 MiB free)`n" +
+        "  Vulkan1: NVIDIA GeForce RTX 4070 (12282 MiB, 11000 MiB free)`n  Vulkan2: llvmpipe (LLVM 17.0.6, 256 bits) (32000 MiB, 32000 MiB free)"))
+    Check ((Select-ODSNativeLlamaDevice -Devices $mixed -AdapterName 'NVIDIA GeForce RTX 4070' -GpuVendor nvidia).Name -ceq 'Vulkan1') 'the native app picks the NVIDIA Vulkan device for an NVIDIA GPU'
+    Check ((Select-ODSNativeLlamaDevice -Devices $mixed -AdapterName 'Another name' -GpuVendor intel).Name -ceq 'Vulkan0') 'a single Intel Vulkan device is used when the driver names it differently'
+    Check ($null -eq (Select-ODSNativeLlamaDevice -Devices $mixed -AdapterName 'NVIDIA GeForce RTX 4070')) 'without -GpuVendor the AMD rule still refuses NVIDIA and Intel devices'
+    Check ($null -eq (Select-ODSNativeLlamaDevice -Devices $devices -AdapterName 'AMD Radeon RX 7900 XTX' -GpuVendor nvidia)) 'the NVIDIA rule never picks an AMD device'
+    Check ($null -eq (Select-ODSNativeLlamaDevice -Devices $software -AdapterName 'llvmpipe' -GpuVendor nvidia)) 'a software rasterizer is never an NVIDIA device'
+    Check ($null -eq (Select-ODSNativeLlamaDevice -Devices $mixed -AdapterName '' -Backend cpu)) 'the CPU build has no device'
 
     # --- API key file: owner-only, exactly 64 hex characters, no BOM/newline ---
     $key = New-ODSNativeLlamaApiKey
@@ -269,6 +371,41 @@ try {
         if ($case.Name -eq 'device') { $options.Device = $case.Value } else { $options.NGpuLayers = $case.Value }
         Check ((Get-Failure { $null = New-ODSNativeLlamaLaunchArguments $plan $options }) -match 'launch options are invalid') "an invalid $($case.Name) option ($($case.Value)) is refused"
         $options.Device = $saved; $options.NGpuLayers = $savedLayers
+    }
+
+    # --- Launch profiles: only the native app keeps the built-in web UI on ---
+    function New-OptionsCopy([hashtable]$Changes) {
+        $copy = [pscustomobject]@{}
+        foreach ($property in $options.PSObject.Properties) { $copy | Add-Member -NotePropertyName $property.Name -NotePropertyValue $property.Value }
+        foreach ($name in $Changes.Keys) {
+            if ($copy.PSObject.Properties[$name]) { $copy.$name = $Changes[$name] } else { $copy | Add-Member -NotePropertyName $name -NotePropertyValue $Changes[$name] }
+        }
+        return $copy
+    }
+    $apiArguments = @(New-ODSNativeLlamaLaunchArguments $plan $options)
+    Check ($apiArguments -ccontains '--no-webui' -and $null -eq $options.Profile) 'options without a profile (the WSL Portal and legacy AMD launch) keep --no-webui'
+    Check ((@(New-ODSNativeLlamaLaunchArguments $plan (New-OptionsCopy @{ Profile = 'api' })) -join '|') -ceq ($apiArguments -join '|')) "the explicit 'api' profile launches exactly as before"
+    $appArguments = @(New-ODSNativeLlamaLaunchArguments $plan (New-OptionsCopy @{ Profile = 'native-app' }))
+    Check ($appArguments -cnotcontains '--no-webui' -and
+        ($appArguments -join '|') -ceq (@($apiArguments | Where-Object { $_ -cne '--no-webui' }) -join '|')) 'the native-app profile only drops --no-webui: loopback, device, metrics and key file are unchanged (Vulkan for NVIDIA too)'
+    $webUiConfig = Join-Path $runtimeDir 'webui-config.json'
+    $appArguments = @(New-ODSNativeLlamaLaunchArguments $plan (New-OptionsCopy @{ Profile = 'native-app'; WebUiConfigPath = $webUiConfig }))
+    $at = [array]::IndexOf($appArguments, '--webui-config-file')
+    Check ($at -gt 0 -and $appArguments[$at + 1] -ceq $webUiConfig -and $appArguments[$at - 2] -ceq '--log-file' -and
+        -not (($appArguments -join ' ').Contains($key))) 'the native app passes its web UI defaults file, never the key'
+    foreach ($case in @(@{ Profile = 'webui' }, @{ Profile = 'Native-App' }, @{ Profile = 'api'; WebUiConfigPath = $webUiConfig },
+            @{ WebUiConfigPath = $webUiConfig }, @{ Profile = 'native-app'; WebUiConfigPath = 'webui-config.json' })) {
+        $label = ($case.Keys | Sort-Object | ForEach-Object { "$_=$($case[$_])" }) -join ' '
+        Check ((Get-Failure { $null = New-ODSNativeLlamaLaunchArguments $plan (New-OptionsCopy $case) }) -match 'launch options are invalid') "launch options $label are refused"
+    }
+    $cpuArguments = @(New-ODSNativeLlamaLaunchArguments $plan (New-OptionsCopy @{ Backend = 'cpu'; Architecture = 'arm64'; Device = 'none'; NGpuLayers = '0'; Profile = 'native-app' }))
+    Check (($cpuArguments -join '|') -cmatch '\|--n-gpu-layers\|0\|--device\|none\|--metrics\|--api-key-file\|' -and $cpuArguments -cnotcontains '--fit' -and
+        $cpuArguments -cnotcontains '--no-webui') 'the CPU build launches with zero GPU layers and --device none, without --fit off'
+    Check ((@(New-ODSNativeLlamaLaunchArguments $plan (New-OptionsCopy @{ Backend = 'cpu'; Device = 'none'; NGpuLayers = '0' })) -ccontains '--no-webui')) 'the CPU build keeps --no-webui outside the native app'
+    foreach ($case in @(@{ Backend = 'cpu'; Device = 'Vulkan0'; NGpuLayers = '0' }, @{ Backend = 'cpu'; Device = 'none'; NGpuLayers = 'auto' },
+            @{ Backend = 'CPU'; Device = 'none'; NGpuLayers = '0' })) {
+        $label = ($case.Keys | Sort-Object | ForEach-Object { "$_=$($case[$_])" }) -join ' '
+        Check ((Get-Failure { $null = New-ODSNativeLlamaLaunchArguments $plan (New-OptionsCopy $case) }) -match 'launch options are invalid') "CPU launch options $label are refused"
     }
     foreach ($gguf in @('../model.gguf', ('Model-' + [char]0x00E9 + '.gguf'), '.gguf', 'model.bin', ' model.gguf')) {
         $plan.GgufFile = $gguf
