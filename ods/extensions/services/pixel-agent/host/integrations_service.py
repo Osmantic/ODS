@@ -242,7 +242,8 @@ class Integrations(RecoveryReviewOnly, AppActions):
                 value = {"version": 1, "revision": config["revision"], "validUntil": int(now()) + 300,
                          "servers": [], "truncated": False}
                 for server in sorted(config["mcp"]["servers"], key=lambda row: row["id"]):
-                    if not server["enabled"] or server.get("checkedBinding") != digest(server_context(server, secrets)):
+                    if (not server["enabled"] or not self._mcp_context_current(config, secrets, server)
+                            or server.get("checkedBinding") != digest(server_context(server, secrets))):
                         continue
                     identity = redact_secrets(server["id"], secrets)
                     if not SERVER_ID.fullmatch(identity):
@@ -253,7 +254,7 @@ class Integrations(RecoveryReviewOnly, AppActions):
                         label = identity
                     entry = {"id": identity, "name": label, "tools": []}
                     for tool in sorted(server["tools"], key=lambda row: row["name"]):
-                        if tool["policy"] not in ("allow", "ask"):
+                        if tool.get("policy") not in ("allow", "ask"):
                             continue
                         name = redact_secrets(tool["name"], secrets)
                         if not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", name):
@@ -439,9 +440,31 @@ class Integrations(RecoveryReviewOnly, AppActions):
             updated['approvalBindings']['appContexts'] = {
                 app: app_context(updated, app, secrets['apps'].get(app, '')) for app in apps.APPS}
             notification_binding = notification_context(updated, secrets)
+            previous_ntfy = config.get("approvalBindings", {}).get("notificationContext")
+            staged_ntfy = secrets.get("notificationContext")
+            if (previous_ntfy != staged_ntfy and notification_binding != staged_ntfy
+                    and secrets.get("ntfyPassword") and "ntfyPassword" not in changes):
+                raise IntegrationError("notification-check-required", "Restore the intended notification destination or re-enter its password before saving.")
             updated['approvalBindings']['notificationContext'] = notification_binding
             secrets['notificationContext'] = notification_binding
             # Revoke before state writes; interrupted saves fail closed.
+            # These markers bind the credentials file to the intended provider.
+            # The two file renames can be separated by a crash or a disk error.
+            mcp_contexts = {server["id"]: digest(server_context(server, secrets))
+                            for server in updated["mcp"]["servers"]}
+            previous_contexts = config.get("approvalBindings", {}).get("mcpContexts", {})
+            saved_contexts = secrets.get("mcpContexts", {})
+            for server_id, target in mcp_contexts.items():
+                saved_target = saved_contexts.get(server_id)
+                if saved_target == previous_contexts.get(server_id) or target == saved_target:
+                    continue
+                # An unrelated save must not bind a replacement key to the old URL.
+                retained_token = secrets["mcp"].get(server_id) and server_id not in changes.get("mcp", {})
+                retained_env = set(secrets["mcpEnv"].get(server_id, {})) - set(env_changes.get(server_id, {}))
+                if retained_token or retained_env:
+                    raise IntegrationError("mcp-check-required", "Restore the intended MCP destination or re-enter its credentials before saving.")
+            updated.setdefault("approvalBindings", {})["mcpContexts"] = mcp_contexts
+            secrets["mcpContexts"] = mcp_contexts
             self.store.save_approvals([])
             self.store.save_secrets(secrets)
             self.store.save_config(updated)
@@ -454,6 +477,20 @@ class Integrations(RecoveryReviewOnly, AppActions):
         for current in stopped:
             current.stop("it was turned off")
 
+    @staticmethod
+    def _mcp_context_current(config, secrets, server):
+        bindings = config.get("approvalBindings", {})
+        if "mcpContexts" not in bindings and "mcpContexts" not in secrets:
+            return True  # Existing pre-marker installations retain their admission rules.
+        expected = digest(server_context(server, secrets))
+        return all(isinstance(contexts, dict) and contexts.get(server["id"]) == expected
+                   for contexts in (bindings.get("mcpContexts"), secrets.get("mcpContexts")))
+
+    def _require_mcp_context(self, config, secrets, server):
+        if not self._mcp_context_current(config, secrets, server):
+            raise IntegrationError("mcp-check-required", "The saved MCP destination and credentials could not be verified together. "
+                                   "Review and save Portal integrations again before connecting.")
+
     def _session(self, server):
         # Construction does no I/O. Capture endpoint/command and credentials in
         # the same admission; __enter__ must run after releasing store.lock.
@@ -461,6 +498,7 @@ class Integrations(RecoveryReviewOnly, AppActions):
             config, secrets = self.store.config(), self.store.secrets()
             if self._server(config, server["id"], enabled=False) != server:
                 raise IntegrationError("stale-revision", "These settings changed. Reload them and try again.")
+            self._require_mcp_context(config, secrets, server)
             admitted = _AdmittedLocalServers(self, digest(config, secrets, self._runtime_revision))
             return McpSession(server, secrets["mcp"].get(server["id"], ""), secrets["mcpEnv"].get(server["id"], {}), admitted)
 
@@ -666,7 +704,17 @@ class Integrations(RecoveryReviewOnly, AppActions):
         if action == "notes-read":
             relative, text = notes.read(config, request.get("path"))
             self._log("notes-read", relative, "read")
-            return {"path": relative, "text": text}
+            reply = {"path": relative, "text": text}
+            if config["notes"].get("write") == "ask":
+                reply["canRequestWriteApproval"] = True
+            return reply
+        if action == "notes-request-approval":
+            if request.get("mode") not in ("append", "create"):
+                raise IntegrationError("invalid-request", "Choose append or create for the proposed note edit.")
+            reply = self._prepare_note_approval(request, notify_owner=True)
+            status = "approval-ready" if reply["status"] == "review-only-ready" else reply["status"]
+            return {"status": status, "approvalId": reply["approvalId"], "summary": reply["summary"],
+                    "proposalOnly": True, "actionExecuted": False, "approvalConsumed": False}
         if action == "notes-write":
             return self._notes_write(config, request)
         if action == "notes-prepare":
@@ -695,8 +743,8 @@ class Integrations(RecoveryReviewOnly, AppActions):
         waiting, notification = None, None
         with self.store.lock:
             config = self.store.config()
-            policy = config['notes']['write']
-            if policy == 'off':
+            policy = config['notes'].get('write')
+            if policy not in ('ask', 'allow'):
                 raise IntegrationError('notes-write-off', 'The owner has not allowed Portal to change notes.')
             relative, target = notes.write_binding(config, relative, mode)
             epoch = self._binding(config, 'notes')
@@ -718,8 +766,8 @@ class Integrations(RecoveryReviewOnly, AppActions):
         return [{"id": server["id"], "name": server["name"],
                  "tools": [{"name": tool["name"], "description": tool["description"], "inputSchema": tool["inputSchema"],
                             "needsApproval": tool["policy"] == "ask"} for tool in server["tools"]
-                           if tool['policy'] != 'off' and server.get('checkedBinding') == digest(server_context(server, secrets))]}
-                for server in config["mcp"]["servers"] if server["enabled"]]
+                           if tool.get('policy') in ('ask', 'allow') and server.get('checkedBinding') == digest(server_context(server, secrets))]}
+                for server in config["mcp"]["servers"] if server["enabled"] and Integrations._mcp_context_current(config, secrets, server)]
 
     def _mcp_call(self, config, request):
         name, arguments = request.get("tool"), request.get("arguments", {})
@@ -741,11 +789,12 @@ class Integrations(RecoveryReviewOnly, AppActions):
         with self.store.lock:
             config, secrets = self.store.config(), self.store.secrets()
             server = self._server(config, request.get('server'), enabled=True)
+            self._require_mcp_context(config, secrets, server)
             context = digest(server_context(server, secrets))
             if server.get('checkedBinding') != context:
                 raise IntegrationError('mcp-check-required', 'The server context changed. Check its tools again before using it.')
             tool = next((item for item in server['tools'] if item['name'] == name), None)
-            if tool is None or tool['policy'] == 'off':
+            if tool is None or tool.get('policy') not in ('ask', 'allow'):
                 raise IntegrationError('tool-not-allowed', f"{server['name']} has no allowed tool named {name}. List its tools first.")
             epoch = self._binding(config, 'mcp', server['id'])
             if tool['policy'] == 'ask':
@@ -775,7 +824,7 @@ class Integrations(RecoveryReviewOnly, AppActions):
 
     @staticmethod
     def _require_prepare_policy(policy):
-        if policy not in {"ask", "allow"}:
+        if policy not in ("ask", "allow"):
             raise IntegrationError("preparation-off", "The owner has disabled this action. No request was prepared.")
 
     def _prepare_notes_write(self, request):
@@ -787,7 +836,7 @@ class Integrations(RecoveryReviewOnly, AppActions):
             config = self.store.config()
             if not config["notes"]["enabled"]:
                 raise IntegrationError("notes-off", "Obsidian notes are not connected.")
-            self._require_prepare_policy(config["notes"]["write"])
+            self._require_prepare_policy(config["notes"].get("write"))
             relative, target = notes.write_binding(config, request["path"], mode)
             epoch = self._binding(config, "notes")
             summary = f"{'Add to' if mode == 'append' else 'Create'} note {relative}"
@@ -814,17 +863,18 @@ class Integrations(RecoveryReviewOnly, AppActions):
                 config = self.store.config()
                 if not config["apps"]["watch"]["enabled"]:
                     raise IntegrationError("app-off", "Watched pages are not connected.")
-                self._require_prepare_policy(config["apps"]["watch"]["changes"])
+                self._require_prepare_policy(config["apps"]["watch"].get("changes"))
                 self._binding(config, "apps", "watch")
             return self._review_watch_change(name, arguments, preparation_only=True)
         with self.store.lock:
             config, secrets = self.store.config(), self.store.secrets()
             server = self._server(config, server_id, enabled=True)
+            self._require_mcp_context(config, secrets, server)
             context = digest(server_context(server, secrets))
             if server.get("checkedBinding") != context:
                 raise IntegrationError("mcp-check-required", "The server context changed. Check its tools again before preparing it.")
             tool = next((item for item in server["tools"] if item["name"] == name), None)
-            if tool is None or tool["policy"] == "off":
+            if tool is None or tool.get("policy") not in ("ask", "allow"):
                 raise IntegrationError("tool-not-allowed", "This server has no allowed tool with that name.")
             self._require_prepare_policy(tool["policy"])
             epoch = self._binding(config, "mcp", server["id"])

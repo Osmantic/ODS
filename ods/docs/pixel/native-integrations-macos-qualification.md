@@ -22,9 +22,8 @@ On a Mac that already runs native Pixel, run the two preflights below and
 retain the installation, model and private receipts. The general preflight
 checks the host. The native preflight checks whether an initial installation
 can proceed. If it reports `existing-native-pixel-requires-migration-or-recovery`,
-stop before the install step. Upgrading that deployment requires a verified
-migration or upgrade path for its installed and target bundles. Running
-`ods-macos.sh update` uses the installed source and does not fetch this PR.
+stop before the initial install step and use the existing-install procedure
+below. The general `ods-macos.sh update` command uses the installed source.
 
 For a checkout at `~/src/ODS` and installation at `~/ods`, record the source and
 platform first:
@@ -159,6 +158,34 @@ still needs the physical checks below; there is no cgroup-equivalent memory
 limit claim.
 
 ## Upgrade and preservation
+
+### Prepare an existing native installation
+
+For a candidate in a separate checkout, run the updater **from that checkout**.
+It imports its packaging and verification helpers relative to its own file.
+Passing a newer source directory to an older installed helper can therefore
+select an older set of native services. Compare `git -C "$HOME/src/ODS" rev-parse HEAD`
+with the intended revision, then prepare the existing install.
+
+```sh
+cd "$HOME/src/ODS/ods"
+/usr/bin/python3 installers/macos/lib/pixel-native-update.py \
+    --install-dir "$HOME/ods" --ods-source "$PWD" --prepare-only
+```
+
+Substitute the actual installation directory for `$HOME/ods`. If protected
+verification needs a password, add `--prompt-for-sudo` in a local terminal.
+A successful preparation prints its directory and returns the status `prepared`.
+Retain that directory and its recovery journals. The existing gateway and
+services stay active while the preparer verifies the proposed migration.
+
+Before scheduling a live rollout, check the host agent and both web images.
+After signing in, open **Settings → Portal integrations** and verify that
+the Dashboard API can read a pending request through the host agent. During
+qualification, make a disposable note edit with **Ask first** enabled. Approval
+should leave the note untouched until the next matching tool call. Record
+separate results for the prepared migration and for this journey through the
+running installation.
 
 Legacy recovery schemas 1/2 remain exact. Schema 3 admits only the whole
 ten-file integrations addition, or that addition together with the five

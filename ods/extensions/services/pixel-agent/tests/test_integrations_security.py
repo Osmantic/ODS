@@ -516,3 +516,84 @@ def test_redirects_never_forward_secrets_or_replay_the_action(world, code, same_
         for server in (source, target):
             server.shutdown()
             server.server_close()
+
+@pytest.mark.parametrize("after_commit", [False, True])
+def test_interrupted_owner_save_keeps_destination_and_credentials_together(world, after_commit):
+    service, store, _ = world
+    received = []
+
+    class Receiver(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            received.append((self.server.label, self.headers.get("Authorization")))
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            self.send_response(403)
+            self.end_headers()
+
+        def log_message(self, *_):
+            pass
+
+    servers = []
+    try:
+        for label in ("old", "new"):
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Receiver)
+            server.label = label
+            servers.append(server)
+            threading.Thread(target=server.serve_forever, kwargs={"poll_interval": .01}, daemon=True).start()
+
+        def settings(target):
+            config = incoming(store)
+            config["mcp"] = {"servers": [{"id": "home", "name": "Home", "kind": "http", "preset": "home-assistant",
+                "enabled": False, "url": f"http://127.0.0.1:{target.server_port}/api/mcp", "policies": {}}]}
+            return config
+
+        save(service, store, settings(servers[0]), {"mcp": {"home": "old-key"}})
+        write = store.save_config
+
+        def interrupt(value):
+            if after_commit:
+                write(value)
+            raise OSError("fixture interruption")
+
+        with patch.object(store, "save_config", side_effect=interrupt), pytest.raises(OSError):
+            save(service, store, settings(servers[1]), {"mcp": {"home": "new-key"}})
+        reopened = Integrations(Store(store.root))
+        with pytest.raises(IntegrationError) as refused:
+            reopened.handle("owner", {"schemaVersion": 1, "action": "discover", "serverId": "home"})
+        if after_commit:
+            assert received == [("new", "Bearer new-key")]
+        else:
+            assert refused.value.code == "mcp-check-required" and received == []
+            with pytest.raises(IntegrationError) as unrelated:
+                save(reopened, reopened.store, settings(servers[0]))
+            assert unrelated.value.code == "mcp-check-required"
+        received.clear()
+        save(reopened, reopened.store, settings(servers[1]), {"mcp": {"home": "new-key"}})
+        assert "old-key" not in (store.root / "secrets.json").read_text()
+        with pytest.raises(IntegrationError):
+            reopened.handle("owner", {"schemaVersion": 1, "action": "discover", "serverId": "home"})
+        assert received == [("new", "Bearer new-key")]
+        assert "approvalBindings" not in reopened.handle("owner", {"schemaVersion": 1, "action": "get"})["settings"]
+    finally:
+        for server in servers:
+            server.shutdown()
+            server.server_close()
+
+
+def test_interrupted_notification_rotation_requires_the_intended_destination_or_password(world):
+    service, store, _ = world
+    current = incoming(store)
+    current["notifications"].update(enabled=True, url="https://previous.invalid", topic="fixture")
+    save(service, store, current, {"ntfyPassword": "fixture-old"})
+    changed = copy.deepcopy(current)
+    changed["notifications"]["url"] = "https://replacement.invalid"
+    with patch.object(store, "save_config", side_effect=OSError("fixture")), pytest.raises(OSError):
+        save(service, store, changed, {"ntfyPassword": "fixture-new"})
+    reopened = Integrations(Store(store.root))
+    with pytest.raises(IntegrationError) as refused:
+        agent(reopened, "notify", title="Fixture", message="Do not send")
+    assert refused.value.code == "notification-check-required"
+    with pytest.raises(IntegrationError) as unrelated:
+        save(reopened, reopened.store, current)
+    assert unrelated.value.code == "notification-check-required"
+    save(reopened, reopened.store, changed)
+    assert reopened.store.config()["notifications"]["url"] == "https://replacement.invalid"

@@ -196,6 +196,21 @@ async function run(submit, payload, signal, render, observed, admitted) {
   }
   const reviewedNoEffect = payload.recoveryReviewOnly === true && reply.recoveryReviewOnly === true &&
     reply.actionExecuted === false && reply.approvalConsumed === false && approvalIdValid;
+  if (payload.action === 'notes-request-approval') {
+    if (reply.ok !== true || reply.isError === true || reply.proposalOnly !== true ||
+        reply.actionExecuted !== false || reply.approvalConsumed !== false || !approvalIdValid ||
+        !['approval-required','approval-ready'].includes(reply.status)) {
+      report('unknown');
+      return text('The Notes service did not confirm the approval request. Check Settings before trying again.',
+        {status:'outcome-unknown',code:'note-approval-result-invalid'},true);
+    }
+    const ready = reply.status === 'approval-ready';
+    report(ready ? 'ready' : 'pending');
+    return text(ready
+      ? 'The owner already approved this exact edit. Nothing was written and the grant is unused. If the current task asks for the edit, call action write with the same path, text and mode.'
+      : 'One request for this edit is waiting in Settings → Portal integrations. The note is unchanged. Report the pending request and finish this run.',
+      {status:ready ? 'approval-ready' : 'approval-required',approvalId:reply.approvalId});
+  }
   if (reply.status === 'review-only-ready') {
     if (!reviewedNoEffect) return text('The review-only action status could not be verified. No additional action was submitted.',
       {status:'refused',code:'review-only-result-invalid'},true);
@@ -267,6 +282,11 @@ function notesRequest(params) {
   const action = params?.action;
   if (action === 'search') return {action: 'notes-search', query: str(params?.query)};
   if (action === 'read') return {action: 'notes-read', path: str(params?.path)};
+  if (action === 'request_approval') {
+    if (!['append','create'].includes(params?.mode) || typeof params?.text !== 'string' || !params.text.trim() ||
+        typeof params?.path !== 'string' || !params.path.trim()) return null;
+    return {action:'notes-request-approval',path:params.path,text:params.text,mode:params.mode};
+  }
   if (action === 'write') return {action: 'notes-write', path: str(params?.path), text: str(params?.text),
     mode: params?.mode === 'create' ? 'create' : 'append'};
   if (action === 'prepare') {
@@ -279,7 +299,8 @@ function notesRequest(params) {
 }
 
 const notesText = reply => reply.results ? searchText(reply)
-  : reply.text !== undefined ? `${reply.path}:\n\n${reply.text}`
+  : reply.text !== undefined ? (reply.canRequestWriteApproval === true
+      ? 'Notes writing is set to Ask first. For a requested edit, action request_approval submits the exact change to owner Settings without editing the note. It requires path, text and mode.\n\n' : '') + reply.path + ':\n\n' + reply.text
     : `${reply.mode === 'create' ? 'Created' : 'Added to'} ${reply.written}.`;
 
 export function integrationRequest(name, params, context) {
@@ -439,17 +460,17 @@ export function createIntegrationTools({submit = submitIntegration, context, out
   return [
     {
       name: 'pixel_ods_notes',
-      description: "Markdown notes in the owner's Obsidian vault; Paperless docs/PDFs use pixel_ods_mcp action list. search finds notes; read opens a path from search. prepare creates an approval request to append text or create a note, using path/text/mode. It never writes or uses an approval, even Allowed; Off refuses. Search/read do not create requests. To fulfill the owner's preparation request, use prepare after any required read confirms its conditions. Announcing preparation creates nothing. write actually saves under policy, only when the owner asks to save. Append adds only new text; existing note contents stay in place. Create uses the new note's full body. Each save/retry needs a normal call, including identical arguments; only typed receipts establish pending/done/refused. Portal approval IDs have no lookup or decision tool.",
+      description: "Markdown notes in the owner's Obsidian vault; Paperless docs/PDFs use pixel_ods_mcp action list. search finds notes; read opens a path from search. prepare creates an approval request to append text or create a note, using path/text/mode. It never writes or uses an approval, even Allowed; Off refuses. Search/read do not create requests. To fulfill the owner's preparation request, use prepare after any required read confirms its conditions. Announcing preparation creates nothing. request_approval is an Ask-only approval proposal for scheduled edits; it may notify the owner but never writes or spends a grant. Allowed saves use write. write actually saves under policy, only when the owner asks to save. Append adds only new text; existing note contents stay in place. Create uses the new note's full body. Each save/retry needs a normal call, including identical arguments; only typed receipts establish pending/done/refused. Portal approval IDs have no lookup or decision tool.",
       parameters: {type: 'object', additionalProperties: false, required: ['action'],
-        properties: {action: {type: 'string', enum: ['search', 'read', 'write', 'prepare'], description: 'search/read retrieve notes; prepare creates an approval request without writing; write saves under the configured permissions.'},
+        properties: {action: {type: 'string', enum: ['search', 'read', 'write', 'prepare', 'request_approval'], description: 'search/read retrieve notes; prepare creates a silent approval request without writing; request_approval makes an Ask-only proposal that may notify; write saves under the configured permissions.'},
           query: {type: 'string', description: 'For search: words to look for, such as "lease deposit".'},
-          path: {type: 'string', description: 'For read, write or prepare: the note path inside the vault.'},
+          path: {type: 'string', description: 'For read, write, prepare or request_approval: the note path inside the vault.'},
           text: {type: 'string', description: 'For append, only the new text to add; never copy the existing note contents into text. For create, the full body of the new note. When the owner supplies exact text, use only that text verbatim, preserving punctuation, whitespace and line breaks. Do not add headings, dates, bullets, templates or any other content unless requested.'},
           mode: {type: 'string', enum: ['append', 'create'], description: 'append adds text after the existing contents without replacing them; create makes a new note from text.'}}},
       execute: (_id, params, signal) => {
         const request = integrationRequest('pixel_ods_notes', params, context);
         return request ? dispatch(_id, 'pixel_ods_notes', params, request, signal, notesText)
-          : Promise.resolve(text('Use action search, read, write or prepare with its exact arguments.', {status: 'invalid'}, true));
+          : Promise.resolve(text('Use action search, read, write, prepare or request_approval with its exact arguments.', {status: 'invalid'}, true));
       },
     },
     {
@@ -465,7 +486,7 @@ export function createIntegrationTools({submit = submitIntegration, context, out
     },
     {
       name: 'pixel_ods_mcp',
-      description: "Discover and use the owner's connected apps: search/read documents (Paperless); find photos in their library by date, place or content and return photo links (Immich); list, add or remove watched web pages and price alerts; read unread news or digests (FreshRSS); use Home Assistant and custom MCP servers. Photo metadata searches and links work with a text-only model; they do not require viewing image files. list checks the configured capabilities and returns server IDs, tools and arguments; check it before claiming an app capability is unavailable and before the first call. Native notes use pixel_ods_notes, notifications use pixel_ods_notify, and Google uses the connected-app tools. prepare creates an approval request for an exact custom MCP call or watch add/remove using server/tool/arguments. It never executes or uses approval, even Allowed; Off refuses. Watch preparation reads metadata needed to bind the target. call submits the actual action under policy. Each new action/retry needs a normal call, including identical arguments or needsApproval; only typed receipts establish pending/done/refused. Portal approval IDs have no lookup or decision tool.",
+      description: "Discover and use the owner's connected apps: search/read documents (Paperless); find photos in their library by date, place or content and return photo links (Immich); list, add or remove watched web pages and price alerts; read unread news or digests (FreshRSS); use Home Assistant and custom MCP servers. Photo metadata searches and links work with a text-only model; they do not require viewing image files. list checks the configured capabilities and returns server IDs, tools and arguments; check it before claiming an app capability is unavailable and before the first call. Native notes use pixel_ods_notes, notifications use pixel_ods_notify, and Google uses the connected-app tools. prepare creates an approval request for an exact custom MCP call or watch add/remove using server/tool/arguments. For an approval request, submit prepare and wait; a chat question creates no request. It never executes or uses approval, even Allowed; Off refuses. Watch preparation reads metadata needed to bind the target. call submits the actual action under policy. Each new action/retry needs a normal call, including identical arguments or needsApproval; only typed receipts establish pending/done/refused. Portal approval IDs have no lookup or decision tool.",
       parameters: {type: 'object', additionalProperties: false, required: ['action'],
         properties: {action: {type: 'string', enum: ['list', 'call', 'prepare'], description: 'list retrieves tool metadata; prepare creates an approval request without execution; call submits the actual tool action under policy.'},
           server: {type: 'string', description: 'For call or prepare: the server id from list, such as home.'},
