@@ -148,6 +148,120 @@ def test_bad_recipe_bytes_are_not_read_or_executed(fixture):
     assert 'delete-data' in recipe.read_text()
 
 
+# Remove deletes a removed extension's stopped containers: nothing manages
+# them once its definition is gone (ods-excalidraw stayed behind on the RTX
+# Spark laptop, 2026-10-25). Its data stays unless the owner chose otherwise.
+
+@pytest.fixture
+def removal(tmp_path, monkeypatch):
+    root = tmp_path / 'ODS café 模'
+    root.mkdir()
+    module = load_helper()
+    rows = []
+    for ident, service, status, mounts in (
+        ('a', 'example', 'exited', [{'Type': 'volume', 'Name': 'ods_example-data'},
+                                    {'Type': 'volume', 'Name': 'f' * 64},
+                                    {'Type': 'bind', 'Source': str(root / 'data/example')}]),
+        ('b', 'example-db', 'exited', [{'Type': 'volume', 'Name': 'ods_shared-cache'},
+                                       {'Type': 'volume', 'Name': 'elsewhere_data'}]),
+        ('d', 'dashboard-api', 'running', []),
+    ):
+        row = container(root, ident, service)
+        row.update(Name='/ods-' + service, State={'Status': status}, Mounts=mounts)
+        rows.append(row)
+    other = container(tmp_path / 'other-install', 'c', 'example')
+    other.update(Name='/other-example', State={'Status': 'exited'}, Mounts=[])
+    rows.append(other)
+    volumes = {
+        'ods_example-data': {'com.docker.compose.project': 'ods', 'com.docker.compose.volume': 'example-data'},
+        'ods_shared-cache': {'com.docker.compose.project': 'ods', 'com.docker.compose.volume': 'shared-cache'},
+        'elsewhere_data': {'com.docker.compose.project': 'elsewhere', 'com.docker.compose.volume': 'data'},
+        'f' * 64: {'com.docker.volume.anonymous': ''},
+    }
+    users = {'ods_shared-cache': 'e' * 64}
+    calls = []
+
+    def docker(args, timeout=30):
+        calls.append(args)
+        if args[:2] == ['ps', '--all'] and '--filter' in args and args[-1].startswith('volume='):
+            return users.get(args[-1].split('=', 1)[1], '')
+        if args[0] == 'ps':
+            return '\n'.join(row['Id'] for row in rows)
+        if args[0] == 'inspect':
+            return json.dumps(rows)
+        if args[:2] == ['volume', 'inspect']:
+            return json.dumps([{'Name': args[2], 'Labels': volumes[args[2]]}])
+        assert args[0] == 'rm' or args[:2] == ['volume', 'rm'], args
+        return ''
+
+    monkeypatch.setattr(module, '_docker', docker)
+    return module, root, rows, calls
+
+
+def deletions(calls):
+    return [call for call in calls if call[0] == 'rm' or call[:2] == ['volume', 'rm']]
+
+
+def test_removal_deletes_stopped_containers_and_keeps_every_volume(removal):
+    module, root, _, calls = removal
+    names, removed, kept = module.remove_owned_containers(root, ['example', 'example-db'])
+    assert names == ['ods-example', 'ods-example-db']
+    assert removed == []
+    # Compose's named volumes of this project; the anonymous one and another
+    # project's volume are not this extension's data.
+    assert kept == ['ods_example-data', 'ods_shared-cache']
+    assert deletions(calls) == [['rm', 'a' * 64, 'b' * 64]]
+
+
+def test_removal_with_data_deletes_only_unshared_project_volumes(removal):
+    module, root, _, calls = removal
+    names, removed, kept = module.remove_owned_containers(
+        root, ['example', 'example-db'], remove_volumes=True)
+    assert names == ['ods-example', 'ods-example-db']
+    assert removed == ['ods_example-data']
+    assert kept == ['ods_shared-cache']
+    assert deletions(calls) == [['rm', '--volumes', 'a' * 64, 'b' * 64],
+                                ['volume', 'rm', 'ods_example-data']]
+
+
+def test_removal_refuses_a_running_container_before_deleting_anything(removal):
+    module, root, rows, calls = removal
+    rows[0]['State']['Status'] = 'running'
+    with pytest.raises(ValueError, match='example container is running'):
+        module.remove_owned_containers(root, ['example'], remove_volumes=True)
+    assert deletions(calls) == []
+
+
+@pytest.mark.parametrize('state', [None, {}, {'Status': 'restarting'}, {'Status': 'paused'}])
+def test_removal_refuses_unproven_stopped_state(removal, state):
+    module, root, rows, calls = removal
+    rows[0]['State'] = state
+    with pytest.raises(ValueError, match='stop it before removing it'):
+        module.remove_owned_containers(root, ['example'])
+    assert deletions(calls) == []
+
+
+def test_removal_never_becomes_an_installation_wide_delete(removal):
+    module, root, _, calls = removal
+    with pytest.raises(ValueError, match='requires the services'):
+        module.remove_owned_containers(root, [])
+    assert calls == []
+
+
+def test_removal_without_owned_containers_deletes_nothing(removal):
+    module, root, _, calls = removal
+    assert module.remove_owned_containers(root, ['missing']) == ([], [], [])
+    assert deletions(calls) == []
+
+
+@pytest.mark.parametrize('service', ['--all', '../dashboard-api', 'example; rm -rf /'])
+def test_removal_rejects_invalid_services_before_docker(removal, service):
+    module, root, _, calls = removal
+    with pytest.raises(ValueError):
+        module.remove_owned_containers(root, [service])
+    assert calls == []
+
+
 def shell_function(path, name):
     source = path.read_text(encoding='utf-8')
     return name + '() {' + source.split(name + '() {', 1)[1].split('\n}\n', 1)[0] + '\n}\n'
@@ -313,3 +427,113 @@ def test_real_docker_recovery_stops_only_the_owned_installation(tmp_path):
     finally:
         if ids:
             module._docker(['rm', '-f', *ids])
+
+
+@pytest.mark.skipif(os.environ.get('ODS_RUN_DOCKER_SECURITY_TESTS') != '1',
+                    reason='Requires an explicitly selected disposable Docker test host')
+def test_real_docker_removal_scopes_containers_and_volumes(tmp_path):
+    import uuid
+    module = load_helper()
+    image = 'python:3.11-slim@sha256:e41613d42d4891e4930f79523f93f81bbc7632584ec65e36ab055f41a800b41e'
+    module._docker(['pull', image], timeout=300)
+    tag = uuid.uuid4().hex[:12]
+    roots = [tmp_path / ('owner-' + tag), tmp_path / ('other-' + tag)]
+    for root in roots:
+        root.mkdir()
+    project = 'ods' + tag
+    private_vol = 'ods_private-' + tag
+    shared_vol = 'ods_shared-' + tag
+    containers = []
+    volumes = []
+
+    def labels(root, service):
+        return container(root, 'a', service, project)['Config']['Labels']
+
+    def run(root, service, extra, command, name):
+        arguments = ['run', '-d', '--name', name, '--network', 'none', '--read-only',
+                     '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+                     '--restart', 'no']
+        for key, value in labels(root, service).items():
+            arguments += ['--label', key + '=' + value]
+        arguments += extra + [image, 'python', '-c', command]
+        ident = module._docker(arguments).strip()
+        containers.append(ident)
+        return ident
+
+    def volume(name):
+        module._docker(['volume', 'create', '--label', 'com.docker.compose.project=' + project,
+                        '--label', 'com.docker.compose.volume=' + name.split('-')[0], name])
+        volumes.append(name)
+
+    try:
+        volume(private_vol)
+        volume(shared_vol)
+        # Owner install: stopped container with a marker in its private volume.
+        owner = run(roots[0], 'example', ['-v', private_vol + ':/data'],
+                    'open("/data/marker","w").write("owned")',
+                    'ods-example-' + tag)
+        assert module._docker(['wait', owner], timeout=120).strip() == '0'
+        # Other install: running container sharing the named volume.
+        other = run(roots[1], 'example', ['-v', shared_vol + ':/data'],
+                    'import time; time.sleep(600)',
+                    'ods-other-example-' + tag)
+        # Owner install: stopped container mounting the shared volume.
+        owner_shared = run(roots[0], 'example-db', ['-v', shared_vol + ':/data'],
+                           'open("/data/marker","w").write("shared")',
+                           'ods-example-db-' + tag)
+        assert module._docker(['wait', owner_shared], timeout=120).strip() == '0'
+        # Owner install: running service under owner root, distinct from other install.
+        owner_running = run(roots[0], 'example-running', [],
+                            'import time; time.sleep(600)',
+                            'ods-example-running-' + tag)
+
+        # Refuses a running container before deleting anything.
+        with pytest.raises(ValueError, match='running'):
+            module.remove_owned_containers(roots[0], ['example-running'], remove_volumes=True)
+        assert module._docker(['inspect', '-f', '{{.State.Running}}', owner_running]).strip() == 'true'
+        assert module._docker(['inspect', '-f', '{{.State.Running}}', other]).strip() == 'true'
+
+        # Stopped owned-container removal keeps the named volume and its content.
+        names, removed, kept = module.remove_owned_containers(roots[0], ['example'])
+        assert names == ['ods-example-' + tag]
+        assert removed == []
+        assert private_vol in kept
+        assert module._docker(['volume', 'inspect', private_vol])
+        marker = module._docker(['run', '--rm', '--network', 'none', '--read-only',
+                                 '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+                                 '-v', private_vol + ':/data:ro', image,
+                                 'python', '-c', 'print(open("/data/marker").read())'])
+        assert marker.strip() == 'owned'
+
+        # Owner companion mounts private AND shared volumes; removing it with
+        # remove_volumes=True must delete the private volume but preserve the
+        # shared one (still referenced by the other-install running container).
+        companion = run(roots[0], 'example-companion',
+                        ['-v', private_vol + ':/private', '-v', shared_vol + ':/shared'],
+                        'open("/private/marker","w").write("companion")',
+                        'ods-example-companion-' + tag)
+        assert module._docker(['wait', companion], timeout=120).strip() == '0'
+        names, removed, kept = module.remove_owned_containers(
+            roots[0], ['example-companion'], remove_volumes=True)
+        assert names == ['ods-example-companion-' + tag]
+        assert private_vol in removed
+        assert shared_vol in kept
+        with pytest.raises(ValueError):
+            module._docker(['volume', 'inspect', private_vol])
+        assert module._docker(['volume', 'inspect', shared_vol])
+        assert module._docker(['inspect', '-f', '{{.State.Running}}', other]).strip() == 'true'
+        assert module._docker(['inspect', '-f', '{{.State.Running}}', owner_running]).strip() == 'true'
+    finally:
+        # Enumerate by unique project label; only remove tracked IDs/volumes.
+        listed = module._docker(['ps', '-aq', '--no-trunc', '--filter',
+                                 'label=com.docker.compose.project=' + project]).split()
+        tracked = set(containers)
+        for ident in listed:
+            assert ident in tracked
+            module._docker(['rm', '-f', ident])
+        listed_vols = module._docker(['volume', 'ls', '-q', '--filter',
+                                      'label=com.docker.compose.project=' + project]).split()
+        tracked_vols = set(volumes)
+        for name in listed_vols:
+            assert name in tracked_vols
+            module._docker(['volume', 'rm', name])

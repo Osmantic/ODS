@@ -5,6 +5,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import math
 import mmap
 import os
 import platform
@@ -200,6 +201,156 @@ def _is_stale(iso_timestamp: str, max_age_seconds: int) -> bool:
         return True
 
 
+def _contained_path(root, name: str) -> Path:
+    """``root / name``, refused when the name would lead outside ``root``.
+
+    Callers validate ids against _SERVICE_ID_RE first; this keeps each path
+    built from one inside its folder whatever a caller passes.
+    """
+    base = os.path.normpath(os.fspath(root))
+    full = os.path.normpath(os.path.join(base, name))
+    if not full.startswith(base + os.sep):
+        raise HTTPException(status_code=400, detail=f"Invalid extension path: {name}")
+    return Path(full)
+
+
+def _parse_timestamp(value) -> datetime | None:
+    """An aware ISO timestamp, or None."""
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, TypeError, AttributeError):
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+# --- Interrupted operations ---
+#
+# A worker on the host agent writes these phases while it runs and replaces
+# them with a final record when it ends. When the agent process dies first (a
+# WSL or Docker Desktop crash, a reboot), nothing finishes the record: the
+# card showed its last progress line for an hour until the record aged out
+# (RTX Spark laptop, 2026-10-25). The host agent marks such records when it
+# starts again; until then, and for a worker that ended without a final
+# record, the agent's list of running operations proves the record orphaned.
+_ACTIVE_PROGRESS_STATES = frozenset({"pulling", "starting", "setup_hook"})
+# The dashboard writes the first record of an install or start itself, just
+# before it hands the operation to the host agent.
+_DASHBOARD_PROGRESS_GRACE_SECONDS = 120
+# The same words the host agent writes (INTERRUPTED_PROGRESS_ERROR there).
+INTERRUPTED_PROGRESS_ERROR = (
+    "ODS stopped before this finished, for example after a restart or a crash. "
+    "Retry to continue; anything already downloaded is reused."
+)
+_JOBS_FRESH_SECONDS = 2.0
+# Code on the event loop never waits for the agent; it uses a recent answer.
+_JOBS_EVENT_LOOP_SECONDS = 15.0
+_jobs_lock = threading.Lock()
+_jobs_cache: dict = {"checked_at": None, "value": None}
+
+
+def _fetch_extension_jobs() -> dict | None:
+    """The host agent's running extension operations, or None.
+
+    None (the agent is unreachable, or predates this endpoint) proves nothing,
+    so progress records are then shown as written.
+    """
+    try:
+        body = request_agent_json("GET", "/v1/extension/jobs", timeout=3)
+    except AgentClientError:
+        return None
+    live = body.get("live")
+    now = _parse_timestamp(body.get("now"))
+    if (body.get("schema_version") != 1 or not isinstance(body.get("instance"), str)
+            or now is None or not isinstance(live, list)
+            or not all(isinstance(service_id, str) for service_id in live)):
+        return None
+    return {"instance": body["instance"], "now": now, "live": frozenset(live)}
+
+
+def _extension_jobs() -> dict | None:
+    """A host-agent job snapshot at most two seconds old, or None."""
+    with _jobs_lock:
+        checked_at, value = _jobs_cache["checked_at"], _jobs_cache["value"]
+    age = None if checked_at is None else time.monotonic() - checked_at
+    if age is not None and age < _JOBS_FRESH_SECONDS:
+        return value
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass  # A worker thread may wait for the agent.
+    else:
+        return value if age is not None and age < _JOBS_EVENT_LOOP_SECONDS else None
+    value = _fetch_extension_jobs()
+    with _jobs_lock:
+        _jobs_cache.update(checked_at=time.monotonic(), value=value)
+    return value
+
+
+def _refresh_extension_jobs_if_active() -> None:
+    """Fetch a job snapshot when any progress record is mid-operation.
+
+    Async endpoints call this in a worker thread before they compute status
+    on the event loop, which then reads the cached snapshot.
+    """
+    progress_dir = Path(DATA_DIR) / "extension-progress"
+    if not progress_dir.is_dir():
+        return
+    for path in progress_dir.glob("*.json"):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(record, dict) and record.get("status") in _ACTIVE_PROGRESS_STATES:
+            _extension_jobs()
+            return
+
+
+def _interrupted_progress(service_id: str, progress: dict) -> dict | None:
+    """The record as an interrupted failure when no operation can finish it.
+
+    It takes proof from the host agent: the record is mid-operation, the
+    agent runs no operation for the service, and the record was written by an
+    earlier agent process (its worker died with it) or before the agent's
+    answer. The dashboard's own first record gets two minutes to reach the
+    agent, and no record is judged while another request of this API works
+    on the extension: a start that outlasted the two minutes is about to
+    record its result. Without an answer from the agent the record stands as
+    written.
+    """
+    if progress.get("status") not in _ACTIVE_PROGRESS_STATES:
+        return None
+    instance = progress.get("agent_instance")
+    if instance is None and not _is_stale(progress.get("updated_at", ""),
+                                          _DASHBOARD_PROGRESS_GRACE_SECONDS):
+        return None
+    if _operation_in_flight_elsewhere(service_id):
+        return None
+    jobs = _extension_jobs()
+    if jobs is None or service_id in jobs["live"]:
+        return None
+    if instance is None or instance == jobs["instance"]:
+        written = _parse_timestamp(progress.get("updated_at"))
+        if written is None or written >= jobs["now"]:
+            return None
+    return {**progress, "status": "error", "error": INTERRUPTED_PROGRESS_ERROR,
+            "interrupted": True, "interrupted_phase": progress["status"]}
+
+
+def _interrupted_operation(progress: dict) -> str | None:
+    """What the interrupted record was doing: "install", "start" or unknown.
+
+    The host agent's install worker stamps its operation identity; the
+    dashboard's own first record names its operation.
+    """
+    operation = progress.get("operation")
+    if operation in ("install", "start"):
+        return operation
+    operation_id = progress.get("operation_id")
+    if isinstance(operation_id, str) and re.fullmatch(r"[a-f0-9]{32}", operation_id):
+        return "install"
+    return None
+
+
 def _progress_blocks_mutation(progress: dict | None) -> bool:
     """True while an in-flight operation should block update/rollback.
 
@@ -221,19 +372,42 @@ def _progress_blocks_mutation(progress: dict | None) -> bool:
 
 
 def _read_progress(service_id: str) -> dict | None:
-    """Read progress file for a service. Returns None if no active progress."""
-    progress_file = Path(DATA_DIR) / "extension-progress" / f"{service_id}.json"
+    """Read progress file for a service. Returns None if no active progress.
+
+    A record no running operation can finish reads as an interrupted failure.
+    """
+    data = _load_progress_file(service_id)
+    if data is None:
+        return None
+    interrupted = _interrupted_progress(service_id, data)
+    if interrupted is not None:
+        return interrupted
+    return _unexpired_progress(data)
+
+
+def _read_recorded_progress(service_id: str) -> dict | None:
+    """The progress record as written, for the code that completes it."""
+    data = _load_progress_file(service_id)
+    return None if data is None else _unexpired_progress(data)
+
+
+def _load_progress_file(service_id: str):
+    progress_file = _contained_path(Path(DATA_DIR) / "extension-progress", f"{service_id}.json")
     if not progress_file.exists():
         return None
     try:
-        data = json.loads(progress_file.read_text(encoding="utf-8"))
-        updated = data.get("updated_at", "")
-        if updated and _is_stale(updated, max_age_seconds=3600):
-            if data.get("status") not in ("error",) and not (data.get('status') == 'started' and data.get('exit_verified') is True):
-                return None
-        return data
+        return json.loads(progress_file.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
+
+
+def _unexpired_progress(data: dict) -> dict | None:
+    """None for a record that stopped changing an hour ago, unless it is final."""
+    updated = data.get("updated_at", "")
+    if updated and _is_stale(updated, max_age_seconds=3600):
+        if data.get("status") not in ("error",) and not (data.get('status') == 'started' and data.get('exit_verified') is True):
+            return None
+    return data
 
 
 def _progress_file_presence(service_id: str) -> str:
@@ -296,8 +470,13 @@ def _store_progress(service_id: str, record: dict) -> None:
             Path(temporary).unlink(missing_ok=True)
 
 
-def _write_initial_progress(service_id: str) -> None:
-    """Write an initial progress file so the UI sees 'installing' immediately."""
+def _write_initial_progress(service_id: str, operation: str | None = None) -> None:
+    """Write an initial progress file so the UI sees 'installing' immediately.
+
+    ``operation`` ("install" or "start") tells a Retry after an interruption
+    which request to repeat.
+    """
+
     now = datetime.now(timezone.utc).isoformat()
     _store_progress(service_id, {
         "service_id": service_id,
@@ -306,7 +485,9 @@ def _write_initial_progress(service_id: str) -> None:
         "error": None,
         "started_at": now,
         "updated_at": now,
+        **({"operation": operation} if operation else {}),
     })
+
 
 
 def _write_error_progress(service_id: str, error_msg: str) -> None:
@@ -323,7 +504,11 @@ def _write_error_progress(service_id: str, error_msg: str) -> None:
     data["status"] = "error"
     data["error"] = error_msg
     data["updated_at"] = now
+    # This failure has its own cause; an earlier interruption is over.
+    data.pop("interrupted", None)
+    data.pop("interrupted_phase", None)
     _store_progress(service_id, data)
+
 
 
 def _write_started_progress(service_id: str) -> None:
@@ -334,9 +519,10 @@ def _write_started_progress(service_id: str) -> None:
     but nothing completed the receipt. The Extensions page polls until a
     terminal status, so the card showed "Starting installation..." forever
     (Strixy, 2026-10-03). A terminal receipt the host wrote itself (a
-    verified one-shot exit) is kept.
+    verified one-shot exit) is kept. The record is read as written: a start
+    that outlasted the interruption grace has just finished, not stopped.
     """
-    progress = _read_progress(service_id)
+    progress = _read_recorded_progress(service_id)
     if not progress or progress.get("status") != "pulling":
         return
     progress.update(status="started", phase_label="Service started", error=None,
@@ -570,7 +756,11 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
         if ps == "setup_hook":
             return "setting_up"
         if ps == "error":
-            return "error"
+            # An interrupted operation can have finished its work just before
+            # it stopped: a healthy service is not an install to retry.
+            svc = services_by_id.get(ext_id)
+            if not (progress.get("interrupted") is True and svc and svc.status == "healthy"):
+                return "error"
         if ps == "started":
             if one_shot:
                 return 'cli_installed' if progress.get('exit_verified') is True else 'stopped'
@@ -1812,6 +2002,20 @@ def _extensions_lock():
         yield
 
 
+# The threads of this API process that hold each extension's operation lock.
+# Another request's operation may be about to write that extension's progress,
+# so its record is not judged interrupted meanwhile.
+_operation_holders: dict[str, list[int]] = {}
+_operation_holders_lock = threading.Lock()
+
+
+def _operation_in_flight_elsewhere(service_id: str) -> bool:
+    """True while another thread of this process operates on the extension."""
+    me = threading.get_ident()
+    with _operation_holders_lock:
+        return any(holder != me for holder in _operation_holders.get(service_id, ()))
+
+
 @contextlib.contextmanager
 def _extension_operation_lock(service_id: str):
     """Serialize the complete lifecycle transaction for one extension."""
@@ -1824,7 +2028,17 @@ def _extension_operation_lock(service_id: str):
         raise OSError("Invalid extension operation lock directory")
     lock_name = hashlib.sha256(service_id.encode("utf-8")).hexdigest() + ".lock"
     with _exclusive_file_lock(lock_dir / lock_name):
-        yield
+        me = threading.get_ident()
+        with _operation_holders_lock:
+            _operation_holders.setdefault(service_id, []).append(me)
+        try:
+            yield
+        finally:
+            with _operation_holders_lock:
+                holders = _operation_holders[service_id]
+                holders.remove(me)
+                if not holders:
+                    del _operation_holders[service_id]
 
 
 def _serialize_extension_operation(func):
@@ -2070,6 +2284,8 @@ async def extensions_catalog(
     await _inspect_non_http_user_services(user_svc_configs, services_by_id)
 
     current_catalog = await asyncio.to_thread(_current_extension_catalog)
+    # Status below runs on the event loop and reads this cached snapshot.
+    await asyncio.to_thread(_refresh_extension_jobs_if_active)
     user_extension_ids = [
         entry["id"] for entry in current_catalog
         if (USER_EXTENSIONS_DIR / entry["id"]).is_dir()
@@ -2130,6 +2346,9 @@ async def extensions_catalog(
             _progress = _read_progress(ext_id)
             if _progress and _progress.get("error"):
                 enriched["error_message"] = _progress["error"]
+            if _progress and _progress.get("interrupted") is True:
+                enriched["interrupted"] = True
+                enriched["interrupted_operation"] = _interrupted_operation(_progress)
 
         if category and ext.get("category") != category:
             continue
@@ -3485,19 +3704,76 @@ async def extension_configure(service_id: str, request: Request, api_key: str = 
 
 @router.get("/api/extensions/{service_id}/progress")
 def extension_progress(service_id: str, api_key: str = Depends(verify_api_key)):
-    """Get install progress for an extension."""
+    """Get install progress for an extension.
+
+    A record no running operation can finish answers as an interrupted
+    failure, so the card stops following it.
+    """
     _validate_service_id(service_id)
     progress_file = Path(DATA_DIR) / "extension-progress" / f"{service_id}.json"
     if not progress_file.exists():
         return {"service_id": service_id, "status": "idle"}
     try:
         data = json.loads(progress_file.read_text(encoding="utf-8"))
-        return data
     except json.JSONDecodeError:
         return {"service_id": service_id, "status": "idle"}
     except OSError as exc:
         logger.warning("Failed to read progress file for %s: %s", service_id, exc)
         return {"service_id": service_id, "status": "idle"}
+    if isinstance(data, dict):
+        return _interrupted_progress(service_id, data) or data
+    return data
+
+
+_DISMISS_REFUSALS = {
+    "unsafe": "The progress record requires inspection; nothing was changed.",
+    "not_interrupted": "This operation was not interrupted, so there is nothing to cancel. Refresh the page.",
+    "changed": "The operation changed while it was cancelled. Refresh the page.",
+}
+
+
+def _dismiss_interrupted_progress(service_id: str) -> str:
+    """Delete the record of an interrupted operation.
+
+    Returns "dismissed", "absent", or why the record stays (a key of
+    _DISMISS_REFUSALS). Only a record that reads as interrupted is deleted,
+    and only when it did not change while it was judged. Definitions,
+    containers and data stay.
+    """
+    directory = Path(DATA_DIR) / "extension-progress"
+    path = _contained_path(directory, f"{service_id}.json")
+    if directory.is_symlink() or path.is_symlink():
+        return "unsafe"
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return "absent"
+    try:
+        record = json.loads(raw)
+    except ValueError:
+        record = None
+    judged = None
+    if isinstance(record, dict):
+        judged = (record if record.get("status") == "error" and record.get("interrupted") is True
+                  else _interrupted_progress(service_id, record))
+    if judged is None:
+        return "not_interrupted"
+    if path.read_bytes() != raw:
+        return "changed"
+    path.unlink()
+    return "dismissed"
+
+
+@router.delete("/api/extensions/{service_id}/progress")
+@_serialize_extension_operation
+def dismiss_interrupted_operation(service_id: str, api_key: str = Depends(verify_api_key)):
+    """Cancel an interrupted install or start: the card shows its state again."""
+    _validate_service_id(service_id)
+    outcome = _dismiss_interrupted_progress(service_id)
+    if outcome in _DISMISS_REFUSALS:
+        raise HTTPException(status_code=409, detail=_DISMISS_REFUSALS[outcome])
+    return {"id": service_id, "action": "dismissed" if outcome == "dismissed" else "none",
+            "message": "Cancelled. Nothing was removed."}
 
 
 @router.get("/api/extensions/{service_id}")
@@ -3556,6 +3832,7 @@ async def extension_detail(
 
     await _inspect_non_http_user_services(user_svc_configs, services_by_id)
 
+    await asyncio.to_thread(_refresh_extension_jobs_if_active)
     status = _compute_extension_status(ext, services_by_id)
     installable = _is_installable(service_id)
     llm_contract = _llm_contract_for_extension(ext)
@@ -3574,10 +3851,14 @@ async def extension_detail(
 
     # See extensions_catalog: same rationale for inlining the install error.
     error_message: Optional[str] = None
+    interrupted: dict = {}
     if status == "error":
         _progress = _read_progress(service_id)
         if _progress and _progress.get("error"):
             error_message = _progress["error"]
+        if _progress and _progress.get("interrupted") is True:
+            interrupted = {"interrupted": True,
+                           "interrupted_operation": _interrupted_operation(_progress)}
 
     detail = {
         "id": ext["id"],
@@ -3586,6 +3867,8 @@ async def extension_detail(
         "status": status,
         "error_message": error_message,
         "incompatible_reason": _host_unsupported_reason(ext) or None,
+        **interrupted,
+
         "runtime_starting": status == "installing" and _service_starting(services_by_id.get(service_id)),
         "source": source,
         "installable": installable,
@@ -4141,7 +4424,7 @@ def _install_extension(service_id: str, api_key: str, operation_id: str | None =
 
     # Write initial progress file so status shows "installing" immediately
     # (before host agent starts processing â€” closes the race window)
-    _write_initial_progress(service_id)
+    _write_initial_progress(service_id, "install")
 
     # Call host agent combined install (setup_hook â†’ pull â†’ start).
     # The setup_hook step internally satisfies the post_install lifecycle
@@ -4170,7 +4453,7 @@ def _install_extension(service_id: str, api_key: str, operation_id: str | None =
 
 
 def _extension_backup_dir(service_id: str) -> Path:
-    return USER_EXTENSIONS_DIR / ".backups" / service_id
+    return _contained_path(USER_EXTENSIONS_DIR / ".backups", service_id)
 
 
 def _set_extension_compose_state(extension_dir: Path, *, enabled: bool) -> bool:
@@ -4871,6 +5154,10 @@ def prepare_extension_images(
         raise HTTPException(status_code=503, detail="Host agent unavailable") from None
     if not isinstance(result, dict) or result.get("status") not in {"ready", "accepted"}:
         raise HTTPException(status_code=502, detail="Image preparation could not be verified")
+    if result["status"] == "ready":
+        # Nothing downloads, so nothing replaces an interrupted download's
+        # record: the retry starting now would otherwise read as interrupted.
+        _dismiss_interrupted_progress(service_id)
     return JSONResponse({"status": result["status"], "service_ids": plan},
                         status_code=202 if result["status"] == "accepted" else 200)
 
@@ -5022,7 +5309,7 @@ def enable_extension(
         if already_enabled and svc_id == service_id:
             # Keep the existing stopped-target start contract and progress
             # receipt, after any newly confirmed prerequisites have started.
-            _write_initial_progress(svc_id)
+            _write_initial_progress(svc_id, "start")
             if not _call_agent("start", svc_id):
                 agent_ok = False
                 failed_services.append(svc_id)
@@ -5307,9 +5594,86 @@ def disable_extension(service_id: str, include_data_info: bool = Query(True), ap
     }
 
 
+def _call_agent_remove_extension(service_id: str, *, delete_data: bool) -> dict:
+    """The host owns selection exclusion through the complete removal."""
+    try:
+        result = request_agent_json(
+            "POST", "/v1/extension/remove",
+            payload={"service_id": service_id, "delete_data": delete_data},
+            timeout=_AGENT_TIMEOUT,
+        )
+    except AgentHTTPError as exc:
+        if exc.status_code in (404, 410):
+            raise HTTPException(status_code=409, detail=(
+                "Finish updating ODS before removing this extension. "
+                "The host service cannot perform the complete removal yet."
+            )) from exc
+        raise HTTPException(
+            status_code=409 if exc.status_code in (400, 403, 409) else 502,
+            detail=(f"Removal of {service_id} did not complete: {exc.detail}. "
+                    "Some resources may already have been deleted. Refresh the extension's "
+                    "state before retrying Remove."),
+        ) from exc
+    except AgentClientError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(f"The ODS host service is not responding; removal of {service_id} "
+                    "could not be verified. Refresh its state before retrying Remove."),
+        ) from exc
+    lists = {key: result.get(key) for key in ("containers", "volumes_removed", "volumes_kept")}
+    freed = result.get("data_freed_gb")
+    if (not all(isinstance(value, list) and all(isinstance(item, str) for item in value)
+                for value in lists.values())
+            or result.get("status") != "ok" or result.get("service_id") != service_id
+            or result.get("definition_removed") is not True
+            or result.get("data_deleted") is not delete_data
+            or (freed is not None and (type(freed) not in (int, float)
+                                      or not math.isfinite(freed) or freed < 0))):
+        raise HTTPException(
+            status_code=502,
+            detail=f"Removal of {service_id} could not be verified. Refresh its state before retrying Remove.",
+        )
+    return {**lists, "data_freed_gb": freed}
+
+
+def _extension_display_name(service_id: str) -> str:
+    """The installed manifest's name, for the owner-facing result."""
+    manifest_path = _contained_path(USER_EXTENSIONS_DIR, service_id) / "manifest.yaml"
+    try:
+        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError):
+        return service_id
+    service = manifest.get("service") if isinstance(manifest, dict) else None
+    name = service.get("name") if isinstance(service, dict) else None
+    return name.strip() if isinstance(name, str) and name.strip() else service_id
+
+
+def _removal_message(name: str, *, stopped: bool, removed: dict, delete_data: bool,
+                     data_info: dict | None, data_freed_gb: float | None) -> str:
+    """Say what Remove deleted, and which data it kept."""
+    first = f"{name} was stopped and removed" if stopped else f"{name} was removed"
+    if delete_data:
+        freed = f" ({data_freed_gb} GB freed)" if data_freed_gb is not None else ""
+        shared = removed["volumes_kept"]
+        shared_note = (f" Docker volumes another service still uses were kept: {', '.join(shared)}."
+                       if shared else "")
+        return (f"{first} with its data: its container, installed definition and data were "
+                f"deleted{freed}.{shared_note}")
+    message = f"{first}: its container and installed definition were deleted."
+    kept = []
+    if data_info:
+        kept.append(f"{data_info['path']}, {data_info['size_gb']} GB")
+    if removed["volumes_kept"]:
+        kept.append("its Docker volumes")
+    if kept:
+        message += f" Its data was kept ({'; '.join(kept)}), so reinstalling it picks it up again."
+    return message
+
+
 @router.delete("/api/extensions/{service_id}")
 @_serialize_extension_operation
-def uninstall_extension(service_id: str, include_data_info: bool = Query(True), api_key: str = Depends(verify_api_key)):
+def uninstall_extension(service_id: str, include_data_info: bool = Query(True),
+                        delete_data: bool = Query(False), api_key: str = Depends(verify_api_key)):
     """Uninstall an extension that is disabled or left in the error state.
 
     Removal never tears down a live service as a side effect: an enabled
@@ -5320,8 +5684,10 @@ def uninstall_extension(service_id: str, include_data_info: bool = Query(True), 
     disable prerequisite is performed here, with the same safety as the
     disable endpoint: the host agent must stop the service before its
     definition is touched, and removal is refused while enabled extensions
-    still depend on it. Service data is never deleted here; purging stays a
-    separate, explicitly confirmed request.
+    still depend on it. The host agent then deletes the stopped containers,
+    which nothing would manage once the definition is gone. Service data
+    (./data/<id> and the extension's Docker volumes) is kept unless
+    ``delete_data`` asks to delete it too.
     """
     _validate_service_id(service_id)
     _assert_not_core(service_id)
@@ -5374,53 +5740,33 @@ def uninstall_extension(service_id: str, include_data_info: bool = Query(True), 
             raise
         stopped_before_removal = True
 
-    with _extensions_lock():
-        # Reject symlinks (checked under lock to prevent TOCTOU)
-        st = os.lstat(ext_dir)
-        if stat.S_ISLNK(st.st_mode):
-            raise HTTPException(
-                status_code=400, detail="Extension directory is a symlink",
-            )
+    name = _extension_display_name(service_id)
+    data_info = _get_service_data_info(service_id) if include_data_info and not delete_data else None
+    # Do not hold the API graph lock across this RPC. It deadlocks the host on
+    # Linux and does not exclude the native CLI across a Mac Docker VM boundary.
+    # The host rechecks selection and deletes all owned resources under its lock.
+    removed = _call_agent_remove_extension(service_id, delete_data=delete_data)
+    data_freed_gb = removed["data_freed_gb"]
+    _invalidate_extension_digest_cache(ext_dir, _extension_backup_dir(service_id))
+    if delete_data:
+        from helpers import invalidate_dir_size_cache  # noqa: PLC0415
+        invalidate_dir_size_cache(Path(DATA_DIR) / service_id)
 
-        # Selection can change after the host RPC and before this lock. The
-        # host CLI uses the same lock, so this check protects the whole delete.
-        if enabled_compose.exists() or enabled_compose.is_symlink():
-            raise HTTPException(
-                status_code=409,
-                detail=f"Extension selection changed: {service_id}; disable it and retry removal",
-            )
-
-        try:
-            shutil.rmtree(ext_dir)
-        except OSError as e:
-            if stopped_before_removal:
-                _call_agent_invalidate_compose_cache()
-            logger.error("Failed to remove extension %s: %s", service_id, e)
-            raise HTTPException(status_code=500, detail=f"Failed to remove extension files: {e}")
-        _call_agent_invalidate_compose_cache()
-
-        backup = _extension_backup_dir(service_id)
-        if backup.parent.is_symlink():
-            logger.warning("Refusing to clean extension backup through symlink: %s", backup.parent)
-        elif backup.is_symlink():
-            backup.unlink(missing_ok=True)
-        elif backup.is_dir():
-            shutil.rmtree(backup)
-        _invalidate_extension_digest_cache(ext_dir, backup)
-
-        _clear_progress(service_id)
-
-    logger.info("Uninstalled extension: %s (stopped first: %s)", service_id, stopped_before_removal)
-    message = "Extension uninstalled. Docker volumes may remain; run 'docker volume ls' to check."
-    if stopped_before_removal:
-        message = "Failed extension stopped and uninstalled. Docker volumes may remain; run 'docker volume ls' to check."
+    logger.info("Uninstalled extension: %s (stopped first: %s, containers: %s, data deleted: %s)",
+                service_id, stopped_before_removal,
+                ", ".join(removed["containers"]), delete_data)
     return {
         "id": service_id,
         "action": "uninstalled",
         "stopped_before_removal": stopped_before_removal,
-        "data_info": _get_service_data_info(service_id) if include_data_info else None,
-        "message": message,
-        "cleanup_hint": f"To remove orphaned volumes: docker volume ls --filter 'name={service_id}' -q | xargs docker volume rm",
+        "containers_removed": removed["containers"],
+        "data_deleted": delete_data,
+        "volumes_removed": removed["volumes_removed"],
+        "volumes_kept": removed["volumes_kept"],
+        "data_info": data_info,
+        "message": _removal_message(name, stopped=stopped_before_removal, removed=removed,
+                                    delete_data=delete_data, data_info=data_info,
+                                    data_freed_gb=data_freed_gb),
     }
 
 

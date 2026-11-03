@@ -107,6 +107,15 @@ const STATUS_DESCRIPTIONS = {
   error:         'Installation or startup failed \u2014 click for details',
 }
 
+// The host agent stopped before an install or start finished (a restart or a
+// crash), so no progress will follow. The card offers Retry and Cancel.
+const isInterrupted = (ext, progressData) => ext.status === 'error'
+  && (ext.interrupted === true || progressData?.interrupted === true)
+const INTERRUPTED_FALLBACK = 'ODS stopped before this finished, for example after a restart or a crash. Retry to continue; anything already downloaded is reused.'
+// Cancel of an interrupted Library install removes what it set up; every
+// other Cancel only forgets the interrupted attempt.
+const cancelRemovesInstall = ext => ext.source === 'user' && ext.interrupted_operation === 'install'
+
 export default function Extensions({ compact = false }) {
   const [catalog, setCatalog] = useState(null)
   const [webuiSelection, setWebuiSelection] = useState(null)
@@ -128,6 +137,8 @@ export default function Extensions({ compact = false }) {
   // are submitted or the dialog closes; never echoed back from the API.
   const [settingValues, setSettingValues] = useState({})
   const [settingsBusy, setSettingsBusy] = useState(false)
+  // Remove keeps an extension's data unless the owner ticks this in its dialog.
+  const [deleteData, setDeleteData] = useState(false)
   const dialogSeq = useRef(0)
   const webuiAddInFlight = useRef(false)
   const settingsSave = useRef(null)
@@ -180,9 +191,19 @@ export default function Extensions({ compact = false }) {
           clearInterval(activePollers.current[serviceId])
           delete activePollers.current[serviceId]
           delete recoveryTrackers.current[serviceId]
-          setToast({ type: 'error', text: data.error || 'Installation failed' })
           setProgressMap(prev => { const next = { ...prev }; delete next[serviceId]; return next })
-          fetchCatalog()
+          if (!data.interrupted) {
+            setToast({ type: 'error', text: data.error || 'Installation failed' })
+            fetchCatalog()
+            return
+          }
+          // The work may have finished just before ODS stopped; the catalog's
+          // health check says whether there is anything to retry.
+          const catData = await fetchCatalog()
+          const ext = catData?.extensions?.find(e => e.id === serviceId)
+          setToast(ext && (ext.status === 'enabled' || ext.status === 'cli_installed')
+            ? { type: 'success', text: 'Extension installed and started.' }
+            : { type: 'error', text: `The ${ext?.name || serviceId} install was interrupted. Retry or cancel it on its card.` })
         } else if (followCatalog || data.status === 'started' || data.status === 'idle' || data.status === 'prepared') {
           // Enable can finish without an install-progress record. Keep checking
           // live health even when progress is idle after the selection changed.
@@ -268,6 +289,7 @@ export default function Extensions({ compact = false }) {
   useEffect(() => {
     setSettingValues({})
     setSettingsBusy(false)
+    setDeleteData(false)
     if (!dialogId) return undefined
     const request = new AbortController()
     const current = confirm
@@ -359,10 +381,19 @@ export default function Extensions({ compact = false }) {
       throw new Error(typeof err.detail === 'string' ? err.detail : 'Could not download the images this needs')
     }
     if (res.status !== 202) return
+    // A crash can take ODS away mid-download; say so instead of leaving the
+    // last progress line looking current.
+    let failures = 0
     for (;;) {
       await new Promise(resolve => setTimeout(resolve, 3000))
       const progress = await fetchJson(`/api/extensions/${serviceId}/progress`).catch(() => null)
-      if (!progress?.ok) continue
+      if (!progress?.ok) {
+        failures += 1
+        if (failures === 3) setPollingLost(true)
+        continue
+      }
+      if (failures >= 3) setPollingLost(false)
+      failures = 0
       const data = await progress.json()
       if (data.status === 'pulling') {
         setProgressMap(prev => ({ ...prev, [serviceId]: data }))
@@ -370,8 +401,10 @@ export default function Extensions({ compact = false }) {
       }
       setProgressMap(prev => { const next = { ...prev }; delete next[serviceId]; return next })
       if (data.status === 'prepared') return
-      throw new Error(data.status === 'error' && data.error
+      const stopped = new Error(data.status === 'error' && data.error
         ? data.error : 'The image download stopped. Retry to resume it.')
+      stopped.interrupted = data.interrupted === true
+      throw stopped
     }
   }
 
@@ -386,7 +419,7 @@ export default function Extensions({ compact = false }) {
     pollProgress(serviceId, { followCatalog: true })
   }
 
-  const handleMutation = async (serviceId, action, { autoEnableDeps = false, force = false, displayServiceId = serviceId } = {}) => {
+  const handleMutation = async (serviceId, action, { autoEnableDeps = false, force = false, displayServiceId = serviceId, removeData = false } = {}) => {
     setMutating(displayServiceId)
     setConfirm(null)
     setDepConfirm(null)
@@ -404,6 +437,9 @@ export default function Extensions({ compact = false }) {
       }
       if (action === 'update' && force) {
         url += '?force=true'
+      }
+      if (action === 'uninstall' && removeData) {
+        url += '?delete_data=true'
       }
       const opts = {
         method: action === 'uninstall' || action === 'purge' ? 'DELETE' : 'POST',
@@ -490,7 +526,8 @@ export default function Extensions({ compact = false }) {
           action === 'purge' ? `Data purged — ${data.size_gb_freed ?? 0} GB freed` :
           `Extension ${action}d`
         )
-        if (data.data_info) {
+        // Remove's own message says which data it kept or deleted.
+        if (data.data_info && action !== 'uninstall') {
           successText += ` Data preserved (${data.data_info.size_gb} GB) — purge to remove.`
         }
         if (data.restart_required) {
@@ -503,6 +540,8 @@ export default function Extensions({ compact = false }) {
     } catch (err) {
       const base = friendlyError(err.message) || `Failed to ${action} extension`
       setToast({ type: 'error', text: base })
+      // The card offers Retry and Cancel for an interrupted download.
+      if (err.interrupted) await fetchCatalog()
     } finally {
       setMutating(null)
     }
@@ -532,10 +571,47 @@ export default function Extensions({ compact = false }) {
       setToast({ type: 'info', text: 'Open WebUI selected. Waiting for its service to become ready.' })
       pollProgress('open-webui')
     } catch (error) {
-      await fetchWebuiSelection()
+      await (error.interrupted ? Promise.all([fetchWebuiSelection(), fetchCatalog()]) : fetchWebuiSelection())
       setToast({ type: 'error', text: friendlyError(error.message) || 'Could not add Open WebUI. Check its selection before retrying.' })
     } finally {
       webuiAddInFlight.current = false
+      setMutating(null)
+    }
+  }
+
+  // Retry repeats what was interrupted, without asking again: the owner
+  // already confirmed it once. Settings it still needs open their dialog.
+  const retryInterrupted = ext => {
+    if (ext.id === 'open-webui') return handleWebuiAdd()
+    if (ext.id === 'opencode' || cancelRemovesInstall(ext)) {
+      return handleMutation(ext.id, 'install')
+    }
+    const addHermesWeb = ext.id === 'hermes' && ext.library_selected === false
+    return handleMutation(addHermesWeb ? 'hermes-proxy' : ext.id, 'enable', {
+      autoEnableDeps: addHermesWeb, displayServiceId: ext.id,
+    })
+  }
+
+  // Cancel of an interrupted Library install removes it, after its dialog.
+  // Every other Cancel forgets the interrupted attempt and changes nothing.
+  const cancelInterrupted = async ext => {
+    if (cancelRemovesInstall(ext)) {
+      requestAction(ext, 'uninstall')
+      return
+    }
+    setMutating(ext.id)
+    try {
+      const res = await fetch(`/api/extensions/${ext.id}/progress`, {
+        method: 'DELETE', signal: AbortSignal.timeout(30000),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(typeof body.detail === 'string' ? body.detail : 'Could not cancel. Refresh the page and try again.')
+      setProgressMap(prev => { const next = { ...prev }; delete next[ext.id]; return next })
+      setToast({ type: 'info', text: body.message || 'Cancelled. Nothing was removed.' })
+      await fetchCatalog()
+    } catch (err) {
+      setToast({ type: 'error', text: err.message })
+    } finally {
       setMutating(null)
     }
   }
@@ -545,7 +621,7 @@ export default function Extensions({ compact = false }) {
     const addHermesWeb = action === 'enable' && ext.id === 'hermes'
       && ext.library_selected === false && ext.status === 'disabled'
     const messages = {
-      'add-webui': 'Add Open WebUI? ODS will download and start its chat service. Any existing Open WebUI chats and settings will be reused.',
+      'add-webui': 'Add Open WebUI? ODS will download and start its chat service. Any existing Open WebUI chats and settings will be reused. Adding is permanent: once added, Open WebUI stays on, and the dashboard cannot remove it.',
       install: `Install ${ext.name}? This will download and start the service.`,
       enable: addHermesWeb
         ? 'Add Hermes Agent and its browser access? ODS will start Hermes, Hermes Auth Proxy, and required services including SearXNG.'
@@ -553,9 +629,11 @@ export default function Extensions({ compact = false }) {
       disable: `Disable ${ext.name}? The service will be stopped.`,
       // A failed extension still has an enabled definition; the API stops
       // whatever the failed attempt left running before removing it.
-      uninstall: ext.status === 'error'
-        ? `Remove ${ext.name}? ODS will stop anything its failed setup left running, then remove it. Service data is kept, and you can reinstall it from the library.`
-        : `Remove ${ext.name}? You can reinstall it from the library.`,
+      uninstall: isInterrupted(ext) && cancelRemovesInstall(ext)
+        ? `Cancel the ${ext.name} install? ODS will stop anything the interrupted install started, then delete its container and installed definition.`
+        : ext.status === 'error'
+        ? `Remove ${ext.name}? ODS will stop anything its failed setup left running, then delete its container and installed definition. You can reinstall it from the library.`
+        : `Remove ${ext.name}? ODS deletes its container and installed definition. You can reinstall it from the library.`,
       purge: `Permanently delete all data for ${ext.name}? This cannot be undone.`,
       update: ext.update_status === 'unknown'
         ? `ODS could not inspect the installed files for ${ext.name}. Refresh from the ODS library? This replaces the installed definition, including any local changes, and retains the current files as a rollback backup.`
@@ -585,6 +663,7 @@ export default function Extensions({ compact = false }) {
       force: current.action === 'update' && (
         current.ext.locally_modified || ['untracked', 'unknown'].includes(current.ext.update_status)
       ),
+      removeData: current.action === 'uninstall' && deleteData,
     })
     const fields = current.settings?.fields || []
     if (!fields.length) return run()
@@ -638,6 +717,8 @@ export default function Extensions({ compact = false }) {
   const allExtensions = catalog?.extensions || []
   const extensions = allExtensions.filter(ext => !['incompatible', 'unsupported'].includes(ext.status) && ext.compatible !== false)
   const webuiCanAdd = webuiSelection?.supported === true && webuiSelection.enabled === false
+  // The Remove dialog of an interrupted Library install is its Cancel.
+  const cancelsInstall = confirm?.action === 'uninstall' && isInterrupted(confirm.ext) && cancelRemovesInstall(confirm.ext)
   const availableForAdd = ext => ext.status === 'not_installed'
     || (ext.id === 'open-webui' && webuiCanAdd)
     || (ext.source === 'core' && ext.library_manageable === true
@@ -769,7 +850,7 @@ export default function Extensions({ compact = false }) {
       {catalog?.agent_available === false && (
         <div className="mb-4 rounded-xl border border-theme-border bg-theme-text-secondary/[0.06] px-4 py-3 text-[11px] text-theme-text-secondary/80 flex items-center gap-2.5">
           <span className="shrink-0 text-theme-text-secondary">!</span>
-          <span>Host agent is offline — install, enable, and disable operations are unavailable. Container logs cannot be fetched.</span>
+          <span>Host agent is offline — install, enable, and disable operations are unavailable. Container logs cannot be fetched. Restart ODS, or run &apos;ods agent restart&apos;, to bring it back; an interrupted install then shows Retry. <HelpLink /></span>
         </div>
       )}
 
@@ -804,6 +885,8 @@ export default function Extensions({ compact = false }) {
               onDetails={() => setExpanded(ext.id)}
               onConsole={() => setConsoleExt(ext)}
               onAction={requestAction}
+              onRetryInterrupted={retryInterrupted}
+              onCancelInterrupted={cancelInterrupted}
               webuiSelection={webuiSelection}
               mutating={mutating}
               progressData={progressMap[ext.id] || (ext.id === 'hermes' ? progressMap['hermes-proxy'] : null)}
@@ -829,9 +912,24 @@ export default function Extensions({ compact = false }) {
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setConfirm(null)}>
           <div className="bg-theme-card border border-theme-border rounded-xl p-6 max-w-md mx-4 shadow-2xl" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Confirm action">
             <h3 className="text-base font-semibold text-theme-text mb-2">
-              {confirm.action === 'add-webui' ? 'Add Open WebUI' : `${confirm.action === 'uninstall' ? 'Remove' : confirm.action === 'purge' ? 'Purge Data' : confirm.action.charAt(0).toUpperCase() + confirm.action.slice(1)} Extension`}
+              {confirm.action === 'add-webui' ? 'Add Open WebUI'
+                : confirm.action === 'uninstall' && cancelsInstall ? 'Cancel Install'
+                : `${confirm.action === 'uninstall' ? 'Remove' : confirm.action === 'purge' ? 'Purge Data' : confirm.action.charAt(0).toUpperCase() + confirm.action.slice(1)} Extension`}
             </h3>
             <p className="text-[11px] text-theme-text-muted/70 mb-5 leading-relaxed">{confirm.message}</p>
+            {confirm.action === 'uninstall' && (
+              <div className="mb-5 space-y-2 text-[11px] leading-relaxed">
+                <p className={deleteData ? 'text-red-300' : 'text-theme-text-muted/70'}>
+                  {deleteData
+                    ? `Its data will be deleted permanently: the data/${confirm.ext.id} folder and its Docker volumes. This cannot be undone.`
+                    : `Service data is kept: the data/${confirm.ext.id} folder and its Docker volumes, if it has any, stay, so a reinstall picks them up again.`}
+                </p>
+                <label className="flex items-center gap-2 text-theme-text-secondary">
+                  <input type="checkbox" checked={deleteData} onChange={event => setDeleteData(event.target.checked)} />
+                  <span>Also delete {confirm.ext.name}&apos;s data</span>
+                </label>
+              </div>
+            )}
             {confirm.action === 'disable' && confirm.ext.dependents?.length > 0 && (
               <DisableDependentWarning dependents={confirm.ext.dependents} />
             )}
@@ -857,7 +955,7 @@ export default function Extensions({ compact = false }) {
               <p role="alert" className="mb-4 text-[11px] leading-relaxed text-red-300">{confirm.settings.error}</p>
             )}
             <div className="flex justify-end gap-3">
-              <button onClick={() => setConfirm(null)} autoFocus className="px-4 py-2 text-[10px] font-mono uppercase tracking-[0.16em] text-theme-text-muted/65 hover:text-theme-text transition-colors">Cancel</button>
+              <button onClick={() => setConfirm(null)} autoFocus className="px-4 py-2 text-[10px] font-mono uppercase tracking-[0.16em] text-theme-text-muted/65 hover:text-theme-text transition-colors">{cancelsInstall ? 'Back' : 'Cancel'}</button>
               <button
                 onClick={confirmAction}
                 disabled={settingsBusy || confirm.settings?.loading === true
@@ -868,7 +966,8 @@ export default function Extensions({ compact = false }) {
                 }`}
               >
                 {(() => {
-                  const label = confirm.action === 'add-webui' ? 'Add' : confirm.action === 'uninstall' ? 'Remove' : confirm.action === 'purge' ? 'Purge'
+                  const removeLabel = deleteData ? 'Remove and delete data' : cancelsInstall ? 'Cancel install' : 'Remove'
+                  const label = confirm.action === 'add-webui' ? 'Add' : confirm.action === 'uninstall' ? removeLabel : confirm.action === 'purge' ? 'Purge'
                     : confirm.action.charAt(0).toUpperCase() + confirm.action.slice(1)
                   if (settingsBusy) return 'Saving…'
                   return confirm.settings?.fields?.length ? `Save and ${label.toLowerCase()}` : label
@@ -897,7 +996,11 @@ export default function Extensions({ compact = false }) {
           'border-green-500/20 bg-theme-card/95 text-green-300'
         }`}>
           <div className="flex items-center justify-between gap-3">
-            <span className="leading-relaxed">{toast.text}</span>
+            <div className="leading-relaxed">
+              <span>{toast.text}</span>
+              {/* Every failure gets a way to ask for help. */}
+              {toast.type === 'error' && <div className="mt-1"><HelpLink /></div>}
+            </div>
             <button onClick={() => setToast(null)} className="text-theme-text-muted/45 hover:text-theme-text-secondary transition-colors">×</button>
           </div>
         </div>
@@ -906,9 +1009,11 @@ export default function Extensions({ compact = false }) {
   )
 }
 
-function StatusBadge({ status, statusStyle, ext, gpuBackend, onConsole }) {
+function StatusBadge({ status, statusStyle, ext, gpuBackend, onConsole, interrupted = false }) {
   const runtimeStarting = status === 'installing' && ext.runtime_starting === true
-  let tooltip = runtimeStarting ? 'Service is starting; waiting for its health check' : STATUS_DESCRIPTIONS[status] || ''
+  let tooltip = runtimeStarting ? 'Service is starting; waiting for its health check'
+    : interrupted ? 'ODS stopped before this finished — Retry or Cancel on the card'
+    : STATUS_DESCRIPTIONS[status] || ''
   if (status === 'disabled' && ext.source === 'core' && ext.library_manageable !== true) {
     tooltip = 'ODS is not currently reporting this service as healthy.'
   }
@@ -926,7 +1031,7 @@ function StatusBadge({ status, statusStyle, ext, gpuBackend, onConsole }) {
       className="text-[10px] px-2 py-0.5 rounded-full bg-red-500/20 text-red-300 cursor-pointer"
       onClick={onConsole}
     >
-      error
+      {interrupted ? 'interrupted' : 'error'}
     </span>
   ) : (
     <span className={`text-[10px] px-2 py-0.5 rounded-full uppercase tracking-wider cursor-help ${statusStyle}`}>
@@ -968,7 +1073,7 @@ function LlmSwapBadge({ llm }) {
   )
 }
 
-function ExtensionCard({ ext, hermesProxy, gpuBackend, agentAvailable, onDetails, onConsole, onAction, webuiSelection, mutating, progressData }) {
+function ExtensionCard({ ext, hermesProxy, gpuBackend, agentAvailable, onDetails, onConsole, onAction, onRetryInterrupted, onCancelInterrupted, webuiSelection, mutating, progressData }) {
   const Icon = extensionIcon(ext)
   const status = ext.status || 'not_installed'
   const statusStyle = STATUS_STYLES[status] || STATUS_STYLES.not_installed
@@ -982,6 +1087,8 @@ function ExtensionCard({ ext, hermesProxy, gpuBackend, agentAvailable, onDetails
   const isUserExt = ext.source === 'user'
   const isManagedBuiltin = isCore && ext.library_manageable === true
   const isError = status === 'error'
+  // Its own Retry and Cancel replace the card's other recovery buttons.
+  const interrupted = isInterrupted(ext, progressData)
   const runtimeStarting = status === 'installing' && ext.runtime_starting === true
   // A saved progress record can describe a terminal failure or completion.
   // Only active phases should keep the installation spinner on screen.
@@ -994,9 +1101,11 @@ function ExtensionCard({ ext, hermesProxy, gpuBackend, agentAvailable, onDetails
   const isToggleable = (isUserExt || (isManagedBuiltin && ext.library_selected === true))
     && (status === 'enabled' || status === 'cli_installed' || status === 'disabled' || status === 'error' || status === 'stopped' || status === 'unhealthy')
   const showManagedAdd = isManagedBuiltin && ext.library_selected === false && status === 'disabled'
-  const showManagedRetry = isManagedBuiltin && (isError
+  const showManagedRetry = !interrupted && isManagedBuiltin && (isError
     || (ext.library_selected === true && (isStopped || isUnhealthy)))
-  const showRemove = isUserExt && (status === 'disabled' || isError)
+  const showRemove = !interrupted && isUserExt && (status === 'disabled' || isError)
+  const webuiAddable = ext.id === 'open-webui' && webuiSelection?.supported === true && webuiSelection.enabled === false
+  const webuiKept = ext.id === 'open-webui' && webuiSelection?.supported === true && webuiSelection.enabled === true
   const showInstall = status === 'not_installed' && ext.installable
   const showUpdate = isUserExt && ext.installable && (
     ext.update_available || ext.locally_modified || ['untracked', 'unknown'].includes(ext.update_status)
@@ -1032,7 +1141,7 @@ function ExtensionCard({ ext, hermesProxy, gpuBackend, agentAvailable, onDetails
                 built-in
               </span>
             )}
-            <StatusBadge status={status} statusStyle={statusStyle} ext={ext} gpuBackend={gpuBackend} onConsole={onConsole} />
+            <StatusBadge status={status} statusStyle={statusStyle} ext={ext} gpuBackend={gpuBackend} onConsole={onConsole} interrupted={interrupted} />
             {isToggleable && (
               <button
                 disabled={actionDisabled}
@@ -1064,12 +1173,40 @@ function ExtensionCard({ ext, hermesProxy, gpuBackend, agentAvailable, onDetails
       {showProgress && (
         <div className="px-4 py-2 border-t border-theme-border/40 text-[10px] text-blue-400/80 flex items-center gap-2">
           <Loader2 size={12} className="animate-spin" />
-          <span>{runtimeStarting ? 'Starting service — waiting for health check...' : progressData?.phase_label || (progressData?.status === 'setup_hook' || status === 'setting_up' ? 'Running setup...' : 'Installing...')}</span>
+          {/* No progress can arrive while the agent that runs it is away. */}
+          <span>{agentOffline ? 'Waiting for the ODS host service to respond…'
+            : runtimeStarting ? 'Starting service — waiting for health check...' : progressData?.phase_label || (progressData?.status === 'setup_hook' || status === 'setting_up' ? 'Running setup...' : 'Installing...')}</span>
+        </div>
+      )}
+      {interrupted && (
+        <div role="alert" className="px-4 py-2 border-t border-red-500/15 text-[10px] text-red-300/80 leading-relaxed">
+          <p className="font-semibold text-red-300">The install was interrupted</p>
+          <p>{progressData?.error || ext.error_message || INTERRUPTED_FALLBACK} <HelpLink className="ml-1" /></p>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            <button
+              disabled={actionDisabled}
+              title={disabledTitle}
+              onClick={() => onRetryInterrupted(ext)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] rounded-lg bg-theme-accent text-white hover:bg-theme-accent-hover transition-colors disabled:opacity-50"
+            >
+              {isMutating ? <Loader2 size={12} className="animate-spin" /> : <><RefreshCw size={12} /> Retry</>}
+            </button>
+            <button
+              disabled={actionDisabled}
+              title={disabledTitle || (cancelRemovesInstall(ext)
+                ? 'Remove what the interrupted install set up; service data is kept unless you choose otherwise'
+                : 'Stop offering this retry; nothing is removed')}
+              onClick={() => onCancelInterrupted(ext)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] rounded-lg bg-transparent text-theme-text-secondary hover:bg-theme-text-secondary/15 transition-colors disabled:opacity-50"
+            >
+              <X size={12} /> Cancel
+            </button>
+          </div>
         </div>
       )}
       {/* Error message — expandable when long or multiline so docker-compose
           stderr isn't cut off mid-actionable-line. */}
-      {ext.status === 'error' && progressData?.error && (() => {
+      {ext.status === 'error' && !interrupted && progressData?.error && (() => {
         const errorText = progressData.error
         const firstLine = errorText.split('\n')[0]
         const isMultiline = errorText.length > firstLine.length
@@ -1114,10 +1251,10 @@ function ExtensionCard({ ext, hermesProxy, gpuBackend, agentAvailable, onDetails
               {isMutating ? <Loader2 size={12} className="animate-spin" /> : <><Download size={12} /> {showManagedAdd && ext.id === 'hermes' ? 'Add Hermes with web access' : showManagedAdd ? `Add ${ext.name}` : `Retry ${ext.name}`}</>}
             </button>
           )}
-          {ext.id === 'open-webui' && webuiSelection?.supported && webuiSelection.enabled === false && (
+          {webuiAddable && !interrupted && (
             <button
               disabled={actionDisabled}
-              title={disabledTitle || 'Existing Open WebUI chats and settings will be reused'}
+              title={disabledTitle || 'Adding is permanent. Existing Open WebUI chats and settings will be reused'}
               onClick={() => onAction(ext, 'add-webui')}
               className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] rounded-lg bg-theme-accent text-white hover:bg-theme-accent-hover transition-colors disabled:opacity-50 shadow-sm shadow-theme-accent/20"
             >
@@ -1174,7 +1311,8 @@ function ExtensionCard({ ext, hermesProxy, gpuBackend, agentAvailable, onDetails
               <Terminal size={12} /> Check Logs
             </button>
           )}
-          {isError && !showManagedRetry && (
+          {/* Open WebUI's retry is its Add: enable refuses a base service. */}
+          {isError && !showManagedRetry && !interrupted && ext.id !== 'open-webui' && (
             <button
               disabled={actionDisabled}
               title={disabledTitle}
@@ -1206,6 +1344,15 @@ function ExtensionCard({ ext, hermesProxy, gpuBackend, agentAvailable, onDetails
           )}
           {isUserExt && (status === 'enabled' || isCliInstalled) && (
             <span className="text-[9px] uppercase tracking-[0.14em] text-theme-text-muted/45">Disable to remove</span>
+          )}
+          {/* Adding Open WebUI is one-way: its chats and settings are kept. */}
+          {webuiKept && (
+            <span
+              className="text-[9px] uppercase tracking-[0.14em] text-theme-text-muted/45 cursor-help"
+              title="ODS keeps Open WebUI once it is added: the dashboard cannot remove it. Its chats and settings stay."
+            >
+              Stays on once added
+            </span>
           )}
           {!showInstall && !showRemove && !isToggleable && (
             <div className="flex items-center gap-1" title={status === 'incompatible' && gpuBackend ? `Your system: ${gpuBackend}` : undefined}>
