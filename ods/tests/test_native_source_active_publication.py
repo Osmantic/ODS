@@ -264,6 +264,8 @@ def test_interrupted_actual_publication_resumes_same_nonce_and_exact_images(
         helper.publish_active_slot(n.selected, "sync")
     before = journal(n)
     assert hit and (custody.NATIVE_STATE / "custody.json").exists()
+    if where in ("after-gate", "metadata-commit"):
+        n.now = int(before["transaction"]["invocation"]["admissionDeadlineNs"])
     monkeypatch.setattr(custody, "_native_save_at", original_save)
     monkeypatch.setattr(os, "rename", original_rename)
     monkeypatch.setattr(os, "replace", original_replace)
@@ -481,3 +483,64 @@ def test_gate_directory_swap_after_intent_preserves_unknown_namespace(
     assert (
         custody.NATIVE_STATE / "unknown"
     ).read_text() == "preserve invented unknown namespace"
+
+
+def test_deadline_crossed_inside_last_real_guard_never_replaces_gate(
+    active, monkeypatch
+):
+    n = active
+    original_binding, original_replace = custody._native_environment_binding, os.replace
+    state = {"armed": False, "advanced": False, "replaces": 0, "deadline": None}
+
+    def clock():
+        path = n.metadata / "source-jobs-active.json"
+        if path.exists():
+            value = journal(n)
+            if value["phase"] == "gate-ready" and not state["armed"]:
+                state["deadline"] = int(
+                    value["transaction"]["invocation"]["admissionDeadlineNs"]
+                )
+                n.now = state["deadline"] - 1
+                state["armed"] = True
+        return n.now
+
+    def binding(*args, **kwargs):
+        value = original_binding(
+            *args, **kwargs
+        )  # Actual qualification, not a guard stub.
+        if state["armed"] and not state["advanced"]:
+            assert journal(n)["phase"] == "gate-ready"
+            assert (
+                custody.NATIVE_STATE / "custody.json"
+            ).read_bytes() == n.initial_gate
+            assert n.now == state["deadline"] - 1
+            n.now = state["deadline"]
+            state["advanced"] = True
+        return value
+
+    def replace(first, second, **kwargs):
+        if second == "custody.json":
+            state["replaces"] += 1
+        return original_replace(first, second, **kwargs)
+
+    monkeypatch.setattr(custody, "_native_clock_ns", clock)
+    monkeypatch.setattr(custody, "_native_environment_binding", binding)
+    monkeypatch.setattr(os, "replace", replace)
+    failure = None
+    try:
+        helper.publish_active_slot(n.selected, "sync")
+    except ValueError as error:
+        failure = str(error)
+    state.update(
+        failure=failure,
+        gateBefore=(custody.NATIVE_STATE / "custody.json").read_bytes()
+        == n.initial_gate,
+        phase=journal(n)["phase"],
+        clockAtFinish=n.now,
+    )
+    (n.world / "deadline-control.json").write_text(
+        json.dumps(state, sort_keys=True) + "\n"
+    )
+    assert state["armed"] and state["advanced"] and n.now == state["deadline"]
+    assert failure == "native-source-active-admission-expired"
+    assert state["gateBefore"] and state["replaces"] == 0

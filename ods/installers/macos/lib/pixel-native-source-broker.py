@@ -1832,6 +1832,13 @@ def publish_active_slot(selection, role, identifier=None, *, rollback=False):
                     if (data, inode) != (body_for(txn['after'], label if key == 'definition' else 'manifest')[0], txn['images'][key]['inode']):
                         raise ValueError('native-source-active-input-unconfirmed')
                 guard()
+                # Qualification above can block. Boot first, then read the
+                # original clock ceiling LAST before this single-file commit.
+                # This is not an atomic clock+filesystem operation.
+                if custody._native_boot_uuid() != txn['invocation']['boot']:
+                    raise ValueError('native-source-active-boot-changed')
+                if custody._native_clock_ns() >= int(txn['invocation']['admissionDeadlineNs']):
+                    raise ValueError('native-source-active-admission-expired')
                 os.replace(stem + 'gate', 'custody.json', src_dir_fd=jobs, dst_dir_fd=gate)
                 os.fsync(gate)
                 os.fsync(jobs)
