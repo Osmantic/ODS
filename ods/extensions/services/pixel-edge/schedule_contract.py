@@ -128,6 +128,8 @@ def validate_request(value):
             "set-enabled": {"action", "id", "revision", "enabled"}, "remove": {"action", "id", "revision"},
             "runs": {"action", "id", "offset"}, "check-create": {"action", "requestId"},
             "dismiss-create": {"action", "requestId"}}
+    if action == "runs" and value.get("includeNoteReceipts") is True:
+        keys["runs"].add("includeNoteReceipts")
     if action not in keys or set(value) != keys[action]:
         raise ScheduleError("invalid-task")
     if action in ("list", "archived", "runs"):
@@ -305,7 +307,10 @@ def validate_response(value):
             if len(value["items"]) > 1:
                 raise ScheduleError("invalid-scheduler-response")
             for item in value["items"]:
-                if (type(item) is not dict or set(item) != {"timestamp", "status", "summary", "summaryTruncated", "durationMs"}
+                fields = {"timestamp", "status", "summary", "summaryTruncated", "durationMs"}
+                if type(item) is dict and item.get("noteApprovalRequested") is True:
+                    fields.add("noteApprovalRequested")
+                if (type(item) is not dict or set(item) != fields
                         or item["status"] not in ("ok", "error", "skipped", "unknown")
                         or type(item["summaryTruncated"]) is not bool):
                     raise ScheduleError("invalid-scheduler-response")
@@ -328,6 +333,8 @@ def validate_reply(request, value):
     if value['kind'] != expected:
         raise ScheduleError('invalid-scheduler-response')
     if expected in ('tasks', 'runs') and value['offset'] != request['offset']:
+        raise ScheduleError('invalid-scheduler-response')
+    if expected == 'runs' and not request.get('includeNoteReceipts') and any('noteApprovalRequested' in row for row in value['items']):
         raise ScheduleError('invalid-scheduler-response')
     if expected == 'runs' and value['taskId'] != request['id']:
         raise ScheduleError('invalid-scheduler-response')

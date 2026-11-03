@@ -177,7 +177,9 @@ export default function PortalScheduledTasks({draftRequest,onDraftHandled,onDraf
         {' '}Approving a note edit permits one matching write. Ask Portal to retry the edit, or let a recurring task retry while the approval is valid.
       </p>}
       {history?.items.length===0 && <p className="portal-schedules-help">No recorded results yet.</p>}
-      {history?.items.map(result=><article className="portal-schedules-result" key={result.timestamp}><header><strong>{status[result.status]}</strong><time dateTime={new Date(result.timestamp).toISOString()}>{stamp(result.timestamp)}</time></header><PortalStreamingText instant components={markdownComponents}>{result.summary || 'This run did not leave a summary.'}</PortalStreamingText>{result.summaryTruncated && <small>This summary was shortened for display.</small>}</article>)}
+      {history?.items.map(result=><article className="portal-schedules-result" key={result.timestamp}><header><strong>{status[result.status]}</strong><time dateTime={new Date(result.timestamp).toISOString()}>{stamp(result.timestamp)}</time></header>
+        {result.noteApprovalRequested === true && <p className="portal-schedules-help">During this run, Notes requested approval for an edit.</p>}
+        <PortalStreamingText instant components={markdownComponents}>{result.summary || 'This run did not leave a summary.'}</PortalStreamingText>{result.summaryTruncated && <small>This summary was shortened for display.</small>}</article>)}
       {history && <nav className="portal-schedules-pages" aria-label="Result pages"><button type="button" disabled={busy || runOffset===0} onClick={()=>runs(Math.max(0,runOffset-1))}>Newer result</button><button type="button" disabled={busy || !history.hasMore} onClick={()=>runs(history.nextOffset)}>Older result</button></nav>}
     </div> : <>
       <nav className="portal-schedules-switch" aria-label="Task lists">{[['list','Current tasks'],['archived','Past tasks']].map(([kind,label])=><button type="button" key={kind} aria-pressed={view===kind} disabled={busy} onClick={()=>{setCreating(false);setView(kind);setOffset(0)}}>{label}</button>)}</nav>

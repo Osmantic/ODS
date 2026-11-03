@@ -304,3 +304,26 @@ describe('one-time schedules at clock changes',()=>{
     expect(calls.find(call=>call.action==='create').schedule.at).toBe(expected)
   })
 })
+
+
+it.each([true,false])('renders historical note evidence only when the gateway supports it (%s)',async supported=>{
+  jobs=[job()]
+  const normal=fetch.getMockImplementation(), requests=[]
+  fetch.mockImplementation(async(url,options={})=>{
+    const request=JSON.parse(options.body)
+    if(request.action!=='runs') return normal(url,options)
+    requests.push(request)
+    if(request.includeNoteReceipts && !supported) return reply({detail:{code:'invalid-task'}},400)
+    const body=runs(request.id)
+    body.items[0].summary='Original mixed result'
+    if(supported) body.items[0].noteApprovalRequested=true
+    return reply(body)
+  })
+  render(<PortalScheduledTasks/>)
+  fireEvent.click(await screen.findByRole('button',{name:/Morning agenda/}))
+  expect(await screen.findByText('Original mixed result')).toBeVisible()
+  const label=screen.queryByText('During this run, Notes requested approval for an edit.')
+  if(supported) expect(label).toBeVisible()
+  else expect(label).toBeNull()
+  expect(requests.map(request=>request.includeNoteReceipts)).toEqual(supported?[true]:[true,undefined])
+})

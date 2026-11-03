@@ -235,7 +235,7 @@ async function run(submit, payload, signal, render, observed, admitted) {
       return text('This review-only recovery requested approval; no action ran and no approval was used. Review Settings → Portal integrations, then send a new request for this exact action.',
         {status:'approval-required',approvalId:reply.approvalId});
     }
-    if (reply.ok === true && approvalIdValid) report('pending');
+    if (reply.ok === true && reply.isError !== true && approvalIdValid) report('pending');
     return text(`${reply.summary}\n\n${APPROVAL_TEXT}`, {status: 'approval-required', approvalId: reply.approvalId});
   }
   const failed = reply.isError === true;
