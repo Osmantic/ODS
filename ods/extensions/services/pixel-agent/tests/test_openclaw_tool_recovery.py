@@ -778,6 +778,8 @@ def test_reviewed_runtime_migrations_round_trip(tmp_path, environment, manifest_
      '4eea7b3f5d3aab6d534f4b3916638ac3e9684a001a09c56fe80f153f79394227'),
     ('OPENCLAW_SELECTION_MODULE', 'openclaw-compaction-budget.json', repair_module.COMPACTION_BUDGET_MODULE,
      '07661b95137eceb301ad23bd4391c01ded07d3de0f7fb30741dde5a6c35df2e6'),
+    ('OPENCLAW_SELECTION_MODULE', 'openclaw-compaction-budget.json', repair_module.COMPACTION_BUDGET_MODULE,
+     'e07ec6e2c0fed3fca043b731896d3738ec5673ca1641084216f71fa4192076fd'),
     ('OPENCLAW_EMBEDDED_AGENT_MODULE', 'openclaw-yield-usage.json', repair_module.YIELD_USAGE_MODULE,
      'd00804f960d617b6b3e2ae6b1691f3aa9866029c8da8772f236a35a6033b37f8'),
 ])

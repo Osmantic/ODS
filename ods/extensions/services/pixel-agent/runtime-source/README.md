@@ -163,3 +163,17 @@ alternative-harness qualification, protect launcher/source/build custody, wire t
 native/Edge admission and activation transaction, prove exact rollback and upgrade
 behavior, and obtain required target-specific activation authority. The patch
 does not implement those installation/activation steps or complete Full Access.
+
+### Offered schema pressure at the 64K precheck
+
+`openclaw-compaction-budget.json` also counts the actual OpenAI conversion of
+the final policy-filtered visible tools before Pixel submits a 64K+ completion.
+This closes a measured gap: history passed the text-only precheck while schema
+JSON caused the transport to reduce the configured output budget silently.
+The existing recovery path compacts genuine prior turns, or refuses when fixed
+overhead cannot fit. Messages, tools, permissions, reserve, sampler and output
+settings are unchanged. The 8K/32K paths retain their prior behavior.
+
+`runtime_schema_pressure.integration.mjs` exercises native recovery and refusal
+against a canned loopback provider. It verifies the full 8192 owner output after
+compaction; it does not qualify summary quality or model tokenization accuracy.
