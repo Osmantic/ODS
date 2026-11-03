@@ -43,6 +43,14 @@ function concreteCandidate(name='pixel_ods_notes',params=appendParams(),options=
   return Object.freeze({ref:options.ref??Object.freeze({}),view:Object.freeze({raw:Object.freeze(raw),payload:Object.freeze(payload),
     maximumEffect:options.maximumEffect??'approval-proposal',references:options.references??EMPTY_REFERENCES})});
 }
+async function admitConcrete(outcomes,recovery,ev,context) {
+  recovery.beforeTool(ev,context);
+  const candidate=await outcomes.prepareReviewCandidate(ev,context);
+  assert.ok(candidate?.ref,'the real native record must prepare an opaque candidate');
+  const verdict=await outcomes.checkReviewCandidate(candidate,value=>recovery.checkConcrete(value,context));
+  assert.equal(verdict?.entailed,true);assert.equal(verdict?.candidate,candidate.ref);
+  assert.equal(outcomes.commitReviewCandidate(candidate,verdict),undefined);
+}
 
 test('catalog stays advisory: no concrete observation until a native candidate; exact normalized params are checked separately',async()=>{
   const {recovery,calls}=world();
@@ -507,7 +515,7 @@ test('same host-payload converter binds a permitted review call and changed sour
     const {recovery}=world();await recovery.finalize(event(),CONTEXT);
     const params=appendParams(),context={...CONTEXT,toolCallId:'native-'+change},ev={...tool('pixel_ods_notes',params),toolCallId:context.toolCallId};
     assert.equal(recovery.floor(ev,CONTEXT),undefined);
-    if(change!=='readonly_hookless')outcomes.before(ev,context,undefined,{recoveryReviewOnly:true});
+    if(change!=='readonly_hookless')await admitConcrete(outcomes,recovery,ev,context);
     if(change==='readonly_ended'){outcomes.end({success:true},CONTEXT);recovery.end({},CONTEXT);}
     if(change==='readonly_cancelled'){outcomes.cancelUser(SESSION.slice('agent:pixel:openai-user:'.length));recovery.cancelSession(SESSION);}
     if(change==='readonly_cleared')outcomes.clear();
@@ -534,7 +542,7 @@ test('requested notes reads and harmless catalog calls keep exact private ticket
     const outcomes=createIntegrationOutcomes();outcomes.begin({prompt:OWNER},CONTEXT,CONTEXT.runId);
     const {recovery}=world({complete:async()=>reply(operations)});await recovery.finalize(event(),CONTEXT);
     const context={...CONTEXT,toolCallId:'requested-read'},ev={...tool(name,params),toolCallId:context.toolCallId};
-    assert.equal(recovery.floor(ev,CONTEXT),undefined);outcomes.before(ev,context,undefined,{recoveryReviewOnly:true});
+    assert.equal(recovery.floor(ev,CONTEXT),undefined);await admitConcrete(outcomes,recovery,ev,context);
     const submitted=[];
     const adapter=createIntegrationTools({context:CONTEXT,outcomes,requireBound:ctx=>recovery.isReviewOnly(ctx),submit:async payload=>{submitted.push(payload);
       return payload.action==='notes-read'?{ok:true,path:'Example.md',text:'Invented note',recoveryReviewOnly:true}
@@ -559,7 +567,7 @@ test('builtin source and verb changes after operation-floor admission cannot bor
     await recovery.finalize(event(),CONTEXT);
     const params={action:'call',server:'app:documents',tool:'read',arguments:{id:1}},context={...CONTEXT,toolCallId:'mcp-'+change};
     const ev={...tool('pixel_ods_mcp',params),toolCallId:context.toolCallId};
-    assert.equal(recovery.floor(ev,CONTEXT),undefined);outcomes.before(ev,context,undefined,{recoveryReviewOnly:true});
+    assert.equal(recovery.floor(ev,CONTEXT),undefined);await admitConcrete(outcomes,recovery,ev,context);
     const submitted=[];
     const mcp=createIntegrationTools({context:CONTEXT,outcomes,requireBound:ctx=>recovery.isReviewOnly(ctx),submit:async payload=>{submitted.push(payload);
       return {ok:true,server:'app:documents',tool:'read',text:'Invented document'};}}).find(value=>value.name==='pixel_ods_mcp');
