@@ -8,7 +8,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import * as responseLanguage from '../plugin/response-language.mjs';
-import {managedTeamRole} from '../plugin/tool-loop-guard.mjs';
+import {currentUserText, managedTeamRole} from '../plugin/tool-loop-guard.mjs';
 import {promptContractForAgent} from '../plugin/prompt-contract.mjs';
 import {ACTIVITY_CONTRACT} from '../plugin/activity-display.mjs';
 import {GOAL_CONTRACT} from '../plugin/goal-progress.mjs';
@@ -183,6 +183,7 @@ export async function promptHookAlone({language, goal = false, clarificationNote
     promptContractForAgent, configuredContextWindow: 131072, configuredLeanPrompt: false, configuredResponseLanguage: language,
     extensionRepositoryContext: async () => '', managedTeamRole, ACTIVITY_CONTRACT, GOAL_CONTRACT,
     executionLocationContext: () => '', executionContext,
+    memoryHooks: {promptContext: async () => ({})}, currentUserText,
   });
   return callback({prompt}, {agentId: 'pixel', runId: 'run'});
 }

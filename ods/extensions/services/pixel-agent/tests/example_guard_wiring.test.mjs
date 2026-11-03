@@ -17,6 +17,7 @@ import vm from 'node:vm';
 
 import {applyVerificationToCompletion, parseVerificationResponse} from '../host/pixel_ingress.mjs';
 import {withCronCommandPayloadBlock} from '../plugin/cron-command-payload-guard.mjs';
+import {withSleepReminderBlock} from '../plugin/sleep-reminder-guard.mjs';
 import {withPixelCronDeliveryDefault} from '../plugin/cron-delivery-default.mjs';
 import {EXAMPLE_NOTES, exampleNotice} from '../plugin/example-guard.mjs';
 import {exampleRecordDirectory, exampleRecordFile} from '../plugin/example-projects.mjs';
@@ -26,7 +27,7 @@ import {inResponseLanguage, responseLanguageTurnContext} from '../plugin/respons
 import {createSubagentDelivery} from '../plugin/subagent-delivery.mjs';
 import {withPixelSubagentWorkspace} from '../plugin/subagent-workspace.mjs';
 import {compactToolResultEnvelope} from '../plugin/tool-result-envelope.mjs';
-import {createToolLoopGuard, managedTeamRole} from '../plugin/tool-loop-guard.mjs';
+import {createToolLoopGuard, currentUserText, managedTeamRole} from '../plugin/tool-loop-guard.mjs';
 import {createWorkspaceArtifactAdmission} from '../plugin/workspace-artifact.mjs';
 import {createWorkspaceBundleAdmission} from '../plugin/workspace-bundle.mjs';
 
@@ -103,7 +104,8 @@ function entry(root) {
     extensionRepositoryContext: async () => '', GOAL_CONTRACT: '', ACTIVITY_CONTRACT: '',
     executionLocationContext: () => '', executionContext: () => '',
     conversationImageLifecycle: {observe() {}}, managedRuntime: undefined,
-    withPixelCronDeliveryDefault, withCronCommandPayloadBlock, withPixelSubagentWorkspace,
+    withPixelCronDeliveryDefault, withCronCommandPayloadBlock, withSleepReminderBlock, withPixelSubagentWorkspace,
+    memoryHooks: {promptContext: async () => ({})}, currentUserText,
     getSessionEntry: () => undefined, resolveStorePath: () => undefined, resolveUserPath: value => value,
     resolveAgentWorkspaceDir: config => config?.agents?.list?.find(agent => agent.id === 'pixel')?.workspace,
     bundleAdmission: createWorkspaceBundleAdmission(), artifactAdmission: createWorkspaceArtifactAdmission(),

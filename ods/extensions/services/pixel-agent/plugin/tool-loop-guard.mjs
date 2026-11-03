@@ -4944,7 +4944,7 @@ function unwrapCurrentUserText(text) {
   return normalized.slice(first + CURRENT_MESSAGE_WRAPPER.length).trimStart();
 }
 
-function currentUserText(messages, prompt = undefined) {
+export function currentUserText(messages, prompt = undefined) {
   if (typeof prompt === "string" && prompt) return unwrapCurrentUserText(prompt);
   if (!Array.isArray(messages)) return "";
   const userMessage = [...messages]
@@ -11424,8 +11424,9 @@ export function createToolLoopGuard({
           state.extensionCompletionGate.observedInstallStatus)
         state.extensionReadOnlyRecovery.completedStatusCalls += 1;
     }
-    const questionResult = toolName === 'pixel_ods_ask_user' ? event
-      : toolName === 'tool_call' ? toolSearchSelectedToolEvent(event, 'pixel_ods_ask_user', 'pixel-ods') : undefined;
+    // The owner's choice card: a clarification question, or a fact Portal asks to remember.
+    const questionResult = ['pixel_ods_ask_user', 'pixel_ods_notes'].map(name => toolName === name ? event
+      : toolName === 'tool_call' ? toolSearchSelectedToolEvent(event, name, 'pixel-ods') : undefined).find(Boolean);
     if (!state.ownerQuestions && questionResult?.result?.details?.status === 'awaiting_user' && !failedToolOutcome(questionResult)) {
       state.ownerQuestions = parseQuestions(questionResult.result.details.questions);
       rememberPendingClarification(state, runId);

@@ -1,4 +1,5 @@
 import net from 'node:net';
+import { chatSession, MEMORY_CHOICES, MEMORY_QUESTION_ID, memoryQuestion } from './integration-memory.mjs';
 
 // Portal tools for the owner's integrations: an Obsidian vault, ntfy notifications, and MCP
 // servers, among them the owner's apps. The gateway holds no token or vault path: every call
@@ -13,7 +14,7 @@ const MCP_USAGE = 'Give the arguments too. To see the servers and their tools: {
   + '{"action": "call", "server": "photos", "tool": "search", "arguments": {"place": "Lisbon"}}.';
 const APPROVAL_TEXT ='Waiting for the owner. Tell the owner this needs their approval in Settings → Portal integrations (they may also get a notification). After they approve, call this tool again with exactly the same arguments; do not change them. In a scheduled task, do not wait: say it needs approval and finish; once approved, the next run within 24 hours with the same arguments goes ahead.';
 
-export function submitIntegration(payload, {connect = net.createConnection, platform = process.platform, signal} = {}) {
+export function submitIntegration(payload, {connect = net.createConnection, platform = process.platform, signal, timeoutMs = TIMEOUT_MS} = {}) {
   return new Promise((resolve, reject) => {
     if (platform !== 'linux') return reject(new Error(platform === 'darwin' ? "Portal integrations aren't available on macOS yet." : 'Portal integrations are not available on this system yet.'));
     const socket = connect({path: SOCKET});
@@ -27,7 +28,7 @@ export function submitIntegration(payload, {connect = net.createConnection, plat
       if (error) reject(error); else resolve(value);
     };
     const unavailable = () => finish(new Error('The integrations service is not running.'));
-    const timer = setTimeout(() => finish(new Error('The integration did not answer in time.')), TIMEOUT_MS);
+    const timer = setTimeout(() => finish(new Error('The integration did not answer in time.')), timeoutMs);
     const onAbort = () => finish(new Error('Cancelled.'));
     signal?.addEventListener('abort', onAbort, {once: true});
     socket.on('connect', () => socket.write(JSON.stringify({schemaVersion: 1, ...payload}) + '\n'));
@@ -84,6 +85,23 @@ function notesRequest(params) {
   return null;
 }
 
+// Portal proposes a fact about the owner; unless the owner chose to save without asking, the
+// chat shows a card with the choices and the turn ends there (see integration-memory.mjs).
+async function remember(submit, params, sessionKey, signal) {
+  let reply;
+  try {
+    reply = await submit({action: 'memory-propose', text: str(params?.text), session: chatSession(sessionKey)}, {signal});
+  } catch (error) {
+    return text(error.message, {status: 'unavailable'}, true);
+  }
+  if (!reply?.ok) return text(reply?.message || 'The memory was not saved.', {status: 'refused', code: reply?.error}, true);
+  if (reply.status === 'known') return text(`Already remembered: ${reply.text}`, {status: 'done'});
+  if (reply.status === 'saved') return text(`Remembered: ${reply.text}`, {status: 'done'});
+  const questions = [{id: MEMORY_QUESTION_ID, question: memoryQuestion(reply.text), options: Object.keys(MEMORY_CHOICES)}];
+  return text(`${questions[0].question}\n\nThe owner decides on a card in the chat. Wait for the answer: do not call another tool or answer for the owner.`,
+    {status: 'awaiting_user', questions});
+}
+
 const notesText = reply => reply.results ? searchText(reply)
   : reply.text !== undefined ? `${reply.path}:\n\n${reply.text}`
     : `${reply.mode === 'create' ? 'Created' : 'Added to'} ${reply.written}.`;
@@ -110,21 +128,22 @@ async function remind(submit, scheduleReminder, params, signal) {
 
 const noScheduler = () => Promise.reject(new Error('Reminders are not available here.'));
 
-export function createIntegrationTools({submit = submitIntegration, scheduleReminder = noScheduler} = {}) {
+export function createIntegrationTools({submit = submitIntegration, scheduleReminder = noScheduler, sessionKey = ''} = {}) {
   return [
     {
       name: 'pixel_ods_notes',
-      description: "The owner's Obsidian notes. action search: find notes holding words (query). action read: read a note (path from a search, such as Home/Lease.md). action write: add text to a note (mode append) or create a new note (mode create), only when the owner asks to save something; the owner may need to approve it first.",
+      description: "The owner's Obsidian notes, and Portal's memory of the owner. action search: find notes holding words (query). action read: read a note (path from a search, such as Home/Lease.md). action write: add text to a note (mode append) or create a new note (mode create), only when the owner asks to save something; the owner may need to approve it first. action remember: keep a lasting fact about the owner or a preference they stated (text, one short sentence such as \"The owner is vegetarian.\"); the owner confirms it in the chat.",
       parameters: {type: 'object', additionalProperties: false, required: ['action'],
-        properties: {action: {type: 'string', enum: ['search', 'read', 'write']},
+        properties: {action: {type: 'string', enum: ['search', 'read', 'write', 'remember']},
           query: {type: 'string', description: 'For search: words to look for, such as "lease deposit".'},
           path: {type: 'string', description: 'For read and write: the note path inside the vault.'},
-          text: {type: 'string', description: 'For write: Markdown text to add.'},
+          text: {type: 'string', description: 'For write: Markdown text to add. For remember: the fact, one short sentence.'},
           mode: {type: 'string', enum: ['append', 'create'], description: 'For write: append to an existing note or create a new one.'}}},
       execute: (_id, params, signal) => {
+        if (params?.action === 'remember') return remember(submit, params, sessionKey, signal);
         const request = notesRequest(params);
         return request ? run(submit, request, signal, notesText)
-          : Promise.resolve(text('Use action search, read or write.', {status: 'invalid'}, true));
+          : Promise.resolve(text('Use action search, read, write or remember.', {status: 'invalid'}, true));
       },
     },
     {
