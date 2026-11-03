@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import {EventEmitter} from 'node:events';
-import {mkdtempSync, rmSync, existsSync, lstatSync, readdirSync, realpathSync, symlinkSync} from 'node:fs';
+import {mkdtempSync, rmSync, unlinkSync, existsSync, lstatSync, readdirSync, realpathSync, symlinkSync} from 'node:fs';
 import {randomUUID} from 'node:crypto';
 import {recordScheduledNoteRequest} from '../plugin/scheduled-note-receipts.mjs';
 import {tmpdir} from 'node:os';
@@ -457,7 +457,7 @@ test('scheduled Notes records only an exact native run in private ODS state', {s
     const native={sessionKey,sessionId,id:sessionId};
     symlinkSync(outside,dir);recordScheduledNoteRequest(native,state);
     assert.deepEqual(readdirSync(outside),[]);
-    rmSync(dir);recordScheduledNoteRequest(native,state);recordScheduledNoteRequest(native,state);
+    unlinkSync(dir);recordScheduledNoteRequest(native,state);recordScheduledNoteRequest(native,state);
     assert.deepEqual(readdirSync(dir),[job+'_'+sessionId]);
     const marker=lstatSync(join(dir,job+'_'+sessionId));
     assert.equal(marker.mode & 0o777,0o600);assert.equal(marker.size,0);
