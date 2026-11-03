@@ -47,7 +47,12 @@ Controlled checks now cover the protected runtime/kit, environment and log
 publication, disabled definitions, inactive v2 readback, exact interrupted
 renames and restoration of the previous gate inode. File/FD/rename controls use
 real Linux files; Darwin account, ownership and ACL calls remain explicitly
-simulated. Native Source execution, job lifecycle, connection activation and
+simulated. The inert Broker bootstrap can now reopen its fixed public runtime
+metadata, exact job definition and private environment without reading owner
+sidefiles. An actual atomic Gate replacement reproduced an unrelated-sibling
+race; the corrected reader accepts a new sibling only while its own immutable
+invocation, common inputs and original deadlines stay unchanged. Changed own
+nonce or deployment still refuses. Native Source execution, job lifecycle, connection activation and
 physical Mac behavior remain unfinished; Connected apps remains unavailable there.
 
 The local integration now composes native-tool candidate `8e9aea1ca` with the

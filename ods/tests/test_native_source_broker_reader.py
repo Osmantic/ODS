@@ -349,6 +349,7 @@ def broker(built, tmp_path, monkeypatch):  # noqa: F811
         owner=owner,
         acl=acl,
         audit=tmp_path / "read-audit.json",
+        simulated_gids=gids,
     )
 
 
@@ -589,3 +590,72 @@ def test_inactive_bootstrap_closes_its_pipe_ends_without_ready(broker):
     finally:
         os.close(ready_r)
         os.close(go_w)
+
+
+@pytest.mark.parametrize("change", ["sibling-only", "own-nonce", "common-deployment"])
+def test_atomic_sibling_publication_preserves_only_the_original_own_authority(
+    broker, monkeypatch, change
+):
+    n = broker
+    original = s._native_broker_runtime
+    own_label = s.NATIVE_LABEL + "sync"
+    own = copy.deepcopy(n.projection["launch"]["invocations"][own_label])
+    identifier = "calendar-1893456789012-12abcdef"
+    sibling_label = s.NATIVE_LABEL + "action." + identifier
+    published = []
+
+    def runtime(projection, qualifier):
+        result = original(projection, qualifier)
+        if published:
+            return result
+        candidate = copy.deepcopy(n.projection)
+        sibling = copy.deepcopy(own["invocation"])
+        sibling.update(role="action", identifier=identifier, nonce="4" * 32)
+        sibling["workerDeadlineNs"] = str(int(sibling["issuedNs"]) + 120 * 10**9)
+        sibling["admissionDeadlineNs"] = sibling["workerDeadlineNs"]
+        assert s._native_invocation(sibling).document == sibling
+        path, body, _mode = s.native_disabled_definition(
+            "action", identity=IDENTITY, python=result[0]["hostPython"], identifier=identifier
+        )
+        document = plistlib.loads(body)
+        document["Disabled"] = False
+        body = plistlib.dumps(document, sort_keys=True)
+        path = n.units / path.name
+        path.write_bytes(body)
+        path.chmod(0o644)
+        info = path.stat()
+        candidate["launch"]["definitions"][sibling_label] = {
+            "inode": [info.st_dev, info.st_ino],
+            "sha256": helper.sha(body),
+            "profileSha256": helper.sha((n.kit / "source-action.sb").read_bytes()),
+        }
+        candidate["launch"]["invocations"][sibling_label] = {
+            "phase": "prepared", "invocation": sibling,
+        }
+        if change == "own-nonce":
+            candidate["launch"]["invocations"][own_label]["invocation"]["nonce"] = "5" * 32
+        elif change == "common-deployment":
+            candidate["deploymentSha256"] = "e" * 64
+        pending = n.state / ".custody-next"
+        pending.write_bytes(helper.encoded(candidate))
+        pending.chmod(0o640)
+        info = pending.stat()
+        n.simulated_gids[(info.st_dev, info.st_ino)] = IDENTITY["id"]
+        os.replace(pending, n.gate)
+        published.append(candidate)
+        n.reads.clear()  # Record subsequent reader I/O, excluding this Root fixture writer.
+        return result
+
+    monkeypatch.setattr(s, "_native_broker_runtime", runtime)
+    if change == "sibling-only":
+        with s._native_broker_read("sync") as view:
+            snapshot = s._native_public_json(view.public)
+            assert snapshot["invocations"][own_label] == own
+            assert sibling_label in snapshot["invocations"]
+            assert view.invocation.document == own["invocation"]
+    else:
+        with pytest.raises(s.CustodyError, match="gate-changed"):
+            with s._native_broker_read("sync"):
+                pytest.fail("a changed own nonce/common binding must not survive")
+    assert published
+    assert not any(name.endswith(sibling_label + ".plist") for name in n.reads)

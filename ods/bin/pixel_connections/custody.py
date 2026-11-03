@@ -2946,6 +2946,16 @@ def _native_broker_projection(value):
     return {'generation': launch['generation'], 'boot': launch['boot'], 'phase': 'active', 'invocations': snapshots}
 
 
+def _native_broker_binding(projection, label):
+    """Common inputs and this slot only; sibling publication is independent."""
+    launch = projection['launch']
+    return hashlib.sha256(_native_encoded({
+        **{key: projection[key] for key in projection if key != 'launch'},
+        'generation': launch['generation'], 'boot': launch['boot'],
+        'environment': launch['environment'], 'definition': launch['definitions'][label],
+    })).hexdigest()
+
+
 def _native_broker_runtime(projection, qualifier):
     """Actual public RuntimeCustody + complete public bundle; no Owner reader.
 
@@ -3102,6 +3112,7 @@ def _native_broker_read(role, identifier=None, *, running=False, _scope=None):
             ceiling = int(times['workerDeadlineNs'] if running else times['admissionDeadlineNs'])
             if not int(times['issuedNs']) <= _native_clock_ns() < ceiling:
                 raise CustodyError('native-source-broker-invocation-expired')
+            binding = _native_broker_binding(projection, label)
             from pixel_access_bridge import AccessError
             try:
                 runtime, root, entries = _native_broker_runtime(projection, _scope.qualifier)
@@ -3156,7 +3167,11 @@ def _native_broker_read(role, identifier=None, *, running=False, _scope=None):
                     or any(values[key] != value for key, value in template.items() if key not in mutable and key not in _native_environment_paths())
                     or any(values[key] not in ('0', '1') for key in PREAUTH_FLAGS if key in values)):
                 raise CustodyError('native-source-broker-env-changed')
-            if (_native_root_file(gate, 'custody.json', gid=identity['id'], mode=0o640, limit=16384)[0] != raw
+            final_raw, _final_inode = _native_root_file(gate, 'custody.json', gid=identity['id'], mode=0o640, limit=16384)
+            final_projection = _native_public_json(final_raw)
+            final_snapshot = _native_broker_projection(final_projection)
+            if (not _native_slot_matches(final_snapshot, invocation, running=running)
+                    or _native_broker_binding(final_projection, label) != binding
                     or _native_at_inode(parent, NATIVE_STATE.name) != [info.st_dev, info.st_ino]
                     or _native_at_inode(gate, NATIVE_ENV.name) != env['inode']
                     or _native_env_fd_guid(environment_fd, uuid.UUID(identity['userGuid']).bytes) != stamp):
@@ -3169,11 +3184,10 @@ def _native_broker_read(role, identifier=None, *, running=False, _scope=None):
                     raise CustodyError('native-source-broker-definition-changed')
             if _native_boot_uuid() != snapshot['boot'] or _native_clock_ns() >= ceiling:
                 raise CustodyError('native-source-broker-invocation-expired')
-            # A sibling may be added between reads; each acquired view is
-            # coherent, and the following binding excludes unrelated slots.
-            binding = hashlib.sha256(_native_encoded({**{key: projection[key] for key in projection if key != 'launch'},
-                'environment': env, 'definition': definition})).hexdigest()
-            view = _NativeBrokerView(_native_encoded(snapshot), invocation, binding, runtime['hostPython'], environment_fd, stamp, _NATIVE_SEAL)
+            # The final Root snapshot may add siblings during this acquisition.
+            # Only unchanged common inputs, own definition/invocation and the
+            # original deadline survive; no new nonce or authority is adopted.
+            view = _NativeBrokerView(_native_encoded(final_snapshot), invocation, binding, runtime['hostPython'], environment_fd, stamp, _NATIVE_SEAL)
             yield view
         finally:
             if environment_fd is not None:
