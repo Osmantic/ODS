@@ -96,8 +96,30 @@ test('the real hook keeps owner/history data out of static integration API facts
     'Scheduled task replies are retained in ODS task results',
     'native cron (discover/describe it if deferred), not notes or shell timers',
     'payload.toolsAllow: [] disables future tools', 'delivery: {mode: "none"} keeps Portal results',
-    'Only a successful cron receipt establishes a job/time', 'Creating future work does not authorize running it now'])
+    'Only a successful cron receipt establishes a job/time', 'Creating future work does not authorize running it now',
+    'cron manages saved Portal scheduled tasks, not connected-app data or app tools',
+    'existing jobId from a cron list/get/add receipt', 'never invent it from an app/tool identifier or date',
+    'run executes that saved task, not an app tool'])
       assert.ok(PORTAL_INTEGRATION_API_CONTRACT.includes(boundary),boundary);
+});
+
+test('job grounding stays static and does not convert app requests or historical cron arguments into a plan', async()=>{
+  const invented='pixel_calendar_count_2026-11-04';
+  const messages=[{role:'assistant',content:[{type:'toolCall',id:'invented-prior-call',name:'cron',
+    arguments:{action:'run',jobId:invented,runMode:'force'}}]},
+    {role:'toolResult',toolName:'cron',toolCallId:'invented-prior-call',isError:true,
+      content:[{type:'text',text:'unknown cron job id: '+invented}]}];
+  const original=JSON.stringify(messages);
+  let apiContext;
+  for(const prompt of ['Count my connected calendar events on November 4.',
+    'Run the saved Portal task I selected.', 'Describe this example cron argument without using tools.']){
+    const context=await promptHookAlone({prompt,messages});
+    apiContext??=context.appendSystemContext;
+    assert.equal(context.appendSystemContext,apiContext,'the same API facts apply independently of owner wording');
+    assert.equal(context.appendContext,PORTAL_INTEGRATION_TURN_CONTEXT,'no generated tool-selection plan');
+    assert.ok(!context.appendSystemContext.includes(invented),'a previous invented identifier is not trusted metadata');
+    assert.equal(JSON.stringify(messages),original,'history, tool identity and original arguments remain untouched');
+  }
 });
 import { createAskUserTool } from '../plugin/ask-user.mjs';
 
