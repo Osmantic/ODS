@@ -213,8 +213,11 @@ def test_actual_macos_selection_guard(tmp_path, monkeypatch, state):
         f.write_text('services: {}\n')
     if state in ('ready', 'partial'):
         assert guard.managed_pixel_identity(root) == 'macos'
-    with pytest.raises((ValueError, OSError), match='native|Source-only|symbolic'):
+    with pytest.raises((ValueError, OSError), match='native|Source-only|symbolic') as refused:
         guard.check_native(root)
+    if state == 'ready':
+        assert '--prepare-only' in str(refused.value)
+        assert 'host agent, Dashboard API and Dashboard' in str(refused.value)
 
 
 def test_incomplete_macos_native_directory_refused(tmp_path, monkeypatch):
