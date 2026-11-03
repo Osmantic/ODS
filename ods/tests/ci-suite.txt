@@ -145,6 +145,7 @@ tests/test-macos-intel-preflight-blocker.sh
 tests/test-macos-lean-feature-selection.sh
 tests/test-macos-native-llama-port.sh
 tests/test-macos-status-optional-opencode.sh
+tests/test-macos-dashboard-port.sh
 tests/test-migrate-lemonade-install.py
 tests/test-model-integrity.sh
 tests/test-model-library-coverage.py

@@ -970,9 +970,17 @@ cmd_status() {
     echo -e "  ${GRN}Health Checks${NC}"
     echo -e "  ${DGRN}$(printf -- '-%.0s' {1..40})${NC}"
 
+    # Compose publishes the Dashboard on DASHBOARD_PORT (docker-compose.base.yml);
+    # read_ods_env decodes it as Compose does (quotes, inline "# comment").
+    local dashboard_port
+    unset ENV_DASHBOARD_PORT
+    read_ods_env DASHBOARD_PORT
+    dashboard_port="${ENV_DASHBOARD_PORT:-}"
+    [[ "$dashboard_port" =~ ^[0-9]+$ ]] || dashboard_port=3001
+
     # Parallel arrays (Bash 3.2 compatible)
     local ep_names=("$CLI_LLM_NAME" "Dashboard")
-    local ep_urls=("$CLI_LLM_HEALTH_URL" "http://127.0.0.1:3001")
+    local ep_urls=("$CLI_LLM_HEALTH_URL" "http://127.0.0.1:${dashboard_port}")
     # OpenCode is opt-in; lean installs never create its LaunchAgent, so only
     # an installed one is expected to answer.
     if [[ -e "$OPENCODE_PLIST" ]]; then
