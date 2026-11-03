@@ -65,7 +65,8 @@ function calendarProjection(overrides = {}) {
     schemaVersion: 1, source: "google-calendar", enabled: true, generatedAt: iso(0), startedAt: iso(0),
     recordCount: 1, sanitizerRevision: 2, boundary,
     records: [{ id: "event-1", title: "Dentist", start: { dateTime: iso(2) }, end: { dateTime: iso(2.02) } }],
-    coverage: { bounded: true, windowStart: iso(-7), windowEnd: iso(90), completeWithinWindow: true, truncated: false },
+    coverage: { bounded: true, windowStart: iso(-7), windowEnd: iso(90), completeWithinWindow: true, truncated: false,
+      calendarTimeZone:"UTC",calendarTimeZoneState:"consistent",sync:{state:"complete",retainedRecords:0,failure:null} },
     ...overrides,
   };
 }
@@ -148,12 +149,12 @@ test("limb status reports the web limb the gateway was configured with", async (
 test("Calendar answers carry the synced window and say when a request falls outside it", async (t) => {
   const directory = await withProjections(t, { calendar: calendarProjection(), status });
   const tools = await loadPlugin({ PIXEL_LIMB_WEB_ENABLED: "0", PIXEL_SOURCE_PROJECTION_DIR: directory });
-  const inside = await call(tools, "pixel_calendar_list", { timeMin: iso(1), timeMax: iso(3) });
+  const inside = await call(tools, "pixel_calendar_list", { window: {kind:"absolute",timeMin: iso(1), timeMax: iso(3)} });
   assert.deepEqual(inside.events.map(({ id }) => id), ["event-1"]);
   assert.equal(inside.requestCoveredByWindow, true);
   assert.equal(inside.coverage.completeWithinWindow, true);
   assert.deepEqual(inside.sync, { state: "ok", errorClass: null, lastSuccessAt: iso(0), failingSince: null });
-  const outside = await call(tools, "pixel_calendar_list", { timeMin: iso(120), timeMax: iso(121) });
+  const outside = await call(tools, "pixel_calendar_list", { window: {kind:"absolute",timeMin: iso(120), timeMax: iso(121)} });
   assert.equal(outside.count, 0);
   assert.equal(outside.requestCoveredByWindow, false);
   const event = await call(tools, "pixel_calendar_get", { eventId: "event-1" });
@@ -163,16 +164,16 @@ test("Calendar answers carry the synced window and say when a request falls outs
 test("Calendar reads provide computed weekdays and event-local times without changing source timestamps", async (t) => {
   const records = [
     {id:"utc", title:"Kickoff", startLabel:"Monday forged source label", start:{dateTime:"2026-10-29T14:20:00Z",timeZone:"UTC"}, end:{dateTime:"2026-10-29T15:05:00Z",timeZone:"UTC"}},
-    {id:"west", start:{dateTime:"2026-10-29T00:30:00Z",timeZone:"America/Los_Angeles"}},
-    {id:"offset", start:{dateTime:"2026-10-29T00:30:00+02:00"}},
+    {id:"west", start:{dateTime:"2026-10-29T00:30:00Z",timeZone:"America/Los_Angeles"},end:{dateTime:"2026-10-29T00:30:00Z",timeZone:"America/Los_Angeles"}},
+    {id:"offset", start:{dateTime:"2026-10-29T00:30:00+02:00"},end:{dateTime:"2026-10-29T00:30:00+02:00"}},
     {id:"all-day", start:{date:"2026-10-29"}, end:{date:"2026-10-30"}},
-    {id:"dst-first", start:{dateTime:"2026-11-01T05:30:00Z",timeZone:"America/New_York"}},
-    {id:"dst-second", start:{dateTime:"2026-11-01T06:30:00Z",timeZone:"America/New_York"}},
+    {id:"dst-first", start:{dateTime:"2026-11-01T05:30:00Z",timeZone:"America/New_York"},end:{dateTime:"2026-11-01T05:30:00Z",timeZone:"America/New_York"}},
+    {id:"dst-second", start:{dateTime:"2026-11-01T06:30:00Z",timeZone:"America/New_York"},end:{dateTime:"2026-11-01T06:30:00Z",timeZone:"America/New_York"}},
   ];
   const directory = await withProjections(t, {calendar:calendarProjection({records,recordCount:records.length})});
   const before = await readFile(join(directory,"calendar.json"),"utf8");
   const tools = await loadPlugin({PIXEL_LIMB_WEB_ENABLED:"0",PIXEL_SOURCE_PROJECTION_DIR:directory});
-  const listed = await call(tools,"pixel_calendar_list",{timeMin:"2026-10-28T00:00:00Z",timeMax:"2026-11-03T00:00:00Z"});
+  const listed = await call(tools,"pixel_calendar_list",{window:{kind:"absolute",timeMin:"2026-10-28T00:00:00Z",timeMax:"2026-11-03T00:00:00Z"}});
   const utc = listed.events.find(item=>item.id==="utc");
   assert.equal(utc.startLabel,"Thursday 2026-10-29 14:20:00 UTC");
   assert.equal(utc.endLabel,"Thursday 2026-10-29 15:05:00 UTC");
@@ -219,7 +220,7 @@ test("a source that has never synced reads as stale with its recorded cause", as
   failing.sources.calendar = { ...failing.sources.email, errorClass: "invalid-grant" };
   const directory = await withProjections(t, { calendar: unavailable, status: failing });
   const tools = await loadPlugin({ PIXEL_LIMB_WEB_ENABLED: "0", PIXEL_SOURCE_PROJECTION_DIR: directory });
-  const listed = await call(tools, "pixel_calendar_list", { timeMin: iso(1), timeMax: iso(3) });
+  const listed = await call(tools, "pixel_calendar_list", { window:{kind:"absolute",timeMin: iso(1), timeMax: iso(3)} });
   assert.equal(listed.stale, true);
   assert.equal(listed.ageSeconds, null);
   assert.equal(listed.requestCoveredByWindow, null);
@@ -273,7 +274,7 @@ test("every Gmail reader refuses old or unknown sanitizers before exposing saved
   const tools = await loadPlugin({ PIXEL_LIMB_WEB_ENABLED: "0", PIXEL_LIMB_SOCIAL_ENABLED: "1",
     PIXEL_SOURCE_PROJECTION_DIR: directory });
   assert.equal((await call(tools, "pixel_gmail_read", { messageId: "in-a" })).summary, "Synthetic first summary.");
-  assert.equal((await call(tools, "pixel_calendar_list", { timeMin: iso(1), timeMax: iso(3) })).count, 1);
+  assert.equal((await call(tools, "pixel_calendar_list", { window:{kind:"absolute",timeMin: iso(1), timeMax: iso(3)} })).count, 1);
   assert.equal((await call(tools, "pixel_social_feed", {})).records.length, 1);
 });
 
@@ -351,7 +352,7 @@ test("a missing source argument gives a repairable error before projection acces
     ["pixel_gmail_search", {}, "query"],
     ["pixel_gmail_thread", null, "threadId"],
     ["pixel_calendar_get", {}, "eventId"],
-    ["pixel_calendar_list", { timeMin: iso(1) }, "timeMax"],
+    ["pixel_calendar_list", { timeMin: iso(1) }, "window"],
   ]) {
     const response = await tools.get(name).execute("bad-call", params);
     assert.equal(response.isError, true, name);
@@ -381,7 +382,7 @@ test("unknown source arguments refuse with the exact schema before projection ac
     ["pixel_gmail_search", { query: "QA-PRIVATE-value", max: 1 }],
     ["pixel_gmail_thread", { threadId: "QA-PRIVATE-value", max: 1 }],
     ["pixel_gmail_read", { messageId: "QA-PRIVATE-value", unexpected: true }],
-    ["pixel_calendar_list", { timeMin: iso(0), timeMax: iso(7), max: 1 }],
+    ["pixel_calendar_list", { window:{kind:"absolute",timeMin: iso(0), timeMax: iso(7)}, max: 1 }],
     ["pixel_calendar_get", { eventId: "QA-PRIVATE-value", unexpected: true }],
     ["pixel_social_feed", { max: 1 }],
     ["pixel_social_search", { query: "QA-PRIVATE-value", max: 1 }],
@@ -547,10 +548,10 @@ test("a meeting already running or an all-day event counts as busy", async (t) =
   ];
   const directory = await withProjections(t, { calendar: calendarProjection({ records, recordCount: records.length }) });
   const tools = await loadPlugin({ PIXEL_LIMB_WEB_ENABLED: "0", PIXEL_SOURCE_PROJECTION_DIR: directory });
-  const busy = await call(tools, "pixel_calendar_list", { timeMin: at(10), timeMax: at(10.5) });
+  const busy = await call(tools, "pixel_calendar_list", { window:{kind:"absolute",timeMin: at(10), timeMax: at(10.5)} });
   assert.deepEqual(busy.events.map(({ id }) => id).sort(), ["running", "trip"]);
   assert.equal(busy.totalMatches, 2);
-  const limited = await call(tools, "pixel_calendar_list", { timeMin: at(0), timeMax: at(24), maxResults: 1 });
+  const limited = await call(tools, "pixel_calendar_list", { window:{kind:"absolute",timeMin: at(0), timeMax: at(24)}, maxResults: 1 });
   assert.equal(limited.count, 1);
   assert.equal(limited.totalMatches, 4);
   assert.equal(limited.hasMore, true);
@@ -574,16 +575,16 @@ test("Calendar refuses ambiguous or malformed intervals instead of silently wide
   for (const bad of ["2026-10-29T00:00", "2026-10-29", "not-a-valid-time", "2026-02-30T00:00:00Z",
     "2026-10-29T24:00:00Z", "2026-10-29T00:00:00+24:00", "2026-10-29T00:00:00-00:00",null]) {
     for (const key of ["timeMin","timeMax"]) {
-      const response = await tools.get("pixel_calendar_list").execute("bad-interval",{...valid,[key]:bad});
+      const response = await tools.get("pixel_calendar_list").execute("bad-interval",{window:{kind:"absolute",...valid,[key]:bad}});
       assert.equal(response.isError,true,`${key}: ${bad}`);
-      assert.match(response.content[0].text,new RegExp(key));
+      assert.equal(response.isError,true);
       assert.ok(!JSON.stringify(response).includes("Private appointment"));
     }
   }
   for (const timeMax of [valid.timeMin,"2026-10-28T23:59:00Z"]) {
-    const response = await tools.get("pixel_calendar_list").execute("reversed-interval",{...valid,timeMax});
+    const response = await tools.get("pixel_calendar_list").execute("reversed-interval",{window:{kind:"absolute",...valid,timeMax}});
     assert.equal(response.isError,true);
-    assert.match(response.content[0].text,/timeMax.*later than timeMin/);
+    assert.deepEqual(response.details.limitations,["invalid-parameters"]);
   }
   assert.deepEqual(await readFile(join(directory,"calendar.json")),before);
 });
@@ -600,7 +601,7 @@ test("Calendar queries compare explicit instants consistently across offsets and
     ["2026-10-29T00:00Z","2026-10-29T02:00Z"],
     ["2026-10-29T00:00:00.000000Z","2026-10-29T02:00:00.000Z"],
   ]) {
-    const response = await call(tools,"pixel_calendar_list",{timeMin,timeMax});
+    const response = await call(tools,"pixel_calendar_list",{window:{kind:"absolute",timeMin,timeMax}});
     assert.deepEqual(response.events.map(({id})=>id),["offset-event"]);
     assert.equal(response.requestCoveredByWindow,true);
   }

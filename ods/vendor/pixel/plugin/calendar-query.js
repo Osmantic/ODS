@@ -95,22 +95,36 @@ export function calendarWindowCovers(coverage, timeMin, timeMax) {
   return from >= start && to <= end;
 }
 
-export function listCalendar(data, params, limit) {
-  const from = queryInstant(params.timeMin);
-  const to = queryInstant(params.timeMax);
-  for (const [key, value] of [["timeMin", from], ["timeMax", to]]) {
-    if (!Number.isFinite(value)) throw new Error(`${key} must be a valid full ISO 8601 timestamp with date and Z or an explicit UTC offset. Read tool_describe before retrying.`);
+// Internal callers may retain the old explicit-instant shape. The native tool
+// uses the shared typed window; no caller may mix the two argument contracts.
+export function calendarListParameters(params) {
+  if (!params || typeof params !== "object" || Array.isArray(params)
+      || Object.keys(params).some(key => !["window", "timeMin", "timeMax", "query", "maxResults"].includes(key))) {
+    throw new Error("Invalid Calendar list parameters. Read tool_describe before retrying.");
   }
-  if (to <= from) throw new Error("timeMax must be later than timeMin.");
-  const query = String(params.query ?? "").toLowerCase();
-  const matches = data.records.filter((item) => overlapsRequest(item, from, to) && matchesQuery(item, query));
+  if (params.query !== undefined && (typeof params.query !== "string" || params.query.length > 500)
+      || params.maxResults !== undefined && (!Number.isInteger(params.maxResults) || params.maxResults < 1 || params.maxResults > 100)) {
+    throw new Error("Invalid Calendar list query or maxResults. Read tool_describe before retrying.");
+  }
+  const legacy = Object.hasOwn(params, "timeMin") || Object.hasOwn(params, "timeMax");
+  if (Object.hasOwn(params, "window")) {
+    if (legacy) throw new Error("Supply window only; do not mix window with timeMin/timeMax.");
+    return params;
+  }
+  for (const key of ["timeMin", "timeMax"]) if (!Number.isFinite(queryInstant(params[key]))) {
+    throw new Error(`${key} must be a valid full ISO 8601 timestamp with date and Z or an explicit UTC offset. Read tool_describe before retrying.`);
+  }
+  if (Date.parse(params.timeMax) <= Date.parse(params.timeMin)) throw new Error("timeMax must be later than timeMin.");
+  const {timeMin, timeMax, ...rest} = params;
+  return {...rest, window: {kind: "absolute", timeMin, timeMax}};
+}
+
+export function listCalendar(data, params, limit, sync, now = Date.now(), staleAfterMs = 180000, ownerTimeZone) {
+  const {reply, matches} = selectCalendar(data, calendarListParameters(params), sync, now, staleAfterMs, ownerTimeZone);
   const events = matches.slice(0, limit).map(calendarEvent);
-  const coverage = data.coverage ?? null;
-  return {
-    generatedAt: data.generatedAt, ageSeconds: data.ageSeconds, stale: data.stale,
-    totalMatches: matches.length, count: events.length, hasMore: matches.length > events.length, events,
-    coverage, requestCoveredByWindow: calendarWindowCovers(coverage, params.timeMin, params.timeMax),
-  };
+  return {...reply, recordsReturned: events.length, stale: reply.freshness !== "fresh",
+    totalMatches: reply.observedMatchCount, count: events.length, hasMore: matches.length > events.length, events,
+    coverage: data?.coverage ?? null};
 }
 
 export function canonicalTimeZone(value) {
@@ -165,6 +179,10 @@ export function resolveCountWindow(window, now, ownerTimeZone, resolver = civilR
     windowStart: null, windowEnd: null, windowDays: null, ownerTimeZone: owner,
     reason: "invalid-window", from: null, to: null };
   let from, to;
+  const allowed = window?.kind === "absolute" ? ["kind", "timeMin", "timeMax"]
+    : window?.kind === "rolling" ? ["kind", "days"] : ["kind", "days", "date", "start"];
+  if (!window || typeof window !== "object" || Array.isArray(window)
+      || Object.keys(window).some(key => !allowed.includes(key))) return result;
   if (window?.kind === "absolute") {
     const min = canonicalTimestamp(window.timeMin), max = canonicalTimestamp(window.timeMax);
     if (min === null || max === null) return result;
@@ -212,10 +230,10 @@ function strictEventBounds(record, zone, resolver) {
   return Number.isFinite(from) && Number.isFinite(to) && (allDay ? to > from : to >= from) ? [from, to] : null;
 }
 
-export function countCalendar(data, params, sync, now, staleAfterMs, ownerTimeZone) {
+function selectCalendar(data, params, sync, now, staleAfterMs, ownerTimeZone) {
   if (data?.enabled !== true || data.coverage?.available === false || !Array.isArray(data.records)
       || data.recordCount !== undefined && (!Number.isSafeInteger(data.recordCount) || data.recordCount !== data.records.length)) {
-    return unavailableCount("calendar", params?.window?.kind);
+    return {reply: unavailableCount("calendar", params?.window?.kind), matches: []};
   }
   const metadata = countMetadata(data, sync, now, staleAfterMs), resolver = civilResolver();
   const window = resolveCountWindow(params?.window, now, ownerTimeZone, resolver);
@@ -229,9 +247,9 @@ export function countCalendar(data, params, sync, now, staleAfterMs, ownerTimeZo
     calendarTimeZone: zone };
   if (!zone) reply.limitations.push(coverage?.calendarTimeZoneState === "inconsistent"
     ? "calendar-time-zone-inconsistent" : "calendar-time-zone-unavailable");
-  if (window.windowState !== "resolved") { reply.limitations.push(window.reason); return reply; }
+  if (window.windowState !== "resolved") { reply.limitations.push(window.reason); return {reply, matches: []}; }
   const query = String(params.query ?? "").toLowerCase();
-  let count = 0;
+  const matches = [];
   const ids = new Set();
   for (const record of data.records) {
     if (!record || typeof record !== "object" || Array.isArray(record)
@@ -243,9 +261,9 @@ export function countCalendar(data, params, sync, now, staleAfterMs, ownerTimeZo
     if (!matchesQuery(record, query)) continue;
     const bounds = strictEventBounds(record, zone, resolver);
     if (!bounds) { reply.unresolvedEventCount += 1; continue; }
-    if (overlapsBounds(...bounds, window.from, window.to)) count += 1;
+    if (overlapsBounds(...bounds, window.from, window.to)) matches.push(record);
   }
-  reply.observedMatchCount = count;
+  reply.observedMatchCount = matches.length;
   reply.requestCoveredByWindow = calendarWindowCovers(coverage, window.windowStart, window.windowEnd);
   const complete = coverage?.bounded === true && coverage.completeWithinWindow === true
     && coverage.truncated === false && coverage.sync?.state === "complete" && coverage.sync.retainedRecords === 0
@@ -256,7 +274,11 @@ export function countCalendar(data, params, sync, now, staleAfterMs, ownerTimeZo
   if (reply.unresolvedEventCount) reply.limitations.push("unresolved-event-time");
   reply.completeWithinWindow = complete && zone !== null && reply.unresolvedEventCount === 0
     && metadata.freshness === "fresh" && metadata.syncState === "ok" && reply.requestCoveredByWindow === true;
-  if (reply.completeWithinWindow) reply.completeMatchCount = count;
+  if (reply.completeWithinWindow) reply.completeMatchCount = matches.length;
   reply.limitations = [...new Set(reply.limitations)];
-  return reply;
+  return {reply, matches};
+}
+
+export function countCalendar(data, params, sync, now, staleAfterMs, ownerTimeZone) {
+  return selectCalendar(data, params, sync, now, staleAfterMs, ownerTimeZone).reply;
 }
