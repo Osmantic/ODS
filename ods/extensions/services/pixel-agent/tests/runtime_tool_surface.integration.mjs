@@ -82,6 +82,36 @@ function integrationTools(submissions=[]) {
   });
 }
 
+test('native cron is a policy-filtered direct capability at32K+, never an automatic schedule or prompt route',async()=>{
+  const submitted=[];
+  const cron={...tool('cron'),execute:async(_id,input)=>{submitted.push(input);return {content:[]};}};
+  const cases=[{window:65536,visible:true},{window:32768,visible:true},{window:8192,visible:false},
+    {window:65536,explicit:8192,visible:false},{window:32767,visible:false},
+    {window:undefined,explicit:32768,visible:true},{window:undefined,visible:false},
+    {window:65536,agentId:'other-agent',visible:false}];
+  for(const candidate of cases) {
+    const config={agents:{list:[{id:'pixel',...(candidate.explicit?{contextTokens:candidate.explicit}:{})}]},
+      tools:{toolSearch:{enabled:true,mode:'tools'}}};
+    const result=run([cron],{config,agentId:candidate.agentId??'pixel',modelContextWindowTokens:candidate.window});
+    assert.equal(result.tools.includes(cron),candidate.visible,JSON.stringify(candidate));
+    assert.equal(resolveExact({agentId:candidate.agentId??'pixel',catalogRef:result.catalogRef},'cron'),cron);
+    assert.equal(submitted.length,0,'catalog projection and discovery never execute a job');
+  }
+  const denied=run(filterByPolicy([cron],{deny:['cron']}),{modelContextWindowTokens:65536});
+  assert.equal(denied.tools.includes(cron),false);
+  assert.equal(resolveExact({agentId:'pixel',catalogRef:denied.catalogRef},'cron'),undefined);
+  const duplicate={...cron};setPluginToolMeta(duplicate,{pluginId:'fixture'});
+  const ambiguous=run([cron,duplicate],{modelContextWindowTokens:65536});
+  assert.equal(ambiguous.tools.some(item=>item.name==='cron'),false,'ambiguous names stay qualified and deferred');
+  const selected=run([cron],{modelContextWindowTokens:65536}).tools.find(item=>item.name==='cron');
+  const input=Object.freeze({action:'add',job:Object.freeze({name:'invented QA',
+    schedule:Object.freeze({kind:'at',at:'2030-01-01T12:00:00Z'}),sessionTarget:'isolated',
+    payload:Object.freeze({kind:'agentTurn',message:'Calculate14+8 without tools.',toolsAllow:Object.freeze([])}),
+    delivery:Object.freeze({mode:'none'})})});
+  await selected.execute('explicit-owner-call',input);
+  assert.equal(submitted.length,1);assert.equal(submitted[0],input,'normal native executor sees the exact explicit input');
+});
+
 test('Coffee schemas are statically direct at qualified32K including provider-only64K, never above an8K cap',async()=>{
   const cases=[
     {window:65536,explicit:undefined,visible:true},
