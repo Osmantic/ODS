@@ -179,14 +179,14 @@ class AppActions:
                                    "unsupported constraints were applied. No app action ran.")
         return specification
 
-    def use_app(self, config, server, tool, arguments, *, run_context=None, secrets=None):
+    def use_app(self, config, server, tool, arguments, *, run_context=None, secrets=None, review_references=False, review_only=False):
         """One app tool, called the way Portal calls an MCP tool; the app's reply."""
         action, _description, properties = self._app_arguments(server, tool, arguments)
         snapshot = None if secrets is None else self._verified_app_snapshot(config, secrets, server)
         return action, self._app_action(config, action, {key: arguments[key] for key in properties if key in arguments},
-                                        run_context=run_context, snapshot=snapshot)
+                                        run_context=run_context, snapshot=snapshot, review_references=review_references, review_only=review_only)
 
-    def _app_action(self, config, action, request, *, run_context=None, snapshot=None):
+    def _app_action(self, config, action, request, *, run_context=None, snapshot=None, review_references=False, review_only=False):
         app = APP_ACTIONS[action]
         config, settings, key = snapshot or self._app_snapshot(app)
         if app == "watch" and snapshot is not None:
@@ -202,7 +202,7 @@ class AppActions:
             return reply
         if action == "photos-search":
             reply = apps.photos_search(settings, key, query=request.get("query", ""), place=request.get("place", ""),
-                                       after=request.get("after", ""), before=request.get("before", ""))
+                                       after=request.get("after", ""), before=request.get("before", ""), allow_query_fallback=not review_only)
             self._app_log("photos-search", str(request.get("query") or request.get("place") or "dates")[:80],
                           f"{len(reply['results'])} photos", key)
             return reply
@@ -220,10 +220,10 @@ class AppActions:
                 text += f"\n\n…and {left}{'+' if capped else ''} more in FreshRSS for a later digest."
             return {"items": items, "text": text}
         if action == "watch-list":
-            return self._watch_list(settings, key, context=self._watch_context(config, key))
+            return self._watch_list(settings, key, context=self._watch_context(config, key), review_references=review_references)
         return self._watch_change(config, settings, key, action, request)
 
-    def _watch_list(self, settings, key, *, context):
+    def _watch_list(self, settings, key, *, context, review_references=False):
         """The watched pages, with each price watch's limit and the last price Portal saw."""
         listing = apps.watches(settings, key)
         with self.store.lock:
@@ -241,7 +241,11 @@ class AppActions:
                     "paused": watch.get("paused") is True,
                     "error": public_text(watch.get("last_error"), 400)}
                    for uuid, watch in list(listing.items())[:apps.MAX_WATCHES]]
-        return {"watches": watches, "total": len(listing)}
+        result = {"watches": watches, "total": len(listing)}
+        if review_references:
+            result["_reviewEntries"] = [{"id": identity, "title": watch.get("title"), "url": watch.get("url")}
+                                        for identity, watch in list(listing.items())[:apps.MAX_WATCHES]]
+        return result
 
     def watch_overview(self):
         """The watched pages for Settings."""
@@ -601,7 +605,7 @@ class AppActions:
             self.store._write("digest-job.json", None)
             return {"cleared": True}
 
-    def _review_watch_change(self, tool, request):
+    def _review_watch_change(self, tool, request, *, reference_context=None):
         """Prepare the normal exact watch digest; never call a watch actuator."""
         with self._watch_lock:
             with self.store.lock:
@@ -610,6 +614,7 @@ class AppActions:
                     raise IntegrationError("app-off", "Watched pages are not connected.")
                 self._require_review_ask(config["apps"]["watch"]["changes"])
                 config, settings, key = self._verified_app_snapshot(config, secrets, "watch")
+                self._check_app_reference(reference_context, config, "watch", key)
                 epoch = self._review_binding(config, "apps", "watch")
                 context = self._watch_context(config, key)
                 state = self.store.watch_state(context)
@@ -624,6 +629,7 @@ class AppActions:
                 below = None if request.get("below") in (None, "") else apps.price_limit(request.get("below"))
                 watch_id = next((identity for identity, watch in listing.items() if watch.get("url") == url), None)
                 target = listing.get(watch_id) if watch_id else None
+                self._check_watch_reference_target(reference_context, watch_id, target)
                 if watch_id is not None:
                     limit = (state.get(watch_id) or {}).get("below")
                     name = title or target.get("title") or url
@@ -636,6 +642,7 @@ class AppActions:
             else:
                 watch_id = str(request.get("id", ""))
                 target = listing.get(watch_id)
+                self._check_watch_reference_target(reference_context, watch_id, target)
                 if target is None:
                     raise IntegrationError("watch-missing", "No watch has that id. List the watches first.")
                 title, url = target.get("title"), target.get("url")
@@ -646,6 +653,7 @@ class AppActions:
                 self._require_review_ask(current["apps"]["watch"]["changes"])
                 self._assert_watch_context(config, key)
                 self._verified_app_snapshot(current, current_secrets, "watch")
+                self._check_app_reference(reference_context, current, "watch", current_secrets["apps"].get("watch", ""))
                 if self._review_binding(current, "apps", "watch") != epoch:
                     raise IntegrationError("stale-revision", "The watched pages review identity changed. Nothing was done.")
                 if already_matches:

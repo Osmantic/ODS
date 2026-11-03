@@ -41,7 +41,7 @@ from integrations_common import (IntegrationError, MAX_REQUEST_BYTES, MAX_RESPON
                                  native_owner_key, native_owner_request, owner_proof, owner_auth_binding, owner_reply_proof, read_owner_frame, OWNER_AUTH_SECONDS,
                                  stop_http_workers, validate_native_state)
 from integrations_app_service import APP_SERVER_IDS, AppActions, app_text  # noqa: E402
-from integrations_recovery import RecoveryReviewOnly, review_only_request  # noqa: E402
+from integrations_recovery import REFERENCE_FIELD, RecoveryReviewOnly, review_only_request  # noqa: E402
 from integrations_ntfy import send_notification  # noqa: E402
 from integrations_mcp import LocalServer, LocalServers, McpSession, SESSION_TIMEOUT, describe_tool  # noqa: E402
 
@@ -520,6 +520,8 @@ class Integrations(RecoveryReviewOnly, AppActions):
     def _agent(self, action, request):
         if review_only_request(request):
             return self._review_only_agent(action, request)
+        if REFERENCE_FIELD in request:
+            raise IntegrationError("invalid-review-reference", "Private lookup context requires the native review path. Nothing ran.")
         with self.store.lock:
             config, secrets = self.store.config(), self.store.secrets()
         if action == "notes-search":

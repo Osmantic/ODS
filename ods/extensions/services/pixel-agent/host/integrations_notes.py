@@ -4,7 +4,7 @@ import os
 import pathlib
 import re
 import stat
-from integrations_common import IntegrationError, clip
+from integrations_common import IntegrationError, clip, digest
 
 MAX_NOTE_BYTES = 1024 * 1024
 MAX_NOTE_FILES = 5000
@@ -63,7 +63,7 @@ def _root(root):
 
 
 @contextmanager
-def _parent(root_fd, parts, *, create=False, expected=None):
+def _parent(root_fd, parts, *, create=False, expected=None, identities=None):
     fd = os.dup(root_fd)
     try:
         for index, part in enumerate(parts[:-1]):
@@ -75,6 +75,9 @@ def _parent(root_fd, parts, *, create=False, expected=None):
                     if expected is not None:
                         raise IntegrationError('notes-changed', 'The note destination changed. Request a new approval.') from None
             following = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+            if identities is not None:
+                info = os.fstat(following)
+                identities.append([part, _review_identity(info)])
             if previous is not None:
                 info = os.fstat(following)
                 if previous != [part, info.st_dev, info.st_ino]:
@@ -96,9 +99,25 @@ def _regular(info):
         raise IntegrationError('note-too-large', 'That note is too large to read or append to.')
 
 
-def _snapshot(root_fd, parts):
+def _review_identity(info, *, file=False):
+    if not isinstance(getattr(info, 'st_ctime_ns', None), int):
+        raise IntegrationError('review-only-context-unavailable', 'The note identity freshness could not be verified.')
+    result = {'device': info.st_dev, 'inode': info.st_ino, 'ctimeNs': info.st_ctime_ns}
+    for field in ('st_birthtime_ns', 'st_birthtime', 'st_gen'):
+        if hasattr(info, field):
+            result[field] = getattr(info, field)
+    if file:
+        if not isinstance(getattr(info, 'st_mtime_ns', None), int):
+            raise IntegrationError('review-only-context-unavailable', 'The note identity freshness could not be verified.')
+        result.update(size=info.st_size, mtimeNs=info.st_mtime_ns)
+    return result
+
+
+def _snapshot(root_fd, parts, *, _review=False):
     info = os.fstat(root_fd)
     result = {'root': [info.st_dev, info.st_ino], 'parents': [], 'missing': [], 'target': None}
+    if _review:
+        result['_reviewIdentity'] = {'root': _review_identity(info), 'parents': [], 'target': None}
     fd = os.dup(root_fd)
     try:
         for index, part in enumerate(parts[:-1]):
@@ -111,12 +130,16 @@ def _snapshot(root_fd, parts):
             fd = following
             info = os.fstat(fd)
             result['parents'].append([part, info.st_dev, info.st_ino])
+            if _review:
+                result['_reviewIdentity']['parents'].append([part, _review_identity(info)])
         try:
             info = os.stat(parts[-1], dir_fd=fd, follow_symlinks=False)
         except FileNotFoundError:
             return result
         _regular(info)
         result['target'] = [info.st_dev, info.st_ino]
+        if _review:
+            result['_reviewIdentity']['target'] = _review_identity(info, file=True)
         return result
     except OSError:
         raise _invalid() from None
@@ -133,12 +156,15 @@ def note_path(root, relative, *, must_exist):
     return pathlib.Path(root).joinpath(*parts), relative
 
 
-def write_binding(config, relative, mode):
+def write_binding(config, relative, mode, *, reference_context=None):
     validate_write('binding', mode)
     root = vault(config)
     parts, relative = _parts(relative)
     with _root(root) as fd:
-        snapshot = _snapshot(fd, parts)
+        _check_review_source(config, fd, reference_context)
+        snapshot = _snapshot(fd, parts, _review=reference_context is not None)
+        identity = snapshot.pop('_reviewIdentity', None)
+        _check_review_target(relative, {'vault': str(root), **snapshot}, reference_context, identity=identity)
     if mode == 'append' and snapshot['target'] is None:
         raise IntegrationError('note-missing', f'There is no note {relative}.')
     if mode == 'create' and snapshot['target'] is not None:
@@ -162,31 +188,62 @@ def _read_fd(fd):
     return b''.join(chunks).decode('utf-8', errors='replace')
 
 
-def _read(root, relative):
+def _review_source(config, root_fd):
+    epoch = config.get('approvalBindings', {}).get('notes')
+    if not isinstance(epoch, str) or not re.fullmatch(r'[a-f0-9]{32}', epoch):
+        raise IntegrationError('review-only-context-unavailable', 'Review and save the notes connection before retrying.')
+    info = os.fstat(root_fd)
+    return digest('review-obsidian-source-v1', config['notes'], epoch, _review_identity(info))
+
+
+def _check_review_source(config, root_fd, context):
+    if context is not None and _review_source(config, root_fd) != context['binding']:
+        raise IntegrationError('stale-review-reference', 'The notes connection or vault changed. No note was read or proposed.')
+
+
+def _check_review_target(relative, binding, context, *, identity=None):
+    expected = next((entry['binding'] for entry in context['entries'] if entry['path'] == relative), None) if context else None
+    if expected is not None and expected != digest('review-note-target-v1', binding, identity):
+        raise IntegrationError('stale-review-reference', 'The referenced note destination changed. No note was read or proposed.')
+
+
+def _read(root, relative, *, config=None, reference_context=None):
     parts, relative = _parts(relative)
-    with _root(root) as root_fd, _parent(root_fd, parts) as parent:
-        try:
-            fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, dir_fd=parent)
-        except FileNotFoundError:
-            raise IntegrationError('note-missing', f'There is no note {relative}.') from None
-        except OSError:
-            raise _invalid() from None
-        try:
-            return relative, _read_fd(fd)
-        finally:
-            os.close(fd)
+    parents = []
+    with _root(root) as root_fd:
+        _check_review_source(config, root_fd, reference_context)
+        with _parent(root_fd, parts, identities=parents if reference_context else None) as parent:
+            try:
+                fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, dir_fd=parent)
+            except FileNotFoundError:
+                raise IntegrationError('note-missing', f'There is no note {relative}.') from None
+            except OSError:
+                raise _invalid() from None
+            try:
+                if reference_context is not None:
+                    info, root_info = os.fstat(fd), os.fstat(root_fd)
+                    # The parent descriptors are still open while traversing;
+                    # _parent records their identity stamps, not a later stat.
+                    legacy_parents = [[part, stamp['device'], stamp['inode']] for part, stamp in parents]
+                    _check_review_target(relative, {'vault': str(root), 'root': [root_info.st_dev, root_info.st_ino],
+                        'parents': legacy_parents, 'missing': [], 'target': [info.st_dev, info.st_ino]}, reference_context,
+                        identity={'root': _review_identity(root_info), 'parents': parents, 'target': _review_identity(info, file=True)})
+                return relative, _read_fd(fd)
+            finally:
+                os.close(fd)
 
 
-def search(config, query):
+def search(config, query, *, _review=False, reference_context=None):
     root = vault(config)
     terms = [term for term in re.findall(r'\w+', query.lower()) if len(term) > 1][:12]
     if not terms:
         raise IntegrationError('invalid-query', 'Give one or more words to search for.')
-    hits, count = [], 0
+    hits, count, limited = [], 0, False
 
-    def walk(directory, prefix='', depth=0):
-        nonlocal count
+    def walk(directory, prefix='', depth=0, parents=(), stamps=()):
+        nonlocal count, limited
         if depth > 64 or count >= MAX_NOTE_FILES:
+            limited = True
             return
         for name in sorted(os.listdir(directory)):
             if name.startswith('.') or count >= MAX_NOTE_FILES:
@@ -198,7 +255,13 @@ def search(config, query):
                     child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
                                     dir_fd=directory)
                     try:
-                        walk(child, relative + '/', depth + 1)
+                        next_parents = parents
+                        next_stamps = stamps
+                        if _review:
+                            child_info = os.fstat(child)
+                            next_parents = (*parents, [name, child_info.st_dev, child_info.st_ino])
+                            next_stamps = (*stamps, [name, _review_identity(child_info)])
+                        walk(child, relative + '/', depth + 1, next_parents, next_stamps)
                     finally:
                         os.close(child)
                     continue
@@ -208,6 +271,8 @@ def search(config, query):
                 fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
                              dir_fd=directory)
                 try:
+                    target_info = os.fstat(fd) if _review else None
+                    target_stamp = _review_identity(target_info, file=True) if _review else None
                     text = _read_fd(fd)
                 finally:
                     os.close(fd)
@@ -220,20 +285,36 @@ def search(config, query):
                 lines = text.splitlines() or ['']
                 best = max(range(len(lines)), key=lambda index: (sum(term in lines[index].lower() for term in terms),
                                                                  not lines[index].lstrip().startswith('#')))
-                hits.append((score, {'path': relative, 'title': title, 'line': best + 1,
-                                    'snippet': lines[best].strip()[:240], 'matched': len(matched), 'of': len(terms)}))
+                hit = {'path': relative, 'title': title, 'line': best + 1,
+                       'snippet': lines[best].strip()[:240], 'matched': len(matched), 'of': len(terms)}
+                if _review:
+                    hit['_referenceBinding'] = digest('review-note-target-v1', {'vault': str(root), 'root': root_identity,
+                        'parents': list(parents), 'missing': [], 'target': [target_info.st_dev, target_info.st_ino]},
+                        {'root': root_stamp, 'parents': list(stamps), 'target': target_stamp})
+                hits.append((score, hit))
             except (OSError, IntegrationError):
+                if _review:
+                    limited = True
                 continue
 
     # One opened vault anchors the complete traversal, including renamed parents.
     with _root(root) as root_fd:
+        _check_review_source(config, root_fd, reference_context)
+        root_info = os.fstat(root_fd) if _review else None
+        root_identity = [root_info.st_dev, root_info.st_ino] if _review else None
+        root_stamp = _review_identity(root_info) if _review else None
+        source_binding = _review_source(config, root_fd) if _review else None
         walk(root_fd)
     hits.sort(key=lambda item: (-item[0], item[1]['path']))
-    return [item for _score, item in hits[:8]]
+    results = [item for _score, item in hits[:8]]
+    if _review:
+        entries = [{'path': item['path'], 'binding': item.pop('_referenceBinding')} for item in results]
+        return results, source_binding, entries, limited or count >= MAX_NOTE_FILES or len(hits) > 8
+    return results
 
 
-def read(config, relative):
-    relative, text = _read(vault(config), relative)
+def read(config, relative, *, reference_context=None):
+    relative, text = _read(vault(config), relative, config=config, reference_context=reference_context)
     return relative, clip(text, MAX_NOTE_READ_CHARS)
 
 

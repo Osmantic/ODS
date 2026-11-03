@@ -260,7 +260,7 @@ def best_place(place, known):
     return None
 
 
-def photos_search(settings, key, *, query="", place="", after="", before=""):
+def photos_search(settings, key, *, query="", place="", after="", before="", allow_query_fallback=True):
     query, place = " ".join(str(query or "").split())[:200], " ".join(str(place or "").split())[:100]
     for value in (after, before):
         if value:
@@ -296,6 +296,9 @@ def photos_search(settings, key, *, query="", place="", after="", before=""):
         raise IntegrationError("photos-no-description", "Immich cannot search by what is in a photo until its machine "
                                "learning is running. Search by place or date instead.")
     if reply is None:
+        if query and not allow_query_fallback:
+            raise IntegrationError("photos-no-description", "The photo description filter could not be applied. "
+                                   "No broader photo search was made.")
         if query:
             note = (f"Searched by place and date only, not for \"{query}\": searching by what is in a photo needs "
                     "Immich's machine learning, which is not running.")
