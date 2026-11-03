@@ -56,9 +56,12 @@ and [restricted-scope review](https://developers.google.com/identity/protocols/o
   transactions. Its Mac path needs implementation, including lifecycle and
   interruption recovery, before physical testing can qualify it. Removing the
   transport refusal alone would not provide that support.
-  Fixed native identity, private-directory and env-file preparation groundwork
-  is now present. It has no Source jobs, env publisher or installer activation;
-  simulated Darwin checks do not qualify those missing paths.
+  Protected runtime/kit, broker-only environment, fixed logs and disabled job
+  definitions now have publication/recovery controls and an inactive v2 gate.
+  The Source 4.3.43 authority is reviewed separately, retaining 4.3.42. There is
+  no native Source execution, automatic trigger or connection activation;
+  controlled Linux files and simulated Darwin metadata do not qualify those
+  remaining lifecycle paths or physical Mac behavior.
 - Review the remaining limitations in the [integration status](PORTAL-INTEGRATIONS-STATUS.md),
   especially real-provider recovery, connected-data/model behavior and installed
   withdrawal/update/rollback. Scope or release acceptance must be explicit.

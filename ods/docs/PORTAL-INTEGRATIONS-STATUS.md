@@ -22,11 +22,14 @@ Windows/WSL model/browser evidence, later source-only checks and remaining limit
 
 The assembled source includes the scheduler/Darwin fixes, explicit future-task
 policy, native Mac schedule wiring and the bundled Source proposal-file repair.
-Native Source identity and private-directory preparation is now implemented as
-groundwork, with strict broker-only env-file custody and last-step gate
-publication. It is not wired into native jobs or the installer, and it does not
-make Google or reviewed apps available on Mac. Those lifecycle and activation
-paths still need code before physical qualification.
+Native Source preparation now includes the protected runtime and Source kit,
+broker-only environment, fixed logs, disabled job definitions and an explicitly
+inactive v2 gate. Interrupted publication can resume or restore the prior
+inode; controlled readback refuses an incoherent active projection or enabled
+definition. Source 4.3.43 has its own reviewed authority row, retaining 4.3.42.
+No native Source execution, Root Run, automatic trigger or connection activation
+is enabled. Those lifecycle paths still need code before physical qualification;
+the preparation does not make Google or reviewed apps available on Mac.
 The experimental semantic operation projection was rejected and reverted as
 `28f0fde4b`. Gabriel's physical Windows installation remains `60534c7b2`.
 The earlier draft checkpoint `d18e2a1de` had 93 passing hosted checks and one
