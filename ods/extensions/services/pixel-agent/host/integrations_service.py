@@ -31,6 +31,7 @@ import uuid
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import integrations_apps as apps  # noqa: E402
+import integrations_memory as memory  # noqa: E402
 import integrations_notes as notes  # noqa: E402
 from integrations_common import (IntegrationError, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES,  # noqa: E402
                                  SCHEMA_VERSION, Store, digest, now)
@@ -46,7 +47,7 @@ SERVER_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 TOPIC = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 OWNER_ACTIONS = {"get", "save", "test-notification", "discover", "test", "test-app", "watch-list", "send-digest", "restart",
-                 "decide", "clear-activity"}
+                 "decide", "clear-activity"} | memory.OWNER_ACTIONS
 TASK_MODES = ("off", "failures", "all")
 WATCH_SECONDS = 120
 OWNER_SOCKET = "owner.sock"
@@ -179,7 +180,7 @@ class _AdmittedLocalServers:
         return self.service._local_get(server, values, self.revision)
 
 
-class Integrations(AppActions):
+class Integrations(AppActions, memory.MemoryActions):
     def __init__(self, store, local_servers=None):
         self.store = store
         self.local = local_servers or LocalServers()
@@ -239,18 +240,20 @@ class Integrations(AppActions):
         elif action == "clear-activity":
             with self.store.lock:
                 self.store.clear_activity()
+        elif action in memory.OWNER_ACTIONS:
+            self.memory_owner(action, request)
         return self.view()
 
     def view(self):
         with self.store.lock:
             config, secrets, approvals = self.store.config(), self.store.secrets(), self.store.approvals()
-            activity = self.store.activity()
+            activity, remembered = self.store.activity(), self.store.memory()
         waiting = [{key: item[key] for key in ("id", "kind", "summary", "createdAt", "expiresAt")}
                    for item in approvals if item["state"] == "pending"]
         processes = {server["id"]: self.local.status(server["id"])
                      for server in config["mcp"]["servers"] if server["kind"] == "stdio"}
         return {"settings": public_config(config, secrets), "approvals": waiting, "activity": activity,
-                "processes": processes}
+                "processes": processes, "memory": memory.public(remembered)}
 
     def _log(self, action, target, outcome):
         with self.store.lock:
@@ -455,6 +458,8 @@ class Integrations(AppActions):
             return self.task_finished(config, request)
         if action == "digest-plan":
             return {"plan": apps.digest_plan(config)}
+        if action in ("memory-context", "memory-propose", "memory-answer"):
+            return self.memory_agent(action, request)
         if action == "reminder-plan":
             return self.plan_reminder(config, request)
         if action == "reminder-due":

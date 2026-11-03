@@ -5335,7 +5335,7 @@ _ods_pixel_install_integrations() {
     printf '%s\n' "$text" >"$stage/pixel-integrations.service" || { rm -rf -- "$stage"; return 1; }
     ods_sudo install -d -o root -g root -m 0755 "$target" || { rm -rf -- "$stage"; return 1; }
     for name in integrations_service.py integrations_common.py integrations_notes.py integrations_mcp.py \
-        integrations_apps.py integrations_app_service.py integrations_ntfy.py integrations_reminders.py unix_peer.py; do
+        integrations_apps.py integrations_app_service.py integrations_ntfy.py integrations_reminders.py integrations_memory.py unix_peer.py; do
         ods_sudo install -o root -g root -m 0644 "$source/$name" "$target/$name" || { rm -rf -- "$stage"; return 1; }
     done
     ods_sudo install -o root -g root -m 0644 "$stage/pixel-integrations.service" "$unit" || { rm -rf -- "$stage"; return 1; }
