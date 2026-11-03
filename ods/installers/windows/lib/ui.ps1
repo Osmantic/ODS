@@ -593,8 +593,8 @@ function Write-SuccessCard {
     Write-Host "http://localhost:$DashboardPort" -ForegroundColor White
     $_bindAddr = ""
     $_envPath = Join-Path $script:ODS_INSTALL_DIR ".env"
-    if (Test-Path $_envPath) {
-        Get-Content $_envPath | ForEach-Object {
+    if (Test-Path -LiteralPath $_envPath -PathType Leaf) {
+        Get-Content -LiteralPath $_envPath -Encoding UTF8 | ForEach-Object {
             if ($_ -match "^BIND_ADDRESS=(.*)$") { $_bindAddr = $Matches[1].Trim() }
         }
     }
