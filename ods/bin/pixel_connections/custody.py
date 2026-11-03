@@ -9,16 +9,23 @@ only that identity can read; the token never passes through here.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import ctypes
+import errno
+import grp
+import hashlib
 import json
 import os
 from pathlib import Path
 import pwd
+import plistlib
 import re
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 from typing import Any, Callable
+import uuid
 
 BROKER_USER = "pixel-source-broker"
 KIT = Path(__file__).resolve().parent / "source-broker-kit"
@@ -616,3 +623,791 @@ def erase(paths: Paths) -> None:
 
 def remove_env(paths: Paths) -> None:
     paths.env.unlink(missing_ok=True)
+
+
+# Native Source custody is deliberately not selected by any public operation yet.
+# The existing Linux Paths/Run/functions above retain their commands and outputs.
+NATIVE_BROKER = '_ods_pixel_sources'
+NATIVE_HOME = '/private/var/empty'
+NATIVE_META = Path('/private/var/lib/ods-pixel-access')
+NATIVE_STATE = Path('/private/var/lib/pixel-source-broker')
+NATIVE_ENV = Path('/private/etc/pixel-source-broker.env')
+NATIVE_KIT = Path('/usr/local/libexec/ods-pixel-access/pixel_connections/source-broker-kit')
+NATIVE_LABEL = 'com.ods.pixel-native-source-'
+_NATIVE_SEAL = object()
+_NATIVE_SHA = re.compile(r'[a-f0-9]{64}\Z')
+_NATIVE_ACTION = re.compile(r'(?:calendar|gmail-draft)-[0-9]{13}-[a-f0-9]{8}\Z')
+_NATIVE_ACL_TYPE = 0x100
+_NATIVE_LIST_SEARCH = (1 << 1) | (1 << 3)
+
+
+@dataclass(frozen=True)
+class NativeSourcePaths(Paths):
+    """Literal native paths, never a browser/owner-selected relocation."""
+
+    install: Path = NATIVE_KIT
+    state: Path = NATIVE_STATE
+    env: Path = NATIVE_ENV
+    units: Path = Path('/Library/LaunchDaemons')
+    kit: Path = NATIVE_KIT
+
+    def __post_init__(self):
+        if (self.install, self.state, self.env, self.units, self.kit) != (
+                NATIVE_KIT, NATIVE_STATE, NATIVE_ENV, Path('/Library/LaunchDaemons'), NATIVE_KIT):
+            raise CustodyError('native-source-paths-invalid')
+
+
+@dataclass(frozen=True)
+class NativeSourceCommand:
+    """A closed plan only. It cannot start, stop, reload or repeat a process."""
+
+    role: str
+    operation: str
+    label: str | None
+    identifier: str | None = None
+    asynchronous: bool = False
+
+
+def native_source_command(arguments, timeout):
+    """Interpret only the Source Run grammar emitted by existing Root code.
+
+    Not a systemctl emulator, shell command builder, scheduler or executor.
+    In particular it does not turn kickstart -k into a one-shot retry.
+    """
+    if (type(arguments) is not list or any(type(item) is not str for item in arguments)
+            or type(timeout) is not int or not 1 <= timeout <= 300):
+        raise CustodyError('native-source-command-invalid')
+    exact = {
+        ('systemctl', 'daemon-reload'): ('definitions', 'verify', None, False),
+        ('systemctl', 'enable', '--now', 'pixel-source-broker.timer'): ('sync', 'enable-trigger', NATIVE_LABEL + 'sync', False),
+        ('systemctl', 'disable', '--now', 'pixel-source-broker.timer'): ('sync', 'disable-trigger', NATIVE_LABEL + 'sync', False),
+        ('systemctl', 'enable', '--now', 'pixel-source-direct.path'): ('direct', 'enable-trigger', NATIVE_LABEL + 'direct', False),
+        ('systemctl', 'disable', '--now', 'pixel-source-direct.path'): ('direct', 'disable-trigger', NATIVE_LABEL + 'direct', False),
+        ('systemctl', 'start', '--no-block', 'pixel-source-broker.service'): ('sync', 'observe-or-start', NATIVE_LABEL + 'sync', True),
+        ('systemctl', 'stop', 'pixel-source-broker.service'): ('sync', 'quiesce', NATIVE_LABEL + 'sync', False),
+        ('systemctl', 'stop', 'pixel-source-direct.service'): ('direct', 'quiesce', NATIVE_LABEL + 'direct', False),
+        ('systemctl', 'stop', 'pixel-source-action@*.service'): ('action', 'quiesce-family', None, False),
+        ('systemctl', 'stop', 'pixel-source-reconcile@*.service'): ('reconcile', 'quiesce-family', None, False),
+        ('systemctl', 'start', 'pixel-source-revoke.service'): ('revoke', 'observe-or-start-once', NATIVE_LABEL + 'revoke', False),
+    }
+    selected = exact.get(tuple(arguments))
+    if selected:
+        if timeout > (60 if selected[0] == 'revoke' else 30):
+            raise CustodyError('native-source-command-invalid')
+        return NativeSourceCommand(selected[0], selected[1], selected[2], asynchronous=selected[3])
+    if len(arguments) == 3 and arguments[:2] == ['systemctl', 'start']:
+        for family, role, pattern in (('action', 'action', _NATIVE_ACTION),
+                                      ('reconcile', 'reconcile', _NATIVE_ACTION),
+                                      ('exchange', 'exchange', FLOW_ID)):
+            match = re.fullmatch(r'pixel-source-' + family + r'@(.+)\.service', arguments[2])
+            if match and pattern.fullmatch(match[1]):
+                if timeout > 120:
+                    raise CustodyError('native-source-command-invalid')
+                return NativeSourceCommand(role, 'observe-or-start-once',
+                    NATIVE_LABEL + role + '.' + match[1], match[1])
+    raise CustodyError('native-source-command-invalid')
+
+
+def _native_root():
+    if sys.platform != 'darwin' or os.geteuid() != 0:
+        raise CustodyError('native-source-root-required')
+
+
+@dataclass(frozen=True)
+class _NativeSourceSelection:
+    bridge: Any
+    deployment: Any
+    seal: Any
+
+    def guard(self):
+        _native_root()
+        from pixel_access_bridge import LaunchdAccessBridge
+        from .planner import ConnectionDeployment
+        if (self.seal is not _NATIVE_SEAL or type(self.bridge) is not LaunchdAccessBridge
+                or type(self.deployment) is not ConnectionDeployment):
+            raise CustodyError('native-source-deployment-required')
+        # Invoke the actual protected method, not a request-supplied callback or
+        # an instance attribute. It reopens RuntimeCustody and loaded deployment.
+        current = LaunchdAccessBridge.connection_deployment(self.bridge)
+        if type(current) is not ConnectionDeployment or current != self.deployment:
+            raise CustodyError('native-source-deployment-changed')
+        doc = current.document
+        if (doc['ownerUid'], doc['ownerGid'], doc['home']) != (
+                self.bridge.owner.pw_uid, self.bridge.owner.pw_gid, str(self.bridge.home)):
+            raise CustodyError('native-source-owner-changed')
+        return doc
+
+
+def native_source_selection(bridge, deployment):
+    """Private Root seam. Parsing/checksumming a deployment is not authority.
+
+    Caller must hold the existing Root connection/admission lock. No default
+    platform selection, availability toggle, job or installer wiring is added.
+    """
+    selected = _NativeSourceSelection(bridge, deployment, _NATIVE_SEAL)
+    selected.guard()
+    return selected
+
+
+def _native_selected(selection):
+    # A duck-typed guard/checksum is not a Root deployment capability.
+    if type(selection) is not _NativeSourceSelection or selection.seal is not _NATIVE_SEAL:
+        raise CustodyError('native-source-deployment-required')
+    return selection.guard()
+
+
+def _native_acl_library():
+    """Apple public sys/acl.h ABI; no opaque-structure layout assumptions.
+
+    LIST_DIRECTORY=1<<1, SEARCH=1<<3, EXTENDED=0x100. Apple Libc acl_flag.c
+    exposes 32-bit flags through acl_get_flag_np; query all bits, including
+    currently unnamed ones. Physical Darwin ABI/kernel qualification is pending.
+    """
+    if sys.platform != 'darwin':
+        raise CustodyError('native-source-acl-platform-required')
+    lib = ctypes.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True)
+    pointer = ctypes.c_void_p
+    signatures = {
+        'acl_get_fd_np': ([ctypes.c_int, ctypes.c_int], pointer),
+        'acl_valid': ([pointer], ctypes.c_int),
+        'acl_get_entry': ([pointer, ctypes.c_int, ctypes.POINTER(pointer)], ctypes.c_int),
+        'acl_get_tag_type': ([pointer, ctypes.POINTER(ctypes.c_int)], ctypes.c_int),
+        'acl_get_permset_mask_np': ([pointer, ctypes.POINTER(ctypes.c_uint64)], ctypes.c_int),
+        'acl_get_flagset_np': ([pointer, ctypes.POINTER(pointer)], ctypes.c_int),
+        'acl_get_flag_np': ([pointer, ctypes.c_int], ctypes.c_int),
+        'acl_get_qualifier': ([pointer], pointer),
+        'acl_init': ([ctypes.c_int], pointer),
+        'acl_create_entry': ([ctypes.POINTER(pointer), ctypes.POINTER(pointer)], ctypes.c_int),
+        'acl_set_tag_type': ([pointer, ctypes.c_int], ctypes.c_int),
+        'acl_set_qualifier': ([pointer, pointer], ctypes.c_int),
+        'acl_set_permset_mask_np': ([pointer, ctypes.c_uint64], ctypes.c_int),
+        'acl_set_fd_np': ([ctypes.c_int, pointer, ctypes.c_int], ctypes.c_int),
+        'acl_free': ([pointer], ctypes.c_int),
+        'mbr_uid_to_uuid': ([ctypes.c_uint32, pointer], ctypes.c_int),
+    }
+    for name, (arguments, result) in signatures.items():
+        try:
+            function = getattr(lib, name)
+        except AttributeError:
+            raise CustodyError('native-source-acl-api-unavailable') from None
+        function.argtypes, function.restype = arguments, result
+    return lib
+
+
+def _native_uuid(lib, uid):
+    if type(uid) is not int or not 0 < uid <= 0xffffffff:
+        raise CustodyError('native-source-identity-invalid')
+    value = (ctypes.c_ubyte * 16)()
+    if lib.mbr_uid_to_uuid(uid, value) != 0:
+        raise CustodyError('native-source-uuid-unavailable')
+    return bytes(value)
+
+
+def _native_flags_zero(lib, item):
+    flags = ctypes.c_void_p()
+    if lib.acl_get_flagset_np(item, ctypes.byref(flags)) != 0 or not flags.value:
+        raise CustodyError('native-source-acl-invalid')
+    for bit in range(32):
+        if lib.acl_get_flag_np(flags, ctypes.c_int(1 << bit).value) != 0:
+            raise CustodyError('native-source-acl-flags')
+
+
+def _native_acl_entries(fd, *, missing=False):
+    lib = _native_acl_library()
+    ctypes.set_errno(0)
+    acl = lib.acl_get_fd_np(fd, _NATIVE_ACL_TYPE)
+    if not acl:
+        if missing and ctypes.get_errno() == errno.ENOENT:
+            os.fstat(fd)
+            return ()
+        raise CustodyError('native-source-acl-required')
+    try:
+        if lib.acl_valid(acl) != 0:
+            raise CustodyError('native-source-acl-invalid')
+        _native_flags_zero(lib, acl)
+        entries = []
+        for index in range(4):
+            entry = ctypes.c_void_p()
+            ctypes.set_errno(0)
+            result = lib.acl_get_entry(acl, 0 if index == 0 else -1, ctypes.byref(entry))
+            if result == -1 and ctypes.get_errno() == errno.EINVAL:
+                return tuple(entries)
+            if result != 0 or not entry.value or index >= 2:
+                raise CustodyError('native-source-acl-entries')
+            _native_flags_zero(lib, entry)
+            tag, mask = ctypes.c_int(), ctypes.c_uint64()
+            if (lib.acl_get_tag_type(entry, ctypes.byref(tag)) != 0 or tag.value != 1
+                    or lib.acl_get_permset_mask_np(entry, ctypes.byref(mask)) != 0
+                    or mask.value != _NATIVE_LIST_SEARCH):
+                raise CustodyError('native-source-acl-rights')
+            qualifier = lib.acl_get_qualifier(entry)
+            if not qualifier:
+                raise CustodyError('native-source-acl-qualifier')
+            try:
+                entries.append(ctypes.string_at(qualifier, 16))
+            finally:
+                lib.acl_free(qualifier)
+        raise CustodyError('native-source-acl-entries')
+    finally:
+        lib.acl_free(acl)
+
+
+def native_verify_gate(fd, owner_uid, broker_uid, *, prefix=False):
+    """Read-only proof on the held Root inode; never repair/adopt a pathname."""
+    info = os.fstat(fd)
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_gid != 0
+            or stat.S_IMODE(info.st_mode) != 0o700 or owner_uid == broker_uid):
+        raise CustodyError('native-source-gate-unsafe')
+    lib = _native_acl_library()
+    wanted = (_native_uuid(lib, owner_uid), _native_uuid(lib, broker_uid))
+    if wanted[0] == wanted[1]:
+        raise CustodyError('native-source-identity-uuid-conflict')
+    actual = _native_acl_entries(fd, missing=prefix)
+    if actual != wanted and not (prefix and actual in ((), wanted[:1])):
+        raise CustodyError('native-source-gate-acl-mismatch')
+    return (info.st_dev, info.st_ino)
+
+
+def _native_write_gate_acl(selection, fd, owner_uid, broker_uid):
+    """Only a Root-intent-bound created inode may receive the two ACEs."""
+    doc = _native_selected(selection)
+    from pixel_macos_custody import protected_directory
+    with protected_directory(NATIVE_META) as directory:
+        record, _raw = _native_json_at(directory, 'source-custody-prepare.json')
+        identity, _raw = _native_json_at(directory, 'source-identity.json')
+    identity = _native_identity_intent(identity)
+    _manifest, kit_sha = native_verify_kit(selection)
+    lib = _native_acl_library()
+    owner_guid = str(uuid.UUID(bytes=_native_uuid(lib, doc['ownerUid']))).upper()
+    binding = _native_prepare_binding(doc, identity, owner_guid, kit_sha, selection.deployment.checksum)
+    _native_validate_prepare_intent(record, binding)
+    info = os.fstat(fd)
+    if (owner_uid != doc['ownerUid'] or broker_uid != identity['id']
+            or record['gate'] != [info.st_dev, info.st_ino]):
+        raise CustodyError('native-source-gate-intent-required')
+    with protected_directory(NATIVE_STATE.parent) as parent:
+        fixed = os.open(NATIVE_STATE.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        try:
+            fixed_info = os.fstat(fixed)
+            if (fixed_info.st_dev, fixed_info.st_ino) != (info.st_dev, info.st_ino):
+                raise CustodyError('native-source-gate-intent-required')
+        finally:
+            os.close(fixed)
+    native_verify_gate(fd, owner_uid, broker_uid, prefix=True)
+    lib = _native_acl_library()
+    acl = ctypes.c_void_p(lib.acl_init(2))
+    if not acl.value:
+        raise CustodyError('native-source-acl-create-failed')
+    try:
+        for uid in (owner_uid, broker_uid):
+            entry = ctypes.c_void_p()
+            qualifier = (ctypes.c_ubyte * 16).from_buffer_copy(_native_uuid(lib, uid))
+            if (lib.acl_create_entry(ctypes.byref(acl), ctypes.byref(entry)) != 0 or not entry.value
+                    or lib.acl_set_tag_type(entry, 1) != 0
+                    or lib.acl_set_qualifier(entry, qualifier) != 0
+                    or lib.acl_set_permset_mask_np(entry, _NATIVE_LIST_SEARCH) != 0):
+                raise CustodyError('native-source-acl-create-failed')
+        _native_flags_zero(lib, acl)
+        if lib.acl_valid(acl) != 0 or lib.acl_set_fd_np(fd, acl, _NATIVE_ACL_TYPE) != 0:
+            raise CustodyError('native-source-acl-write-failed')
+    finally:
+        lib.acl_free(acl)
+    native_verify_gate(fd, owner_uid, broker_uid)
+
+
+def _native_no_acl(fd):
+    if _native_acl_entries(fd, missing=True):
+        raise CustodyError('native-source-descendant-acl')
+
+
+def _native_identity_intent(value):
+    if (type(value) is not dict or set(value) != {'schema', 'name', 'id', 'userGuid', 'groupGuid'}
+            or type(value['schema']) is not int or value['schema'] != 1 or value['name'] != NATIVE_BROKER
+            or type(value['id']) is not int or not 60000 <= value['id'] < 65000):
+        raise CustodyError('native-source-identity-intent-invalid')
+    for key in ('userGuid', 'groupGuid'):
+        try:
+            if type(value[key]) is not str or str(uuid.UUID(value[key])).upper() != value[key]:
+                raise ValueError()
+        except (ValueError, AttributeError):
+            raise CustodyError('native-source-identity-intent-invalid') from None
+    if value['userGuid'] == value['groupGuid']:
+        raise CustodyError('native-source-identity-intent-invalid')
+    return dict(value)
+
+
+def _native_identity_attributes(intent, kind):
+    intent = _native_identity_intent(intent)
+    if kind == 'Groups':
+        return {'GeneratedUID': intent['groupGuid'], 'Password': '*', 'PrimaryGroupID': str(intent['id'])}
+    if kind != 'Users':
+        raise CustodyError('native-source-identity-kind-invalid')
+    # Same UUID-bound prefix algorithm as the protected native Operations helper.
+    # UniqueID is LAST: a partial user must not acquire a usable UID early.
+    return {'GeneratedUID': intent['userGuid'], 'Password': '*', 'UserShell': '/usr/bin/false',
+        'NFSHomeDirectory': NATIVE_HOME, 'IsHidden': '1', 'PrimaryGroupID': str(intent['id']),
+        'UniqueID': str(intent['id'])}
+
+
+def _native_identity_record(record, expected, *, complete=False):
+    if record is None:
+        if complete:
+            raise CustodyError('native-source-identity-record-missing')
+        return
+    if type(record) is not dict or record.get('GeneratedUID') != [expected['GeneratedUID']]:
+        raise CustodyError('native-source-identity-foreign-record')
+    for key, value in expected.items():
+        if (key in record or complete) and record.get(key) != [value]:
+            raise CustodyError('native-source-identity-attribute-conflict')
+    for key in ('GroupMembership', 'GroupMembers', 'NestedGroups', 'AuthenticationAuthority', 'ShadowHashData'):
+        if record.get(key):
+            raise CustodyError('native-source-identity-authority-conflict')
+
+
+def _native_identity_collisions(intent):
+    for entry in pwd.getpwall():
+        if entry.pw_uid == intent['id'] and entry.pw_name != NATIVE_BROKER:
+            raise CustodyError('native-source-identity-id-collision')
+    for entry in grp.getgrall():
+        if (entry.gr_gid == intent['id'] and entry.gr_name != NATIVE_BROKER
+                or NATIVE_BROKER in entry.gr_mem):
+            raise CustodyError('native-source-identity-membership-conflict')
+
+
+def _native_ds_record(kind):
+    if kind not in ('Groups', 'Users'):
+        raise CustodyError('native-source-identity-kind-invalid')
+    result = subprocess.run(['/usr/bin/dscl', '-plist', '.', '-read', '/' + kind + '/' + NATIVE_BROKER],
+        stdin=subprocess.DEVNULL, capture_output=True, timeout=20, check=False)
+    if result.returncode:
+        if b'eDSRecordNotFound' in result.stdout + result.stderr:
+            return None
+        raise CustodyError('native-source-directory-read-failed')
+    try:
+        value = plistlib.loads(result.stdout)
+    except (ValueError, TypeError):
+        raise CustodyError('native-source-directory-record-invalid') from None
+    if type(value) is not dict or any(type(key) is not str for key in value):
+        raise CustodyError('native-source-directory-record-invalid')
+    value = {key.removeprefix('dsAttrTypeStandard:'): item for key, item in value.items()}
+    if 'dsAttrTypeNative:IsHidden' in value:
+        if 'IsHidden' in value:
+            raise CustodyError('native-source-directory-record-invalid')
+        value['IsHidden'] = value.pop('dsAttrTypeNative:IsHidden')
+    return value
+
+
+def _native_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise CustodyError('native-source-record-invalid')
+        result[key] = value
+    return result
+
+
+def _native_json_at(directory, name, *, mode=0o600):
+    if name not in ('source-identity.json', 'source-custody-prepare.json'):
+        raise CustodyError('native-source-record-invalid')
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    except FileNotFoundError:
+        return None, None
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_gid != 0
+                or stat.S_IMODE(info.st_mode) != mode or info.st_nlink != 1 or info.st_size > 16384):
+            raise CustodyError('native-source-record-unsafe')
+        _native_no_acl(stream.fileno())
+        raw = stream.read(16385)
+        if len(raw) > 16384:
+            raise CustodyError('native-source-record-unsafe')
+    try:
+        value = json.loads(raw, object_pairs_hook=_native_pairs)
+    except (ValueError, UnicodeError, RecursionError):
+        raise CustodyError('native-source-record-invalid') from None
+    return value, raw
+
+
+def _native_save_at(selection, directory, name, value, *, previous=None):
+    _native_selected(selection)
+    _current, raw = _native_json_at(directory, name)
+    if raw != previous:
+        raise CustodyError('native-source-record-changed')
+    body = (json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False) + '\n').encode()
+    if len(body) > 16384:
+        raise CustodyError('native-source-record-invalid')
+    temporary = '.source-' + uuid.uuid4().hex
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            info = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_gid != 0
+                    or info.st_nlink != 1):
+                raise CustodyError('native-source-record-unsafe')
+            _native_no_acl(stream.fileno())
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(body)
+            stream.flush()
+            os.fsync(stream.fileno())
+        _native_selected(selection)
+        if previous is None:
+            os.link(temporary, name, src_dir_fd=directory, dst_dir_fd=directory, follow_symlinks=False)
+        else:
+            if _native_json_at(directory, name)[1] != previous:
+                raise CustodyError('native-source-record-changed')
+            os.replace(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+        os.fsync(directory)
+    finally:
+        try:
+            os.unlink(temporary, dir_fd=directory)
+        except FileNotFoundError:
+            pass
+    os.fsync(directory)
+    return body
+
+
+def native_prepare_identity(selection):
+    """Unwired Root-only account preparation. No job, token or provider starts."""
+    _native_selected(selection)
+    native_verify_kit(selection)
+    from pixel_macos_custody import protected_directory
+    with protected_directory(NATIVE_META) as directory:
+        intent, raw = _native_json_at(directory, 'source-identity.json')
+        if raw is None:
+            if any(_native_ds_record(kind) is not None for kind in ('Groups', 'Users')):
+                raise CustodyError('native-source-identity-unmanaged-record')
+            occupied = {entry.pw_uid for entry in pwd.getpwall()} | {entry.gr_gid for entry in grp.getgrall()}
+            available = next((value for value in range(60000, 65000) if value not in occupied), None)
+            if available is None:
+                raise CustodyError('native-source-identity-id-exhausted')
+            intent = {'schema': 1, 'name': NATIVE_BROKER, 'id': available,
+                'userGuid': str(uuid.uuid4()).upper(), 'groupGuid': str(uuid.uuid4()).upper()}
+            _native_save_at(selection, directory, 'source-identity.json', intent)
+        intent = _native_identity_intent(intent)
+        records = {kind: _native_ds_record(kind) for kind in ('Groups', 'Users')}
+        for kind, record in records.items():
+            _native_identity_record(record, _native_identity_attributes(intent, kind))
+        _native_identity_collisions(intent)
+        for kind in ('Groups', 'Users'):
+            for key, value in _native_identity_attributes(intent, kind).items():
+                record = _native_ds_record(kind)
+                _native_identity_record(record, _native_identity_attributes(intent, kind))
+                _native_identity_collisions(intent)
+                if record is None or key not in record:
+                    _native_selected(selection)
+                    result = subprocess.run(['/usr/bin/dscl', '-plist', '.', '-create',
+                        '/' + kind + '/' + NATIVE_BROKER, key, value], stdin=subprocess.DEVNULL,
+                        capture_output=True, timeout=20, check=False)
+                    if result.returncode:
+                        raise CustodyError('native-source-directory-write-failed')
+            _native_identity_record(_native_ds_record(kind), _native_identity_attributes(intent, kind), complete=True)
+        _native_identity_collisions(intent)
+        user, group = pwd.getpwnam(NATIVE_BROKER), grp.getgrnam(NATIVE_BROKER)
+        if user.pw_uid != intent['id'] or user.pw_gid != intent['id'] or group.gr_gid != intent['id']:
+            raise CustodyError('native-source-identity-id-conflict')
+        lib = _native_acl_library()
+        if _native_uuid(lib, intent['id']) != uuid.UUID(intent['userGuid']).bytes:
+            raise CustodyError('native-source-identity-uuid-conflict')
+        return intent
+
+
+
+def native_verify_kit(selection):
+    """A protected but not-yet-published kit is unavailable, never synthesized.
+
+    The future protected native installer must publish this manifest with the
+    selected Source blob and deployment. This function does not publish it.
+    """
+    _native_selected(selection)
+    from pixel_macos_custody import protected_directory
+    bodies = {}
+    with protected_directory(NATIVE_KIT) as directory:
+        if set(os.listdir(directory)) != {'source-kit.json', 'broker.py', 'source-broker.env'}:
+            raise CustodyError('native-source-kit-invalid')
+        for name, mode in (('source-kit.json', 0o644), ('broker.py', 0o755), ('source-broker.env', 0o644)):
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            with os.fdopen(fd, 'rb') as stream:
+                info = os.fstat(stream.fileno())
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_gid != 0
+                        or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != mode
+                        or info.st_size > 2 * 1024 * 1024):
+                    raise CustodyError('native-source-kit-unsafe')
+                _native_no_acl(stream.fileno())
+                body = stream.read(2 * 1024 * 1024 + 1)
+                after = os.fstat(stream.fileno())
+                if (len(body) > 2 * 1024 * 1024 or (info.st_dev, info.st_ino, info.st_size,
+                        info.st_mtime_ns, info.st_ctime_ns) != (after.st_dev, after.st_ino,
+                        after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
+                    raise CustodyError('native-source-kit-changed')
+                bodies[name] = body
+    try:
+        manifest = json.loads(bodies['source-kit.json'], object_pairs_hook=_native_pairs)
+    except (ValueError, UnicodeError, RecursionError):
+        raise CustodyError('native-source-kit-invalid') from None
+    if (type(manifest) is not dict or set(manifest) != {'schemaVersion', 'kind', 'deploymentSha256', 'sourceRef', 'files'}
+            or type(manifest['schemaVersion']) is not int or manifest['schemaVersion'] != 1
+            or manifest['kind'] != 'ods-native-source-kit'
+            or manifest['deploymentSha256'] != selection.deployment.checksum
+            or type(manifest['sourceRef']) is not str or not re.fullmatch('[a-f0-9]{40}', manifest['sourceRef'])
+            or type(manifest['files']) is not dict or set(manifest['files']) != {'broker.py', 'source-broker.env'}):
+        raise CustodyError('native-source-kit-invalid')
+    for name in manifest['files']:
+        if (type(manifest['files'][name]) is not str or not _NATIVE_SHA.fullmatch(manifest['files'][name])
+                or hashlib.sha256(bodies[name]).hexdigest() != manifest['files'][name]):
+            raise CustodyError('native-source-kit-changed')
+    # No shell interpretation. Validate the existing generated format before
+    # returning even disabled values; runtime publication is a later slice.
+    try:
+        lines = parse_env(bodies['source-broker.env'].decode('utf-8'))
+    except UnicodeError:
+        raise CustodyError('native-source-kit-invalid') from None
+    if len({key for key, _value in lines}) != len(lines):
+        raise CustodyError('native-source-kit-invalid')
+    _native_selected(selection)
+    return manifest, hashlib.sha256(bodies['source-kit.json']).hexdigest()
+
+
+def _native_layout(doc, identity):
+    uid, gid = identity['id'], identity['id']
+    return (('private', uid, gid, 0o700), ('private/oauth', uid, gid, 0o700),
+        ('projection', uid, doc['ownerGid'], 0o2750),
+        ('results', uid, doc['ownerGid'], 0o2750),
+        ('proposals', doc['ownerUid'], gid, 0o2750))
+
+
+def _native_directory_fd(parent, relative):
+    fd = os.dup(parent)
+    try:
+        for part in relative.split('/'):
+            if part in ('', '.', '..'):
+                raise CustodyError('native-source-layout-invalid')
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _native_descriptor(doc, identity, owner_guid, kit_sha):
+    return {'schemaVersion': 1, 'kind': 'ods-native-source-custody',
+        'phase': 'prepared-no-jobs', 'deploymentSha256': hashlib.sha256(
+            json.dumps(doc, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest(),
+        'kitSha256': kit_sha, 'ownerUid': doc['ownerUid'], 'ownerGid': doc['ownerGid'],
+        'ownerGuid': owner_guid, 'broker': dict(identity),
+        'state': str(NATIVE_STATE), 'env': str(NATIVE_ENV), 'kit': str(NATIVE_KIT),
+        'hostPython': doc['hostPythonPath']}
+
+
+def _native_verify_data_tree(fd, *, owners, group, private, remaining, depth=0):
+    """Metadata only, not provider/schema admission or credential inspection."""
+    if depth > 32:
+        raise CustodyError('native-source-state-too-large')
+    for name in os.listdir(fd):
+        remaining[0] -= 1
+        if remaining[0] < 0:
+            raise CustodyError('native-source-state-too-large')
+        info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+        directory = stat.S_ISDIR(info.st_mode)
+        if not directory and not stat.S_ISREG(info.st_mode):
+            raise CustodyError('native-source-descendant-unsafe')
+        child = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+            | (os.O_DIRECTORY if directory else 0), dir_fd=fd)
+        try:
+            actual = os.fstat(child)
+            if ((actual.st_dev, actual.st_ino) != (info.st_dev, info.st_ino)
+                    or not (stat.S_ISDIR(actual.st_mode) if directory else stat.S_ISREG(actual.st_mode))):
+                raise CustodyError('native-source-descendant-changed')
+            allowed_modes = (0o700, 0o2700) if directory else ((0o600,) if private else (0o600, 0o640))
+            if (actual.st_uid not in owners or actual.st_gid != group
+                    or stat.S_IMODE(actual.st_mode) not in allowed_modes
+                    or not directory and actual.st_nlink != 1):
+                raise CustodyError('native-source-descendant-unsafe')
+            _native_no_acl(child)
+            if directory:
+                _native_verify_data_tree(child, owners=owners, group=group, private=private,
+                    remaining=remaining, depth=depth + 1)
+        finally:
+            os.close(child)
+
+
+def _native_prepare_binding(doc, identity, owner_guid, kit_sha, checksum):
+    return {'schema': 1, 'kind': 'native-source-prepare', 'deploymentSha256': checksum,
+        'kitSha256': kit_sha, 'ownerUid': doc['ownerUid'], 'ownerGid': doc['ownerGid'],
+        'ownerGuid': owner_guid, 'brokerUid': identity['id'], 'brokerGuid': identity['userGuid'],
+        'groupGuid': identity['groupGuid']}
+
+
+def _native_inode(value):
+    return (type(value) is list and len(value) == 2 and all(type(v) is int for v in value)
+            and value[0] >= 0 and value[1] > 0)
+
+
+def _native_validate_prepare_intent(intent, binding):
+    if (type(intent) is not dict or set(intent) != {*binding, 'gate', 'children'}
+            or any(type(intent[key]) is not type(value) or intent[key] != value for key, value in binding.items())
+            or intent['gate'] is not None and not _native_inode(intent['gate'])
+            or type(intent['children']) is not dict
+            or set(intent['children']) - {'private', 'private/oauth', 'projection', 'results', 'proposals'}):
+        raise CustodyError('native-source-state-intent-changed')
+    for record in intent['children'].values():
+        if (type(record) is not dict or set(record) != {'inode', 'ready'}
+                or type(record['ready']) is not bool or not _native_inode(record['inode'])):
+            raise CustodyError('native-source-state-intent-changed')
+    if intent['gate'] is None and intent['children']:
+        raise CustodyError('native-source-state-intent-changed')
+
+
+def native_prepare_state(selection, identity):
+    """Prepare only journal-bound native dirs/descriptor, never env/jobs/consent.
+
+    Deliberate slice-A limit: retained action archives need the later lifecycle
+    validator; this preparer refuses incompatible/nonconforming existing data.
+    A crash before an inode is recorded leaves preserved unadoptable residue.
+    """
+    doc = _native_selected(selection)
+    _manifest, kit_sha = native_verify_kit(selection)
+    identity = _native_identity_intent(identity)
+    from pixel_macos_custody import protected_directory
+    with protected_directory(NATIVE_META) as metadata:
+        recorded_identity, _raw = _native_json_at(metadata, 'source-identity.json')
+    if _native_identity_intent(recorded_identity) != identity:
+        raise CustodyError('native-source-identity-intent-changed')
+    lib = _native_acl_library()
+    owner_guid = str(uuid.UUID(bytes=_native_uuid(lib, doc['ownerUid']))).upper()
+    for kind in ('Groups', 'Users'):
+        _native_identity_record(_native_ds_record(kind), _native_identity_attributes(identity, kind), complete=True)
+    _native_identity_collisions(identity)
+    if _native_uuid(lib, identity['id']) != uuid.UUID(identity['userGuid']).bytes:
+        raise CustodyError('native-source-identity-uuid-conflict')
+    binding = _native_prepare_binding(doc, identity, owner_guid, kit_sha, selection.deployment.checksum)
+    with protected_directory(NATIVE_META) as metadata:
+        intent, raw = _native_json_at(metadata, 'source-custody-prepare.json')
+        if raw is None:
+            if os.path.lexists(NATIVE_STATE):
+                raise CustodyError('native-source-state-unmanaged')
+            intent = dict(binding, gate=None, children={})
+            raw = _native_save_at(selection, metadata, 'source-custody-prepare.json', intent)
+        _native_validate_prepare_intent(intent, binding)
+        with protected_directory(NATIVE_STATE.parent) as parent:
+            if intent['gate'] is None:
+                _native_selected(selection)
+                try:
+                    os.mkdir(NATIVE_STATE.name, mode=0o700, dir_fd=parent)
+                except FileExistsError:
+                    raise CustodyError('native-source-state-unmanaged') from None
+                os.fsync(parent)
+                gate = os.open(NATIVE_STATE.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+                try:
+                    native_verify_gate(gate, doc['ownerUid'], identity['id'], prefix=True)
+                    if os.listdir(gate):
+                        raise CustodyError('native-source-state-unmanaged')
+                    info = os.fstat(gate)
+                    intent['gate'] = [info.st_dev, info.st_ino]
+                    raw = _native_save_at(selection, metadata, 'source-custody-prepare.json', intent, previous=raw)
+                finally:
+                    os.close(gate)
+            gate = os.open(NATIVE_STATE.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            try:
+                info = os.fstat(gate)
+                if intent['gate'] != [info.st_dev, info.st_ino]:
+                    raise CustodyError('native-source-gate-identity-changed')
+                native_verify_gate(gate, doc['ownerUid'], identity['id'], prefix=True)
+                wanted = (_native_uuid(lib, doc['ownerUid']), _native_uuid(lib, identity['id']))
+                if _native_acl_entries(gate, missing=True) != wanted:
+                    _native_write_gate_acl(selection, gate, doc['ownerUid'], identity['id'])
+                if set(os.listdir(gate)) - {'private', 'projection', 'results', 'proposals', 'custody.json'}:
+                    raise CustodyError('native-source-state-unmanaged')
+                for relative, uid, gid, mode in _native_layout(doc, identity):
+                    parts = relative.split('/')
+                    container = _native_directory_fd(gate, '/'.join(parts[:-1])) if len(parts) > 1 else os.dup(gate)
+                    try:
+                        record = intent['children'].get(relative)
+                        if record is None:
+                            _native_selected(selection)
+                            try:
+                                os.mkdir(parts[-1], mode=0o700, dir_fd=container)
+                            except FileExistsError:
+                                raise CustodyError('native-source-descendant-unmanaged') from None
+                            os.fsync(container)
+                            child = _native_directory_fd(container, parts[-1])
+                            try:
+                                created = os.fstat(child)
+                                if (created.st_uid != 0 or created.st_gid != 0
+                                        or stat.S_IMODE(created.st_mode) != 0o700 or os.listdir(child)):
+                                    raise CustodyError('native-source-descendant-unmanaged')
+                                _native_no_acl(child)
+                                intent['children'][relative] = {'inode': [created.st_dev, created.st_ino], 'ready': False}
+                                raw = _native_save_at(selection, metadata, 'source-custody-prepare.json', intent, previous=raw)
+                            finally:
+                                os.close(child)
+                        child = _native_directory_fd(container, parts[-1])
+                        try:
+                            record = intent['children'][relative]
+                            actual = os.fstat(child)
+                            if (type(record) is not dict or set(record) != {'inode', 'ready'}
+                                    or type(record['ready']) is not bool or record['inode'] != [actual.st_dev, actual.st_ino]):
+                                raise CustodyError('native-source-descendant-changed')
+                            _native_no_acl(child)
+                            if not record['ready']:
+                                if (os.listdir(child) or (actual.st_uid, actual.st_gid) not in ((0, 0), (uid, gid))
+                                        or stat.S_IMODE(actual.st_mode) not in (0o700, mode)):
+                                    raise CustodyError('native-source-descendant-unmanaged')
+                                _native_selected(selection)
+                                if (actual.st_uid, actual.st_gid) != (uid, gid):
+                                    os.fchown(child, uid, gid)
+                                os.fchmod(child, mode)
+                                os.fsync(child)
+                                intent['children'][relative]['ready'] = True
+                                raw = _native_save_at(selection, metadata, 'source-custody-prepare.json', intent, previous=raw)
+                            actual = os.fstat(child)
+                            if (actual.st_uid, actual.st_gid, stat.S_IMODE(actual.st_mode)) != (uid, gid, mode):
+                                raise CustodyError('native-source-descendant-changed')
+                        finally:
+                            os.close(child)
+                    finally:
+                        os.close(container)
+                descriptor = _native_descriptor(doc, identity, owner_guid, kit_sha)
+                expected = (json.dumps(descriptor, sort_keys=True, separators=(',', ':')) + '\n').encode()
+                try:
+                    fd = os.open('custody.json', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=gate)
+                except FileNotFoundError:
+                    _native_selected(selection)
+                    fd = os.open('custody.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=gate)
+                    with os.fdopen(fd, 'wb') as stream:
+                        info = os.fstat(stream.fileno())
+                        if info.st_uid != 0 or info.st_nlink != 1:
+                            raise CustodyError('native-source-descriptor-unsafe')
+                        _native_no_acl(stream.fileno())
+                        os.fchown(stream.fileno(), 0, identity['id'])
+                        os.fchmod(stream.fileno(), 0o640)
+                        stream.write(expected)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    os.fsync(gate)
+                    fd = os.open('custody.json', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=gate)
+                with os.fdopen(fd, 'rb') as stream:
+                    info = os.fstat(stream.fileno())
+                    if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_gid != identity['id']
+                            or stat.S_IMODE(info.st_mode) != 0o640 or info.st_nlink != 1 or info.st_size > 16384):
+                        raise CustodyError('native-source-descriptor-unsafe')
+                    _native_no_acl(stream.fileno())
+                    if stream.read(16385) != expected:
+                        raise CustodyError('native-source-descriptor-changed')
+                # Metadata walks never read token, handoff, message or provider bytes.
+                for relative, _uid, gid, _mode in _native_layout(doc, identity):
+                    if relative == 'private/oauth':
+                        continue
+                    child = _native_directory_fd(gate, relative)
+                    try:
+                        _native_verify_data_tree(child, owners={identity['id']} if relative != 'proposals' else {doc['ownerUid']},
+                            group=gid, private=relative == 'private', remaining=[MAX_RETIRED_ACTION_FILES])
+                    finally:
+                        os.close(child)
+                native_verify_gate(gate, doc['ownerUid'], identity['id'])
+                _native_selected(selection)
+                return descriptor
+            finally:
+                os.close(gate)
