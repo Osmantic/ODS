@@ -43,6 +43,7 @@ from config import (
     _read_env_from_file,
     get_env_file_read_error,
     normalize_ods_mode, read_live_env_value, LLM_BACKEND,
+    external_stt_base_url,
 )
 from models import (
     GPUInfo, ServiceStatus, DiskUsage, ModelInfo, BootstrapStatus,
@@ -315,6 +316,7 @@ def _build_readiness_payload(
     host_agent: dict[str, Any],
     stt_model_cached: Optional[bool],
     stt_model_name: str,
+    stt_external: bool = False,
 ) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
 
@@ -419,7 +421,9 @@ def _build_readiness_payload(
 
     whisper = _service_by_id(service_statuses, "whisper")
     tts = _service_by_id(service_statuses, "tts")
-    voice_enabled = bool(whisper or tts)
+    # stt_external: speech-to-text runs on another machine (no whisper row);
+    # its readiness is whether that server serves the configured model.
+    voice_enabled = bool(whisper or tts or stt_external)
     if not voice_enabled:
         checks.append(_readiness_check(
             check_id="voice",
@@ -431,18 +435,28 @@ def _build_readiness_payload(
         ))
         can_use_voice = False
     else:
-        whisper_ready = bool(whisper and whisper.status == "healthy")
+        if stt_external:
+            whisper_ready = stt_model_cached is True
+        else:
+            whisper_ready = bool(whisper and whisper.status == "healthy")
         tts_ready = bool(tts and tts.status == "healthy")
         model_ready = stt_model_cached is True
         can_use_voice = whisper_ready and tts_ready and model_ready
         if can_use_voice:
             voice_detail = f"Whisper model {stt_model_name} cached and TTS is healthy"
+        elif not whisper_ready and stt_external:
+            voice_detail = f"The speech-to-text server does not answer or does not serve {stt_model_name}"
         elif not whisper_ready:
             voice_detail = "Whisper STT is not healthy"
         elif not model_ready:
             voice_detail = f"Whisper STT model {stt_model_name} is not cached"
         else:
             voice_detail = "Kokoro TTS is not healthy"
+        # ods repair voice restarts local services; it cannot fix a speech-to-
+        # text server on another machine.
+        voice_repair = None
+        if not can_use_voice and not (stt_external and not whisper_ready):
+            voice_repair = "ods repair voice"
         checks.append(_readiness_check(
             check_id="voice",
             name="Voice",
@@ -450,7 +464,7 @@ def _build_readiness_payload(
             ready=can_use_voice,
             status="ready" if can_use_voice else "needs_repair",
             detail=voice_detail,
-            repair="ods repair voice" if not can_use_voice else None,
+            repair=voice_repair,
         ))
 
     required_ready = all(check["ready"] for check in checks if check["required"])
@@ -474,16 +488,17 @@ def _build_readiness_payload(
 
 async def _check_stt_model_cached() -> tuple[Optional[bool], str]:
     model_name = os.environ.get("AUDIO_STT_MODEL") or _read_env_from_file("AUDIO_STT_MODEL") or "Systran/faster-whisper-base"
-    whisper_cfg = SERVICES.get("whisper")
-    if not whisper_cfg:
-        return None, model_name
+    base_url = external_stt_base_url()
+    if not base_url:
+        whisper_cfg = SERVICES.get("whisper")
+        if not whisper_cfg:
+            return None, model_name
+        base_url = f"http://{whisper_cfg.get('host', 'localhost')}:{whisper_cfg.get('port', 8000)}"
 
-    host = whisper_cfg.get("host", "localhost")
-    port = whisper_cfg.get("port", 8000)
     encoded = model_name.replace("/", "%2F")
     try:
         client = await _get_httpx_client()
-        resp = await client.get(f"http://{host}:{port}/v1/models/{encoded}")
+        resp = await client.get(f"{base_url}/v1/models/{encoded}")
         return resp.status_code == 200, model_name
     except (httpx.HTTPError, httpx.TimeoutException, OSError):
         return False, model_name
@@ -1582,6 +1597,7 @@ async def api_readiness(api_key: str = Depends(verify_api_key)):
         host_agent=host_agent,
         stt_model_cached=stt_model_cached,
         stt_model_name=stt_model_name,
+        stt_external=bool(external_stt_base_url()),
     )
 
 

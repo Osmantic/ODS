@@ -95,3 +95,22 @@ class TestVoiceStatus:
         result = await voice_status(api_key="test")
 
         assert result["available"] is True
+
+    @pytest.mark.asyncio
+    async def test_external_stt_server_stands_in_for_local_whisper(self, voice_env, monkeypatch):
+        """install.sh --external-stt-url leaves no local Whisper to check."""
+        voice_env(configured=("tts",), statuses={"tts": "healthy"})
+        probed = []
+
+        async def check_external_stt(base_url):
+            probed.append(base_url)
+            return "healthy"
+
+        monkeypatch.setattr("config.external_stt_base_url", lambda: "http://192.168.1.20:8000")
+        monkeypatch.setattr("helpers.check_external_stt", check_external_stt)
+
+        result = await voice_status(api_key="test")
+
+        assert probed == ["http://192.168.1.20:8000"]
+        assert result["services"]["stt"]["status"] == "healthy"
+        assert result["available"] is True

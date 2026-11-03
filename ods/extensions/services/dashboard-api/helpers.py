@@ -1036,6 +1036,20 @@ async def refresh_cached_builtin_services(service_ids: list[str]) -> None:
 
 # --- Service Health ---
 
+async def check_external_stt(base_url: str) -> str:
+    """Health of a speech-to-text server on another machine.
+
+    install.sh --external-stt-url proves the server lists models before it
+    retires the local Whisper; the same /v1/models answer is its health.
+    """
+    try:
+        client = await _get_httpx_client()
+        resp = await client.get(f"{base_url}/v1/models", timeout=5.0)
+    except httpx.HTTPError:
+        return "unavailable"
+    return "healthy" if resp.status_code == 200 else "unhealthy"
+
+
 async def check_service_health(
     service_id: str,
     config: dict,
