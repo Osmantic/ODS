@@ -39,14 +39,14 @@ MACOS_INSTALLER = ROOT / 'installers/macos/install-macos.sh'
 # The game files as Portal wrote them and https://odsspark.com/game/ serves
 # them. This second pin means changing the game takes two deliberate edits.
 PUBLISHED = {
-    'chars.js': '71408b66267ecdec9fc45cd6732448b71500ccdf936b3d68394852e2b3eef7ff',
+    'chars.js': 'af03eef4d9ab9a6906cbb4357e68cff4b7efee515ffb1b1b31494b34289f6a63',
     'dungeon.js': '80dfc2e0517cb89bce4f445d75e6a85a4a9c2317893a6762d87666b5b136004c',
-    'engine.js': 'f32fc72e33854d3965587a85c9d7eaf501b0abcc6bc0483b194e68a857af609d',
-    'index.html': '4a325311a23cdadbb17f390fecd493afbd379837630e675a593427d168bf012a',
+    'engine.js': 'd9ee0583004b3e263b09e3472afa85856f356c8b26b9b5a2c092378882391a88',
+    'index.html': 'c4491e65f40d66c29907d842048bcdccdf451774ed49cd09b84544e57080360b',
     'legacy.js': '81e8f16fa20cd0961200fb0a78750ea7cd1365fbfda42ca2edbfac07410050eb',
-    'style.css': '2364f00be5b34cde47d4ba83a73daabc8118f8c2163ffcb2206e4092557f9a6d',
-    'ui.js': 'a4373aa0e53bf0727d99d5adc7af4e7e482cbb98c869dab2ec6bf97c72ed3062',
-    'world.js': '90ee17c8904eefe626e4f111a68025444a995a2d9383a2109bdc818b01d0b9e3',
+    'style.css': 'f2d39c8053267b0ed1ce98307e13c5331180871c95b0153bd701be9fa3b3474f',
+    'ui.js': '8ab355d14467fcb183c77a3cabf9423206156d9939053d5be0cc66ba91378db9',
+    'world.js': '935ff43d4d85145157a0834b304d2f540ff65c0213f20d455a4de07f65dfacdd',
 }
 WARNING = 'WARN: Portal is ready, but ODS could not add its Elf of Doom example project: '
 # Not a Discord invite: tests/test-help-links.sh rejects any other invite.
