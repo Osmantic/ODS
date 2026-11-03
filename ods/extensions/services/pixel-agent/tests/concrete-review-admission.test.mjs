@@ -17,7 +17,8 @@ function fixture(submit) {
   const sent=[];
   const tools=createIntegrationTools({context:ctx,outcomes,requireBound:()=>true,submit:async payload=>{
     sent.push(payload);
-    return submit?submit(payload):{ok:true,recoveryReviewOnly:true,path:payload.path,text:'Invented note',results:[],servers:[]};
+    return submit?submit(payload):{ok:true,recoveryReviewOnly:true,path:payload.path,text:'Invented note',results:[],servers:[],
+      ...(payload.action==='notes-search'?{reviewReferences:{version:1,source:'obsidian',binding:hash('default-vault'),entries:[],truncated:false}}:{})};
   }});
   const tool=name=>tools.find(tool=>tool.name===name);
   const prepare=(id,params,name='pixel_ods_notes')=>outcomes.prepareReviewCandidate(event(id,params,name),at(id));
@@ -73,6 +74,18 @@ test('known builtin unknown arguments are rejected before a semantic check or ho
   const f=fixture();
   const denied=await f.prepare('ignored-date',{action:'call',server:'app:news',tool:'digest',arguments:{before:'2026-01-01'}},'pixel_ods_mcp');
   assert.equal(denied.block,true);assert.equal(f.sent.length,0);
+});
+
+test('the first native floor refusal records a fact without any ticket and never adopts a sparse or fresh owner',()=>{
+  const outcomes=createIntegrationOutcomes();outcomes.begin({},ctx,ctx.runId);
+  outcomes.refuseReviewCall(undefined,ctx,'review-candidate-refused',{recoveryReviewOnly:true});
+  assert.match(outcomes.projection(ctx.runId),/did not submit/);assert.equal(outcomes.reviewStartClear(ctx),false);
+  assert.equal(outcomes.take('absent',{action:'notes-read',path:'Example.md'},ctx,{name:'pixel_ods_notes',params:note()}),undefined);
+  const next={...ctx,runId:'fresh-owner',trigger:'user'};outcomes.begin({},next,next.runId);
+  outcomes.refuseReviewCall('old',ctx,'review-candidate-refused',{recoveryReviewOnly:true});
+  outcomes.refuseReviewCall('sparse',{agentId:ctx.agentId,sessionId:ctx.sessionId,sessionKey:ctx.sessionKey},
+    'review-candidate-refused',{recoveryReviewOnly:true});
+  assert.equal(outcomes.projection(next.runId),undefined);assert.equal(outcomes.reviewStartClear(next),true);
 });
 
 test('review candidates refuse actual host truncation tails without changing or shortening arguments',async()=>{
@@ -158,6 +171,23 @@ test('cancellation releases queued families and old settlement cannot release a 
   f.outcomes.clear();
 });
 
+test('an old native aborted closure cannot consume or stop a newer same-ID owner admission',async()=>{
+  const f=fixture(),oldContext={agentId:ctx.agentId,sessionId:ctx.sessionId,sessionKey:ctx.sessionKey};
+  const old=createIntegrationTools({context:oldContext,outcomes:f.outcomes,requireBound:()=>true,
+    submit:async()=>assert.fail('an aborted old native closure reached the host')}).find(t=>t.name==='pixel_ods_notes');
+  f.outcomes.end({success:false},ctx);
+  const next={...ctx,runId:'new-collision-owner'};f.outcomes.begin({},next,next.runId);
+  const candidate=await f.outcomes.prepareReviewCandidate(event('reused',note()),{...next,toolCallId:'reused'});
+  const verdict=await f.outcomes.checkReviewCandidate(candidate,async c=>approved(c));
+  assert.equal(f.outcomes.commitReviewCandidate(candidate,verdict),undefined);
+  const controller=new AbortController();controller.abort();
+  assert.equal((await old.execute('reused',note(),controller.signal)).details.code,'integration-call-cancelled');
+  let sent=0;const fresh=createIntegrationTools({context:next,outcomes:f.outcomes,requireBound:()=>true,
+    submit:async()=>{sent++;return {ok:true,recoveryReviewOnly:true,path:'Example.md',text:'Current'};}}).find(t=>t.name==='pixel_ods_notes');
+  assert.equal((await fresh.execute('reused',note())).details.status,'done');assert.equal(sent,1);
+  assert.equal(f.outcomes.projection(next.runId),undefined);
+});
+
 test('typed lookup facts stay private and >16 retained refs preserve the selected old-last target and note alias',async()=>{
   const source=hash('vault'),entry=i=>({path:`N${i}.md`,binding:hash('target'+i)});
   const f=fixture(payload=>payload.action==='notes-search'?{ok:true,recoveryReviewOnly:true,results:[],
@@ -205,6 +235,33 @@ test('host-valid non-BMP note paths and document titles retain their exact typed
   await docs.admit('search',find,'pixel_ods_mcp');await docs.tool('pixel_ods_mcp').execute('search',find);
   const read={action:'call',server:'app:documents',tool:'read',arguments:{id:'1'}};
   const doc=await docs.admit('read',read,'pixel_ods_mcp');assert.equal(doc.view.references.lookups[0].entries[0].title,'😀'.repeat(200));
+});
+
+test('clipping all lookup facts never drops the privately observed source generation',async()=>{
+  const binding=hash('docs-before-connection-change');
+  const f=fixture(()=>({ok:true,recoveryReviewOnly:true,text:'Invented lookup',reviewReferences:{version:1,source:'paperless',
+    binding,entries:[{id:'1',title:'Invented'}],truncated:false}}));
+  const search={action:'call',server:'app:documents',tool:'search',arguments:{query:' '.repeat(17000)+'invented'}};
+  await f.admit('large-query',search,'pixel_ods_mcp');await f.tool('pixel_ods_mcp').execute('large-query',search);
+  const read={action:'call',server:'app:documents',tool:'read',arguments:{id:'1'}};
+  const candidate=await f.admit('read',read,'pixel_ods_mcp');
+  assert.deepEqual(candidate.view.references,{lookups:[],truncated:true});
+  await f.tool('pixel_ods_mcp').execute('read',read);
+  assert.equal(f.sent.at(-1).recoveryReferenceContext.binding,binding);
+  assert.deepEqual(f.sent.at(-1).recoveryReferenceContext.entries,[]);
+  assert.equal(f.sent.at(-1).recoveryReferenceContext.truncated,true);
+});
+
+test('missing or malformed successful lookup references cannot settle or ground another private call',async()=>{
+  for (const references of [undefined,{}, {version:1,source:'obsidian',binding:hash('vault'),entries:[{path:'a.md'}],truncated:false}]) {
+    const f=fixture(()=>({ok:true,recoveryReviewOnly:true,results:[],reviewReferences:references}));
+    const search={action:'search',query:'invented'};await f.admit('lookup',search);
+    const result=await f.tool('pixel_ods_notes').execute('lookup',search);
+    assert.equal(result.details.code,'review-reference-result-invalid');assert.equal(result.isError,true);
+    assert.equal((await f.prepare('retry',note())).block,true);assert.equal(f.sent.length,1);
+    assert.match(f.outcomes.projection(ctx.runId),/lookup was submitted/);
+    assert.doesNotMatch(f.outcomes.projection(ctx.runId),/did not submit/);
+  }
 });
 
 test('a stale host reference refusal terminates review I/O, releases queues and never appears as unknown or done',async()=>{

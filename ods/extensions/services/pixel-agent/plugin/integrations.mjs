@@ -69,7 +69,7 @@ export function submitIntegration(payload, {connect = net.createConnection, plat
 const text = (value, details, isError = false) => ({content: [{type: 'text', text: value}], details, ...(isError ? {isError} : {})});
 
 async function run(submit, payload, signal, render, observed, admitted) {
-  const report = (status, references, code) => { try { observed?.(status, references, code); } catch { /* Observation grants no execution authority. */ } };
+  const report = (status, references, code) => { try { return observed?.(status, references, code); } catch { return false; } };
   const reviewRead = payload.recoveryReviewOnly === true && (REVIEW_READS.has(payload.action) || payload.action==='mcp-call'
     && Object.hasOwn(REVIEW_APP_READS,payload.server) && REVIEW_APP_READS[payload.server].includes(payload.tool));
   let reply;
@@ -108,7 +108,7 @@ async function run(submit, payload, signal, render, observed, admitted) {
     }
     const scope = reply?.error === 'notes-off' && payload.action?.startsWith('notes-')
       ? ' This result concerns only Obsidian notes, not the Paperless document connection. Paperless documents use pixel_ods_mcp action list. Respect the owner\'s requested source.' : '';
-    if (reviewRead && reply?.ok === false) report('settled');
+    if (reviewRead && reply?.ok === false) report('refused');
     return text((reply?.message || 'The integration request failed.') + scope, {status: 'refused', code: reply?.error}, true);
   }
   if (reviewRead) {
@@ -120,7 +120,8 @@ async function run(submit, payload, signal, render, observed, admitted) {
     if (valid) {
       try {
         const rendered = render(reply);
-        report('settled', references);
+        if (report('settled', references)===false) return text('The lookup returned no verified reference for another private call. Automatic review stopped.',
+          {status:'outcome-unknown',code:'review-reference-result-invalid'},true);
         return text(rendered, {status:'done'});
       } catch { /* A malformed read reply cannot claim a settled result. */ }
     }
@@ -304,6 +305,11 @@ export function createIntegrationTools({submit = submitIntegration, context, out
   // isolated cron run has its own session identity; keep its read snapshot apart
   // from an interactive digest or another task. This metadata grants no action.
   const dispatch = async (id, name, params, payload, signal, render) => {
+    // An old native definition retains its original combined abort signal. Do
+    // not let a cancelled callback inspect or consume a newer owner's ticket,
+    // even when a provider reuses the same call ID and arguments.
+    if (signal?.aborted) return text('This integration call was cancelled before submission.',
+      {status:'cancelled',code:'integration-call-cancelled'},true);
     let reservation, boundRequired = false;
     try {
       if (requireBound !== undefined) {
@@ -345,8 +351,10 @@ export function createIntegrationTools({submit = submitIntegration, context, out
       return text('No integration action was submitted: its bounded request was too large.',{status:'blocked',code:'integration-request-too-large'},true);
     }
     try {return await run(submit, nativePayload, signal, render,
-      (status,references,code) => {outcomes?.complete(reservation,status,references,code);
-        if(reviewOnly && ['invalid-review-reference','stale-review-reference','integration-call-unbound'].includes(code))onReviewRefused?.(context,code);},
+      (status,references,code) => {const accepted=outcomes?.complete(reservation,status,references,code);
+        if(reviewOnly && (accepted===false || ['invalid-review-reference','stale-review-reference','integration-call-unbound'].includes(code)))
+          onReviewRefused?.(context,accepted===false?'review-reference-result-invalid':code);
+        return accepted;},
       reviewOnly ? () => Boolean(outcomes?.control?.(reservation)) : undefined);
     } finally {outcomes?.finish?.(reservation);}
   };

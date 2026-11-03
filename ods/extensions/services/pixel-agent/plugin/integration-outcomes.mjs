@@ -26,6 +26,7 @@ const childOf = (id,call) => {
 };
 const REVIEW_REFUSED = 'Portal did not submit this integration candidate because its current restrictions or reference could not be verified. No action or approval request was created by this candidate. Check the saved results, then send a new request.';
 const REVIEW_SERVICE_REFUSED = 'The service refused this proposed integration call because its reference was invalid or no longer current. No change or approval request was created by this call. Automatic review stopped; check the saved results, then send a new request.';
+const REVIEW_LOOKUP_INVALID = 'The service returned an invalid or missing lookup reference. This lookup was submitted, but its result cannot ground another integration call. Automatic review stopped.';
 const referenceSources = new Set(['obsidian','paperless','watch']);
 const hexBinding = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const exactKeys = (value,keys) => value && typeof value === 'object' && !Array.isArray(value)
@@ -133,8 +134,11 @@ export function createIntegrationOutcomes({maximumRuns = 64, maximumCalls = 64} 
   }
   function referenceContext(run,payload) {
     const source=referenceSource(payload),groups=(run.referenceLookups??[]).filter(group=>group.envelope.source===source);
-    if (!groups.length) return undefined;
-    const binding=groups.at(-1).envelope.binding;
+    // Public facts can be clipped, but clipping must never erase a previously
+    // observed source epoch. An empty envelope still makes the host compare the
+    // actual connection/vault before this call accesses private data.
+    const binding=run.referenceBindings?.get(source);
+    if (!binding) return undefined;
     if (groups.some(group=>group.envelope.binding!==binding)) throw new Error('stale-review-reference');
     const target=referenceTarget(payload,source),all=[];
     for (const group of [...groups].reverse()) for (const entry of [...group.envelope.entries].reverse())
@@ -151,9 +155,11 @@ export function createIntegrationOutcomes({maximumRuns = 64, maximumCalls = 64} 
     const source=referenceSource(call.payload);
     const lookup=call.payload.action==='notes-search' || call.payload.action==='mcp-call' &&
       (call.payload.server==='app:documents'&&call.payload.tool==='search' || call.payload.server==='app:watch'&&call.payload.tool==='list');
-    if (!lookup || !source || value===undefined || !current(call.run) || call.run.ended || call.run.reviewStopped) return;
-    let envelope;try{envelope=readReferences(value,source);}catch{return;}
+    if (!lookup) return true;
+    if (!source || !current(call.run) || call.run.ended || call.run.reviewStopped) return false;
+    let envelope;try{envelope=readReferences(value,source);}catch{return false;}
     const run=call.run;
+    run.referenceBindings.set(source,envelope.binding);
     let groups=run.referenceLookups??[];
     if (groups.some(group=>group.envelope.source===source && group.envelope.binding!==envelope.binding)) groups=groups.filter(group=>group.envelope.source!==source);
     const replaced=new Set(envelope.entries.map(entry=>referenceId(source,entry)));
@@ -166,6 +172,7 @@ export function createIntegrationOutcomes({maximumRuns = 64, maximumCalls = 64} 
       if (!groups[0].envelope.entries.length) groups.shift();run.referencesTruncated=true;
     }
     run.referenceLookups=freezeJson(groups);
+    return true;
   }
   function bind(run, context, includeCancelled = false) {
     if (context?.agentId !== 'pixel' || !identity(context.sessionId) || context.sessionId !== run.sessionId ||
@@ -201,7 +208,7 @@ export function createIntegrationOutcomes({maximumRuns = 64, maximumCalls = 64} 
       if (byKey.get(old.sessionKey) === id) byKey.delete(old.sessionKey);
     }
     run = {id:context.runId, sessionId:context.sessionId, sessionKey:context.sessionKey, calls:[], sequence:0,
-      generation:++generation, uncertain,reviewQueue:[],referenceLookups:[]};
+      generation:++generation, uncertain,reviewQueue:[],referenceLookups:[],referenceBindings:new Map()};
     runs.set(run.id, run);
     bySession.set(run.sessionId, run.id);
     if (run.sessionKey) byKey.set(run.sessionKey, run.id);
@@ -212,7 +219,7 @@ export function createIntegrationOutcomes({maximumRuns = 64, maximumCalls = 64} 
     // clear uncertainty. In particular, do not call the mutating bind().
     if (context?.agentId !== 'pixel' || ![context.runId,context.sessionId,context.sessionKey].every(identity)) return false;
     const run = runs.get(context.runId);
-    return Boolean(current(run) && !run.ended && !run.uncertain && !run.overflow
+    return Boolean(current(run) && !run.ended && !run.reviewStopped && !run.uncertain && !run.overflow
       && run.sessionId === context.sessionId && run.sessionKey === context.sessionKey && run.calls.length === 0);
   }
   function before(event, context, decision, trustedControl) {
@@ -356,8 +363,16 @@ export function createIntegrationOutcomes({maximumRuns = 64, maximumCalls = 64} 
       return candidateBlocked(call);
     call.committed=true;return undefined;
   }
-  function refuseReviewCall(id,context,code='review-candidate-refused') {
-    const run=context?.runId?runs.get(context.runId):runs.get(bySession.get(context?.sessionId));
+  function refuseReviewCall(id,context,code='review-candidate-refused',trustedControl) {
+    const trusted=trustedControl?.recoveryReviewOnly===true;
+    const run=context?.runId?runs.get(context.runId):trusted?undefined:runs.get(bySession.get(context?.sessionId));
+    // A first native floor refusal precedes candidate preparation. Record only
+    // the restrictive fact on the EXACT existing owner; never adopt a sparse
+    // context, produce a candidate or grant a factory ticket here.
+    if (trusted) {
+      if (!run || !sameReviewContext(run,context) || !current(run) || run.ended) return;
+      run.reviewOnly=true;
+    }
     if (!run || !run.reviewOnly || !bind(run,context,true)) return;
     const call=run.calls.find(value=>value.id===id || value.nativeChild===id || childOf(id,value));
     const terminal=code!=='integration-outcome-unresolved';
@@ -395,9 +410,12 @@ export function createIntegrationOutcomes({maximumRuns = 64, maximumCalls = 64} 
       if (!current(call.run) || call.closed || call.run.ended || !['pending', 'unknown', 'settled', 'ready','refused'].includes(status)) return;
       call.status = status;
       if (status === 'unknown') call.run.uncertain = true;
-      if (call.recoveryReviewOnly && status==='settled') retainReferences(call,references);
+      if (call.recoveryReviewOnly && status==='settled' && !retainReferences(call,references)) {
+        call.status='unknown';call.run.uncertain=true;drain(call.run,true,REVIEW_LOOKUP_INVALID);return false;
+      }
       if (call.recoveryReviewOnly && ['invalid-review-reference','stale-review-reference'].includes(code)) drain(call.run,true,REVIEW_SERVICE_REFUSED);
       else if (call.recoveryReviewOnly && code==='integration-call-unbound') drain(call.run,true);
+      return true;
     } finally {release(call);}
   }
   function finish(token) {

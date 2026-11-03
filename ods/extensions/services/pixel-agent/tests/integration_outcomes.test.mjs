@@ -87,7 +87,7 @@ test('changed append/read/search/mode/source payloads cannot downgrade to option
 test('only exact bound review note reads/search/catalogs settle, carry the private host flag, and cannot replay', async () => {
   for(const [name,value,reply] of [
     ['pixel_ods_notes',{action:'read',path:'a.md'},{path:'a.md',text:'owned'}],
-    ['pixel_ods_notes',{action:'search',query:'owned'},{results:[]}],
+    ['pixel_ods_notes',{action:'search',query:'owned'},{results:[],reviewReferences:{version:1,source:'obsidian',binding:'a'.repeat(64),entries:[],truncated:false}}],
     ['pixel_ods_mcp',{action:'list'},{servers:[]}],
   ]) {
     const outcomes=setup(),submissions=[];

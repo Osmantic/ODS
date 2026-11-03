@@ -596,7 +596,7 @@ export default definePluginEntry({
         }
         if (decision?.block) {
           integrationOutcomes.refuseReviewCall(context?.toolCallId??event?.toolCallId,context,
-            decision.code??'review-candidate-refused');
+            decision.code??'review-candidate-refused',{recoveryReviewOnly:true});
           if (decision.code!=='integration-outcome-unresolved')
             integrationReviewRecovery.stopReview?.(context,'review-candidate-refused');
         }
