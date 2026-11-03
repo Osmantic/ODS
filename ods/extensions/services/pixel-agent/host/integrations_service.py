@@ -1129,7 +1129,7 @@ if __name__ == "__main__":
         request = {"schemaVersion": 1, "action": "get"}
         owner = (native_owner_request(pathlib.Path(sys.argv[3]) / OWNER_SOCKET, request, timeout=5)
                  if sys.platform == "darwin" else client(pathlib.Path(sys.argv[3]) / OWNER_SOCKET, request, timeout=5))
-        agent = client(sys.argv[2], {"action": "mcp-tools"}, timeout=5)
+        agent = client(sys.argv[2], {"schemaVersion": 1, "action": "mcp-tools"}, timeout=5)
         if owner.get("ok") is not True or agent.get("ok") is not True or type(agent.get("servers")) is not list:
             raise SystemExit("native integrations are not ready")
         print(json.dumps({"schemaVersion": 1, "status": "ready", "owner": True, "agent": True}))
