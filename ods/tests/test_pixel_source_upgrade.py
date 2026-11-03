@@ -1740,6 +1740,8 @@ def test_hold_reacquires_admission_only_before_the_downstream_boundary(
 
 @pytest.mark.parametrize('before_ref,version,active,accepted', [
     ('a' * 40, b'4.3.42\n', '4.3.41', True),
+    ('a' * 40, b'4.3.43\n', '4.3.42', True),
+    ('a' * 40, b'4.3.43\n', '4.3.43', False),
     ('a' * 40, b'4.3.41\n', '4.3.41', False),
     ('a' * 40, b'4.3.29\n', '4.3.28', True),
     ('a' * 40, b'4.10.0\n', '4.9.9', True),  # numeric, not lexical, ordering

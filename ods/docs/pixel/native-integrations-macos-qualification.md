@@ -12,12 +12,19 @@ journey can be qualified. Do not treat a pass here as support for those routes.
 
 ## First physical run
 
-Start from the exact source commit named in the final PR qualification note,
-with the checkout outside the installed directory. Keep Docker Desktop running.
-Use an existing disposable ODS installation or a dedicated test account; retain
-its installation, model and private receipts. The source update below is the
-ordinary installer path. `ods-macos.sh update` uses the installed source and
-does not fetch the draft's installer/plugin source from GitHub.
+Start from the exact source commit named in the PR qualification note, with
+the checkout outside the install directory. Keep the local container engine
+running. For a first native installation, use a disposable Apple Silicon Mac
+or macOS guest with no existing native Pixel deployment. A second user account
+or a different `ODS_HOME` still shares the system launchd services.
+
+On a Mac that already runs native Pixel, run the two preflights below and
+retain the installation, model and private receipts. The general preflight
+checks the host. The native preflight checks whether an initial installation
+can proceed. If it reports `existing-native-pixel-requires-migration-or-recovery`,
+stop before the install step. Upgrading that deployment requires a verified
+migration or upgrade path for its installed and target bundles. Running
+`ods-macos.sh update` uses the installed source and does not fetch this PR.
 
 For a checkout at `~/src/ODS` and installation at `~/ods`, record the source and
 platform first:
@@ -27,6 +34,7 @@ git -C "$HOME/src/ODS" rev-parse HEAD
 git -C "$HOME/src/ODS" status --short
 sw_vers
 uname -m
+docker context show
 docker version --format 'client={{.Client.Version}} server={{.Server.Version}}'
 ```
 
@@ -38,13 +46,19 @@ ODS_HOME="$HOME/ods" bash "$HOME/src/ODS/ods/install.sh" --pixel --preflight-onl
 ```
 
 ```sh
+/usr/bin/python3 "$HOME/src/ODS/ods/installers/macos/lib/pixel-native-install.py" \
+    --install-dir "$HOME/ods" --preflight-only
+```
+
+On the disposable Mac or guest, proceed after both preflights pass.
+
+```sh
 ODS_HOME="$HOME/ods" bash "$HOME/src/ODS/ods/install.sh" --pixel
 ```
 
-Keep the existing installation options and local model when prompted. The
-source checkout is already selected, so `ODS_REF` is unnecessary here. For a
-custom installed directory, replace `~/ods` consistently in `ODS_HOME` and the
-commands below; the checkout and installed directory must remain separate.
+Choose the local test model and installation options when prompted. For a
+custom install directory, use the same path for `ODS_HOME`, `--install-dir`
+and the status command.
 
 After installation:
 
@@ -72,6 +86,37 @@ these acceptance journeys:
 Record the first failing step, exact error and source commit. Share sanitized
 results, never credentials, account content or private receipt files. Passing
 the initial UI journeys does not replace the remaining physical matrix.
+
+### Scheduled Notes approval on Apple Silicon
+
+Record the source commit, physical model, selected OpenClaw provider and model
+alias, and whether the run used the installed Portal or an isolated gateway.
+For the managed model route, use the shipped Pixel model relay and the
+installer-generated Pixel hook policy. The configuration writer sets
+`plugins.entries.pixel-ods.hooks.allowConversationAccess` on the private
+candidate. The native runtime reports whether it can restrict a follow-up's
+tools and require its first tool call. Record those two acknowledgments
+separately when testing a follow-up. A custom provider can report a different
+capability set even when it reaches the same model. Keep API keys, private
+configuration and note contents out of shared receipts.
+
+1. With a disposable vault set to **Ask first**, schedule a recurring task that
+   appends one unique line to an existing note. Close the chat and let the
+   scheduler run it. Check for one pending request in owner Settings and
+   verify the note is byte-identical. A question in task history alone does
+   not give the owner a request to approve.
+2. Approve the pending item and verify the file is still unchanged. Let the
+   next occurrence run. Verify that it consumed the approval and appended the
+   line exactly once. Cancel the task, retain both history entries, and check
+   that the following due time passes without another edit.
+3. Schedule a read-only request for the note heading. Check that the result
+   contains the actual heading, the file stays unchanged and Settings gains
+   no approval. For revocation, turn note writing **Off** between occurrences
+   and verify that subsequent runs cannot edit the note or queue an approval.
+
+Record whether an owner decision came from rendered Settings or the
+authenticated owner API. Track a supported update of an existing launchd
+installation as a separate physical qualification.
 
 ## Deployment contract
 

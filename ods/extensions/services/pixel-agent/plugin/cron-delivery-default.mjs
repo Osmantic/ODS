@@ -11,8 +11,9 @@
 // malformed/null) is left untouched so the original validator decides.
 // Portal's current hook first applies withPixelCronJobAdmission: a new detached
 // agent job must explicitly declare its future tools and delivery. This legacy
-// default function remains unchanged for its existing callers; admission never
-// synthesizes the owner's intended policy from the instruction text.
+// delivery default still applies to its existing callers. For private one-offs,
+// also default deleteAfterRun to false: Portal needs the job to look up its
+// run history after the chat closes. Explicit deletion is respected.
 //
 // Documented limitations (initial revision):
 // - The flat message shorthand (`message` without an explicit `payload`
@@ -203,9 +204,17 @@ function cronDeliveryDefaultFor(base, toolName, configuredPixelId) {
   if (!isPlainObject(payload) || payload.kind !== "agentTurn") return undefined;
   const agentId = resolveField(target, host, "agentId");
   if (agentId !== undefined && agentId !== configuredPixelId) return undefined;
-  if (hasOwn(target, "delivery") || hasOwn(host, "delivery")) return undefined;
+  const defaultDelivery = !hasOwn(target, "delivery") && !hasOwn(host, "delivery");
+  const localDelivery = defaultDelivery || resolveField(target, host, "delivery")?.mode === "none";
+  const schedule = resolveField(target, host, "schedule");
+  const retainOneOff = localDelivery && typeof schedule?.kind === "string" &&
+    schedule.kind.trim().toLowerCase() === "at" &&
+    !hasOwn(target, "deleteAfterRun") && !hasOwn(host, "deleteAfterRun");
+  if (!defaultDelivery && !retainOneOff) return undefined;
 
-  const nextTarget = { ...target, delivery: CRON_DELIVERY_NONE };
+  const nextTarget = { ...target };
+  if (defaultDelivery) nextTarget.delivery = CRON_DELIVERY_NONE;
+  if (retainOneOff) nextTarget.deleteAfterRun = false;
   if (!hasNested) return wrapped ? { ...base, args: nextTarget } : nextTarget;
   const nextHost = { ...host, job: nextTarget };
   return wrapped ? { ...base, args: nextHost } : nextHost;

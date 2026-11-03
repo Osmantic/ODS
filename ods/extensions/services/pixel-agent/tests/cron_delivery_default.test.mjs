@@ -312,11 +312,28 @@ test("unrelated tools untouched", () => {
   );
 });
 
+test("retention only defaults private one-off jobs and respects explicit deletion", () => {
+  const local = { payload: { kind: "agentTurn", message: "Read the note." }, delivery: { mode: "none" } };
+  for (const overrides of [
+    { deleteAfterRun: true }, { deleteAfterRun: false }, { schedule: { kind: "every", everyMs: 60000 } },
+    { delivery: { mode: "announce", channel: "example", to: "recipient" } }, { agentId: "another-agent" },
+  ]) {
+    assert.equal(apply({ params: addJob({ ...local, ...overrides }) }, CTX), undefined);
+  }
+  const flat = { action: "add", ...local, schedule: { kind: " AT ", at: "2035-01-01T00:00:00Z" } };
+  const params = { id: "openclaw:core:cron", args: flat };
+  const result = apply({ params }, { agentId: PIXEL, toolName: "tool_call" });
+  assert.equal(result.params.args.deleteAfterRun, false);
+  assert.equal(result.params.args.delivery, local.delivery);
+  assert.equal(Object.hasOwn(flat, "deleteAfterRun"), false);
+});
+
 test("inner second dispatch is idempotent (already defaulted params pass through unchanged)", () => {
   const params = addJob({
     sessionTarget: "isolated",
     payload: { kind: "agentTurn", message: "m" },
     delivery: { mode: "none" },
+    deleteAfterRun: false,
   });
   const guard = { params };
   assert.equal(apply({ params }, CTX, guard), guard);

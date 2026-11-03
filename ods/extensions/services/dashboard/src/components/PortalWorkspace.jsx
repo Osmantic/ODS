@@ -13,7 +13,7 @@ import PortalSourceReview from './PortalSourceReview'
 import PortalScheduledTasks from './PortalScheduledTasks'
 import './portal-workspace.css'
 
-export default function PortalWorkspace({preview,before,access:providedAccess,title,request,onRequestHandled,refresh=0,onRefresh,onClose,collapsed,onCollapse,onPublish,expanded,onExpand,agents,renderApproval,task,working=false}) {
+export default function PortalWorkspace({preview,before,access:providedAccess,title,request,onRequestHandled,onDraftScheduled,refresh=0,onRefresh,onClose,collapsed,onCollapse,onPublish,expanded,onExpand,agents,renderApproval,task,working=false}) {
   const access=useVerifiedPreview(preview,providedAccess,refresh)
   const [active,setActive]=useState(['agents','schedules'].includes(request?.kind)?request.kind:!preview?'review':'preview'),[tabs,setTabs]=useState([]),[manifest,setManifest]=useState(null)
   const [agentsTabOpen,setAgentsTabOpen]=useState(request?.kind==='agents')
@@ -56,7 +56,9 @@ export default function PortalWorkspace({preview,before,access:providedAccess,ti
       consumed.current=request;setAgentsTabOpen(true);setActive('agents');setOptions(false);setPendingPath(null);setMissingPath(null);onRequestHandled?.(request);return
     }
     if(request.kind==='schedules'){
-      consumed.current=request;setSchedulesTabOpen(true);setActive('schedules');setOptions(false);setPendingPath(null);setMissingPath(null);onRequestHandled?.(request);return
+      consumed.current=request;setSchedulesTabOpen(true);setActive('schedules');setOptions(false);setPendingPath(null);setMissingPath(null)
+      if (!request.draft) onRequestHandled?.(request)
+      return
     }
     if(request.siteId!==preview?.siteId)return
     consumed.current=request
@@ -100,7 +102,7 @@ export default function PortalWorkspace({preview,before,access:providedAccess,ti
     {!collapsed && !preview && active==='preview' && <section className="portal-workbench-empty"><Files size={24}/><h2>No files to show yet</h2><p>Published files and web previews will appear here.</p>{onPublish && <button type="button" onClick={onPublish}>Ask Portal to publish</button>}</section>}
     <div className="portal-workbench-live" hidden={!!preview || collapsed || active!=='review'}><PortalLiveReview task={task} active={working}/></div>
     {agentsTabOpen && agents && <div className="portal-workbench-body" hidden={collapsed || active!=='agents'} id={panelDomId('agents')} role="tabpanel" aria-labelledby={tabDomId('agents')}><PortalSubagents controller={agents} renderApproval={renderApproval}/></div>}
-    {schedulesTabOpen && <div className="portal-workbench-body" hidden={collapsed || active!=='schedules'} id={panelDomId('schedules')} role="tabpanel" aria-labelledby={tabDomId('schedules')}><PortalScheduledTasks/></div>}
+    {schedulesTabOpen && <div className="portal-workbench-body" hidden={collapsed || active!=='schedules'} id={panelDomId('schedules')} role="tabpanel" aria-labelledby={tabDomId('schedules')}><PortalScheduledTasks draftRequest={request?.kind==='schedules' && request.draft?request:null} onDraftHandled={onRequestHandled} onDraftScheduled={onDraftScheduled}/></div>}
     {preview && <div className="portal-workbench-body" hidden={collapsed || ['agents','schedules'].includes(active)}>
       {error && <section className="portal-workbench-empty" role="status"><h2>Preview unavailable</h2><button type="button" onClick={()=>setRetry(value=>value+1)}>Check publication again</button>{onPublish && <button type="button" onClick={onPublish}>Ask Portal to publish again</button>}</section>}
       {missingPath && <p role="status" className="portal-source-notice">This file is not available in this publication. <button type="button" onClick={()=>setMissingPath(null)}>Dismiss</button></p>}

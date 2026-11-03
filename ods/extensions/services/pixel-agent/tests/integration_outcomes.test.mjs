@@ -660,3 +660,26 @@ test('index wires only native admissions/direct outcomes and both existing deliv
   assert.match(source,/integrationOutcomes\.end\(event, context\)/);
   assert.match(source,/nativeStartClear:\s*state\s*=>\s*integrationOutcomes\.reviewStartClear\(\{agentId:AGENT_ID,\s*runId:state\.runId,sessionId:state\.sessionId,sessionKey:state\.sessionKey\}\)/);
 });
+
+test('silent reply can disclose a bound settled note edit without replay or private content',async()=>{
+  const outcomes=setup();let submissions=0;
+  const note={action:'write',path:'Private.md',mode:'append',text:'private words'};
+  const observe=async(id,params,reply)=>{
+    const hook=event(id,params,'pixel_ods_notes');const ctx={...context,toolCallId:id};
+    outcomes.before(hook,ctx);
+    const tools=createIntegrationTools({context:factory(),outcomes,submit:async()=>{submissions++;return reply;}});
+    await tools.find(tool=>tool.name==='pixel_ods_notes').execute(id,params);
+    outcomes.after(hook,ctx);
+  };
+  const base={status:'none'};
+  await observe('only-read',{action:'read',path:'Private.md'},{ok:true,path:'Private.md',text:'private words'});
+  await observe('refused',note,{ok:false,error:'notes-write-off',message:'refused'});
+  assert.deepEqual(outcomes.verification(base,runId,true),base);
+  await observe('written',note,{ok:true,written:'Private.md',mode:'append'});
+  assert.deepEqual(outcomes.verification(base,runId),base);
+  assert.deepEqual(outcomes.verification(base,'other-run',true),base);
+  assert.deepEqual(outcomes.verification(base,runId,true),{status:'none',integrationNotice:'ODS confirmed a note edit during this request.'});
+  assert.deepEqual(outcomes.verification({status:'failed',text:'Earlier failure'},runId,true),{status:'failed',text:'Earlier failure'});
+  outcomes.cancelUser('ods-'+'a'.repeat(64));assert.deepEqual(outcomes.verification(base,runId,true),base);
+  assert.equal(submissions,3);
+});

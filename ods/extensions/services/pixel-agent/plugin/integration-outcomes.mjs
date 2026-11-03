@@ -309,7 +309,7 @@ export function createIntegrationOutcomes({maximumRuns = 64, maximumCalls = 64} 
       const recoveryReviewOnly = run.reviewOnly === true;
       run.calls.push({id, name, deferred, baseKey,
         key:effectiveKey(baseKey,recoveryReviewOnly),
-        recoveryReviewOnly, label:label(payload), sequence:++run.sequence,
+        recoveryReviewOnly, noteWrite:payload.action === 'notes-write', label:label(payload), sequence:++run.sequence,
         run, pending:true, taken:false, status:null});
     } catch { /* Malformed/unbounded inputs receive no observation, never new authority. */ }
   }
@@ -514,9 +514,15 @@ export function createIntegrationOutcomes({maximumRuns = 64, maximumCalls = 64} 
     if (!owned(run) || run.sessionKey !== context.sessionKey || context.runId !== undefined && context.runId !== run.id) return undefined;
     return run.uncertain ? UNRESOLVED : undefined;
   }
-  function verification(base, id) {
+  function verification(base, id, silentCompletion = false) {
     const notice = projection(id);
-    return notice ? {...base, integrationNotice:notice} : base;
+    if (notice) return {...base, integrationNotice:notice};
+    const run = runs.get(id);
+    if (silentCompletion && base.status === 'none' && !base.artifacts?.length && !base.stop && current(run) &&
+        !run.uncertain && run.calls.some(call => call.noteWrite && call.taken && !call.recoveryReviewOnly && call.status === 'settled')) {
+      return {...base, integrationNotice:'ODS confirmed a note edit during this request.'};
+    }
+    return base;
   }
   function channel(event, decision) {
     if (event?.kind !== 'final' || decision?.cancel) return decision;

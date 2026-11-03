@@ -259,3 +259,37 @@ it('can schedule over private-LAN HTTP without crypto.randomUUID',async()=>{
   await screen.findByRole('button',{name:/Morning agenda.*Daily/})
   expect(calls.find(item=>item.action==='create').requestId).toMatch(/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/)
 })
+
+// Exercise the browser's local-time conversion before any mutation reaches the owner API.
+describe('one-time schedules at clock changes',()=>{
+  beforeEach(()=>vi.spyOn(Date,'now').mockReturnValue(Date.parse('2026-11-01T00:00:00Z')))
+  afterEach(()=>{vi.unstubAllEnvs();vi.restoreAllMocks()})
+  async function chooseLocalTime(zone,local) {
+    vi.stubEnv('TZ',zone)
+    render(<PortalScheduledTasks/>)
+    await fillForm()
+    fireEvent.change(screen.getByLabelText('Repeat'),{target:{value:'once'}})
+    fireEvent.change(screen.getByLabelText('Date and time'),{target:{value:local}})
+  }
+  it('refuses a nonexistent local minute without shifting the task forward',async()=>{
+    await chooseLocalTime('America/Los_Angeles','2027-03-14T02:30')
+    fireEvent.click(screen.getByRole('button',{name:'Schedule task'}))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/does not exist in America\/Los_Angeles/)
+    expect(calls.filter(call=>call.action==='create')).toHaveLength(0)
+    fireEvent.change(screen.getByLabelText('Date and time'),{target:{value:'2027-03-14T03:30'}})
+    fireEvent.click(screen.getByRole('button',{name:'Schedule task'}))
+    await screen.findByRole('button',{name:/Morning agenda.*Daily/})
+    expect(calls.find(call=>call.action==='create').schedule.at).toBe('2027-03-14T10:30:00.000Z')
+  })
+  it.each(['2027-04-03T14:45:00.000Z','2027-04-03T15:15:00.000Z'])('submits the chosen occurrence in a half-hour overlap: %s',async expected=>{
+    await chooseLocalTime('Australia/Lord_Howe','2027-04-04T01:45')
+    const occurrence=screen.getByLabelText('Which occurrence?')
+    expect(occurrence.value).toBe('')
+    expect(Array.from(occurrence.options,option=>option.value)).toEqual(['','2027-04-03T14:45:00.000Z','2027-04-03T15:15:00.000Z'])
+    expect(calls.filter(call=>call.action==='create')).toHaveLength(0)
+    fireEvent.change(occurrence,{target:{value:expected}})
+    fireEvent.click(screen.getByRole('button',{name:'Schedule task'}))
+    await screen.findByRole('button',{name:/Morning agenda.*Daily/})
+    expect(calls.find(call=>call.action==='create').schedule.at).toBe(expected)
+  })
+})

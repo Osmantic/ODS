@@ -78,6 +78,19 @@ test("real SDK reproduces announce default and accepts Pixel's replacement", () 
   assert.deepEqual(params.job, job);
 });
 
+test("private one-off agent tasks retain their run history after native normalization", () => {
+  const scoped = { ...structuredClone(job), delivery: { mode: "none" },
+    payload: { ...job.payload, toolsAllow: ["pixel_ods_notes"] } };
+  const params = { action: "add", job: scoped };
+  const ctx = { agentId: "pixel", toolName: "cron" };
+  assert.equal(normalize(structuredClone(scoped)).deleteAfterRun, true);
+  const admitted = withPixelCronJobAdmission(undefined, { params }, ctx, "pixel");
+  assert.notEqual(admitted?.block, true);
+  const effective = withPixelCronDeliveryDefault(admitted, { params }, ctx, "pixel")?.params ?? params;
+  assert.equal(normalize(effective.job).deleteAfterRun, false);
+  assert.equal(Object.hasOwn(scoped, "deleteAfterRun"), false);
+});
+
 test("Tool Search and selected-tool hooks preserve the explicit default", () => {
   const params = { id: "openclaw:core:cron", args: { action: "add", job: structuredClone(job) } };
   const outer = withPixelCronDeliveryDefault(undefined, { params },

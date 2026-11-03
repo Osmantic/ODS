@@ -9,8 +9,21 @@ const status={ok:'Completed',error:'Needs attention',skipped:'Skipped',unknown:'
 const finishedOneOff=item=>item.schedule.kind==='at' && Date.parse(item.schedule.at)<=Date.now()
   && Number.isFinite(item.lastRunAt) && item.lastRunAt>0 && item.lastRunAt>=Date.parse(item.schedule.at)
   && ['ok','error','skipped'].includes(item.lastStatus)
-const emptyForm=()=>({name:'',task:'',frequency:'daily',time:'09:00',at:'',weekday:'1'})
+const emptyForm=()=>({name:'',task:'',frequency:'daily',time:'09:00',at:'',occurrence:'',weekday:'1'})
 const timezone=()=>Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+// A datetime-local input has no offset. Date advances through a clock gap and
+// chooses the first occurrence of a repeated minute. Only offer instants that
+// map back to the owner's wall time, including zones with half-hour changes.
+function localInstants(value) {
+  if (!value) return []
+  const wallTime=Date.parse(`${value}Z`)
+  const first=new Date(value)
+  const matches=instant=>instant.getTime()-instant.getTimezoneOffset()*60000===wallTime
+  if (!matches(first)) return []
+  const nextDay=new Date(first.getTime()+86400000)
+  const other=new Date(wallTime+nextDay.getTimezoneOffset()*60000)
+  return other>first && matches(other)?[first,other]:[first]
+}
 // Saved summaries use Portal's Markdown/link policy without loading model-supplied images.
 const markdownComponents={img:({alt})=><span className="portal-schedules-image">{alt || 'Image'}</span>}
 // transition-busy is the Root lock refusal, before any owner task or receipt.
@@ -18,10 +31,12 @@ const refusedCreate=error=>new Set(['invalid-task','task-too-large','task-time-p
   'invalid-task-timezone','task-history-full','task-config-changed','runtime-change-pending',
   'schedule-installation-mismatch','transition-busy']).has(error?.code?.replace(/^controller-/,''))
 
-export default function PortalScheduledTasks() {
+export default function PortalScheduledTasks({draftRequest,onDraftHandled,onDraftScheduled}={}) {
   const [view,setView]=useState('list'),[offset,setOffset]=useState(0),[page,setPage]=useState(null)
   const [selected,setSelected]=useState(null),[history,setHistory]=useState(null),[runOffset,setRunOffset]=useState(0)
-  const [form,setForm]=useState(emptyForm),[creating,setCreating]=useState(false),[zone]=useState(timezone)
+  const [form,setForm]=useState(emptyForm),[creating,setCreating]=useState(false)
+  const zone=timezone()
+  const onceTimes=form.frequency==='once'?localInstants(form.at):[]
   const [busy,setBusy]=useState(false),[notice,setNotice]=useState(''),[error,setError]=useState('')
   const [unknown,setUnknown]=useState(null),[confirmRemove,setConfirmRemove]=useState(false)
   const current=useRef(null),mounted=useRef(false),nameInput=useRef(null)
@@ -51,6 +66,24 @@ export default function PortalScheduledTasks() {
   }
   useEffect(()=>{load(view,offset)},[view,offset])
   useEffect(()=>{if(creating)nameInput.current?.focus()},[creating])
+  const draftOrigin=useRef(null)
+  useEffect(()=>{
+    if (!draftRequest || busy || !page) return
+    onDraftHandled?.(draftRequest)
+    if (unknown || page.pendingCount || creating) {
+      setNotice(unknown || page.pendingCount?'Check the unconfirmed creation before scheduling this draft.':'Finish or cancel the open task first. Your chat draft is still in the composer.')
+      return
+    }
+    draftOrigin.current={request:draftRequest,requestId:null}
+    setView('list');setOffset(0);setSelected(null);setConfirmRemove(false)
+    setNotice('Choose when to run this draft.');setError('')
+    setForm({...emptyForm(),frequency:'once',task:draftRequest.draft});setCreating(true)
+  },[draftRequest,onDraftHandled,busy,page,unknown,creating])
+  function finishDraft(requestId) {
+    if (draftOrigin.current?.requestId===requestId) onDraftScheduled?.(draftOrigin.current.request)
+    draftOrigin.current=null
+  }
+
   function open(task) {
     setSelected(task);setRunOffset(0);setHistory(null);setConfirmRemove(false)
     operate({action:'runs',id:task.id,offset:0},setHistory)
@@ -70,20 +103,26 @@ export default function PortalScheduledTasks() {
     if (busy || unknown) return
     if (!form.name.trim() || !form.task.trim() || new TextEncoder().encode(form.name).length>160
         || new TextEncoder().encode(form.task).length>4000) {setError('Use a shorter name or instructions before scheduling.');return}
-    const instant=new Date(form.at)
-    if (form.frequency==='once' && (!Number.isFinite(instant.getTime()) || instant.getTime()<=Date.now())) {
-      setError('Choose a date and time in the future.');return
+    let schedule
+    if (form.frequency==='once') {
+      if (form.at && !onceTimes.length) {setError(`That local time does not exist in ${zone}. Choose another time.`);return}
+      const instant=onceTimes.length===2?onceTimes.find(time=>time.toISOString()===form.occurrence):onceTimes[0]
+      if (!instant && onceTimes.length===2) {setError('Choose which occurrence of this time to schedule.');return}
+      if (!instant || instant.getTime()<=Date.now()) {setError('Choose a date and time in the future.');return}
+      schedule={kind:'at',at:instant.toISOString()}
+    } else {
+      schedule={kind:'recurring',frequency:form.frequency,time:form.time,timeZone:zone,weekday:form.frequency==='weekly'?Number(form.weekday):null}
     }
-    const schedule=form.frequency==='once'?{kind:'at',at:instant.toISOString()}
-      :{kind:'recurring',frequency:form.frequency,time:form.time,timeZone:zone,weekday:form.frequency==='weekly'?Number(form.weekday):null}
     let requestId
     try {requestId=newScheduleRequestId()} catch {setError('This browser could not create a request identity. Try a current browser.');return}
+    if (draftOrigin.current) draftOrigin.current.requestId=requestId
     const body={action:'create',requestId,name:form.name,task:form.task,schedule}
     operate(body,result=>{
       if(result.outcome==='unconfirmed') {
         setUnknown({requestId:body.requestId,name:body.name})
         setNotice('The request was sent, but creation is not confirmed. Check it before creating another task.')
       } else {
+        finishDraft(requestId)
         setCreating(false);setForm(emptyForm());setUnknown(null)
         changed(result,'Task scheduled.')
       }
@@ -93,12 +132,14 @@ export default function PortalScheduledTasks() {
     operate({action:'check-create',requestId:pending.requestId},result=>{
       if(result.outcome==='unconfirmed') {setNotice('This request is still unconfirmed. It has not been sent again.');return}
       setUnknown(null);setCreating(false);setForm(emptyForm())
+      finishDraft(pending.requestId)
       changed(result,'The existing task was found. No duplicate was created.')
     })
   }
   function dismiss(pending) {
     operate({action:'dismiss-create',requestId:pending.requestId},result=>{
       setUnknown(null);setCreating(false);setForm(emptyForm())
+      draftOrigin.current=null
       changed(result,'Notice dismissed. This does not stop an existing task; check Current tasks.')
     })
   }
@@ -140,11 +181,17 @@ export default function PortalScheduledTasks() {
         <label>Name<input ref={nameInput} required maxLength={160} value={form.name} disabled={busy || !!unknown} onChange={event=>setForm({...form,name:event.target.value})} placeholder="Daily briefing"/></label>
         <label>What should Portal do?<textarea required maxLength={4000} value={form.task} disabled={busy || !!unknown} onChange={event=>setForm({...form,task:event.target.value})} rows={4} placeholder="Summarize my upcoming day using my connected calendar."/></label>
         <p className="portal-schedules-help">Portal can only use apps you have connected. Actions that need your approval may wait for you.</p>
-        <label>Repeat<select value={form.frequency} disabled={busy || !!unknown} onChange={event=>setForm({...form,frequency:event.target.value})}><option value="daily">Daily</option><option value="weekdays">Weekdays</option><option value="weekly">Weekly</option><option value="once">Once</option></select></label>
+        <label>Repeat<select value={form.frequency} disabled={busy || !!unknown} onChange={event=>setForm({...form,frequency:event.target.value,occurrence:''})}><option value="daily">Daily</option><option value="weekdays">Weekdays</option><option value="weekly">Weekly</option><option value="once">Once</option></select></label>
         {form.frequency==='weekly' && <label>Day<select value={form.weekday} disabled={busy || !!unknown} onChange={event=>setForm({...form,weekday:event.target.value})}>{['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'].map((day,index)=><option key={day} value={index}>{day}</option>)}</select></label>}
-        <label>{form.frequency==='once'?'Date and time':'Time'}<input required type={form.frequency==='once'?'datetime-local':'time'} value={form.frequency==='once'?form.at:form.time} disabled={busy || !!unknown} onChange={event=>setForm({...form,[form.frequency==='once'?'at':'time']:event.target.value})}/></label>
+        <label>{form.frequency==='once'?'Date and time':'Time'}<input required type={form.frequency==='once'?'datetime-local':'time'} value={form.frequency==='once'?form.at:form.time} disabled={busy || !!unknown} onChange={event=>setForm({...form,[form.frequency==='once'?'at':'time']:event.target.value,occurrence:''})}/></label>
+        {onceTimes.length===2 && <label>Which occurrence?<select required value={form.occurrence} disabled={busy || !!unknown} onChange={event=>setForm({...form,occurrence:event.target.value})}>
+          <option value="">Choose a time</option>
+          {onceTimes.map((instant,index)=><option key={instant.toISOString()} value={instant.toISOString()}>
+            {index===0?'First':'Second'} ({instant.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit',timeZone:zone,timeZoneName:'longOffset'})})
+          </option>)}
+        </select></label>}
         <p className="portal-schedules-time">Timezone: {zone}</p>
-        <div className="portal-schedules-actions"><button type="submit" disabled={busy || !!unknown}><Check size={14}/>Schedule task</button><button type="button" disabled={busy} onClick={()=>setCreating(false)}>Cancel</button></div>
+        <div className="portal-schedules-actions"><button type="submit" disabled={busy || !!unknown}><Check size={14}/>Schedule task</button><button type="button" disabled={busy || !!unknown} onClick={()=>{if(draftOrigin.current){draftOrigin.current=null;setForm(emptyForm())}setCreating(false)}}>Cancel</button></div>
       </form>}
       {page?.items.length===0 && !creating && <div className="portal-schedules-empty"><Clock3 size={24}/><h3>{view==='list'?'No scheduled tasks yet':'No past tasks yet'}</h3><p>{view==='list'?'Schedule a useful check-in or a recurring task.':'Removed schedules appear here with their recorded results.'}</p></div>}
       {page?.items.map(item=><button type="button" key={item.id} className="portal-schedules-row" disabled={busy} onClick={()=>open(item)}><span><strong>{item.name}</strong><span>{scheduleLabel(item.schedule)}</span><small>{item.runningSince!==null?'Running':item.removed?'Removed':item.enabled?'Scheduled':finishedOneOff(item)?'Finished':'Paused'}{item.lastStatus?` · ${status[item.lastStatus]}`:''}</small></span><span className="portal-schedules-next">{item.nextRunAt!==null?`Next: ${stamp(item.nextRunAt)}`:'View results'}</span></button>)}
