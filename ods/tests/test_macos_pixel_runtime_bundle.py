@@ -274,7 +274,10 @@ def test_shared_repairs_compose_deterministically_only_in_staging(artifacts, sha
     manifest, _ = bundle.verify(root, expected_digest=digest)
     repairs = json.loads((root / 'ods-runtime-repairs.json').read_bytes())
     stream = json.loads((root / 'ods-runtime-patches.json').read_bytes())[0]
-    assert len(repairs) == 25
+    assert len(repairs) == 26
+    repair_names = [item['manifest'] for item in repairs]
+    assert repair_names.index('openclaw-plugin-tool-version.json') < repair_names.index('openclaw-image-envelope.json')
+    assert repair_names.index('openclaw-image-envelope.json') < repair_names.index('openclaw-compaction-budget.json')
     assert repairs[-1]['module'] == 'selection-BEwSQKM-.js'
     assert len({item['module'] for item in repairs}) == len(repairs)
     assert {item["manifest"] for item in repairs}.issuperset({
@@ -312,7 +315,11 @@ def test_scope_dependency_failure_never_publishes_or_changes_runtime_input(
     target = artifacts['runtime'] / 'dist' / dependency
     target.write_bytes(b'unreviewed native scope implementation')
     before = bundle.inventory(artifacts['runtime'], normalize_modes=False)
-    with pytest.raises(ValueError, match='dependency differs'):
+    # Metadata is now an earlier managed repair, so its own exact-byte guard
+    # must reject drift before any downstream dependency check or publication.
+    refusal = ('recovery module differs' if dependency == 'tools-D5HS8Q_I.js'
+               else 'dependency differs')
+    with pytest.raises(ValueError, match=refusal):
         bundle.build(**artifacts, shared_runtime_repairs=True, stream_progress_fix=True)
     assert not artifacts['destination'].exists()
     assert bundle.inventory(artifacts['runtime'], normalize_modes=False) == before
@@ -330,7 +337,8 @@ def test_required_first_dependency_graph_binds_final_upstream_bytes_without_cycl
                 assert upstream_index < index
                 assert digest == upstream['patchedSha256']
                 edges.add((row['module'], name))
-    assert edges == {('selection-BEwSQKM-.js', 'attempt.model-diagnostic-events-DqqiPQPY.js')}
+    assert edges == {('selection-BEwSQKM-.js', 'attempt.model-diagnostic-events-DqqiPQPY.js'),
+                     ('selection-BEwSQKM-.js', 'tools-D5HS8Q_I.js')}
 
 
 def test_required_first_refuses_pristine_diagnostic_dependency_after_its_repair(

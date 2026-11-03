@@ -5503,20 +5503,53 @@ _ods_pixel_install_integrations() {
     ods_sudo systemctl restart pixel-integrations.service || return 1
     ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 - "$home/.config/ods/pixel-integrations/owner.sock" <<'PY' || return 1
 import json, socket, sys, time
-for attempt in range(50):
+# Type=simple is active before Python imports finish and either socket binds.
+# Bound the whole readiness check, including a peer that accepts but drips data.
+timeout_seconds = 60.0
+deadline = time.monotonic() + timeout_seconds
+last_failure = 'connection-unavailable'
+healthy = False
+while time.monotonic() < deadline:
     try:
         with socket.socket(socket.AF_UNIX) as client:
-            client.settimeout(10)
+            def bound_timeout():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError()
+                client.settimeout(min(10.0, remaining))
+
+            bound_timeout()
             client.connect(sys.argv[1])
+            bound_timeout()
             client.sendall(b'{"schemaVersion":1,"action":"get"}\n')
-            with client.makefile('rb') as stream:
-                if json.loads(stream.readline(1 << 20)).get('ok') is True:
+            raw = bytearray()
+            limit = 1 << 20
+            while len(raw) <= limit and b'\n' not in raw:
+                bound_timeout()
+                piece = client.recv(min(65536, limit + 1 - len(raw)))
+                if not piece:
                     break
-    except (OSError, ValueError):
-        pass
-    if attempt == 49:
-        raise SystemExit('Portal integrations did not answer on the owner socket')
-    time.sleep(.2)
+                raw.extend(piece)
+            if not raw.endswith(b'\n') or raw.count(b'\n') != 1 or len(raw) > limit:
+                last_failure = 'invalid-reply'
+            else:
+                reply = json.loads(raw)
+                if isinstance(reply, dict) and reply.get('ok') is True and time.monotonic() < deadline:
+                    healthy = True
+                    break
+                last_failure = 'not-ready'
+    except TimeoutError:
+        last_failure = 'timeout'
+    except OSError:
+        last_failure = 'connection-unavailable'
+    except ValueError:
+        last_failure = 'invalid-reply'
+    remaining = deadline - time.monotonic()
+    if remaining > 0:
+        time.sleep(min(.2, remaining))
+if not healthy:
+    raise SystemExit('Portal integrations did not answer on the owner socket within 60 seconds '
+                     f'(last check: {last_failure}).')
 PY
 }
 

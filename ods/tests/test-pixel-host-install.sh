@@ -3616,7 +3616,13 @@ assert "--state-dir \"$home/.openclaw/ods-runtime-patches/sandbox-mkdir-$mkdir_m
 managed.extend(["sandbox-mkdir-bridge", "sandbox-mkdir-secure"])
 known = installer[foreign_restore:own_repair].split("--known", 1)[1].split(">>", 1)[0]
 assert sorted(known.replace("\\", " ").split()) == sorted(managed)
-assert len(set(managed)) == len(managed) == 25
+assert len(set(managed)) == len(managed) == 26
+assert "plugin-tool-version" in managed
+assert "host/openclaw-plugin-tool-version.json" in installer
+metadata_repair = installer.index("--state-dir \"$home/.openclaw/ods-runtime-patches/plugin-tool-version\"")
+image_repair = installer.index("--state-dir \"$home/.openclaw/ods-runtime-patches/image-envelope\"")
+budget_repair = installer.index("--state-dir \"$home/.openclaw/ods-runtime-patches/compaction-budget\"")
+assert metadata_repair < image_repair < budget_repair
 assert "finalize-tool-scope" in managed
 assert "host/openclaw-finalize-tool-scope.json" in installer
 scope_helper = installer.index("--state-dir \"$home/.openclaw/ods-runtime-patches/finalize-tool-scope\"")
@@ -3967,6 +3973,7 @@ else
 fi
 
 check python3 "$ROOT/tests/test_pixel_access_program_modes.py"
+check python3 "$ROOT/tests/test-pixel-integrations-readiness.py"
 
 # Portal integrations: the owner socket must stay out of the gateway sandbox, and
 # the unit is rendered for the owner and started.
