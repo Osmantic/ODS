@@ -37,7 +37,7 @@ async function latchedReview() {
     nativeStartClear:state=>startOutcomeRecord.reviewStartClear({agentId:'pixel',
       runId:state.runId,sessionId:state.sessionId,sessionKey:state.sessionKey}),
     complete:async()=>({agentId:'pixel',provider:'ods-gateway',model:'ods/current',text:JSON.stringify({
-      operations:[{id:'notes.read',approval:'none'}]})})});
+      operations:[{source:'obsidian',verb:'read'}]})})});
   recovery.observe({prompt:owner},ctx,ctx.runId);
   const decision=await recovery.finalize({...ctx,nativeRetryToolsAllowVersion:1,nativeRetryToolChoiceVersion:1,
     lastAssistantMessage:'I read it.',messages:[{role:'user',content:owner},{role:'assistant',content:'I read it.'}]},ctx);
