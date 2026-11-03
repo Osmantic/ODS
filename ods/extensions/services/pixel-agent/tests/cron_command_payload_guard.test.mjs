@@ -93,7 +93,12 @@ test("a future one-off cannot be consumed by a force run in its creation turn", 
     after({...job, schedule:{kind:"every", everyMs:60000}});
     assert.notEqual((await before(force))?.block, true);
     after(job);
+    const additional = {action:"add", job:{name:"another calculation", schedule:job.schedule,
+      payload:{kind:"agentTurn", message:"Save the result", toolsAllow:[]}, delivery:{mode:"none"}}};
+    assert.notEqual((await before(additional))?.block, true);
     assert.match((await before(force))?.blockReason, /already scheduled/);
+    assert.match((await before(additional))?.blockReason, /replacement task/);
+    assert.notEqual((await before(additional, {...ctx,runId:"new-owner-request"}))?.block, true);
     assert.match((await before({action:"run",id:job.id,runMode:"force"}))?.blockReason, /already scheduled/);
     for (const request of [{...force,runMode:"due"}, {action:"runs",id:job.id}, {...force,jobId:"another"}])
       assert.notEqual((await before(request))?.block, true);

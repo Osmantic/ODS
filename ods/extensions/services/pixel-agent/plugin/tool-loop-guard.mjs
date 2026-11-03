@@ -9139,13 +9139,19 @@ export function createToolLoopGuard({
     const state = context?.agentId === agentId && runId ? runs.get(runId) : undefined;
     if (state?.createdFutureOneOffs && decision?.block !== true) {
       const cron = cronArguments(decision?.params ?? event?.params, toolName);
-      if (typeof cron?.action === "string" && cron.action.trim() === "run" && cron.runMode === "force") {
+      const action = typeof cron?.action === "string" ? cron.action.trim() : undefined;
+      if (action === "add" && state.refusedNewJobForce) {
+        decision = {block: true, blockReason:
+          "The one-time task is already scheduled. Do not create a replacement task after a refused force run. Report the existing schedule. Additional task creation is available on the next owner turn."};
+      }
+      if (action === "run" && cron.runMode === "force") {
         const primaryId = typeof cron.jobId === "string" ? cron.jobId.trim() : "";
         const id = primaryId || (typeof cron.id === "string" ? cron.id.trim() : "");
-        if (state.createdFutureOneOffs.has(id)) decision = {
-          block: true,
-          blockReason: "This one-time task is already scheduled. Forcing it now can consume its scheduled run. Report its scheduled time. Use cron list or runs to inspect it.",
-        };
+        if (state.createdFutureOneOffs.has(id)) {
+          state.refusedNewJobForce = true;
+          decision = {block: true, blockReason:
+            "This one-time task is already scheduled. Forcing it now can consume its scheduled run. Report its scheduled time. Use cron list or runs to inspect it."};
+        }
       }
     }
     // Many refusals come after rememberToolRun recorded the call. A refused
