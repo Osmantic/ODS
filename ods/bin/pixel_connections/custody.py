@@ -631,6 +631,8 @@ NATIVE_BROKER = '_ods_pixel_sources'
 NATIVE_HOME = '/private/var/empty'
 NATIVE_META = Path('/private/var/lib/ods-pixel-access')
 NATIVE_DEFINITIONS = Path('/Library/LaunchDaemons')
+NATIVE_PROGRAM = Path('/usr/local/libexec/ods-pixel-access')
+NATIVE_RUNTIMES = Path('/usr/local/libexec/ods-pixel-runtimes')
 NATIVE_STATE = Path('/private/var/lib/pixel-source-broker')
 NATIVE_ENV = NATIVE_STATE / 'source-broker.env'
 NATIVE_LEGACY_ENV = Path('/private/etc/pixel-source-broker.env')
@@ -943,13 +945,24 @@ def native_verify_env_fd(fd, broker_uid):
     read/validate its bounded environment using this same held descriptor.
     This helper neither reads bytes, installs an ACL nor runs anything.
     """
+    return _native_env_fd_guid(fd, _native_uuid(_native_acl_library(), broker_uid))
+
+
+def _native_env_fd_guid(fd, expected):
+    """Same FD/ACL proof using a GUID already attested by the fixed Root Gate.
+
+    The Broker cannot query Directory Services after Seatbelt. This does not
+    turn a caller-supplied GUID into authority; the reader first proves Gate
+    custody, its exact principal ACL, current credentials and runtime binding.
+    """
+    if type(expected) is not bytes or len(expected) != 16:
+        raise CustodyError('native-source-env-acl-mismatch')
     info = os.fstat(fd)
     if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_gid != 0
             or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1
             or not 0 < info.st_size <= MAX_RESULT_BYTES):
         raise CustodyError('native-source-env-unsafe')
     lib = _native_acl_library()
-    expected = _native_uuid(lib, broker_uid)
     acl = lib.acl_get_fd_np(fd, _NATIVE_ACL_TYPE)
     if not acl:
         raise CustodyError('native-source-env-acl-required')
@@ -2836,6 +2849,379 @@ def _native_release_child(process, *, started, invocation, ready_fd, go_fd, curr
             pass
         cleanup = NativeChildOutcome('unknown', process.returncode, process.poll() is not None, False, 'startup-identity-unproven')
     return NativeStartupOutcome(False, failure, witness, cleanup)
+
+
+def _native_boot_uuid():
+    """Fixed read-only Apple sysctl ABI, no subprocess/owner environment."""
+    if sys.platform != 'darwin':
+        raise CustodyError('native-source-boot-unavailable')
+    lib = ctypes.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True)
+    lib.sysctlbyname.argtypes = [ctypes.c_char_p, ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p, ctypes.c_size_t]
+    lib.sysctlbyname.restype = ctypes.c_int
+    value, size = ctypes.create_string_buffer(37), ctypes.c_size_t(37)
+    if (lib.sysctlbyname(b'kern.bootsessionuuid', value, ctypes.byref(size), None, 0) != 0
+            or size.value != 37 or value.raw[36:] != b'\0'):
+        raise CustodyError('native-source-boot-unavailable')
+    try:
+        result = str(uuid.UUID(value.raw[:36].decode('ascii'))).upper()
+    except (ValueError, UnicodeError):
+        raise CustodyError('native-source-boot-unavailable') from None
+    return result
+
+
+def _native_label_parts(label):
+    if type(label) is not str or not label.startswith(NATIVE_LABEL):
+        raise CustodyError('native-source-broker-definition-invalid')
+    role, separator, identifier = label[len(NATIVE_LABEL):].partition('.')
+    native_child_arguments(role, identifier if separator else None)
+    return role, identifier if separator else None
+
+
+def _native_public_json(body):
+    try:
+        return json.loads(body, object_pairs_hook=_native_pairs,
+            parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()))
+    except (ValueError, UnicodeError, RecursionError):
+        raise CustodyError('native-source-broker-metadata-invalid') from None
+
+
+def _native_broker_projection(value):
+    """Only a FUTURE v3 Root projection; existing v1/v2 never confer dispatch."""
+    keys = {'schemaVersion', 'kind', 'phase', 'deploymentSha256', 'kitSha256', 'ownerUid',
+        'ownerGid', 'ownerGuid', 'broker', 'state', 'env', 'kit', 'hostPython', 'runtime', 'launch'}
+    if type(value) is not dict or value.get('schemaVersion') != 3 or type(value.get('schemaVersion')) is not int:
+        raise CustodyError('native-source-broker-inactive')
+    if (set(value) != keys or value['kind'] != 'ods-native-source-custody' or value['phase'] != 'active'
+            or type(value['ownerUid']) is not int or value['ownerUid'] <= 0
+            or type(value['ownerGid']) is not int or value['ownerGid'] < 0
+            or type(value['ownerGuid']) is not str or (value['state'], value['env'], value['kit']) != (
+                str(NATIVE_STATE), str(NATIVE_ENV), str(NATIVE_KIT))):
+        raise CustodyError('native-source-broker-projection-invalid')
+    identity = _native_identity_intent(value['broker'])
+    if value['ownerUid'] == identity['id']:
+        raise CustodyError('native-source-broker-identity-invalid')
+    try:
+        if str(uuid.UUID(value['ownerGuid'])).upper() != value['ownerGuid']:
+            raise ValueError()
+    except ValueError:
+        raise CustodyError('native-source-broker-projection-invalid') from None
+    for key in ('deploymentSha256', 'kitSha256'):
+        if type(value[key]) is not str or not _NATIVE_SHA.fullmatch(value[key]):
+            raise CustodyError('native-source-broker-projection-invalid')
+    runtime, launch = value['runtime'], value['launch']
+    if (type(runtime) is not dict or set(runtime) != {'custodySha256', 'bundleSha256', 'sourceRef'}
+            or any(type(runtime[key]) is not str or not _NATIVE_SHA.fullmatch(runtime[key]) for key in ('custodySha256', 'bundleSha256'))
+            or type(runtime['sourceRef']) is not str or not re.fullmatch('[a-f0-9]{40}', runtime['sourceRef'])
+            or type(launch) is not dict or set(launch) != {'generation', 'phase', 'boot', 'environment', 'definitions', 'invocations'}
+            or type(launch['generation']) is not str or not FLOW_ID.fullmatch(launch['generation'])
+            or launch['phase'] != 'active' or type(launch['boot']) is not str
+            or not re.fullmatch('[A-F0-9]{8}(?:-[A-F0-9]{4}){3}-[A-F0-9]{12}', launch['boot'])
+            or type(launch['environment']) is not dict or set(launch['environment']) != {'inode', 'sha256'}
+            or not _native_inode(launch['environment']['inode']) or type(launch['environment']['sha256']) is not str
+            or not _NATIVE_SHA.fullmatch(launch['environment']['sha256'])
+            or type(launch['invocations']) is not dict or not 1 <= len(launch['invocations']) <= 64
+            or type(launch['definitions']) is not dict):
+        raise CustodyError('native-source-broker-projection-invalid')
+    snapshots = {}
+    for label, row in launch['invocations'].items():
+        role, identifier = _native_label_parts(label)
+        if type(row) is not dict or set(row) != {'phase', 'invocation'} or type(row['phase']) is not str:
+            raise CustodyError('native-source-broker-projection-invalid')
+        if row['phase'] == 'inactive' and row['invocation'] is None and label not in launch['definitions']:
+            continue  # A sibling's inactive/absent slot never authorizes I/O.
+        invocation = _native_invocation(row['invocation'])
+        doc = invocation.document
+        if (row['phase'] not in ('prepared', 'running', 'unknown', 'retired')
+                or (doc['role'], doc['identifier'], doc['generation'], doc['boot']) != (role, identifier, launch['generation'], launch['boot'])):
+            raise CustodyError('native-source-broker-projection-invalid')
+        definition = launch['definitions'].get(label)
+        if (type(definition) is not dict or set(definition) != {'inode', 'sha256', 'profileSha256'}
+                or not _native_inode(definition['inode']) or any(type(definition[key]) is not str
+                    or not _NATIVE_SHA.fullmatch(definition[key]) for key in ('sha256', 'profileSha256'))):
+            raise CustodyError('native-source-broker-definition-invalid')
+        snapshots[label] = row
+    if set(launch['definitions']) != set(snapshots):
+        raise CustodyError('native-source-broker-definition-invalid')
+    return {'generation': launch['generation'], 'boot': launch['boot'], 'phase': 'active', 'invocations': snapshots}
+
+
+def _native_broker_runtime(projection, qualifier):
+    """Actual public RuntimeCustody + complete public bundle; no Owner reader.
+
+    Do NOT call require_native_deployment: it reopens owner-private sidefiles.
+    The Root Gate attests that private owner/deployment association. Here we
+    independently reopen only runtime/source/code metadata that Broker may read.
+    """
+    from types import SimpleNamespace
+    from pixel_provider.runtime_custody import RuntimeCustody, tree_manifest
+    from pixel_macos_custody import protected_directory
+    if (type(qualifier) is not RuntimeCustody or type(qualifier.bridge) is not SimpleNamespace
+            or vars(qualifier.bridge) != {'binary': str(NATIVE_PROGRAM / 'openclaw-gateway-launcher')}):
+        raise CustodyError('native-source-broker-runtime-changed')
+    runtime, checksum = RuntimeCustody.inspect(qualifier)
+    root = Path(runtime['node']).parent
+    if (root.parent != NATIVE_RUNTIMES or root.name != projection['runtime']['bundleSha256']
+            or runtime['runtimeRoot'] != str(root / 'runtime') or runtime['sourceRoot'] != str(root / 'ods-source')
+            or runtime['hostPython'] != projection['hostPython'] or checksum != projection['runtime']['custodySha256']):
+        raise CustodyError('native-source-broker-runtime-changed')
+    with protected_directory(root) as directory:
+        body, _inode = _native_root_file(directory, 'bundle.json', mode=0o644, limit=32*1024*1024)
+        bundle = _native_public_json(body)
+        if (hashlib.sha256(body).hexdigest() != root.name or type(bundle) is not dict
+                or set(bundle) != {'schemaVersion', 'openclawVersion', 'plugins', 'entries'}
+                or bundle['schemaVersion'] != 1 or type(bundle['entries']) is not dict):
+            raise CustodyError('native-source-broker-bundle-changed')
+        # Same acquisition only. The existing cache still checks every entry,
+        # inode/ctime/mode and (on Darwin) its current ACL before reusing a hash.
+        actual = tree_manifest(root, qualifier._cache)
+        actual.pop('bundle.json', None)
+        if actual != bundle['entries']:
+            raise CustodyError('native-source-broker-bundle-changed')
+        selection, _inode = _native_root_file(directory, 'ods-release-selection.json', mode=0o644, limit=2*1024*1024)
+        selected = _native_public_json(selection)
+        if type(selected) is not dict or selected.get('pixelSourceRevision') != projection['runtime']['sourceRef']:
+            raise CustodyError('native-source-broker-source-changed')
+    # The fixed installed program must be the actual qualified Source copy,
+    # not a same-named owner module. No dynamic helper execution/sys.path edit.
+    relative = 'bin/pixel_connections/custody.py'
+    expected = actual.get('ods-source/' + relative)
+    with protected_directory(NATIVE_PROGRAM / 'pixel_connections') as directory:
+        installed, _inode = _native_root_file(directory, 'custody.py', mode=0o644, limit=2*1024*1024)
+    if (Path(__file__) != NATIVE_PROGRAM / 'pixel_connections/custody.py'
+            or expected != ['file', 0o644, len(installed), hashlib.sha256(installed).hexdigest()]):
+        raise CustodyError('native-source-broker-bootstrap-changed')
+    # The independently reviewed table lives in the qualified code closure.
+    # Read only its literal data; never execute installer/Git/Node in Broker.
+    import ast
+    helper_path = root / 'ods-source/installers/macos/lib'
+    with protected_directory(helper_path) as directory:
+        code, _inode = _native_root_file(directory, 'pixel-native-source-broker.py', mode=0o644, limit=2*1024*1024)
+    try:
+        table = next(ast.literal_eval(node.value) for node in ast.parse(code).body
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == 'SOURCE_AUTHORITIES')
+        authority = table[projection['runtime']['sourceRef']]
+    except (ValueError, SyntaxError, TypeError, KeyError, StopIteration):
+        raise CustodyError('native-source-broker-source-unqualified') from None
+    with protected_directory(root / 'native-source') as directory:
+        component, _inode = _native_root_file(directory, 'component.json', mode=0o644, limit=2*1024*1024)
+    component = _native_public_json(component)
+    if (type(component) is not dict or component.get('sourceRef') != projection['runtime']['sourceRef']
+            or component.get('inputs') != authority['inputs'] or component.get('hostPython') != runtime['hostPython']
+            or actual.get('native-source/broker.py', [None])[-1] != authority['inputs']['deploy/source-broker/broker.py']
+            or actual.get('native-source/source-broker.env', [None])[-1] != authority['templateSha256']):
+        raise CustodyError('native-source-broker-source-unqualified')
+    return runtime, root, actual
+
+
+def _native_broker_credentials(projection):
+    identity = projection['broker']
+    wanted = identity['id']
+    if ((os.getuid(), os.geteuid(), os.getgid(), os.getegid()) != (wanted,)*4
+            or any(group != wanted for group in os.getgroups())):
+        raise CustodyError('native-source-broker-credentials-invalid')
+    from pixel_macos_process import process_identity
+    process_identity(os.getpid(), uid=wanted, gid=wanted, executable=projection['hostPython'])
+
+
+def _native_broker_platform():
+    if sys.platform != 'darwin':
+        raise CustodyError('native-source-broker-platform-required')
+
+
+@dataclass(frozen=True, repr=False)
+class _NativeBrokerView:
+    """A held private env FD; neither repr nor snapshot contains env contents."""
+    public: bytes
+    invocation: _NativeInvocation
+    binding: str
+    python: str
+    environment_fd: int
+    environment_stamp: tuple
+    seal: Any
+
+
+@dataclass(frozen=True, repr=False)
+class _NativeBrokerScope:
+    role: str
+    identifier: str | None
+    qualifier: Any
+    seal: Any
+
+
+def _native_broker_scope(role, identifier):
+    native_child_arguments(role, identifier)
+    from types import SimpleNamespace
+    from pixel_provider.runtime_custody import RuntimeCustody
+    return _NativeBrokerScope(role, identifier, RuntimeCustody(SimpleNamespace(
+        binary=str(NATIVE_PROGRAM / 'openclaw-gateway-launcher'))), _NATIVE_SEAL)
+
+
+from contextlib import contextmanager as _native_contextmanager
+
+
+@_native_contextmanager
+def _native_broker_read(role, identifier=None, *, running=False, _scope=None):
+    """Fixed Broker reader only. No caller dictionary/path conveys authority."""
+    _native_broker_platform()
+    if type(running) is not bool:
+        raise CustodyError('native-source-broker-platform-required')
+    native_child_arguments(role, identifier)
+    if _scope is None:
+        _scope = _native_broker_scope(role, identifier)
+    if (type(_scope) is not _NativeBrokerScope or _scope.seal is not _NATIVE_SEAL
+            or (_scope.role, _scope.identifier) != (role, identifier)):
+        raise CustodyError('native-source-broker-scope-invalid')
+    label = NATIVE_LABEL + role + ('.' + identifier if identifier is not None else '')
+    from pixel_macos_custody import protected_directory
+    environment_fd, environment_identity, view = None, None, None
+    with protected_directory(NATIVE_STATE.parent) as parent:
+        gate = os.open(NATIVE_STATE.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        try:
+            info = os.fstat(gate)
+            if (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != (0, 0, 0o700):
+                raise CustodyError('native-source-gate-unsafe')
+            raw, _gate_inode = _native_root_file(gate, 'custody.json', gid=os.getegid(), mode=0o640, limit=16384)
+            projection = _native_public_json(raw)
+            snapshot = _native_broker_projection(projection)
+            identity = projection['broker']
+            if (_native_acl_entries(gate) != (uuid.UUID(projection['ownerGuid']).bytes, uuid.UUID(identity['userGuid']).bytes)
+                    or _native_at_inode(parent, NATIVE_STATE.name) != [info.st_dev, info.st_ino]):
+                raise CustodyError('native-source-gate-acl-mismatch')
+            _native_broker_credentials(projection)
+            if _native_boot_uuid() != snapshot['boot']:
+                raise CustodyError('native-source-broker-boot-changed')
+            row = snapshot['invocations'].get(label)
+            if row is None:
+                raise CustodyError('native-source-broker-slot-inactive')
+            invocation = _native_invocation(row['invocation'])
+            if not _native_slot_matches(snapshot, invocation, running=running):
+                raise CustodyError('native-source-broker-slot-inactive')
+            times = invocation.document
+            ceiling = int(times['workerDeadlineNs'] if running else times['admissionDeadlineNs'])
+            if not int(times['issuedNs']) <= _native_clock_ns() < ceiling:
+                raise CustodyError('native-source-broker-invocation-expired')
+            from pixel_access_bridge import AccessError
+            try:
+                runtime, root, entries = _native_broker_runtime(projection, _scope.qualifier)
+            except AccessError:
+                raise CustodyError('native-source-broker-runtime-changed') from None
+            with protected_directory(NATIVE_KIT) as kit:
+                kit_info = os.fstat(kit)
+                kit_inode = [kit_info.st_dev, kit_info.st_ino]
+                kit_raw, _inode = _native_root_file(kit, 'source-kit.json', mode=0o644)
+                kit_doc = _native_public_json(kit_raw)
+                if (hashlib.sha256(kit_raw).hexdigest() != projection['kitSha256'] or type(kit_doc) is not dict
+                        or set(kit_doc) != {'schemaVersion', 'kind', 'deploymentSha256', 'sourceRef', 'files'}
+                        or kit_doc['schemaVersion'] != 2 or kit_doc['kind'] != 'ods-native-source-kit'
+                        or kit_doc['deploymentSha256'] != projection['deploymentSha256']
+                        or kit_doc['sourceRef'] != projection['runtime']['sourceRef']
+                        or set(os.listdir(kit)) != {'source-kit.json', 'broker.py', 'source-broker.env', *NATIVE_PROFILES}
+                        or type(kit_doc['files']) is not dict or set(kit_doc['files']) != {'broker.py', 'source-broker.env', *NATIVE_PROFILES}):
+                    raise CustodyError('native-source-broker-kit-changed')
+                payloads = {}
+                for name in kit_doc['files']:
+                    mode = 0o755 if name == 'broker.py' else 0o644
+                    data, _inode = _native_root_file(kit, name, mode=mode, limit=2*1024*1024)
+                    if (hashlib.sha256(data).hexdigest() != kit_doc['files'][name]
+                            or entries.get('native-source/' + name) != ['file', mode, len(data), kit_doc['files'][name]]):
+                        raise CustodyError('native-source-broker-kit-changed')
+                    payloads[name] = data
+            definition = projection['launch']['definitions'][label]
+            if kit_doc['files']['source-' + role + '.sb'] != definition['profileSha256']:
+                raise CustodyError('native-source-broker-profile-changed')
+            with protected_directory(NATIVE_DEFINITIONS) as definitions:
+                data, inode = _native_root_file(definitions, label + '.plist', mode=0o644, limit=16384)
+            _path, expected, _mode = native_disabled_definition(role, identity=identity, python=runtime['hostPython'], identifier=identifier)
+            expected_doc = plistlib.loads(expected)
+            expected_doc['Disabled'] = False
+            if (inode != definition['inode'] or hashlib.sha256(data).hexdigest() != definition['sha256']
+                    or data != plistlib.dumps(expected_doc, sort_keys=True)):
+                raise CustodyError('native-source-broker-definition-changed')
+            environment_fd = os.open(NATIVE_ENV.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=gate)
+            environment_info = os.fstat(environment_fd)
+            environment_identity = (environment_info.st_dev, environment_info.st_ino, environment_info.st_mode)
+            stamp = _native_env_fd_guid(environment_fd, uuid.UUID(identity['userGuid']).bytes)
+            body = os.pread(environment_fd, MAX_RESULT_BYTES + 1, 0)
+            env = projection['launch']['environment']
+            if (list(stamp[:2]) != env['inode'] or len(body) != stamp[6]
+                    or hashlib.sha256(body).hexdigest() != env['sha256']
+                    or _native_env_fd_guid(environment_fd, uuid.UUID(identity['userGuid']).bytes) != stamp
+                    or _native_at_inode(gate, NATIVE_ENV.name) != env['inode']):
+                raise CustodyError('native-source-broker-env-changed')
+            values, template = dict(parse_env(body.decode('utf-8'))), dict(parse_env(payloads['source-broker.env'].decode('utf-8')))
+            mutable = {*PREAUTH_FLAGS, 'PIXEL_SOURCE_CALENDAR_ID', 'PIXEL_SOURCE_TIME_ZONE', 'PIXEL_SOURCE_GMAIL_QUERY', 'PIXEL_SOURCE_GMAIL_SENT_QUERY'}
+            if (list(values) != list(template) or any(values.get(key) != value for key, value in _native_environment_paths().items())
+                    or any(values[key] != value for key, value in template.items() if key not in mutable and key not in _native_environment_paths())
+                    or any(values[key] not in ('0', '1') for key in PREAUTH_FLAGS if key in values)):
+                raise CustodyError('native-source-broker-env-changed')
+            if (_native_root_file(gate, 'custody.json', gid=identity['id'], mode=0o640, limit=16384)[0] != raw
+                    or _native_at_inode(parent, NATIVE_STATE.name) != [info.st_dev, info.st_ino]
+                    or _native_at_inode(gate, NATIVE_ENV.name) != env['inode']
+                    or _native_env_fd_guid(environment_fd, uuid.UUID(identity['userGuid']).bytes) != stamp):
+                raise CustodyError('native-source-broker-gate-changed')
+            with protected_directory(NATIVE_KIT.parent) as kit_parent:
+                if _native_at_inode(kit_parent, NATIVE_KIT.name) != kit_inode:
+                    raise CustodyError('native-source-broker-kit-changed')
+            with protected_directory(NATIVE_DEFINITIONS) as definitions:
+                if _native_root_file(definitions, label + '.plist', mode=0o644, limit=16384) != (data, inode):
+                    raise CustodyError('native-source-broker-definition-changed')
+            if _native_boot_uuid() != snapshot['boot'] or _native_clock_ns() >= ceiling:
+                raise CustodyError('native-source-broker-invocation-expired')
+            # A sibling may be added between reads; each acquired view is
+            # coherent, and the following binding excludes unrelated slots.
+            binding = hashlib.sha256(_native_encoded({**{key: projection[key] for key in projection if key != 'launch'},
+                'environment': env, 'definition': definition})).hexdigest()
+            view = _NativeBrokerView(_native_encoded(snapshot), invocation, binding, runtime['hostPython'], environment_fd, stamp, _NATIVE_SEAL)
+            yield view
+        finally:
+            if environment_fd is not None:
+                try:
+                    current_fd = os.fstat(environment_fd)
+                    if (current_fd.st_dev, current_fd.st_ino, current_fd.st_mode) == environment_identity:
+                        os.close(environment_fd)
+                except OSError:
+                    pass
+                if view is not None:
+                    object.__setattr__(view, 'environment_fd', -1)
+            os.close(gate)
+
+
+def _native_broker_sandbox_prefix(view):
+    if type(view) is not _NativeBrokerView or view.seal is not _NATIVE_SEAL or view.environment_fd < 0:
+        raise CustodyError('native-source-broker-view-required')
+    doc = view.invocation.document
+    label = NATIVE_LABEL + doc['role'] + ('.' + doc['identifier'] if doc['identifier'] is not None else '')
+    # Never accepts a caller-selected SBPL parameter/path. Root definition
+    # role/ID was already re-rendered and compared by the fixed reader.
+    return ('/usr/bin/sandbox-exec', '-D', 'ODS_SOURCE_JOB_PLIST=' + str(NATIVE_DEFINITIONS / (label + '.plist')),
+        '-f', str(NATIVE_KIT / ('source-' + doc['role'] + '.sb')), view.python, '-I', '-B')
+
+
+def _native_post_seatbelt_bootstrap(role, identifier, *, ready_fd, go_fd):
+    """Inert protected bootstrap: validate, READY/GO, revalidate; no Source import."""
+    ready = _native_pipe_binding(ready_fd, writing=True)
+    go = None
+    try:
+        go = _native_pipe_binding(go_fd, writing=False)
+        scope = _native_broker_scope(role, identifier)
+        with _native_broker_read(role, identifier, _scope=scope) as original:
+            def current():
+                with _native_broker_read(role, identifier, running=True, _scope=scope) as other:
+                    if original.binding != other.binding or original.invocation.encoded != other.invocation.encoded:
+                        raise CustodyError('native-source-broker-scope-changed')
+                    return _native_public_json(other.public)
+            _native_child_ready_barrier(original.invocation, ready_fd=ready_fd, go_fd=go_fd, current=current)
+            current()  # Same closed reader after GO, before any future Source import.
+            if _native_clock_ns() >= int(original.invocation.document['workerDeadlineNs']):
+                raise CustodyError('native-source-broker-invocation-expired')
+            return {'kind': 'ods-native-source-bootstrap-inert', 'label': NATIVE_LABEL + role + ('.' + identifier if identifier is not None else ''),
+                'generation': original.invocation.document['generation']}
+    finally:
+        _native_pipe_close(ready_fd, ready)
+        if go is not None:
+            _native_pipe_close(go_fd, go)
 
 
 def _native_child_main(argv):
