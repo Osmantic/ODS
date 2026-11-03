@@ -50,6 +50,12 @@ and [restricted-scope review](https://developers.google.com/identity/protocols/o
   overlapping stacks in arbitrary order.
 - Assign native macOS and the applicable platform/release acceptance. Local
   Windows/WSL qualification and simulated provider lanes do not replace them.
+- Distinguish Coffee's implemented native Mac integrations transport from Google
+  and the fixed reviewed-app journey in Connected apps. The latter still returns
+  unavailable on Darwin and depends on Linux/WSL Source Broker custody and
+  transactions. Its Mac path needs implementation, including lifecycle and
+  interruption recovery, before physical testing can qualify it. Removing the
+  transport refusal alone would not provide that support.
 - Review the remaining limitations in the [integration status](PORTAL-INTEGRATIONS-STATUS.md),
   especially real-provider recovery, connected-data/model behavior and installed
   withdrawal/update/rollback. Scope or release acceptance must be explicit.

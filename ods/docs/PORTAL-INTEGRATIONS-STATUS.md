@@ -10,8 +10,13 @@ The November 2 composition includes Coffee's #8324 and #8352 with Mike's
 follow-ups: notes, ntfy, HTTP/Home Assistant, local MCP, documents, photos,
 page/price watches, news and native scheduled-task notices. Actual installed
 Windows acceptance and newer source changes remain separately identified.
-The native Mac service is implemented; physical Mac acceptance and the
-reliable approval-continuation repair remain open. See the
+Coffee's native Mac integrations service is implemented; physical Mac acceptance
+and the reliable approval-continuation repair remain open. Google/Calendar and
+the fixed reviewed-app journey are a separate path: their Source Broker and
+owner transactions currently run only on Linux/WSL, and Connected apps returns
+unavailable on macOS. Supporting those connections on Mac requires native
+implementation before physical qualification; the Coffee service does not
+replace that controller. See the
 [composition and acceptance record](PORTAL-COFFEE-INTEGRATION.md) for the actual
 Windows/WSL model/browser evidence, later source-only checks and remaining limits.
 

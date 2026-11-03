@@ -4,6 +4,12 @@ Status: implementation and offline regression coverage; **physical Apple
 Silicon qualification has not been completed**. A passing Linux/WSL test is
 not a launchd, Darwin ACL, Seatbelt, reboot or native process-custody result.
 
+This matrix covers the native Portal runtime, scheduling and Coffee integrations.
+Google/Calendar and fixed reviewed apps in Connected apps still depend on the
+Linux/WSL Source Broker; their host relay returns unavailable on macOS. They need
+a native custody/lifecycle/transaction implementation before a Mac connection
+journey can be qualified. Do not treat a pass here as support for those routes.
+
 ## First physical run
 
 Start from the exact source commit named in the final PR qualification note,
