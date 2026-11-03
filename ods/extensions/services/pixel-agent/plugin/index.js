@@ -732,10 +732,9 @@ export default definePluginEntry({
       await toolLoopGuard.verifyCitedPages(event, context, AGENT_ID);
       const guardDecision = toolLoopGuard.beforeAgentFinalize(event, context, AGENT_ID);
       const verification = toolLoopGuard.deliveryVerificationForRun(context?.runId ?? event?.runId);
-      let decision = goalProgress.finalize(event, context, {guardDecision,
+      const decision = goalProgress.finalize(event, context, {guardDecision,
         allowed:toolLoopGuard.continuationAllowed(context?.runId ?? event?.runId),
         waiting:verification?.status === 'pending'});
-      decision = await integrationReviewRecovery.finalize(event, context, decision);
       if (integrationReviewRecovery.isReviewOnly(context, event)) toolLoopGuard.discardExampleRun(context?.runId ?? event?.runId);
       delegationDelivery.finalize(event,context,decision);
       return decision;

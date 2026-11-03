@@ -7,6 +7,8 @@ import vm from 'node:vm';
 import {createIntegrationReviewRecovery} from '../plugin/integration-review-recovery.mjs';
 import {defaultAgentId} from '../plugin/stop-synthesis.mjs';
 import {createIntegrationOutcomes} from '../plugin/integration-outcomes.mjs';
+import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
+import {createGoalProgress} from '../plugin/goal-progress.mjs';
 import {createIntegrationTools,integrationRequest,NATIVE_REVIEW_ROLE,nativeReviewOperation} from '../plugin/integrations.mjs';
 
 const SESSION='agent:pixel:openai-user:ods-'+'a'.repeat(64);
@@ -289,6 +291,44 @@ test('capacity never evicts a latch into unrestricted execution',async()=>{
   const next={...CONTEXT,runId:'next'};recovery.observe({prompt:'new'},next,next.runId);
   assert.equal(recovery.floor(tool('exec'),next),undefined);assert.equal(recovery.floor(tool('exec'),CONTEXT).block,true);
   assert.equal(recovery.isReviewOnly(next),false);assert.equal(recovery.isReviewOnly(CONTEXT),true);
+});
+
+for(const scenario of [
+  {name:'ordinary greeting',owner:'Hello.',answer:'Hello.'},
+  {name:'integration request',owner:OWNER,answer:'Approval is needed.'},
+  {name:'existing completion assurance',owner:'notícias de hoje',
+    answer:'Vou pesquisar agora.',retry:'ods-completion-assurance'},
+]) test(`actual index finalize preserves ${scenario.name} without invoking integration recovery`,async()=>{
+  const outcomes=createIntegrationOutcomes();
+  outcomes.begin({prompt:scenario.owner},CONTEXT,CONTEXT.runId);
+  const recovery=createIntegrationReviewRecovery({eligible:()=>true,ready:()=>true,
+    nativeStartClear:state=>outcomes.reviewStartClear({agentId:'pixel',runId:state.runId,
+      sessionId:state.sessionId,sessionKey:state.sessionKey})});
+  recovery.observe({prompt:scenario.owner},CONTEXT,CONTEXT.runId);
+  const guard=createToolLoopGuard(),goals=createGoalProgress();
+  guard.observeRun(CONTEXT,'pixel',{prompt:scenario.owner});
+  goals.begin({prompt:scenario.owner},CONTEXT);
+  const source=readFileSync(new URL('../plugin/index.js',import.meta.url),'utf8');
+  const start=source.indexOf('    api.on("before_agent_finalize",');
+  const end=source.indexOf('    // Delivery rewriting',start);
+  assert.ok(start>=0&&end>start);
+  let finalize,ordinaryDecision,deliveredDecision,integrationCalls=0;
+  vm.runInNewContext(source.slice(start,end),{
+    api:{on:(_name,callback)=>{finalize=callback;}},AGENT_ID:'pixel',
+    integrationReviewRecovery:{...recovery,finalize(){integrationCalls++;throw Error('Integration recovery invoked');}},
+    toolLoopGuard:{...guard,beforeAgentFinalize(...args){ordinaryDecision=guard.beforeAgentFinalize(...args);return ordinaryDecision;}},
+    goalProgress:goals,delegationDelivery:{finalize(_event,_context,decision){deliveredDecision=decision;}},
+  });
+  const nativeEvent={...event(scenario.owner),lastAssistantMessage:scenario.answer,
+    messages:[{role:'user',content:scenario.owner},{role:'assistant',content:scenario.answer}]};
+  const decision=await finalize(nativeEvent,CONTEXT);
+  assert.equal(integrationCalls,0);
+  assert.equal(decision,ordinaryDecision,'the existing native decision reaches delivery unchanged');
+  assert.equal(deliveredDecision,ordinaryDecision);
+  assert.equal(decision?.retry?.idempotencyKey,scenario.retry);
+  assert.equal(recovery.isReviewOnly(CONTEXT),false,'finalization cannot create an integration review latch');
+  assert.equal(recovery.admit({runId:CONTEXT.runId},CONTEXT),undefined);
+  assert.equal(recovery.floor(tool('exec'),CONTEXT),undefined);
 });
 
 test('actual index lifecycle hooks suppress workful helpers even with event-only native run identity',async()=>{
