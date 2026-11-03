@@ -45,7 +45,7 @@ import {
   statusFileFromEnv,
   statusPayload,
 } from "./projection.mjs";
-import { longTaskContract, promptContractForAgent, PORTAL_INTEGRATION_TURN_CONTEXT } from "./prompt-contract.mjs";
+import { longTaskContract, promptContractForAgent, PORTAL_INTEGRATION_API_CONTRACT, PORTAL_INTEGRATION_TURN_CONTEXT } from "./prompt-contract.mjs";
 import { executionContext } from "./completion-assurance.mjs";
 import { createAskUserTool } from "./ask-user.mjs";
 import { createIntegrationTools } from "./integrations.mjs";
@@ -406,11 +406,9 @@ export default definePluginEntry({
       toolResultMaxChars: () => projectCapabilityOutputLimit(api.runtime?.config?.current?.() ?? api.config, AGENT_ID),
     });
     integrationReviewRecovery ??= createIntegrationReviewRecovery({
-      complete: parameters => api.runtime.llm.complete(parameters),
       eligible: runId => toolLoopGuard.continuationAllowed(runId),
       nativeStartClear: state => integrationOutcomes.reviewStartClear({agentId:AGENT_ID,
         runId:state.runId,sessionId:state.sessionId,sessionKey:state.sessionKey}),
-      ownerTimezone: () => (api.runtime?.config?.current?.() ?? api.config)?.agents?.defaults?.userTimezone ?? null,
       ready: state => {
         const config = api.runtime?.config?.current?.() ?? api.config;
         const access = accessRuntime.status();
@@ -521,6 +519,8 @@ export default definePluginEntry({
         {goal: goalProgress.active(context?.runId ?? event?.runId), teamRole: managedTeamRole(ownerEvent)});
       const goalContract = inResponseLanguage(GOAL_CONTRACT, configuredResponseLanguage);
       const integrationTurnContext = contract && !accessRuntime.isProbe(context) ? PORTAL_INTEGRATION_TURN_CONTEXT : '';
+      // Static API facts belong in SYSTEM; the history reminder stays by the owner.
+      const integrationApiContract = integrationTurnContext ? PORTAL_INTEGRATION_API_CONTRACT : '';
       const appendContext = [goalProgress.active(context?.runId ?? event?.runId) ? goalContract : '', languageNote,
         toolLoopGuard.clarificationContextForRun(context?.runId ?? event?.runId) ??
           toolLoopGuard.clarificationContextForRun(delegationDelivery.ownerRunFor(context)),
@@ -529,7 +529,7 @@ export default definePluginEntry({
       // extension requests refuse update_plan, and read-only roles cannot edit.
       const longTask = toolLoopGuard.longTaskEligible(context?.runId ?? event?.runId)
         ? longTaskContract(context, ownerEvent, {configuredContextWindow, configuredLeanPrompt}) : '';
-      return contract ? { ...contract, ...(prependContext ? {prependContext} : {}), ...(appendContext ? {appendContext} : {}), appendSystemContext: `${inResponseLanguage(ACTIVITY_CONTRACT, configuredResponseLanguage)} ${executionLocationContext(context, AGENT_ID)} ${goalProgress.active(context?.runId ?? event?.runId) ? goalContract : ""} ${contract.appendSystemContext}${longTask ? ` ${longTask}` : ''} ${inResponseLanguage(executionContext(), configuredResponseLanguage)} ${repositoryEvidence}` } : prependContext ? {prependContext} : undefined;
+      return contract ? { ...contract, ...(prependContext ? {prependContext} : {}), ...(appendContext ? {appendContext} : {}), appendSystemContext: `${inResponseLanguage(ACTIVITY_CONTRACT, configuredResponseLanguage)} ${executionLocationContext(context, AGENT_ID)} ${goalProgress.active(context?.runId ?? event?.runId) ? goalContract : ""} ${contract.appendSystemContext}${integrationApiContract ? ` ${integrationApiContract}` : ''}${longTask ? ` ${longTask}` : ''} ${inResponseLanguage(executionContext(), configuredResponseLanguage)} ${repositoryEvidence}` } : prependContext ? {prependContext} : undefined;
     });
     api.on("model_call_started", (event, context) =>
       toolLoopGuard.observeModelCall(event, context, AGENT_ID)
@@ -589,9 +589,9 @@ export default definePluginEntry({
           const candidate=await integrationOutcomes.prepareReviewCandidate(event,context,decision);
           if (candidate?.block) decision=candidate;
           else if (candidate?.ref) {
-            const verdict=await integrationOutcomes.checkReviewCandidate(candidate,
-              value=>integrationReviewRecovery.checkConcrete(value,context));
-            decision=integrationOutcomes.commitReviewCandidate(candidate,verdict)??decision;
+            const permit=integrationOutcomes.checkNativeCandidate(candidate,
+              value=>integrationReviewRecovery.admitNativeCandidate(value,context));
+            decision=integrationOutcomes.commitNativeCandidate(candidate,permit)??decision;
           } else decision={block:true,blockReason:'This review call has no current native admission. Nothing was submitted.'};
         }
         if (decision?.block) {
@@ -734,10 +734,9 @@ export default definePluginEntry({
       await toolLoopGuard.verifyCitedPages(event, context, AGENT_ID);
       const guardDecision = toolLoopGuard.beforeAgentFinalize(event, context, AGENT_ID);
       const verification = toolLoopGuard.deliveryVerificationForRun(context?.runId ?? event?.runId);
-      let decision = goalProgress.finalize(event, context, {guardDecision,
+      const decision = goalProgress.finalize(event, context, {guardDecision,
         allowed:toolLoopGuard.continuationAllowed(context?.runId ?? event?.runId),
         waiting:verification?.status === 'pending'});
-      decision = await integrationReviewRecovery.finalize(event, context, decision);
       if (integrationReviewRecovery.isReviewOnly(context, event)) toolLoopGuard.discardExampleRun(context?.runId ?? event?.runId);
       delegationDelivery.finalize(event,context,decision);
       return decision;

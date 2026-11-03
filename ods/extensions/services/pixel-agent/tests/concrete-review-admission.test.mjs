@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {EventEmitter} from 'node:events';
 import {createIntegrationOutcomes} from '../plugin/integration-outcomes.mjs';
+import {createIntegrationReviewRecovery} from '../plugin/integration-review-recovery.mjs';
 import {createIntegrationTools,submitIntegration,canonicalReviewNotePath,canonicalReviewDocumentId} from '../plugin/integrations.mjs';
 
-const ctx={agentId:'pixel',runId:'concrete-owner',sessionId:'concrete-session',sessionKey:'agent:pixel:openai-user:ods-'+'a'.repeat(64)};
+const ctx={agentId:'pixel',runId:'concrete-owner',sessionId:'concrete-session',sessionKey:'agent:pixel:openai-user:ods-'+'a'.repeat(64),
+  trigger:'user',modelProviderId:'ods-gateway',modelId:'ods/current'};
 const hash=value=>createHash('sha256').update(value).digest('hex');
 const readRef=path=>({version:1,source:'obsidian',binding:hash('default-vault'),
   entries:[{path:canonicalReviewNotePath(path),binding:hash('read:'+canonicalReviewNotePath(path))}],truncated:false});
@@ -13,7 +15,19 @@ const note=(path='Example.md')=>({action:'read',path});
 const write=(text='Current exact line')=>({action:'write',path:'Example.md',text,mode:'append'});
 const event=(id,params,name='pixel_ods_notes')=>({toolName:name,toolCallId:id,params});
 const at=id=>({...ctx,toolCallId:id});
-const approved=candidate=>Object.freeze({candidate:candidate.ref,entailed:true});
+const approved=candidate=>Object.freeze({candidate:candidate.ref,admission:'native-review-policy-v1'});
+async function nativeController(outcomes,context=ctx) {
+  const owner='Use the configured integrations within their current policy.';
+  const recovery=createIntegrationReviewRecovery({eligible:()=>true,ready:()=>true,
+    nativeStartClear:state=>outcomes.reviewStartClear({agentId:'pixel',runId:state.runId,sessionId:state.sessionId,sessionKey:state.sessionKey}),
+    complete:()=>assert.fail('no secondary model is available')});
+  recovery.observe({prompt:owner},context,context.runId);
+  assert.equal((await recovery.finalize({...context,nativeRetryToolsAllowVersion:1,nativeRetryToolChoiceVersion:1,
+    lastAssistantMessage:'A provisional answer.',messages:[{role:'user',content:owner},{role:'assistant',content:'A provisional answer.'}]},context)).action,'revise');
+  assert.equal(recovery.admit({...context,nativeRetryToolsAllowState:Object.freeze({version:1,ownerRunId:context.runId,active:true,
+    toolsAllow:Object.freeze(['pixel_ods_notes','pixel_ods_mcp'])})},context),undefined);
+  return recovery;
+}
 function fixture(submit) {
   const outcomes=createIntegrationOutcomes();outcomes.begin({},ctx,ctx.runId);
   const sent=[];
@@ -28,8 +42,8 @@ function fixture(submit) {
   const admit=async(id,params,name='pixel_ods_notes')=>{
     const candidate=await prepare(id,params,name);
     assert.ok(candidate.ref);
-    const verdict=await outcomes.checkReviewCandidate(candidate,async c=>approved(c));
-    assert.equal(outcomes.commitReviewCandidate(candidate,verdict),undefined);
+    const verdict=await outcomes.checkNativeCandidate(candidate,c=>approved(c));
+    assert.equal(outcomes.commitNativeCandidate(candidate,verdict),undefined);
     return candidate;
   };
   return {outcomes,sent,tool,prepare,admit};
@@ -37,7 +51,7 @@ function fixture(submit) {
 
 test('a provisional or forged-positive candidate cannot dispatch; a checked exact one-use candidate can',async()=>{
   const first=fixture(),candidate=await first.prepare('pending',note());
-  assert.equal(first.outcomes.commitReviewCandidate(candidate,approved(candidate)).block,true);
+  assert.equal(first.outcomes.commitNativeCandidate(candidate,approved(candidate)).block,true);
   assert.equal((await first.tool('pixel_ods_notes').execute('pending',note())).details.code,'integration-call-unbound');
   assert.equal(first.sent.length,0);
   const valid=fixture();await valid.admit('valid',note());
@@ -47,13 +61,138 @@ test('a provisional or forged-positive candidate cannot dispatch; a checked exac
   assert.equal(valid.sent.length,1);
 });
 
-test('await-time mutation and a late invalid-mode normalization cannot borrow an accepted append',async()=>{
+test('native permit object identity is bound to its exact candidate, route context and original family',async()=>{
+  for(const mode of ['copy','wrong-ref','old-semantic','bare-true','async','replay']) {
+    const f=fixture(),source=await nativeController(f.outcomes),candidate=await f.prepare('first',note());
+    const permit=f.outcomes.checkNativeCandidate(candidate,current=>source.admitNativeCandidate(current,at('first')));
+    assert.equal(permit.admission,'native-review-policy-v1');
+    let supplied=permit;
+    if(mode==='copy')supplied=Object.freeze({...permit});
+    if(mode==='wrong-ref')supplied=Object.freeze({...permit,candidate:Object.freeze({})});
+    if(mode==='old-semantic')supplied=Object.freeze({candidate:candidate.ref,entailed:true});
+    if(mode==='bare-true')supplied=true;
+    if(mode==='async')supplied=Promise.resolve(permit);
+    if(mode==='replay') {
+      assert.equal(f.outcomes.commitNativeCandidate(candidate,permit),undefined);
+      await f.tool('pixel_ods_notes').execute('first',note());
+      const later=await f.prepare('later',note('Other.md'));
+      assert.equal(f.outcomes.commitNativeCandidate(later,permit).block,true);
+    } else assert.equal(f.outcomes.commitNativeCandidate(candidate,supplied).block,true);
+    assert.equal((await f.tool('pixel_ods_notes').execute(mode==='replay'?'later':'first',note())).details.code,'integration-call-unbound');
+    assert.equal(f.sent.length,mode==='replay'?1:0);
+  }
+  const f=fixture(),source=await nativeController(f.outcomes),candidate=await f.prepare('route',note()),scope=at('route');
+  const permit=f.outcomes.checkNativeCandidate(candidate,current=>source.admitNativeCandidate(current,scope));
+  scope.modelId='foreign';source.observe({prompt:'changed'},scope,scope.runId);
+  assert.equal(source.admitNativeCandidate(candidate,scope).admission,'refused');
+  f.outcomes.end({success:false},ctx);
+  assert.equal(f.outcomes.commitNativeCandidate(candidate,permit).block,true);
+  assert.equal(f.sent.length,0);
+});
+
+for(const shape of ['decorated-promise','hidden-then'])test('async-shaped native permits refuse before tickets: '+shape,async()=>{
+  const f=fixture(),candidate=await f.prepare('async-shape',note());
+  const fields={candidate:candidate.ref,admission:'native-review-policy-v1'};
+  const shaped=shape==='decorated-promise'?Object.assign(Promise.resolve(),fields)
+    :Object.defineProperty({...fields},'then',{value:()=>{},enumerable:false});
+  Object.freeze(shaped);
+  const permit=f.outcomes.checkNativeCandidate(candidate,()=>shaped);
+  assert.equal(permit,undefined);
+  assert.equal(f.outcomes.commitNativeCandidate(candidate,shaped).block,true);
+  assert.equal((await f.tool('pixel_ods_notes').execute('async-shape',note())).details.code,'integration-call-unbound');
+  assert.equal(f.sent.length,0);
+});
+
+test('only a frozen literal data permit is accepted; accessors, symbols, exotic prototypes and proxies fail closed',async()=>{
+  let getters=0;
+  const builders=[
+    fields=>Object.freeze(Object.defineProperty({...fields},'admission',{get:()=>{getters++;return fields.admission;},enumerable:true})),
+    fields=>Object.freeze(Object.defineProperty({...fields},Symbol('hidden'),{value:true})),
+    fields=>Object.freeze(Object.assign(Object.create({}),fields)),
+    fields=>Object.freeze(Object.assign(Object.create(null),fields)),
+    fields=>Object.freeze(Object.setPrototypeOf(Object.assign(Promise.resolve(),fields),Object.prototype)),
+    fields=>Object.freeze(Object.defineProperty({...fields},'then',{get:()=>{getters++;throw Error('must not read');}})),
+    fields=>new Proxy(Object.freeze(fields),{}),
+    fields=>new Proxy(Object.freeze(fields),{getPrototypeOf(){throw Error('prototype trap');}}),
+    fields=>new Proxy(Object.freeze(fields),{ownKeys(){throw Error('keys trap');}}),
+    fields=>new Proxy(Object.freeze(fields),{getOwnPropertyDescriptor(){throw Error('descriptor trap');}}),
+    fields=>{const proxy=Proxy.revocable(Object.freeze(fields),{});proxy.revoke();return proxy.proxy;},
+  ];
+  for(const build of builders) {
+    const f=fixture(),candidate=await f.prepare('literal-shape',note());
+    const shaped=build({candidate:candidate.ref,admission:'native-review-policy-v1'});
+    let permit;assert.doesNotThrow(()=>{permit=f.outcomes.checkNativeCandidate(candidate,()=>shaped);});
+    assert.equal(permit,undefined);assert.equal(f.outcomes.commitNativeCandidate(candidate,shaped).block,true);
+    assert.equal((await f.tool('pixel_ods_notes').execute('literal-shape',note())).details.code,'integration-call-unbound');
+    assert.equal(f.sent.length,0);
+  }
+  assert.equal(getters,0,'no getter or then accessor is invoked to validate authority');
+  const positive=fixture(),candidate=await positive.prepare('literal',note());
+  const literal=Object.freeze({candidate:candidate.ref,admission:'native-review-policy-v1'});
+  assert.equal(positive.outcomes.checkNativeCandidate(candidate,()=>literal),literal);
+  assert.equal(positive.outcomes.commitNativeCandidate(candidate,literal),undefined);
+  assert.equal((await positive.tool('pixel_ods_notes').execute('literal',note())).details.status,'done');
+  assert.equal(positive.sent.length,1);
+});
+
+test('the native budget spans sources, counts canonical operations not calls, and exempts bound metadata',async()=>{
+  const f=fixture(payload=>({ok:true,recoveryReviewOnly:true,path:payload.path,text:'Bounded result',servers:[],results:[],
+    ...(payload.action==='notes-search'?{reviewReferences:{...readRef('Example.md'),entries:[]}}:
+      payload.action==='notes-read'?{reviewReferences:readRef(payload.path)}:
+      payload.server==='app:documents'?{reviewReferences:{version:1,source:'paperless',binding:hash('docs'),entries:[],truncated:false}}:{})}));
+  const source=await nativeController(f.outcomes);
+  const calls=[['pixel_ods_mcp',{action:'list'}],['pixel_ods_notes',{action:'search',query:'owned'}],
+    ['pixel_ods_notes',note()],['pixel_ods_mcp',{action:'call',server:'app:documents',tool:'search',arguments:{query:'owned'}}],
+    ['pixel_ods_mcp',{action:'call',server:'app:photos',tool:'search',arguments:{place:'Lisbon'}}],
+    ['pixel_ods_notes',note('Other.md')],['pixel_ods_mcp',{action:'list'}]];
+  for(const [index,[name,params]]of calls.entries()) {
+    const id='bounded-'+index,candidate=await f.prepare(id,params,name);
+    const permit=f.outcomes.checkNativeCandidate(candidate,current=>source.admitNativeCandidate(current,at(id)));
+    assert.equal(f.outcomes.commitNativeCandidate(candidate,permit),undefined);
+    assert.equal((await f.tool(name).execute(id,params)).details.status,'done');
+  }
+  f.outcomes.begin({},ctx,ctx.runId); // Same native fallback must not reset budgets.
+  const news={action:'call',server:'app:news',tool:'unread',arguments:{}},candidate=await f.prepare('fifth',news,'pixel_ods_mcp');
+  const permit=f.outcomes.checkNativeCandidate(candidate,current=>source.admitNativeCandidate(current,at('fifth')));
+  assert.equal(f.outcomes.commitNativeCandidate(candidate,permit).code,'review-operation-limit');
+  assert.equal((await f.tool('pixel_ods_mcp').execute('fifth',news)).details.code,'integration-call-unbound');
+  assert.equal(f.sent.length,calls.length);
+});
+
+test('queued identical proposals reserve one original family before any second host submission',async()=>{
+  let release;const f=fixture(()=>new Promise(resolve=>{release=()=>resolve({ok:true,status:'approval-required',approvalId:'pending',
+    recoveryReviewOnly:true,actionExecuted:false,approvalConsumed:false});})),source=await nativeController(f.outcomes);
+  const parent=await f.outcomes.prepareReviewCandidate(event('parent',{id:'openclaw:pixel-ods:pixel_ods_notes',args:write()},'tool_call'),at('parent'));
+  const permit=f.outcomes.checkNativeCandidate(parent,current=>source.admitNativeCandidate(current,at('parent')));
+  assert.equal(f.outcomes.commitNativeCandidate(parent,permit),undefined);
+  const childId='tool_search_code:parent:pixel_ods_notes:1',child=await f.prepare(childId,write());
+  assert.equal(child,parent);assert.equal(f.outcomes.checkNativeCandidate(child,()=>assert.fail('original family must reuse proof')),permit);
+  assert.equal(f.outcomes.commitNativeCandidate(child,permit),undefined);
+  const host=f.tool('pixel_ods_notes').execute(childId,write());let queued=false;
+  const second=f.prepare('different-original-family',write()).then(value=>{queued=true;return value;});
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(queued,false);assert.equal(f.sent.length,1);
+  release();assert.equal((await host).details.status,'approval-required');const candidate=await second;
+  const next=f.outcomes.checkNativeCandidate(candidate,current=>source.admitNativeCandidate(current,at('different-original-family')));
+  assert.equal(f.outcomes.commitNativeCandidate(candidate,next).code,'review-proposal-limit');
+  assert.equal((await f.tool('pixel_ods_notes').execute('different-original-family',write())).details.code,'integration-call-unbound');
+  assert.equal(f.sent.length,1);
+  const newOwner={...ctx,runId:'explicit-new-owner'};f.outcomes.begin({},newOwner,newOwner.runId);
+  const fresh=await nativeController(f.outcomes,newOwner),current=await f.outcomes.prepareReviewCandidate(event('fresh',write()),{...newOwner,toolCallId:'fresh'});
+  const valid=f.outcomes.checkNativeCandidate(current,value=>fresh.admitNativeCandidate(value,{...newOwner,toolCallId:'fresh'}));
+  assert.equal(f.outcomes.commitNativeCandidate(current,valid),undefined);
+  assert.equal((await f.prepare('old-late',write())).block,true);
+  f.outcomes.clear();
+});
+
+test('thenable authority, post-check mutation and a late invalid mode cannot borrow an accepted append',async()=>{
   const changed=fixture(),params=write(),candidate=await changed.prepare('changed',params);
-  let release;
-  const held=changed.outcomes.checkReviewCandidate(candidate,()=>new Promise(resolve=>{release=()=>resolve(approved(candidate));}));
-  params.text='Different current text';release();
-  assert.equal(changed.outcomes.commitReviewCandidate(candidate,await held).block,true);
+  const held=changed.outcomes.checkNativeCandidate(candidate,()=>Promise.resolve(approved(candidate)));
+  assert.equal(held,undefined,'native policy is synchronous; a promised positive is not authority');
+  assert.equal(changed.outcomes.commitNativeCandidate(candidate,held).block,true);
   assert.equal(changed.sent.length,0);
+  const drift=fixture(),raw=write(),current=await drift.prepare('drift',raw);
+  const permit=drift.outcomes.checkNativeCandidate(current,approved);raw.text='Different current text';
+  assert.equal(drift.outcomes.commitNativeCandidate(current,permit).block,true);
   const late=fixture();await late.admit('late',write());
   const result=await late.tool('pixel_ods_notes').execute('late',{...write(),mode:'overwrite'});
   assert.equal(result.details.code,'integration-call-unbound');assert.equal(late.sent.length,0);
@@ -110,13 +249,13 @@ test('review candidates refuse actual host truncation tails without changing or 
 test('native wrapper and exact child share one verifier and admission, without queueing behind themselves',async()=>{
   const f=fixture(),params=note();let checks=0;
   const parent=await f.outcomes.prepareReviewCandidate(event('parent',{id:'openclaw:pixel-ods:pixel_ods_notes',args:params},'tool_call'),at('parent'));
-  const verdict=await f.outcomes.checkReviewCandidate(parent,async c=>{checks++;return approved(c);});
-  assert.equal(f.outcomes.commitReviewCandidate(parent,verdict),undefined);
+  const verdict=await f.outcomes.checkNativeCandidate(parent,c=>{checks++;return approved(c);});
+  assert.equal(f.outcomes.commitNativeCandidate(parent,verdict),undefined);
   const childId='tool_search_code:parent:pixel_ods_notes:1';
   const child=await f.prepare(childId,params);
   assert.equal(child,parent);
-  assert.equal(await f.outcomes.checkReviewCandidate(child,async()=>assert.fail('a child must not rejudge')),verdict);
-  assert.equal(f.outcomes.commitReviewCandidate(child,verdict),undefined);
+  assert.equal(await f.outcomes.checkNativeCandidate(child,()=>assert.fail('a child must not rejudge')),verdict);
+  assert.equal(f.outcomes.commitNativeCandidate(child,verdict),undefined);
   assert.equal((await f.tool('pixel_ods_notes').execute(childId,params)).details.status,'done');
   assert.equal(checks,1);assert.equal(f.sent.length,1);
 });
@@ -132,8 +271,8 @@ test('distinct candidate families wait through real host settlement, not merely 
   await new Promise(resolve=>setImmediate(resolve));assert.equal(prepared,false);
   release();await executing;
   const candidate=await next;assert.ok(candidate.ref);assert.equal(prepared,true);
-  const verdict=await f.outcomes.checkReviewCandidate(candidate,async c=>approved(c));
-  assert.equal(f.outcomes.commitReviewCandidate(candidate,verdict),undefined);
+  const verdict=await f.outcomes.checkNativeCandidate(candidate,c=>approved(c));
+  assert.equal(f.outcomes.commitNativeCandidate(candidate,verdict),undefined);
   f.outcomes.cancelUser('ods-'+'a'.repeat(64));
 });
 
@@ -169,8 +308,8 @@ test('cancellation releases queued families and old settlement cannot release a 
   const candidate=await f.outcomes.prepareReviewCandidate(event('new',note()),{...newer,toolCallId:'new'});
   assert.ok(candidate.ref);
   release();await old;
-  const verdict=await f.outcomes.checkReviewCandidate(candidate,async c=>approved(c));
-  assert.equal(f.outcomes.commitReviewCandidate(candidate,verdict),undefined);
+  const verdict=await f.outcomes.checkNativeCandidate(candidate,c=>approved(c));
+  assert.equal(f.outcomes.commitNativeCandidate(candidate,verdict),undefined);
   f.outcomes.clear();
 });
 
@@ -181,8 +320,8 @@ test('an old native aborted closure cannot consume or stop a newer same-ID owner
   f.outcomes.end({success:false},ctx);
   const next={...ctx,runId:'new-collision-owner'};f.outcomes.begin({},next,next.runId);
   const candidate=await f.outcomes.prepareReviewCandidate(event('reused',note()),{...next,toolCallId:'reused'});
-  const verdict=await f.outcomes.checkReviewCandidate(candidate,async c=>approved(c));
-  assert.equal(f.outcomes.commitReviewCandidate(candidate,verdict),undefined);
+  const verdict=await f.outcomes.checkNativeCandidate(candidate,c=>approved(c));
+  assert.equal(f.outcomes.commitNativeCandidate(candidate,verdict),undefined);
   const controller=new AbortController();controller.abort();
   assert.equal((await old.execute('reused',note(),controller.signal)).details.code,'integration-call-cancelled');
   let sent=0;const fresh=createIntegrationTools({context:next,outcomes:f.outcomes,requireBound:()=>true,
