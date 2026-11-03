@@ -155,7 +155,7 @@ function scheduleApi({loseCreateReply=false}={}) {
       reply={kind:'change',outcome:'applied',task}
     } else if(body.action==='check-create')reply={kind:'change',outcome:'unchanged',task}
     else reply={kind:'tasks',items:task?[task]:[],offset:0,hasMore:false,nextOffset:null,pendingCreates:[],pendingCount:0,pendingRemovals:[]}
-    return new Response(JSON.stringify(reply),{headers:{'Content-Type':'application/json'}})
+    return new globalThis.Response(JSON.stringify(reply),{headers:{'Content-Type':'application/json'}})
   })
   return requests
 }
