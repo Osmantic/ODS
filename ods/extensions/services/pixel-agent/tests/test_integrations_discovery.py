@@ -148,3 +148,47 @@ def test_publication_failure_does_not_fail_a_committed_owner_save(subject):
     result = save(app, config)
     assert result['settings']['mcp']['servers'][0]['enabled'] is False
     assert app.discovery_path.is_symlink() and target.read_bytes() == b'foreign'
+
+
+@pytest.mark.parametrize('policy', ['unknown', None, True, {}, 'missing'])
+def test_unknown_permission_is_removed_from_snapshot_and_catalog(subject, policy):
+    app = subject
+    checked(app)
+    config = app.store.config()
+    tool = next(tool for tool in config['mcp']['servers'][0]['tools'] if tool['name'] == 'change')
+    if policy == 'missing':
+        tool.pop('policy')
+    else:
+        tool['policy'] = policy
+    app.store.save_config(config)
+    assert app.publish_discovery()
+    assert [tool['name'] for tool in snapshot(app)['servers'][0]['tools']] == ['list_directory']
+    catalog = app.handle('agent', {'schemaVersion': 1, 'action': 'mcp-tools'})['servers']
+    assert [tool['name'] for tool in catalog[0]['tools']] == ['list_directory']
+    with pytest.raises(service.IntegrationError):
+        app.handle('agent', {'schemaVersion': 1, 'action': 'mcp-prepare', 'server': 'files',
+                             'tool': 'change', 'arguments': {}})
+    assert app.store.approvals() == []
+
+
+def test_interrupted_credential_binding_cannot_advertise_prepare_or_spend_a_grant(subject, monkeypatch):
+    app = subject
+    checked(app)
+    monkeypatch.setattr(service, 'McpSession', lambda *_: pytest.fail('unverified provider was opened'))
+    request = {'schemaVersion': 1, 'server': 'files', 'tool': 'change', 'arguments': {'value': 'unchanged'}}
+    proposal = app.handle('agent', {**request, 'action': 'mcp-prepare'})
+    owner(app, 'decide', approvalId=proposal['approvalId'], decision='approve')
+    grants = app.store.approvals()
+    # A crash after the secrets rename can leave the old endpoint/tool check
+    # matching while the paired destination marker belongs to the next save.
+    secrets = app.store.secrets()
+    secrets['mcpContexts']['files'] = '0' * 64
+    app.store.save_secrets(secrets)
+    assert app.publish_discovery()
+    assert snapshot(app)['servers'] == []
+    assert app.handle('agent', {'schemaVersion': 1, 'action': 'mcp-tools'})['servers'] == []
+    for action, fields in [('mcp-call', {}), ('mcp-prepare', {}), ('mcp-call', {'recoveryReviewOnly': True})]:
+        with pytest.raises(service.IntegrationError) as refused:
+            app.handle('agent', {**request, 'action': action, **fields})
+        assert refused.value.code == 'mcp-check-required'
+    assert app.store.approvals() == grants

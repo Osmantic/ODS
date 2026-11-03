@@ -171,6 +171,122 @@ class IntegrationsTests(unittest.TestCase):
             with self.assertRaises(service.IntegrationError):
                 self.agent("notes-read", path=bad)
 
+    def test_explicit_note_proposal_never_edits_or_spends_an_approval(self):
+        fields = dict(path='Groceries.md', mode='append', text='test proposal')
+        note = self.vault / fields['path']
+        original = note.read_bytes()
+        for policy in ('off', 'allow'):
+            self.save(self.settings(write=policy))
+            with self.assertRaises(service.IntegrationError):
+                self.agent('notes-request-approval', **fields)
+            self.assertEqual(note.read_bytes(), original)
+            self.assertFalse(self.store.approvals())
+        self.save(self.settings(write='ask'), secrets={'ntfyPassword':'pw'})
+        first = self.agent('notes-request-approval', **fields)
+        self.assertEqual(first['status'], 'approval-required')
+        self.assertFalse(first['actionExecuted'] or first['approvalConsumed'])
+        self.assertEqual(first['approvalId'], self.agent('notes-request-approval', **fields)['approvalId'])
+        self.assertEqual(len(self.owner('get')['approvals']), 1)
+        self.assertEqual(len(FakeNtfy.sent), 1, 'only the first explicit proposal notifies the owner')
+        detail = self.owner('approval-detail', approvalId=first['approvalId'])['approval']
+        self.assertTrue(detail['available'])
+        self.assertEqual(detail['request'], {'action': 'notes-write', **fields})
+        self.assertNotIn('reviewPayload', json.dumps(first))
+        self.assertEqual(note.read_bytes(), original)
+        self.owner('decide', approvalId=first['approvalId'], decision='approve')
+        ready = self.agent('notes-request-approval', **fields)
+        self.assertEqual(ready['status'], 'approval-ready')
+        self.assertFalse(ready['actionExecuted'] or ready['approvalConsumed'])
+        self.assertEqual(len(FakeNtfy.sent), 1)
+        self.assertEqual(note.read_bytes(), original)
+        self.assertEqual(self.agent('notes-write', **fields)['written'], fields['path'])
+        self.assertEqual(note.read_text().count(fields['text']), 1)
+        fresh = self.agent('notes-request-approval', **fields)
+        self.owner('decide', approvalId=fresh['approvalId'], decision='decline')
+        with self.assertRaises(service.IntegrationError):
+            self.agent('notes-request-approval', **fields)
+        self.assertFalse(self.owner('get')['approvals'])
+
+    def test_note_proposal_is_bound_to_the_destination_and_current_permission(self):
+        self.save(self.settings(write='ask'))
+        paths = [self.vault / name for name in ('A.md', 'B.md')]
+        for path in paths:
+            path.write_text('original')
+        edit = dict(path='A.md', mode='append', text='one line')
+        waiting = self.agent('notes-request-approval', **edit)
+        self.owner('decide', approvalId=waiting['approvalId'], decision='approve')
+        other = self.agent('notes-write', **{**edit, 'path':'B.md'})
+        self.assertEqual(other['status'], 'approval-required')
+        self.assertNotEqual(other['approvalId'], waiting['approvalId'])
+        self.assertEqual([p.read_text() for p in paths], ['original','original'])
+        self.save(self.settings(write='off'))
+        with self.assertRaises(service.IntegrationError):
+            self.agent('notes-request-approval', **edit)
+        with self.assertRaises(service.IntegrationError):
+            self.agent('notes-write', **edit)
+        self.assertEqual([p.read_text() for p in paths], ['original','original'])
+
+    def test_proposal_refuses_a_symlink_and_cannot_escape_the_native_review_floor(self):
+        self.save(self.settings(write='ask'))
+        hidden = self.vault.parent / 'outside.md'
+        hidden.write_text('outside')
+        link = self.vault / 'Alias.md'
+        link.symlink_to(hidden)
+        with self.assertRaises(service.IntegrationError):
+            self.agent('notes-request-approval', path='Alias.md', text='x', mode='append')
+        with self.assertRaises(service.IntegrationError):
+            self.agent('notes-request-approval', path='Groceries.md', text='x', mode='append', recoveryReviewOnly=True)
+        self.assertFalse(self.owner('get')['approvals'])
+        self.assertEqual(hidden.read_text(), 'outside')
+        self.assertFalse(FakeNtfy.sent)
+
+    def test_unknown_saved_note_policy_denies_writes_and_preserves_existing_approval(self):
+        self.save(self.settings(write='ask'))
+        fields = dict(path='Groceries.md', text='approved line', mode='append')
+        pending = self.agent('notes-write', **fields)
+        self.owner('decide', approvalId=pending['approvalId'], decision='approve')
+        grants = self.store.approvals()
+        original = (self.vault / 'Groceries.md').read_bytes()
+        for policy in ('unknown', None, True, {}, 'missing'):
+            with self.subTest(policy=policy):
+                config = self.store.config()
+                if policy == 'missing':
+                    config['notes'].pop('write', None)
+                else:
+                    config['notes']['write'] = policy
+                self.store.save_config(config)
+                self.assertEqual(self.agent('notes-read', path='Groceries.md')['path'], 'Groceries.md')
+                with self.assertRaises(service.IntegrationError) as refused:
+                    self.agent('notes-write', **fields)
+                self.assertEqual(refused.exception.code, 'notes-write-off')
+                for action in ('notes-prepare', 'notes-request-approval'):
+                    with self.assertRaises(service.IntegrationError):
+                        self.agent(action, **fields)
+                self.assertEqual((self.vault / 'Groceries.md').read_bytes(), original)
+                self.assertEqual(self.store.approvals(), grants)
+
+    def test_unknown_saved_mcp_policy_hides_only_that_tool_and_refuses_direct_calls(self):
+        self.save(self.settings(servers=[self.home_server()]), secrets={'mcp': {'home': 'secret-token'}})
+        self.owner('discover', serverId='home')
+        self.save(self.settings(servers=[self.home_server(enabled=True)]))
+        for policy in ('unknown', None, True, {}, 'missing'):
+            with self.subTest(policy=policy):
+                config = self.store.config()
+                target = next(tool for tool in config['mcp']['servers'][0]['tools'] if tool['name'] == 'unlock')
+                if policy == 'missing':
+                    target.pop('policy', None)
+                else:
+                    target['policy'] = policy
+                self.store.save_config(config)
+                names = [item['name'] for item in self.agent('mcp-tools')['servers'][0]['tools']]
+                self.assertIn('get_state', names)
+                self.assertNotIn('unlock', names)
+                with self.assertRaises(service.IntegrationError) as refused:
+                    self.agent('mcp-call', server='home', tool='unlock', arguments={'entity': 'lock.front'})
+                self.assertEqual(refused.exception.code, 'tool-not-allowed')
+                self.assertFalse(FakeMcp.calls)
+                self.assertFalse(self.store.approvals())
+
     def test_note_writes_follow_the_owner_policy_and_approvals_are_single_use(self):
         self.save(self.settings(write="off"), secrets={"ntfyPassword": "pw"})
         with self.assertRaisesRegex(service.IntegrationError, "not allowed"):
@@ -565,9 +681,10 @@ class IntegrationsTests(unittest.TestCase):
         secrets = self.store.secrets()
         secrets['mcp']['home'] = 'invented-new-credential'
         self.store.save_secrets(secrets)  # Failure prefix: secret write landed, config write did not.
-        with self.assertRaisesRegex(service.IntegrationError, 'Check its tools'):
+        with self.assertRaises(service.IntegrationError) as refused:
             self.agent('mcp-call', server='home', tool='get_state', arguments={})
-        self.assertEqual(self.agent('mcp-tools')['servers'][0]['tools'], [])
+        self.assertEqual(refused.exception.code, 'mcp-check-required')
+        self.assertEqual(self.agent('mcp-tools')['servers'], [])
         self.assertEqual(FakeMcp.calls, [])
 
     def test_discovery_does_not_attach_old_tools_to_a_new_destination(self):

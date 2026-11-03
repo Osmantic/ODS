@@ -202,11 +202,11 @@ class RecoveryReviewOnly:
             normal = {key: value for key, value in request.items() if key != REVIEW_FIELD}
             return {**self._agent(action, normal), REVIEW_FIELD: True}
         if action == "notes-write":
-            return self._review_notes_write(request)
+            return self._prepare_note_approval(request)
         if action == "notes-prepare":
             if set(request) - {"schemaVersion", "action", "path", "text", "mode", REVIEW_FIELD, REFERENCE_FIELD} or not isinstance(request.get("path"), str):
                 raise IntegrationError("invalid-request", "Prepare needs only the exact note path, text and mode.")
-            reply = self._review_notes_write(request)
+            reply = self._prepare_note_approval(request)
             return {**reply, "status": "approval-ready" if reply["status"] == "review-only-ready" else reply["status"],
                     "preparationOnly": True}
         if action == "mcp-call":
@@ -239,6 +239,10 @@ class RecoveryReviewOnly:
                                    "It can only prepare a request under Ask first. No action or approval request was created.")
 
     def _review_approval(self, kind, summary, request_digest, review_payload=None):
+        reply, _ = self._prepare_review_approval(kind, summary, request_digest, review_payload)
+        return reply
+
+    def _prepare_review_approval(self, kind, summary, request_digest, review_payload=None):
         """Caller holds current policy/generation admission; never consumes a grant."""
         with self.store.lock:
             approvals = self.store.approvals()  # Existing 24-hour expiry semantics.
@@ -247,39 +251,45 @@ class RecoveryReviewOnly:
             approved = next((entry for entry in exact if entry.get("state") == "approved"), None)
             if approved:
                 return {"status": "review-only-ready", "approvalId": approved["id"], "summary": approved["summary"],
-                        REVIEW_FIELD: True, "actionExecuted": False, "approvalConsumed": False}
+                        REVIEW_FIELD: True, "actionExecuted": False, "approvalConsumed": False}, None
             if any(entry.get("state") == "declined" for entry in exact):
                 raise IntegrationError("review-only-declined", "The exact request was declined. This recovery did not reopen it "
                                        "or perform the action.")
             if any(entry.get("state") not in {"pending", "used"} for entry in exact):
                 raise IntegrationError("review-only-state-unavailable", "The saved request state cannot be reviewed safely. Nothing was done.")
             pending = next((entry for entry in exact if entry.get("state") == "pending"), None)
-            if pending is None:
+            created = pending is None
+            if created:
                 summary = redact_secrets(summary, self.store.secrets())[:400]
                 pending = {"id": uuid.uuid4().hex[:12], "kind": kind, "summary": summary, "digest": request_digest,
                            "state": "pending", "createdAt": now(), "expiresAt": now() + REVIEW_APPROVAL_SECONDS,
                            **self._approval_review_fields(request_digest, review_payload)}
                 self.store.save_approvals(approvals + [pending])
                 self._log("approval", summary, "requested for review")
-            # No _notify_approval: even an approval ping would be an external effect.
             return {"status": "approval-required", "approvalId": pending["id"], "summary": pending["summary"],
-                    REVIEW_FIELD: True, "actionExecuted": False, "approvalConsumed": False}
+                    REVIEW_FIELD: True, "actionExecuted": False, "approvalConsumed": False}, pending["summary"] if created else None
 
-    def _review_notes_write(self, request):
+    def _prepare_note_approval(self, request, *, notify_owner=False):
         expected = self._reference_context(request, "obsidian")
         with self.store.lock:
             config = self.store.config()
             if not config["notes"]["enabled"]:
                 raise IntegrationError("notes-off", "Obsidian notes are not connected. This recovery did not change a note.")
-            self._require_review_ask(config["notes"]["write"])
+            policy = config["notes"].get("write")
+            if notify_owner and policy != "ask":
+                raise IntegrationError("note-proposal-not-allowed", "The owner must set Notes writing to Ask first to request approval. Nothing was submitted.")
+            self._require_review_ask(policy)
             mode = request.get("mode", "append")
             notes.validate_write(request.get("text"), mode)
             relative, target = notes.write_binding(config, str(request.get("path", "")), mode, reference_context=expected)
             epoch = self._review_binding(config, "notes")
             summary = f"{'Add to' if mode == 'append' else 'Create'} note {relative}"
-            return self._review_approval("note", summary,
-                                         digest("note-v2", epoch, target, relative, mode, request.get("text")),
-                                         {"action": "notes-write", "path": relative, "mode": mode, "text": request.get("text")})
+            reply, notification = self._prepare_review_approval("note", summary,
+                digest("note-v2", epoch, target, relative, mode, request.get("text")),
+                {"action": "notes-write", "path": relative, "mode": mode, "text": request.get("text")})
+        if notify_owner and notification:
+            self._notify_approval(notification)
+        return reply
 
     def _review_mcp_call(self, request):
         name, arguments = request.get("tool"), request.get("arguments", {})
@@ -322,6 +332,7 @@ class RecoveryReviewOnly:
         with self.store.lock:
             config, secrets = self.store.config(), self.store.secrets()
             server = self._server(config, server_id, enabled=True)
+            self._require_mcp_context(config, secrets, server)
             context = digest(self._recovery_server_context(server, secrets))
             if server.get("checkedBinding") != context:
                 raise IntegrationError("mcp-check-required", "The server context changed. Check its tools before using it.")

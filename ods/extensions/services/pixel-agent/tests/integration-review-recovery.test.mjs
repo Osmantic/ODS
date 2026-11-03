@@ -10,6 +10,7 @@ import {createIntegrationOutcomes} from '../plugin/integration-outcomes.mjs';
 import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
 import {createGoalProgress} from '../plugin/goal-progress.mjs';
 import {createIntegrationTools,integrationRequest,NATIVE_REVIEW_ROLE,nativeReviewOperation} from '../plugin/integrations.mjs';
+import {integrationCapabilitiesContext} from '../plugin/integration-capabilities.mjs';
 
 const SESSION='agent:pixel:openai-user:ods-'+'a'.repeat(64);
 const CONTEXT={agentId:'pixel',runId:'current-run',sessionId:'owned-session',sessionKey:SESSION,
@@ -357,7 +358,7 @@ test('actual index lifecycle hooks suppress workful helpers even with event-only
     accessRuntime:{isProbe:()=>false,finish:noop},delegationDelivery:{admission:noop,observe:noop,
       ownerRunFor:noop,ownerRunOf:noop,promptContext:noop,finalize:noop,end:noop},
     toolLoopGuard:guard,goalProgress:quiet,taskActivity:quiet,projectSnapshots:{end:forbidden('workspace-snapshot-end')},
-    privateBrowserAccessForAgent:()=>false,executionHostForAgent:()=> 'gateway',
+    privateBrowserAccessForAgent:()=>false,executionHostForAgent:()=> 'gateway',integrationCapabilitiesContext,
     promptContractForAgent:()=>({prependContext:'fixture',appendSystemContext:'fixture'}),
     extensionRepositoryContext:forbidden('repository-fetch'),responseLanguageTurnContext:noop,
     configuredResponseLanguage:undefined,configuredContextWindow:65536,configuredLeanPrompt:false,

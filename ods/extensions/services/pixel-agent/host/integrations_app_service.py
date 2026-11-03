@@ -175,11 +175,12 @@ class AppActions:
         for app, tools in APP_TOOLS.items():
             if not config["apps"][app]["enabled"]:
                 continue
-            asks = app == "watch" and config["apps"]["watch"]["changes"] == "ask"
+            change_policy = config["apps"][app].get("changes") if app == "watch" else None
             servers.append({"id": "app:" + app, "name": APP_SERVER_NAMES[app], "tools": [
-                {"name": name, "description": description, "needsApproval": asks and name in ("add", "remove"),
+                {"name": name, "description": description, "needsApproval": change_policy == "ask" and name in ("add", "remove"),
                  "inputSchema": {"type": "object", "properties": properties}}
-                for name, (_action, description, properties) in tools.items()]})
+                for name, (_action, description, properties) in tools.items()
+                if app != "watch" or name not in ("add", "remove") or change_policy in ("ask", "allow")]})
         return servers
 
     @staticmethod
@@ -692,6 +693,8 @@ class AppActions:
                                self._watch_approval_payload(action, url, title, below if action == "watch-add" else None, watch_id))
 
     def _watch_change(self, config, settings, key, action, request):
+        if settings.get("changes") not in ("ask", "allow"):
+            raise IntegrationError("watch-changes-not-allowed", "Watched page changes require an owner permission in Settings.")
         # Serialise mutations of this provider, not unrelated owner Settings.
         with self._watch_lock:
             context = self._watch_context(config, key)
