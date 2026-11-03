@@ -166,3 +166,38 @@ def test_multiple_large_pending_proposals_remain_readable_without_expanding_the_
     assert "reviewPayload" not in json.dumps(listed)
     for approval_id, text in requests:
         assert detail(service, approval_id)["request"]["text"] == text
+
+
+@pytest.mark.parametrize("mode,path,initial,separator", [
+    ("append", "Owned.md", b"Original without LF", b"\n\n"),
+    ("append", "Owned.md", b"Original with LF\n", b"\n"),
+    ("append", "Owned.md", b"Original blank line\n\n", b""),
+    ("append", "Owned.md", b"Original CRLF\r\n", b"\n"),
+    ("create", "New.md", None, b""),
+])
+@pytest.mark.parametrize("text,body", [
+    ("Trailing Markdown spaces  ", b"Trailing Markdown spaces  \n"),
+    ("Multiple blank lines\n\n", b"Multiple blank lines\n\n"),
+    ("Primeira linha  \r\nSegunda linha\t \r\n\r\n", b"Primeira linha  \r\nSegunda linha\t \r\n\r\n"),
+])
+def test_approved_note_body_is_written_verbatim_only_on_explicit_write(world, mode, path, initial, separator, text, body):
+    service, store, vault, endpoint, _, mutations = world
+    target = vault / path
+    untouched = vault / "Untouched.md"
+    untouched.write_bytes(b"Existing data\r\n\x00Not the target.\n")
+    if initial is not None:
+        target.write_bytes(initial)
+    request = {"path": path, "mode": mode, "text": text}
+    pending = call(service, "notes-prepare", **request)
+    assert detail(service, pending["approvalId"])["request"] == {"action": "notes-write", **request}
+    assert (target.read_bytes() if target.exists() else None) == initial
+    assert not mutations and not endpoint.requests
+    service.handle("owner", {"schemaVersion": 1, "action": "decide", "approvalId": pending["approvalId"], "decision": "approve"})
+    assert (target.read_bytes() if target.exists() else None) == initial
+    assert not mutations and store.approvals()[0]["state"] == "approved"
+    result = call(service, "notes-write", **request)
+    assert result["written"] == path
+    assert target.read_bytes() == (initial or b"") + separator + body
+    assert untouched.read_bytes() == b"Existing data\r\n\x00Not the target.\n"
+    assert len(mutations) == 1 and store.approvals()[0]["state"] == "used"
+    assert not endpoint.requests

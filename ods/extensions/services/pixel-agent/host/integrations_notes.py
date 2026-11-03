@@ -359,7 +359,10 @@ def write(config, relative, text, mode, *, expected_binding=None):
                     raise IntegrationError('notes-changed', 'The note destination changed. Request a new approval.')
                 existing = _read_fd(fd) if mode == 'append' else ''
                 separator = '' if existing.endswith('\n\n') or not existing else '\n' if existing.endswith('\n') else '\n\n'
-                payload = (separator + text.rstrip() + '\n').encode()
+                # The approved body is literal Markdown: trailing spaces and
+                # blank lines can be meaningful. Only add the block separator
+                # and a missing terminal LF; never trim or normalize the body.
+                payload = (separator + text + ('' if text.endswith('\n') else '\n')).encode('utf-8')
                 while payload:
                     payload = payload[os.write(fd, payload):]
             finally:

@@ -133,9 +133,9 @@ turned on:
   arguments, before Settings offers **Approve**. Full payloads stay in private
   owner state and are omitted from agent replies and approval lists. Older
   requests without a saved payload, damaged snapshots and previews containing
-  configured secrets cannot be approved in this screen; decline and prepare a
-  new request. The owner API's existing exact-id decision remains available to
-  other owner clients.
+  configured secrets cannot be approved in this screen. Decline proposals you
+  cannot verify; an identical declined preparation is not automatically reopened.
+  The owner API's existing exact-id decision remains available to other owner clients.
 - Approving does not execute the action or resume a finished chat. Ask Portal to
   try the same action again. A scheduled task does not wait: it reports that the
   action needs approval, and its next run within 24 hours with the same arguments
@@ -143,6 +143,14 @@ turned on:
 - The ping can carry an **Open approvals** button. It only opens the Settings
   page, where the owner still signs in; the link grants nothing. Use an address
   the phone can reach.
+
+The note writer preserves the supplied text body as UTF-8, including trailing
+Markdown spaces, blank lines and CRLF line endings. It adds a final LF only if
+the body does not already end with LF. Appending leaves all existing file bytes
+unchanged and keeps the existing block-separator rules: no separator for an empty
+note or a note ending in two LF characters (`\n\n`), one LF after another
+LF-terminated note, otherwise two LF characters. These separators are outside the
+exact body shown in the approval preview; creating a note has no prefix separator.
 
 ## Local servers
 

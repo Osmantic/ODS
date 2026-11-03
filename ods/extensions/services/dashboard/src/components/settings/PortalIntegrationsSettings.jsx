@@ -59,12 +59,13 @@ function ApprovalRequest({ item, busy, onDecide }) {
       </div>
     </div>
     {error && <p role="alert" className="text-theme-text-muted">{error}</p>}
-    {detail && !detail.available && <p className="text-theme-text-muted">Full action details are unavailable. Decline this request and ask Portal to prepare it again.</p>}
+    {detail && !detail.available && <p className="text-theme-text-muted">Full action details are unavailable. Decline this request if you cannot verify it.</p>}
     {request && <div className="space-y-2" aria-label="Proposed action">
       {item.kind === 'note' ? <>
         <p>{request.mode === 'create' ? 'Create note' : 'Append to note'}: <span className="font-mono break-all">{request.path}</span></p>
         <p className="text-theme-text-muted">Exact text</p>
         <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words font-mono text-sm">{request.text}</pre>
+        <p className="text-xs text-theme-text-muted">Portal preserves this text. Appending may add spacing before it; a final newline is added only if missing.</p>
       </> : <>
         <p>Server: <span className="font-mono break-all">{request.server}</span> · Tool: <span className="font-mono break-all">{request.tool}</span></p>
         <p className="text-theme-text-muted">Exact arguments</p>
