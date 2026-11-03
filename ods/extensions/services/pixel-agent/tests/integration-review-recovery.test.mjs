@@ -22,10 +22,10 @@ const reply=(operations=[op('notes.append')])=>({agentId:'pixel',provider:'fixtu
 const concreteReply=(entailed=true)=>({...reply(),text:JSON.stringify({entailed})});
 function world(options={}) {
   const calls=[];
-  const {complete:propose=async()=>reply(),verify=async()=>concreteReply(),...rest}=options;
+  const {owner=OWNER,complete:propose=async()=>reply(),verify=async()=>concreteReply(),...rest}=options;
   const recovery=createIntegrationReviewRecovery({eligible:()=>true,ready:()=>true,nativeStartClear:()=>true,
     ...rest,complete:async params=>{calls.push(params);return (params.systemPrompt===REVIEW_CONCRETE_SYSTEM?verify:propose)(params);}});
-  recovery.observe({prompt:OWNER},CONTEXT,CONTEXT.runId);
+  recovery.observe({prompt:owner},CONTEXT,CONTEXT.runId);
   return {recovery,calls};
 }
 const tool=(name,params={})=>({toolName:name,params});
@@ -37,11 +37,13 @@ const nativeChoice=(context=CONTEXT,changes={})=>Object.freeze({version:1,ownerR
 const admission=(changes={})=>({...event(),nativeRetryToolsAllowState:nativeScope(),nativeRetryToolChoiceState:nativeChoice(),...changes});
 const TOOL_CONTEXT=Object.freeze({agentId:CONTEXT.agentId,runId:CONTEXT.runId,sessionId:CONTEXT.sessionId,sessionKey:CONTEXT.sessionKey,toolCallId:'native-current'});
 const EMPTY_REFERENCES=Object.freeze({lookups:Object.freeze([]),truncated:false});
+const EMPTY_PROGRESS=Object.freeze({reads:Object.freeze([]),truncated:false});
 function concreteCandidate(name='pixel_ods_notes',params=appendParams(),options={}) {
   const raw=JSON.parse(JSON.stringify({name,params}));
   const payload=options.payload??integrationRequest(name,raw.params,TOOL_CONTEXT);
   return Object.freeze({ref:options.ref??Object.freeze({}),view:Object.freeze({raw:Object.freeze(raw),payload:Object.freeze(payload),
-    maximumEffect:options.maximumEffect??'approval-proposal',references:options.references??EMPTY_REFERENCES})});
+    maximumEffect:options.maximumEffect??'approval-proposal',references:options.references??EMPTY_REFERENCES,
+    progress:options.progress??EMPTY_PROGRESS})});
 }
 async function admitConcrete(outcomes,recovery,ev,context) {
   recovery.beforeTool(ev,context);
@@ -62,11 +64,62 @@ test('catalog stays advisory: no concrete observation until a native candidate; 
   const verify=calls[1],input=JSON.parse(verify.messages[0].content);
   assert.equal(verify.systemPrompt,REVIEW_CONCRETE_SYSTEM);assert.equal(verify.maxTokens,192);assert.equal(verify.temperature,0.2);
   assert.deepEqual(Object.keys(verify).sort(),['maxTokens','messages','purpose','signal','systemPrompt','temperature']);
-  assert.deepEqual(Object.keys(input).sort(),['clock','declaredTypes','maximumEffect','ownerRequest','payload','raw','references']);
+  assert.deepEqual(Object.keys(input).sort(),['clock','declaredTypes','maximumEffect','ownerRequest','payload','progress','raw','references']);
   assert.equal(input.ownerRequest,OWNER);assert.deepEqual(input.declaredTypes,[op('notes.append')]);
   assert.deepEqual(input.raw,{name:'pixel_ods_notes',params:appendParams()});
   assert.deepEqual(input.payload,integrationRequest('pixel_ods_notes',appendParams(),TOOL_CONTEXT));
   assert.equal(input.maximumEffect,'approval-proposal');assert.deepEqual(input.references,EMPTY_REFERENCES);
+  assert.deepEqual(input.progress,EMPTY_PROGRESS);
+});
+
+test('concrete current-step input includes only typed bounded-read completion order, never inferred contents',async()=>{
+  const owner='Read Example.md, then prepare approval to append Current owned line to it. Do not write it.';
+  const progress={reads:[{sequence:2,raw:{name:'pixel_ods_notes',params:{action:'read',path:'Example.md'}},status:'read-complete'}],truncated:false};
+  const {recovery,calls}=world({owner,complete:async()=>reply([op('notes.read'),op('notes.append','before')])});
+  await recovery.finalize(event(owner),CONTEXT);
+  assert.equal((await recovery.checkConcrete(concreteCandidate('pixel_ods_notes',appendParams(),{progress}),TOOL_CONTEXT)).entailed,true);
+  const input=JSON.parse(calls[1].messages[0].content);
+  assert.deepEqual(input.progress,progress);assert.equal(input.ownerRequest,owner);
+  assert.deepEqual(Object.keys(input.progress.reads[0]).sort(),['raw','sequence','status']);
+  assert.match(REVIEW_CONCRETE_SYSTEM,/not that all contents were supplied, understood or satisfy a content condition/);
+  assert.match(REVIEW_CONCRETE_SYSTEM,/missing or clipped facts remain unknown/);
+  assert.equal(calls.length,2,'progress changes the existing concrete input, not the number of judges');
+});
+
+test('missing, malformed, foreign, non-read or excessive progress refuses before the concrete model',async()=>{
+  const fact={sequence:1,raw:{name:'pixel_ods_notes',params:{action:'read',path:'Example.md'}},status:'read-complete'};
+  const progressCases=[undefined,{reads:[],truncated:'false'},
+    {reads:[{...fact,status:'settled'}],truncated:false},{reads:[{...fact,status:'unknown'}],truncated:false},
+    {reads:[{...fact,sequence:0}],truncated:false},{reads:[{...fact,sequence:257}],truncated:false},
+    {reads:[fact,fact],truncated:false},{reads:Array.from({length:17},(_,index)=>({...fact,sequence:index+1})),truncated:false},
+    ...['body','binding','assistantProse','conditions','source'].map(key=>({reads:[{...fact,[key]:'not-an-order-fact'}],truncated:false})),
+    {reads:[{...fact,raw:{name:'pixel_ods_notes',params:{action:'search',query:'Example'}}}],truncated:false},
+    {reads:[{...fact,raw:{name:'pixel_ods_notes',params:appendParams()}}],truncated:false},
+    {reads:[{...fact,raw:{name:'pixel_ods_mcp',params:{action:'call',server:'app:documents',tool:'read',arguments:{id:'1'}}}}],truncated:false},
+    {reads:[{...fact,raw:{name:'pixel_ods_notes',params:{action:'read',path:'Example.md',text:'untrusted body'}}}],truncated:false},
+    {reads:Array.from({length:16},(_,index)=>({...fact,sequence:index+1,
+      raw:{name:'pixel_ods_notes',params:{action:'read',path:'x'.repeat(500)}}})),truncated:true},
+  ];
+  for(const progress of progressCases){
+    const {recovery,calls}=world({complete:async()=>reply([op('notes.read'),op('notes.append')])});
+    await recovery.finalize(event(),CONTEXT);
+    const candidate=concreteCandidate();
+    const altered=Object.freeze({...candidate,view:Object.freeze({...candidate.view,progress})});
+    assert.equal((await recovery.checkConcrete(altered,TOOL_CONTEXT)).entailed,false);
+    assert.equal(calls.length,1,'invalid progress must not spend a semantic observation');
+  }
+});
+
+test('progress retains exact decimal-string identities and explicit clipping without private bindings',async()=>{
+  const progress={reads:[{sequence:9,raw:{name:'pixel_ods_mcp',params:{action:'call',server:'app:documents',tool:'read',
+    arguments:{id:'9223372036854775807'}}},status:'read-complete'}],truncated:true};
+  const {recovery,calls}=world({complete:async()=>reply([op('documents.read')])});await recovery.finalize(event(),CONTEXT);
+  const candidate=concreteCandidate('pixel_ods_mcp',{action:'call',server:'app:documents',tool:'read',arguments:{id:'9223372036854775807'}},
+    {maximumEffect:'private-read',progress});
+  assert.equal((await recovery.checkConcrete(candidate,TOOL_CONTEXT)).entailed,true);
+  assert.deepEqual(JSON.parse(calls[1].messages[0].content).progress,progress);
+  assert.equal(typeof JSON.parse(calls[1].messages[0].content).progress.reads[0].raw.params.arguments.id,'string');
+  assert.equal(createHash('sha256').update(REVIEW_LABEL_SYSTEM).digest('hex'),'7dfbc5328bd9b1717ba1bc14b48ec9495a931966b63b38b5093e060949dfeb92');
 });
 
 test('every private candidate is checked, catalog metadata alone is exempt, and start-clear is never reused after latch',async()=>{
