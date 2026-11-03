@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import plistlib
 import re
 import stat
 import subprocess
@@ -246,6 +247,34 @@ def profiles(python):
             for stream in ('stdout', 'stderr')) + ')\n'
         result['source-' + role + '.sb'] = body.encode()
     return result
+
+
+def disabled_definition(role, *, identity, python, identifier=None):
+    """Render ONLY an inert definition, never validate admission or publish it.
+
+    The broker entrypoint deliberately refuses until Root approves the launch
+    generation/cancellation handoff. No periodic/path trigger is emitted here.
+    """
+    from pixel_connections.custody import (_native_identity_intent, native_child_arguments,
+        NATIVE_BROKER, NATIVE_LABEL)
+    _native_identity_intent(identity)
+    native_child_arguments(role, identifier)
+    python = _path(python)
+    label = NATIVE_LABEL + role + ('.' + identifier if identifier is not None else '')
+    environment = {'HOME': '/private/var/empty', 'USER': NATIVE_BROKER, 'LOGNAME': NATIVE_BROKER,
+        'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'PYTHONDONTWRITEBYTECODE': '1', 'PYTHONNOUSERSITE': '1'}
+    document = {
+        'Label': label, 'Disabled': True, 'RunAtLoad': False, 'KeepAlive': False,
+        'UserName': NATIVE_BROKER, 'GroupName': NATIVE_BROKER, 'InitGroups': False,
+        'ProgramArguments': ['/usr/bin/env', '-i', *(key + '=' + value for key, value in environment.items()),
+            python, '-I', '-B', str(PROGRAM_ROOT / 'pixel_connections/custody.py'),
+            '--native-broker-child', role, *([identifier] if identifier is not None else [])],
+        'WorkingDirectory': STATE, 'Umask': 0o077, 'ProcessType': 'Background',
+        'AbandonProcessGroup': False, 'ExitTimeOut': 5, 'StandardInPath': '/dev/null',
+        'StandardOutPath': LOGS + '/' + role + '.stdout.log',
+        'StandardErrorPath': LOGS + '/' + role + '.stderr.log',
+    }
+    return Path('/Library/LaunchDaemons') / (label + '.plist'), plistlib.dumps(document, sort_keys=True), 0o644
 
 
 def source_payloads(source, ref, python):

@@ -637,6 +637,8 @@ NATIVE_KIT = Path('/usr/local/libexec/ods-pixel-access/pixel_connections/source-
 NATIVE_LOGS = Path('/private/var/log/pixel-source-broker')
 NATIVE_LABEL = 'com.ods.pixel-native-source-'
 NATIVE_ROLES = ('sync', 'direct', 'action', 'reconcile', 'exchange', 'revoke')
+NATIVE_CHILD_BUDGETS = {'sync': 300, 'direct': 90, 'action': 120,
+    'reconcile': 120, 'exchange': 120, 'revoke': 60}
 NATIVE_PROFILES = tuple('source-' + role + '.sb' for role in NATIVE_ROLES)
 _NATIVE_SEAL = object()
 _NATIVE_SHA = re.compile(r'[a-f0-9]{64}\Z')
@@ -710,6 +712,20 @@ def native_source_command(arguments, timeout):
                 return NativeSourceCommand(role, 'observe-or-start-once',
                     NATIVE_LABEL + role + '.' + match[1], match[1])
     raise CustodyError('native-source-command-invalid')
+
+
+def native_child_arguments(role, identifier=None):
+    """Pure closed Source argv, not admission or an executor."""
+    if type(role) is not str or role not in NATIVE_ROLES:
+        raise CustodyError('native-source-role-invalid')
+    if role in ('action', 'reconcile', 'exchange'):
+        pattern = FLOW_ID if role == 'exchange' else _NATIVE_ACTION
+        if type(identifier) is not str or not pattern.fullmatch(identifier):
+            raise CustodyError('native-source-command-invalid')
+        return (('--approve' if role == 'action' else '--' + role), identifier)
+    if identifier is not None:
+        raise CustodyError('native-source-command-invalid')
+    return () if role == 'sync' else (('--drain-direct',) if role == 'direct' else ('--revoke',))
 
 
 def _native_root():
@@ -2113,3 +2129,217 @@ def native_prepare_logs(selection):
                         'files': {name: list(value['inode']) for name, value in record['files'].items()}}
             finally:
                 os.close(directory)
+
+
+@dataclass(frozen=True)
+class NativeChildOutcome:
+    """Process mechanics only. An exit code is never a provider result."""
+    disposition: str
+    returncode: int | None
+    reaped: bool
+    known_children_gone: bool
+    reason: str
+
+
+@dataclass(frozen=True)
+class _NativeChildWitness:
+    process: Any
+    started: float
+    root: tuple
+    identities: tuple
+    inspect: Any
+    tree: Any
+    seal: Any
+
+
+def _native_observe_child(process, *, started, uid, gid, executable, inspect=None, tree=None):
+    """Bind an OWNED Popen handle, not a PID supplied over a request.
+
+    This does not launch a Source program or grant Root admission. The future
+    authenticated dispatcher must capture started BEFORE Popen and qualify the
+    sealed Root selection before dispatch. Alternate observers are private
+    test seams; Linux tests use real proc metadata, not a claimed Darwin proof.
+    """
+    import math
+    import time
+    if (type(process) is not subprocess.Popen or type(started) not in (int, float)
+            or not math.isfinite(started) or not 0 < started <= time.monotonic()
+            or type(uid) is not int or uid < 0 or type(gid) is not int or gid < 0
+            or type(executable) is not str or not executable.startswith('/')
+            or type(process.pid) is not int or process.pid <= 0 or process.poll() is not None):
+        raise CustodyError('native-source-child-unbound')
+    if inspect is None or tree is None:
+        if inspect is not None or tree is not None:
+            raise CustodyError('native-source-child-observer-invalid')
+        from pixel_macos_process import process_identity, process_tree_snapshot
+        inspect = lambda pid: process_identity(pid, uid=uid, gid=gid, executable=executable, allow_root=uid == 0)
+        tree = process_tree_snapshot
+    if not callable(inspect) or not callable(tree):
+        raise CustodyError('native-source-child-observer-invalid')
+    try:
+        root = inspect(process.pid)
+        rows = tree(process.pid)
+        if (type(root) is not tuple or len(root) != 10 or root[0] != process.pid
+                or root[3:9] != (uid, gid, uid, gid, uid, gid) or root[9] != executable
+                or type(rows) not in (list, tuple) or not 1 <= len(rows) <= 64
+                or len({row[0] for row in rows}) != len(rows)
+                or root[:3] not in rows):
+            raise ValueError()
+        identities = []
+        for row in rows:
+            if (type(row) is not tuple or len(row) != 3
+                    or any(type(value) is not int or value < 0 for value in row) or row[0] <= 0):
+                raise ValueError()
+            identity = inspect(row[0])
+            if (identity[:3] != row or identity[3:9] != (uid, gid, uid, gid, uid, gid)
+                    or identity[9] != executable):
+                raise ValueError()
+            identities.append(identity)
+        if inspect(process.pid) != root or process.poll() is not None:
+            raise ValueError()
+    except Exception:
+        raise CustodyError('native-source-child-identity-unproven') from None
+    return _NativeChildWitness(process, started, root, tuple(identities), inspect, tree, _NATIVE_SEAL)
+
+
+def _native_supervise_child(witness, *, role, timeout, cancel=None):
+    """Bounded wait/TERM/KILL/reap for observed, identity-matched children.
+
+    No spawn, retry, Root Run binding or provider-result interpretation occurs
+    here. known_children_gone covers the recorded tree, NOT an unobserved or
+    escaped descendant. launchd/process-group and Seatbelt proof remains a
+    physical gate before this primitive may confer completed actor cleanup.
+    """
+    import math
+    import signal
+    import threading
+    import time
+    if (type(witness) is not _NativeChildWitness or witness.seal is not _NATIVE_SEAL
+            or type(role) is not str or role not in NATIVE_CHILD_BUDGETS
+            or type(timeout) not in (int, float) or not math.isfinite(timeout)
+            or not 0 < timeout <= NATIVE_CHILD_BUDGETS[role]
+            or cancel is not None and type(cancel) is not threading.Event):
+        raise CustodyError('native-source-child-control-invalid')
+    process = witness.process
+    root = witness.root
+    if process.pid != root[0]:
+        return NativeChildOutcome('unknown', None, False, False, 'owned-child-handle-changed')
+    known = {identity[0]: identity for identity in witness.identities}
+    deadline = witness.started + timeout
+    cleanup = min(5.0, timeout / 2)
+    work_end = deadline - cleanup
+    uncertain = False
+    reason = 'exited'
+    def probe(pid):
+        nonlocal uncertain
+        if pid == root[0] and process.poll() is not None:
+            return False
+        try:
+            current = witness.inspect(pid)
+        except (ProcessLookupError, FileNotFoundError):
+            return False
+        except Exception as error:
+            if getattr(error, 'errno', None) == errno.ESRCH:
+                return False
+            uncertain = True
+            return None
+        if current != known[pid]:
+            uncertain = True
+            # A replacement is not permission to signal the reused PID.
+            return None
+        return True
+    def observe():
+        nonlocal uncertain
+        if process.pid != root[0]:
+            uncertain = True
+            return
+        if process.poll() is not None:
+            return
+        try:
+            rows = witness.tree(root[0])
+            if (type(rows) not in (tuple, list) or not 1 <= len(rows) <= 64
+                    or len({row[0] for row in rows}) != len(rows) or root[:3] not in rows):
+                raise ValueError()
+            for row in rows:
+                if type(row) is not tuple or len(row) != 3:
+                    raise ValueError()
+                if row[0] in known:
+                    if known[row[0]][:3] != row:
+                        raise ValueError()
+                    continue
+                current = witness.inspect(row[0])
+                if (type(current) is not tuple or len(current) != 10 or current[:3] != row
+                        or current[3:] != root[3:] or len(known) >= 64):
+                    raise ValueError()
+                known[row[0]] = current
+        except Exception:
+            uncertain = True
+    def live():
+        return {pid for pid in known if probe(pid) is not False}
+    def send(which):
+        nonlocal uncertain
+        # Descendants first; never kill a UID/name/process group wholesale.
+        for pid in sorted(known, key=lambda value: value == root[0]):
+            if time.monotonic() >= deadline:
+                return
+            if probe(pid) is not True:
+                continue
+            try:
+                os.kill(pid, which)
+            except ProcessLookupError:
+                pass
+            except OSError:
+                uncertain = True
+    while time.monotonic() < work_end:
+        observe()
+        if not live():
+            break
+        if uncertain:
+            reason = 'identity-unproven'
+            break
+        if cancel is not None and cancel.is_set():
+            reason = 'cancelled'
+            break
+        time.sleep(min(0.02, max(0, work_end - time.monotonic())))
+    else:
+        reason = 'timed-out'
+    if live():
+        if reason == 'exited':
+            reason = 'descendants-remained'
+        term_end = min(deadline, time.monotonic() + cleanup / 2)
+        send(signal.SIGTERM)
+        while time.monotonic() < deadline and live():
+            observe()
+            if time.monotonic() >= term_end:
+                send(signal.SIGKILL)
+            time.sleep(min(0.02, max(0, deadline - time.monotonic())))
+    # A process may already be a non-running zombie while its exit is not yet
+    # returned by poll(). Reap only this owned handle, within the SAME deadline.
+    if process.poll() is None and time.monotonic() < deadline:
+        try:
+            process.wait(timeout=max(0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            pass
+    remaining_children = live()
+    reaped = process.poll() is not None
+    if uncertain or remaining_children or not reaped:
+        return NativeChildOutcome('unknown', process.returncode, reaped, not remaining_children,
+                                  'identity-or-cleanup-unproven')
+    disposition = reason if reason in ('cancelled', 'timed-out') else 'exited'
+    return NativeChildOutcome(disposition, process.returncode, True, True, reason)
+
+
+def _native_child_main(argv):
+    """Inert entrypoint: no generation/admission handoff has been approved yet."""
+    if type(argv) is not list or len(argv) not in (2, 3) or argv[0] != '--native-broker-child':
+        raise CustodyError('native-source-command-invalid')
+    native_child_arguments(argv[1], argv[2] if len(argv) == 3 else None)
+    raise CustodyError('native-source-generation-not-admitted')
+
+
+if __name__ == '__main__' and sys.argv[1:2] == ['--native-broker-child']:
+    try:
+        _native_child_main(sys.argv[1:])
+    except CustodyError as error:
+        print('error: ' + error.code, file=sys.stderr)
+        raise SystemExit(2)
