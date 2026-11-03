@@ -55,8 +55,15 @@ invocation, common inputs and original deadlines stay unchanged. Changed own
 nonce or deployment still refuses. Root qualification can reuse verified file
 hashes inside one typed operation, while repeating namespace, metadata and ACL
 checks and the actual independent bundle verifier. Scope exit revokes the cache;
-this is not a physical Mac timing qualification. Native Source execution, job lifecycle, connection activation and
-physical Mac behavior remain unfinished; Connected apps remains unavailable there.
+this is not a physical Mac timing qualification. The private active-slot
+publisher now records intent before its exact definition/manifest images and
+publishes the Gate last with one atomic replace. Adding an independent slot
+preserves sibling invocations and their original deadlines. A reproduced gap
+after the final blocking guard is fixed by rechecking boot and the original
+admission deadline immediately before that replace. Controlled interruption
+and rollback checks retain original evidence; they do not launch native jobs.
+Native Source execution, job lifecycle, connection activation and physical Mac
+behavior remain unfinished; Connected apps remains unavailable there.
 
 The local integration now composes native-tool candidate `8e9aea1ca` with the
 newer Mac startup barrier. Explicit approval preparation does not execute an
@@ -71,10 +78,13 @@ pending approval without modifying notes or consuming older approvals. Root
 reviewed both delivered replies and the real tool receipts/state. This is one
 positive journey using the existing thinking-enabled 9B profile, not general
 model reliability or qualification of the owner's default thinking-off profile.
-An SDK plugin-register warning from the private QA wrapper is still under
-independent startup/worker audit; observed business callbacks were present,
-but clean startup is not claimed. The original run will not be repeated or
-regraded. Earlier direct-engine false-preparation/status results and unsuccessful
+The original journey's private QA wrapper missed its metadata bridge in the
+SDK's separate authentication worker. A separate zero-inference startup control
+reproduced that cause and qualified a prospective worker bridge and isolation
+fix, including the actual parent authentication snapshot and SDK termination
+path. This does not retroactively trace the original worker or certify clean
+startup for the original journey. That run will not be repeated or regraded.
+Earlier direct-engine false-preparation/status results and unsuccessful
 compact-prompt/sampling diagnostics remain failed evidence. New negative and
 approval-continuation journeys and final installed acceptance remain required.
 

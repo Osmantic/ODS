@@ -1373,6 +1373,486 @@ def publish_disabled_generation(selection, specifications, *, rollback=False):
             os.close(gate)
 
 
+def _active_definition(custody, descriptor, role, identifier, active):
+    path, body, _mode = custody.native_disabled_definition(role, identity=descriptor['broker'],
+        python=descriptor['hostPython'], identifier=identifier)
+    if active:
+        import plistlib
+        value = plistlib.loads(body)
+        value['Disabled'] = False
+        body = plistlib.dumps(value, sort_keys=True)
+    return path.stem, body
+
+
+def _active_manifest(custody, state, binding):
+    return {**binding, 'schemaVersion': 2, 'kind': 'ods-native-source-job-generation',
+        'projectionSha256': sha(custody._native_encoded(state['gate']['document'])),
+        'definitions': state['definitions']}
+
+
+def _active_projection(custody, before, binding, environment, label, invocation, image):
+    import copy
+    old = before['gate']['document']
+    base = {key: value for key, value in old.items() if key not in ('launch', 'runtime')}
+    value = dict(base, schemaVersion=3, phase='active', runtime={
+        'custodySha256': binding['runtimeCustodySha256'], 'bundleSha256': binding['bundleSha256'],
+        'sourceRef': binding['sourceRef']})
+    launch = copy.deepcopy(old['launch']) if old['schemaVersion'] == 3 else {
+        'generation': old['launch']['generation'], 'phase': 'active', 'boot': invocation['boot'],
+        'environment': {key: environment[key] for key in ('inode', 'sha256')},
+        'definitions': {}, 'invocations': {}}
+    launch['phase'] = 'active'
+    launch['definitions'][label] = {'inode': image['inode'], 'sha256': image['sha256'],
+        'profileSha256': image['profileSha256']}
+    launch['invocations'][label] = {'phase': 'prepared', 'invocation': invocation}
+    value['launch'] = launch
+    return value
+
+
+def _active_state(custody, state, origin, binding, expected, *, staging=False):
+    """Root journal consistency, independent of file self-hashes."""
+    if (type(state) is not dict or set(state) != {'gate', 'manifest', 'definitions'}
+            or type(state['gate']) is not dict or set(state['gate']) != {'document', 'inode'}
+            or type(state['manifest']) is not dict or set(state['manifest']) != {'document', 'inode'}
+            or any(item['inode'] is not None and not custody._native_inode(item['inode'])
+                for item in (state['gate'], state['manifest']))
+            or not staging and any(item['inode'] is None for item in (state['gate'], state['manifest']))
+            or type(state['definitions']) is not dict or not 1 <= len(state['definitions']) <= 64):
+        raise ValueError('native-source-active-record-changed')
+    descriptor = json.loads(expected)
+    for label, item in state['definitions'].items():
+        if (type(item) is not dict or set(item) != {'role', 'identifier', 'active', 'inode', 'sha256', 'profileSha256'}
+                or type(item['active']) is not bool or item['inode'] is not None and not custody._native_inode(item['inode'])
+                or not staging and item['inode'] is None):
+            raise ValueError('native-source-active-record-changed')
+        actual_label, body = _active_definition(custody, descriptor, item['role'], item['identifier'], item['active'])
+        if (label != actual_label or sha(body) != item['sha256'] or type(item['profileSha256']) is not str
+                or not re.fullmatch('[a-f0-9]{64}', item['profileSha256'])):
+            raise ValueError('native-source-active-record-changed')
+    gate = state['gate']['document']
+    if type(gate) is not dict:
+        raise ValueError('native-source-active-record-changed')
+    if gate.get('schemaVersion') == 2:
+        if (gate != json.loads(custody._native_job_projection(origin))
+                or state['manifest']['document'] != custody._native_job_manifest(origin)
+                or set(state['definitions']) != set(origin['definitions'])
+                or any(item['active'] or item['inode'] != origin['definitions'][label]['inode']
+                    for label, item in state['definitions'].items())):
+            raise ValueError('native-source-active-record-changed')
+        return
+    common = {key: value for key, value in gate.items() if key not in ('launch', 'runtime', 'schemaVersion', 'phase')}
+    if (common != {key: value for key, value in descriptor.items() if key not in ('schemaVersion', 'phase')}
+            or gate.get('runtime') != {'custodySha256': binding['runtimeCustodySha256'],
+            'bundleSha256': binding['bundleSha256'], 'sourceRef': binding['sourceRef']}
+            or len(custody._native_encoded(gate)) > 16384):
+        raise ValueError('native-source-active-record-changed')
+    # A not-yet-created definition inode is not public authority. Validate a
+    # detached shape placeholder only while its exact Root FD is being staged.
+    import copy
+    check = copy.deepcopy(gate)
+    if staging:
+        for definition in check['launch']['definitions'].values():
+            if definition['inode'] is None:
+                definition['inode'] = [1, 1]
+    snapshot = custody._native_broker_projection(check)
+    if (snapshot['generation'] != origin['generation']
+            or set(check['launch']['definitions']) != {label for label, item in state['definitions'].items() if item['active']}
+            or state['manifest']['document'] != _active_manifest(custody, state, binding)):
+        raise ValueError('native-source-active-record-changed')
+    for label, image in gate['launch']['definitions'].items():
+        item = state['definitions'][label]
+        if image != {key: item[key] for key in ('inode', 'sha256', 'profileSha256')}:
+            raise ValueError('native-source-active-record-changed')
+
+
+def _active_record(custody, record, origin, binding, expected):
+    keys = {'schemaVersion', 'kind', 'binding', 'originSha256', 'phase', 'current', 'transaction', 'retained', 'retired'}
+    if (type(record) is not dict or set(record) != keys or record['schemaVersion'] != 1
+            or type(record['schemaVersion']) is not int or record['kind'] != 'ods-native-source-active-journal'
+            or record['binding'] != binding or record['originSha256'] != sha(custody._native_encoded(origin))
+            or record['phase'] not in ('committed', 'staging', 'publishing', 'gate-ready', 'restoring', 'restored', 'unknown', 'retired')
+            or type(record['retired']) is not list or len(record['retired']) > 64
+            or len(set(record['retired'])) != len(record['retired'])
+            or type(record['retained']) is not dict or len(record['retained']) > 320):
+        raise ValueError('native-source-active-record-changed')
+    for label in record['retired']:
+        custody._native_label_parts(label)
+    for name, item in record['retained'].items():
+        if (not re.fullmatch(r'\.active-[a-f0-9]{32}\.(?:definition|manifest|gate|before|definition-old|manifest-old)', name)
+                or type(item) is not dict or set(item) != {'inode', 'sha256', 'mode', 'gid'}
+                or not custody._native_inode(item['inode']) or not re.fullmatch('[a-f0-9]{64}', item['sha256'])
+                or item['mode'] not in (0o600, 0o640, 0o644) or item['gid'] not in (0, json.loads(expected)['broker']['id'])):
+            raise ValueError('native-source-active-record-changed')
+    _active_state(custody, record['current'], origin, binding, expected)
+    txn = record['transaction']
+    if txn is None:
+        if record['phase'] != 'committed':
+            raise ValueError('native-source-active-record-changed')
+        return
+    if (type(txn) is not dict or set(txn) != {'label', 'invocation', 'before', 'after', 'images'}
+            or type(txn['images']) is not dict or set(txn['images']) != {'definition', 'manifest', 'gate', 'before'}):
+        raise ValueError('native-source-active-record-changed')
+    invocation = custody._native_invocation(txn['invocation']).document
+    label, body = _active_definition(custody, json.loads(expected), invocation['role'], invocation['identifier'], True)
+    if txn['label'] != label or invocation['generation'] != origin['generation']:
+        raise ValueError('native-source-active-record-changed')
+    for image in txn['images'].values():
+        if (type(image) is not dict or set(image) != {'inode', 'ready'} or type(image['ready']) is not bool
+                or image['inode'] is not None and not custody._native_inode(image['inode'])
+                or image['ready'] and image['inode'] is None):
+            raise ValueError('native-source-active-record-changed')
+    if record['phase'] in ('committed', 'publishing', 'gate-ready') and any(not image['ready'] for image in txn['images'].values()):
+        raise ValueError('native-source-active-record-changed')
+    _active_state(custody, txn['before'], origin, binding, expected)
+    _active_state(custody, txn['after'], origin, binding, expected, staging=True)
+    before, after = txn['before'], txn['after']
+    if (set(after['definitions']) != set(before['definitions']) | {label}
+            or any(item != after['definitions'][name] for name, item in before['definitions'].items() if name != label)
+            or before['definitions'].get(label, {}).get('active')
+            or after['definitions'][label]['sha256'] != sha(body)
+            or after['definitions'][label]['inode'] != txn['images']['definition']['inode']
+            or after['gate']['inode'] != txn['images']['gate']['inode']
+            or after['manifest']['inode'] != txn['images']['manifest']['inode']
+            or after['gate']['document'] != _active_projection(custody, before, binding,
+                origin['environment'], label, invocation, after['definitions'][label])
+            or record['current'] not in (before, after)
+            or record['phase'] == 'committed' and record['current'] != after
+            or record['phase'] == 'restored' and record['current'] != before):
+        raise ValueError('native-source-active-record-changed')
+
+
+def publish_active_slot(selection, role, identifier=None, *, rollback=False):
+    """Root-only fixed publisher, caller holds existing admission lock.
+
+    No launchctl mutation/Source dispatch. Root inputs and intent precede the
+    atomic Gate replace. Additive slots preserve every sibling's immutable
+    invocation and definition. Only a globally quiescent latest slot rolls back.
+    """
+    import copy
+    from pixel_macos_custody import protected_directory
+    if type(rollback) is not bool:
+        raise ValueError('native-source-active-control-invalid')
+    custody, doc, component, ref = _material(selection)
+    custody.native_child_arguments(role, identifier)
+    with protected_directory(custody.NATIVE_META) as metadata, protected_directory(custody.NATIVE_DEFINITIONS) as units, \
+            protected_directory(custody.NATIVE_STATE.parent) as parent:
+        gate = os.open(custody.NATIVE_STATE.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        jobs = None
+        try:
+            _kit, kit_sha = custody.native_verify_kit(selection, require_profiles=True, _publication=True)
+            identity, base_binding, expected = custody._native_environment_binding(selection, metadata, gate, kit_sha, _publication=True)
+            publication, _inode = custody._native_root_file(metadata, 'source-publication.json')
+            old_binding = dict(base_binding, publicationSha256=sha(publication))
+            origin, origin_raw = custody._native_json_at(metadata, 'source-jobs-prepare.json')
+            custody._native_job_record(origin, old_binding, expected)
+            if origin['phase'] != 'committed-inactive':
+                raise ValueError('native-source-active-origin-unsettled')
+            jobs = custody._native_job_directory(metadata, origin)
+            environment = custody._native_environment_snapshot(gate, custody.NATIVE_ENV.name, identity['id'])
+            env_record, env_raw = custody._native_json_at(metadata, 'source-environment.json')
+            custody._native_environment_record(env_record, base_binding)
+            if environment != origin['environment'] or env_record['pending'] is not None or environment != env_record['current']:
+                raise ValueError('native-source-active-environment-changed')
+            binding = dict(old_binding, runtimeCustodySha256=doc['runtimeCustodySha256'],
+                bundleSha256=doc['bundleSha256'], sourceRef=ref)
+            label, definition_body = _active_definition(custody, json.loads(expected), role, identifier, True)
+            record, raw = custody._native_json_at(metadata, 'source-jobs-active.json')
+            if record is None:
+                if rollback:
+                    raise ValueError('native-source-active-recovery-missing')
+                before, inode = custody._native_root_file(gate, 'custody.json', mode=0o640, gid=identity['id'], limit=16384)
+                custody._native_validate_inactive_generation(selection, metadata, gate, identity, base_binding, expected, before, inode)
+                witness = _no_actors(selection, custody, metadata, _generation=True)
+                if witness != origin['witness']:
+                    raise ValueError('native-source-active-boot-changed')
+                state = {'gate': {'document': json.loads(before), 'inode': inode},
+                    'manifest': {'document': custody._native_job_manifest(origin), 'inode': origin['manifest']['inode']},
+                    'definitions': {name: {**{key: item[key] for key in ('role', 'identifier', 'inode', 'sha256')},
+                        'active': False, 'profileSha256': sha(component['source-' + item['role'] + '.sb'])}
+                        for name, item in origin['definitions'].items()}}
+                record = {'schemaVersion': 1, 'kind': 'ods-native-source-active-journal', 'binding': binding,
+                    'originSha256': sha(origin_raw), 'phase': 'committed', 'current': state,
+                    'transaction': None, 'retained': {}, 'retired': []}
+            _active_record(custody, record, origin, binding, expected)
+            if record['phase'] in ('unknown', 'retired'):
+                raise ValueError('native-source-active-explicit-recovery-required')
+
+            def body_for(state, name):
+                if name == 'gate':
+                    return custody._native_encoded(state['gate']['document']), 0o640, identity['id']
+                if name == 'manifest':
+                    return custody._native_encoded(state['manifest']['document']), 0o600, 0
+                item = state['definitions'][name]
+                return _active_definition(custody, json.loads(expected), item['role'], item['identifier'], item['active'])[1], 0o644, 0
+
+            def observed(directory, name, candidates, *, mode, gid=0):
+                present = custody._native_at_inode(directory, name)
+                if present is None:
+                    return None
+                data, inode = custody._native_root_file(directory, name, mode=mode, gid=gid, limit=16384 if mode != 0o600 else 65536)
+                for tag, body, known in candidates:
+                    if known is not None and (data, inode) == (body, known):
+                        return tag
+                raise ValueError('native-source-active-image-changed')
+
+            def images():
+                txn = record['transaction']
+                if txn is None:
+                    return {}
+                stem = '.active-' + txn['invocation']['nonce'] + '.'
+                before, after = txn['before'], txn['after']
+                return {key: (stem + key, *body_for(before if key == 'before' else after,
+                        'gate' if key == 'before' else txn['label'] if key == 'definition' else key))
+                    for key in txn['images']}
+
+            def namespace():
+                txn = record['transaction']
+                allowed = {'manifest.json', '.gate-before', *record['retained']}
+                if txn is not None:
+                    stem = '.active-' + txn['invocation']['nonce'] + '.'
+                    allowed.update(name for name, *_rest in images().values())
+                    allowed.update((stem + 'definition-old', stem + 'manifest-old'))
+                if set(os.listdir(jobs)) - allowed:
+                    raise ValueError('native-source-active-unmanaged-directory')
+                for name, image in record['retained'].items():
+                    data, inode = custody._native_root_file(jobs, name, mode=image['mode'], gid=image['gid'])
+                    if inode != image['inode'] or sha(data) != image['sha256']:
+                        raise ValueError('native-source-active-retained-changed')
+
+            def guard():
+                current_doc = custody._native_selected(selection, _publication=True)
+                current_identity, current_binding, current_expected = custody._native_environment_binding(
+                    selection, metadata, gate, kit_sha, _publication=True)
+                if (current_doc != doc or current_identity != identity or current_binding != base_binding or current_expected != expected
+                        or custody._native_at_inode(parent, custody.NATIVE_STATE.name) != base_binding['gate']
+                        or custody._native_json_at(metadata, 'source-jobs-prepare.json')[1] != origin_raw
+                        or custody._native_root_file(metadata, 'source-publication.json')[0] != publication
+                        or custody._native_json_at(metadata, 'source-environment.json')[1] != env_raw
+                        or custody._native_environment_snapshot(gate, custody.NATIVE_ENV.name, identity['id']) != environment
+                        or custody._native_json_at(metadata, 'source-jobs-active.json')[1] != raw):
+                    raise ValueError('native-source-active-input-changed')
+                custody._native_verify_prepared_logs(metadata, identity, base_binding)
+                if custody._native_boot_uuid() != origin['witness']['boot']:
+                    raise ValueError('native-source-active-boot-changed')
+                if role in ('exchange', 'revoke') and _no_actors(selection, custody, metadata, _generation=True) != origin['witness']:
+                    raise ValueError('native-source-active-grant-quiesce-required')
+                check_jobs = custody._native_job_directory(metadata, origin)
+                os.close(check_jobs)
+                namespace()
+                txn = record['transaction']
+                strict = txn is None or record['phase'] in ('committed', 'restored')
+                states = [('current', record['current'])] if strict else [('before', txn['before']), ('after', txn['after'])]
+                if record['phase'] == 'restoring' and txn['images']['before']['inode'] is not None:
+                    restored = copy.deepcopy(txn['before'])
+                    restored['gate']['inode'] = txn['images']['before']['inode']
+                    states.append(('restored', restored))
+                if observed(gate, 'custody.json', [(tag, body_for(state, 'gate')[0], state['gate']['inode']) for tag, state in states],
+                        mode=0o640, gid=identity['id']) is None:
+                    raise ValueError('native-source-active-gate-missing')
+                known_labels = set().union(*(set(state['definitions']) for _tag, state in states))
+                if set(name for name in os.listdir(units) if name.startswith(custody.NATIVE_LABEL)) - {name + '.plist' for name in known_labels}:
+                    raise ValueError('native-source-active-unmanaged-definition')
+                for name in set().union(*(set(state['definitions']) for _tag, state in states)):
+                    found = observed(units, name + '.plist', [(tag, body_for(state, name)[0], state['definitions'][name]['inode'])
+                        for tag, state in states if name in state['definitions']], mode=0o644)
+                    if found is None and (strict or name != txn['label']):
+                        raise ValueError('native-source-active-definition-missing')
+                manifest = observed(jobs, 'manifest.json', [(tag, body_for(state, 'manifest')[0], state['manifest']['inode']) for tag, state in states], mode=0o600)
+                if manifest is None and strict:
+                    raise ValueError('native-source-active-manifest-missing')
+                # Existing labels can remain loaded while an independent slot
+                # is added. Unknown labels (including the prospective target)
+                # do not acquire provenance from the new transaction.
+                loaded = selection.bridge.command(['/bin/launchctl', 'print', 'system'], timeout=10)
+                if (not loaded.startswith('system = {') or not loaded.rstrip().endswith('}')
+                        or len(loaded) > 1024 * 1024):
+                    raise ValueError('native-source-job-observation-unavailable')
+                allowed_labels = set(record['current']['gate']['document'].get('launch', {}).get('invocations', {}))
+                if set(re.findall(r'com\.ods\.pixel-native-source-[A-Za-z0-9.-]+', loaded)) - allowed_labels:
+                    raise ValueError('native-source-active-unbound-loaded-job')
+                if txn is not None:
+                    for key, (name, body, mode, gid) in images().items():
+                        _generation_prefix(custody, jobs, name, body, txn['images'][key], mode=mode, gid=gid)
+                    stem = '.active-' + txn['invocation']['nonce'] + '.'
+                    for suffix, key in (('definition-old', txn['label']), ('manifest-old', 'manifest')):
+                        if custody._native_at_inode(jobs, stem + suffix) is not None:
+                            if key not in txn['before']['definitions'] and key != 'manifest':
+                                raise ValueError('native-source-active-image-changed')
+                            state = txn['before']
+                            observed(jobs, stem + suffix, [('before', body_for(state, key)[0],
+                                state['manifest']['inode'] if key == 'manifest' else state['definitions'][key]['inode'])],
+                                mode=0o600 if key == 'manifest' else 0o644)
+
+            def refresh():
+                txn = record['transaction']
+                if txn is not None:
+                    after, image = txn['after'], txn['images']
+                    after['definitions'][txn['label']]['inode'] = image['definition']['inode']
+                    after['gate']['document'] = _active_projection(custody, txn['before'], binding, environment,
+                        txn['label'], txn['invocation'], after['definitions'][txn['label']])
+                    after['gate']['inode'] = image['gate']['inode']
+                    after['manifest']['document'] = _active_manifest(custody, after, binding)
+                    after['manifest']['inode'] = image['manifest']['inode']
+
+            def save():
+                nonlocal raw
+                refresh()
+                guard()
+                _active_record(custody, record, origin, binding, expected)
+                raw = custody._native_save_at(selection, metadata, 'source-jobs-active.json', record, previous=raw, _publication=True)
+
+            guard()
+            txn = record['transaction']
+            if rollback:
+                if txn is None or txn['label'] != label:
+                    raise ValueError('native-source-active-recovery-mismatch')
+                # Removing admitted authority requires explicit global quiesce.
+                # This does not relax the DATA-only no-actors guard.
+                if _no_actors(selection, custody, metadata, _generation=True) != origin['witness']:
+                    raise ValueError('native-source-active-quiesce-required')
+                record['phase'] = 'restoring'
+                save()
+                stem = '.active-' + txn['invocation']['nonce'] + '.'
+                before, after = txn['before'], txn['after']
+                tag = observed(gate, 'custody.json', [('before', body_for(before, 'gate')[0], before['gate']['inode']),
+                    ('after', body_for(after, 'gate')[0], after['gate']['inode']),
+                    ('restored', body_for(before, 'gate')[0], txn['images']['before']['inode'])], mode=0o640, gid=identity['id'])
+                if tag == 'after':
+                    guard()
+                    os.replace(stem + 'before', 'custody.json', src_dir_fd=jobs, dst_dir_fd=gate)
+                    os.fsync(gate)
+                    os.fsync(jobs)
+                    before['gate']['inode'] = txn['images']['before']['inode']
+                    save()
+                elif tag == 'restored':
+                    before['gate']['inode'] = txn['images']['before']['inode']
+                    save()
+                for key, directory, name in (('definition', units, label + '.plist'), ('manifest', jobs, 'manifest.json')):
+                    prior = before['definitions'].get(label) if key == 'definition' else before['manifest']
+                    old_name, new_name = stem + key + '-old', stem + key
+                    if custody._native_at_inode(directory, name) == txn['images'][key]['inode']:
+                        if custody._native_at_inode(jobs, new_name) is not None:
+                            raise ValueError('native-source-active-restore-conflict')
+                        guard()
+                        os.rename(name, new_name, src_dir_fd=directory, dst_dir_fd=jobs)
+                        os.fsync(directory)
+                        os.fsync(jobs)
+                    if prior is not None and custody._native_at_inode(directory, name) is None:
+                        guard()
+                        os.rename(old_name, name, src_dir_fd=jobs, dst_dir_fd=directory)
+                        os.fsync(directory)
+                        os.fsync(jobs)
+                record['current'] = before
+                record['phase'] = 'restored'
+                if label not in record['retired']:
+                    record['retired'].append(label)
+                save()
+                return {'status': 'restored', 'label': label, 'generation': origin['generation']}
+            if record['phase'] in ('restoring', 'restored'):
+                raise ValueError('native-source-active-explicit-recovery-required')
+            if record['phase'] == 'committed':
+                current = record['current']
+                row = current['gate']['document'].get('launch', {}).get('invocations', {}).get(label)
+                if row is not None:
+                    return {'status': 'observed', 'label': label, 'invocation': row['invocation'],
+                        'eligible': row['phase'] in ('prepared', 'running') and custody._native_clock_ns() < int(
+                            row['invocation']['admissionDeadlineNs' if row['phase'] == 'prepared' else 'workerDeadlineNs'])}
+                if label in record['retired']:
+                    raise ValueError('native-source-active-retired-slot')
+                if txn is not None:
+                    # Retain previous exact Root evidence, never delete/adopt it.
+                    for name in os.listdir(jobs):
+                        if name.startswith('.active-' + txn['invocation']['nonce'] + '.'):
+                            data, inode = custody._native_root_file(jobs, name,
+                                mode=0o640 if name.endswith('.before') else 0o644 if 'definition' in name else 0o600,
+                                gid=identity['id'] if name.endswith('.before') else 0)
+                            record['retained'][name] = {'inode': inode, 'sha256': sha(data),
+                                'mode': 0o640 if name.endswith('.before') else 0o644 if 'definition' in name else 0o600,
+                                'gid': identity['id'] if name.endswith('.before') else 0}
+                boot = custody._native_boot_uuid()
+                if boot != origin['witness']['boot']:
+                    raise ValueError('native-source-active-boot-changed')
+                now = custody._native_clock_ns()
+                invocation = custody._native_invocation({'role': role, 'identifier': identifier,
+                    'nonce': uuid.uuid4().hex, 'boot': boot, 'clock': 'darwin-clock-monotonic-raw-ns-v1',
+                    'generation': origin['generation'], 'issuedNs': str(now),
+                    'admissionDeadlineNs': str(now + (30 if role == 'sync' else custody.NATIVE_CHILD_BUDGETS[role]) * 10**9),
+                    'workerDeadlineNs': str(now + custody.NATIVE_CHILD_BUDGETS[role] * 10**9)}).document
+                after = copy.deepcopy(current)
+                after['definitions'][label] = {'role': role, 'identifier': identifier, 'active': True, 'inode': None,
+                    'sha256': sha(definition_body), 'profileSha256': sha(component['source-' + role + '.sb'])}
+                after['gate']['inode'] = after['manifest']['inode'] = None
+                record['transaction'] = {'label': label, 'invocation': invocation, 'before': copy.deepcopy(current),
+                    'after': after, 'images': {key: {'inode': None, 'ready': False} for key in ('definition', 'manifest', 'gate', 'before')}}
+                record['phase'] = 'staging'
+                refresh()
+                if len(custody._native_encoded(after['gate']['document'])) > 16384 or len(after['definitions']) > 64:
+                    raise ValueError('native-source-active-projection-too-large')
+                # Closed prospective journal too, before any intent/file write.
+                _active_record(custody, record, origin, binding, expected)
+                if len(custody._native_encoded(record)) > 131072:
+                    raise ValueError('native-source-active-record-too-large')
+                save()
+                txn = record['transaction']
+            if txn['label'] != label:
+                raise ValueError('native-source-active-pending-slot-preserved')
+            if record['phase'] == 'staging':
+                for key in ('definition', 'manifest', 'gate', 'before'):
+                    refresh()
+                    name, body, mode, gid = images()[key]
+                    _generation_stage(custody, jobs, name, body, txn['images'][key], save, guard, mode=mode, gid=gid)
+                record['phase'] = 'publishing'
+                save()
+            stem = '.active-' + txn['invocation']['nonce'] + '.'
+            if record['phase'] == 'publishing':
+                for key, directory, name in (('definition', units, label + '.plist'), ('manifest', jobs, 'manifest.json')):
+                    old = txn['before']['definitions'].get(label) if key == 'definition' else txn['before']['manifest']
+                    if custody._native_at_inode(directory, name) == (old['inode'] if old else None) and old is not None:
+                        if custody._native_at_inode(jobs, stem + key + '-old') is not None:
+                            raise ValueError('native-source-active-before-conflict')
+                        guard()
+                        os.rename(name, stem + key + '-old', src_dir_fd=directory, dst_dir_fd=jobs)
+                        os.fsync(directory)
+                        os.fsync(jobs)
+                    if custody._native_at_inode(directory, name) is None:
+                        guard()
+                        os.rename(stem + key, name, src_dir_fd=jobs, dst_dir_fd=directory)
+                        os.fsync(directory)
+                        os.fsync(jobs)
+                record['phase'] = 'gate-ready'
+                save()
+            guard()
+            if observed(gate, 'custody.json', [('before', body_for(txn['before'], 'gate')[0], txn['before']['gate']['inode']),
+                    ('after', body_for(txn['after'], 'gate')[0], txn['after']['gate']['inode'])], mode=0o640, gid=identity['id']) == 'before':
+                if custody._native_clock_ns() >= int(txn['invocation']['admissionDeadlineNs']) or custody._native_boot_uuid() != txn['invocation']['boot']:
+                    raise ValueError('native-source-active-admission-expired')
+                # Root manifest + exact target definition must precede authority.
+                for key, directory, name in (('definition', units, label + '.plist'), ('manifest', jobs, 'manifest.json')):
+                    data, inode = custody._native_root_file(directory, name, mode=0o644 if key == 'definition' else 0o600)
+                    if (data, inode) != (body_for(txn['after'], label if key == 'definition' else 'manifest')[0], txn['images'][key]['inode']):
+                        raise ValueError('native-source-active-input-unconfirmed')
+                guard()
+                # Qualification above can block. Boot first, then read the
+                # original clock ceiling LAST before this single-file commit.
+                # This is not an atomic clock+filesystem operation.
+                if custody._native_boot_uuid() != txn['invocation']['boot']:
+                    raise ValueError('native-source-active-boot-changed')
+                if custody._native_clock_ns() >= int(txn['invocation']['admissionDeadlineNs']):
+                    raise ValueError('native-source-active-admission-expired')
+                os.replace(stem + 'gate', 'custody.json', src_dir_fd=jobs, dst_dir_fd=gate)
+                os.fsync(gate)
+                os.fsync(jobs)
+            guard()
+            record['current'] = txn['after']
+            record['phase'] = 'committed'
+            save()
+            return {'status': 'prepared', 'label': label, 'invocation': txn['invocation']}
+        finally:
+            if jobs is not None:
+                os.close(jobs)
+            os.close(gate)
+
+
 def verify_kit_publication(selection):
     """Read-only initial-install proof; incomplete publication cannot finalize."""
     custody, doc, component, ref = _material(selection)
