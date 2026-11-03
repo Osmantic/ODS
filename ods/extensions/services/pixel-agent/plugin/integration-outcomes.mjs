@@ -19,6 +19,7 @@ const UNRESOLVED = 'An earlier integration call in this response has an unverifi
 const effectful = payload => payload?.action === 'notify' || payload?.action === 'notes-write' ||
   payload?.action === 'mcp-call' && !(Object.hasOwn(SAFE_APP_READS,payload.server) && SAFE_APP_READS[payload.server].includes(payload.tool));
 const childOf = (id,call) => {
+  if (typeof id!=='string') return false;
   const parent = call.id.replace(/[^A-Za-z0-9_.:-]+/g, '_').slice(0,120) || 'call';
   const prefix = `tool_search_code:${parent}:${call.name}:`;
   return call.deferred && id.startsWith(prefix) && /^[1-9][0-9]*$/.test(id.slice(prefix.length));
@@ -396,6 +397,7 @@ export function createIntegrationOutcomes({maximumRuns = 64, maximumCalls = 64} 
       if (status === 'unknown') call.run.uncertain = true;
       if (call.recoveryReviewOnly && status==='settled') retainReferences(call,references);
       if (call.recoveryReviewOnly && ['invalid-review-reference','stale-review-reference'].includes(code)) drain(call.run,true,REVIEW_SERVICE_REFUSED);
+      else if (call.recoveryReviewOnly && code==='integration-call-unbound') drain(call.run,true);
     } finally {release(call);}
   }
   function finish(token) {
@@ -404,7 +406,8 @@ export function createIntegrationOutcomes({maximumRuns = 64, maximumCalls = 64} 
   }
   function control(token) {
     const call = token && reservations.get(token);
-    if (!call || !current(call.run) || call.run.ended || call.closed || call.recoveryReviewOnly && !reviewCurrent(call)) return undefined;
+    if (!call || !current(call.run) || call.run.ended || call.closed
+      || call.recoveryReviewOnly && (!reviewCurrent(call) || !unchanged(call))) return undefined;
     return call.recoveryReviewOnly ? {recoveryReviewOnly:true,...(call.referenceContext?{recoveryReferenceContext:call.referenceContext}:{})} : {};
   }
   function after(event, context) {

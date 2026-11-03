@@ -76,8 +76,11 @@ async function run(submit, payload, signal, render, observed, admitted) {
   try {
     reply = await submit(payload, {signal, ...(admitted ? {admitted} : {})});
   } catch (error) {
-    if (error?.code === 'integration-call-unbound') return text('No integration action was submitted: its native admission is no longer current.',
-      {status:'blocked',code:'integration-call-unbound'},true);
+    if (error?.code === 'integration-call-unbound') {
+      report('refused',undefined,'integration-call-unbound');
+      return text('No integration action was submitted: its native admission is no longer current.',
+        {status:'blocked',code:'integration-call-unbound'},true);
+    }
     if (error?.code === 'integration-outcome-unknown') {
       report('unknown');
       return text('The integration was submitted, but its result could not be verified. Check the service or destination before trying again; do not repeat the action automatically.',
@@ -343,7 +346,7 @@ export function createIntegrationTools({submit = submitIntegration, context, out
     }
     try {return await run(submit, nativePayload, signal, render,
       (status,references,code) => {outcomes?.complete(reservation,status,references,code);
-        if(reviewOnly && ['invalid-review-reference','stale-review-reference'].includes(code))onReviewRefused?.(context,code);},
+        if(reviewOnly && ['invalid-review-reference','stale-review-reference','integration-call-unbound'].includes(code))onReviewRefused?.(context,code);},
       reviewOnly ? () => Boolean(outcomes?.control?.(reservation)) : undefined);
     } finally {outcomes?.finish?.(reservation);}
   };

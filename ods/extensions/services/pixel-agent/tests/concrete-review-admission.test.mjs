@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
+import {EventEmitter} from 'node:events';
 import {createIntegrationOutcomes} from '../plugin/integration-outcomes.mjs';
-import {createIntegrationTools,canonicalReviewNotePath,canonicalReviewDocumentId} from '../plugin/integrations.mjs';
+import {createIntegrationTools,submitIntegration,canonicalReviewNotePath,canonicalReviewDocumentId} from '../plugin/integrations.mjs';
 
 const ctx={agentId:'pixel',runId:'concrete-owner',sessionId:'concrete-session',sessionKey:'agent:pixel:openai-user:ods-'+'a'.repeat(64)};
 const hash=value=>createHash('sha256').update(value).digest('hex');
@@ -53,6 +54,19 @@ test('await-time mutation and a late invalid-mode normalization cannot borrow an
   const result=await late.tool('pixel_ods_notes').execute('late',{...write(),mode:'overwrite'});
   assert.equal(result.details.code,'integration-call-unbound');assert.equal(late.sent.length,0);
   assert.match(late.outcomes.projection(ctx.runId),/did not submit/);
+});
+
+test('raw source drift after taking a ticket is refused at the actual socket write boundary',async()=>{
+  const f=fixture(),params=note();await f.admit('socket',params);let writes=0;
+  const tools=createIntegrationTools({context:ctx,outcomes:f.outcomes,requireBound:()=>true,
+    submit:(payload,options)=>submitIntegration(payload,{...options,platform:'linux',connect:()=>{
+      const socket=new EventEmitter();socket.destroy=()=>{};socket.write=()=>{writes++;};
+      queueMicrotask(()=>{params.path='Changed.md';socket.emit('connect');});return socket;
+    }})});
+  const result=await tools.find(tool=>tool.name==='pixel_ods_notes').execute('socket',params);
+  assert.equal(result.details.code,'integration-call-unbound');assert.equal(writes,0);
+  assert.match(f.outcomes.projection(ctx.runId),/did not submit/);
+  assert.equal((await f.prepare('later',note())).block,true);
 });
 
 test('known builtin unknown arguments are rejected before a semantic check or host submission',async()=>{
