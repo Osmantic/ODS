@@ -1,4 +1,7 @@
 # Gitleaks ignore file
+# Pytest's literal version label "previous-4.3.41" beside an access-release ID.
+# This exact historical finding is test metadata, not an issued credential.
+036075a9578e345df7f930564ce1768773ea2aa3:ods/tests/pixel_inference/test_client.py:generic-api-key:108
 # Historical loopback-only Node relay fixture: a literal synthetic key, never
 # issued or used outside this disposable test. Current test generates its key.
 9bdb0ca65e831b61b00f86d667a6fd4ddc4e1e14:ods/extensions/services/pixel-agent/tests/native_apps_relay.test.mjs:generic-api-key:27
