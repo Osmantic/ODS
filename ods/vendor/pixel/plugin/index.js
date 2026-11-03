@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { open, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
@@ -183,6 +183,19 @@ const hasProjectionPlaceholder = (value) => {
   return false;
 };
 
+async function publishProposal(proposalId, proposal) {
+  const body = `${JSON.stringify(proposal, null, 2)}\n`;
+  const file = await open(join(PROPOSAL_DIR, `${proposalId}.json`), "wx", 0o640);
+  try {
+    // Keep the gateway's private umask. Only this exclusively created proposal
+    // needs the broker-readable mode, set on its descriptor before body bytes.
+    await file.chmod(0o640);
+    await file.writeFile(body);
+  } finally {
+    await file.close();
+  }
+}
+
 async function writeProposal(action, values) {
   if (hasProjectionPlaceholder(values)) throw new Error("projection placeholders cannot be written to Calendar proposals");
   const proposalId = `calendar-${Date.now()}-${randomUUID().slice(0, 8)}`;
@@ -197,7 +210,7 @@ async function writeProposal(action, values) {
     values,
     boundary: "This file is a proposal only. No Calendar mutation has occurred.",
   };
-  await writeFile(join(PROPOSAL_DIR, `${proposalId}.json`), `${JSON.stringify(proposal, null, 2)}\n`, { flag: "wx", mode: 0o640 });
+  await publishProposal(proposalId, proposal);
   if (direct) {
     const applied = await applyDirectProposal(proposalId);
     return {
@@ -226,7 +239,7 @@ async function writeDraftProposal(values) {
     values,
     boundary: "This file is a proposal only. No Gmail draft has been created.",
   };
-  await writeFile(join(PROPOSAL_DIR, `${proposalId}.json`), `${JSON.stringify(proposal, null, 2)}\n`, { flag: "wx", mode: 0o640 });
+  await publishProposal(proposalId, proposal);
   return { ...proposal, operatorInstruction: `The owner must approve this exact draft (${proposalId}) before Gmail creates it. Pixel never sends email; the owner sends the draft from Gmail.` };
 }
 

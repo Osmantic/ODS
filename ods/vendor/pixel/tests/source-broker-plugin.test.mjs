@@ -92,6 +92,50 @@ test("Calendar change tools register only while Calendar changes are on", async 
   assert.equal(limbs.calendarWrite, false);
 });
 
+for (const [name, params] of [
+  ["pixel_calendar_propose_create", { summary: "Invented mode fixture", start: "2030-01-01T09:00:00Z", end: "2030-01-01T09:15:00Z" }],
+  ["pixel_gmail_draft_propose", { to: [{ email: "fixture@example.invalid" }], subject: "Invented mode fixture", body: "Not sent." }],
+]) {
+  test(`${name} publishes broker-readable proposals under private gateway umask`, {
+    skip: process.platform === "win32" ? "Source Broker file custody requires POSIX modes; Windows runs it in WSL" : false,
+  }, async (t) => {
+    const directory = await withProjections(t, {});
+    const script = `
+import assert from 'node:assert/strict';
+import {register} from 'node:module';
+import {lstat,readFile,writeFile} from 'node:fs/promises';
+import {join} from 'node:path';
+register(process.argv[2]);
+process.umask(0o077);
+const tools=new Map();
+const {default:entry}=await import(process.argv[1]);
+entry.register({registerTool(factory,{names}){const tool=factory({agentId:'pixel'});if(tool)tools.set(names[0],tool)}});
+const control=join(process.env.PIXEL_ACTION_PROPOSAL_DIR,'private-control.json');
+await writeFile(control,'private fixture',{flag:'wx',mode:0o600});
+const reply=await tools.get(process.argv[3]).execute('proposal-mode-fixture',JSON.parse(process.argv[4]));
+assert.notEqual(reply.isError,true,reply.content?.[0]?.text);
+const target=join(process.env.PIXEL_ACTION_PROPOSAL_DIR,reply.details.proposalId+'.json');
+const info=await lstat(target),body=JSON.parse(await readFile(target,'utf8'));
+assert(info.isFile()&&!info.isSymbolicLink()&&info.nlink===1);
+assert.equal(body.proposalId,reply.details.proposalId);
+assert.equal(body.status,'pending-operator-approval');
+console.log(JSON.stringify({mode:info.mode&0o777,privateMode:(await lstat(control)).mode&0o777,umask:process.umask()}));
+`;
+    const env = { PATH: process.env.PATH, HOME: directory,
+      PIXEL_LIMB_WEB_ENABLED: "0", PIXEL_LIMB_SOCIAL_ENABLED: "0",
+      PIXEL_LIMB_EMAIL_ENABLED: "1", PIXEL_LIMB_EMAIL_DRAFTS_ENABLED: "1",
+      PIXEL_LIMB_CALENDAR_ENABLED: "1", PIXEL_LIMB_CALENDAR_WRITE_ENABLED: "1",
+      PIXEL_CALENDAR_DIRECT_ENABLED: "0", PIXEL_ACTION_PROPOSAL_DIR: directory };
+    if (process.env.PIXEL_TEST_TYPEBOX_DIR) env.PIXEL_TEST_TYPEBOX_DIR = process.env.PIXEL_TEST_TYPEBOX_DIR;
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", script,
+      new URL("../plugin/index.js", import.meta.url).href,
+      new URL("./fixtures/source-plugin/loader.mjs", import.meta.url).href, name, JSON.stringify(params)],
+    { env, encoding: "utf8", timeout: 15000 });
+    assert.equal(child.status, 0, child.stderr || child.stdout);
+    assert.deepEqual(JSON.parse(child.stdout), { mode: 0o640, privateMode: 0o600, umask: 0o077 });
+  });
+}
+
 test("limb status reports the web limb the gateway was configured with", async () => {
   const off = await loadPlugin({ PIXEL_LIMB_WEB_ENABLED: "0" });
   assert.equal(off.has("pixel_web_browse"), false);
