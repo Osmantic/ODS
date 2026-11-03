@@ -51,10 +51,10 @@ function readReferences(value,source) {
   const ids=new Set();
   for (const entry of copy.entries) {
     const valid = source==='obsidian' ? exactKeys(entry,['path','binding']) && canonicalReviewNotePath(entry.path)===entry.path && hexBinding(entry.binding)
-      : source==='paperless' ? exactKeys(entry,['id','title']) && canonicalReviewDocumentId(entry.id)===entry.id && typeof entry.title==='string' && entry.title.length<=200
-        : exactKeys(entry,['id','title','url']) && typeof entry.id==='string' && entry.id.length>0 && entry.id.length<=128
-          && !/[\x00-\x1f\x7f]/.test(entry.id) && typeof entry.title==='string' && entry.title.length<=200
-          && typeof entry.url==='string' && entry.url.length<=500 && (()=>{try{const url=new URL(entry.url);return ['http:','https:'].includes(url.protocol)&&!url.username&&!url.password;}catch{return false;}})();
+      : source==='paperless' ? exactKeys(entry,['id','title']) && canonicalReviewDocumentId(entry.id)===entry.id && typeof entry.title==='string' && [...entry.title].length<=200
+        : exactKeys(entry,['id','title','url']) && typeof entry.id==='string' && entry.id.length>0 && [...entry.id].length<=128
+          && !/[\x00-\x1f\x7f]/.test(entry.id) && typeof entry.title==='string' && [...entry.title].length<=200
+          && typeof entry.url==='string' && [...entry.url].length<=500 && (()=>{try{const url=new URL(entry.url);return ['http:','https:'].includes(url.protocol)&&!url.username&&!url.password;}catch{return false;}})();
     const id=referenceId(source,entry);
     if (!valid || ids.has(id)) throw new Error('invalid-review-reference');ids.add(id);
   }

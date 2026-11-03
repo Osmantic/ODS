@@ -177,6 +177,22 @@ test('decimal-string document identities beyond JS precision remain exact; unsaf
   assert.equal((await f.prepare('unsafe',{...read,arguments:{id:Number(id)}},'pixel_ods_mcp')).block,true);
 });
 
+test('host-valid non-BMP note paths and document titles retain their exact typed reference identities',async()=>{
+  const path=Array.from({length:20},()=> '😀'.repeat(15)).join('/')+'.md';
+  assert.ok(path.length>512);assert.ok([...path].length<=512);assert.equal(canonicalReviewNotePath(path),path);
+  const f=fixture(()=>({ok:true,recoveryReviewOnly:true,results:[],reviewReferences:{version:1,source:'obsidian',
+    binding:hash('unicode-vault'),entries:[{path,binding:hash('unicode-note')}],truncated:false}}));
+  const search={action:'search',query:'invented'};await f.admit('search',search);await f.tool('pixel_ods_notes').execute('search',search);
+  const candidate=await f.admit('read',note(path));assert.equal(candidate.view.references.lookups[0].entries[0].path,path);
+  await f.tool('pixel_ods_notes').execute('read',note(path));assert.equal(f.sent.at(-1).recoveryReferenceContext.entries[0].path,path);
+  const docs=fixture(()=>({ok:true,recoveryReviewOnly:true,text:'Invented',reviewReferences:{version:1,source:'paperless',
+    binding:hash('unicode-docs'),entries:[{id:'1',title:'😀'.repeat(200)}],truncated:false}}));
+  const find={action:'call',server:'app:documents',tool:'search',arguments:{query:'invented'}};
+  await docs.admit('search',find,'pixel_ods_mcp');await docs.tool('pixel_ods_mcp').execute('search',find);
+  const read={action:'call',server:'app:documents',tool:'read',arguments:{id:'1'}};
+  const doc=await docs.admit('read',read,'pixel_ods_mcp');assert.equal(doc.view.references.lookups[0].entries[0].title,'😀'.repeat(200));
+});
+
 test('a stale host reference refusal terminates review I/O, releases queues and never appears as unknown or done',async()=>{
   const f=fixture(()=>({ok:false,error:'stale-review-reference',message:'Connection changed.'}));
   await f.admit('stale',note());

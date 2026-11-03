@@ -241,7 +241,7 @@ export function reviewIntegrationCandidate(name, params, context) {
     else if (params.action === 'read') {ownKeys(['action','path']); if (!canonicalReviewNotePath(params.path)) throw new Error('invalid-review-arguments');}
     else if (params.action === 'write') {
       ownKeys(['action','path','text','mode']);
-      if (!canonicalReviewNotePath(params.path) || typeof params.text !== 'string' || !params.text.trim() || params.text.length > 20000
+      if (!canonicalReviewNotePath(params.path) || typeof params.text !== 'string' || !params.text.trim() || [...params.text].length > 20000
           || params.mode !== undefined && !['append','create'].includes(params.mode)) throw new Error('invalid-review-arguments');
     } else throw new Error('invalid-review-arguments');
     maximumEffect = params.action === 'write' ? 'approval-proposal' : 'private-read';
@@ -282,7 +282,7 @@ export function reviewIntegrationCandidate(name, params, context) {
 }
 
 export function canonicalReviewNotePath(value) {
-  if (typeof value !== 'string' || value.length > 512 || value.includes('\0')) return undefined;
+  if (typeof value !== 'string' || [...value].length > 512 || value.includes('\0')) return undefined;
   // Match Python str.strip(), including its four additional ASCII separators.
   const stripped = value.replace(/^[\u0009-\u000d\u001c-\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+|[\u0009-\u000d\u001c-\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+$/gu,'');
   if (!stripped || stripped.startsWith('/') || stripped.includes('\\')) return undefined;
