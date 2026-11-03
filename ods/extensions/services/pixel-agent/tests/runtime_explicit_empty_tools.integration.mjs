@@ -8,7 +8,7 @@ import path from 'node:path';
 import http from 'node:http';
 import {once} from 'node:events';
 import {createHash} from 'node:crypto';
-import {registerHooks} from 'node:module';
+import {registerHooks,syncBuiltinESMExports} from 'node:module';
 import {pathToFileURL} from 'node:url';
 import {reviewedNativeRevisionDependencies} from './fixtures/native-revision-dependencies.mjs';
 
@@ -21,6 +21,15 @@ process.env.HOME=path.join(root,'home');fs.mkdirSync(process.env.HOME);
 process.env.OPENCLAW_STATE_DIR=path.join(root,'state');
 process.env.OPENCLAW_CONFIG_PATH=path.join(root,'openclaw.json');
 const sha=value=>createHash('sha256').update(value).digest('hex');
+// Observe only the disposable nonce read through the actual native reader's
+// fs/promises binding. The positive control below proves the observer is live.
+const originalReadFile=fs.promises.readFile;
+let observedNonce,nonceReads=0;
+fs.promises.readFile=async function(filename,...args){
+  if(filename===observedNonce)nonceReads++;
+  return originalReadFile.call(this,filename,...args);
+};
+syncBuiltinESMExports();
 const selection=path.join(pkg,'dist/selection-BEwSQKM-.js');
 const installedBefore=sha(fs.readFileSync(selection));
 const sources=new Map([...reviewedNativeRevisionDependencies(pkg)].map(([filename,source])=>[pathToFileURL(filename).href,source]));
@@ -42,6 +51,7 @@ const {t:runEmbeddedAgent}=await import(pathToFileURL(path.join(pkg,'dist/embedd
 test.after(async()=>{
   const {n:closeStateDatabases}=await import(pathToFileURL(path.join(pkg,'dist/openclaw-state-db-BtpXMqJX.js')));
   closeStateDatabases();loader.deregister();
+  fs.promises.readFile=originalReadFile;syncBuiltinESMExports();
   assert.equal(sha(fs.readFileSync(selection)),installedBefore,'installed native module stays unchanged');
   const current=fs.lstatSync(root,{bigint:true});
   assert.equal(current.isDirectory()&&!current.isSymbolicLink(),true);
@@ -57,13 +67,28 @@ const cases=[
   {name:'nonempty denied runtime cap stays refused',toolsAllow:['read'],allowed:['read','cron'],denied:['read'],provider:false},
   {name:'runtime cap cannot expand the owner allowlist',toolsAllow:['write'],allowed:['read','cron'],denied:[],provider:false},
   {name:'disabled tools cannot waive a nonempty runtime cap',toolsAllow:['read'],disableTools:true,allowed:['read','cron'],denied:[],provider:false},
+  {name:'NONE rejects an unsolicited native read before opening the nonce',toolsAllow:[],allowed:['read','cron'],denied:[],provider:true,toolNames:[],unsolicited:'read',reads:false},
+  {name:'NONE rejects an unsolicited Tool Search call before opening the nonce',toolsAllow:[],allowed:['read','cron'],denied:[],provider:true,toolNames:[],unsolicited:'tool_call',reads:false},
+  {name:'positive read cap can execute the same harmless nonce read',toolsAllow:['read'],allowed:['read','cron'],denied:[],provider:true,toolNames:['read','tool_call','tool_describe','tool_search'],unsolicited:'read',reads:true},
 ];
 for(const [index,c] of cases.entries())test(`actual native runtime: ${c.name}`,{timeout:60000},async t=>{
   const requests=[];
+  const nonce=sha(`owned-empty-cap-${index}-${Date.now()}`);
+  const nonceFile=path.join(root,`owned-nonce-${index}.txt`);
+  if(c.unsolicited)fs.writeFileSync(nonceFile,nonce);
+  observedNonce=nonceFile;nonceReads=0;
   const upstream=http.createServer(async(req,res)=>{
     const chunks=[];for await(const chunk of req)chunks.push(chunk);
     requests.push(JSON.parse(Buffer.concat(chunks)));
     res.writeHead(200,{'Content-Type':'text/event-stream'});
+    if(c.unsolicited&&requests.length===1){
+      const args=c.unsolicited==='read'?{path:nonceFile}:{id:'openclaw:core:read',args:{path:nonceFile}};
+      res.write('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta:{role:'assistant',
+        tool_calls:[{index:0,id:'unsolicited-nonce',type:'function',function:{name:c.unsolicited,arguments:JSON.stringify(args)}}]},finish_reason:null}]})+'\n\n');
+      res.end('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta:{},finish_reason:'tool_calls'}],
+        usage:{prompt_tokens:1000,completion_tokens:1,total_tokens:1001}})+'\n\ndata: [DONE]\n\n');
+      return;
+    }
     res.write('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta:{role:'assistant',content:'22'},finish_reason:null}]})+'\n\n');
     res.end('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta:{},finish_reason:'stop'}],usage:{prompt_tokens:1000,completion_tokens:1,total_tokens:1001}})+'\n\ndata: [DONE]\n\n');
   });
@@ -91,8 +116,21 @@ for(const [index,c] of cases.entries())test(`actual native runtime: ${c.name}`,{
     return;
   }
   assert.equal(error,undefined,error?.stack);assert.equal(result.meta?.error,undefined,JSON.stringify(result));
-  assert.equal(requests.length,1,'one provider call, no replay');
+  assert.equal(requests.length,c.unsolicited?2:1,'one native response to the unsolicited call, no replay');
   assert.equal(result.payloads?.map(p=>p.text??'').join(''),'22');
   assert.deepEqual((requests[0].tools??[]).map(tool=>tool.function.name),c.toolNames);
   assert.equal(requests[0].max_tokens??requests[0].max_completion_tokens,2048);
+  if(c.unsolicited){
+    assert.equal(nonceReads>0,c.reads,'actual native read observation must match the runtime cap');
+    const results=requests[1].messages.filter(message=>message.role==='tool');
+    assert.equal(results.length,1);
+    assert.equal(JSON.stringify(results).includes(nonce),c.reads,'NONE never discloses the owned nonce to the provider');
+    if(!c.reads){
+      assert.match(JSON.stringify(results),/not found/);
+      for(const request of requests)assert.deepEqual(request.tools??[],[],'unsolicited calls cannot reopen the tool surface');
+    }
+    const info=fs.lstatSync(nonceFile);
+    assert.equal(info.isFile()&&!info.isSymbolicLink(),true);
+    assert.equal(info.size,Buffer.byteLength(nonce));
+  }
 });
