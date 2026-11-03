@@ -8,6 +8,10 @@ import os from 'node:os';
 import {createHash,randomUUID} from 'node:crypto';
 import {registerHooks} from 'node:module';
 import {fileURLToPath,pathToFileURL} from 'node:url';
+import http from 'node:http';
+import {once} from 'node:events';
+import {promptContractForAgent} from '../plugin/prompt-contract.mjs';
+import {reviewedNativeRevisionDependencies} from './fixtures/native-revision-dependencies.mjs';
 
 const pkg=process.env.OPENCLAW_PACKAGE_DIR,typebox=process.env.PIXEL_TEST_TYPEBOX_DIR;
 assert.ok(pkg&&typebox,'provide the pinned native package and locked Source TypeBox');
@@ -22,6 +26,7 @@ const sourceUrl=pathToFileURL(sourceRoot+path.sep).href;
 assert.equal(JSON.parse(fs.readFileSync(path.join(typebox,'package.json'))).version,
   JSON.parse(fs.readFileSync(path.join(sourceRoot,'package.json'))).dependencies.typebox);
 const modulePath=path.join(pkg,'dist/tool-search-BInRpkE3.js'),moduleUrl=pathToFileURL(modulePath).href;
+const nativeSources=new Map([...reviewedNativeRevisionDependencies(pkg)].map(([name,value])=>[pathToFileURL(name).href,value]));
 const manifest=JSON.parse(fs.readFileSync(new URL('../host/openclaw-image-envelope.json',import.meta.url)));
 const sha=value=>createHash('sha256').update(value).digest('hex');
 const installedBefore=sha(fs.readFileSync(modulePath));
@@ -41,7 +46,8 @@ const alias={
 const loader=registerHooks({
   resolve(specifier,context,next){return context.parentURL?.startsWith(sourceUrl)&&alias[specifier]
     ?{url:alias[specifier],shortCircuit:true}:next(specifier,context);},
-  load(url,context,next){return url===moduleUrl?{format:'module',source,shortCircuit:true}:next(url,context);},
+  load(url,context,next){return url===moduleUrl?{format:'module',source,shortCircuit:true}:nativeSources.has(url)
+    ?{format:'module',source:nativeSources.get(url),shortCircuit:true}:next(url,context);},
 });
 test.after(async()=>{
   const {n:closeStateDatabases}=await import(pathToFileURL(path.join(pkg,'dist/openclaw-state-db-BtpXMqJX.js')));
@@ -141,4 +147,75 @@ test('denied or empty catalogs cannot disclose source schemas and other agents k
   assert.equal(found.details[0].parameters,undefined);
   assert.equal(found.details[0].parametersDeferred,undefined);
   assert.equal(value.dispatched.length,0);
+});
+
+// Physical normal-profile wire coverage. The actual writer-derived 8K profile
+// remains covered by runtime_8k_prompt_budget.integration.mjs, not a shortened fixture.
+for(const window of [65536])for(const name of ['pixel_calendar_count','pixel_gmail_read'])
+test(`actual native second provider request retains full cold ${name} schema at ${window}`,{timeout:60000},async t=>{
+  const {t:runEmbeddedAgent}=await import(pathToFileURL(path.join(pkg,'dist/embedded-agent-CJx-nG3W.js')));
+  const original=actualTools.get(name),requests=[];
+  const upstream=http.createServer(async(req,res)=>{
+    const chunks=[];for await(const chunk of req)chunks.push(chunk);requests.push(JSON.parse(Buffer.concat(chunks)));
+    const first=requests.length===1;
+    const delta=first?{role:'assistant',tool_calls:[{index:0,id:'schema-only-search',type:'function',
+      function:{name:'tool_search',arguments:JSON.stringify({query:name,limit:2})}}]}:{role:'assistant',content:'READY'};
+    res.writeHead(200,{'Content-Type':'text/event-stream'});
+    res.write('data: '+JSON.stringify({id:'schema-fixture',object:'chat.completion.chunk',choices:[{index:0,delta,finish_reason:null}]})+'\n\n');
+    res.end('data: '+JSON.stringify({id:'schema-fixture',object:'chat.completion.chunk',choices:[{index:0,delta:{},
+      finish_reason:first?'tool_calls':'stop'}],usage:{prompt_tokens:1000,completion_tokens:10,total_tokens:1010}})+'\n\ndata: [DONE]\n\n');
+  });
+  upstream.listen(0,'127.0.0.1');await once(upstream,'listening');
+  t.after(async()=>{upstream.closeAllConnections();await new Promise(resolve=>upstream.close(resolve));});
+  const directory=path.join(privateRoot,`${window}-${name}`);fs.mkdirSync(directory);
+  const workspace=path.join(directory,'workspace'),agentDir=path.join(directory,'agent'),plugin=path.join(directory,'plugin');
+  for(const folder of [workspace,agentDir,plugin])fs.mkdirSync(folder);
+  const prompt='Discover the requested fixture capability, then reply READY. Do not run a business tool.';
+  const contract=promptContractForAgent({agentId:'pixel',contextTokenBudget:window},'pixel',{prompt,messages:[]},
+    {configuredContextWindow:window});
+  const entries=[...actualTools.values()].filter(value=>['pixel_calendar_count','pixel_gmail_read'].includes(value.name))
+    .map(({name,description,parameters})=>({name,description,parameters}));
+  fs.writeFileSync(path.join(plugin,'package.json'),JSON.stringify({name:'pixel-source-broker',version:'1.0.0',type:'module',openclaw:{extensions:['./index.mjs']}}));
+  fs.writeFileSync(path.join(plugin,'openclaw.plugin.json'),JSON.stringify({id:'pixel-source-broker',activation:{onStartup:true},
+    contracts:{tools:entries.map(value=>value.name)},configSchema:{type:'object',properties:{}}}));
+  fs.writeFileSync(path.join(plugin,'tools.json'),JSON.stringify(entries));
+  fs.writeFileSync(path.join(plugin,'contract.json'),JSON.stringify(contract));
+  fs.writeFileSync(path.join(plugin,'index.mjs'),`import fs from 'node:fs';
+const tools=JSON.parse(fs.readFileSync(new URL('./tools.json',import.meta.url)));
+export default{id:'pixel-source-broker',register(api){
+ api.on('before_prompt_build',()=>JSON.parse(fs.readFileSync(new URL('./contract.json',import.meta.url))));
+ for(const value of tools)api.registerTool({...value,execute:async()=>{throw Error('business execution forbidden in cold-schema fixture');}});
+}};`);
+  const output=8192;
+  const config={agents:{defaults:{workspace,skipBootstrap:true,model:{primary:'fixture/model'},contextTokens:window,
+    heartbeat:{every:'0m'},compaction:{reserveTokens:Math.ceil(window*0.4),reserveTokensFloor:0,keepRecentTokens:2048}},
+    list:[{id:'pixel',default:true,workspace,agentDir}]},
+    tools:{allow:[...entries.map(value=>value.name),'tool_search','tool_describe','tool_call'],toolSearch:{enabled:true,mode:'tools'}},
+    plugins:{allow:['pixel-source-broker'],load:{paths:[plugin]},entries:{'pixel-source-broker':{enabled:true,hooks:{allowConversationAccess:true}}}},
+    models:{mode:'replace',providers:{fixture:{api:'openai-completions',baseUrl:`http://127.0.0.1:${upstream.address().port}/v1`,apiKey:'fixture-only',
+      models:[{id:'model',name:'Fixture',contextWindow:window,maxTokens:output,reasoning:false,input:['text']}]}}}};
+  fs.writeFileSync(process.env.OPENCLAW_CONFIG_PATH,JSON.stringify(config));
+  const sessionFile=path.join(directory,'session.jsonl');
+  const result=await runEmbeddedAgent({agentId:'pixel',sessionId:`schema-${window}-${name}`,sessionFile,
+    sessionKey:`agent:pixel:schema-${window}-${name}`,workspaceDir:workspace,agentDir,config,provider:'fixture',model:'model',prompt,
+    runId:`schema-${window}-${name}`,trigger:'user',timeoutMs:30000});
+  assert.equal(result.meta?.error,undefined,JSON.stringify(result));
+  assert.equal(requests.length,2,'one real native search round trip, no business tool or compensating request');
+  assert.deepEqual(requests[0].tools,requests[1].tools,'discovery does not expand native function schemas');
+  assert.ok(!requests[0].tools.some(value=>value.function?.name===name),'source target remains deferred on initial wire');
+  for(const request of requests){
+    assert.equal(request.max_tokens??request.max_completion_tokens,output,'configured output budget unchanged');
+    assert.ok(request.messages.some(m=>m.role==='system'&&typeof m.content==='string'&&m.content.includes(contract.appendSystemContext)),
+      'production core/output contract remains on the physical provider wire');
+  }
+  const wireResults=requests[1].messages.filter(m=>m.role==='tool');assert.equal(wireResults.length,1);
+  const rendered=typeof wireResults[0].content==='string'?wireResults[0].content:wireResults[0].content.map(x=>x.text??'').join('\n');
+  const decoded=JSON.parse(rendered),hit=decoded.find(value=>value.name===name);assert.ok(hit);
+  assert.deepEqual(hit.parameters,original.parameters,'full ACTUAL Source schema survives text formatter/projection onto next request');
+  const persisted=fs.readFileSync(sessionFile,'utf8').trim().split('\n').map(JSON.parse).filter(row=>row.message?.role==='toolResult');
+  assert.equal(persisted.length,1);
+  const persistedText=persisted[0].message.content.filter(x=>x.type==='text').map(x=>x.text).join('\n');
+  assert.deepEqual(JSON.parse(persistedText).find(value=>value.name===name).parameters,original.parameters);
+  t.diagnostic(JSON.stringify({window,name,actualSchemaUtf8Bytes:Buffer.byteLength(JSON.stringify(original.parameters)),
+    nextRequestToolResultUtf8Bytes:Buffer.byteLength(rendered),configuredOutputTokens:output,businessExecutions:0}));
 });
