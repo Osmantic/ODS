@@ -351,5 +351,6 @@ tests/test-cli-compose-cache-model-store.sh
 tests/test-update-compose-cache-owner-overlays.sh
 tests/test-cli-update-model-lifecycle.sh
 tests/test-summary-quick-commands.sh
+tests/test-summary-dashboard-port.sh
 tests/test_dashboard_env_custody.py
 tests/test_cli_preset_name_validation.py
