@@ -20,6 +20,7 @@ MANIFEST = Path(__file__).with_name("openclaw-tool-recovery.json")
 MODULE = "tool-loop-detection-C0oQKkXZ.js"
 COMPLETION_MODULE = "agent-command-DeS125kF.js"
 IMAGE_MODULE = "tool-search-BInRpkE3.js"
+PLUGIN_TOOL_VERSION_MODULE = "tools-D5HS8Q_I.js"
 IMAGE_DEPENDENCIES = frozenset({"src-M7TBQdDX.js", "hook-helpers-CZ2oRHhZ.js",
                                 "hook-runner-global-mWFYlTIy.js", "agent-tools.before-tool-call-bDDdy3YD.js"})
 COMPACTION_MODULE = "embedded-agent-subscribe.handlers.compaction.runtime.js"
@@ -151,7 +152,7 @@ def recorded_original(state_dir, module_name, source_sha256, current_hash):
 
 def repair(runtime_root, state_dir, *, restore=False, manifest_path=MANIFEST,
            module_name=MODULE):
-    if module_name not in {MODULE, COMPLETION_MODULE, IMAGE_MODULE, COMPACTION_MODULE, COMPACTION_IDLE_MODULE,
+    if module_name not in {MODULE, COMPLETION_MODULE, IMAGE_MODULE, PLUGIN_TOOL_VERSION_MODULE, COMPACTION_MODULE, COMPACTION_IDLE_MODULE,
                            COMPACTION_RESUME_MODULE, COMPACTION_BUDGET_MODULE, READ_RANGE_MODULE,
                            TOOL_RESULT_PROJECTION_MODULE, DIAGNOSTIC_STREAM_MODULE, COMMAND_ATTEMPT_MODULE, UTF8_OUTPUT_MODULE, DIRECT_TOOL_MODULE, CONTEXT_USAGE_MODULE, YIELD_USAGE_MODULE,
                            COMPACTION_EMPTY_MODULE, COMPACTION_NO_WORK_MODULE, SUBAGENT_ADMISSION_MODULE, SUBAGENT_SESSION_MODULE, HOOK_PROVENANCE_MODULE, RUN_ID_REDACTION_MODULE, NO_TOOLS_INGRESS_MODULE, FINALIZE_TOOL_SCOPE_MODULE, *SANDBOX_MKDIR_MODULES.values()}:
@@ -356,6 +357,7 @@ def main():
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--completion-recovery", action="store_true")
     selection.add_argument("--image-envelope", action="store_true")
+    selection.add_argument("--plugin-tool-version", action="store_true")
     selection.add_argument("--compaction-export", action="store_true")
     selection.add_argument("--compaction-idle", action="store_true")
     selection.add_argument("--compaction-resume", action="store_true")
@@ -396,6 +398,9 @@ def main():
     elif args.image_envelope:
         options = {"module_name": IMAGE_MODULE,
                    "manifest_path": MANIFEST.with_name("openclaw-image-envelope.json")}
+    elif args.plugin_tool_version:
+        options = {"module_name": PLUGIN_TOOL_VERSION_MODULE,
+                   "manifest_path": MANIFEST.with_name("openclaw-plugin-tool-version.json")}
     elif args.compaction_export:
         options = {"module_name": COMPACTION_MODULE,
                    "manifest_path": MANIFEST.with_name("openclaw-compaction-export.json")}

@@ -7,6 +7,7 @@ import {readFileSync} from 'node:fs';
 import path from 'node:path';
 
 const FAMILY = [
+  ['plugin-tool-version', 'tools-D5HS8Q_I.js'],
   ['finalize-tool-scope', 'lifecycle-hook-helpers-Ck-WCTzd.js'],
   ['yield-usage', 'embedded-agent-CJx-nG3W.js'],
   ['diagnostic-stream-writes', 'attempt.model-diagnostic-events-DqqiPQPY.js'],

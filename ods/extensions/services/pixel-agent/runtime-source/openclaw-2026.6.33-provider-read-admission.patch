@@ -1,0 +1,30 @@
+--- a/dist/tool-search-BInRpkE3.js
++++ b/dist/tool-search-BInRpkE3.js
+@@ -657,0 +658,18 @@
++	// Fixed Source/provider read API, never a current-request or name-suffix route.
++	// These original objects have already passed the native tool policy.
++	const providerReadNames = new Set(["pixel_gmail_inbox", "pixel_gmail_sent", "pixel_gmail_search",
++		"pixel_gmail_read", "pixel_gmail_thread", "pixel_gmail_count",
++		"pixel_calendar_list", "pixel_calendar_get", "pixel_calendar_count"]);
++	let providerReads = new Set();
++	if (params.agentId === "pixel" && config.mode === "tools" && Number.isInteger(contextTokens) && contextTokens >= 65536) {
++		const family = params.tools.filter((tool) => providerReadNames.has(tool.name) && uniqueNames.has(tool.name)
++			&& getPluginToolMeta(tool)?.pluginId === "pixel-source-broker"
++			&& getPluginToolMeta(tool)?.pluginVersion === "4.3.45");
++		try {
++			// A family cap is a bounded schema offer, not a total context-token proof.
++			// Keep the complete original family deferred when its JSON cannot fit.
++			const bytes = Buffer.byteLength(JSON.stringify(family.map((tool) => ({type:"function",function:{
++				name:tool.name,description:tool.description,parameters:tool.parameters}}))), "utf8");
++			if (family.length && bytes <= 8192) providerReads = new Set(family);
++		} catch { /* Preserve the original safe deferred catalog. */ }
++	}
+@@ -662 +680 @@
+-			isVisibleCatalogTool: (tool) => odsNativeNames.has(tool.name) && uniqueNames.has(tool.name)
++			isVisibleCatalogTool: (tool) => (odsNativeNames.has(tool.name) || providerReads.has(tool)) && uniqueNames.has(tool.name)
+--- a/dist/tools-D5HS8Q_I.js
++++ b/dist/tools-D5HS8Q_I.js
+@@ -517,0 +518 @@
++		pluginVersion: params.plugin?.version,
+@@ -926,0 +928 @@
++				pluginVersion: manifestPlugin?.version,

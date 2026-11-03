@@ -1,7 +1,7 @@
 """Run native revision controls on a private production-repaired pinned SDK.
 
 This is a Linux CI fixture, not an installer or model/provider test. It reuses
-the production 25-recipe staging implementation and the existing Node suite.
+the production 26-recipe staging implementation and the existing Node suite.
 The shared npm package is only read; SDK writes and Node state are disposable.
 """
 import hashlib
@@ -69,7 +69,7 @@ def run_native_suite(package, node_suite=None):
         ODS / 'installers/macos/lib/pixel-runtime-bundle.py')
     bundle = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(bundle)
-    if len(bundle.SHARED_REPAIRS) != 25 or bundle.SHARED_REPAIRS[-1][0] != 'openclaw-compaction-budget.json':
+    if len(bundle.SHARED_REPAIRS) != 26 or bundle.SHARED_REPAIRS[-1][0] != 'openclaw-compaction-budget.json':
         raise ValueError('production repair set/order changed')
     before = inventory(package)
     try:
@@ -92,7 +92,7 @@ def run_native_suite(package, node_suite=None):
             # Production staging verifies exact sources, backups, dependencies,
             # receipts and final bytes. It does not load a gateway or provider.
             contracts = bundle._apply_shared_repairs(private, directory)
-            if len({row['module'] for row in contracts}) != 25:
+            if len({row['module'] for row in contracts}) != 26:
                 raise ValueError('duplicate production repair target')
             finals = {}
             vectors = {'version': '2026.6.33', 'modules': {}, 'reviewedReadDependencies': {}}
@@ -126,7 +126,7 @@ def run_native_suite(package, node_suite=None):
             raise AssertionError('shared pinned SDK changed during the private native fixture')
     if directory.exists():
         raise AssertionError('private native fixture was not cleaned')
-    print(json.dumps({'productionRepairCount': 25, 'sdkCodeFiles': len(finals),
+    print(json.dumps({'productionRepairCount': 26, 'sdkCodeFiles': len(finals),
         'nativeScopeModules': 3, 'sourceClosureVerified': True,
         'sharedSourceUnchanged': True, 'privateStateCleaned': True,
         'gatewayOrModelStarted': False, 'prototypePatchArtifactUsed': False}))

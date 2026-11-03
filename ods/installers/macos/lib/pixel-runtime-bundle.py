@@ -61,6 +61,7 @@ REPAIR_ROOT = Path(__file__).resolve().parents[3] / 'extensions/services/pixel-a
 SHARED_REPAIRS = (
     ('openclaw-tool-recovery.json', 'tool-loop-detection-C0oQKkXZ.js'),
     ('openclaw-completion-recovery.json', 'agent-command-DeS125kF.js'),
+    ('openclaw-plugin-tool-version.json', 'tools-D5HS8Q_I.js'),
     ('openclaw-image-envelope.json', 'tool-search-BInRpkE3.js'),
     ('openclaw-compaction-export.json', 'embedded-agent-subscribe.handlers.compaction.runtime.js'),
     ('openclaw-compaction-idle.json', 'sessions-KE_Xmzwf.js'),
