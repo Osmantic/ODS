@@ -251,7 +251,7 @@ const calendarWindowSchema = Type.Union([
   Type.Object({ kind: Type.Literal("absolute"), timeMin: Type.String({ maxLength: 64 }), timeMax: Type.String({ maxLength: 64 }) }, { additionalProperties: false }),
   Type.Object({ kind: Type.Literal("rolling"), days: Type.Integer({ minimum: 1, maximum: 730 }) }, { additionalProperties: false }),
   Type.Object({ kind: Type.Literal("civil-days"), days: Type.Integer({ minimum: 1, maximum: 730 }), start: Type.Union([Type.Literal("today"), Type.Literal("tomorrow")]) }, { additionalProperties: false }),
-  Type.Object({ kind: Type.Literal("civil-days"), days: Type.Integer({ minimum: 1, maximum: 730 }), date: Type.String({ pattern: "^\\d{4}-\\d{2}-\\d{2}$", description: "First civil date YYYY-MM-DD in the owner's configured timezone; no UTC-offset calculation is needed." }) }, { additionalProperties: false }),
+  Type.Object({ kind: Type.Literal("civil-days"), days: Type.Integer({ minimum: 1, maximum: 730 }), date: Type.String({ pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$", description: "First civil date YYYY-MM-DD in the owner's configured timezone; no UTC-offset calculation is needed." }) }, { additionalProperties: false }),
 ]);
 const calendarValues = {
   summary: Type.String({ minLength: 1, maxLength: 1000 }),
