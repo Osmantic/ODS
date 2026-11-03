@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import McpServerCard from './McpServerCard'
 import PortalAppsSettings from './PortalAppsSettings'
 import PortalMemorySettings from './PortalMemorySettings'
+import PortalTelegramSettings from './PortalTelegramSettings'
 import { HOME_ASSISTANT, NO_SECRETS, POLICY_LABELS, TASK_NOTICES, approvalLinkFor, draftFrom, idsForSave, newServerId, renameServers, sameDraft, secretsFrom, settingsFrom, typedForDraft } from './portalIntegrationsForm'
 
 const inputStyle = 'w-full rounded border border-theme-border bg-theme-bg px-3 py-2 text-theme-text focus:outline-none focus:ring-2 focus:ring-theme-accent'
@@ -50,6 +51,8 @@ const ACTIVITY_LABELS = {
   'memory-propose': 'Offered to remember', 'memory-answer': 'Memory answer', 'memory-settings': 'Memory settings',
   'memory-edit': 'Changed a memory', 'memory-delete': 'Deleted a memory', 'memory-clear': 'Cleared memory',
   'memory-decide': 'Memory decision', 'memory-chat': 'Chat memory',
+  telegram: 'Telegram', 'telegram-save': 'Telegram settings', 'telegram-test': 'Tested Telegram', 'telegram-message': 'Telegram message',
+  'telegram-refused': 'Telegram',
 }
 
 function Activity({ entries, busy, onClear }) {
@@ -147,7 +150,7 @@ export default function PortalIntegrationsSettings() {
     <section className={cardStyle} aria-labelledby="portal-integrations-title">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0"><h2 id="portal-integrations-title" className="text-lg font-semibold">Portal integrations</h2>
-          <p className="text-sm text-theme-text-muted">Let Portal read your notes, send you notifications and reminders, remember what you tell it, use MCP servers such as Home Assistant, and work with your documents, photos, watched pages and news. Passwords and tokens stay on this computer.</p></div>
+          <p className="text-sm text-theme-text-muted">Let Portal read your notes, send you notifications and reminders, remember what you tell it, chat with you on Telegram, use MCP servers such as Home Assistant, and work with your documents, photos, watched pages and news. Passwords and tokens stay on this computer.</p></div>
         <div className="flex gap-2">
           <button className={buttonStyle} disabled={busy} onClick={() => run([[null]], '', { keepDraft: dirty })}>Reload</button>
           <button className={buttonStyle} disabled={busy || !dirty} onClick={save}>Save changes</button>
@@ -221,6 +224,9 @@ export default function PortalIntegrationsSettings() {
       revision={view.settings.revision} notifications={notifications.enabled} onLoadWatches={loadWatches} result={appResult}
       onTest={async app => { setAppResult(null); setAppResult({ app, ...await run(withSave([['test-app', { app }]])) }) }}
       onSendDigest={async () => { setAppResult(null); setAppResult({ app: 'news', ...await run(withSave([['send-digest']])) }) }} />
+
+    {view.telegram && <PortalTelegramSettings telegram={view.telegram} busy={busy}
+      onAct={steps => run(steps, '', { keepDraft: dirty })} />}
 
     {view.memory && <PortalMemorySettings memory={view.memory} busy={busy} onAct={(steps, done) => run(steps, done, { keepDraft: dirty })} />}
 
