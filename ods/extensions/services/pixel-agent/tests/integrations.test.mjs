@@ -198,6 +198,50 @@ test('refusals and an absent service are errors with the service message', async
   assert.equal(result.details.status, 'unavailable');
 });
 
+test('unknown MCP identifiers retain refusal while explaining the separate native discovery namespace',async()=>{
+  for(const error of ['server-missing','tool-not-allowed']){
+    const {tools,sent}=recording([{ok:false,error,message:'The requested MCP capability is unavailable.'}]);
+    const params={action:'call',server:'invented-account-provider',tool:'count',arguments:{date:'2026-11-04'}};
+    const original=JSON.stringify(params);
+    const result=await withPiToolErrorContract(tool(tools,'pixel_ods_mcp')).execute('missing',params);
+    assert.equal(result.isError,true);
+    assert.deepEqual(result.details,{status:'refused',code:error,catalogScope:'mcp',recordCountEstablished:false,permissionBypassAllowed:false,ok:false});
+    assert.match(result.content[0].text,/This refusal establishes no application read, record count or account status/);
+    assert.match(result.content[0].text,/only the server\/tool IDs and argument schemas returned by this tool's action list/);
+    assert.match(result.content[0].text,/Respect disabled server\/tool policies/);
+    assert.match(result.content[0].text,/grants no permission and does not authorize an automatic retry of the refused MCP action/);
+    if(error==='server-missing'){
+      assert.match(result.content[0].text,/Native account\/provider tools .* are outside this MCP catalog/);
+      assert.match(result.content[0].text,/tool_search.*tool_describe.*tool_call/);
+      assert.match(result.content[0].text,/Use native tools only under their own normal authorization for the original owner request/);
+    }else assert.doesNotMatch(result.content[0].text,/tool_search|tool_describe|tool_call/,'an Off/tool refusal does not suggest native fallback');
+    assert.equal(JSON.stringify(params),original,'metadata cannot rewrite the attempted action');
+    assert.deepEqual(sent,[{action:'mcp-call',server:params.server,tool:params.tool,arguments:params.arguments}],
+      'no automatic lookup, fallback provider call or retry follows a refusal');
+  }
+});
+
+test('a tool Off refusal remains authoritative and cannot trigger discovery or another provider',async()=>{
+  const {tools,sent}=recording([{ok:false,error:'tool-not-allowed',message:'This server has no allowed tool with that name.'}]);
+  const result=await tool(tools,'pixel_ods_mcp').execute('off',{action:'call',server:'configured',tool:'off-action',arguments:{}});
+  assert.equal(result.isError,true);
+  assert.equal(result.details.status,'refused');
+  assert.equal(result.details.code,'tool-not-allowed');
+  assert.equal(result.details.permissionBypassAllowed,false);
+  assert.doesNotMatch(result.content[0].text,/tool_search|tool_describe|tool_call/);
+  assert.equal(sent.length,1,'no automatic retry, discovery or alternate provider dispatch');
+});
+
+test('namespace guidance does not reroute or forbid a configured custom account server',async()=>{
+  const {tools,sent}=recording([{ok:true,text:'Invented configured account count: 2'}]);
+  const params={action:'call',server:'google-calendar',tool:'count',arguments:{window:'invented'}};
+  const result=await tool(tools,'pixel_ods_mcp').execute('configured',params);
+  assert.notEqual(result.isError,true);
+  assert.equal(result.details.status,'done');
+  assert.deepEqual(sent,[{action:'mcp-call',server:params.server,tool:params.tool,arguments:params.arguments}]);
+  assert.doesNotMatch(result.content[0].text,/tool_search|record count/,'successful configured tools keep their normal result');
+});
+
 test('MCP execution success and failure reach the native Pi and progress error contract', async () => {
   const {tools} = recording([
     {ok: true, text: 'Invented sensor value: 21', isError: false},
@@ -259,6 +303,10 @@ test('MCP catalogs never imply absence of the separate native notification conne
     assert.match(reply.content[0].text, /configured Documents, Photos, Watched pages and News apps, plus custom MCP servers/);
     assert.match(reply.content[0].text, /ntfy notifications use pixel_ods_notify/);
     assert.match(reply.content[0].text, /connection state is not reported here/);
+    assert.match(reply.content[0].text,/only the server\/tool IDs and argument schemas returned by this tool's action list/);
+    assert.match(reply.content[0].text,/Native account\/provider tools .* are outside this MCP catalog/);
+    assert.match(reply.content[0].text,/tool_search.*tool_describe.*tool_call/);
+    assert.doesNotMatch(reply.content[0].text,/Google uses the connected-app tools/,'avoid the ambiguous former namespace');
     assert.notEqual(reply.isError, true);
   }
 });

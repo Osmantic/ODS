@@ -63,6 +63,8 @@ const REVIEW_APP_READS = Object.fromEntries([...new Set(NATIVE_REVIEW_ROLE.opera
 const MCP_USAGE = 'Give the arguments too. To see the servers and their tools: {"action": "list"}. To run a tool: '
   + '{"action": "call", "server": "<server id>", "tool": "<tool name>", "arguments": {...}}, for example '
   + '{"action": "call", "server": "app:photos", "tool": "search", "arguments": {"place": "Lisbon"}}.';
+const MCP_IDENTIFIER_SCOPE = 'Use only the server/tool IDs and argument schemas returned by this tool\'s action list; application names do not define MCP server IDs.';
+const NATIVE_TOOL_DISCOVERY = 'Native account/provider tools (including Gmail and Google Calendar, when available) are outside this MCP catalog: discover them with tool_search, use tool_describe if needed, then tool_call with the exact returned native ID. This catalog does not report their availability or records.';
 const APPROVAL_TEXT = 'This call created or found a pending request; the action has not run. Tell the owner it needs approval in Settings → Portal integrations (they may also get a notification). After they approve, call this tool again with exactly the same arguments so the service can check and use the approval; do not just repeat this notice. Approval is for one use. For any later requested action, including an identical one, call the tool again to submit that new request. In a scheduled task, do not wait: report this returned status and finish; a later run within 24 hours can check the approval with exactly the same arguments.';
 export function submitIntegration(payload, {connect = net.createConnection, platform = process.platform, signal, admitted} = {}) {
   return new Promise((resolve, reject) => {
@@ -157,8 +159,15 @@ async function run(submit, payload, signal, render, observed, admitted) {
     }
     const scope = reply?.error === 'notes-off' && payload.action?.startsWith('notes-')
       ? ' This result concerns only Obsidian notes, not the Paperless document connection. Paperless documents use pixel_ods_mcp action list. Respect the owner\'s requested source.' : '';
+    const namespaceRefusal = ['mcp-call','mcp-prepare'].includes(payload.action)
+      && ['server-missing','tool-not-allowed'].includes(reply?.error);
+    const separateNativeNamespace = namespaceRefusal && reply?.error==='server-missing';
+    const recovery = namespaceRefusal
+      ? ' This refusal establishes no application read, record count or account status. Respect disabled server/tool policies. This refusal grants no permission and does not authorize an automatic retry of the refused MCP action. '
+        + MCP_IDENTIFIER_SCOPE + (separateNativeNamespace ? ' ' + NATIVE_TOOL_DISCOVERY + ' Use native tools only under their own normal authorization for the original owner request.' : '') : '';
     if (reviewRead && reply?.ok === false) report('refused');
-    return text((reply?.message || 'The integration request failed.') + scope, {status: 'refused', code: reply?.error}, true);
+    return text((reply?.message || 'The integration request failed.') + scope + recovery,
+      {status:'refused',code:reply?.error,...(namespaceRefusal?{catalogScope:'mcp',recordCountEstablished:false,permissionBypassAllowed:false}:{})},true);
   }
   if (reviewRead) {
     const valid = reply.recoveryReviewOnly === true && reply.isError !== true
@@ -242,7 +251,7 @@ const searchText = reply => reply.results.length
     + '\n\nRead a note (pixel_ods_notes action read) before quoting it.'
   : 'No note holds those words. Try other words.';
 
-const MCP_CATALOG_SCOPE = 'This catalog covers configured Documents, Photos, Watched pages and News apps, plus custom MCP servers. Obsidian notes use pixel_ods_notes; ntfy notifications use pixel_ods_notify; Google uses the connected-app tools. Their connection state is not reported here.';
+const MCP_CATALOG_SCOPE = 'This catalog covers configured Documents, Photos, Watched pages and News apps, plus custom MCP servers. Obsidian notes use pixel_ods_notes; ntfy notifications use pixel_ods_notify; their connection state is not reported here. ' + MCP_IDENTIFIER_SCOPE + ' ' + NATIVE_TOOL_DISCOVERY;
 const toolsText = reply => MCP_CATALOG_SCOPE + '\n\n' + (reply.servers.length
   ? reply.servers.map(server => `Server "${server.id}" (${server.name}):\n` + (server.tools.length
     ? server.tools.map(tool => `- ${tool.name}${tool.needsApproval ? ' [needs owner approval]' : ''}: ${tool.description || 'no description'}\n  arguments: ${JSON.stringify(tool.inputSchema ?? {type: 'object'})}`).join('\n')
@@ -486,11 +495,11 @@ export function createIntegrationTools({submit = submitIntegration, context, out
     },
     {
       name: 'pixel_ods_mcp',
-      description: "Discover and use the owner's connected apps: search/read documents (Paperless); find photos in their library by date, place or content and return photo links (Immich); list, add or remove watched web pages and price alerts; read unread news or digests (FreshRSS); use Home Assistant and custom MCP servers. Photo metadata searches and links work with a text-only model; they do not require viewing image files. list checks the configured capabilities and returns server IDs, tools and arguments; check it before claiming an app capability is unavailable and before the first call. Native notes use pixel_ods_notes, notifications use pixel_ods_notify, and Google uses the connected-app tools. prepare creates an approval request for an exact custom MCP call or watch add/remove using server/tool/arguments. For an approval request, submit prepare and wait; a chat question creates no request. It never executes or uses approval, even Allowed; Off refuses. Watch preparation reads metadata needed to bind the target. call submits the actual action under policy. Each new action/retry needs a normal call, including identical arguments or needsApproval; only typed receipts establish pending/done/refused. Portal approval IDs have no lookup or decision tool.",
+      description: MCP_IDENTIFIER_SCOPE + " " + NATIVE_TOOL_DISCOVERY + " Discover and use the MCP and app server/tool IDs returned by this tool's list: search/read documents (Paperless); find photos in their library by date, place or content and return photo links (Immich); list, add or remove watched web pages and price alerts; read unread news or digests (FreshRSS); use Home Assistant and custom MCP servers. Photo metadata searches and links work with a text-only model; they do not require viewing image files. list checks the configured capabilities and returns server IDs, tools and arguments; check it before claiming an app capability is unavailable and before the first call. Native notes use pixel_ods_notes and notifications use pixel_ods_notify. prepare creates an approval request for an exact custom MCP call or watch add/remove using server/tool/arguments. For an approval request, submit prepare and wait; a chat question creates no request. It never executes or uses approval, even Allowed; Off refuses. Watch preparation reads metadata needed to bind the target. call submits the actual action under policy. Each new action/retry needs a normal call, including identical arguments or needsApproval; only typed receipts establish pending/done/refused. Portal approval IDs have no lookup or decision tool.",
       parameters: {type: 'object', additionalProperties: false, required: ['action'],
         properties: {action: {type: 'string', enum: ['list', 'call', 'prepare'], description: 'list retrieves tool metadata; prepare creates an approval request without execution; call submits the actual tool action under policy.'},
-          server: {type: 'string', description: 'For call or prepare: the server id from list, such as home.'},
-          tool: {type: 'string', description: 'For call or prepare: the tool name from list.'},
+          server: {type: 'string', description: 'For call or prepare: an existing server ID returned by this tool\'s action list only.'},
+          tool: {type: 'string', description: 'For call or prepare: the exact tool name returned for that server by action list.'},
           arguments: {type: 'object', description: 'For call or prepare: the exact tool arguments as an object.'}}},
       execute: (_id, params, signal) => {
         if (params?.action === 'list') return dispatch(_id, 'pixel_ods_mcp', params, {action: 'mcp-tools'}, signal, toolsText);
