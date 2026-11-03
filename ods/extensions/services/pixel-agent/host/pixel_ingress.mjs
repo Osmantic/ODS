@@ -923,7 +923,7 @@ export function parseVerificationResponse(value, runId) {
   return value;
 }
 
-async function readVerificationForRun(runId, token, gatewayPort, signal, deps) {
+async function readVerificationForRun(runId, token, gatewayPort, signal, deps, silentCompletion) {
   if (typeof runId !== "string" || !OPENAI_RUN_ID.test(runId)) {
     throw new HttpError(502, "invalid upstream response");
   }
@@ -935,6 +935,7 @@ async function readVerificationForRun(runId, token, gatewayPort, signal, deps) {
         authorization: `Bearer ${token}`,
         "content-type": "application/json",
         accept: "application/json",
+        ...(silentCompletion ? {"x-ods-silent-completion": "1"} : {}),
       },
       body: JSON.stringify({ runId }),
       redirect: "error",
@@ -959,12 +960,14 @@ async function readVerificationForRun(runId, token, gatewayPort, signal, deps) {
   return parseVerificationResponse(parsed, runId);
 }
 
-async function verificationForRun(runId, token, gatewayPort, signal, deps) {
+async function verificationForRun(completion, token, gatewayPort, signal, deps) {
+  const runId = completion?.id;
+  const silentCompletion = completion?.choices?.length === 1 && silentFinalReply(completion.choices[0]);
   // Only re-read the same host receipt. Never resubmit the model request or
   // replay tools when finalization and receipt availability briefly overlap.
   for (let attempt = 0; ; attempt++) {
     try {
-      return await readVerificationForRun(runId, token, gatewayPort, signal, deps);
+      return await readVerificationForRun(runId, token, gatewayPort, signal, deps, silentCompletion);
     } catch (error) {
       if (signal.aborted || attempt >= 2 || !OPENAI_RUN_ID.test(runId ?? '')) throw error;
       await new Promise(resolve => {
@@ -1036,6 +1039,10 @@ function validDeliveredArtifacts(items) {
     new Set(items.map(item=>item.siteId+'/'+item.file.path)).size === items.length;
 }
 
+function silentFinalReply(choice) {
+  return missingVisibleAssistantText(choice?.message?.content) && choice.finish_reason !== 'tool_calls' && !choice.message.tool_calls?.length;
+}
+
 function deliveryVerification(completion, verification) {
   const choice = completion?.choices?.length === 1 ? completion.choices[0] : undefined;
   const content = choice?.message?.content;
@@ -1046,9 +1053,11 @@ function deliveryVerification(completion, verification) {
   // skip before_agent_finalize for an empty assistant message, so classify its
   // terminal result here, after reading the same run's trusted evidence. This
   // never resubmits the owner request or repeats a possibly completed effect.
-  if (!missingVisibleAssistantText(content) || choice.finish_reason === 'tool_calls' ||
-      choice.message.tool_calls?.length || verification.text || verification.status === 'pending') return verification;
+  if (!silentFinalReply(choice) || verification.text || verification.status === 'pending') return verification;
   const { suppressStaleExecWarning, ...evidence } = verification;
+  if (verification.integrationNotice && !verification.artifacts?.length) {
+    return {...evidence, status:'failed', text:'Portal returned no written answer. Check the recorded integration status before repeating the request.'};
+  }
   return {
     ...evidence, status:'failed',
     text:(verification.artifacts?.length ? 'Verified file downloads are attached, but Portal ended without a written answer. This request may be incomplete. ' : 'Portal ended without a visible answer or a delivered result. This request is incomplete. ') +
@@ -1446,7 +1455,7 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
         completion = delegated.completion;
         deliveryStage = "verification";
         const verification = deliveryVerification(completion, delegated.verification ?? await verificationForRun(
-          completion?.id,
+          completion,
           token,
           gatewayPort,
           controller.signal,
@@ -1485,7 +1494,7 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
     const delegated = await awaitSubagentDelivery(completion,outgoing.user,token,gatewayPort,controller.signal,deps);
     completion = delegated.completion;
     const verification = deliveryVerification(completion, delegated.verification ?? await verificationForRun(
-      completion?.id,
+      completion,
       token,
       gatewayPort,
       controller.signal,

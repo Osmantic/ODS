@@ -830,7 +830,8 @@ export default definePluginEntry({
         await toolLoopGuard.settleDelivery(parsed.runId);
         const task = taskActivity.projection(parsed.runId);
         sendJson(res, 200, integrationOutcomes.verification(
-          {...toolLoopGuard.deliveryVerificationForRun(parsed.runId), ...(task ? {task} : {})}, parsed.runId));
+          {...toolLoopGuard.deliveryVerificationForRun(parsed.runId), ...(task ? {task} : {})}, parsed.runId,
+          req.headers?.['x-ods-silent-completion'] === '1'));
         return true;
       },
     });
