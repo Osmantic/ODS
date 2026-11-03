@@ -24,8 +24,11 @@ function digestJob(plan, agentId) {
 // A turn that asks for a reminder gets a note naming the tool: pixel_ods_notify sits behind
 // tool search, and without it a small model says it cannot schedule anything (#7794).
 const ASKS_REMINDER = /\bremind(?:er|ers|ing)?\b|\blembr(?:e|ete|ar|ança|ete-me)\b/i;
-export const REMINDER_HINT = 'To remind the owner later, call pixel_ods_notify with message and inMinutes (such as 10) '
-  + 'or at (such as 17:30). It schedules the reminder and it reaches their phone then. Never use sleep for this.';
+// The exact call, because a small model that only knows the tool's name searches and describes it
+// again and again instead of calling it (e2e: three attempts for "Remind me in 3 minutes ...").
+export const REMINDER_HINT = 'To remind the owner later, make one call: tool_call with id "openclaw:pixel-ods:pixel_ods_notify" '
+  + 'and args {"message": "<the reminder>", "inMinutes": 10}, or "at": "17:30" instead of inMinutes. '
+  + 'It schedules the reminder and it reaches their phone then. No search is needed first. Never use sleep for this.';
 export const reminderHint = text => (typeof text === 'string' && ASKS_REMINDER.test(text) ? REMINDER_HINT : '');
 
 export function reminderJob(plan, agentId) {

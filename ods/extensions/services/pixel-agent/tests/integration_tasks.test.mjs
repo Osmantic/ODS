@@ -184,4 +184,5 @@ test('a turn asking for a reminder is told which tool sets one', () => {
     'Lembre-me daqui a 10 minutos']) assert.equal(reminderHint(text), REMINDER_HINT, text);
   for (const text of ['What is the weather?', 'The reminiscence was nice', undefined]) assert.equal(reminderHint(text), '', String(text));
   assert.match(REMINDER_HINT, /pixel_ods_notify/);
+  assert.match(REMINDER_HINT, /tool_call with id "openclaw:pixel-ods:pixel_ods_notify"/, 'the hint gives the exact call');
 });
