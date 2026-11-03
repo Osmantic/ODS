@@ -13,8 +13,9 @@ The installed, published and newly composed code have different evidence:
 | --- | --- | --- |
 | Latest installed qualification | `60534c7b2` | The ordinary Windows/WSL update and scoped app/model/browser journeys below. |
 | Earlier hosted checkpoint | `b36909f40` | Composed scheduler/Darwin fixes, scoped disposable Linux upgrade and 93 passing hosted checks with one skip. |
-| Published draft checkpoint | `d18e2a1de` | Concrete candidate custody and bounded successful-read evidence; 93 passing hosted checks and one skip. |
-| Current local composition | `28f0fde4b` | Native Mac schedule wiring and Source 4.3.42 proposal repair; the failed catalog-derived semantic projection has been reverted. Not another installed qualification. |
+| Earlier published draft checkpoint | `d18e2a1de` | Concrete candidate custody and bounded successful-read evidence; 93 passing hosted checks and one skip. |
+| Recent published checkpoint | `0344eaf3e` | Native connection deployment paths, atomic journal snapshot repair and current bundle-pin test fixtures. Runtime and API hosted suites passed; the full checkpoint was still pending when recorded. |
+| Current source groundwork | `f62f3915a` | Native Source identity and private filesystem preparation, including closed env-file custody and publication ordering. No native Source jobs, active env or installer activation. Not another installed qualification. |
 
 The `c7f7aded7` scheduler and Darwin follow-ups are already composed. Earlier
 installed and hosted evidence does not certify newer runtime source.
@@ -33,6 +34,16 @@ after a lost create reply. Physical launchd, Darwin ACLs and an installed Mac
 runtime remain unqualified. Google/Calendar and reviewed Notion connections are
 a separate unfinished native Source Broker port; the implemented Coffee service
 and schedule wiring do not make those connections available on Mac.
+
+Native Source preparation now binds the existing protected deployment to a fixed
+service identity and inode-journaled private directories. The env-file contract
+uses a Root-owned file inside the private gate with read permission for only the
+broker's user UUID; shared group membership does not grant env access. The gate
+opens only after descendant, descriptor and current-deployment validation.
+Controlled descriptor and interruption checks qualify this preparation code,
+with Darwin account, ownership and ACL calls explicitly simulated. Native job
+lifecycle, env publication, installation/activation and physical Mac behavior
+remain unfinished; Connected apps remains unavailable there.
 
 The current source retains 32 native tools and source-bound OpenClaw 2026.6.33
 repairs. Its production CI entrypoint applies all 25 recipes in a private SDK

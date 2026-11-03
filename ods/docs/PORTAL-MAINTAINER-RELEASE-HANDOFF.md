@@ -56,6 +56,9 @@ and [restricted-scope review](https://developers.google.com/identity/protocols/o
   transactions. Its Mac path needs implementation, including lifecycle and
   interruption recovery, before physical testing can qualify it. Removing the
   transport refusal alone would not provide that support.
+  Fixed native identity, private-directory and env-file preparation groundwork
+  is now present. It has no Source jobs, env publisher or installer activation;
+  simulated Darwin checks do not qualify those missing paths.
 - Review the remaining limitations in the [integration status](PORTAL-INTEGRATIONS-STATUS.md),
   especially real-provider recovery, connected-data/model behavior and installed
   withdrawal/update/rollback. Scope or release acceptance must be explicit.
@@ -63,8 +66,10 @@ and [restricted-scope review](https://developers.google.com/identity/protocols/o
 The assembled source includes the scheduler/Darwin fixes, explicit future-task
 policy, native Mac schedule wiring and the Source proposal-file repair.
 Gabriel's physical Windows installation remains `60534c7b2`.
-The published draft checkpoint `d18e2a1de` has 93 passing hosted checks and one
-skip; earlier disposable Linux upgrade evidence retains its recorded scope.
+The earlier draft checkpoint `d18e2a1de` had 93 passing hosted checks and one
+skip. The recent `0344eaf3e` runtime and API hosted suites passed, with other
+checkpoint jobs still pending when recorded. Earlier disposable Linux upgrade
+evidence retains its recorded scope.
 Neither result qualifies the newer local code or another installed update.
 
 SDK12 cancellation repairs passed native cold controls, not real-model benefit.

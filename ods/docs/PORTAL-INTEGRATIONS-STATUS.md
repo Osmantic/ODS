@@ -22,10 +22,17 @@ Windows/WSL model/browser evidence, later source-only checks and remaining limit
 
 The assembled source includes the scheduler/Darwin fixes, explicit future-task
 policy, native Mac schedule wiring and the bundled Source proposal-file repair.
+Native Source identity and private-directory preparation is now implemented as
+groundwork, with strict broker-only env-file custody and last-step gate
+publication. It is not wired into native jobs or the installer, and it does not
+make Google or reviewed apps available on Mac. Those lifecycle and activation
+paths still need code before physical qualification.
 The experimental semantic operation projection was rejected and reverted as
 `28f0fde4b`. Gabriel's physical Windows installation remains `60534c7b2`.
-The published draft checkpoint `d18e2a1de` has 93 passing hosted checks and one
-skip; this does not certify the newer local source or another installed update.
+The earlier draft checkpoint `d18e2a1de` had 93 passing hosted checks and one
+skip. The recent `0344eaf3e` runtime and API hosted suites passed; its remaining
+jobs were still pending when recorded. Neither certifies the newer native
+preparation code or another installed update.
 
 The SDK12 cancellation lock/fence repairs passed native mechanical controls.
 Earlier semantic experiments, including the 144-completion scope3 corpus,
