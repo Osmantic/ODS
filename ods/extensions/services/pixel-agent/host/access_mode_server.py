@@ -153,7 +153,7 @@ def main(*, reprove_installer_access=False):
                 elif request == {"operation": "model-status"}:
                     status, body = 200, adapter.model_status()
                 elif request['operation'] == 'schedules':
-                    if platform.system() != 'Linux':
+                    if platform.system() not in ('Linux', 'Darwin'):
                         status, body = 503, {'error': 'scheduler-platform-unavailable'}
                     else:
                         status, body = 200, adapter.schedules(request['request'], source=request['source'])

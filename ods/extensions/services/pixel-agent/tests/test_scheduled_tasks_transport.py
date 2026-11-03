@@ -5,9 +5,14 @@ if sys.platform == 'win32':
     raise SkipTest('The root coordinator uses POSIX custody and owner pipes')
 
 import contextlib
+import ast
 import hashlib
+import io
 import json
+import os
 from pathlib import Path
+import socketserver
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
@@ -17,6 +22,7 @@ sys.path.insert(0, str(ROOT / 'bin'))
 import pixel_access_bridge as bridge  # noqa: E402
 import pixel_access_protocol as protocol  # noqa: E402
 import pixel_schedules as contract  # noqa: E402
+import pixel_access_relay as relay  # noqa: E402
 
 
 def test_runtime_mirrors_are_exact_and_installed_image_includes_the_contract():
@@ -105,3 +111,66 @@ def test_larger_run_results_do_not_expand_other_owner_frames():
     assert protocol.result('schedules', decoded['result']) == result
     with pytest.raises(contract.ScheduleError):
         contract.validate_reply({'action': 'runs', 'id': 'another-task', 'offset': 0}, result)
+
+
+@pytest.mark.parametrize('system', ['Darwin', 'Windows', 'Linux'])
+def test_hybrid_native_schedule_reuses_fixed_authenticated_edge_transport(monkeypatch, system):
+    request = {'action': 'list', 'offset': 0}
+    result = {'kind': 'tasks', 'items': [], 'pendingCreates': [], 'pendingCount': 0,
+              'pendingRemovals': [], 'offset': 0, 'hasMore': False, 'nextOffset': None}
+    # Use the real shared reply validator; only the HTTP service is simulated.
+    contract.validate_reply(request, result)
+    monkeypatch.setattr(relay.platform, 'system', lambda: system)
+    transport = Mock(return_value=(200, result))
+    monkeypatch.setattr(relay, '_request_runtime_controller', transport)
+    config = {'PIXEL_OPENWEBUI_KEY': 'fixed-edge-key'}
+    assert relay.request_runtime_schedules(request, config=config, data_dir='/owned/data') == (200, result)
+    transport.assert_called_once_with(request, config=config, path='/v1/schedules', timeout=190)
+
+
+def test_native_schedule_does_not_guess_a_transport_or_enable_connections(monkeypatch):
+    monkeypatch.setattr(relay.platform, 'system', lambda: 'Darwin')
+    transport = Mock(side_effect=AssertionError('unconfigured native transport'))
+    monkeypatch.setattr(relay, '_request_runtime_controller', transport)
+    assert relay.request_runtime_schedules({'action': 'list', 'offset': 0}, config={}, data_dir='/owned/data')[0] == 503
+    assert relay.request_runtime_connection_action('connection-sync', {}, config={'PIXEL_OPENWEBUI_KEY': 'edge'})[0] == 409
+    transport.assert_not_called()
+
+
+@pytest.mark.parametrize('system,status', [('Darwin', 200), ('Linux', 200), ('Windows', 503)])
+def test_actual_root_handler_routes_only_supported_native_schedules(system, status):
+    source = ROOT / 'extensions/services/pixel-agent/host/access_mode_server.py'
+    tree = ast.parse(source.read_text())
+    handler = next(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == 'Handler')
+    action = Mock(return_value={'kind': 'tasks'})
+    scope = {'socketserver': socketserver, 'owner': SimpleNamespace(pw_uid=os.getuid()),
+             'peer_ids': lambda _socket: (os.getuid(), os.getgid()),
+             'control_request': protocol.control_request, 'decode_frame': protocol.decode_frame,
+             'platform': SimpleNamespace(system=lambda: system), 'AccessError': bridge.AccessError,
+             'make_adapter': lambda: SimpleNamespace(schedules=action), 'json': json}
+    # Execute the actual nested handler, not a mirror of its dispatch. Root
+    # publication/UID custody is separately qualified; peer identity is explicit
+    # here and no installed daemon/socket is selected.
+    exec(compile(ast.Module(body=[handler], type_ignores=[]), str(source), 'exec'), scope)
+    request = {'operation': 'schedules', 'request': {'action': 'list', 'offset': 0},
+               'source': {'kind': 'owner-key', 'identity': 'a' * 64}}
+
+    def send(value):
+        instance = object.__new__(scope['Handler'])
+        instance.connection = SimpleNamespace(settimeout=lambda _seconds: None)
+        instance.rfile, instance.wfile = io.BytesIO(json.dumps(value).encode() + b'\n'), io.BytesIO()
+        instance.handle()
+        return json.loads(instance.wfile.getvalue())
+
+    assert send(request)['status'] == status
+    if status == 200:
+        action.assert_called_once_with(request['request'], source=request['source'])
+    else:
+        action.assert_not_called()
+    action.reset_mock()
+    scope['peer_ids'] = lambda _socket: (os.getuid() + 1, os.getgid())
+    assert send(request)['status'] == 403
+    action.assert_not_called()
+    scope['peer_ids'] = lambda _socket: (os.getuid(), os.getgid())
+    assert send(dict(request, source={'kind': 'owner-key', 'identity': 'wrong'}))['status'] == 400
+    action.assert_not_called()

@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'bin'))
 from pixel_access_bridge import AccessError, atomic_json
 from pixel_provider import runtime_custody as r
 from pixel_provider.managed_deployment import required_policy
+from pixel_access_bridge import LaunchdAccessBridge, SystemdAccessBridge
 
 
 @pytest.fixture
@@ -166,6 +167,47 @@ def test_fixed_descriptor_uses_canonical_host_path(monkeypatch, system, expected
     assert r._descriptor_path() == Path(expected)
     monkeypatch.setattr(r, 'DESCRIPTOR', Path('/operator/selected.json'))
     assert r._descriptor_path() == Path('/operator/selected.json')
+
+
+def native_schedule_adapter(artifact):
+    adapter = object.__new__(LaunchdAccessBridge)
+    adapter.binary = str(artifact.launcher)
+    adapter.owner = SimpleNamespace(pw_uid=os.getuid(), pw_gid=os.getgid())
+    adapter.gateway_process = {'uid': os.getuid(), 'gid': os.getgid(), 'executable': str(artifact.node)}
+    return adapter
+
+
+def test_native_schedule_selects_real_qualified_package_not_validator_wrapper(artifact):
+    adapter = native_schedule_adapter(artifact)
+    env = {'PATH': str(artifact.root)}
+    assert adapter._worker_executable('schedules', env) == str(artifact.runtime / 'openclaw.mjs')
+    for operation in ('settings-status', 'status', 'model-apply'):
+        assert adapter._worker_executable(operation, env) == str(artifact.launcher)
+    linux = object.__new__(SystemdAccessBridge)
+    linux.binary = str(artifact.launcher)
+    assert linux._worker_executable('schedules', env) == str(artifact.launcher)
+
+
+@pytest.mark.parametrize('changed', ['runtime', 'manifest', 'launcher', 'node', 'gateway-node', 'path-node', 'missing-descriptor'])
+def test_native_schedule_runtime_drift_refuses_before_owner_launch(artifact, monkeypatch, changed):
+    adapter = native_schedule_adapter(artifact)
+    env = {'PATH': str(artifact.root)}
+    if changed in ('runtime', 'manifest', 'launcher', 'node'):
+        target = artifact.runtime / 'openclaw.mjs' if changed == 'runtime' else getattr(artifact, changed)
+        target.write_bytes(target.read_bytes() + b'\n# changed\n')
+    elif changed == 'gateway-node':
+        adapter.gateway_process['executable'] = '/unrelated/node'
+    elif changed == 'path-node':
+        env['PATH'] = '/usr/bin:/bin'
+    else:
+        artifact.descriptor.unlink()
+    # Actual RuntimeCustody.inspect still checks every disposable file/hash;
+    # the existing artifact fixture explicitly simulates root metadata only.
+    monkeypatch.setattr(adapter, 'worker_environment', lambda: env)
+    monkeypatch.setattr(adapter, '_launch_owner_worker', lambda *_: pytest.fail('unqualified runtime reached owner RPC'))
+    with pytest.raises(AccessError):
+        adapter.worker('schedules', config_hash='a' * 64, gateway_port=18789,
+                       schedule_request={'action': 'list', 'offset': 0})
 
 
 @pytest.mark.skipif(sys.platform != 'darwin', reason='Real Darwin ACL API required')

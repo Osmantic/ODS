@@ -5,6 +5,7 @@ import net from 'node:net';
 import path from 'node:path';
 import os from 'node:os';
 import {spawn} from 'node:child_process';
+import {createHash} from 'node:crypto';
 import {accessPort, createAccessServer} from '../host/access_mode_http.mjs';
 import {requestAccessController} from '../host/access_mode_relay.mjs';
 
@@ -120,4 +121,60 @@ print('docker-desktop-control-transport-ok')
   assert.equal(result, 0, error);
   assert.equal(output.trim(), 'docker-desktop-control-transport-ok');
   assert.deepEqual(calls, [{operation: 'model-route-status'}]);
+});
+
+test('native schedules retain owner auth, large framed results and no lost-reply replay', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ods-schedule-http-'));
+  const original = await fs.lstat(directory);
+  const socketPath = path.join(directory, 'control.sock'), calls = [];
+  let mode = 'large';
+  const result = {kind: 'runs', taskId: 'owned-task', offset: 0, hasMore: false, nextOffset: null,
+    items: [1].map(timestamp => ({timestamp, status: 'ok', summary: 'A'.repeat(90000),
+      summaryTruncated: false, durationMs: 1}))};
+  const controller = net.createServer(socket => {
+    socket.on('error', error => assert.equal(error.code, 'ECONNRESET')); // Intentional overbound reply is closed by the client.
+    let raw = '';
+    socket.on('data', chunk => {
+      raw += chunk;
+      if (!raw.endsWith('\n')) return;
+      calls.push(JSON.parse(raw));
+      if (mode === 'lost') return socket.destroy();
+      const body = mode === 'overbound' ? {...result, padding: 'X'.repeat(525312)} : result;
+      socket.end(JSON.stringify({status: 200, body}) + '\n');
+    });
+  });
+  const server = createAccessServer({ownerKey,
+    request: (payload, options) => requestAccessController(payload, {...options, socketPath})});
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+    await new Promise(resolve => controller.close(resolve));
+    const current = await fs.lstat(directory);
+    assert(!current.isSymbolicLink() && current.dev === original.dev && current.ino === original.ino);
+    assert.equal(path.dirname(path.resolve(directory)), path.resolve(os.tmpdir()));
+    await fs.rm(directory, {recursive: true});
+  });
+  await new Promise(resolve => controller.listen(socketPath, resolve));
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${server.address().port}/v1/schedules`;
+  const send = (body, headers = {}) => fetch(origin, {method: 'POST', headers: {
+    authorization: 'Bearer ' + ownerKey, 'content-type': 'application/json', ...headers}, body: JSON.stringify(body)});
+  const request = {action: 'runs', id: 'owned-task', offset: 0};
+  for (const headers of [{authorization: ''}, {authorization: 'Bearer ' + 'c'.repeat(64)},
+    {origin: 'http://generated.localhost'}, {'sec-fetch-site': 'same-origin'}]) {
+    assert.equal((await send(request, headers)).status, 403);
+  }
+  assert.equal(calls.length, 0);
+  const reply = await send(request);
+  assert.equal(reply.status, 200);
+  assert.deepEqual(await reply.json(), result);
+  assert.deepEqual(calls[0], {operation: 'schedules', request,
+    source: {kind: 'owner-key', identity: createHash('sha256').update(ownerKey).digest('hex')}});
+  mode = 'overbound';
+  assert.equal((await send(request)).status, 503);
+  mode = 'lost';
+  assert.equal((await send({action: 'create', requestId: '284ba2ae-05b6-48c7-84ab-4b05b98a4365',
+    name: 'Private future task', task: 'Do not execute during this fixture.',
+    schedule: {kind: 'at', at: '2030-01-01T09:00:00Z'}})).status, 503);
+  assert.equal(calls.length, 3); // Exactly one dispatch per owner HTTP request, including a lost reply.
 });

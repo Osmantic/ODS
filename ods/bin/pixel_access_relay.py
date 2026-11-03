@@ -128,8 +128,6 @@ def request_runtime_model_control(operation, request=None, *, config):
 def request_runtime_schedules(request, *, config, data_dir):
     from pixel_schedules import validate_request, validate_reply
     validate_request(request)
-    if platform.system() == 'Darwin':
-        return 503, {'error': 'scheduler-platform-unavailable'}
     if config.get('PIXEL_OPENWEBUI_KEY'):
         status, body = _request_runtime_controller(request,config=config,path='/v1/schedules',timeout=190)
     elif platform.system() == 'Linux':

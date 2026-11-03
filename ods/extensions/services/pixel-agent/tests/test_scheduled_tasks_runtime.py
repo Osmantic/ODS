@@ -4,7 +4,10 @@ The loopback provider returns a controlled answer, not model inference. Nothing
 uses the installed owner's config, models, credentials, plugins or services.
 """
 from datetime import datetime, timedelta, timezone
+import ast
+import hashlib
 import http.server
+import io
 import json
 import os
 from pathlib import Path
@@ -167,6 +170,73 @@ class NativeSchedulerRuntimeTests(unittest.TestCase):
             resumed = tasks.operate({'action': 'set-enabled', 'id': future['id'], 'revision': paused['revision'], 'enabled': True})['task']
             self.assertTrue(resumed['enabled'])
             tasks.operate({'action': 'remove', 'id': future['id'], 'revision': resumed['revision']})
+
+    def test_actual_owner_handler_uses_package_entrypoint_and_reconciles_lost_native_reply(self):
+        # Real pinned gateway + actual owner main/NativeTasks/SDK RPC. The
+        # privileged publication/UID-drop preamble is outside this owner test;
+        # no Root metadata or installed daemon is asserted here.
+        import scheduled_tasks_owner as owner_module
+        source = Path(__file__).resolve().parents[1] / 'host/access_mode_worker.py'
+        tree = ast.parse(source.read_text())
+        owner_code = ast.Module(body=[node for node in tree.body if isinstance(
+            node, (ast.Import, ast.ImportFrom, ast.FunctionDef))], type_ignores=[])
+        scope = {'__file__': str(source), '__name__': 'disposable_owner_handler'}
+        exec(compile(owner_code, str(source), 'exec'), scope)
+        self.start('future-owner')
+        config = self.state / 'openclaw.json'
+        request = {'action': 'create', 'requestId': str(uuid.uuid4()), 'name': 'Future owner bridge fixture',
+                   'task': 'Future-only invented fixture; do not run a model.',
+                   'schedule': {'kind': 'at', 'at': '2030-01-01T09:00:00Z'}}
+
+        def operate(action, *, binary=self.openclaw, checksum=None):
+            frame = {'operation': 'schedules', 'openclaw': binary, 'confirmed': False,
+                     'config_sha256': checksum or hashlib.sha256(config.read_bytes()).hexdigest(),
+                     'gateway_port': self.port, 'schedule_request': action}
+            incoming = io.TextIOWrapper(io.BytesIO((json.dumps(frame) + '\n').encode()))
+            outgoing = io.StringIO()
+            with patch.dict(os.environ, self.env, clear=True), patch.object(sys, 'stdin', incoming), patch.object(sys, 'stdout', outgoing):
+                scope['main']()
+            return json.loads(outgoing.getvalue())
+
+        wrapper = self.home / 'bin/openclaw-gateway-launcher'
+        wrapper.parent.mkdir(mode=0o700)
+        wrapper.write_text('#!/bin/sh\n# private wrapper is not the SDK package\n')
+        wrapper.chmod(0o700)
+        self.assertEqual(operate({'action': 'list', 'offset': 0}, binary=str(wrapper)), {'error': 'owner-operation-failed'})
+        self.assertEqual(operate({'action': 'list', 'offset': 0}, checksum='0' * 64), {'error': 'task-config-changed'})
+        calls = []
+        original_gateway = owner_module.gateway_call
+        lost = False
+
+        def gateway_with_one_lost_reply(*args):
+            actual = original_gateway(*args)
+
+            def call(method, params):
+                nonlocal lost
+                calls.append(method)
+                value = actual(method, params)
+                if method == 'cron.add' and not lost:
+                    lost = True
+                    raise owner_module.ScheduleError('scheduler-unavailable')
+                return value
+            return call
+
+        with patch.object(owner_module, 'gateway_call', gateway_with_one_lost_reply):
+            first = operate(request)['result']
+            self.assertEqual(first['outcome'], 'unconfirmed')
+            recovered = operate(request)['result']
+            self.assertEqual(recovered['outcome'], 'unchanged')
+            self.assertEqual(calls.count('cron.add'), 1)
+            task = recovered['task']
+            paused = operate({'action': 'set-enabled', 'id': task['id'], 'revision': task['revision'], 'enabled': False})['result']
+            self.assertFalse(paused['task']['enabled'])
+            removed = operate({'action': 'remove', 'id': task['id'], 'revision': paused['task']['revision']})['result']
+            self.assertTrue(removed['task']['removed'])
+            self.assertEqual(operate({'action': 'list', 'offset': 0})['result']['items'], [])
+        ledger = self.state / '.ods-scheduled-tasks/tasks.json'
+        self.assertEqual(ledger.stat().st_uid, os.getuid())
+        self.assertEqual(ledger.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.provider_requests, [])  # No task became due and no inference was requested.
 
 
 if __name__ == '__main__':

@@ -19,6 +19,7 @@ import platform
 import re
 import selectors
 import shlex
+import shutil
 import socket
 import stat
 import subprocess
@@ -825,6 +826,9 @@ class SystemdAccessBridge:
         return {"HOME": str(self.home), "USER": self.owner.pw_name, "LOGNAME": self.owner.pw_name,
                 "PATH": str(Path(self.binary).parent) + ":/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8"}
 
+    def _worker_executable(self, operation, environment):
+        return self.binary
+
     def worker(self, operation="status", *, confirmed=False, config_hash=None, busy=None, restart=None,
                transaction_id=None, settings_revision=None, preferences=None, capabilities=None, activate_settings=None,
                binding=None, activate_provider=None, expected_projection=None, provider_probe=None,
@@ -833,7 +837,8 @@ class SystemdAccessBridge:
                receipt_sha256=None, connection_target=None, connection_answers=None, activate_connection=None,
                schedule_request=None, gateway_port=None, native_oauth_request=None):
         env = self.worker_environment()
-        request = dict(operation=operation, openclaw=self.binary, config_sha256=config_hash, confirmed=confirmed)
+        request = dict(operation=operation, openclaw=self._worker_executable(operation, env),
+                       config_sha256=config_hash, confirmed=confirmed)
         if operation == 'schedules':
             request.update(schedule_request=schedule_request, gateway_port=gateway_port)
         if operation == 'native-mcp-oauth':
@@ -2646,6 +2651,32 @@ class LaunchdAccessBridge(SystemdAccessBridge):
             if key in configured:
                 env[key] = configured[key]
         return env
+
+    def _worker_executable(self, operation, environment):
+        if operation != 'schedules':
+            return super()._worker_executable(operation, environment)
+        # The native CLI validator is an exact protected wrapper, not a package
+        # directory. Reuse the existing full runtime qualification; only this
+        # fixed operation receives the real entrypoint on the private pipe.
+        from pixel_provider.runtime_custody import RuntimeCustody
+        try:
+            runtime, _custody = RuntimeCustody(self).inspect()
+        except (OSError, ValueError):
+            raise AccessError('scheduler-runtime-unqualified') from None
+        process = getattr(self, 'gateway_process', None)
+        if (type(process) is not dict or set(process) != {'uid', 'gid', 'executable'}
+                or process['uid'] != self.owner.pw_uid or process['gid'] != self.owner.pw_gid
+                or process['executable'] != runtime['node']):
+            raise AccessError('scheduler-runtime-unqualified')
+        node = shutil.which('node', path=environment.get('PATH', ''))
+        entrypoint = Path(runtime['runtimeRoot']) / 'openclaw.mjs'
+        try:
+            if (node is None or Path(node).resolve(strict=True) != Path(runtime['node'])
+                    or entrypoint.resolve(strict=True) != entrypoint or not entrypoint.is_file()):
+                raise AccessError('scheduler-runtime-unqualified')
+        except OSError:
+            raise AccessError('scheduler-runtime-unqualified') from None
+        return str(entrypoint)
 
     def _docker_process_context(self):
         # Docker Desktop and its socket are owner-managed. Drop root before
