@@ -166,11 +166,22 @@ class AppActions:
                 for name, (_action, description, properties) in tools.items()]})
         return servers
 
-    def use_app(self, config, server, tool, arguments, *, run_context=None, secrets=None):
-        """One app tool, called the way Portal calls an MCP tool; the app's reply."""
+    @staticmethod
+    def _app_arguments(server, tool, arguments):
+        """Refuse unsupported constraints before any private or provider access."""
         if tool not in APP_TOOLS[server]:
             raise IntegrationError("tool-not-allowed", f"{APP_SERVER_NAMES[server]} has no tool named {tool}. List its tools first.")
-        action, _description, properties = APP_TOOLS[server][tool]
+        if not isinstance(arguments, dict):
+            raise IntegrationError("invalid-request", "Tool arguments must be an object.")
+        specification = APP_TOOLS[server][tool]
+        if any(key not in specification[2] for key in arguments):
+            raise IntegrationError("invalid-request", "This builtin tool has unsupported arguments. List its tools; do not assume "
+                                   "unsupported constraints were applied. No app action ran.")
+        return specification
+
+    def use_app(self, config, server, tool, arguments, *, run_context=None, secrets=None):
+        """One app tool, called the way Portal calls an MCP tool; the app's reply."""
+        action, _description, properties = self._app_arguments(server, tool, arguments)
         snapshot = None if secrets is None else self._verified_app_snapshot(config, secrets, server)
         return action, self._app_action(config, action, {key: arguments[key] for key in properties if key in arguments},
                                         run_context=run_context, snapshot=snapshot)

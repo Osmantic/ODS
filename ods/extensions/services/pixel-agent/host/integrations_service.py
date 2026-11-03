@@ -585,6 +585,7 @@ class Integrations(RecoveryReviewOnly, AppActions):
         if not isinstance(arguments, dict):
             raise IntegrationError("invalid-request", "Tool arguments must be an object.")
         if request.get("server") in APP_SERVER_IDS:
+            self._app_arguments(APP_SERVER_IDS[request["server"]], name, arguments)
             with self.store.lock:
                 config, secrets = self.store.config(), self.store.secrets()
                 if APP_SERVER_IDS[request["server"]] == "watch":

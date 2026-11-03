@@ -21,6 +21,92 @@ import integrations_service as service  # noqa: E402
 from integrations_common import Store, default_apps  # noqa: E402
 
 
+class BuiltinArgumentTests(unittest.TestCase):
+    """Admission itself must not touch settings, credentials, approvals or providers."""
+
+    class Probe(service.Integrations):
+        def __init__(self):
+            self.calls = []
+            probe = self
+
+            class NoStore:
+                @property
+                def lock(self):
+                    probe.calls.append("store")
+                    raise AssertionError("Invalid builtin arguments reached the store")
+
+            self.store = NoStore()
+
+        def _verified_app_snapshot(self, *_args, **_kwargs):
+            self.calls.append("snapshot")
+            return {}, {}, "fixture-only"
+
+        def _app_action(self, _config, action, request, **_kwargs):
+            self.calls.append("action")
+            return {"action": action, "request": request}
+
+        def _review_watch_change(self, *_args):
+            self.calls.append("watch-proposal")
+            raise AssertionError("Invalid builtin arguments reached approval preparation")
+
+    CASES = (
+        ("documents", "search", {"query": "lease", "after": "2026-01-01"}),
+        ("documents", "read", {"id": 1, "page": 2}),
+        ("photos", "search", {"place": "Lisbon", "limit": 1}),
+        ("watch", "list", {"tag": "fixture"}),
+        ("watch", "add", {"url": "https://example.invalid/qa", "interval": 60}),
+        ("watch", "remove", {"id": "fixture", "onlyIfChanged": True}),
+        ("news", "unread", {"feed": "fictional-source"}),
+        ("news", "digest", {"after": "2026-01-01"}),
+    )
+
+    def test_unknown_constraints_refuse_before_snapshot_or_action(self):
+        for app, tool, arguments in self.CASES:
+            for secrets in (None, {}):
+                with self.subTest(app=app, tool=tool, secrets=secrets):
+                    probe = self.Probe()
+                    with self.assertRaises(service.IntegrationError) as caught:
+                        probe.use_app({}, app, tool, arguments, secrets=secrets)
+                    self.assertEqual(caught.exception.code, "invalid-request")
+                    self.assertEqual(probe.calls, [])
+
+    def test_actual_normal_and_review_dispatch_refuse_before_any_private_access(self):
+        for app, tool, arguments in self.CASES:
+            request = {"server": "app:" + app, "tool": tool, "arguments": arguments}
+            for review in (False, True):
+                with self.subTest(app=app, tool=tool, review=review):
+                    probe = self.Probe()
+                    with self.assertRaises(service.IntegrationError) as caught:
+                        if review:
+                            probe._review_mcp_call(request)
+                        else:
+                            probe._mcp_call({}, request)
+                    self.assertEqual(caught.exception.code, "invalid-request")
+                    self.assertEqual(probe.calls, [])
+
+    def test_valid_builtin_fields_and_omitted_options_are_forwarded_unchanged(self):
+        cases = (("documents", "search", {"query": "lease"}), ("documents", "read", {"id": 1}),
+                 ("photos", "search", {"place": "Lisbon"}),
+                 ("photos", "search", {"query": "snow", "place": "Oslo", "after": "2026-01-01", "before": "2026-12-31"}),
+                 ("watch", "list", {}), ("watch", "add", {"url": "https://example.invalid/qa"}),
+                 ("watch", "remove", {"id": "fixture"}), ("news", "unread", {}), ("news", "digest", {}))
+        for app, tool, arguments in cases:
+            with self.subTest(app=app, tool=tool):
+                probe = self.Probe()
+                _action, reply = probe.use_app({}, app, tool, arguments)
+                self.assertEqual(reply["request"], arguments)
+                self.assertEqual(probe.calls, ["action"])
+
+    def test_invalid_argument_objects_and_names_do_not_echo_untrusted_values(self):
+        for arguments in (None, [], "not-an-object", {"fixture-private-key": "fixture-private-value"}):
+            probe = self.Probe()
+            with self.subTest(arguments=arguments), self.assertRaises(service.IntegrationError) as caught:
+                probe.use_app({}, "news", "unread", arguments)
+            self.assertEqual(caught.exception.code, "invalid-request")
+            self.assertNotIn("fixture-private", caught.exception.message)
+            self.assertEqual(probe.calls, [])
+
+
 class Fake(http.server.BaseHTTPRequestHandler):
     """Shared plumbing for the fake apps: JSON replies and a key check."""
     key_header, key = "", ""
@@ -644,8 +730,9 @@ class AppTests(unittest.TestCase):
         self.assertEqual(waiting["status"], "approval-required")
         with self.assertRaisesRegex(service.IntegrationError, "no tool named delete"):
             self.agent("mcp-call", server="app:documents", tool="delete", arguments={})
-        # Unknown argument names are dropped, not passed to the app.
-        self.assertIn("No document", self.agent("mcp-call", server="app:documents", tool="search", arguments={"query": "spaceship", "x": 1})["text"])
+        # Unknown constraints must be refused, never silently discarded.
+        with self.assertRaisesRegex(service.IntegrationError, "unsupported arguments"):
+            self.agent("mcp-call", server="app:documents", tool="search", arguments={"query": "spaceship", "x": 1})
 
     def test_custom_servers_keep_plain_app_names(self):
         settings = self.settings()

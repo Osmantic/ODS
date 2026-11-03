@@ -105,6 +105,7 @@ class RecoveryReviewOnly:
         server_id = request.get("server")
         if server_id in APP_SERVER_IDS:
             app = APP_SERVER_IDS[server_id]
+            self._app_arguments(app, name, arguments)
             if app == "watch" and name in {"add", "remove"}:
                 return self._review_watch_change(name, arguments)
             if (app, name) not in BUILTIN_READS:
