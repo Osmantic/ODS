@@ -14,6 +14,7 @@ import {ACTIVITY_CONTRACT} from '../plugin/activity-display.mjs';
 import {GOAL_CONTRACT} from '../plugin/goal-progress.mjs';
 import {executionContext} from '../plugin/completion-assurance.mjs';
 import {nativeIntegrationHookState} from './native-integration-hook-state.mjs';
+import {isolateSdkImports} from './isolated-sdk-imports.mjs';
 
 const PYTHON = process.platform === 'win32' ? 'python' : 'python3';
 export const PYTHON_AVAILABLE = spawnSync(PYTHON, ['--version'], {windowsHide: true}).status === 0;
@@ -125,11 +126,7 @@ export async function realPromptBuild(t, {stateFiles = {}} = {}) {
     if (!Object.hasOwn(sdk, name)) throw new Error(`Unexpected SDK call: ${name}`);
     return sdk[name](...args);
   };
-  const stubbed = source.replace(/import\s*\{([^}]+)\}\s*from\s*['"]openclaw\/plugin-sdk\/[^'"]+['"];?/g, (_match, names) =>
-    names.split(',').map(name => name.trim()).filter(Boolean).map(name => name === 'definePluginEntry'
-      ? 'const definePluginEntry = entry => entry;' : name === 'OPENCLAW_VERSION' ? 'const OPENCLAW_VERSION = "2026.6.33";'
-        : `const ${name} = (...args) => globalThis.${hook}(${JSON.stringify(name)}, args);`).join('\n'));
-  assert.doesNotMatch(stubbed, /from\s*['"]openclaw\//, 'all SDK imports are isolated');
+  const stubbed = isolateSdkImports(source, hook);
   const {default: plugin} = await import(`data:text/javascript;base64,${Buffer.from(
     `${stubbed}\n//# sourceURL=${entry.href}?prompt-build-${load}`).toString('base64')}`);
   const hooks = new Map();

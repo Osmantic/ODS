@@ -23,6 +23,7 @@ import {PORTAL_INTEGRATION_TURN_CONTEXT, promptContractForAgent} from '../plugin
 import {createSubagentDelivery} from '../plugin/subagent-delivery.mjs';
 import {GOAL_CONTRACT} from '../plugin/goal-progress.mjs';
 import {GOAL_TURN_LANGUAGE_NOTE} from '../plugin/response-language.mjs';
+import {isolateSdkImports} from './isolated-sdk-imports.mjs';
 
 const USER = 'ods-2c7a1f3b9e0d4c6a8b5e7f9a1c3d5e7f9b1a3c5e7d9f1b3a5c7e9d1f3b5a7c9e';
 const SESSION_KEY = `agent:pixel:openai-user:${USER}`;
@@ -695,11 +696,7 @@ async function loadPlugin(sessions, home, sdkOverrides = {}) {
     if (!Object.hasOwn(sdk, name)) throw new Error(`Unexpected SDK call: ${name}`);
     return sdk[name](...args);
   };
-  const stubbed = source.replace(/import\s*\{([^}]+)\}\s*from\s*['"]openclaw\/plugin-sdk\/[^'"]+['"];?/g, (_match, names) =>
-    names.split(',').map(name => name.trim()).filter(Boolean).map(name => name === 'definePluginEntry'
-      ? 'const definePluginEntry = entry => entry;' : name === 'OPENCLAW_VERSION' ? 'const OPENCLAW_VERSION = "2026.6.33";'
-        : `const ${name} = (...args) => globalThis.__odsClarificationSdk(${JSON.stringify(name)}, args);`).join('\n'));
-  assert.doesNotMatch(stubbed, /from\s*['"]openclaw\//, 'all SDK imports are isolated');
+  const stubbed = isolateSdkImports(source, '__odsClarificationSdk');
   const {default: plugin} = await import(`data:text/javascript;base64,${Buffer.from(
     `${stubbed}\n//# sourceURL=${entry.href}?clarification-${++pluginLoads}`).toString('base64')}`);
   const hooks = new Map(), tools = new Map();
