@@ -61,6 +61,8 @@ const MCP_USAGE = 'Give the arguments too. To see the servers and their tools: {
   + '{"action": "call", "server": "<server id>", "tool": "<tool name>", "arguments": {...}}, for example '
   + '{"action": "call", "server": "app:photos", "tool": "search", "arguments": {"place": "Lisbon"}}.';
 const APPROVAL_TEXT = 'This call created or found a pending request; the action has not run. Tell the owner it needs approval in Settings → Portal integrations (they may also get a notification). After they approve, call this tool again with exactly the same arguments so the service can check and use the approval; do not just repeat this notice. Approval is for one use. For any later requested action, including an identical one, call the tool again to submit that new request. In a scheduled task, do not wait: report this returned status and finish; a later run within 24 hours can check the approval with exactly the same arguments.';
+// Ordinary tool capability; review-only effect limits are supplied separately.
+const APPROVAL_CAPABILITY = ' Portal approvals are owner decisions in Settings → Portal integrations. This tool has no action to look up, approve or decline Portal approval IDs. For a request only to decide a Portal approval, explain that limit rather than reconstruct a replacement action from history. For a requested action already approved by the owner, submit exactly the approved arguments so the service can verify and use the grant.';
 
 export function submitIntegration(payload, {connect = net.createConnection, platform = process.platform, signal, admitted} = {}) {
   return new Promise((resolve, reject) => {
@@ -413,7 +415,7 @@ export function createIntegrationTools({submit = submitIntegration, context, out
   return [
     {
       name: 'pixel_ods_notes',
-      description: "Only Markdown notes in the owner's Obsidian vault. For Paperless documents, bills or PDFs, use pixel_ods_mcp action list instead. action search: find notes holding words (query). action read: read a note (path from a search, such as Home/Lease.md). action write: add text (mode append) or create a note (mode create), only when the owner asks to save something. Call action write for every new save request, even if you expect approval or the text is identical. The service creates a request or performs the permitted write. Only its returned status approval-required means a request is pending; describing the need for approval creates nothing.",
+      description: "Only Markdown notes in the owner's Obsidian vault. For Paperless documents, bills or PDFs, use pixel_ods_mcp action list instead. action search: find notes holding words (query). action read: read a note (path from a search, such as Home/Lease.md). action write: add text (mode append) or create a note (mode create), only when the owner asks to save something. Call action write for every new save request, even if you expect approval or the text is identical. The service creates a request or performs the permitted write. Only its returned status approval-required means a request is pending; describing the need for approval creates nothing." + APPROVAL_CAPABILITY,
       parameters: {type: 'object', additionalProperties: false, required: ['action'],
         properties: {action: {type: 'string', enum: ['search', 'read', 'write']},
           query: {type: 'string', description: 'For search: words to look for, such as "lease deposit".'},
@@ -439,7 +441,7 @@ export function createIntegrationTools({submit = submitIntegration, context, out
     },
     {
       name: 'pixel_ods_mcp',
-      description: "The owner's configured apps and custom MCP servers: documents (Paperless-ngx), photos (Immich), watched web pages and price alerts, news (FreshRSS), Home Assistant and others. This catalog does not include native Obsidian, ntfy or Google connections. action list: show server ids and permitted tools with their arguments; always list before the first call. action call: submit the requested action with server, tool and arguments. Call for every new action, including an identical later one, even when the catalog says needsApproval. That flag creates no request; only the call's returned status approval-required confirms a pending request. Use pixel_ods_notes for notes and pixel_ods_notify for notifications.",
+      description: "The owner's configured apps and custom MCP servers: documents (Paperless-ngx), photos (Immich), watched web pages and price alerts, news (FreshRSS), Home Assistant and others. This catalog does not include native Obsidian, ntfy or Google connections. action list: show server ids and permitted tools with their arguments; always list before the first call. action call: submit the requested action with server, tool and arguments. Call for every new action, including an identical later one, even when the catalog says needsApproval. That flag creates no request; only the call's returned status approval-required confirms a pending request. Use pixel_ods_notes for notes and pixel_ods_notify for notifications." + APPROVAL_CAPABILITY,
       parameters: {type: 'object', additionalProperties: false, required: ['action'],
         properties: {action: {type: 'string', enum: ['list', 'call']},
           server: {type: 'string', description: 'For call: the server id from list, such as home.'},
