@@ -83,7 +83,7 @@ def test_actual_publisher_commits_only_inactive_v2_after_all_disabled_inputs(gen
     assert all(argv[:2] not in (['/bin/launchctl','bootstrap'], ['/bin/launchctl','kickstart']) for argv in n.commands)
     with pytest.raises(custody.CustodyError, match='generation-requires-lifecycle'):
         custody.native_publish_environment(n.selected, n.env_before.decode())
-    with pytest.raises(custody.CustodyError, match='generation-not-admitted'):
+    with pytest.raises(custody.CustodyError, match='native-source-broker-platform-required'):
         custody._native_child_main(['--native-broker-child', 'sync'])
 
 

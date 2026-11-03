@@ -64,7 +64,13 @@ preserves sibling invocations and their original deadlines. A reproduced gap
 after the final blocking guard is fixed by rechecking boot and the original
 admission deadline immediately before that replace. Controlled interruption
 and rollback checks retain original evidence; they do not launch native jobs.
-Native Source execution, job lifecycle, connection activation and physical Mac
+The private consumer verifies the fixed public code closure before application
+imports and uses isolated Python with site hooks disabled. Its wrapper owns a
+real child and anonymous READY/GO pipes; Source environment and pinned program
+bytes are loaded only after GO. Controlled real-process checks cover startup,
+refusal, cancellation and original-deadline cleanup with disabled Source
+connections. Darwin metadata and Seatbelt are explicitly simulated there.
+Root dispatch, launchd job lifecycle, connection activation and physical Mac
 behavior remain unfinished; Connected apps remains unavailable there.
 
 The local integration now composes native-tool candidate `8e9aea1ca` with the

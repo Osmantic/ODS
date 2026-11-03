@@ -633,6 +633,8 @@ NATIVE_META = Path('/private/var/lib/ods-pixel-access')
 NATIVE_DEFINITIONS = Path('/Library/LaunchDaemons')
 NATIVE_PROGRAM = Path('/usr/local/libexec/ods-pixel-access')
 NATIVE_RUNTIMES = Path('/usr/local/libexec/ods-pixel-runtimes')
+NATIVE_RUNTIME_DESCRIPTOR = Path('/private/etc/ods/pixel-provider-runtime.json')
+NATIVE_RUNTIME_MANIFEST = Path('/private/etc/ods/pixel-provider-runtime-manifest.json')
 NATIVE_STATE = Path('/private/var/lib/pixel-source-broker')
 NATIVE_ENV = NATIVE_STATE / 'source-broker.env'
 NATIVE_LEGACY_ENV = Path('/private/etc/pixel-source-broker.env')
@@ -745,7 +747,7 @@ def native_disabled_definition(role, *, identity, python, identifier=None):
         'Label': label, 'Disabled': True, 'RunAtLoad': False, 'KeepAlive': False,
         'UserName': NATIVE_BROKER, 'GroupName': NATIVE_BROKER, 'InitGroups': False,
         'ProgramArguments': ['/usr/bin/env', '-i', *(key + '=' + value for key, value in environment.items()),
-            python, '-I', '-B', '/usr/local/libexec/ods-pixel-access/pixel_connections/custody.py',
+            python, '-I', '-S', '-B', '/usr/local/libexec/ods-pixel-access/pixel_connections/custody.py',
             '--native-broker-child', role, *([identifier] if identifier is not None else [])],
         'WorkingDirectory': str(NATIVE_STATE), 'Umask': 0o077, 'ProcessType': 'Background',
         'AbandonProcessGroup': False, 'ExitTimeOut': 5, 'StandardInPath': '/dev/null',
@@ -3042,6 +3044,187 @@ def _native_broker_platform():
         raise CustodyError('native-source-broker-platform-required')
 
 
+from contextlib import contextmanager as _native_contextmanager
+
+
+@_native_contextmanager
+def _native_public_directory(path):
+    """Standalone pre-import walk; no unqualified application import needed."""
+    text = os.fspath(path)
+    if (type(text) is not str or not text.startswith('/') or text == '/'
+            or any(ord(char) < 32 for char in text)
+            or any(part in ('', '.', '..') for part in text.split('/')[1:])):
+        raise CustodyError('native-source-bootstrap-path-invalid')
+    fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for part in ('', *text.split('/')[1:]):
+            if part:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                os.close(fd)
+                fd = child
+            info = os.fstat(fd)
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+                raise CustodyError('native-source-bootstrap-parent-unsafe')
+            _native_no_acl(fd)
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def _native_broker_application_imports(role, identifier=None):
+    """Gate-bound public code proof BEFORE importing any application peer.
+
+    Only used by the isolated CLI. This bootstrap does not replace the complete
+    real Broker reader before Popen/READY/GO, or read a Root/owner private file.
+    """
+    _native_broker_platform()
+    native_child_arguments(role, identifier)
+    entry = NATIVE_PROGRAM / 'pixel_connections/custody.py'
+    if (Path(__file__) != entry or not sys.flags.isolated or not sys.flags.no_site
+            or not sys.dont_write_bytecode):
+        raise CustodyError('native-source-bootstrap-isolation-required')
+    with _native_public_directory(NATIVE_STATE.parent) as parent:
+        gate = os.open(NATIVE_STATE.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        try:
+            info = os.fstat(gate)
+            if (not stat.S_ISDIR(info.st_mode) or (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != (0, 0, 0o700)):
+                raise CustodyError('native-source-gate-unsafe')
+            raw, _inode = _native_root_file(gate, 'custody.json', gid=os.getegid(), mode=0o640, limit=16384)
+            projection = _native_public_json(raw)
+            snapshot = _native_broker_projection(projection)
+            identity = projection['broker']
+            if (_native_acl_entries(gate) != (uuid.UUID(projection['ownerGuid']).bytes, uuid.UUID(identity['userGuid']).bytes)
+                    or (os.getuid(), os.geteuid(), os.getgid(), os.getegid()) != (identity['id'],)*4
+                    or any(group != identity['id'] for group in os.getgroups())
+                    or _native_boot_uuid() != snapshot['boot']):
+                raise CustodyError('native-source-bootstrap-identity-changed')
+            label = NATIVE_LABEL + role + ('.' + identifier if identifier is not None else '')
+            row = snapshot['invocations'].get(label)
+            if row is None or not _native_slot_matches(snapshot, _native_invocation(row['invocation'])):
+                raise CustodyError('native-source-broker-slot-inactive')
+            deadline = int(row['invocation']['admissionDeadlineNs'])
+            if not int(row['invocation']['issuedNs']) <= _native_clock_ns() < deadline:
+                raise CustodyError('native-source-broker-invocation-expired')
+            with _native_public_directory(NATIVE_RUNTIME_DESCRIPTOR.parent) as directory:
+                desc_body, _inode = _native_root_file(directory, NATIVE_RUNTIME_DESCRIPTOR.name, mode=0o644, limit=16384)
+                manifest_body, _inode = _native_root_file(directory, NATIVE_RUNTIME_MANIFEST.name, mode=0o644, limit=32*1024*1024)
+            descriptor, manifest = _native_public_json(desc_body), _native_public_json(manifest_body)
+            keys = {'schemaVersion', 'runtimeRoot', 'sourceRoot', 'node', 'launcher', 'hostPython', 'manifest', 'manifestSha256', 'policy'}
+            root = NATIVE_RUNTIMES / projection['runtime']['bundleSha256']
+            source = root / 'ods-source'
+            if (type(descriptor) is not dict or set(descriptor) != keys or descriptor['schemaVersion'] != 1
+                    or type(descriptor['schemaVersion']) is not int or type(manifest) is not dict
+                    or descriptor['runtimeRoot'] != str(root / 'runtime') or descriptor['sourceRoot'] != str(source)
+                    or descriptor['node'] != str(root / 'node') or descriptor['launcher'] != str(NATIVE_PROGRAM / 'openclaw-gateway-launcher')
+                    or descriptor['hostPython'] != projection['hostPython'] or descriptor['hostPython'] != sys.executable
+                    or descriptor['manifest'] != str(NATIVE_RUNTIME_MANIFEST)
+                    or descriptor['manifestSha256'] != hashlib.sha256(manifest_body).hexdigest()
+                    or hashlib.sha256(json.dumps([descriptor, manifest], sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+                        != projection['runtime']['custodySha256']):
+                raise CustodyError('native-source-bootstrap-runtime-changed')
+            with _native_public_directory(root) as directory:
+                bundle_body, _inode = _native_root_file(directory, 'bundle.json', mode=0o644, limit=32*1024*1024)
+            bundle = _native_public_json(bundle_body)
+            entries = manifest.get('source')
+            if (hashlib.sha256(bundle_body).hexdigest() != root.name or type(bundle) is not dict
+                    or set(bundle) != {'schemaVersion', 'openclawVersion', 'plugins', 'entries'}
+                    or bundle['schemaVersion'] != 1 or type(bundle['entries']) is not dict or type(entries) is not dict
+                    or entries != {name[len('ods-source/'):]: value for name, value in bundle['entries'].items() if name.startswith('ods-source/')}):
+                raise CustodyError('native-source-bootstrap-code-changed')
+            for relative, record in entries.items():
+                if (type(relative) is not str or relative.startswith('/')
+                        or any(part in ('', '.', '..') for part in relative.split('/'))
+                        or type(record) is not list or not record or record[0] not in ('file', 'directory')):
+                    raise CustodyError('native-source-bootstrap-code-changed')
+            # No app code executes to learn the already reviewed literal list.
+            helper_relative = 'installers/macos/lib/pixel-native-source-broker.py'
+            with _native_public_directory(source / Path(helper_relative).parent) as directory:
+                helper_body, _inode = _native_root_file(directory, Path(helper_relative).name, mode=0o644, limit=2*1024*1024)
+            if entries.get(helper_relative) != ['file', 0o644, len(helper_body), hashlib.sha256(helper_body).hexdigest()]:
+                raise CustodyError('native-source-bootstrap-code-changed')
+            import ast
+            try:
+                files = next(ast.literal_eval(node.value) for node in ast.parse(helper_body).body
+                    if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+                    and node.targets[0].id == 'ROOT_SOURCE_FILES')
+            except (SyntaxError, ValueError, TypeError, StopIteration):
+                raise CustodyError('native-source-bootstrap-code-changed') from None
+            if type(files) is not dict or len(files) != 107 or set(files) != {name for name, value in entries.items() if value[0] == 'file'}:
+                raise CustodyError('native-source-bootstrap-code-changed')
+            def namespace(directory, prefix=''):
+                children = {name[len(prefix):].split('/')[0] for name in entries if name.startswith(prefix)}
+                if set(os.listdir(directory)) != children:
+                    raise CustodyError('native-source-bootstrap-code-changed')
+                for name in children:
+                    relative = prefix + name
+                    record = entries[relative]
+                    if record[0] != 'directory':
+                        continue
+                    fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+                    try:
+                        info = os.fstat(fd)
+                        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022
+                                or record != ['directory', stat.S_IMODE(info.st_mode)]
+                                or _native_at_inode(directory, name) != [info.st_dev, info.st_ino]):
+                            raise CustodyError('native-source-bootstrap-code-changed')
+                        _native_no_acl(fd)
+                        namespace(fd, relative + '/')
+                    finally:
+                        os.close(fd)
+            with _native_public_directory(source) as directory:
+                source_info = os.fstat(directory)
+                source_inode = [source_info.st_dev, source_info.st_ino]
+                namespace(directory)
+            admitted = {}
+            for relative in files:
+                if (type(relative) is not str or relative.startswith('/') or any(part in ('', '.', '..') for part in relative.split('/'))):
+                    raise CustodyError('native-source-bootstrap-code-changed')
+                expected = entries[relative]
+                mode = 0o755 if relative == 'bin/ods-pixel-route-lease' else 0o644
+                with _native_public_directory(source / Path(relative).parent) as directory:
+                    body, _inode = _native_root_file(directory, Path(relative).name, mode=mode, limit=2*1024*1024)
+                if expected != ['file', mode, len(body), hashlib.sha256(body).hexdigest()]:
+                    raise CustodyError('native-source-bootstrap-code-changed')
+                admitted[str(source / relative)] = expected
+            with _native_public_directory(entry.parent) as directory:
+                executing, _inode = _native_root_file(directory, entry.name, mode=0o644, limit=2*1024*1024)
+            if admitted.get(str(source / 'bin/pixel_connections/custody.py')) != ['file', 0o644, len(executing), hashlib.sha256(executing).hexdigest()]:
+                raise CustodyError('native-source-bootstrap-code-changed')
+            binary = str(source / 'bin')
+            # Every already-loaded app alias must be the executing module or
+            # the same qualified closure. Never replace an owner-loaded peer.
+            for name, module in tuple(sys.modules.items()):
+                if name.startswith(('pixel_', 'access_mode_', 'scheduled_tasks_', 'settings_transaction', 'provider_transaction', 'model_transaction')):
+                    filename = getattr(module, '__file__', None)
+                    if filename not in admitted and not (name == 'pixel_connections.custody' and module is sys.modules[__name__]):
+                        raise CustodyError('native-source-bootstrap-peer-alias')
+            final = _native_public_json(_native_root_file(gate, 'custody.json', gid=identity['id'], mode=0o640, limit=16384)[0])
+            final_snapshot = _native_broker_projection(final)
+            with _native_public_directory(root) as directory:
+                if _native_at_inode(directory, 'ods-source') != source_inode:
+                    raise CustodyError('native-source-bootstrap-code-changed')
+            with _native_public_directory(NATIVE_RUNTIME_DESCRIPTOR.parent) as directory:
+                if (_native_root_file(directory, NATIVE_RUNTIME_DESCRIPTOR.name, mode=0o644, limit=16384)[0] != desc_body
+                        or _native_root_file(directory, NATIVE_RUNTIME_MANIFEST.name, mode=0o644, limit=32*1024*1024)[0] != manifest_body):
+                    raise CustodyError('native-source-bootstrap-runtime-changed')
+            if (_native_at_inode(parent, NATIVE_STATE.name) != [info.st_dev, info.st_ino]
+                    or _native_broker_binding(projection, label) != _native_broker_binding(final, label)
+                    or not _native_slot_matches(final_snapshot, _native_invocation(row['invocation']))
+                    or _native_boot_uuid() != snapshot['boot'] or _native_clock_ns() >= deadline):
+                raise CustodyError('native-source-bootstrap-scope-changed')
+            sys.path[:] = [binary, *(path for path in sys.path if path != binary)]
+            import importlib
+            package = importlib.import_module('pixel_connections')
+            old = sys.modules.get('pixel_connections.custody')
+            if old is not None and old is not sys.modules[__name__]:
+                raise CustodyError('native-source-bootstrap-peer-alias')
+            sys.modules['pixel_connections.custody'] = sys.modules[__name__]
+            package.custody = sys.modules[__name__]
+            return binary
+        finally:
+            os.close(gate)
+
+
 @dataclass(frozen=True, repr=False)
 class _NativeBrokerView:
     """A held private env FD; neither repr nor snapshot contains env contents."""
@@ -3051,6 +3234,8 @@ class _NativeBrokerView:
     python: str
     environment_fd: int
     environment_stamp: tuple
+    broker_guid: bytes
+    broker_sha256: str
     seal: Any
 
 
@@ -3068,9 +3253,6 @@ def _native_broker_scope(role, identifier):
     from pixel_provider.runtime_custody import RuntimeCustody
     return _NativeBrokerScope(role, identifier, RuntimeCustody(SimpleNamespace(
         binary=str(NATIVE_PROGRAM / 'openclaw-gateway-launcher'))), _NATIVE_SEAL)
-
-
-from contextlib import contextmanager as _native_contextmanager
 
 
 @_native_contextmanager
@@ -3189,7 +3371,8 @@ def _native_broker_read(role, identifier=None, *, running=False, _scope=None):
             # The final Root snapshot may add siblings during this acquisition.
             # Only unchanged common inputs, own definition/invocation and the
             # original deadline survive; no new nonce or authority is adopted.
-            view = _NativeBrokerView(_native_encoded(final_snapshot), invocation, binding, runtime['hostPython'], environment_fd, stamp, _NATIVE_SEAL)
+            view = _NativeBrokerView(_native_encoded(final_snapshot), invocation, binding, runtime['hostPython'], environment_fd, stamp,
+                uuid.UUID(identity['userGuid']).bytes, hashlib.sha256(payloads['broker.py']).hexdigest(), _NATIVE_SEAL)
             yield view
         finally:
             if environment_fd is not None:
@@ -3212,7 +3395,7 @@ def _native_broker_sandbox_prefix(view):
     # Never accepts a caller-selected SBPL parameter/path. Root definition
     # role/ID was already re-rendered and compared by the fixed reader.
     return ('/usr/bin/sandbox-exec', '-D', 'ODS_SOURCE_JOB_PLIST=' + str(NATIVE_DEFINITIONS / (label + '.plist')),
-        '-f', str(NATIVE_KIT / ('source-' + doc['role'] + '.sb')), view.python, '-I', '-B')
+        '-f', str(NATIVE_KIT / ('source-' + doc['role'] + '.sb')), view.python, '-I', '-S', '-B')
 
 
 def _native_post_seatbelt_bootstrap(role, identifier, *, ready_fd, go_fd):
@@ -3240,17 +3423,143 @@ def _native_post_seatbelt_bootstrap(role, identifier, *, ready_fd, go_fd):
             _native_pipe_close(go_fd, go)
 
 
-def _native_child_main(argv):
-    """Inert entrypoint: no generation/admission handoff has been approved yet."""
-    if type(argv) is not list or len(argv) not in (2, 3) or argv[0] != '--native-broker-child':
-        raise CustodyError('native-source-command-invalid')
-    native_child_arguments(argv[1], argv[2] if len(argv) == 3 else None)
-    raise CustodyError('native-source-generation-not-admitted')
+def _native_consumer_environment():
+    return {'HOME': NATIVE_HOME, 'USER': NATIVE_BROKER, 'LOGNAME': NATIVE_BROKER,
+        'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'PYTHONDONTWRITEBYTECODE': '1', 'PYTHONNOUSERSITE': '1'}
 
 
-if __name__ == '__main__' and sys.argv[1:2] == ['--native-broker-child']:
+def _native_post_seatbelt_source(role, identifier, *, ready_fd, go_fd):
+    """Source's existing CLI begins ONLY after the authenticated READY/GO."""
+    ready = _native_pipe_binding(ready_fd, writing=True)
+    go = None
     try:
-        _native_child_main(sys.argv[1:])
+        go = _native_pipe_binding(go_fd, writing=False)
+        scope = _native_broker_scope(role, identifier)
+        with _native_broker_read(role, identifier, _scope=scope) as original:
+            def current():
+                with _native_broker_read(role, identifier, running=True, _scope=scope) as other:
+                    if original.binding != other.binding or original.invocation.encoded != other.invocation.encoded:
+                        raise CustodyError('native-source-broker-scope-changed')
+                    return _native_public_json(other.public)
+            _native_child_ready_barrier(original.invocation, ready_fd=ready_fd, go_fd=go_fd, current=current)
+            with _native_broker_read(role, identifier, running=True, _scope=scope) as admitted:
+                if original.binding != admitted.binding or original.invocation.encoded != admitted.invocation.encoded:
+                    raise CustodyError('native-source-broker-scope-changed')
+                stamp = _native_env_fd_guid(admitted.environment_fd, admitted.broker_guid)
+                env_body = os.pread(admitted.environment_fd, MAX_RESULT_BYTES + 1, 0)
+                if (stamp != admitted.environment_stamp or len(env_body) != stamp[6]
+                        or _native_env_fd_guid(admitted.environment_fd, admitted.broker_guid) != stamp):
+                    raise CustodyError('native-source-broker-env-changed')
+                from pixel_macos_custody import protected_directory
+                with protected_directory(NATIVE_KIT) as directory:
+                    source_body, _inode = _native_root_file(directory, 'broker.py', mode=0o755, limit=2*1024*1024)
+                if hashlib.sha256(source_body).hexdigest() != admitted.broker_sha256:
+                    raise CustodyError('native-source-broker-source-changed')
+                # Compile before the last deadline check. No Source code or
+                # Source import has run before authenticated GO.
+                code = compile(source_body, str(NATIVE_KIT / 'broker.py'), 'exec')
+                values = dict(parse_env(env_body.decode('utf-8')))
+                if any('\0' in key + value for key, value in values.items()):
+                    raise CustodyError('native-source-broker-env-changed')
+                current()
+                doc = admitted.invocation.document
+                if _native_boot_uuid() != doc['boot'] or _native_clock_ns() >= int(doc['workerDeadlineNs']):
+                    raise CustodyError('native-source-broker-invocation-expired')
+                os.environ.clear()
+                os.environ.update(_native_consumer_environment())
+                os.environ.update(values)
+                sys.argv[:] = [str(NATIVE_KIT / 'broker.py'), *native_child_arguments(role, identifier)]
+                try:
+                    exec(code, {'__name__': '__main__', '__file__': str(NATIVE_KIT / 'broker.py'), '__package__': None})
+                except SystemExit as exit:
+                    return exit.code if type(exit.code) is int and 0 <= exit.code <= 255 else (0 if exit.code is None else 1)
+                return 0
+    finally:
+        _native_pipe_close(ready_fd, ready)
+        if go is not None:
+            _native_pipe_close(go_fd, go)
+
+
+def _native_consume_source(role, identifier=None, *, cancel=None):
+    """Broker wrapper owns the Popen; never borrow launchd's numeric PID."""
+    import time
+    import threading
+    if cancel is None:
+        cancel = threading.Event()
+    if type(cancel) is not threading.Event:
+        raise CustodyError('native-source-child-control-invalid')
+    scope = _native_broker_scope(role, identifier)
+    with _native_broker_read(role, identifier, _scope=scope) as original:
+        def current():
+            with _native_broker_read(role, identifier, running=True, _scope=scope) as other:
+                if original.binding != other.binding or original.invocation.encoded != other.invocation.encoded:
+                    raise CustodyError('native-source-broker-scope-changed')
+                return _native_public_json(other.public)
+        ready_r, ready_w = os.pipe()
+        go_r, go_w = os.pipe()
+        pipe_bindings = {fd: _native_pipe_binding(fd, writing=writing)
+            for fd, writing in ((ready_r, False), (ready_w, True), (go_r, False), (go_w, True))}
+        started = time.monotonic()
+        try:
+            args = [*_native_broker_sandbox_prefix(original), str(NATIVE_PROGRAM / 'pixel_connections/custody.py'),
+                '--native-broker-post-seatbelt', role, identifier if identifier is not None else '-', str(ready_w), str(go_r)]
+            doc = original.invocation.document
+            if (cancel.is_set() or _native_boot_uuid() != doc['boot']
+                    or _native_clock_ns() >= int(doc['admissionDeadlineNs'])):
+                raise CustodyError('native-source-broker-invocation-expired')
+            process = subprocess.Popen(args, shell=False, close_fds=True, pass_fds=(ready_w, go_r),
+                stdin=subprocess.DEVNULL, cwd=str(NATIVE_STATE), env=_native_consumer_environment())
+            os.close(ready_w)
+            ready_w = None
+            os.close(go_r)
+            go_r = None
+            startup = _native_release_child(process, started=started, invocation=original.invocation,
+                ready_fd=ready_r, go_fd=go_w, current=current,
+                uid=os.geteuid(), gid=os.getegid(), executable=original.python, cancel=cancel)
+            ready_r = go_w = None  # Existing barrier owns/closes these handles.
+            if not startup.go_sent:
+                return 2
+            result = _native_supervise_child(startup.witness, role=role, timeout=NATIVE_CHILD_BUDGETS[role],
+                cancel=cancel, _invocation=original.invocation, _current=current)
+            # Process completion ONLY, never a provider/business receipt.
+            if not result.reaped or not result.known_children_gone or result.disposition != 'exited':
+                return 2
+            return process.returncode if type(process.returncode) is int and 0 <= process.returncode <= 255 else 1
+        finally:
+            for fd in (ready_r, ready_w, go_r, go_w):
+                if fd is not None:
+                    _native_pipe_close(fd, pipe_bindings[fd])
+
+
+def _native_child_main(argv):
+    """Private fixed consumer; no RootRun/trigger/availability wiring."""
+    if type(argv) is not list or not argv:
+        raise CustodyError('native-source-command-invalid')
+    if argv[0] == '--native-broker-child' and len(argv) in (2, 3):
+        role, identifier = argv[1], argv[2] if len(argv) == 3 else None
+        native_child_arguments(role, identifier)
+        _native_broker_application_imports(role, identifier)
+        import signal
+        import threading
+        cancel = threading.Event()
+        old = {name: signal.signal(name, lambda _signum, _frame: cancel.set()) for name in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)}
+        try:
+            return _native_consume_source(role, identifier, cancel=cancel)
+        finally:
+            for name, handler in old.items():
+                signal.signal(name, handler)
+    if (argv[0] == '--native-broker-post-seatbelt' and len(argv) == 5
+            and all(type(value) is str and re.fullmatch('[0-9]{1,8}', value) for value in argv[3:])):
+        role, identifier = argv[1], None if argv[2] == '-' else argv[2]
+        native_child_arguments(role, identifier)
+        _native_broker_application_imports(role, identifier)
+        return _native_post_seatbelt_source(role, identifier, ready_fd=int(argv[3]), go_fd=int(argv[4]))
+    raise CustodyError('native-source-command-invalid')
+
+
+if __name__ == '__main__' and sys.argv[1:2] in (['--native-broker-child'], ['--native-broker-post-seatbelt']):
+    try:
+        raise SystemExit(_native_child_main(sys.argv[1:]))
     except CustodyError as error:
         print('error: ' + error.code, file=sys.stderr)
         raise SystemExit(2)
