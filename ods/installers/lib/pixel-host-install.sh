@@ -284,6 +284,138 @@ _ods_pixel_prepare_attempt_log() {
     printf '%s\n' "$path"
 }
 
+_ods_pixel_write_install_transaction() {
+    local owner="$1" home="$2" marker_dir tx_marker local_tx
+    tx_marker="$home/.config/ods/.pixel-install-transaction.json"
+    marker_dir="${tx_marker%/*}"
+    local_tx="${INSTALL_DIR:?}/.ods-pixel-transaction"
+    if [[ -e "$marker_dir" || -L "$marker_dir" ]]; then
+        [[ -d "$marker_dir" && ! -L "$marker_dir" ]] || return 1
+        [[ "$(stat -c '%u' -- "$marker_dir")" == "$(id -u "$owner")" ]] || return 1
+        ods_pixel_run_as_owner "$owner" "$home" chmod 0700 "$marker_dir" || return 1
+    else
+        ods_pixel_run_as_owner "$owner" "$home" install -d -m 0700 -- "$marker_dir" || return 1
+    fi
+    ods_pixel_run_as_owner "$owner" "$home" python3 - \
+        "$tx_marker" "$local_tx" "${INSTALL_DIR:?}" "${PIXEL_SOURCE_REF:-}" <<'PY'
+import json, os, pathlib, subprocess, sys, tempfile, time
+
+marker_path = pathlib.Path(sys.argv[1])
+local_path = pathlib.Path(sys.argv[2])
+install_dir = sys.argv[3]
+pixel_source_ref = sys.argv[4]
+
+git_commit = ""
+try:
+    git_commit = subprocess.check_output(
+        ["git", "-C", install_dir, "rev-parse", "HEAD"],
+        stderr=subprocess.DEVNULL,
+        text=True,
+    ).strip()
+except Exception:
+    pass
+
+payload = json.dumps({
+    "schema_version": 1,
+    "manager": "ods",
+    "install_dir": install_dir,
+    "pixel_source_ref": pixel_source_ref,
+    "git_commit": git_commit,
+    "timestamp": int(time.time()),
+    "uid": os.getuid(),
+}, indent=2, sort_keys=True) + "\n"
+
+for target in (marker_path, local_path):
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=".pixel-tx.", dir=target.parent)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, target)
+    except Exception:
+        pass
+PY
+}
+
+_ods_pixel_clear_install_transaction() {
+    local owner="$1" home="$2" tx_marker local_tx
+    tx_marker="$home/.config/ods/.pixel-install-transaction.json"
+    local_tx="${INSTALL_DIR:?}/.ods-pixel-transaction"
+    ods_pixel_run_as_owner "$owner" "$home" rm -f -- "$tx_marker" >/dev/null 2>&1 || true
+    rm -f -- "$local_tx" >/dev/null 2>&1 || true
+}
+
+_ods_pixel_verify_interrupted_transaction() {
+    local owner="$1" home="$2" tx_marker local_tx onboarding_path
+    tx_marker="$home/.config/ods/.pixel-install-transaction.json"
+    local_tx="${INSTALL_DIR:?}/.ods-pixel-transaction"
+    onboarding_path="$home/.config/pixel-deployment/onboarding.json"
+    ods_pixel_run_as_owner "$owner" "$home" python3 - \
+        "$tx_marker" "$local_tx" "${INSTALL_DIR:?}" "$onboarding_path" <<'PY'
+import json, os, pathlib, stat, sys
+
+tx_marker = pathlib.Path(sys.argv[1])
+local_tx = pathlib.Path(sys.argv[2])
+install_dir = sys.argv[3]
+onboarding_path = pathlib.Path(sys.argv[4])
+
+def check_tx_file(path: pathlib.Path) -> bool:
+    if not path.is_file() or path.is_symlink():
+        return False
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+            return False
+        if info.st_nlink != 1 or (info.st_mode & 0o077) != 0 or info.st_size > 65536:
+            return False
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if data.get("schema_version") == 1 and data.get("manager") == "ods":
+            rec_dir = data.get("install_dir", "")
+            if rec_dir and install_dir:
+                try:
+                    if os.path.exists(rec_dir) and os.path.exists(install_dir):
+                        if os.path.samefile(rec_dir, install_dir):
+                            return True
+                except Exception:
+                    pass
+                if os.path.abspath(rec_dir) == os.path.abspath(install_dir):
+                    return True
+    except Exception:
+        pass
+    return False
+
+if check_tx_file(tx_marker) or check_tx_file(local_tx):
+    sys.exit(0)
+
+# Fallback: check onboarding.json provenance if created by ODS
+try:
+    if onboarding_path.is_file() and not onboarding_path.is_symlink():
+        info = onboarding_path.lstat()
+        if stat.S_ISREG(info.st_mode) and not stat.S_ISLNK(info.st_mode) and info.st_size <= 262144:
+            onboarding = json.loads(onboarding_path.read_text(encoding="utf-8"))
+            if onboarding.get("deploymentName") == "ods-default":
+                for ext in onboarding.get("gatewayExtensions", []):
+                    p = ext.get("path", "")
+                    if p and "extensions/services/pixel-agent" in p:
+                        plugin_dir = pathlib.Path(p)
+                        expected = pathlib.Path(install_dir) / "extensions/services/pixel-agent/plugin"
+                        try:
+                            if plugin_dir.exists() and expected.exists() and os.path.samefile(plugin_dir, expected):
+                                sys.exit(0)
+                        except Exception:
+                            pass
+                        if os.path.abspath(plugin_dir) == os.path.abspath(expected):
+                            sys.exit(0)
+except Exception:
+    pass
+
+sys.exit(1)
+PY
+}
+
 _ods_pixel_assert_managed_state() {
     local owner="$1" home="$2" marker marker_dir pixel_install
     marker="$home/.config/ods/pixel-managed.json"
@@ -328,6 +460,7 @@ PY
     fi
 
     # Never adopt or rewrite an ambient user-managed Pixel/OpenClaw deployment.
+    local ambient_detected=false
     for existing in \
         "$home/.openclaw/openclaw.json" \
         "$home/.config/pixel-agent/gateway.env" \
@@ -336,10 +469,19 @@ PY
         "$pixel_install/runtime-attestation.json" \
         "$gateway_unit"; do
         if [[ -e "$existing" || -L "$existing" ]]; then
+            ambient_detected=true
+            break
+        fi
+    done
+
+    if [[ "$ambient_detected" == true ]]; then
+        if _ods_pixel_verify_interrupted_transaction "$owner" "$home"; then
+            ai_warn "Detected interrupted previous ODS installation for this repository. Resuming setup..."
+        else
             ai_bad "An existing non-ODS Pixel/OpenClaw deployment was found. ODS will not overwrite it."
             return 1
         fi
-    done
+    fi
 
     ods_pixel_run_as_owner "$owner" "$home" python3 - "$marker" "${INSTALL_DIR:?}" "${PIXEL_SOURCE_REF:?}" <<'PY'
 import json, os, pathlib, sys, tempfile
@@ -5452,6 +5594,7 @@ ods_pixel_install_default_agent() {
         # restoring just the checkout would not restore the whole runtime.
         _ods_pixel_source_upgrade downstream "$owner" || return 1
     fi
+    _ods_pixel_write_install_transaction "$owner" "$home" || return 1
     _ods_pixel_assert_managed_state "$owner" "$home" || return 1
     gateway_port_status=0
     _ods_pixel_existing_gateway_port_matches "$owner" "$home" "$pixel_gateway_port" \
@@ -6251,6 +6394,7 @@ ods_pixel_install_default_agent() {
         ai_bad "Could not record the verified Pixel runtime as ready."
         return 1
     fi
+    _ods_pixel_clear_install_transaction "$owner" "$home"
     if ! _ods_pixel_install_access_service "$owner" "$openclaw_bin"; then
         ai_bad "Pixel access coordinator installation failed; access mode changes remain unavailable."
         return 1
