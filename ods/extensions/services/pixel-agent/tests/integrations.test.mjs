@@ -110,3 +110,38 @@ test('the socket client sends one JSON line and reads one reply', async () => {
     rmSync(directory, {recursive: true, force: true});
   }
 });
+
+test('notify with inMinutes or at sets a reminder through the service and the scheduler', async () => {
+  const sent = [], scheduled = [];
+  const plan = {name: 'Reminder: Stretch', description: 'Portal reminder: Stretch', atMs: 1, when: 'Tue 03 Nov 2026 at 16:22 WET',
+    text: 'Stretch', runMessage: 'Done.'};
+  const tools = createIntegrationTools({submit: async payload => { sent.push(payload); return {ok: true, plan}; },
+    scheduleReminder: async value => { scheduled.push(value); }});
+  const notify = tool(tools, 'pixel_ods_notify');
+  assert.match(notify.description, /remind the owner later/);
+  assert.match(notify.description, /Never wait with sleep/);
+  const reply = await notify.execute('1', {message: 'Stretch', inMinutes: 2});
+  assert.equal(reply.isError, undefined);
+  assert.match(reply.content[0].text, /^Reminder set for Tue 03 Nov 2026 at 16:22 WET: "Stretch"\. It will reach the owner's phone then/);
+  await notify.execute('2', {title: 'Tea', message: 'Kettle', at: '17:30'});
+  assert.deepEqual(sent, [
+    {action: 'reminder-plan', title: '', message: 'Stretch', inMinutes: 2, at: undefined},
+    {action: 'reminder-plan', title: 'Tea', message: 'Kettle', inMinutes: undefined, at: '17:30'}]);
+  assert.deepEqual(scheduled, [plan, plan]);
+});
+
+test('a reminder the service refuses or the scheduler cannot take is an error the model can read', async () => {
+  const refused = createIntegrationTools({submit: async () => ({ok: false, error: 'invalid-reminder', message: 'tomorrow is not a time.'}),
+    scheduleReminder: async () => assert.fail('nothing to schedule')});
+  const no = await tool(refused, 'pixel_ods_notify').execute('1', {message: 'Stretch', at: 'tomorrow'});
+  assert.equal(no.isError, true);
+  assert.equal(no.content[0].text, 'tomorrow is not a time.');
+  const unscheduled = createIntegrationTools({submit: async () => ({ok: true, plan: {when: 'x', text: 'y'}})});
+  const notReady = await tool(unscheduled, 'pixel_ods_notify').execute('2', {message: 'Stretch', inMinutes: 2});
+  assert.equal(notReady.isError, true);
+  assert.equal(notReady.content[0].text, 'The reminder was not set: Reminders are not available here.');
+  const plain = [];
+  const tools = createIntegrationTools({submit: async payload => { plain.push(payload); return {ok: true}; }});
+  await tool(tools, 'pixel_ods_notify').execute('3', {message: 'Now please'});
+  assert.equal(plain[0].action, 'notify', 'without a time it is an ordinary notification');
+});

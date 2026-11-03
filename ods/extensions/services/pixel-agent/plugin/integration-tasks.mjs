@@ -3,7 +3,11 @@ import { submitIntegration } from './integrations.mjs';
 // Gateway hooks for scheduled tasks, which are OpenClaw's own cron jobs. A finished run of one
 // of Portal's tasks goes to the host integrations service, which notifies the owner as they
 // chose, and the daily news digest is kept as one more cron job that follows their settings.
+// A reminder is a one-off cron job too: the service sends it when the job starts, so it arrives
+// on time however long the job's own agent turn takes.
 const SYNC_MS = 60000;
+export const REMINDER_MARK = 'Portal reminder: ';
+const isReminder = job => str(job?.description).startsWith(REMINDER_MARK);
 
 const str = value => (typeof value === 'string' ? value : '');
 
@@ -12,6 +16,13 @@ function digestJob(plan, agentId) {
     schedule: {kind: 'cron', expr: plan.expr, tz: plan.tz}, sessionTarget: 'isolated', wakeMode: 'now',
     payload: {kind: 'agentTurn', message: plan.message, timeoutSeconds: plan.timeoutSeconds, lightContext: true, toolsAllow: plan.tools},
     delivery: {mode: 'none'}, deleteAfterRun: false};
+}
+
+export function reminderJob(plan, agentId) {
+  return {name: plan.name, description: plan.description, enabled: true, agentId,
+    schedule: {kind: 'at', at: new Date(plan.atMs).toISOString()}, sessionTarget: 'isolated', wakeMode: 'now',
+    payload: {kind: 'agentTurn', message: plan.runMessage, timeoutSeconds: 60, lightContext: true, toolsAllow: []},
+    delivery: {mode: 'none'}, deleteAfterRun: true};
 }
 
 const sameSchedule = (job, plan) => job.schedule?.kind === 'cron' && job.schedule.expr === plan.expr
@@ -56,10 +67,27 @@ export function createTaskHooks({submit = submitIntegration, agentId = 'pixel', 
     return 'updated';
   }
 
+  // Called by the notify tool with a plan the service checked.
+  async function scheduleReminder(plan) {
+    if (!cron) throw new Error('The scheduler is not ready yet. Try again in a minute.');
+    await cron.add(reminderJob(plan, agentId));
+  }
+
+  async function reminderEvent(event, job) {
+    if (event.action === 'started') {
+      const reply = await submit({action: 'reminder-due', jobId: str(event.jobId), name: str(job.name), description: str(job.description)});
+      if (!reply?.ok) warn(`Portal integrations: reminder not sent: ${reply?.message}`);
+    } else if (event.action === 'finished' && cron) {
+      // The reminder went out when the job started; a failed run must not retry and send it again.
+      await cron.remove(str(event.jobId));
+    }
+  }
+
   const syncQuietly = () => syncDigest().catch(error => warn(`Portal integrations: daily digest not scheduled: ${error.message}`));
 
   return {
     syncDigest,
+    scheduleReminder,
     gatewayStart(_event, context) {
       remember(context);
       if (!timer) {
@@ -74,8 +102,17 @@ export function createTaskHooks({submit = submitIntegration, agentId = 'pixel', 
     },
     async cronChanged(event, context) {
       remember(context);
-      if (event?.action !== 'finished' || (event.agentId && event.agentId !== agentId)) return;
-      const job = event.job ?? {};
+      if (event?.agentId && event.agentId !== agentId) return;
+      const job = event?.job ?? {};
+      if (isReminder(job)) {
+        try {
+          await reminderEvent(event, job);
+        } catch (error) {
+          warn(`Portal integrations: reminder failed: ${error.message}`);
+        }
+        return;
+      }
+      if (event?.action !== 'finished') return;
       try {
         const reply = await submit({action: 'task-finished', jobId: str(event.jobId), name: str(job.name), description: str(job.description),
           status: str(event.status), summary: str(event.summary).slice(0, 4000), error: str(event.error).slice(0, 2000),

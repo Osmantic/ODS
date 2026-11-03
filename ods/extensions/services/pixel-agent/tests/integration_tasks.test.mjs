@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createTaskHooks } from '../plugin/integration-tasks.mjs';
+import { createTaskHooks, REMINDER_MARK, reminderJob } from '../plugin/integration-tasks.mjs';
 
 function recorder(replies) {
   const sent = [];
@@ -102,4 +102,53 @@ test('overlapping digest syncs add the job only once', async () => {
   assert.deepEqual(await Promise.all([first, second]), ['added', 'added']);
   assert.equal(cron.calls.filter(([kind]) => kind === 'add').length, 1);
   assert.equal(await hooks.syncDigest(), 'kept');  // A later sync runs on its own again.
+});
+
+const REMINDER_PLAN = {name: 'Reminder: Stretch', description: 'Portal reminder: Stretch your legs', atMs: Date.UTC(2026, 10, 3, 16, 22),
+  when: 'Tue 03 Nov 2026 at 16:22 WET', text: 'Stretch your legs', runMessage: 'Reply with exactly: Done.'};
+
+test('a reminder becomes a one-off job that deletes itself and runs nothing of note', () => {
+  assert.deepEqual(reminderJob(REMINDER_PLAN, 'pixel'), {
+    name: 'Reminder: Stretch', description: 'Portal reminder: Stretch your legs', enabled: true, agentId: 'pixel',
+    schedule: {kind: 'at', at: '2026-11-03T16:22:00.000Z'}, sessionTarget: 'isolated', wakeMode: 'now',
+    payload: {kind: 'agentTurn', message: 'Reply with exactly: Done.', timeoutSeconds: 60, lightContext: true, toolsAllow: []},
+    delivery: {mode: 'none'}, deleteAfterRun: true});
+  assert.ok(REMINDER_PLAN.description.startsWith(REMINDER_MARK));
+});
+
+test('reminders are scheduled with the gateway cron once it is known', async () => {
+  const {submit} = recorder({'digest-plan': {ok: true, plan: {...PLAN, enabled: false}}});
+  const hooks = createTaskHooks({submit, timers: {setInterval: () => ({}), clearInterval() {}}});
+  await assert.rejects(hooks.scheduleReminder(REMINDER_PLAN), /scheduler is not ready/);
+  const cron = fakeCron();
+  await hooks.gatewayStart({}, {getCron: () => cron});
+  await hooks.scheduleReminder(REMINDER_PLAN);
+  assert.deepEqual(cron.calls.filter(([kind]) => kind === 'add').map(([, job]) => [job.name, job.schedule.kind, job.deleteAfterRun]),
+    [['Reminder: Stretch', 'at', true]]);
+});
+
+test('a reminder is sent when its job starts, and its run is removed when it ends', async () => {
+  const {sent, submit} = recorder({'reminder-due': {ok: true, notified: true}, 'task-finished': {ok: true, notified: false}});
+  const warnings = [];
+  const cron = fakeCron();
+  const hooks = createTaskHooks({submit, warn: message => warnings.push(message)});
+  const job = {name: 'Reminder: Stretch', description: 'Portal reminder: Stretch your legs'};
+  await hooks.cronChanged({action: 'added', jobId: 'r1', agentId: 'pixel', job}, {getCron: () => cron});
+  await hooks.cronChanged({action: 'started', jobId: 'r1', agentId: 'pixel', job, runAtMs: 5}, {getCron: () => cron});
+  await hooks.cronChanged({action: 'finished', jobId: 'r1', agentId: 'pixel', job, status: 'error', error: 'model busy'}, {getCron: () => cron});
+  // Another agent's job is not Portal's, even when its description looks like a reminder.
+  await hooks.cronChanged({action: 'started', jobId: 'x1', agentId: 'other', job}, {getCron: () => cron});
+  assert.deepEqual(sent, [{action: 'reminder-due', jobId: 'r1', name: 'Reminder: Stretch', description: 'Portal reminder: Stretch your legs'}]);
+  assert.deepEqual(cron.calls, [['remove', 'r1']]);
+  assert.deepEqual(warnings, []);
+});
+
+test('a reminder that cannot be sent is a warning, not a crash', async () => {
+  const warnings = [];
+  const job = {name: 'Reminder: Tea', description: 'Portal reminder: Tea'};
+  const refusing = createTaskHooks({submit: async () => ({ok: false, message: 'notifications off'}), warn: message => warnings.push(message)});
+  await refusing.cronChanged({action: 'started', jobId: 'r2', job});
+  const down = createTaskHooks({submit: async () => { throw new Error('down'); }, warn: message => warnings.push(message)});
+  await down.cronChanged({action: 'started', jobId: 'r3', job});
+  assert.deepEqual(warnings, ['Portal integrations: reminder not sent: notifications off', 'Portal integrations: reminder failed: down']);
 });

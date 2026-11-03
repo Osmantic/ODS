@@ -88,7 +88,29 @@ const notesText = reply => reply.results ? searchText(reply)
   : reply.text !== undefined ? `${reply.path}:\n\n${reply.text}`
     : `${reply.mode === 'create' ? 'Created' : 'Added to'} ${reply.written}.`;
 
-export function createIntegrationTools({submit = submitIntegration} = {}) {
+// A reminder: the service checks it and works out when it is due, then the gateway's scheduler
+// gets a one-off job for it; the service sends it through ntfy when that job starts.
+async function remind(submit, scheduleReminder, params, signal) {
+  let reply;
+  try {
+    reply = await submit({action: 'reminder-plan', title: str(params?.title), message: str(params?.message),
+      inMinutes: params?.inMinutes, at: params?.at === undefined ? undefined : str(params.at)}, {signal});
+  } catch (error) {
+    return text(error.message, {status: 'unavailable'}, true);
+  }
+  if (!reply?.ok) return text(reply?.message || 'The reminder could not be set.', {status: 'refused', code: reply?.error}, true);
+  try {
+    await scheduleReminder(reply.plan);
+  } catch (error) {
+    return text(`The reminder was not set: ${error.message}`, {status: 'unavailable'}, true);
+  }
+  return text(`Reminder set for ${reply.plan.when}: "${reply.plan.text}". It will reach the owner's phone then; nothing else is needed.`,
+    {status: 'done', reminderAt: reply.plan.atMs});
+}
+
+const noScheduler = () => Promise.reject(new Error('Reminders are not available here.'));
+
+export function createIntegrationTools({submit = submitIntegration, scheduleReminder = noScheduler} = {}) {
   return [
     {
       name: 'pixel_ods_notes',
@@ -107,12 +129,21 @@ export function createIntegrationTools({submit = submitIntegration} = {}) {
     },
     {
       name: 'pixel_ods_notify',
-      description: "Send a notification to the owner's phone or computer through their ntfy notifications. Use when the owner asks to be notified, or at the end of a scheduled task that should tell them its result.",
+      description: "Send a notification to the owner's phone or computer through their ntfy notifications, now or later. "
+        + "Use when the owner asks to be notified, at the end of a scheduled task that should tell them its result, "
+        + "and for reminders: to remind the owner later (\"remind me in 10 minutes to stretch\"), give inMinutes or at "
+        + "and Portal schedules it; it reaches their phone at that time. Never wait with sleep or a background command, "
+        + "since nothing of this turn keeps running.",
       parameters: {type: 'object', additionalProperties: false, required: ['message'],
-        properties: {title: {type: 'string'}, message: {type: 'string'},
-          priority: {type: 'string', enum: ['low', 'default', 'high']}}},
-      execute: (_id, params, signal) => run(submit, {action: 'notify', title: str(params?.title) || 'Portal',
-        message: str(params?.message), priority: params?.priority ?? 'default'}, signal, () => 'Notification sent.'),
+        properties: {title: {type: 'string'}, message: {type: 'string', description: 'The text the owner gets, such as "Stretch".'},
+          priority: {type: 'string', enum: ['low', 'default', 'high']},
+          inMinutes: {type: 'number', description: 'For a reminder: send it this many minutes from now, such as 10.'},
+          at: {type: 'string', description: 'For a reminder: send it at this local time, such as 17:30, or date and time, such as 2026-11-04T09:00.'}}},
+      execute: (_id, params, signal) => {
+        if (params?.inMinutes !== undefined || params?.at !== undefined) return remind(submit, scheduleReminder, params, signal);
+        return run(submit, {action: 'notify', title: str(params?.title) || 'Portal',
+          message: str(params?.message), priority: params?.priority ?? 'default'}, signal, () => 'Notification sent.');
+      },
     },
     {
       name: 'pixel_ods_mcp',

@@ -64,6 +64,7 @@ import {
 } from "./tool-loop-guard.mjs";
 import { withPixelCronDeliveryDefault } from "./cron-delivery-default.mjs";
 import { withCronCommandPayloadBlock } from "./cron-command-payload-guard.mjs";
+import { withSleepReminderBlock } from "./sleep-reminder-guard.mjs";
 import { withPixelSubagentWorkspace } from "./subagent-workspace.mjs";
 import { createPublicPageReader, createPublicWebExtractTool } from "./web-extract.mjs";
 import { citationPageReadsAllowed, createHostCitationVerifier } from "./citation-verification.mjs";
@@ -527,6 +528,7 @@ export default definePluginEntry({
         scope => getSessionEntry({...scope,
           storePath: resolveStorePath(runtimeConfig?.session?.store, {agentId: AGENT_ID})}), {resolveUserPath, resolveAgentWorkspaceDir});
       guard = withCronCommandPayloadBlock(guard, event, context);
+      guard = withSleepReminderBlock(guard, event, context);
       const decision = guard?.block ? guard : delegationDelivery.blocked(context,event) ?? goalProgress.before(event, context) ?? accessRuntime.beforeTool(event, context) ?? guard;
       delegationDelivery.before(event,context,decision);
       bundleAdmission.before(event, context, decision);
@@ -920,10 +922,10 @@ export default definePluginEntry({
     })), {names:['pixel_ods_workspace_artifact']});
     registerTool(api, createAgentSkillTool(), {names:['pixel_ods_skill']});
     registerTool(api, createAskUserTool({responseLanguage: configuredResponseLanguage}), {names:['pixel_ods_ask_user']});
-    // The owner's notes, notifications, MCP servers and apps, all through the host integrations service.
-    for (const tool of createIntegrationTools()) registerTool(api, tool, {names: [tool.name]});
-    // Finished scheduled tasks notify the owner; the daily news digest is kept as a cron job.
+    // Finished scheduled tasks notify the owner; the daily news digest and reminders are cron jobs.
     const taskHooks = createTaskHooks({warn: message => api.logger.warn(message)});
+    // The owner's notes, notifications, MCP servers and apps, all through the host integrations service.
+    for (const tool of createIntegrationTools({scheduleReminder: taskHooks.scheduleReminder})) registerTool(api, tool, {names: [tool.name]});
     api.on("gateway_start", (event, context) => taskHooks.gatewayStart(event, context));
     api.on("gateway_stop", () => taskHooks.gatewayStop());
     api.on("cron_changed", (event, context) => taskHooks.cronChanged(event, context));
