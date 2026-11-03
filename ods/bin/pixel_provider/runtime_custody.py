@@ -6,6 +6,7 @@ descriptor is NOT qualification: every use checks the actual files. This module
 does not install software, change services or confer root execution on Node.
 """
 import hashlib
+import json
 import os
 import platform
 import plistlib
@@ -21,6 +22,7 @@ from .managed_deployment import deployment, required_policy
 from .service_environment import _parents as _posix_parents
 
 DESCRIPTOR = Path('/etc/ods/pixel-provider-runtime.json')
+NATIVE_MANIFEST = Path('/private/etc/ods/pixel-provider-runtime-manifest.json')
 MAX_MANIFEST = 32 * 1024 * 1024
 ROOT_UID = 0
 
@@ -61,6 +63,47 @@ def _directory_acl(path, expected):
         if os.fstat(fd) != expected:
             raise AccessError('provider-runtime-file-changed')
         _acl(fd)
+    finally:
+        os.close(fd)
+
+
+def _native_metadata(path, maximum):
+    """Only two nonsecret Darwin metadata files are deliberately owner-readable.
+
+    Secret/config/state readers retain their private0600 contract. These files
+    stay Root-owned0644 below protected traversable parents, never owner-owned.
+    """
+    path = Path(path)
+    if path not in (_descriptor_path(), NATIVE_MANIFEST):
+        raise AccessError('provider-runtime-public-metadata-unqualified')
+    _parents(path)
+    before = path.lstat()
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        opened = os.fstat(fd)
+        if (opened != before or not stat.S_ISREG(opened.st_mode)
+                or (opened.st_uid, opened.st_gid) != (0, 0) or stat.S_IMODE(opened.st_mode) != 0o644
+                or opened.st_nlink != 1 or opened.st_size > maximum):
+            raise AccessError('provider-runtime-public-metadata-unqualified')
+        _acl(fd)
+        with os.fdopen(fd, 'rb', closefd=False) as handle:
+            body = handle.read(maximum + 1)
+        after, current = os.fstat(fd), path.lstat()
+        stamp = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+        if len(body) > maximum or stamp(opened) != stamp(after) or stamp(current) != stamp(opened):
+            raise AccessError('provider-runtime-file-changed')
+        def unique(rows):
+            result = {}
+            for key, value in rows:
+                if key in result:
+                    raise ValueError('duplicate-key')
+                result[key] = value
+            return result
+        try:
+            value = json.loads(body, object_pairs_hook=unique)
+        except (ValueError, UnicodeError, RecursionError):
+            raise AccessError('provider-runtime-public-metadata-unqualified') from None
+        return value, hashlib.sha256(body).hexdigest()
     finally:
         os.close(fd)
 
@@ -158,7 +201,8 @@ class RuntimeCustody:
         descriptor = _descriptor_path()
         _parents(descriptor)
         descriptor_record = _regular(descriptor, self._cache, maximum=16384)
-        value, descriptor_sha = _read(descriptor, 0, 16384)
+        native = platform.system() == 'Darwin'
+        value, descriptor_sha = (_native_metadata(descriptor, 16384) if native else _read(descriptor, 0, 16384))
         if descriptor_sha != descriptor_record[-1]:
             raise AccessError('provider-runtime-file-changed')
         keys = {'schemaVersion', 'runtimeRoot', 'sourceRoot', 'node', 'launcher',
@@ -171,8 +215,11 @@ class RuntimeCustody:
             if type(value[key]) is not str:
                 raise AccessError('provider-runtime-descriptor-unqualified')
             _parents(Path(value[key]))
+        if native and value['manifest'] != str(NATIVE_MANIFEST):
+            raise AccessError('provider-runtime-public-metadata-unqualified')
         manifest_record = _regular(Path(value['manifest']), self._cache, maximum=MAX_MANIFEST)
-        manifest, checksum = _read(Path(value['manifest']), 0, MAX_MANIFEST)
+        manifest, checksum = (_native_metadata(Path(value['manifest']), MAX_MANIFEST) if native
+                              else _read(Path(value['manifest']), 0, MAX_MANIFEST))
         if checksum != manifest_record[-1]:
             raise AccessError('provider-runtime-file-changed')
         if checksum != value['manifestSha256'] or type(manifest) is not dict:

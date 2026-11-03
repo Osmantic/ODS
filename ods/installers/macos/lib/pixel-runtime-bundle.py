@@ -575,8 +575,61 @@ def verify(root, *, expected_digest=None):
     package = json.loads((root / 'runtime/package.json').read_bytes())
     if package.get('name') != 'openclaw' or package.get('version') != value['openclawVersion']:
         raise BundleError('bundle-version-mismatch')
-    _read_release_selection(root, value['entries'])
+    selection = _read_release_selection(root, value['entries'])
+    _verify_native_source(root, value['entries'], selection)
     return value, checksum
+
+
+def _verify_native_source(root, entries, selection):
+    capability = {'ods-source', 'ods-source.json', 'native-source'}
+    present = any(name in capability or name.startswith(('ods-source/', 'native-source/')) for name in entries)
+    if not present:
+        return  # Existing bundles keep their exact absent-capability contract.
+    spec = importlib.util.spec_from_file_location('verify_native_source',
+        Path(__file__).with_name('pixel-native-source-broker.py'))
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    if (any(entries.get(name) != ['directory', 0o755] for name in ('ods-source', 'native-source'))
+            or entries.get('ods-source.json', [None])[0] != 'file'
+            or selection['odsSource']['state'] != 'verified-source-bindings'):
+        raise BundleError('native-source-capability-incomplete')
+    with os.fdopen(_open_file(root, 'ods-source.json'), 'rb') as handle:
+        body = handle.read(MAX_SELECTION + 1)
+    try:
+        manifest = json.loads(body, object_pairs_hook=helper._pairs)
+    except (ValueError, UnicodeError, RecursionError):
+        raise BundleError('native-source-provenance-invalid') from None
+    if (len(body) > MAX_SELECTION or _encode(manifest) != body or type(manifest) is not dict
+            or set(manifest) != {'schemaVersion', 'kind', 'commit', 'files'}
+            or type(manifest['schemaVersion']) is not int or manifest['schemaVersion'] != 1
+            or manifest['kind'] != 'ods-native-protected-source'
+            or manifest['commit'] != selection['odsSource']['commit'] or type(manifest['files']) is not dict
+            or set(manifest['files']) != set(helper.ROOT_SOURCE_FILES)):
+        raise BundleError('native-source-provenance-invalid')
+    actual = {name[len('ods-source/'):]: item for name, item in entries.items()
+              if name.startswith('ods-source/') and item[0] != 'directory'}
+    if set(actual) != set(helper.ROOT_SOURCE_FILES):
+        raise BundleError('native-source-code-set-changed')
+    for path, origin in helper.ROOT_SOURCE_FILES.items():
+        record, entry = manifest['files'][path], actual[path]
+        if (type(record) is not dict or set(record) != {'source', 'mode', 'gitBlob', 'sha256'}
+                or record['source'] != origin or record['mode'] not in ('100644', '100755')
+                or entry[0] != 'file' or entry[1] != int(record['mode'][-3:], 8)
+                or type(record['gitBlob']) is not str or not re.fullmatch('[a-f0-9]{40}', record['gitBlob'])
+                or record['sha256'] != entry[3]
+                or _artifact_source_record(root, 'ods-source/' + path, entry)[1] != record['gitBlob']):
+            raise BundleError('native-source-provenance-changed')
+    raw = {}
+    for name in helper.FILES:
+        entry = entries.get('native-source/' + name)
+        if entry is None or entry[0] != 'file' or entry[1] != (0o755 if name == 'broker.py' else 0o644):
+            raise BundleError('native-source-component-incomplete')
+        with os.fdopen(_open_file(root, 'native-source/' + name), 'rb') as handle:
+            raw[name] = handle.read(helper.LIMIT + 1)
+    if {name.split('/', 1)[1] for name in entries if name.startswith('native-source/')} != set(helper.FILES):
+        raise BundleError('native-source-component-incomplete')
+    helper.validate_payloads(raw, ref=selection['pixelSourceRevision'],
+                            python=json.loads(raw['component.json'])['hostPython'])
 
 
 def _shared_repair_contract(manifest_name, module_name):
@@ -714,7 +767,7 @@ def verify_service_binding(root, services_digest):
 def build(*, node, runtime, destination, plugins=(), expected_version='2026.6.33',
           stream_progress_fix=False, services_digest=None, exec_wrapper=None,
           shared_runtime_repairs=False, ods_source=None, pixel_source_ref=None,
-          ods_plugin_indices=(), service_manifest=None):
+          ods_plugin_indices=(), service_manifest=None, source_component=None):
     if shared_runtime_repairs and expected_version != '2026.6.33':
         raise BundleError('shared-repairs-unqualified-version')
     if services_digest is not None and (type(services_digest) is not str
@@ -736,11 +789,24 @@ def build(*, node, runtime, destination, plugins=(), expected_version='2026.6.33
         if (hashlib.sha256(_encode(service_manifest)).hexdigest() != services_digest
                 or service_manifest['pixelSourceRef'] != pixel_source_ref):
             raise BundleError('selected-service-manifest-mismatch')
+    source_helper = None
+    if source_component is not None:
+        source_spec = importlib.util.spec_from_file_location('bundle_source_payload',
+            Path(__file__).with_name('pixel-native-source-broker.py'))
+        source_helper = importlib.util.module_from_spec(source_spec)
+        source_spec.loader.exec_module(source_helper)
+        source_helper.validate_payloads(source_component, ref=pixel_source_ref,
+            python=json.loads(source_component['component.json'])['hostPython'])
+        if ods_source is None:
+            raise BundleError('native-source-ods-selection-required')
     selected = None
     if ods_source is not None:
         selected = _selected_release_source(ods_source, ods_plugin_indices,
             wrapper=exec_wrapper is not None, repairs=shared_runtime_repairs,
-            expected_ref=service_source['odsSource']['commit'] if service_source else None)
+            expected_ref=service_source['odsSource']['commit'] if service_source else None,
+            source_paths=source_helper.ROOT_SOURCE_FILES.values() if source_helper else ())
+    if source_helper and selected['reason'] is not None:
+        raise BundleError('native-source-ods-selection-unqualified')
     destination = Path(destination)
     if not destination.is_absolute() or os.path.lexists(destination):
         raise BundleError('new-absolute-bundle-destination-required')
@@ -789,6 +855,40 @@ def build(*, node, runtime, destination, plugins=(), expected_version='2026.6.33
         (staged / 'plugins').chmod(0o755)
         for index, (source, entries) in enumerate(zip(plugins, snapshots[1:])):
             _copy_tree(source, staged / 'plugins' / str(index), entries)
+        if source_helper:
+            component = staged / source_helper.COMPONENT
+            component.mkdir(mode=0o755)
+            for name, body in source_component.items():
+                with (component / name).open('xb') as output:
+                    output.write(body)
+                    output.flush()
+                    os.fsync(output.fileno())
+                (component / name).chmod(0o755 if name == 'broker.py' else 0o644)
+            bindings = {}
+            for target, origin in source_helper.ROOT_SOURCE_FILES.items():
+                relative = selected['prefix'] + origin
+                mode, oid = selected['objects'].get(relative, (None, None))
+                if mode not in ('100644', '100755'):
+                    raise BundleError('native-source-ods-input-unmapped')
+                with os.fdopen(_open_file(ods_source, origin), 'rb') as input_file:
+                    body = input_file.read(MAX_SELECTION + 1)
+                if len(body) > MAX_SELECTION or _git_blob(body) != oid:
+                    raise BundleError('native-source-ods-input-changed')
+                path = staged / 'ods-source' / target
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.parent.chmod(0o755)
+                with path.open('xb') as output:
+                    output.write(body)
+                    output.flush()
+                    os.fsync(output.fileno())
+                path.chmod(0o755 if mode == '100755' else 0o644)
+                bindings[target] = {'source': origin, 'mode': mode, 'gitBlob': oid,
+                                    'sha256': hashlib.sha256(body).hexdigest()}
+            for directory, folders, _files in os.walk(staged / 'ods-source'):
+                Path(directory).chmod(0o755)
+            (staged / 'ods-source.json').write_bytes(_encode({'schemaVersion': 1,
+                'kind': 'ods-native-protected-source', 'commit': selected['commit'], 'files': bindings}))
+            (staged / 'ods-source.json').chmod(0o644)
         if services_digest is not None:
             binding = staged / 'ods-service-binding.json'
             binding.write_bytes(_encode({'schemaVersion': 1, 'serviceBundleDigest': services_digest}))

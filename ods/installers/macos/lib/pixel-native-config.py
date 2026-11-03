@@ -380,12 +380,24 @@ def stage_bundle(*, source, ref, candidate, node, runtime, destination, services
         temporary = Path(temporary)
         staged = temporary / 'bundle'
         protected_node = native_node.acquire(temporary, minimum_major=int(release['node'][2:]))
+        source_spec = importlib.util.spec_from_file_location('native_source_payload',
+            Path(__file__).with_name('pixel-native-source-broker.py'))
+        source_payload = importlib.util.module_from_spec(source_spec)
+        source_spec.loader.exec_module(source_payload)
+        python_spec = importlib.util.spec_from_file_location('native_source_python',
+            Path(__file__).with_name('pixel-native-ops-service.py'))
+        python_module = importlib.util.module_from_spec(python_spec)
+        python_spec.loader.exec_module(python_module)
+        # Same existing Apple executable discovery as native service install.
+        host_python = python_module.select_python()
+        component = source_payload.source_payloads(source, ref, host_python)
         digest = bundle.build(node=protected_node, runtime=runtime / 'node_modules/openclaw',
             destination=staged, plugins=paths, expected_version=release['openclaw'],
             stream_progress_fix=True, shared_runtime_repairs=True, services_digest=services_digest,
             exec_wrapper=Path(__file__).resolve().parents[3] / 'extensions/services/pixel-agent/host/cancellable-exec.sh',
             ods_source=ods_source or Path(__file__).resolve().parents[3], pixel_source_ref=ref,
-            ods_plugin_indices=[int(expected['pixel-ods'].split('/')[-1])], service_manifest=service_manifest)
+            ods_plugin_indices=[int(expected['pixel-ods'].split('/')[-1])], service_manifest=service_manifest,
+            source_component=component)
         relocated = copy.deepcopy(config)
         relocated['plugins']['load']['paths'] = [str(staged / ('plugins/' + str(i)))
                                                 for i in range(len(paths))]
@@ -526,11 +538,23 @@ def prepare(*, source, ref, answers, node, sandbox_image, destination, runtime,
         shutil.copytree(checkout / '.generated/workspace', output / 'workspace')
         shutil.copyfile(checkout / '.generated/ops-policy.json', output / 'operations-policy.json')
         (output / 'operations-policy.json').chmod(0o600)
+        # Explicit owner-side producer. These are private candidate artifacts,
+        # not permission to adopt any previous preparation during Root install.
+        for name, body in (('gateway.env', (checkout / '.generated/gateway.env').read_bytes()),
+                           ('onboarding.json', (json.dumps(private_answers(answers), sort_keys=True) + '\n').encode())):
+            with (output / name).open('xb') as stream:
+                stream.write(body)
+                stream.flush()
+                os.fsync(stream.fileno())
+            (output / name).chmod(0o600)
+        sidefiles = {name: hashlib.sha256((output / name).read_bytes()).hexdigest()
+                     for name in ('gateway.env', 'onboarding.json')}
         # Do not export generated systemd units or a deployment record claiming
         # an active hardened service. This is an unactivated candidate only.
         (output / 'candidate.json').write_text(json.dumps({
             'schemaVersion': 1, 'pixelSourceRef': ref, 'status': 'staged',
-            'sandboxImage': sandbox_image, 'requiresServiceQualification': True}) + '\n')
+            'sandboxImage': sandbox_image, 'requiresServiceQualification': True,
+            'connectionSidefiles': sidefiles}) + '\n')
         (output / 'candidate.json').chmod(0o600)
         if os.path.lexists(destination):
             raise ValueError('native-candidate-destination-appeared')

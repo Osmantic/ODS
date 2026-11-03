@@ -73,6 +73,11 @@ HOST_FILES = (
     "pixel_model_contract.py", "pixel_model_coordinator.py", "pixel_macos_policy.py",
     "pixel_schedules.py", "scheduled_tasks_owner.py", "scheduled_tasks_gateway.mjs",
 )
+SOURCE_HOST_FILES = ('connection_transaction.py', 'native_mcp_owner.py', 'native_mcp_oauth.mjs')
+CONNECTION_FILES = ('__init__.py', 'activity.py', 'approvals.py', 'catalog.py', 'converge.py',
+    'coordinator.py', 'custody.py', 'drafts.py', 'google_app.py', 'host_api.py', 'lifecycle.py',
+    'native_access.py', 'native_apps.py', 'native_contract.py', 'native_enrollment.py', 'native_host_api.py',
+    'native_mcp.py', 'native_public.py', 'oauth.py', 'planner.py', 'plugins.py', 'state.py', 'status.py')
 SETTINGS_FILES = ("__init__.py", "contract.py", "projection.py", "runtime.py", "coordinator.py")
 PROVIDER_FILES = ("__init__.py", "config.py", "store.py", "activation_config.py", "managed_deployment.py",
                   "service_environment.py", "service_activation.py", "runtime_custody.py", "coordinator.py")
@@ -291,6 +296,11 @@ def _bundle_plan(source, digest, environment, owner, *, upgrade=None):
     manifest, checksum = _bundle.verify(source, expected_digest=digest)
     if manifest['openclawVersion'] != '2026.6.33':
         raise InstallError('unqualified-openclaw-version')
+    if upgrade is not None and 'native-source' in manifest['entries']:
+        # The first Source publication is inert and initial-install only.
+        # A different deployment needs the later joint Source lifecycle,
+        # including its existing private sidefiles and business transactions.
+        raise InstallError('native-source-upgrade-not-qualified')
     baseline = manifest
     current = None
     if upgrade is not None:
@@ -322,10 +332,27 @@ def _bundle_plan(source, digest, environment, owner, *, upgrade=None):
     if paths:
         plugins['load']['paths'] = [str(destination / path) for path in manifest['plugins']]
     config_target = RUNTIME_CONFIG_ROOT / str(owner.pw_uid) / 'openclaw.json'
-    return {'source': str(source), 'digest': checksum, 'destination': str(destination),
+    result = {'source': str(source), 'digest': checksum, 'destination': str(destination),
             'source_config': str(config_path), 'source_config_bytes': body,
             'config_path': str(config_target),
             'config_bytes': (json.dumps(config, indent=2, ensure_ascii=True) + '\n').encode()}
+    if 'native-source' in manifest['entries']:
+        # Explicit output of native-config.prepare, not a search for old answers.
+        candidate = json.loads(_configuration_bytes(config_path.with_name('candidate.json'), owner.pw_uid))
+        selection = _bundle._read_release_selection(source, manifest['entries'])
+        if (type(candidate) is not dict or candidate.get('status') != 'staged'
+                or candidate.get('pixelSourceRef') != selection['pixelSourceRevision']
+                or type(candidate.get('connectionSidefiles')) is not dict
+                or set(candidate['connectionSidefiles']) != {'gateway.env', 'onboarding.json'}):
+            raise InstallError('native-connection-sidefile-producer-required')
+        sidefiles = {}
+        for name in ('gateway.env', 'onboarding.json'):
+            data = _configuration_bytes(config_path.with_name(name), owner.pw_uid)
+            if len(data) > 131072 or hashlib.sha256(data).hexdigest() != candidate['connectionSidefiles'][name]:
+                raise InstallError('native-connection-sidefile-producer-changed')
+            sidefiles[name] = data.decode('utf-8')
+        result['connection_sidefiles'] = sidefiles
+    return result
 
 
 def make_plan(*, install_dir, owner_name, source_plist, openclaw_bin, gateway_port,
@@ -929,6 +956,23 @@ def _write_exact(path, data, *, mode, uid=0, gid=0):
             os.unlink(temporary)
 
 
+def _source_flat_files(selection):
+    """New flat Source workers come from the exact approved protected copy."""
+    manifest, _checksum = _bundle.verify(selection['source'], expected_digest=selection['digest'])
+    result = []
+    for relative in (*SOURCE_HOST_FILES, *('pixel_connections/' + name for name in CONNECTION_FILES)):
+        origin = 'ods-source/bin/' + relative
+        expected = manifest['entries'].get(origin)
+        if type(expected) is not list or expected[:2] != ['file', 0o644] or expected[2] > 8 * 1024 * 1024:
+            raise InstallError('native-source-flat-file-unqualified')
+        with os.fdopen(_bundle._open_file(selection['source'], origin), 'rb') as stream:
+            body = stream.read(8 * 1024 * 1024 + 1)
+        if expected != ['file', 0o644, len(body), hashlib.sha256(body).hexdigest()]:
+            raise InstallError('native-source-flat-file-changed')
+        result.append((relative, body))
+    return result
+
+
 def _deployment_files(source, plan):
     """Snapshot every input before the first deployment write or job change."""
     files = []
@@ -945,6 +989,9 @@ def _deployment_files(source, plan):
         add(target / "pixel_settings" / name, (bin_root / "pixel_settings" / name).read_bytes())
     for name in PROVIDER_FILES:
         add(target / "pixel_provider" / name, (bin_root / "pixel_provider" / name).read_bytes())
+    if plan.get('runtime_bundle', {}).get('connection_sidefiles') is not None:
+        for relative, body in _source_flat_files(plan['runtime_bundle']):
+            add(target / relative, body)
     add(PROFILE, plan['policies']['sandboxed'])
     for mode, record in plan['access_settings']['gateway_policy']['profiles'].items():
         add(record['path'], plan['policies'][mode])
@@ -971,6 +1018,20 @@ def _deployment_files(source, plan):
         add(_launchd.RELAY_PLIST, _launchd.encode(plan['access_relay']))
     if len({path for path, _, _ in files}) != len(files):
         raise InstallError("duplicate-deployment-destination")
+    selection = plan.get('runtime_bundle')
+    if selection and selection.get('connection_sidefiles') is not None:
+        spec = importlib.util.spec_from_file_location('source_runtime_plan', HERE / 'pixel-native-source-broker.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        manifest, _checksum = _bundle.verify(selection['source'], expected_digest=selection['digest'])
+        with os.fdopen(_bundle._open_file(selection['source'], 'native-source/component.json'), 'rb') as stream:
+            component = json.load(stream)
+        # The same fixed Apple discovery used by native services; no PATH lookup.
+        python = _native_services.helper('ops').select_python()
+        if component['hostPython'] != str(python):
+            raise InstallError('native-source-python-changed')
+        for path, body, mode in module.runtime_files(selection['source'], selection['digest'], plan['launcher'], str(python)):
+            add(path, body, mode=mode)
     return files
 
 
@@ -2396,6 +2457,195 @@ def _runtime_config(plan, *, write=False):
             os.close(fd)
 
 
+def _connection_sidefiles(plan):
+    """Explicit candidate producer -> owner600 files; no preparation adoption."""
+    selection, owner = plan['runtime_bundle'], plan['owner']
+    supplied = selection.get('connection_sidefiles')
+    if supplied is None:
+        return
+    if type(supplied) is not dict or set(supplied) != {'gateway.env', 'onboarding.json'}:
+        raise InstallError('native-connection-sidefiles-invalid')
+    from pixel_macos_custody import protected_directory, _require_no_acl
+    config = Path(selection['config_path'])
+    if config.parent != RUNTIME_CONFIG_ROOT / str(owner.pw_uid):
+        raise InstallError('native-connection-sidefiles-path-invalid')
+    bodies = {name: text.encode('utf-8') for name, text in supplied.items()}
+    if any(not 0 < len(body) <= 131072 for body in bodies.values()):
+        raise InstallError('native-connection-sidefiles-invalid')
+    binding = {'schemaVersion': 1, 'kind': 'ods-native-connection-sidefiles',
+        'ownerUid': owner.pw_uid, 'ownerGid': owner.pw_gid, 'configPath': str(config),
+        'bundleSha256': selection['digest'],
+        'files': {name: hashlib.sha256(body).hexdigest() for name, body in bodies.items()}}
+    record_path = _launchd.ACCESS_STATE / 'source-sidefiles.json'
+    with protected_directory(_launchd.ACCESS_STATE) as metadata:
+        def read_record():
+            try:
+                fd = os.open(record_path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=metadata)
+            except FileNotFoundError:
+                return None
+            with os.fdopen(fd, 'rb') as stream:
+                value = os.fstat(stream.fileno())
+                _require_no_acl(stream.fileno())
+                if (not stat.S_ISREG(value.st_mode) or (value.st_uid, value.st_gid) != (0, 0)
+                        or stat.S_IMODE(value.st_mode) != 0o600 or value.st_nlink != 1 or value.st_size > 8192):
+                    raise InstallError('native-connection-sidefiles-receipt-unsafe')
+                return stream.read(8193)
+        previous = read_record()
+        def save(value):
+            nonlocal previous
+            if read_record() != previous:
+                raise InstallError('native-connection-sidefiles-receipt-changed')
+            body = (json.dumps(value, sort_keys=True, separators=(',', ':')) + '\n').encode()
+            temporary = '.source-sidefiles-' + os.urandom(16).hex()
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=metadata)
+            try:
+                with os.fdopen(fd, 'wb') as stream:
+                    _require_no_acl(stream.fileno())
+                    stream.write(body)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                if read_record() != previous:
+                    raise InstallError('native-connection-sidefiles-receipt-changed')
+                if previous is None:
+                    os.link(temporary, record_path.name, src_dir_fd=metadata, dst_dir_fd=metadata, follow_symlinks=False)
+                else:
+                    os.replace(temporary, record_path.name, src_dir_fd=metadata, dst_dir_fd=metadata)
+                os.fsync(metadata)
+                previous = body
+            finally:
+                try:
+                    os.unlink(temporary, dir_fd=metadata)
+                except FileNotFoundError:
+                    pass
+        directory = os.open(config.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            parent = os.fstat(directory)
+            _require_no_acl(directory)
+            if ((parent.st_uid, parent.st_gid) != (owner.pw_uid, owner.pw_gid)
+                    or stat.S_IMODE(parent.st_mode) != 0o700):
+                raise InstallError('native-connection-sidefiles-parent-unsafe')
+            parent_id = [parent.st_dev, parent.st_ino]
+            if previous is None:
+                if any(os.path.lexists(config.parent / name) for name in bodies):
+                    raise InstallError('native-connection-sidefiles-unbound')
+                record = {**binding, 'parent': parent_id,
+                    'children': {name: {'inode': None, 'ready': False} for name in bodies}}
+                save(record)
+            else:
+                def unique(rows):
+                    result = {}
+                    for key, value in rows:
+                        if key in result:
+                            raise InstallError('native-connection-sidefiles-receipt-changed')
+                        result[key] = value
+                    return result
+                record = json.loads(previous, object_pairs_hook=unique)
+                if (type(record) is not dict or set(record) != {*binding, 'parent', 'children'}
+                        or any(type(record[key]) is not type(value) or record[key] != value for key, value in binding.items())
+                        or record['parent'] != parent_id or type(record['children']) is not dict
+                        or set(record['children']) != set(bodies)):
+                    raise InstallError('native-connection-sidefiles-receipt-changed')
+            for name, body in bodies.items():
+                child = record['children'][name]
+                if (type(child) is not dict or set(child) != {'inode', 'ready'} or type(child['ready']) is not bool
+                        or child['inode'] is not None and (type(child['inode']) is not list
+                        or len(child['inode']) != 2 or any(type(v) is not int for v in child['inode']))):
+                    raise InstallError('native-connection-sidefiles-receipt-changed')
+                flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
+                if child['inode'] is None:
+                    flags |= os.O_CREAT | os.O_EXCL
+                fd = os.open(name, flags, 0o600, dir_fd=directory)
+                with os.fdopen(fd, 'r+b') as stream:
+                    before = os.fstat(stream.fileno())
+                    _require_no_acl(stream.fileno())
+                    pairs = {(owner.pw_uid, owner.pw_gid)} if child['ready'] else {(0, 0), (owner.pw_uid, owner.pw_gid)}
+                    if (not stat.S_ISREG(before.st_mode) or (before.st_uid, before.st_gid) not in pairs
+                            or stat.S_IMODE(before.st_mode) != 0o600
+                            or before.st_nlink != 1 or before.st_size > len(body)):
+                        raise InstallError('native-connection-sidefile-unsafe')
+                    identity = [before.st_dev, before.st_ino]
+                    if child['inode'] is None:
+                        child['inode'] = identity
+                        save(record)  # Before the first body byte/chown.
+                    elif child['inode'] != identity:
+                        raise InstallError('native-connection-sidefile-changed')
+                    existing = stream.read(len(body) + 1)
+                    if (existing != body) if child['ready'] else (not body.startswith(existing)):
+                        raise InstallError('native-connection-sidefile-changed')
+                    if not child['ready']:
+                        stream.seek(0, os.SEEK_END)
+                        stream.write(body[len(existing):])
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                        os.fchown(stream.fileno(), owner.pw_uid, owner.pw_gid)
+                        os.fsync(stream.fileno())
+                        child['ready'] = True
+                        save(record)
+                    current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                    if [current.st_dev, current.st_ino] != identity:
+                        raise InstallError('native-connection-sidefile-changed')
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+
+
+def _preflight_source_publication(plan):
+    selection = plan.get('runtime_bundle')
+    if not selection or selection.get('connection_sidefiles') is None:
+        return
+    if not plan.get('initial_install'):
+        raise InstallError('native-source-initial-publication-required')
+    descriptor = _destination(Path('/private/etc/ods/pixel-provider-runtime.json'))
+    receipt = _destination(_launchd.ACCESS_STATE / 'source-runtime-installation.json')
+    if os.path.lexists(descriptor) and not os.path.lexists(receipt):
+        raise InstallError('native-source-operator-runtime-preserved')
+    record = _destination(_launchd.ACCESS_STATE / 'source-sidefiles.json')
+    parent = Path(selection['config_path']).parent
+    if not os.path.lexists(record) and any(os.path.lexists(parent / name)
+                                         for name in ('gateway.env', 'onboarding.json')):
+        raise InstallError('native-connection-sidefiles-unbound')
+
+
+def _verify_source_runtime(plan, *, publish=True):
+    selection = plan.get('runtime_bundle')
+    if not selection or selection.get('connection_sidefiles') is None:
+        return
+    from pixel_provider.runtime_custody import RuntimeCustody
+    from pixel_connections.custody import native_source_selection
+    bridge = _bridge_from_recovery_plan(plan, owner_name=plan['owner'].pw_name)
+    with bridge.locked():
+        value, _checksum = RuntimeCustody(bridge).inspect()
+        if (value['runtimeRoot'] != selection['destination'] + '/runtime'
+                or value['sourceRoot'] != selection['destination'] + '/ods-source'):
+            raise InstallError('native-source-runtime-selection-changed')
+        selected = native_source_selection(bridge, bridge.connection_deployment())
+        spec = importlib.util.spec_from_file_location('installed_source_publication', HERE / 'pixel-native-source-broker.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        if publish:
+            module.publish_kit(selected)
+        else:
+            module.publish_runtime_metadata(selection['destination'], selection['digest'], plan['launcher'],
+                str(_native_services.helper('ops').select_python()), verify=True, installation={
+                    'source': str(plan['source']), 'owner': plan['owner'].pw_uid, 'operation': 'initial-install'})
+            module.verify_kit_publication(selected)
+
+
+def _publish_source_runtime_metadata(plan):
+    selection = plan.get('runtime_bundle')
+    if not selection or selection.get('connection_sidefiles') is None:
+        return
+    if not plan.get('initial_install'):
+        raise InstallError('native-source-initial-publication-required')
+    spec = importlib.util.spec_from_file_location('initial_source_runtime', HERE / 'pixel-native-source-broker.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _mkdir_deployment_directories(module.RUNTIME_MANIFEST.parent)
+    return module.publish_runtime_metadata(selection['destination'], selection['digest'], plan['launcher'],
+        str(_native_services.helper('ops').select_python()), installation={
+            'source': str(plan['source']), 'owner': plan['owner'].pw_uid, 'operation': 'initial-install'})
+
+
 RECOVERY_PLAN_FIELDS = ('source_environment', 'source_process', 'gateway_binding',
                         'access_settings', 'access_port', 'upgrade_qualification', 'upgrade_kind')
 MIGRATION_RECOVERY_FIELDS = ('migration_qualification', 'migration_source_config_bytes',
@@ -2521,6 +2771,7 @@ def _retirement_plan(snapshots, *, current_digest, candidate_digest, owner_name)
             or type(item.get('path')) is not str for item in files)):
         raise InstallError('runtime-upgrade-recovery-file-contract-invalid')
     selected = {item['path'] for item in files}
+    _require_complete_source_file_family(selected)
     if str(_launchd.ACCESS_STATE / 'service-installation.json') in selected:
         native_contract = _managed_service_contract(selected)
         required.update(native_contract)
@@ -2590,7 +2841,26 @@ def _recovery_file_contract():
     optional = {str(_destination(PROFILE.with_name('pixel-gateway.' + mode + '.sb'))): (0o644, 0)
                 for mode in _policy.MODES}
     optional[str(_launchd.ACCESS_STATE / 'service-baseline.json')] = (0o600, 0)
+    optional[str(_destination(_launchd.ACCESS_STATE / 'source-runtime-installation.json'))] = (0o600, 0)
+    for path in (Path('/private/etc/ods/pixel-provider-runtime-manifest.json'),
+                 Path('/private/etc/ods/pixel-provider-runtime.json')):
+        optional[str(_destination(path))] = (0o644, 0)
+    for path in ([ACCESS_PROGRAM_ROOT / 'pixel_connections' / name for name in CONNECTION_FILES]
+                 + [ACCESS_PROGRAM_ROOT / name for name in SOURCE_HOST_FILES]):
+        optional[str(_destination(path))] = (0o644, 0)
     return required, optional
+
+
+def _require_complete_source_file_family(selected):
+    """A Source publication is one closed family, never arbitrary optional files."""
+    family = {str(_destination(path)) for path in (
+        *[ACCESS_PROGRAM_ROOT / 'pixel_connections' / name for name in CONNECTION_FILES],
+        *[ACCESS_PROGRAM_ROOT / name for name in SOURCE_HOST_FILES],
+        _launchd.ACCESS_STATE / 'source-runtime-installation.json',
+        Path('/private/etc/ods/pixel-provider-runtime-manifest.json'),
+        Path('/private/etc/ods/pixel-provider-runtime.json'))}
+    if family.intersection(selected) and not family.issubset(selected):
+        raise InstallError('native-source-recovery-file-family-incomplete')
 
 
 def _load_upgrade_recovery_base(*, current_digest, candidate_digest, owner_name, completed=False):
@@ -2612,6 +2882,7 @@ def _load_upgrade_recovery_base(*, current_digest, candidate_digest, owner_name,
             or type(item.get('path')) is not str for item in files)):
         raise InstallError('runtime-upgrade-recovery-file-contract-invalid')
     selected = {item['path'] for item in files}
+    _require_complete_source_file_family(selected)
     if str(_launchd.ACCESS_STATE / 'service-installation.json') in selected:
         native_contract = _managed_service_contract(selected)
         required.update(native_contract)
@@ -3198,6 +3469,7 @@ def verify_initial_install(plan):
             or [_upgrade_service_identity(service) for service in services] != identities):
         raise InstallError('native-initial-activation-changed')
     _verify_bundle_selection(plan)
+    _verify_source_runtime(plan, publish=False)
     for service in services:
         service.verify()
         if _job_disabled(service.target):
@@ -3222,6 +3494,7 @@ def install(plan, source):
     # but a protected service must never execute that writable runtime.
     if not plan.get('runtime_bundle'):
         raise InstallError('protected-runtime-bundle-required')
+    _preflight_source_publication(plan)
     files = _deployment_files(source, plan)
     for path, data, attributes in files:
         _preflight_file(path, data, **attributes)
@@ -3256,12 +3529,20 @@ def install(plan, source):
         if str(published) != selection['destination']:
             raise InstallError('native-bundle-destination-changed')
         _runtime_config(plan, write=True)
+        _connection_sidefiles(plan)
+        source_metadata = ({_destination(Path('/private/etc/ods/pixel-provider-runtime-manifest.json')),
+            _destination(Path('/private/etc/ods/pixel-provider-runtime.json')),
+            _destination(_launchd.ACCESS_STATE / 'source-runtime-installation.json')}
+            if selection.get('connection_sidefiles') is not None else set())
         for path, data, attributes in files:
-            _write_exact(path, data, **attributes)
+            if path not in source_metadata:
+                _write_exact(path, data, **attributes)
+        _publish_source_runtime_metadata(plan)
     except BaseException:
         _migration_phase(plan, journal, 'staging-failed')
         raise
     _activate_with_admission(plan, services, journal)
+    _verify_source_runtime(plan)
     _reprove_installed_access(plan)
 
 

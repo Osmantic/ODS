@@ -634,7 +634,10 @@ NATIVE_STATE = Path('/private/var/lib/pixel-source-broker')
 NATIVE_ENV = NATIVE_STATE / 'source-broker.env'
 NATIVE_LEGACY_ENV = Path('/private/etc/pixel-source-broker.env')
 NATIVE_KIT = Path('/usr/local/libexec/ods-pixel-access/pixel_connections/source-broker-kit')
+NATIVE_LOGS = Path('/private/var/log/pixel-source-broker')
 NATIVE_LABEL = 'com.ods.pixel-native-source-'
+NATIVE_ROLES = ('sync', 'direct', 'action', 'reconcile', 'exchange', 'revoke')
+NATIVE_PROFILES = tuple('source-' + role + '.sb' for role in NATIVE_ROLES)
 _NATIVE_SEAL = object()
 _NATIVE_SHA = re.compile(r'[a-f0-9]{64}\Z')
 _NATIVE_ACTION = re.compile(r'(?:calendar|gmail-draft)-[0-9]{13}-[a-f0-9]{8}\Z')
@@ -750,7 +753,7 @@ def native_source_selection(bridge, deployment):
     return selected
 
 
-def _native_selected(selection):
+def _native_selected(selection, *, _publication=False):
     # A duck-typed guard/checksum is not a Root deployment capability.
     if type(selection) is not _NativeSourceSelection or selection.seal is not _NATIVE_SEAL:
         raise CustodyError('native-source-deployment-required')
@@ -759,6 +762,16 @@ def _native_selected(selection):
     # this implementation. Preserve any object there; do not adopt or move it.
     if os.path.lexists(NATIVE_LEGACY_ENV):
         raise CustodyError('native-source-legacy-env-preserved')
+    if not _publication and os.path.lexists(NATIVE_META):
+        from pixel_macos_custody import protected_directory
+        with protected_directory(NATIVE_META) as directory:
+            publication, _raw = _native_json_at(directory, 'source-publication.json')
+        if publication is not None and (type(publication) is not dict
+                or publication.get('schemaVersion') != 1
+                or publication.get('kind') != 'ods-native-source-publication'
+                or publication.get('deploymentSha256') != selection.deployment.checksum
+                or publication.get('phase') not in ('prepared-no-jobs', 'restored')):
+            raise CustodyError('native-source-publication-pending')
     return doc
 
 
@@ -1131,20 +1144,21 @@ def _native_pairs(pairs):
 
 
 def _native_json_at(directory, name, *, mode=0o600):
-    if name not in ('source-identity.json', 'source-custody-prepare.json'):
+    if name not in ('source-identity.json', 'source-custody-prepare.json', 'source-environment.json', 'source-logs-prepare.json', 'source-publication.json'):
         raise CustodyError('native-source-record-invalid')
     try:
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
     except FileNotFoundError:
         return None, None
+    limit = 65536 if name == 'source-publication.json' else 16384
     with os.fdopen(fd, 'rb') as stream:
         info = os.fstat(stream.fileno())
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_gid != 0
-                or stat.S_IMODE(info.st_mode) != mode or info.st_nlink != 1 or info.st_size > 16384):
+                or stat.S_IMODE(info.st_mode) != mode or info.st_nlink != 1 or info.st_size > limit):
             raise CustodyError('native-source-record-unsafe')
         _native_no_acl(stream.fileno())
-        raw = stream.read(16385)
-        if len(raw) > 16384:
+        raw = stream.read(limit + 1)
+        if len(raw) > limit:
             raise CustodyError('native-source-record-unsafe')
     try:
         value = json.loads(raw, object_pairs_hook=_native_pairs)
@@ -1153,13 +1167,13 @@ def _native_json_at(directory, name, *, mode=0o600):
     return value, raw
 
 
-def _native_save_at(selection, directory, name, value, *, previous=None):
-    _native_selected(selection)
+def _native_save_at(selection, directory, name, value, *, previous=None, _publication=False):
+    _native_selected(selection, **({'_publication': True} if _publication is True else {}))
     _current, raw = _native_json_at(directory, name)
     if raw != previous:
         raise CustodyError('native-source-record-changed')
     body = (json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False) + '\n').encode()
-    if len(body) > 16384:
+    if len(body) > (65536 if name == 'source-publication.json' else 16384):
         raise CustodyError('native-source-record-invalid')
     temporary = '.source-' + uuid.uuid4().hex
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
@@ -1174,7 +1188,7 @@ def _native_save_at(selection, directory, name, value, *, previous=None):
             stream.write(body)
             stream.flush()
             os.fsync(stream.fileno())
-        _native_selected(selection)
+        _native_selected(selection, **({'_publication': True} if _publication is True else {}))
         if previous is None:
             os.link(temporary, name, src_dir_fd=directory, dst_dir_fd=directory, follow_symlinks=False)
         else:
@@ -1249,19 +1263,32 @@ def native_prepare_identity(selection):
 
 
 
-def native_verify_kit(selection):
+def native_verify_kit(selection, *, require_profiles=False, _publication=False):
     """A protected but not-yet-published kit is unavailable, never synthesized.
 
     The future protected native installer must publish this manifest with the
-    selected Source blob and deployment. This function does not publish it.
+    selected Source blob and deployment. Schema1 is the exact A prefix;
+    schema2 has all six profiles, never a subset. require_profiles attests only
+    that protected kit, not an active broker or the remaining B lifecycle.
+    This function does not publish or migrate any file/Root state.
     """
-    _native_selected(selection)
+    if type(require_profiles) is not bool:
+        raise CustodyError('native-source-kit-invalid')
+    _native_selected(selection, **({'_publication': True} if _publication is True else {}))
     from pixel_macos_custody import protected_directory
     bodies = {}
     with protected_directory(NATIVE_KIT) as directory:
-        if set(os.listdir(directory)) != {'source-kit.json', 'broker.py', 'source-broker.env'}:
+        names = set(os.listdir(directory))
+        base = {'source-kit.json', 'broker.py', 'source-broker.env'}
+        complete = names == base | set(NATIVE_PROFILES)
+        if names != base and not complete:
             raise CustodyError('native-source-kit-invalid')
-        for name, mode in (('source-kit.json', 0o644), ('broker.py', 0o755), ('source-broker.env', 0o644)):
+        if require_profiles and not complete:
+            raise CustodyError('native-source-kit-profiles-incomplete')
+        files = [('source-kit.json', 0o644), ('broker.py', 0o755), ('source-broker.env', 0o644)]
+        if complete:
+            files.extend((name, 0o644) for name in NATIVE_PROFILES)
+        for name, mode in files:
             fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
             with os.fdopen(fd, 'rb') as stream:
                 info = os.fstat(stream.fileno())
@@ -1282,11 +1309,12 @@ def native_verify_kit(selection):
     except (ValueError, UnicodeError, RecursionError):
         raise CustodyError('native-source-kit-invalid') from None
     if (type(manifest) is not dict or set(manifest) != {'schemaVersion', 'kind', 'deploymentSha256', 'sourceRef', 'files'}
-            or type(manifest['schemaVersion']) is not int or manifest['schemaVersion'] != 1
+            or type(manifest['schemaVersion']) is not int or manifest['schemaVersion'] != (2 if complete else 1)
             or manifest['kind'] != 'ods-native-source-kit'
             or manifest['deploymentSha256'] != selection.deployment.checksum
             or type(manifest['sourceRef']) is not str or not re.fullmatch('[a-f0-9]{40}', manifest['sourceRef'])
-            or type(manifest['files']) is not dict or set(manifest['files']) != {'broker.py', 'source-broker.env'}):
+            or type(manifest['files']) is not dict
+            or set(manifest['files']) != {'broker.py', 'source-broker.env'} | (set(NATIVE_PROFILES) if complete else set())):
         raise CustodyError('native-source-kit-invalid')
     for name in manifest['files']:
         if (type(manifest['files'][name]) is not str or not _NATIVE_SHA.fullmatch(manifest['files'][name])
@@ -1300,7 +1328,7 @@ def native_verify_kit(selection):
         raise CustodyError('native-source-kit-invalid') from None
     if len({key for key, _value in lines}) != len(lines):
         raise CustodyError('native-source-kit-invalid')
-    _native_selected(selection)
+    _native_selected(selection, **({'_publication': True} if _publication is True else {}))
     return manifest, hashlib.sha256(bodies['source-kit.json']).hexdigest()
 
 
@@ -1547,3 +1575,541 @@ def native_prepare_state(selection, identity):
                 return descriptor
             finally:
                 os.close(gate)
+
+
+# Native slice B: an internal Root publisher only. No caller selects this
+# backend yet; no launchd job, credential handoff or availability is enabled.
+def _native_environment_paths():
+    return {'PIXEL_SOURCE_TOKEN_PATH': str(NATIVE_STATE / 'private/google-token.json'),
+        'PIXEL_SOURCE_OAUTH_DIR': str(NATIVE_STATE / 'private/oauth'),
+        'PIXEL_SOURCE_PROJECTION_DIR': str(NATIVE_STATE / 'projection'),
+        'PIXEL_ACTION_PROPOSAL_DIR': str(NATIVE_STATE / 'proposals'),
+        'PIXEL_ACTION_RESULT_DIR': str(NATIVE_STATE / 'results')}
+
+
+def _native_environment_template(selection):
+    manifest, checksum = native_verify_kit(selection)
+    from pixel_macos_custody import protected_directory
+    with protected_directory(NATIVE_KIT) as directory:
+        fd = os.open('source-broker.env', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        with os.fdopen(fd, 'rb') as stream:
+            before = os.fstat(stream.fileno())
+            _native_no_acl(stream.fileno())
+            data = stream.read(MAX_RESULT_BYTES + 1)
+            after = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(before.st_mode) or before.st_uid != 0 or before.st_gid != 0
+                    or stat.S_IMODE(before.st_mode) != 0o644 or before.st_nlink != 1
+                    or len(data) > MAX_RESULT_BYTES
+                    or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+                    != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+                    or hashlib.sha256(data).hexdigest() != manifest['files']['source-broker.env']):
+                raise CustodyError('native-source-environment-template-changed')
+    try:
+        lines = parse_env(data.decode('utf-8'))
+    except UnicodeError:
+        raise CustodyError('native-source-environment-template-invalid') from None
+    if (not _native_environment_paths().keys() <= dict(lines).keys()
+            or any(not key.startswith('PIXEL_') and (key, value) != ('PYTHONDONTWRITEBYTECODE', '1')
+                   for key, value in lines)):
+        raise CustodyError('native-source-environment-template-invalid')
+    _native_selected(selection)
+    return lines, checksum
+
+
+def native_environment_text(selection, overrides=None, *, preauth=False):
+    """Render only the admitted template; no shell/loader or request paths.
+
+    The Root connection transaction computes these existing capability/query
+    choices. This helper is not consent, a permission decision, or a launcher.
+    """
+    if type(preauth) is not bool or overrides is not None and type(overrides) is not dict:
+        raise CustodyError('native-source-environment-invalid')
+    lines, _checksum = _native_environment_template(selection)
+    supplied = {} if overrides is None else dict(overrides)
+    mutable = {*PREAUTH_FLAGS, 'PIXEL_SOURCE_CALENDAR_ID', 'PIXEL_SOURCE_TIME_ZONE',
+               'PIXEL_SOURCE_GMAIL_QUERY', 'PIXEL_SOURCE_GMAIL_SENT_QUERY'}
+    if (set(supplied) - mutable or any(type(value) is not str or any(c in value for c in '\0\n\r')
+                                     for value in supplied.values())):
+        raise CustodyError('native-source-environment-invalid')
+    if preauth:
+        supplied.update({key: '0' for key, _value in lines
+            if key in PREAUTH_FLAGS or key.startswith('PIXEL_LIMB_') and key.endswith('_ENABLED')})
+    supplied.update(_native_environment_paths())
+    return env_text(lines, supplied)
+
+
+def _native_environment_bytes(selection, text):
+    if type(text) is not str or '\0' in text:
+        raise CustodyError('native-source-environment-invalid')
+    try:
+        data = text.encode('utf-8')
+        lines = parse_env(text)
+    except UnicodeError:
+        raise CustodyError('native-source-environment-invalid') from None
+    if not 0 < len(data) <= MAX_RESULT_BYTES:
+        raise CustodyError('native-source-environment-invalid')
+    template, checksum = _native_environment_template(selection)
+    values, base = dict(lines), dict(template)
+    mutable = {*PREAUTH_FLAGS, 'PIXEL_SOURCE_CALENDAR_ID', 'PIXEL_SOURCE_TIME_ZONE',
+               'PIXEL_SOURCE_GMAIL_QUERY', 'PIXEL_SOURCE_GMAIL_SENT_QUERY'}
+    fixed = _native_environment_paths()
+    if (list(values) != list(base) or any(values.get(key) != value for key, value in fixed.items())
+            or any(values[key] != value for key, value in base.items() if key not in mutable and key not in fixed)
+            or any(values[key] not in ('0', '1') for key in PREAUTH_FLAGS if key in values)):
+        raise CustodyError('native-source-environment-invalid')
+    return data, checksum
+
+
+def _native_environment_snapshot(directory, name, broker_uid):
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(fd, 'rb') as stream:
+        before = native_verify_env_fd(stream.fileno(), broker_uid)
+        body = stream.read(MAX_RESULT_BYTES + 1)
+        if (len(body) > MAX_RESULT_BYTES or native_verify_env_fd(stream.fileno(), broker_uid) != before
+                or len(body) != before[6]):
+            raise CustodyError('native-source-env-changed')
+        return {'inode': list(before[:2]), 'sha256': hashlib.sha256(body).hexdigest(), 'size': len(body)}
+
+
+def _native_environment_record(value, binding):
+    if (type(value) is not dict or set(value) != {*binding, 'current', 'pending'}
+            or any(type(value[key]) is not type(item) or value[key] != item for key, item in binding.items())):
+        raise CustodyError('native-source-environment-journal-changed')
+    current, pending = value['current'], value['pending']
+    if current is not None and (type(current) is not dict or set(current) != {'inode', 'sha256', 'size'}
+            or not _native_inode(current['inode']) or type(current['sha256']) is not str
+            or not _NATIVE_SHA.fullmatch(current['sha256']) or type(current['size']) is not int
+            or not 0 < current['size'] <= MAX_RESULT_BYTES):
+        raise CustodyError('native-source-environment-journal-changed')
+    if pending is not None and (type(pending) is not dict or set(pending) != {'name', 'inode', 'sha256', 'ready'}
+            or type(pending['name']) is not str or not re.fullmatch(r'\.source-env-[a-f0-9]{32}', pending['name'])
+            or pending['inode'] is not None and not _native_inode(pending['inode'])
+            or type(pending['sha256']) is not str or not _NATIVE_SHA.fullmatch(pending['sha256'])
+            or type(pending['ready']) is not bool or pending['ready'] and pending['inode'] is None):
+        raise CustodyError('native-source-environment-journal-changed')
+
+
+def _native_environment_context(selection, metadata, gate, kit_sha, *, _publication=False):
+    doc = _native_selected(selection, **({'_publication': True} if _publication is True else {}))
+    _manifest, current_kit = native_verify_kit(selection, _publication=_publication)
+    if current_kit != kit_sha:
+        raise CustodyError('native-source-environment-template-changed')
+    identity, _raw = _native_json_at(metadata, 'source-identity.json')
+    identity = _native_identity_intent(identity)
+    for kind in ('Groups', 'Users'):
+        _native_identity_record(_native_ds_record(kind), _native_identity_attributes(identity, kind), complete=True)
+    _native_identity_collisions(identity)
+    lib = _native_acl_library()
+    owner_guid = str(uuid.UUID(bytes=_native_uuid(lib, doc['ownerUid']))).upper()
+    if _native_uuid(lib, identity['id']) != uuid.UUID(identity['userGuid']).bytes:
+        raise CustodyError('native-source-identity-uuid-conflict')
+    intent, _raw = _native_json_at(metadata, 'source-custody-prepare.json')
+    prepared = _native_prepare_binding(doc, identity, owner_guid, kit_sha, selection.deployment.checksum)
+    _native_validate_prepare_intent(intent, prepared)
+    inode = native_verify_gate(gate, doc['ownerUid'], identity['id'])
+    if set(os.listdir(gate)) - {'private', 'projection', 'results', 'proposals', 'custody.json', NATIVE_ENV.name}:
+        raise CustodyError('native-source-environment-state-unmanaged')
+    if intent['gate'] != list(inode) or set(intent['children']) != {row[0] for row in _native_layout(doc, identity)}:
+        raise CustodyError('native-source-environment-state-unprepared')
+    for relative, uid, gid, mode in _native_layout(doc, identity):
+        child = _native_directory_fd(gate, relative)
+        try:
+            actual, recorded = os.fstat(child), intent['children'][relative]
+            if (not recorded['ready'] or recorded['inode'] != [actual.st_dev, actual.st_ino]
+                    or (actual.st_uid, actual.st_gid, stat.S_IMODE(actual.st_mode)) != (uid, gid, mode)):
+                raise CustodyError('native-source-environment-state-changed')
+            _native_no_acl(child)
+            if relative != 'private/oauth':
+                _native_verify_data_tree(child, owners={uid}, group=gid, private=relative == 'private',
+                                         remaining=[MAX_RETIRED_ACTION_FILES])
+        finally:
+            os.close(child)
+    expected = (json.dumps(_native_descriptor(doc, identity, owner_guid, kit_sha),
+                           sort_keys=True, separators=(',', ':')) + '\n').encode()
+    fd = os.open('custody.json', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=gate)
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_gid != identity['id']
+                or stat.S_IMODE(info.st_mode) != 0o640 or info.st_nlink != 1 or info.st_size != len(expected)):
+            raise CustodyError('native-source-descriptor-unsafe')
+        _native_no_acl(stream.fileno())
+        if stream.read(16385) != expected:
+            raise CustodyError('native-source-descriptor-changed')
+    return identity, {'schemaVersion': 1, 'kind': 'ods-native-source-environment',
+        'deploymentSha256': selection.deployment.checksum, 'kitSha256': kit_sha,
+        'gate': list(inode), 'ownerUid': doc['ownerUid'], 'brokerUid': identity['id'],
+        'brokerGuid': identity['userGuid']}
+
+
+def _native_environment_acl(selection, fd, broker_uid):
+    """Only called on an inode already recorded in the Root pending journal."""
+    from pixel_macos_custody import protected_directory
+    _manifest, kit_sha = native_verify_kit(selection)
+    with protected_directory(NATIVE_META) as metadata, protected_directory(NATIVE_STATE.parent) as parent:
+        gate = os.open(NATIVE_STATE.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        try:
+            identity, binding = _native_environment_context(selection, metadata, gate, kit_sha)
+            record, _raw = _native_json_at(metadata, 'source-environment.json')
+            _native_environment_record(record, binding)
+            info, pending = os.fstat(fd), record['pending']
+            if (pending is None or pending['inode'] != [info.st_dev, info.st_ino]
+                    or identity['id'] != broker_uid or not stat.S_ISREG(info.st_mode)
+                    or info.st_uid != 0 or info.st_gid != 0 or stat.S_IMODE(info.st_mode) != 0o600
+                    or info.st_nlink != 1 or not 0 < info.st_size <= MAX_RESULT_BYTES):
+                raise CustodyError('native-source-env-intent-required')
+            leaf = os.stat(pending['name'], dir_fd=metadata, follow_symlinks=False)
+            if (leaf.st_dev, leaf.st_ino) != (info.st_dev, info.st_ino):
+                raise CustodyError('native-source-env-intent-required')
+            body = os.pread(fd, MAX_RESULT_BYTES + 1, 0)
+            if len(body) != info.st_size or hashlib.sha256(body).hexdigest() != pending['sha256']:
+                raise CustodyError('native-source-env-candidate-changed')
+        finally:
+            os.close(gate)
+    _native_selected(selection)
+    lib = _native_acl_library()
+    ctypes.set_errno(0)
+    existing = lib.acl_get_fd_np(fd, _NATIVE_ACL_TYPE)
+    if existing:
+        try:
+            if lib.acl_valid(existing) != 0:
+                raise CustodyError('native-source-env-acl-invalid')
+            _native_flags_zero(lib, existing)
+            entry = ctypes.c_void_p()
+            ctypes.set_errno(0)
+            result = lib.acl_get_entry(existing, 0, ctypes.byref(entry))
+            empty = result == -1 and ctypes.get_errno() == errno.EINVAL
+        finally:
+            lib.acl_free(existing)
+        if not empty:
+            native_verify_env_fd(fd, broker_uid)  # Never replace an unknown ACL.
+            return
+    elif ctypes.get_errno() != errno.ENOENT:
+        raise CustodyError('native-source-env-acl-required')
+    acl = ctypes.c_void_p(lib.acl_init(1))
+    if not acl.value:
+        raise CustodyError('native-source-acl-create-failed')
+    try:
+        entry = ctypes.c_void_p()
+        qualifier = (ctypes.c_ubyte * 16).from_buffer_copy(_native_uuid(lib, broker_uid))
+        if (lib.acl_create_entry(ctypes.byref(acl), ctypes.byref(entry)) != 0 or not entry.value
+                or lib.acl_set_tag_type(entry, 1) != 0 or lib.acl_set_qualifier(entry, qualifier) != 0
+                or lib.acl_set_permset_mask_np(entry, 1 << 1) != 0):
+            raise CustodyError('native-source-acl-create-failed')
+        _native_flags_zero(lib, acl)
+        if lib.acl_valid(acl) != 0 or lib.acl_set_fd_np(fd, acl, _NATIVE_ACL_TYPE) != 0:
+            raise CustodyError('native-source-acl-write-failed')
+    finally:
+        lib.acl_free(acl)
+    native_verify_env_fd(fd, broker_uid)
+
+
+def native_publish_environment(selection, text):
+    """Durable fixed-gate env replacement under the existing Root admission.
+
+    The journal holds identities/hashes only, never credentials or env text.
+    A lost rename acknowledgement resumes the SAME candidate, never a job.
+    Unknown/unrecorded files and changed deployments are preserved/refused.
+    """
+    data, kit_sha = _native_environment_bytes(selection, text)
+    wanted = hashlib.sha256(data).hexdigest()
+    from pixel_macos_custody import protected_directory
+    with protected_directory(NATIVE_META) as metadata, protected_directory(NATIVE_STATE.parent) as parent:
+        gate = os.open(NATIVE_STATE.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        try:
+            identity, binding = _native_environment_context(selection, metadata, gate, kit_sha)
+            if os.fstat(metadata).st_dev != os.fstat(gate).st_dev:
+                raise CustodyError('native-source-env-cross-filesystem')
+            record, raw = _native_json_at(metadata, 'source-environment.json')
+            actual = _native_environment_snapshot(gate, NATIVE_ENV.name, identity['id'])
+            if raw is None:
+                if actual is not None:
+                    raise CustodyError('native-source-env-unmanaged')
+                record = dict(binding, current=None, pending=None)
+            _native_environment_record(record, binding)
+            pending = record['pending']
+            if pending is None:
+                if actual != record['current']:
+                    raise CustodyError('native-source-env-changed')
+                if actual is not None and actual['sha256'] == wanted:
+                    return dict(actual)
+                record['pending'] = {'name': '.source-env-' + uuid.uuid4().hex, 'inode': None,
+                                     'sha256': wanted, 'ready': False}
+                raw = _native_save_at(selection, metadata, 'source-environment.json', record, previous=raw)
+                pending = record['pending']
+            if pending['sha256'] != wanted:
+                raise CustodyError('native-source-environment-pending')
+            # A crash after the exact rename must not restore/re-publish an old
+            # env. Complete only this journal-bound new inode and hash.
+            if actual is not None and pending['ready'] and actual['inode'] == pending['inode'] and actual['sha256'] == wanted:
+                record.update(current=actual, pending=None)
+                _native_save_at(selection, metadata, 'source-environment.json', record, previous=raw)
+                return dict(actual)
+            if actual != record['current']:
+                raise CustodyError('native-source-env-changed')
+            if pending['inode'] is None:
+                _native_selected(selection)
+                try:
+                    fd = os.open(pending['name'], os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                 0o600, dir_fd=metadata)
+                except FileExistsError:
+                    raise CustodyError('native-source-env-candidate-unmanaged') from None
+                try:
+                    info = os.fstat(fd)
+                    if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_gid != 0
+                            or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size):
+                        raise CustodyError('native-source-env-candidate-unsafe')
+                    _native_no_acl(fd)
+                    pending['inode'] = [info.st_dev, info.st_ino]
+                    os.fsync(fd)
+                    os.fsync(metadata)
+                    raw = _native_save_at(selection, metadata, 'source-environment.json', record, previous=raw)
+                finally:
+                    os.close(fd)
+            fd = os.open(pending['name'], os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=metadata)
+            try:
+                info = os.fstat(fd)
+                if (not stat.S_ISREG(info.st_mode) or pending['inode'] != [info.st_dev, info.st_ino]
+                        or info.st_uid != 0 or info.st_gid != 0 or info.st_nlink != 1
+                        or stat.S_IMODE(info.st_mode) != 0o600 or not 0 <= info.st_size <= len(data)):
+                    raise CustodyError('native-source-env-candidate-changed')
+                prefix = os.read(fd, MAX_RESULT_BYTES + 1)
+                if prefix != data[:len(prefix)]:
+                    raise CustodyError('native-source-env-candidate-changed')
+                if len(prefix) != len(data):
+                    _native_no_acl(fd)  # A readable incomplete candidate is not a valid prefix.
+                    _native_selected(selection)
+                    os.lseek(fd, len(prefix), os.SEEK_SET)
+                    remaining = memoryview(data)[len(prefix):]
+                    while remaining:
+                        count = os.write(fd, remaining)
+                        if count <= 0:
+                            raise CustodyError('native-source-env-write-failed')
+                        remaining = remaining[count:]
+                    os.fsync(fd)
+                _native_environment_acl(selection, fd, identity['id'])
+                os.fsync(fd)
+                snapshot = _native_environment_snapshot(metadata, pending['name'], identity['id'])
+                if snapshot != {'inode': pending['inode'], 'sha256': wanted, 'size': len(data)}:
+                    raise CustodyError('native-source-env-candidate-changed')
+                if not pending['ready']:
+                    pending['ready'] = True
+                    raw = _native_save_at(selection, metadata, 'source-environment.json', record, previous=raw)
+                _native_environment_context(selection, metadata, gate, kit_sha)
+                if _native_environment_snapshot(gate, NATIVE_ENV.name, identity['id']) != record['current']:
+                    raise CustodyError('native-source-env-changed')
+                if _native_environment_snapshot(metadata, pending['name'], identity['id']) != snapshot:
+                    raise CustodyError('native-source-env-candidate-changed')
+                _native_selected(selection)
+                os.replace(pending['name'], NATIVE_ENV.name, src_dir_fd=metadata, dst_dir_fd=gate)
+                os.fsync(gate)
+                os.fsync(metadata)
+                actual = _native_environment_snapshot(gate, NATIVE_ENV.name, identity['id'])
+                if actual != snapshot:
+                    raise CustodyError('native-source-env-changed')
+                record.update(current=actual, pending=None)
+                _native_save_at(selection, metadata, 'source-environment.json', record, previous=raw)
+                return dict(actual)
+            finally:
+                os.close(fd)
+        finally:
+            os.close(gate)
+
+
+def _native_log_names():
+    return tuple(role + '.' + stream + '.log' for role in NATIVE_ROLES for stream in ('stdout', 'stderr'))
+
+
+def native_verify_log_directory(fd, broker_uid, *, prefix=False):
+    """Metadata-only singleton broker LIST/SEARCH; no owner/group principal."""
+    if type(prefix) is not bool:
+        raise CustodyError('native-source-log-specification-invalid')
+    info = os.fstat(fd)
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_gid != 0
+            or stat.S_IMODE(info.st_mode) != 0o700):
+        raise CustodyError('native-source-log-directory-unsafe')
+    wanted = (_native_uuid(_native_acl_library(), broker_uid),)
+    actual = _native_acl_entries(fd, missing=prefix)
+    if actual != wanted and not (prefix and actual == ()):
+        raise CustodyError('native-source-log-directory-acl')
+    return [info.st_dev, info.st_ino]
+
+
+def _native_log_file(fd, identity, *, prefix=False):
+    info = os.fstat(fd)
+    owner = (info.st_uid, info.st_gid)
+    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600
+            or not 0 <= info.st_size <= MAX_RETIRED_ACTION_BYTES
+            or owner != (identity['id'], identity['id']) and not (prefix and owner == (0, 0) and info.st_size == 0)):
+        raise CustodyError('native-source-log-file-unsafe')
+    _native_no_acl(fd)
+    return [info.st_dev, info.st_ino]
+
+
+def _native_log_record(record, binding):
+    if (type(record) is not dict or set(record) != {*binding, 'directory', 'files'}
+            or any(type(record[key]) is not type(value) or record[key] != value for key, value in binding.items())
+            or record['directory'] is not None and not _native_inode(record['directory'])
+            or type(record['files']) is not dict or set(record['files']) - set(_native_log_names())
+            or record['directory'] is None and record['files']):
+        raise CustodyError('native-source-log-intent-changed')
+    for value in record['files'].values():
+        if (type(value) is not dict or set(value) != {'inode', 'ready'}
+                or not _native_inode(value['inode']) or type(value['ready']) is not bool):
+            raise CustodyError('native-source-log-intent-changed')
+
+
+def _native_log_binding(selection, metadata, kit_sha, *, _publication=False):
+    from pixel_macos_custody import protected_directory
+    with protected_directory(NATIVE_STATE.parent) as parent:
+        fd = os.open(NATIVE_STATE.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        try:
+            identity, context = _native_environment_context(selection, metadata, fd, kit_sha, _publication=_publication)
+        finally:
+            os.close(fd)
+    return identity, {**context, 'kind': 'ods-native-source-log-prepare', 'path': str(NATIVE_LOGS)}
+
+
+def _native_log_files(directory, record, identity):
+    if set(record['files']) != set(_native_log_names()) or set(os.listdir(directory)) != set(_native_log_names()):
+        raise CustodyError('native-source-logs-incomplete')
+    for name in _native_log_names():
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        try:
+            value = record['files'][name]
+            if not value['ready'] or value['inode'] != _native_log_file(fd, identity):
+                raise CustodyError('native-source-log-file-changed')
+        finally:
+            os.close(fd)
+
+
+def _native_publish_log_acl(selection, directory, identity):
+    from pixel_macos_custody import protected_directory
+    _manifest, kit_sha = native_verify_kit(selection)
+    with protected_directory(NATIVE_META) as metadata:
+        selected, binding = _native_log_binding(selection, metadata, kit_sha)
+        record, _raw = _native_json_at(metadata, 'source-logs-prepare.json')
+        _native_log_record(record, binding)
+        if selected != identity or record['directory'] != native_verify_log_directory(directory, identity['id'], prefix=True):
+            raise CustodyError('native-source-log-intent-changed')
+        _native_log_files(directory, record, identity)
+    with protected_directory(NATIVE_LOGS.parent) as parent:
+        fixed = os.open(NATIVE_LOGS.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        try:
+            if native_verify_log_directory(fixed, identity['id'], prefix=True) != record['directory']:
+                raise CustodyError('native-source-log-intent-changed')
+        finally:
+            os.close(fixed)
+    lib = _native_acl_library()
+    if _native_acl_entries(directory, missing=True) == (_native_uuid(lib, identity['id']),):
+        return
+    _native_selected(selection)
+    acl = ctypes.c_void_p(lib.acl_init(1))
+    if not acl.value:
+        raise CustodyError('native-source-acl-create-failed')
+    try:
+        entry = ctypes.c_void_p()
+        qualifier = (ctypes.c_ubyte * 16).from_buffer_copy(_native_uuid(lib, identity['id']))
+        if (lib.acl_create_entry(ctypes.byref(acl), ctypes.byref(entry)) != 0 or not entry.value
+                or lib.acl_set_tag_type(entry, 1) != 0 or lib.acl_set_qualifier(entry, qualifier) != 0
+                or lib.acl_set_permset_mask_np(entry, _NATIVE_LIST_SEARCH) != 0):
+            raise CustodyError('native-source-acl-create-failed')
+        _native_flags_zero(lib, acl)
+        if lib.acl_valid(acl) != 0 or lib.acl_set_fd_np(directory, acl, _NATIVE_ACL_TYPE) != 0:
+            raise CustodyError('native-source-acl-write-failed')
+    finally:
+        lib.acl_free(acl)
+    native_verify_log_directory(directory, identity['id'])
+
+
+def native_prepare_logs(selection):
+    """Root-only, journal-first known files; publishes traverse ACL LAST.
+
+    The Source program prints to inherited stdout/stderr; it receives no
+    directory ADD/DELETE/WRITE_SECURITY permission and no rotation authority.
+    This function neither publishes a plist nor starts any process.
+    """
+    _manifest, kit_sha = native_verify_kit(selection)
+    from pixel_macos_custody import protected_directory
+    with protected_directory(NATIVE_META) as metadata:
+        identity, binding = _native_log_binding(selection, metadata, kit_sha)
+        record, raw = _native_json_at(metadata, 'source-logs-prepare.json')
+        if raw is None:
+            if os.path.lexists(NATIVE_LOGS):
+                raise CustodyError('native-source-logs-unmanaged')
+            record = dict(binding, directory=None, files={})
+            raw = _native_save_at(selection, metadata, 'source-logs-prepare.json', record)
+        _native_log_record(record, binding)
+        with protected_directory(NATIVE_LOGS.parent) as parent:
+            if record['directory'] is None:
+                _native_selected(selection)
+                try:
+                    os.mkdir(NATIVE_LOGS.name, mode=0o700, dir_fd=parent)
+                except FileExistsError:
+                    raise CustodyError('native-source-logs-unmanaged') from None
+                os.fsync(parent)
+                fd = os.open(NATIVE_LOGS.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+                try:
+                    inode = native_verify_log_directory(fd, identity['id'], prefix=True)
+                    if os.listdir(fd) or _native_acl_entries(fd, missing=True):
+                        raise CustodyError('native-source-logs-unmanaged')
+                    record['directory'] = inode
+                    raw = _native_save_at(selection, metadata, 'source-logs-prepare.json', record, previous=raw)
+                finally:
+                    os.close(fd)
+            directory = os.open(NATIVE_LOGS.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            try:
+                if native_verify_log_directory(directory, identity['id'], prefix=True) != record['directory']:
+                    raise CustodyError('native-source-log-directory-changed')
+                if set(os.listdir(directory)) - set(_native_log_names()):
+                    raise CustodyError('native-source-logs-unmanaged')
+                if _native_acl_entries(directory, missing=True):
+                    _native_log_files(directory, record, identity)  # No opening an unfinished prefix.
+                for name in _native_log_names():
+                    current = record['files'].get(name)
+                    if current is None:
+                        _native_selected(selection)
+                        try:
+                            fd = os.open(name, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                         0o600, dir_fd=directory)
+                        except FileExistsError:
+                            raise CustodyError('native-source-log-file-unmanaged') from None
+                        try:
+                            inode = _native_log_file(fd, identity, prefix=True)
+                            if os.fstat(fd).st_size:
+                                raise CustodyError('native-source-log-file-unmanaged')
+                            record['files'][name] = {'inode': inode, 'ready': False}
+                            os.fsync(fd)
+                            os.fsync(directory)
+                            raw = _native_save_at(selection, metadata, 'source-logs-prepare.json', record, previous=raw)
+                        finally:
+                            os.close(fd)
+                        current = record['files'][name]
+                    flags = os.O_RDONLY if current['ready'] else os.O_RDWR
+                    fd = os.open(name, flags | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                    try:
+                        if _native_log_file(fd, identity, prefix=not current['ready']) != current['inode']:
+                            raise CustodyError('native-source-log-file-changed')
+                        if not current['ready']:
+                            if os.fstat(fd).st_size:
+                                raise CustodyError('native-source-log-file-unmanaged')
+                            _native_selected(selection)
+                            if (os.fstat(fd).st_uid, os.fstat(fd).st_gid) != (identity['id'], identity['id']):
+                                os.fchown(fd, identity['id'], identity['id'])
+                            os.fsync(fd)
+                            current['ready'] = True
+                            raw = _native_save_at(selection, metadata, 'source-logs-prepare.json', record, previous=raw)
+                        _native_log_file(fd, identity)
+                    finally:
+                        os.close(fd)
+                _native_log_files(directory, record, identity)
+                _native_log_binding(selection, metadata, kit_sha)
+                _native_publish_log_acl(selection, directory, identity)
+                os.fsync(directory)
+                native_verify_log_directory(directory, identity['id'])
+                return {'directory': list(record['directory']),
+                        'files': {name: list(value['inode']) for name, value in record['files'].items()}}
+            finally:
+                os.close(directory)

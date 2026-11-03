@@ -275,6 +275,31 @@ def test_missing_worker_receipt_does_not_start_owner_probe(artifact):
         a.custody.require_worker(a.root, a.custody.qualify())
 
 
+def darwin_public_metadata(artifact, monkeypatch):
+    """Process test only: simulate Root metadata, retain the actual reader.
+
+    Real distinct-UID DAC is qualified separately; this fixture does not claim
+    Root ownership or Apple's ACL kernel behavior on a non-root Linux runner.
+    """
+    monkeypatch.setattr(r, 'NATIVE_MANIFEST', artifact.manifest)
+    monkeypatch.setattr(r, 'ROOT_UID', 0)
+    files = (artifact.descriptor, artifact.manifest)
+    for path in files:
+        path.chmod(0o644)
+    identities = {(path.stat().st_dev, path.stat().st_ino)
+                  for path in artifact.root.rglob('*') if path.is_file()}
+    original_lstat, original_fstat, original_stat = os.lstat, os.fstat, os.stat
+    def root_metadata(info):
+        if (info.st_dev, info.st_ino) not in identities:
+            return info
+        fields = {name: getattr(info, name) for name in dir(info) if name.startswith('st_')}
+        fields.update(st_uid=0, st_gid=0)
+        return SimpleNamespace(**fields)
+    monkeypatch.setattr(os, 'lstat', lambda *args, **kwargs: root_metadata(original_lstat(*args, **kwargs)))
+    monkeypatch.setattr(os, 'stat', lambda *args, **kwargs: root_metadata(original_stat(*args, **kwargs)))
+    monkeypatch.setattr(os, 'fstat', lambda *args, **kwargs: root_metadata(original_fstat(*args, **kwargs)))
+
+
 def test_macos_runtime_process_is_bound_to_launchd_plist_and_libproc_identity(artifact, monkeypatch):
     import grp
     from pixel_settings import coordinator as settings
@@ -292,6 +317,7 @@ def test_macos_runtime_process_is_bound_to_launchd_plist_and_libproc_identity(ar
     artifact.custody.bridge.gateway_service = SimpleNamespace(plist=plist)
     monkeypatch.setattr(settings, '_identity', lambda _bridge: identity)
     monkeypatch.setattr(r.platform, 'system', lambda: 'Darwin')
+    darwin_public_metadata(artifact, monkeypatch)
     if sys.platform != 'darwin':
         # This fixture simulates Darwin process APIs on Linux, not Darwin ACLs.
         monkeypatch.setattr('pixel_macos_custody._require_no_acl', lambda fd: os.fstat(fd))
@@ -318,6 +344,7 @@ def test_macos_runtime_process_rejects_launchd_command_drift(artifact, monkeypat
     artifact.custody.bridge.gateway_service = SimpleNamespace(plist=plist)
     monkeypatch.setattr(settings, '_identity', lambda _bridge: identity)
     monkeypatch.setattr(r.platform, 'system', lambda: 'Darwin')
+    darwin_public_metadata(artifact, monkeypatch)
     if sys.platform != 'darwin':
         monkeypatch.setattr('pixel_macos_custody._require_no_acl', lambda fd: os.fstat(fd))
     monkeypatch.setattr('pixel_macos_custody.protected_bytes', lambda _path: plist.read_bytes())

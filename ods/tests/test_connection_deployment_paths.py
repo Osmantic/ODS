@@ -205,6 +205,29 @@ def worker_main():
 def test_actual_owner_worker_receives_root_paths_and_refuses_a_missing_publication(deployment, monkeypatch):
     f = deployment
     monkeypatch.setattr(platform, 'system', lambda: 'Darwin')
+    # This preexisting owner/worker control now uses Darwin's nonsecret Root644
+    # metadata contract. Only Root UID/GID are simulated; inspect/reader/hash,
+    # native deployment comparison and owner-private state checks remain real.
+    descriptor = custody.DESCRIPTOR
+    runtime = json.loads(descriptor.read_bytes())
+    manifest = Path(runtime['manifest'])
+    for path in (descriptor, manifest):
+        path.chmod(0o644)
+    monkeypatch.setattr(custody, 'NATIVE_MANIFEST', manifest)
+    monkeypatch.setattr(custody, 'ROOT_UID', 0)
+    code = {f.root, Path(runtime['sourceRoot'])}
+    code.update(path for root in tuple(code) for path in root.rglob('*'))
+    code.update((descriptor, manifest, f.plist, Path(runtime['launcher']), Path(runtime['hostPython'])))
+    identities = {(path.stat().st_dev, path.stat().st_ino) for path in code}
+    original_stat, original_lstat, original_fstat = os.stat, os.lstat, os.fstat
+    def root_metadata(info):
+        if (info.st_dev, info.st_ino) not in identities:
+            return info
+        fields = {name: getattr(info, name) for name in dir(info) if name.startswith('st_')}
+        return SimpleNamespace(**dict(fields, st_uid=0, st_gid=0))
+    monkeypatch.setattr(os, 'stat', lambda *args, **kwargs: root_metadata(original_stat(*args, **kwargs)))
+    monkeypatch.setattr(os, 'lstat', lambda *args, **kwargs: root_metadata(original_lstat(*args, **kwargs)))
+    monkeypatch.setattr(os, 'fstat', lambda *args, **kwargs: root_metadata(original_fstat(*args, **kwargs)))
     monkeypatch.setenv('HOME', str(f.home))
     monkeypatch.setenv('OPENCLAW_CONFIG_PATH', str(f.config))
     monkeypatch.setattr(controller, '_default_state_dir', lambda: str(f.home / 'absent-legacy'))

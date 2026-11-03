@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 
@@ -86,6 +87,7 @@ def test_candidate_uses_upstream_policy_without_activating_services(tmp_path, mo
             generated.chmod(0o700)  # configure.mjs creates this private parent.
             (generated / 'workspace/AGENTS.md').write_text('upstream instructions')
             (generated / 'ops-policy.json').write_text('{"originalPolicy":true}')
+            (generated / 'gateway.env').write_text("PIXEL_LIMB_EMAIL_ENABLED='0'\n")
         elif args[0] == str(node) and args[1].endswith('render-config.mjs'):
             assert args[1].endswith('render-config.mjs')
             assert kwargs['env']['PIXEL_LIMB_OPERATIONS_ENABLED'] == '1'
@@ -121,6 +123,13 @@ def test_candidate_uses_upstream_policy_without_activating_services(tmp_path, mo
         assert value['plugins']['entries']['pixel-ods']['config']['workspacePreviewTransport'] == 'docker-desktop'
         assert (destination / 'openclaw.json').stat().st_mode & 0o777 == 0o600
         assert (destination / 'workspace/AGENTS.md').read_text() == 'upstream instructions'
+        sidefiles = json.loads((destination / 'candidate.json').read_text())['connectionSidefiles']
+        assert set(sidefiles) == {'gateway.env', 'onboarding.json'}
+        assert (destination / 'gateway.env').read_text() == "PIXEL_LIMB_EMAIL_ENABLED='0'\n"
+        assert json.loads((destination / 'onboarding.json').read_text()) == json.loads(answers.read_text())
+        for name, checksum in sidefiles.items():
+            assert (destination / name).stat().st_mode & 0o777 == 0o600
+            assert hashlib.sha256((destination / name).read_bytes()).hexdigest() == checksum
         assert not (home / 'openclaw.json').exists()
         assert not list(destination.glob('*.service'))
     assert not list(tmp_path.glob('.pixel-config-*'))
