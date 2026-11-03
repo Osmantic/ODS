@@ -598,7 +598,9 @@ test('requested notes reads and harmless catalog calls keep exact private ticket
     assert.equal(recovery.floor(ev,CONTEXT),undefined);await admitConcrete(outcomes,recovery,ev,context);
     const submitted=[];
     const adapter=createIntegrationTools({context:CONTEXT,outcomes,requireBound:ctx=>recovery.isReviewOnly(ctx),submit:async payload=>{submitted.push(payload);
-      return payload.action==='notes-read'?{ok:true,path:'Example.md',text:'Invented note',recoveryReviewOnly:true}
+      return payload.action==='notes-read'?{ok:true,path:'Example.md',text:'Invented note',recoveryReviewOnly:true,
+          reviewReferences:{version:1,source:'obsidian',binding:'a'.repeat(64),
+            entries:[{path:'Example.md',binding:'b'.repeat(64)}],truncated:false}}
         :payload.action==='notes-search'?{ok:true,results:[],recoveryReviewOnly:true,
           reviewReferences:{version:1,source:'obsidian',binding:'a'.repeat(64),entries:[],truncated:false}}
           :{ok:true,servers:[],recoveryReviewOnly:true};}}).find(value=>value.name===name);
@@ -624,7 +626,9 @@ test('builtin source and verb changes after operation-floor admission cannot bor
     assert.equal(recovery.floor(ev,CONTEXT),undefined);await admitConcrete(outcomes,recovery,ev,context);
     const submitted=[];
     const mcp=createIntegrationTools({context:CONTEXT,outcomes,requireBound:ctx=>recovery.isReviewOnly(ctx),submit:async payload=>{submitted.push(payload);
-      return {ok:true,server:'app:documents',tool:'read',text:'Invented document',recoveryReviewOnly:true};}}).find(value=>value.name==='pixel_ods_mcp');
+      return {ok:true,server:'app:documents',tool:'read',text:'Invented document',recoveryReviewOnly:true,
+        reviewReferences:{version:1,source:'paperless',binding:'a'.repeat(64),
+          entries:[{id:'1',title:'Invented document'}],truncated:false}};}}).find(value=>value.name==='pixel_ods_mcp');
     const actual=change==='source'?{...params,server:'app:photos',tool:'search'}:change==='verb'?{...params,tool:'search'}:params;
     const result=await mcp.execute(context.toolCallId,actual);
     if(change==='none') {
