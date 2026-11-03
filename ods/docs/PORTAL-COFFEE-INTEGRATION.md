@@ -19,6 +19,13 @@ The installed, published and newly composed code have different evidence:
 The `c7f7aded7` scheduler and Darwin follow-ups are already composed. Earlier
 installed and hosted evidence does not certify newer runtime source.
 
+The ODS-maintained Source 4.3.42 candidate also fixes proposal-file publication
+under the gateway's private umask, with coherent bundle/installer/client pins and
+preserved old prepared-client identities. Its deterministic artifact and focused
+component checks are recorded in [source provenance](../vendor/PIXEL-SOURCE-PROVENANCE.md).
+This is not another installed qualification; the historical public-export audit
+file gate remains failed as recorded there.
+
 Native Mac schedule controls now reuse the protected launchd runtime, Root
 access controller and existing cron worker. Controlled checks cover source and
 owner identity, native request dispatch, bounded results and reconciliation
