@@ -71,6 +71,11 @@ def upgrade_config(config):
     return config
 
 
+def notification_context(config, secrets):
+    """Private cohesion marker for the ntfy destination/account and password."""
+    return digest("ntfy-admission-v1", config["notifications"], secrets.get("ntfyPassword", ""))
+
+
 class Store:
     """Settings, secrets, approvals and the activity log, each an owner-only file."""
 

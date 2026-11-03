@@ -31,7 +31,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import integrations_notes as notes  # noqa: E402
 from integrations_common import (IntegrationError, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES,  # noqa: E402
-                                 NETWORK_TIMEOUT, SCHEMA_VERSION, Store, digest, now, open_direct)
+                                 NETWORK_TIMEOUT, SCHEMA_VERSION, Store, digest, now, notification_context, open_direct)
 from integrations_mcp import LocalServer, LocalServers, McpSession, describe_tool  # noqa: E402
 
 MAX_SERVERS = 20
@@ -146,6 +146,7 @@ def validate_settings(current, incoming):
 def public_config(config, secrets):
     """Settings for the owner's screen: whether each secret is set, never its value."""
     value = json.loads(json.dumps(config))
+    value.pop("approvalBindings", None)
     value["notifications"]["hasPassword"] = bool(secrets.get("ntfyPassword"))
     for server in value["mcp"]["servers"]:
         server["hasToken"] = bool(secrets["mcp"].get(server["id"]))
@@ -157,6 +158,17 @@ def public_config(config, secrets):
 # ---------------------------------------------------------------- notifications (ntfy)
 
 def send_notification(config, secrets, title, message, priority="default", link=""):
+    # Untouched legacy pairs keep working. Once either side has been saved with
+    # a marker, require both files to describe the same endpoint/credential pair.
+    # A save interrupted between the two writes must never send a new password
+    # to the old destination (or an old password to the new destination).
+    bindings = config.get("approvalBindings", {})
+    marked = "notificationContext" in bindings or "notificationContext" in secrets
+    if marked:
+        expected = notification_context(config, secrets)
+        if bindings.get("notificationContext") != expected or secrets.get("notificationContext") != expected:
+            raise IntegrationError("notification-check-required", "The saved notification destination and password could not be verified together. "
+                                   "Review and save Portal integrations again before sending notifications.")
     settings = config["notifications"]
     if not settings["enabled"]:
         raise IntegrationError("notifications-off", "Notifications are not set up. The owner can connect ntfy in Settings → Portal integrations.")
@@ -189,6 +201,15 @@ def send_notification(config, secrets, title, message, priority="default", link=
 
 
 # ---------------------------------------------------------------- the service
+
+def server_context(server, secrets):
+    """Private identity, never a public credential projection."""
+    return {**{key: server.get(key) for key in ('id', 'kind', 'url', 'command', 'workingFolder')},
+            'envNames': sorted(server.get('envNames', [])),
+            'token': secrets['mcp'].get(server['id'], ''),
+            'env': {name: secrets['mcpEnv'].get(server['id'], {}).get(name, '')
+                    for name in server.get('envNames', [])}}
+
 
 class _AdmittedLocalServers:
     """A session's immutable admission, checked again before publishing a local process."""
@@ -297,6 +318,31 @@ class Integrations:
                     for key, values in secrets["mcpEnv"].items() if key in servers}
             secrets["mcpEnv"] = {key: values for key, values in kept.items() if values}
             # Revoke first, so an interrupted settings write fails closed.
+            # These markers bind the credentials file to the intended provider.
+            # The two file renames can be separated by a crash or a disk error.
+            mcp_contexts = {server["id"]: digest(server_context(server, secrets))
+                            for server in updated["mcp"]["servers"]}
+            previous_contexts = config.get("approvalBindings", {}).get("mcpContexts", {})
+            saved_contexts = secrets.get("mcpContexts", {})
+            for server_id, target in mcp_contexts.items():
+                saved_target = saved_contexts.get(server_id)
+                if saved_target == previous_contexts.get(server_id) or target == saved_target:
+                    continue
+                # An unrelated save must not bind a replacement key to the old URL.
+                retained_token = secrets["mcp"].get(server_id) and server_id not in changes.get("mcp", {})
+                retained_env = set(secrets["mcpEnv"].get(server_id, {})) - set(env_changes.get(server_id, {}))
+                if retained_token or retained_env:
+                    raise IntegrationError("mcp-check-required", "Restore the intended MCP destination or re-enter its credentials before saving.")
+            updated.setdefault("approvalBindings", {})["mcpContexts"] = mcp_contexts
+            secrets["mcpContexts"] = mcp_contexts
+            notification_binding = notification_context(updated, secrets)
+            previous_ntfy = config.get("approvalBindings", {}).get("notificationContext")
+            staged_ntfy = secrets.get("notificationContext")
+            if (previous_ntfy != staged_ntfy and notification_binding != staged_ntfy
+                    and secrets.get("ntfyPassword") and "ntfyPassword" not in changes):
+                raise IntegrationError("notification-check-required", "Restore the intended notification destination or re-enter its password before saving.")
+            updated["approvalBindings"]["notificationContext"] = notification_binding
+            secrets["notificationContext"] = notification_binding
             self.store.save_approvals([])
             self.store.save_secrets(secrets)
             self.store.save_config(updated)
@@ -317,6 +363,13 @@ class Integrations:
             config, secrets = self.store.config(), self.store.secrets()
             if self._server(config, server["id"], enabled=False) != server:
                 raise IntegrationError("stale-revision", "These settings changed. Reload them and try again.")
+            bindings = config.get("approvalBindings", {})
+            if "mcpContexts" in bindings or "mcpContexts" in secrets:
+                expected = digest(server_context(server, secrets))
+                for contexts in (bindings.get("mcpContexts"), secrets.get("mcpContexts")):
+                    if not isinstance(contexts, dict) or contexts.get(server["id"]) != expected:
+                        raise IntegrationError("mcp-check-required", "The saved MCP destination and credentials could not be verified together. "
+                                               "Review and save Portal integrations again before connecting.")
             admitted = _AdmittedLocalServers(self, digest(config, secrets, self._runtime_revision))
             return McpSession(server, secrets["mcp"].get(server["id"], ""), secrets["mcpEnv"].get(server["id"], {}), admitted)
 
