@@ -8,13 +8,62 @@ import net from 'node:net';
 const SOCKET = '/run/ods-pixel-integrations/control.sock';
 const MAX_REPLY = 512 * 1024;
 const TIMEOUT_MS = 130000;
-const REVIEW_READS = new Set(['notes-search','notes-read','mcp-tools']);
-const REVIEW_APP_READS = {'app:documents':['search','read'],'app:photos':['search'],'app:watch':['list'],'app:news':['unread','digest']};
+const freezeRole = value => {
+  if (value && typeof value === 'object') {for (const child of Object.values(value)) freezeRole(child);Object.freeze(value);}
+  return value;
+};
+// Private native policy, not an owner-intent classifier, availability report or
+// permission grant. Normal model-facing tool definitions below stay unchanged.
+export const NATIVE_REVIEW_ROLE = freezeRole({version:1,scope:'native-review-policy-not-owner-intent',
+  limits:{distinctCanonicalOperations:4,askProposalFamilies:1},operations:[
+  {canonicalOperation:'integration:catalog',action:'mcp-tools',maximumEffect:'catalog-metadata',
+    role:'List saved integration tool metadata only; never start a custom server or read private source data.',
+    constraints:{metadataOnly:true,customProgramStart:false}},
+  {canonicalOperation:'obsidian:search',action:'notes-search',maximumEffect:'private-read',arguments:{query:'string'},
+    role:'Search bounded names/content in the configured Obsidian vault; no file changes.',constraints:{queryMaxCodePoints:300}},
+  {canonicalOperation:'obsidian:read',action:'notes-read',maximumEffect:'private-read',arguments:{path:'note-path'},
+    role:'Read bounded contents of one Markdown note inside the configured Obsidian vault; no file changes.',constraints:{pathMaxCodePoints:512}},
+  {canonicalOperation:'obsidian:append',action:'notes-write',mode:'append',maximumEffect:'approval-proposal',requiresCurrentAsk:true,
+    arguments:{path:'note-path',text:'string',mode:'append'},role:'Only prepare or reuse an exact Ask request to append. Never write the note, consume approval or notify; Allowed/Off refuse.',
+    constraints:{pathMaxCodePoints:512,textMaxCodePoints:20000,defaultMode:'append',preserveFullText:true}},
+  {canonicalOperation:'obsidian:create',action:'notes-write',mode:'create',maximumEffect:'approval-proposal',requiresCurrentAsk:true,
+    arguments:{path:'note-path',text:'string',mode:'create'},role:'Only prepare or reuse an exact Ask request to create a note. Never create it, consume approval or notify; Allowed/Off refuse.',
+    constraints:{pathMaxCodePoints:512,textMaxCodePoints:20000,preserveFullText:true}},
+  {canonicalOperation:'paperless:search',action:'mcp-call',server:'app:documents',tool:'search',maximumEffect:'private-read',arguments:{query:'string'},
+    role:'Search bounded existing documents in the configured Paperless library; no document changes.',constraints:{normalizedQueryMaxCodePoints:200}},
+  {canonicalOperation:'paperless:read',action:'mcp-call',server:'app:documents',tool:'read',maximumEffect:'private-read',arguments:{id:'document'},
+    role:'Read bounded text of the selected Paperless document; no document changes.',constraints:{id:'positive safe integer or canonical positive decimal string <= 9223372036854775807'}},
+  {canonicalOperation:'immich:search',action:'mcp-call',server:'app:photos',tool:'search',maximumEffect:'private-read',arguments:{query:'string',place:'string',after:'string',before:'string'},
+    role:'Search configured Immich photos with the supplied query/place/date restrictions; no photo changes or query fallback.',constraints:{normalizedQueryMaxCodePoints:200,normalizedPlaceMaxCodePoints:100,hostValidatesDates:true}},
+  {canonicalOperation:'watch:list',action:'mcp-call',server:'app:watch',tool:'list',maximumEffect:'private-read',arguments:{},
+    role:'List configured webpage monitors; do not create or remove any monitor.',constraints:{readOnly:true}},
+  {canonicalOperation:'watch:add',action:'mcp-call',server:'app:watch',tool:'add',maximumEffect:'approval-proposal',requiresCurrentAsk:true,arguments:{url:'string',title:'string',below:'number'},
+    role:'Only prepare or reuse an exact Ask request for a webpage/price monitor. Never create the monitor, consume approval or notify; Allowed/Off refuse.',constraints:{strippedTitleMaxCodePoints:200,hostValidatesUrlAndPrice:true}},
+  {canonicalOperation:'watch:remove',action:'mcp-call',server:'app:watch',tool:'remove',maximumEffect:'approval-proposal',requiresCurrentAsk:true,arguments:{id:'string'},
+    role:'Only prepare or reuse an exact Ask request to remove the selected monitor. Never remove it, consume approval or notify; Allowed/Off refuse.',constraints:{preserveExactId:true}},
+  {canonicalOperation:'freshrss:unread',action:'mcp-call',server:'app:news',tool:'unread',maximumEffect:'private-read',arguments:{},
+    role:'Read bounded unread FreshRSS stories for this response; do not mark read or send a notification.',constraints:{delivery:false}},
+  {canonicalOperation:'freshrss:digest_read',action:'mcp-call',server:'app:news',tool:'digest',maximumEffect:'private-read',arguments:{},
+    role:'Read a bounded FreshRSS digest for this response; do not mark read, notify or arm later delivery.',constraints:{delivery:false}},
+].map(entry=>({...entry,adapter:entry.action.startsWith('notes-')?'pixel_ods_notes':'pixel_ods_mcp',
+  adapterAction:entry.action.startsWith('notes-')?entry.action.slice('notes-'.length):entry.action==='mcp-tools'?'list':'call',
+  ...(entry.maximumEffect==='approval-proposal'?{adapterPreparationAction:'prepare'}:{})}))});
+export function nativeReviewOperation(payload) {
+  const action=payload?.action==='notes-prepare'?'notes-write':payload?.action==='mcp-prepare'?'mcp-call':payload?.action;
+  const operation=NATIVE_REVIEW_ROLE.operations.find(entry=>entry.action===action
+    && (entry.action!=='notes-write'||entry.mode===payload.mode)
+    && (entry.action!=='mcp-call'||entry.server===payload.server&&entry.tool===payload.tool));
+  return payload?.action==='mcp-prepare' && operation?.maximumEffect!=='approval-proposal'?undefined:operation;
+}
+const REVIEW_READS = new Set(NATIVE_REVIEW_ROLE.operations.filter(entry=>entry.action!=='mcp-call'
+  &&entry.maximumEffect!=='approval-proposal').map(entry=>entry.action));
+const REVIEW_APP_READS = Object.fromEntries([...new Set(NATIVE_REVIEW_ROLE.operations.filter(entry=>entry.action==='mcp-call')
+  .map(entry=>entry.server))].map(server=>[server,NATIVE_REVIEW_ROLE.operations.filter(entry=>entry.server===server
+    &&entry.maximumEffect==='private-read').map(entry=>entry.tool)]));
 const MCP_USAGE = 'Give the arguments too. To see the servers and their tools: {"action": "list"}. To run a tool: '
   + '{"action": "call", "server": "<server id>", "tool": "<tool name>", "arguments": {...}}, for example '
   + '{"action": "call", "server": "app:photos", "tool": "search", "arguments": {"place": "Lisbon"}}.';
 const APPROVAL_TEXT = 'This call created or found a pending request; the action has not run. Tell the owner it needs approval in Settings → Portal integrations (they may also get a notification). After they approve, call this tool again with exactly the same arguments so the service can check and use the approval; do not just repeat this notice. Approval is for one use. For any later requested action, including an identical one, call the tool again to submit that new request. In a scheduled task, do not wait: report this returned status and finish; a later run within 24 hours can check the approval with exactly the same arguments.';
-
 export function submitIntegration(payload, {connect = net.createConnection, platform = process.platform, signal, admitted} = {}) {
   return new Promise((resolve, reject) => {
     if (platform !== 'linux' && platform !== 'darwin') return reject(new Error('Portal integrations are not available on this system yet.'));
@@ -131,6 +180,20 @@ async function run(submit, payload, signal, render, observed, admitted) {
       {status:'outcome-unknown',code:'review-only-read-result-invalid'},true);
   }
   const approvalIdValid = typeof reply.approvalId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(reply.approvalId);
+  if (payload.action==='notes-prepare'||payload.action==='mcp-prepare') {
+    if (reply.preparationOnly!==true || reply.actionExecuted!==false || reply.approvalConsumed!==false || !approvalIdValid
+        || !['approval-required','approval-ready'].includes(reply.status)
+        || payload.recoveryReviewOnly===true && reply.recoveryReviewOnly!==true) {
+      report('unknown');
+      return text('The preparation receipt could not be verified. No action completion or approval consumption was confirmed.',
+        {status:'outcome-unknown',code:'preparation-result-invalid'},true);
+    }
+    report(reply.status==='approval-ready'?'ready':'pending');
+    return text(reply.status==='approval-ready'
+      ? 'This exact action already has owner approval. Preparation did not run it or use the approval. Only a separate owner-requested normal write/call with exactly the approved arguments can execute it.'
+      : `${reply.summary}\n\nApproval was prepared only: no action ran, no approval was used and no notification was sent. Review Settings → Portal integrations. After approval, a separate owner-requested normal write/call with exactly the same arguments lets the service check the approval.`,
+      {status:reply.status,approvalId:reply.approvalId,preparationOnly:true,actionExecuted:false,approvalConsumed:false});
+  }
   const reviewedNoEffect = payload.recoveryReviewOnly === true && reply.recoveryReviewOnly === true &&
     reply.actionExecuted === false && reply.approvalConsumed === false && approvalIdValid;
   if (reply.status === 'review-only-ready') {
@@ -206,6 +269,12 @@ function notesRequest(params) {
   if (action === 'read') return {action: 'notes-read', path: str(params?.path)};
   if (action === 'write') return {action: 'notes-write', path: str(params?.path), text: str(params?.text),
     mode: params?.mode === 'create' ? 'create' : 'append'};
+  if (action === 'prepare') {
+    if (Object.keys(params).some(key=>!['action','path','text','mode'].includes(key))
+        || typeof params.path!=='string' || typeof params.text!=='string'
+        || params.mode!==undefined&&!['append','create'].includes(params.mode)) return null;
+    return {action:'notes-prepare',path:params.path,text:params.text,mode:params.mode??'append'};
+  }
   return null;
 }
 
@@ -219,7 +288,10 @@ export function integrationRequest(name, params, context) {
     message: str(params?.message), priority: params?.priority ?? 'default'};
   if (name !== 'pixel_ods_mcp') return null;
   if (params?.action === 'list') return {action: 'mcp-tools'};
-  if (params?.action !== 'call') return null;
+  if (params?.action !== 'call' && params?.action !== 'prepare') return null;
+  if (params.action==='prepare' && (Object.keys(params).some(key=>!['action','server','tool','arguments'].includes(key))
+      || typeof params.server!=='string' || typeof params.tool!=='string'
+      || params.arguments!==undefined && (!params.arguments || typeof params.arguments!=='object' || Array.isArray(params.arguments)))) return null;
   const args = params?.arguments && typeof params.arguments === 'object' && !Array.isArray(params.arguments) ? params.arguments : {};
   const server = str(params?.server), tool = str(params?.tool);
   const identityString = value => typeof value === 'string' && value.length > 0
@@ -227,8 +299,8 @@ export function integrationRequest(name, params, context) {
   const runContext = context?.agentId === 'pixel' && identityString(context.sessionId)
     && identityString(context.sessionKey) && context.sessionKey.startsWith('agent:pixel:')
     ? {sessionId: context.sessionId, sessionKey: context.sessionKey} : undefined;
-  return {action: 'mcp-call', server, tool, arguments: args,
-    ...(server === 'app:news' && tool === 'digest' && runContext ? {runContext} : {})};
+  return {action: params.action==='prepare'?'mcp-prepare':'mcp-call', server, tool, arguments: args,
+    ...(params.action==='call' && server === 'app:news' && tool === 'digest' && runContext ? {runContext} : {})};
 }
 
 // This is a permission-reducing check for the latched review path only. Keep
@@ -241,24 +313,25 @@ export function reviewIntegrationCandidate(name, params, context) {
   };
   let maximumEffect;
   if (name === 'pixel_ods_notes') {
+    const operation=nativeReviewOperation({action:'notes-'+params.action,mode:params.mode??'append'});
+    if (!operation) throw new Error('invalid-review-operation');
     if (params.action === 'search') {ownKeys(['action','query']); if (typeof params.query !== 'string' || !params.query.trim()
-      || [...params.query].length>300) throw new Error('invalid-review-arguments');}
+      || [...params.query].length>operation.constraints.queryMaxCodePoints) throw new Error('invalid-review-arguments');}
     else if (params.action === 'read') {ownKeys(['action','path']); if (!canonicalReviewNotePath(params.path)) throw new Error('invalid-review-arguments');}
-    else if (params.action === 'write') {
+    else if (params.action === 'write' || params.action === 'prepare') {
       ownKeys(['action','path','text','mode']);
-      if (!canonicalReviewNotePath(params.path) || typeof params.text !== 'string' || !params.text.trim() || [...params.text].length > 20000
+      if (!canonicalReviewNotePath(params.path) || typeof params.text !== 'string' || !params.text.trim()
+          || [...params.text].length > operation.constraints.textMaxCodePoints
           || params.mode !== undefined && !['append','create'].includes(params.mode)) throw new Error('invalid-review-arguments');
     } else throw new Error('invalid-review-arguments');
-    maximumEffect = params.action === 'write' ? 'approval-proposal' : 'private-read';
+    maximumEffect = operation.maximumEffect;
   } else if (name === 'pixel_ods_mcp') {
-    if (params.action === 'list') {ownKeys(['action']); maximumEffect = 'catalog-metadata';}
-    else if (params.action === 'call') {
+    if (params.action === 'list') {ownKeys(['action']); maximumEffect = nativeReviewOperation({action:'mcp-tools'}).maximumEffect;}
+    else if (params.action === 'call' || params.action === 'prepare') {
       ownKeys(['action','server','tool','arguments']);
-      const schemas = {'app:documents':{search:{query:'string'},read:{id:'document'}},
-        'app:photos':{search:{query:'string',place:'string',after:'string',before:'string'}},
-        'app:watch':{list:{},add:{url:'string',title:'string',below:'number'},remove:{id:'string'}},
-        'app:news':{unread:{},digest:{}}};
-      const schema = Object.hasOwn(schemas,params.server) && Object.hasOwn(schemas[params.server],params.tool) && schemas[params.server][params.tool];
+      const operation = nativeReviewOperation({action:'mcp-call',server:params.server,tool:params.tool});
+      if (params.action==='prepare' && operation?.maximumEffect!=='approval-proposal') throw new Error('invalid-review-operation');
+      const schema = operation?.arguments;
       const args = params.arguments ?? {};
       if (!schema || !args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).some(key => !Object.hasOwn(schema,key))) throw new Error('invalid-review-arguments');
       for (const [key,value] of Object.entries(args)) {
@@ -266,7 +339,7 @@ export function reviewIntegrationCandidate(name, params, context) {
           : schema[key] === 'number' ? typeof value !== 'number' || !Number.isFinite(value)
             : typeof value !== 'string') throw new Error('invalid-review-arguments');
       }
-      // Match the host's existing truncating fields before the semantic view is
+      // Match the host's existing truncating fields before the native view is
       // constructed. Refuse a lost restriction; never shorten it on the model's
       // behalf. Python str.split() also treats the four ASCII separators as
       // whitespace, unlike JavaScript's \s.
@@ -274,16 +347,20 @@ export function reviewIntegrationCandidate(name, params, context) {
       const words=value=>value.split(whitespace).filter(Boolean).join(' ');
       const stripped=value=>value.replace(/^[\u0009-\u000d\u001c-\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+|[\u0009-\u000d\u001c-\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+$/gu,'');
       const bounded=(value,maximum)=>value===undefined || [...words(value)].length<=maximum;
-      if (params.server==='app:documents' && params.tool==='search' && !bounded(args.query,200)
-        || params.server==='app:photos' && (!bounded(args.query,200) || !bounded(args.place,100))
+      if (params.server==='app:documents' && params.tool==='search' && !bounded(args.query,operation.constraints.normalizedQueryMaxCodePoints)
+        || params.server==='app:photos' && (!bounded(args.query,operation.constraints.normalizedQueryMaxCodePoints)
+          || !bounded(args.place,operation.constraints.normalizedPlaceMaxCodePoints))
         || params.server==='app:watch' && params.tool==='add' && args.title!==undefined
-          && [...stripped(args.title)].length>200)
+          && [...stripped(args.title)].length>operation.constraints.strippedTitleMaxCodePoints)
         throw new Error('invalid-review-arguments');
       if (params.server === 'app:documents' && params.tool === 'read' && !canonicalReviewDocumentId(args.id)) throw new Error('invalid-review-arguments');
-      maximumEffect = params.server === 'app:watch' && ['add','remove'].includes(params.tool) ? 'approval-proposal' : 'private-read';
+      maximumEffect = operation.maximumEffect;
     } else throw new Error('invalid-review-arguments');
   } else throw new Error('invalid-review-arguments');
-  return {raw:snapshotIntegrationRequest({name,params}),payload:snapshotIntegrationRequest(integrationRequest(name,params,context)),maximumEffect};
+  const payload=snapshotIntegrationRequest(integrationRequest(name,params,context));
+  const role=nativeReviewOperation(payload);
+  if (!role || role.maximumEffect!==maximumEffect) throw new Error('invalid-review-operation');
+  return {raw:snapshotIntegrationRequest({name,params}),payload,maximumEffect:role.maximumEffect};
 }
 
 export function canonicalReviewNotePath(value) {
@@ -362,17 +439,17 @@ export function createIntegrationTools({submit = submitIntegration, context, out
   return [
     {
       name: 'pixel_ods_notes',
-      description: "Only Markdown notes in the owner's Obsidian vault. For Paperless documents, bills or PDFs, use pixel_ods_mcp action list instead. action search: find notes holding words (query). action read: read a note (path from a search, such as Home/Lease.md). action write: add text (mode append) or create a note (mode create), only when the owner asks to save something. Call action write for every new save request, even if you expect approval or the text is identical. The service creates a request or performs the permitted write. Only its returned status approval-required means a request is pending; describing the need for approval creates nothing.",
+      description: "Markdown notes in the owner's Obsidian vault; Paperless docs/PDFs use pixel_ods_mcp action list. search finds notes; read opens a path from search. prepare creates an approval request to append text or create a note, using path/text/mode. It never writes or uses an approval, even Allowed; Off refuses. Search/read do not create requests. To fulfill the owner's preparation request, use prepare after any required read confirms its conditions. Announcing preparation creates nothing. write actually saves under policy, only when the owner asks to save. Each save/retry needs a normal call, including identical arguments; only typed receipts establish pending/done/refused. Portal approval IDs have no lookup or decision tool.",
       parameters: {type: 'object', additionalProperties: false, required: ['action'],
-        properties: {action: {type: 'string', enum: ['search', 'read', 'write']},
+        properties: {action: {type: 'string', enum: ['search', 'read', 'write', 'prepare'], description: 'search/read retrieve notes; prepare creates an approval request without writing; write saves under the configured permissions.'},
           query: {type: 'string', description: 'For search: words to look for, such as "lease deposit".'},
-          path: {type: 'string', description: 'For read and write: the note path inside the vault.'},
-          text: {type: 'string', description: 'For write: Markdown text to add.'},
-          mode: {type: 'string', enum: ['append', 'create'], description: 'For write: append to an existing note or create a new one.'}}},
+          path: {type: 'string', description: 'For read, write or prepare: the note path inside the vault.'},
+          text: {type: 'string', description: 'For write or prepare: the exact Markdown text to add.'},
+          mode: {type: 'string', enum: ['append', 'create'], description: 'For write or prepare: append to an existing note or create a new one.'}}},
       execute: (_id, params, signal) => {
         const request = integrationRequest('pixel_ods_notes', params, context);
         return request ? dispatch(_id, 'pixel_ods_notes', params, request, signal, notesText)
-          : Promise.resolve(text('Use action search, read or write.', {status: 'invalid'}, true));
+          : Promise.resolve(text('Use action search, read, write or prepare with its exact arguments.', {status: 'invalid'}, true));
       },
     },
     {
@@ -388,17 +465,18 @@ export function createIntegrationTools({submit = submitIntegration, context, out
     },
     {
       name: 'pixel_ods_mcp',
-      description: "The owner's configured apps and custom MCP servers: documents (Paperless-ngx), photos (Immich), watched web pages and price alerts, news (FreshRSS), Home Assistant and others. This catalog does not include native Obsidian, ntfy or Google connections. action list: show server ids and permitted tools with their arguments; always list before the first call. action call: submit the requested action with server, tool and arguments. Call for every new action, including an identical later one, even when the catalog says needsApproval. That flag creates no request; only the call's returned status approval-required confirms a pending request. Use pixel_ods_notes for notes and pixel_ods_notify for notifications.",
+      description: "Configured apps/custom MCP: Paperless documents, Immich photos, watched web pages/price alerts, FreshRSS news, Home Assistant and others; not native notes/ntfy/Google. list shows server IDs/tools/arguments; list before the first call. prepare creates an approval request for an exact custom MCP call or watch add/remove using server/tool/arguments. It never executes or uses approval, even Allowed; Off refuses. Watch preparation reads metadata needed to bind the target. call submits the actual action under policy. Each new action/retry needs a normal call, including identical arguments or needsApproval; only typed receipts establish pending/done/refused. Notes use pixel_ods_notes; notifications use pixel_ods_notify. Portal approval IDs have no lookup or decision tool.",
       parameters: {type: 'object', additionalProperties: false, required: ['action'],
-        properties: {action: {type: 'string', enum: ['list', 'call']},
-          server: {type: 'string', description: 'For call: the server id from list, such as home.'},
-          tool: {type: 'string', description: 'For call: the tool name from list.'},
-          arguments: {type: 'object', description: 'For call: the tool arguments as an object.'}}},
+        properties: {action: {type: 'string', enum: ['list', 'call', 'prepare'], description: 'list retrieves tool metadata; prepare creates an approval request without execution; call submits the actual tool action under policy.'},
+          server: {type: 'string', description: 'For call or prepare: the server id from list, such as home.'},
+          tool: {type: 'string', description: 'For call or prepare: the tool name from list.'},
+          arguments: {type: 'object', description: 'For call or prepare: the exact tool arguments as an object.'}}},
       execute: (_id, params, signal) => {
         if (params?.action === 'list') return dispatch(_id, 'pixel_ods_mcp', params, {action: 'mcp-tools'}, signal, toolsText);
         // A small model sometimes sends no arguments at all; show it the exact shape to retry with.
-        if (params?.action !== 'call') return Promise.resolve(text(MCP_USAGE, {status: 'invalid'}, true));
+        if (params?.action !== 'call' && params?.action !== 'prepare') return Promise.resolve(text(MCP_USAGE, {status: 'invalid'}, true));
         const payload = integrationRequest('pixel_ods_mcp', params, context);
+        if (!payload) return Promise.resolve(text('Prepare needs the exact server, tool and argument object.',{status:'invalid'},true));
         return dispatch(_id, 'pixel_ods_mcp', params, payload, signal,
           reply => `${reply.isError ? 'The tool reported an error:\n' : ''}${reply.text}`);
       },

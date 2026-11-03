@@ -605,14 +605,17 @@ class AppActions:
             self.store._write("digest-job.json", None)
             return {"cleared": True}
 
-    def _review_watch_change(self, tool, request, *, reference_context=None):
+    def _review_watch_change(self, tool, request, *, reference_context=None, preparation_only=False):
         """Prepare the normal exact watch digest; never call a watch actuator."""
         with self._watch_lock:
             with self.store.lock:
                 config, secrets = self.store.config(), self.store.secrets()
                 if not config["apps"]["watch"]["enabled"]:
                     raise IntegrationError("app-off", "Watched pages are not connected.")
-                self._require_review_ask(config["apps"]["watch"]["changes"])
+                if preparation_only:
+                    self._require_prepare_policy(config["apps"]["watch"]["changes"])
+                else:
+                    self._require_review_ask(config["apps"]["watch"]["changes"])
                 config, settings, key = self._verified_app_snapshot(config, secrets, "watch")
                 self._check_app_reference(reference_context, config, "watch", key)
                 epoch = self._review_binding(config, "apps", "watch")
@@ -650,18 +653,24 @@ class AppActions:
                 details = (action, watch_id, target)
             with self.store.lock:
                 current, current_secrets = self.store.config(), self.store.secrets()
-                self._require_review_ask(current["apps"]["watch"]["changes"])
+                if preparation_only:
+                    self._require_prepare_policy(current["apps"]["watch"]["changes"])
+                else:
+                    self._require_review_ask(current["apps"]["watch"]["changes"])
                 self._assert_watch_context(config, key)
                 self._verified_app_snapshot(current, current_secrets, "watch")
                 self._check_app_reference(reference_context, current, "watch", current_secrets["apps"].get("watch", ""))
                 if self._review_binding(current, "apps", "watch") != epoch:
                     raise IntegrationError("stale-revision", "The watched pages review identity changed. Nothing was done.")
                 if already_matches:
+                    if preparation_only:
+                        raise IntegrationError("preparation-no-change", "The page already has those watch settings. "
+                                               "No action or approval request was prepared.")
                     raise IntegrationError("review-only-no-change", "The page already has those watch settings. "
                                            "This recovery made no change or approval request.")
                 summary = redact_secrets(summary, {"admittedAppKey": key})
-                return self._review_approval("watch", summary,
-                                             digest("watch-v2", epoch, context, settings, *details))
+                prepare = self._prepare_approval if preparation_only else self._review_approval
+                return prepare("watch", summary, digest("watch-v2", epoch, context, settings, *details))
 
     def _watch_change(self, config, settings, key, action, request):
         # Serialise mutations of this provider, not unrelated owner Settings.

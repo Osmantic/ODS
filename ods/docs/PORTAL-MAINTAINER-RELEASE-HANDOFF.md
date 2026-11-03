@@ -76,6 +76,12 @@ evidence retains its recorded scope.
 Neither result qualifies the newer local code or another installed update.
 
 SDK12 cancellation repairs passed native cold controls, not real-model benefit.
+The local composition also includes explicit non-executing approval preparation.
+One real Dashboard-to-native-9B journey selected the correct note and created
+the exact pending request without writing or consuming old approvals. Its QA
+plugin-register warning remains under audit. This single thinking-enabled
+journey does not qualify the default owner profile, negative cases or final
+installed operation, and it has not been published or installed.
 Previous semantic experiments remain failed evidence. The latest operations-only
 interface failed its 9B threshold: 48/56 valid cells qualified, with zero
 false-eligible negatives or extra canonical scopes. This is a conservative
@@ -94,12 +100,14 @@ Before landing, complete final ordinary
 Windows/WSL installation, real-model safety/continuation and the physical Mac
 matrix. The Google project, verified domain, published data notice and official
 client work above remain maintainer publication tasks; local QA consent does not
-fulfill them. The ODS-maintained Source candidate advances to 4.3.42 to fix
-broker-readable proposal publication under the gateway's private umask. Its
-paired bundle identity changed coherently and old prepared-client identities
-are retained. See [source provenance](../vendor/PIXEL-SOURCE-PROVENANCE.md)
-for the deterministic artifact checks and the preexisting historical audit-file
-gate that remains failed. Ordinary installed adoption is still required.
+fulfill them. Source 4.3.43 retains 4.3.42's broker-readable proposal publication
+under the gateway's private umask and adds the release-checker/count-manifest
+repairs. Its bundle and version pins changed coherently; 4.3.42 authority and
+old prepared-client identities remain available. See
+[source provenance](../vendor/PIXEL-SOURCE-PROVENANCE.md) for the deterministic
+artifact checks, the qualified private full-scope checker result and the
+preserved public-export audit-file limitation. Ordinary installed adoption is
+still required.
 Dependency, image and trust pins remain unchanged; the separate 25 managed SDK
 compatibility repairs retain their own custody and runtime qualification
 requirements.

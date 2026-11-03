@@ -9,7 +9,7 @@ import vm from 'node:vm';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import * as responseLanguage from '../plugin/response-language.mjs';
 import {managedTeamRole} from '../plugin/tool-loop-guard.mjs';
-import {longTaskContract, promptContractForAgent, PORTAL_INTEGRATION_TURN_CONTEXT} from '../plugin/prompt-contract.mjs';
+import {longTaskContract, promptContractForAgent, PORTAL_INTEGRATION_API_CONTRACT, PORTAL_INTEGRATION_TURN_CONTEXT} from '../plugin/prompt-contract.mjs';
 import {ACTIVITY_CONTRACT} from '../plugin/activity-display.mjs';
 import {GOAL_CONTRACT} from '../plugin/goal-progress.mjs';
 import {executionContext} from '../plugin/completion-assurance.mjs';
@@ -180,7 +180,7 @@ export async function promptHookAlone({language, goal = false, clarificationNote
       observeExampleRun() {}, exampleContextForRun: () => undefined,
       clarificationContextForRun: id => (id === 'run' ? clarificationNote : undefined), longTaskEligible: () => true},
     goalProgress: {begin() {}, active: () => goal}, taskActivity: {begin() {}},
-    promptContractForAgent, longTaskContract, PORTAL_INTEGRATION_TURN_CONTEXT,
+    promptContractForAgent, longTaskContract, PORTAL_INTEGRATION_API_CONTRACT, PORTAL_INTEGRATION_TURN_CONTEXT,
     configuredContextWindow: 131072, configuredLeanPrompt: false, configuredResponseLanguage: language,
     extensionRepositoryContext: async () => '', managedTeamRole, ACTIVITY_CONTRACT, GOAL_CONTRACT,
     executionLocationContext: () => '', executionContext,

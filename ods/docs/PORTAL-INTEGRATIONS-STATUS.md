@@ -38,6 +38,12 @@ jobs were still pending when recorded. Neither certifies the newer native
 preparation code or another installed update.
 
 The SDK12 cancellation lock/fence repairs passed native mechanical controls.
+The local branch now includes explicit preparation without execution or approval
+consumption, composed with the existing confirmed-note-edit verification. One
+real full-frontdoor 9B journey correctly selected, read and prepared an Obsidian
+change without mutation. Its private QA registration warning remains under
+audit. Broader negative/continuation cases, the actual owner model profile and
+the final installed update remain unqualified; this is not release acceptance.
 Earlier semantic experiments, including the 144-completion scope3 corpus,
 failed their declared gates; their negative evidence remains unchanged. The
 latest operations-only interface also failed its real 9B gate: it safely refused

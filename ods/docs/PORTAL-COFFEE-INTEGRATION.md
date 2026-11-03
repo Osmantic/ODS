@@ -50,14 +50,25 @@ real Linux files; Darwin account, ownership and ACL calls remain explicitly
 simulated. Native Source execution, job lifecycle, connection activation and
 physical Mac behavior remain unfinished; Connected apps remains unavailable there.
 
-A separate private native-tool candidate at `8e9aea1ca` composes explicit
-approval preparation with the current note-edit verification. Preparation does
-not execute an action or consume an approval, including under Allowed. Its
-focused component controls passed, but model reliability is not qualified: prior
-direct-engine runs still included false preparation claims and unrelated status
-calls. The compact-prompt and alternate-sampling diagnostics did not resolve
-them. A new real-frontdoor mechanical journey is being built before another
-model test. This candidate is not adopted, installed or release acceptance.
+The local integration now composes native-tool candidate `8e9aea1ca` with the
+newer Mac startup barrier. Explicit approval preparation does not execute an
+action or consume an approval, including under Allowed, and cannot count as a
+confirmed note edit. The Portal plugin and host bytes remain identical to that
+candidate. It has not been published or installed.
+
+One actual two-turn Dashboard/Edge/ingress/Gateway/native-model journey selected
+the correct Obsidian dossier even though a different dossier's cross-index was
+the first search result. It read the required condition and created the exact
+pending approval without modifying notes or consuming older approvals. Root
+reviewed both delivered replies and the real tool receipts/state. This is one
+positive journey using the existing thinking-enabled 9B profile, not general
+model reliability or qualification of the owner's default thinking-off profile.
+An SDK plugin-register warning from the private QA wrapper is still under
+independent startup/worker audit; observed business callbacks were present,
+but clean startup is not claimed. The original run will not be repeated or
+regraded. Earlier direct-engine false-preparation/status results and unsuccessful
+compact-prompt/sampling diagnostics remain failed evidence. New negative and
+approval-continuation journeys and final installed acceptance remain required.
 
 The current source retains 32 native tools and source-bound OpenClaw 2026.6.33
 repairs. Its production CI entrypoint applies all 25 recipes in a private SDK

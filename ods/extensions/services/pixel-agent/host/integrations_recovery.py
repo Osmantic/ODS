@@ -203,8 +203,22 @@ class RecoveryReviewOnly:
             return {**self._agent(action, normal), REVIEW_FIELD: True}
         if action == "notes-write":
             return self._review_notes_write(request)
+        if action == "notes-prepare":
+            if set(request) - {"schemaVersion", "action", "path", "text", "mode", REVIEW_FIELD, REFERENCE_FIELD} or not isinstance(request.get("path"), str):
+                raise IntegrationError("invalid-request", "Prepare needs only the exact note path, text and mode.")
+            reply = self._review_notes_write(request)
+            return {**reply, "status": "approval-ready" if reply["status"] == "review-only-ready" else reply["status"],
+                    "preparationOnly": True}
         if action == "mcp-call":
             return self._review_mcp_call(request)
+        if action == "mcp-prepare":
+            if set(request) - {"schemaVersion", "action", "server", "tool", "arguments", REVIEW_FIELD, REFERENCE_FIELD}:
+                raise IntegrationError("invalid-request", "Prepare needs only the exact server, tool and arguments.")
+            if request.get("server") != "app:watch" or request.get("tool") not in {"add", "remove"}:
+                raise IntegrationError("review-only-refused", "Only builtin watch changes can be prepared through MCP during review.")
+            reply = self._review_mcp_call(request)
+            return {**reply, "status": "approval-ready" if reply["status"] == "review-only-ready" else reply["status"],
+                    "preparationOnly": True}
         # Includes notify, cron/task-finished and digest management callbacks.
         raise IntegrationError("review-only-refused", "This recovery can only read builtin connections or prepare an Ask request. "
                                "No action or notification was performed.")
