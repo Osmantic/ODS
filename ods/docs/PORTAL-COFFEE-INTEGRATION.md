@@ -15,17 +15,20 @@ The installed, published and newly composed code have different evidence:
 | Earlier hosted checkpoint | `b36909f40` | Composed scheduler/Darwin fixes, scoped disposable Linux upgrade and 93 passing hosted checks with one skip. |
 | Earlier published draft checkpoint | `d18e2a1de` | Concrete candidate custody and bounded successful-read evidence; 93 passing hosted checks and one skip. |
 | Recent published checkpoint | `0344eaf3e` | Native connection deployment paths, atomic journal snapshot repair and current bundle-pin test fixtures. Runtime and API hosted suites passed; the full checkpoint was still pending when recorded. |
-| Current source groundwork | `f62f3915a` | Native Source identity and private filesystem preparation, including closed env-file custody and publication ordering. No native Source jobs, active env or installer activation. Not another installed qualification. |
+| Earlier source groundwork | `f62f3915a` | Native Source identity and private filesystem preparation, including closed env-file custody and publication ordering. Not another installed qualification. |
+| Current local native preparation | `1c7475ca6` | Protected runtime/kit, broker-only env, logs, disabled definitions, interrupted-publication recovery and an inactive v2 gate. Exact Source 4.3.43 authority and retained 4.3.42 controls. No native Source dispatch, active jobs or connection activation; not published or installed qualification. |
 
 The `c7f7aded7` scheduler and Darwin follow-ups are already composed. Earlier
 installed and hosted evidence does not certify newer runtime source.
 
-The ODS-maintained Source 4.3.42 candidate also fixes proposal-file publication
-under the gateway's private umask, with coherent bundle/installer/client pins and
-preserved old prepared-client identities. Its deterministic artifact and focused
-component checks are recorded in [source provenance](../vendor/PIXEL-SOURCE-PROVENANCE.md).
-This is not another installed qualification; the historical public-export audit
-file gate remains failed as recorded there.
+The ODS-maintained Source 4.3.43 candidate retains the 4.3.42 proposal-file
+publication fix and advances the release-contract checks and metadata with
+coherent bundle/installer/client pins and preserved prepared-client identities.
+The deterministic artifact and full-repository-scope checker result are recorded
+in [source provenance](../vendor/PIXEL-SOURCE-PROVENANCE.md). That result uses the
+legitimate immutable audit/workflow inputs omitted from the public export; it
+does not make the intentionally incomplete public export a full repository.
+Historical failed artifacts remain preserved. This is not installed adoption.
 
 Native Mac schedule controls now reuse the protected launchd runtime, Root
 access controller and existing cron worker. Controlled checks cover source and
@@ -40,10 +43,21 @@ service identity and inode-journaled private directories. The env-file contract
 uses a Root-owned file inside the private gate with read permission for only the
 broker's user UUID; shared group membership does not grant env access. The gate
 opens only after descendant, descriptor and current-deployment validation.
-Controlled descriptor and interruption checks qualify this preparation code,
-with Darwin account, ownership and ACL calls explicitly simulated. Native job
-lifecycle, env publication, installation/activation and physical Mac behavior
-remain unfinished; Connected apps remains unavailable there.
+Controlled checks now cover the protected runtime/kit, environment and log
+publication, disabled definitions, inactive v2 readback, exact interrupted
+renames and restoration of the previous gate inode. File/FD/rename controls use
+real Linux files; Darwin account, ownership and ACL calls remain explicitly
+simulated. Native Source execution, job lifecycle, connection activation and
+physical Mac behavior remain unfinished; Connected apps remains unavailable there.
+
+A separate private native-tool candidate at `8e9aea1ca` composes explicit
+approval preparation with the current note-edit verification. Preparation does
+not execute an action or consume an approval, including under Allowed. Its
+focused component controls passed, but model reliability is not qualified: prior
+direct-engine runs still included false preparation claims and unrelated status
+calls. The compact-prompt and alternate-sampling diagnostics did not resolve
+them. A new real-frontdoor mechanical journey is being built before another
+model test. This candidate is not adopted, installed or release acceptance.
 
 The current source retains 32 native tools and source-bound OpenClaw 2026.6.33
 repairs. Its production CI entrypoint applies all 25 recipes in a private SDK
