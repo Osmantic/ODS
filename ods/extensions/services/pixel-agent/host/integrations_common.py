@@ -6,6 +6,7 @@ import pathlib
 import threading
 import time
 import uuid
+import urllib.request
 
 SCHEMA_VERSION = 1
 MAX_REQUEST_BYTES = 64 * 1024
@@ -16,6 +17,18 @@ ACTIVITY_LINES = 500
 # The owner's apps and the local addresses the ODS extension catalog publishes them on.
 APP_URLS = {"documents": "http://127.0.0.1:7807", "photos": "http://127.0.0.1:2283",
             "watch": "http://127.0.0.1:11039", "news": "http://127.0.0.1:11029"}
+
+
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # A redirect is a different request, not part of the approved action.
+        # Never forward credentials or replay a POST, even same-origin.
+        return None
+
+
+def open_direct(request, *, timeout):
+    """Use the configured URL exactly; ordinary TLS verification stays enabled."""
+    return urllib.request.build_opener(_NoRedirects()).open(request, timeout=timeout)
 
 
 class IntegrationError(Exception):

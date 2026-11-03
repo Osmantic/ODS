@@ -16,7 +16,7 @@ import urllib.parse
 import urllib.request
 import zoneinfo
 
-from integrations_common import APP_URLS, IntegrationError, NETWORK_TIMEOUT, clip
+from integrations_common import APP_URLS, IntegrationError, NETWORK_TIMEOUT, clip, open_direct
 
 APPS = tuple(APP_URLS)
 NAMES = {"documents": "Paperless-ngx", "photos": "Immich", "watch": "changedetection.io", "news": "FreshRSS"}
@@ -102,8 +102,8 @@ def request(app, url, *, method="GET", headers=None, body=None, form=None, parse
     if body is not None:
         sent["Content-Type"] = "application/json"
     try:
-        with urllib.request.urlopen(urllib.request.Request(url, data=data, headers=sent, method=method),
-                                    timeout=NETWORK_TIMEOUT) as response:
+        with open_direct(urllib.request.Request(url, data=data, headers=sent, method=method),
+                         timeout=NETWORK_TIMEOUT) as response:
             raw = response.read(MAX_APP_BYTES + 1)
     except urllib.error.HTTPError as error:
         if error.code in (401, 403):

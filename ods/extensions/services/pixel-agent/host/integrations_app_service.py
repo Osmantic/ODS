@@ -89,17 +89,23 @@ class AppActions:
         """Reach one app with its saved token; a sentence for the owner."""
         if app not in apps.APPS:
             raise IntegrationError("invalid-request", "Unknown app.")
-        config, key = self.store.config(), self.store.secrets()["apps"].get(app, "")
+        config, secrets = self._snapshot()
+        key = secrets["apps"].get(app, "")
         if not key:
             raise IntegrationError("app-no-key", f"Save the {apps.NAMES[app]} token first.")
         settings = config["apps"][app]
         notice = {"documents": apps.documents_test, "photos": apps.photos_test, "watch": apps.watch_test,
                   "news": apps.news_test}[app](settings, key)
-        self.store.log("app-test", apps.NAMES[app], "answered")
+        self._log("app-test", apps.NAMES[app], "answered")
         return notice
 
+    def _snapshot(self):
+        """The settings and secrets as one consistent pair."""
+        with self.store.lock:
+            return self.store.config(), self.store.secrets()
+
     def _key(self, app):
-        return self.store.secrets()["apps"].get(app, "")
+        return self._snapshot()[1]["apps"].get(app, "")
 
     @staticmethod
     def app_servers(config):
@@ -127,27 +133,27 @@ class AppActions:
         settings, key = apps.app_settings(config, app), self._key(app)
         if action == "documents-search":
             reply = apps.documents_search(settings, key, request.get("query"))
-            self.store.log("documents-search", str(request.get("query", ""))[:80], f"{len(reply['results'])} documents")
+            self._log("documents-search", str(request.get("query", ""))[:80], f"{len(reply['results'])} documents")
             return reply
         if action == "documents-read":
             reply = apps.documents_read(settings, key, request.get("id"))
-            self.store.log("documents-read", reply["title"], "read")
+            self._log("documents-read", reply["title"], "read")
             return reply
         if action == "photos-search":
             reply = apps.photos_search(settings, key, query=request.get("query", ""), place=request.get("place", ""),
                                        after=request.get("after", ""), before=request.get("before", ""))
-            self.store.log("photos-search", str(request.get("query") or request.get("place") or "dates")[:80],
+            self._log("photos-search", str(request.get("query") or request.get("place") or "dates")[:80],
                            f"{len(reply['results'])} photos")
             return reply
         if action == "news-unread":
             items = apps.unread_news(settings, key)
-            self.store.log("news-unread", "unread news", f"{len(items)} stories")
+            self._log("news-unread", "unread news", f"{len(items)} stories")
             return {"items": items, "text": apps.digest_text(items)}
         if action == "news-digest":
             items = self._new_stories(settings, key)
             # The stories are remembered as sent only when this run's digest goes out.
             self.digest_items, self.digest_called_at = items, time.time()
-            self.store.log("news-digest", "new stories", f"{len(items)} stories")
+            self._log("news-digest", "new stories", f"{len(items)} stories")
             return {"items": items, "text": apps.digest_text(items) if items else apps.NO_NEW_STORIES}
         if action == "watch-list":
             return self._watch_list(settings, key)
@@ -167,18 +173,19 @@ class AppActions:
     def watch_overview(self):
         """The watched pages for Settings."""
         # Saving refuses an app turned on without its key.
-        return self._watch_list(apps.app_settings(self.store.config(), "watch"), self._key("watch"))
+        config, secrets = self._snapshot()
+        return self._watch_list(apps.app_settings(config, "watch"), secrets["apps"].get("watch", ""))
 
     def send_digest_now(self):
         """Send the owner today's news brief right away, without waiting for the scheduled time."""
-        config = self.store.config()
+        config, secrets = self._snapshot()
         settings = apps.app_settings(config, "news")
         if not config["notifications"]["enabled"]:
             raise IntegrationError("notifications-off", "Turn notifications on and save before sending a digest.")
         items, capped = self._new_stories(settings, self._key("news"), with_cap=True)
-        send_notification(config, self.store.secrets(), apps.DIGEST_NAME, apps.digest_brief(items, capped))
+        send_notification(config, secrets, apps.DIGEST_NAME, apps.digest_brief(items, capped))
         self._remember_sent(items)
-        self.store.log("notify", apps.DIGEST_NAME, "sent")
+        self._log("notify", apps.DIGEST_NAME, "sent")
         shown = min(len(items), apps.MAX_BRIEF_STORIES)
         if not shown:
             return "Digest sent: there are no new stories since the last digest."
@@ -212,7 +219,9 @@ class AppActions:
                 raise IntegrationError("watch-missing", "No watch has that id. List the watches first.")
             summary, details = f"Stop watching {watch.get('title') or watch.get('url')}", ("watch-remove", uuid)
         if config["apps"]["watch"]["changes"] == "ask":
-            waiting = self._approval("watch", summary, digest(*details))
+            waiting, notification = self._approval("watch", summary, digest(*details))
+            if notification:
+                self._notify_approval(notification)
             if waiting:
                 return waiting
         with self.store.lock:
@@ -231,7 +240,7 @@ class AppActions:
                 apps.remove_watch(settings, key, uuid)
                 state.pop(uuid, None)
             self.store.save_watch_state(state)
-        self.store.log(action, summary, "done")
+        self._log(action, summary, "done")
         return {"done": summary, "id": uuid}
 
     def _already_watched(self, settings, key, url, title, below):
@@ -268,8 +277,8 @@ class AppActions:
 
     def check_watches(self):
         """Tell the owner about watched pages that changed since the last look."""
-        config = self.store.config()
-        settings, key = config["apps"]["watch"], self._key("watch")
+        config, secrets = self._snapshot()
+        settings, key = config["apps"]["watch"], secrets["apps"].get("watch", "")
         if not (settings["enabled"] and key):
             return
         listing = apps.watches(settings, key)
@@ -301,7 +310,7 @@ class AppActions:
         try:
             return apps.watch_price(settings, key, uuid)
         except IntegrationError as error:
-            self.store.log("watch-check", str(watch.get("title") or watch.get("url") or uuid)[:80], error.message)
+            self._log("watch-check", str(watch.get("title") or watch.get("url") or uuid)[:80], error.message)
             return self.UNREAD
 
     # Scheduled tasks.
@@ -341,7 +350,7 @@ class AppActions:
         self.digest_failing = False
         if not items and time.time() - self.digest_sent_at < apps.DIGEST_QUIET_SECONDS:
             # Nothing new just after a digest went out: OpenClaw retrying a run, or one sent from Settings.
-            self.store.log("notify", apps.DIGEST_NAME, "nothing new since the last digest")
+            self._log("notify", apps.DIGEST_NAME, "nothing new since the last digest")
             return False
         sent = self._tell(config, apps.DIGEST_NAME, text)
         if sent:
@@ -353,9 +362,9 @@ class AppActions:
         if not config["notifications"]["enabled"]:
             return False
         try:
-            send_notification(config, self.store.secrets(), title, message, priority, link, link_label="Open")
+            send_notification(config, self._snapshot()[1], title, message, priority, link, link_label="Open")
         except IntegrationError as error:
-            self.store.log("notify", title, error.message)
+            self._log("notify", title, error.message)
             return False
-        self.store.log("notify", title, "sent")
+        self._log("notify", title, "sent")
         return True

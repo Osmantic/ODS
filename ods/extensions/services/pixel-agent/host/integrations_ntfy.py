@@ -4,7 +4,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from integrations_common import IntegrationError, NETWORK_TIMEOUT
+from integrations_common import IntegrationError, NETWORK_TIMEOUT, open_direct
 
 
 def header_text(value):
@@ -42,7 +42,7 @@ def send_notification(config, secrets, title, message, priority="default", link=
     elif password:
         request.add_header("Authorization", "Bearer " + password)
     try:
-        with urllib.request.urlopen(request, timeout=NETWORK_TIMEOUT):
+        with open_direct(request, timeout=NETWORK_TIMEOUT):
             pass
     except urllib.error.HTTPError as error:
         reason = "the user or password was refused" if error.code in (401, 403) else f"ntfy answered {error.code}"

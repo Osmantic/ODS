@@ -3,6 +3,7 @@ if sys.platform == "win32":
     from unittest import SkipTest
     raise SkipTest("Requires process groups; run under Linux/WSL")
 
+import errno
 import json
 import os
 import pathlib
@@ -11,6 +12,7 @@ import textwrap
 import threading
 import time
 import unittest
+from unittest.mock import Mock, call, patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "host"))
 import integrations_mcp as mcp  # noqa: E402
@@ -181,6 +183,39 @@ class LocalServerTests(unittest.TestCase):
         self.assertIn("API_KEY is not set", refused.exception.message)
         self.assertIn("API_KEY is not set", self.owner("get")["processes"]["local"]["lastError"])
 
+    def test_stopping_an_exited_child_reaps_and_retries_a_denied_group_signal(self):
+        candidate = mcp.LocalServer(self.server(), {})
+        candidate.process = Mock(pid=12345)
+        candidate.process.poll.return_value = 1
+        with patch.object(mcp.os, "killpg", side_effect=[PermissionError(), ProcessLookupError(), ProcessLookupError()]) as kill:
+            candidate.stop()
+        candidate.process.poll.assert_called_once_with()
+        candidate.process.stdin.close.assert_called_once_with()
+        self.assertEqual(kill.call_args_list, [call(12345, mcp.signal.SIGTERM), call(12345, mcp.signal.SIGTERM),
+                                              call(12345, mcp.signal.SIGKILL)])
+
+    def test_stopping_an_exited_leader_still_signals_its_live_descendants(self):
+        candidate = mcp.LocalServer(self.server(), {})
+        candidate.process = Mock(pid=12345)
+        candidate.process.poll.return_value = 1
+        with patch.object(mcp.os, "killpg", side_effect=[PermissionError(), None, None]) as kill:
+            candidate.stop()
+        self.assertEqual(kill.call_args_list, [call(12345, mcp.signal.SIGTERM), call(12345, mcp.signal.SIGTERM),
+                                              call(12345, mcp.signal.SIGKILL)])
+        candidate.process.wait.assert_called_once_with(timeout=mcp.STOP_SECONDS)
+
+    def test_stopping_a_live_group_preserves_permission_failures(self):
+        for returncode in (None, 1):
+            with self.subTest(returncode=returncode):
+                candidate = mcp.LocalServer(self.server(), {})
+                candidate.process = Mock(pid=12345)
+                candidate.process.poll.return_value = returncode
+                with patch.object(mcp.os, "killpg", side_effect=PermissionError()) as kill:
+                    with self.assertRaises(PermissionError):
+                        candidate.stop()
+                self.assertEqual(kill.call_count, 1 if returncode is None else 2)
+                candidate.process.wait.assert_not_called()
+
     def test_a_server_that_never_answers_initialize_is_stopped(self):
         self.save(self.server("silent-start"))
         with self.assertRaisesRegex(service.IntegrationError, "did not answer in time"):
@@ -232,6 +267,60 @@ class LocalServerTests(unittest.TestCase):
         self.save(self.server(enabled=True, policies={"env": "allow"}))
         self.assertEqual(self.call("env")["text"], "None|False")
         self.assertEqual(Store(self.root / "state").secrets()["mcpEnv"], {})
+
+    def test_a_valid_maximum_agent_frame_cannot_block_stdin_past_its_deadline(self):
+        # Initialize normally, then deliberately never read another byte. This
+        # is a VALID service request, not an oversized-input rejection test.
+        script = self.root / "does-not-read.py"
+        ready = self.root / "pipe-ready"
+        script.write_text("import json,sys,time\n"
+                          "message=json.loads(sys.stdin.readline())\n"
+                          "print(json.dumps({'jsonrpc':'2.0','id':message['id'],'result':{}}),flush=True)\n"
+                          "open(sys.argv[1],'w').close()\n"
+                          "time.sleep(30)\n")
+        definition = self.server(command=f"{sys.executable} {script} {ready}")
+        child = mcp.LocalServer(definition, {}).start()
+        self.addCleanup(child.stop)
+        self.assertTrue(wait_until(ready.exists))
+        frame = {"schemaVersion": 1, "action": "mcp-call", "server": "local", "tool": "count", "arguments": {"value": ""}}
+        frame["arguments"]["value"] = "x" * (service.MAX_REQUEST_BYTES - 1 - len(json.dumps(frame, separators=(",", ":")).encode()))
+        self.assertEqual(len(json.dumps(frame, separators=(",", ":")).encode()) + 1, service.MAX_REQUEST_BYTES)
+        # Prefill only this owned never-reading pipe; the valid service frame is unchanged.
+        fd = child.process.stdin.fileno()
+        blocking = os.get_blocking(fd)
+        filled, blocked = 0, False
+        fill_deadline = time.monotonic() + 0.5
+        try:
+            os.set_blocking(fd, False)
+            while filled < 1024 * 1024 and time.monotonic() < fill_deadline:
+                try:
+                    filled += os.write(fd, b" " * 4096)
+                except BlockingIOError as error:
+                    self.assertIn(error.errno, (errno.EAGAIN, errno.EWOULDBLOCK))
+                    blocked = True
+                    break
+        finally:
+            os.set_blocking(fd, blocking)
+        self.assertTrue(blocked, "owned pipe did not reach EAGAIN within 1MiB/0.5s")
+        errors = []
+        def invoke():
+            try:
+                child.request("tools/call", {"name": "count", "arguments": frame["arguments"]}, timeout=0.2)
+            except service.IntegrationError as error:
+                errors.append(error.code)
+        thread = threading.Thread(target=invoke, daemon=True)
+        started = time.monotonic()
+        thread.start()
+        thread.join(timeout=0.8)
+        try:
+            self.assertFalse(thread.is_alive(), "valid request remained blocked past four request budgets")
+            self.assertLess(time.monotonic() - started, 0.8)
+            self.assertEqual(errors, ["mcp-timeout"])
+            self.assertIsNotNone(child.process.poll())
+        finally:
+            child.stop("owned test cleanup")
+            thread.join(timeout=2)
+        self.assertFalse(thread.is_alive())
 
     def test_bad_variable_names_and_values_are_refused(self):
         for names in (["PATH"], ["1BAD"], ["A", "A"], ["X-Y"]):
