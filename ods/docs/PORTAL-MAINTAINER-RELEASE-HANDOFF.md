@@ -61,8 +61,8 @@ and [restricted-scope review](https://developers.google.com/identity/protocols/o
   withdrawal/update/rollback. Scope or release acceptance must be explicit.
 
 The assembled source includes the scheduler/Darwin fixes, explicit future-task
-policy, native Mac schedule wiring and the local concrete-operation review
-interface. Gabriel's physical Windows installation remains `60534c7b2`.
+policy, native Mac schedule wiring and the Source proposal-file repair.
+Gabriel's physical Windows installation remains `60534c7b2`.
 The published draft checkpoint `d18e2a1de` has 93 passing hosted checks and one
 skip; earlier disposable Linux upgrade evidence retains its recorded scope.
 Neither result qualifies the newer local code or another installed update.
@@ -75,8 +75,10 @@ miss, not reliable continuation acceptance. Later catalog and consistency
 prototypes also failed their frozen gates and were reverted. A seventh concrete
 candidate experiment admitted no incorrect action but refused 22 of 24
 legitimate positive cells and left eight negative cells unexercised. It failed
-too. The local catalog-derived semantic operation projection has passed code
-review and mechanical controls; fresh real-model qualification is still open.
+too. An eighth catalog-derived semantic operation projection passed code review
+and mechanical controls but failed its real 9B experiment, with five false
+admissions and only 11 of 24 qualified positives. It was rejected and reverted
+without installation. Reliable automatic continuation remains unresolved.
 A real chat-created
 task exposed future-policy defaults and a never-run status error; source repairs
 are structurally qualified, with installed retakes still pending.

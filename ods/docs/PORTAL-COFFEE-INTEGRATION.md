@@ -14,7 +14,7 @@ The installed, published and newly composed code have different evidence:
 | Latest installed qualification | `60534c7b2` | The ordinary Windows/WSL update and scoped app/model/browser journeys below. |
 | Earlier hosted checkpoint | `b36909f40` | Composed scheduler/Darwin fixes, scoped disposable Linux upgrade and 93 passing hosted checks with one skip. |
 | Published draft checkpoint | `d18e2a1de` | Concrete candidate custody and bounded successful-read evidence; 93 passing hosted checks and one skip. |
-| Current local composition | `c79597eea` | Native Mac schedule wiring plus a catalog-derived concrete operation projection; not another installed or real-model qualification. |
+| Current local composition | `28f0fde4b` | Native Mac schedule wiring and Source 4.3.42 proposal repair; the failed catalog-derived semantic projection has been reverted. Not another installed qualification. |
 
 The `c7f7aded7` scheduler and Darwin follow-ups are already composed. Earlier
 installed and hosted evidence does not certify newer runtime source.
@@ -97,13 +97,25 @@ failure remains preserved alongside the previous six.
 
 The concrete checker lacked operation definitions that the first-stage catalog
 had supplied. That is a real interface omission, not proof of the failure's sole
-cause. Local source now derives the candidate's meaning, complete validated
+cause. An eighth prototype derived the candidate's meaning, complete validated
 arguments and maximum effect from that same catalog. It also projects declared
 operation meanings and actual read-completion facts without private bindings or
 content. Raw/payload identity, permission floors, one-use custody and refusals
-remain in place. Independent code review and coupled mechanical checks passed;
-a fresh frozen real-model qualification is still required. There is no additional
-judge, phrase-based admission or default approval.
+remained in place. Independent code review and coupled mechanical checks passed.
+There was no additional judge, phrase-based admission or default approval.
+
+Its fresh frozen 58-cell real 9B experiment failed too: 11 of 24 positive cells
+qualified, below the required 23, and five candidates were falsely admitted.
+Those candidates widened an explicit photo date range twice, selected a document
+absent from its actual lookup result, treated read completion as proof of a
+content condition, or used a digest variant that violated an inclusion
+restriction. Two other negative cells remained uncovered after an invalid
+first-stage proposal. All 110 native observations returned normally; 12 actual
+invented-data prerequisite reads completed and no final candidate was dispatched.
+The prototype was rejected and reverted as `28f0fde4b` without installation.
+All eight semantic failures and their original data, outputs and criteria remain
+preserved. A further wording change or passing mechanical suite cannot substitute
+for a reliable recovery architecture and real-model safety-and-benefit evidence.
 
 The ordinary installed 9B chat also created one real native one-off arithmetic
 task. Read-only inspection confirmed that it inherited 79 future tools and

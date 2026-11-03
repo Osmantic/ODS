@@ -20,9 +20,10 @@ replace that controller. See the
 [composition and acceptance record](PORTAL-COFFEE-INTEGRATION.md) for the actual
 Windows/WSL model/browser evidence, later source-only checks and remaining limits.
 
-The assembled source `c79597eea` includes the scheduler/Darwin fixes, explicit
-future-task policy, native Mac schedule wiring and the concrete review interface
-described below. Gabriel's physical Windows installation remains `60534c7b2`.
+The assembled source includes the scheduler/Darwin fixes, explicit future-task
+policy, native Mac schedule wiring and the bundled Source proposal-file repair.
+The experimental semantic operation projection was rejected and reverted as
+`28f0fde4b`. Gabriel's physical Windows installation remains `60534c7b2`.
 The published draft checkpoint `d18e2a1de` has 93 passing hosted checks and one
 skip; this does not certify the newer local source or another installed update.
 
@@ -38,10 +39,11 @@ also reverted. A seventh real-model experiment used actual candidate arguments
 and typed read progress, but qualified only two of 24 legitimate cells. No
 incorrect action was admitted; eight negative cells remained unexercised because
 their prerequisite reads were refused. This was a failure, not safety-and-benefit
-acceptance. The new local interface projects validated operation meanings and
-arguments from the shared catalog; mechanical checks and independent code review
-do not establish improved 9B decisions. Reliable approval continuation remains
-open. Source now refuses
+acceptance. An eighth experiment projected validated operation meanings and
+arguments from the shared catalog. It qualified only 11 of 24 positive cells
+and falsely admitted five restricted candidates; it was rejected and reverted
+without installation. Mechanical checks and code review did not establish
+improved 9B decisions. Reliable approval continuation remains open. Source now refuses
 implicit future-task tools/delivery and fixes the never-run one-off label; a
 real installed chat creation exposed those gaps, but its task was paused before
 execution. Final ordinary
