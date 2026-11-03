@@ -29,6 +29,7 @@ import { appendComposerText, restoreUnsentDraft } from '../lib/pixelComposerText
 import { ATTACH_BLOCKED, newTaskBlockedReason, publishNewTaskBlocked, sendBlockedReason } from '../lib/portalTaskState'
 import PixelSelectionActions from '../components/PixelSelectionActions'
 import PixelQuestions from '../components/PixelQuestions'
+import PortalChatMemory from '../components/PortalChatMemory'
 import PortalGoalPlan from '../components/PortalGoalPlan'
 import {goalCommand,continueGoal} from '../lib/portalGoal'
 import PortalContextRing from '../components/PortalContextRing'
@@ -2213,6 +2214,7 @@ export default function Pixel({ systemStatus = null }) {
               row?.scrollIntoView?.({block:'start', behavior:'auto'})
               row?.focus?.({preventScroll:true})
             }}/>
+            <PortalChatMemory chatId={chatIdRef.current} />
             <PixelHandoffApproval label="Approvals" />
             <details className="pixel-chat-options-advanced"><summary>Advanced tools</summary><div>
               <PortalRuntimeIdentity identity={runtimeIdentity} runtime={agentRuntime} />
