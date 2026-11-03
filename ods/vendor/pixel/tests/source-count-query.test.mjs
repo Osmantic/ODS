@@ -70,6 +70,49 @@ test("civil days use owner DST: 23/25 hours, not rolling 24h", () => {
   }
 });
 
+test("an explicit civil date resolves owner midnights without model-computed offsets", () => {
+  for (const now of ["2026-01-01T12:00:00Z", "2026-11-03T19:00:00Z", "2026-12-31T12:00:00Z"]) {
+    const result = resolveCountWindow({ kind: "civil-days", date: "2026-11-04", days: 1 }, Date.parse(now), "America/Sao_Paulo");
+    assert.equal(result.windowKind, "civil-days");
+    assert.equal(result.windowStart, "2026-11-04T03:00:00.000Z");
+    assert.equal(result.windowEnd, "2026-11-05T03:00:00.000Z");
+    assert.equal(result.ownerTimeZone, "America/Sao_Paulo");
+  }
+  for (const [date, hours] of [["2026-03-08", 23], ["2026-11-01", 25]]) {
+    const result = resolveCountWindow({ kind: "civil-days", date, days: 1 }, NOW, "America/New_York");
+    assert.equal(result.windowState, "resolved");
+    assert.equal(result.to - result.from, hours * 3600000);
+  }
+});
+
+test("explicit civil dates reject invalid, mixed and non-unique boundaries", () => {
+  for (const window of [{ kind: "civil-days", date: "2026-02-30", days: 1 },
+    { kind: "civil-days", date: "2026-11-4", days: 1 },
+    { kind: "civil-days", date: "2026-11-04", start: "tomorrow", days: 1 },
+    { kind: "civil-days", date: "0000-01-01", days: 1 },
+    { kind: "civil-days", date: "9999-12-31", days: 1 }]) {
+    assert.equal(resolveCountWindow(window, NOW, "UTC").windowState, "unavailable");
+  }
+  for (const [date, zone, days] of [["2018-11-04", "America/Sao_Paulo", 1],
+    ["2020-11-01", "America/Havana", 1], ["2011-12-29", "Pacific/Apia", 3]]) {
+    assert.equal(resolveCountWindow({ kind: "civil-days", date, days }, NOW, zone).windowState, "unavailable");
+  }
+  assert.equal(resolveCountWindow({ kind: "civil-days", date: "2026-11-04", days: 1 }, NOW, undefined).reason, "owner-time-zone-unavailable");
+});
+
+test("an owner civil-date count includes the late local evening that a guessed UTC day omits", () => {
+  const now = Date.parse("2026-11-03T19:00:00Z");
+  const data = { ...calendar([event({ dateTime: "2026-11-05T01:00:00Z" }, { dateTime: "2026-11-05T02:00:00Z" })]),
+    generatedAt: new Date(now - 1000).toISOString() };
+  Object.assign(data.coverage, { windowStart: "2026-11-01T00:00:00Z", windowEnd: "2026-11-10T00:00:00Z", calendarTimeZone: "America/Sao_Paulo" });
+  const result = countCalendar(data, { window: { kind: "civil-days", date: "2026-11-04", days: 1 } }, sync, now, TTL, "America/Sao_Paulo");
+  assert.equal(result.completeMatchCount, 1);
+  assert.equal(result.recordsReturned, 0);
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE-|events|notesSummary|title|location/);
+  const wrong = countCalendar(data, { window: { kind: "absolute", timeMin: "2026-11-04T00:00:00Z", timeMax: "2026-11-04T23:59:59Z" } }, sync, now, TTL, "America/Sao_Paulo");
+  assert.equal(wrong.completeMatchCount, 0, "a valid explicit UTC interval is not the owner's civil day");
+});
+
 test("civil boundary and interior gaps, folds and skipped dates are unavailable", () => {
   for (const [now, zone, days] of [["2018-11-04T12:00:00Z", "America/Sao_Paulo", 1],
     ["2020-11-01T12:00:00Z", "America/Havana", 1], ["2011-12-29T12:00:00Z", "Pacific/Apia", 3],

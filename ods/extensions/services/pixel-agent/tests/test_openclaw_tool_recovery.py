@@ -771,6 +771,8 @@ def test_reviewed_runtime_migrations_round_trip(tmp_path, environment, manifest_
 
 
 @pytest.mark.parametrize('environment,manifest_name,module_name,prior_hash', [
+    ('OPENCLAW_TOOL_SEARCH_MODULE', 'openclaw-image-envelope.json', repair_module.IMAGE_MODULE,
+     'df9c6739312ed3c05ab33266f413c402f0f53dd8b15a5e9e430401221916a279'),
     ('OPENCLAW_SELECTION_MODULE', 'openclaw-compaction-budget.json', repair_module.COMPACTION_BUDGET_MODULE,
      '4eea7b3f5d3aab6d534f4b3916638ac3e9684a001a09c56fe80f153f79394227'),
     ('OPENCLAW_SELECTION_MODULE', 'openclaw-compaction-budget.json', repair_module.COMPACTION_BUDGET_MODULE,

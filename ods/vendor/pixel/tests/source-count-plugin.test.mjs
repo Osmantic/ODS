@@ -52,6 +52,9 @@ test("count parameters are refused by locked TypeBox before Source access and wi
     ["pixel_calendar_count", { window: { kind: "rolling", days: "7" } }],
     ["pixel_calendar_count", { window: { kind: "rolling", days: 7, timeZone: "PRIVATE-ZONE" } }],
     ["pixel_calendar_count", { window: { kind: "civil-days", days: 0, start: "today" } }],
+    ["pixel_calendar_count", { window: { kind: "civil-days", days: 1, date: "2026-11-04", start: "tomorrow" } }],
+    ["pixel_calendar_count", { window: { kind: "civil-days", days: 1, date: "2026-11-4" } }],
+    ["pixel_calendar_count", { window: { kind: "civil-days", days: 1, date: "2026-11-04", timeZone: "PRIVATE-ZONE" } }],
     ["pixel_calendar_count", { window: { kind: "rolling", days: 7 }, query: "PRIVATE-QUERY", now: "PRIVATE-TIME" }],
   ]) {
     const response = await tools.get(name).execute("private-schema-test", params);
@@ -108,4 +111,20 @@ test("missing owner zone is not replaced by host/configured provider zone for ci
   const response = await tools.get("pixel_calendar_count").execute("private-calendar-no-zone", { window: { kind: "civil-days", days: 1, start: "today" } });
   closed("pixel_calendar_count", response); assert.equal(response.details.ownerTimeZone, null);
   assert.equal(response.details.windowState, "unavailable"); assert.equal(response.details.observedMatchCount, null);
+});
+
+test("registered explicit-date count uses current configured owner timezone and returns no event records", async t => {
+  const calendar = { schemaVersion: 1, enabled: true, generatedAt, boundary, records: [],
+    coverage: { bounded: true, windowStart: "2000-01-01T00:00:00Z", windowEnd: "2099-01-01T00:00:00Z",
+      completeWithinWindow: true, truncated: false, calendarTimeZone: "Asia/Tokyo", calendarTimeZoneState: "consistent",
+      sync: { state: "complete", retainedRecords: 0, failure: null } } };
+  const tools = await fixture(t, { calendar, status }, { config: { agents: { defaults: { userTimezone: "UTC" } } },
+    runtime: { config: { current: () => ({ agents: { defaults: { userTimezone: "America/Sao_Paulo" } } }) } } });
+  const response = await tools.get("pixel_calendar_count").execute("explicit-owner-date", { window: { kind: "civil-days", date: "2026-11-04", days: 1 } });
+  assert.equal(response.isError, undefined); closed("pixel_calendar_count", response);
+  assert.equal(response.details.ownerTimeZone, "America/Sao_Paulo");
+  assert.equal(response.details.calendarTimeZone, "Asia/Tokyo");
+  assert.equal(response.details.windowStart, "2026-11-04T03:00:00.000Z");
+  assert.equal(response.details.windowEnd, "2026-11-05T03:00:00.000Z");
+  assert.equal(response.details.completeMatchCount, 0);
 });

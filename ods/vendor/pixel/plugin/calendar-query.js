@@ -174,11 +174,16 @@ export function resolveCountWindow(window, now, ownerTimeZone, resolver = civilR
     result.windowDays = window.days;
     if (window.kind === "rolling") { from = now; to = now + window.days * 86_400_000; }
     else {
-      if (!["today", "tomorrow"].includes(window.start)) return result;
+      const dated = Object.hasOwn(window, "date");
+      if (dated ? Object.hasOwn(window, "start") || !civilDate(window.date)
+        : !["today", "tomorrow"].includes(window.start)) return result;
       if (!owner) return { ...result, reason: "owner-time-zone-unavailable" };
-      const today = resolver.parts(now, owner).date;
-      const first = addCivilDays(today, window.start === "tomorrow" ? 1 : 0);
+      // The model supplies an ISO civil date, never an inferred UTC offset.
+      // Resolve every boundary using the same configured owner zone as today.
+      const first = dated ? window.date
+        : addCivilDays(resolver.parts(now, owner).date, window.start === "tomorrow" ? 1 : 0);
       const last = first && addCivilDays(first, window.days);
+      if (!last) return result;
       for (let day = 0; first && day <= window.days; day += 1) {
         const date = addCivilDays(first, day);
         if (!date || resolver.midnight(date, owner) === null) return result;

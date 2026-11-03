@@ -1,0 +1,27 @@
+--- a/tool-search-BInRpkE3.js
++++ b/tool-search-BInRpkE3.js
+@@ -1262 +1262 @@
+-			})).filter((hit) => hit.score > 0).toSorted((a, b) => b.score - a.score || a.entry.id.localeCompare(b.entry.id)).slice(0, limit).map((hit) => {
++			})).filter((hit) => hit.score > 0).toSorted((a, b) => b.score - a.score || a.entry.id.localeCompare(b.entry.id)).slice(0, limit).map((hit, index) => {
+@@ -1264,5 +1264,13 @@
+-				// Discovery is a summary, not the entire operating manual. Keep the
+-				// full entry for ranking, tool_describe, dispatch and other agents.
+-				return this.ctx.agentId === "pixel" && this.config.mode === "tools"
+-					? { ...entry, description: compactDirectoryDescription(entry.description) }
+-					: entry;
++				if (this.ctx.agentId !== "pixel" || this.config.mode !== "tools") return entry;
++				// Cold discovery carries one complete schema, never a partial fragment.
++				// Bound UTF-8 bytes; retain the unchanged catalog/describe path for all
++				// other hits and for oversized/non-serializable schemas.
++				const parameters = hit.entry.parameters ?? {};
++				let inlineSchema = false;
++				if (index === 0) try {
++					const encoded = JSON.stringify(parameters);
++					inlineSchema = typeof encoded === "string" && Buffer.byteLength(encoded, "utf8") <= 4096;
++				} catch {}
++				return { ...entry, description: compactDirectoryDescription(entry.description),
++					...(inlineSchema ? { parameters } : { parametersDeferred: true,
++						describeWith: { tool: TOOL_DESCRIBE_RAW_TOOL_NAME, id: entry.id } }) };
+@@ -1717 +1725 @@
+-			description: ctx.agentId === "pixel" && config.mode === "tools" ? "Find tools by capability, not data. Describe then call a result." : "Search the effective Tool Search catalog.",
++			description: ctx.agentId === "pixel" && config.mode === "tools" ? "Find tools by capability, not data. Use the included schema; describe deferred results before calling." : "Search the effective Tool Search catalog.",
