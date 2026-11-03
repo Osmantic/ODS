@@ -192,9 +192,10 @@ class RecoveryReviewOnly:
                 self._log("notes-search", query[:80], f"{len(hits)} notes")
                 return {"results": hits, REVIEW_FIELD: True, "reviewReferences":
                         self._reference_envelope("obsidian", binding, entries, secrets, truncated=truncated)}
-            relative, text = notes.read(config, request.get("path"), reference_context=expected)
+            relative, text, binding, entries = notes.read_review(config, request.get("path"), reference_context=expected)
             self._log("notes-read", relative, "read")
-            return {"path": relative, "text": text, REVIEW_FIELD: True}
+            return {"path": relative, "text": text, REVIEW_FIELD: True, "reviewReferences":
+                    self._reference_envelope("obsidian", binding, entries, secrets)}
         if action == "mcp-tools":
             self._reference_context(request, None)
             # Only these literal read handlers may re-enter normal dispatch.
@@ -289,10 +290,15 @@ class RecoveryReviewOnly:
                                          review_references=app == "watch" and name == "list", review_only=True)
             result = {"server": server_id, "tool": name,
                     "text": clip(redact_secrets(app_text(action, reply), secrets)), "isError": False, REVIEW_FIELD: True}
-            if (app, name) in {("documents", "search"), ("watch", "list")}:
-                entries = ([{"id": row["id"], "title": row["title"]} for row in reply["results"]]
-                           if app == "documents" else reply["_reviewEntries"])
-                truncated = reply["total"] > len(entries)
+            if (app, name) in {("documents", "search"), ("documents", "read"), ("watch", "list")}:
+                if (app, name) == ("documents", "read"):
+                    # The actual structured handler result identifies the
+                    # admitted endpoint read; no second provider lookup.
+                    entries, truncated = [{"id": reply["id"], "title": reply["title"]}], False
+                else:
+                    entries = ([{"id": row["id"], "title": row["title"]} for row in reply["results"]]
+                               if app == "documents" else reply["_reviewEntries"])
+                    truncated = reply["total"] > len(entries)
                 result["reviewReferences"] = self._reference_envelope(source, self._app_reference_binding(config, app, key),
                                                                       entries, secrets, truncated=truncated)
             return result

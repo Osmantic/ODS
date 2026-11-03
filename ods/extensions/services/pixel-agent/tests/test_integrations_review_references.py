@@ -64,7 +64,7 @@ def test_notes_references_are_lookup_descriptors_and_never_bodies_or_roots(world
     assert all(value not in json.dumps(ref) for value in (str(world[2]), "original private body", "snippet"))
     read = call(world, "notes-read", path=" folder/Example ", recoveryReferenceContext=ref)
     assert read["path"] == "folder/Example.md" and "original private body" in read["text"]
-    assert "reviewReferences" not in read
+    assert read["reviewReferences"] == ref
     pending = call(world, "notes-write", path="folder/Example", text="Ask only.", recoveryReferenceContext=ref)
     assert pending["status"] == "approval-required" and "reviewReferences" not in pending
     assert world[1].approvals()[0]["state"] == "pending"
@@ -123,6 +123,98 @@ def test_reference_does_not_invent_a_lookup_requirement_for_owner_named_targets(
     assert "reviewReferences" not in normal and normal["results"][0]["path"] == "folder/Example.md"
 
 
+def test_direct_note_read_emits_only_actual_canonical_target_metadata(world):
+    reply = call(world, "notes-read", path=" folder/Example ")
+    ref = reply["reviewReferences"]
+    assert reply["path"] == "folder/Example.md" and reply["recoveryReviewOnly"] is True
+    assert ref["source"] == "obsidian" and not ref["truncated"]
+    assert ref["entries"] == [{"path": reply["path"], "binding": ref["entries"][0]["binding"]}]
+    assert len(ref["binding"]) == len(ref["entries"][0]["binding"]) == 64
+    assert all(value not in json.dumps(ref) for value in (str(world[2]), "original private body", "text", "snippet"))
+    relative, text = notes.read(world[1].config(), "folder/Example")
+    assert relative == reply["path"] and text == reply["text"]  # Ordinary return shape is unchanged.
+    ordinary = world[0].handle("agent", {"schemaVersion": 1, "action": "notes-read", "path": "folder/Example"})
+    assert ordinary["path"] == reply["path"] and "reviewReferences" not in ordinary
+
+
+def test_note_read_receipt_cannot_adopt_a_path_replaced_during_content_read(world, monkeypatch):
+    before = call(world, "notes-read", path="folder/Example")["reviewReferences"]
+    replacement = world[2].parent / "replacement.md"
+    replacement.write_text("replacement private body")
+    original = notes._read_fd
+
+    def replace_after_read(fd):
+        text = original(fd)
+        os.replace(replacement, world[2] / "folder/Example.md")
+        return text
+
+    with monkeypatch.context() as patch:
+        patch.setattr(notes, "_read_fd", replace_after_read)
+        reply = call(world, "notes-read", path="folder/Example")
+    assert "original private body" in reply["text"] and reply["reviewReferences"] == before
+    monkeypatch.setattr(world[0], "_review_approval", lambda *_: pytest.fail("replaced read target reached approval"))
+    with pytest.raises(IntegrationError) as caught:
+        call(world, "notes-write", path="folder/Example", text="Do not propose.",
+             recoveryReferenceContext=reply["reviewReferences"])
+    assert caught.value.code == "stale-review-reference" and world[1].approvals() == []
+
+
+def test_redacted_note_read_identity_is_explicitly_omitted_not_a_different_target(world):
+    (world[2] / "documents-fixture-secret.md").write_text("bounded invented body")
+    reply = call(world, "notes-read", path="documents-fixture-secret")
+    assert reply["reviewReferences"]["entries"] == [] and reply["reviewReferences"]["truncated"]
+    assert "documents-fixture-secret" not in json.dumps(reply["reviewReferences"])
+
+
+def test_failed_note_read_has_no_successful_receipt(world, monkeypatch):
+    def fail_read(_fd):
+        raise IntegrationError("note-too-large", "Invented read refusal")
+
+    monkeypatch.setattr(notes, "_read_fd", fail_read)
+    with pytest.raises(IntegrationError) as caught:
+        call(world, "notes-read", path="folder/Example")
+    assert caught.value.code == "note-too-large" and world[1].approvals() == []
+
+
+def test_direct_document_read_emits_one_exact_endpoint_id_without_a_second_provider_call(world, monkeypatch):
+    paths = []
+    identity = 9007199254740993
+
+    def paperless(_settings, _key, path, **_kwargs):
+        paths.append(path)
+        return {"content": "invented document body", "title": "Lease documents-fixture-secret"}
+
+    monkeypatch.setattr(apps, "_paperless", paperless)
+    reply = mcp(world, "documents", "read", {"id": str(identity)})
+    ref = reply["reviewReferences"]
+    assert ref["source"] == "paperless" and not ref["truncated"]
+    assert ref["entries"] == [{"id": str(identity), "title": "Lease [redacted]"}]
+    assert paths == [f"/api/documents/{identity}/"]
+    assert "invented document body" not in json.dumps(ref) and reply["recoveryReviewOnly"] is True
+    ordinary = world[0].handle("agent", {"schemaVersion": 1, "action": "mcp-call", "server": "app:documents",
+                                       "tool": "read", "arguments": {"id": str(identity)}})
+    assert "reviewReferences" not in ordinary and paths == [f"/api/documents/{identity}/"] * 2
+
+
+def test_document_read_receipt_retains_admitted_source_epoch_across_connection_change(world, monkeypatch):
+    service, store, *_ = world
+
+    def change_source(_settings, _key, _path, **_kwargs):
+        config = store.config()
+        settings = {key: config[key] for key in ("notes", "notifications", "mcp", "apps")}
+        settings["apps"]["documents"]["url"] = "https://changed.example.invalid"
+        service.save(config["revision"], settings, {})
+        return {"content": "bounded old connection body", "title": "Original endpoint"}
+
+    monkeypatch.setattr(apps, "_paperless", change_source)
+    reply = mcp(world, "documents", "read", {"id": 1})
+    assert reply["reviewReferences"]["entries"] == [{"id": "1", "title": "Original endpoint"}]
+    monkeypatch.setattr(apps, "_paperless", lambda *_args, **_kw: pytest.fail("stale read epoch reached provider"))
+    with pytest.raises(IntegrationError) as caught:
+        mcp(world, "documents", "read", {"id": 1}, recoveryReferenceContext=reply["reviewReferences"])
+    assert caught.value.code == "stale-review-reference"
+
+
 def test_paperless_ids_keep_all_decimal_digits_and_titles_are_redacted(world, monkeypatch):
     calls = []
     identity = 9007199254740993
@@ -140,7 +232,8 @@ def test_paperless_ids_keep_all_decimal_digits_and_titles_are_redacted(world, mo
     assert "needle body" not in json.dumps(ref)
     result = mcp(world, "documents", "read", {"id": str(identity)}, recoveryReferenceContext=ref)
     assert "read exactly" in result["text"] and calls[-1] == f"/api/documents/{identity}/"
-    assert "reviewReferences" not in result
+    assert result["reviewReferences"]["entries"] == [{"id": str(identity), "title": "Lease"}]
+    assert result["reviewReferences"]["binding"] == ref["binding"]
 
 
 @pytest.mark.parametrize("app,tool,args", [("documents", "read", {"id": 1}), ("documents", "search", {"query": "needle"}),

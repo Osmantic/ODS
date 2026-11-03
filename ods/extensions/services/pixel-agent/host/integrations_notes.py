@@ -188,11 +188,11 @@ def _read_fd(fd):
     return b''.join(chunks).decode('utf-8', errors='replace')
 
 
-def _review_source(config, root_fd):
+def _review_source(config, root_fd, *, info=None):
     epoch = config.get('approvalBindings', {}).get('notes')
     if not isinstance(epoch, str) or not re.fullmatch(r'[a-f0-9]{32}', epoch):
         raise IntegrationError('review-only-context-unavailable', 'Review and save the notes connection before retrying.')
-    info = os.fstat(root_fd)
+    info = os.fstat(root_fd) if info is None else info
     return digest('review-obsidian-source-v1', config['notes'], epoch, _review_identity(info))
 
 
@@ -207,12 +207,15 @@ def _check_review_target(relative, binding, context, *, identity=None):
         raise IntegrationError('stale-review-reference', 'The referenced note destination changed. No note was read or proposed.')
 
 
-def _read(root, relative, *, config=None, reference_context=None):
+def _read(root, relative, *, config=None, reference_context=None, _review=False):
     parts, relative = _parts(relative)
     parents = []
     with _root(root) as root_fd:
         _check_review_source(config, root_fd, reference_context)
-        with _parent(root_fd, parts, identities=parents if reference_context else None) as parent:
+        review_target = _review or reference_context is not None
+        root_info = os.fstat(root_fd) if review_target else None
+        source_binding = _review_source(config, root_fd, info=root_info) if _review else None
+        with _parent(root_fd, parts, identities=parents if review_target else None) as parent:
             try:
                 fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, dir_fd=parent)
             except FileNotFoundError:
@@ -220,15 +223,20 @@ def _read(root, relative, *, config=None, reference_context=None):
             except OSError:
                 raise _invalid() from None
             try:
-                if reference_context is not None:
-                    info, root_info = os.fstat(fd), os.fstat(root_fd)
+                if review_target:
+                    info = os.fstat(fd)
                     # The parent descriptors are still open while traversing;
                     # _parent records their identity stamps, not a later stat.
                     legacy_parents = [[part, stamp['device'], stamp['inode']] for part, stamp in parents]
-                    _check_review_target(relative, {'vault': str(root), 'root': [root_info.st_dev, root_info.st_ino],
-                        'parents': legacy_parents, 'missing': [], 'target': [info.st_dev, info.st_ino]}, reference_context,
-                        identity={'root': _review_identity(root_info), 'parents': parents, 'target': _review_identity(info, file=True)})
-                return relative, _read_fd(fd)
+                    binding = {'vault': str(root), 'root': [root_info.st_dev, root_info.st_ino],
+                               'parents': legacy_parents, 'missing': [], 'target': [info.st_dev, info.st_ino]}
+                    identity = {'root': _review_identity(root_info), 'parents': parents, 'target': _review_identity(info, file=True)}
+                    _check_review_target(relative, binding, reference_context, identity=identity)
+                    entry = {'path': relative, 'binding': digest('review-note-target-v1', binding, identity)}
+                text = _read_fd(fd)
+                # This receipt describes the descriptors admitted before this
+                # successful bounded read, never a later path replacement.
+                return (relative, text, source_binding, entry) if _review else (relative, text)
             finally:
                 os.close(fd)
 
@@ -316,6 +324,12 @@ def search(config, query, *, _review=False, reference_context=None):
 def read(config, relative, *, reference_context=None):
     relative, text = _read(vault(config), relative, config=config, reference_context=reference_context)
     return relative, clip(text, MAX_NOTE_READ_CHARS)
+
+
+def read_review(config, relative, *, reference_context=None):
+    relative, text, binding, entry = _read(vault(config), relative, config=config,
+                                         reference_context=reference_context, _review=True)
+    return relative, clip(text, MAX_NOTE_READ_CHARS), binding, [entry]
 
 
 def write(config, relative, text, mode, *, expected_binding=None):
