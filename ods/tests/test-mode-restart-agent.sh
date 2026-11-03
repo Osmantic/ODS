@@ -49,6 +49,7 @@ for platform in linux macos; do
             network_access_is_enabled() { return 1; }
             _ods_cli_repair_rootless_ownership() { return 0; }
             _ods_cli_refresh_soul() { :; }
+            _ods_cli_reconcile_bootstrap_swap() { :; }
             _ods_cli_wait_for_bootstrap_compose_safe() { :; }
             _ods_cli_reload_model_env() { load_env; }
             _ods_cli_wait_for_litellm_ready() { :; }

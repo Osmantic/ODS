@@ -3302,6 +3302,51 @@ def _schedule_initial_switchboard_verification(reason: str) -> None:
         _switchboard_initial_verify_thread.start()
 
 
+_BOOTSTRAP_RECONCILE_DEFERRED = 75
+_BOOTSTRAP_RECONCILE_RECHECK_SECONDS = 300
+# 4 rechecks x 300s outlast the script's 900s freshness window.
+_BOOTSTRAP_RECONCILE_MAX_RECHECKS = 4
+
+
+def _run_bootstrap_swap_reconcile(script: Path) -> int:
+    result = subprocess.run(
+        ["bash", str(script), str(INSTALL_DIR)],
+        capture_output=True, text=True, timeout=600, check=False,
+    )
+    for line in result.stdout.splitlines():
+        logger.info("%s", line)
+    if result.returncode not in (0, _BOOTSTRAP_RECONCILE_DEFERRED):
+        logger.warning(
+            "bootstrap swap reconciliation failed (rc=%d): %s",
+            result.returncode, result.stderr.strip(),
+        )
+    return result.returncode
+
+
+def _reconcile_interrupted_bootstrap_swap() -> None:
+    """Settle a bootstrap upgrade a host reboot cut off mid-swap.
+
+    The agent starts on every boot, so it is the one hook that runs after a
+    reboot without the user typing `ods start`. The script starts a
+    llama-server left "created" and marks the run interrupted (failed) for
+    the `ods start`/`ods restart` resume to finish; it never marks it
+    complete. It no-ops while a bootstrap-upgrade.sh process is alive and
+    defers (exit 75) while the status is still fresh, Docker is not answering
+    yet or the lifecycle lock is busy; those cases are rechecked a bounded
+    number of times so a fast reboot still recovers.
+    """
+    script = INSTALL_DIR / "scripts" / "reconcile-bootstrap-swap.sh"
+    if not script.is_file():
+        return
+    for attempt in range(_BOOTSTRAP_RECONCILE_MAX_RECHECKS + 1):
+        if attempt:
+            time.sleep(_BOOTSTRAP_RECONCILE_RECHECK_SECONDS)
+        if _run_bootstrap_swap_reconcile(script) != _BOOTSTRAP_RECONCILE_DEFERRED:
+            return
+    logger.warning("bootstrap swap reconciliation still deferred after %d rechecks; "
+                   "'ods start' will retry", _BOOTSTRAP_RECONCILE_MAX_RECHECKS)
+
+
 def _bootstrap_status_allows_route_proof() -> bool:
     status_path = INSTALL_DIR / "data" / "bootstrap-status.json"
     try:
@@ -22983,6 +23028,9 @@ def main():
         STARTUP_ODS_MODE,
     )
     try:
+        if platform.system() == 'Linux':
+            threading.Thread(target=_reconcile_interrupted_bootstrap_swap,
+                             name='ods-bootstrap-swap-reconcile', daemon=True).start()
         if platform.system() in ('Darwin', 'Linux'):
             threading.Thread(target=_monitor_native_pixel_access,
                              name='ods-pixel-startup-reproof', daemon=True).start()
