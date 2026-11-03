@@ -45,6 +45,13 @@ def digest(*parts):
     return hashlib.sha256(json.dumps(parts, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+NOTE_APPROVAL_PREFIX = "note-v3:"
+
+
+def note_approval_digest(*parts):
+    return NOTE_APPROVAL_PREFIX + digest(*parts)
+
+
 def clip(text, limit=MAX_RESULT_CHARS):
     return text if len(text) <= limit else text[:limit] + "\n[truncated]"
 
@@ -119,7 +126,10 @@ class Store:
 
     def approvals(self):
         current = now()
-        return [item for item in self._read("approvals.json", []) if item["expiresAt"] > current]
+        return [item for item in self._read("approvals.json", [])
+                if item["expiresAt"] > current and
+                (item.get("kind") != "note" or item["state"] not in ("pending", "approved")
+                 or str(item.get("digest", "")).startswith(NOTE_APPROVAL_PREFIX))]
 
     def save_approvals(self, value):
         self._write("approvals.json", value[-200:])

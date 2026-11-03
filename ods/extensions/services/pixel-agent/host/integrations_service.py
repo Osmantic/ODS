@@ -30,7 +30,7 @@ import uuid
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import integrations_notes as notes  # noqa: E402
-from integrations_common import (IntegrationError, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES,  # noqa: E402
+from integrations_common import (IntegrationError, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, note_approval_digest,  # noqa: E402
                                  NETWORK_TIMEOUT, SCHEMA_VERSION, Store, digest, now, notification_context, open_direct)
 from integrations_mcp import LocalServer, LocalServers, McpSession, describe_tool  # noqa: E402
 
@@ -507,6 +507,7 @@ class Integrations:
     def _notes_write(self, config, request):
         mode, relative = request.get("mode", "append"), str(request.get("path", ""))
         relative = notes.relative_name(relative)
+        notes.validate_write(request.get("text"), mode)
         waiting, notification = None, None
         # Filesystem changes are bounded and remain in the admission lock. Use
         # one descriptor for the approved identity and the eventual write.
@@ -516,13 +517,14 @@ class Integrations:
             if policy not in ("ask", "allow"):
                 raise IntegrationError("notes-write-off", "The owner has not allowed Portal to change notes.")
             with notes.open_vault(config) as root:
-                identity = os.fstat(root)
+                binding = None
                 if policy == "ask":
+                    binding = notes.write_binding(root, relative, mode)
                     summary = f"{'Add to' if mode == 'append' else 'Create'} note {relative}"
-                    waiting, notification = self._approval("note", summary, digest("note-v2", config, secrets,
-                        identity.st_dev, identity.st_ino, relative, mode, request.get("text")))
+                    waiting, notification = self._approval("note", summary, note_approval_digest(config, secrets,
+                        binding, relative, mode, request.get("text")))
                 if not waiting:
-                    written = notes.write(config, relative, request.get("text"), mode, root_fd=root)
+                    written = notes.write(config, relative, request.get("text"), mode, root_fd=root, expected=binding)
                     self.store.log("notes-write", written, mode)
         if notification:
             self._notify_approval(notification)
