@@ -1057,6 +1057,26 @@ function Get-SearxngDefaultLanguage {
     return "en"
 }
 
+function Test-SearxngSettingsKept {
+    <#
+    .SYNOPSIS
+        True when an existing SearXNG settings.yml is the owner's to keep.
+        Mirrors installers/phases/06-directories.sh: a missing file or the
+        stock CHANGEME secret is regenerated; an empty file stops the install.
+    #>
+    param([string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $false
+    }
+    $content = [IO.File]::ReadAllText($Path)
+    if ([string]::IsNullOrWhiteSpace($content)) {
+        throw "Existing SearXNG settings are empty ($Path); restore the file or rerun with -Force to regenerate."
+    }
+    $placeholder = '(?m)^[ \t]*secret_key:[ \t]*("CHANGEME-run-the-installer-to-generate-a-secure-key"|''CHANGEME-run-the-installer-to-generate-a-secure-key''|CHANGEME-run-the-installer-to-generate-a-secure-key)[ \t]*(#.*)?\r?$'
+    return -not ($content -match $placeholder)
+}
+
 function New-SearxngConfig {
     <#
     .SYNOPSIS
