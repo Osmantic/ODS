@@ -1,14 +1,16 @@
 """The owner's apps for the integrations service: what Portal asks of them, page watching,
-and notifications for finished scheduled tasks. Mixed into the service's Integrations class,
-which provides store, _approval, failing_tasks and the digest_* run memory.
+notifications for finished scheduled tasks, and reminders. Mixed into the service's Integrations
+class, which provides store, _approval, failing_tasks, reminders_sent and the digest_* run memory.
 
 Portal reaches the apps through its MCP tool, where each app the owner turned on is listed as
 a built-in server (documents, photos, watch, news) next to the owner's MCP servers. The
 gateway's plugin may declare only a few tools, so the apps add none of their own.
 """
+import datetime
 import time
 
 import integrations_apps as apps
+import integrations_reminders as reminders
 from integrations_common import IntegrationError, digest
 from integrations_ntfy import send_notification
 
@@ -316,6 +318,8 @@ class AppActions:
     # Scheduled tasks.
     def task_finished(self, config, event):
         """A scheduled task finished: the daily digest goes to the owner; others as they chose."""
+        if reminders.is_reminder(event.get("description")):
+            return {"notified": False}  # Sent when its job started; its own run is only a formality.
         news = config["apps"]["news"]
         if event.get("description") == apps.DIGEST_MARKER and news["enabled"] and news["digest"]["enabled"]:
             return {"notified": self._send_digest(config, event)}
@@ -329,6 +333,32 @@ class AppActions:
         if notice is None:
             return {"notified": False}
         return {"notified": self._tell(config, notice["title"], notice["message"], notice["priority"])}
+
+    def plan_reminder(self, config, request):
+        """Check a reminder Portal wants to set; the plugin schedules the job this returns."""
+        if not config["notifications"]["enabled"]:
+            raise IntegrationError("notifications-off", "Reminders reach the owner through ntfy notifications, which are not set up. "
+                                   "The owner can connect ntfy in Settings → Portal integrations.")
+        plan = reminders.plan(datetime.datetime.now().astimezone(), request.get("title"), request.get("message"),
+                              request.get("inMinutes"), request.get("at"))
+        self._log("reminder-set", plan["name"], plan["when"])
+        return {"plan": plan}
+
+    def reminder_due(self, config, event):
+        """A reminder's job started: send it, once per job, whatever the owner chose for scheduled tasks."""
+        if not reminders.is_reminder(event.get("description")):
+            raise IntegrationError("invalid-request", "That scheduled task is not a reminder.")
+        job = str(event.get("jobId") or "")
+        if job and job in self.reminders_sent:
+            return {"notified": False}  # OpenClaw retried the job's run.
+        title, message = reminders.notice(event.get("name"), event["description"])
+        if not config["notifications"]["enabled"]:
+            self._log("reminder", title, "not sent: notifications are off")
+            return {"notified": False}
+        sent = self._tell(config, title, message)
+        if sent and job:
+            self.reminders_sent.append(job)
+        return {"notified": sent}
 
     def _send_digest(self, config, event):
         """The brief Portal wrote in this run, or the plain brief of unread stories when it wrote none."""

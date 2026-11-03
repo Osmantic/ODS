@@ -10,8 +10,10 @@ approvals. The gateway may only use what the owner turned on: search and read no
 notes as the owner allowed, send notifications, call the MCP tools the owner allowed, and use
 the owner's apps (documents, photos, watched pages, news). A tool, note change or watch change
 set to "ask first" waits for the owner's approval, bound to the exact call and usable once.
-The service also tells the owner when a scheduled task finishes and when a watched page changes.
+The service also tells the owner when a scheduled task finishes, when a watched page changes and
+when a reminder is due.
 """
+import collections
 import json
 import os
 import pathlib
@@ -187,6 +189,7 @@ class Integrations(AppActions):
         self.digest_sent_at = 0  # When the last digest went out, so a retried run with nothing new stays quiet.
         self.digest_failing = False  # Whether the last digest could not be made, so its retries do not say so again.
         self.failing_tasks = set()  # Scheduled tasks whose last run failed, so a retry does not notify again.
+        self.reminders_sent = collections.deque(maxlen=500)  # Reminder jobs already sent, so a retried run stays quiet.
 
     def handle(self, role, request):
         """role is "owner" or "agent", set by the socket the request came in on."""
@@ -452,6 +455,10 @@ class Integrations(AppActions):
             return self.task_finished(config, request)
         if action == "digest-plan":
             return {"plan": apps.digest_plan(config)}
+        if action == "reminder-plan":
+            return self.plan_reminder(config, request)
+        if action == "reminder-due":
+            return self.reminder_due(config, request)
         raise IntegrationError("invalid-request", "Unknown integration action.")
 
 
