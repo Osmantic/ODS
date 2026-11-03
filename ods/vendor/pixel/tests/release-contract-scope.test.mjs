@@ -20,7 +20,7 @@ const checkEvidence = new AsyncFunction('root', 'manifest', 'read', 'sha256', 'r
 const manifest = JSON.parse(await readFile(join(root, 'RELEASE-MANIFEST.json'), 'utf8'));
 const sha256 = value => createHash('sha256').update(value).digest('hex');
 const evidence = (await readdir(root)).filter(name => /^ODS-QUALIFICATION-[0-9.]+\.md$/.test(name)).sort();
-assert.equal(evidence.length, 15);
+assert.equal(evidence.length, 16);
 
 async function world(t) {
   const directory = await mkdtemp(join(tmpdir(), 'pixel-release-scope-'));

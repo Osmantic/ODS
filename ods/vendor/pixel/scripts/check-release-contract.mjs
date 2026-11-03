@@ -237,7 +237,7 @@ const expectedReactivationArchiveBridge = {
   operation: "exact-terminal-no-live-mutation-reactivation-preservation-outside-bounded-staging",
   boundary: "terminal-no-live-mutation-reactivation-evidence-only-no-active-deployment-change",
 };
-if (!["4.3.27", "4.3.28", "4.3.29", "4.3.32", "4.3.33", "4.3.34", "4.3.35", "4.3.36", "4.3.37", "4.3.38", "4.3.39", "4.3.40", "4.3.41", "4.3.42"].includes(version) || JSON.stringify(manifest.releaseReactivationArchive) !== JSON.stringify(expectedReactivationArchiveBridge)) throw new Error("Release reactivation archive bridge contract is invalid");
+if (!["4.3.27", "4.3.28", "4.3.29", "4.3.32", "4.3.33", "4.3.34", "4.3.35", "4.3.36", "4.3.37", "4.3.38", "4.3.39", "4.3.40", "4.3.41", "4.3.42", "4.3.43"].includes(version) || JSON.stringify(manifest.releaseReactivationArchive) !== JSON.stringify(expectedReactivationArchiveBridge)) throw new Error("Release reactivation archive bridge contract is invalid");
 if (manifest.legacyCleanMigration?.schemaVersion !== 1 || manifest.legacyCleanMigration?.cli !== "./scripts/migrate-legacy-clean.py" || manifest.legacyCleanMigration?.evidenceSchema !== "./schemas/legacy-clean-migration-v1.schema.json" || manifest.legacyCleanMigration?.boundary !== "terminal-only-clean-migration-no-in-place-update" || manifest.legacyCleanMigration?.v1Contract?.sourcePixel !== "3.2.2" || manifest.legacyCleanMigration?.v1Contract?.targetPixel !== version || manifest.legacyCleanMigration?.activation !== "self-contained-migrate-legacy-clean-activate-transaction") throw new Error("Legacy clean-migration contract is invalid");
 if (manifest.customizationKit?.schemaVersion !== 1 || manifest.customizationKit?.defaultEnabled !== false || manifest.customizationKit?.signature !== "openssh-ed25519-detached") throw new Error("Customization kit trust contract is invalid");
 if (manifest.customizationKit?.clientOverlaySchema !== "./schemas/client-overlay-v1.schema.json" || manifest.customizationKit?.clientOverlayExample !== "./client-overlay.example.json" || manifest.customizationKit?.clientOverlayBoundary !== "private-client-state-outside-golden-core") throw new Error("Client overlay boundary is invalid");
@@ -342,6 +342,7 @@ const frozenOdsQualificationEvidence = {
   "ODS-QUALIFICATION-4.3.40.md": "2a6e018ea4e4170399bc0361f67303b93adab9313cb1cd33c36a0b4a0e78c6c3",
   "ODS-QUALIFICATION-4.3.41.md": "8361b899765e07d3de5c3aa9a477e4bbc5c065b99993935c7c7645fde204db7f",
   "ODS-QUALIFICATION-4.3.42.md": "6bdd6926c6ab2677f13b456af9ef11d33f4bf88c894f8b90a87eb2cd6b86312c",
+  "ODS-QUALIFICATION-4.3.43.md": "1f792deb846cb0999eba426ed7e638c6839bd6ce1af68d58775b3fe342b736ee",
 };
 for (const [path, expected] of Object.entries(frozenOdsQualificationEvidence)) {
   if (sha256(await read(path)) !== expected) throw new Error(`${path} frozen ODS qualification evidence changed`);
