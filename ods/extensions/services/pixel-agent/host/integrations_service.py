@@ -53,7 +53,7 @@ SERVER_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 TOPIC = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 OWNER_ACTIONS = {"get", "save", "test-notification", "discover", "test", "test-app", "watch-list", "send-digest", "retry-digest", "restart",
-                 "decide", "clear-activity"}
+                 "decide", "approval-detail", "clear-activity"}
 TASK_MODES = ("off", "failures", "all")
 WATCH_SECONDS = 120
 REQUEST_SECONDS = 130
@@ -273,6 +273,8 @@ class Integrations(RecoveryReviewOnly, AppActions):
             self._log("mcp-restart", server["name"], "stopped; starts on next use")
         elif action == "decide":
             self.decide(request.get("approvalId"), request.get("decision"))
+        elif action == "approval-detail":
+            return self.approval_detail(request.get("approvalId"))
         elif action == "clear-activity":
             with self.store.lock:
                 self.store.clear_activity()
@@ -516,6 +518,69 @@ class Integrations(RecoveryReviewOnly, AppActions):
             self.store.save_approvals(approvals)
             self._log("approval", match["summary"], match["state"])
 
+    @staticmethod
+    def _approval_snapshot(request):
+        """Detached private receipt data, never part of an agent result or list."""
+        if request is None:
+            return None
+        try:
+            raw = json.dumps(request, ensure_ascii=True, allow_nan=False)
+            # One lazy detail fits the existing 256 KiB owner response envelope.
+            if len(raw.encode()) > 2 * MAX_REQUEST_BYTES:
+                return None
+            return json.loads(raw)
+        except (TypeError, ValueError):
+            return None
+
+    def _approval_review_fields(self, request_digest, request):
+        snapshot = self._approval_snapshot(request)
+        return {"reviewPayload": snapshot,
+                "reviewPayloadDigest": digest("approval-review-v1", request_digest, snapshot)}
+
+    def approval_detail(self, approval_id):
+        """Owner-only, one still-pending request; no provider or file-content read."""
+        if not isinstance(approval_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", approval_id):
+            raise IntegrationError("invalid-request", "An approval id is required.")
+        with self.store.lock:
+            item = next((entry for entry in self.store.approvals()
+                         if entry["id"] == approval_id and entry["state"] == "pending"), None)
+            if item is None:
+                raise IntegrationError("approval-missing", "This request is no longer waiting for approval.")
+            request = self._approval_snapshot(item.get("reviewPayload"))
+            detail = {key: item[key] for key in ("id", "kind", "summary", "createdAt", "expiresAt")}
+            secrets = self.store.secrets()
+            detail["summary"] = redact_secrets(detail["summary"], secrets)[:400]
+            keys = {"notes-write": {"action", "path", "mode", "text"},
+                    "mcp-call": {"action", "server", "tool", "arguments"}}
+            if (not isinstance(request, dict) or not isinstance(request.get("action"), str)
+                    or set(request) != keys.get(request["action"], set())
+                    or not isinstance(item.get("reviewPayloadDigest"), str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", item["reviewPayloadDigest"])
+                    or not hmac.compare_digest(item["reviewPayloadDigest"],
+                                               digest("approval-review-v1", item["digest"], request))):
+                return {"approval": {**detail, "available": False}}
+            if ((request["action"] == "notes-write" and
+                 (not all(isinstance(request[key], str) for key in ("path", "text", "mode"))
+                  or request["mode"] not in ("append", "create")))
+                    or (request["action"] == "mcp-call" and
+                        (not all(isinstance(request[key], str) for key in ("server", "tool"))
+                         or not isinstance(request["arguments"], dict)))):
+                return {"approval": {**detail, "available": False}}
+            # Keep JSON types/structure intact: redact string leaves, not JSON text.
+            def hide(value):
+                if isinstance(value, str):
+                    return redact_secrets(value, secrets)
+                if isinstance(value, list):
+                    return [hide(x) for x in value]
+                if isinstance(value, dict):
+                    return {hide(k): hide(v) for k, v in value.items()}
+                return value
+            hidden = hide(request)
+            result = {"approval": {**detail, "available": True, "request": hidden, "redacted": hidden != request}}
+            if len(json.dumps({"ok": True, **result}, ensure_ascii=True).encode()) > MAX_RESPONSE_BYTES - 2048:
+                return {"approval": {**detail, "available": False}}
+            return result
+
     # Gateway (Portal agent) actions.
     def _agent(self, action, request):
         if review_only_request(request):
@@ -568,7 +633,8 @@ class Integrations(RecoveryReviewOnly, AppActions):
             epoch = self._binding(config, 'notes')
             if policy == 'ask':
                 summary = f"{'Add to' if mode == 'append' else 'Create'} note {relative}"
-                waiting, notification = self._approval('note', summary, digest('note-v2', epoch, target, relative, mode, request.get('text')))
+                waiting, notification = self._approval('note', summary, digest('note-v2', epoch, target, relative, mode, request.get('text')),
+                    {"action": "notes-write", "path": relative, "mode": mode, "text": request.get("text")})
             if not waiting:
                 written = notes.write(config, relative, request.get('text'), mode, expected_binding=target)
                 self._log("notes-write", written, mode)
@@ -616,7 +682,8 @@ class Integrations(RecoveryReviewOnly, AppActions):
             if tool['policy'] == 'ask':
                 argument_summary = redact_secrets(json.dumps(arguments, sort_keys=True), secrets)[:300]
                 summary = redact_secrets(f"{server['name']}: {name} {argument_summary}", secrets)
-                waiting, notification = self._approval('mcp', summary, digest('mcp-v2', epoch, context, tool, name, arguments))
+                waiting, notification = self._approval('mcp', summary, digest('mcp-v2', epoch, context, tool, name, arguments),
+                    {"action": "mcp-call", "server": server["id"], "tool": name, "arguments": arguments})
             if not waiting:
                 admitted = self._session(server)
         if notification:
@@ -656,7 +723,8 @@ class Integrations(RecoveryReviewOnly, AppActions):
             epoch = self._binding(config, "notes")
             summary = f"{'Add to' if mode == 'append' else 'Create'} note {relative}"
             return self._prepare_approval("note", summary,
-                                          digest("note-v2", epoch, target, relative, mode, request["text"]))
+                                          digest("note-v2", epoch, target, relative, mode, request["text"]),
+                                          {"action": "notes-write", "path": relative, "mode": mode, "text": request["text"]})
 
     def _prepare_mcp_call(self, request):
         if set(request) - {"schemaVersion", "action", "server", "tool", "arguments"}:
@@ -693,9 +761,10 @@ class Integrations(RecoveryReviewOnly, AppActions):
             epoch = self._binding(config, "mcp", server["id"])
             argument_summary = redact_secrets(json.dumps(arguments, sort_keys=True), secrets)[:300]
             summary = redact_secrets(f"{server['name']}: {name} {argument_summary}", secrets)
-            return self._prepare_approval("mcp", summary, digest("mcp-v2", epoch, context, tool, name, arguments))
+            return self._prepare_approval("mcp", summary, digest("mcp-v2", epoch, context, tool, name, arguments),
+                                          {"action": "mcp-call", "server": server["id"], "tool": name, "arguments": arguments})
 
-    def _prepare_approval(self, kind, summary, request_digest):
+    def _prepare_approval(self, kind, summary, request_digest, review_payload=None):
         """A new RPC ceiling: ledger only, even under Allowed or an approved grant."""
         with self.store.lock:
             approvals = self.store.approvals()
@@ -712,13 +781,14 @@ class Integrations(RecoveryReviewOnly, AppActions):
             if pending is None:
                 summary = redact_secrets(summary, self.store.secrets())[:400]
                 pending = {"id": uuid.uuid4().hex[:12], "kind": kind, "summary": summary, "digest": request_digest,
-                           "state": "pending", "createdAt": now(), "expiresAt": now() + APPROVAL_SECONDS}
+                           "state": "pending", "createdAt": now(), "expiresAt": now() + APPROVAL_SECONDS,
+                           **self._approval_review_fields(request_digest, review_payload)}
                 self.store.save_approvals(approvals + [pending])
                 self._log("approval", summary, "prepared without execution")
             return {"status": "approval-required", "approvalId": pending["id"], "summary": pending["summary"],
                     "preparationOnly": True, "actionExecuted": False, "approvalConsumed": False}
 
-    def _approval(self, kind, summary, request_digest):
+    def _approval(self, kind, summary, request_digest, review_payload=None):
         """Return (waiting reply, notification); no external I/O under admission.
 
         (None, None) consumes an exact approval once. Only a new pending request
@@ -735,7 +805,8 @@ class Integrations(RecoveryReviewOnly, AppActions):
             created = pending is None
             if created:
                 pending = {"id": uuid.uuid4().hex[:12], "kind": kind, "summary": summary[:400], "digest": request_digest,
-                           "state": "pending", "createdAt": now(), "expiresAt": now() + APPROVAL_SECONDS}
+                           "state": "pending", "createdAt": now(), "expiresAt": now() + APPROVAL_SECONDS,
+                           **self._approval_review_fields(request_digest, review_payload)}
                 self.store.save_approvals(approvals + [pending])
                 self._log("approval", summary, "requested")
         return ({"status": "approval-required", "approvalId": pending["id"], "summary": pending["summary"]},

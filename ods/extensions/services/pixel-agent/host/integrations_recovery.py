@@ -238,7 +238,7 @@ class RecoveryReviewOnly:
             raise IntegrationError("review-only-policy", "Automatic recovery cannot use Allowed or Off to perform an action. "
                                    "It can only prepare a request under Ask first. No action or approval request was created.")
 
-    def _review_approval(self, kind, summary, request_digest):
+    def _review_approval(self, kind, summary, request_digest, review_payload=None):
         """Caller holds current policy/generation admission; never consumes a grant."""
         with self.store.lock:
             approvals = self.store.approvals()  # Existing 24-hour expiry semantics.
@@ -257,7 +257,8 @@ class RecoveryReviewOnly:
             if pending is None:
                 summary = redact_secrets(summary, self.store.secrets())[:400]
                 pending = {"id": uuid.uuid4().hex[:12], "kind": kind, "summary": summary, "digest": request_digest,
-                           "state": "pending", "createdAt": now(), "expiresAt": now() + REVIEW_APPROVAL_SECONDS}
+                           "state": "pending", "createdAt": now(), "expiresAt": now() + REVIEW_APPROVAL_SECONDS,
+                           **self._approval_review_fields(request_digest, review_payload)}
                 self.store.save_approvals(approvals + [pending])
                 self._log("approval", summary, "requested for review")
             # No _notify_approval: even an approval ping would be an external effect.
@@ -277,7 +278,8 @@ class RecoveryReviewOnly:
             epoch = self._review_binding(config, "notes")
             summary = f"{'Add to' if mode == 'append' else 'Create'} note {relative}"
             return self._review_approval("note", summary,
-                                         digest("note-v2", epoch, target, relative, mode, request.get("text")))
+                                         digest("note-v2", epoch, target, relative, mode, request.get("text")),
+                                         {"action": "notes-write", "path": relative, "mode": mode, "text": request.get("text")})
 
     def _review_mcp_call(self, request):
         name, arguments = request.get("tool"), request.get("arguments", {})
@@ -332,4 +334,5 @@ class RecoveryReviewOnly:
             argument_summary = redact_secrets(json.dumps(arguments, sort_keys=True), secrets)[:300]
             summary = redact_secrets(f"{server['name']}: {name} {argument_summary}", secrets)
             return self._review_approval("mcp", summary,
-                                         digest("mcp-v2", epoch, context, tool, name, arguments))
+                                         digest("mcp-v2", epoch, context, tool, name, arguments),
+                                         {"action": "mcp-call", "server": server["id"], "tool": name, "arguments": arguments})

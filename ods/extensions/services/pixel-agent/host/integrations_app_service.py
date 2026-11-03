@@ -104,6 +104,13 @@ def app_text(action, reply):
 
 
 class AppActions:
+    @staticmethod
+    def _watch_approval_payload(action, url, title, below, watch_id):
+        arguments = ({"url": url, "title": title, "below": below} if action == "watch-add"
+                     else {"id": watch_id})
+        return {"action": "mcp-call", "server": "app:watch",
+                "tool": "add" if action == "watch-add" else "remove", "arguments": arguments}
+
     def test_app(self, app):
         """Reach one app with its saved token; a sentence for the owner."""
         if app not in apps.APPS:
@@ -676,7 +683,8 @@ class AppActions:
                                            "This recovery made no change or approval request.")
                 summary = redact_secrets(summary, {"admittedAppKey": key})
                 prepare = self._prepare_approval if preparation_only else self._review_approval
-                return prepare("watch", summary, digest("watch-v2", epoch, context, settings, *details))
+                return prepare("watch", summary, digest("watch-v2", epoch, context, settings, *details),
+                               self._watch_approval_payload(action, url, title, below if action == "watch-add" else None, watch_id))
 
     def _watch_change(self, config, settings, key, action, request):
         # Serialise mutations of this provider, not unrelated owner Settings.
@@ -717,7 +725,8 @@ class AppActions:
                 epoch = self._binding(self.store.config(), "apps", "watch")
                 if settings["changes"] == "ask":
                     waiting, notification = self._approval("watch", summary,
-                        digest("watch-v2", epoch, context, settings, *details))
+                        digest("watch-v2", epoch, context, settings, *details),
+                        self._watch_approval_payload(action, url, title, below if action == "watch-add" else None, uuid))
             if notification:
                 self._notify_approval(notification)
             if waiting:

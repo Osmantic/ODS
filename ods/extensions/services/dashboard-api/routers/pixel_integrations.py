@@ -27,6 +27,7 @@ FIELDS = {
     'retry-digest': {'attemptId', 'expectedRevision'},
     'restart': {'serverId'},
     'decide': {'approvalId', 'decision'},
+    'approval-detail': {'approvalId'},
     'clear-activity': set(),
 }
 # A local server may download itself on its first start; the app actions make several calls.

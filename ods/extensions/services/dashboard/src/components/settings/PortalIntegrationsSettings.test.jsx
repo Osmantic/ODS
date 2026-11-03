@@ -40,7 +40,7 @@ const WATCHES = { total: 2, watches: [
 ] }
 
 // A fake service: save stores the settings, discover adds the tools.
-function fakeService(initial = view(), { watches = WATCHES } = {}) {
+function fakeService(initial = view(), { watches = WATCHES, approvalDetails = {} } = {}) {
   let current = initial
   const posts = []
   const failures = new Map()
@@ -75,6 +75,10 @@ function fakeService(initial = view(), { watches = WATCHES } = {}) {
       if (body.expectedRevision !== current.settings.revision) return response({ detail: 'These settings changed in another window.', code: 'stale-revision' }, 409)
       current = { ...current, digestRecovery: [] }
       return response({ ...current, notice: 'The saved digest was sent again.' })
+    } else if (action === 'approval-detail') {
+      const item = current.approvals.find(entry => entry.id === body.approvalId)
+      if (!item) return response({detail: 'This request is no longer waiting for approval.'}, 400)
+      return response({approval: {...item, available: Boolean(approvalDetails[item.id]), ...approvalDetails[item.id]}})
     } else if (action === 'clear-activity') {
       current = { ...current, activity: [] }
     } else if (action === 'decide') {
@@ -147,11 +151,16 @@ it('shows a server’s tools and their effect before it can be turned on', async
 it('approves a waiting action and shows the service’s refusal sentences', async () => {
   const approval = { id: 'a1', kind: 'mcp', summary: 'Home Assistant: HassTurnOn {"name":"Kitchen"}', createdAt: 1, expiresAt: 2 }
   const activity = [{ at: 1, action: 'notes-search', target: 'deposit', outcome: '1 notes' }]
-  const { posts } = fakeService(view({ approvals: [approval], settings: settings(3), activity }))
+  const { posts } = fakeService(view({ approvals: [approval], settings: settings(3), activity }), {
+    approvalDetails: {a1: {request: {action: 'mcp-call', server: 'home-assistant', tool: 'HassTurnOn', arguments: {name: 'Kitchen'}}, redacted: false}},
+  })
   expect(await screen.findByText(/Searched notes: deposit \(1 notes\)/)).toBeInTheDocument()
+  expect(screen.queryByRole('button', {name: 'Approve'})).toBeNull()
+  fireEvent.click(await screen.findByRole('button', {name: 'Review request'}))
+  expect(await screen.findByText('Exact arguments')).toBeInTheDocument()
   fireEvent.click(await screen.findByRole('button', { name: 'Approve' }))
   await screen.findByText('Nothing is waiting.')
-  expect(posts).toEqual([['decide', { approvalId: 'a1', decision: 'approve' }]])
+  expect(posts).toEqual([['approval-detail', {approvalId: 'a1'}], ['decide', { approvalId: 'a1', decision: 'approve' }]])
 
   vi.stubGlobal('fetch', vi.fn(async (url, options) => options.method === 'POST'
     ? response({ detail: 'The vault folder must be an existing folder, given as a full path.', code: 'invalid-settings' }, 400)
@@ -169,6 +178,42 @@ it('keeps saved tools only while the address is unchanged and makes unique ids',
   expect(newServerId('Home Assistant', [{ id: 'home-assistant' }])).toBe('home-assistant-2')
   expect(newServerId('!!', [])).toBe('server')
   expect(secretsFrom({ ntfyPassword: '', mcp: { a: '', b: 't' } })).toEqual({ mcp: { b: 't' } })
+})
+
+it('loads only the selected proposal and shows all exact note text before offering approval', async () => {
+  const approval = {id: 'note-1', kind: 'note', summary: 'Add to Owned.md', createdAt: 1, expiresAt: 2}
+  const text = 'Exact first line.\n' + Array.from({length: 20}, (_, i) => `${i + 1}. Unexpected additional text`).join('\n') + '\n<h1>Literal text</h1>'
+  const {posts} = fakeService(view({approvals: [approval]}), {approvalDetails: {
+    'note-1': {request: {action: 'notes-write', path: 'Owned.md', mode: 'append', text}, redacted: false},
+  }})
+  await screen.findByText('Add to Owned.md')
+  expect(posts).toEqual([])
+  expect(screen.queryByText('Exact text')).toBeNull()
+  expect(screen.queryByRole('button', {name: 'Approve'})).toBeNull()
+  fireEvent.click(screen.getByRole('button', {name: 'Review request'}))
+  await screen.findByText('Exact text')
+  const proposal = screen.getByLabelText('Proposed action')
+  expect(proposal.querySelector('pre').textContent).toBe(text)
+  expect(within(proposal).queryByRole('heading')).toBeNull()
+  expect(screen.getByRole('button', {name: 'Approve'})).toBeEnabled()
+  expect(posts).toEqual([['approval-detail', {approvalId: 'note-1'}]])
+  fireEvent.click(screen.getByRole('button', {name: 'Decline'}))
+  await screen.findByText('Nothing is waiting.')
+  expect(posts.at(-1)).toEqual(['decide', {approvalId: 'note-1', decision: 'decline'}])
+})
+
+it.each([
+  {available: false},
+  {available: true, redacted: true, request: {action: 'mcp-call', server: 'owned', tool: 'change', arguments: {value: '[redacted]'}}},
+])('keeps decline available when the exact proposal cannot be reviewed: %j', async detail => {
+  const approval = {id: 'old-1', kind: 'mcp', summary: 'Old request', createdAt: 1, expiresAt: 2}
+  const {posts} = fakeService(view({approvals: [approval]}), {approvalDetails: {'old-1': detail}})
+  fireEvent.click(await screen.findByRole('button', {name: 'Review request'}))
+  await waitFor(() => expect(screen.queryByRole('button', {name: 'Loading request…'})).toBeNull())
+  expect(screen.queryByRole('button', {name: 'Approve'})).toBeNull()
+  fireEvent.click(screen.getByRole('button', {name: 'Decline'}))
+  await screen.findByText('Nothing is waiting.')
+  expect(posts).toEqual([['approval-detail', {approvalId: 'old-1'}], ['decide', {approvalId: 'old-1', decision: 'decline'}]])
 })
 
 it('keeps Save and Discard in reach while changes are unsaved, and warns before leaving', async () => {

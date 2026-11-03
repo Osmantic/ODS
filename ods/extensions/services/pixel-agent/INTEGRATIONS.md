@@ -57,7 +57,8 @@ owner requests from agent requests. A uid check could not do that.
   tools, use the apps, and report a finished scheduled task.
 - **Owner socket:** `~/.config/ods/pixel-integrations/owner.sock`. It accepts
   only owner actions: read settings, save, test notification, check tools, test a
-  server, test an app, restart a local server, approve or decline, and clear the activity list.
+  server, test an app, restart a local server, review the exact pending action,
+  approve or decline, and clear the activity list.
   In Sandbox, the gateway's home mount hides this folder from ordinary paths;
   the installer refuses a bind that exposes it, including a canonical alias.
   This is not a different-user security boundary.
@@ -118,9 +119,17 @@ turned on:
 - Saving settings or checking tools revokes pending and approved requests, even
   for an unrelated integration. Repeat the action to request a new approval.
 - It can be used once and expires after 24 hours.
-- After the owner approves, Portal repeats the same call. A scheduled task does
-  not wait: it reports that the action needs approval, and its next run within 24
-  hours with the same arguments goes ahead.
+- **Review request** loads the exact proposed note text, or server, tool and
+  arguments, before Settings offers **Approve**. Full payloads stay in private
+  owner state and are omitted from agent replies and approval lists. Older
+  requests without a saved payload, damaged snapshots and previews containing
+  configured secrets cannot be approved in this screen; decline and prepare a
+  new request. The owner API's existing exact-id decision remains available to
+  other owner clients.
+- Approving does not execute the action or resume a finished chat. Ask Portal to
+  try the same action again. A scheduled task does not wait: it reports that the
+  action needs approval, and its next run within 24 hours with the same arguments
+  goes ahead.
 - The ping can carry an **Open approvals** button. It only opens the Settings
   page, where the owner still signs in; the link grants nothing. Use an address
   the phone can reach.

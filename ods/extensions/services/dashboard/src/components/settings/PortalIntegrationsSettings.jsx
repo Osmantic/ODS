@@ -26,18 +26,62 @@ function Toggle({ checked, disabled, onChange, children }) {
   return <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={checked} disabled={disabled} onChange={event => onChange(event.target.checked)} />{children}</label>
 }
 
+function ApprovalRequest({ item, busy, onDecide }) {
+  const [detail, setDetail] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const controller = useRef(null)
+  useEffect(() => () => controller.current?.abort(), [])
+  const review = async () => {
+    controller.current?.abort()
+    const current = new AbortController()
+    controller.current = current
+    setLoading(true); setError('')
+    try {
+      const result = await call('approval-detail', {approvalId: item.id}, current.signal)
+      if (current.signal.aborted) return
+      if (result.approval?.id !== item.id) throw new Error('This request could not be reviewed. Reload to try again.')
+      setDetail(result.approval)
+    } catch (failure) {
+      if (!current.signal.aborted) setError(failure.message)
+    } finally {
+      if (!current.signal.aborted) setLoading(false)
+    }
+  }
+  const request = detail?.request
+  const reviewable = detail?.available && !detail.redacted && request
+  return <li className="space-y-3 py-3 text-sm">
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="min-w-[12rem] flex-1"><p className="font-medium break-words">{item.summary}</p><p className="text-theme-text-muted">Asked {when(item.createdAt)}</p></div>
+      <div className="flex gap-2">
+        {!detail && <button className={buttonStyle} disabled={busy || loading} onClick={review}>{loading ? 'Loading request…' : 'Review request'}</button>}
+        <button className={buttonStyle} disabled={busy} onClick={() => onDecide(item.id, 'decline')}>Decline</button>
+      </div>
+    </div>
+    {error && <p role="alert" className="text-theme-text-muted">{error}</p>}
+    {detail && !detail.available && <p className="text-theme-text-muted">Full action details are unavailable. Decline this request and ask Portal to prepare it again.</p>}
+    {request && <div className="space-y-2" aria-label="Proposed action">
+      {item.kind === 'note' ? <>
+        <p>{request.mode === 'create' ? 'Create note' : 'Append to note'}: <span className="font-mono break-all">{request.path}</span></p>
+        <p className="text-theme-text-muted">Exact text</p>
+        <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words font-mono text-sm">{request.text}</pre>
+      </> : <>
+        <p>Server: <span className="font-mono break-all">{request.server}</span> · Tool: <span className="font-mono break-all">{request.tool}</span></p>
+        <p className="text-theme-text-muted">Exact arguments</p>
+        <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words font-mono text-sm">{JSON.stringify(request.arguments, null, 2)}</pre>
+      </>}
+      {detail.redacted && <p className="text-theme-text-muted">Configured secrets are hidden. This preview cannot be approved; decline it and submit an action without secret contents.</p>}
+    </div>}
+    {reviewable && <button className={buttonStyle} disabled={busy} onClick={() => onDecide(item.id, 'approve')}>Approve</button>}
+  </li>
+}
+
 function Approvals({ approvals, busy, onDecide }) {
   return <section className={cardStyle} aria-labelledby="integrations-approvals">
     <h3 id="integrations-approvals" className="font-semibold">Waiting for your approval</h3>
     {approvals.length === 0
       ? <p className="text-sm text-theme-text-muted">Nothing is waiting.</p>
-      : <ul className="space-y-2" aria-label="Waiting approvals">{approvals.map(item => <li key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded border border-theme-border p-3 text-sm">
-          <div className="min-w-[12rem] flex-1"><p className="font-medium break-words">{item.summary}</p><p className="text-theme-text-muted">Asked {when(item.createdAt)}</p></div>
-          <div className="flex gap-2">
-            <button className={buttonStyle} disabled={busy} onClick={() => onDecide(item.id, 'approve')}>Approve</button>
-            <button className={buttonStyle} disabled={busy} onClick={() => onDecide(item.id, 'decline')}>Decline</button>
-          </div>
-        </li>)}</ul>}
+      : <ul className="space-y-2" aria-label="Waiting approvals">{approvals.map(item => <ApprovalRequest key={item.id} item={item} busy={busy} onDecide={onDecide} />)}</ul>}
     <p className="text-xs text-theme-text-muted">An approval allows that exact action once, within 24 hours. Approving here does not resume a finished chat: ask Portal to try the same action again. A scheduled task can use the approval on a later run.</p>
   </section>
 }
