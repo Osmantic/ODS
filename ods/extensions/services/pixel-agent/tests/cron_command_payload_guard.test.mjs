@@ -3,6 +3,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import {createToolLoopGuard} from "../plugin/tool-loop-guard.mjs";
 import {
   CRON_COMMAND_PAYLOAD_REASON,
   withCronCommandPayloadBlock,
@@ -71,4 +72,31 @@ test("keeps an earlier block and checks an earlier hook's rewritten params", () 
 
   const passthrough = { params: { action: "add", job: { payload: { kind: "agentTurn", message: "m" } } } };
   assert.equal(check({ action: "add" }, CRON, passthrough), passthrough);
+});
+
+test("a future one-off cannot be consumed by a force run in its creation turn", async () => {
+  const job = {id: "scheduled-once", agentId: "pixel", enabled: true, createdAtMs: 1000,
+    schedule: {kind: "at", at: "2035-01-01T00:00:00Z"}, state: {nextRunAtMs: 2000},
+    payload: {kind: "agentTurn"}};
+  const info = {id: "openclaw:core:cron", source: "openclaw", sourceName: "core", name: "cron"};
+  for (const wrapped of [false, true]) {
+    const guard = createToolLoopGuard();
+    const name = wrapped ? "tool_call" : "cron";
+    const ctx = {agentId: "pixel", sessionId: "session", runId: "creation", toolName: name};
+    const params = args => wrapped ? {id: info.id, args} : args;
+    const after = (details, error) => guard.afterToolCall({params: params({action:"add"}), error,
+      result: {details: wrapped ? {tool:info, result:{details}} : details}}, ctx);
+    const before = (request, context=ctx) => guard.beforeToolCall({params:params(request)}, context);
+    const force = {action:"run", jobId:job.id, runMode:"force"};
+    after(job, "add failed");
+    assert.notEqual((await before(force))?.block, true);
+    after({...job, schedule:{kind:"every", everyMs:60000}});
+    assert.notEqual((await before(force))?.block, true);
+    after(job);
+    assert.match((await before(force))?.blockReason, /already scheduled/);
+    assert.match((await before({action:"run",id:job.id,runMode:"force"}))?.blockReason, /already scheduled/);
+    for (const request of [{...force,runMode:"due"}, {action:"runs",id:job.id}, {...force,jobId:"another"}])
+      assert.notEqual((await before(request))?.block, true);
+    assert.notEqual((await before(force, {...ctx,runId:"new-owner-turn"}))?.block, true);
+  }
 });

@@ -1,3 +1,4 @@
+import { cronArguments } from "./cron-command-payload-guard.mjs";
 import {ownerLaneText, ownerForbidsTools} from './owner-tool-policy.mjs';
 import {validDeliveredArtifact, normalizeWorkspaceArtifact, WORKSPACE_ARTIFACT_DELIVERY_GUIDANCE} from './workspace-artifact.mjs';
 // Pixel per-run tool-loop guard.
@@ -9130,18 +9131,29 @@ export function createToolLoopGuard({
     // Only refine an already-proven phantom process refusal. Real exec
     // sessions, earlier denials, correction allowances and failure fuses keep
     // their existing decisions. Fixed text preserves identical-outcome checks.
-    const decision = nativeDelegationPending === true && originalDecision?.blockReason === PHANTOM_PROCESS_REASON
+    let decision = nativeDelegationPending === true && originalDecision?.blockReason === PHANTOM_PROCESS_REASON
       ? {...originalDecision,blockReason:NATIVE_DELEGATION_WAIT_REASON} : originalDecision;
     const toolName = context?.toolName ?? event?.toolName;
     const { runId } = runIdentity(event, context);
     const callId = context?.toolCallId ?? event?.toolCallId;
+    const state = context?.agentId === agentId && runId ? runs.get(runId) : undefined;
+    if (state?.createdFutureOneOffs && decision?.block !== true) {
+      const cron = cronArguments(decision?.params ?? event?.params, toolName);
+      if (typeof cron?.action === "string" && cron.action.trim() === "run" && cron.runMode === "force") {
+        const primaryId = typeof cron.jobId === "string" ? cron.jobId.trim() : "";
+        const id = primaryId || (typeof cron.id === "string" ? cron.id.trim() : "");
+        if (state.createdFutureOneOffs.has(id)) decision = {
+          block: true,
+          blockReason: "This one-time task is already scheduled. Forcing it now can consume its scheduled run. Report its scheduled time. Use cron list or runs to inspect it.",
+        };
+      }
+    }
     // Many refusals come after rememberToolRun recorded the call. A refused
     // call never runs, so a stopped response keeps nothing of it.
     if (decision?.block === true && context?.agentId === agentId && typeof callId === 'string' && callId) {
       const pending = pendingToolRuns.get(callId);
       if (pending) pending.refused = true;
     }
-    const state = context?.agentId === agentId && runId ? runs.get(runId) : undefined;
     const connectionCall = connectionCallBinding({...event,params:decision?.params ?? event?.params},context,state);
     if (state && connectionCall) state.connectionEvidence.prepare(connectionCall);
     // A tool now running, which the deadline stop may end (responseDeadlineDue).
@@ -11955,6 +11967,20 @@ export function createToolLoopGuard({
     if (typeof runId !== "string" || !runId) return;
     recordExampleOutcome({...context, runId}, examples.check(runId), context?.toolCallId ?? event?.toolCallId);
     const state = stateFor(runId);
+    // A forced run can consume a one-off before its due time. Bind the
+    // creation-turn guard to the native receipt, never to model-supplied text.
+    const cron = cronArguments(event?.params, toolName);
+    if ((!event?.runId || event.runId === runId) && typeof cron?.action === "string" &&
+        cron.action.trim() === "add" && !toolCallFailed(event)) {
+      const receipt = toolName === "tool_call" ? toolSearchSelectedToolEvent(event, "cron", "core") : event;
+      const job = receipt?.result?.details;
+      if (!toolCallFailed(receipt) && job?.agentId === agentId && job.enabled === true &&
+          job.payload?.kind === "agentTurn" && job.schedule?.kind === "at" &&
+          Number.isFinite(job.createdAtMs) && Number.isFinite(job.state?.nextRunAtMs) &&
+          job.state.nextRunAtMs > job.createdAtMs && typeof job.id === "string" && job.id) {
+        (state.createdFutureOneOffs ??= new Set()).add(job.id);
+      }
+    }
     const connectionCall = connectionCallBinding(event,context,state);
     if (connectionCall) state.connectionEvidence.observe(connectionCall,event?.result,event?.error);
     state.responseDeadline?.tools.delete(context?.toolCallId ?? event?.toolCallId);
