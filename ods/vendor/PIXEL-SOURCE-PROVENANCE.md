@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`fb48263c80ed86ddbfafad14cd688bec97f21704`, and its SHA-256 is
-`d261803e5da0fb8f59712a735c80fa9656ae8160305a1b46a0db31838b62797a`.
+`acc5550888fe034a9a42e90307c9f7a664726315`, and its SHA-256 is
+`477f974f7d85c43b8e4e7a79ff3411da8ee938a9d597033c4f53323a5569d922`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -22,7 +22,57 @@ The repository owner authorized this source publication and the ODS-only
 Pixel grant. Third-party packages are not included in the Git bundle and
 retain their own notices and licenses.
 
-The current Portal runtime candidate uses internal package version 4.3.41.
+## ODS-maintained Source 4.3.42 proposal publication candidate
+
+The current ODS-maintained Source candidate uses internal package version
+4.3.42. Its functional checkpoint is
+`2341f406ee4b461e6f36e595632dac72fb1872b1`; the scoped candidate record is
+[`pixel/ODS-QUALIFICATION-4.3.42.md`](pixel/ODS-QUALIFICATION-4.3.42.md).
+Calendar and Gmail proposal publication now sets the intended broker-readable
+`0640` mode through the same exclusively opened file descriptor before writing
+the body, while retaining the gateway's private `0077` umask. Existing direct
+Calendar policy, owner approval, tool arguments and execution authority remain
+unchanged. The version advances because the existing ordinary Linux/WSL update
+refuses a different Source ref at the already active version; that strict gate
+was preserved. Current-release metadata and exact migration target bindings are
+consistent at 4.3.42; unknown next releases and wrong migration targets remain
+refused. This is a candidate, not upstream or supported-release promotion.
+
+The reviewed vendor tree is `754f9cf764a800c79a6c2e5f619dc910ff5c3c07`.
+Two independent empty bare repositories, using the retained synthetic public
+identity, timestamp, root message and documented alternates procedure with
+`pack.threads=1`, produced byte-identical bundles at the current ref/digest
+above. All 1,339 blobs and Git modes match the visible source, including
+96 executable entrypoints; only the single parentless root commit is advertised.
+Recreating the previous tree reproduced its exact synthetic commit. These
+packaging identities are reproducibility metadata, not a signature or upstream
+approval. No private source history or signing credential was used.
+
+The exact bundle/source/digest/Git-mode verifier, local bundled-source
+acquisition and tamper checks, paired installer pins, prepared-client identity
+and unchanged-receipt checks, controlled native bootstrap/update fixtures and
+source-upgrade/overlay custody controls passed. Both real exported proposal
+writers also passed from the exact new bundle checkout under `0077`; the
+existing optional SDK case remains explicitly skipped. The native component
+fixtures ran on Linux and do not qualify physical Darwin execution. The
+previous 4.3.41 artifact `fb48263c80ed86ddbfafad14cd688bec97f21704`, digest
+`d261803e5da0fb8f59712a735c80fa9656ae8160305a1b46a0db31838b62797a`,
+remains an exact readable prepared-client identity; its historical evidence
+and other prior receipts were not rewritten.
+
+The full public-export release-contract gate still fails on the missing frozen
+historical `LIVE-AUDIT-4.0.0.md`, reproduced on the prior 4.3.41 source. That
+fixed hash check was not waived or supplied with invented evidence; associated
+expected-message generation checks remain blocked behind it. This artifact
+verification does not claim that full gate passed. Ordinary installed
+Windows/WSL adoption, actual direct-broker/provider behavior, real-account
+journeys and physical Mac installation/update remain separate qualification.
+OpenClaw, dependency and image versions/hashes, trust anchors, signing and
+other policy fields are unchanged.
+
+## Prior metadata-count candidate 4.3.41
+
+The preceding Portal runtime candidate uses internal package version 4.3.41.
 Its functional checkpoint is `cc49a94b991b99e254e0b5555e6b21740a62dc09`;
 the versioned source checkpoint is `133f5f387cc45b68cd16fdd1c34981700b430b5f`.
 It adds metadata-only Gmail/Calendar counts, explicit rolling/civil windows,
