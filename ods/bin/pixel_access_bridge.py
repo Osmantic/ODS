@@ -2472,6 +2472,50 @@ class SystemdAccessBridge:
 
 _NATIVE_RUNTIME_OPERATION = contextvars.ContextVar("pixel_native_runtime_operation", default=None)
 _NATIVE_RUNTIME_OPERATION_SEAL = object()
+_NATIVE_SOURCE_DEADLINE = contextvars.ContextVar("pixel_native_source_deadline", default=None)
+_NATIVE_SOURCE_DEADLINE_SEAL = object()
+
+
+class _NativeSourceDeadline:
+    """Revocable raw-clock twin of one actual Root bounded scope, not admission."""
+    __slots__ = ('bridge', 'thread', 'active', 'seal', 'raw0', 'ceiling', 'monotonic', 'parent')
+
+    def __init__(self, bridge, raw0, ceiling, monotonic, parent):
+        self.bridge, self.raw0, self.ceiling = bridge, raw0, ceiling
+        self.monotonic, self.parent = monotonic, parent
+        self.thread, self.active = threading.current_thread(), True
+        self.seal = _NATIVE_SOURCE_DEADLINE_SEAL
+
+
+def _native_source_clock_ns():
+    """Unavailable raw time makes only Source dispatch ineligible."""
+    if sys.platform != 'darwin':
+        return None
+    try:
+        value = time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW)
+    except (AttributeError, OSError, TypeError, ValueError, OverflowError):
+        return None
+    return value if type(value) is int and 0 < value < 2**63 else None
+
+
+def _native_source_deadline_chain(scope):
+    seen = set()
+    while scope is not None:
+        if (type(scope) is not _NativeSourceDeadline or id(scope) in seen
+                or scope.seal is not _NATIVE_SOURCE_DEADLINE_SEAL or scope.active is not True
+                or type(scope.bridge) is not LaunchdAccessBridge
+                or scope.thread is not threading.current_thread()
+                or type(scope.monotonic) not in (int, float)
+                or type(scope.raw0) is not int or type(scope.ceiling) is not int
+                or not 0 < scope.raw0 < scope.ceiling < 2**63):
+            return False
+        seen.add(id(scope))
+        child, scope = scope, scope.parent
+        if scope is not None and (type(scope) is not _NativeSourceDeadline
+                or type(scope.raw0) is not int or type(scope.ceiling) is not int
+                or child.raw0 < scope.raw0 or child.ceiling > scope.ceiling):
+            return False
+    return True
 
 
 class _NativeRuntimeOperation:
@@ -2565,9 +2609,46 @@ class LaunchdAccessBridge(SystemdAccessBridge):
 
     @contextlib.contextmanager
     def bounded(self, seconds):
+        raw0 = _native_source_clock_ns() if type(self) is LaunchdAccessBridge else None
+        parent = _NATIVE_SOURCE_DEADLINE.get()
         with super().bounded(seconds):
-            with LaunchdAccessBridge._native_runtime_operation(self):
-                yield
+            scope, token = None, None
+            if type(self) is LaunchdAccessBridge:
+                ceiling = None
+                if raw0 is not None and _native_source_deadline_chain(parent):
+                    try:
+                        candidate = raw0 + int(remaining(seconds) * 10**9)
+                        if parent is not None:
+                            candidate = min(candidate, parent.ceiling)
+                        if raw0 < candidate < 2**63:
+                            ceiling = candidate
+                    except (AccessError, TypeError, ValueError, OverflowError):
+                        pass
+                scope = _NativeSourceDeadline(self, raw0, ceiling, _DEADLINE.get(), parent)
+                token = _NATIVE_SOURCE_DEADLINE.set(scope)
+            try:
+                with LaunchdAccessBridge._native_runtime_operation(self):
+                    yield
+            finally:
+                if scope is not None:
+                    scope.active = False
+                    _NATIVE_SOURCE_DEADLINE.reset(token)
+
+    def _native_source_deadline_ns(self):
+        """Return only this live bounded scope's original conservative ceiling."""
+        scope = _NATIVE_SOURCE_DEADLINE.get()
+        if (type(self) is not LaunchdAccessBridge or type(scope) is not _NativeSourceDeadline
+                or scope.bridge is not self or not _native_source_deadline_chain(scope)
+                or _DEADLINE.get() != scope.monotonic):
+            raise AccessError('native-source-deadline-unavailable')
+        now = _native_source_clock_ns()
+        try:
+            remaining(1)  # The existing monotonic deadline remains independently binding.
+        except (AccessError, TypeError, ValueError, OverflowError):
+            raise AccessError('native-source-deadline-unavailable') from None
+        if now is None or not scope.raw0 <= now < scope.ceiling:
+            raise AccessError('native-source-deadline-unavailable')
+        return scope.ceiling
 
     @contextlib.contextmanager
     def locked(self, *, wait_seconds=0):

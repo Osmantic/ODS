@@ -73,6 +73,13 @@ connections. Darwin metadata and Seatbelt are explicitly simulated there.
 Root dispatch, launchd job lifecycle, connection activation and physical Mac
 behavior remain unfinished; Connected apps remains unavailable there.
 
+Native Root bounded operations now retain a separate, revocable raw-clock
+ceiling derived from their effective inherited time limit. Nested operations
+cannot extend it, including across bridges. Missing, foreign, expired or
+revoked scopes refuse Source dispatch without breaking unrelated Mac work.
+The existing monotonic limit and operation-local hash cache remain separate;
+this groundwork does not start a Source job or prove physical clock behavior.
+
 The local integration now composes native-tool candidate `8e9aea1ca` with the
 newer Mac startup barrier. Explicit approval preparation does not execute an
 action or consume an approval, including under Allowed, and cannot count as a
