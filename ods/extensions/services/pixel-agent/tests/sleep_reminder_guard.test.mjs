@@ -44,8 +44,11 @@ test('an earlier block is kept, a rewrite is checked, and other tools pass', () 
   assert.equal(withSleepReminderBlock(earlier, exec('sleep 600'), {toolName: 'exec'}), earlier);
   const rewrite = {params: {command: 'sleep 600'}};
   assert.equal(withSleepReminderBlock(rewrite, exec('ls'), {toolName: 'exec'})?.block, true);
-  const fine = {params: {command: 'ls'}};
-  assert.equal(withSleepReminderBlock(fine, exec('sleep 600'), {toolName: 'exec'}), fine);
+  // The cancellation wrapper hides the command in base64; the owner's own call still shows it.
+  const wrapped = {params: {command: `/run/pixel-ods-control/cancellable-exec.sh run-1 ${Buffer.from('(sleep 120 && echo hi) &').toString('base64')}`}};
+  assert.equal(withSleepReminderBlock(wrapped, exec('(sleep 120 && echo hi) &'), {toolName: 'exec'})?.block, true);
+  const quick = {params: {command: '/run/pixel-ods-control/cancellable-exec.sh run-2 bHM='}};
+  assert.equal(withSleepReminderBlock(quick, exec('ls'), {toolName: 'exec'}), quick);
   assert.equal(withSleepReminderBlock(undefined, {toolName: 'write', params: {command: 'sleep 600'}}, {toolName: 'write'}), undefined);
   assert.equal(withSleepReminderBlock(undefined, {toolName: 'exec', params: {code: 'x'}}, {toolName: 'exec'}), undefined);
 });

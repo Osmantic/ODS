@@ -41,12 +41,13 @@ export function waitsToActLater(command) {
 }
 
 // Composition entry for the before_tool_call hook, like the cron payload guard: an earlier
-// block is kept, otherwise the effective parameters are checked.
+// block is kept. Both the call's own command and an earlier hook's rewrite are checked: the
+// cancellation wrapper rewrites every exec into a base64-encoded command (tool-loop-guard.mjs).
 export function withSleepReminderBlock(guardResult, event, context) {
   if (isPlainObject(guardResult) && guardResult.block === true) return guardResult;
   const toolName = context?.toolName ?? event?.toolName;
-  const params = isPlainObject(guardResult) && guardResult.params !== undefined ? guardResult.params : event?.params;
-  const command = execCommand(params, toolName);
-  if (command === undefined || !waitsToActLater(command)) return guardResult;
+  const rewritten = isPlainObject(guardResult) && guardResult.params !== undefined ? guardResult.params : undefined;
+  const commands = [execCommand(event?.params, toolName), execCommand(rewritten, toolName)].filter(command => command !== undefined);
+  if (!commands.some(waitsToActLater)) return guardResult;
   return { block: true, blockReason: SLEEP_REMINDER_REASON };
 }
