@@ -15,8 +15,7 @@ const ANSWER='You need to approve the new request in Settings.';
 const event=(owner=OWNER)=>({runId:CONTEXT.runId,sessionId:CONTEXT.sessionId,sessionKey:SESSION,
   nativeRetryToolsAllowVersion:1,nativeRetryToolChoiceVersion:1,
   messages:[{role:'user',content:owner},{role:'assistant',content:ANSWER}],lastAssistantMessage:ANSWER});
-const op=(id,approval='none')=>({id,approval});
-const reply=(operations=[op('notes.append')])=>({agentId:'pixel',provider:'fixture-local',model:'fixture/9b',
+const reply=(operations=[{source:'obsidian',verb:'append'}])=>({agentId:'pixel',provider:'fixture-local',model:'fixture/9b',
   text:JSON.stringify({operations})});
 function world(options={}) {
   const calls=[];
@@ -207,7 +206,7 @@ test('latched operation scope blocks cross-source, cross-verb, implicit private 
 });
 
 test('builtin reads use exact requested app and operation; catalog metadata grants no private prerequisite read',async()=>{
-  const {recovery}=world({complete:async()=>reply([op('documents.read')])});
+  const {recovery}=world({complete:async()=>reply([{source:'paperless',verb:'read'}])});
   await recovery.finalize(event(),CONTEXT);
   const call=(server,name,args={})=>tool('pixel_ods_mcp',{action:'call',server,tool:name,arguments:args});
   assert.equal(recovery.floor(call('app:documents','read',{id:1}),CONTEXT),undefined);
@@ -219,81 +218,86 @@ test('builtin reads use exact requested app and operation; catalog metadata gran
   assert.equal(recovery.floor(tool('pixel_ods_mcp',{action:'list'}),CONTEXT),undefined);
 });
 
-test('literal catalog IDs freeze the exact native operation limits in state and correction',async()=>{
-  const call=(server,name)=>tool('pixel_ods_mcp',{action:'call',server,tool:name,arguments:{}});
+test('structured aliases freeze canonical operation limits in both state and corrective instruction',async()=>{
   const cases=[
-    ['notes.search',['obsidian:search'],[tool('pixel_ods_notes',{action:'search',query:'x'})]],
-    ['notes.read',['obsidian:read'],[tool('pixel_ods_notes',{action:'read',path:'Example.md'})]],
-    ['notes.create',['obsidian:create'],[tool('pixel_ods_notes',{...appendParams(),mode:'create'})]],
-    ['notes.append',['obsidian:append'],[tool('pixel_ods_notes',appendParams())]],
-    ['documents.search',['paperless:search'],[call('app:documents','search')]],
-    ['documents.read',['paperless:read'],[call('app:documents','read')]],
-    ['photos.search',['immich:search'],[call('app:photos','search')]],
-    ['monitors.list',['watch:list'],[call('app:watch','list')]],
-    ['monitors.add',['watch:add'],[call('app:watch','add')]],
-    ['monitors.remove',['watch:remove'],[call('app:watch','remove')]],
-    ['news.read',['freshrss:digest_read','freshrss:unread'],[call('app:news','unread'),call('app:news','digest')]],
+    [[{source:'watch',verb:'delete'}],['watch:remove'],[['app:watch','remove']],[['app:watch','list'],['app:watch','add']]],
+    [[{source:'freshrss',verb:'read'}],['freshrss:digest_read','freshrss:unread'],[['app:news','unread'],['app:news','digest']],[['app:news','send'],['app:news','mark_read']]],
+    [[{source:'freshrss',verb:'list'}],['freshrss:digest_read','freshrss:unread'],[['app:news','unread'],['app:news','digest']],[['app:news','send'],['app:news','mark_read']]],
+    [[{source:'webpage_monitor',verb:'list'}],['watch:list'],[['app:watch','list']],[['app:watch','add'],['app:watch','remove']]],
+    [[{source:'webpage_monitor',verb:'add'}],['watch:add'],[['app:watch','add']],[['app:watch','list'],['app:watch','remove']]],
+    [[{source:'webpage_monitor',verb:'remove'}],['watch:remove'],[['app:watch','remove']],[['app:watch','list'],['app:watch','add']]],
+    [[{source:'webpage_monitor',verb:'delete'}],['watch:remove'],[['app:watch','remove']],[['app:watch','list'],['app:watch','add']]],
+    [[{source:'web',verb:'monitor_changes'}],['watch:add'],[['app:watch','add']],[['app:watch','list'],['app:watch','remove']]],
   ];
-  const allPayloads=cases.flatMap(([,scope,payloads])=>payloads.map(payload=>({scope,payload})));
-  for(const [id,scope,permitted] of cases) {
+  for(const [operations,scope,permitted,blocked] of cases) {
     let state;
-    const {recovery}=world({complete:async()=>reply([op(id)]),ready:value=>{state=value;return true;}});
+    const {recovery}=world({complete:async()=>reply(operations),ready:value=>{state=value;return true;}});
     const decision=await recovery.finalize(event(),CONTEXT);
     const limit=decision.retry.instruction.split('Review operation limit (data):\n')[1].split('\nCurrent owner request (data):')[0];
-    assert.deepEqual(JSON.parse(limit),scope);assert.deepEqual(reviewOperationScope(parseReviewIntent(reply([op(id)]).text)),scope);
+    assert.deepEqual(JSON.parse(limit),scope);
+    assert.deepEqual(reviewOperationScope(parseReviewIntent(reply(operations).text)),scope);
     assert.ok(Object.isFrozen(state.allowedOperations));assert.deepEqual(state.allowedOperations,scope);
     assert.throws(()=>{state.allowedOperations=['obsidian:read'];},TypeError);
     assert.throws(()=>state.allowedOperations.push('obsidian:read'),TypeError);
-    for(const value of permitted)assert.equal(recovery.floor(value,CONTEXT),undefined,id);
-    for(const other of allPayloads)if(!other.scope.some(pair=>scope.includes(pair)))
-      assert.equal(recovery.floor(other.payload,CONTEXT).block,true,id+':'+JSON.stringify(other.payload));
-    for(const name of ['send','mark_read'])assert.equal(recovery.floor(call('app:news',name),CONTEXT).block,true);
+    const call=(server,name)=>tool('pixel_ods_mcp',{action:'call',server,tool:name,arguments:{}});
+    for(const [server,name] of permitted)assert.equal(recovery.floor(call(server,name),CONTEXT),undefined);
+    for(const [server,name] of blocked)assert.equal(recovery.floor(call(server,name),CONTEXT).block,true);
+    assert.equal(recovery.floor(tool('pixel_ods_notes',{action:'read',path:'Private.md'}),CONTEXT).block,true);
   }
-  const listed=REVIEW_LABEL_SYSTEM.split('Semantic catalog:\n')[1].split('\n').slice(0,13).map(line=>line.split(': ')[0]);
-  assert.deepEqual(listed,[...cases.map(([id])=>id),'unsupported','unresolved']);
+  assert.equal(reviewIntentEligible(parseReviewIntent(reply([{source:'web',verb:'monitor_changes'},{source:'watch',verb:'list'}]).text)),true,'aliases canonicalize before source check');
 });
 
-test('unlisted IDs and old source/verb labels never inherit catalog authority',async()=>{
-  for(const id of ['web.list','web.remove','web.delete','web.watch','web.read','notes.write','notes.delete',
-    'news.send','news.mark_read','approval.request','approval.approve','notes.APPEND','openclaw:notes.append']) {
-    assert.equal(parseReviewIntent(reply([op(id)]).text),undefined,id);
-    const {recovery}=world({complete:async()=>reply([op(id)])});
-    assert.equal(await recovery.finalize(event(),CONTEXT),undefined,id);
-    assert.equal(recovery.isReviewOnly(CONTEXT),false,id);
-    assert.equal(recovery.floor(tool('browser'),CONTEXT),undefined,id);
-  }
-  assert.equal(parseReviewIntent(JSON.stringify({operations:[{source:'obsidian',verb:'append'}]})),undefined);
-});
-
-test('owner-requested approval timing grants nothing beyond one exact underlying proposal',async()=>{
-  const proposals=[
-    ['notes.append','obsidian:append',tool('pixel_ods_notes',appendParams())],
-    ['notes.create','obsidian:create',tool('pixel_ods_notes',{...appendParams(),mode:'create'})],
-    ['monitors.add','watch:add',tool('pixel_ods_mcp',{action:'call',server:'app:watch',tool:'add',arguments:{}})],
-    ['monitors.remove','watch:remove',tool('pixel_ods_mcp',{action:'call',server:'app:watch',tool:'remove',arguments:{}})],
-  ];
-  for(const [id,canonical,allowed] of proposals)for(const approval of ['none','before']) {
-    const operations=[op(id,approval)];
-    assert.deepEqual(reviewOperationScope(parseReviewIntent(reply(operations).text)),[canonical]);
+test('generic web operations do not inherit website-monitor or builtin read authority',async()=>{
+  for(const verb of ['list','remove','delete','watch','read','search']) {
+    const operations=[{source:'web',verb}];
+    assert.equal(reviewOperationScope(parseReviewIntent(reply(operations).text)),undefined,verb);
     const {recovery}=world({complete:async()=>reply(operations)});
-    const decision=await recovery.finalize(event(),CONTEXT);
-    assert.equal(decision.action,'revise');assert.ok(decision.retry.instruction.includes(JSON.stringify([canonical])));
-    assert.equal(recovery.floor(allowed,CONTEXT),undefined);
-    assert.equal(recovery.floor(tool('pixel_ods_mcp',{action:'list'}),CONTEXT),undefined,'catalog metadata remains available');
-    for(const denied of [tool('pixel_ods_notes',{action:'read',path:'Example.md'}),
-      tool('pixel_ods_notes',{action:'search',query:'x'}),tool('pixel_ods_notify',{message:'x'}),
-      tool('pixel_ods_mcp',{action:'call',server:'app:watch',tool:'list',arguments:{}})])
-      assert.equal(recovery.floor(denied,CONTEXT).block,true,id);
+    assert.equal(await recovery.finalize(event(),CONTEXT),undefined,verb);
+    assert.equal(recovery.isReviewOnly(CONTEXT),false,verb);
+    assert.equal(recovery.floor(tool('browser'),CONTEXT),undefined,verb);
   }
 });
 
-test('approval-before-read and mixed approval timing refuse atomically',async()=>{
-  const reads=['notes.search','notes.read','documents.search','documents.read','photos.search','monitors.list','news.read'];
-  const operationsCases=[...reads.map(id=>[op(id,'before')]),
-    [op('notes.append','before'),op('notes.read')],[op('notes.append'),op('notes.read','before')],
-    [op('notes.append','before'),op('notes.search')],[op('monitors.remove','before'),op('monitors.list')],
-    [op('notes.append','before'),op('documents.read')],[op('unsupported','before')],
-    [op('notes.append','before'),op('unsupported')],[op('unresolved','before')]];
+test('approval request metadata contributes no authority beyond one exact underlying proposal',async()=>{
+  const proposals=[
+    [{source:'obsidian',verb:'append'},'obsidian:append',tool('pixel_ods_notes',appendParams())],
+    [{source:'obsidian',verb:'create'},'obsidian:create',tool('pixel_ods_notes',{...appendParams(),mode:'create'})],
+    [{source:'webpage_monitor',verb:'add'},'watch:add',tool('pixel_ods_mcp',{action:'call',server:'app:watch',tool:'add',arguments:{}})],
+    [{source:'webpage_monitor',verb:'delete'},'watch:remove',tool('pixel_ods_mcp',{action:'call',server:'app:watch',tool:'remove',arguments:{}})],
+  ];
+  for(const verb of ['request','prepare','create'])for(const [underlying,canonical,allowed] of proposals) {
+    for(const operations of [[{source:'approval',verb},underlying],[underlying,{source:'approval',verb}]]) {
+      const parsed=parseReviewIntent(reply(operations).text);
+      assert.deepEqual(reviewOperationScope(parsed),[canonical]);
+      const {recovery}=world({complete:async()=>reply(operations)});
+      const decision=await recovery.finalize(event(),CONTEXT);
+      assert.equal(decision.action,'revise');
+      assert.ok(decision.retry.instruction.includes(JSON.stringify([canonical])));
+      assert.equal(recovery.floor(allowed,CONTEXT),undefined);
+      assert.equal(recovery.floor(tool('pixel_ods_mcp',{action:'list'}),CONTEXT),undefined,'catalog metadata remains available');
+      for(const denied of [tool('pixel_ods_notes',{action:'read',path:'Example.md'}),
+        tool('pixel_ods_notes',{action:'search',query:'x'}),tool('pixel_ods_notify',{message:'x'}),
+        tool('pixel_ods_mcp',{action:'call',server:'app:watch',tool:'list',arguments:{}})])
+        assert.equal(recovery.floor(denied,CONTEXT).block,true,canonical);
+    }
+  }
+});
+
+test('approval-only, approval-before-read and ambiguous approval workflows refuse atomically',async()=>{
+  const modifier={source:'approval',verb:'request'},append={source:'obsidian',verb:'append'};
+  const operationsCases=[
+    [modifier],[modifier,{source:'approval',verb:'prepare'}],
+    [modifier,{source:'obsidian',verb:'read'}],[modifier,{source:'obsidian',verb:'search'}],
+    [modifier,{source:'paperless',verb:'read'}],[modifier,{source:'immich',verb:'search'}],
+    [modifier,{source:'freshrss',verb:'list'}],[modifier,{source:'webpage_monitor',verb:'list'}],
+    [modifier,append,{source:'obsidian',verb:'read'}],
+    [modifier,append,{source:'obsidian',verb:'search'}],
+    [modifier,{source:'webpage_monitor',verb:'remove'},{source:'webpage_monitor',verb:'list'}],
+    [modifier,append,{source:'paperless',verb:'read'}],
+    [modifier,{source:'obsidian',verb:'delete'}],[modifier,{source:'notifications',verb:'send'}],
+    [modifier,append,{source:'notifications',verb:'send'}],
+    ...['approve','execute','cancel','status','read','unknown'].map(verb=>[{source:'approval',verb},append]),
+  ];
   for(const operations of operationsCases) {
     assert.equal(reviewOperationScope(parseReviewIntent(reply(operations).text)),undefined,JSON.stringify(operations));
     const {recovery}=world({complete:async()=>reply(operations)});
@@ -304,17 +308,20 @@ test('approval-before-read and mixed approval timing refuse atomically',async()=
 });
 
 test('distinct proposal types never choose a winner or trim the owner workflow',async()=>{
-  const proposals=['notes.append','notes.create','monitors.add','monitors.remove'];
+  const proposals=[{source:'obsidian',verb:'append'},{source:'obsidian',verb:'create'},
+    {source:'watch',verb:'add'},{source:'webpage_monitor',verb:'remove'}];
   for(const first of proposals)for(const second of proposals) {
     if(first===second)continue;
-    const operations=[op(first),op(second)];
+    const operations=[first,second];
     assert.equal(reviewOperationScope(parseReviewIntent(reply(operations).text)),undefined,JSON.stringify(operations));
     const {recovery}=world({complete:async()=>reply(operations)});
-    assert.equal(await recovery.finalize(event(),CONTEXT),undefined);assert.equal(recovery.isReviewOnly(CONTEXT),false);
+    assert.equal(await recovery.finalize(event(),CONTEXT),undefined);
+    assert.equal(recovery.isReviewOnly(CONTEXT),false);
   }
-  assert.equal(parseReviewIntent(reply([op('monitors.remove'),op('monitors.remove','before')]).text),undefined,'IDs are unique even when timing differs');
-  assert.deepEqual(reviewOperationScope(parseReviewIntent(reply([op('notes.search'),op('notes.append')]).text)),
-    ['obsidian:append','obsidian:search'],'without before timing explicit reads remain explicit operations');
+  assert.deepEqual(reviewOperationScope(parseReviewIntent(reply([{source:'watch',verb:'remove'},
+    {source:'webpage_monitor',verb:'delete'}]).text)),['watch:remove'],'synonymous labels add no second proposal type');
+  assert.deepEqual(reviewOperationScope(parseReviewIntent(reply([{source:'obsidian',verb:'search'},
+    {source:'obsidian',verb:'append'}]).text)),['obsidian:append','obsidian:search'],'without approval metadata explicit reads remain explicit operations');
 });
 
 test('native floor also rejects an invalid retained scope containing multiple proposal types',async()=>{
@@ -333,11 +340,11 @@ test('native floor also rejects an invalid retained scope containing multiple pr
 });
 
 test('requested create mode permits no append, and multiple explicit reads admit only their shared source',async()=>{
-  const created=world({complete:async()=>reply([op('notes.create')])});
+  const created=world({complete:async()=>reply([{source:'obsidian',verb:'create'}])});
   await created.recovery.finalize(event(),CONTEXT);
   assert.equal(created.recovery.floor(tool('pixel_ods_notes',{...appendParams(),mode:'create'}),CONTEXT),undefined);
   assert.equal(created.recovery.floor(tool('pixel_ods_notes',appendParams()),CONTEXT).block,true);
-  const read=world({complete:async()=>reply([op('notes.search'),op('notes.read')])});
+  const read=world({complete:async()=>reply([{source:'obsidian',verb:'search'},{source:'obsidian',verb:'read'}])});
   await read.recovery.finalize(event(),CONTEXT);
   assert.equal(read.recovery.floor(tool('pixel_ods_notes',{action:'search',query:'Gmail'}),CONTEXT),undefined);
   assert.equal(read.recovery.floor(tool('pixel_ods_notes',{action:'read',path:'Gmail.md'}),CONTEXT),undefined);
@@ -369,9 +376,9 @@ test('same host-payload converter binds a permitted review call and changed sour
 
 test('requested notes reads and harmless catalog calls keep exact private tickets; normal first-pass optional reads stay ordinary',async()=>{
   const fixtures=[
-    [[op('notes.read')],'pixel_ods_notes',{action:'read',path:'Example.md'}],
-    [[op('notes.search')],'pixel_ods_notes',{action:'search',query:'Gmail'}],
-    [[op('notes.append')],'pixel_ods_mcp',{action:'list'}],
+    [[{source:'obsidian',verb:'read'}],'pixel_ods_notes',{action:'read',path:'Example.md'}],
+    [[{source:'obsidian',verb:'search'}],'pixel_ods_notes',{action:'search',query:'Gmail'}],
+    [[{source:'obsidian',verb:'append'}],'pixel_ods_mcp',{action:'list'}],
   ];
   for(const [operations,name,params] of fixtures) {
     const outcomes=createIntegrationOutcomes();outcomes.begin({prompt:OWNER},CONTEXT,CONTEXT.runId);
@@ -398,7 +405,7 @@ test('requested notes reads and harmless catalog calls keep exact private ticket
 test('builtin source and verb changes after operation-floor admission cannot borrow an MCP ticket',async()=>{
   for(const change of ['none','source','verb']) {
     const outcomes=createIntegrationOutcomes();outcomes.begin({prompt:OWNER},CONTEXT,CONTEXT.runId);
-    const {recovery}=world({complete:async()=>reply([op('documents.read')])});
+    const {recovery}=world({complete:async()=>reply([{source:'paperless',verb:'read'}])});
     await recovery.finalize(event(),CONTEXT);
     const params={action:'call',server:'app:documents',tool:'read',arguments:{id:1}},context={...CONTEXT,toolCallId:'mcp-'+change};
     const ev={...tool('pixel_ods_mcp',params),toolCallId:context.toolCallId};
@@ -544,43 +551,41 @@ test('terminal native event ends its latched run even when context names an olde
   assert.equal(recovery.floor(tool('pixel_ods_mcp'),current).block,true);
 });
 
-test('strict catalog parser rejects legacy labels, malformed types, extra keys, duplicate IDs and bounds',async()=>{
-  const base={operations:[op('notes.append')]};
+test('strict operations-only parser rejects legacy labels, malformed types, extra keys, duplicates and bounds',async()=>{
+  const base={operations:[{source:'obsidian',verb:'append'}]};
   const invalid=['not JSON','```json\n'+JSON.stringify(base)+'\n```','null','[]',
     JSON.stringify({request:'action',answer:'done',scope:'notes'}),
     JSON.stringify({...base,supportedScope:'notes'}),JSON.stringify({...base,complete:true}),
     JSON.stringify({...base,intent:'perform'}),JSON.stringify({...base,answerNeedsEvidence:true}),
-    JSON.stringify({...base,operations:op('notes.append')}),JSON.stringify({...base,operations:[null]}),
-    JSON.stringify({...base,operations:[['notes.append','none']]}),
-    JSON.stringify({...base,operations:[{...op('notes.append'),allowed:true}]}),
-    JSON.stringify({...base,operations:[{id:1,approval:'none'}]}),
-    JSON.stringify({...base,operations:[{id:'notes.append'}]}),
-    JSON.stringify({...base,operations:[{approval:'none'}]}),
-    JSON.stringify({...base,operations:[{source:'obsidian',verb:'append'}]}),
-    ...[undefined,null,1,true,'ask','Allowed','off','NONE','after'].map(approval=>JSON.stringify({...base,operations:[{id:'notes.append',approval}]})),
-    JSON.stringify({...base,operations:[op('notes.APPEND')]}),JSON.stringify({...base,operations:[op('notes.append/other')]}),
-    JSON.stringify({...base,operations:[op('x'.repeat(49))]}),
-    JSON.stringify({...base,operations:[op('notes.append'),op('notes.append')]}),
-    JSON.stringify({...base,operations:[op('notes.append'),op('notes.append','before')]}),
-    JSON.stringify({...base,operations:['notes.search','notes.read','notes.create','notes.append','news.read'].map(id=>op(id))}),
+    JSON.stringify({...base,operations:{source:'obsidian',verb:'append'}}),
+    JSON.stringify({...base,operations:[null]}),JSON.stringify({...base,operations:[['obsidian','append']]}),
+    JSON.stringify({...base,operations:[{source:'obsidian',verb:'append',allowed:true}]}),
+    JSON.stringify({...base,operations:[{source:1,verb:'append'}]}),
+    JSON.stringify({...base,operations:[{source:'obsidian',verb:'APPEND'}]}),
+    JSON.stringify({...base,operations:[{source:'obsidian/other',verb:'append'}]}),
+    JSON.stringify({...base,operations:[{source:'x'.repeat(49),verb:'append'}]}),
+    JSON.stringify({...base,operations:[...base.operations,...base.operations]}),
+    JSON.stringify({...base,operations:Array.from({length:5},(_,index)=>({source:'obsidian',verb:'unknown'+index}))}),
     ' '.repeat(4097)];
   for(const text of invalid) {
     assert.equal(parseReviewIntent(text),undefined,text);
     const {recovery}=world({complete:async()=>({...reply(),text})});
-    assert.equal(await recovery.finalize(event(),CONTEXT),undefined,text);assert.equal(recovery.isReviewOnly(CONTEXT),false);
+    assert.equal(await recovery.finalize(event(),CONTEXT),undefined,text);
+    assert.equal(recovery.isReviewOnly(CONTEXT),false);
   }
 });
 
-test('empty operations and explicit sentinels preserve discussion and unresolved intent',async()=>{
-  for(const operations of [[],[op('unsupported')],[op('unresolved')],
-    [op('notes.append'),op('unsupported')],[op('unresolved'),op('news.read')]]) {
-    const parsed=parseReviewIntent(reply(operations).text);assert.ok(parsed);assert.equal(reviewIntentEligible(parsed),false);
+test('empty and unknown operations preserve discussion and unresolved intent without policy labels',async()=>{
+  for(const operations of [[],[{source:'unknown',verb:'unknown'}],[{source:'unknown',verb:'read'}],
+    [{source:'obsidian',verb:'unknown'}]]) {
+    const parsed=parseReviewIntent(reply(operations).text);
+    assert.ok(parsed);assert.equal(reviewIntentEligible(parsed),false);
     const {recovery}=world({complete:async()=>reply(operations)});
-    assert.equal(await recovery.finalize(event(),CONTEXT),undefined);assert.equal(recovery.isReviewOnly(CONTEXT),false);
+    assert.equal(await recovery.finalize(event(),CONTEXT),undefined);
+    assert.equal(recovery.isReviewOnly(CONTEXT),false);
   }
   assert.equal(reviewIntentEligible(undefined),false);
-  assert.equal(reviewOperationScope({operations:[{id:'notes.read'}]}),undefined);
-  assert.equal(reviewOperationScope({operations:[op('notes.read'),op('notes.read')]}),undefined);
+  assert.equal(reviewIntentEligible({}),false);
 });
 
 test('missing, false, nonboolean or throwing native start proof never spends a classifier call',async()=>{
@@ -633,39 +638,48 @@ test('classifier sees only ownerRequest: assistant prose cannot invent owner ope
   }
 });
 
-test('catalog policy matches only the existing native modes and preserves the same source matrix',()=>{
-  const expected={
-    'notes.search':['obsidian:search'],'notes.read':['obsidian:read'],'notes.create':['obsidian:create'],'notes.append':['obsidian:append'],
-    'documents.search':['paperless:search'],'documents.read':['paperless:read'],'photos.search':['immich:search'],
-    'monitors.list':['watch:list'],'monitors.add':['watch:add'],'monitors.remove':['watch:remove'],
-    'news.read':['freshrss:digest_read','freshrss:unread'],
-  };
-  for(const [id,canonical] of Object.entries(expected)) {
-    assert.deepEqual(reviewOperationScope(parseReviewIntent(reply([op(id)]).text)),canonical,id);
-    assert.equal(reviewIntentEligible(parseReviewIntent(reply([op(id)]).text)),true,id);
+test('operation policy matches only the existing notes modes, builtin reads and watch Ask changes',()=>{
+  const allowed={obsidian:['search','read','create','append'],paperless:['search','read'],immich:['search'],
+    watch:['list','add','remove','delete'],freshrss:['unread','digest_read','read'],web:['monitor_changes']};
+  for(const [source,verbs] of Object.entries(allowed)) {
+    for(const verb of verbs)assert.equal(reviewIntentEligible(parseReviewIntent(reply([{source,verb}]).text)),true,source+':'+verb);
+    for(const verb of ['write','update','overwrite','replace','send','digest_send','schedule','configure','execute','status','unknown'])
+      assert.equal(reviewIntentEligible(parseReviewIntent(reply([{source,verb}]).text)),false,source+':'+verb);
   }
-  for(const id of ['unsupported','unresolved'])assert.equal(reviewIntentEligible(parseReviewIntent(reply([op(id)]).text)),false,id);
-  assert.equal(parseReviewIntent(reply([op('notes.delete')]).text),undefined);
+  for(const source of ['gmail','calendar','notifications','filesystem','runtime','account','schedule','devices','custom_mcp','future_application','unknown'])
+    for(const verb of ['read','search','create','append','send','status','unknown']) {
+      const parsed=parseReviewIntent(reply([{source,verb}]).text);
+      assert.ok(parsed,'unknown operations remain semantically representable');
+      assert.equal(reviewIntentEligible(parsed),false,source+':'+verb);
+    }
+  for(const [source,verb] of [['web','watch'],['web','read'],['web','execute'],['obsidian','delete'],['notes','write'],['notes','update']])
+    assert.equal(reviewIntentEligible(parseReviewIntent(reply([{source,verb}]).text)),false,source+':'+verb);
 });
 
-test('every catalog operation must pass; sentinels and mixed sources cannot partially activate',async()=>{
-  const allowed=op('monitors.add');
-  for(const operations of [[allowed,op('unsupported')],[op('unsupported'),allowed],
-    [op('notes.read'),op('unsupported')],[op('news.read'),op('unsupported')],
-    [op('notes.read'),op('documents.read')],[allowed,op('unresolved')]]) {
+test('every operation must pass; unsupported companions and mixed sources cannot partially activate',async()=>{
+  const allowed={source:'watch',verb:'add'};
+  for(const operations of [
+    [allowed,{source:'notifications',verb:'send'}],[{source:'notifications',verb:'send'},allowed],
+    [{source:'obsidian',verb:'read'},{source:'obsidian',verb:'delete'}],
+    [{source:'obsidian',verb:'read'},{source:'obsidian',verb:'replace'}],
+    [{source:'freshrss',verb:'digest_read'},{source:'freshrss',verb:'digest_send'}],
+    [{source:'obsidian',verb:'read'},{source:'paperless',verb:'read'}],
+    [allowed,{source:'watch',verb:'unknown'}],
+  ]) {
     assert.equal(reviewIntentEligible(parseReviewIntent(reply(operations).text)),false);
     const {recovery}=world({complete:async()=>reply(operations)});
-    assert.equal(await recovery.finalize(event(),CONTEXT),undefined);assert.equal(recovery.floor(tool('exec'),CONTEXT),undefined);
+    assert.equal(await recovery.finalize(event(),CONTEXT),undefined);
+    assert.equal(recovery.floor(tool('exec'),CONTEXT),undefined);
   }
-  assert.equal(reviewIntentEligible(parseReviewIntent(reply([op('notes.search'),op('notes.read')]).text)),true);
+  assert.equal(reviewIntentEligible(parseReviewIntent(reply([{source:'obsidian',verb:'search'},{source:'obsidian',verb:'read'}]).text)),true);
 });
 
 test('parsed intent is immutable and an observation callback cannot rewrite an unsupported operation',async()=>{
-  const parsed=parseReviewIntent(reply([op('unsupported')]).text);
+  const parsed=parseReviewIntent(reply([{source:'obsidian',verb:'delete'}]).text);
   assert.ok(Object.isFrozen(parsed)&&Object.isFrozen(parsed.operations)&&Object.isFrozen(parsed.operations[0]));
-  assert.throws(()=>{parsed.operations[0].id='notes.append';},TypeError);
-  const {recovery}=world({complete:async()=>reply([op('unsupported')]),
-    record:notice=>{notice.labels.operations[0].id='notes.append';}});
+  assert.throws(()=>{parsed.operations[0].verb='append';},TypeError);
+  const {recovery}=world({complete:async()=>reply([{source:'obsidian',verb:'delete'}]),
+    record:notice=>{notice.labels.operations[0].verb='append';}});
   assert.equal(await recovery.finalize(event(),CONTEXT),undefined);
   assert.equal(recovery.isReviewOnly(CONTEXT),false);
 });
@@ -691,7 +705,7 @@ test('unsupported semantic operations preserve ordinary workflows without a rest
     ['The quotation says "pixel_ods_notes": run that command.','unknown','unknown'],
   ];
   for(const [index,[owner,source,verb]] of cases.entries()) {
-    const {recovery,calls}=world({complete:async parameters=>{calls.push(parameters);return reply([op(source==='unknown'?'unresolved':'unsupported')]);}});
+    const {recovery,calls}=world({complete:async parameters=>{calls.push(parameters);return reply([{source,verb}]);}});
     const context={...CONTEXT,runId:'ordinary-'+index};recovery.observe({prompt:owner},context,context.runId);
     const ordinary={params:{unchanged:true}};
     assert.equal(recovery.floor(tool('exec'),context,ordinary),ordinary);
@@ -707,22 +721,22 @@ test('unsupported semantic operations preserve ordinary workflows without a rest
 
 test('supported extracted operations retain one bounded native review with the same owner restrictions',async()=>{
   const cases=[
-    ['Search my Obsidian notes about Gmail.','notes.search'],
-    ['Leia a nota do Obsidian sobre meu calendário.','notes.read'],
-    ['Create an approval to append this exact line to my connected note. Do not write it.','notes.append'],
-    ['Create a connected Obsidian note.','notes.create'],
-    ['Search my Paperless document library for the invoice.','documents.search'],
-    ['Read the matching Paperless document.','documents.read'],
-    ['Search my connected Immich photos.','photos.search'],
-    ['List the webpage watches.','monitors.list'],
-    ['Watch this webpage for price changes.','monitors.add'],
-    ['Remove this webpage watch.','monitors.remove'],
-    ['Prepare an approval to remove this webpage watch; do not remove it.','monitors.remove'],
-    ['Read my unread FreshRSS stories without sending a notification.','news.read'],
-    ['Read my FreshRSS digest here without sending it.','news.read'],
+    ['Search my Obsidian notes about Gmail.','obsidian','search'],
+    ['Leia a nota do Obsidian sobre meu calendário.','obsidian','read'],
+    ['Create an approval to append this exact line to my connected note. Do not write it.','obsidian','append'],
+    ['Create a connected Obsidian note.','obsidian','create'],
+    ['Search my Paperless document library for the invoice.','paperless','search'],
+    ['Read the matching Paperless document.','paperless','read'],
+    ['Search my connected Immich photos.','immich','search'],
+    ['List the webpage watches.','watch','list'],
+    ['Watch this webpage for price changes.','watch','add'],
+    ['Remove this webpage watch.','watch','remove'],
+    ['Prepare an approval to remove this webpage watch; do not remove it.','watch','remove'],
+    ['Read my unread FreshRSS stories without sending a notification.','freshrss','unread'],
+    ['Read my FreshRSS digest here without sending it.','freshrss','digest_read'],
   ];
-  for(const [index,[owner,id]] of cases.entries()) {
-    const {recovery,calls}=world({complete:async parameters=>{calls.push(parameters);return reply([op(id)]);}});
+  for(const [index,[owner,source,verb]] of cases.entries()) {
+    const {recovery,calls}=world({complete:async parameters=>{calls.push(parameters);return reply([{source,verb}]);}});
     const context={...CONTEXT,runId:'supported-'+index};recovery.observe({prompt:owner},context,context.runId);
     const decision=await recovery.finalize({...event(owner),runId:context.runId},context);
     assert.equal(decision.action,'revise',owner);assert.equal(calls.length,1,owner);
