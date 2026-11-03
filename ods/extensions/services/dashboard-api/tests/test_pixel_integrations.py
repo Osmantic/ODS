@@ -107,3 +107,30 @@ def test_macos_says_integrations_are_not_available_yet(client, agent):
     response = client.get('/api/pixel/integrations', headers=AUTH)
     assert response.status_code == 400
     assert response.json()['detail'] == "Portal integrations aren't available on macOS yet."
+
+
+def test_memory_actions_relay_their_exact_fields(client, agent):
+    agent.return_value = {'settings': {'revision': 3}, 'approvals': [], 'activity': [],
+                          'memory': {'enabled': True, 'askFirst': True, 'items': [], 'pending': []}}
+    requests = {
+        'memory-settings': {'enabled': False, 'askFirst': True},
+        'memory-edit': {'id': 'abc', 'text': 'The owner is vegetarian.'},
+        'memory-delete': {'id': 'abc'},
+        'memory-clear': {},
+        'memory-decide': {'id': 'abc', 'decision': 'save'},
+    }
+    for action, payload in requests.items():
+        assert client.post(f'/api/pixel/integrations/{action}', headers=AUTH, json=payload).json()['memory']['enabled'] is True
+        agent.assert_awaited_with('POST', f'/v1/pixel/integrations/{action}', payload=payload, timeout=30)
+    assert client.post('/api/pixel/integrations/memory-edit', headers=AUTH, json={'id': 'abc'}).status_code == 400
+    assert client.post('/api/pixel/integrations/memory-clear', headers=AUTH, json={'items': []}).status_code == 400
+
+
+def test_a_chat_is_named_to_the_service_as_the_gateway_names_its_session(client, agent):
+    agent.return_value = {'settings': {'revision': 3}, 'approvals': [], 'activity': [], 'memory': {}}
+    client.post('/api/pixel/integrations/memory-chat', headers=AUTH, json={'chatId': 'chat-1', 'remember': False})
+    # The Portal ingress names a chat's session "ods-" + sha256(chat id) (pixel_ingress.mjs computeSessionUser).
+    agent.assert_awaited_with('POST', '/v1/pixel/integrations/memory-chat', timeout=30, payload={
+        'session': 'ods-' + __import__('hashlib').sha256(b'chat-1').hexdigest(), 'remember': False})
+    assert client.post('/api/pixel/integrations/memory-chat', headers=AUTH, json={'chatId': '../x', 'remember': False}).status_code == 400
+    assert client.post('/api/pixel/integrations/memory-chat', headers=AUTH, json={'chatId': 'chat-1'}).status_code == 400
