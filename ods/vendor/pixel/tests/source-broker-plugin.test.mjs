@@ -537,6 +537,56 @@ test("missing proposal fields never create a partial draft or calendar proposal"
   assert.deepEqual(await readdir(directory), []);
 });
 
+test("Calendar list uses the calendar's civil dates for all-day events and their exclusive end", async t => {
+  const records = [{id:"day", title:"Away", start:{date:"2026-11-01"}, end:{date:"2026-11-02"}}];
+  const base = calendarProjection({records, recordCount:1});
+  for (const [zone, start, end] of [
+    ["America/Los_Angeles", "2026-11-01T07:00:00Z", "2026-11-02T08:00:00Z"],
+    ["Asia/Kathmandu", "2026-10-31T18:15:00Z", "2026-11-01T18:15:00Z"],
+  ]) {
+    const coverage = {...base.coverage, calendarTimeZoneState:"consistent", calendarTimeZone:zone};
+    const directory = await withProjections(t,{calendar:{...base,coverage}});
+    const tools = await loadPlugin({PIXEL_LIMB_WEB_ENABLED:"0",PIXEL_SOURCE_PROJECTION_DIR:directory});
+    const probe = async (from, to) => call(tools,"pixel_calendar_list",{
+      timeMin:new Date(from).toISOString(),timeMax:new Date(to).toISOString()});
+    const a=Date.parse(start), b=Date.parse(end);
+    for (const [from,to,expected] of [[a-3600000,a,0],[a,a+3600000,1],[b-3600000,b,1],[b,b+3600000,0]]) {
+      const result=await probe(from,to);
+      assert.equal(result.count,expected,zone);
+      assert.equal(result.unresolvedAllDayEventCount,0);
+      assert.equal(result.coverage.completeWithinWindow,true);
+    }
+  }
+});
+
+test("unresolved all-day dates stay readable without certifying an empty or busy time slot", async t => {
+  const records=[
+    {id:"day",title:"Legacy date",start:{date:"2026-11-01"},end:{date:"2026-11-02"}},
+    {id:"timed",title:"Timed",start:{dateTime:"2026-11-02T03:00:00Z"},end:{dateTime:"2026-11-02T04:00:00Z"},timeWindowUnverified:true},
+  ];
+  const base=calendarProjection({records,recordCount:2});
+  for (const zone of [{},{calendarTimeZoneState:"inconsistent",calendarTimeZone:"UTC"},
+    {calendarTimeZoneState:"consistent",calendarTimeZone:"Invalid/Zone"}]) {
+    const directory=await withProjections(t,{calendar:{...base,coverage:{...base.coverage,...zone}}});
+    const tools=await loadPlugin({PIXEL_LIMB_WEB_ENABLED:"0",PIXEL_SOURCE_PROJECTION_DIR:directory});
+    const read=(from,to)=>call(tools,"pixel_calendar_list",{timeMin:from,timeMax:to});
+    const previous=await read("2026-11-01T03:00:00Z","2026-11-01T04:00:00Z");
+    assert.deepEqual(previous.events.map(e=>[e.id,e.timeWindowUnverified]),[["day",true]]);
+    const later=await read("2026-11-02T03:00:00Z","2026-11-02T04:00:00Z");
+    assert.deepEqual(later.events.map(e=>e.id),["day","timed"]);
+    assert.equal(later.events[0].timeWindowUnverified,true);
+    assert.equal(Object.hasOwn(later.events[1],"timeWindowUnverified"),false);
+    for (const result of [previous,later]) {
+      assert.equal(result.unresolvedAllDayEventCount,1);
+      assert.equal(result.coverage.completeWithinWindow,false);
+    }
+    const distant=await read("2026-11-05T03:00:00Z","2026-11-05T04:00:00Z");
+    assert.equal(distant.count,0);
+    assert.equal(distant.unresolvedAllDayEventCount,0);
+    assert.equal(distant.coverage.completeWithinWindow,true);
+  }
+});
+
 test("a meeting already running or an all-day event counts as busy", async (t) => {
   const at = (hours) => new Date(Date.parse("2026-11-02T00:00:00Z") + hours * 3_600_000).toISOString();
   const records = [

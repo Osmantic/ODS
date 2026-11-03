@@ -47,6 +47,7 @@ function timeLabel(bound, exclusiveEnd) {
 // Keep raw source timestamps and coverage unchanged for verification.
 export function calendarEvent(record) {
   const event = {...record};
+  delete event.timeWindowUnverified;
   delete event.startLabel;
   delete event.endLabel;
   const start = timeLabel(event.start, false);
@@ -103,13 +104,41 @@ export function listCalendar(data, params, limit) {
   }
   if (to <= from) throw new Error("timeMax must be later than timeMin.");
   const query = String(params.query ?? "").toLowerCase();
-  const matches = data.records.filter((item) => overlapsRequest(item, from, to) && matchesQuery(item, query));
-  const events = matches.slice(0, limit).map(calendarEvent);
   const coverage = data.coverage ?? null;
+  const zone = calendarZone(coverage);
+  const resolver = civilResolver();
+  const unresolved = new Set();
+  const matches = data.records.filter(item => {
+    if (!matchesQuery(item, query)) return false;
+    if (item.start?.date !== undefined || item.end?.date !== undefined) {
+      const bounds = strictEventBounds(item, zone, resolver);
+      if (bounds) return overlapsBounds(...bounds, from, to);
+      // A civil midnight differs from the same date at 00:00 UTC by less than a day.
+      // Without a reliable zone, include possible overlaps as unverified. Distant
+      // all-day records must not invalidate an otherwise complete answer.
+      const start = civilDate(item.start?.date), end = civilDate(item.end?.date);
+      if (start && end && end > start) {
+        const day = 86_400_000;
+        if (!overlapsBounds(start.getTime() - day, end.getTime() + day, from, to)) return false;
+        unresolved.add(item);
+        return true;
+      }
+      // Preserve readable legacy records with incomplete bounds.
+      unresolved.add(item);
+    }
+    return overlapsRequest(item, from, to);
+  });
+  const events = matches.slice(0, limit).map(item => {
+    const event = calendarEvent(item);
+    if (unresolved.has(item)) event.timeWindowUnverified = true;
+    return event;
+  });
   return {
     generatedAt: data.generatedAt, ageSeconds: data.ageSeconds, stale: data.stale,
     totalMatches: matches.length, count: events.length, hasMore: matches.length > events.length, events,
-    coverage, requestCoveredByWindow: calendarWindowCovers(coverage, params.timeMin, params.timeMax),
+    coverage: unresolved.size && coverage?.completeWithinWindow ? { ...coverage, completeWithinWindow: false } : coverage,
+    unresolvedAllDayEventCount: unresolved.size,
+    requestCoveredByWindow: calendarWindowCovers(coverage, params.timeMin, params.timeMax),
   };
 }
 
@@ -117,6 +146,10 @@ export function canonicalTimeZone(value) {
   if (typeof value !== "string" || !/^[A-Za-z][A-Za-z0-9_+\-/]{0,127}$/.test(value)) return null;
   try { return new Intl.DateTimeFormat("en", { timeZone: value }).resolvedOptions().timeZone; }
   catch { return null; }
+}
+
+function calendarZone(coverage) {
+  return coverage?.calendarTimeZoneState === "consistent" ? canonicalTimeZone(coverage.calendarTimeZone) : null;
 }
 
 function civilResolver() {
@@ -220,7 +253,7 @@ export function countCalendar(data, params, sync, now, staleAfterMs, ownerTimeZo
   const metadata = countMetadata(data, sync, now, staleAfterMs), resolver = civilResolver();
   const window = resolveCountWindow(params?.window, now, ownerTimeZone, resolver);
   const coverage = data.coverage;
-  const zone = coverage?.calendarTimeZoneState === "consistent" ? canonicalTimeZone(coverage.calendarTimeZone) : null;
+  const zone = calendarZone(coverage);
   const reply = { ...metadata, source: "calendar", scope: "configured-calendar-projection", filterSemantics: "sanitized-projected-fields",
     queryApplied: typeof params?.query === "string" && Boolean(params.query.trim()),
     observedMatchCount: null, completeMatchCount: null, requestCoveredByWindow: null,

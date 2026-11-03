@@ -1,18 +1,37 @@
 # Portal connected-app acceptance
 
-Validation snapshot: 3 November 2026. The latest ordinary Windows/WSL baseline
+Validation snapshot: 3 November 2026. The contributor Windows/WSL baseline below
 is Source 4.3.44. Documents, photos and named-feed checks ran after that update;
 the earlier component campaigns are labeled below. Physical model smokes used
 local Qwen 3.5 9B at 64K context with an 8,192-token output budget. External-app
 fixtures used invented data; Google checks used the existing read-only account
 connection. Separate copied-runtime budget checks covered 8K and 32K profiles.
 
-The final ordinary installed candidate was `992e5716c`. Its independent
+That Windows installation ran `992e5716c`. Its independent
 postflight preserved the complete native configuration, Google grant, model
 profile, integration state, existing tasks and histories. The later `bb3b8feeb`
 namespace descriptions were adopted as an explicitly scoped two-file component
 update, with another independent preservation check. This is not a second full
 ordinary-install qualification. **Keep draft: Calendar chat acceptance is open.**
+
+A second Windows 11 laptop upgraded its everyday WSL2 installation to the
+combined candidate `44d02e933` through the ordinary Windows installer. The
+owner reconnected the saved remote model and verified the same route. Portal
+showed the Google card and Notes controls. One dated task ran with the browser
+closed. Its requested answer appeared once in history, and removing the task
+restored the empty active list. All four model files retained their hashes.
+
+Google was disconnected on this laptop. Two fresh Portal chats asked about
+tomorrow's availability. Both completed requests explained that Calendar was
+unavailable and made no claim that the day was empty.
+
+On the installed `44d02e933` Calendar code, a synthetic Los Angeles all-day
+event appeared in the preceding local evening and disappeared from the evening
+it occupied. The count tool placed it correctly. The list now resolves dates
+using the calendar's timezone and exclusive end. The registered-tool regression
+covers both sides of those boundaries in Los Angeles and Kathmandu. An older
+projection with uncertain all-day timing flags possible matches and cannot
+certify an empty slot they might occupy.
 
 | Area | Observed result |
 | --- | --- |
