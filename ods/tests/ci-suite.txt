@@ -343,6 +343,7 @@ tests/test-update-changelog-fallback.py
 tests/test-gpu-reassign-preflight.sh
 tests/test_uninstall_validate_install_dir.py
 tests/test-preset-completion.sh
+tests/test_label_studio_local_files.py
 tests/test-open-interpreter-llm-port.sh
 tests/test-cli-chat-route.py
 tests/test_host_agent_process_shutdown.py
