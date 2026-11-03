@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createTaskHooks, REMINDER_MARK, reminderJob } from '../plugin/integration-tasks.mjs';
+import { createTaskHooks, REMINDER_HINT, REMINDER_MARK, reminderHint, reminderJob } from '../plugin/integration-tasks.mjs';
 
 function recorder(replies) {
   const sent = [];
@@ -177,4 +177,11 @@ test('a reminder set from another instance of the plugin finds the scheduler the
   assert.equal(cron.calls.filter(([kind]) => kind === 'add').length, 1);
   // Separate processes, or tests, keep separate slots.
   await assert.rejects(createTaskHooks({submit, timers, shared: {}}).scheduleReminder(REMINDER_PLAN), /not ready/);
+});
+
+test('a turn asking for a reminder is told which tool sets one', () => {
+  for (const text of ['Remind me in 2 minutes to stretch', 'Set a reminder for 17:30', 'reminders for tomorrow please',
+    'Lembre-me daqui a 10 minutos']) assert.equal(reminderHint(text), REMINDER_HINT, text);
+  for (const text of ['What is the weather?', 'The reminiscence was nice', undefined]) assert.equal(reminderHint(text), '', String(text));
+  assert.match(REMINDER_HINT, /pixel_ods_notify/);
 });

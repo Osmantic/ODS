@@ -6,7 +6,8 @@ import { chatSession, MEMORY_CHOICES, MEMORY_QUESTION_ID, memoryQuestion } from 
 // goes to the host integrations service, which checks what the owner turned on and keeps "ask first"
 // actions waiting for the owner's approval. Results are the owner's own data or a server's
 // answer and are passed on as untrusted text.
-const SOCKET = '/run/ods-pixel-integrations/control.sock';
+// Tests that load the whole plugin point this elsewhere, so a service on the test machine never answers.
+const socketPath = () => process.env.ODS_PIXEL_INTEGRATIONS_SOCKET || '/run/ods-pixel-integrations/control.sock';
 const MAX_REPLY = 512 * 1024;
 const TIMEOUT_MS = 130000;
 const MCP_USAGE = 'Give the arguments too. To see the servers and their tools: {"action": "list"}. To run a tool: '
@@ -17,7 +18,7 @@ const APPROVAL_TEXT ='Waiting for the owner. Tell the owner this needs their app
 export function submitIntegration(payload, {connect = net.createConnection, platform = process.platform, signal, timeoutMs = TIMEOUT_MS} = {}) {
   return new Promise((resolve, reject) => {
     if (platform !== 'linux') return reject(new Error(platform === 'darwin' ? "Portal integrations aren't available on macOS yet." : 'Portal integrations are not available on this system yet.'));
-    const socket = connect({path: SOCKET});
+    const socket = connect({path: socketPath()});
     let buffer = Buffer.alloc(0), finished = false;
     const finish = (error, value) => {
       if (finished) return;

@@ -105,7 +105,7 @@ function entry(root) {
     executionLocationContext: () => '', executionContext: () => '',
     conversationImageLifecycle: {observe() {}}, managedRuntime: undefined,
     withPixelCronDeliveryDefault, withCronCommandPayloadBlock, withSleepReminderBlock, withPixelSubagentWorkspace,
-    memoryHooks: {promptContext: async () => ({})}, currentUserText,
+    memoryHooks: {promptContext: async () => ({})}, currentUserText, reminderHint: () => '',
     getSessionEntry: () => undefined, resolveStorePath: () => undefined, resolveUserPath: value => value,
     resolveAgentWorkspaceDir: config => config?.agents?.list?.find(agent => agent.id === 'pixel')?.workspace,
     bundleAdmission: createWorkspaceBundleAdmission(), artifactAdmission: createWorkspaceArtifactAdmission(),

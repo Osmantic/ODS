@@ -49,7 +49,7 @@ import { executionContext } from "./completion-assurance.mjs";
 import { createAskUserTool } from "./ask-user.mjs";
 import { createIntegrationTools, INTEGRATION_TOOL_NAMES, submitIntegration } from "./integrations.mjs";
 import { createMemoryHooks } from "./integration-memory.mjs";
-import { createTaskHooks } from "./integration-tasks.mjs";
+import { createTaskHooks, reminderHint } from "./integration-tasks.mjs";
 import { createPendingClarifications } from "./pending-clarification.mjs";
 import {
   appsToolText,
@@ -464,8 +464,9 @@ export default definePluginEntry({
       const deliveryContext = delegationDelivery.promptContext(context);
       // A turn that mentions the shipped example without naming it.
       const exampleContext = toolLoopGuard.exampleContextForRun(context?.runId ?? event?.runId);
-      const memory = accessRuntime.isProbe(context) ? {}
-        : await memoryHooks.promptContext(currentUserText(ownerEvent?.messages, ownerEvent?.prompt), context?.sessionKey);
+      const ownerText = currentUserText(ownerEvent?.messages, ownerEvent?.prompt);
+      const memory = accessRuntime.isProbe(context) ? {} : await memoryHooks.promptContext(ownerText, context?.sessionKey);
+      const reminder = accessRuntime.isProbe(context) ? '' : reminderHint(ownerText);
       const prependContext = [contract?.prependContext,cancelContext,deliveryContext,exampleContext,memory.facts].filter(Boolean).join('\n\n');
       // Beside the owner turn (OpenClaw appendContext), also model-only. A
       // child's announce continuation of a clarification answer carries that
@@ -479,7 +480,7 @@ export default definePluginEntry({
       const goalContract = inResponseLanguage(GOAL_CONTRACT, configuredResponseLanguage);
       const appendContext = [goalProgress.active(context?.runId ?? event?.runId) ? goalContract : '', languageNote,
         toolLoopGuard.clarificationContextForRun(context?.runId ?? event?.runId) ??
-          toolLoopGuard.clarificationContextForRun(delegationDelivery.ownerRunFor(context)), memory.answer, memory.hint].filter(Boolean).join('\n\n');
+          toolLoopGuard.clarificationContextForRun(delegationDelivery.ownerRunFor(context)), memory.answer, memory.hint, reminder].filter(Boolean).join('\n\n');
       return contract ? { ...contract, ...(prependContext ? {prependContext} : {}), ...(appendContext ? {appendContext} : {}), appendSystemContext: `${inResponseLanguage(ACTIVITY_CONTRACT, configuredResponseLanguage)} ${executionLocationContext(context, AGENT_ID)} ${goalProgress.active(context?.runId ?? event?.runId) ? goalContract : ""} ${contract.appendSystemContext} ${inResponseLanguage(executionContext(), configuredResponseLanguage)} ${repositoryEvidence}` } : prependContext ? {prependContext} : undefined;
     });
     api.on("model_call_started", (event, context) =>

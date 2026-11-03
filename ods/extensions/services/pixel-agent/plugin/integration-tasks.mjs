@@ -21,6 +21,13 @@ function digestJob(plan, agentId) {
     delivery: {mode: 'none'}, deleteAfterRun: false};
 }
 
+// A turn that asks for a reminder gets a note naming the tool: pixel_ods_notify sits behind
+// tool search, and without it a small model says it cannot schedule anything (#7794).
+const ASKS_REMINDER = /\bremind(?:er|ers|ing)?\b|\blembr(?:e|ete|ar|ança|ete-me)\b/i;
+export const REMINDER_HINT = 'To remind the owner later, call pixel_ods_notify with message and inMinutes (such as 10) '
+  + 'or at (such as 17:30). It schedules the reminder and it reaches their phone then. Never use sleep for this.';
+export const reminderHint = text => (typeof text === 'string' && ASKS_REMINDER.test(text) ? REMINDER_HINT : '');
+
 export function reminderJob(plan, agentId) {
   return {name: plan.name, description: plan.description, enabled: true, agentId,
     schedule: {kind: 'at', at: new Date(plan.atMs).toISOString()}, sessionTarget: 'isolated', wakeMode: 'now',
