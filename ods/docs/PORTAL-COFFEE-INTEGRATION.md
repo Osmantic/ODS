@@ -54,8 +54,10 @@ race; the corrected reader accepts a new sibling only while its own immutable
 invocation, common inputs and original deadlines stay unchanged. Changed own
 nonce or deployment still refuses. Root qualification can reuse verified file
 hashes inside one typed operation, while repeating namespace, metadata and ACL
-checks and the actual independent bundle verifier. Scope exit revokes the cache;
-this is not a physical Mac timing qualification. The private active-slot
+checks and the actual independent bundle verifier. The active publisher now
+enters that same typed scope; the next operation starts cold and scope exit
+revokes its cache, including on error. This is not a physical Mac timing
+qualification. The private active-slot
 publisher now records intent before its exact definition/manifest images and
 publishes the Gate last with one atomic replace. Adding an independent slot
 preserves sibling invocations and their original deadlines. A reproduced gap
