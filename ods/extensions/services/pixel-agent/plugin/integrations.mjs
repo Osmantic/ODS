@@ -46,11 +46,14 @@ export const NATIVE_REVIEW_ROLE = freezeRole({version:1,scope:'native-review-pol
   {canonicalOperation:'freshrss:digest_read',action:'mcp-call',server:'app:news',tool:'digest',maximumEffect:'private-read',arguments:{},
     role:'Read a bounded FreshRSS digest for this response; do not mark read, notify or arm later delivery.',constraints:{delivery:false}},
 ].map(entry=>({...entry,adapter:entry.action.startsWith('notes-')?'pixel_ods_notes':'pixel_ods_mcp',
-  adapterAction:entry.action.startsWith('notes-')?entry.action.slice('notes-'.length):entry.action==='mcp-tools'?'list':'call'}))});
+  adapterAction:entry.action.startsWith('notes-')?entry.action.slice('notes-'.length):entry.action==='mcp-tools'?'list':'call',
+  ...(entry.maximumEffect==='approval-proposal'?{adapterPreparationAction:'prepare'}:{})}))});
 export function nativeReviewOperation(payload) {
-  return NATIVE_REVIEW_ROLE.operations.find(entry=>entry.action===payload?.action
+  const action=payload?.action==='notes-prepare'?'notes-write':payload?.action==='mcp-prepare'?'mcp-call':payload?.action;
+  const operation=NATIVE_REVIEW_ROLE.operations.find(entry=>entry.action===action
     && (entry.action!=='notes-write'||entry.mode===payload.mode)
     && (entry.action!=='mcp-call'||entry.server===payload.server&&entry.tool===payload.tool));
+  return payload?.action==='mcp-prepare' && operation?.maximumEffect!=='approval-proposal'?undefined:operation;
 }
 const REVIEW_READS = new Set(NATIVE_REVIEW_ROLE.operations.filter(entry=>entry.action!=='mcp-call'
   &&entry.maximumEffect!=='approval-proposal').map(entry=>entry.action));
@@ -180,6 +183,20 @@ async function run(submit, payload, signal, render, observed, admitted) {
       {status:'outcome-unknown',code:'review-only-read-result-invalid'},true);
   }
   const approvalIdValid = typeof reply.approvalId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(reply.approvalId);
+  if (payload.action==='notes-prepare'||payload.action==='mcp-prepare') {
+    if (reply.preparationOnly!==true || reply.actionExecuted!==false || reply.approvalConsumed!==false || !approvalIdValid
+        || !['approval-required','approval-ready'].includes(reply.status)
+        || payload.recoveryReviewOnly===true && reply.recoveryReviewOnly!==true) {
+      report('unknown');
+      return text('The preparation receipt could not be verified. No action completion or approval consumption was confirmed.',
+        {status:'outcome-unknown',code:'preparation-result-invalid'},true);
+    }
+    report(reply.status==='approval-ready'?'ready':'pending');
+    return text(reply.status==='approval-ready'
+      ? 'This exact action already has owner approval. Preparation did not run it or use the approval. Only a separate owner-requested normal write/call with exactly the approved arguments can execute it.'
+      : `${reply.summary}\n\nApproval was prepared only: no action ran, no approval was used and no notification was sent. Review Settings → Portal integrations. After approval, a separate owner-requested normal write/call with exactly the same arguments lets the service check the approval.`,
+      {status:reply.status,approvalId:reply.approvalId,preparationOnly:true,actionExecuted:false,approvalConsumed:false});
+  }
   const reviewedNoEffect = payload.recoveryReviewOnly === true && reply.recoveryReviewOnly === true &&
     reply.actionExecuted === false && reply.approvalConsumed === false && approvalIdValid;
   if (reply.status === 'review-only-ready') {
@@ -255,6 +272,12 @@ function notesRequest(params) {
   if (action === 'read') return {action: 'notes-read', path: str(params?.path)};
   if (action === 'write') return {action: 'notes-write', path: str(params?.path), text: str(params?.text),
     mode: params?.mode === 'create' ? 'create' : 'append'};
+  if (action === 'prepare') {
+    if (Object.keys(params).some(key=>!['action','path','text','mode'].includes(key))
+        || typeof params.path!=='string' || typeof params.text!=='string'
+        || params.mode!==undefined&&!['append','create'].includes(params.mode)) return null;
+    return {action:'notes-prepare',path:params.path,text:params.text,mode:params.mode??'append'};
+  }
   return null;
 }
 
@@ -268,7 +291,10 @@ export function integrationRequest(name, params, context) {
     message: str(params?.message), priority: params?.priority ?? 'default'};
   if (name !== 'pixel_ods_mcp') return null;
   if (params?.action === 'list') return {action: 'mcp-tools'};
-  if (params?.action !== 'call') return null;
+  if (params?.action !== 'call' && params?.action !== 'prepare') return null;
+  if (params.action==='prepare' && (Object.keys(params).some(key=>!['action','server','tool','arguments'].includes(key))
+      || typeof params.server!=='string' || typeof params.tool!=='string'
+      || params.arguments!==undefined && (!params.arguments || typeof params.arguments!=='object' || Array.isArray(params.arguments)))) return null;
   const args = params?.arguments && typeof params.arguments === 'object' && !Array.isArray(params.arguments) ? params.arguments : {};
   const server = str(params?.server), tool = str(params?.tool);
   const identityString = value => typeof value === 'string' && value.length > 0
@@ -276,8 +302,8 @@ export function integrationRequest(name, params, context) {
   const runContext = context?.agentId === 'pixel' && identityString(context.sessionId)
     && identityString(context.sessionKey) && context.sessionKey.startsWith('agent:pixel:')
     ? {sessionId: context.sessionId, sessionKey: context.sessionKey} : undefined;
-  return {action: 'mcp-call', server, tool, arguments: args,
-    ...(server === 'app:news' && tool === 'digest' && runContext ? {runContext} : {})};
+  return {action: params.action==='prepare'?'mcp-prepare':'mcp-call', server, tool, arguments: args,
+    ...(params.action==='call' && server === 'app:news' && tool === 'digest' && runContext ? {runContext} : {})};
 }
 
 // This is a permission-reducing check for the latched review path only. Keep
@@ -295,7 +321,7 @@ export function reviewIntegrationCandidate(name, params, context) {
     if (params.action === 'search') {ownKeys(['action','query']); if (typeof params.query !== 'string' || !params.query.trim()
       || [...params.query].length>operation.constraints.queryMaxCodePoints) throw new Error('invalid-review-arguments');}
     else if (params.action === 'read') {ownKeys(['action','path']); if (!canonicalReviewNotePath(params.path)) throw new Error('invalid-review-arguments');}
-    else if (params.action === 'write') {
+    else if (params.action === 'write' || params.action === 'prepare') {
       ownKeys(['action','path','text','mode']);
       if (!canonicalReviewNotePath(params.path) || typeof params.text !== 'string' || !params.text.trim()
           || [...params.text].length > operation.constraints.textMaxCodePoints
@@ -304,9 +330,10 @@ export function reviewIntegrationCandidate(name, params, context) {
     maximumEffect = operation.maximumEffect;
   } else if (name === 'pixel_ods_mcp') {
     if (params.action === 'list') {ownKeys(['action']); maximumEffect = nativeReviewOperation({action:'mcp-tools'}).maximumEffect;}
-    else if (params.action === 'call') {
+    else if (params.action === 'call' || params.action === 'prepare') {
       ownKeys(['action','server','tool','arguments']);
       const operation = nativeReviewOperation({action:'mcp-call',server:params.server,tool:params.tool});
+      if (params.action==='prepare' && operation?.maximumEffect!=='approval-proposal') throw new Error('invalid-review-operation');
       const schema = operation?.arguments;
       const args = params.arguments ?? {};
       if (!schema || !args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).some(key => !Object.hasOwn(schema,key))) throw new Error('invalid-review-arguments');
@@ -415,17 +442,17 @@ export function createIntegrationTools({submit = submitIntegration, context, out
   return [
     {
       name: 'pixel_ods_notes',
-      description: "Only Markdown notes in the owner's Obsidian vault. For Paperless documents, bills or PDFs, use pixel_ods_mcp action list instead. action search: find notes holding words (query). action read: read a note (path from a search, such as Home/Lease.md). action write: add text (mode append) or create a note (mode create), only when the owner asks to save something. Call action write for every new save request, even if you expect approval or the text is identical. The service creates a request or performs the permitted write. Only its returned status approval-required means a request is pending; describing the need for approval creates nothing." + APPROVAL_CAPABILITY,
+      description: "Only Markdown notes in the owner's Obsidian vault. For Paperless documents, bills or PDFs, use pixel_ods_mcp action list instead. action search: find notes holding words (query). action read: read a note (path from a search, such as Home/Lease.md). action write: add text (mode append) or create a note (mode create), only when the owner asks to save something. Call action write for every new save request, even if you expect approval or the text is identical. The service creates a request or performs the permitted write. action prepare: prepare approval only for the exact path/text/mode; never write or consume an approval, even under Allowed. Use prepare when the owner requests approval preparation without execution. Off refuses. Only its returned status approval-required means a request is pending; describing the need for approval creates nothing." + APPROVAL_CAPABILITY,
       parameters: {type: 'object', additionalProperties: false, required: ['action'],
-        properties: {action: {type: 'string', enum: ['search', 'read', 'write']},
+        properties: {action: {type: 'string', enum: ['search', 'read', 'write', 'prepare']},
           query: {type: 'string', description: 'For search: words to look for, such as "lease deposit".'},
-          path: {type: 'string', description: 'For read and write: the note path inside the vault.'},
-          text: {type: 'string', description: 'For write: Markdown text to add.'},
-          mode: {type: 'string', enum: ['append', 'create'], description: 'For write: append to an existing note or create a new one.'}}},
+          path: {type: 'string', description: 'For read, write or prepare: the note path inside the vault.'},
+          text: {type: 'string', description: 'For write or prepare: the exact Markdown text to add.'},
+          mode: {type: 'string', enum: ['append', 'create'], description: 'For write or prepare: append to an existing note or create a new one.'}}},
       execute: (_id, params, signal) => {
         const request = integrationRequest('pixel_ods_notes', params, context);
         return request ? dispatch(_id, 'pixel_ods_notes', params, request, signal, notesText)
-          : Promise.resolve(text('Use action search, read or write.', {status: 'invalid'}, true));
+          : Promise.resolve(text('Use action search, read, write or prepare with its exact arguments.', {status: 'invalid'}, true));
       },
     },
     {
@@ -441,17 +468,18 @@ export function createIntegrationTools({submit = submitIntegration, context, out
     },
     {
       name: 'pixel_ods_mcp',
-      description: "The owner's configured apps and custom MCP servers: documents (Paperless-ngx), photos (Immich), watched web pages and price alerts, news (FreshRSS), Home Assistant and others. This catalog does not include native Obsidian, ntfy or Google connections. action list: show server ids and permitted tools with their arguments; always list before the first call. action call: submit the requested action with server, tool and arguments. Call for every new action, including an identical later one, even when the catalog says needsApproval. That flag creates no request; only the call's returned status approval-required confirms a pending request. Use pixel_ods_notes for notes and pixel_ods_notify for notifications." + APPROVAL_CAPABILITY,
+      description: "The owner's configured apps and custom MCP servers: documents (Paperless-ngx), photos (Immich), watched web pages and price alerts, news (FreshRSS), Home Assistant and others. This catalog does not include native Obsidian, ntfy or Google connections. action list: show server ids and permitted tools with their arguments; always list before the first call. action call: submit the requested action with server, tool and arguments. Call for every new action, including an identical later one, even when the catalog says needsApproval. action prepare: prepare approval only for an exact custom MCP call or watch add/remove, never execute or consume approval even under Allowed; Off refuses. Watch preparation reads only current watch metadata needed to bind the target. Use prepare when the owner requests preparation without execution. That flag creates no request; only the returned status approval-required confirms a pending request. Use pixel_ods_notes for notes and pixel_ods_notify for notifications." + APPROVAL_CAPABILITY,
       parameters: {type: 'object', additionalProperties: false, required: ['action'],
-        properties: {action: {type: 'string', enum: ['list', 'call']},
-          server: {type: 'string', description: 'For call: the server id from list, such as home.'},
-          tool: {type: 'string', description: 'For call: the tool name from list.'},
-          arguments: {type: 'object', description: 'For call: the tool arguments as an object.'}}},
+        properties: {action: {type: 'string', enum: ['list', 'call', 'prepare']},
+          server: {type: 'string', description: 'For call or prepare: the server id from list, such as home.'},
+          tool: {type: 'string', description: 'For call or prepare: the tool name from list.'},
+          arguments: {type: 'object', description: 'For call or prepare: the exact tool arguments as an object.'}}},
       execute: (_id, params, signal) => {
         if (params?.action === 'list') return dispatch(_id, 'pixel_ods_mcp', params, {action: 'mcp-tools'}, signal, toolsText);
         // A small model sometimes sends no arguments at all; show it the exact shape to retry with.
-        if (params?.action !== 'call') return Promise.resolve(text(MCP_USAGE, {status: 'invalid'}, true));
+        if (params?.action !== 'call' && params?.action !== 'prepare') return Promise.resolve(text(MCP_USAGE, {status: 'invalid'}, true));
         const payload = integrationRequest('pixel_ods_mcp', params, context);
+        if (!payload) return Promise.resolve(text('Prepare needs the exact server, tool and argument object.',{status:'invalid'},true));
         return dispatch(_id, 'pixel_ods_mcp', params, payload, signal,
           reply => `${reply.isError ? 'The tool reported an error:\n' : ''}${reply.text}`);
       },

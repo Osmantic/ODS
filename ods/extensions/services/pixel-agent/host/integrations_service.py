@@ -535,6 +535,8 @@ class Integrations(RecoveryReviewOnly, AppActions):
             return {"path": relative, "text": text}
         if action == "notes-write":
             return self._notes_write(config, request)
+        if action == "notes-prepare":
+            return self._prepare_notes_write(request)
         if action == "notify":
             title = send_notification(config, secrets, request.get("title"), request.get("message"),
                                       request.get("priority", "default"))
@@ -544,6 +546,8 @@ class Integrations(RecoveryReviewOnly, AppActions):
             return {"servers": self.app_servers(config) + self._agent_servers(config, secrets)}
         if action == "mcp-call":
             return self._mcp_call(config, request)
+        if action == "mcp-prepare":
+            return self._prepare_mcp_call(request)
         if action == "task-finished":
             return self.task_finished(config, request)
         if action in {"digest-plan", "digest-job-record", "digest-job-clear"}:
@@ -632,6 +636,87 @@ class Integrations(RecoveryReviewOnly, AppActions):
             values[key] = uuid.uuid4().hex
             self.store.save_config(config)
         return values[key]
+
+    @staticmethod
+    def _require_prepare_policy(policy):
+        if policy not in {"ask", "allow"}:
+            raise IntegrationError("preparation-off", "The owner has disabled this action. No request was prepared.")
+
+    def _prepare_notes_write(self, request):
+        if set(request) - {"schemaVersion", "action", "path", "text", "mode"} or not isinstance(request.get("path"), str):
+            raise IntegrationError("invalid-request", "Prepare needs only the exact note path, text and mode.")
+        mode = request.get("mode", "append")
+        notes.validate_write(request.get("text"), mode)
+        with self.store.lock:
+            config = self.store.config()
+            if not config["notes"]["enabled"]:
+                raise IntegrationError("notes-off", "Obsidian notes are not connected.")
+            self._require_prepare_policy(config["notes"]["write"])
+            relative, target = notes.write_binding(config, request["path"], mode)
+            epoch = self._binding(config, "notes")
+            summary = f"{'Add to' if mode == 'append' else 'Create'} note {relative}"
+            return self._prepare_approval("note", summary,
+                                          digest("note-v2", epoch, target, relative, mode, request["text"]))
+
+    def _prepare_mcp_call(self, request):
+        if set(request) - {"schemaVersion", "action", "server", "tool", "arguments"}:
+            raise IntegrationError("invalid-request", "Prepare needs only the exact server, tool and arguments.")
+        name, arguments = request.get("tool"), request.get("arguments", {})
+        if not isinstance(name, str) or not isinstance(arguments, dict):
+            raise IntegrationError("invalid-request", "Tool name and arguments are required.")
+        server_id = request.get("server")
+        if not isinstance(server_id, str):
+            raise IntegrationError("invalid-request", "A server id is required.")
+        if server_id in APP_SERVER_IDS:
+            app = APP_SERVER_IDS[server_id]
+            self._app_arguments(app, name, arguments)
+            self._review_app_values(app, name, arguments)
+            if app != "watch" or name not in {"add", "remove"}:
+                raise IntegrationError("preparation-not-supported", "This builtin has no approval preparation action.")
+            with self.store.lock:
+                config = self.store.config()
+                if not config["apps"]["watch"]["enabled"]:
+                    raise IntegrationError("app-off", "Watched pages are not connected.")
+                self._require_prepare_policy(config["apps"]["watch"]["changes"])
+                self._binding(config, "apps", "watch")
+            return self._review_watch_change(name, arguments, preparation_only=True)
+        with self.store.lock:
+            config, secrets = self.store.config(), self.store.secrets()
+            server = self._server(config, server_id, enabled=True)
+            context = digest(server_context(server, secrets))
+            if server.get("checkedBinding") != context:
+                raise IntegrationError("mcp-check-required", "The server context changed. Check its tools again before preparing it.")
+            tool = next((item for item in server["tools"] if item["name"] == name), None)
+            if tool is None or tool["policy"] == "off":
+                raise IntegrationError("tool-not-allowed", "This server has no allowed tool with that name.")
+            self._require_prepare_policy(tool["policy"])
+            epoch = self._binding(config, "mcp", server["id"])
+            argument_summary = redact_secrets(json.dumps(arguments, sort_keys=True), secrets)[:300]
+            summary = redact_secrets(f"{server['name']}: {name} {argument_summary}", secrets)
+            return self._prepare_approval("mcp", summary, digest("mcp-v2", epoch, context, tool, name, arguments))
+
+    def _prepare_approval(self, kind, summary, request_digest):
+        """A new RPC ceiling: ledger only, even under Allowed or an approved grant."""
+        with self.store.lock:
+            approvals = self.store.approvals()
+            exact = [entry for entry in approvals if entry.get("digest") == request_digest]
+            approved = next((entry for entry in exact if entry.get("state") == "approved"), None)
+            if approved:
+                return {"status": "approval-ready", "approvalId": approved["id"], "summary": approved["summary"],
+                        "preparationOnly": True, "actionExecuted": False, "approvalConsumed": False}
+            if any(entry.get("state") == "declined" for entry in exact):
+                raise IntegrationError("preparation-declined", "The exact request was declined. It was not reopened.")
+            if any(entry.get("state") not in {"pending", "used"} for entry in exact):
+                raise IntegrationError("preparation-state-unavailable", "The saved request state cannot be prepared safely.")
+            pending = next((entry for entry in exact if entry.get("state") == "pending"), None)
+            if pending is None:
+                summary = redact_secrets(summary, self.store.secrets())[:400]
+                pending = {"id": uuid.uuid4().hex[:12], "kind": kind, "summary": summary, "digest": request_digest,
+                           "state": "pending", "createdAt": now(), "expiresAt": now() + APPROVAL_SECONDS}
+                self.store.save_approvals(approvals + [pending])
+                self._log("approval", summary, "prepared without execution")
+            return {"status": "approval-required", "approvalId": pending["id"], "summary": pending["summary"],
+                    "preparationOnly": True, "actionExecuted": False, "approvalConsumed": False}
 
     def _approval(self, kind, summary, request_digest):
         """Return (waiting reply, notification); no external I/O under admission.

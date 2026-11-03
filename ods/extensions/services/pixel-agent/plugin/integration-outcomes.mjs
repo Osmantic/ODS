@@ -8,14 +8,17 @@ import {integrationRequest, snapshotIntegrationRequest, reviewIntegrationCandida
 const PENDING = 'This call did not run the action; it requested approval. Review Settings → Portal integrations, then ask Portal to retry the same action.';
 const UNKNOWN = 'Its result could not be verified; check the destination before retrying.';
 const READY = 'This exact action already has owner approval, but this review-only recovery did not run it or use the approval. Send a new request to execute it.';
+const PREPARED_READY = 'This exact action already has owner approval. This preparation did not run it or use the approval. A separate owner-requested normal write/call is required to execute it.';
 export const MAX_INTEGRATION_NOTICE = 2048;
 const identity = value => typeof value === 'string' && value.length > 0 && value.length <= 512 && !/[\x00-\x20\x7f]/.test(value);
 const names = new Set(INTEGRATION_TOOL_NAMES);
-const actions = new Set(['notes-write', 'notify', 'mcp-call']);
+const actions = new Set(['notes-write', 'notes-prepare', 'notify', 'mcp-call', 'mcp-prepare']);
 const reviewReads = new Set(['notes-search', 'notes-read', 'mcp-tools']);
 const tracked = (payload, reviewOnly) => actions.has(payload?.action) || reviewOnly && reviewReads.has(payload?.action);
+const preparation = payload => payload?.action==='notes-prepare'||payload?.action==='mcp-prepare';
 const UNRESOLVED = 'An earlier integration call in this response has an unverified result. This additional action was not submitted. Check the destination, then send a new request before trying again. Known built-in reads and the catalog remain available.';
 const effectful = payload => payload?.action === 'notify' || payload?.action === 'notes-write' ||
+  preparation(payload) ||
   payload?.action === 'mcp-call' && nativeReviewOperation(payload)?.maximumEffect !== 'private-read';
 const childOf = (id,call) => {
   if (typeof id!=='string') return false;
@@ -47,11 +50,11 @@ function freezeJson(value) {
 }
 function referenceSource(payload) {
   if (payload?.action?.startsWith('notes-')) return 'obsidian';
-  if (payload?.action==='mcp-call') return {'app:documents':'paperless','app:watch':'watch'}[payload.server];
+  if (payload?.action==='mcp-call'||payload?.action==='mcp-prepare') return {'app:documents':'paperless','app:watch':'watch'}[payload.server];
 }
 function referenceId(source,entry) {return source==='obsidian'?entry.path:entry.id;}
 function referenceTarget(payload,source) {
-  if (source==='obsidian' && ['notes-read','notes-write'].includes(payload.action)) return canonicalReviewNotePath(payload.path);
+  if (source==='obsidian' && ['notes-read','notes-write','notes-prepare'].includes(payload.action)) return canonicalReviewNotePath(payload.path);
   if (source==='paperless' && payload.tool==='read') return canonicalReviewDocumentId(payload.arguments?.id);
   if (source==='watch' && payload.tool==='remove') return payload.arguments?.id;
 }
@@ -85,7 +88,7 @@ const effectiveKey = (baseKey, reviewOnly) => reviewOnly
 
 function label(payload) {
   if (payload.action === 'notify') return 'Notification';
-  if (payload.action === 'notes-write') return payload.mode === 'create' ? 'Create an Obsidian note' : 'Add to an Obsidian note';
+  if (payload.action === 'notes-write'||payload.action==='notes-prepare') return payload.mode === 'create' ? 'Create an Obsidian note' : 'Add to an Obsidian note';
   if (payload.action === 'notes-search') return 'Search Obsidian notes';
   if (payload.action === 'notes-read') return 'Read an Obsidian note';
   if (payload.action === 'mcp-tools') return 'Integration catalog';
@@ -320,7 +323,7 @@ export function createIntegrationOutcomes({maximumRuns = 64, maximumCalls = 64} 
       const recoveryReviewOnly = run.reviewOnly === true;
       run.calls.push({id, name, deferred, baseKey,
         key:effectiveKey(baseKey,recoveryReviewOnly),
-        recoveryReviewOnly, label:label(payload), sequence:++run.sequence,
+        recoveryReviewOnly, preparationOnly:preparation(payload), label:label(payload), sequence:++run.sequence,
         run, pending:true, taken:false, status:null});
     } catch { /* Malformed/unbounded inputs receive no observation, never new authority. */ }
   }
@@ -533,7 +536,8 @@ export function createIntegrationOutcomes({maximumRuns = 64, maximumCalls = 64} 
     const visible = run.calls.filter(call => call.status === 'unknown' || ['pending','ready'].includes(call.status) &&
       pending.get(call.key) === call && call.sequence > (settled.get(call.key) ?? 0));
     if (!visible.length && !run.overflow && !run.reviewNotice) return undefined;
-    const lines = visible.slice(0, 6).map(call => `${call.label} (request ${call.sequence}): ${call.status === 'pending' ? PENDING : call.status === 'ready' ? READY : UNKNOWN}`);
+    const lines = visible.slice(0, 6).map(call => `${call.label} (request ${call.sequence}): ${call.status === 'pending' ? PENDING
+      : call.status === 'ready' ? (call.preparationOnly||preparation(call.payload)?PREPARED_READY:READY) : UNKNOWN}`);
     if (visible.length > 6 || run.overflow) lines.push('Additional integration call statuses are not shown in this notice.');
     if (run.reviewNotice) lines.push(run.reviewNotice);
     return lines.join('\n\n').slice(0, MAX_INTEGRATION_NOTICE);
