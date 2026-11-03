@@ -120,19 +120,30 @@ class ConnectionDeployment:
         return hashlib.sha256(self.encoded).hexdigest()
 
 
-def _native_bundle_plugins(runtime):
+def _native_bundle_plugins(runtime, *, _operation=None):
     """Use the protected published inventory, never owner config load.paths."""
     from pixel_macos_custody import protected_bytes, protected_tree_metadata
     root = Path(runtime['node']).parent
     if root.parent != NATIVE_RUNTIME_ROOT or not _HEX.fullmatch(root.name) or Path(runtime['runtimeRoot']) != root / 'runtime':
         raise PlanError('connection-runtime-bundle-unavailable')
+    if _operation is not None:
+        from pixel_access_bridge import _native_runtime_bundle_cache
+        _native_runtime_bundle_cache(_operation, root)
     protected_tree_metadata(root)
     helper = Path(runtime['sourceRoot']) / 'installers/macos/lib/pixel-runtime-bundle.py'
     protected_bytes(helper)
     spec = importlib.util.spec_from_file_location('_connection_bundle', helper)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    manifest, checksum = module.verify(root, expected_digest=root.name)
+    # Older protected helpers remain cold. Inspect the trusted signature, never
+    # catch TypeError and retry a call that may already have done real work.
+    import inspect
+    parameter = inspect.signature(module.verify).parameters.get('_operation')
+    if (_operation is not None and parameter is not None
+            and parameter.kind is inspect.Parameter.KEYWORD_ONLY and parameter.default is None):
+        manifest, checksum = module.verify(root, expected_digest=root.name, _operation=_operation)
+    else:
+        manifest, checksum = module.verify(root, expected_digest=root.name)
     paths = {}
     for relative in manifest['plugins']:
         metadata = json.loads(protected_bytes(root / relative / 'openclaw.plugin.json'))
@@ -146,14 +157,14 @@ def _native_bundle_plugins(runtime):
     return paths, checksum
 
 
-def native_deployment(runtime, runtime_checksum, *, uid, gid, environment, plist, plist_sha256):
+def native_deployment(runtime, runtime_checksum, *, uid, gid, environment, plist, plist_sha256, _operation=None):
     """Derive one value from already-qualified runtime and launchd inputs.
 
     Sidefiles are a future installer publication beside the selected config.
     Their absence refuses; preparation answers and Linux paths are never adopted.
     """
     from .native_mcp import _parents, _read
-    plugins, bundle_checksum = _native_bundle_plugins(runtime)
+    plugins, bundle_checksum = _native_bundle_plugins(runtime, _operation=_operation)
     home, config, state_dir = (environment[key] for key in ('HOME', 'OPENCLAW_CONFIG_PATH', 'OPENCLAW_STATE_DIR'))
     config_parent = Path(config).parent
     env_path, answers_path = config_parent / 'gateway.env', config_parent / 'onboarding.json'

@@ -52,7 +52,10 @@ metadata, exact job definition and private environment without reading owner
 sidefiles. An actual atomic Gate replacement reproduced an unrelated-sibling
 race; the corrected reader accepts a new sibling only while its own immutable
 invocation, common inputs and original deadlines stay unchanged. Changed own
-nonce or deployment still refuses. Native Source execution, job lifecycle, connection activation and
+nonce or deployment still refuses. Root qualification can reuse verified file
+hashes inside one typed operation, while repeating namespace, metadata and ACL
+checks and the actual independent bundle verifier. Scope exit revokes the cache;
+this is not a physical Mac timing qualification. Native Source execution, job lifecycle, connection activation and
 physical Mac behavior remain unfinished; Connected apps remains unavailable there.
 
 The local integration now composes native-tool candidate `8e9aea1ca` with the
