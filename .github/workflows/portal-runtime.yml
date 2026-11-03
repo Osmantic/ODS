@@ -89,6 +89,11 @@ jobs:
         env:
           OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: python3 ods/extensions/services/pixel-agent/tests/test_native_runtime_revision_scope.py
+      - name: Verify explicit scheduled-job policy against the pinned native cron factory
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_cron_delivery.integration.mjs
       - name: Verify real file reads and range failures
         shell: bash
         env:

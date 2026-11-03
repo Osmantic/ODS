@@ -6,6 +6,9 @@ import './portal-scheduled-tasks.css'
 
 const stamp=value=>value===null?'Not yet':new Date(value).toLocaleString()
 const status={ok:'Completed',error:'Needs attention',skipped:'Skipped',unknown:'Unconfirmed'}
+const finishedOneOff=item=>item.schedule.kind==='at' && Date.parse(item.schedule.at)<=Date.now()
+  && Number.isFinite(item.lastRunAt) && item.lastRunAt>0 && item.lastRunAt>=Date.parse(item.schedule.at)
+  && ['ok','error','skipped'].includes(item.lastStatus)
 const emptyForm=()=>({name:'',task:'',frequency:'daily',time:'09:00',at:'',weekday:'1'})
 const timezone=()=>Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 // Saved summaries use Portal's Markdown/link policy without loading model-supplied images.
@@ -144,7 +147,7 @@ export default function PortalScheduledTasks() {
         <div className="portal-schedules-actions"><button type="submit" disabled={busy || !!unknown}><Check size={14}/>Schedule task</button><button type="button" disabled={busy} onClick={()=>setCreating(false)}>Cancel</button></div>
       </form>}
       {page?.items.length===0 && !creating && <div className="portal-schedules-empty"><Clock3 size={24}/><h3>{view==='list'?'No scheduled tasks yet':'No past tasks yet'}</h3><p>{view==='list'?'Schedule a useful check-in or a recurring task.':'Removed schedules appear here with their recorded results.'}</p></div>}
-      {page?.items.map(item=><button type="button" key={item.id} className="portal-schedules-row" disabled={busy} onClick={()=>open(item)}><span><strong>{item.name}</strong><span>{scheduleLabel(item.schedule)}</span><small>{item.runningSince!==null?'Running':item.removed?'Removed':item.enabled?'Scheduled':item.schedule.kind==='at' && Date.parse(item.schedule.at)<=Date.now()?'Finished':'Paused'}{item.lastStatus?` · ${status[item.lastStatus]}`:''}</small></span><span className="portal-schedules-next">{item.nextRunAt!==null?`Next: ${stamp(item.nextRunAt)}`:'View results'}</span></button>)}
+      {page?.items.map(item=><button type="button" key={item.id} className="portal-schedules-row" disabled={busy} onClick={()=>open(item)}><span><strong>{item.name}</strong><span>{scheduleLabel(item.schedule)}</span><small>{item.runningSince!==null?'Running':item.removed?'Removed':item.enabled?'Scheduled':finishedOneOff(item)?'Finished':'Paused'}{item.lastStatus?` · ${status[item.lastStatus]}`:''}</small></span><span className="portal-schedules-next">{item.nextRunAt!==null?`Next: ${stamp(item.nextRunAt)}`:'View results'}</span></button>)}
       {page && <nav className="portal-schedules-pages" aria-label="Task pages"><button type="button" disabled={busy || offset===0} onClick={()=>setOffset(Math.max(0,offset-10))}>Previous</button><button type="button" disabled={busy || !page.hasMore} onClick={()=>setOffset(page.nextOffset)}>Next</button></nav>}
     </>}
   </section>

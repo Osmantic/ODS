@@ -17,7 +17,7 @@ import vm from 'node:vm';
 
 import {applyVerificationToCompletion, parseVerificationResponse} from '../host/pixel_ingress.mjs';
 import {withCronCommandPayloadBlock} from '../plugin/cron-command-payload-guard.mjs';
-import {withPixelCronDeliveryDefault} from '../plugin/cron-delivery-default.mjs';
+import {withPixelCronDeliveryDefault,withPixelCronJobAdmission} from '../plugin/cron-delivery-default.mjs';
 import {EXAMPLE_NOTES, exampleNotice} from '../plugin/example-guard.mjs';
 import {exampleRecordDirectory, exampleRecordFile} from '../plugin/example-projects.mjs';
 import {createProjectRunControl} from '../plugin/project-run-control.mjs';
@@ -105,7 +105,7 @@ function entry(root) {
     extensionRepositoryContext: async () => '', GOAL_CONTRACT: '', ACTIVITY_CONTRACT: '',
     executionLocationContext: () => '', executionContext: () => '',
     conversationImageLifecycle: {observe() {}}, managedRuntime: undefined,
-    withPixelCronDeliveryDefault, withCronCommandPayloadBlock, withPixelSubagentWorkspace,
+    withPixelCronDeliveryDefault, withPixelCronJobAdmission, withCronCommandPayloadBlock, withPixelSubagentWorkspace,
     getSessionEntry: () => undefined, resolveStorePath: () => undefined, resolveUserPath: value => value,
     resolveAgentWorkspaceDir: config => config?.agents?.list?.find(agent => agent.id === 'pixel')?.workspace,
     bundleAdmission: createWorkspaceBundleAdmission(), artifactAdmission: createWorkspaceArtifactAdmission(),

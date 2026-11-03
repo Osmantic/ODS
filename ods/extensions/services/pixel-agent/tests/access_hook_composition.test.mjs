@@ -56,16 +56,25 @@ function hooks(guardResult, managedRuntime = false, delivery = {}) {
 }
 const context = {agentId: 'pixel', runId: 'cron-request', toolName: 'cron'};
 const event = {toolCallId: 'cron-1', toolName: 'cron', params: {
-  action: 'add', payload: {kind: 'agentTurn', message: 'Check disk space'},
+  action: 'add', payload: {kind: 'agentTurn', message: 'Check disk space',toolsAllow:['read']},delivery:{mode:'none'},
 }};
 
-test('native tracking preserves the committed cron delivery repair', async () => {
+test('native tracking preserves explicit future cron policy without rewriting it', async () => {
   const {callbacks, calls, activity} = hooks();
   const result = await callbacks.before_tool_call(event, context);
-  assert.equal(result?.params?.delivery?.mode, 'none');
+  assert.equal(result,undefined);
+  assert.equal(event.params.delivery.mode, 'none');
   assert.deepEqual(calls, ['guard', 'admit']);
   assert.deepEqual(activity, ['before']);
-  assert.equal(event.params.delivery, undefined);
+});
+
+test('missing future cron policy is refused before native tool admission and is not defaulted',async()=>{
+  const {callbacks,calls,activity}=hooks();
+  const params={action:'add',payload:{kind:'agentTurn',message:'Calculate 14 + 8.'}};
+  const result=await callbacks.before_tool_call({...event,params},context);
+  assert.equal(result.block,true);assert.match(result.blockReason,/payload.toolsAllow/);
+  assert.deepEqual(calls,['guard']);assert.deepEqual(activity,['blocked']);
+  assert.equal(params.delivery,undefined);assert.equal(params.payload.toolsAllow,undefined);
 });
 
 test('guard denials never acquire a native tool slot', async () => {
@@ -76,13 +85,13 @@ test('guard denials never acquire a native tool slot', async () => {
   assert.deepEqual(activity, ['blocked']);
 });
 
-test('guard rewritten cron params survive admission and receive the default', async () => {
+test('guard rewritten explicit cron params survive admission unchanged', async () => {
   const params = {...event.params, name: 'guard-approved'};
   const {callbacks} = hooks({params});
   const result = await callbacks.before_tool_call(event, context);
   assert.equal(result.params.name, 'guard-approved');
   assert.equal(result.params.delivery.mode, 'none');
-  assert.equal(params.delivery, undefined);
+  assert.equal(result.params,params);
 });
 
 test('agent cron calls cannot create command jobs through the actual hook', async () => {

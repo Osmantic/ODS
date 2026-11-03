@@ -65,7 +65,7 @@ import {
   managedTeamRole,
   privateBrowserAccessForAgent,
 } from "./tool-loop-guard.mjs";
-import { withPixelCronDeliveryDefault } from "./cron-delivery-default.mjs";
+import { withPixelCronDeliveryDefault, withPixelCronJobAdmission } from "./cron-delivery-default.mjs";
 import { withCronCommandPayloadBlock } from "./cron-command-payload-guard.mjs";
 import { withPixelSubagentWorkspace } from "./subagent-workspace.mjs";
 import { createPublicPageReader, createPublicWebExtractTool } from "./web-extract.mjs";
@@ -590,8 +590,8 @@ export default definePluginEntry({
         return decision;
       }
       let guard = withPixelCronDeliveryDefault(
-        await toolLoopGuard.beforeToolCall(event, context, AGENT_ID,
-          delegationDelivery.hasPendingChildren(context)),
+        withPixelCronJobAdmission(await toolLoopGuard.beforeToolCall(event, context, AGENT_ID,
+          delegationDelivery.hasPendingChildren(context)), event, context, AGENT_ID),
         event, context, AGENT_ID,
       );
       const runtimeConfig = api.runtime?.config?.current?.() ?? api.config;

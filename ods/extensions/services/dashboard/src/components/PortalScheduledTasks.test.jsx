@@ -33,6 +33,21 @@ async function fillForm() {
   fireEvent.change(screen.getByLabelText('What should Portal do?'),{target:{value:'Summarize my upcoming day.'}})
 }
 
+it('keeps paused never-run and rescheduled one-offs paused; only terminal runs after the current due time are finished',async()=>{
+  const due=Date.now()-60000,schedule={kind:'at',at:new Date(due).toISOString()}
+  jobs=[{...job('never','Never ran'),enabled:false,schedule,nextRunAt:null},
+    {...job('uncertain','No terminal status'),enabled:false,schedule,nextRunAt:null,lastRunAt:due+1000},
+    {...job('rescheduled','Earlier completed run'),enabled:false,schedule,nextRunAt:null,lastRunAt:due-60000,lastStatus:'ok'},
+    {...job('done','Recorded run'),enabled:false,schedule,nextRunAt:null,lastRunAt:due+1000,lastStatus:'ok'}]
+  render(<PortalScheduledTasks/>)
+  const never=await screen.findByRole('button',{name:/Never ran.*Paused/})
+  expect(never).not.toHaveTextContent('Finished')
+  expect(screen.getByRole('button',{name:/No terminal status.*Paused/})).not.toHaveTextContent('Finished')
+  expect(screen.getByRole('button',{name:/Earlier completed run.*Paused.*Completed/})).not.toHaveTextContent('Finished')
+  expect(screen.getByRole('button',{name:/Recorded run.*Finished.*Completed/})).toBeVisible()
+  expect(calls).toEqual([{action:'list',offset:0}])
+})
+
 it('uses the native task flow: create, read result, pause, remove, return to saved result',async()=>{
   render(<PortalScheduledTasks/>)
   expect(await screen.findByText('No scheduled tasks yet')).toBeVisible()
