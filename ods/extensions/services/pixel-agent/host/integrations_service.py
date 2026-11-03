@@ -32,6 +32,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import integrations_apps as apps  # noqa: E402
 import integrations_memory as memory  # noqa: E402
+import integrations_telegram as telegram  # noqa: E402
 import integrations_notes as notes  # noqa: E402
 from integrations_common import (IntegrationError, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES,  # noqa: E402
                                  SCHEMA_VERSION, Store, digest, now)
@@ -47,7 +48,7 @@ SERVER_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 TOPIC = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 OWNER_ACTIONS = {"get", "save", "test-notification", "discover", "test", "test-app", "watch-list", "send-digest", "restart",
-                 "decide", "clear-activity"} | memory.OWNER_ACTIONS
+                 "decide", "clear-activity"} | memory.OWNER_ACTIONS | telegram.OWNER_ACTIONS
 TASK_MODES = ("off", "failures", "all")
 WATCH_SECONDS = 120
 OWNER_SOCKET = "owner.sock"
@@ -180,7 +181,7 @@ class _AdmittedLocalServers:
         return self.service._local_get(server, values, self.revision)
 
 
-class Integrations(AppActions, memory.MemoryActions):
+class Integrations(AppActions, memory.MemoryActions, telegram.TelegramActions):
     def __init__(self, store, local_servers=None):
         self.store = store
         self.local = local_servers or LocalServers()
@@ -245,6 +246,9 @@ class Integrations(AppActions, memory.MemoryActions):
                 self.store.clear_activity()
         elif action in memory.OWNER_ACTIONS:
             self.memory_owner(action, request)
+        elif action in telegram.OWNER_ACTIONS:
+            notice = self.telegram_owner(action, request)
+            return {**self.view(), "notice": notice}
         return self.view()
 
     def view(self):
@@ -256,7 +260,7 @@ class Integrations(AppActions, memory.MemoryActions):
         processes = {server["id"]: self.local.status(server["id"])
                      for server in config["mcp"]["servers"] if server["kind"] == "stdio"}
         return {"settings": public_config(config, secrets), "approvals": waiting, "activity": activity,
-                "processes": processes, "memory": memory.public(remembered)}
+                "processes": processes, "memory": memory.public(remembered), "telegram": self.telegram_view()}
 
     def _log(self, action, target, outcome):
         with self.store.lock:
@@ -646,13 +650,23 @@ def watch_or_exit(service, stop, seconds=WATCH_SECONDS, exit=os._exit):
         exit(1)
 
 
+def telegram_or_exit(service, stop, exit=os._exit):
+    """Answer the owner on Telegram; any error but a Telegram or Portal failure ends the service, as for watching."""
+    try:
+        telegram.telegram_loop(service, stop)
+    except BaseException:
+        traceback.print_exc()
+        exit(1)
+
+
 def start(agent_socket, state_dir):
-    """Both listeners and the page watcher, in background threads; the owner socket is STATE_DIR/owner.sock."""
+    """Both listeners, the page watcher and the Telegram bridge, in background threads; the owner socket is STATE_DIR/owner.sock."""
     service = Integrations(Store(state_dir))
     servers = [_listener(service, agent_socket, "agent"), _listener(service, pathlib.Path(state_dir) / OWNER_SOCKET, "owner")]
     for server in servers:
         threading.Thread(target=server.serve_forever, daemon=True).start()
     threading.Thread(target=watch_or_exit, args=(service, threading.Event()), daemon=True).start()
+    threading.Thread(target=telegram_or_exit, args=(service, threading.Event()), daemon=True).start()
     return servers
 
 

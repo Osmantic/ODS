@@ -3893,7 +3893,7 @@ ods_pixel_run_as_owner() { printf '%s\n' "$*" >> "$integrations_root/owner-runs"
 check _ods_pixel_install_integrations "$owner" /home/u "$ROOT/extensions/services/pixel-agent/host"
 check grep -Fx "systemctl restart pixel-integrations.service" "$integrations_root/sudo"
 check grep -F "/home/u/.config/ods/pixel-integrations/owner.sock" "$integrations_root/owner-runs"
-for module in integrations_mcp.py integrations_apps.py integrations_app_service.py integrations_ntfy.py integrations_reminders.py integrations_memory.py; do
+for module in integrations_mcp.py integrations_apps.py integrations_app_service.py integrations_ntfy.py integrations_reminders.py integrations_memory.py integrations_telegram.py; do
     check grep -F "$module /usr/local/libexec/ods-pixel-integrations/$module" "$integrations_root/sudo"
 done
 for covering in "/home/u/.config:/home/u/.config:rbind" "-/home/u:/home/u:rbind" "/home/u/.config/ods/pixel-integrations"; do

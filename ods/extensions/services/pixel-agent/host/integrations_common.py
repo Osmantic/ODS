@@ -73,6 +73,12 @@ def default_config():
     }
 
 
+def default_telegram():
+    """The Telegram bridge's state before the owner sets it up (integrations_telegram.py)."""
+    return {"enabled": False, "ownerId": "", "apiRoot": "https://api.telegram.org", "bot": "", "offset": 0, "conversation": 1,
+            "history": [], "questions": None, "lastError": "", "lastMessageAt": 0, "refused": []}
+
+
 def upgrade_config(config):
     """Settings saved by an earlier version, with the fields added since."""
     config["notifications"].setdefault("approvalLink", "")
@@ -122,7 +128,7 @@ class Store:
         self._write("config.json", value)
 
     def secrets(self):
-        return {"ntfyPassword": "", "mcp": {}, "mcpEnv": {}, "apps": {}, **self._read("secrets.json", {})}
+        return {"ntfyPassword": "", "mcp": {}, "mcpEnv": {}, "apps": {}, "telegramToken": "", **self._read("secrets.json", {})}
 
     def save_secrets(self, value):
         self._write("secrets.json", value)
@@ -151,6 +157,12 @@ class Store:
 
     def save_memory(self, value):
         self._write("memory.json", value)
+
+    def telegram(self):
+        return {**default_telegram(), **self._read("telegram.json", {})}
+
+    def save_telegram(self, value):
+        self._write("telegram.json", value)
 
     def log(self, action, target, outcome):
         path = self.root / "activity.jsonl"
