@@ -7,6 +7,7 @@ import email.header
 import http.server
 import json
 import pathlib
+import re
 import tempfile
 import threading
 import time
@@ -375,6 +376,70 @@ class AppTests(unittest.TestCase):
             self.app("documents", "search", query="lease")
 
     # Photos.
+    def test_photos_catalog_exposes_calendar_date_shape_with_empty_bounds(self):
+        self.save(self.settings())
+        server = next(item for item in self.agent("mcp-tools")["servers"] if item["id"] == "app:photos")
+        tool = next(item for item in server["tools"] if item["name"] == "search")
+        properties = tool["inputSchema"]["properties"]
+        self.assertEqual(properties["query"], {"type": "string"})
+        self.assertEqual(properties["place"], {"type": "string"})
+        for field in ("after", "before"):
+            schema = properties[field]
+            self.assertEqual(schema["type"], "string")
+            self.assertEqual(schema["maxLength"], 10)
+            for value in ("", "2026-01-10", "2028-02-29"):
+                with self.subTest(field=field, valid=value):
+                    self.assertIsNotNone(re.fullmatch(schema["pattern"], value))
+                    if value:
+                        self.assertEqual(apps.day(value).isoformat(), value)
+            for value in ("2026-01-10T00:00:00.000Z", "2026-1-10", "2026-01-10\n"):
+                with self.subTest(field=field, invalid=value):
+                    self.assertIsNone(re.fullmatch(schema["pattern"], value))
+
+    def test_photos_catalog_dates_reject_timestamps_before_provider_io(self):
+        self.save(self.settings())
+        server = next(item for item in self.agent("mcp-tools")["servers"] if item["id"] == "app:photos")
+        tool = next(item for item in server["tools"] if item["name"] == "search")
+        with unittest.mock.patch.object(apps, "request", side_effect=AssertionError("Invalid date reached provider")) as provider:
+            for field in ("after", "before"):
+                for value in ("2026-01-10T00:00:00.000Z", "2026-02-30"):
+                    with self.subTest(field=field, value=value), self.assertRaises(service.IntegrationError) as caught:
+                        self.agent("mcp-call", server=server["id"], tool=tool["name"], arguments={field: value})
+                    self.assertEqual(caught.exception.code, "invalid-request")
+            provider.assert_not_called()
+
+    def test_photos_catalog_single_day_includes_both_utc_boundaries(self):
+        self.save(self.settings())
+        server = next(item for item in self.agent("mcp-tools")["servers"] if item["id"] == "app:photos")
+        tool = next(item for item in server["tools"] if item["name"] == "search")
+        assets = [{"id": name, "originalFileName": name + ".jpg", "localDateTime": stamp,
+                   "exifInfo": {"city": "", "country": ""}}
+                  for name, stamp in (("next", "2026-01-11T00:00:00.000Z"),
+                                      ("first", "2026-01-10T00:00:00.000Z"),
+                                      ("last", "2026-01-10T23:59:59.999Z"),
+                                      ("prior", "2026-01-09T23:59:59.999Z"))]
+        with unittest.mock.patch.object(FakeImmich, "assets", assets):
+            reply = self.agent("mcp-call", server=server["id"], tool=tool["name"],
+                               arguments={"after": "2026-01-10", "before": "2026-01-10"})
+        self.assertFalse(reply["isError"])
+        self.assertIn("first.jpg", reply["text"])
+        self.assertIn("last.jpg", reply["text"])
+        self.assertNotIn("next.jpg", reply["text"])
+        self.assertNotIn("prior.jpg", reply["text"])
+        self.assertEqual(FakeImmich.searches, [("/api/search/metadata", {"size": 10, "withExif": True, "order": "desc",
+                         "takenAfter": "2026-01-10T00:00:00.000Z", "takenBefore": "2026-01-10T23:59:59.999Z"})])
+
+    def test_photos_catalog_empty_or_omitted_dates_leave_bounds_open(self):
+        self.save(self.settings())
+        server = next(item for item in self.agent("mcp-tools")["servers"] if item["id"] == "app:photos")
+        tool = next(item for item in server["tools"] if item["name"] == "search")
+        for bounds in ({}, {"after": "", "before": ""}):
+            with self.subTest(bounds=bounds):
+                reply = self.agent("mcp-call", server=server["id"], tool=tool["name"], arguments={"place": "Lisbon", **bounds})
+                self.assertIn("beach.jpg", reply["text"])
+                self.assertEqual(FakeImmich.searches[-1], ("/api/search/metadata", {
+                    "size": 10, "withExif": True, "order": "desc", "city": "Lisbon"}))
+
     def test_photos_by_place_and_date_without_machine_learning(self):
         self.save(self.settings())
         found = self.app("photos", "search", place="lisbon")

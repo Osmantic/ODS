@@ -19,6 +19,7 @@ from integrations_ntfy import send_notification
 APP_ACTIONS = {"documents-search": "documents", "documents-read": "documents", "photos-search": "photos",
                "watch-list": "watch", "watch-add": "watch", "watch-remove": "watch", "news-unread": "news", "news-digest": "news"}
 TEXT = {"type": "string"}
+PHOTO_DAY = {"type": "string", "pattern": r"^(?:[0-9]{4}-[0-9]{2}-[0-9]{2})?$", "maxLength": 10}
 # Each app as a built-in server: its tools, what they do, and the action and arguments behind them.
 APP_TOOLS = {
     "documents": {
@@ -28,8 +29,13 @@ APP_TOOLS = {
     },
     "photos": {
         "search": ("photos-search", "Find the owner's photos by what is in them (query), where (place: a city or country) "
-                   "or when (after and before, YYYY-MM-DD). Returns links that open the photos.",
-                   {"query": TEXT, "place": TEXT, "after": TEXT, "before": TEXT}),
+                   "or when (after and before: inclusive UTC calendar dates, YYYY-MM-DD, not timestamps). "
+                   "For a single day, use the same date for both bounds. Returns links that open the photos.",
+                   {"query": TEXT, "place": TEXT,
+                    "after": {**PHOTO_DAY, "description": "First UTC calendar day, inclusive, as YYYY-MM-DD. "
+                              "Empty or omitted leaves this bound open. For one day, use the same date in after and before."},
+                    "before": {**PHOTO_DAY, "description": "Last UTC calendar day, inclusive, as YYYY-MM-DD. "
+                               "Empty or omitted leaves this bound open. For one day, use the same date in after and before."}}),
     },
     "watch": {
         "list": ("watch-list", "Show the watched web pages.", {}),
