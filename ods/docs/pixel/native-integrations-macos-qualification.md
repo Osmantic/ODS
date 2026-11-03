@@ -12,12 +12,19 @@ journey can be qualified. Do not treat a pass here as support for those routes.
 
 ## First physical run
 
-Start from the exact source commit named in the final PR qualification note,
-with the checkout outside the installed directory. Keep Docker Desktop running.
-Use an existing disposable ODS installation or a dedicated test account; retain
-its installation, model and private receipts. The source update below is the
-ordinary installer path. `ods-macos.sh update` uses the installed source and
-does not fetch the draft's installer/plugin source from GitHub.
+Start from the exact source commit named in the PR qualification note, with
+the checkout outside the install directory. Keep the local container engine
+running. For a first native installation, use a disposable Apple Silicon Mac
+or macOS guest with no existing native Pixel deployment. A second user account
+or a different `ODS_HOME` still shares the system launchd services.
+
+On a Mac that already runs native Pixel, run the two preflights below and
+retain the installation, model and private receipts. The general preflight
+checks the host. The native preflight checks whether an initial installation
+can proceed. If it reports `existing-native-pixel-requires-migration-or-recovery`,
+stop before the install step. Upgrading that deployment requires a verified
+migration or upgrade path for its installed and target bundles. Running
+`ods-macos.sh update` uses the installed source and does not fetch this PR.
 
 For a checkout at `~/src/ODS` and installation at `~/ods`, record the source and
 platform first:
@@ -27,6 +34,7 @@ git -C "$HOME/src/ODS" rev-parse HEAD
 git -C "$HOME/src/ODS" status --short
 sw_vers
 uname -m
+docker context show
 docker version --format 'client={{.Client.Version}} server={{.Server.Version}}'
 ```
 
@@ -38,13 +46,19 @@ ODS_HOME="$HOME/ods" bash "$HOME/src/ODS/ods/install.sh" --pixel --preflight-onl
 ```
 
 ```sh
+/usr/bin/python3 "$HOME/src/ODS/ods/installers/macos/lib/pixel-native-install.py" \
+    --install-dir "$HOME/ods" --preflight-only
+```
+
+On the disposable Mac or guest, proceed after both preflights pass.
+
+```sh
 ODS_HOME="$HOME/ods" bash "$HOME/src/ODS/ods/install.sh" --pixel
 ```
 
-Keep the existing installation options and local model when prompted. The
-source checkout is already selected, so `ODS_REF` is unnecessary here. For a
-custom installed directory, replace `~/ods` consistently in `ODS_HOME` and the
-commands below; the checkout and installed directory must remain separate.
+Choose the local test model and installation options when prompted. For a
+custom install directory, use the same path for `ODS_HOME`, `--install-dir`
+and the status command.
 
 After installation:
 
