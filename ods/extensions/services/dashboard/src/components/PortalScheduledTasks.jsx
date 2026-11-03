@@ -1,6 +1,8 @@
 import {useEffect,useRef,useState} from 'react'
+import {Link} from 'react-router-dom'
 import {ArrowLeft,Check,Clock3,Pause,Play,Plus,RefreshCw,Trash2} from 'lucide-react'
 import {requestSchedules,scheduleError,scheduleLabel,newScheduleRequestId} from '../lib/portalSchedules'
+import {approvalLinkFor} from './settings/portalIntegrationsForm'
 import PortalStreamingText from './PortalStreamingText'
 import './portal-scheduled-tasks.css'
 
@@ -170,6 +172,10 @@ export default function PortalScheduledTasks({draftRequest,onDraftHandled,onDraf
       </div>}
       {confirmRemove && <div className="portal-schedules-pending" role="group" aria-label="Confirm schedule removal"><p>Stop future runs of “{selected.name}”? Its saved results will stay in Past tasks. A run already underway may finish.</p><div><button type="button" disabled={busy} onClick={()=>operate({action:'remove',id:selected.id,revision:selected.revision},result=>changed(result,'Task removed. Its results are kept in Past tasks.'))}>Remove schedule</button><button type="button" disabled={busy} onClick={()=>setConfirmRemove(false)}>Keep schedule</button></div></div>}
       <h4>Results</h4>
+      {history?.items.length > 0 && <p className="portal-schedules-help">
+        If a run asks for integration approval, <Link className="text-theme-accent underline underline-offset-2" to={approvalLinkFor('')}>review requests in ODS Settings</Link>.
+        {' '}Approving a note edit permits one matching write. Ask Portal to retry the edit, or let a recurring task retry while the approval is valid.
+      </p>}
       {history?.items.length===0 && <p className="portal-schedules-help">No recorded results yet.</p>}
       {history?.items.map(result=><article className="portal-schedules-result" key={result.timestamp}><header><strong>{status[result.status]}</strong><time dateTime={new Date(result.timestamp).toISOString()}>{stamp(result.timestamp)}</time></header><PortalStreamingText instant components={markdownComponents}>{result.summary || 'This run did not leave a summary.'}</PortalStreamingText>{result.summaryTruncated && <small>This summary was shortened for display.</small>}</article>)}
       {history && <nav className="portal-schedules-pages" aria-label="Result pages"><button type="button" disabled={busy || runOffset===0} onClick={()=>runs(Math.max(0,runOffset-1))}>Newer result</button><button type="button" disabled={busy || !history.hasMore} onClick={()=>runs(history.nextOffset)}>Older result</button></nav>}

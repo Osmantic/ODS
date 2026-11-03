@@ -72,7 +72,7 @@ function Test-ODSPortalVirtualization {
 }
 
 function Get-ODSPortalFreeSystemGB {
-    # WSL disks and Docker Desktop data live under the user's profile drive.
+    # Measure the profile volume used by a default Windows installation.
     $root = [IO.Path]::GetPathRoot($env:LOCALAPPDATA)
     return [math]::Floor(([IO.DriveInfo]::new($root)).AvailableFreeSpace / 1GB)
 }
@@ -98,14 +98,13 @@ function Get-ODSPortalDistroDrive([string]$Distro) {
     return ''
 }
 
-function Assert-ODSPortalHostCapacity([bool]$WslReady) {
+function Assert-ODSPortalHostCapacity([bool]$WslReady, [bool]$ReuseUbuntu = $WslReady) {
     $free = Get-ODSPortalFreeSystemGB
     if ($free -lt $script:ODSPortalMinimumFreeGB) {
         $need = "Ubuntu, Docker images and the AI model need about $($script:ODSPortalMinimumFreeGB) GB"
-        # With WSL already present this may be a rerun whose data is already
-        # on disk, so only warn; a missing model download still fails later.
-        if (-not $WslReady) { throw "Only $free GB is free on the Windows drive that stores Ubuntu and Docker data. $need. Free space, then rerun this command. Nothing was installed." }
-        Write-Host "Only $free GB is free on the Windows drive. $need; setup continues because WSL is already installed. If a download fails, free space and rerun." -ForegroundColor Yellow
+        # An existing Ubuntu may already contain the needed images and model.
+        if (-not $ReuseUbuntu) { throw "Only $free GB is free on the Windows profile drive. $need. Free space, then rerun this command. Nothing was installed." }
+        Write-Host "Only $free GB is free on the Windows profile drive. $need; setup continues because the selected Ubuntu distribution is already installed. If a download fails, free space and rerun." -ForegroundColor Yellow
     }
     if (-not $WslReady -and -not (Test-ODSPortalVirtualization)) {
         throw (Get-ODSPortalVirtualizationOffMessage (Test-ODSSparkWindowsArm64))
