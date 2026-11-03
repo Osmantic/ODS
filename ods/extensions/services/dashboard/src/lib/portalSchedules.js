@@ -61,7 +61,9 @@ export function scheduleReply(request,value) {
     } else {
       if (value.taskId!==request.id) fail()
       for (const item of value.items) {
-        if (!keys(item,['timestamp','status','summary','summaryTruncated','durationMs']) || !number(item.timestamp)
+        const fields=['timestamp','status','summary','summaryTruncated','durationMs']
+        if (request.includeNoteReceipts === true && item?.noteApprovalRequested === true) fields.push('noteApprovalRequested')
+        if (!keys(item,fields) || !number(item.timestamp)
             || !['ok','error','skipped','unknown'].includes(item.status) || !text(item.summary,262144)
             || typeof item.summaryTruncated!=='boolean' || (item.durationMs!==null && !number(item.durationMs))) fail()
       }
@@ -71,6 +73,17 @@ export function scheduleReply(request,value) {
 }
 
 export async function requestSchedules(request,signal) {
+  if (request.action==='runs') {
+    try {return await fetchSchedules({...request,includeNoteReceipts:true},signal)}
+    catch (error) {
+      // An older API or controller can still return the saved result.
+      if (!['invalid-task','controller-invalid-task'].includes(error.code) || signal?.aborted) throw error
+    }
+  }
+  return fetchSchedules(request,signal)
+}
+
+async function fetchSchedules(request,signal) {
   const response=await fetch('/api/pixel/schedules',{method:'POST',cache:'no-store',signal,
     headers:{'Content-Type':'application/json'},body:JSON.stringify(request)})
   if (!response.ok) {

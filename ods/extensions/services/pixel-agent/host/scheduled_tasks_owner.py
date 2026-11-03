@@ -14,6 +14,7 @@ import shutil
 import stat
 import subprocess
 import time
+import uuid
 
 import pixel_access_mode as controller
 from pixel_schedules import (
@@ -94,6 +95,28 @@ class TaskStore:
         except ScheduleError:
             raise ScheduleError("invalid-schedule-state") from None
         return value
+
+    def note_request(self, job_id, entry):
+        session = entry.get("sessionId")
+        if not isinstance(session, str) or entry.get("sessionKey") != f"agent:pixel:cron:{job_id}:run:{session}":
+            return False
+        try:
+            if str(uuid.UUID(job_id)) != job_id or str(uuid.UUID(session)) != session:
+                return False
+            directory = self.directory.parent / ".ods-scheduled-note-receipts"
+            fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                owner = os.geteuid()
+                info = os.fstat(fd)
+                if info.st_uid != owner or info.st_mode & 0o077:
+                    return False
+                marker = os.stat(f"{job_id}_{session}", dir_fd=fd, follow_symlinks=False)
+                return (stat.S_ISREG(marker.st_mode) and marker.st_uid == owner and marker.st_nlink == 1
+                        and marker.st_size == 0 and stat.S_IMODE(marker.st_mode) == 0o600)
+            finally:
+                os.close(fd)
+        except (OSError, ValueError):
+            return False
 
     def write(self, value):
         raw = (json.dumps(value, ensure_ascii=False, sort_keys=True) + "\n").encode()
@@ -309,6 +332,8 @@ class NativeTasks:
         if type(page) is not dict or type(page.get("entries")) is not list or type(page.get("hasMore")) is not bool:
             raise ScheduleError("invalid-scheduler-response")
         items = []
+        if len(page["entries"]) > 1:
+            raise ScheduleError("invalid-scheduler-response")
         for entry in page["entries"]:
             if type(entry) is not dict or entry.get("jobId") != job_id:
                 raise ScheduleError("invalid-scheduler-response")
@@ -319,5 +344,7 @@ class NativeTasks:
                           if entry.get("status") in ("ok", "error", "skipped") else "unknown",
                           "summary": summary[:65536], "summaryTruncated": len(summary) > 65536,
                           "durationMs": entry.get("durationMs")})
+            if request.get("includeNoteReceipts") and self.store.note_request(job_id, entry):
+                items[-1]["noteApprovalRequested"] = True
         return {"kind": "runs", "taskId": job_id, "items": items, "offset": request["offset"],
                 "hasMore": page["hasMore"], "nextOffset": page.get("nextOffset") if page["hasMore"] else None}

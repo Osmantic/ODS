@@ -207,3 +207,35 @@ def test_private_state_is_not_reset_when_it_is_corrupt_or_readable_by_other_user
     with pytest.raises(ScheduleError, match="invalid-schedule-state"):
         api.operate({"action": "list", "offset": 0})
     assert calls == []
+
+
+def test_note_receipt_is_scoped_to_the_exact_archived_run_and_optional(owner):
+    api, _, _, runs, _ = owner
+    task = api.operate(proposal())["task"]
+    api.operate({"action": "remove", "id": task["id"], "revision": task["revision"]})
+    session = str(uuid.uuid4())
+    key = f"agent:pixel:cron:{task['id']}:run:{session}"
+    entry = {"jobId": task["id"], "sessionId": session, "sessionKey": key, "ts": 2,
+             "status": "ok", "durationMs": 1, "summary": "Original mixed result"}
+    runs.append(entry)
+    folder = api.store.directory.parent / ".ods-scheduled-note-receipts"
+    folder.mkdir(mode=0o700)
+    marker = folder / f"{task['id']}_{session}"
+    marker.touch(mode=0o600)
+    request = {"action": "runs", "id": task["id"], "offset": 0}
+    original, = api.operate(request)["items"]
+    assert "noteApprovalRequested" not in original
+    enhanced = dict(request, includeNoteReceipts=True)
+    assert api.operate(enhanced)["items"] == [dict(original, noteApprovalRequested=True)]
+    for unbound in (f"agent:pixel:cron:{task['id']}", key.replace(session, str(uuid.uuid4())),
+                    key.replace(task["id"], str(uuid.uuid4()))):
+        entry["sessionKey"] = unbound
+        assert api.operate(enhanced)["items"] == [original]
+    entry["sessionKey"] = key
+    marker.chmod(0o644)
+    assert api.operate(enhanced)["items"] == [original]
+    marker.unlink()
+    marker.symlink_to(api.store.path)
+    assert api.operate(enhanced)["items"] == [original]
+    marker.unlink()
+    assert api.operate(enhanced)["items"] == [original]

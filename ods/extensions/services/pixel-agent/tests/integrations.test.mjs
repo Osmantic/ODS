@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import {EventEmitter} from 'node:events';
-import {mkdtempSync, rmSync} from 'node:fs';
+import {mkdtempSync, rmSync, existsSync, lstatSync, readdirSync, realpathSync, symlinkSync} from 'node:fs';
+import {randomUUID} from 'node:crypto';
+import {recordScheduledNoteRequest} from '../plugin/scheduled-note-receipts.mjs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createIntegrationTools, submitIntegration, INTEGRATION_TOOL_NAMES} from '../plugin/integrations.mjs';
@@ -439,4 +441,25 @@ test('the Unix socket client sends one JSON line and reads one reply',
     server.close();
     rmSync(directory, {recursive: true, force: true});
   }
+});
+
+test('scheduled Notes records only an exact native run in private ODS state', {skip:process.platform==='win32'}, () => {
+  const state=mkdtempSync(join(realpathSync(tmpdir()),'ods-native-note-')), outside=mkdtempSync(join(realpathSync(tmpdir()),'ods-other-'));
+  const job=randomUUID(), sessionId=randomUUID(), sessionKey=`agent:pixel:cron:${job}:run:${sessionId}`;
+  const dir=join(state,'.ods-scheduled-note-receipts');
+  try {
+    for (const invalid of [
+      {sessionKey:`agent:pixel:cron:${job}`,sessionId,id:sessionId},
+      {sessionKey,sessionId:randomUUID(),id:sessionId}, {sessionKey,sessionId,id:randomUUID()},
+      {sessionKey:sessionKey+'\n',sessionId,id:sessionId},
+    ]) recordScheduledNoteRequest(invalid,state);
+    assert.equal(existsSync(dir),false);
+    const native={sessionKey,sessionId,id:sessionId};
+    symlinkSync(outside,dir);recordScheduledNoteRequest(native,state);
+    assert.deepEqual(readdirSync(outside),[]);
+    rmSync(dir);recordScheduledNoteRequest(native,state);recordScheduledNoteRequest(native,state);
+    assert.deepEqual(readdirSync(dir),[job+'_'+sessionId]);
+    const marker=lstatSync(join(dir,job+'_'+sessionId));
+    assert.equal(marker.mode & 0o777,0o600);assert.equal(marker.size,0);
+  } finally {rmSync(state,{recursive:true,force:true});rmSync(outside,{recursive:true,force:true});}
 });

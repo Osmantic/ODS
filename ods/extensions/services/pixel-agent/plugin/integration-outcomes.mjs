@@ -1,3 +1,4 @@
+import {recordScheduledNoteRequest} from './scheduled-note-receipts.mjs';
 import {createHash} from 'node:crypto';
 import {isPromise, isProxy} from 'node:util/types';
 import {integrationRequest, snapshotIntegrationRequest, reviewIntegrationCandidate, canonicalReviewNotePath,
@@ -484,6 +485,10 @@ export function createIntegrationOutcomes({maximumRuns = 64, maximumCalls = 64} 
     try {
       if (!current(call.run) || call.closed || call.run.ended || !['pending', 'unknown', 'settled', 'ready','refused'].includes(status)) return;
       call.status = status;
+      if (status === 'pending' && call.name === 'pixel_ods_notes' &&
+          (call.noteProposal || call.noteWrite || ['notes-request-approval','notes-write'].includes(call.payload?.action))) {
+        recordScheduledNoteRequest(call.run);
+      }
       if (status === 'unknown') call.run.uncertain = true;
       if (call.recoveryReviewOnly && status==='settled' && !retainReferences(call,references,completion)) {
         call.status='unknown';call.run.uncertain=true;drain(call.run,true,REVIEW_LOOKUP_INVALID);return false;
