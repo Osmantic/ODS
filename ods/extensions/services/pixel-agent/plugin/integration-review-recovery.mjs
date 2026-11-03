@@ -196,6 +196,7 @@ export function createIntegrationReviewRecovery({eligible=()=>false,ready=()=>fa
       if(!states.length)return;
       const state=states[0],deny=()=>{state.cancelled=true;return ADMISSION_BLOCK;};
       if(states.some(value=>value!==state)||!same(state,identity(context))||!live(state)
+          ||context.modelProviderId!==state.modelProviderId||context.modelId!==state.modelId
           ||event?.runId!==undefined&&event.runId!==state.runId)return deny();
       let valid=false;
       try{

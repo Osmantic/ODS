@@ -126,6 +126,21 @@ test('native AUTO admission requires an exact frozen active cap and refuses requ
   }
 });
 
+test('native AUTO gate binds every actual inference route and refuses missing or fallback model identity',async()=>{
+  const {recovery}=world();await recovery.finalize(event(),CONTEXT);
+  assert.equal(recovery.admit(admission(),CONTEXT),undefined,'the actual captured ods route remains admitted');
+  for(const changes of [{modelProviderId:undefined},{modelId:undefined},{modelProviderId:null},{modelId:null},
+    {modelProviderId:'fallback-provider'},{modelId:'fallback-model'},{modelProviderId:'ODS-gateway'}]){
+    const f=world();await f.recovery.finalize(event(),CONTEXT);
+    assert.equal(f.recovery.admit(admission(),{...CONTEXT,...changes})?.outcome,'block');
+    assert.equal(f.recovery.admit(admission(),CONTEXT).outcome,'block','a later original route cannot reopen this refused owner run');
+    assert.equal(f.recovery.floor(tool('pixel_ods_notes',appendParams()),CONTEXT).block,true);
+  }
+  const normal=world();
+  assert.equal(normal.recovery.admit(event(),{...CONTEXT,modelProviderId:undefined,modelId:undefined}),undefined,
+    'ordinary unlatched inference keeps its native admission behavior');
+});
+
 test('revoked readiness, conflicting IDs, provider changes and supersession cannot restore a cap',async()=>{
   for(const change of ['ready','eligible','provider','new-owner','conflict']){
     let current=true;const f=world({ready:()=>current,eligible:()=>current});await f.recovery.finalize(event(),CONTEXT);
