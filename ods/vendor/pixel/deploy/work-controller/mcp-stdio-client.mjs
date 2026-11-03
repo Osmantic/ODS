@@ -57,7 +57,7 @@ function bindings(pack, expectedPackSha256, grant, claim, toolName, input, prefl
 function metadata() {
   return {
     "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,
-    "io.modelcontextprotocol/clientInfo": { name: "pixel-deep-work", version: "4.3.43" },
+    "io.modelcontextprotocol/clientInfo": { name: "pixel-deep-work", version: "4.3.44" },
     "io.modelcontextprotocol/clientCapabilities": {},
   };
 }

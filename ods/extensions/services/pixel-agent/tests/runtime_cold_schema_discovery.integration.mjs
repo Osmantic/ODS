@@ -74,9 +74,10 @@ function catalog(tools,{window=65536,agentId='pixel',mode='tools'}={}) {
   return {result,dispatched,api:Object.fromEntries(createControls(ctx).map(value=>[value.name,value]))};
 }
 
-for(const window of [8192,32768,65536])test(`actual Source count/read schemas hydrate cold at ${window} with no execution`,async()=>{
+for(const window of [8192,32768,65536])test(`actual Source count/read schemas hydrate cold at ${window} with no execution`,async t=>{
   const count=actualTools.get('pixel_calendar_count'),read=actualTools.get('pixel_gmail_read');
   assert.ok(count&&read);
+  if(window===65536)t.diagnostic(JSON.stringify({actualFactorySchemaBytes:{calendarCount:Buffer.byteLength(JSON.stringify(count.parameters),'utf8'),gmailRead:Buffer.byteLength(JSON.stringify(read.parameters),'utf8')},inlineLimit:4096}));
   const selected=[count,read],value=catalog(selected,{window});
   assert.ok(!value.result.tools.includes(count),'count direct/deferred surface remains unchanged');
   for(const [original,args,bad] of [[count,{window:{kind:'civil-days',date:'2026-11-04',days:1}},

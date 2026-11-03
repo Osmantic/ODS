@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`224ed399e38273db0f9d4834ceab55d493a99cf3`, and its SHA-256 is
-`2fec2c091b424b74f7109c18ef55310e5e78adad75b73e973e64a4b46613cf15`.
+`8afb55abf50633616cd759146366588717534afc`, and its SHA-256 is
+`988caa969858f457855e134d6e26d44ff2edb82263aeff08347d9dd8fc115b16`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -22,7 +22,32 @@ The repository owner authorized this source publication and the ODS-only
 Pixel grant. Third-party packages are not included in the Git bundle and
 retain their own notices and licenses.
 
-## ODS-maintained 4.3.43 release-contract candidate
+## ODS-maintained 4.3.44 civil-date candidate
+
+The new candidate adds a structured civil date to the existing Calendar count
+window and uses the configured owner timezone for exclusive midnight bounds.
+Functional source is `dc07fa669083e61f2e781452205099ab2a2ff735`; the current
+candidate record is [`pixel/ODS-QUALIFICATION-4.3.44.md`](pixel/ODS-QUALIFICATION-4.3.44.md).
+It preserves count-only output and the existing source authority limits. The
+separate ODS native repair exposes one atomic parameter schema on the highest
+ranked Tool Search result, with a 4096-byte limit and explicit describe pointers
+for deferred schemas. No owner-keyword router or forced tool execution is added.
+
+The Source44 bundle contains 1,342 public files and 96 executable Git entries.
+Its vendor tree is `d5b97ff209a161781cf842badc54b88daa49b864`. Two independently empty
+bare repositories produced the same parentless Source commit and byte-identical
+4748386-byte bundles. The exact Source43 synthetic commit was reproduced
+first. Private history, historical LIVE-AUDIT files and workflow files remain
+excluded. The Source43 and older Mac authorities remain unchanged; a distinct
+Source44 authority binds the new bundle, tree and reviewed broker inputs.
+
+The ordinary installer selects this incoming bundled ref, stages a distinct
+4.3.44 release and preserves the existing access-mode upgrade contract. It does
+not modify the published 4.3.43 release in place. Normal installed adoption and
+the original real-owner Calendar regression still require verification. This
+candidate makes no signed upstream, supported-release or physical macOS claim.
+
+## Retained ODS-maintained 4.3.43 release-contract candidate
 
 The current ODS-maintained candidate uses internal package version 4.3.43.
 Its functional checkpoint is `728c9a6e34341a4fa727c726acbbcdecef1fc8c3`;
