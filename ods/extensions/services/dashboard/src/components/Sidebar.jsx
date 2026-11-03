@@ -11,6 +11,7 @@ import ODSLogo from './ODSLogo'
 import MetalMetricIcon from './MetalMetricIcon'
 import PixelConversationNavigation from './PixelConversationNavigation'
 import {useLocalProfile} from '../lib/localProfile'
+import { isWindowsDesktop } from '../lib/runtimeProfile'
 import { ODS_HELP_DISCORD_URL } from '../lib/support'
 import UserAvatar from './UserAvatar'
 
@@ -77,7 +78,8 @@ export default function Sidebar({ status, collapsed, onToggle }) {
           return <a key={key} className="pixel-nav-item" title={healthy ? label : `${label} · Offline`} aria-label={label} aria-disabled={!healthy} href={healthy ? url : undefined} target={healthy ? '_blank' : undefined} rel="noopener noreferrer" onClick={opensWithOdsSession(key) ? openWithFreshSession : undefined}><Icon size={16} /><span>{label}</span>{!healthy && !collapsed && <small>Offline</small>}</a>
         })}
       </details>}
-      <PixelConversationNavigation collapsed={collapsed} />
+      {/* Windows Desktop keeps its chats in Local chat; Portal's list would be a second, empty one. */}
+      {!isWindowsDesktop(status) && <PixelConversationNavigation collapsed={collapsed} />}
       {pixelMode && !collapsed && <div className="pixel-sidebar-sections">
         <PixelHandoffApproval label="Approvals" />
       </div>}

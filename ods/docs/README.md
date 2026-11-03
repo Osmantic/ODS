@@ -20,7 +20,7 @@ matches the work in front of them.
 |--------------|-----------------|----------|
 | Install the default path | [../QUICKSTART.md](../QUICKSTART.md) | [INSTALLER_TRUST.md](INSTALLER_TRUST.md), [SUPPORT-MATRIX.md](SUPPORT-MATRIX.md), [POST-INSTALL-CHECKLIST.md](POST-INSTALL-CHECKLIST.md) |
 | Install or operate Pixel | [PIXEL.md](PIXEL.md) | [HERMES.md](HERMES.md), [SUPPORT-MATRIX.md](SUPPORT-MATRIX.md), [RELEASE_VALIDATION.md](RELEASE_VALIDATION.md) |
-| Install on Windows | [WINDOWS-QUICKSTART.md](WINDOWS-QUICKSTART.md) | [WINDOWS-INSTALL-WALKTHROUGH.md](WINDOWS-INSTALL-WALKTHROUGH.md), [WINDOWS-WSL2-GPU-GUIDE.md](WINDOWS-WSL2-GPU-GUIDE.md) |
+| Install on Windows | [WINDOWS-QUICKSTART.md](WINDOWS-QUICKSTART.md) | [WINDOWS-INSTALL-WALKTHROUGH.md](WINDOWS-INSTALL-WALKTHROUGH.md), [WINDOWS-WSL2-GPU-GUIDE.md](WINDOWS-WSL2-GPU-GUIDE.md), [WINDOWS-DESKTOP.md](WINDOWS-DESKTOP.md) (native preview) |
 | Install on Apple Silicon | [MACOS-QUICKSTART.md](MACOS-QUICKSTART.md) | [MODEL-MANAGEMENT.md](MODEL-MANAGEMENT.md), [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
 | Debug a broken install | [ODS-DOCTOR.md](ODS-DOCTOR.md) | [INSTALL-TROUBLESHOOTING.md](INSTALL-TROUBLESHOOTING.md), [SUPPORT-BUNDLE.md](SUPPORT-BUNDLE.md) |
 | Change installer behavior | [INSTALLER-ARCHITECTURE.md](INSTALLER-ARCHITECTURE.md) | [BACKEND-CONTRACT.md](BACKEND-CONTRACT.md), [PREFLIGHT-ENGINE.md](PREFLIGHT-ENGINE.md) |
@@ -178,6 +178,7 @@ canonical source and treat older recipes as context.
 |-----|----------|-------------|
 | [WINDOWS-QUICKSTART.md](WINDOWS-QUICKSTART.md) | Operators | Windows install guide |
 | [WINDOWS-INSTALL-WALKTHROUGH.md](WINDOWS-INSTALL-WALKTHROUGH.md) | Operators | Detailed Windows walkthrough |
+| [WINDOWS-DESKTOP.md](WINDOWS-DESKTOP.md) | Operators | Native Windows Desktop preview (no Docker, no WSL) |
 | [WINDOWS-TROUBLESHOOTING-GUIDE.md](WINDOWS-TROUBLESHOOTING-GUIDE.md) | Operators | Windows-specific issues |
 | [WSL2-GPU-PASSTHROUGH.md](WSL2-GPU-PASSTHROUGH.md) | Operators | WSL2 GPU setup |
 | [WSL2-GPU-TROUBLESHOOTING.md](WSL2-GPU-TROUBLESHOOTING.md) | Operators | WSL2 GPU issues |
