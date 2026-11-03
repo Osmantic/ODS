@@ -31,6 +31,7 @@ import {createWorkspaceArtifactAdmission} from '../plugin/workspace-artifact.mjs
 import {createWorkspaceBundleAdmission} from '../plugin/workspace-bundle.mjs';
 import {createIntegrationOutcomes} from '../plugin/integration-outcomes.mjs';
 import {createIntegrationReviewRecovery} from '../plugin/integration-review-recovery.mjs';
+import {integrationCapabilitiesContext} from '../plugin/integration-capabilities.mjs';
 
 const source = fs.readFileSync(process.env.PIXEL_PLUGIN_ENTRY ?? new URL('../plugin/index.js', import.meta.url), 'utf8');
 function slice(start, end) {
@@ -111,6 +112,7 @@ function entry(root) {
     bundleAdmission: createWorkspaceBundleAdmission(), artifactAdmission: createWorkspaceArtifactAdmission(),
     projectRunControl: createProjectRunControl(), projectSnapshots: {before() {}, end() {}}, compactToolResultEnvelope,
     integrationOutcomes:createIntegrationOutcomes(), integrationReviewRecovery:createIntegrationReviewRecovery(),
+    integrationCapabilitiesContext,
   });
   return {callbacks, delivery: links.delegationDelivery, guard: links.toolLoopGuard};
 }

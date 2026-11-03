@@ -1025,6 +1025,7 @@ def test_system_source_resolves_only_exact_protected_launcher(deployment, monkey
 
 def test_plan_pins_distinct_profiles_and_starts_sandboxed(deployment):
     plan = installer.make_plan(**deployment)
+    assert plan['runtime_bundle'] is None
     receipt = plan['access_settings']['gateway_policy']
     assert receipt == installer._policy.deployment_receipt('/private/etc/ods', plan['policies'])
     files = {str(path): body for path, body, _ in installer._deployment_files(ROOT, plan)}
@@ -3176,6 +3177,20 @@ def test_recovery_file_contract_matches_real_deployment(bundled_deployment):
               for path, body, attrs in installer._deployment_files(ROOT, plan)
               if attrs.get('uid', 0) == 0}
     assert optional.pop(str(installer._launchd.ACCESS_STATE / 'service-baseline.json')) == (0o600, 0)
+    # This legacy runtime fixture has no native Source component. Its complete
+    # optional Source family belongs to recovery of newer bundles, not this
+    # deployment; retain exact equality for every file it actually installs.
+    assert 'connection_sidefiles' not in plan['runtime_bundle']
+    source_paths = [installer.ACCESS_PROGRAM_ROOT / name for name in installer.SOURCE_HOST_FILES]
+    source_paths += [installer.ACCESS_PROGRAM_ROOT / 'pixel_connections' / name for name in installer.CONNECTION_FILES]
+    source_paths += [Path('/private/etc/ods/pixel-provider-runtime-manifest.json'),
+                     Path('/private/etc/ods/pixel-provider-runtime.json')]
+    for path in source_paths:
+        assert optional.pop(str(installer._destination(path))) == (0o644, 0)
+        assert str(installer._destination(path)) not in actual
+    source_receipt = str(installer._destination(installer._launchd.ACCESS_STATE / 'source-runtime-installation.json'))
+    assert optional.pop(source_receipt) == (0o600, 0)
+    assert source_receipt not in actual
     assert actual == {**required, **optional}
     assert str(installer._destination(installer.ACCESS_FILES['key'])) not in actual
 

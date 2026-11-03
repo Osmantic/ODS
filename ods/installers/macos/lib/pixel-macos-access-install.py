@@ -989,8 +989,9 @@ def _deployment_files(source, plan):
         add(target / "pixel_settings" / name, (bin_root / "pixel_settings" / name).read_bytes())
     for name in PROVIDER_FILES:
         add(target / "pixel_provider" / name, (bin_root / "pixel_provider" / name).read_bytes())
-    if plan.get('runtime_bundle', {}).get('connection_sidefiles') is not None:
-        for relative, body in _source_flat_files(plan['runtime_bundle']):
+    selection = plan.get('runtime_bundle')
+    if selection and selection.get('connection_sidefiles') is not None:
+        for relative, body in _source_flat_files(selection):
             add(target / relative, body)
     add(PROFILE, plan['policies']['sandboxed'])
     for mode, record in plan['access_settings']['gateway_policy']['profiles'].items():
@@ -1018,7 +1019,6 @@ def _deployment_files(source, plan):
         add(_launchd.RELAY_PLIST, _launchd.encode(plan['access_relay']))
     if len({path for path, _, _ in files}) != len(files):
         raise InstallError("duplicate-deployment-destination")
-    selection = plan.get('runtime_bundle')
     if selection and selection.get('connection_sidefiles') is not None:
         spec = importlib.util.spec_from_file_location('source_runtime_plan', HERE / 'pixel-native-source-broker.py')
         module = importlib.util.module_from_spec(spec)
