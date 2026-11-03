@@ -1204,11 +1204,12 @@ def _native_pairs(pairs):
 
 
 def _native_json_at(directory, name, *, mode=0o600):
-    if name not in ('source-identity.json', 'source-custody-prepare.json', 'source-environment.json', 'source-logs-prepare.json', 'source-publication.json', 'source-jobs-prepare.json'):
+    if name not in ('source-identity.json', 'source-custody-prepare.json', 'source-environment.json', 'source-logs-prepare.json', 'source-publication.json', 'source-jobs-prepare.json', 'source-jobs-active.json'):
         raise CustodyError('native-source-record-invalid')
-    if name == 'source-jobs-prepare.json':
+    if name in ('source-jobs-prepare.json', 'source-jobs-active.json'):
         try:
-            raw, _inode = _native_root_file(directory, name, mode=mode)
+            raw, _inode = _native_root_file(directory, name, mode=mode,
+                limit=131072 if name == 'source-jobs-active.json' else 65536)
         except FileNotFoundError:
             return None, None
         try:
@@ -1242,7 +1243,8 @@ def _native_save_at(selection, directory, name, value, *, previous=None, _public
     if raw != previous:
         raise CustodyError('native-source-record-changed')
     body = (json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False) + '\n').encode()
-    if len(body) > (65536 if name in ('source-publication.json', 'source-jobs-prepare.json') else 16384):
+    if len(body) > (131072 if name == 'source-jobs-active.json' else
+            65536 if name in ('source-publication.json', 'source-jobs-prepare.json') else 16384):
         raise CustodyError('native-source-record-invalid')
     temporary = '.source-' + uuid.uuid4().hex
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
