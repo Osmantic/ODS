@@ -171,6 +171,71 @@ class IntegrationsTests(unittest.TestCase):
             with self.assertRaises(service.IntegrationError):
                 self.agent("notes-read", path=bad)
 
+    def test_explicit_note_proposal_never_edits_or_spends_an_approval(self):
+        fields = dict(path='Groceries.md', mode='append', text='test proposal')
+        note = self.vault / fields['path']
+        original = note.read_bytes()
+        for policy in ('off', 'allow'):
+            self.save(self.settings(write=policy))
+            with self.assertRaises(service.IntegrationError):
+                self.agent('notes-request-approval', **fields)
+            self.assertEqual(note.read_bytes(), original)
+            self.assertFalse(self.store.approvals())
+        self.save(self.settings(write='ask'), secrets={'ntfyPassword':'pw'})
+        first = self.agent('notes-request-approval', **fields)
+        self.assertEqual(first['status'], 'approval-required')
+        self.assertFalse(first['actionExecuted'] or first['approvalConsumed'])
+        self.assertEqual(first['approvalId'], self.agent('notes-request-approval', **fields)['approvalId'])
+        self.assertEqual(len(self.owner('get')['approvals']), 1)
+        self.assertEqual(len(FakeNtfy.sent), 1, 'only the first explicit proposal notifies the owner')
+        self.assertEqual(note.read_bytes(), original)
+        self.owner('decide', approvalId=first['approvalId'], decision='approve')
+        ready = self.agent('notes-request-approval', **fields)
+        self.assertEqual(ready['status'], 'approval-ready')
+        self.assertFalse(ready['actionExecuted'] or ready['approvalConsumed'])
+        self.assertEqual(len(FakeNtfy.sent), 1)
+        self.assertEqual(note.read_bytes(), original)
+        self.assertEqual(self.agent('notes-write', **fields)['written'], fields['path'])
+        self.assertEqual(note.read_text().count(fields['text']), 1)
+        fresh = self.agent('notes-request-approval', **fields)
+        self.owner('decide', approvalId=fresh['approvalId'], decision='decline')
+        with self.assertRaises(service.IntegrationError):
+            self.agent('notes-request-approval', **fields)
+        self.assertFalse(self.owner('get')['approvals'])
+
+    def test_note_proposal_is_bound_to_the_destination_and_current_permission(self):
+        self.save(self.settings(write='ask'))
+        paths = [self.vault / name for name in ('A.md', 'B.md')]
+        for path in paths:
+            path.write_text('original')
+        edit = dict(path='A.md', mode='append', text='one line')
+        waiting = self.agent('notes-request-approval', **edit)
+        self.owner('decide', approvalId=waiting['approvalId'], decision='approve')
+        other = self.agent('notes-write', **{**edit, 'path':'B.md'})
+        self.assertEqual(other['status'], 'approval-required')
+        self.assertNotEqual(other['approvalId'], waiting['approvalId'])
+        self.assertEqual([p.read_text() for p in paths], ['original','original'])
+        self.save(self.settings(write='off'))
+        with self.assertRaises(service.IntegrationError):
+            self.agent('notes-request-approval', **edit)
+        with self.assertRaises(service.IntegrationError):
+            self.agent('notes-write', **edit)
+        self.assertEqual([p.read_text() for p in paths], ['original','original'])
+
+    def test_proposal_refuses_a_symlink_and_cannot_escape_the_native_review_floor(self):
+        self.save(self.settings(write='ask'))
+        hidden = self.vault.parent / 'outside.md'
+        hidden.write_text('outside')
+        link = self.vault / 'Alias.md'
+        link.symlink_to(hidden)
+        with self.assertRaises(service.IntegrationError):
+            self.agent('notes-request-approval', path='Alias.md', text='x', mode='append')
+        with self.assertRaises(service.IntegrationError):
+            self.agent('notes-request-approval', path='Groceries.md', text='x', mode='append', recoveryReviewOnly=True)
+        self.assertFalse(self.owner('get')['approvals'])
+        self.assertEqual(hidden.read_text(), 'outside')
+        self.assertFalse(FakeNtfy.sent)
+
     def test_unknown_saved_note_policy_denies_writes_and_preserves_existing_approval(self):
         self.save(self.settings(write='ask'))
         fields = dict(path='Groceries.md', text='approved line', mode='append')

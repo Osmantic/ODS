@@ -133,6 +133,21 @@ async function run(submit, payload, signal, render, observed, admitted) {
   const approvalIdValid = typeof reply.approvalId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(reply.approvalId);
   const reviewedNoEffect = payload.recoveryReviewOnly === true && reply.recoveryReviewOnly === true &&
     reply.actionExecuted === false && reply.approvalConsumed === false && approvalIdValid;
+  if (payload.action === 'notes-request-approval') {
+    if (reply.ok !== true || reply.isError === true || reply.proposalOnly !== true ||
+        reply.actionExecuted !== false || reply.approvalConsumed !== false || !approvalIdValid ||
+        !['approval-required','approval-ready'].includes(reply.status)) {
+      report('unknown');
+      return text('The Notes service did not confirm the approval request. Check Settings before trying again.',
+        {status:'outcome-unknown',code:'note-approval-result-invalid'},true);
+    }
+    const ready = reply.status === 'approval-ready';
+    report(ready ? 'ready' : 'pending');
+    return text(ready
+      ? 'The owner already approved this exact edit. Nothing was written and the grant is unused. If the current task asks for the edit, call action write with the same path, text and mode.'
+      : 'One request for this edit is waiting in Settings → Portal integrations. The note is unchanged. Report the pending request and finish this run.',
+      {status:ready ? 'approval-ready' : 'approval-required',approvalId:reply.approvalId});
+  }
   if (reply.status === 'review-only-ready') {
     if (!reviewedNoEffect) return text('The review-only action status could not be verified. No additional action was submitted.',
       {status:'refused',code:'review-only-result-invalid'},true);
@@ -204,13 +219,19 @@ function notesRequest(params) {
   const action = params?.action;
   if (action === 'search') return {action: 'notes-search', query: str(params?.query)};
   if (action === 'read') return {action: 'notes-read', path: str(params?.path)};
+  if (action === 'request_approval') {
+    if (!['append','create'].includes(params?.mode) || typeof params?.text !== 'string' || !params.text.trim() ||
+        typeof params?.path !== 'string' || !params.path.trim()) return null;
+    return {action:'notes-request-approval',path:params.path,text:params.text,mode:params.mode};
+  }
   if (action === 'write') return {action: 'notes-write', path: str(params?.path), text: str(params?.text),
     mode: params?.mode === 'create' ? 'create' : 'append'};
   return null;
 }
 
 const notesText = reply => reply.results ? searchText(reply)
-  : reply.text !== undefined ? `${reply.path}:\n\n${reply.text}`
+  : reply.text !== undefined ? (reply.canRequestWriteApproval === true
+      ? 'Notes writing is set to Ask first. For a requested edit, action request_approval submits the exact change to owner Settings without editing the note. It requires path, text and mode.\n\n' : '') + reply.path + ':\n\n' + reply.text
     : `${reply.mode === 'create' ? 'Created' : 'Added to'} ${reply.written}.`;
 
 export function integrationRequest(name, params, context) {
@@ -362,17 +383,17 @@ export function createIntegrationTools({submit = submitIntegration, context, out
   return [
     {
       name: 'pixel_ods_notes',
-      description: "Only Markdown notes in the owner's Obsidian vault. For Paperless documents, bills or PDFs, use pixel_ods_mcp action list instead. action search: find notes holding words (query). action read: read a note (path from a search, such as Home/Lease.md). action write: add text (mode append) or create a note (mode create), only when the owner asks to save something. Call action write for every new save request, even if you expect approval or the text is identical. The service creates a request or performs the permitted write. Only its returned status approval-required means a request is pending; describing the need for approval creates nothing.",
+      description: "Only Markdown notes in the owner's Obsidian vault. For Paperless documents, bills or PDFs, use pixel_ods_mcp action list instead. action search: find notes holding words (query). action read: read a note (path from a search, such as Home/Lease.md). action write: add text (mode append) or create a note (mode create), only when the owner asks to save something. When asking for approval for a requested edit, use action request_approval with the exact path, text and mode. This opens an owner Settings request and cannot write or consume an approval. An Allowed save uses action write directly. Only a returned approval-required status confirms a pending request.",
       parameters: {type: 'object', additionalProperties: false, required: ['action'],
-        properties: {action: {type: 'string', enum: ['search', 'read', 'write']},
+        properties: {action: {type: 'string', enum: ['search', 'read', 'write', 'request_approval']},
           query: {type: 'string', description: 'For search: words to look for, such as "lease deposit".'},
-          path: {type: 'string', description: 'For read and write: the note path inside the vault.'},
-          text: {type: 'string', description: 'For write: Markdown text to add.'},
-          mode: {type: 'string', enum: ['append', 'create'], description: 'For write: append to an existing note or create a new one.'}}},
+          path: {type: 'string', description: 'The note path inside the vault for a read, edit or approval request.'},
+          text: {type: 'string', description: 'The exact Markdown text for a write or approval request.'},
+          mode: {type: 'string', enum: ['append', 'create'], description: 'For a write or approval request, append to an existing note or create a new one.'}}},
       execute: (_id, params, signal) => {
         const request = integrationRequest('pixel_ods_notes', params, context);
         return request ? dispatch(_id, 'pixel_ods_notes', params, request, signal, notesText)
-          : Promise.resolve(text('Use action search, read or write.', {status: 'invalid'}, true));
+          : Promise.resolve(text('Use search, read, write, or request_approval with an exact path, text and mode.', {status: 'invalid'}, true));
       },
     },
     {

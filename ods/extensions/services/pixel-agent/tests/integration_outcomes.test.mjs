@@ -683,3 +683,28 @@ test('silent reply can disclose a bound settled note edit without replay or priv
   outcomes.cancelUser('ods-'+'a'.repeat(64));assert.deepEqual(outcomes.verification(base,runId,true),base);
   assert.equal(submissions,3);
 });
+
+
+test('an explicit proposal cannot write and only the matching completed edit clears its notice', async () => {
+  const outcomes = setup();
+  const call = {action:'request_approval',path:'Private.md',mode:'append',text:'One private line'};
+  let count = 0;
+  async function send(id, args, reply) {
+    const ctx = {...context,toolCallId:id};
+    const hook = event(id,args,'pixel_ods_notes');
+    outcomes.before(hook,ctx);
+    const tools = createIntegrationTools({context:factory(ctx),outcomes,submit:async () => {count++; return reply;}});
+    const result = await tools.find(t => t.name === 'pixel_ods_notes').execute(id,args);
+    outcomes.after(hook,ctx);
+    return result;
+  }
+  const response = {ok:true,proposalOnly:true,approvalId:'test-approved',actionExecuted:false,approvalConsumed:false};
+  assert.equal((await send('proposal',call,{...response,status:'approval-ready'})).details.status,'approval-ready');
+  assert.match(outcomes.projection(runId),/available for one write/);
+  const write = {ok:true,written:'Private.md',mode:'append'};
+  await send('other-edit',{...call,action:'write',text:'Different'},write);
+  assert.match(outcomes.projection(runId),/available for one write/);
+  await send('same-edit',{...call,action:'write'},write);
+  assert.equal(outcomes.projection(runId),undefined);
+  assert.equal(count,3);
+});

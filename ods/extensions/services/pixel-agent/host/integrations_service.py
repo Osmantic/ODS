@@ -532,7 +532,17 @@ class Integrations(RecoveryReviewOnly, AppActions):
         if action == "notes-read":
             relative, text = notes.read(config, request.get("path"))
             self._log("notes-read", relative, "read")
-            return {"path": relative, "text": text}
+            reply = {"path": relative, "text": text}
+            if config["notes"].get("write") == "ask":
+                reply["canRequestWriteApproval"] = True
+            return reply
+        if action == "notes-request-approval":
+            if request.get("mode") not in ("append", "create"):
+                raise IntegrationError("invalid-request", "Choose append or create for the proposed note edit.")
+            reply = self._prepare_note_approval(request, notify_owner=True)
+            status = "approval-ready" if reply["status"] == "review-only-ready" else reply["status"]
+            return {"status": status, "approvalId": reply["approvalId"], "summary": reply["summary"],
+                    "proposalOnly": True, "actionExecuted": False, "approvalConsumed": False}
         if action == "notes-write":
             return self._notes_write(config, request)
         if action == "notify":

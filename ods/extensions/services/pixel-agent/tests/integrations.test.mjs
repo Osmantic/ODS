@@ -127,6 +127,23 @@ test('the tools match the declared names and keep schemas small enough for the m
   assert.match(tools.find(item => item.name === 'pixel_ods_mcp').description, /documents.*photos.*watched web pages.*news/);
 });
 
+test('explicit approval requests cannot fall back to an executable write', async () => {
+  const call = {action:'request_approval',path:'Test.md',text:'line',mode:'append'};
+  const receipt = {ok:true,status:'approval-required',approvalId:'native-id',proposalOnly:true,actionExecuted:false,approvalConsumed:false};
+  for (const [reply, status] of [[receipt,'approval-required'], [{...receipt,status:'approval-ready'},'approval-ready'],
+    [{...receipt,actionExecuted:true},'outcome-unknown'], [{...receipt,approvalId:''},'outcome-unknown'],
+    [{ok:true,written:'Test.md',mode:'append'},'outcome-unknown']]) {
+    const {tools,sent} = recording([reply]);
+    const result = await tool(tools,'pixel_ods_notes').execute('1',call);
+    assert.equal(result.details.status,status);
+    assert.deepEqual(sent,[{action:'notes-request-approval',path:'Test.md',text:'line',mode:'append'}]);
+  }
+  const {tools,sent} = recording([]);
+  const result = await tool(tools,'pixel_ods_notes').execute('2',{...call,mode:'other'});
+  assert.equal(result.details.status,'invalid');
+  assert.deepEqual(sent,[]);
+});
+
 test('notes actions become exact service requests and readable results', async () => {
   const {sent, tools} = recording([
     {ok: true, results: [{path: 'Home/Lease.md', line: 2, matched: 2, of: 2, snippet: 'The deposit is two months of rent.'}]},

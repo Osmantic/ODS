@@ -107,6 +107,13 @@ connection** connects without changing anything and says whether tools were adde
 or removed since the last check. If the server's address or command changes, its
 tools must be checked again.
 
+When a Notes task needs owner approval, Pixel can call the Notes tool with
+`action: request_approval` and the exact path, text and append/create mode.
+With **Ask first**, this creates or finds one Settings request. Proposing an
+already approved edit leaves its grant unused. Only a later `write` with the
+same destination and content can spend the grant. **Allowed** still supports
+a one-step write. **Off** refuses both operations.
+
 An "ask first" action creates an approval in Settings, and an ntfy ping if that is
 turned on:
 
