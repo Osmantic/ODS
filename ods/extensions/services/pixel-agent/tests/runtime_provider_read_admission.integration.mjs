@@ -7,19 +7,29 @@ import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import {pathToFileURL,fileURLToPath} from 'node:url';
 import {registerHooks} from 'node:module';
+import {reviewedNativeRevisionDependencies} from './fixtures/native-revision-dependencies.mjs';
 const pkg=process.env.OPENCLAW_PACKAGE_DIR,box=process.env.PIXEL_TEST_TYPEBOX_DIR;
 assert.ok(pkg&&box,'exact copied SDK and locked Source TypeBox required');
 const sha=x=>createHash('sha256').update(x).digest('hex');
 const recipes=Object.fromEntries(['image-envelope','plugin-tool-version'].map(n=>[n,JSON.parse(fs.readFileSync(new URL('../host/openclaw-'+n+'.json',import.meta.url)))]));
-for(const [r,m]of [['image-envelope','tool-search-BInRpkE3.js'],['plugin-tool-version','tools-D5HS8Q_I.js']])assert.equal(sha(fs.readFileSync(path.join(pkg,'dist',m))),recipes[r].patchedSha256);
+const reviewed=reviewedNativeRevisionDependencies(pkg,{withToolCatalog:true});
+const inputHashes=new Map();
+for(const [r,m]of [['image-envelope','tool-search-BInRpkE3.js'],['plugin-tool-version','tools-D5HS8Q_I.js']]){
+ const file=path.join(pkg,'dist',m);inputHashes.set(file,sha(fs.readFileSync(file)));
+ assert.equal(sha(reviewed.get(file)),recipes[r].patchedSha256,'exact production-repaired bytes will be loaded');
+}
+const nativeSources=new Map([...reviewed].map(([file,source])=>[pathToFileURL(file).href,source]));
 const root=fs.mkdtempSync(path.join(os.tmpdir(),'ods-provider-admission-'));fs.chmodSync(root,0o700);
 process.env.OPENCLAW_STATE_DIR=path.join(root,'state');process.env.OPENCLAW_CONFIG_PATH=path.join(root,'config.json');
 test.after(()=>fs.rmSync(root,{recursive:true,force:true}));
 const source=fileURLToPath(new URL('../../../../vendor/pixel/plugin/',import.meta.url));
 const aliases={typebox:pathToFileURL(path.join(box,'build/index.mjs')).href,'typebox/value':pathToFileURL(path.join(box,'build/value/index.mjs')).href,
  'openclaw/plugin-sdk/plugin-entry':pathToFileURL(path.join(pkg,'dist/plugin-sdk/plugin-entry.js')).href};
-const loader=registerHooks({resolve(s,c,next){return c.parentURL?.startsWith(pathToFileURL(source).href)&&aliases[s]?{url:aliases[s],shortCircuit:true}:next(s,c);}});
-test.after(()=>loader.deregister());
+const loader=registerHooks({
+ resolve(s,c,next){return c.parentURL?.startsWith(pathToFileURL(source).href)&&aliases[s]?{url:aliases[s],shortCircuit:true}:next(s,c);},
+ load(url,c,next){return nativeSources.has(url)?{format:'module',source:nativeSources.get(url),shortCircuit:true}:next(url,c);},
+});
+test.after(()=>{loader.deregister();for(const [file,digest]of inputHashes)assert.equal(sha(fs.readFileSync(file)),digest,'shared native package stays unchanged');});
 Object.assign(process.env,{PIXEL_AGENT_ID:'pixel',PIXEL_LIMB_EMAIL_ENABLED:'1',PIXEL_LIMB_CALENDAR_ENABLED:'1',PIXEL_LIMB_CALENDAR_WRITE_ENABLED:'0',PIXEL_LIMB_EMAIL_DRAFTS_ENABLED:'0',PIXEL_LIMB_WEB_ENABLED:'0',PIXEL_LIMB_SOCIAL_ENABLED:'0'});
 const names=['pixel_gmail_inbox','pixel_gmail_sent','pixel_gmail_search','pixel_gmail_read','pixel_gmail_thread','pixel_gmail_count','pixel_calendar_list','pixel_calendar_get','pixel_calendar_count'];
 const factories=[];const {default:entry}=await import(pathToFileURL(path.join(source,'index.js')));
@@ -27,7 +37,7 @@ entry.register({config:{agents:{defaults:{userTimezone:'America/Sao_Paulo'}}},re
 assert.equal(factories.length,9);
 const {a:resolveTools,i:getMeta,o:setMeta,n:copyMeta,s:resetCache}=await import(pathToFileURL(path.join(pkg,'dist/tools-D5HS8Q_I.js')));
 const {u:apply,m:createRef}=await import(pathToFileURL(path.join(pkg,'dist/tool-search-BInRpkE3.js')));
-let priorImage=fs.readFileSync(path.join(pkg,'dist/tool-search-BInRpkE3.js'),'utf8');
+let priorImage=reviewed.get(path.join(pkg,'dist/tool-search-BInRpkE3.js'));
 for(const [before,after]of [...recipes['image-envelope'].replacements].reverse()){assert.equal(priorImage.split(after).length,2);priorImage=priorImage.replace(after,()=>before);}
 assert.equal(sha(priorImage),recipes['image-envelope'].sourceSha256);
 const priorHash='d31ad2f589de1a916626b62d0b87d58ee235f13bd040ecd99de77dcdc539465a';
