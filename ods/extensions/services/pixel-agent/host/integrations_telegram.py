@@ -157,6 +157,16 @@ def answer_text(questions, reply):
     return f"{question['question']}\n{choice}"
 
 
+def telegram_reply(content, questions):
+    """Portal's answer for Telegram; a card's numbered choices replace an answer that only repeats its question."""
+    content = content.strip()
+    if not questions:
+        return content
+    if not content or any(question["question"] in content for question in questions):
+        return questions_text(questions)
+    return content + "\n\n" + questions_text(questions)
+
+
 class _UnixConnection(http.client.HTTPConnection):
     def __init__(self, path, timeout):
         super().__init__("localhost", timeout=timeout)
@@ -306,7 +316,7 @@ class TelegramActions:
             return self._send(state, bot_token, chat, error.message)
         finally:
             done.set()
-        reply = content.strip() if not questions else (content.strip() + "\n\n" if content.strip() else "") + questions_text(questions)
+        reply = telegram_reply(content, questions)
         self._telegram_change(lambda latest: {**latest, "lastMessageAt": now(), "questions": questions})
         self._log("telegram-message", "from Telegram", "answered")
         self._send(state, bot_token, chat, reply)

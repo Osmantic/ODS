@@ -143,6 +143,12 @@ class Pure(unittest.TestCase):
         self.assertEqual(telegram.answer_text(CARD, "9"), 'Remember this about you? "The owner is vegetarian."\n9')
         self.assertEqual(telegram.answer_text(None, "1"), "1")
         self.assertEqual(telegram.answer_text(CARD * 2, "1"), "1")
+        self.assertEqual(telegram.telegram_reply(" Hello ", None), "Hello")
+        self.assertEqual(telegram.telegram_reply("", CARD), telegram.questions_text(CARD))
+        # The model often writes the card out itself; Telegram gets it once, as numbered choices.
+        repeated = 'Remember this about you? "The owner is vegetarian."\n- Save\n- Don\'t save'
+        self.assertEqual(telegram.telegram_reply(repeated, CARD), telegram.questions_text(CARD))
+        self.assertEqual(telegram.telegram_reply("Noted.", CARD), "Noted.\n\n" + telegram.questions_text(CARD))
         self.assertEqual(telegram.portal_request("b", "telegram-1-1"),
                          {"model": "openclaw/default", "stream": True, "user": "telegram-1-1",
                           "messages": [{"role": "user", "content": "b"}]})
