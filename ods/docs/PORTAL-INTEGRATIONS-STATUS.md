@@ -6,7 +6,7 @@ combined branch includes the existing connected-apps stack (#8196 through
 integration work. The original PRs remain separate; this document does not
 mark them merged or replace their review.
 
-The November 2 composition includes Coffee's #8324 and #8352 with Mike's
+The November 3 composition includes Coffee's #8324 and #8352 with Mike's
 follow-ups: notes, ntfy, HTTP/Home Assistant, local MCP, documents, photos,
 page/price watches, news and native scheduled-task notices. Actual installed
 Windows acceptance and newer source changes remain separately identified.
@@ -20,11 +20,11 @@ replace that controller. See the
 [composition and acceptance record](PORTAL-COFFEE-INTEGRATION.md) for the actual
 Windows/WSL model/browser evidence, later source-only checks and remaining limits.
 
-The assembled source `69201e111` includes the `c7f7aded7` scheduler/Darwin fixes,
-native recovery controls and explicit future-task policy. Gabriel's physical
-Windows installation remains `60534c7b2`. The recorded 93 passing hosted checks,
-one skipped check and disposable Linux upgrade/preservation evidence belong
-to `b36909f40`, not the newer source. Current-head CI must be checked separately.
+The assembled source `c79597eea` includes the scheduler/Darwin fixes, explicit
+future-task policy, native Mac schedule wiring and the concrete review interface
+described below. Gabriel's physical Windows installation remains `60534c7b2`.
+The published draft checkpoint `d18e2a1de` has 93 passing hosted checks and one
+skip; this does not certify the newer local source or another installed update.
 
 The SDK12 cancellation lock/fence repairs passed native mechanical controls.
 Earlier semantic experiments, including the 144-completion scope3 corpus,
@@ -34,7 +34,14 @@ unsupported requests, but missed eight valid cells, chiefly connected news and
 photo observations. A subsequent finite-catalog prototype introduced seven
 false-eligible negative cells and was reverted without installation. A separate
 whole-request consistency prototype rejected too many valid proposals and was
-also reverted. Reliable approval continuation remains open. Source now refuses
+also reverted. A seventh real-model experiment used actual candidate arguments
+and typed read progress, but qualified only two of 24 legitimate cells. No
+incorrect action was admitted; eight negative cells remained unexercised because
+their prerequisite reads were refused. This was a failure, not safety-and-benefit
+acceptance. The new local interface projects validated operation meanings and
+arguments from the shared catalog; mechanical checks and independent code review
+do not establish improved 9B decisions. Reliable approval continuation remains
+open. Source now refuses
 implicit future-task tools/delivery and fixes the never-run one-off label; a
 real installed chat creation exposed those gaps, but its task was paused before
 execution. Final ordinary

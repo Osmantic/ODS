@@ -5,7 +5,7 @@ and [#8352](https://github.com/Osmantic/ODS/pull/8352) with
 [#8293](https://github.com/Osmantic/ODS/pull/8293). This document does not mark
 those PRs merged or establish release acceptance.
 
-## Current development checkpoint — November 2
+## Current development checkpoint — November 3
 
 The installed, published and newly composed code have different evidence:
 
@@ -13,10 +13,19 @@ The installed, published and newly composed code have different evidence:
 | --- | --- | --- |
 | Latest installed qualification | `60534c7b2` | The ordinary Windows/WSL update and scoped app/model/browser journeys below. |
 | Earlier hosted checkpoint | `b36909f40` | Composed scheduler/Darwin fixes, scoped disposable Linux upgrade and 93 passing hosted checks with one skip. |
-| Current code composition | `69201e111` | Runtime `065dd29b5` plus explicit future-task policy and truthful one-off status; not another installed qualification. |
+| Published draft checkpoint | `d18e2a1de` | Concrete candidate custody and bounded successful-read evidence; 93 passing hosted checks and one skip. |
+| Current local composition | `c79597eea` | Native Mac schedule wiring plus a catalog-derived concrete operation projection; not another installed or real-model qualification. |
 
 The `c7f7aded7` scheduler and Darwin follow-ups are already composed. Earlier
 installed and hosted evidence does not certify newer runtime source.
+
+Native Mac schedule controls now reuse the protected launchd runtime, Root
+access controller and existing cron worker. Controlled checks cover source and
+owner identity, native request dispatch, bounded results and reconciliation
+after a lost create reply. Physical launchd, Darwin ACLs and an installed Mac
+runtime remain unqualified. Google/Calendar and reviewed Notion connections are
+a separate unfinished native Source Broker port; the implemented Coffee service
+and schedule wiring do not make those connections available on Mac.
 
 The current source retains 32 native tools and source-bound OpenClaw 2026.6.33
 repairs. Its production CI entrypoint applies all 25 recipes in a private SDK
@@ -68,6 +77,26 @@ effects. Cached-output finalizer replay matched every decision and floor probe.
 This prototype was reverted too; same-model agreement is not independent proof.
 Abstract operation descriptions omit actual arguments and cannot establish
 full action compliance. No additional judge or semantic reroll was used.
+
+The seventh experiment moved the veto to an actual concrete native candidate,
+with its parameters, effect, references and ordered successful-read facts.
+Its 58 cells ran once: only two of 24 positive cells qualified, below the required
+23. All positive first-stage proposals were exact, but the concrete checker
+refused 22 legitimate steps. There were no false admissions, extra scope or lost
+constraints; eight of 34 negative cells did not reach their required candidate
+because an earlier read was vetoed. No actual prerequisite host read or final
+candidate dispatch ran. All native observations returned normally. This strict
+failure remains preserved alongside the previous six.
+
+The concrete checker lacked operation definitions that the first-stage catalog
+had supplied. That is a real interface omission, not proof of the failure's sole
+cause. Local source now derives the candidate's meaning, complete validated
+arguments and maximum effect from that same catalog. It also projects declared
+operation meanings and actual read-completion facts without private bindings or
+content. Raw/payload identity, permission floors, one-use custody and refusals
+remain in place. Independent code review and coupled mechanical checks passed;
+a fresh frozen real-model qualification is still required. There is no additional
+judge, phrase-based admission or default approval.
 
 The ordinary installed 9B chat also created one real native one-off arithmetic
 task. Read-only inspection confirmed that it inherited 79 future tools and
