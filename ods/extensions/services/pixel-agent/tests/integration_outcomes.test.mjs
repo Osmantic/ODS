@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {createIntegrationOutcomes, MAX_INTEGRATION_NOTICE} from '../plugin/integration-outcomes.mjs';
 import {createIntegrationTools, integrationRequest} from '../plugin/integrations.mjs';
-import {createIntegrationReviewRecovery} from '../plugin/integration-review-recovery.mjs';
+import {createIntegrationReviewRecovery,REVIEW_CONSISTENCY_SYSTEM} from '../plugin/integration-review-recovery.mjs';
 import {parseVerificationResponse, applyVerificationToCompletion} from '../host/pixel_ingress.mjs';
 
 const runId = 'chatcmpl_11111111-1111-4111-8111-111111111111';
@@ -36,8 +36,8 @@ async function latchedReview() {
   const recovery=createIntegrationReviewRecovery({eligible:()=>true,ready:()=>true,
     nativeStartClear:state=>startOutcomeRecord.reviewStartClear({agentId:'pixel',
       runId:state.runId,sessionId:state.sessionId,sessionKey:state.sessionKey}),
-    complete:async()=>({agentId:'pixel',provider:'ods-gateway',model:'ods/current',text:JSON.stringify({
-      operations:[{id:'notes.read',approval:'none'}]})})});
+    complete:async params=>({agentId:'pixel',provider:'ods-gateway',model:'ods/current',text:JSON.stringify(
+      params.systemPrompt===REVIEW_CONSISTENCY_SYSTEM?{entailed:true}:{operations:[{id:'notes.read',approval:'none'}]})})});
   recovery.observe({prompt:owner},ctx,ctx.runId);
   const decision=await recovery.finalize({...ctx,nativeRetryToolsAllowVersion:1,nativeRetryToolChoiceVersion:1,
     lastAssistantMessage:'I read it.',messages:[{role:'user',content:owner},{role:'assistant',content:'I read it.'}]},ctx);

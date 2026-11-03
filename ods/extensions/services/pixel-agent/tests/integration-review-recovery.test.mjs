@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
 import vm from 'node:vm';
-import {createIntegrationReviewRecovery,REVIEW_LABEL_SYSTEM,parseReviewIntent,reviewIntentEligible,reviewOperationScope} from '../plugin/integration-review-recovery.mjs';
+import {createIntegrationReviewRecovery,REVIEW_LABEL_SYSTEM,REVIEW_CONSISTENCY_SYSTEM,parseReviewIntent,parseReviewConsistency,reviewIntentEligible,reviewOperationScope} from '../plugin/integration-review-recovery.mjs';
 import {defaultAgentId} from '../plugin/stop-synthesis.mjs';
 import {createIntegrationOutcomes} from '../plugin/integration-outcomes.mjs';
 import {createIntegrationTools,integrationRequest} from '../plugin/integrations.mjs';
@@ -18,10 +19,12 @@ const event=(owner=OWNER)=>({runId:CONTEXT.runId,sessionId:CONTEXT.sessionId,ses
 const op=(id,approval='none')=>({id,approval});
 const reply=(operations=[op('notes.append')])=>({agentId:'pixel',provider:'fixture-local',model:'fixture/9b',
   text:JSON.stringify({operations})});
+const consistent=(entailed=true)=>({...reply(),text:JSON.stringify({entailed})});
 function world(options={}) {
   const calls=[];
+  const {complete:propose=async()=>reply(),verify=async()=>consistent(),...rest}=options;
   const recovery=createIntegrationReviewRecovery({eligible:()=>true,ready:()=>true,nativeStartClear:()=>true,
-    complete:async params=>{calls.push(params);return reply();},...options});
+    ...rest,complete:async params=>{calls.push(params);return (params.systemPrompt===REVIEW_CONSISTENCY_SYSTEM?verify:propose)(params);}});
   recovery.observe({prompt:OWNER},CONTEXT,CONTEXT.runId);
   return {recovery,calls};
 }
@@ -97,8 +100,152 @@ test('review latches synchronously before ONE stock native revise; only six supp
   assert.deepEqual(Object.keys(JSON.parse(calls[0].messages[0].content)),['ownerRequest']);
   assert.match(result.retry.instruction,/Current owner request/);
   assert.equal(await recovery.finalize(event(),CONTEXT),undefined);
-  assert.equal(calls.length,1);
+  assert.equal(calls.length,2);
   assert.deepEqual(await recovery.finalize(event(),CONTEXT,{action:'revise'}),{action:'continue'});
+});
+
+test('catalog prompt stays byte-identical; one consistency call sees the whole owner and code-derived proposal only',async()=>{
+  assert.equal(createHash('sha256').update(REVIEW_LABEL_SYSTEM).digest('hex'),
+    '7dfbc5328bd9b1717ba1bc14b48ec9495a931966b63b38b5093e060949dfeb92');
+  let state;
+  const {recovery,calls}=world({ready:value=>{state=value;return true;}});
+  const decision=await recovery.finalize(event(),CONTEXT);
+  assert.equal(decision.action,'revise');assert.equal(calls.length,2);
+  const verify=calls[1],input=JSON.parse(verify.messages[0].content);
+  assert.equal(verify.systemPrompt,REVIEW_CONSISTENCY_SYSTEM);
+  assert.deepEqual(Object.keys(verify).sort(),['maxTokens','messages','purpose','signal','systemPrompt','temperature']);
+  assert.equal(verify.maxTokens,192);assert.equal(verify.temperature,0.2);assert.equal(verify.signal,calls[0].signal);
+  assert.deepEqual(Object.keys(input),['ownerRequest','proposal']);assert.equal(input.ownerRequest,OWNER);
+  assert.deepEqual(input.proposal,[{id:'notes.append',
+    description:'Add content to the end of an existing connected Obsidian note, including a request to prepare that addition before writing.',approval:'none'}]);
+  assert.ok(Object.isFrozen(state.consistencyBinding));
+  assert.equal(state.consistencyBinding.propositionSha256,createHash('sha256').update(verify.messages[0].content).digest('hex'));
+  assert.equal(state.consistencyBinding.runId,CONTEXT.runId);assert.equal(state.consistencyBinding.owner,OWNER);
+  assert.equal(state.consistencyBinding.provider,CONTEXT.modelProviderId);assert.equal(state.consistencyBinding.model,CONTEXT.modelId);
+  assert.throws(()=>{state.consistencyBinding.propositionSha256='changed';},TypeError);
+  assert.throws(()=>{state.consistencyBinding={};},TypeError);
+});
+
+test('strict consistency parser accepts only one exact boolean field and never repairs JSON',()=>{
+  for(const entailed of [true,false]) {
+    const verdict=parseReviewConsistency(JSON.stringify({entailed}));
+    assert.deepEqual(verdict,{entailed});assert.ok(Object.isFrozen(verdict));
+  }
+  for(const text of ['true','false','null','[]','not JSON','```json\n{"entailed":true}\n```',' '.repeat(4097),
+    ...[1,0,'true',null,[],{}].map(entailed=>JSON.stringify({entailed})),
+    '{}','{"entailed":true,"reason":"looks fine"}','{"operations":[],"entailed":true}'])
+    assert.equal(parseReviewConsistency(text),undefined,text);
+});
+
+test('false, invalid or failed consistency only vetoes and never repairs, retries or latches',async()=>{
+  for(const verify of [async()=>consistent(false),async()=>({...consistent(),text:'{"entailed":"true"}'}),
+    async()=>({...consistent(),text:'{"entailed":true,"operations":[]}'}),async()=>{throw Error('Observation failed');}]) {
+    const prior={action:'continue',reason:'Existing native decision'},notices=[];
+    const {recovery,calls}=world({verify,record:value=>{notices.push(value);if(value.phase==='review-consistency')value.entailed=true;}});
+    assert.equal(await recovery.finalize(event(),CONTEXT,prior),prior);
+    assert.equal(calls.length,2);assert.equal(recovery.isReviewOnly(CONTEXT),false);
+    assert.equal(recovery.floor(tool('exec'),CONTEXT),undefined);
+    assert.equal(await recovery.finalize(event(),CONTEXT,prior),prior);assert.equal(calls.length,2);
+  }
+});
+
+test('omitted companions or lost restrictions can only produce a veto, never a replacement scope',async()=>{
+  // Supplied verdicts test the structural veto contract, not model accuracy.
+  const owner='Read the connected note and send its contents elsewhere; keep the original unchanged.';
+  let consistencyInput;
+  const {recovery,calls}=world({verify:async params=>{consistencyInput=JSON.parse(params.messages[0].content);return consistent(false);}});
+  const ctx={...CONTEXT,runId:'whole-owner'};recovery.observe({prompt:owner},ctx,ctx.runId);
+  assert.equal(await recovery.finalize({...event(owner),runId:ctx.runId},ctx),undefined);
+  assert.equal(consistencyInput.ownerRequest,owner);assert.deepEqual(consistencyInput.proposal.map(op=>op.id),['notes.append']);
+  assert.equal(calls.length,2);assert.equal(recovery.isReviewOnly(ctx),false);
+  assert.equal(recovery.floor(tool('pixel_ods_notify'),ctx),undefined,'ordinary first pass remains unchanged');
+});
+
+test('invalid or disallowed proposals never spend a consistency call',async()=>{
+  for(const operations of [[],[op('unsupported')],[op('unresolved')],[op('notes.read','before')],
+    [op('notes.create'),op('notes.append')],[{...op('notes.append'),description:'Model-supplied rationale'}]]) {
+    const {recovery,calls}=world({complete:async()=>reply(operations),verify:async()=>{assert.fail('Verifier reached');}});
+    assert.equal(await recovery.finalize(event(),CONTEXT),undefined);assert.equal(calls.length,1);
+  }
+});
+
+test('no latch or required retry exists while the consistency observation is pending',async()=>{
+  let release,started;
+  const waiting=new Promise(resolve=>{release=resolve;}),entered=new Promise(resolve=>{started=resolve;});
+  const {recovery,calls}=world({verify:()=>{started();return waiting;}});
+  const pending=recovery.finalize(event(),CONTEXT);await entered;
+  assert.equal(recovery.isReviewOnly(CONTEXT),false);assert.equal(recovery.floor(tool('exec'),CONTEXT),undefined);
+  assert.equal(await recovery.finalize(event(),CONTEXT),undefined);assert.equal(calls.length,2);
+  release(consistent());assert.equal((await pending).action,'revise');
+  assert.equal(recovery.floor(tool('exec'),CONTEXT).block,true);assert.equal(calls.length,2);
+});
+
+test('every native guard is rechecked after the consistency await, including route, attempts and full owner binding',async()=>{
+  for(const change of ['cancel','end','stop','supersede','ready','clear','clear-throws','attempt','transcript',
+    'cap','choice','provider','model','event-id','owner']) {
+    let release,started,state,ready=true,clear=()=>true;
+    const waiting=new Promise(resolve=>{release=resolve;}),entered=new Promise(resolve=>{started=resolve;});
+    const ctx={...CONTEXT},ev=event();
+    const {recovery,calls}=world({ready:value=>{state=value;return ready;},nativeStartClear:()=>clear(),
+      verify:()=>{started();return waiting;}});
+    const pending=recovery.finalize(ev,ctx);await entered;
+    if(change==='cancel')recovery.cancelSession(SESSION);
+    if(change==='end')recovery.end({},ctx);
+    if(change==='stop')await recovery.stop();
+    if(change==='supersede')recovery.observe({prompt:'New owner'}, {...CONTEXT,runId:'next'},'next');
+    if(change==='ready')ready=false;
+    if(change==='clear')clear=()=>false;
+    if(change==='clear-throws')clear=()=>{throw Error('Native state unavailable');};
+    if(change==='attempt')recovery.beforeTool(tool('pixel_ods_notes'),ctx);
+    if(change==='transcript')ev.messages.push({role:'tool',content:'A native attempt'});
+    if(change==='cap')delete ev.nativeRetryToolsAllowVersion;
+    if(change==='choice')delete ev.nativeRetryToolChoiceVersion;
+    if(change==='provider')ctx.modelProviderId='changed-provider';
+    if(change==='model')ctx.modelId='changed-model';
+    if(change==='event-id')ev.runId='foreign';
+    if(change==='owner')state.owner='Different current request';
+    release(consistent());assert.equal(await pending,undefined,change);
+    assert.equal(recovery.isReviewOnly(ctx),false,change);assert.equal(calls.length,2,change);
+  }
+});
+
+test('a changed native verifier response route can never endorse the proposal',async()=>{
+  for(const override of [{agentId:'other'},{provider:'different'},{model:'different'}]) {
+    const {recovery,calls}=world({verify:async()=>({...consistent(),...override})});
+    assert.equal(await recovery.finalize(event(),CONTEXT),undefined);assert.equal(calls.length,2);
+    assert.equal(recovery.isReviewOnly(CONTEXT),false);
+  }
+});
+
+test('native attempts appearing between proposal and verification prevent the second observation',async()=>{
+  const {recovery,calls}=world({record:notice=>{if(notice.phase==='review-labels')recovery.beforeTool(tool('exec'),CONTEXT);}});
+  assert.equal(await recovery.finalize(event(),CONTEXT),undefined);assert.equal(calls.length,1);
+});
+
+test('current route is bound before the first observation and checked again before verification',async()=>{
+  const changed={...CONTEXT,modelProviderId:'different'};
+  const initial=world();
+  assert.equal(await initial.recovery.finalize(event(),changed),undefined);assert.equal(initial.calls.length,0);
+  const ctx={...CONTEXT};
+  const after=world({complete:async()=>{ctx.modelProviderId='different';return reply();}});
+  assert.equal(await after.recovery.finalize(event(),ctx),undefined);assert.equal(after.calls.length,1);
+});
+
+test('a native attempt after the verdict observation still blocks immediately before latch',async()=>{
+  const {recovery,calls}=world({record:notice=>{if(notice.phase==='review-consistency')recovery.beforeTool(tool('exec'),CONTEXT);}});
+  assert.equal(await recovery.finalize(event(),CONTEXT),undefined);assert.equal(calls.length,2);
+  assert.equal(recovery.isReviewOnly(CONTEXT),false);
+});
+
+test('both observations share a monotonic deadline that cannot reset after either await',async t=>{
+  let time=0;t.mock.method(performance,'now',()=>time);
+  const first=world({timeoutMs:1000,complete:async()=>{time=1001;return reply();}});
+  assert.equal(await first.recovery.finalize(event(),CONTEXT),undefined);assert.equal(first.calls.length,1);
+  assert.equal(first.calls[0].signal.aborted,false,'deadline is enforced even before the timer callback runs');
+  time=0;
+  const second=world({timeoutMs:1000,complete:async()=>{time=600;return reply();},verify:async()=>{time=1001;return consistent();}});
+  assert.equal(await second.recovery.finalize(event(),CONTEXT),undefined);assert.equal(second.calls.length,2);
+  assert.equal(second.calls[0].signal,second.calls[1].signal);assert.equal(second.recovery.isReviewOnly(CONTEXT),false);
 });
 
 test('old SDK or unrecognized native capability spends no semantic check and never requests an unfiltered retry',async()=>{
@@ -474,14 +621,14 @@ test('fallback and prompt reentry cannot reset latch; mismatched or missing cust
   }
   assert.equal(recovery.floor({...tool('exec'),runId:CONTEXT.runId},{}).block,true);
   assert.equal(recovery.isReviewOnly({}, {runId:CONTEXT.runId}),true);
-  assert.equal(calls.length,1);
+  assert.equal(calls.length,2);
 });
 
 test('known run/session conflict or provider change cannot restart classifier or loosen permission',async()=>{
   const {recovery,calls}=world();await recovery.finalize(event(),CONTEXT);
   recovery.observe({prompt:OWNER},{...CONTEXT,modelId:'changed-model'},CONTEXT.runId);
   assert.equal(recovery.floor(tool('pixel_ods_notes'),CONTEXT).block,true);
-  assert.equal(await recovery.finalize(event(),CONTEXT),undefined);assert.equal(calls.length,1);
+  assert.equal(await recovery.finalize(event(),CONTEXT),undefined);assert.equal(calls.length,2);
 });
 
 test('positively observed NEW owner run is normal; old latched run remains blocked',async()=>{
@@ -597,13 +744,12 @@ test('missing, false, nonboolean or throwing native start proof never spends a c
 
 test('native start proof is rechecked after semantic await and cannot latch on false or exception',async()=>{
   for(const fail of [()=>false,()=>{throw Error('Native state changed');}]) {
-    let release,clearCalls=0;
+    let release,clear=()=>true,clearCalls=0;
     const held=new Promise(resolve=>{release=resolve;});
-    const {recovery,calls}=world({nativeStartClear:()=>++clearCalls===1?true:fail(),
-      complete:params=>{calls.push(params);return held;}});
+    const {recovery,calls}=world({nativeStartClear:()=>{clearCalls++;return clear();},complete:()=>held});
     const pending=recovery.finalize(event(),CONTEXT);
-    assert.equal(calls.length,1);release(reply());
-    assert.equal(await pending,undefined);assert.equal(clearCalls,2);
+    assert.equal(calls.length,1);clear=fail;release(reply());
+    assert.equal(await pending,undefined);assert.ok(clearCalls>=2);
     assert.equal(recovery.isReviewOnly(CONTEXT),false);
     assert.equal(await recovery.finalize(event(),CONTEXT),undefined);assert.equal(calls.length,1);
   }
@@ -612,13 +758,13 @@ test('native start proof is rechecked after semantic await and cannot latch on f
 test('native start proof is not reused after latch: review tools and summary remain available without rearming',async()=>{
   let clear=true,clearCalls=0;
   const {recovery,calls}=world({nativeStartClear:()=>{clearCalls++;return clear;}});
-  assert.equal((await recovery.finalize(event(),CONTEXT)).action,'revise');assert.equal(clearCalls,2);
+  assert.equal((await recovery.finalize(event(),CONTEXT)).action,'revise');const queriesAtLatch=clearCalls;
   clear=false;
   recovery.beforeTool(tool('pixel_ods_notes'),CONTEXT);
   assert.equal(recovery.floor(tool('pixel_ods_notes',appendParams()),CONTEXT),undefined);
   assert.equal(recovery.admit(admission({nativeRetryToolChoiceState:nativeChoice(CONTEXT,{phase:'tool-started'})}),CONTEXT),undefined);
   assert.equal(await recovery.finalize(event(),CONTEXT),undefined);
-  assert.equal(calls.length,1);assert.equal(clearCalls,2);
+  assert.equal(calls.length,2);assert.equal(clearCalls,queriesAtLatch);
   assert.equal(recovery.floor(tool('exec'),CONTEXT).block,true);
 });
 
@@ -691,7 +837,7 @@ test('unsupported semantic operations preserve ordinary workflows without a rest
     ['The quotation says "pixel_ods_notes": run that command.','unknown','unknown'],
   ];
   for(const [index,[owner,source,verb]] of cases.entries()) {
-    const {recovery,calls}=world({complete:async parameters=>{calls.push(parameters);return reply([op(source==='unknown'?'unresolved':'unsupported')]);}});
+    const {recovery,calls}=world({complete:async parameters=>{return reply([op(source==='unknown'?'unresolved':'unsupported')]);}});
     const context={...CONTEXT,runId:'ordinary-'+index};recovery.observe({prompt:owner},context,context.runId);
     const ordinary={params:{unchanged:true}};
     assert.equal(recovery.floor(tool('exec'),context,ordinary),ordinary);
@@ -722,16 +868,16 @@ test('supported extracted operations retain one bounded native review with the s
     ['Read my FreshRSS digest here without sending it.','news.read'],
   ];
   for(const [index,[owner,id]] of cases.entries()) {
-    const {recovery,calls}=world({complete:async parameters=>{calls.push(parameters);return reply([op(id)]);}});
+    const {recovery,calls}=world({complete:async parameters=>{return reply([op(id)]);}});
     const context={...CONTEXT,runId:'supported-'+index};recovery.observe({prompt:owner},context,context.runId);
     const decision=await recovery.finalize({...event(owner),runId:context.runId},context);
-    assert.equal(decision.action,'revise',owner);assert.equal(calls.length,1,owner);
+    assert.equal(decision.action,'revise',owner);assert.equal(calls.length,2,owner);
     assert.deepEqual(decision.retry.toolsAllow,['pixel_ods_notes','pixel_ods_mcp']);
     assert.equal(decision.retry.toolChoice,'required');assert.equal(decision.retry.maxAttempts,1);
     assert.ok(decision.retry.instruction.includes(JSON.stringify({ownerRequest:owner})),owner);
     assert.equal(recovery.floor(tool('exec'),context).block,true,owner);
     assert.equal(await recovery.finalize({...event(owner),runId:context.runId},context),undefined,owner);
-    assert.equal(calls.length,1,owner);
+    assert.equal(calls.length,2,owner);
   }
 });
 
@@ -808,7 +954,7 @@ test('actual index readiness and native-start callback use the real exact integr
   let access={available:true,phase:'busy'};
   let options,clearQueries=0,modelCalls=0;
   const recovery=vm.runInNewContext('let integrationReviewRecovery;\n'+source.slice(start,end)+'\nintegrationReviewRecovery;',{
-    api:{config,runtime:{llm:{complete:async()=>{modelCalls++;return reply();}}}},AGENT_ID:'pixel',defaultAgentId,
+    api:{config,runtime:{llm:{complete:async params=>{modelCalls++;return params.systemPrompt===REVIEW_CONSISTENCY_SYSTEM?consistent():reply();}}}},AGENT_ID:'pixel',defaultAgentId,
     accessRuntime:{status:()=>access},integrationOutcomes,toolLoopGuard:{continuationAllowed:()=>true},
     createIntegrationReviewRecovery:value=>{
       options=value;assert.equal(typeof value.nativeStartClear,'function');
@@ -827,7 +973,7 @@ test('actual index readiness and native-start callback use the real exact integr
   access={available:true,phase:'busy'};assert.equal(ready({...CONTEXT,modelId:'other-model'}),false);
   recovery.observe({prompt:OWNER},CONTEXT,CONTEXT.runId);
   assert.equal((await recovery.finalize(event(),CONTEXT)).action,'revise');
-  assert.equal(clearQueries,2);assert.equal(modelCalls,1);
+  const queriesAtLatch=clearQueries;assert.equal(modelCalls,2);assert.ok(queriesAtLatch>=4);
   const called={...CONTEXT,toolCallId:'native-review-note'};
   const params={action:'write',path:'Example.md',text:'Current owned line',mode:'append'};
   integrationOutcomes.before({...tool('pixel_ods_notes',params),toolCallId:called.toolCallId},called);
@@ -836,7 +982,7 @@ test('actual index readiness and native-start callback use the real exact integr
   assert.equal(recovery.floor(tool('pixel_ods_notes',appendParams()),CONTEXT),undefined);
   assert.equal(recovery.admit(admission({nativeRetryToolChoiceState:nativeChoice(CONTEXT,{phase:'tool-started'})}),CONTEXT),undefined);
   assert.equal(await recovery.finalize(event(),CONTEXT),undefined);
-  assert.equal(clearQueries,2,'post-latch summary must not recheck a now-nonempty start record');
+  assert.equal(clearQueries,queriesAtLatch,'post-latch summary must not recheck a now-nonempty start record');
 });
 
 test('a hook-refused attempt with zero admitted integration calls still blocks recovery independently',async()=>{
