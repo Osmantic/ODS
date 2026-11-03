@@ -444,7 +444,7 @@ export function createIntegrationTools({submit = submitIntegration, context, out
         properties: {action: {type: 'string', enum: ['search', 'read', 'write', 'prepare'], description: 'search/read retrieve notes; prepare creates an approval request without writing; write saves under the configured permissions.'},
           query: {type: 'string', description: 'For search: words to look for, such as "lease deposit".'},
           path: {type: 'string', description: 'For read, write or prepare: the note path inside the vault.'},
-          text: {type: 'string', description: 'For write or prepare: the exact Markdown text to add.'},
+          text: {type: 'string', description: 'The complete text for write or prepare. When the owner supplies exact text, copy it verbatim, preserving punctuation, whitespace and line breaks. Do not add formatting, headings, dates, bullets, templates or other content unless the owner requested them.'},
           mode: {type: 'string', enum: ['append', 'create'], description: 'For write or prepare: append to an existing note or create a new one.'}}},
       execute: (_id, params, signal) => {
         const request = integrationRequest('pixel_ods_notes', params, context);
