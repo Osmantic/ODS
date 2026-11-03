@@ -45,6 +45,8 @@ function referenceTarget(payload,source) {
   if (source==='paperless' && payload.tool==='read') return canonicalReviewDocumentId(payload.arguments?.id);
   if (source==='watch' && payload.tool==='remove') return payload.arguments?.id;
 }
+const contentRead=payload=>payload?.action==='notes-read'||payload?.action==='mcp-call'
+  &&payload.server==='app:documents'&&payload.tool==='read';
 function readReferences(value,source) {
   const copy=snapshotIntegrationRequest(value);
   if (!exactKeys(copy,['version','source','binding','entries','truncated']) || copy.version!==1 || copy.source!==source
@@ -132,6 +134,22 @@ export function createIntegrationOutcomes({maximumRuns = 64, maximumCalls = 64} 
       entries:group.envelope.entries.map(({binding,...entry})=>entry),truncated:group.envelope.truncated})),
       truncated:Boolean(run.referencesTruncated || groups.some(group=>group.envelope.truncated))});
   }
+  function completedReads(run,before=Infinity) {
+    return run.calls.filter(call=>call.sequence<before&&call.status==='settled'&&call.readCompleted&&!call.readInvalidated
+      &&run.referenceBindings.get(call.readCompleted.source)===call.readCompleted.binding);
+  }
+  function publicProgress(run,payload,before) {
+    const facts=completedReads(run,before),source=referenceSource(payload),target=referenceTarget(payload,source);
+    const matching=facts.findLast(call=>call.readCompleted.source===source&&call.readCompleted.target===target);
+    const ordered=[...(matching?[matching]:[]),...facts.toReversed().filter(call=>call!==matching)];
+    const reads=[];let omitted=false;
+    for(const call of ordered) {
+      const fact={sequence:call.sequence,raw:snapshotIntegrationRequest(call.raw),status:'read-complete'};
+      if(reads.length===16||Buffer.byteLength(JSON.stringify({reads:[...reads,fact],truncated:true}))>8192) {omitted=true;continue;}
+      reads.push(fact);
+    }
+    return freezeJson({reads,truncated:Boolean(run.progressTruncated||omitted)});
+  }
   function referenceContext(run,payload) {
     const source=referenceSource(payload),groups=(run.referenceLookups??[]).filter(group=>group.envelope.source===source);
     // Public facts can be clipped, but clipping must never erase a previously
@@ -143,6 +161,10 @@ export function createIntegrationOutcomes({maximumRuns = 64, maximumCalls = 64} 
     const target=referenceTarget(payload,source),all=[];
     for (const group of [...groups].reverse()) for (const entry of [...group.envelope.entries].reverse())
       if (!all.some(value=>referenceId(source,value)===referenceId(source,entry))) all.push(entry);
+    // A bounded progress fact may outlive clipping of public lookup entries.
+    // Its own exact read target remains the expected identity at dispatch.
+    const read=completedReads(run).findLast(call=>call.readCompleted.source===source&&call.readCompleted.target===target);
+    if(read&&!all.some(entry=>referenceId(source,entry)===target))all.unshift(read.readCompleted.entry);
     const match=target===undefined?undefined:all.find(entry=>referenceId(source,entry)===target);
     // A retained matching target always wins the bounded subset, including a
     // normalized note alias and decimal-string document IDs beyond JS precision.
@@ -151,14 +173,28 @@ export function createIntegrationOutcomes({maximumRuns = 64, maximumCalls = 64} 
     return readReferences({version:1,source,binding,entries:selected,
       truncated:Boolean(run.referencesTruncated || groups.some(group=>group.envelope.truncated) || selected.length<all.length)},source);
   }
-  function retainReferences(call,value) {
+  function retainReferences(call,value,completion) {
     const source=referenceSource(call.payload);
     const lookup=call.payload.action==='notes-search' || call.payload.action==='mcp-call' &&
       (call.payload.server==='app:documents'&&call.payload.tool==='search' || call.payload.server==='app:watch'&&call.payload.tool==='list');
-    if (!lookup) return true;
+    const directRead=contentRead(call.payload);
+    if (!lookup&&!directRead) return true;
+    if (directRead&&completion?.readCompleted!==true) return false;
     if (!source || !current(call.run) || call.run.ended || call.run.reviewStopped) return false;
     let envelope;try{envelope=readReferences(value,source);}catch{return false;}
     const run=call.run;
+    const target=referenceTarget(call.payload,source),readEntry=directRead?envelope.entries.find(entry=>referenceId(source,entry)===target):undefined;
+    if(directRead&&!readEntry&&(!envelope.truncated||envelope.entries.length))return false;
+    for(const previous of run.calls)if(previous.readCompleted&&!previous.readInvalidated&&previous.readCompleted.source===source) {
+      const changed=envelope.entries.find(entry=>referenceId(source,entry)===previous.readCompleted.target);
+      if(previous.readCompleted.binding!==envelope.binding||changed&&requestKey(changed)!==requestKey(previous.readCompleted.entry)) {
+        previous.readInvalidated=true;run.progressTruncated=true;
+      }
+    }
+    if(directRead) {
+      if(readEntry)call.readCompleted=freezeJson({source,binding:envelope.binding,target,entry:readEntry});
+      else run.progressTruncated=true; // Successful bounded read, no retainable target proof.
+    }
     run.referenceBindings.set(source,envelope.binding);
     let groups=run.referenceLookups??[];
     if (groups.some(group=>group.envelope.source===source && group.envelope.binding!==envelope.binding)) groups=groups.filter(group=>group.envelope.source!==source);
@@ -334,7 +370,8 @@ export function createIntegrationOutcomes({maximumRuns = 64, maximumCalls = 64} 
       call.referenceContext=expected;
       const ref=Object.freeze({});
       const view=freezeJson({raw:snapshotIntegrationRequest(call.raw),payload:snapshotIntegrationRequest(call.payload),
-        maximumEffect:call.maximumEffect,references:publicReferences(run,referenceSource(call.payload))});
+        maximumEffect:call.maximumEffect,references:publicReferences(run,referenceSource(call.payload)),
+        progress:publicProgress(run,call.payload,call.sequence)});
       const candidate=Object.freeze({ref,view});candidates.set(ref,call);call.preparedValue=candidate;return candidate;
     })();
     return call.prepared;
@@ -402,7 +439,7 @@ export function createIntegrationOutcomes({maximumRuns = 64, maximumCalls = 64} 
     reservations.set(token, call);
     return token;
   }
-  function complete(token, status, references, code) {
+  function complete(token, status, references, code, completion) {
     const call = token && reservations.get(token);
     if (!call) return;
     reservations.delete(token);
@@ -410,7 +447,7 @@ export function createIntegrationOutcomes({maximumRuns = 64, maximumCalls = 64} 
       if (!current(call.run) || call.closed || call.run.ended || !['pending', 'unknown', 'settled', 'ready','refused'].includes(status)) return;
       call.status = status;
       if (status === 'unknown') call.run.uncertain = true;
-      if (call.recoveryReviewOnly && status==='settled' && !retainReferences(call,references)) {
+      if (call.recoveryReviewOnly && status==='settled' && !retainReferences(call,references,completion)) {
         call.status='unknown';call.run.uncertain=true;drain(call.run,true,REVIEW_LOOKUP_INVALID);return false;
       }
       if (call.recoveryReviewOnly && ['invalid-review-reference','stale-review-reference'].includes(code)) drain(call.run,true,REVIEW_SERVICE_REFUSED);

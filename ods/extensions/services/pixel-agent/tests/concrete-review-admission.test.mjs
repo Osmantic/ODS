@@ -7,6 +7,8 @@ import {createIntegrationTools,submitIntegration,canonicalReviewNotePath,canonic
 
 const ctx={agentId:'pixel',runId:'concrete-owner',sessionId:'concrete-session',sessionKey:'agent:pixel:openai-user:ods-'+'a'.repeat(64)};
 const hash=value=>createHash('sha256').update(value).digest('hex');
+const readRef=path=>({version:1,source:'obsidian',binding:hash('default-vault'),
+  entries:[{path:canonicalReviewNotePath(path),binding:hash('read:'+canonicalReviewNotePath(path))}],truncated:false});
 const note=(path='Example.md')=>({action:'read',path});
 const write=(text='Current exact line')=>({action:'write',path:'Example.md',text,mode:'append'});
 const event=(id,params,name='pixel_ods_notes')=>({toolName:name,toolCallId:id,params});
@@ -18,7 +20,8 @@ function fixture(submit) {
   const tools=createIntegrationTools({context:ctx,outcomes,requireBound:()=>true,submit:async payload=>{
     sent.push(payload);
     return submit?submit(payload):{ok:true,recoveryReviewOnly:true,path:payload.path,text:'Invented note',results:[],servers:[],
-      ...(payload.action==='notes-search'?{reviewReferences:{version:1,source:'obsidian',binding:hash('default-vault'),entries:[],truncated:false}}:{})};
+      ...(payload.action==='notes-read'?{reviewReferences:readRef(payload.path)}:
+        payload.action==='notes-search'?{reviewReferences:{version:1,source:'obsidian',binding:hash('default-vault'),entries:[],truncated:false}}:{})};
   }});
   const tool=name=>tools.find(tool=>tool.name===name);
   const prepare=(id,params,name='pixel_ods_notes')=>outcomes.prepareReviewCandidate(event(id,params,name),at(id));
@@ -121,7 +124,7 @@ test('native wrapper and exact child share one verifier and admission, without q
 test('distinct candidate families wait through real host settlement, not merely the first verdict',async()=>{
   let release,entered;
   const started=new Promise(resolve=>{entered=resolve;});
-  const f=fixture(payload=>new Promise(resolve=>{entered();release=()=>resolve({ok:true,recoveryReviewOnly:true,path:payload.path,text:'Read'});}));
+  const f=fixture(payload=>new Promise(resolve=>{entered();release=()=>resolve({ok:true,recoveryReviewOnly:true,path:payload.path,text:'Read',reviewReferences:readRef(payload.path)});}));
   await f.admit('first',note());
   const executing=f.tool('pixel_ods_notes').execute('first',note());await started;
   let prepared=false;
@@ -146,7 +149,7 @@ test('uncertainty refuses effectful queued calls but preserves otherwise-admitte
   let reject,entered;
   const started=new Promise(resolve=>{entered=resolve;});
   const f=fixture(payload=>payload.action==='notes-write'?new Promise((_resolve,no)=>{entered();reject=()=>no(Object.assign(Error('lost acknowledgement'),{code:'integration-outcome-unknown'}));})
-    :{ok:true,recoveryReviewOnly:true,path:payload.path,text:'Read'});
+    :{ok:true,recoveryReviewOnly:true,path:payload.path,text:'Read',reviewReferences:readRef(payload.path)});
   await f.admit('uncertain',write());const executing=f.tool('pixel_ods_notes').execute('uncertain',write());await started;
   const effectful=f.prepare('next-write',write('Not submitted'));
   reject();assert.equal((await executing).details.status,'outcome-unknown');
@@ -183,7 +186,7 @@ test('an old native aborted closure cannot consume or stop a newer same-ID owner
   const controller=new AbortController();controller.abort();
   assert.equal((await old.execute('reused',note(),controller.signal)).details.code,'integration-call-cancelled');
   let sent=0;const fresh=createIntegrationTools({context:next,outcomes:f.outcomes,requireBound:()=>true,
-    submit:async()=>{sent++;return {ok:true,recoveryReviewOnly:true,path:'Example.md',text:'Current'};}}).find(t=>t.name==='pixel_ods_notes');
+    submit:async()=>{sent++;return {ok:true,recoveryReviewOnly:true,path:'Example.md',text:'Current',reviewReferences:readRef('Example.md')};}}).find(t=>t.name==='pixel_ods_notes');
   assert.equal((await fresh.execute('reused',note())).details.status,'done');assert.equal(sent,1);
   assert.equal(f.outcomes.projection(next.runId),undefined);
 });
@@ -192,7 +195,7 @@ test('typed lookup facts stay private and >16 retained refs preserve the selecte
   const source=hash('vault'),entry=i=>({path:`N${i}.md`,binding:hash('target'+i)});
   const f=fixture(payload=>payload.action==='notes-search'?{ok:true,recoveryReviewOnly:true,results:[],
     reviewReferences:{version:1,source:'obsidian',binding:source,entries:Array.from({length:16},(_v,i)=>entry((payload.query==='first'?0:16)+i)),truncated:false}}
-    :{ok:true,recoveryReviewOnly:true,path:'N15.md',text:'Current note'});
+    :{ok:true,recoveryReviewOnly:true,path:'N15.md',text:'Current note',reviewReferences:{version:1,source:'obsidian',binding:source,entries:[entry(15)],truncated:false}});
   for(const query of ['first','second']) {
     await f.admit(query,{action:'search',query});
     const reply=await f.tool('pixel_ods_notes').execute(query,{action:'search',query});
@@ -224,7 +227,7 @@ test('decimal-string document identities beyond JS precision remain exact; unsaf
 test('host-valid non-BMP note paths and document titles retain their exact typed reference identities',async()=>{
   const path=Array.from({length:20},()=> '😀'.repeat(15)).join('/')+'.md';
   assert.ok(path.length>512);assert.ok([...path].length<=512);assert.equal(canonicalReviewNotePath(path),path);
-  const f=fixture(()=>({ok:true,recoveryReviewOnly:true,results:[],reviewReferences:{version:1,source:'obsidian',
+  const f=fixture(payload=>({ok:true,recoveryReviewOnly:true,results:[],path:payload.path,text:'Invented bounded read',reviewReferences:{version:1,source:'obsidian',
     binding:hash('unicode-vault'),entries:[{path,binding:hash('unicode-note')}],truncated:false}}));
   const search={action:'search',query:'invented'};await f.admit('search',search);await f.tool('pixel_ods_notes').execute('search',search);
   const candidate=await f.admit('read',note(path));assert.equal(candidate.view.references.lookups[0].entries[0].path,path);

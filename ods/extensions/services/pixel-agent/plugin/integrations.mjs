@@ -69,7 +69,7 @@ export function submitIntegration(payload, {connect = net.createConnection, plat
 const text = (value, details, isError = false) => ({content: [{type: 'text', text: value}], details, ...(isError ? {isError} : {})});
 
 async function run(submit, payload, signal, render, observed, admitted) {
-  const report = (status, references, code) => { try { return observed?.(status, references, code); } catch { return false; } };
+  const report = (status, references, code, completion) => { try { return observed?.(status, references, code, completion); } catch { return false; } };
   const reviewRead = payload.recoveryReviewOnly === true && (REVIEW_READS.has(payload.action) || payload.action==='mcp-call'
     && Object.hasOwn(REVIEW_APP_READS,payload.server) && REVIEW_APP_READS[payload.server].includes(payload.tool));
   let reply;
@@ -120,7 +120,8 @@ async function run(submit, payload, signal, render, observed, admitted) {
     if (valid) {
       try {
         const rendered = render(reply);
-        if (report('settled', references)===false) return text('The lookup returned no verified reference for another private call. Automatic review stopped.',
+        const contentRead=payload.action==='notes-read'||payload.action==='mcp-call'&&payload.server==='app:documents'&&payload.tool==='read';
+        if (report('settled', references,undefined,contentRead?{readCompleted:true}:undefined)===false) return text('The read returned no verified reference for another private call. Automatic review stopped.',
           {status:'outcome-unknown',code:'review-reference-result-invalid'},true);
         return text(rendered, {status:'done'});
       } catch { /* A malformed read reply cannot claim a settled result. */ }
@@ -351,7 +352,7 @@ export function createIntegrationTools({submit = submitIntegration, context, out
       return text('No integration action was submitted: its bounded request was too large.',{status:'blocked',code:'integration-request-too-large'},true);
     }
     try {return await run(submit, nativePayload, signal, render,
-      (status,references,code) => {const accepted=outcomes?.complete(reservation,status,references,code);
+      (status,references,code,completion) => {const accepted=outcomes?.complete(reservation,status,references,code,completion);
         if(reviewOnly && (accepted===false || ['invalid-review-reference','stale-review-reference','integration-call-unbound'].includes(code)))
           onReviewRefused?.(context,accepted===false?'review-reference-result-invalid':code);
         return accepted;},

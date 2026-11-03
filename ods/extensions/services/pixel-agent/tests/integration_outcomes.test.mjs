@@ -86,7 +86,7 @@ test('changed append/read/search/mode/source payloads cannot downgrade to option
 
 test('only exact bound review note reads/search/catalogs settle, carry the private host flag, and cannot replay', async () => {
   for(const [name,value,reply] of [
-    ['pixel_ods_notes',{action:'read',path:'a.md'},{path:'a.md',text:'owned'}],
+    ['pixel_ods_notes',{action:'read',path:'a.md'},{path:'a.md',text:'owned',reviewReferences:{version:1,source:'obsidian',binding:'a'.repeat(64),entries:[{path:'a.md',binding:'b'.repeat(64)}],truncated:false}}],
     ['pixel_ods_notes',{action:'search',query:'owned'},{results:[],reviewReferences:{version:1,source:'obsidian',binding:'a'.repeat(64),entries:[],truncated:false}}],
     ['pixel_ods_mcp',{action:'list'},{servers:[]}],
   ]) {
@@ -111,7 +111,8 @@ test('native deferred review reads share one exact parent/child ticket and canno
     const decision=await admitReview(outcomes,child,concrete,context,'pixel_ods_notes');
     let submissions=0;
     const tools=createIntegrationTools({context:factory(),outcomes,requireBound:()=>true,
-      submit:async()=>{submissions++;return {ok:true,path:'a.md',text:'owned',recoveryReviewOnly:true};}});
+      submit:async()=>{submissions++;return {ok:true,path:'a.md',text:'owned',recoveryReviewOnly:true,
+        reviewReferences:{version:1,source:'obsidian',binding:'a'.repeat(64),entries:[{path:'a.md',binding:'b'.repeat(64)}],truncated:false}};}});
     const result=await tools.find(t=>t.name==='pixel_ods_notes').execute(child,concrete);
     assert.equal(submissions,changed?0:1);assert.equal(result.details.status,changed?'blocked':'done');
     if(changed)assert.equal(decision.block,true);
