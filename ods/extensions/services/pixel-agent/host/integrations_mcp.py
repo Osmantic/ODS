@@ -17,6 +17,7 @@ import re
 import shlex
 import shutil
 import signal
+import selectors
 import subprocess
 import threading
 import time
@@ -135,7 +136,10 @@ class LocalServer:
         self.stopped_because = None
         self.last_used = time.monotonic()
 
-    def start(self):
+    def start(self, *, deadline=None):
+        deadline = min(time.monotonic() + START_TIMEOUT, deadline) if deadline is not None else time.monotonic() + START_TIMEOUT
+        if deadline <= time.monotonic():
+            raise self._timeout()
         program = shutil.which(self.argv[0], path=self.env["PATH"])
         if program is None:
             raise IntegrationError("mcp-unavailable", f"{self.name} could not be started: {self.argv[0]} was not found. "
@@ -148,14 +152,19 @@ class LocalServer:
                                             stderr=subprocess.PIPE, cwd=self.folder, env=self.env, start_new_session=True)
         except OSError as error:
             raise IntegrationError("mcp-unavailable", f"{self.name} could not be started: {error.strerror}.") from None
+        os.set_blocking(self.process.stdin.fileno(), False)
         threading.Thread(target=self._read_replies, daemon=True).start()
         threading.Thread(target=self._read_errors, daemon=True).start()
         result = self.request("initialize", {"protocolVersion": MCP_PROTOCOL, "capabilities": {},
-                                             "clientInfo": {"name": "ods-portal", "version": "1"}}, timeout=START_TIMEOUT)
+                                             "clientInfo": {"name": "ods-portal", "version": "1"}}, timeout=max(0, deadline - time.monotonic()))
         if not isinstance(result, dict):
             self.stop("it did not answer as an MCP server")
             raise IntegrationError("mcp-protocol", f"{self.name} did not answer as an MCP server.")
-        self._write({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        try:
+            self._write({"jsonrpc": "2.0", "method": "notifications/initialized"}, deadline=deadline)
+        except IntegrationError:
+            self.stop("initialization did not finish")
+            raise
         return self
 
     def alive(self):
@@ -209,17 +218,43 @@ class LocalServer:
         except IntegrationError:
             pass  # The server stopped; the waiting request reports that.
 
-    def _write(self, message):
+    def _timeout(self):
+        return IntegrationError("mcp-timeout", f"{self.name} did not answer in time, so it was stopped. "
+                                "It starts again on the next use.")
+
+    def _write(self, message, *, deadline=None):
+        deadline = time.monotonic() + CALL_TIMEOUT if deadline is None else deadline
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not self.write_lock.acquire(timeout=remaining):
+            raise self._timeout()
         try:
-            with self.write_lock:
-                self.process.stdin.write((json.dumps(message) + "\n").encode())
-                self.process.stdin.flush()
+            descriptor = self.process.stdin.fileno()
+            data = memoryview((json.dumps(message) + "\n").encode())
+            with selectors.DefaultSelector() as poller:
+                poller.register(descriptor, selectors.EVENT_WRITE)
+                while data:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise self._timeout()
+                    try:
+                        written = os.write(descriptor, data)
+                        if written <= 0:
+                            raise OSError("pipe closed")
+                        data = data[written:]
+                    except BlockingIOError:
+                        if not poller.select(remaining):
+                            raise self._timeout()
+                    except InterruptedError:
+                        continue
         except (OSError, ValueError):
             raise IntegrationError("mcp-unavailable", f"{self.name} stopped.") from None
+        finally:
+            self.write_lock.release()
 
     def request(self, method, params, timeout=None):
-        timeout = timeout or CALL_TIMEOUT
-        if not self.lock.acquire(timeout=timeout):
+        timeout = CALL_TIMEOUT if timeout is None else timeout
+        deadline = time.monotonic() + timeout
+        if not self.lock.acquire(timeout=max(0, deadline - time.monotonic())):
             raise IntegrationError("mcp-busy", f"{self.name} is still busy with another request. Try again shortly.")
         try:
             self.last_used = time.monotonic()
@@ -228,11 +263,13 @@ class LocalServer:
             self.counter += 1
             waiting = self.replies[self.counter] = [threading.Event(), None]
             try:
-                self._write({"jsonrpc": "2.0", "id": self.counter, "method": method, "params": params})
-                if not waiting[0].wait(timeout):
-                    self.stop(f"it did not answer within {timeout} seconds")
-                    raise IntegrationError("mcp-timeout", f"{self.name} did not answer in time, so it was stopped. "
-                                           "It starts again on the next use.")
+                self._write({"jsonrpc": "2.0", "id": self.counter, "method": method, "params": params}, deadline=deadline)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not waiting[0].wait(remaining):
+                    raise self._timeout()
+            except IntegrationError:
+                self.stop(f"request did not complete within {timeout} seconds")
+                raise
             finally:
                 del self.replies[self.counter]
             if waiting[1] is None:
