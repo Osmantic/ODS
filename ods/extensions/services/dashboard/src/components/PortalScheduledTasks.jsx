@@ -31,7 +31,7 @@ const refusedCreate=error=>new Set(['invalid-task','task-too-large','task-time-p
   'invalid-task-timezone','task-history-full','task-config-changed','runtime-change-pending',
   'schedule-installation-mismatch','transition-busy']).has(error?.code?.replace(/^controller-/,''))
 
-export default function PortalScheduledTasks() {
+export default function PortalScheduledTasks({draftRequest,onDraftHandled,onDraftScheduled}={}) {
   const [view,setView]=useState('list'),[offset,setOffset]=useState(0),[page,setPage]=useState(null)
   const [selected,setSelected]=useState(null),[history,setHistory]=useState(null),[runOffset,setRunOffset]=useState(0)
   const [form,setForm]=useState(emptyForm),[creating,setCreating]=useState(false)
@@ -66,6 +66,24 @@ export default function PortalScheduledTasks() {
   }
   useEffect(()=>{load(view,offset)},[view,offset])
   useEffect(()=>{if(creating)nameInput.current?.focus()},[creating])
+  const draftOrigin=useRef(null)
+  useEffect(()=>{
+    if (!draftRequest || busy || !page) return
+    onDraftHandled?.(draftRequest)
+    if (unknown || page.pendingCount || creating) {
+      setNotice(unknown || page.pendingCount?'Check the unconfirmed creation before scheduling this draft.':'Finish or cancel the open task first. Your chat draft is still in the composer.')
+      return
+    }
+    draftOrigin.current={request:draftRequest,requestId:null}
+    setView('list');setOffset(0);setSelected(null);setConfirmRemove(false)
+    setNotice('Choose when to run this draft.');setError('')
+    setForm({...emptyForm(),frequency:'once',task:draftRequest.draft});setCreating(true)
+  },[draftRequest,onDraftHandled,busy,page,unknown,creating])
+  function finishDraft(requestId) {
+    if (draftOrigin.current?.requestId===requestId) onDraftScheduled?.(draftOrigin.current.request)
+    draftOrigin.current=null
+  }
+
   function open(task) {
     setSelected(task);setRunOffset(0);setHistory(null);setConfirmRemove(false)
     operate({action:'runs',id:task.id,offset:0},setHistory)
@@ -97,12 +115,14 @@ export default function PortalScheduledTasks() {
     }
     let requestId
     try {requestId=newScheduleRequestId()} catch {setError('This browser could not create a request identity. Try a current browser.');return}
+    if (draftOrigin.current) draftOrigin.current.requestId=requestId
     const body={action:'create',requestId,name:form.name,task:form.task,schedule}
     operate(body,result=>{
       if(result.outcome==='unconfirmed') {
         setUnknown({requestId:body.requestId,name:body.name})
         setNotice('The request was sent, but creation is not confirmed. Check it before creating another task.')
       } else {
+        finishDraft(requestId)
         setCreating(false);setForm(emptyForm());setUnknown(null)
         changed(result,'Task scheduled.')
       }
@@ -112,12 +132,14 @@ export default function PortalScheduledTasks() {
     operate({action:'check-create',requestId:pending.requestId},result=>{
       if(result.outcome==='unconfirmed') {setNotice('This request is still unconfirmed. It has not been sent again.');return}
       setUnknown(null);setCreating(false);setForm(emptyForm())
+      finishDraft(pending.requestId)
       changed(result,'The existing task was found. No duplicate was created.')
     })
   }
   function dismiss(pending) {
     operate({action:'dismiss-create',requestId:pending.requestId},result=>{
       setUnknown(null);setCreating(false);setForm(emptyForm())
+      draftOrigin.current=null
       changed(result,'Notice dismissed. This does not stop an existing task; check Current tasks.')
     })
   }
@@ -169,7 +191,7 @@ export default function PortalScheduledTasks() {
           </option>)}
         </select></label>}
         <p className="portal-schedules-time">Timezone: {zone}</p>
-        <div className="portal-schedules-actions"><button type="submit" disabled={busy || !!unknown}><Check size={14}/>Schedule task</button><button type="button" disabled={busy} onClick={()=>setCreating(false)}>Cancel</button></div>
+        <div className="portal-schedules-actions"><button type="submit" disabled={busy || !!unknown}><Check size={14}/>Schedule task</button><button type="button" disabled={busy || !!unknown} onClick={()=>{if(draftOrigin.current){draftOrigin.current=null;setForm(emptyForm())}setCreating(false)}}>Cancel</button></div>
       </form>}
       {page?.items.length===0 && !creating && <div className="portal-schedules-empty"><Clock3 size={24}/><h3>{view==='list'?'No scheduled tasks yet':'No past tasks yet'}</h3><p>{view==='list'?'Schedule a useful check-in or a recurring task.':'Removed schedules appear here with their recorded results.'}</p></div>}
       {page?.items.map(item=><button type="button" key={item.id} className="portal-schedules-row" disabled={busy} onClick={()=>open(item)}><span><strong>{item.name}</strong><span>{scheduleLabel(item.schedule)}</span><small>{item.runningSince!==null?'Running':item.removed?'Removed':item.enabled?'Scheduled':finishedOneOff(item)?'Finished':'Paused'}{item.lastStatus?` · ${status[item.lastStatus]}`:''}</small></span><span className="portal-schedules-next">{item.nextRunAt!==null?`Next: ${stamp(item.nextRunAt)}`:'View results'}</span></button>)}

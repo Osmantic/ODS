@@ -17,6 +17,12 @@ Portal can use the owner's own services. Each is off until the owner sets it up 
 - **News (FreshRSS):** the unread stories, and a daily digest sent to the phone.
 - **Scheduled tasks:** a notification when one finishes or fails.
 
+To defer work from chat, type the instructions and choose **Schedule** beside Send.
+Give the task a name, choose when it should run, then select **Schedule task**.
+Opening the form does not send the draft or edit a note. Cancel keeps the draft
+in chat. Scheduled tasks use the permissions in effect when they run. In ordinary
+chat, **Send** can perform an **Allowed** note edit immediately.
+
 Portal gets three tools: `pixel_ods_notes`, `pixel_ods_notify` and `pixel_ods_mcp`. The
 apps add no tools of their own: each app the owner turns on is listed in `pixel_ods_mcp`
 as a built-in server (`app:documents`, `app:photos`, `app:watch`, `app:news`) next to the owner's MCP

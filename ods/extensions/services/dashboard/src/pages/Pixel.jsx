@@ -2092,6 +2092,17 @@ export default function Pixel({ systemStatus = null }) {
     return agent ? `/agents ${next}` : goal ? `/goal ${next}` : next
   }), [])
   const prepareComposerSend = useComposerFocus({ inputRef, disabled: composerLocked, visible: composerVisible, onType: typeIntoComposer })
+  const canScheduleDraft = !isDisabled && !restoredUnconfirmed && !images.busy && !images.items.length
+    && !command && !goalDraft && !!input.trim()
+  function scheduleFromComposer() {
+    if (!canScheduleDraft) return
+    setWorkspaceOpen(true)
+    setPreviewCollapsed(false)
+    setWorkspaceRequest({kind:'schedules', chatId:chatIdRef.current, draft:input})
+  }
+  function scheduledComposerDraft(request) {
+    setInput(current=>chatIdRef.current===request.chatId && current===request.draft?'':current)
+  }
   const sendFromComposer = () => {
     prepareComposerSend()
     if (sendBlocked) {
@@ -2450,6 +2461,11 @@ export default function Pixel({ systemStatus = null }) {
             }`}
           />
           <div className="pixel-composer-actions">
+          <button type="button" onClick={scheduleFromComposer} disabled={!canScheduleDraft}
+            aria-label="Schedule this draft" title={images.items.length?'Scheduled tasks accept text only':'Review this draft as a scheduled task'}
+            className="inline-flex h-11 shrink-0 items-center gap-1 rounded-xl px-2 text-sm text-theme-text hover:bg-theme-surface-hover disabled:opacity-50">
+            <Clock3 size={16}/><span className="hidden sm:inline">Schedule</span>
+          </button>
           <PixelDictation disabled={isDisabled} conversationId={chatIdRef.current} input={input} limit={MAX_INPUT_LEN} onInsert={insertComposerText}/>
           {teams.busy && teams.teams[0] ? <button type="button" onClick={()=>teams.teams[0].mode==='goal'?teams.stop(teams.teams[0].id):openAgents({teamId:teams.teams[0].id,agentId:'0'})} title={teams.teams[0].mode==='goal'?'Stop goal':'View active agent team'} className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border-0 text-theme-text"><Square size={16}/></button> : sending || restoredActive ? (
             <button
@@ -2522,7 +2538,7 @@ export default function Pixel({ systemStatus = null }) {
               task={[...messages].reverse().find(message=>message.role==='assistant')?.task} working={sending || restoredActive}
               agents={teams} renderApproval={content=><OperationsApprovalCard content={content}/>}
               before={[...messages].reverse().find(message=>message.publication?.siteId===currentPreview?.siteId)?.beforePublication || null}
-              title={`Interactive ${displayName} preview`} request={workspaceRequest?.chatId===chatIdRef.current?workspaceRequest:null} onRequestHandled={handleWorkspaceRequest} refresh={previewRefresh}
+              title={`Interactive ${displayName} preview`} request={workspaceRequest?.chatId===chatIdRef.current?workspaceRequest:null} onRequestHandled={handleWorkspaceRequest} onDraftScheduled={scheduledComposerDraft} refresh={previewRefresh}
               onRefresh={()=>setPreviewRefresh(value=>value+1)}
               collapsed={previewCollapsed} onCollapse={()=>setPreviewCollapsed(value=>!value)}
               expanded={workspaceExpanded} onExpand={()=>setWorkspaceExpanded(value=>!value)}
