@@ -143,9 +143,9 @@ class Pure(unittest.TestCase):
         self.assertEqual(telegram.answer_text(CARD, "9"), 'Remember this about you? "The owner is vegetarian."\n9')
         self.assertEqual(telegram.answer_text(None, "1"), "1")
         self.assertEqual(telegram.answer_text(CARD * 2, "1"), "1")
-        self.assertEqual(telegram.portal_request([{"role": "user", "content": "a"}], "b", "telegram-1-1"),
+        self.assertEqual(telegram.portal_request("b", "telegram-1-1"),
                          {"model": "openclaw/default", "stream": True, "user": "telegram-1-1",
-                          "messages": [{"role": "user", "content": "a"}, {"role": "user", "content": "b"}]})
+                          "messages": [{"role": "user", "content": "b"}]})
 
 
 class Bridge(unittest.TestCase):
@@ -219,9 +219,9 @@ class Bridge(unittest.TestCase):
         self.poll(update(1, "My name is Ana."))
         FakeIngress.answer = "Nice to meet you."
         self.poll(update(2, "What is my name?"))
-        self.assertEqual(FakeIngress.requests[1]["messages"], [{"role": "user", "content": "My name is Ana."},
-                                                                {"role": "assistant", "content": "Hello from Portal."},
-                                                                {"role": "user", "content": "What is my name?"}])
+        # Portal keeps the conversation in its session: the same user, and only the new message.
+        self.assertEqual(FakeIngress.requests[1]["user"], FakeIngress.requests[0]["user"])
+        self.assertEqual(FakeIngress.requests[1]["messages"], [{"role": "user", "content": "What is my name?"}])
         self.poll(update(3, "/new"))
         self.assertEqual(FakeTelegram.sent[-1], (int(OWNER), "New conversation started."))
         self.poll(update(4, "Hello again"))
@@ -286,7 +286,7 @@ class Bridge(unittest.TestCase):
         self.assertEqual(self.store.telegram()["offset"], 42)
         self.owner("telegram-save", enabled=True, ownerId=OWNER, apiRoot=self.api, token="111111111:BBH" + "y" * 32)
         state = self.store.telegram()
-        self.assertEqual((state["offset"], state["history"], state["bot"]), (0, [], ""))
+        self.assertEqual((state["offset"], state["bot"]), (0, ""))
 
 
 if __name__ == "__main__":

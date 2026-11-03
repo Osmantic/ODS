@@ -254,8 +254,8 @@ The owner makes a bot with @BotFather and gives Settings its token and their
 numeric Telegram user ID (@userinfobot shows it). The service long-polls the
 bot: outbound only, nothing listens for Telegram. The owner's text messages to
 the bot in a private chat go to Portal through the same ingress socket as the
-dashboard's chat, as one Portal chat, with the last 20 messages of the
-conversation; Portal's answer goes back, split into Telegram-sized pieces, with
+dashboard's chat, as one Portal chat that Portal keeps itself (each message is
+sent alone); Portal's answer goes back, split into Telegram-sized pieces, with
 "typing…" shown meanwhile. Messages from anyone else, and from groups, are
 dropped before Portal sees them; Settings says that someone else wrote. A
 question card (such as a memory to save) arrives as numbered choices, and a

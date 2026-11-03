@@ -76,7 +76,7 @@ def default_config():
 def default_telegram():
     """The Telegram bridge's state before the owner sets it up (integrations_telegram.py)."""
     return {"enabled": False, "ownerId": "", "apiRoot": "https://api.telegram.org", "bot": "", "offset": 0, "conversation": 1,
-            "history": [], "questions": None, "lastError": "", "lastMessageAt": 0, "refused": []}
+            "questions": None, "lastError": "", "lastMessageAt": 0, "refused": []}
 
 
 def upgrade_config(config):

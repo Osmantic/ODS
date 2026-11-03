@@ -4,6 +4,8 @@ The owner creates a bot with @BotFather and gives Settings its token and their o
 Telegram user ID. The service then long-polls that bot (outbound only: nothing listens for
 Telegram). Text the owner sends the bot in a private chat goes to Portal as one Portal chat,
 through the same ingress socket the dashboard's chat uses, and Portal's answer goes back.
+Portal keeps the conversation itself (one session per conversation), so each message is sent
+alone: sending earlier ones again makes Portal read them as new context, not as its history.
 Messages from anyone else, and from groups, are dropped before Portal sees them. A question
 card Portal shows (such as "Remember this about you?") arrives as numbered choices, and a
 number in reply answers it. /new starts a new conversation.
@@ -29,7 +31,6 @@ RETRY_SECONDS = 30
 TYPING_SECONDS = 4.5  # Telegram shows "typing…" for about 5 seconds.
 PORTAL_SECONDS = 1900  # Above Portal's own 30-minute limit (pixel_ingress.mjs TOTAL_TIMEOUT_MS).
 MAX_MESSAGE = 4000  # Telegram takes up to 4,096 characters per message.
-MAX_HISTORY = 20  # Messages of the conversation sent with each new one.
 MAX_TEXT = 8000
 MAX_REPLY_BYTES = 4 * 1024 * 1024
 MAX_REFUSED = 50
@@ -40,7 +41,7 @@ TEXT_ONLY = "Portal reads text messages here. Send your request as text."
 
 
 def public(state, has_token):
-    """Telegram for the owner's Settings screen: never the token, the history or who was refused."""
+    """Telegram for the owner's Settings screen: never the token or who was refused."""
     return {"enabled": state["enabled"], "ownerId": state["ownerId"], "apiRoot": state["apiRoot"], "hasToken": has_token,
             "bot": state["bot"], "lastError": state["lastError"], "lastMessageAt": state["lastMessageAt"],
             "refusedCount": len(state["refused"])}
@@ -108,9 +109,9 @@ def chunks(text):
     return pieces + [text]
 
 
-def portal_request(history, text, session):
+def portal_request(text, session):
     return {"model": "openclaw/default", "stream": True, "user": session,
-            "messages": [*history, {"role": "user", "content": text}]}
+            "messages": [{"role": "user", "content": text}]}
 
 
 def read_stream(raw):
@@ -224,7 +225,7 @@ class TelegramActions:
             updated = validate(self.store.telegram(), request, bool(new_token or saved))
             if new_token and new_token != saved:
                 # Another bot: start reading its messages from scratch.
-                updated = {**updated, "bot": "", "offset": 0, "history": [], "questions": None, "lastError": ""}
+                updated = {**updated, "bot": "", "offset": 0, "questions": None, "lastError": ""}
                 secrets["telegramToken"] = new_token
                 self.store.save_secrets(secrets)
             if not updated["enabled"]:
@@ -290,8 +291,7 @@ class TelegramActions:
         if text.strip() in ("/start", "/help"):
             return self._send(state, bot_token, chat, HELP)
         if text.strip() == "/new":
-            self._telegram_change(lambda current: {**current, "conversation": current["conversation"] + 1, "history": [],
-                                                   "questions": None})
+            self._telegram_change(lambda current: {**current, "conversation": current["conversation"] + 1, "questions": None})
             self._log("telegram-message", "new conversation", "started")
             return self._send(state, bot_token, chat, "New conversation started.")
         current = self._telegram()[0]
@@ -300,16 +300,14 @@ class TelegramActions:
         done = threading.Event()
         threading.Thread(target=self._typing, args=(state, bot_token, chat, done), daemon=True).start()
         try:
-            content, questions = read_stream(ask_portal(portal_request(current["history"], sent, session), self.ingress))
+            content, questions = read_stream(ask_portal(portal_request(sent, session), self.ingress))
         except IntegrationError as error:
             self._log("telegram-message", "from Telegram", error.message)
             return self._send(state, bot_token, chat, error.message)
         finally:
             done.set()
         reply = content.strip() if not questions else (content.strip() + "\n\n" if content.strip() else "") + questions_text(questions)
-        self._telegram_change(lambda latest: {**latest, "lastMessageAt": now(), "questions": questions,
-                                              "history": [*latest["history"], {"role": "user", "content": sent},
-                                                          {"role": "assistant", "content": content}][-MAX_HISTORY:]})
+        self._telegram_change(lambda latest: {**latest, "lastMessageAt": now(), "questions": questions})
         self._log("telegram-message", "from Telegram", "answered")
         self._send(state, bot_token, chat, reply)
 
