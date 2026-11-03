@@ -12,6 +12,7 @@ import errno
 import hashlib
 import json
 import os
+import plistlib
 from pathlib import Path
 import stat
 import sys
@@ -157,7 +158,8 @@ def native(deployment, tmp_path, monkeypatch):  # noqa: F811 -- imported pytest 
     metadata.mkdir(mode=0o700)
     kit.mkdir(mode=0o755)
     for name, value in [('NATIVE_META', metadata), ('NATIVE_KIT', kit),
-                        ('NATIVE_STATE', world / 'state'), ('NATIVE_ENV', world / 'source.env')]:
+                        ('NATIVE_STATE', world / 'state'), ('NATIVE_ENV', world / 'state/source-broker.env'),
+                        ('NATIVE_LEGACY_ENV', world / 'legacy-source.env')]:
         monkeypatch.setattr(source, name, value)
     # Explicit platform/root metadata simulation; the real guard's exact types,
     # RuntimeCustody.inspect and bundle/plugin/plist requalification still run.
@@ -394,7 +396,10 @@ def test_intent_bound_acl_failure_can_resume_but_unknown_acl_cannot(native):
     native.acl.fail_write = True
     with pytest.raises(source.CustodyError, match='acl-write-failed'):
         source.native_prepare_state(native.selected, native.identity)
-    assert source.NATIVE_STATE.is_dir() and not native.changes
+    assert source.NATIVE_STATE.is_dir() and native.acl.writes==0
+    prepared=json.loads((native.metadata/'source-custody-prepare.json').read_text())
+    assert set(prepared['children'])=={'private','private/oauth','projection','results','proposals'}
+    assert all(record['ready'] for record in prepared['children'].values())
     native.acl.fail_write = False
     assert source.native_prepare_state(native.selected, native.identity)['phase'] == 'prepared-no-jobs'
     fd = os.open(source.NATIVE_STATE, os.O_RDONLY | os.O_DIRECTORY)
@@ -826,3 +831,269 @@ def test_direct_named_group_requires_an_actual_empty_member_list(native,monkeypa
         if name==source.NATIVE_BROKER else original(name))
     with pytest.raises(source.CustodyError,match='membership-conflict'):
         source.native_prepare_identity(native.selected)
+
+
+def test_known_owner_group_omitted_from_enumeration_is_reserved_before_identity_intent(native,monkeypatch):
+    # Actual Root qualifier/runtime/bundle/loaded-definition path; only the
+    # selected group's account-database metadata is explicitly simulated.
+    f=native.f
+    definition=plistlib.loads(f.plist.read_bytes())
+    definition['GroupName']='qa-omitted-owner-group'
+    f.plist.write_bytes(plistlib.dumps(definition))
+    original_group,original_gid=source.grp.getgrnam,source.grp.getgrgid
+    original_user=source.pwd.getpwnam
+    owner_user=original_user(f.bridge.gateway_owner)
+    monkeypatch.setattr(source.pwd,'getpwnam',lambda name:SimpleNamespace(pw_uid=owner_user.pw_uid,pw_gid=60000,
+        pw_name=owner_user.pw_name,pw_dir=owner_user.pw_dir) if name==f.bridge.gateway_owner else original_user(name))
+    monkeypatch.setattr(source.grp,'getgrnam',lambda name:SimpleNamespace(gr_name=name,gr_gid=60000,gr_mem=[])
+        if name=='qa-omitted-owner-group' else original_group(name))
+    monkeypatch.setattr(source.grp,'getgrgid',lambda gid:SimpleNamespace(gr_name='qa-omitted-owner-group',gr_gid=60000,gr_mem=[])
+        if gid==60000 else original_gid(gid))
+    f.bridge.owner=SimpleNamespace(pw_uid=os.getuid(),pw_gid=60000,pw_name=f.bridge.owner.pw_name)
+    f.bridge.gateway_process={**f.bridge.gateway_process,'gid':60000}
+    current=f.bridge.connection_deployment()
+    selected=source.native_source_selection(f.bridge,current)
+    assert current.document['ownerGid']==60000
+    manifest=json.loads((native.kit/'source-kit.json').read_text())
+    manifest['deploymentSha256']=current.checksum
+    (native.kit/'source-kit.json').write_text(json.dumps(manifest))
+    (native.metadata/'source-identity.json').unlink()
+    native.records['Groups']=None
+    native.records['Users']=None
+    assert source.pwd.getpwall()==[] and source.grp.getgrall()==[]
+    attempts=[]
+    def intercepted(selected,directory,name,value,**kwargs):
+        attempts.append((name,value))
+        raise OSError('identity intent intercepted before file write')
+    monkeypatch.setattr(source,'_native_save_at',intercepted)
+    monkeypatch.setattr(source.subprocess,'run',lambda *a,**k:pytest.fail('no DS mutation'))
+    with pytest.raises(OSError,match='intercepted'):
+        source.native_prepare_identity(selected)
+    assert attempts[0][0]=='source-identity.json'
+    assert attempts[0][1]['id'] not in {current.document['ownerUid'],current.document['ownerGid']}
+    assert not (native.metadata/'source-identity.json').exists() and not native.changes
+
+
+
+def env_file(native):
+    path=source.NATIVE_ENV
+    path.write_bytes(b"PIXEL_CALENDAR_DIRECT_ENABLED='0'\n")
+    path.chmod(0o600)
+    info=path.stat()
+    native.acl.acls[(info.st_dev,info.st_ino)]={'entries':[native.acl.entry(60001,mask=2)],'flags':0}
+    return path
+
+
+def test_fixed_native_env_is_inside_root_gate_and_not_the_legacy_location():
+    paths=source.NativeSourcePaths()
+    assert paths.env==paths.state/'source-broker.env'
+    assert paths.env!=source.NATIVE_LEGACY_ENV
+
+
+def test_env_fd_has_only_broker_user_read_and_does_not_depend_on_group_enumeration(native,monkeypatch):
+    source.native_prepare_state(native.selected,native.identity)
+    path=env_file(native)
+    monkeypatch.setattr(source.pwd,'getpwall',lambda:pytest.fail('no user enumeration for fd custody'))
+    monkeypatch.setattr(source.grp,'getgrall',lambda:pytest.fail('no group enumeration for fd custody'))
+    fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+    gate=os.open(source.NATIVE_STATE,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    writes=native.acl.writes
+    try:
+        stamp=source.native_verify_env_fd(fd,60001)
+        assert stamp[:2]==(path.stat().st_dev,path.stat().st_ino)
+        assert source._native_env_at(gate,os.getuid(),60001,required=True)==stamp
+        assert native.acl.acls[native.acl.key(fd)]['entries']==[native.acl.entry(60001,mask=2)]
+        # A file ACL may not weaken the unchanged directory reader(mask10).
+        with pytest.raises(source.CustodyError,match='acl-rights'):
+            source._native_acl_entries(fd)
+        source.native_verify_gate(gate,os.getuid(),60001)
+    finally:
+        os.close(fd)
+        os.close(gate)
+    assert native.acl.writes==writes
+
+
+@pytest.mark.parametrize('case',['missing','owner-reader','duplicate','write','directory-mask','inherit','header-flag','deny'])
+def test_env_fd_rejects_any_acl_beyond_singleton_broker_read(native,case):
+    source.native_prepare_state(native.selected,native.identity)
+    path=env_file(native)
+    fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+    try:
+        key=native.acl.key(fd)
+        if case=='missing':native.acl.acls.pop(key)
+        else:
+            value=native.acl.acls[key]
+            if case=='owner-reader':value['entries'][0]=native.acl.entry(os.getuid(),mask=2)
+            elif case=='duplicate':value['entries'].append(native.acl.entry(60001,mask=2))
+            elif case=='write':value['entries'][0]['mask']=6
+            elif case=='directory-mask':value['entries'][0]['mask']=10
+            elif case=='inherit':value['entries'][0]['flags']=1<<5
+            elif case=='header-flag':value['flags']=1<<31
+            else:value['entries'][0]['tag']=2
+        with pytest.raises(source.CustodyError):source.native_verify_env_fd(fd,60001)
+    finally:os.close(fd)
+
+
+@pytest.mark.parametrize('case',['mode640','owner','group','hardlink','empty','oversize','fifo'])
+def test_env_fd_requires_root_singleton_regular_private_bounded_file(native,case):
+    source.native_prepare_state(native.selected,native.identity)
+    path=env_file(native)
+    if case=='mode640':path.chmod(0o640)
+    elif case in ('owner','group'):
+        info=path.stat()
+        native.owners[(info.st_dev,info.st_ino)]=(os.getuid(),0) if case=='owner' else (0,60001)
+    elif case=='hardlink':os.link(path,path.with_name('duplicate-env'))
+    elif case=='empty':path.write_bytes(b'')
+    elif case=='oversize':path.write_bytes(b'x'*(source.MAX_RESULT_BYTES+1))
+    else:
+        path.unlink()
+        os.mkfifo(path,0o600)
+    fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+    try:
+        with pytest.raises(source.CustodyError,match='env-unsafe'):source.native_verify_env_fd(fd,60001)
+    finally:os.close(fd)
+
+
+def test_env_fd_detects_actual_file_change_during_acl_validation(native,monkeypatch):
+    source.native_prepare_state(native.selected,native.identity)
+    path=env_file(native)
+    qualifier=native.acl.acl_get_qualifier
+    def changed(ptr):
+        result=qualifier(ptr)
+        with path.open('ab') as stream:stream.write(b'#changed\n')
+        return result
+    monkeypatch.setattr(native.acl,'acl_get_qualifier',changed)
+    fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+    try:
+        with pytest.raises(source.CustodyError,match='env-changed'):source.native_verify_env_fd(fd,60001)
+    finally:os.close(fd)
+
+
+def test_fixed_env_reader_is_optional_until_publication_and_never_follows_alias(native):
+    source.native_prepare_state(native.selected,native.identity)
+    gate=os.open(source.NATIVE_STATE,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:
+        assert source._native_env_at(gate,os.getuid(),60001) is None
+        with pytest.raises(source.CustodyError,match='env-unavailable'):
+            source._native_env_at(gate,os.getuid(),60001,required=True)
+        source.NATIVE_ENV.symlink_to(native.f.config)
+        before=native.f.config.read_bytes()
+        with pytest.raises(OSError):source._native_env_at(gate,os.getuid(),60001)
+        assert native.f.config.read_bytes()==before
+    finally:os.close(gate)
+
+
+@pytest.mark.parametrize('kind',['file','symlink','directory','fifo'])
+def test_legacy_outside_gate_env_is_preserved_and_refused_before_mutations(native,monkeypatch,kind):
+    path=source.NATIVE_LEGACY_ENV
+    if kind=='file':path.write_bytes(b'invented preserved legacy config')
+    elif kind=='symlink':path.symlink_to(native.f.config)
+    elif kind=='directory':path.mkdir()
+    else:os.mkfifo(path,0o600)
+    original=path.lstat()
+    monkeypatch.setattr(source.subprocess,'run',lambda *a,**k:pytest.fail('no DS mutation for legacy residue'))
+    monkeypatch.setattr(source,'_native_save_at',lambda *a,**k:pytest.fail('no state write for legacy residue'))
+    for operation in (lambda:source.native_prepare_identity(native.selected),
+                      lambda:source.native_prepare_state(native.selected,native.identity)):
+        with pytest.raises(source.CustodyError,match='legacy-env-preserved'):operation()
+    assert (path.lstat().st_dev,path.lstat().st_ino,path.lstat().st_mode)==(original.st_dev,original.st_ino,original.st_mode)
+    assert not source.NATIVE_STATE.exists() and not native.changes and native.acl.writes==0
+
+
+def test_preparer_does_not_adopt_an_env_found_in_an_unfinished_gate_prefix(native):
+    native.acl.fail_write=True
+    with pytest.raises(source.CustodyError,match='acl-write-failed'):
+        source.native_prepare_state(native.selected,native.identity)
+    path=env_file(native)
+    before=path.read_bytes()
+    changes=list(native.changes)
+    native.acl.fail_write=False
+    with pytest.raises(source.CustodyError,match='state-unmanaged'):
+        source.native_prepare_state(native.selected,native.identity)
+    assert native.acl.writes==0,'unknown env must not receive a newly accessible gate'
+    assert path.read_bytes()==before and native.changes==changes
+
+
+
+def test_unpublished_registered_gate_stays_closed_when_known_child_is_unsafe(native):
+    native.acl.fail_write=True
+    with pytest.raises(source.CustodyError,match='acl-write-failed'):
+        source.native_prepare_state(native.selected,native.identity)
+    native.acl.fail_write=False
+    gate=os.open(source.NATIVE_STATE,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    metadata=os.open(native.metadata,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:
+        # Real Root record publication binds this known newly created child FD.
+        try:os.mkdir('private',mode=0o700,dir_fd=gate)
+        except FileExistsError:pass
+        child=os.open('private',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=gate)
+        try:
+            info=os.fstat(child)
+            intent,raw=source._native_json_at(metadata,'source-custody-prepare.json')
+            # A publication interrupted before the ready record may retain an
+            # already chowned inode. Both old/new publication orders construct
+            # this same supported inode-bound prefix; no authority is faked.
+            intent['children']['private']={'inode':[info.st_dev,info.st_ino],'ready':False}
+            source._native_save_at(native.selected,metadata,'source-custody-prepare.json',intent,previous=raw)
+            os.fchmod(child,0o777)  # Unsupported prefix; never repair it.
+        finally:os.close(child)
+    finally:
+        os.close(metadata)
+        os.close(gate)
+    changes=list(native.changes)
+    with pytest.raises(source.CustodyError,match='descendant-unmanaged'):
+        source.native_prepare_state(native.selected,native.identity)
+    assert native.acl.writes==0,'a known unsafe child must be refused before opening the gate'
+    assert native.changes==changes and stat.S_IMODE((source.NATIVE_STATE/'private').stat().st_mode)==0o777
+
+
+
+def test_gate_publication_is_after_complete_children_descriptor_and_data_tree(native,monkeypatch):
+    publish=source._native_write_gate_acl
+    walk=source._native_verify_data_tree
+    checked=[]
+    def checked_walk(fd,**kwargs):
+        result=walk(fd,**kwargs)
+        checked.append(os.fstat(fd).st_ino)
+        return result
+    def checked_publish(selection,fd,owner_uid,broker_uid):
+        record=json.loads((native.metadata/'source-custody-prepare.json').read_text())
+        assert set(record['children'])=={'private','private/oauth','projection','results','proposals'}
+        assert all(child['ready'] for child in record['children'].values())
+        assert (source.NATIVE_STATE/'custody.json').is_file()
+        assert len(checked)>=4 and native.acl.writes==0
+        return publish(selection,fd,owner_uid,broker_uid)
+    monkeypatch.setattr(source,'_native_verify_data_tree',checked_walk)
+    monkeypatch.setattr(source,'_native_write_gate_acl',checked_publish)
+    assert source.native_prepare_state(native.selected,native.identity)['phase']=='prepared-no-jobs'
+    assert native.acl.writes==1
+
+
+def test_lost_final_root_currentness_leaves_prepared_gate_unpublished(native,monkeypatch):
+    selected=source._native_selected
+    def lose_after_preparation(value):
+        result=selected(value)  # Actual qualifier still runs before fault.
+        if (source.NATIVE_STATE/'custody.json').exists():
+            raise source.CustodyError('injected-final-currentness-lost')
+        return result
+    monkeypatch.setattr(source,'_native_selected',lose_after_preparation)
+    with pytest.raises(source.CustodyError,match='final-currentness-lost'):
+        source.native_prepare_state(native.selected,native.identity)
+    assert native.acl.writes==0
+    assert (source.NATIVE_STATE/'custody.json').is_file()
+    monkeypatch.setattr(source,'_native_selected',selected)
+    assert source.native_prepare_state(native.selected,native.identity)['phase']=='prepared-no-jobs'
+    assert native.acl.writes==1
+
+
+def test_already_published_gate_is_preserved_when_child_later_becomes_invalid(native):
+    source.native_prepare_state(native.selected,native.identity)
+    fd=os.open(source.NATIVE_STATE,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:key=native.acl.key(fd)
+    finally:os.close(fd)
+    before=copy.deepcopy(native.acl.acls[key])
+    (source.NATIVE_STATE/'private').chmod(0o777)
+    with pytest.raises(source.CustodyError,match='descendant-changed'):
+        source.native_prepare_state(native.selected,native.identity)
+    assert native.acl.writes==1 and native.acl.acls[key]==before
+    assert stat.S_IMODE((source.NATIVE_STATE/'private').stat().st_mode)==0o777

@@ -631,7 +631,8 @@ NATIVE_BROKER = '_ods_pixel_sources'
 NATIVE_HOME = '/private/var/empty'
 NATIVE_META = Path('/private/var/lib/ods-pixel-access')
 NATIVE_STATE = Path('/private/var/lib/pixel-source-broker')
-NATIVE_ENV = Path('/private/etc/pixel-source-broker.env')
+NATIVE_ENV = NATIVE_STATE / 'source-broker.env'
+NATIVE_LEGACY_ENV = Path('/private/etc/pixel-source-broker.env')
 NATIVE_KIT = Path('/usr/local/libexec/ods-pixel-access/pixel_connections/source-broker-kit')
 NATIVE_LABEL = 'com.ods.pixel-native-source-'
 _NATIVE_SEAL = object()
@@ -753,7 +754,12 @@ def _native_selected(selection):
     # A duck-typed guard/checksum is not a Root deployment capability.
     if type(selection) is not _NativeSourceSelection or selection.seal is not _NATIVE_SEAL:
         raise CustodyError('native-source-deployment-required')
-    return selection.guard()
+    doc = selection.guard()
+    # No native publisher for this obsolete outside-gate path ever existed in
+    # this implementation. Preserve any object there; do not adopt or move it.
+    if os.path.lexists(NATIVE_LEGACY_ENV):
+        raise CustodyError('native-source-legacy-env-preserved')
+    return doc
 
 
 def _native_acl_library():
@@ -868,6 +874,79 @@ def native_verify_gate(fd, owner_uid, broker_uid, *, prefix=False):
     if actual != wanted and not (prefix and actual in ((), wanted[:1])):
         raise CustodyError('native-source-gate-acl-mismatch')
     return (info.st_dev, info.st_ino)
+
+
+def native_verify_env_fd(fd, broker_uid):
+    """Read-only env-file custody, not env-content/deployment admission.
+
+    The future publisher/launcher must prove the fixed gate/Root intent and
+    read/validate its bounded environment using this same held descriptor.
+    This helper neither reads bytes, installs an ACL nor runs anything.
+    """
+    info = os.fstat(fd)
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_gid != 0
+            or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1
+            or not 0 < info.st_size <= MAX_RESULT_BYTES):
+        raise CustodyError('native-source-env-unsafe')
+    lib = _native_acl_library()
+    expected = _native_uuid(lib, broker_uid)
+    acl = lib.acl_get_fd_np(fd, _NATIVE_ACL_TYPE)
+    if not acl:
+        raise CustodyError('native-source-env-acl-required')
+    try:
+        if lib.acl_valid(acl) != 0:
+            raise CustodyError('native-source-env-acl-invalid')
+        _native_flags_zero(lib, acl)
+        entry = ctypes.c_void_p()
+        if lib.acl_get_entry(acl, 0, ctypes.byref(entry)) != 0 or not entry.value:
+            raise CustodyError('native-source-env-acl-mismatch')
+        _native_flags_zero(lib, entry)
+        tag, mask = ctypes.c_int(), ctypes.c_uint64()
+        if (lib.acl_get_tag_type(entry, ctypes.byref(tag)) != 0 or tag.value != 1
+                or lib.acl_get_permset_mask_np(entry, ctypes.byref(mask)) != 0 or mask.value != (1 << 1)):
+            raise CustodyError('native-source-env-acl-rights')
+        qualifier = lib.acl_get_qualifier(entry)
+        if not qualifier:
+            raise CustodyError('native-source-env-acl-mismatch')
+        try:
+            if ctypes.string_at(qualifier, 16) != expected:
+                raise CustodyError('native-source-env-acl-mismatch')
+        finally:
+            lib.acl_free(qualifier)
+        extra = ctypes.c_void_p()
+        ctypes.set_errno(0)
+        if lib.acl_get_entry(acl, -1, ctypes.byref(extra)) != -1 or ctypes.get_errno() != errno.EINVAL:
+            raise CustodyError('native-source-env-acl-mismatch')
+    finally:
+        lib.acl_free(acl)
+    def fingerprint(value):
+        return (value.st_dev, value.st_ino, value.st_uid, value.st_gid, value.st_mode,
+                value.st_nlink, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+    if fingerprint(os.fstat(fd)) != fingerprint(info):
+        raise CustodyError('native-source-env-changed')
+    return fingerprint(info)
+
+
+def _native_env_at(gate, owner_uid, broker_uid, *, required=False):
+    """Validate the fixed leaf under an already Root-admitted gate descriptor.
+
+    This does not qualify a caller-supplied gate as a deployment. B must bind
+    the actual fixed gate/Root journal before use; A has no env publisher and
+    deliberately does not admit an existing env in prepare_state's namespace.
+    """
+    if type(required) is not bool or NATIVE_ENV != NATIVE_STATE / 'source-broker.env':
+        raise CustodyError('native-source-env-path-invalid')
+    native_verify_gate(gate, owner_uid, broker_uid)
+    try:
+        fd = os.open(NATIVE_ENV.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=gate)
+    except FileNotFoundError:
+        if required:
+            raise CustodyError('native-source-env-unavailable') from None
+        return None
+    try:
+        return native_verify_env_fd(fd, broker_uid)
+    finally:
+        os.close(fd)
 
 
 def _native_write_gate_acl(selection, fd, owner_uid, broker_uid):
@@ -1114,7 +1193,7 @@ def _native_save_at(selection, directory, name, value, *, previous=None):
 
 def native_prepare_identity(selection):
     """Unwired Root-only account preparation. No job, token or provider starts."""
-    _native_selected(selection)
+    doc = _native_selected(selection)
     native_verify_kit(selection)
     from pixel_macos_custody import protected_directory
     with protected_directory(NATIVE_META) as directory:
@@ -1134,7 +1213,7 @@ def native_prepare_identity(selection):
             if (any(entry.pw_name == NATIVE_BROKER for entry in users)
                     or any(entry.gr_name == NATIVE_BROKER or NATIVE_BROKER in entry.gr_mem for entry in groups)):
                 raise CustodyError('native-source-identity-unmanaged-record')
-            occupied = {entry.pw_uid for entry in users} | {entry.pw_gid for entry in users} | {entry.gr_gid for entry in groups}
+            occupied = {doc['ownerUid'], doc['ownerGid']} | {entry.pw_uid for entry in users} | {entry.pw_gid for entry in users} | {entry.gr_gid for entry in groups}
             available = next((value for value in range(60000, 65000) if value not in occupied), None)
             if available is None:
                 raise CustodyError('native-source-identity-id-exhausted')
@@ -1372,9 +1451,6 @@ def native_prepare_state(selection, identity):
                 if intent['gate'] != [info.st_dev, info.st_ino]:
                     raise CustodyError('native-source-gate-identity-changed')
                 native_verify_gate(gate, doc['ownerUid'], identity['id'], prefix=True)
-                wanted = (_native_uuid(lib, doc['ownerUid']), _native_uuid(lib, identity['id']))
-                if _native_acl_entries(gate, missing=True) != wanted:
-                    _native_write_gate_acl(selection, gate, doc['ownerUid'], identity['id'])
                 if set(os.listdir(gate)) - {'private', 'projection', 'results', 'proposals', 'custody.json'}:
                     raise CustodyError('native-source-state-unmanaged')
                 for relative, uid, gid, mode in _native_layout(doc, identity):
@@ -1463,8 +1539,11 @@ def native_prepare_state(selection, identity):
                             group=gid, private=relative == 'private', remaining=[MAX_RETIRED_ACTION_FILES])
                     finally:
                         os.close(child)
-                native_verify_gate(gate, doc['ownerUid'], identity['id'])
                 _native_selected(selection)
+                wanted = (_native_uuid(lib, doc['ownerUid']), _native_uuid(lib, identity['id']))
+                if _native_acl_entries(gate, missing=True) != wanted:
+                    _native_write_gate_acl(selection, gate, doc['ownerUid'], identity['id'])
+                native_verify_gate(gate, doc['ownerUid'], identity['id'])
                 return descriptor
             finally:
                 os.close(gate)
