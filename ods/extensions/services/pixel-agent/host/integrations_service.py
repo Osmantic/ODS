@@ -459,8 +459,8 @@ class Integrations:
         # one descriptor for the approved identity and the eventual write.
         with self.store.lock:
             config, secrets = self.store.config(), self.store.secrets()
-            policy = config["notes"]["write"]
-            if policy == "off":
+            policy = config["notes"].get("write")
+            if policy not in ("ask", "allow"):
                 raise IntegrationError("notes-write-off", "The owner has not allowed Portal to change notes.")
             with notes.open_vault(config) as root:
                 identity = os.fstat(root)
@@ -481,7 +481,7 @@ class Integrations:
     def _agent_servers(config):
         return [{"id": server["id"], "name": server["name"],
                  "tools": [{"name": tool["name"], "description": tool["description"], "inputSchema": tool["inputSchema"],
-                            "needsApproval": tool["policy"] == "ask"} for tool in server["tools"] if tool["policy"] != "off"]}
+                            "needsApproval": tool["policy"] == "ask"} for tool in server["tools"] if tool.get("policy") in ("ask", "allow")]}
                 for server in config["mcp"]["servers"] if server["enabled"]]
 
     def _mcp_call(self, config, request):
@@ -493,7 +493,7 @@ class Integrations:
             config, secrets = self.store.config(), self.store.secrets()
             server = self._server(config, request.get("server"), enabled=True)
             tool = next((item for item in server["tools"] if item["name"] == name), None)
-            if tool is None or tool["policy"] == "off":
+            if tool is None or tool.get("policy") not in ("ask", "allow"):
                 raise IntegrationError("tool-not-allowed", f"{server['name']} has no allowed tool named {name}. List its tools first.")
             if tool["policy"] == "ask":
                 summary = f"{server['name']}: {name} {json.dumps(arguments, sort_keys=True)[:300]}"
