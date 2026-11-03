@@ -76,8 +76,11 @@ was waived.
 The previous 4.3.42 artifact `acc5550888fe034a9a42e90307c9f7a664726315`,
 digest `477f974f7d85c43b8e4e7a79ff3411da8ee938a9d597033c4f53323a5569d922`,
 remains an exact readable prepared-client identity and immutable historical
-artifact. The Native Source authority table is not rebound by this packaging;
-an explicit separately reviewed 4.3.43 authority row is still required.
+artifact. A separately reviewed Native Source authority row now binds 4.3.43
+to its exact bundle, tree, three input hashes and canonical environment
+template, while retaining the unchanged 4.3.42 row. Actual current and retained
+bundle controls passed. This authorizes those payloads for offline preparation;
+it does not enable native jobs or complete the Mac connection lifecycle.
 OpenClaw, dependency and image versions/digests, signing trust and other
 runtime/provider policy are unchanged. No model, provider/account, installed
 configuration, physical Mac, fleet-readiness or publication claim is made.
