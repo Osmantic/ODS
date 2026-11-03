@@ -83,6 +83,13 @@ def test_legacy_missing_expired_and_declined_details_do_not_invent_a_payload(wor
     row = {"id": "legacy", "kind": "note", "summary": "Append to Owned.md", "digest": "opaque", "state": "pending",
            "createdAt": now(), "expiresAt": now() + 60}
     store.save_approvals([row])
+    # Upgrading the filesystem binding revokes weaker pending note grants.
+    with pytest.raises(IntegrationError, match="no longer waiting"):
+        detail(service, "legacy")
+    assert store.approvals() == []
+    # Other legacy request kinds keep the unavailable-preview fallback.
+    row = {**row, "kind": "mcp", "summary": "Legacy custom tool"}
+    store.save_approvals([row])
     result = detail(service, "legacy")
     assert result["available"] is False and "request" not in result
     assert store.approvals() == [row]
@@ -120,6 +127,11 @@ def test_detail_rejects_a_snapshot_that_is_no_longer_bound_to_its_exact_approval
     else:
         rows[0]["reviewPayloadDigest"] = "字" if change == "unicode-review-digest" else "invalid"
     store.save_approvals(rows)
+    if change == "digest":
+        with pytest.raises(IntegrationError, match="no longer waiting"):
+            detail(service, reply["approvalId"])
+        assert not endpoint.requests and store.approvals() == []
+        return
     result = detail(service, reply["approvalId"])
     assert result["available"] is False and "request" not in result
     assert not endpoint.requests and store.approvals() == rows

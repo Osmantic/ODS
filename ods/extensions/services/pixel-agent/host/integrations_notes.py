@@ -69,6 +69,8 @@ def _parent(root_fd, parts, *, create=False, expected=None, identities=None):
         for index, part in enumerate(parts[:-1]):
             previous = expected['parents'][index] if expected is not None and index < len(expected['parents']) else None
             if create and previous is None:
+                if expected is not None and index == len(expected['parents']):
+                    _check_approval_identity(fd, expected)
                 try:
                     os.mkdir(part, mode=0o755, dir_fd=fd)
                 except FileExistsError:
@@ -111,6 +113,20 @@ def _review_identity(info, *, file=False):
             raise IntegrationError('review-only-context-unavailable', 'The note identity freshness could not be verified.')
         result.update(size=info.st_size, mtimeNs=info.st_mtime_ns)
     return result
+
+
+def _approval_identity(identity):
+    # For a new note the destination is the deepest existing directory.
+    # For append it is the file itself. Inodes can be reused after unlink.
+    if identity['target'] is not None:
+        return identity['target']
+    return identity['parents'][-1][1] if identity['parents'] else identity['root']
+
+
+def _check_approval_identity(fd, snapshot, *, file=False):
+    stamp = snapshot.get('approvalIdentity')
+    if stamp is not None and _review_identity(os.fstat(fd), file=file) != stamp:
+        raise IntegrationError('notes-changed', 'The note destination changed. Request a new approval.')
 
 
 def _snapshot(root_fd, parts, *, _review=False):
@@ -156,15 +172,17 @@ def note_path(root, relative, *, must_exist):
     return pathlib.Path(root).joinpath(*parts), relative
 
 
-def write_binding(config, relative, mode, *, reference_context=None):
+def write_binding(config, relative, mode, *, reference_context=None, for_approval=False):
     validate_write('binding', mode)
     root = vault(config)
     parts, relative = _parts(relative)
     with _root(root) as fd:
         _check_review_source(config, fd, reference_context)
-        snapshot = _snapshot(fd, parts, _review=reference_context is not None)
+        snapshot = _snapshot(fd, parts, _review=reference_context is not None or for_approval)
         identity = snapshot.pop('_reviewIdentity', None)
         _check_review_target(relative, {'vault': str(root), **snapshot}, reference_context, identity=identity)
+        if for_approval:
+            snapshot['approvalIdentity'] = _approval_identity(identity)
     if mode == 'append' and snapshot['target'] is None:
         raise IntegrationError('note-missing', f'There is no note {relative}.')
     if mode == 'create' and snapshot['target'] is not None:
@@ -337,13 +355,18 @@ def write(config, relative, text, mode, *, expected_binding=None):
     root = vault(config)
     parts, relative = _parts(relative)
     with _root(root) as root_fd:
-        snapshot = _snapshot(root_fd, parts)
+        for_approval = expected_binding is not None and 'approvalIdentity' in expected_binding
+        snapshot = _snapshot(root_fd, parts, _review=for_approval)
+        if for_approval:
+            snapshot['approvalIdentity'] = _approval_identity(snapshot.pop('_reviewIdentity'))
         binding = {'vault': str(root), **snapshot}
         if expected_binding is not None and binding != expected_binding:
             raise IntegrationError('notes-changed', 'The note destination changed. Request a new approval.')
         if mode == 'append' and snapshot['target'] is None:
             raise IntegrationError('note-missing', f'There is no note {relative}.')
         with _parent(root_fd, parts, create=mode == 'create', expected=snapshot) as parent:
+            if mode == 'create' and not snapshot['missing']:
+                _check_approval_identity(parent, snapshot)
             flags = os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
             flags |= os.O_CREAT | os.O_EXCL if mode == 'create' else os.O_APPEND
             try:
@@ -357,6 +380,8 @@ def write(config, relative, text, mode, *, expected_binding=None):
                 _regular(info)
                 if mode == 'append' and [info.st_dev, info.st_ino] != snapshot['target']:
                     raise IntegrationError('notes-changed', 'The note destination changed. Request a new approval.')
+                if mode == 'append':
+                    _check_approval_identity(fd, snapshot, file=True)
                 existing = _read_fd(fd) if mode == 'append' else ''
                 separator = '' if existing.endswith('\n\n') or not existing else '\n' if existing.endswith('\n') else '\n\n'
                 # The approved body is literal Markdown: trailing spaces and

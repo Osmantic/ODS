@@ -37,7 +37,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import integrations_apps as apps  # noqa: E402
 import integrations_notes as notes  # noqa: E402
-from integrations_common import (IntegrationError, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES,  # noqa: E402
+from integrations_common import (IntegrationError, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, note_approval_digest,  # noqa: E402
                                  SCHEMA_VERSION, Store, digest, now, redact_secrets, clip, app_context, notification_context,
                                  native_owner_key, native_owner_request, owner_proof, owner_auth_binding, owner_reply_proof, read_owner_frame, OWNER_AUTH_SECONDS,
                                  stop_http_workers, validate_native_state)
@@ -746,11 +746,11 @@ class Integrations(RecoveryReviewOnly, AppActions):
             policy = config['notes'].get('write')
             if policy not in ('ask', 'allow'):
                 raise IntegrationError('notes-write-off', 'The owner has not allowed Portal to change notes.')
-            relative, target = notes.write_binding(config, relative, mode)
+            relative, target = notes.write_binding(config, relative, mode, for_approval=policy == 'ask')
             epoch = self._binding(config, 'notes')
             if policy == 'ask':
                 summary = f"{'Add to' if mode == 'append' else 'Create'} note {relative}"
-                waiting, notification = self._approval('note', summary, digest('note-v2', epoch, target, relative, mode, request.get('text')),
+                waiting, notification = self._approval('note', summary, note_approval_digest(epoch, target, relative, mode, request.get('text')),
                     {"action": "notes-write", "path": relative, "mode": mode, "text": request.get("text")})
             if not waiting:
                 written = notes.write(config, relative, request.get('text'), mode, expected_binding=target)
@@ -837,11 +837,11 @@ class Integrations(RecoveryReviewOnly, AppActions):
             if not config["notes"]["enabled"]:
                 raise IntegrationError("notes-off", "Obsidian notes are not connected.")
             self._require_prepare_policy(config["notes"].get("write"))
-            relative, target = notes.write_binding(config, request["path"], mode)
+            relative, target = notes.write_binding(config, request["path"], mode, for_approval=True)
             epoch = self._binding(config, "notes")
             summary = f"{'Add to' if mode == 'append' else 'Create'} note {relative}"
             return self._prepare_approval("note", summary,
-                                          digest("note-v2", epoch, target, relative, mode, request["text"]),
+                                          note_approval_digest(epoch, target, relative, mode, request["text"]),
                                           {"action": "notes-write", "path": relative, "mode": mode, "text": request["text"]})
 
     def _prepare_mcp_call(self, request):

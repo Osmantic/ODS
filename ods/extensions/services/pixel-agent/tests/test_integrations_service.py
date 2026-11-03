@@ -609,8 +609,8 @@ class IntegrationsTests(unittest.TestCase):
         original = service.notes._snapshot
         swapped = []
 
-        def race(fd, parts):
-            result = original(fd, parts)
+        def race(fd, parts, **options):
+            result = original(fd, parts, **options)
             if not swapped:
                 swapped.append(True)
                 (self.vault / 'Home').rename(self.vault / 'Moved')
