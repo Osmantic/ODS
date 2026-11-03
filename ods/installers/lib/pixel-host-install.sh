@@ -2360,7 +2360,7 @@ _ods_pixel_start_stopped_access_service() {
 
 _ods_pixel_resume_completed_release() {
     local owner="$1" home="$2" pixel_root="$3" contract_sha="$4"
-    local status resume transaction_id outcome config_sha observed
+    local status resume transaction_id outcome config_sha observed source_start_sha
     local helper="${ODS_PIXEL_ACCESS_HELPER:-/usr/local/libexec/ods-pixel-access/pixel_model_transition.py}"
     local unit="${ODS_PIXEL_ACCESS_UNIT_PATH:-/etc/systemd/system/ods-pixel-access.service}"
     local state_dir="${ODS_PIXEL_ACCESS_STATE_DIR:-/var/lib/ods-pixel-access}"
@@ -2380,11 +2380,52 @@ _ods_pixel_resume_completed_release() {
     status="$(_ods_pixel_model_transition status "$owner" "$home")" || return 1
     if [[ -n "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]; then
         _ods_pixel_check_source_transaction "$owner" || return 1
-        if printf '%s' "$status" | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("transaction_id")==sys.argv[1] and "release_completion" not in d else 1)' "$ODS_PIXEL_SOURCE_TRANSACTION"; then
+        resume="$(printf '%s' "$status" | python3 -c '
+import json,re,sys
+d=json.load(sys.stdin)
+if (d.get("pending") is not True or d.get("kind") != "model" or d.get("phase") not in ("held","error")
+    or d.get("transaction_id") != sys.argv[1]):
+    raise SystemExit("Pixel source update does not own the pending release; preserve its admission hold")
+if "release_completion" not in d:
+    print("not-applied")
+    raise SystemExit(0)
+c=d["release_completion"]
+if (not isinstance(c,dict) or set(c) != {"outcome","config_sha256"}
+    or c["outcome"] != "apply" or not isinstance(c["config_sha256"],str)
+    or re.fullmatch("[a-f0-9]{64}",c["config_sha256"]) is None
+    or not isinstance(d.get("start_config_sha256"),str)
+    or re.fullmatch("[a-f0-9]{64}",d["start_config_sha256"]) is None):
+    raise SystemExit("Pixel source update has an incompatible release completion; preserve its admission hold")
+print(c["config_sha256"],d["start_config_sha256"])
+' "$ODS_PIXEL_SOURCE_TRANSACTION")" || return 1
+        if [[ "$resume" == not-applied ]]; then
             # This exact source update acquired admission before Phase06 copy.
             # No release has been applied yet; continue the same staged plan.
             return 0
         fi
+        read -r config_sha source_start_sha <<< "$resume"
+        observed="$(ods_pixel_run_as_owner "$owner" "$home" sha256sum "$home/.openclaw/openclaw.json")" || return 1
+        observed="${observed%% *}"
+        # ODS's overlay can restore the exact configuration held before a
+        # vendor apply. Accept that protected baseline or the vendor's exact
+        # completion, never an arbitrary same-mode owner configuration. Other
+        # non-baseline overlays still require separate verified recovery.
+        if [[ ! "$observed" =~ ^[a-f0-9]{64}$ \
+            || ( "$observed" != "$config_sha" && "$observed" != "$source_start_sha" ) ]]; then
+            printf '%s\n' 'error: source release configuration is unbound; preserve its admission hold' >&2
+            return 1
+        fi
+        config_sha="$observed"
+        # Re-prove this exact process/config under the same protected hold.
+        # Only final source finish may release admission after all ODS work.
+        _ods_pixel_verify_current_runtime "$owner" "$home" "$pixel_root" "$ODS_PIXEL_SOURCE_TRANSACTION" || return 1
+        observed="$(ods_pixel_run_as_owner "$owner" "$home" sha256sum "$home/.openclaw/openclaw.json")" || return 1
+        if [[ "${observed%% *}" != "$config_sha" ]]; then
+            printf '%s\n' 'error: source release configuration changed during verification; preserve its admission hold' >&2
+            return 1
+        fi
+        _ods_pixel_mark_verified_installing "$owner" "$home" "$contract_sha" "$pixel_root"
+        return
     fi
     resume="$(printf '%s' "$status" | python3 -c '
 import json,re,sys

@@ -305,6 +305,127 @@ for resume_case in no-unit-no-transition no-unit-with-transition unit-installed;
     ); then pass "access coordinator resume guard: $resume_case"
     else fail "access coordinator resume guard: $resume_case"; fi
 done
+
+# Resume a completed vendor release under its exact borrowed source hold.
+# The protected baseline may equal ODS's final overlay; unknown config is not
+# authorized merely because a process still has the selected access mode.
+for release_resume_case in source-before-apply source-baseline-overlay source-vendor-completion source-error-hold \
+    source-unknown-config source-verify-fails source-marker-fails source-postverify-drift source-wrong-hold \
+    source-wrong-phase source-model-phase source-invalid-mode source-rollback source-invalid-completion \
+    source-extra-completion source-invalid-start generic-applied generic-config-drift generic-rollback generic-unfinished; do
+    if (
+        case_root="$TEST_ROOT/release-resume/$release_resume_case"
+        mkdir -p "$case_root/state"
+        calls="$case_root/calls"
+        export ODS_PIXEL_ACCESS_HELPER="$case_root/pixel_model_transition.py"
+        export ODS_PIXEL_ACCESS_UNIT_PATH="$case_root/ods-pixel-access.service"
+        export ODS_PIXEL_ACCESS_STATE_DIR="$case_root/state"
+        export PIXEL_SOURCE_REF=0123456789abcdef0123456789abcdef01234567
+        : >"$ODS_PIXEL_ACCESS_HELPER"; : >"$ODS_PIXEL_ACCESS_UNIT_PATH"
+        transaction="$(printf 'a%.0s' {1..64})"; model_transaction="$transaction"
+        current_sha="$(printf 'd%.0s' {1..64})"; completion_sha="$(printf 'c%.0s' {1..64})"
+        start_sha="$current_sha"; contract_sha="$(printf 'e%.0s' {1..64})"
+        source_phase=applied source_mode=full-access model_phase=held completion=apply
+        expected_rc=0 verify_rc=0 mark_rc=0
+        expected_calls=$'coordinator-start\nmodel-status'
+        if [[ "$release_resume_case" == source-* ]]; then
+            export ODS_PIXEL_SOURCE_TRANSACTION="$transaction"
+            expected_calls+=$'\nsource-status'
+        else
+            export ODS_PIXEL_SOURCE_TRANSACTION=''
+        fi
+        case "$release_resume_case" in
+            source-before-apply) completion=absent ;;
+            source-baseline-overlay) expected_calls+=$'\nowner-sha\nverify-source\nowner-sha\nmark' ;;
+            source-vendor-completion)
+                completion_sha="$current_sha"; start_sha="$(printf 'f%.0s' {1..64})"
+                expected_calls+=$'\nowner-sha\nverify-source\nowner-sha\nmark' ;;
+            source-error-hold)
+                model_phase=error; expected_calls+=$'\nowner-sha\nverify-source\nowner-sha\nmark' ;;
+            source-unknown-config)
+                start_sha="$(printf 'f%.0s' {1..64})"; expected_rc=1; expected_calls+=$'\nowner-sha' ;;
+            source-verify-fails) verify_rc=1; expected_rc=1; expected_calls+=$'\nowner-sha\nverify-source' ;;
+            source-marker-fails)
+                mark_rc=1; expected_rc=1; expected_calls+=$'\nowner-sha\nverify-source\nowner-sha\nmark' ;;
+            source-postverify-drift) expected_rc=1; expected_calls+=$'\nowner-sha\nverify-source\nowner-sha' ;;
+            source-wrong-hold) model_transaction="$(printf 'b%.0s' {1..64})"; expected_rc=1 ;;
+            source-wrong-phase) source_phase=held; expected_rc=1 ;;
+            source-model-phase) model_phase=finishing; expected_rc=1 ;;
+            source-invalid-mode) source_mode=unknown; expected_rc=1 ;;
+            source-rollback) completion=rollback; expected_rc=1 ;;
+            source-invalid-completion) completion_sha=invalid; expected_rc=1 ;;
+            source-extra-completion) completion=extra; expected_rc=1 ;;
+            source-invalid-start) start_sha=invalid; expected_rc=1 ;;
+            generic-applied)
+                completion_sha="$current_sha"; expected_calls+=$'\nowner-sha\nfinish:applied\nverify-generic\nmark' ;;
+            generic-config-drift) expected_rc=1; expected_calls+=$'\nowner-sha' ;;
+            generic-rollback)
+                completion=rollback; completion_sha="$current_sha"; expected_calls+=$'\nowner-sha\nfinish:rolled-back' ;;
+            generic-unfinished) completion=absent; expected_rc=1 ;;
+        esac
+        model_status="$(python3 - "$model_transaction" "$completion" "$completion_sha" "$start_sha" "$model_phase" <<'PY'
+import json,sys
+transaction, completion, digest, start, phase = sys.argv[1:]
+value = dict(pending=True, kind='model', transaction_id=transaction, phase=phase,
+             configured_mode='full-access', start_config_sha256=start)
+if completion != 'absent':
+    value['release_completion'] = dict(outcome='apply' if completion == 'extra' else completion,
+                                       config_sha256=digest)
+    if completion == 'extra':
+        value['release_completion']['unreviewed'] = True
+print(json.dumps(value))
+PY
+        )"
+        _ods_pixel_start_stopped_access_service() { printf '%s\n' coordinator-start >>"$calls"; }
+        _ods_pixel_source_upgrade() {
+            [[ "$1" == status && "$2" == "$owner" ]] || return 99
+            printf '%s\n' source-status >>"$calls"
+            printf '{"pending":true,"transaction":"%s","phase":"%s","mode":"%s"}\n' \
+                "$transaction" "$source_phase" "$source_mode"
+        }
+        _ods_pixel_model_transition() {
+            if [[ "$1" == status ]]; then
+                printf '%s\n' model-status >>"$calls"
+                printf '%s\n' "$model_status"
+            else
+                printf 'finish:%s\n' "$5" >>"$calls"
+                # This trap also detects any premature finish of a source hold.
+                [[ -z "$ODS_PIXEL_SOURCE_TRANSACTION" && "$1" == finish && "$4" == "$transaction" ]]
+            fi
+        }
+        ods_pixel_run_as_owner() {
+            [[ "$1" == "$owner" && "$2" == "$case_root" && "$3" == sha256sum \
+                && "$4" == "$case_root/.openclaw/openclaw.json" ]] || return 99
+            printf '%s\n' owner-sha >>"$calls"
+            printf '%s  %s\n' "$current_sha" "$4"
+        }
+        _ods_pixel_verify_current_runtime() {
+            [[ "$1" == "$owner" && "$2" == "$case_root" && "$3" == "$case_root/pixel" ]] || return 99
+            if [[ -n "$ODS_PIXEL_SOURCE_TRANSACTION" ]]; then
+                [[ "${4:-}" == "$transaction" ]] || return 99
+                printf '%s\n' verify-source >>"$calls"
+            else
+                [[ -z "${4:-}" ]] || return 99
+                printf '%s\n' verify-generic >>"$calls"
+            fi
+            if [[ "$release_resume_case" == source-postverify-drift ]]; then
+                current_sha="$(printf 'b%.0s' {1..64})"
+            fi
+            return "$verify_rc"
+        }
+        _ods_pixel_mark_verified_installing() {
+            [[ "$1" == "$owner" && "$2" == "$case_root" && "$3" == "$contract_sha" \
+                && "$4" == "$case_root/pixel" ]] || return 99
+            printf '%s\n' mark >>"$calls"
+            return "$mark_rc"
+        }
+        result=0
+        _ods_pixel_resume_completed_release "$owner" "$case_root" "$case_root/pixel" "$contract_sha" \
+            >"$case_root/output" 2>&1 || result=$?
+        [[ "$result" == "$expected_rc" && "$(cat "$calls")" == "$expected_calls" ]]
+    ); then pass "held source and generic release resume: $release_resume_case"
+    else fail "held source and generic release resume: $release_resume_case"; fi
+done
 grep -Fq '_ods_pixel_start_stopped_access_service "$owner" "$home" "${PIXEL_SOURCE_REF:?}"' \
     "$ROOT/installers/lib/pixel-host-install.sh" \
     && grep -Fq '_ods_pixel_start_stopped_access_service \' "$ROOT/installers/phases/06-directories.sh" \
