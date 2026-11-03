@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {createIntegrationOutcomes} from '../plugin/integration-outcomes.mjs';
 import {createIntegrationTools,canonicalReviewNotePath,integrationRequest} from '../plugin/integrations.mjs';
-import {createIntegrationReviewRecovery,REVIEW_LABEL_SYSTEM} from '../plugin/integration-review-recovery.mjs';
+import {createIntegrationReviewRecovery} from '../plugin/integration-review-recovery.mjs';
 
 const context={agentId:'pixel',runId:'progress-owner',sessionId:'progress-session',sessionKey:'agent:pixel:openai-user:ods-'+'a'.repeat(64),
   trigger:'user',modelProviderId:'ods-gateway',modelId:'ods/current'};
@@ -13,7 +13,7 @@ const pathParams=(path='Example.md')=>({action:'read',path});
 const append={action:'write',path:'Example.md',text:'Exact current line',mode:'append'};
 const ref=(path='Example.md',binding=hash('file:'+path),sourceBinding=hash('vault'))=>({version:1,source:'obsidian',binding:sourceBinding,
   entries:[{path,binding}],truncated:false});
-const positive=candidate=>Object.freeze({candidate:candidate.ref,entailed:true});
+const positive=candidate=>Object.freeze({candidate:candidate.ref,admission:'native-review-policy-v1'});
 function fixture(reply){
   const outcomes=createIntegrationOutcomes();outcomes.begin({},context,context.runId);const sent=[];
   const tools=createIntegrationTools({context,outcomes,requireBound:()=>true,submit:async payload=>{
@@ -24,8 +24,8 @@ function fixture(reply){
   const prepare=(id,params,name='pixel_ods_notes')=>outcomes.prepareReviewCandidate({toolName:name,params,toolCallId:id},at(id));
   const admit=async(id,params,name='pixel_ods_notes')=>{
     const candidate=await prepare(id,params,name);assert.ok(candidate.ref);
-    const verdict=await outcomes.checkReviewCandidate(candidate,async value=>positive(value));
-    assert.equal(outcomes.commitReviewCandidate(candidate,verdict),undefined);return candidate;
+    const verdict=await outcomes.checkNativeCandidate(candidate,value=>positive(value));
+    assert.equal(outcomes.commitNativeCandidate(candidate,verdict),undefined);return candidate;
   };
   return {outcomes,sent,tools,tool,prepare,admit};
 }
@@ -122,7 +122,7 @@ test('bounded progress prioritizes the candidate target without manufacturing fu
   assert.ok(progress.reads.every(value=>value.sequence<18));assert.ok(Buffer.byteLength(JSON.stringify(progress))<=8192);
 });
 
-test('actual Recovery receives completed-read evidence only after real factory settlement',async()=>{
+test('native role admission retains real completed-read facts without claiming owner-order entailment',async()=>{
   for(const hasRead of [false,true]) {
     const f=fixture(payload=>payload.action==='notes-read'?{ok:true,recoveryReviewOnly:true,path:'Example.md',text:'Bounded read',reviewReferences:ref()}
       :{ok:true,status:'approval-required',approvalId:'fresh',recoveryReviewOnly:true,actionExecuted:false,approvalConsumed:false});
@@ -130,25 +130,22 @@ test('actual Recovery receives completed-read evidence only after real factory s
     const inputs=[];
     const recovery=createIntegrationReviewRecovery({eligible:()=>true,ready:()=>true,
       nativeStartClear:state=>f.outcomes.reviewStartClear({agentId:'pixel',runId:state.runId,sessionId:state.sessionId,sessionKey:state.sessionKey}),
-      complete:async params=>{
-        const input=JSON.parse(params.messages[0].content);inputs.push(input);
-        const data=params.systemPrompt===REVIEW_LABEL_SYSTEM?{operations:[{id:'notes.read',approval:'none'},{id:'notes.append',approval:'before'}]}
-          :{entailed:input.maximumEffect==='private-read'||input.progress.reads.some(value=>value.raw.params.path==='Example.md')};
-        return {agentId:'pixel',provider:'ods-gateway',model:'ods/current',text:JSON.stringify(data)};
-      }});
+      complete:()=>assert.fail('native role admission must not call another model')});
     recovery.observe({prompt:owner},context,context.runId);
     assert.equal((await recovery.finalize({...context,nativeRetryToolsAllowVersion:1,nativeRetryToolChoiceVersion:1,
       messages:[{role:'user',content:owner},{role:'assistant',content:'I will do that.'}],lastAssistantMessage:'I will do that.'},context)).action,'revise');
     const checked=async(id,params)=>{
       const ev={toolName:'pixel_ods_notes',params,toolCallId:id};recovery.beforeTool(ev,at(id));
       const candidate=await f.outcomes.prepareReviewCandidate(ev,at(id));
-      const verdict=await f.outcomes.checkReviewCandidate(candidate,value=>recovery.checkConcrete(value,at(id)));
-      return f.outcomes.commitReviewCandidate(candidate,verdict);
+      inputs.push(candidate.view);
+      const permit=f.outcomes.checkNativeCandidate(candidate,value=>recovery.admitNativeCandidate(value,at(id)));
+      return f.outcomes.commitNativeCandidate(candidate,permit);
     };
     if(hasRead) {assert.equal(await checked('read',pathParams()),undefined);await f.tool('pixel_ods_notes').execute('read',pathParams());}
     const decision=await checked('append',append);
-    if(hasRead) {assert.equal(decision,undefined);assert.equal((await f.tool('pixel_ods_notes').execute('append',append)).details.status,'approval-required');}
-    else {assert.equal(decision.block,true);assert.equal(f.sent.length,0);}
+    assert.equal(decision,undefined,'native policy does not certify semantic order or owner intent');
+    assert.equal((await f.tool('pixel_ods_notes').execute('append',append)).details.status,'approval-required');
+    assert.equal(f.sent.length,hasRead?2:1);
     assert.equal(inputs.at(-1).progress.reads.length,hasRead?1:0);
   }
 });

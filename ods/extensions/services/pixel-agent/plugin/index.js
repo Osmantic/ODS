@@ -406,11 +406,9 @@ export default definePluginEntry({
       toolResultMaxChars: () => projectCapabilityOutputLimit(api.runtime?.config?.current?.() ?? api.config, AGENT_ID),
     });
     integrationReviewRecovery ??= createIntegrationReviewRecovery({
-      complete: parameters => api.runtime.llm.complete(parameters),
       eligible: runId => toolLoopGuard.continuationAllowed(runId),
       nativeStartClear: state => integrationOutcomes.reviewStartClear({agentId:AGENT_ID,
         runId:state.runId,sessionId:state.sessionId,sessionKey:state.sessionKey}),
-      ownerTimezone: () => (api.runtime?.config?.current?.() ?? api.config)?.agents?.defaults?.userTimezone ?? null,
       ready: state => {
         const config = api.runtime?.config?.current?.() ?? api.config;
         const access = accessRuntime.status();
@@ -589,9 +587,9 @@ export default definePluginEntry({
           const candidate=await integrationOutcomes.prepareReviewCandidate(event,context,decision);
           if (candidate?.block) decision=candidate;
           else if (candidate?.ref) {
-            const verdict=await integrationOutcomes.checkReviewCandidate(candidate,
-              value=>integrationReviewRecovery.checkConcrete(value,context));
-            decision=integrationOutcomes.commitReviewCandidate(candidate,verdict)??decision;
+            const permit=integrationOutcomes.checkNativeCandidate(candidate,
+              value=>integrationReviewRecovery.admitNativeCandidate(value,context));
+            decision=integrationOutcomes.commitNativeCandidate(candidate,permit)??decision;
           } else decision={block:true,blockReason:'This review call has no current native admission. Nothing was submitted.'};
         }
         if (decision?.block) {

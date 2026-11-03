@@ -14,8 +14,8 @@ import {PORTAL_INTEGRATIONS_CONTRACT, promptContractForAgent} from '../plugin/pr
 const tool = (tools, name) => tools.find(item => item.name === name);
 async function admitReviewRead(outcomes,context) {
   const candidate=await outcomes.prepareReviewCandidate({toolName:'pixel_ods_notes',toolCallId:'read',params:{action:'read',path:'a.md'}},context);
-  const verdict=await outcomes.checkReviewCandidate(candidate,async value=>Object.freeze({candidate:value.ref,entailed:true}));
-  assert.equal(outcomes.commitReviewCandidate(candidate,verdict),undefined);
+  const verdict=await outcomes.checkNativeCandidate(candidate,value=>Object.freeze({candidate:value.ref,admission:'native-review-policy-v1'}));
+  assert.equal(outcomes.commitNativeCandidate(candidate,verdict),undefined);
 }
 
 test('requireBound is dynamic, strict and fail-closed without changing ordinary optional reads', async () => {

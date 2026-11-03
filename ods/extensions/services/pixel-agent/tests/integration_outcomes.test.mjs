@@ -31,8 +31,8 @@ async function execute(outcomes, id, value=params, reply=pending, ctx=context, s
 async function admitReview(outcomes,id,value=params,ctx=context,name='pixel_ods_mcp') {
   const candidate=await outcomes.prepareReviewCandidate(event(id,value,name),{...ctx,toolCallId:id});
   if(candidate?.block)return candidate;
-  const verdict=await outcomes.checkReviewCandidate(candidate,async current=>Object.freeze({candidate:current.ref,entailed:true}));
-  return outcomes.commitReviewCandidate(candidate,verdict);
+  const verdict=await outcomes.checkNativeCandidate(candidate,current=>Object.freeze({candidate:current.ref,admission:'native-review-policy-v1'}));
+  return outcomes.commitNativeCandidate(candidate,verdict);
 }
 async function reserveReview(outcomes,id,value=params,ctx=context,name='pixel_ods_mcp') {
   assert.equal(await admitReview(outcomes,id,value,ctx,name),undefined);
@@ -45,9 +45,7 @@ async function latchedReview() {
   const startOutcomeRecord=createIntegrationOutcomes();startOutcomeRecord.begin({},ctx);
   const recovery=createIntegrationReviewRecovery({eligible:()=>true,ready:()=>true,
     nativeStartClear:state=>startOutcomeRecord.reviewStartClear({agentId:'pixel',
-      runId:state.runId,sessionId:state.sessionId,sessionKey:state.sessionKey}),
-    complete:async()=>({agentId:'pixel',provider:'ods-gateway',model:'ods/current',text:JSON.stringify({
-      operations:[{id:'notes.read',approval:'none'}]})})});
+      runId:state.runId,sessionId:state.sessionId,sessionKey:state.sessionKey})});
   recovery.observe({prompt:owner},ctx,ctx.runId);
   const decision=await recovery.finalize({...ctx,nativeRetryToolsAllowVersion:1,nativeRetryToolChoiceVersion:1,
     lastAssistantMessage:'I read it.',messages:[{role:'user',content:owner},{role:'assistant',content:'I read it.'}]},ctx);
@@ -389,7 +387,7 @@ test('native end invalidates unfinished ticket control and same-run context reen
   assert.equal(outcomes.control(token),undefined);
   outcomes.finish(token); // This unit never started a host request to settle it.
   outcomes.begin({}, {...context});
-  const next = await reserveReview(outcomes,'next',params,{...context});
+  const next = await reserveReview(outcomes,'next',{action:'list'},{...context});
   assert.equal(outcomes.control(next).recoveryReviewOnly,true);
   outcomes.complete(token,'pending');
   assert.equal(outcomes.projection(runId),undefined);
@@ -434,11 +432,16 @@ test('only native trusted ticket control adds review-only and cannot borrow norm
   // every model-controlled argument is otherwise identical.
   // A later false control cannot lower the native run's floor.
   assert.equal(outcomes.before(event('latched'),{...context,toolCallId:'latched'},undefined,{recoveryReviewOnly:false}).block,true);
-  const latched = await reserveReview(outcomes,'latched');
+  assert.equal((await admitReview(outcomes,'latched')).code,'review-proposal-limit');
+  assert.match(outcomes.projection(runId),/did not submit/);
+  // A new explicit owner has fresh budgets, while the old run stays terminal.
+  const nextContext={...context,runId:'fresh-private-control',trigger:'user'};
+  outcomes.begin({},nextContext);
+  const latched = await reserveReview(outcomes,'latched',params,nextContext);
   assert.equal(outcomes.control(latched).recoveryReviewOnly,true);
   outcomes.complete(latched,'pending');
-  assert.match(outcomes.projection(runId),/request 4/);
-  const cancelled = await reserveReview(outcomes,'cancelled');
+  assert.match(outcomes.projection(nextContext.runId),/request 1/);
+  const cancelled = await reserveReview(outcomes,'cancelled',{action:'list'},nextContext);
   outcomes.cancelUser('ods-'+'a'.repeat(64));
   assert.equal(outcomes.control(cancelled),undefined);
   // A no-longer-current ticket is not turned into an unflagged dispatch.
@@ -652,8 +655,8 @@ test('index wires only native admissions/direct outcomes and both existing deliv
     < source.indexOf('await toolLoopGuard.beforeToolCall(event, context'));
   assert.match(source,/createIntegrationTools\(\{context, outcomes:integrationOutcomes,\s*requireBound:factoryContext=>integrationReviewRecovery\.isReviewOnly\(factoryContext\),/);
   assert.match(source,/prepareReviewCandidate\(event,context,decision\)/);
-  assert.match(source,/checkReviewCandidate\(candidate,[\s\S]*?integrationReviewRecovery\.checkConcrete\(value,context\)/);
-  assert.match(source,/commitReviewCandidate\(candidate,verdict\)/);
+  assert.match(source,/checkNativeCandidate\(candidate,[\s\S]*?integrationReviewRecovery\.admitNativeCandidate\(value,context\)/);
+  assert.match(source,/commitNativeCandidate\(candidate,permit\)/);
   assert.match(source,/integrationOutcomes\.verification\(/);
   assert.match(source,/integrationOutcomes\.channel\(event, toolLoopGuard\.replyPayloadSending\(event\)\)/);
   assert.match(source,/integrationOutcomes\.cancelUser\(parsed\.user\)/);

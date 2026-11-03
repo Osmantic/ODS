@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {integrationRequest, snapshotIntegrationRequest, reviewIntegrationCandidate, canonicalReviewNotePath,
-  canonicalReviewDocumentId, INTEGRATION_TOOL_NAMES} from './integrations.mjs';
+  canonicalReviewDocumentId, INTEGRATION_TOOL_NAMES, NATIVE_REVIEW_ROLE, nativeReviewOperation} from './integrations.mjs';
 
 // Native outcome evidence and refusal after uncertainty. Never executes,
 // reads approvals, parses model prose or requests another model attempt.
@@ -13,11 +13,9 @@ const names = new Set(INTEGRATION_TOOL_NAMES);
 const actions = new Set(['notes-write', 'notify', 'mcp-call']);
 const reviewReads = new Set(['notes-search', 'notes-read', 'mcp-tools']);
 const tracked = (payload, reviewOnly) => actions.has(payload?.action) || reviewOnly && reviewReads.has(payload?.action);
-const SAFE_APP_READS = Object.freeze({'app:documents':['search','read'], 'app:photos':['search'],
-  'app:watch':['list'], 'app:news':['unread','digest']});
 const UNRESOLVED = 'An earlier integration call in this response has an unverified result. This additional action was not submitted. Check the destination, then send a new request before trying again. Known built-in reads and the catalog remain available.';
 const effectful = payload => payload?.action === 'notify' || payload?.action === 'notes-write' ||
-  payload?.action === 'mcp-call' && !(Object.hasOwn(SAFE_APP_READS,payload.server) && SAFE_APP_READS[payload.server].includes(payload.tool));
+  payload?.action === 'mcp-call' && nativeReviewOperation(payload)?.maximumEffect !== 'private-read';
 const childOf = (id,call) => {
   if (typeof id!=='string') return false;
   const parent = call.id.replace(/[^A-Za-z0-9_.:-]+/g, '_').slice(0,120) || 'call';
@@ -94,7 +92,7 @@ export function appendIntegrationNotice(text, notice) {
 
 export function createIntegrationOutcomes({maximumRuns = 64, maximumCalls = 64} = {}) {
   if (![maximumRuns, maximumCalls].every(value => Number.isInteger(value) && value >= 1 && value <= 256)) throw new Error('invalid-outcome-limits');
-  const runs = new Map(), bySession = new Map(), byKey = new Map(), reservations = new WeakMap(), candidates = new WeakMap();
+  const runs = new Map(), bySession = new Map(), byKey = new Map(), reservations = new WeakMap(), candidates = new WeakMap(), nativePermits = new WeakMap();
   let generation = 0;
   const owned = run => run && runs.get(run.id) === run && !run.invalid &&
     bySession.get(run.sessionId) === run.id && (!run.sessionKey || byKey.get(run.sessionKey) === run.id);
@@ -244,7 +242,8 @@ export function createIntegrationOutcomes({maximumRuns = 64, maximumCalls = 64} 
       if (byKey.get(old.sessionKey) === id) byKey.delete(old.sessionKey);
     }
     run = {id:context.runId, sessionId:context.sessionId, sessionKey:context.sessionKey, calls:[], sequence:0,
-      generation:++generation, uncertain,reviewQueue:[],referenceLookups:[],referenceBindings:new Map()};
+      generation:++generation, uncertain,reviewQueue:[],referenceLookups:[],referenceBindings:new Map(),
+      nativeReviewOperations:new Set(),nativeReviewProposals:new Set()};
     runs.set(run.id, run);
     bySession.set(run.sessionId, run.id);
     if (run.sessionKey) byKey.set(run.sessionKey, run.id);
@@ -376,28 +375,47 @@ export function createIntegrationOutcomes({maximumRuns = 64, maximumCalls = 64} 
     })();
     return call.prepared;
   }
-  async function checkReviewCandidate(candidate,check) {
+  function nativePermitCurrent(call,permit) {
+    const proof=permit&&nativePermits.get(permit);
+    return Boolean(proof && proof.call===call && proof.candidate===call.preparedValue && proof.run===call.run
+      && proof.generation===call.run.generation && proof.rawKey===call.rawKey && proof.baseKey===call.baseKey
+      && proof.contextKey===requestKey({agentId:'pixel',runId:call.run.id,sessionId:call.run.sessionId,sessionKey:call.run.sessionKey}));
+  }
+  function checkNativeCandidate(candidate,check) {
     const call=candidate?.ref&&candidates.get(candidate.ref);
     if (!call || call.preparedValue!==candidate) return undefined;
-    if (call.checkPromise) return call.checkPromise;
-    call.checkPromise=(async()=>{
-      if (!reviewCurrent(call) || !unchanged(call)) return undefined;
-      let verdict;
-      try{verdict=call.maximumEffect==='catalog-metadata'?Object.freeze({candidate:candidate.ref,entailed:true,code:'review-metadata'}):await check(candidate);}
-      catch{verdict=Object.freeze({candidate:candidate.ref,entailed:false,code:'review-check-failed'});}
-      if (!reviewCurrent(call) || !unchanged(call)) return undefined;
-      call.verdict=verdict;return verdict;
-    })();
-    return call.checkPromise;
+    if (!reviewCurrent(call) || !unchanged(call) || call.run.reviewLease!==call) return undefined;
+    if (call.nativeChecked) return nativePermitCurrent(call,call.nativePermit)?call.nativePermit:undefined;
+    call.nativeChecked=true;
+    let permit;try{permit=check(candidate);}catch{return undefined;}
+    // The Source callback is native-only and synchronous. Neither a semantic
+    // boolean, a thenable nor an equal-looking copied object grants a ticket.
+    if (!exactKeys(permit,['candidate','admission']) || !Object.isFrozen(permit)
+        || permit.candidate!==candidate.ref || permit.admission!=='native-review-policy-v1'
+        || !reviewCurrent(call) || !unchanged(call) || call.run.reviewLease!==call) return undefined;
+    nativePermits.set(permit,{call,candidate,run:call.run,generation:call.run.generation,rawKey:call.rawKey,baseKey:call.baseKey,
+      contextKey:requestKey({agentId:'pixel',runId:call.run.id,sessionId:call.run.sessionId,sessionKey:call.run.sessionKey})});
+    call.nativePermit=permit;return permit;
   }
-  function commitReviewCandidate(candidate,verdict) {
+  function commitNativeCandidate(candidate,permit) {
     const call=candidate?.ref&&candidates.get(candidate.ref);
     if (!call || call.preparedValue!==candidate) return {block:true,blockReason:REVIEW_REFUSED};
     if (call.run.uncertain && effectful(call.payload)) return candidateBlocked(call,'integration-outcome-unresolved',false);
-    if (!reviewCurrent(call) || !unchanged(call)) return candidateBlocked(call);
-    if (call.committed) return undefined; // Exact native wrapper/child reuse.
-    if (call.verdict!==verdict || !Object.isFrozen(verdict) || verdict?.candidate!==candidate.ref || verdict.entailed!==true)
+    if (!reviewCurrent(call) || !unchanged(call) || call.run.reviewLease!==call || !nativePermitCurrent(call,permit))
       return candidateBlocked(call);
+    if (call.committed) return undefined; // Same original native wrapper/child family only.
+    const operation=nativeReviewOperation(call.payload),run=call.run,limits=NATIVE_REVIEW_ROLE.limits;
+    if (!operation || operation.maximumEffect!==call.maximumEffect) return candidateBlocked(call);
+    if (operation.maximumEffect!=='catalog-metadata') {
+      if (!run.nativeReviewOperations.has(operation.canonicalOperation)
+          && run.nativeReviewOperations.size>=limits.distinctCanonicalOperations) return candidateBlocked(call,'review-operation-limit');
+      // Reserve an ORIGINAL call family, never just an equal payload. A second
+      // family cannot obtain another proposal even if its bytes are identical.
+      if (operation.requiresCurrentAsk && !run.nativeReviewProposals.has(call)
+          && run.nativeReviewProposals.size>=limits.askProposalFamilies) return candidateBlocked(call,'review-proposal-limit');
+      run.nativeReviewOperations.add(operation.canonicalOperation);
+      if (operation.requiresCurrentAsk) run.nativeReviewProposals.add(call);
+    }
     call.committed=true;return undefined;
   }
   function refuseReviewCall(id,context,code='review-candidate-refused',trustedControl) {
@@ -425,7 +443,8 @@ export function createIntegrationOutcomes({maximumRuns = 64, maximumCalls = 64} 
       for (const call of run.calls) {
         if (!call.pending || call.taken || call.baseKey !== key) continue;
         if (run.reviewOnly) {
-          if (!call.candidate || !call.committed || !reviewCurrent(call) || !unchanged(call) || run.reviewLease!==call) continue;
+          if (!call.candidate || !call.committed || !nativePermitCurrent(call,call.nativePermit)
+              || !reviewCurrent(call) || !unchanged(call) || run.reviewLease!==call) continue;
           try{const validated=reviewIntegrationCandidate(raw?.name,raw?.params,context);
             if(requestKey(validated.raw)!==call.rawKey || requestKey(validated.payload)!==call.baseKey)continue;
           }catch{continue;}
@@ -462,7 +481,7 @@ export function createIntegrationOutcomes({maximumRuns = 64, maximumCalls = 64} 
   function control(token) {
     const call = token && reservations.get(token);
     if (!call || !current(call.run) || call.run.ended || call.closed
-      || call.recoveryReviewOnly && (!reviewCurrent(call) || !unchanged(call))) return undefined;
+      || call.recoveryReviewOnly && (!nativePermitCurrent(call,call.nativePermit) || !reviewCurrent(call) || !unchanged(call))) return undefined;
     return call.recoveryReviewOnly ? {recoveryReviewOnly:true,...(call.referenceContext?{recoveryReferenceContext:call.referenceContext}:{})} : {};
   }
   function after(event, context) {
@@ -525,7 +544,7 @@ export function createIntegrationOutcomes({maximumRuns = 64, maximumCalls = 64} 
     return {...decision, payload:{...payload, text:appendIntegrationNotice(payload.text, notice)},
       reason:decision?.reason ?? 'Portal adds the recorded status of this integration call.'};
   }
-  return {begin, reviewStartClear, before, prepareReviewCandidate,checkReviewCandidate,commitReviewCandidate,refuseReviewCall,
+  return {begin, reviewStartClear, before, prepareReviewCandidate,checkNativeCandidate,commitNativeCandidate,refuseReviewCall,
     take, control, complete,finish, after, end, cancelUser, projection, verification, channel, refusal, effectful,
     clear() {for(const run of runs.values()){run.cancelled=true;drain(run);}runs.clear(); bySession.clear(); byKey.clear();}};
 }

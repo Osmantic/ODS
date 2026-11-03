@@ -8,8 +8,55 @@ import net from 'node:net';
 const SOCKET = '/run/ods-pixel-integrations/control.sock';
 const MAX_REPLY = 512 * 1024;
 const TIMEOUT_MS = 130000;
-const REVIEW_READS = new Set(['notes-search','notes-read','mcp-tools']);
-const REVIEW_APP_READS = {'app:documents':['search','read'],'app:photos':['search'],'app:watch':['list'],'app:news':['unread','digest']};
+const freezeRole = value => {
+  if (value && typeof value === 'object') {for (const child of Object.values(value)) freezeRole(child);Object.freeze(value);}
+  return value;
+};
+// Private native policy, not an owner-intent classifier, availability report or
+// permission grant. Normal model-facing tool definitions below stay unchanged.
+export const NATIVE_REVIEW_ROLE = freezeRole({version:1,scope:'native-review-policy-not-owner-intent',
+  limits:{distinctCanonicalOperations:4,askProposalFamilies:1},operations:[
+  {canonicalOperation:'integration:catalog',action:'mcp-tools',maximumEffect:'catalog-metadata',
+    role:'List saved integration tool metadata only; never start a custom server or read private source data.',
+    constraints:{metadataOnly:true,customProgramStart:false}},
+  {canonicalOperation:'obsidian:search',action:'notes-search',maximumEffect:'private-read',arguments:{query:'string'},
+    role:'Search bounded names/content in the configured Obsidian vault; no file changes.',constraints:{queryMaxCodePoints:300}},
+  {canonicalOperation:'obsidian:read',action:'notes-read',maximumEffect:'private-read',arguments:{path:'note-path'},
+    role:'Read bounded contents of one Markdown note inside the configured Obsidian vault; no file changes.',constraints:{pathMaxCodePoints:512}},
+  {canonicalOperation:'obsidian:append',action:'notes-write',mode:'append',maximumEffect:'approval-proposal',requiresCurrentAsk:true,
+    arguments:{path:'note-path',text:'string',mode:'append'},role:'Only prepare or reuse an exact Ask request to append. Never write the note, consume approval or notify; Allowed/Off refuse.',
+    constraints:{pathMaxCodePoints:512,textMaxCodePoints:20000,defaultMode:'append',preserveFullText:true}},
+  {canonicalOperation:'obsidian:create',action:'notes-write',mode:'create',maximumEffect:'approval-proposal',requiresCurrentAsk:true,
+    arguments:{path:'note-path',text:'string',mode:'create'},role:'Only prepare or reuse an exact Ask request to create a note. Never create it, consume approval or notify; Allowed/Off refuse.',
+    constraints:{pathMaxCodePoints:512,textMaxCodePoints:20000,preserveFullText:true}},
+  {canonicalOperation:'paperless:search',action:'mcp-call',server:'app:documents',tool:'search',maximumEffect:'private-read',arguments:{query:'string'},
+    role:'Search bounded existing documents in the configured Paperless library; no document changes.',constraints:{normalizedQueryMaxCodePoints:200}},
+  {canonicalOperation:'paperless:read',action:'mcp-call',server:'app:documents',tool:'read',maximumEffect:'private-read',arguments:{id:'document'},
+    role:'Read bounded text of the selected Paperless document; no document changes.',constraints:{id:'positive safe integer or canonical positive decimal string <= 9223372036854775807'}},
+  {canonicalOperation:'immich:search',action:'mcp-call',server:'app:photos',tool:'search',maximumEffect:'private-read',arguments:{query:'string',place:'string',after:'string',before:'string'},
+    role:'Search configured Immich photos with the supplied query/place/date restrictions; no photo changes or query fallback.',constraints:{normalizedQueryMaxCodePoints:200,normalizedPlaceMaxCodePoints:100,hostValidatesDates:true}},
+  {canonicalOperation:'watch:list',action:'mcp-call',server:'app:watch',tool:'list',maximumEffect:'private-read',arguments:{},
+    role:'List configured webpage monitors; do not create or remove any monitor.',constraints:{readOnly:true}},
+  {canonicalOperation:'watch:add',action:'mcp-call',server:'app:watch',tool:'add',maximumEffect:'approval-proposal',requiresCurrentAsk:true,arguments:{url:'string',title:'string',below:'number'},
+    role:'Only prepare or reuse an exact Ask request for a webpage/price monitor. Never create the monitor, consume approval or notify; Allowed/Off refuse.',constraints:{strippedTitleMaxCodePoints:200,hostValidatesUrlAndPrice:true}},
+  {canonicalOperation:'watch:remove',action:'mcp-call',server:'app:watch',tool:'remove',maximumEffect:'approval-proposal',requiresCurrentAsk:true,arguments:{id:'string'},
+    role:'Only prepare or reuse an exact Ask request to remove the selected monitor. Never remove it, consume approval or notify; Allowed/Off refuse.',constraints:{preserveExactId:true}},
+  {canonicalOperation:'freshrss:unread',action:'mcp-call',server:'app:news',tool:'unread',maximumEffect:'private-read',arguments:{},
+    role:'Read bounded unread FreshRSS stories for this response; do not mark read or send a notification.',constraints:{delivery:false}},
+  {canonicalOperation:'freshrss:digest_read',action:'mcp-call',server:'app:news',tool:'digest',maximumEffect:'private-read',arguments:{},
+    role:'Read a bounded FreshRSS digest for this response; do not mark read, notify or arm later delivery.',constraints:{delivery:false}},
+].map(entry=>({...entry,adapter:entry.action.startsWith('notes-')?'pixel_ods_notes':'pixel_ods_mcp',
+  adapterAction:entry.action.startsWith('notes-')?entry.action.slice('notes-'.length):entry.action==='mcp-tools'?'list':'call'}))});
+export function nativeReviewOperation(payload) {
+  return NATIVE_REVIEW_ROLE.operations.find(entry=>entry.action===payload?.action
+    && (entry.action!=='notes-write'||entry.mode===payload.mode)
+    && (entry.action!=='mcp-call'||entry.server===payload.server&&entry.tool===payload.tool));
+}
+const REVIEW_READS = new Set(NATIVE_REVIEW_ROLE.operations.filter(entry=>entry.action!=='mcp-call'
+  &&entry.maximumEffect!=='approval-proposal').map(entry=>entry.action));
+const REVIEW_APP_READS = Object.fromEntries([...new Set(NATIVE_REVIEW_ROLE.operations.filter(entry=>entry.action==='mcp-call')
+  .map(entry=>entry.server))].map(server=>[server,NATIVE_REVIEW_ROLE.operations.filter(entry=>entry.server===server
+    &&entry.maximumEffect==='private-read').map(entry=>entry.tool)]));
 const MCP_USAGE = 'Give the arguments too. To see the servers and their tools: {"action": "list"}. To run a tool: '
   + '{"action": "call", "server": "<server id>", "tool": "<tool name>", "arguments": {...}}, for example '
   + '{"action": "call", "server": "app:photos", "tool": "search", "arguments": {"place": "Lisbon"}}.';
@@ -241,24 +288,24 @@ export function reviewIntegrationCandidate(name, params, context) {
   };
   let maximumEffect;
   if (name === 'pixel_ods_notes') {
+    const operation=nativeReviewOperation({action:'notes-'+params.action,mode:params.mode??'append'});
+    if (!operation) throw new Error('invalid-review-operation');
     if (params.action === 'search') {ownKeys(['action','query']); if (typeof params.query !== 'string' || !params.query.trim()
-      || [...params.query].length>300) throw new Error('invalid-review-arguments');}
+      || [...params.query].length>operation.constraints.queryMaxCodePoints) throw new Error('invalid-review-arguments');}
     else if (params.action === 'read') {ownKeys(['action','path']); if (!canonicalReviewNotePath(params.path)) throw new Error('invalid-review-arguments');}
     else if (params.action === 'write') {
       ownKeys(['action','path','text','mode']);
-      if (!canonicalReviewNotePath(params.path) || typeof params.text !== 'string' || !params.text.trim() || [...params.text].length > 20000
+      if (!canonicalReviewNotePath(params.path) || typeof params.text !== 'string' || !params.text.trim()
+          || [...params.text].length > operation.constraints.textMaxCodePoints
           || params.mode !== undefined && !['append','create'].includes(params.mode)) throw new Error('invalid-review-arguments');
     } else throw new Error('invalid-review-arguments');
-    maximumEffect = params.action === 'write' ? 'approval-proposal' : 'private-read';
+    maximumEffect = operation.maximumEffect;
   } else if (name === 'pixel_ods_mcp') {
-    if (params.action === 'list') {ownKeys(['action']); maximumEffect = 'catalog-metadata';}
+    if (params.action === 'list') {ownKeys(['action']); maximumEffect = nativeReviewOperation({action:'mcp-tools'}).maximumEffect;}
     else if (params.action === 'call') {
       ownKeys(['action','server','tool','arguments']);
-      const schemas = {'app:documents':{search:{query:'string'},read:{id:'document'}},
-        'app:photos':{search:{query:'string',place:'string',after:'string',before:'string'}},
-        'app:watch':{list:{},add:{url:'string',title:'string',below:'number'},remove:{id:'string'}},
-        'app:news':{unread:{},digest:{}}};
-      const schema = Object.hasOwn(schemas,params.server) && Object.hasOwn(schemas[params.server],params.tool) && schemas[params.server][params.tool];
+      const operation = nativeReviewOperation({action:'mcp-call',server:params.server,tool:params.tool});
+      const schema = operation?.arguments;
       const args = params.arguments ?? {};
       if (!schema || !args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).some(key => !Object.hasOwn(schema,key))) throw new Error('invalid-review-arguments');
       for (const [key,value] of Object.entries(args)) {
@@ -266,7 +313,7 @@ export function reviewIntegrationCandidate(name, params, context) {
           : schema[key] === 'number' ? typeof value !== 'number' || !Number.isFinite(value)
             : typeof value !== 'string') throw new Error('invalid-review-arguments');
       }
-      // Match the host's existing truncating fields before the semantic view is
+      // Match the host's existing truncating fields before the native view is
       // constructed. Refuse a lost restriction; never shorten it on the model's
       // behalf. Python str.split() also treats the four ASCII separators as
       // whitespace, unlike JavaScript's \s.
@@ -274,16 +321,20 @@ export function reviewIntegrationCandidate(name, params, context) {
       const words=value=>value.split(whitespace).filter(Boolean).join(' ');
       const stripped=value=>value.replace(/^[\u0009-\u000d\u001c-\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+|[\u0009-\u000d\u001c-\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+$/gu,'');
       const bounded=(value,maximum)=>value===undefined || [...words(value)].length<=maximum;
-      if (params.server==='app:documents' && params.tool==='search' && !bounded(args.query,200)
-        || params.server==='app:photos' && (!bounded(args.query,200) || !bounded(args.place,100))
+      if (params.server==='app:documents' && params.tool==='search' && !bounded(args.query,operation.constraints.normalizedQueryMaxCodePoints)
+        || params.server==='app:photos' && (!bounded(args.query,operation.constraints.normalizedQueryMaxCodePoints)
+          || !bounded(args.place,operation.constraints.normalizedPlaceMaxCodePoints))
         || params.server==='app:watch' && params.tool==='add' && args.title!==undefined
-          && [...stripped(args.title)].length>200)
+          && [...stripped(args.title)].length>operation.constraints.strippedTitleMaxCodePoints)
         throw new Error('invalid-review-arguments');
       if (params.server === 'app:documents' && params.tool === 'read' && !canonicalReviewDocumentId(args.id)) throw new Error('invalid-review-arguments');
-      maximumEffect = params.server === 'app:watch' && ['add','remove'].includes(params.tool) ? 'approval-proposal' : 'private-read';
+      maximumEffect = operation.maximumEffect;
     } else throw new Error('invalid-review-arguments');
   } else throw new Error('invalid-review-arguments');
-  return {raw:snapshotIntegrationRequest({name,params}),payload:snapshotIntegrationRequest(integrationRequest(name,params,context)),maximumEffect};
+  const payload=snapshotIntegrationRequest(integrationRequest(name,params,context));
+  const role=nativeReviewOperation(payload);
+  if (!role || role.maximumEffect!==maximumEffect) throw new Error('invalid-review-operation');
+  return {raw:snapshotIntegrationRequest({name,params}),payload,maximumEffect:role.maximumEffect};
 }
 
 export function canonicalReviewNotePath(value) {
