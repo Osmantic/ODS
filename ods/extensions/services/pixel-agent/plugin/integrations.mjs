@@ -9,15 +9,21 @@ const SOCKET = '/run/ods-pixel-integrations/control.sock';
 const MAX_REPLY = 512 * 1024;
 const TIMEOUT_MS = 130000;
 const REVIEW_READS = new Set(['notes-search','notes-read','mcp-tools']);
+const REVIEW_APP_READS = {'app:documents':['search','read'],'app:photos':['search'],'app:watch':['list'],'app:news':['unread','digest']};
 const MCP_USAGE = 'Give the arguments too. To see the servers and their tools: {"action": "list"}. To run a tool: '
   + '{"action": "call", "server": "<server id>", "tool": "<tool name>", "arguments": {...}}, for example '
   + '{"action": "call", "server": "app:photos", "tool": "search", "arguments": {"place": "Lisbon"}}.';
 const APPROVAL_TEXT = 'This call created or found a pending request; the action has not run. Tell the owner it needs approval in Settings → Portal integrations (they may also get a notification). After they approve, call this tool again with exactly the same arguments so the service can check and use the approval; do not just repeat this notice. Approval is for one use. For any later requested action, including an identical one, call the tool again to submit that new request. In a scheduled task, do not wait: report this returned status and finish; a later run within 24 hours can check the approval with exactly the same arguments.';
 
-export function submitIntegration(payload, {connect = net.createConnection, platform = process.platform, signal} = {}) {
+export function submitIntegration(payload, {connect = net.createConnection, platform = process.platform, signal, admitted} = {}) {
   return new Promise((resolve, reject) => {
     if (platform !== 'linux' && platform !== 'darwin') return reject(new Error('Portal integrations are not available on this system yet.'));
     if (signal?.aborted) return reject(new Error('Cancelled.'));
+    const currentAdmission = () => {
+      try { return admitted === undefined || typeof admitted === 'function' && admitted() === true; }
+      catch { return false; }
+    };
+    if (!currentAdmission()) return reject(Object.assign(new Error('Native admission is no longer current.'), {code:'integration-call-unbound'}));
     const socket = connect({path: platform === 'darwin' ? '/private/var/lib/ods-pixel-integrations/control.sock' : SOCKET});
     let buffer = Buffer.alloc(0), finished = false, dispatched = false;
     const finish = (error, value) => {
@@ -41,6 +47,7 @@ export function submitIntegration(payload, {connect = net.createConnection, plat
     socket.on('connect', () => {
       if (finished) return;
       if (signal?.aborted) return finish(new Error('Cancelled.'));
+      if (!currentAdmission()) return finish(Object.assign(new Error('Native admission is no longer current.'), {code:'integration-call-unbound'}));
       dispatched = true;
       socket.write(JSON.stringify({schemaVersion: 1, ...payload}) + '\n');
     });
@@ -61,13 +68,16 @@ export function submitIntegration(payload, {connect = net.createConnection, plat
 
 const text = (value, details, isError = false) => ({content: [{type: 'text', text: value}], details, ...(isError ? {isError} : {})});
 
-async function run(submit, payload, signal, render, observed) {
-  const report = status => { try { observed?.(status); } catch { /* Observation grants no execution authority. */ } };
-  const reviewRead = payload.recoveryReviewOnly === true && REVIEW_READS.has(payload.action);
+async function run(submit, payload, signal, render, observed, admitted) {
+  const report = (status, references, code) => { try { observed?.(status, references, code); } catch { /* Observation grants no execution authority. */ } };
+  const reviewRead = payload.recoveryReviewOnly === true && (REVIEW_READS.has(payload.action) || payload.action==='mcp-call'
+    && Object.hasOwn(REVIEW_APP_READS,payload.server) && REVIEW_APP_READS[payload.server].includes(payload.tool));
   let reply;
   try {
-    reply = await submit(payload, {signal});
+    reply = await submit(payload, {signal, ...(admitted ? {admitted} : {})});
   } catch (error) {
+    if (error?.code === 'integration-call-unbound') return text('No integration action was submitted: its native admission is no longer current.',
+      {status:'blocked',code:'integration-call-unbound'},true);
     if (error?.code === 'integration-outcome-unknown') {
       report('unknown');
       return text('The integration was submitted, but its result could not be verified. Check the service or destination before trying again; do not repeat the action automatically.',
@@ -75,12 +85,19 @@ async function run(submit, payload, signal, render, observed) {
     }
     return text('The integrations service is unavailable.', {status: 'unavailable'}, true);
   }
+  // Host-owned typed references are retained only by the exact reservation.
+  // They never enter render(), tool details, model text or ordinary callers.
+  const references = reply?.reviewReferences;
+  if (reply && typeof reply === 'object') {
+    reply = {...reply}; delete reply.reviewReferences; delete reply.recoveryReferenceContext;
+  }
   if (reviewRead && (!reply || typeof reply !== 'object' || typeof reply.ok !== 'boolean')) {
     report('unknown');
     return text('The integration read result could not be verified. No approval request or action completion was confirmed.',
       {status:'outcome-unknown',code:'review-only-read-result-invalid'},true);
   }
   if (!reply?.ok) {
+    if (payload.recoveryReviewOnly === true && ['invalid-review-reference','stale-review-reference'].includes(reply?.error)) report('refused',undefined,reply.error);
     if (reply?.ok === false && ['notification-outcome-unknown', 'mcp-outcome-unknown', 'app-outcome-unknown'].includes(reply.error)) {
       report('unknown');
       return text('Its result could not be verified; check the destination before retrying. Do not repeat the action automatically.',
@@ -95,11 +112,12 @@ async function run(submit, payload, signal, render, observed) {
     const valid = reply.recoveryReviewOnly === true && reply.isError !== true
       && !['approval-required','review-only-ready'].includes(reply.status)
       && (payload.action === 'notes-read' ? typeof reply.path === 'string' && typeof reply.text === 'string'
-        : payload.action === 'notes-search' ? Array.isArray(reply.results) : Array.isArray(reply.servers));
+        : payload.action === 'notes-search' ? Array.isArray(reply.results)
+          : payload.action === 'mcp-call' ? typeof reply.text==='string' : Array.isArray(reply.servers));
     if (valid) {
       try {
         const rendered = render(reply);
-        report('settled');
+        report('settled', references);
         return text(rendered, {status:'done'});
       } catch { /* A malformed read reply cannot claim a settled result. */ }
     }
@@ -132,7 +150,7 @@ async function run(submit, payload, signal, render, observed) {
   if (reply.ok === true && !failed && (
     payload.action === 'notify' && reply.sent === true ||
     payload.action === 'notes-write' && typeof reply.written === 'string' && reply.mode === payload.mode ||
-    payload.action === 'mcp-call' && typeof reply.text === 'string')) report('settled');
+    payload.action === 'mcp-call' && typeof reply.text === 'string')) report('settled', references);
   return text(render(reply), {status: failed ? 'failed' : 'done'}, failed);
 }
 
@@ -208,11 +226,81 @@ export function integrationRequest(name, params, context) {
     ...(server === 'app:news' && tool === 'digest' && runContext ? {runContext} : {})};
 }
 
-export function createIntegrationTools({submit = submitIntegration, context, outcomes, requireBound} = {}) {
+// This is a permission-reducing check for the latched review path only. Keep
+// the raw leaf parameters as well as the host payload: normalization must not
+// turn a later invalid mode or ignored restriction into an admitted append.
+export function reviewIntegrationCandidate(name, params, context) {
+  if (!params || typeof params !== 'object' || Array.isArray(params)) throw new Error('invalid-review-arguments');
+  const ownKeys = allowed => {
+    if (Object.keys(params).some(key => !allowed.includes(key))) throw new Error('invalid-review-arguments');
+  };
+  let maximumEffect;
+  if (name === 'pixel_ods_notes') {
+    if (params.action === 'search') {ownKeys(['action','query']); if (typeof params.query !== 'string' || !params.query.trim()
+      || [...params.query].length>300) throw new Error('invalid-review-arguments');}
+    else if (params.action === 'read') {ownKeys(['action','path']); if (!canonicalReviewNotePath(params.path)) throw new Error('invalid-review-arguments');}
+    else if (params.action === 'write') {
+      ownKeys(['action','path','text','mode']);
+      if (!canonicalReviewNotePath(params.path) || typeof params.text !== 'string' || !params.text.trim() || params.text.length > 20000
+          || params.mode !== undefined && !['append','create'].includes(params.mode)) throw new Error('invalid-review-arguments');
+    } else throw new Error('invalid-review-arguments');
+    maximumEffect = params.action === 'write' ? 'approval-proposal' : 'private-read';
+  } else if (name === 'pixel_ods_mcp') {
+    if (params.action === 'list') {ownKeys(['action']); maximumEffect = 'catalog-metadata';}
+    else if (params.action === 'call') {
+      ownKeys(['action','server','tool','arguments']);
+      const schemas = {'app:documents':{search:{query:'string'},read:{id:'document'}},
+        'app:photos':{search:{query:'string',place:'string',after:'string',before:'string'}},
+        'app:watch':{list:{},add:{url:'string',title:'string',below:'number'},remove:{id:'string'}},
+        'app:news':{unread:{},digest:{}}};
+      const schema = Object.hasOwn(schemas,params.server) && Object.hasOwn(schemas[params.server],params.tool) && schemas[params.server][params.tool];
+      const args = params.arguments ?? {};
+      if (!schema || !args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).some(key => !Object.hasOwn(schema,key))) throw new Error('invalid-review-arguments');
+      for (const [key,value] of Object.entries(args)) {
+        if (schema[key] === 'document' ? !canonicalReviewDocumentId(value)
+          : schema[key] === 'number' ? typeof value !== 'number' || !Number.isFinite(value)
+            : typeof value !== 'string') throw new Error('invalid-review-arguments');
+      }
+      // Match the host's existing truncating fields before the semantic view is
+      // constructed. Refuse a lost restriction; never shorten it on the model's
+      // behalf. Python str.split() also treats the four ASCII separators as
+      // whitespace, unlike JavaScript's \s.
+      const whitespace=/[\u0009-\u000d\u001c-\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/u;
+      const words=value=>value.split(whitespace).filter(Boolean).join(' ');
+      const stripped=value=>value.replace(/^[\u0009-\u000d\u001c-\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+|[\u0009-\u000d\u001c-\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+$/gu,'');
+      const bounded=(value,maximum)=>value===undefined || [...words(value)].length<=maximum;
+      if (params.server==='app:documents' && params.tool==='search' && !bounded(args.query,200)
+        || params.server==='app:photos' && (!bounded(args.query,200) || !bounded(args.place,100))
+        || params.server==='app:watch' && params.tool==='add' && args.title!==undefined
+          && [...stripped(args.title)].length>200)
+        throw new Error('invalid-review-arguments');
+      if (params.server === 'app:documents' && params.tool === 'read' && !canonicalReviewDocumentId(args.id)) throw new Error('invalid-review-arguments');
+      maximumEffect = params.server === 'app:watch' && ['add','remove'].includes(params.tool) ? 'approval-proposal' : 'private-read';
+    } else throw new Error('invalid-review-arguments');
+  } else throw new Error('invalid-review-arguments');
+  return {raw:snapshotIntegrationRequest({name,params}),payload:snapshotIntegrationRequest(integrationRequest(name,params,context)),maximumEffect};
+}
+
+export function canonicalReviewNotePath(value) {
+  if (typeof value !== 'string' || value.length > 512 || value.includes('\0')) return undefined;
+  // Match Python str.strip(), including its four additional ASCII separators.
+  const stripped = value.replace(/^[\u0009-\u000d\u001c-\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+|[\u0009-\u000d\u001c-\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+$/gu,'');
+  if (!stripped || stripped.startsWith('/') || stripped.includes('\\')) return undefined;
+  const path = stripped.toLowerCase().endsWith('.md') ? stripped : stripped+'.md';
+  return path.split('/').every(part => part && !part.startsWith('.')) ? path : undefined;
+}
+
+export function canonicalReviewDocumentId(value) {
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value > 0 ? String(value) : undefined;
+  if (typeof value !== 'string' || !/^[1-9][0-9]{0,18}$/.test(value)) return undefined;
+  return BigInt(value) <= 9223372036854775807n ? value : undefined;
+}
+
+export function createIntegrationTools({submit = submitIntegration, context, outcomes, requireBound, onReviewRefused} = {}) {
   // Factory context comes from the native runtime, never model arguments. Each
   // isolated cron run has its own session identity; keep its read snapshot apart
   // from an interactive digest or another task. This metadata grants no action.
-  const dispatch = (id, payload, signal, render) => {
+  const dispatch = async (id, name, params, payload, signal, render) => {
     let reservation, boundRequired = false;
     try {
       if (requireBound !== undefined) {
@@ -222,23 +310,42 @@ export function createIntegrationTools({submit = submitIntegration, context, out
         boundRequired = required;
       }
       payload = snapshotIntegrationRequest(payload);
+      const raw = boundRequired ? reviewIntegrationCandidate(name,params,context).raw : undefined;
       const refusal = outcomes?.refusal(payload, context);
-      if (refusal) return Promise.resolve(text(refusal, {status:'blocked',code:'integration-outcome-unresolved'}, true));
-      reservation = outcomes?.take(id, payload, context);
+      if (refusal) {
+        outcomes?.refuseReviewCall?.(id,context,'integration-outcome-unresolved');
+        return text(refusal, {status:'blocked',code:'integration-outcome-unresolved'}, true);
+      }
+      reservation = outcomes?.take(id, payload, context, raw ?? {name,params});
       if ((boundRequired || outcomes && (payload.action === 'mcp-call' || outcomes.effectful(payload))) && !reservation) {
-        return Promise.resolve(text('No integration action was submitted: this call has no matching current native admission.',
-          {status:'blocked',code:'integration-call-unbound'}, true));
+        outcomes?.refuseReviewCall?.(id,context,'integration-call-unbound');
+        if (boundRequired) onReviewRefused?.(context,'integration-call-unbound');
+        return text('No integration action was submitted: this call has no matching current native admission.',
+          {status:'blocked',code:'integration-call-unbound'}, true);
       }
     } catch {
-      return Promise.resolve(text('No integration action was submitted: its native admission could not be verified.',
-        {status:'blocked',code:'integration-call-unbound'}, true));
+      outcomes?.refuseReviewCall?.(id,context,'integration-call-unbound');
+      if (boundRequired) onReviewRefused?.(context,'integration-call-unbound');
+      return text('No integration action was submitted: its native admission could not be verified.',
+        {status:'blocked',code:'integration-call-unbound'}, true);
     }
     const control = outcomes?.control?.(reservation);
-    if (reservation && !control || boundRequired && control?.recoveryReviewOnly !== true) return text('This integration call is no longer admitted for this response.',
-      {status:'blocked',code:'integration-call-unbound'},true);
+    if (reservation && !control || boundRequired && control?.recoveryReviewOnly !== true) {
+      outcomes?.finish?.(reservation);outcomes?.refuseReviewCall?.(id,context,'integration-call-unbound');
+      return text('This integration call is no longer admitted for this response.',{status:'blocked',code:'integration-call-unbound'},true);
+    }
     const reviewOnly = control?.recoveryReviewOnly === true;
-    return run(submit, reviewOnly ? {...payload,recoveryReviewOnly:true} : payload, signal, render,
-      status => outcomes?.complete(reservation, status));
+    const nativePayload = reviewOnly ? {...payload,...control} : payload;
+    if (reviewOnly && Buffer.byteLength(JSON.stringify({schemaVersion:1,...nativePayload})+'\n')>65536) {
+      outcomes?.refuseReviewCall?.(id,context,'integration-request-too-large');outcomes?.finish?.(reservation);
+      onReviewRefused?.(context,'integration-request-too-large');
+      return text('No integration action was submitted: its bounded request was too large.',{status:'blocked',code:'integration-request-too-large'},true);
+    }
+    try {return await run(submit, nativePayload, signal, render,
+      (status,references,code) => {outcomes?.complete(reservation,status,references,code);
+        if(reviewOnly && ['invalid-review-reference','stale-review-reference'].includes(code))onReviewRefused?.(context,code);},
+      reviewOnly ? () => Boolean(outcomes?.control?.(reservation)) : undefined);
+    } finally {outcomes?.finish?.(reservation);}
   };
   return [
     {
@@ -252,7 +359,7 @@ export function createIntegrationTools({submit = submitIntegration, context, out
           mode: {type: 'string', enum: ['append', 'create'], description: 'For write: append to an existing note or create a new one.'}}},
       execute: (_id, params, signal) => {
         const request = integrationRequest('pixel_ods_notes', params, context);
-        return request ? dispatch(_id, request, signal, notesText)
+        return request ? dispatch(_id, 'pixel_ods_notes', params, request, signal, notesText)
           : Promise.resolve(text('Use action search, read or write.', {status: 'invalid'}, true));
       },
     },
@@ -264,7 +371,7 @@ export function createIntegrationTools({submit = submitIntegration, context, out
           priority: {type: 'string', enum: ['low', 'default', 'high']}}},
       execute: (_id, params, signal) => {
         const payload = integrationRequest('pixel_ods_notify', params, context);
-        return dispatch(_id, payload, signal, () => 'Notification sent.');
+        return dispatch(_id, 'pixel_ods_notify', params, payload, signal, () => 'Notification sent.');
       },
     },
     {
@@ -276,11 +383,11 @@ export function createIntegrationTools({submit = submitIntegration, context, out
           tool: {type: 'string', description: 'For call: the tool name from list.'},
           arguments: {type: 'object', description: 'For call: the tool arguments as an object.'}}},
       execute: (_id, params, signal) => {
-        if (params?.action === 'list') return dispatch(_id, {action: 'mcp-tools'}, signal, toolsText);
+        if (params?.action === 'list') return dispatch(_id, 'pixel_ods_mcp', params, {action: 'mcp-tools'}, signal, toolsText);
         // A small model sometimes sends no arguments at all; show it the exact shape to retry with.
         if (params?.action !== 'call') return Promise.resolve(text(MCP_USAGE, {status: 'invalid'}, true));
         const payload = integrationRequest('pixel_ods_mcp', params, context);
-        return dispatch(_id, payload, signal,
+        return dispatch(_id, 'pixel_ods_mcp', params, payload, signal,
           reply => `${reply.isError ? 'The tool reported an error:\n' : ''}${reply.text}`);
       },
     },

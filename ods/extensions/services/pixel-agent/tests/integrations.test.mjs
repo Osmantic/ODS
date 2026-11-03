@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
+import {EventEmitter} from 'node:events';
 import {mkdtempSync, rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -11,6 +12,11 @@ import {failedToolOutcome} from '../plugin/run-progress-budget.mjs';
 import {PORTAL_INTEGRATIONS_CONTRACT, promptContractForAgent} from '../plugin/prompt-contract.mjs';
 
 const tool = (tools, name) => tools.find(item => item.name === name);
+async function admitReviewRead(outcomes,context) {
+  const candidate=await outcomes.prepareReviewCandidate({toolName:'pixel_ods_notes',toolCallId:'read',params:{action:'read',path:'a.md'}},context);
+  const verdict=await outcomes.checkReviewCandidate(candidate,async value=>Object.freeze({candidate:value.ref,entailed:true}));
+  assert.equal(outcomes.commitReviewCandidate(candidate,verdict),undefined);
+}
 
 test('requireBound is dynamic, strict and fail-closed without changing ordinary optional reads', async () => {
   let required=false,submissions=0;
@@ -36,14 +42,14 @@ test('bound review reads reject malformed or approval replies and record transpo
     {ok:true,recoveryReviewOnly:true,path:'a.md'},
   ]) {
     const outcomes=createIntegrationOutcomes();outcomes.begin({},context);
-    outcomes.before({toolName:'pixel_ods_notes',toolCallId:'read',params:{action:'read',path:'a.md'}},context,undefined,{recoveryReviewOnly:true});
+    await admitReviewRead(outcomes,context);
     const tools=createIntegrationTools({context,outcomes,requireBound:()=>true,submit:async()=>reply});
     assert.equal((await tool(tools,'pixel_ods_notes').execute('read',{action:'read',path:'a.md'})).details.status,'outcome-unknown');
     assert.match(outcomes.projection(context.runId),/Read an Obsidian note/);
     assert.doesNotMatch(outcomes.projection(context.runId),/requested approval/);
   }
   const outcomes=createIntegrationOutcomes();outcomes.begin({},context);
-  outcomes.before({toolName:'pixel_ods_notes',toolCallId:'read',params:{action:'read',path:'a.md'}},context,undefined,{recoveryReviewOnly:true});
+  await admitReviewRead(outcomes,context);
   const tools=createIntegrationTools({context,outcomes,requireBound:()=>true,submit:async()=>{
     throw Object.assign(new Error('private'),{code:'integration-outcome-unknown'});
   }});
@@ -60,6 +66,21 @@ test('a cancelled request never opens a service connection or submits an action'
     connect: () => { connected = true; throw new Error('A cancelled request reached the service'); },
   }), /Cancelled/);
   assert.equal(connected, false);
+});
+
+test('review native admission is checked both before connecting and before writing a connected socket',async()=>{
+  let connects=0,writes=0,destroyed=0,checks=0;
+  const connect=()=>{
+    connects++;const socket=new EventEmitter();
+    socket.write=()=>{writes++;};socket.destroy=()=>{destroyed++;};
+    queueMicrotask(()=>socket.emit('connect'));return socket;
+  };
+  await assert.rejects(submitIntegration({action:'notes-read',path:'a.md'},
+    {platform:'linux',connect,admitted:()=>false}),{code:'integration-call-unbound'});
+  assert.equal(connects,0);
+  await assert.rejects(submitIntegration({action:'notes-read',path:'a.md'},
+    {platform:'linux',connect,admitted:()=>++checks===1}),{code:'integration-call-unbound'});
+  assert.equal(connects,1);assert.equal(writes,0);assert.equal(destroyed,1);assert.equal(checks,2);
 });
 
 function recording(replies) {

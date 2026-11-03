@@ -410,6 +410,7 @@ export default definePluginEntry({
       eligible: runId => toolLoopGuard.continuationAllowed(runId),
       nativeStartClear: state => integrationOutcomes.reviewStartClear({agentId:AGENT_ID,
         runId:state.runId,sessionId:state.sessionId,sessionKey:state.sessionKey}),
+      ownerTimezone: () => (api.runtime?.config?.current?.() ?? api.config)?.agents?.defaults?.userTimezone ?? null,
       ready: state => {
         const config = api.runtime?.config?.current?.() ?? api.config;
         const access = accessRuntime.status();
@@ -584,7 +585,21 @@ export default definePluginEntry({
       const reviewFloor = integrationReviewRecovery.floor(event, context);
       if (reviewFloor || integrationReviewRecovery.isReviewOnly(context, event)) {
         let decision = reviewFloor ?? accessRuntime.beforeTool(event, context);
-        decision = integrationOutcomes.before(event, context, decision, {recoveryReviewOnly:true}) ?? decision;
+        if (!decision?.block) {
+          const candidate=await integrationOutcomes.prepareReviewCandidate(event,context,decision);
+          if (candidate?.block) decision=candidate;
+          else if (candidate?.ref) {
+            const verdict=await integrationOutcomes.checkReviewCandidate(candidate,
+              value=>integrationReviewRecovery.checkConcrete(value,context));
+            decision=integrationOutcomes.commitReviewCandidate(candidate,verdict)??decision;
+          } else decision={block:true,blockReason:'This review call has no current native admission. Nothing was submitted.'};
+        }
+        if (decision?.block) {
+          integrationOutcomes.refuseReviewCall(context?.toolCallId??event?.toolCallId,context,
+            decision.code??'review-candidate-refused');
+          if (decision.code!=='integration-outcome-unresolved')
+            integrationReviewRecovery.stopReview?.(context,'review-candidate-refused');
+        }
         delegationDelivery.before(event, context, decision);
         taskActivity.before(event, context, decision?.block === true);
         return decision;
@@ -1024,7 +1039,8 @@ export default definePluginEntry({
     // The owner's notes, notifications, MCP servers and apps, all through the host integrations service.
     for (const {name} of createIntegrationTools()) {
       api.registerTool(onlyPixel(context => createIntegrationTools({context, outcomes:integrationOutcomes,
-        requireBound:factoryContext=>integrationReviewRecovery.isReviewOnly(factoryContext)})
+        requireBound:factoryContext=>integrationReviewRecovery.isReviewOnly(factoryContext),
+        onReviewRefused:(factoryContext,code)=>integrationReviewRecovery.stopReview?.(factoryContext,code)})
         .find(tool => tool.name === name)), {names: [name]});
     }
     // Finished scheduled tasks notify the owner; the daily news digest is kept as a cron job.

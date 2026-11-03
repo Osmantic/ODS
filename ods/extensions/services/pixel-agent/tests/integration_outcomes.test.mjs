@@ -28,6 +28,16 @@ async function execute(outcomes, id, value=params, reply=pending, ctx=context, s
   outcomes.after(event(id,value), {...ctx,toolCallId:id});
   return result;
 }
+async function admitReview(outcomes,id,value=params,ctx=context,name='pixel_ods_mcp') {
+  const candidate=await outcomes.prepareReviewCandidate(event(id,value,name),{...ctx,toolCallId:id});
+  if(candidate?.block)return candidate;
+  const verdict=await outcomes.checkReviewCandidate(candidate,async current=>Object.freeze({candidate:current.ref,entailed:true}));
+  return outcomes.commitReviewCandidate(candidate,verdict);
+}
+async function reserveReview(outcomes,id,value=params,ctx=context,name='pixel_ods_mcp') {
+  assert.equal(await admitReview(outcomes,id,value,ctx,name),undefined);
+  return outcomes.take(id,integrationRequest(name,value,ctx),factory(ctx),{name,params:value});
+}
 
 async function latchedReview() {
   const ctx={...context,modelProviderId:'ods-gateway',modelId:'ods/current'};
@@ -37,7 +47,7 @@ async function latchedReview() {
     nativeStartClear:state=>startOutcomeRecord.reviewStartClear({agentId:'pixel',
       runId:state.runId,sessionId:state.sessionId,sessionKey:state.sessionKey}),
     complete:async()=>({agentId:'pixel',provider:'ods-gateway',model:'ods/current',text:JSON.stringify({
-      operations:[{source:'obsidian',verb:'read'}]})})});
+      operations:[{id:'notes.read',approval:'none'}]})})});
   recovery.observe({prompt:owner},ctx,ctx.runId);
   const decision=await recovery.finalize({...ctx,nativeRetryToolsAllowVersion:1,nativeRetryToolChoiceVersion:1,
     lastAssistantMessage:'I read it.',messages:[{role:'user',content:owner},{role:'assistant',content:'I read it.'}]},ctx);
@@ -66,7 +76,7 @@ test('changed append/read/search/mode/source payloads cannot downgrade to option
   ];
   for(const [beforeName,beforeValue,afterName,afterValue] of cases) {
     const outcomes=setup();let submissions=0;
-    outcomes.before(event('one',beforeValue,beforeName),{...context,toolCallId:'one'},undefined,{recoveryReviewOnly:true});
+    await admitReview(outcomes,'one',beforeValue,context,beforeName);
     const tools=createIntegrationTools({context:factory(),outcomes,requireBound:()=>true,
       submit:async()=>{submissions++;return {ok:true,text:'never'};}});
     const result=await tools.find(t=>t.name===afterName).execute('one',afterValue);
@@ -81,7 +91,7 @@ test('only exact bound review note reads/search/catalogs settle, carry the priva
     ['pixel_ods_mcp',{action:'list'},{servers:[]}],
   ]) {
     const outcomes=setup(),submissions=[];
-    outcomes.before(event('one',value,name),{...context,toolCallId:'one'},undefined,{recoveryReviewOnly:true});
+    await admitReview(outcomes,'one',value,context,name);
     const tools=createIntegrationTools({context:factory(),outcomes,requireBound:()=>true,
       submit:async payload=>{submissions.push(payload);return {ok:true,...reply,recoveryReviewOnly:true};}});
     const tool=tools.find(t=>t.name===name),result=await tool.execute('one',value);
@@ -96,10 +106,9 @@ test('only exact bound review note reads/search/catalogs settle, carry the priva
 test('native deferred review reads share one exact parent/child ticket and cannot change their arguments', async () => {
   for(const changed of [false,true]) {
     const outcomes=setup(),value={action:'read',path:'a.md'},child='tool_search_code:parent:pixel_ods_notes:1';
-    outcomes.before(event('parent',{id:'openclaw:pixel-ods:pixel_ods_notes',args:value},'tool_call'),
-      {...context,toolCallId:'parent'},undefined,{recoveryReviewOnly:true});
+    await admitReview(outcomes,'parent',{id:'openclaw:pixel-ods:pixel_ods_notes',args:value},context,'tool_call');
     const concrete=changed?{...value,path:'b.md'}:value;
-    const decision=outcomes.before(event(child,concrete,'pixel_ods_notes'),{...context,toolCallId:child},undefined,{recoveryReviewOnly:true});
+    const decision=await admitReview(outcomes,child,concrete,context,'pixel_ods_notes');
     let submissions=0;
     const tools=createIntegrationTools({context:factory(),outcomes,requireBound:()=>true,
       submit:async()=>{submissions++;return {ok:true,path:'a.md',text:'owned',recoveryReviewOnly:true};}});
@@ -372,31 +381,31 @@ test('dispatched bytes use the admitted private snapshot even if the caller late
   assert.match(outcomes.projection(runId),/requested approval/);
 });
 
-test('native end invalidates unfinished ticket control and same-run context reentry keeps the floor', () => {
+test('native end invalidates unfinished ticket control and same-run context reentry keeps the checked floor', async () => {
   const outcomes = setup();
-  outcomes.before(event('first'),{...context,toolCallId:'first'},undefined,{recoveryReviewOnly:true});
-  const token = outcomes.take('first',integrationRequest('pixel_ods_mcp',params,context),factory());
+  const token = await reserveReview(outcomes,'first');
   outcomes.end({success:true},{...context});
   assert.equal(outcomes.control(token),undefined);
+  outcomes.finish(token); // This unit never started a host request to settle it.
   outcomes.begin({}, {...context});
-  const next = reserve(outcomes,'next',params,{...context});
+  const next = await reserveReview(outcomes,'next',params,{...context});
   assert.equal(outcomes.control(next).recoveryReviewOnly,true);
   outcomes.complete(token,'pending');
   assert.equal(outcomes.projection(runId),undefined);
 });
 
-test('a trusted floor latched at a concrete native child also tightens its untaken parent ticket', () => {
+test('a newly latched concrete child needs its own check and cannot promote an unchecked ordinary parent', async () => {
   const outcomes = setup();
   outcomes.before({toolName:'tool_call',toolCallId:'parent',params:{id:'pixel_ods_mcp',args:params}},
     {...context,toolCallId:'parent'});
   const child = 'tool_search_code:parent:pixel_ods_mcp:1';
-  outcomes.before(event(child),{...context,toolCallId:child},undefined,{recoveryReviewOnly:true});
-  const token = outcomes.take(child,integrationRequest('pixel_ods_mcp',params,context),factory());
+  assert.equal(await admitReview(outcomes,child),undefined);
+  assert.equal(outcomes.take('parent',integrationRequest('pixel_ods_mcp',params,context),factory()),undefined);
+  const token = outcomes.take(child,integrationRequest('pixel_ods_mcp',params,context),factory(),{name:'pixel_ods_mcp',params});
   assert.equal(outcomes.control(token).recoveryReviewOnly,true);
   outcomes.complete(token,'pending');
-  outcomes.begin({},context);
-  const later = reserve(outcomes,'later');
-  assert.equal(outcomes.control(later).recoveryReviewOnly,true);
+  const checked=setup(),later=await reserveReview(checked,'later');
+  assert.equal(checked.control(later).recoveryReviewOnly,true);
 });
 
 test('only native trusted ticket control adds review-only and cannot borrow normal receipt identity', async () => {
@@ -412,8 +421,8 @@ test('only native trusted ticket control adds review-only and cannot borrow norm
   await tool.execute('normal',forged);
   assert.equal(submitted[0].recoveryReviewOnly,undefined);
   const ordinary = reserve(outcomes,'ordinary',params);
-  // The fourth argument is owned by the native current-run admission path.
-  outcomes.before(event('review',params),{...context,toolCallId:'review'},undefined,{recoveryReviewOnly:true});
+  // Only the native provisional/check/commit path supplies private control.
+  await admitReview(outcomes,'review');
   await tool.execute('review',params);
   assert.equal(submitted[1].recoveryReviewOnly,true);
   assert.equal(submitted[1].arguments.recoveryReviewOnly,undefined);
@@ -423,12 +432,12 @@ test('only native trusted ticket control adds review-only and cannot borrow norm
   // A settled ordinary request cannot clear a review-only proposal, even when
   // every model-controlled argument is otherwise identical.
   // A later false control cannot lower the native run's floor.
-  outcomes.before(event('latched'),{...context,toolCallId:'latched'},undefined,{recoveryReviewOnly:false});
-  const latched = outcomes.take('latched',integrationRequest('pixel_ods_mcp',params,context),factory());
+  assert.equal(outcomes.before(event('latched'),{...context,toolCallId:'latched'},undefined,{recoveryReviewOnly:false}).block,true);
+  const latched = await reserveReview(outcomes,'latched');
   assert.equal(outcomes.control(latched).recoveryReviewOnly,true);
   outcomes.complete(latched,'pending');
   assert.match(outcomes.projection(runId),/request 4/);
-  const cancelled = reserve(outcomes,'cancelled',params);
+  const cancelled = await reserveReview(outcomes,'cancelled');
   outcomes.cancelUser('ods-'+'a'.repeat(64));
   assert.equal(outcomes.control(cancelled),undefined);
   // A no-longer-current ticket is not turned into an unflagged dispatch.
@@ -443,7 +452,7 @@ test('only native trusted ticket control adds review-only and cannot borrow norm
 test('approved review-only reply stays ready and truthfully no-effect, not pending or completed', async () => {
   for (const [name,value] of [['pixel_ods_notes',{action:'write',path:'private.md',text:'SECRET'}],['pixel_ods_mcp',params]]) {
     const outcomes = setup();
-    outcomes.before(event('review',value,name),{...context,toolCallId:'review'},undefined,{recoveryReviewOnly:true});
+    await admitReview(outcomes,'review',value,context,name);
     const reply = {ok:true,status:'review-only-ready',approvalId:'approved_private',summary:'SECRET',
       recoveryReviewOnly:true,actionExecuted:false,approvalConsumed:false};
     const tools = createIntegrationTools({context:factory(),outcomes,submit:async()=>reply});
@@ -466,7 +475,7 @@ test('approved review-only reply stays ready and truthfully no-effect, not pendi
 
 test('builtin digest cannot omit its native ticket and a review-only read carries private control', async () => {
   const outcomes = setup();
-  const value = {action:'call',server:'app:news',tool:'digest',arguments:{recoveryReviewOnly:false}};
+  const value = {action:'call',server:'app:news',tool:'digest',arguments:{}};
   const submissions = [];
   const tools = createIntegrationTools({context:factory(),outcomes,submit:async payload=>{
     submissions.push(payload);
@@ -476,7 +485,7 @@ test('builtin digest cannot omit its native ticket and a review-only read carrie
   const missing = await tool.execute('no-ticket',value);
   assert.equal(missing.details.code,'integration-call-unbound');
   assert.deepEqual(submissions,[]); // No host call can arm a digest snapshot.
-  outcomes.before(event('review',value),{...context,toolCallId:'review'},undefined,{recoveryReviewOnly:true});
+  await admitReview(outcomes,'review',value);
   const read = await tool.execute('review',value);
   assert.equal(read.details.status,'done');
   assert.equal(submissions.length,1);
@@ -640,7 +649,10 @@ test('index wires only native admissions/direct outcomes and both existing deliv
   assert.match(source,/integrationOutcomes\.before\(event, context, decision,\s*\{recoveryReviewOnly:/);
   assert.ok(source.indexOf('integrationReviewRecovery.floor(event, context)')
     < source.indexOf('await toolLoopGuard.beforeToolCall(event, context'));
-  assert.match(source,/createIntegrationTools\(\{context, outcomes:integrationOutcomes,\s*requireBound:factoryContext=>integrationReviewRecovery\.isReviewOnly\(factoryContext\)\}\)/);
+  assert.match(source,/createIntegrationTools\(\{context, outcomes:integrationOutcomes,\s*requireBound:factoryContext=>integrationReviewRecovery\.isReviewOnly\(factoryContext\),/);
+  assert.match(source,/prepareReviewCandidate\(event,context,decision\)/);
+  assert.match(source,/checkReviewCandidate\(candidate,[\s\S]*?integrationReviewRecovery\.checkConcrete\(value,context\)/);
+  assert.match(source,/commitReviewCandidate\(candidate,verdict\)/);
   assert.match(source,/integrationOutcomes\.verification\(/);
   assert.match(source,/integrationOutcomes\.channel\(event, toolLoopGuard\.replyPayloadSending\(event\)\)/);
   assert.match(source,/integrationOutcomes\.cancelUser\(parsed\.user\)/);
