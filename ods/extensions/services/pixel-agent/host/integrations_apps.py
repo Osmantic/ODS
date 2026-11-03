@@ -495,9 +495,32 @@ def _reader(settings, password):
     return base, {"Authorization": f"GoogleLogin auth={auth}"}
 
 
-def unread_news(settings, password, limit=MAX_NEWS_ITEMS):
+def news_feed_title(value):
+    """One exact display title, never a URL or a provider endpoint selector."""
+    if (not isinstance(value, str) or not 0 < len(value) <= 300 or not value.strip()
+            or re.search(r"[\x00-\x1f\x7f]", value)):
+        raise IntegrationError("invalid-request", "Give one exact subscribed feed title, or omit feedTitle for all feeds.")
+    return value
+
+
+def unread_news(settings, password, limit=MAX_NEWS_ITEMS, *, feed_title=None):
+    if feed_title is not None:
+        news_feed_title(feed_title)
     base, headers = _reader(settings, password)
-    stream = urllib.parse.quote("user/-/state/com.google/reading-list", safe="")
+    stream_id = "user/-/state/com.google/reading-list"
+    if feed_title is not None:
+        subscriptions = request("news", f"{base}/reader/api/0/subscription/list?output=json", headers=headers)
+        _shape("news", isinstance(subscriptions, dict) and _records(subscriptions.get("subscriptions"))
+               and all(isinstance(row.get("title"), str) for row in subscriptions["subscriptions"]))
+        matches = [row for row in subscriptions["subscriptions"] if row["title"] == feed_title]
+        if not matches:
+            raise IntegrationError("news-feed-not-found", "No subscribed feed has that exact title. No other feed was read.")
+        if len(matches) != 1:
+            raise IntegrationError("news-feed-ambiguous", "More than one subscribed feed has that exact title. "
+                                   "Give the feeds distinct titles in FreshRSS before reading one of them.")
+        stream_id = matches[0].get("id")
+        _shape("news", isinstance(stream_id, str) and re.fullmatch(r"feed/[1-9][0-9]{0,19}", stream_id))
+    stream = urllib.parse.quote(stream_id, safe="")
     query = urllib.parse.urlencode({"xt": "user/-/state/com.google/read", "n": limit, "output": "json"})
     reply = request("news", f"{base}/reader/api/0/stream/contents/{stream}?{query}", headers=headers)
     _shape("news", isinstance(reply, dict) and _records(reply.get("items")))
@@ -507,6 +530,8 @@ def unread_news(settings, password, limit=MAX_NEWS_ITEMS):
         origin, summary = item.get("origin") or {}, item.get("summary") or {}
         _shape("news", _records(links) and isinstance(origin, dict) and isinstance(summary, dict)
                and isinstance(item.get("title") or "", str) and isinstance(summary.get("content") or "", str))
+        if feed_title is not None:
+            _shape("news", origin.get("streamId") == stream_id)
         items.append({"id": str(item.get("id") or "")[:300], "feed": str((item.get("origin") or {}).get("title", ""))[:100],
                       "title": plain(item.get("title"), 200), "link": str(links[0].get("href", ""))[:500],
                       "summary": plain((item.get("summary") or {}).get("content"), 240)})

@@ -45,7 +45,10 @@ APP_TOOLS = {
         "remove": ("watch-remove", "Stop watching a page; id comes from list.", {"id": TEXT}),
     },
     "news": {
-        "unread": ("news-unread", "The owner's unread news stories, grouped by feed, with links.", {}),
+        "unread": ("news-unread", "The owner's unread news stories, grouped by feed, with links. For one named feed, "
+                   "set feedTitle to its exact subscription title; omit it only for news from all feeds. "
+                   "A missing or ambiguous title is refused, never broadened to all feeds.",
+                   {"feedTitle": {"type": "string", "minLength": 1, "maxLength": 300}}),
         "digest": ("news-digest", "For the daily digest: the unread stories no earlier digest sent.", {}),
     },
 }
@@ -190,6 +193,8 @@ class AppActions:
         if any(key not in specification[2] for key in arguments):
             raise IntegrationError("invalid-request", "This builtin tool has unsupported arguments. List its tools; do not assume "
                                    "unsupported constraints were applied. No app action ran.")
+        if server == "news" and tool == "unread" and "feedTitle" in arguments:
+            apps.news_feed_title(arguments["feedTitle"])
         return specification
 
     def use_app(self, config, server, tool, arguments, *, run_context=None, secrets=None, review_references=False, review_only=False):
@@ -220,7 +225,7 @@ class AppActions:
                           f"{len(reply['results'])} photos", key)
             return reply
         if action == "news-unread":
-            items = apps.unread_news(settings, key)
+            items = apps.unread_news(settings, key, feed_title=request.get("feedTitle"))
             self._log("news-unread", "unread news", f"{len(items)} stories")
             return {"items": items, "text": apps.digest_text(items)}
         if action == "news-digest":

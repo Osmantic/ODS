@@ -234,7 +234,11 @@ turned on only with its key.
   watched pages, with each price limit and the last price Portal saw. A price is
   read only for a watch that changed since the last look.
 - **News:** Portal reads the unread stories from FreshRSS (up to 40), grouped by
-  feed. FreshRSS needs API access allowed and an API password.
+  feed. The `unread` tool accepts an optional exact `feedTitle` to read only one
+  subscribed feed, selecting its provider stream before the story limit. Missing
+  or duplicate titles stop the read rather than including other feeds. Omitting
+  the field keeps the all-feeds read. This does not send a notification or change
+  the daily digest. FreshRSS needs API access allowed and an API password.
 
 ## Scheduled tasks and the daily digest
 

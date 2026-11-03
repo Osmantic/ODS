@@ -90,7 +90,8 @@ class BuiltinArgumentTests(unittest.TestCase):
                  ("photos", "search", {"place": "Lisbon"}),
                  ("photos", "search", {"query": "snow", "place": "Oslo", "after": "2026-01-01", "before": "2026-12-31"}),
                  ("watch", "list", {}), ("watch", "add", {"url": "https://example.invalid/qa"}),
-                 ("watch", "remove", {"id": "fixture"}), ("news", "unread", {}), ("news", "digest", {}))
+                 ("watch", "remove", {"id": "fixture"}), ("news", "unread", {}),
+                 ("news", "unread", {"feedTitle": "City"}), ("news", "digest", {}))
         for app, tool, arguments in cases:
             with self.subTest(app=app, tool=tool):
                 probe = self.Probe()
@@ -106,6 +107,87 @@ class BuiltinArgumentTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, "invalid-request")
             self.assertNotIn("fixture-private", caught.exception.message)
             self.assertEqual(probe.calls, [])
+
+    def test_invalid_feed_title_refuses_normal_and_review_dispatch_before_private_access(self):
+        for value in (None, False, 3, [], {}, "", "  ", "x\ny", "x" * 301):
+            request = {"server": "app:news", "tool": "unread", "arguments": {"feedTitle": value}}
+            for review in (False, True):
+                probe = self.Probe()
+                with self.subTest(value=value, review=review), self.assertRaises(service.IntegrationError) as caught:
+                    if review:
+                        probe._review_mcp_call(request)
+                    else:
+                        probe._mcp_call({}, request)
+                self.assertEqual(caught.exception.code, "invalid-request")
+                self.assertEqual(probe.calls, [])
+
+
+class NewsFeedScopeTests(unittest.TestCase):
+    """A feed constraint selects an encoded provider stream before its result cap."""
+
+    def read(self, subscriptions, items=(), title="QA-N9", limit=40):
+        requests = []
+
+        def provider(_app, url, **_kwargs):
+            requests.append(url)
+            return {"subscriptions": subscriptions} if "subscription/list?" in url else {"items": list(items)}
+
+        with unittest.mock.patch.object(apps, "_reader", return_value=("http://fixture/api/greader.php", {})), \
+                unittest.mock.patch.object(apps, "request", side_effect=provider):
+            try:
+                result = apps.unread_news({}, "fixture-only", limit, feed_title=title)
+            except service.IntegrationError as error:
+                return error, requests
+        return result, requests
+
+    @staticmethod
+    def story(title, stream="feed/3", feed="QA-N9"):
+        return {"title": title, "origin": {"title": feed, "streamId": stream}, "summary": {}}
+
+    def test_selected_feed_is_queried_before_cap_and_other_feeds_are_not_read(self):
+        selected = [self.story("Library"), self.story("Garden")]
+        reply, requests = self.read([{"id": "feed/1", "title": "Old feed"}, {"id": "feed/3", "title": "QA-N9"}], selected, limit=2)
+        self.assertEqual([item["title"] for item in reply], ["Library", "Garden"])
+        self.assertEqual(len(requests), 2)
+        self.assertIn("/stream/contents/feed%2F3?", requests[1])
+        self.assertIn("n=2", requests[1])
+        self.assertTrue(all("reading-list" not in url for url in requests))
+
+    def test_absent_title_keeps_global_read_without_subscription_lookup(self):
+        reply, requests = self.read([], [self.story("Library")], title=None)
+        self.assertEqual(len(reply), 1)
+        self.assertEqual(len(requests), 1)
+        self.assertIn("user%2F-%2Fstate%2Fcom.google%2Freading-list", requests[0])
+
+    def test_missing_ambiguous_and_case_mismatch_refuse_without_global_fallback(self):
+        cases = (([], "news-feed-not-found"), ([{"id": "feed/3", "title": "qa-n9"}], "news-feed-not-found"),
+                 ([{"id": "feed/3", "title": "QA-N9"}, {"id": "feed/4", "title": "QA-N9"}], "news-feed-ambiguous"))
+        for subscriptions, code in cases:
+            with self.subTest(subscriptions=subscriptions):
+                error, requests = self.read(subscriptions)
+                self.assertEqual(error.code, code)
+                self.assertEqual(len(requests), 1)
+                self.assertIn("subscription/list?", requests[0])
+
+    def test_url_like_title_is_only_an_exact_label_not_a_network_destination(self):
+        title = "http://private.invalid/../../admin?token=fixture"
+        reply, requests = self.read([{"id": "feed/3", "title": title}], [self.story("Library")], title=title)
+        self.assertEqual(len(reply), 1)
+        self.assertTrue(all(url.startswith("http://fixture/api/greader.php/") for url in requests))
+        self.assertNotIn("private.invalid", " ".join(requests))
+
+    def test_untrusted_subscription_id_cannot_select_an_arbitrary_endpoint(self):
+        for stream in ("http://private.invalid/admin", "../../admin", "feed/3?x=1", "feed/3/../../admin", None):
+            with self.subTest(stream=stream):
+                error, requests = self.read([{"id": stream, "title": "QA-N9"}])
+                self.assertEqual(error.code, "app-protocol")
+                self.assertEqual(len(requests), 1)
+
+    def test_wrong_or_missing_returned_origin_refuses_instead_of_mixing_feeds(self):
+        for story in (self.story("Old", "feed/1", "Old feed"), {"title": "Missing origin"}):
+            with self.subTest(story=story):
+                error, _ = self.read([{"id": "feed/3", "title": "QA-N9"}], [story])
+                self.assertEqual(error.code, "app-protocol")
 
 
 class Fake(http.server.BaseHTTPRequestHandler):
@@ -232,9 +314,9 @@ class FakeChanges(Fake):
 
 class FakeReader(Fake):
     key_header, key = "Authorization", "GoogleLogin auth=tok123"
-    items = [{"title": "Rain &amp; wind tomorrow", "canonical": [{"href": "https://news.example/rain"}], "origin": {"title": "Weather"},
+    items = [{"title": "Rain &amp; wind tomorrow", "canonical": [{"href": "https://news.example/rain"}], "origin": {"title": "Weather", "streamId": "feed/1"},
               "summary": {"content": "<p>Bring a coat.</p>"}},
-             {"title": "New library opens", "canonical": [{"href": "https://news.example/library"}], "origin": {"title": "City"},
+             {"title": "New library opens", "canonical": [{"href": "https://news.example/library"}], "origin": {"title": "City", "streamId": "feed/2"},
               "summary": {"content": ""}}]
 
     def do_POST(self):
@@ -247,9 +329,11 @@ class FakeReader(Fake):
         if not self.allowed():
             return
         if "subscription/list" in self.path:
-            return self.reply({"subscriptions": [{"id": "feed/1"}, {"id": "feed/2"}]})
+            return self.reply({"subscriptions": [{"id": "feed/1", "title": "Weather"}, {"id": "feed/2", "title": "City"}]})
         wanted = int(urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)["n"][0])
-        self.reply({"items": FakeReader.items[:wanted]})
+        stream = urllib.parse.unquote(urllib.parse.urlsplit(self.path).path).rsplit("/stream/contents/", 1)[-1]
+        items = FakeReader.items if not stream.startswith("feed/") else [item for item in FakeReader.items if item.get("origin", {}).get("streamId") == stream]
+        self.reply({"items": items[:wanted]})
 
 
 class FakeNtfy(Fake):
@@ -643,6 +727,20 @@ class AppTests(unittest.TestCase):
         self.save(self.settings(), secrets={"apps": {"news": "wrong"}})
         with self.assertRaisesRegex(service.IntegrationError, "FreshRSS refused"):
             self.app("news", "unread")
+
+    def test_named_feed_read_is_scoped_and_does_not_send_or_change_digest_state(self):
+        self.save(self.settings())
+        before = {path.name: path.read_bytes() for path in self.store.root.iterdir() if path.name.startswith("digest-")}
+        catalog = next(row for row in self.agent("mcp-tools")["servers"] if row["id"] == "app:news")
+        descriptor = next(row for row in catalog["tools"] if row["name"] == "unread")
+        self.assertIn("feedTitle", descriptor["inputSchema"]["properties"])
+        self.assertIn("exact subscription title", descriptor["description"])
+        reply = self.app("news", "unread", feedTitle="City")
+        self.assertEqual([item["title"] for item in reply["items"]], ["New library opens"])
+        self.assertNotIn("Weather", reply["text"])
+        self.assertEqual(FakeNtfy.sent, [])
+        self.assertEqual(before, {path.name: path.read_bytes() for path in self.store.root.iterdir() if path.name.startswith("digest-")})
+        self.assertEqual(len(self.app("news", "unread")["items"]), 2)
 
     def test_digest_plan_follows_the_owner_settings(self):
         self.save(self.settings(digest=True))
