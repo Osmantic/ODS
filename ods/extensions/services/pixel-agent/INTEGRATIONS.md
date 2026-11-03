@@ -65,6 +65,18 @@ owner requests from agent requests. A uid check could not do that.
 
 Both sockets refuse any process that is not the owner's user.
 
+The service publishes `discovery.json` beside the agent socket: a bounded 0600
+snapshot of checked, enabled custom MCP connections and their non-Off tool names
+and Ask-first flags. It contains no remote descriptions, argument schemas,
+endpoints, commands, private paths or credentials. Startup, successful Owner
+save/check and the existing watcher renew it atomically; it expires after five
+minutes. It is configuration metadata, never live provider health or authority.
+Portal adds a quoted, at most 2048-byte view to the current model prompt without
+calling a provider or storing it in chat history. Small contexts of 8K or less,
+managed team roles, probes and automatic review continuations keep their existing
+contract. Missing, expired, corrupt or unsafe files omit the hint; MCP `list`
+remains the complete metadata API and every action still follows host policy.
+
 Private URLs do not enable direct agent networking. Public web tools, shell and
 unapproved browser access retain their private-destination restrictions. The
 configured-app/MCP tool uses the integration service instead: its catalog lists

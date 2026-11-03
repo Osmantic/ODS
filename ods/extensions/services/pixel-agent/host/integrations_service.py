@@ -27,6 +27,7 @@ import socketserver
 import stat
 import sys
 import threading
+import tempfile
 import time
 import traceback
 import urllib.parse
@@ -220,6 +221,71 @@ class Integrations(RecoveryReviewOnly, AppActions):
         self.digest_sent_at = 0
         self.digest_failing = False
         self.failing_tasks = set()
+        self.discovery_path = None
+
+    def publish_discovery(self):
+        """Cached configuration hints only; no provider/credential projection or authority."""
+        path, temporary = self.discovery_path, None
+        if path is None:
+            return False
+        try:
+            for parent in (path.parent, *path.parent.parents):
+                info = parent.lstat()
+                if (not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, os.geteuid()) or info.st_mode & 0o022):
+                    return False
+            if os.path.lexists(path):
+                info = path.lstat()
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1 or info.st_mode & 0o077):
+                    return False
+            with self.store.lock:
+                config, secrets = self.store.config(), self.store.secrets()
+                value = {"version": 1, "revision": config["revision"], "validUntil": int(now()) + 300,
+                         "servers": [], "truncated": False}
+                for server in sorted(config["mcp"]["servers"], key=lambda row: row["id"]):
+                    if not server["enabled"] or server.get("checkedBinding") != digest(server_context(server, secrets)):
+                        continue
+                    identity = redact_secrets(server["id"], secrets)
+                    if not SERVER_ID.fullmatch(identity):
+                        value["truncated"] = True
+                        continue
+                    label = redact_secrets(server["name"], secrets)[:96]
+                    if re.search(r"://|[/\\]|[\x00-\x1f\x7f]", label):
+                        label = identity
+                    entry = {"id": identity, "name": label, "tools": []}
+                    for tool in sorted(server["tools"], key=lambda row: row["name"]):
+                        if tool["policy"] not in ("allow", "ask"):
+                            continue
+                        name = redact_secrets(tool["name"], secrets)
+                        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", name):
+                            value["truncated"] = True
+                            continue
+                        entry["tools"].append({"name": name, "ask": tool["policy"] == "ask"})
+                        candidate = {**value, "servers": value["servers"] + [entry]}
+                        if len(json.dumps(candidate, ensure_ascii=True).encode()) > 8000:
+                            entry["tools"].pop()
+                            value["truncated"] = True
+                            break
+                    if entry["tools"]:
+                        value["servers"].append(entry)
+                raw = (json.dumps(value, ensure_ascii=True, separators=(",", ":")) + "\n").encode()
+                if len(raw) > 8192:
+                    return False
+                fd, temporary = tempfile.mkstemp(prefix=".discovery-", dir=path.parent)
+                with os.fdopen(fd, "wb") as output:
+                    output.write(raw)
+                    output.flush()
+                    os.fsync(output.fileno())
+                os.replace(temporary, path)
+                temporary = None
+            return True
+        except (OSError, ValueError, TypeError, KeyError):
+            return False  # A hint failure cannot turn a committed Owner save into a failed transaction.
+        finally:
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
 
     def handle(self, role, request):
         """role is "owner" or "agent", set by the socket the request came in on."""
@@ -230,7 +296,10 @@ class Integrations(RecoveryReviewOnly, AppActions):
             if role == "owner":
                 if action not in OWNER_ACTIONS:
                     raise IntegrationError("invalid-request", "Unknown owner action.")
-                return self._owner(action, request)
+                result = self._owner(action, request)
+                if action in ("save", "discover"):
+                    self.publish_discovery()
+                return result
             if action in OWNER_ACTIONS:
                 raise IntegrationError("forbidden", "Only the owner can change integrations.")
             return self._agent(action, request)
@@ -939,6 +1008,9 @@ def _listener(service, socket_path, role, *, owner_key=None, stop=None):
 def watch_pages(service, stop, seconds=WATCH_SECONDS):
     """Look at the owner's watched pages every few minutes until stop is set."""
     while not stop.wait(seconds):
+        publisher = getattr(service, 'publish_discovery', None)
+        if publisher:
+            publisher()  # Renews expiry without starting/touching MCP providers.
         try:
             service.check_watches()
         except IntegrationError as error:
@@ -999,6 +1071,8 @@ def start(agent_socket, state_dir):
     try:
         servers.append(_listener(service, agent_socket, "agent", stop=stop))
         servers.append(_listener(service, pathlib.Path(state_dir) / OWNER_SOCKET, "owner", owner_key=key, stop=stop))
+        service.discovery_path = pathlib.Path(agent_socket).parent / "discovery.json"
+        service.publish_discovery()
     except BaseException:
         for server in servers:
             server.server_close()

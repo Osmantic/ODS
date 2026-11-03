@@ -14,6 +14,7 @@ import {ACTIVITY_CONTRACT} from '../plugin/activity-display.mjs';
 import {GOAL_CONTRACT} from '../plugin/goal-progress.mjs';
 import {executionContext} from '../plugin/completion-assurance.mjs';
 import {nativeIntegrationHookState} from './native-integration-hook-state.mjs';
+import {integrationCapabilitiesContext} from '../plugin/integration-capabilities.mjs';
 import {isolateSdkImports} from './isolated-sdk-imports.mjs';
 
 const PYTHON = process.platform === 'win32' ? 'python' : 'python3';
@@ -161,7 +162,8 @@ export async function realPromptBuild(t, {stateFiles = {}} = {}) {
 // everything beside the owner turn can be checked for turns the real flow
 // rarely combines.
 export async function promptHookAlone({language, goal = false, clarificationNote,
-  prompt = 'Quais são três dicas para manter o foco?', agentId = 'pixel', probe = false, messages = []} = {}) {
+  prompt = 'Quais são três dicas para manter o foco?', agentId = 'pixel', probe = false, messages = [],
+  capabilitySnapshotFile, contextWindow = 131072} = {}) {
   const source = fs.readFileSync(new URL('../plugin/index.js', import.meta.url), 'utf8');
   const begin = source.indexOf('    api.on("before_prompt_build",');
   const finish = source.indexOf('    api.on("model_call_started",', begin);
@@ -181,7 +183,9 @@ export async function promptHookAlone({language, goal = false, clarificationNote
       clarificationContextForRun: id => (id === 'run' ? clarificationNote : undefined), longTaskEligible: () => true},
     goalProgress: {begin() {}, active: () => goal}, taskActivity: {begin() {}},
     promptContractForAgent, longTaskContract, PORTAL_INTEGRATION_API_CONTRACT, PORTAL_INTEGRATION_TURN_CONTEXT,
-    configuredContextWindow: 131072, configuredLeanPrompt: false, configuredResponseLanguage: language,
+    configuredContextWindow: contextWindow, configuredLeanPrompt: false, configuredResponseLanguage: language,
+    integrationCapabilitiesContext: options => integrationCapabilitiesContext({...options,
+      file:capabilitySnapshotFile ?? fileURLToPath(new URL('./fixtures/absent-capability-snapshot.json',import.meta.url))}),
     extensionRepositoryContext: async () => '', managedTeamRole, ACTIVITY_CONTRACT, GOAL_CONTRACT,
     executionLocationContext: () => '', executionContext,
   });

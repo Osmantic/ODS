@@ -49,6 +49,7 @@ import { longTaskContract, promptContractForAgent, PORTAL_INTEGRATION_API_CONTRA
 import { executionContext } from "./completion-assurance.mjs";
 import { createAskUserTool } from "./ask-user.mjs";
 import { createIntegrationTools } from "./integrations.mjs";
+import {integrationCapabilitiesContext} from './integration-capabilities.mjs';
 import { createIntegrationOutcomes } from "./integration-outcomes.mjs";
 import { createIntegrationReviewRecovery } from "./integration-review-recovery.mjs";
 import { createTaskHooks } from "./integration-tasks.mjs";
@@ -521,6 +522,9 @@ export default definePluginEntry({
       const integrationTurnContext = contract && !accessRuntime.isProbe(context) ? PORTAL_INTEGRATION_TURN_CONTEXT : '';
       // Static API facts belong in SYSTEM; the history reminder stays by the owner.
       const integrationApiContract = integrationTurnContext ? PORTAL_INTEGRATION_API_CONTRACT : '';
+      const integrationCapabilities = integrationTurnContext ? integrationCapabilitiesContext({agentId:context?.agentId,
+        role:managedTeamRole(ownerEvent), probe:accessRuntime.isProbe(context), reviewOnly:integrationReviewRecovery.isReviewOnly(context,event),
+        trigger:context?.trigger, contextWindow:configuredContextWindow}) : '';
       const appendContext = [goalProgress.active(context?.runId ?? event?.runId) ? goalContract : '', languageNote,
         toolLoopGuard.clarificationContextForRun(context?.runId ?? event?.runId) ??
           toolLoopGuard.clarificationContextForRun(delegationDelivery.ownerRunFor(context)),
@@ -529,7 +533,7 @@ export default definePluginEntry({
       // extension requests refuse update_plan, and read-only roles cannot edit.
       const longTask = toolLoopGuard.longTaskEligible(context?.runId ?? event?.runId)
         ? longTaskContract(context, ownerEvent, {configuredContextWindow, configuredLeanPrompt}) : '';
-      return contract ? { ...contract, ...(prependContext ? {prependContext} : {}), ...(appendContext ? {appendContext} : {}), appendSystemContext: `${inResponseLanguage(ACTIVITY_CONTRACT, configuredResponseLanguage)} ${executionLocationContext(context, AGENT_ID)} ${goalProgress.active(context?.runId ?? event?.runId) ? goalContract : ""} ${contract.appendSystemContext}${integrationApiContract ? ` ${integrationApiContract}` : ''}${longTask ? ` ${longTask}` : ''} ${inResponseLanguage(executionContext(), configuredResponseLanguage)} ${repositoryEvidence}` } : prependContext ? {prependContext} : undefined;
+      return contract ? { ...contract, ...(prependContext ? {prependContext} : {}), ...(appendContext ? {appendContext} : {}), appendSystemContext: `${inResponseLanguage(ACTIVITY_CONTRACT, configuredResponseLanguage)} ${executionLocationContext(context, AGENT_ID)} ${goalProgress.active(context?.runId ?? event?.runId) ? goalContract : ""} ${contract.appendSystemContext}${integrationApiContract ? ` ${integrationApiContract}` : ''}${longTask ? ` ${longTask}` : ''} ${inResponseLanguage(executionContext(), configuredResponseLanguage)} ${repositoryEvidence}${integrationCapabilities ? `\n\n${integrationCapabilities}` : ''}` } : prependContext ? {prependContext} : undefined;
     });
     api.on("model_call_started", (event, context) =>
       toolLoopGuard.observeModelCall(event, context, AGENT_ID)

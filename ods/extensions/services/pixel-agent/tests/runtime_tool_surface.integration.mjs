@@ -1,7 +1,8 @@
 // Exercise the actual reviewed package module and its catalog implementation.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import {homedir} from 'node:os';
 import {registerHooks} from 'node:module';
 import { createHash, randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
@@ -12,6 +13,7 @@ import { createConnectionsStatusTool } from '../plugin/connections-status.mjs';
 import {createIntegrationTools} from '../plugin/integrations.mjs';
 import {withPiToolErrorContract} from '../plugin/pi-tool-result.mjs';
 import {failedToolOutcome} from '../plugin/run-progress-budget.mjs';
+import {promptHookAlone} from './prompt-build-harness.mjs';
 
 const file = process.env.OPENCLAW_TOOL_SEARCH_MODULE;
 const manifest = JSON.parse(readFileSync(new URL('../host/openclaw-image-envelope.json', import.meta.url)));
@@ -21,6 +23,31 @@ const { t: filterByPolicy } = await import(pathToFileURL(join(dirname(file), 'ag
 const {o:setPluginToolMeta} = await import(pathToFileURL(join(dirname(file),'tools-D5HS8Q_I.js')));
 const tool = name => ({ name, label: name, description: name, parameters: { type: 'object', properties: {} }, execute: async () => ({ content: [] }) });
 const controls = ['tool_search', 'tool_describe', 'tool_call'].map(tool);
+
+test('actual native 8K/32K/64K surfaces keep identical schemas while bounded capability data preserves the core and output contract',async t=>{
+  const root=mkdtempSync(join(homedir(),'.ods-native-capability-budget-'));
+  t.after(()=>rmSync(root,{recursive:true,force:true}));
+  const snapshot=join(root,'discovery.json');
+  writeFileSync(snapshot,JSON.stringify({version:1,revision:2,validUntil:Math.floor(Date.now()/1000)+300,truncated:false,
+    servers:[{id:'files',name:'Arquivos QA WQA-M5',tools:[{name:'list_allowed_directories',ask:false},{name:'list_directory',ask:false}]}]}),{mode:0o600});
+  let executions=0;
+  const originals=createIntegrationTools({submit:async()=>{executions++;throw Error('metadata must not execute tools');}});
+  const schemas=value=>JSON.stringify(value.tools.map(({name,parameters})=>({name,parameters})));
+  for(const window of [8192,32768,65536]) {
+    const before=run(originals,{modelContextWindowTokens:window});
+    const common={prompt:'Sem usar ferramentas nem acessar dados, calcule 9 + 17.',contextWindow:window};
+    const base=await promptHookAlone({...common,capabilitySnapshotFile:join(root,'missing.json')});
+    const actual=await promptHookAlone({...common,capabilitySnapshotFile:snapshot});
+    const delta=Buffer.byteLength(actual.appendSystemContext)-Buffer.byteLength(base.appendSystemContext);
+    assert.ok(actual.appendSystemContext.startsWith(base.appendSystemContext),'existing core/output guidance byte-identical');
+    assert.equal(actual.appendContext,base.appendContext,'owner turn receives no metadata');
+    assert.equal(actual.prependContext,base.prependContext);
+    assert.ok(window===8192 ? delta===0 : delta>0 && delta<=2050,'only the bounded metadata tail is added');
+    const after=run(originals,{modelContextWindowTokens:window});
+    assert.equal(schemas(before),schemas(after),'actual pinned native direct/deferred schemas unchanged');
+  }
+  assert.equal(executions,0,'NoIO construction and native catalog expose no business or provider call');
+});
 
 function connectionStatusTool(reads) {
   const unknownSource=()=>({lastObservedState:'unknown',recent:null,lastSuccessAt:null,complete:null,error:null});
